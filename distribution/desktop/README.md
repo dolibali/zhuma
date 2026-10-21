@@ -35,3 +35,9 @@ Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek �
 ## 原图一致性验收
 
 `pnpm brand:check` 检查原始 PNG 的固定 SHA-256 和全部导出资源；`pnpm desktop:verify:mac` 继续检查安装包内 ICNS 与本次准备的 ICNS 完全相同。运行时通过 CDP 读取两个品牌图标的实际 `currentSrc`、像素密度和响应字节摘要，确认窗口加载的是原图导出而不是缓存中的旧图。修订安装包采用 `brand.json` 的独立构建版本，保留旧包作为历史，不将同名旧包误认为已修复。
+
+## 外侧黑边修复
+
+构建 `0.2.1-rc.2.20261021.3` 使用 `icon-transparent.png` 派生母版：只改外部透明度，原图保持不变；蓝色圆角内的图案和背景保留。Dock、Finder、内部侧边栏、首页及分享卡片统一使用这套资源。
+
+维护者执行 `python3 branding/default/export_icons.py --check` 验证像素；CI 的 `pnpm brand:check` 验证原始 RGB 与 alpha 规则。实际启动应用后执行 `pnpm desktop:verify:icons` 校验 UI 资源字节、四角透明度、无 CSS 背景／阴影并保存真实窗口截图。需要临时用回环 CDP 端口 9333 启动对应应用；正式正常启动不主动开启调试端口。

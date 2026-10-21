@@ -5,5 +5,5 @@ import { verifyIconAssets } from './icon-assets.mjs';
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const manifest = verifyIconAssets(root);
 console.log(
-  `Approved original SHA-256 and ${manifest.outputs.length} lossless PNG exports verified.`,
+  `Approved original SHA-256 and ${manifest.outputs.length} transparent PNG exports verified; exterior alpha is zero and original RGB is unchanged.`,
 );

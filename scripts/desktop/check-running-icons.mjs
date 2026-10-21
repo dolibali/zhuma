@@ -75,8 +75,20 @@ try {
         await image.decode();
         const bytes = await (await fetch(image.currentSrc, { cache: 'reload' })).arrayBuffer();
         const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+        const bitmap = await createImageBitmap(new Blob([bytes], {type: 'image/png'}));
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width; canvas.height = bitmap.height;
+        const context = canvas.getContext('2d');
+        // Sample the actual displayed <img>, not only a fresh fetch that could hide stale pixels.
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        const alphaAt = (x,y) => rgba[(y * canvas.width + x) * 4 + 3];
+        const cornerAlpha = [[0,0], [canvas.width-1,0], [0,canvas.height-1], [canvas.width-1,canvas.height-1]].map(([x,y]) => alphaAt(x,y));
+        const centerAlpha = alphaAt(Math.floor(canvas.width/2), Math.floor(canvas.height/2));
+        bitmap.close();
         return { src: image.currentSrc, displayedWidth: image.width, naturalWidth: image.naturalWidth,
-          sha256: hash, borderRadius: getComputedStyle(image).borderRadius, filter: getComputedStyle(image).filter };
+          sha256: hash, cornerAlpha, centerAlpha, background: getComputedStyle(image).backgroundColor,
+          borderRadius: getComputedStyle(image).borderRadius, filter: getComputedStyle(image).filter, boxShadow: getComputedStyle(image).boxShadow };
       })) };
     })()`,
     awaitPromise: true,
@@ -91,6 +103,18 @@ try {
     const expected = manifest.outputs.find((entry) => path.endsWith(`/icon-${entry.width}.png`));
     assert.ok(expected, `Unknown icon: ${path}`);
     assert.equal(image.sha256, expected.sha256, 'Running UI is serving an old or modified image');
+    assert.deepEqual(
+      image.cornerAlpha,
+      [0, 0, 0, 0],
+      'Black matte: actual loaded UI image must have transparent corners',
+    );
+    assert.equal(image.centerAlpha, 255, 'The inner artwork must stay opaque');
+    assert.equal(
+      image.background,
+      'rgba(0, 0, 0, 0)',
+      'No CSS background may reintroduce a black tile',
+    );
+    assert.equal(image.boxShadow, 'none', 'No extra UI shadow around the mark');
     assert.equal(image.filter, 'none', 'Do not recolor the approved art with CSS');
     assert.equal(image.borderRadius, '0px', 'Do not apply an additional clipping mask');
   }
@@ -100,11 +124,19 @@ try {
   writeFileSync(join(output, 'zhuma-fixed-window.png'), Buffer.from(screenshot.data, 'base64'));
   writeFileSync(
     join(output, 'runtime-icon-verification.json'),
-    JSON.stringify({ originalSha256: manifest.source.sha256, ...result }, null, 2) + '\n',
+    JSON.stringify(
+      {
+        originalSha256: manifest.source.sha256,
+        transparentMasterSha256: manifest.master.sha256,
+        ...result,
+      },
+      null,
+      2,
+    ) + '\n',
   );
   console.log(JSON.stringify(result, null, 2));
   console.log(
-    'Actual app sidebar and hero bytes match approved-source exports. Screenshot recorded.',
+    'Actual sidebar and hero load verified transparent exports, with no CSS black background. Screenshot recorded.',
   );
 } finally {
   ws.close();

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { decodeRgbaPng, assertTransparentExterior } from './png-alpha.mjs';
 export const APPROVED_ICON_SHA256 =
   'e0fd8cc6d4706ad60af35d6ea12415f36582fdd8cae92e0a20d390538475bf00';
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -14,10 +15,29 @@ function pngSize(bytes) {
 export function verifyIconAssets(root) {
   const brand = join(root, 'branding/default');
   const manifest = JSON.parse(readFileSync(join(brand, 'icon-manifest.json'), 'utf8'));
+  assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.source.sha256, APPROVED_ICON_SHA256);
   const source = readFileSync(join(brand, 'icon-source.png'));
   assert.equal(sha256(source), APPROVED_ICON_SHA256, 'Approved source image was replaced');
   assert.deepEqual(pngSize(source), [1254, 1254]);
+  assert.equal(manifest.master.recipe, 'approved-perimeter-alpha-v1');
+  assert.equal(manifest.master.path, 'icon-transparent.png');
+  const masterBytes = readFileSync(join(brand, manifest.master.path));
+  assert.equal(sha256(masterBytes), manifest.master.sha256, 'Transparent master checksum differs');
+  const original = decodeRgbaPng(source);
+  const master = decodeRgbaPng(masterBytes);
+  assert.equal(original.width, master.width);
+  assert.equal(original.height, master.height);
+  for (let i = 0; i < original.pixels.length; i++) {
+    if (i % 4 !== 3)
+      assert.equal(
+        master.pixels[i],
+        original.pixels[i],
+        'Only exterior alpha may change; RGB artwork must remain intact',
+      );
+  }
+  assertTransparentExterior(master, 'Transparent master');
+
   assert.equal(existsSync(join(brand, 'render_icon.py')), false, 'Retire the old redrawing script');
   assert.equal(
     existsSync(join(brand, 'icon-source.jpg')),
@@ -29,6 +49,7 @@ export function verifyIconAssets(root) {
     const bytes = readFileSync(join(brand, entry.path));
     assert.equal(sha256(bytes), entry.sha256, `Export checksum mismatch: ${entry.path}`);
     assert.deepEqual(pngSize(bytes), [entry.width, entry.height]);
+    assertTransparentExterior(decodeRgbaPng(bytes), entry.path);
   }
   assert.equal(
     sha256(readFileSync(join(brand, 'icon.png'))),
@@ -68,6 +89,6 @@ export function installIconAssets(root, stage) {
   if (result.error || result.status !== 0)
     throw new Error('macOS icon container conversion failed');
   console.log(
-    `Original PNG preserved; native and UI sizes installed (${APPROVED_ICON_SHA256.slice(0, 12)}).`,
+    `Original PNG preserved; transparent native and UI sizes installed (${APPROVED_ICON_SHA256.slice(0, 12)}).`,
   );
 }

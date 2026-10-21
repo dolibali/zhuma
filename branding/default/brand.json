@@ -9,6 +9,7 @@
     "enabled": false
   },
   "status": "macos-desktop-build-integrated",
-  "desktopBuildVersion": "0.2.1-rc.2.20261021.2",
-  "iconSource": "icon-source.png"
+  "desktopBuildVersion": "0.2.1-rc.2.20261021.3",
+  "iconSource": "icon-source.png",
+  "iconMaster": "icon-transparent.png"
 }

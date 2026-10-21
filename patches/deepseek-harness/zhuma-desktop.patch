@@ -329,7 +329,7 @@ index 5d9d4607..17b37ad6 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index 2afdfd71..97437160 100644
+index 2afdfd71..abab4b6a 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -82,6 +82,9 @@ const rendererConsole = new RendererConsoleTail()
@@ -342,16 +342,19 @@ index 2afdfd71..97437160 100644
  app.setAppLogsPath()
  
  function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
-@@ -932,7 +935,7 @@ async function main(): Promise<void> {
+@@ -931,8 +934,10 @@ async function main(): Promise<void> {
+ 
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
++  // Load this build's transparent image instead of a stale Launch Services Dock cache.
++  if (process.platform === 'darwin') app.dock?.setIcon(applicationIconPath)
    app.setAboutPanelOptions({
 -    applicationName: 'DeepSeek Harness',
 +    applicationName: 'Zhuma',
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -1232,10 +1235,10 @@ async function main(): Promise<void> {
+@@ -1232,10 +1237,10 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -409,7 +412,7 @@ index 6592d6a7..c4be9f90 100644
        "type": "image/svg+xml",
        "purpose": "any"
 diff --git a/packages/client/ui-brand-official/src/client/Brand.tsx b/packages/client/ui-brand-official/src/client/Brand.tsx
-index 9ac6dd7c..c9b9b5b7 100644
+index 9ac6dd7c..30ac8947 100644
 --- a/packages/client/ui-brand-official/src/client/Brand.tsx
 +++ b/packages/client/ui-brand-official/src/client/Brand.tsx
 @@ -1,19 +1,15 @@
@@ -421,10 +424,10 @@ index 9ac6dd7c..c9b9b5b7 100644
 - * @param props - Host-supplied mark presentation.
 - * @returns the official whale mark.
 - */
-+/** Lossless resized exports of the user-approved PNG; do not draw or mask a substitute. */
++/** Original RGB artwork with only the exterior matte removed; no CSS border or background. */
  export function OfficialBrandMark({ size }: SidebarBrandMarkOwnerProps) {
 -  return <FishLogo size={size} />
-+  const revision = 'e0fd8cc6d470'
++  const revision = '50cc08a24c50'
 +  const optimized = size === 24 || size === 34
 +  const image = (pixels: number) => `/zhuma-icons/icon-${pixels}.png?v=${revision}`
 +  return <img src={optimized ? image(size) : `/zhuma-icon.png?v=${revision}`}
