@@ -1,0 +1,464 @@
+diff --git a/apps/desktop/electron-builder.config.d.mts b/apps/desktop/electron-builder.config.d.mts
+index 0682e6e9..3af33c8b 100644
+--- a/apps/desktop/electron-builder.config.d.mts
++++ b/apps/desktop/electron-builder.config.d.mts
+@@ -4,7 +4,7 @@ import type { AfterPackContext, BeforePackContext } from 'app-builder-lib'
+ export interface DesktopElectronBuilderConfig {
+   readonly appId: string
+   readonly artifactName: string
+-  readonly protocols: readonly [{ readonly name: 'DeepSeek Harness'; readonly schemes: readonly ['dsh'] }]
++  readonly protocols: readonly [{ readonly name: 'Zhuma'; readonly schemes: readonly ['zhuma'] }]
+   readonly directories: {
+     readonly output: string
+   }
+diff --git a/apps/desktop/scripts/desktop-build-version-discovery.ts b/apps/desktop/scripts/desktop-build-version-discovery.ts
+index 68291ca3..db3ed424 100644
+--- a/apps/desktop/scripts/desktop-build-version-discovery.ts
++++ b/apps/desktop/scripts/desktop-build-version-discovery.ts
+@@ -31,7 +31,7 @@ const LISTING_DEADLINE_MS = 8_000
+ const LISTING_PAGE_SIZE = 1000
+ 
+ /** Artifact name electron-builder writes for one build, on either platform; unsigned and unnotarized builds add a suffix. */
+-const ARTIFACT = /(?:^|\/)deepseek-harness-(?<version>.+)-(?:mac|win)-(?:arm64|x64)(?:-unsigned|-unnotarized)?\.(?:exe|dmg|zip)$/u
++const ARTIFACT = /(?:^|\/)zhuma-(?<version>.+)-(?:mac|win)-(?:arm64|x64)(?:-unsigned|-unnotarized)?\.(?:exe|dmg|zip)$/u
+ 
+ /** Inputs that decide which versions are already taken. */
+ export interface DesktopBuildVersionSuggestionOptions {
+@@ -107,7 +107,7 @@ async function remoteVersions(options: DesktopBuildVersionSuggestionOptions): Pr
+         new Promise<{ keys: string[]; next: string | undefined }>((resolveListing, rejectListing) => {
+           cos.getBucket({
+             Bucket: update.bucket, Region: DESKTOP_COS_REGION, MaxKeys: LISTING_PAGE_SIZE,
+-            Prefix: `${update.binaryKeyPrefix}/deepseek-harness-`, ...marker === undefined ? {} : { Marker: marker },
++            Prefix: `${update.binaryKeyPrefix}/zhuma-`, ...marker === undefined ? {} : { Marker: marker },
+           }, (error, data) => {
+             if (error !== null && error !== undefined) rejectListing(error instanceof Error ? error : new Error(String(error)))
+             else {
+diff --git a/apps/desktop/scripts/desktop-package-environment.mjs b/apps/desktop/scripts/desktop-package-environment.mjs
+index 8116dea2..9575c9a2 100644
+--- a/apps/desktop/scripts/desktop-package-environment.mjs
++++ b/apps/desktop/scripts/desktop-package-environment.mjs
+@@ -28,7 +28,7 @@ const FILE_SETTINGS = ['DSH_DESKTOP_WINDOWS_CER_FILE', 'DSH_DESKTOP_WINDOWS_SIGN
+ export function localMacOSPackageEnvironment(environment = process.env) {
+   return {
+     ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
+-    DSH_DESKTOP_APP_ID: 'com.deepseek.harness',
++    DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
+     DSH_DESKTOP_UNSIGNED: '1',
+   }
+ }
+diff --git a/apps/desktop/scripts/development-app.ts b/apps/desktop/scripts/development-app.ts
+index ff09b8b7..452846d8 100644
+--- a/apps/desktop/scripts/development-app.ts
++++ b/apps/desktop/scripts/development-app.ts
+@@ -1,7 +1,7 @@
+ /** macOS development bundle that loads the current workspace through Electron. */
+ import { execFileSync } from 'node:child_process'
+ import { createHash } from 'node:crypto'
+-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
++import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+ import { dirname, join } from 'node:path'
+ 
+ /** Workspace and runtime settings captured for Launch Services cold starts. */
+@@ -26,7 +26,7 @@ function quote(value: string): string { return `'${value.replaceAll("'", "'\\''"
+  */
+ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
+   const source = dirname(dirname(dirname(options.electron)))
+-  const bundle = join(options.directory, 'Harness Dev.app')
++  const bundle = join(options.directory, 'Zhuma Dev.app')
+   const executable = join(bundle, 'Contents', 'MacOS', 'HarnessDev')
+   const stamp = join(bundle, 'Contents', 'Resources', 'dsh-development.json')
+   const launcher = developmentLauncher(options, bundle)
+@@ -36,15 +36,17 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
+     execFileSync('/usr/bin/ditto', [source, bundle])
+     const plist = join(bundle, 'Contents', 'Info.plist')
+     const values = {
+-      CFBundleIdentifier: `com.deepseek.harness.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
+-      CFBundleName: 'Harness Dev',
+-      CFBundleDisplayName: 'Harness Dev',
++      CFBundleIdentifier: `dev.zhuma.desktop.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
++      CFBundleName: 'Zhuma Dev',
++      CFBundleDisplayName: 'Zhuma Dev',
+       CFBundleExecutable: 'HarnessDev',
+-      CFBundleURLTypes: [{ CFBundleURLName: 'DeepSeek Harness', CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
++      CFBundleIconFile: 'zhuma.icns',
++      CFBundleURLTypes: [{ CFBundleURLName: 'Zhuma', CFBundleURLSchemes: ['zhuma'], CFBundleTypeRole: 'Viewer' }],
+     }
+     for (const [key, value] of Object.entries(values)) {
+       execFileSync('/usr/bin/plutil', ['-replace', key, '-json', JSON.stringify(value), plist])
+     }
++    copyFileSync(join(options.appRoot, 'resources', 'icon-macos.icns'), join(bundle, 'Contents', 'Resources', 'zhuma.icns'))
+     writeFileSync(executable, launcher, { mode: 0o755 })
+     writeFileSync(stamp, identity, { mode: 0o600 })
+     execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index 4b9cd27a..fcb0a7a6 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -105,7 +105,7 @@ export function createElectronBuilderConfig(
+   const packaged = resolveDesktopBuildCommit(env)
+   return {
+     appId,
+-    protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
++    protocols: [{ name: 'Zhuma', schemes: ['zhuma'] }],
+     extraMetadata: {
+       dshDesktopAppId: appId,
+       dshDesktopUpdateChannel: update?.channel ?? 'nightly',
+@@ -113,9 +113,9 @@ export function createElectronBuilderConfig(
+       ...buildVersion === productVersion ? {} : { version: buildVersion },
+       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
+     },
+-    productName: 'DeepSeek Harness',
++    productName: 'Zhuma',
+     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
+-    artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${output.suffix}.\${ext}`,
++    artifactName: `zhuma-\${version}-\${os}-\${arch}${output.suffix}.\${ext}`,
+     directories: { output: output.directory },
+     asar: true,
+     electronDist: buildPaths.electron,
+@@ -165,7 +165,7 @@ export function createElectronBuilderConfig(
+       identity: unsigned ? '-' : macOSSigning?.signingIdentity,
+       forceCodeSigning: !unsigned,
+       hardenedRuntime: true,
+-      extendInfo: { NSMicrophoneUsageDescription: 'DeepSeek Harness uses your microphone to transcribe speech into message drafts.' },
++      extendInfo: { NSMicrophoneUsageDescription: 'Zhuma uses your microphone to transcribe speech into message drafts.' },
+       entitlements: fileURLToPath(new URL('./macos-entitlements.plist', import.meta.url)),
+       entitlementsInherit: fileURLToPath(new URL('./macos-entitlements.plist', import.meta.url)),
+       // Prepared runtime files retain their signatures; PAK resources are sealed by their enclosing bundle.
+diff --git a/apps/desktop/scripts/macos-notarization-proxy.ts b/apps/desktop/scripts/macos-notarization-proxy.ts
+index bd5900a7..c0574f06 100644
+--- a/apps/desktop/scripts/macos-notarization-proxy.ts
++++ b/apps/desktop/scripts/macos-notarization-proxy.ts
+@@ -24,7 +24,7 @@ interface ProxyOperations {
+   readonly ownerAlive: (pid: number) => boolean
+ }
+ 
+-const LOCK = join(homedir(), 'Library', 'Caches', 'com.deepseek.harness', 'notarization-proxy')
++const LOCK = join(homedir(), 'Library', 'Caches', 'dev.zhuma.app', 'notarization-proxy')
+ const RECOVERY = 'pnpm --dir apps/desktop run restore:mac-proxy'
+ const NETWORKSETUP = '/usr/sbin/networksetup'
+ const operations: ProxyOperations = {
+diff --git a/apps/desktop/scripts/package-macos.ts b/apps/desktop/scripts/package-macos.ts
+index 4ba0fd12..00adcdfd 100644
+--- a/apps/desktop/scripts/package-macos.ts
++++ b/apps/desktop/scripts/package-macos.ts
+@@ -78,7 +78,7 @@ export async function packageMacOSArtifacts(
+   const expected = resolveMacOSSigningEnvironment(environment)
+   const credentials = resolveMacOSNotarizationEnvironment(environment)
+   const update = resolveDesktopAutoUpdateConfig(environment, 'darwin', arch)
+-  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
++  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'Zhuma.app')
+   const root = await mkdtemp(join(dirname(artifactsRoot), 'notarization-'))
+   const zipApp = join(root, 'zip', basename(appPath))
+   const dmgApp = join(root, 'dmg', basename(appPath))
+diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/package-target.ts
+index be2f577e..bf3cee31 100644
+--- a/apps/desktop/scripts/package-target.ts
++++ b/apps/desktop/scripts/package-target.ts
+@@ -401,7 +401,7 @@ async function main(): Promise<void> {
+   if (success && target.platform === 'darwin' && !invocation.directory && !invocation.prepareOnly) {
+     const paths = desktopTargetBuildPaths(target.name)
+     const output = desktopArtifactOutput(paths, invocation)
+-    const filename = `deepseek-harness-${buildVersion}-mac-${target.arch}${output.suffix}.dmg`
++    const filename = `zhuma-${buildVersion}-mac-${target.arch}${output.suffix}.dmg`
+     console.log(`DMG: ${join(output.directory, filename)}`)
+   }
+ }
+@@ -515,7 +515,7 @@ export async function packageTarget(
+   } else if (target.platform === 'darwin' && !invocation.unsigned && !invocation.skipNotarization) {
+     await execute([...desktopElectronBuilderArguments(target, true), '--config.mac.notarize=false'], electronBuilderEnv)
+     await execute(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts'], targetEnv)
+-    const appPath = join(buildPaths.artifacts, target.arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
++    const appPath = join(buildPaths.artifacts, target.arch === 'arm64' ? 'mac-arm64' : 'mac', 'Zhuma.app')
+     await withMacOSNotarizationProxy(mac?.notarizationProxy,
+       () => notarizeMacOS({ appPath, ...resolveMacOSNotarizationEnvironment(environment) }), undefined, undefined, proxyEvent)
+   } else {
+diff --git a/apps/desktop/scripts/smoke-packaged-runtime.ts b/apps/desktop/scripts/smoke-packaged-runtime.ts
+index 6c3c12c8..3f99135f 100644
+--- a/apps/desktop/scripts/smoke-packaged-runtime.ts
++++ b/apps/desktop/scripts/smoke-packaged-runtime.ts
+@@ -13,9 +13,9 @@ const target = resolveDesktopBuildTarget()
+ const windows = target === 'win-x64'
+ const artifacts = desktopArtifactOutput(paths, { unsigned: values.unsigned, skipNotarization: values['skip-notarization'] }).directory
+ const application = windows ? join(artifacts, 'win-unpacked')
+-  : join(artifacts, target === 'mac-arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app', 'Contents')
++  : join(artifacts, target === 'mac-arm64' ? 'mac-arm64' : 'mac', 'Zhuma.app', 'Contents')
+ const resources = join(application, windows ? 'resources' : 'Resources')
+-const executable = windows ? join(application, 'DeepSeek Harness.exe') : join(application, 'MacOS', 'DeepSeek Harness')
++const executable = windows ? join(application, 'Zhuma.exe') : join(application, 'MacOS', 'Zhuma')
+ const descriptor = await verifyDesktopRuntime(paths.dsh, readDesktopRuntime(paths.dsh).release.version,
+   resolveDesktopPackageTarget(target))
+ if (windows && !values.unsigned) await verifyWindowsCode(application)
+diff --git a/apps/desktop/scripts/verify-retained-desktop.ts b/apps/desktop/scripts/verify-retained-desktop.ts
+index 613580da..f67f31e7 100644
+--- a/apps/desktop/scripts/verify-retained-desktop.ts
++++ b/apps/desktop/scripts/verify-retained-desktop.ts
+@@ -39,6 +39,6 @@ export async function verifyRetainedDesktopSignatures(
+   const extracted = await mkdtemp(join(tmpdir(), 'desktop-publish-verify-'))
+   try {
+     run('/usr/bin/ditto', ['-x', '-k', zipPath, extracted])
+-    verifyMacOSNotarizedApplication(join(extracted, 'DeepSeek Harness.app'), config.macOS)
++    verifyMacOSNotarizedApplication(join(extracted, 'Zhuma.app'), config.macOS)
+   } finally { await rm(extracted, { recursive: true, force: true }) }
+ }
+diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
+index 5d9d4607..17b37ad6 100644
+--- a/apps/desktop/src/locale.ts
++++ b/apps/desktop/src/locale.ts
+@@ -31,17 +31,17 @@ export const en = {
+   application: 'Application',
+   fileMenu: 'File',
+   closePage: 'Close Page or Window',
+-  aboutMenu: 'About DeepSeek Harness',
+-  aboutProduct: 'DeepSeek Harness',
++  aboutMenu: 'About Zhuma',
++  aboutProduct: 'Zhuma',
+   aboutVersion: 'Version V{version}',
+-  hideApplication: 'Hide DeepSeek Harness',
++  hideApplication: 'Hide Zhuma',
+   hideOtherApplications: 'Hide Others',
+   showAllApplications: 'Show All',
+-  quitApplication: 'Quit DeepSeek Harness',
+-  openApplication: 'Open DeepSeek Harness',
++  quitApplication: 'Quit Zhuma',
++  openApplication: 'Open Zhuma',
+   quit: 'Quit',
+   cancel: 'Cancel',
+-  quitTitle: 'Quit DeepSeek Harness?',
++  quitTitle: 'Quit Zhuma?',
+   quitActiveTasks: 'Running tasks will be interrupted.',
+   quitScheduledTasks: 'Scheduled tasks will not run while the app is closed.',
+   quitActiveAndScheduledTasks: 'Running tasks will be interrupted, and scheduled tasks will not run while the app is closed.',
+@@ -56,7 +56,7 @@ export const en = {
+   copy: 'Copy',
+   paste: 'Paste',
+   selectAll: 'Select All',
+-  startupFailed: 'DeepSeek Harness is unavailable',
++  startupFailed: 'Zhuma is unavailable',
+   fatalSummary: 'The application could not start or stopped unexpectedly.',
+   startupAddressInUse: 'Another DSH instance (such as dsh web or the desktop app) is running. They cannot start at the same time. Quit the other running DSH instance, then restart.',
+   diagnosticTruncated: '… Error details shortened.',
+@@ -66,10 +66,10 @@ export const en = {
+   restartApplication: 'Restart',
+   recoveryOperationFailed: 'The recovery operation failed',
+   disableThirdPartyPlugins: 'Disable third-party plugins, back up profile patch, and restart',
+-  welcomeTitle: 'DeepSeek Harness',
+-  welcomeBrand: 'DeepSeek Harness',
++  welcomeTitle: 'Zhuma',
++  welcomeBrand: 'Zhuma',
+   welcomeTaglineBefore: 'Welcome to ',
+-  welcomeTaglineBrand: 'DeepSeek Harness',
++  welcomeTaglineBrand: 'Zhuma',
+   welcomeTaglineAfter: '',
+   welcomeDescription: 'Build potential. Explore intelligence.',
+   welcomeAuthStarting: 'Opening sign in…',
+@@ -130,7 +130,7 @@ export const en = {
+   updateTasksUnavailable: 'Task status is unavailable. Try updating again when the workspace is ready.',
+   updateStopFailed: 'Could not safely stop the tasks. The update has not been installed. Please try again later.',
+   updateTechnicalDetails: 'View technical details',
+-  updateTitle: 'DeepSeek Harness Update',
++  updateTitle: 'Zhuma Update',
+   updateAvailable: 'New version available: {version}',
+   updateDetail: 'Once the download is complete, you can install the update and restart the app.',
+   installAndRestart: 'Install and Restart',
+@@ -202,17 +202,17 @@ export const zh = {
+   application: '应用',
+   fileMenu: '文件',
+   closePage: '关闭页面或窗口',
+-  aboutMenu: '关于 DeepSeek Harness',
+-  aboutProduct: 'DeepSeek Harness',
++  aboutMenu: '关于 Zhuma',
++  aboutProduct: 'Zhuma',
+   aboutVersion: '版本 V{version}',
+-  hideApplication: '隐藏 DeepSeek Harness',
++  hideApplication: '隐藏 Zhuma',
+   hideOtherApplications: '隐藏其他',
+   showAllApplications: '显示全部',
+-  quitApplication: '退出 DeepSeek Harness',
+-  openApplication: '打开 DeepSeek Harness',
++  quitApplication: '退出 Zhuma',
++  openApplication: '打开 Zhuma',
+   quit: '退出',
+   cancel: '取消',
+-  quitTitle: '退出 DeepSeek Harness？',
++  quitTitle: '退出 Zhuma？',
+   quitActiveTasks: '当前正在运行的任务将会中断',
+   quitScheduledTasks: '应用关闭期间，定时任务不会运行',
+   quitActiveAndScheduledTasks: '当前正在运行的任务将会中断，且应用关闭期间，定时任务不会运行',
+@@ -227,7 +227,7 @@ export const zh = {
+   copy: '复制',
+   paste: '粘贴',
+   selectAll: '全选',
+-  startupFailed: 'DeepSeek Harness 无法使用',
++  startupFailed: 'Zhuma 无法使用',
+   fatalSummary: '应用无法启动或已意外停止。',
+   startupAddressInUse: '有其他正在运行的 DSH（如其他 dsh web、桌面端），无法同时启动，请退出其他正在运行的 DSH 后重启。',
+   diagnosticTruncated: '… 错误详情已截短。',
+@@ -237,10 +237,10 @@ export const zh = {
+   restartApplication: '重启',
+   recoveryOperationFailed: '恢复操作失败',
+   disableThirdPartyPlugins: '禁用第三方插件、备份 profile patch 并重启',
+-  welcomeTitle: 'DeepSeek Harness',
+-  welcomeBrand: 'DeepSeek Harness',
++  welcomeTitle: 'Zhuma',
++  welcomeBrand: 'Zhuma',
+   welcomeTaglineBefore: '欢迎使用 ',
+-  welcomeTaglineBrand: 'DeepSeek Harness',
++  welcomeTaglineBrand: 'Zhuma',
+   welcomeTaglineAfter: '',
+   welcomeDescription: '组装无限可能，共探智能上限',
+   welcomeAuthStarting: '正在打开登录…',
+@@ -301,7 +301,7 @@ export const zh = {
+   updateTasksUnavailable: '无法确认任务状态，请在工作区就绪后重试更新。',
+   updateStopFailed: '未能安全停止任务，更新尚未安装，请稍后重试。',
+   updateTechnicalDetails: '查看技术详情',
+-  updateTitle: 'DeepSeek Harness 更新',
++  updateTitle: 'Zhuma 更新',
+   updateAvailable: '发现新版本 {version}',
+   updateDetail: '下载完成后，可安装并重启应用。',
+   installAndRestart: '安装并重启',
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 2afdfd71..97437160 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -82,6 +82,9 @@ const rendererConsole = new RendererConsoleTail()
+ 
+ // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
+ // set before ready so the first fatal report already resolves under it.
++// Keep Zhuma's settings, sessions and credentials separate from an existing DSH install.
++app.setName('Zhuma')
++process.env.DSH_HOME ||= join(app.getPath('userData'), 'harness')
+ app.setAppLogsPath()
+ 
+ function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
+@@ -932,7 +935,7 @@ async function main(): Promise<void> {
+   const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
+     : join(process.resourcesPath, 'icon.png')
+   app.setAboutPanelOptions({
+-    applicationName: 'DeepSeek Harness',
++    applicationName: 'Zhuma',
+     applicationVersion: app.getVersion(),
+     // The release has no separate build number; omit Electron's bundle version.
+     version: '',
+@@ -1232,10 +1235,10 @@ async function main(): Promise<void> {
+     window.focus()
+   }
+ 
+-  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('dsh')
++  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('zhuma')
+   app.on('open-url', (event, url) => {
+     event.preventDefault()
+-    if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
++    if (url === 'zhuma://open' || url === 'zhuma://open/') focusPrimaryWindow()
+   })
+ 
+   app.on('activate', (_event, hasVisibleWindows) => {
+diff --git a/apps/desktop/src/welcome-api.ts b/apps/desktop/src/welcome-api.ts
+index c693f385..71b2707e 100644
+--- a/apps/desktop/src/welcome-api.ts
++++ b/apps/desktop/src/welcome-api.ts
+@@ -71,5 +71,8 @@ export interface WelcomeAuthentication {
+  * @returns true only when neither authentication route is configured.
+  */
+ export function needsWelcome(authentication: WelcomeAuthentication): boolean {
+-  return !authentication.loggedIn && !authentication.hasApiKey
++  // Zhuma's local-first desktop opens the workspace without an account or API key.
++  // Credential checks for remote model providers still happen when they are used.
++  void authentication
++  return false
+ }
+diff --git a/apps/web/index.html b/apps/web/index.html
+index f5c2ffac..97d2411c 100644
+--- a/apps/web/index.html
++++ b/apps/web/index.html
+@@ -4,9 +4,9 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <link rel="manifest" href="/manifest.webmanifest" />
+-    <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
+-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" media="(prefers-color-scheme: light)" />
+-    <title>DSH Local Build</title>
++    <link rel="icon" type="image/svg+xml" href="/zhuma-icon.png" media="(prefers-color-scheme: dark)" />
++    <link rel="icon" type="image/svg+xml" href="/zhuma-icon.png" media="(prefers-color-scheme: light)" />
++    <title>Zhuma</title>
+   </head>
+   <body>
+     <div id="root"></div>
+diff --git a/apps/web/public/manifest.webmanifest b/apps/web/public/manifest.webmanifest
+index 6592d6a7..c4be9f90 100644
+--- a/apps/web/public/manifest.webmanifest
++++ b/apps/web/public/manifest.webmanifest
+@@ -6,7 +6,7 @@
+   "display": "fullscreen",
+   "icons": [
+     {
+-      "src": "favicon.svg",
++      "src": "zhuma-icon.png",
+       "sizes": "any",
+       "type": "image/svg+xml",
+       "purpose": "any"
+diff --git a/packages/client/ui-brand-official/src/client/Brand.tsx b/packages/client/ui-brand-official/src/client/Brand.tsx
+index 9ac6dd7c..fd9bb993 100644
+--- a/packages/client/ui-brand-official/src/client/Brand.tsx
++++ b/packages/client/ui-brand-official/src/client/Brand.tsx
+@@ -1,19 +1,10 @@
+-import { BrandWordmark, FishLogo } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type { SidebarBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
+ 
+-/**
+- * Render the official mark with the presentation requested by its host surface.
+- * @param props - Host-supplied mark presentation.
+- * @returns the official whale mark.
+- */
++/** The Zhuma product icon is served by the bundled local Web frontend. */
+ export function OfficialBrandMark({ size }: SidebarBrandMarkOwnerProps) {
+-  return <FishLogo size={size} />
++  return <img src="/zhuma-icon.png" alt="Zhuma" width={size} height={size} style={{ borderRadius: '24%', objectFit: 'contain' }} />
+ }
+ 
+-/**
+- * Render the official name artwork without its independently slotted mark.
+- * @returns the official name wordmark.
+- */
+ export function OfficialBrandName() {
+-  return <BrandWordmark includeMark={false} />
++  return <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.04em' }}>Zhuma</span>
+ }
+diff --git a/packages/client/ui-brand-official/src/client/index.ts b/packages/client/ui-brand-official/src/client/index.ts
+index 332a5f60..2714be2f 100644
+--- a/packages/client/ui-brand-official/src/client/index.ts
++++ b/packages/client/ui-brand-official/src/client/index.ts
+@@ -2,6 +2,7 @@
+ import type { Context as ClientContext } from '@deepseek-ai/cordis'
+ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
++import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+ import { OfficialBrandMark, OfficialBrandName } from './Brand.tsx'
+ 
+ /** Required service: the UI slot registry. */
+@@ -14,10 +15,12 @@ export const inject = ['slots']
+  * @param ctx - Client root context.
+  */
+ export function apply(ctx: ClientContext): void {
+-  if (process.env.DSH_CLIENT_BUILD_PROFILE !== 'official') return
+   ctx.slots.inject('sidebar.brand.mark', () =>
+     ctx.slots.inject('sidebar.brand.name', function* () {
+       yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)
+       yield ctx.slots.register({ name: 'sidebar.brand.name' }, OfficialBrandName)
+     }))
++  ctx.slots.inject('conversation.hero.brand.mark', function* () {
++    yield ctx.slots.register({ name: 'conversation.hero.brand.mark' }, OfficialBrandMark)
++  })
+ }
+diff --git a/scripts/client-build-environment.ts b/scripts/client-build-environment.ts
+index 6c616cff..e239d644 100644
+--- a/scripts/client-build-environment.ts
++++ b/scripts/client-build-environment.ts
+@@ -19,7 +19,7 @@ export const CLIENT_BUILD_PROFILE_SELECTOR = 'DSH_BUILD_CLIENT_PROFILE'
+ /** Public client environment required by official DSH artifacts. */
+ const OFFICIAL_CLIENT_BUILD_ENVIRONMENT = {
+   DSH_CLIENT_BUILD_PROFILE: 'official',
+-  DSH_CLIENT_TITLE: 'DeepSeek Harness',
++  DSH_CLIENT_TITLE: 'Zhuma',
+ } as const
+ 
+ /** Public variable carrying the source commit embedded in client artifacts. */

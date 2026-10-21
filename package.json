@@ -21,7 +21,12 @@
     "clean": "node scripts/clean.mjs",
     "doctor": "node scripts/doctor.mjs",
     "upstream:init": "git submodule update --init --recursive",
-    "upstream:check": "node scripts/check-upstream.mjs"
+    "upstream:check": "node scripts/check-upstream.mjs",
+    "desktop:prepare": "node scripts/desktop/prepare.mjs",
+    "desktop:dev": "node scripts/desktop/run.mjs dev",
+    "desktop:package:mac": "node scripts/desktop/run.mjs package",
+    "desktop:reset": "node scripts/desktop/reset.mjs",
+    "desktop:verify:mac": "node scripts/desktop/verify.mjs"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

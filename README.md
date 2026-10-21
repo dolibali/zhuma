@@ -1,5 +1,7 @@
 # Zhuma
 
+<img src="branding/default/icon.png" alt="Zhuma" width="100" />
+
 基于 DeepSeek Harness（DSH）官方 Electron 桌面实现的插件化 AI 工作台。
 
 本仓库是产品主仓：维护自己的任务核心、工程上下文、DSH 适配、客户端和发行配置。DSH 完整源码作为固定提交的 Git 子模块放在 `upstream/deepseek-harness/`，官方桌面入口位于其 `apps/desktop/`，不另外复制一套 Electron 应用。
@@ -8,7 +10,7 @@
 
 这是项目的第一个工程骨架，已提供四个可构建的 TypeScript 包、基础契约与单元测试、仓库边界检查、上游版本检查及 CI 配置。
 
-**尚未实现：**真实 DSH Host／Client 插件注册、桌面品牌注入、完整工作流、可用工作台界面和码道 CLI 集成。测试中的模拟执行器只验证契约，不代表真实编码能力已接通。当前没有可使用的产品安装包，也不提供会冒充产品已运行的 `start` 命令。
+**尚未实现：**真实自研 DSH Host／Client 功能插件、完整工作流、专业工作台视图和码道 CLI 集成。已提供基于 DSH 的 Zhuma **macOS 桌面发行构建层**与独立品牌资源；详情见 [桌面发行指南](distribution/desktop/README.md)。桌面可运行仅代表复用的基础 DSH 功能可用，不代表自研功能已交付。
 
 ## 开发准备
 
@@ -71,7 +73,7 @@ zhuma/
 
 正式产品将复用上游 `apps/desktop/`。品牌、插件预装、更新和签名在 `distribution/`、`branding/` 与补丁层完成；在 `.build/` 临时构建树应用，不直接长期修改子模块。
 
-当前只提交配置和集成边界，不声称这些配置已被官方桌面自动读取。下一步先验证一个真实 Host 工具和 Client 页面在官方桌面中工作，再形成独立安装包。
+桌面构建使用可验证的上游补丁和独立临时 Git worktree，避免修改固定子模块。开发版直接进入本地工作台，不强制显示 DeepSeek 账号欢迎界面；使用模型仍需配置相应供应商凭据。macOS 安装包构建指令、签名限制和调试说明见 [桌面发行指南](distribution/desktop/README.md)。
 
 ## 许可与公开发布
 

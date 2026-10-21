@@ -4,3 +4,6 @@
 *.ico binary
 *.icns binary
 *.pdf binary
+
+# Git-formatted patch context lines include a literal leading space.
+patches/deepseek-harness/*.patch whitespace=-blank-at-eol
