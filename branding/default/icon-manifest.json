@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "path": "icon-source.png",
+    "sha256": "e0fd8cc6d4706ad60af35d6ea12415f36582fdd8cae92e0a20d390538475bf00",
+    "width": 1254,
+    "height": 1254,
+    "mode": "RGBA"
+  },
+  "transform": "Resize from original with Lanczos, PNG lossless encoding. No redraw, crop, tint, texture, or mask.",
+  "outputs": [
+    {
+      "path": "icons/icon-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "102d1e0ec34ca1aba75b557138185a7175dd7ec709e38e422eef10c6423c1deb"
+    },
+    {
+      "path": "icons/icon-24.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "4e18e92cfe9728c1fc2d7e93487dd892d2b9a07d6f5fa62210b923a3d3752092"
+    },
+    {
+      "path": "icons/icon-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "df16c59df9f88cbd86c66774a1bd8845e17794caf8010dd3c3a19f795e58e828"
+    },
+    {
+      "path": "icons/icon-34.png",
+      "width": 34,
+      "height": 34,
+      "sha256": "b2aa56bf5f275c9a82f6d67e3bb1c09998559a880d8e48af942947d442d29ee9"
+    },
+    {
+      "path": "icons/icon-48.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "e8184de1316f7d05006ebf9e33bfa505716be25b5e5fe80c867f18307f0733e6"
+    },
+    {
+      "path": "icons/icon-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "90b4327c17f8cc5ff2f9365eb783554c2b17cda731db321705ea08ce50668406"
+    },
+    {
+      "path": "icons/icon-68.png",
+      "width": 68,
+      "height": 68,
+      "sha256": "f89a2d846264d9dff5fc8223d71b5eca9ef00822adca3c3a0367f6299a7b5a43"
+    },
+    {
+      "path": "icons/icon-72.png",
+      "width": 72,
+      "height": 72,
+      "sha256": "5f4325de4d9d66bc6507d7f00a8ed7569d45510085da51c3de53a7224042f6e5"
+    },
+    {
+      "path": "icons/icon-96.png",
+      "width": 96,
+      "height": 96,
+      "sha256": "e9f3df86f62a175eda004d7057599836968edfd3285422bbd6ef17fc32519382"
+    },
+    {
+      "path": "icons/icon-102.png",
+      "width": 102,
+      "height": 102,
+      "sha256": "e47a63b0ae967bf7343863b8474f89b5c03022c0ec306dc4aae5653200a20080"
+    },
+    {
+      "path": "icons/icon-128.png",
+      "width": 128,
+      "height": 128,
+      "sha256": "e946d73299638397743d26656e221b933335ef84b0187188cd83884565f9e141"
+    },
+    {
+      "path": "icons/icon-256.png",
+      "width": 256,
+      "height": 256,
+      "sha256": "3811d20186de220d4a636455e9c376a69be729def91a2197e9acf0a9a197b874"
+    },
+    {
+      "path": "icons/icon-512.png",
+      "width": 512,
+      "height": 512,
+      "sha256": "075ff9a852bbf80b49b0f27fe72a7246bd8e86da123ea9c2952dbb3ca60f06c7"
+    },
+    {
+      "path": "icons/icon-1024.png",
+      "width": 1024,
+      "height": 1024,
+      "sha256": "efa6db3bf9f13b03a7b4261f3ffdcfbbb115a77357ee7da5bc577dee9dcbd3be"
+    }
+  ]
+}

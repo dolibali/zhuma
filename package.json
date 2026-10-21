@@ -14,7 +14,7 @@
     "build": "tsc -b",
     "typecheck": "pnpm build && pnpm -r --if-present run typecheck",
     "test": "pnpm build && node scripts/run-tests.mjs",
-    "check": "pnpm check:repo && pnpm format:check && pnpm typecheck && pnpm test",
+    "check": "pnpm check:repo && pnpm brand:check && pnpm format:check && pnpm typecheck && pnpm test",
     "check:repo": "node scripts/check-repo.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -26,7 +26,9 @@
     "desktop:dev": "node scripts/desktop/run.mjs dev",
     "desktop:package:mac": "node scripts/desktop/run.mjs package",
     "desktop:reset": "node scripts/desktop/reset.mjs",
-    "desktop:verify:mac": "node scripts/desktop/verify.mjs"
+    "desktop:verify:mac": "node scripts/desktop/verify.mjs",
+    "brand:check": "node scripts/desktop/check-icons.mjs",
+    "desktop:verify:icons": "node scripts/desktop/check-running-icons.mjs"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

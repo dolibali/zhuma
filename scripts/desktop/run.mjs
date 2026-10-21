@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /** Run Zhuma desktop inside the isolated DSH worktree. */
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const stage = `${root}/.build/desktop/deepseek-harness`;
 const task = process.argv[2] ?? 'dev';
+const brand = JSON.parse(readFileSync(join(root, 'branding/default/brand.json'), 'utf8'));
+if (!/^[0-9A-Za-z.-]+$/u.test(brand.desktopBuildVersion))
+  throw new Error('Invalid desktop build version');
 if (!['dev', 'package'].includes(task)) throw new Error(`Unknown desktop task: ${task}`);
 const env = {
   ...process.env,
@@ -28,15 +31,17 @@ if (task === 'dev') {
   run(['--config.verifyDepsBeforeRun=false', 'run', 'build:lib:client']);
   run(['--config.verifyDepsBeforeRun=false', 'run', 'dev:desktop']);
 } else {
-  run(['--config.verifyDepsBeforeRun=false', 'run', 'package:desktop:mac:arm64:unsigned']);
+  run([
+    '--config.verifyDepsBeforeRun=false',
+    'run',
+    'package:desktop:mac:arm64:unsigned',
+    '--build-version',
+    brand.desktopBuildVersion,
+  ]);
   const artifacts = join(stage, 'apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts');
-  const images = readdirSync(artifacts).filter((name) =>
-    /^zhuma-.+-mac-arm64-unsigned\.dmg$/u.test(name),
-  );
-  if (images.length !== 1)
-    throw new Error(`Expected exactly one Zhuma DMG, found ${images.join(', ')}`);
+  const artifactName = `zhuma-${brand.desktopBuildVersion}-mac-arm64-unsigned.dmg`;
   const destination = join(root, 'dist');
   mkdirSync(destination, { recursive: true });
-  copyFileSync(join(artifacts, images[0]), join(destination, images[0]));
-  console.log(`Zhuma installer available at ${join(destination, images[0])}`);
+  copyFileSync(join(artifacts, artifactName), join(destination, artifactName));
+  console.log(`Zhuma installer available at ${join(destination, artifactName)}`);
 }

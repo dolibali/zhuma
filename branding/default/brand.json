@@ -8,5 +8,7 @@
   "updates": {
     "enabled": false
   },
-  "status": "macos-desktop-build-integrated"
+  "status": "macos-desktop-build-integrated",
+  "desktopBuildVersion": "0.2.1-rc.2.20261021.2",
+  "iconSource": "icon-source.png"
 }

@@ -6,7 +6,7 @@ Zhuma 使用固定的官方 DSH Electron 实现。所有产品改动保存在 `p
 
 - Apple Silicon macOS、Node.js 24、pnpm 12（根项目）、Corepack；上游使用其声明的 pnpm 11。
 - 首次构建需能访问 npm 注册表和所需的 DSH/Electron 运行时下载地址。
-- 图标源文件 `branding/default/icon-source.jpg`；分辨率适配及 macOS `.icns` 由 `desktop:prepare` 生成。`branding/default/icon.png` 供 README 和品牌文档使用。
+- 图标源文件为用户确认的 `branding/default/icon-source.png`，保留原始 PNG 字节；`icon-manifest.json` 固定其 SHA-256。桌面 `.icns` 从已提交的无损 PNG 尺寸封装，内部 UI 使用 1×／2×／3× 同源资源，禁止重新绘制。
 
 ```bash
 cd /path/to/zhuma  # 替换为实际仓库路径
@@ -28,6 +28,10 @@ Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek �
 
 ## 维护和再构建
 
-如果补丁或图标源发生变化，先在确保开发版已退出后运行 `pnpm desktop:reset`，再 `pnpm desktop:prepare`。`desktop:reset` 仅清理专用临时工作树，不删安装版用户资料。上游版本升级必须更新 `runtime.lock.json`，重新校验并调整补丁，不能直接跟随浮动 `master`。
+修改图标导出后，可以在桌面退出且临时工作树仍匹配源码补丁时执行 `pnpm desktop:prepare --refresh-assets`，仅刷新资源。源码补丁不匹配时先检查差异；确认临时树可丢弃后，再执行 `pnpm desktop:reset` 和 `pnpm desktop:prepare`。`desktop:reset` 仅清理专用临时工作树，不删安装版用户资料。上游版本升级必须更新 `runtime.lock.json`，重新校验并调整补丁，不能直接跟随浮动 `master`。
 
 保持 DSH 上游的版权与 MIT 许可声明；公开仓库中的独立 Zhuma 许可另行确定。当前四个自研包仍处于基础骨架阶段。
+
+## 原图一致性验收
+
+`pnpm brand:check` 检查原始 PNG 的固定 SHA-256 和全部导出资源；`pnpm desktop:verify:mac` 继续检查安装包内 ICNS 与本次准备的 ICNS 完全相同。运行时通过 CDP 读取两个品牌图标的实际 `currentSrc`、像素密度和响应字节摘要，确认窗口加载的是原图导出而不是缓存中的旧图。修订安装包采用 `brand.json` 的独立构建版本，保留旧包作为历史，不将同名旧包误认为已修复。

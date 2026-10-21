@@ -47,7 +47,7 @@ index 8116dea2..9575c9a2 100644
    }
  }
 diff --git a/apps/desktop/scripts/development-app.ts b/apps/desktop/scripts/development-app.ts
-index ff09b8b7..452846d8 100644
+index ff09b8b7..77cb955a 100644
 --- a/apps/desktop/scripts/development-app.ts
 +++ b/apps/desktop/scripts/development-app.ts
 @@ -1,7 +1,7 @@
@@ -59,7 +59,7 @@ index ff09b8b7..452846d8 100644
  import { dirname, join } from 'node:path'
  
  /** Workspace and runtime settings captured for Launch Services cold starts. */
-@@ -26,7 +26,7 @@ function quote(value: string): string { return `'${value.replaceAll("'", "'\\''"
+@@ -26,25 +26,27 @@ function quote(value: string): string { return `'${value.replaceAll("'", "'\\''"
   */
  export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
    const source = dirname(dirname(dirname(options.electron)))
@@ -68,7 +68,10 @@ index ff09b8b7..452846d8 100644
    const executable = join(bundle, 'Contents', 'MacOS', 'HarnessDev')
    const stamp = join(bundle, 'Contents', 'Resources', 'dsh-development.json')
    const launcher = developmentLauncher(options, bundle)
-@@ -36,15 +36,17 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
+-  const identity = JSON.stringify({ ...options, launcher, plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
++  const identity = JSON.stringify({ ...options, launcher, iconHash: createHash('sha256').update(readFileSync(join(options.appRoot, 'resources', 'icon-macos.icns'))).digest('hex'), plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
+   if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== identity) {
+     rmSync(bundle, { recursive: true, force: true })
      execFileSync('/usr/bin/ditto', [source, bundle])
      const plist = join(bundle, 'Contents', 'Info.plist')
      const values = {
@@ -91,7 +94,7 @@ index ff09b8b7..452846d8 100644
      writeFileSync(stamp, identity, { mode: 0o600 })
      execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
 diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
-index 4b9cd27a..fcb0a7a6 100644
+index 4b9cd27a..b0f8b367 100644
 --- a/apps/desktop/scripts/electron-builder-config.mjs
 +++ b/apps/desktop/scripts/electron-builder-config.mjs
 @@ -105,7 +105,7 @@ export function createElectronBuilderConfig(
@@ -115,6 +118,15 @@ index 4b9cd27a..fcb0a7a6 100644
      directories: { output: output.directory },
      asar: true,
      electronDist: buildPaths.electron,
+@@ -157,7 +157,7 @@ export function createElectronBuilderConfig(
+       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+     ],
+     mac: {
+-      icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),
++      icon: fileURLToPath(new URL('../resources/icon-macos.icns', import.meta.url)),
+       category: 'public.app-category.developer-tools',
+       // macOS matches the application locale against this bundle, not Electron Framework resources.
+       extendInfo: { CFBundleLocalizations: ['en', 'zh_CN'] },
 @@ -165,7 +165,7 @@ export function createElectronBuilderConfig(
        identity: unsigned ? '-' : macOSSigning?.signingIdentity,
        forceCodeSigning: !unsigned,
@@ -397,10 +409,10 @@ index 6592d6a7..c4be9f90 100644
        "type": "image/svg+xml",
        "purpose": "any"
 diff --git a/packages/client/ui-brand-official/src/client/Brand.tsx b/packages/client/ui-brand-official/src/client/Brand.tsx
-index 9ac6dd7c..fd9bb993 100644
+index 9ac6dd7c..c9b9b5b7 100644
 --- a/packages/client/ui-brand-official/src/client/Brand.tsx
 +++ b/packages/client/ui-brand-official/src/client/Brand.tsx
-@@ -1,19 +1,10 @@
+@@ -1,19 +1,15 @@
 -import { BrandWordmark, FishLogo } from '@deepseek-ai/dsh-client-ui-primitives'
  import type { SidebarBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
  
@@ -409,10 +421,15 @@ index 9ac6dd7c..fd9bb993 100644
 - * @param props - Host-supplied mark presentation.
 - * @returns the official whale mark.
 - */
-+/** The Zhuma product icon is served by the bundled local Web frontend. */
++/** Lossless resized exports of the user-approved PNG; do not draw or mask a substitute. */
  export function OfficialBrandMark({ size }: SidebarBrandMarkOwnerProps) {
 -  return <FishLogo size={size} />
-+  return <img src="/zhuma-icon.png" alt="Zhuma" width={size} height={size} style={{ borderRadius: '24%', objectFit: 'contain' }} />
++  const revision = 'e0fd8cc6d470'
++  const optimized = size === 24 || size === 34
++  const image = (pixels: number) => `/zhuma-icons/icon-${pixels}.png?v=${revision}`
++  return <img src={optimized ? image(size) : `/zhuma-icon.png?v=${revision}`}
++    srcSet={optimized ? `${image(size)} 1x, ${image(size * 2)} 2x, ${image(size * 3)} 3x` : undefined}
++    alt="Zhuma" width={size} height={size} style={{ display: 'block', objectFit: 'contain' }} />
  }
  
 -/**
