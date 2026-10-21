@@ -1,0 +1,31 @@
+{
+  "name": "zhuma",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Plugin-first agent workbench built on DeepSeek Harness Desktop.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@12.4.2",
+  "engines": {
+    "node": ">=24.15.0 <25",
+    "pnpm": "12.4.2"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "pnpm build && pnpm -r --if-present run typecheck",
+    "test": "pnpm build && node scripts/run-tests.mjs",
+    "check": "pnpm check:repo && pnpm format:check && pnpm typecheck && pnpm test",
+    "check:repo": "node scripts/check-repo.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "clean": "node scripts/clean.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "upstream:init": "git submodule update --init --recursive",
+    "upstream:check": "node scripts/check-upstream.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3"
+  }
+}

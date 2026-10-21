@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - name: Install first-party workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check source pin and environment
+        run: pnpm run doctor
+      - name: Check first-party scaffold
+        run: pnpm check
+      - name: Confirm clean upstream source
+        run: pnpm upstream:check
