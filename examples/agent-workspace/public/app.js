@@ -10,6 +10,7 @@ const state = {
 };
 
 let pollTimer = 0;
+let pollDelay = 0;
 let busy = false;
 
 const thread = document.querySelector('#thread');
@@ -61,16 +62,13 @@ async function load() {
 }
 
 function schedule() {
-  const polling = Boolean(state.view?.poll);
-  if (polling && pollTimer === 0) {
-    pollTimer = window.setInterval(() => {
-      void refresh();
-    }, 250);
-  }
-  if (!polling && pollTimer !== 0) {
-    window.clearInterval(pollTimer);
-    pollTimer = 0;
-  }
+  const delay = state.view?.poll ? 250 : 1500;
+  if (pollTimer !== 0 && pollDelay === delay) return;
+  if (pollTimer !== 0) window.clearInterval(pollTimer);
+  pollDelay = delay;
+  pollTimer = window.setInterval(() => {
+    void refresh();
+  }, delay);
 }
 
 async function refresh() {
@@ -99,10 +97,11 @@ async function post(pathname, body) {
     const payload = await response.json();
     adopt(payload, true);
     return payload;
-  } catch (error) {
+  } catch {
+    state.disconnected = true;
     state.localError = {
       objectLabel: '工作区服务',
-      reason: error instanceof Error ? error.message : '请求没有完成',
+      reason: '页面与服务断开。当前显示的是断开前的事实。',
       nextStep: '保留当前页面。不要把这次失败看成运行已完成。',
     };
     render();

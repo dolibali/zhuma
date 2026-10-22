@@ -468,7 +468,7 @@ export function settleExecutionRun(
     return { ok: false, code: 'terminal-run', mayChangeNodeStatus: false, attempt };
   }
   if (next === 'cancelled') {
-    if (attempt.stopPhase !== 'requested') {
+    if (attempt.stopPhase !== 'requested' && attempt.stopPhase !== 'receipt-rejected') {
       return { ok: false, code: 'cancel-unconfirmed', mayChangeNodeStatus: false, attempt };
     }
     return {
@@ -837,21 +837,34 @@ export function classifyExecutorFailure(message: string): ExecutionFaultKind {
     return 'executor-disconnected';
   }
   if (text.includes('工具') || text.includes('tool')) return 'tool-failure';
-  if (text.includes('模型') || text.includes('model')) return 'model-error';
+  if (
+    text.includes('模型') ||
+    text.includes('model') ||
+    text.includes('json') ||
+    text.includes('syntax') ||
+    text.includes('unexpected token') ||
+    text.includes('event-stream') ||
+    text.includes('流式')
+  ) {
+    return 'model-error';
+  }
   if (
     text.includes('网络') ||
     text.includes('network') ||
     text.includes('fetch') ||
     text.includes('econn') ||
     text.includes('etimedout') ||
-    text.includes('enotfound')
+    text.includes('enotfound') ||
+    text.includes('超时') ||
+    text.includes('timeout') ||
+    text.includes('abort')
   ) {
     return 'network-interruption';
   }
   return 'executor-disconnected';
 }
 
-/** 切换专家只影响下一次配置。返回副本，调用方改输入不会改到已保留的轮次。 */
+/** 切换专家只影响下一次配置。深拷贝，调用方改嵌套字段也不会改到已保留的轮次。 */
 export function preservedTurnsAfterExpertSwitch<T extends object>(turns: readonly T[]): T[] {
-  return turns.map((turn) => ({ ...turn }));
+  return turns.map((turn) => structuredClone(turn));
 }

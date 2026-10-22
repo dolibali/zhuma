@@ -313,11 +313,20 @@ test('契约：故障分开呈现且不伪造运行，切换专家不丢历史�
   assert.equal(copied[0].body, '第一轮');
   copied[0].body = '改写';
   assert.equal(turns[0].body, '第一轮');
+  const originalNested = [{ id: 't3', body: '第三轮', attachmentIds: ['file-1'] }];
+  const cloned = preservedTurnsAfterExpertSwitch(originalNested);
+  cloned[0].attachmentIds.push('file-2');
+  cloned[0].body = '改写';
+  assert.deepEqual(originalNested[0].attachmentIds, ['file-1']);
+  assert.equal(originalNested[0].body, '第三轮');
   assert.equal(classifyExecutorFailure('网络超时 ETIMEDOUT'), 'network-interruption');
   assert.equal(classifyExecutorFailure('工具调用失败'), 'tool-failure');
   assert.equal(classifyExecutorFailure('模型拒绝'), 'model-error');
   assert.equal(classifyExecutorFailure('尚未实现'), 'executor-disconnected');
   assert.equal(classifyExecutorFailure('未知错误'), 'executor-disconnected');
+  assert.equal(classifyExecutorFailure('Unexpected token { in JSON'), 'model-error');
+  assert.equal(classifyExecutorFailure('text/event-stream'), 'model-error');
+  assert.equal(classifyExecutorFailure('请求超时'), 'network-interruption');
   assert.deepEqual(assigneeAfterAgentAssist({ id: 'chen-ning', kind: 'human' }), {
     id: 'chen-ning',
     kind: 'human',

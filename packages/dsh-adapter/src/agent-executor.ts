@@ -320,17 +320,21 @@ function isDshModelId(value: string): value is DshModelConfig['modelId'] {
  * 向 OpenAI 兼容的 `/chat/completions` 发一次非流式请求。
  * 配置缺失时 `run` 直接失败，不会改用模拟执行器。
  */
+const GATEWAY_TIMEOUT_MS = 30_000;
+
 export class DshChatExecutor implements AgentExecutor {
   readonly id = 'dsh' as const;
   readonly capabilities: ExecutorCapabilities;
   private readonly configResult: DshModelConfigResult;
+  private readonly timeoutMs: number;
   private readonly known = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly aborts = new Map<string, AbortController>();
   private readonly receipts = new Map<string, (receipt: CancelReceipt) => void>();
 
-  constructor(env: NodeJS.ProcessEnv = process.env) {
+  constructor(env: NodeJS.ProcessEnv = process.env, timeoutMs = GATEWAY_TIMEOUT_MS) {
     this.configResult = readDshModelConfig(env);
+    this.timeoutMs = timeoutMs;
     this.capabilities = Object.freeze({
       liveInjection: false,
       sessionResume: false,
@@ -361,7 +365,8 @@ export class DshChatExecutor implements AgentExecutor {
     this.known.add(request.runId);
     const local = new AbortController();
     this.aborts.set(request.runId, local);
-    const signal = AbortSignal.any([request.signal, local.signal]);
+    const timedOut = AbortSignal.timeout(this.timeoutMs);
+    const signal = AbortSignal.any([request.signal, local.signal, timedOut]);
     const config = this.configResult.config;
     const executorRunId = `dsh-${request.runId}`;
     let receipt: CancelReceipt = { receipt: 'rejected', reason: '运行已经结束。' };
@@ -389,33 +394,76 @@ export class DshChatExecutor implements AgentExecutor {
         };
         return;
       }
-      const payload = (await response.json()) as {
-        choices?: readonly { message?: { content?: unknown } }[];
+      const contentType = response.headers.get('content-type') ?? '';
+      if (contentType.includes('text/event-stream')) {
+        yield {
+          type: 'failed',
+          fault: 'model-error',
+          message: '模型网关返回了流式响应，当前只接受一次完整回复。',
+          simulated: false,
+        };
+        return;
+      }
+      let payload: {
+        choices?: readonly {
+          message?: { content?: unknown; tool_calls?: readonly unknown[] };
+        }[];
       };
-      const content = payload.choices?.[0]?.message?.content;
-      const text = typeof content === 'string' ? content : '';
-      if (text.length > 0) yield { type: 'delta', text, simulated: false };
+      try {
+        payload = (await response.json()) as typeof payload;
+      } catch {
+        yield {
+          type: 'failed',
+          fault: 'model-error',
+          message: '模型网关返回的内容无法读取。',
+          simulated: false,
+        };
+        return;
+      }
+      const message = payload.choices?.[0]?.message;
+      const text = typeof message?.content === 'string' ? message.content.trim() : '';
+      const toolCalls = message?.tool_calls;
+      const toolsOnly = Array.isArray(toolCalls) && toolCalls.length > 0 && text.length === 0;
+      if (text.length === 0) {
+        yield {
+          type: 'failed',
+          fault: toolsOnly ? 'tool-failure' : 'model-error',
+          message: toolsOnly ? '模型只返回了工具调用，没有可展示的正文。' : '模型没有返回正文。',
+          simulated: false,
+        };
+        return;
+      }
+      yield { type: 'delta', text, simulated: false };
       yield {
         type: 'completed',
         result: {
           executorRunId,
           simulated: false,
-          summary: text.length > 0 ? text : '模型没有返回正文。',
+          summary: text,
           draftText: text,
           sourceReferences: [...request.contextReferences],
           verification: [],
         },
       };
     } catch (error) {
-      if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      if (local.signal.aborted || request.signal.aborted) {
         receipt = { receipt: 'cancelled' };
         yield { type: 'cancelled', simulated: false };
         return;
       }
-      const message = error instanceof Error ? error.message : '模型调用失败';
+      if (timedOut.aborted) {
+        yield {
+          type: 'failed',
+          fault: 'network-interruption',
+          message: '模型网关超时。',
+          simulated: false,
+        };
+        return;
+      }
+      const detail = error instanceof Error ? error.message : '模型调用失败';
       yield {
         type: 'failed',
-        fault: classifyExecutorFailure(message),
+        fault: classifyExecutorFailure(detail),
         message: '模型调用失败。',
         simulated: false,
       };
@@ -453,16 +501,17 @@ function delay(ms: number): Promise<void> {
 }
 
 function simulatedReply(request: AgentRunRequest): string {
-  const attachments = request.attachmentIds.length > 0 ? request.attachmentIds.join('、') : '无';
+  const attachments =
+    request.attachmentIds.length === 0 ? '无' : `${request.attachmentIds.length} 个`;
   const context =
-    request.contextReferences.length > 0 ? request.contextReferences.join('、') : '无';
+    request.contextReferences.length === 0 ? '无' : `${request.contextReferences.length} 项`;
   return [
     '【模拟】这是模拟执行器的回复，不是模型输出。',
     '没有调用真实模型，也没有真实工具调用成功。',
     `节点目标：${request.goal}`,
     `本轮要求：${request.instruction}`,
-    `附件引用：${attachments}`,
-    `上下文引用：${context}`,
+    `附件：${attachments}`,
+    `上下文：${context}`,
     '可编辑草稿：',
     `（模拟草稿）${request.instruction}`,
   ].join('\n');

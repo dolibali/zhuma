@@ -659,6 +659,274 @@ test('契约：运行结束的 returnTo 等于记下的入口', async () => {
   assert.equal(session.snapshot().node.status, 'needs-revision');
 });
 
+test('契约：核实断开、下一轮启动失败和接收前停止都把队列标成未应用', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-queue-abandon-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
+  const { desk: session } = desk({ journal });
+  const started = session.send({ text: '保持运行', idempotencyKey: 'held-queue' });
+  await session.waitForRun(started.runId, 'running');
+  session.send({ text: '补充还没生效', idempotencyKey: 'queued-abandon', intent: 'supplement' });
+  const restored = ExecutionDesk.restore(journal.load(), {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+    journal,
+  });
+  restored.resumeInteraction();
+  const verified = restored.verifyAbandoned();
+  assert.equal(verified.ok, true);
+  assert.equal(verified.snapshot.node.status, 'failed');
+  assert.equal(verified.snapshot.interventions[0].phase, 'not-applied');
+  assert.match(verified.snapshot.interventions[0].notice, /未应用/);
+
+  const { desk: blocked } = desk();
+  const running = blocked.send({ text: '第一轮', idempotencyKey: 'block-run' });
+  await blocked.waitForRun(running.runId, 'running');
+  blocked.send({ text: '补充被挡住', idempotencyKey: 'block-queue', intent: 'supplement' });
+  blocked.setAvailability({ expertId: 'api-impl', enabled: false });
+  blocked.releaseActive();
+  await blocked.flush();
+  assert.equal(blocked.snapshot().runs.length, 1);
+  assert.equal(blocked.snapshot().runs[0].status, 'completed');
+  assert.equal(blocked.snapshot().interventions[0].phase, 'not-applied');
+
+  const { desk: context } = desk();
+  const contextRun = context.send({ text: '第一轮', idempotencyKey: 'context-run' });
+  await context.waitForRun(contextRun.runId, 'running');
+  context.send({ text: '补充缺文件', idempotencyKey: 'context-queue', intent: 'supplement' });
+  context.setContextIncluded('missing', true);
+  context.releaseActive();
+  await context.flush();
+  assert.equal(context.snapshot().runs.length, 1);
+  assert.equal(context.snapshot().interventions[0].phase, 'not-applied');
+
+  const gates = new Map();
+  const cancelled = new Set();
+  let seen = 0;
+  const executor = {
+    id: 'simulated',
+    capabilities: {
+      liveInjection: false,
+      sessionResume: false,
+      cancelReceipt: true,
+      streaming: false,
+      verified: false,
+      mode: 'simulated',
+    },
+    release(runId) {
+      gates.get(runId)?.();
+    },
+    async cancel(runId) {
+      cancelled.add(runId);
+      gates.get(runId)?.();
+      return { receipt: 'cancelled' };
+    },
+    async *run(request) {
+      const index = ++seen;
+      if (index > 1) {
+        await new Promise((resolve) => {
+          gates.set(request.runId, resolve);
+        });
+        if (cancelled.has(request.runId) || request.signal.aborted) {
+          yield { type: 'cancelled', simulated: true };
+          return;
+        }
+      }
+      yield { type: 'accepted', executorRunId: `sim-${request.runId}`, simulated: true };
+      if (index === 1) {
+        await new Promise((resolve) => {
+          gates.set(request.runId, resolve);
+        });
+      }
+      if (cancelled.has(request.runId) || request.signal.aborted) {
+        yield { type: 'cancelled', simulated: true };
+        return;
+      }
+      yield {
+        type: 'completed',
+        result: {
+          executorRunId: `sim-${request.runId}`,
+          simulated: true,
+          summary: 'ok',
+          draftText: 'ok',
+          sourceReferences: [],
+          verification: [],
+        },
+      };
+    },
+  };
+  const early = ExecutionDesk.create(seed(), { executors: [executor], newId: ids() });
+  early.updateConfig({
+    executorId: 'simulated',
+    skillIds: ['test-design'],
+    mcpIds: ['api-docs'],
+  });
+  const first = early.send({ text: '先跑完', idempotencyKey: 'early-run' });
+  await early.waitForRun(first.runId, 'running');
+  early.send({ text: '下一条还没接收', idempotencyKey: 'early-q1', intent: 'supplement' });
+  early.send({ text: '再下一条', idempotencyKey: 'early-q2', intent: 'supplement' });
+  executor.release(first.runId);
+  await early.flush();
+  const stopped = await early.stop();
+  await early.flush();
+  assert.equal(stopped.ok, true);
+  const queued = early.snapshot().interventions;
+  assert.equal(queued.length, 2);
+  assert.equal(
+    queued.every((item) => item.phase === 'not-applied'),
+    true,
+  );
+  assert.equal(
+    early.snapshot().runs.some((run) => run.status === 'cancelled' && !run.acknowledged),
+    true,
+  );
+});
+
+test('契约：停止回执超时后迟到的取消仍结束运行', async () => {
+  let releaseRun = () => {};
+  const executor = {
+    id: 'simulated',
+    capabilities: {
+      liveInjection: false,
+      sessionResume: false,
+      cancelReceipt: true,
+      streaming: false,
+      verified: false,
+      mode: 'simulated',
+    },
+    async *run() {
+      yield { type: 'accepted', executorRunId: 'late', simulated: true };
+      await new Promise((resolve) => {
+        releaseRun = resolve;
+      });
+      yield { type: 'cancelled', simulated: true };
+    },
+    cancel() {
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          releaseRun();
+          resolve({ receipt: 'cancelled' });
+        }, 4500);
+      });
+    },
+  };
+  const session = ExecutionDesk.create(seed(), { executors: [executor], newId: ids() });
+  session.updateConfig({
+    executorId: 'simulated',
+    skillIds: ['test-design'],
+    mcpIds: ['api-docs'],
+  });
+  const started = session.send({ text: '等迟到取消', idempotencyKey: 'late-cancel' });
+  await session.waitForRun(started.runId, 'running');
+  const stopped = await session.stop();
+  assert.equal(stopped.code, 'stop-receipt-missing');
+  assert.equal(stopped.snapshot.runs[0].status, 'running');
+  assert.equal(stopped.snapshot.runs[0].stopPhase, 'receipt-rejected');
+  await session.flush();
+  assert.equal(session.snapshot().runs[0].status, 'cancelled');
+  assert.equal(session.snapshot().runs[0].stopPhase, 'confirmed');
+  assert.equal(session.snapshot().node.status, 'cancelled');
+});
+
+test('契约：入口不一致时拒绝发送，运行中对不上就结束运行', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-entry-send-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
+  desk({ journal });
+  const created = journal.load();
+  created.nodeState.status = 'needs-revision';
+  created.nodeState.entryStatus = 'ready';
+  const restored = ExecutionDesk.restore(created, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+  });
+  restored.resumeInteraction();
+  const refused = restored.send({ text: '不要改写入口', idempotencyKey: 'bad-entry-send' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'entry-inconsistent');
+  assert.equal(refused.snapshot.runs.length, 0);
+  assert.equal(refused.snapshot.node.status, 'needs-revision');
+  assert.equal(created.nodeState.entryStatus, 'ready');
+
+  const { desk: session } = desk();
+  const started = session.send({ text: '跑到一半入口坏了', idempotencyKey: 'mid-entry' });
+  await session.waitForRun(started.runId, 'running');
+  const state = session.nodeState;
+  session.nodeState = {
+    status: state.status,
+    version: state.version,
+    upstreamAffected: state.upstreamAffected,
+    stored: state.stored,
+  };
+  session.releaseActive();
+  await session.flush();
+  assert.equal(session.snapshot().runs[0].status, 'failed');
+  assert.notEqual(session.snapshot().runs[0].status, 'running');
+  assert.equal(session.snapshot().node.status, 'failed');
+  assert.equal(session.nodeState.entryStatus, undefined);
+});
+
+test('契约：坏的网关响应不算成功，也不会记成断开', async () => {
+  const original = globalThis.fetch;
+  const env = {
+    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
+    ZHUMA_MODEL_API_KEY: 'test-key',
+  };
+  async function collect(executor) {
+    const events = [];
+    for await (const event of executor.run(runRequest('dsh-gateway'))) events.push(event);
+    return events;
+  }
+  try {
+    globalThis.fetch = async () =>
+      new Response('not-json', { status: 200, headers: { 'content-type': 'application/json' } });
+    const badJson = await collect(new DshChatExecutor(env));
+    assert.equal(badJson.at(-1).type, 'failed');
+    assert.equal(badJson.at(-1).fault, 'model-error');
+    assert.match(badJson.at(-1).message, /无法读取/);
+
+    globalThis.fetch = async () =>
+      new Response('data: {}\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    const stream = await collect(new DshChatExecutor(env));
+    assert.equal(stream.at(-1).fault, 'model-error');
+    assert.match(stream.at(-1).message, /流式/);
+
+    globalThis.fetch = async () => Response.json({ choices: [{ message: { content: '  ' } }] });
+    const empty = await collect(new DshChatExecutor(env));
+    assert.equal(empty.at(-1).type, 'failed');
+    assert.equal(
+      empty.some((event) => event.type === 'completed'),
+      false,
+    );
+
+    globalThis.fetch = async () =>
+      Response.json({
+        choices: [{ message: { content: null, tool_calls: [{ id: 'call-1' }] } }],
+      });
+    const tools = await collect(new DshChatExecutor(env));
+    assert.equal(tools.at(-1).fault, 'tool-failure');
+    assert.equal(
+      tools.some((event) => event.type === 'completed'),
+      false,
+    );
+
+    globalThis.fetch = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          const error = new Error('The operation was aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    const timed = await collect(new DshChatExecutor(env, 30));
+    assert.equal(timed.at(-1).fault, 'network-interruption');
+    assert.match(timed.at(-1).message, /超时/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('契约：人工交接可以不带专家引用', () => {
   const bare = seed();
   delete bare.handoff.expertRef;

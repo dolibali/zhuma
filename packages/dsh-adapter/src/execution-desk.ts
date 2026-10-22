@@ -483,6 +483,7 @@ export class ExecutionDesk {
       return this.succeed({ runId: active.id });
     }
     this.putRun(rejectStopReceipt(latest));
+    if (!latest.acknowledged) this.dropPending(active.id);
     return this.fail(
       'stop-receipt-missing',
       humanExecutor(executor.id),
@@ -566,6 +567,7 @@ export class ExecutionDesk {
       runId: run.id,
     });
     this.resumeGap = null;
+    this.dropPending(run.id);
     this.releaseClaim(run.id);
     return this.succeed({ runId: run.id });
   }
@@ -678,6 +680,14 @@ export class ExecutionDesk {
   }
 
   private beginRun(input: SendInput): DeskResult {
+    if (!entryIsConsistent(this.nodeState)) {
+      return this.fail(
+        'entry-inconsistent',
+        '节点',
+        '读回的入口和节点状态对不上',
+        '不要按这份记录发送。先核对节点命令里的 entryStatus。',
+      );
+    }
     const text = input.text.trim();
     if (text.length === 0) {
       return this.fail('empty-message', '消息', '没有要发送的内容', '写上本轮要求后再发送');
@@ -726,9 +736,10 @@ export class ExecutionDesk {
     const assembled = this.assemble();
     if (!assembled.ok) {
       const block = assembled.blocks[0];
+      const blockedItem = this.seed.contextItems.find((item) => item.sourceId === block?.sourceId);
       return this.fail(
         'context-blocked',
-        block?.sourceId ?? '上下文',
+        blockedItem?.summary || '上下文',
         `来源被阻塞：${block?.reason ?? 'context-blocked'}`,
         '补齐文件或权限，或移除此来源后再运行。不会传出不可访问的本机路径。',
       );
@@ -1054,8 +1065,7 @@ export class ExecutionDesk {
     if (settled.nodeTransition.type === 'execution-finished') {
       const returnTo = recordedEntryStatus(this.nodeState);
       if (returnTo === undefined) {
-        this.lastError = entryMismatch();
-        this.persist();
+        this.failInconsistentRun(attempt.id);
         return;
       }
       this.putRun(settled.attempt);
@@ -1080,7 +1090,12 @@ export class ExecutionDesk {
       idempotencyKey: `apply:${first.id}`,
       intent: 'new',
     });
-    if (!opened.ok || !opened.runId || opened.replayed) return;
+    if (!opened.ok) {
+      this.dropPending(finishedRunId);
+      this.persist();
+      return;
+    }
+    if (!opened.runId || opened.replayed) return;
     const nextRunId = opened.runId;
     this.queueApply.set(nextRunId, first.id);
     const moving = new Set(pending.slice(1).map((item) => item.id));
@@ -1093,12 +1108,39 @@ export class ExecutionDesk {
   }
 
   private dropPending(runId: string): void {
+    const applying = this.queueApply.get(runId);
     this.interventions = this.interventions.map((item) => {
-      if (item.runId !== runId || item.phase !== 'pending') return item;
+      const tied = item.runId === runId || item.id === applying;
+      if (!tied || item.phase !== 'pending') return item;
       return copyIntervention(item, 'not-applied', {
         notice: '这次运行已结束，队列里的内容未应用。',
       });
     });
+    if (applying) this.queueApply.delete(runId);
+  }
+
+  /** 入口已经对不上时，不再把运行留在执行中，也不改写记下的入口。 */
+  private failInconsistentRun(runId: string): void {
+    const attempt = this.runs.find((run) => run.id === runId);
+    const entryBefore = this.nodeState.entryStatus;
+    this.lastError = entryMismatch();
+    if (attempt && !isTerminalRunStatus(attempt.status)) {
+      const settled = settleExecutionRun(attempt, 'failed');
+      if (settled.ok) {
+        this.putRun(settled.attempt);
+        if (settled.nodeTransition.type === 'execution-failed') {
+          this.applyTransition(settled.nodeTransition, `entry:${runId}`);
+          if (this.nodeState.entryStatus !== entryBefore) {
+            const { entryStatus: _ignored, ...rest } = this.nodeState;
+            this.nodeState =
+              entryBefore === undefined ? rest : { ...rest, entryStatus: entryBefore };
+          }
+        }
+      }
+    }
+    this.dropPending(runId);
+    this.releaseClaim(runId);
+    this.persist();
   }
 
   private noteQueueApplied(runId: string): void {

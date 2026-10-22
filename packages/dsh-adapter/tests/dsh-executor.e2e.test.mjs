@@ -8,11 +8,6 @@ test('真实执行器：发送、停止回执、失败展示和重新开始', { 
     t.skip(`跳过真实执行器：${config.reason}`);
     return;
   }
-  const reachable = await gatewayReachable(config.config);
-  if (!reachable.ok) {
-    t.skip(reachable.reason);
-    return;
-  }
   const secrets = [config.config.baseUrl, config.config.apiKey];
   const desk = openDesk(new DshChatExecutor(process.env));
 
@@ -68,32 +63,14 @@ test('真实执行器：发送、停止回执、失败展示和重新开始', { 
     true,
   );
   assertClean(afterRestart, secrets);
+  await assertRestartFromRevision(new DshChatExecutor(process.env));
+  await assertGatewayRejectsUnlistedModel(config.config);
   console.log('重新开始：通过');
 });
 
-async function gatewayReachable(config) {
-  const probe = new AbortController();
-  const timer = setTimeout(() => probe.abort(), 8000);
-  try {
-    const response = await fetch(`${config.baseUrl}/models`, {
-      method: 'GET',
-      signal: probe.signal,
-      headers: { authorization: `Bearer ${config.apiKey}` },
-    });
-    if (response.status === 401 || response.status === 403 || response.status >= 500) {
-      return { ok: false, reason: `跳过真实执行器：模型网关返回 HTTP ${response.status}` };
-    }
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: '跳过真实执行器：模型网关不可达。这不是实现失败。' };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function openDesk(executor) {
+function openDesk(executor, nodeStatus = 'ready') {
   let n = 0;
-  const desk = ExecutionDesk.create(realSeed(), {
+  const desk = ExecutionDesk.create(realSeed(nodeStatus), {
     executors: [executor],
     newId: (prefix) => `${prefix}-${++n}`,
   });
@@ -121,7 +98,12 @@ async function stopWhileRunning(desk) {
     if (stopped.ok && run?.status === 'cancelled' && run.stopPhase === 'confirmed') {
       return { runId: started.runId, snapshot };
     }
-    if (run?.status === 'completed' && snapshot.node.status === 'ready') continue;
+    if (
+      run?.status === 'completed' &&
+      (snapshot.node.status === 'ready' || snapshot.node.status === 'needs-revision')
+    ) {
+      continue;
+    }
     throw new Error(`停止没有回执：${stopped.ok ? 'completed-without-receipt' : stopped.code}`);
   }
   throw new Error('三次都在停止前结束，没有取得停止回执');
@@ -159,8 +141,61 @@ async function assertFailureDisplay(secrets) {
   assert.equal(snapshot.node.status, 'failed');
   assert.notEqual(snapshot.node.status, 'completed');
   assert.equal(snapshot.faults[0]?.forgesRun, false);
-  assert.match(snapshot.faults[0]?.reason ?? '', /模型网关返回 HTTP|模型调用失败/);
+  const reason = snapshot.faults[0]?.reason ?? '';
+  const http = reason.match(/HTTP (\d+)/);
+  if (http && Number(http[1]) >= 500) throw new Error(`模型网关返回 HTTP ${http[1]}`);
+  assert.match(reason, /模型网关返回 HTTP|模型调用失败/);
   assertClean(snapshot, [...secrets, 'invalid-key']);
+}
+
+async function assertRestartFromRevision(executor) {
+  const desk = openDesk(executor, 'needs-revision');
+  const sent = desk.send({ text: '用一句话回复：收到。', idempotencyKey: 'e2e-rev-send' });
+  assert.equal(sent.ok, true);
+  await desk.flush();
+  assert.equal(desk.snapshot().node.status, 'needs-revision');
+  assert.equal(desk.persistence().nodeState.entryStatus, 'needs-revision');
+  const stopped = await stopWhileRunning(desk);
+  assert.equal(stopped.snapshot.node.status, 'cancelled');
+  assert.equal(desk.persistence().nodeState.entryStatus, 'needs-revision');
+  const restarted = desk.retry('e2e-rev-restart');
+  assert.equal(restarted.ok, true);
+  assert.notEqual(restarted.runId, stopped.runId);
+  assert.equal(
+    desk
+      .persistence()
+      .nodeState.stored.some(
+        (command) => command.result.from === 'cancelled' && command.result.to === 'needs-revision',
+      ),
+    true,
+  );
+  await desk.flush();
+  assert.equal(desk.snapshot().runs.find((run) => run.id === restarted.runId)?.status, 'completed');
+  assert.equal(desk.snapshot().node.status, 'needs-revision');
+  assert.equal(desk.persistence().nodeState.entryStatus, 'needs-revision');
+}
+
+async function assertGatewayRejectsUnlistedModel(config) {
+  let response;
+  try {
+    response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'zhuma-not-in-allowlist',
+        stream: false,
+        messages: [{ role: 'user', content: 'ping' }],
+      }),
+    });
+  } catch {
+    throw new Error('模型网关没有返回拒绝');
+  }
+  if (response.status >= 500) throw new Error(`模型网关返回 HTTP ${response.status}`);
+  assert.equal(response.ok, false);
 }
 
 function assertClean(value, secrets) {
@@ -171,7 +206,7 @@ function assertClean(value, secrets) {
   }
 }
 
-function realSeed() {
+function realSeed(nodeStatus = 'ready') {
   return {
     handoff: {
       nodeId: 'node-fields',
@@ -193,7 +228,7 @@ function realSeed() {
     taskTitle: '企业客户门户季度交付',
     taskGoal: '完成企业客户开户闭环',
     actorId: 'chen-ning',
-    nodeStatus: 'ready',
+    nodeStatus,
     catalog: {
       experts: [
         {

@@ -48,6 +48,13 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
   try {
     await page.goto(url);
     await page.getByTestId('banner').filter({ hasText: '不会自动改用模拟' }).waitFor();
+    await page.route('**/api/workspace', (route) => route.abort());
+    await page.getByTestId('banner').filter({ hasText: '页面与服务断开' }).waitFor();
+    await page.unroute('**/api/workspace');
+    await page.waitForFunction(
+      () =>
+        !document.querySelector('[data-testid="banner"]')?.textContent?.includes('页面与服务断开'),
+    );
     assert.match(
       await page.locator('[data-testid="expert"] option[value="api-impl"]').innerText(),
       /整理接口字段与校验/,
@@ -75,6 +82,12 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await page.locator('[data-testid="mcp-chip"][data-id="issue-search"]').waitFor();
     await page.getByTestId('mcp-search').fill('');
     assert.equal(await page.locator('[data-testid="mcp"][value="billing"]').isDisabled(), true);
+    await page.route('**/api/messages', (route) => route.abort());
+    await page.locator('#message').fill('这条发送到不了');
+    await page.getByTestId('primary').click();
+    await page.getByTestId('error').filter({ hasText: '页面与服务断开' }).waitFor();
+    assert.equal((await page.locator('body').innerText()).includes('Failed to fetch'), false);
+    await page.unroute('**/api/messages');
     assert.match(
       await page.locator('[data-testid="mcp"][value="billing"]').locator('..').innerText(),
       /没有工具授权/,
@@ -107,6 +120,10 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await release(page);
     await waitStatus(page, '待处理');
     await page.getByTestId('activity').filter({ hasText: '没有调用真实模型' }).waitFor();
+    const visible = await page.locator('body').innerText();
+    assert.equal(visible.includes('node-fields'), false);
+    assert.equal(visible.includes('attachment:'), false);
+    assert.equal(visible.includes('goal:'), false);
     assert.equal(
       await page.getByTestId('activity').first().getAttribute('data-succeeded'),
       'false',

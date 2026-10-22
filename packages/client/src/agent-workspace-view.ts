@@ -361,7 +361,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
         item.fileState === 'missing' ||
         item.fileState === 'unreadable' ||
         item.fileState === 'rejected'
-          ? `来源 ${item.sourceId} @ ${item.version}：${
+          ? `${item.summary}：${
               item.fileState === 'missing'
                 ? '文件不存在'
                 : item.fileState === 'unreadable'
@@ -375,10 +375,15 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       summary: item.summary,
       version: item.version,
     })),
-    blocks: snapshot.contextBlocks.map((block) => ({
-      sourceId: block.sourceId,
-      text: `来源 ${block.sourceId} @ ${block.version}：${BLOCK_LABELS[block.reason] ?? block.reason}。不会传出不可访问的本机路径。`,
-    })),
+    blocks: snapshot.contextBlocks.map((block) => {
+      const summary =
+        snapshot.contextItems.find((item) => item.sourceId === block.sourceId)?.summary ??
+        '这项上下文';
+      return {
+        sourceId: block.sourceId,
+        text: `${summary}：${BLOCK_LABELS[block.reason] ?? '无法使用'}。不会传出不可访问的本机路径。`,
+      };
+    }),
     attachments: snapshot.attachments.map((item) => ({
       id: item.id,
       name: item.name,
