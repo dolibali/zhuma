@@ -9,8 +9,8 @@ import {
   type WorkbenchCommand,
 } from '@zhuma/agent-core';
 import type { WorkbenchApi } from './api.js';
-import { Field, MemberPicker, Modal, ParticipantSelect } from './controls.js';
-import { TaskEditor } from './TaskEditor.js';
+import { Field, Modal, ParticipantSelect } from './controls.js';
+import { TaskEditor, type InitialPlanning } from './TaskEditor.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 import { Button } from './Button.js';
 
@@ -19,7 +19,7 @@ type Dialog =
   | { kind: 'project'; value: Project }
   | { kind: 'member'; value: Participant }
   | { kind: 'asset'; value: TeamAsset }
-  | { kind: 'task'; value: WorkTask };
+  | { kind: 'task'; value: WorkTask; planning: 'ai' | 'manual' };
 const uid = () => crypto.randomUUID();
 const labels: Record<Section, string> = {
   projects: '项目',
@@ -48,6 +48,16 @@ export function WorkbenchPage({
   const [saving, setSaving] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [initialPlanning, setInitialPlanning] = useState<InitialPlanning | null>(null);
+  const submitting = useRef(false);
+  const pageGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      pageGeneration.current += 1;
+    },
+    [],
+  );
+  useEffect(() => () => initialPlanning?.controller.abort(), [initialPlanning]);
   const [projectFilter, setProjectFilter] = useState('');
   const [search, setSearch] = useState('');
   const [assetKind, setAssetKind] = useState('all');
@@ -117,23 +127,66 @@ export function WorkbenchPage({
     void refresh(abort.signal);
     return () => abort.abort();
   }, [api]);
-  async function submit(command: WorkbenchCommand): Promise<boolean> {
+  async function submit(command: WorkbenchCommand): Promise<Workbench | null> {
+    if (submitting.current) return null;
+    submitting.current = true;
     setSaving(true);
     setDialogError('');
     const content = JSON.stringify(command);
     if (pending.current?.content !== content)
       pending.current = { content, id: uid(), revision: state.revision };
     try {
-      setState(await api.save(pending.current.revision, command, pending.current.id));
+      const committed = await api.save(pending.current.revision, command, pending.current.id);
+      setState(committed);
       pending.current = null;
       setDialog(null);
-      return true;
+      return committed;
     } catch (e) {
       setDialogError(e instanceof Error ? e.message : '保存失败，请重试。');
-      return false;
+      return null;
     } finally {
       setSaving(false);
+      submitting.current = false;
     }
+  }
+  async function createTask(draft: Extract<Dialog, { kind: 'task' }>) {
+    const generation = pageGeneration.current;
+    const goal = draft.value.goal.trim();
+    if (!goal) {
+      setDialogError('请描述这次要完成的目标。');
+      return;
+    }
+    if (
+      draft.planning === 'ai' &&
+      !state.participants.some((p) => p.available && draft.value.participantIds.includes(p.id))
+    ) {
+      setDialogError('请至少选择一位可参与的人或专家，再生成计划。');
+      return;
+    }
+    const task = {
+      ...draft.value,
+      goal,
+      title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, 60),
+    };
+    const committed = await submit({ type: 'save-task', task });
+    // The Host may have saved after this panel was removed. Keep that draft, but do not
+    // start a paid planning request or navigate from a stale create-form submission.
+    if (!committed || generation !== pageGeneration.current) return;
+    if (draft.planning === 'ai') {
+      const controller = new AbortController();
+      const result: InitialPlanning['result'] = Promise.resolve()
+        .then(() => {
+          controller.signal.throwIfAborted();
+          return api.plan(task.id, committed.revision, '', controller.signal);
+        })
+        .then(
+          (proposal) => ({ ok: true, proposal }),
+          (error: unknown) => ({ ok: false, error }),
+        );
+      setInitialPlanning({ controller, result });
+    } else setInitialPlanning(null);
+    setActiveTaskId(task.id);
+    setSection('tasks');
   }
   function newTask(projectId = projectFilter || state.projects[0]?.id) {
     if (!projectId) {
@@ -142,6 +195,7 @@ export function WorkbenchPage({
     }
     openDialog({
       kind: 'task',
+      planning: 'ai',
       value: {
         id: uid(),
         projectId,
@@ -218,8 +272,12 @@ export function WorkbenchPage({
           model={model}
           api={api}
           saved={setState}
-          close={() => setActiveTaskId(null)}
+          close={() => {
+            setInitialPlanning(null);
+            setActiveTaskId(null);
+          }}
           appearance={appearance}
+          {...(initialPlanning ? { initialPlanning } : {})}
         />
       </div>
     );
@@ -616,13 +674,7 @@ export function WorkbenchPage({
                   },
                 });
               if (d.kind === 'asset') void submit({ type: 'save-asset', asset: d.value });
-              if (d.kind === 'task')
-                void submit({ type: 'save-task', task: d.value }).then((ok) => {
-                  if (ok) {
-                    setActiveTaskId(d.value.id);
-                    setSection('tasks');
-                  }
-                });
+              if (d.kind === 'task') void createTask(d);
             }}
           >
             <div className="zm-form-body">
@@ -827,28 +879,83 @@ export function WorkbenchPage({
                 )}
                 {dialog.kind === 'task' && (
                   <>
-                    <Field label="所属项目">
-                      <select
-                        value={dialog.value.projectId}
+                    <Field label="任务目标">
+                      <textarea
+                        required
+                        autoFocus
+                        className="zm-create-goal"
+                        rows={5}
+                        maxLength={8000}
+                        value={dialog.value.goal}
                         onChange={(e) =>
-                          setDialog({
-                            ...dialog,
-                            value: { ...dialog.value, projectId: e.target.value },
-                          })
+                          setDialog({ ...dialog, value: { ...dialog.value, goal: e.target.value } })
                         }
-                      >
-                        {state.projects.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="这次要完成什么？描述目标与预期结果…"
+                      />
                     </Field>
+                    <div className="zm-creation-context">
+                      <Field label="所属项目">
+                        <select
+                          value={dialog.value.projectId}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: { ...dialog.value, projectId: e.target.value },
+                            })
+                          }
+                        >
+                          {state.projects.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <div className="zm-creation-participants">
+                        <span>参与者 · {dialog.value.participantIds.length} 位</span>
+                        <ParticipantSelect
+                          label="参与者"
+                          multiple
+                          members={state.participants}
+                          selected={dialog.value.participantIds}
+                          change={(participantIds) =>
+                            setDialog({ ...dialog, value: { ...dialog.value, participantIds } })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <fieldset className="zm-create-modes">
+                      <legend>规划方式</legend>
+                      <label>
+                        <input
+                          type="radio"
+                          name="planning-mode"
+                          value="ai"
+                          checked={dialog.planning === 'ai'}
+                          onChange={() => setDialog({ ...dialog, planning: 'ai' })}
+                        />
+                        <span>
+                          <strong>AI 规划</strong>
+                          <small>根据目标与团队能力生成计划</small>
+                        </span>
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="planning-mode"
+                          value="manual"
+                          checked={dialog.planning === 'manual'}
+                          onChange={() => setDialog({ ...dialog, planning: 'manual' })}
+                        />
+                        <span>
+                          <strong>自定义</strong>
+                          <small>自行添加节点与分工</small>
+                        </span>
+                      </label>
+                    </fieldset>
                     <Field label="任务名称">
                       <input
-                        required
                         maxLength={160}
-                        autoFocus
                         value={dialog.value.title}
                         onChange={(e) =>
                           setDialog({
@@ -856,30 +963,9 @@ export function WorkbenchPage({
                             value: { ...dialog.value, title: e.target.value },
                           })
                         }
-                        placeholder="这次想完成什么？"
+                        placeholder="可选，留空时从目标生成"
                       />
                     </Field>
-                    <Field label="任务目标">
-                      <textarea
-                        rows={3}
-                        maxLength={8000}
-                        value={dialog.value.goal}
-                        onChange={(e) =>
-                          setDialog({ ...dialog, value: { ...dialog.value, goal: e.target.value } })
-                        }
-                        placeholder="描述背景和预期结果"
-                      />
-                    </Field>
-                    <h3>
-                      参与者 <small>{dialog.value.participantIds.length} 位</small>
-                    </h3>
-                    <MemberPicker
-                      members={state.participants}
-                      selected={dialog.value.participantIds}
-                      change={(participantIds) =>
-                        setDialog({ ...dialog, value: { ...dialog.value, participantIds } })
-                      }
-                    />
                     <ParticipantSelect
                       label="任务负责人"
                       members={state.participants.filter(
@@ -893,9 +979,7 @@ export function WorkbenchPage({
                         })
                       }
                     />
-                    {!dialog.value.ownerId && (
-                      <small>可先保存草稿，确认工作流前需选择负责人。</small>
-                    )}
+                    {!dialog.value.ownerId && <small>确认工作流前需指定负责人。</small>}
                   </>
                 )}
               </fieldset>
@@ -910,7 +994,11 @@ export function WorkbenchPage({
                 取消
               </Button>
               <Button type="submit" variant="primary" busy={saving} busyLabel="正在保存…">
-                {dialog.kind === 'task' ? '创建并编排' : '保存'}
+                {dialog.kind === 'task'
+                  ? dialog.planning === 'ai'
+                    ? '生成计划'
+                    : '创建工作流'
+                  : '保存'}
               </Button>
             </footer>
           </form>

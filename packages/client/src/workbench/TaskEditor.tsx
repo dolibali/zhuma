@@ -17,6 +17,12 @@ import { indexWorkTree, resolveWorkLocation, workflowPath } from './navigation.j
 import { Button } from './Button.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 
+// Started only by the create-form submit handler. The parent owns cancellation on task exit.
+export type InitialPlanning = {
+  controller: AbortController;
+  result: Promise<{ ok: true; proposal: PlanProposal } | { ok: false; error: unknown }>;
+};
+
 export function newNode(): WorkNode {
   return {
     id: crypto.randomUUID(),
@@ -43,6 +49,7 @@ export function TaskEditor({
   saved,
   close,
   appearance,
+  initialPlanning,
 }: {
   original: WorkTask;
   state: Workbench;
@@ -51,6 +58,7 @@ export function TaskEditor({
   saved(state: Workbench): void;
   close(): void;
   appearance: AppearanceStore;
+  initialPlanning?: InitialPlanning;
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
@@ -65,7 +73,9 @@ export function TaskEditor({
   const [expanded, setExpanded] = useState(() => new Set(original.workflows.map((w) => w.id)));
   const [locateRequest, setLocateRequest] = useState(0);
   const [view, setView] = useState<'list' | 'workflow'>('workflow');
-  const [inspectorOpen, setInspectorOpen] = useState(() => window.innerWidth > 1100);
+  const [inspectorOpen, setInspectorOpen] = useState(
+    () => !!initialPlanning || window.innerWidth > 1100,
+  );
   const editorRef = useRef<HTMLDivElement>(null);
   const inspectorRef = useRef<HTMLElement>(null);
   const [compact, setCompact] = useState(false);
@@ -92,7 +102,7 @@ export function TaskEditor({
     };
   }, [compact, inspectorOpen]);
   const [tree, setTree] = useState(false);
-  const [panel, setPanel] = useState<'config' | 'plan'>('config');
+  const [panel, setPanel] = useState<'config' | 'plan'>(initialPlanning ? 'plan' : 'config');
   const [membersOpen, setMembersOpen] = useState(false);
   const [memberDraft, setMemberDraft] = useState(task.participantIds);
   const [error, setError] = useState('');
@@ -100,10 +110,11 @@ export function TaskEditor({
   const [conflict, setConflict] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [planning, setPlanning] = useState(false);
+  const [planning, setPlanning] = useState(!!initialPlanning);
+  const [planFailed, setPlanFailed] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [proposal, setProposal] = useState<PlanProposal | null>(null);
-  const controller = useRef<AbortController | null>(null);
+  const controller = useRef<AbortController | null>(initialPlanning?.controller ?? null);
   const pendingSave = useRef<{
     content: string;
     requestId: string;
@@ -152,7 +163,32 @@ export function TaskEditor({
     );
   }, [workTree, workflowId, selectedId]);
   const members = state.participants.filter((m) => task.participantIds.includes(m.id));
-  useEffect(() => () => controller.current?.abort(), []);
+  useEffect(
+    () => () => {
+      // The creation request survives StrictMode's child effect replay. Its parent closes it.
+      if (controller.current !== initialPlanning?.controller) controller.current?.abort();
+    },
+    [initialPlanning],
+  );
+  useEffect(() => {
+    if (!initialPlanning) return;
+    let subscribed = true;
+    void initialPlanning.result.then((result) => {
+      if (!subscribed || controller.current !== initialPlanning.controller) return;
+      if (initialPlanning.controller.signal.aborted) setMessage('已取消规划');
+      else if (result.ok) setProposal(result.proposal);
+      else {
+        setError(result.error instanceof Error ? result.error.message : '规划失败，请重试。');
+        setConflict(result.error instanceof WorkbenchError && result.error.code === 'conflict');
+        setPlanFailed(true);
+      }
+      setPlanning(false);
+      controller.current = null;
+    });
+    return () => {
+      subscribed = false;
+    };
+  }, [initialPlanning]);
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {
       if (dirty) {
@@ -295,6 +331,7 @@ export function TaskEditor({
       saved(latest.state);
       pendingSave.current = null;
       setProposal(null);
+      setPlanFailed(false);
       setConflict(false);
       setError('');
       // Reconcile against the new snapshot in the navigation effect, keeping a surviving ancestor.
@@ -308,6 +345,7 @@ export function TaskEditor({
     const result = dirty ? await persist() : state;
     if (!result) return;
     setPlanning(true);
+    setPlanFailed(false);
     setError('');
     setMessage('');
     const abort = new AbortController();
@@ -328,6 +366,7 @@ export function TaskEditor({
       else {
         setError(error instanceof Error ? error.message : '规划失败。');
         setConflict(error instanceof WorkbenchError && error.code === 'conflict');
+        setPlanFailed(true);
       }
     } finally {
       setPlanning(false);
@@ -482,10 +521,13 @@ export function TaskEditor({
               : '计划草稿'}
           </span>
           {locked ? (
-            <span className="zm-muted">
-              {task.ownerId
-                ? `负责人 ${members.find((p) => p.id === task.ownerId)?.name ?? '不可用成员'}`
-                : '负责人待补选'}
+            <span className="zm-task-owner-readonly">
+              <span>负责人</span>
+              <b title={members.find((p) => p.id === task.ownerId)?.name}>
+                {task.ownerId
+                  ? (members.find((p) => p.id === task.ownerId)?.name ?? '不可用成员')
+                  : '待补选'}
+              </b>
             </span>
           ) : (
             <ParticipantSelect
@@ -677,7 +719,7 @@ export function TaskEditor({
               expanded={expanded}
               locateRequest={locateRequest}
             />
-          ) : (
+          ) : workflow.nodes.length ? (
             <div className="zm-node-list">
               {workflow.nodes.map((n, i) => (
                 <div
@@ -733,8 +775,14 @@ export function TaskEditor({
                 </div>
               ))}
             </div>
+          ) : null}
+          {!workflow.nodes.length && !tree && panel === 'plan' && (
+            <div className="zm-empty zm-plan-canvas-placeholder">
+              <span aria-hidden="true">✧</span>
+              <h3>{planning ? '正在生成工作流' : '工作流将在这里展开'}</h3>
+            </div>
           )}
-          {!workflow.nodes.length && !tree && (
+          {!workflow.nodes.length && !tree && panel !== 'plan' && (
             <div className="zm-empty">
               <h3>从一个清晰的工作节点开始</h3>
               <p>手动编排，或让 AI 根据任务和团队情况生成草案。</p>
@@ -985,11 +1033,26 @@ export function TaskEditor({
                     }
                     onClick={() => void generate()}
                   >
-                    {proposal ? '重新规划' : '生成工作流草案'}
+                    {proposal ? '重新规划' : planFailed ? '重试规划' : '生成工作流草案'}
                   </Button>
                   {planning && (
                     <Button variant="quiet" onClick={() => controller.current?.abort()}>
                       取消
+                    </Button>
+                  )}
+                  {!planning && !proposal && (
+                    <Button
+                      variant="quiet"
+                      disabled={busy || conflict}
+                      onClick={() => {
+                        setError('');
+                        setPanel('config');
+                        setTree(false);
+                        setView('workflow');
+                        if (!workflow.nodes.length) addNode();
+                      }}
+                    >
+                      手动编排
                     </Button>
                   )}
                   {previewTask && proposal && (
