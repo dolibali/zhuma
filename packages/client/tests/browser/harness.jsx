@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client';
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
 import styles from '../../src/workbench/workbench.css';
@@ -44,7 +44,21 @@ systemTheme.addEventListener('change', reflectTheme);
 const style = document.createElement('style');
 style.textContent = `${flowStyles}\n${styles}`;
 document.head.append(style);
-const content = <WorkbenchPage api={api} initialSection="tasks" appearance={appearance} />;
+function MountProbe() {
+  const [mounted, setMounted] = useState(true);
+  return (
+    <>
+      <button onClick={() => setMounted(false)}>切出工作台</button>
+      <button onClick={() => setMounted(true)}>返回工作台</button>
+      {mounted && <WorkbenchPage api={api} initialSection="tasks" appearance={appearance} />}
+    </>
+  );
+}
+const content = new URL(location.href).searchParams.has('mount-probe') ? (
+  <MountProbe />
+) : (
+  <WorkbenchPage api={api} initialSection="tasks" appearance={appearance} />
+);
 createRoot(document.getElementById('root')).render(
   new URL(location.href).searchParams.has('strict') ? <StrictMode>{content}</StrictMode> : content,
 );

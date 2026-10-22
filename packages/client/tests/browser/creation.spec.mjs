@@ -216,3 +216,45 @@ test('任务信息栏负责人同行，小屏长姓名整组换行；空值、�
   expect(requests(replay, 'command')).toHaveLength(0);
   expect(requests(replay, 'plan')).toHaveLength(0);
 });
+
+test('创建保存期间卸载并重挂载：迟到响应仅保留草稿，下一次明确创建才规划', async ({
+  page,
+  replay,
+}) => {
+  const gate = deferred();
+  let count = 0;
+  replay.handlers.command = async (payload) => {
+    replay.state = applyWorkbenchCommand(replay.state, payload.command);
+    const committed = structuredClone(replay.state);
+    if (++count === 1) await gate.promise;
+    return { ok: true, value: committed };
+  };
+  replay.handlers.plan = async (payload) => proposal(payload);
+  try {
+    await creation(page, '切出前保存的草稿', '/?strict=1&mount-probe=1');
+    await button(page, '生成计划').click();
+    await expect.poll(() => count).toBe(1);
+    // Simulate the host replacing its active panel, outside the native modal's pointer scope.
+    await button(page, '切出工作台').evaluate((element) => element.click());
+    await expect(page.getByRole('heading', { name: '任务清单', exact: true })).toHaveCount(0);
+    await button(page, '返回工作台').click();
+    await expect(page.getByRole('button', { name: /^切出前保存的草稿/ })).toBeVisible();
+    const response = page.waitForResponse((r) => r.url().endsWith('/api/zhuma/command'));
+    gate.resolve();
+    await (await response).finished();
+    // Observe the absence of the stale continuation after the delayed response settles.
+    await page.waitForTimeout(150);
+    expect(requests(replay, 'plan')).toHaveLength(0);
+    await expect(page.getByRole('heading', { name: '任务清单', exact: true })).toBeVisible();
+    expect(replay.state.tasks.filter((t) => t.title === '切出前保存的草稿')).toHaveLength(1);
+    await button(page, '＋ 创建任务').click();
+    await page.getByLabel('任务目标', { exact: true }).fill('重新进入后的明确新任务');
+    await button(page, '生成计划').click();
+    await expect(button(page, '应用草案')).toBeEnabled();
+    expect(requests(replay, 'plan')).toHaveLength(1);
+    expect(requests(replay, 'plan')[0].taskId).toBe(replay.state.tasks.at(-1).id);
+    expect(count).toBe(2);
+  } finally {
+    gate.resolve();
+  }
+});

@@ -50,6 +50,13 @@ export function WorkbenchPage({
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [initialPlanning, setInitialPlanning] = useState<InitialPlanning | null>(null);
   const submitting = useRef(false);
+  const pageGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      pageGeneration.current += 1;
+    },
+    [],
+  );
   useEffect(() => () => initialPlanning?.controller.abort(), [initialPlanning]);
   const [projectFilter, setProjectFilter] = useState('');
   const [search, setSearch] = useState('');
@@ -143,6 +150,7 @@ export function WorkbenchPage({
     }
   }
   async function createTask(draft: Extract<Dialog, { kind: 'task' }>) {
+    const generation = pageGeneration.current;
     const goal = draft.value.goal.trim();
     if (!goal) {
       setDialogError('请描述这次要完成的目标。');
@@ -161,7 +169,9 @@ export function WorkbenchPage({
       title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, 60),
     };
     const committed = await submit({ type: 'save-task', task });
-    if (!committed) return;
+    // The Host may have saved after this panel was removed. Keep that draft, but do not
+    // start a paid planning request or navigate from a stale create-form submission.
+    if (!committed || generation !== pageGeneration.current) return;
     if (draft.planning === 'ai') {
       const controller = new AbortController();
       const result: InitialPlanning['result'] = Promise.resolve()
