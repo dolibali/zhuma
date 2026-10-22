@@ -184,12 +184,14 @@ export function ParticipantSelect({
   members,
   selected,
   multiple = false,
+  hint,
   change,
 }: {
   label: string;
   members: Participant[];
   selected: string[];
   multiple?: boolean;
+  hint?: string;
   change(ids: string[]): void;
 }) {
   const [open, setOpen] = useState(false);
@@ -207,7 +209,11 @@ export function ParticipantSelect({
           setOpen(true);
         }}
       >
-        <span>{names.length ? names.join('、') : `选择${label}`}</span>
+        <span title={names.join('、')}>
+          {names.length
+            ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` +${names.length - 3}` : ''}`
+            : `选择${label}`}
+        </span>
         <span aria-hidden>⌄</span>
       </button>
       {open && (
@@ -220,7 +226,7 @@ export function ParticipantSelect({
           />
           <footer>
             <span className="zm-muted">
-              已选 {draft.length} 位{multiple ? ' · 全部通过后交接' : ''}
+              已选 {draft.length} 位{hint ? ` · ${hint}` : ''}
             </span>
             <button type="button" onClick={() => setOpen(false)}>
               取消

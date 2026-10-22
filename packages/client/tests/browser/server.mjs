@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 // Static test harness only. RPC responses are intercepted per test; no Host or model is started.
-const bundle = await build({
+const options = {
   entryPoints: [fileURLToPath(new URL('./harness.jsx', import.meta.url))],
   bundle: true,
   write: false,
@@ -12,7 +12,12 @@ const bundle = await build({
   target: 'es2022',
   jsx: 'automatic',
   loader: { '.css': 'text' },
-  define: { 'process.env.NODE_ENV': '"production"' },
+};
+const bundle = await build({ ...options, define: { 'process.env.NODE_ENV': '"production"' } });
+// Explicit development bundle exercises React StrictMode effect replay in creation tests.
+const strictBundle = await build({
+  ...options,
+  define: { 'process.env.NODE_ENV': '"development"' },
 });
 const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,11 +29,18 @@ const server = createServer((request, response) => {
   if (request.method === 'GET' && pathname === '/health') {
     response.writeHead(200).end('browser-contract-fixture');
   } else if (request.method === 'GET' && pathname === '/') {
-    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(html);
+    const strict = new URL(request.url, 'http://127.0.0.1').searchParams.has('strict');
+    response
+      .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      .end(strict ? html.replace('/harness.js', '/harness-dev.js') : html);
   } else if (request.method === 'GET' && pathname === '/harness.js') {
     response
       .writeHead(200, { 'content-type': 'text/javascript' })
       .end(bundle.outputFiles[0].contents);
+  } else if (request.method === 'GET' && pathname === '/harness-dev.js') {
+    response
+      .writeHead(200, { 'content-type': 'text/javascript' })
+      .end(strictBundle.outputFiles[0].contents);
   } else {
     response.writeHead(404).end('No real API is available in the browser contract harness.');
   }

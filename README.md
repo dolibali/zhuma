@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-已在四包边界上实现第一批组织与编排能力：项目、成员与专家、资产定义、任务参与者、列表/画布编辑、嵌套草稿和模型规划提案。Host/Client 插件挂载到官方 DSH，数据由 DSH storage domain 保存。启动方式见 [工作台集成](distribution/workbench/README.md)，实现边界见 [A 开发记录](docs/development-a.md)。
+已在四包边界上实现第一批组织与编排能力：项目、成员与专家、资产定义、任务参与者、列表/画布编辑、嵌套草稿和模型规划提案。Host/Client 插件挂载到官方 DSH，数据由 DSH storage domain 保存。启动方式见 [工作台集成](distribution/workbench/README.md)，实现边界见 [A 开发记录](docs/development-a.md)，完整范围与未完成链路见 [产品能力覆盖账本](docs/product-coverage.md)。
 
 当前是单个本地 Host 的开发版本。多人登录与授权、执行待办、产物与评审服务由后续工作包接入；完整多层任务权限及安装包尚未验收。模型规划需要在 DSH 中配置模型；不会用固定模板替代失败的真实调用。
 

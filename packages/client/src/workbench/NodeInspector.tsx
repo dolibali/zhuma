@@ -146,6 +146,7 @@ export function NodeInspector({
           <ParticipantSelect
             label="评审人"
             multiple
+            hint="全部通过后交接"
             members={members.filter((m) => m.id !== node.assigneeId)}
             selected={node.reviewerIds}
             change={(reviewerIds) => update({ reviewerIds })}
