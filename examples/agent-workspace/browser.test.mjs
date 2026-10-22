@@ -19,6 +19,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     env: {
       ...process.env,
       ZHUMA_HOLD_RUNS: '1',
+      ZHUMA_TEST_HOOKS: '1',
       ZHUMA_SESSION_FILE: path.join(sessionDir, 'session.json'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -246,6 +247,25 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
       return document.documentElement.scrollWidth <= window.innerWidth + 1;
     });
     assert.equal(zoomFits, true);
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = '';
+    });
+
+    await send(page, '跑到一半丢掉入口');
+    await waitStatus(page, '执行中');
+    const dropped = await page.request.post(api(page, '/api/test/drop-entry'));
+    if (!dropped.ok()) throw new Error(await dropped.text());
+    await release(page);
+    await waitStatus(page, '节点记录异常，需要人工处理');
+    const status = page.getByTestId('node-status');
+    const statusText = await status.innerText();
+    assert.equal(statusText.includes('执行中'), false);
+    assert.match(statusText, /节点记录异常，需要人工处理/);
+    assert.equal(await status.getAttribute('data-status'), 'record-broken');
+    assert.match(await page.getByTestId('error').innerText(), /节点记录异常，需要人工处理/);
+    const broken = await workspace(page);
+    assert.equal(broken.node.status, 'running');
+    assert.equal(broken.runs.at(-1).status, 'failed');
   } finally {
     await browser.close();
     child.kill();

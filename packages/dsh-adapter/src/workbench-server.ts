@@ -116,6 +116,10 @@ async function dispatch(desk: ExecutionDesk, pathname: string, body: Record<stri
     desk.releaseActive();
     return { ok: true as const, replayed: false, snapshot: desk.snapshot() };
   }
+  if (pathname === '/api/test/drop-entry' && process.env.ZHUMA_TEST_HOOKS === '1') {
+    desk.dropRecordedEntry();
+    return { ok: true as const, replayed: false, snapshot: desk.snapshot() };
+  }
   if (pathname === '/api/resume') {
     desk.resumeInteraction();
     return { ok: true as const, replayed: false, snapshot: desk.snapshot() };

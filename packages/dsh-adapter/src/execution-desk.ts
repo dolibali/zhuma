@@ -647,6 +647,13 @@ export class ExecutionDesk {
     if (executor instanceof SimulatedAgentExecutor) executor.release(active.id);
   }
 
+  /** 测试钩子：丢掉记下的入口，不释放正在执行的运行。 */
+  dropRecordedEntry(): void {
+    const { entryStatus: _ignored, ...rest } = this.nodeState;
+    this.nodeState = rest;
+    this.persist();
+  }
+
   async flush(): Promise<void> {
     await Promise.all([...this.inflight]);
   }
@@ -1119,24 +1126,13 @@ export class ExecutionDesk {
     if (applying) this.queueApply.delete(runId);
   }
 
-  /** 入口已经对不上时，不再把运行留在执行中，也不改写记下的入口。 */
+  /** 运行中丢掉入口记录时，把这次运行标成失败，不推进节点。 */
   private failInconsistentRun(runId: string): void {
     const attempt = this.runs.find((run) => run.id === runId);
-    const entryBefore = this.nodeState.entryStatus;
-    this.lastError = entryMismatch();
+    this.lastError = missingRecord();
     if (attempt && !isTerminalRunStatus(attempt.status)) {
       const settled = settleExecutionRun(attempt, 'failed');
-      if (settled.ok) {
-        this.putRun(settled.attempt);
-        if (settled.nodeTransition.type === 'execution-failed') {
-          this.applyTransition(settled.nodeTransition, `entry:${runId}`);
-          if (this.nodeState.entryStatus !== entryBefore) {
-            const { entryStatus: _ignored, ...rest } = this.nodeState;
-            this.nodeState =
-              entryBefore === undefined ? rest : { ...rest, entryStatus: entryBefore };
-          }
-        }
-      }
+      if (settled.ok) this.putRun(settled.attempt);
     }
     this.dropPending(runId);
     this.releaseClaim(runId);
@@ -1677,6 +1673,15 @@ function entryMismatch(): CommandErrorFact {
     code: 'entry-inconsistent',
     objectLabel: '节点',
     reason: '读回的入口和节点状态对不上',
+    nextStep: '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
+  };
+}
+
+function missingRecord(): CommandErrorFact {
+  return {
+    code: 'entry-inconsistent',
+    objectLabel: '节点',
+    reason: '节点记录异常，需要人工处理',
     nextStep: '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
   };
 }

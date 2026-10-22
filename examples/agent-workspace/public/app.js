@@ -122,7 +122,7 @@ function render() {
   document.querySelector('#back-link').setAttribute('href', view.backHref);
   const status = document.querySelector('#node-status');
   status.textContent = view.nodeStatusText;
-  status.dataset.status = view.nodeStatus;
+  status.dataset.status = view.nodeStatusKey;
   const notes = [
     view.banner,
     state.disconnected ? '页面与服务断开。当前显示的是断开前的事实。' : null,

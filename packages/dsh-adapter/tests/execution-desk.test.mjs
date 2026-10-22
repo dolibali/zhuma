@@ -827,7 +827,7 @@ test('契约：停止回执超时后迟到的取消仍结束运行', async () =>
   assert.equal(session.snapshot().node.status, 'cancelled');
 });
 
-test('契约：入口不一致时拒绝发送，运行中对不上就结束运行', async () => {
+test('契约：入口不一致时拒绝发送，运行中丢记录则停在人工处理', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-entry-send-'));
   const journal = createFileJournal(path.join(directory, 'session.json'));
   desk({ journal });
@@ -858,10 +858,14 @@ test('契约：入口不一致时拒绝发送，运行中对不上就结束运�
   };
   session.releaseActive();
   await session.flush();
-  assert.equal(session.snapshot().runs[0].status, 'failed');
-  assert.notEqual(session.snapshot().runs[0].status, 'running');
-  assert.equal(session.snapshot().node.status, 'failed');
+  const after = session.snapshot();
+  assert.equal(after.runs[0].status, 'failed');
+  assert.equal(after.node.status, 'running');
+  assert.notEqual(after.node.status, 'failed');
+  assert.notEqual(after.node.status, 'cancelled');
   assert.equal(session.nodeState.entryStatus, undefined);
+  assert.equal(after.lastError.code, 'entry-inconsistent');
+  assert.equal(after.lastError.reason, '节点记录异常，需要人工处理');
 });
 
 test('契约：坏的网关响应不算成功，也不会记成断开', async () => {

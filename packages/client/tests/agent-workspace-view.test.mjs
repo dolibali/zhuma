@@ -42,6 +42,41 @@ test('契约：投影标出模拟、不改快照，也不把交付写成已完�
   assert.equal(unselected.primary.enabled, false);
 });
 
+test('契约：运行中丢了入口记录时，状态不再写成执行中', () => {
+  const base = workspaceSnapshot();
+  const broken = createAgentWorkspaceView(
+    workspaceSnapshot({
+      runs: [{ ...base.runs[0], status: 'failed' }],
+      lastError: {
+        code: 'entry-inconsistent',
+        objectLabel: '节点',
+        reason: '节点记录异常，需要人工处理',
+        nextStep: '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
+      },
+    }),
+  );
+  assert.equal(broken.nodeStatus, 'running');
+  assert.equal(broken.nodeStatusKey, 'record-broken');
+  assert.equal(broken.nodeStatusText, '状态：节点记录异常，需要人工处理');
+  assert.equal(broken.nodeStatusText.includes('执行中'), false);
+  assert.equal(broken.primary.enabled, false);
+
+  const refused = createAgentWorkspaceView(
+    workspaceSnapshot({
+      node: { status: 'needs-revision', version: 2, upstreamAffected: false },
+      runs: [],
+      lastError: {
+        code: 'entry-inconsistent',
+        objectLabel: '节点',
+        reason: '读回的入口和节点状态对不上',
+        nextStep: '不要按这份记录发送。先核对节点命令里的 entryStatus。',
+      },
+    }),
+  );
+  assert.equal(refused.nodeStatusText, '状态：需修改');
+  assert.equal(refused.nodeStatusKey, 'needs-revision');
+});
+
 function workspaceSnapshot(overrides = {}) {
   const config = {
     id: 'cfg-1',

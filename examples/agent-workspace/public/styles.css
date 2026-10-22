@@ -155,7 +155,8 @@ h2 {
   color: var(--amber);
 }
 .status-pill[data-status='failed'],
-.status-pill[data-status='cancelled'] {
+.status-pill[data-status='cancelled'],
+.status-pill[data-status='record-broken'] {
   background: var(--red-soft);
   color: var(--red);
 }

@@ -63,6 +63,7 @@ export interface AgentWorkspaceView {
   readonly taskGoal: string;
   readonly nodeGoal: string;
   readonly nodeStatus: NodeStatus;
+  readonly nodeStatusKey: NodeStatus | 'record-broken';
   readonly nodeStatusLabel: string;
   readonly nodeStatusText: string;
   readonly assigneeNote: string;
@@ -231,6 +232,11 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
         ? '模型'
         : humanizeLabel(issue?.target);
   const terminalNode = snapshot.node.status === 'cancelled' || snapshot.node.status === 'completed';
+  const recordBroken =
+    snapshot.node.status === 'running' &&
+    snapshot.lastError?.code === 'entry-inconsistent' &&
+    snapshot.runs.some((run) => run.status === 'failed') &&
+    active === undefined;
   const sendBlocked = issue
     ? `${issueTarget}：${issue.reason}。修正后再发送，未配置时不会改用模拟执行器。`
     : snapshot.resumeGap
@@ -243,8 +249,10 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
             ? snapshot.node.status === 'completed'
               ? '节点已完成，不能再发送。'
               : '节点已取消。请使用重新开始。'
-            : null;
-  const nodeLabel = NODE_LABELS[snapshot.node.status];
+            : recordBroken
+              ? '节点记录异常，需要人工处理。不要按这份记录重试或结束运行。'
+              : null;
+  const nodeLabel = recordBroken ? '节点记录异常，需要人工处理' : NODE_LABELS[snapshot.node.status];
   const unavailable = snapshot.config.executorUnavailableReason ?? null;
   return {
     pageTitle: 'Agent 处理',
@@ -255,6 +263,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     taskGoal: snapshot.taskGoal,
     nodeGoal: snapshot.handoff.goal,
     nodeStatus: snapshot.node.status,
+    nodeStatusKey: recordBroken ? 'record-broken' : snapshot.node.status,
     nodeStatusLabel: nodeLabel,
     nodeStatusText: `状态：${nodeLabel}`,
     assigneeNote: '责任人不变。使用 Agent 不改变责任人。',
