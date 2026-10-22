@@ -659,6 +659,66 @@ test('契约：运行结束的 returnTo 等于记下的入口', async () => {
   assert.equal(session.snapshot().node.status, 'needs-revision');
 });
 
+test('契约：入口、版本、评审轮次和幂等回执随正式命令落盘', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-command-journal-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
+  const { desk: session } = desk({ journal });
+  const before = journal.load();
+  assert.equal(before.nodeState.entryStatus, 'ready');
+  assert.equal(before.nodeState.version, 1);
+  assert.equal(before.nodeState.stored.length, 0);
+  assert.deepEqual(before.reviewRounds, [{ id: 'round-old', status: 'changes-requested' }]);
+  assert.equal(before.activeRoundId, null);
+
+  const started = session.send({ text: '落盘核对', idempotencyKey: 'persist-run' });
+  await session.waitForRun(started.runId, 'running');
+  const running = journal.load();
+  assert.equal(running.nodeState.status, 'running');
+  assert.equal(running.nodeState.entryStatus, 'ready');
+  assert.equal(running.nodeState.version, before.nodeState.version + 1);
+  const acknowledged = running.nodeState.stored.find(
+    (item) => item.idempotencyKey === `ack:${started.runId}`,
+  );
+  assert.equal(acknowledged.actorId, 'chen-ning');
+  assert.equal(acknowledged.objectId, 'node-fields');
+  assert.equal(acknowledged.result.from, 'ready');
+  assert.equal(acknowledged.result.to, 'running');
+  assert.deepEqual(running.reviewRounds, before.reviewRounds);
+
+  const stopped = await session.stop();
+  assert.equal(stopped.ok, true);
+  const cancelled = journal.load();
+  const cancel = cancelled.nodeState.stored.find(
+    (item) => item.idempotencyKey === `cancel:${started.runId}`,
+  );
+  assert.equal(cancel.result.from, 'running');
+  assert.equal(cancel.result.to, 'cancelled');
+  assert.equal(cancelled.nodeState.entryStatus, 'ready');
+  assert.equal(cancelled.nodeState.version, running.nodeState.version + 1);
+  assert.deepEqual(cancelled.reviewRounds, before.reviewRounds);
+
+  const restored = ExecutionDesk.restore(cancelled, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+    journal,
+  });
+  restored.resumeInteraction();
+  const versionBeforeRetry = restored.persistence().nodeState.version;
+  const retried = restored.retry('persist-restart');
+  assert.equal(retried.ok, true);
+  const after = journal.load();
+  const recovery = after.nodeState.stored.find(
+    (item) => item.idempotencyKey === 'recovery:persist-restart',
+  );
+  assert.equal(recovery.result.from, 'cancelled');
+  assert.equal(recovery.result.to, 'ready');
+  assert.equal(after.nodeState.version, versionBeforeRetry + 1);
+  assert.equal(after.nodeState.entryStatus, 'ready');
+  assert.deepEqual(after.reviewRounds, before.reviewRounds);
+  assert.equal(after.activeRoundId, null);
+  assert.equal(after.nodeState.stored.length, cancelled.nodeState.stored.length + 1);
+});
+
 test('契约：核实断开、下一轮启动失败和接收前停止都把队列标成未应用', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-queue-abandon-'));
   const journal = createFileJournal(path.join(directory, 'session.json'));
