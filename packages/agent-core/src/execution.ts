@@ -803,11 +803,19 @@ export function executionTodoHint(input: {
 
 export function recoveryCommandFor(
   nodeStatus: NodeStatus,
+  returnTo?: 'ready' | 'needs-revision',
 ):
-  | { readonly ok: true; readonly transition: 'retry' | 'restart' }
+  | {
+      readonly ok: true;
+      readonly transition: 'retry' | 'restart';
+      readonly returnTo: 'ready' | 'needs-revision';
+    }
   | { readonly ok: false; readonly code: 'recovery-not-available' } {
-  if (nodeStatus === 'failed') return { ok: true, transition: 'retry' };
-  if (nodeStatus === 'cancelled') return { ok: true, transition: 'restart' };
+  if (returnTo !== 'ready' && returnTo !== 'needs-revision') {
+    return { ok: false, code: 'recovery-not-available' };
+  }
+  if (nodeStatus === 'failed') return { ok: true, transition: 'retry', returnTo };
+  if (nodeStatus === 'cancelled') return { ok: true, transition: 'restart', returnTo };
   return { ok: false, code: 'recovery-not-available' };
 }
 

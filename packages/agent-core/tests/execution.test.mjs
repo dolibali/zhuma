@@ -196,9 +196,11 @@ test('契约：停止先等待回执，未确认的取消和结束后的回执�
   assert.equal(finished.attempt.status, 'completed');
   const lateFail = settleExecutionRun(finished.attempt, 'failed');
   assert.equal(lateFail.mayChangeNodeStatus, false);
-  assert.equal(recoveryCommandFor('failed').transition, 'retry');
-  assert.equal(recoveryCommandFor('cancelled').transition, 'restart');
-  assert.equal(recoveryCommandFor('completed').code, 'recovery-not-available');
+  assert.equal(recoveryCommandFor('failed', 'ready').transition, 'retry');
+  assert.equal(recoveryCommandFor('failed', 'needs-revision').returnTo, 'needs-revision');
+  assert.equal(recoveryCommandFor('cancelled', 'ready').transition, 'restart');
+  assert.equal(recoveryCommandFor('cancelled').ok, false);
+  assert.equal(recoveryCommandFor('completed', 'ready').code, 'recovery-not-available');
 });
 
 test('契约：不支持实时注入时进入队列，发送成功不能直接变成已应用', () => {

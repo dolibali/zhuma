@@ -484,17 +484,20 @@ export class ExecutionDesk {
 
   retry(idempotencyKey: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
-    const recovery = recoveryCommandFor(this.nodeState.status);
+    const entry = [...this.runs]
+      .reverse()
+      .find((run) => run.status === 'failed' || run.status === 'cancelled');
+    const recovery = recoveryCommandFor(this.nodeState.status, entry?.entryNodeStatus);
     if (!recovery.ok) {
       return this.fail(
         'recovery-not-available',
         '节点',
         '当前状态不能重试或重新开始',
-        '失败用重试，取消后用显式重新开始',
+        '失败用重试，取消后用显式重新开始，并带回进入运行前的 ready 或 needs-revision',
       );
     }
     const applied = this.applyTransition(
-      { type: recovery.transition },
+      { type: recovery.transition, returnTo: recovery.returnTo },
       `recovery:${idempotencyKey}`,
     );
     if (!applied) {
