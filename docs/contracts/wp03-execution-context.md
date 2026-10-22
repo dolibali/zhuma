@@ -1,6 +1,6 @@
 # WP03 执行与上下文
 
-状态：成员 B 实现。日期：2026-10-22。基线是 `b/wp00-contracts` 的 `b3c3875fc85625f7c3d4846a52cc9ba5c61f791e`。
+状态：成员 B 实现。日期：2026-10-22。基线是 `b/wp00-contracts` 的 `32690f1f0d54332bddabbfd8012f656798b174fe`。
 
 本文说明 FR05、FR07、FR10 的 P0，以及 FR13 在本仓里的落点。FR10 的 P1（安全点暂停、方案重排）不在本期。产物正式提交属于 WP04，评审执行属于 WP05。
 
@@ -52,7 +52,7 @@
 
 `requestRunStop` 只把 `stopPhase` 设为 `requested`，节点仍保持 `running`，直到取消回执到达。停止会等这个回执，最多 4 秒。未知运行的取消立即返回拒绝，不挂起。超时或回执被拒绝时记为 `stop-receipt-missing`，`stopPhase` 回到 `receipt-rejected`，节点不标成已取消。模拟执行器在回执之前先交出取消事件和一条迟到输出，上层把迟到输出记成附属记录。执行器尚未回执接收就取消时，运行可以结束，但节点迁移是 `none`，不发 `cancel-confirmed`。
 
-失败后的恢复命令是 `retry`，取消后是 `restart`。二者都必须带上 `returnTo`，取值只来自节点自己记下的入口，或该次运行在启动时抄下的 `entryNodeStatus`。调用方不能另供一个 `entryStatus`。没有记下 `ready` 或 `needs-revision` 时恢复失败，不发出缺 `returnTo` 的命令。然后由调用方显式再发送，才会有新的运行标识。改派和人工接回只记录 `RecoveryRequest`：`changesAssignee` 和 `forgesRun` 都是 false。谁真正改派由成员 A 决定。演示交接的责任人种类是 `human`。
+失败后的恢复命令是 `retry`，取消后是 `restart`。二者的 `returnTo` 必填，并且必须等于 `NodeCommandState.entryStatus`。记录是 `needs-revision` 时，`returnTo: 'ready'` 会被拒绝。没有这份记录时恢复失败，不拿该次运行的 `entryNodeStatus` 或调用方给出的入口补上。然后由调用方显式再发送，才会有新的运行标识。需修改义务一直留到 `applyReviewSettlementCommand` 通过；子流程返回、失败重试和取消后重新开始都不能靠 `reviewRequired: false` 完成。改派和人工接回只记录 `RecoveryRequest`：`changesAssignee` 和 `forgesRun` 都是 false。谁真正改派由成员 A 决定。演示交接的责任人种类是 `human`，可以不带 `expertRef`。内部 agent 运行由 `toHandoffActor` 映射成 `human` 或 `expert`。
 
 服务重启时 `ExecutionDesk.restore` 先装回事实，`interactionReady` 为 false，并在执行器不支持会话恢复时留下 `resumeGap`。此阶段拒绝新命令，不推断完成，也不自动续跑。继续交互之后，这条中断运行不再当作当前可补充的运行：发送和停止都要求先核实为执行器已断开，并且不会把 `stopPhase` 写成 `requested`。核实结果是失败，不是完成。
 

@@ -494,16 +494,13 @@ export class ExecutionDesk {
 
   retry(idempotencyKey: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
-    const entry = [...this.runs]
-      .reverse()
-      .find((run) => run.status === 'failed' || run.status === 'cancelled');
-    const returnTo = recordedEntryStatus(this.nodeState, entry);
+    const returnTo = recordedEntryStatus(this.nodeState);
     if (returnTo === undefined) {
       return this.fail(
         'recovery-not-available',
         '节点',
         '没有记下进入运行前的状态，不能重试或重新开始',
-        '失败用重试，取消后用显式重新开始。入口状态只取节点或该次运行自己记下的 ready 或 needs-revision',
+        '失败用重试，取消后用显式重新开始。returnTo 只取节点命令记下的 entryStatus',
       );
     }
     const recovery = recoveryCommandFor(this.nodeState.status, returnTo);
@@ -1586,15 +1583,11 @@ function cancelWithTimeout(pending: Promise<{ receipt: string; reason?: string }
   });
 }
 
-function recordedEntryStatus(
-  state: NodeCommandState,
-  attempt: ExecutionAttempt | undefined,
-): 'ready' | 'needs-revision' | undefined {
-  const stored = (state as NodeCommandState & { entryStatus?: unknown }).entryStatus;
-  if (stored === 'ready' || stored === 'needs-revision') return stored;
-  if (attempt?.entryNodeStatus === 'ready' || attempt?.entryNodeStatus === 'needs-revision') {
-    return attempt.entryNodeStatus;
+function recordedEntryStatus(state: NodeCommandState): 'ready' | 'needs-revision' | undefined {
+  if (state.entryStatus === 'ready' || state.entryStatus === 'needs-revision') {
+    return state.entryStatus;
   }
+  if (state.status === 'needs-revision') return 'needs-revision';
   return undefined;
 }
 

@@ -579,6 +579,63 @@ test('契约：停止回执超时后不把节点标成已取消', async () => {
   assert.equal(stopped.snapshot.runs[0].stopPhase, 'receipt-rejected');
 });
 
+test('契约：重新开始只带回节点记下的需修改入口', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-entry-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
+  const { desk: session } = desk({ journal, seed: { nodeStatus: 'needs-revision' } });
+  const started = session.send({ text: '按退回意见再跑', idempotencyKey: 'rev-run' });
+  await session.waitForRun(started.runId, 'running');
+  const stopped = await session.stop();
+  assert.equal(stopped.ok, true);
+  const saved = journal.load();
+  assert.equal(saved.nodeState.status, 'cancelled');
+  assert.equal(saved.nodeState.entryStatus, 'needs-revision');
+  saved.runs[0].entryNodeStatus = 'ready';
+  const restored = ExecutionDesk.restore(saved, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+    journal,
+  });
+  restored.resumeInteraction();
+  const retried = restored.retry('retry-revision');
+  assert.equal(retried.ok, true);
+  await restored.waitForRun(retried.runId, 'running');
+  assert.equal(journal.load().nodeState.entryStatus, 'needs-revision');
+  assert.equal(journal.load().nodeState.status, 'running');
+
+  const blocked = journal.load();
+  delete blocked.nodeState.entryStatus;
+  blocked.nodeState.status = 'cancelled';
+  const missing = ExecutionDesk.restore(blocked, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+  });
+  missing.resumeInteraction();
+  const refused = missing.retry('retry-missing-entry');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'recovery-not-available');
+  assert.equal(missing.snapshot().node.status, 'cancelled');
+  assert.equal(missing.snapshot().runs.length, blocked.runs.length);
+});
+
+test('契约：人工交接可以不带专家引用', () => {
+  const bare = seed();
+  delete bare.handoff.expertRef;
+  const session = ExecutionDesk.create(bare, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+  });
+  session.updateConfig({
+    executorId: 'simulated',
+    skillIds: ['test-design'],
+    mcpIds: ['api-docs'],
+  });
+  const started = session.send({ text: '人工节点', idempotencyKey: 'human-only' });
+  assert.equal(started.ok, true);
+  assert.equal(started.snapshot.handoff.expertRef, undefined);
+  assert.equal(started.snapshot.assignee.kind, 'human');
+});
+
 function runRequest(runId) {
   return {
     runId,
