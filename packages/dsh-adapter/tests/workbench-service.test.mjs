@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { WorkbenchSchema } from '@zhuma/agent-core';
 import { WorkbenchService } from '../dist/workbench-service.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
@@ -54,6 +55,51 @@ test('durable commands: failed storage and cancelled requests preserve prior sta
   assert.equal(service.snapshot().revision, 0);
   await assert.rejects(service.command(request, AbortSignal.abort()));
   assert.equal(service.snapshot().projects.length, 1);
+});
+
+test('durable commands: legacy ownerless receipt survives schema defaults without a second write', async () => {
+  const { state, task } = fixture();
+  delete task.ownerId;
+  const legacyCommand = { type: 'save-task', task };
+  const requestId = randomUUID();
+  state.revision = 1;
+  state.receipts = [
+    {
+      id: requestId,
+      revision: 1,
+      fingerprint: createHash('sha256').update(JSON.stringify(legacyCommand)).digest('hex'),
+    },
+  ];
+  const loaded = WorkbenchSchema.parse(state);
+  let writes = 0;
+  const service = new WorkbenchService(
+    {
+      read: () => loaded,
+      write: async () => {
+        writes++;
+      },
+    },
+    { get: () => undefined, put: async () => {} },
+  );
+  const request = { requestId, expectedRevision: 0, command: legacyCommand };
+  assert.equal((await service.command(request, signal())).revision, 1);
+  assert.equal(
+    (
+      await service.command(
+        { ...request, command: { ...legacyCommand, task: { ...task, ownerId: null } } },
+        signal(),
+      )
+    ).tasks[0].ownerId,
+    null,
+  );
+  assert.equal(writes, 0);
+  await assert.rejects(
+    service.command(
+      { ...request, command: { ...legacyCommand, task: { ...task, ownerId: 'chen' } } },
+      signal(),
+    ),
+    { code: 'request-reused' },
+  );
 });
 
 test('planning contract: bounded repair with saved inputs, result remains a proposal and repeat does not call model', async () => {

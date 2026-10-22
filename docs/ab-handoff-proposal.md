@@ -10,6 +10,12 @@
 - A 的 task.status=ready 当前仅表示定义已确认，UI 显示“已确认、待执行接入”。B node.ready 才是依赖满足可处理；后续接入时 A 只读取 B 的 NodeExecutionReport，不根据 AI 结束或进程退出猜测完成。
 - A 的 requestId 幂等回执与工作台 snapshot 在同一次存储中写入；B 的 actor/对象版本命令信封继续由 B 维护。集成时为 A 命令加可信身份封装，不能把本地单所有者模式当作多人授权已经完成。
 
+## 人类责任人及旧数据
+
+`WorkTask.ownerId` 明确记录承担任务最终责任的人，必须是参与任务的 human；目录负责人不是 Host 登录 actor，也不授予执行/文件权限。新任务和旧数据缺失字段时为 null，草稿可保存、AI 可先生成提案；确认和新派发前要求用户明确选择。模型不会代选负责人，UI 在创建和任务详情使用同一人员选择控件，移除当前负责人前必须更换。
+
+旧持久化数据通过 schema 默认值读取，不因缺字段导致全库加载失败，也不按成员顺序补值。旧已确认快照保持原状可按精确版本读取；缺责任人的历史版本不能作为新的派发依据，应显式补选并确认新版本，不能追写旧快照。旧 ownerless 请求的幂等指纹把 absent/null 视为相同默认值，重试不会重复创建计划。
+
 ## 层级模型：建议采用子任务容器
 
 用户场景是公司目标 → 项目工作 → 团队分工 → 个人再拆解。子流程需要独立参与者、负责人、计划确认、执行和可见范围，因此不能只满足画布展开。
@@ -59,9 +65,9 @@ AI 输出可继续使用“嵌套草案”形状，作为一次提案的中间�
 }
 ```
 
-入口均从 `@zhuma/agent-core` 导出：`createExecutionHandoff(task, state)` 取得持久化的 `AppliedPlan`，`createNodeHandoffs(appliedPlan)` 映射为 B 的节点定义。它校验快照中的人员、资产、依赖和评审，拒绝未确认、错任务或缺失引用；包含嵌套草稿时返回 `child-task-required`，不把子流程偷偷摊平成可派发节点。
+入口均从 `@zhuma/agent-core` 导出：`createExecutionHandoff({ taskId, planId, revision }, state)` 取得指定的持久化 `AppliedPlan`，`createNodeHandoffs(appliedPlan)` 映射为 B 的节点定义。它校验快照中的人员、资产、依赖和评审，拒绝未确认、错任务或缺失引用；包含嵌套草稿时返回 `child-task-required`，不把子流程偷偷摊平成可派发节点。
 
-第一版 `VersionedRef.version = AppliedPlan.id`，资源 ID 在该快照内定位历史内容，不把可编辑的目录 ID 当成不可变版本。真人节点省略 engine/model/expertRef；专家节点必须携带 `{ id: assignee.id, version: AppliedPlan.id }` 的 `expertRef`。输入文字说明与可读取的 ArtifactVersion/ContextPack 引用分开，初始 `inputRefs=[]`，真实引用由 B/context 按依赖、版本和权限解析。转换不生成 actor、Run、待办或完成状态；可信身份、项目访问和派发门槛仍由 Host 验证。凭据不进入快照。
+第一版 `VersionedRef.version = AppliedPlan.id`，资源 ID 在该快照内定位历史内容，不把可编辑的目录 ID 当成不可变版本。真人节点省略 engine/model/expertRef；专家节点必须携带 `{ id: assignee.id, version: AppliedPlan.id }` 的 `expertRef`。输入文字说明与可读取的 ArtifactVersion/ContextPack 引用分开，初始 `inputRefs=[]`，真实引用由 B/context 按依赖、版本和权限解析。交接读取必须锁定三个字段，当前任务编辑为草稿或再次确认 v2 都不会改取 v1 的结果；错误任务、标识或版本直接拒绝，不提供隐式 latest 回退。转换不生成 actor、Run、待办或完成状态；可信身份、项目访问和派发门槛仍由 Host 验证。凭据不进入快照。
 
 ## 首次联调与集成
 

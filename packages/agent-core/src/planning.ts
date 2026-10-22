@@ -49,7 +49,7 @@ export function buildPlanningContext(state: Workbench, task: WorkTask, instructi
   if (!participants.length)
     throw new WorkbenchError('participants-required', '请先选择至少一位可参与的人或专家。');
   const context = {
-    task: { title: task.title, goal: task.goal },
+    task: { title: task.title, goal: task.goal, ownerId: task.ownerId },
     project: state.projects.find((p) => p.id === task.projectId),
     participants,
     assets: state.assets.filter((a) => a.available),
@@ -117,7 +117,12 @@ export function parsePlanningResult(
       '只询问最多三个阻碍编排的问题，其余细节放入相应节点确认。',
     );
   if (!result.workflows.length && result.questions.length) return result;
-  const errors = validateWorkTask({ ...task, workflows: result.workflows, status: 'ready' }, state);
+  // A proposal may precede explicit ownership selection; it still cannot be confirmed without one.
+  const errors = validateWorkTask(
+    { ...task, workflows: result.workflows, status: 'ready' },
+    state,
+    { requireOwner: false },
+  );
   if (errors.length) throw new WorkbenchError('invalid-plan', errors.join('\n'));
   return result;
 }

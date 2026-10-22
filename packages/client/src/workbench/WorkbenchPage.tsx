@@ -9,7 +9,7 @@ import {
   type WorkbenchCommand,
 } from '@zhuma/agent-core';
 import type { WorkbenchApi } from './api.js';
-import { Field, MemberPicker, Modal } from './controls.js';
+import { Field, MemberPicker, Modal, ParticipantSelect } from './controls.js';
 import { TaskEditor } from './TaskEditor.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 
@@ -100,6 +100,7 @@ export function WorkbenchPage({
         goal: '',
         status: 'draft',
         participantIds: state.participants.filter((p) => p.available).map((p) => p.id),
+        ownerId: null,
         updatedAt: new Date().toISOString(),
         workflows: [{ id: uid(), name: '主工作流', parentNodeId: null, nodes: [] }],
       },
@@ -739,6 +740,17 @@ export function WorkbenchPage({
                       setDialog({ ...dialog, value: { ...dialog.value, participantIds } })
                     }
                   />
+                  <ParticipantSelect
+                    label="任务负责人"
+                    members={state.participants.filter(
+                      (p) => p.kind === 'human' && dialog.value.participantIds.includes(p.id),
+                    )}
+                    selected={dialog.value.ownerId ? [dialog.value.ownerId] : []}
+                    change={(ids) =>
+                      setDialog({ ...dialog, value: { ...dialog.value, ownerId: ids[0] ?? null } })
+                    }
+                  />
+                  {!dialog.value.ownerId && <small>可先保存草稿，确认工作流前需选择负责人。</small>}
                 </>
               )}
             </div>

@@ -9,7 +9,7 @@ import {
   type PlanProposal,
 } from '@zhuma/agent-core';
 import type { WorkbenchApi } from './api.js';
-import { Field, MemberPicker, Modal } from './controls.js';
+import { Field, MemberPicker, Modal, ParticipantSelect } from './controls.js';
 import { WorkflowCanvas } from './WorkflowCanvas.js';
 import { NodeInspector } from './NodeInspector.js';
 import { Button } from './Button.js';
@@ -412,9 +412,25 @@ export function TaskEditor({
         )}
       </div>
       <div className="zm-editor-heading">
-        <p className="zm-project-location">
-          {state.projects.find((p) => p.id === task.projectId)?.name}
-        </p>
+        <div className="zm-task-meta">
+          <p className="zm-project-location">
+            {state.projects.find((p) => p.id === task.projectId)?.name}
+          </p>
+          {locked ? (
+            <span className="zm-muted">
+              {task.ownerId
+                ? `负责人 ${members.find((p) => p.id === task.ownerId)?.name ?? '不可用成员'}`
+                : '负责人待补选 · 继续编辑后选择'}
+            </span>
+          ) : (
+            <ParticipantSelect
+              label="负责人"
+              members={members.filter((p) => p.kind === 'human')}
+              selected={task.ownerId ? [task.ownerId] : []}
+              change={(ids) => edit({ ...task, ownerId: ids[0] ?? null })}
+            />
+          )}
+        </div>
         {task.status === 'ready' ? (
           <h1>{task.title}</h1>
         ) : (
@@ -892,6 +908,10 @@ export function TaskEditor({
                     ...n.reviewerIds,
                   ]),
                 );
+                if (task.ownerId && !memberDraft.includes(task.ownerId)) {
+                  setMemberError('请先更换任务负责人，再将该成员移出参与者。');
+                  return;
+                }
                 if (referenced.some((id) => !memberDraft.includes(id))) {
                   setMemberError('被移除的参与者仍承担节点或评审，请先重新分配。');
                   return;

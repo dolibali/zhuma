@@ -63,44 +63,46 @@ export function MemberPicker({
         value={search}
         onChange={(e) => setSearch(e.target.value)}
       />
-      {(['human', 'expert'] as const).map((kind) => (
-        <section key={kind}>
-          <h4>{kind === 'human' ? '团队成员' : 'Agent 专家'}</h4>
-          {matching
-            .filter((m) => m.kind === kind)
-            .map((m) => (
-              <label className="zm-member" key={m.id}>
-                <input
-                  type={selectionMode === 'single' ? 'radio' : 'checkbox'}
-                  name={selectionMode === 'single' ? groupId : undefined}
-                  checked={selected.includes(m.id)}
-                  disabled={
-                    disabledIds.includes(m.id) || (!m.available && !selected.includes(m.id))
-                  }
-                  onChange={(e) =>
-                    change(
-                      selectionMode === 'single'
-                        ? [m.id]
-                        : e.target.checked
-                          ? [...selected, m.id]
-                          : selected.filter((id) => id !== m.id),
-                    )
-                  }
-                />
-                <span className={`zm-avatar ${m.kind}`}>
-                  {m.kind === 'expert' ? 'AI' : m.name.slice(0, 1)}
-                </span>
-                <span>
-                  <strong>{m.name}</strong>
-                  <small title={m.role || m.capabilities.join(' · ')}>
-                    {m.role || m.capabilities.join(' · ') || '尚未填写职责'}
-                    {!m.available && ' · 不可用'}
-                  </small>
-                </span>
-              </label>
-            ))}
-        </section>
-      ))}
+      {(['human', 'expert'] as const)
+        .filter((kind) => matching.some((member) => member.kind === kind))
+        .map((kind) => (
+          <section key={kind}>
+            <h4>{kind === 'human' ? '团队成员' : 'Agent 专家'}</h4>
+            {matching
+              .filter((m) => m.kind === kind)
+              .map((m) => (
+                <label className="zm-member" key={m.id}>
+                  <input
+                    type={selectionMode === 'single' ? 'radio' : 'checkbox'}
+                    name={selectionMode === 'single' ? groupId : undefined}
+                    checked={selected.includes(m.id)}
+                    disabled={
+                      disabledIds.includes(m.id) || (!m.available && !selected.includes(m.id))
+                    }
+                    onChange={(e) =>
+                      change(
+                        selectionMode === 'single'
+                          ? [m.id]
+                          : e.target.checked
+                            ? [...selected, m.id]
+                            : selected.filter((id) => id !== m.id),
+                      )
+                    }
+                  />
+                  <span className={`zm-avatar ${m.kind}`}>
+                    {m.kind === 'expert' ? 'AI' : m.name.slice(0, 1)}
+                  </span>
+                  <span>
+                    <strong>{m.name}</strong>
+                    <small title={m.role || m.capabilities.join(' · ')}>
+                      {m.role || m.capabilities.join(' · ') || '尚未填写职责'}
+                      {!m.available && ' · 不可用'}
+                    </small>
+                  </span>
+                </label>
+              ))}
+          </section>
+        ))}
       {!members.length && <p className="zm-empty">先在“成员与专家”中添加参与者。</p>}
       {!!members.length && !matching.length && <p className="zm-empty">没有匹配的参与者。</p>}
     </div>
@@ -166,6 +168,7 @@ export function ParticipantSelect({
     <div className="zm-field">
       <span className="zm-field-label">{label}</span>
       <button
+        type="button"
         className="zm-person-select"
         aria-label={`选择${label}`}
         onClick={() => {
@@ -188,8 +191,11 @@ export function ParticipantSelect({
             <span className="zm-muted">
               已选 {draft.length} 位{multiple ? ' · 全部通过后交接' : ''}
             </span>
-            <button onClick={() => setOpen(false)}>取消</button>
+            <button type="button" onClick={() => setOpen(false)}>
+              取消
+            </button>
             <button
+              type="button"
               className="primary"
               onClick={() => {
                 change(draft);
@@ -222,6 +228,7 @@ export function ExpandableText({
         <div className="zm-field">
           <span className="zm-field-label">{label}</span>
           <button
+            type="button"
             className="zm-text-preview"
             aria-label={`编辑${label}`}
             onClick={() => {
@@ -251,8 +258,11 @@ export function ExpandableText({
             </Field>
           </div>
           <footer>
-            <button onClick={() => setOpen(false)}>取消</button>
+            <button type="button" onClick={() => setOpen(false)}>
+              取消
+            </button>
             <button
+              type="button"
               className="primary"
               onClick={() => {
                 change(draft);

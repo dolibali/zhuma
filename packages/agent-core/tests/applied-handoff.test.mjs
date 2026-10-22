@@ -14,7 +14,13 @@ function confirmed() {
     type: 'save-task',
     task: { ...task, status: 'ready' },
   });
-  return { state: next, plan: createExecutionHandoff(next.tasks[0], next) };
+  return {
+    state: next,
+    plan: createExecutionHandoff(
+      { taskId: task.id, planId: next.appliedPlans[0].id, revision: 1 },
+      next,
+    ),
+  };
 }
 
 test('A/B handoff: human has no engine/expert; resource refs bind the frozen plan version', () => {
@@ -46,7 +52,10 @@ test('A/B handoff: expert identity must resolve to the same frozen expert defini
     type: 'save-task',
     task: { ...task, status: 'ready' },
   });
-  const plan = createExecutionHandoff(next.tasks[0], next);
+  const plan = createExecutionHandoff(
+    { taskId: task.id, planId: next.appliedPlans[0].id, revision: 1 },
+    next,
+  );
   const [handoff] = createNodeHandoffs(plan);
   assert.equal(readNodeHandoff(handoff).ok, true);
   assert.deepEqual(handoff.assignee, { id: 'qa', kind: 'expert' });

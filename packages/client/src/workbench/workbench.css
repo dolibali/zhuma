@@ -118,10 +118,8 @@ body[data-ds-dark-theme] {
   padding: 5px 11px;
   box-shadow: 0 1px 2px var(--zm-shadow-soft);
   cursor: pointer;
-  transition:
-    background 0.12s,
-    border-color 0.12s,
-    color 0.12s;
+  /* Do not tween opposite theme foregrounds/backgrounds through an unreadable gray midpoint. */
+  transition: border-color 0.12s;
   white-space: nowrap;
 }
 .zhuma button:hover:not(:disabled),
@@ -887,6 +885,29 @@ body[data-ds-dark-theme] {
 .zm-project-location {
   margin: 0 0 4px !important;
   color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.zm-task-meta .zm-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.zm-task-meta .zm-field-label {
+  font-size: 12px;
+}
+.zm-task-meta .zm-person-select {
+  width: auto;
+  min-height: 28px;
+  padding: 2px 7px;
   font-size: 12px;
 }
 .zm-editor-heading h1 {

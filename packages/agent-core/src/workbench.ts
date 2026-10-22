@@ -58,6 +58,8 @@ export const WorkTaskSchema = z.strictObject({
   title,
   goal: description,
   participantIds: ids,
+  // Legacy drafts and frozen plans remain readable; ownership is chosen explicitly before confirmation.
+  ownerId: id.nullable().default(null),
   workflows: z.array(WorkflowSchema).min(1).max(30),
   status: z.enum(['draft', 'ready']),
   updatedAt: z.string().datetime(),
@@ -129,10 +131,23 @@ export class WorkbenchError extends Error {
 }
 
 /** Definitions are validated here; runtime and review decisions remain execution-owned. */
-export function validateWorkTask(task: WorkTask, state: Workbench): string[] {
+export function validateWorkTask(
+  task: WorkTask,
+  state: Workbench,
+  { requireOwner = task.status === 'ready' }: { requireOwner?: boolean } = {},
+): string[] {
   const errors: string[] = [];
   if (!state.projects.some((p) => p.id === task.projectId)) errors.push('项目不存在。');
   const participantIds = new Set(task.participantIds);
+  if (!task.ownerId) {
+    if (requireOwner) errors.push('请选择一位参与任务的团队成员作为负责人。');
+  } else {
+    const owner = state.participants.find((p) => p.id === task.ownerId);
+    if (!participantIds.has(task.ownerId) || owner?.kind !== 'human')
+      errors.push('任务负责人必须是参与任务的真人成员。');
+    else if (task.status === 'ready' && !owner.available)
+      errors.push('任务负责人当前不可用，请重新选择。');
+  }
   if (participantIds.size !== task.participantIds.length) errors.push('参与者不能重复。');
   for (const memberId of participantIds) {
     if (!state.participants.some((p) => p.id === memberId))
@@ -270,10 +285,28 @@ function definitionSnapshot(task: WorkTask, state: Workbench) {
   });
 }
 
-/** B consumes a persisted, immutable plan version; subsequent drafts and catalog changes cannot rewrite it. */
-export function createExecutionHandoff(task: WorkTask, state: Workbench): AppliedPlan {
-  if (task.status !== 'ready') throw new WorkbenchError('not-ready', '请先确认工作流。');
-  const applied = state.appliedPlans.filter((p) => p.taskId === task.id).at(-1);
-  if (!applied) throw new WorkbenchError('not-ready', '请重新确认工作流，生成交接版本。');
+export interface AppliedPlanRef {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+}
+
+/** Read the exact frozen version locked by the caller, independently of the current draft. */
+export function createExecutionHandoff(reference: AppliedPlanRef, state: Workbench): AppliedPlan {
+  if (
+    !reference.taskId ||
+    !reference.planId ||
+    !Number.isSafeInteger(reference.revision) ||
+    reference.revision < 1
+  )
+    throw new WorkbenchError('plan-reference-required', '请提供任务、计划标识和精确计划版本。');
+  const applied = state.appliedPlans.find(
+    (p) =>
+      p.taskId === reference.taskId &&
+      p.id === reference.planId &&
+      p.revision === reference.revision,
+  );
+  if (!applied || applied.task.id !== reference.taskId || applied.task.status !== 'ready')
+    throw new WorkbenchError('plan-not-found', '找不到该任务指定的已确认计划版本。');
   return structuredClone(applied);
 }

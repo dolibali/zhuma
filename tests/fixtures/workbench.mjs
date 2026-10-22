@@ -63,6 +63,7 @@ export function fixture() {
     title: '账号登录',
     goal: '设计登录流程',
     participantIds: ['chen', 'qa'],
+    ownerId: 'chen',
     workflows: [{ id: 'root', name: '登录工作流', parentNodeId: null, nodes: [node] }],
     status: 'draft',
     updatedAt: '2026-10-22T00:00:00.000Z',

@@ -53,7 +53,13 @@ export class WorkbenchService {
     const operation = this.writes.then(async () => {
       signal.throwIfAborted();
       const state = this.storage.read();
-      const hash = fingerprint(request.command);
+      // Absent owner and explicit null are the same legacy draft, including old idempotent retries.
+      let fingerprintInput: unknown = request.command;
+      if (request.command.type === 'save-task' && request.command.task.ownerId === null) {
+        const { ownerId: _owner, ...task } = request.command.task;
+        fingerprintInput = { ...request.command, task };
+      }
+      const hash = fingerprint(fingerprintInput);
       const receipt = state.receipts.find((r) => r.id === request.requestId);
       if (receipt) {
         if (receipt.fingerprint !== hash)
