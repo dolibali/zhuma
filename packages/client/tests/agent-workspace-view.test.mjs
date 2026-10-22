@@ -224,6 +224,14 @@ function workspaceSnapshot(overrides = {}) {
   };
 }
 
+test('契约：会话历史没有带入时，投影写出说明', () => {
+  const noted = createAgentWorkspaceView(
+    workspaceSnapshot({ historyNote: '没有带上之前的历史。' }),
+  );
+  assert.equal(noted.historyNote, '没有带上之前的历史。');
+  assert.equal(createAgentWorkspaceView(workspaceSnapshot()).historyNote, null);
+});
+
 test('契约：接收回执之前显示启动中', () => {
   const snapshot = workspaceSnapshot();
   snapshot.node = { status: 'ready', version: 1, upstreamAffected: false };

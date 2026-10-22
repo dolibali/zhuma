@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
   DshChatExecutor,
   ExecutionDesk,
+  dshSessionHome,
   readDshModelConfig,
   resolveDshBinary,
 } from '@zhuma/dsh-adapter';
@@ -136,6 +137,117 @@ test('真实执行器：拒绝 PDF 后纯文本仍然成功', { timeout: 180_000
   assertClean(after, secrets);
   console.log('第二轮纯文本：通过');
 });
+
+test('真实执行器：核实断开后再发一轮成功', { timeout: 180_000 }, async (t) => {
+  const ready = realReady(t);
+  if (!ready) return;
+  const { secrets, env } = ready;
+  const pids = [];
+  const desk = openDesk(new DshChatExecutor(env, { onSpawn: (pid) => pids.push(pid) }));
+  const captured = await captureRunning(desk);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // 进程已经退出。
+    }
+  }
+  let n = 0;
+  const restored = ExecutionDesk.restore(captured.saved, {
+    executors: [new DshChatExecutor(env)],
+    newId: (prefix) => `e2e-abandon-${prefix}-${++n}`,
+  });
+  restored.resumeInteraction();
+  const verified = restored.verifyAbandoned();
+  assert.equal(verified.ok, true);
+  assert.equal(existsSync(dshSessionHome(captured.sessionId, env)), false);
+  assert.equal(
+    restored.snapshot().runs.every((run) => run.sessionId === undefined),
+    true,
+  );
+  assert.equal(
+    restored
+      .snapshot()
+      .turns.some((turn) => turn.role === 'executor' && turn.body.trim().length === 0),
+    false,
+  );
+  const again = restored.retry('e2e-after-abandon');
+  assert.equal(again.ok, true);
+  await restored.flush();
+  const next = restored.snapshot().runs.at(-1);
+  assert.equal(next?.status, 'completed');
+  assert.notEqual(next?.sessionId, captured.sessionId);
+  assert.match(restored.snapshot().historyNote ?? '', /没有带上之前的历史/);
+  assert.equal(restored.snapshot().node.status, 'ready');
+  assertClean(restored.snapshot(), secrets);
+  console.log('核实断开后再发一轮：通过');
+});
+
+test('真实执行器：完成后被退回再发一轮成功', { timeout: 180_000 }, async (t) => {
+  const ready = realReady(t);
+  if (!ready) return;
+  const { secrets, env } = ready;
+  const desk = openDesk(new DshChatExecutor(env));
+  const sent = desk.send({ text: '用一句话回复：收到。', idempotencyKey: 'e2e-done-1' });
+  assert.equal(sent.ok, true);
+  await desk.flush();
+  const sessionId = desk.snapshot().runs[0].sessionId;
+  assert.equal(typeof sessionId, 'string');
+  assert.equal(existsSync(dshSessionHome(sessionId, env)), true);
+  const completed = desk.confirmCompleted();
+  assert.equal(completed.ok, true);
+  assert.equal(desk.snapshot().node.status, 'completed');
+  assert.equal(existsSync(dshSessionHome(sessionId, env)), false);
+  assert.equal(desk.snapshot().runs[0].sessionId, undefined);
+  console.log('节点完成删除会话目录：通过');
+  const reopened = desk.reopenForRework();
+  assert.equal(reopened.ok, true);
+  assert.equal(desk.snapshot().node.status, 'needs-revision');
+  const again = desk.send({ text: '用一句话回复：继续。', idempotencyKey: 'e2e-done-2' });
+  assert.equal(again.ok, true);
+  await desk.flush();
+  const next = desk.snapshot().runs.at(-1);
+  assert.equal(next?.status, 'completed');
+  assert.notEqual(next?.sessionId, sessionId);
+  assert.match(desk.snapshot().historyNote ?? '', /没有带上之前的历史/);
+  assert.equal(desk.snapshot().node.status, 'needs-revision');
+  assertClean(desk.snapshot(), secrets);
+  console.log('完成后被退回再发一轮：通过');
+});
+
+function realReady(t) {
+  const config = readDshModelConfig(process.env);
+  if (!config.ok) {
+    t.skip(`跳过真实执行器：${config.reason}`);
+    return null;
+  }
+  if (resolveDshBinary(process.env) === null) {
+    throw new Error(
+      '模型环境已配置，但没有 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。',
+    );
+  }
+  return {
+    secrets: [config.config.baseUrl, config.config.apiKey],
+    env: isolatedEnv(),
+  };
+}
+
+async function captureRunning(desk) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const started = desk.send({
+      text: `第${attempt}次：请写一段约一百五十字的说明，主题是企业开户字段核对。`,
+      idempotencyKey: `e2e-abandon-capture-${attempt}`,
+    });
+    if (!started.ok) throw new Error(`核实前发送失败：${started.code}`);
+    await desk.waitForRun(started.runId, 'running');
+    const saved = desk.persistence();
+    const run = saved.runs.find((item) => item.id === started.runId);
+    if (run?.status === 'running' && typeof run.sessionId === 'string') {
+      return { saved, sessionId: run.sessionId, runId: started.runId };
+    }
+  }
+  throw new Error('三次都没有停在执行中');
+}
 
 function openDesk(executor, nodeStatus = 'ready') {
   let n = 0;

@@ -289,6 +289,7 @@ test('契约：故障分开呈现且不伪造运行，切换专家不丢历史�
     'network-interruption',
     'executor-disconnected',
     'expert-disabled',
+    'attachment-rejected',
   ]) {
     const fault = presentExecutionFault(kind);
     assert.equal(fault.forgesRun, false);
@@ -298,6 +299,11 @@ test('契约：故障分开呈现且不伪造运行，切换专家不丢历史�
   assert.notEqual(
     presentExecutionFault('model-error').objectLabel,
     presentExecutionFault('tool-failure').objectLabel,
+  );
+  assert.equal(presentExecutionFault('attachment-rejected').objectLabel, '附件');
+  assert.notEqual(
+    presentExecutionFault('attachment-rejected').objectLabel,
+    presentExecutionFault('model-error').objectLabel,
   );
   assert.notEqual(
     presentExecutionFault('tool-failure').reason,

@@ -100,6 +100,7 @@ export type AgentRunEvent =
       readonly fault: ExecutionFaultKind;
       readonly message: string;
       readonly simulated: boolean;
+      readonly droppedSessionId?: string;
     }
   | { readonly type: 'cancelled'; readonly simulated: boolean }
   | { readonly type: 'late-output'; readonly text: string; readonly simulated: boolean };

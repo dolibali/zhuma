@@ -169,7 +169,7 @@ function isOfficeRoot(root: string): boolean {
 }
 
 /**
- * 上游 file 块必须带已经入库的附件引用。客户端发不出这个引用。
+ * 当前 SDK 接入方式的 file 块必须带已经入库的附件引用。客户端发不出这个引用。
  * 文本、JSON 和 png、jpeg、webp、gif 可以发送。其余在上传时拒绝。
  */
 export function attachmentRefusalReason(name: string, mediaType: string): string | null {
@@ -177,7 +177,7 @@ export function attachmentRefusalReason(name: string, mediaType: string): string
   if (type.startsWith('text/') || type === 'application/json') return null;
   if (isImageMime(type)) return null;
   const label = name.trim().length > 0 ? name.trim() : '这个文件';
-  return `${label} 不能交给当前执行器。上游会话只接受文本和内联图片，PDF 及其他文件没有可发送的附件引用。`;
+  return `${label} 不能交给当前执行器。当前 SDK 接入方式只接受文本和内联图片，PDF 及其他文件没有可发送的附件引用。`;
 }
 
 export function mcpTransportReady(item: {
@@ -222,7 +222,7 @@ export function sweepDshSessionOrphans(root: string): void {
 /**
  * 从上游会话事件里取出正文和结束原因。
  * 正文在 `data.message.content`，随整段 `assistant/message` 到达。
- * `data.stream` 是这条事件上的事后记录，没有单独的增量通知。
+ * `data.stream` 是这条事件上的事后记录。当前 SDK 接入方式没有逐字通知。
  * 结束原因在 `data.reason.kind`。
  */
 export function describeDshSessionEvent(event: unknown): {
@@ -309,6 +309,12 @@ export class DshChatExecutor implements AgentExecutor {
     if (home !== null) rmSync(home, { recursive: true, force: true });
   }
 
+  /** 索引和目录都还在，才可以 session/resume。 */
+  hasSessionDirectory(sessionId: string): boolean {
+    const home = this.lookup(sessionId);
+    return home !== null && existsSync(home);
+  }
+
   async cancel(runId: string): Promise<CancelReceipt> {
     if (!this.known.has(runId)) return { receipt: 'rejected', reason: '没有这次运行。' };
     if (this.finished.has(runId)) {
@@ -338,7 +344,7 @@ export class DshChatExecutor implements AgentExecutor {
       pending?.({ receipt: 'rejected', reason: '运行已经结束。' });
       yield {
         type: 'failed',
-        fault: 'model-error',
+        fault: 'attachment-rejected',
         message: unsupported,
         simulated: false,
       };
@@ -390,6 +396,7 @@ export class DshChatExecutor implements AgentExecutor {
     const rpc = new StdioRpc(child, (text) => redact(text, config.apiKey));
     let cancelYielded = false;
     let initialized = false;
+    let droppedSessionId: string | undefined;
     const fail = (fault: ExecutionFaultKind, message: string): AgentRunEvent => ({
       type: 'failed',
       fault,
@@ -405,7 +412,14 @@ export class DshChatExecutor implements AgentExecutor {
       initialized = true;
       restrictTree(home);
       if (request.resumeSessionId !== undefined) {
-        await rpc.request('session/resume', { sessionId }, this.promptTimeoutMs);
+        try {
+          await rpc.request('session/resume', { sessionId }, this.promptTimeoutMs);
+        } catch (resumeError) {
+          droppedSessionId = sessionId;
+          if (existsSync(home)) rmSync(home, { recursive: true, force: true });
+          this.forget(sessionId);
+          throw resumeError;
+        }
       }
       const prompted = await rpc.request(
         'session/prompt',
@@ -462,7 +476,7 @@ export class DshChatExecutor implements AgentExecutor {
         return;
       }
       const timedOut = error instanceof Error && error.message === 'timeout';
-      yield fail(
+      const failed = fail(
         timedOut ? 'network-interruption' : 'executor-disconnected',
         timedOut
           ? initialized
@@ -472,6 +486,11 @@ export class DshChatExecutor implements AgentExecutor {
             : '执行器启动超时。'
           : '执行器启动失败。',
       );
+      if (failed.type === 'failed' && droppedSessionId !== undefined) {
+        yield { ...failed, droppedSessionId };
+      } else {
+        yield failed;
+      }
     } finally {
       if (!rpc.closed) await stopChild(child, rpc);
       if (existsSync(home)) {

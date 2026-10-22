@@ -68,6 +68,10 @@ function handle(line) {
     return;
   }
   if (message.method === 'session/resume') {
+    if (mode === 'resume-fail') {
+      errorReply(message.id, 'session missing');
+      return;
+    }
     resumed = true;
     const history = readLog();
     writeFileSync(path.join(home, 'zhuma-history.json'), JSON.stringify(history), 'utf8');
@@ -77,14 +81,7 @@ function handle(line) {
   if (message.method === 'session/prompt') {
     if (mode === 'hang-prompt') return;
     const blocks = message.params?.contentBlocks ?? [];
-    if (
-      blocks.some(
-        (block) => block?.type === 'file' && typeof block.attachment?.attachmentId !== 'string',
-      )
-    ) {
-      errorReply(message.id, 'file block requires attachment.attachmentId');
-      return;
-    }
+    const bareFile = blocks.some((block) => bareFileBlock(block));
     if (priorTurn() && !resumed && !acceptedPrompt) {
       errorReply(message.id, 'session already exists');
       return;
@@ -102,6 +99,18 @@ function handle(line) {
     reply(message.id, { messageId: 'msg-1' });
     prompted = true;
     acceptedPrompt = true;
+    if (bareFile || sessionPoisoned()) {
+      emit('turn/end', {
+        reason: {
+          kind: 'error',
+          error: {
+            message: "Cannot read properties of undefined (reading 'attachmentId')",
+          },
+        },
+      });
+      exitSoon();
+      return;
+    }
     if (mode === 'hold-after-messageId') {
       waitRelease(() => finishTurn());
       return;
@@ -143,10 +152,39 @@ function emit(type, data) {
   notify('session.event', { sessionId: 'live', event });
 }
 
+function bareFileBlock(block) {
+  if (block?.type !== 'file') return false;
+  if (typeof block.attachment?.attachmentId === 'string') return false;
+  if (typeof block.attachmentId === 'string') return false;
+  return true;
+}
+
+function sessionPoisoned() {
+  return readLog().some((entry) => containsBareFile(entry));
+}
+
+function containsBareFile(value) {
+  if (Array.isArray(value)) return value.some((item) => containsBareFile(item));
+  if (value !== null && typeof value === 'object') {
+    if (bareFileBlock(value)) return true;
+    return Object.values(value).some((item) => containsBareFile(item));
+  }
+  return false;
+}
+
 function admit(blocks) {
   const stored = [];
   let index = 0;
   for (const block of blocks) {
+    if (bareFileBlock(block)) {
+      stored.push({
+        type: 'file',
+        data: '',
+        ...(typeof block.mimeType === 'string' ? { mimeType: block.mimeType } : {}),
+        ...(typeof block.name === 'string' ? { name: block.name } : {}),
+      });
+      continue;
+    }
     if (block?.type === 'image' || block?.type === 'file') {
       const bytes = Buffer.from(String(block.data ?? ''), 'base64');
       const id = `${block.type}-${index}`;

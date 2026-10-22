@@ -29,6 +29,7 @@ export const EXECUTION_FAULTS = [
   'network-interruption',
   'executor-disconnected',
   'expert-disabled',
+  'attachment-rejected',
 ] as const;
 
 export type ExecutionFaultKind = (typeof EXECUTION_FAULTS)[number];
@@ -666,6 +667,12 @@ const FAULT_COPY: Record<ExecutionFaultKind, Omit<FaultPresentation, 'kind' | 'f
     reason: '专家已停用，不能作为本次执行配置。',
     nextStep: '换一个可用专家，或改派、人工接回。历史消息仍保留。',
     recovery: ['reassign', 'human-takeover'],
+  },
+  'attachment-rejected': {
+    objectLabel: '附件',
+    reason: '当前 SDK 接入方式不能发送这个附件。',
+    nextStep: '改用文本、JSON 或 png、jpeg、webp、gif 图片。',
+    recovery: ['retry', 'reassign', 'human-takeover'],
   },
 };
 

@@ -153,6 +153,7 @@ export interface DeskPersistence {
   readonly contextBlocks: ContextBlockFact[];
   readonly draftRoundId?: string | null;
   readonly handoffInvalid?: boolean;
+  readonly historyNote?: string;
 }
 
 export type DeskResult =
@@ -210,6 +211,7 @@ export class ExecutionDesk {
   private sequence = 0;
   private draftRoundId: string | null = null;
   private handoffInvalid = false;
+  private historyNote: string | null = null;
 
   private readonly seed: DeskSeed;
 
@@ -273,6 +275,7 @@ export class ExecutionDesk {
     this.citations = restored.citations;
     this.contextBlocks = restored.contextBlocks;
     this.draftRoundId = restored.draftRoundId ?? null;
+    this.historyNote = restored.historyNote ?? null;
     this.sequence = restored.turns.reduce((max, turn) => Math.max(max, turn.sequence), 0);
     this.noteEntry();
     if (this.handoffInvalid) this.lastError = invalidHandoffError();
@@ -325,6 +328,7 @@ export class ExecutionDesk {
       downstreamLaunches: this.downstreamLaunches,
       delivered: false,
       resumeGap: this.resumeGap,
+      ...(this.historyNote !== null ? { historyNote: this.historyNote } : {}),
       lastError: this.lastError,
       reviewRounds: this.reviewRounds,
       activeRoundId: this.activeRoundId,
@@ -369,6 +373,7 @@ export class ExecutionDesk {
       contextBlocks: this.contextBlocks,
       ...(this.draftRoundId !== null ? { draftRoundId: this.draftRoundId } : {}),
       ...(this.handoffInvalid ? { handoffInvalid: true } : {}),
+      ...(this.historyNote !== null ? { historyNote: this.historyNote } : {}),
     };
   }
 
@@ -635,6 +640,7 @@ export class ExecutionDesk {
     this.resumeGap = null;
     this.dropPending(run.id);
     this.releaseClaim(run.id);
+    this.dropEmptyExecutorTurn(run.id);
     this.discardRunSession(run);
     return this.succeed({ runId: run.id });
   }
@@ -687,6 +693,48 @@ export class ExecutionDesk {
         decision.code === 'voided-round' ? '该评审轮次已作废' : '这不是当前轮次的结果',
         '不要用它改变节点状态',
       );
+    }
+    return this.succeed();
+  }
+
+  /**
+   * 把节点标成已完成。进入 `completed` 时删除会话目录，并清掉运行记录里的会话引用。
+   * 正式评审提交仍属于后续工作包。这里只走状态机里不要求评审的完成迁移。
+   */
+  confirmCompleted(): DeskResult {
+    if (!this.interactionReady) return this.blockedRestore();
+    if (this.resumeGap) return this.gapBlocked();
+    if (this.activeRun()) {
+      return this.fail('run-active', '节点', '还有运行没有结束', '先结束运行再确认完成');
+    }
+    if (this.nodeState.status === 'completed') return this.succeed();
+    const moved = this.applyTransition(
+      { type: 'submit-artifact', reviewRequired: false },
+      `complete:${this.deps.newId('complete')}`,
+    );
+    if (!moved.ok) {
+      return this.fail(
+        'illegal-transition',
+        '节点',
+        '节点现在不能标成完成',
+        '先结束当前运行。需修改的节点不能跳过评审直接完成。',
+      );
+    }
+    return this.succeed();
+  }
+
+  /** 已完成的节点被退回，进入需修改。不恢复已删除的会话，也不自动开始运行。 */
+  reopenForRework(): DeskResult {
+    if (!this.interactionReady) return this.blockedRestore();
+    if (this.nodeState.status !== 'completed') {
+      return this.fail('not-completed', '节点', '只有已完成的节点可以退回', '先确认完成');
+    }
+    const moved = this.applyTransition(
+      { type: 'reopen-for-rework' },
+      `reopen:${this.deps.newId('reopen')}`,
+    );
+    if (!moved.ok) {
+      return this.fail('illegal-transition', '节点', '节点现在不能退回', '保持已完成');
     }
     return this.succeed();
   }
@@ -1117,6 +1165,12 @@ export class ExecutionDesk {
       return;
     }
     if (event.type === 'failed') {
+      if (event.droppedSessionId !== undefined) {
+        this.clearSessionReferences(event.droppedSessionId);
+        this.rememberHistoryOmitted();
+        const executor = this.deps.executors.find((item) => item instanceof DshChatExecutor);
+        if (executor instanceof DshChatExecutor) executor.discardSession(event.droppedSessionId);
+      }
       this.applyFault(runId, event.fault, event.message);
       return;
     }
@@ -1282,6 +1336,7 @@ export class ExecutionDesk {
       forgesRun: false,
       runId,
     });
+    this.dropEmptyExecutorTurn(runId);
     this.dropPending(runId);
     this.releaseClaim(runId);
     this.persist();
@@ -1315,6 +1370,13 @@ export class ExecutionDesk {
       mayChangeNodeStatus: false,
       mayTriggerDownstream: false,
     });
+  }
+
+  private dropEmptyExecutorTurn(runId: string): void {
+    this.turns = this.turns.filter(
+      (turn) =>
+        !(turn.runId === runId && turn.role === 'executor' && turn.body.trim().length === 0),
+    );
   }
 
   private ensureExecutorTurn(attempt: ExecutionAttempt, body: string): void {
@@ -1679,19 +1741,42 @@ export class ExecutionDesk {
 
   private discardRunSession(run: ExecutionAttempt): void {
     if (run.sessionId === undefined) return;
+    const sessionId = run.sessionId;
     const executor = this.deps.executors.find((item) => item.id === run.executor);
-    if (executor instanceof DshChatExecutor) executor.discardSession(run.sessionId);
+    if (executor instanceof DshChatExecutor) executor.discardSession(sessionId);
+    this.clearSessionReferences(sessionId);
+    this.rememberHistoryOmitted();
   }
 
   private discardNodeSessions(): void {
     for (const run of this.runs) this.discardRunSession(run);
   }
 
+  private clearSessionReferences(sessionId: string): void {
+    this.runs = this.runs.map((run) => (run.sessionId === sessionId ? withoutSessionId(run) : run));
+  }
+
+  private rememberHistoryOmitted(): void {
+    this.historyNote = '没有带上之前的历史。';
+  }
+
+  private sessionDirectoryExists(sessionId: string): boolean {
+    const executor = this.deps.executors.find((item) => item instanceof DshChatExecutor);
+    if (!(executor instanceof DshChatExecutor)) return true;
+    return executor.hasSessionDirectory(sessionId);
+  }
+
   private previousSessionId(nodeId: string, runId: string): string | undefined {
-    return [...this.runs]
+    const candidate = [...this.runs]
       .reverse()
-      .find((run) => run.nodeId === nodeId && run.id !== runId && run.sessionId !== undefined)
-      ?.sessionId;
+      .find(
+        (run) => run.nodeId === nodeId && run.id !== runId && run.sessionId !== undefined,
+      )?.sessionId;
+    if (candidate === undefined) return undefined;
+    if (this.sessionDirectoryExists(candidate)) return candidate;
+    this.clearSessionReferences(candidate);
+    this.rememberHistoryOmitted();
+    return undefined;
   }
 
   private officeReady(): boolean {
@@ -1705,6 +1790,10 @@ export class ExecutionDesk {
     const detail = pending
       .map((item) => `${item.label ?? item.id}：未连接。没有配置传输，不会连接外部服务。`)
       .join('');
+    const duplicate = this.activities.some(
+      (item) => item.title === 'MCP' && item.detail === detail && item.succeeded === false,
+    );
+    if (duplicate) return;
     this.activities.push(
       normalizeActivity({
         id: this.deps.newId('act'),
@@ -1885,6 +1974,12 @@ export function executionHint(snapshot: ExecutionDeskSnapshot) {
     assignee: snapshot.assignee,
     ...(active ? { runStatus: active.status, stopPhase: active.stopPhase } : {}),
   });
+}
+
+function withoutSessionId(attempt: ExecutionAttempt): ExecutionAttempt {
+  if (attempt.sessionId === undefined) return attempt;
+  const { sessionId: _sessionId, ...rest } = attempt;
+  return rest;
 }
 
 function copyIntervention(

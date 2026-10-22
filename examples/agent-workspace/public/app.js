@@ -127,6 +127,7 @@ function render() {
     view.banner,
     state.disconnected ? '页面与服务断开。当前显示的是断开前的事实。' : null,
     view.resumeNote,
+    view.historyNote,
   ].filter(Boolean);
   banner.textContent = notes.join(' ');
   document.querySelector('#task-page').hidden = !task;

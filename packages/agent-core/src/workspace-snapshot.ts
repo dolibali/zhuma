@@ -145,6 +145,8 @@ export interface ExecutionDeskSnapshot {
   readonly downstreamLaunches: number;
   readonly delivered: false;
   readonly resumeGap: { readonly runId: string; readonly reason: 'session-not-resumed' } | null;
+  /** 会话目录已删除，下一轮是新会话，历史没有带入。 */
+  readonly historyNote?: string;
   readonly lastError: CommandErrorFact | null;
   readonly reviewRounds: readonly { readonly id: string; readonly status: ReviewRound['status'] }[];
   readonly activeRoundId: string | null;

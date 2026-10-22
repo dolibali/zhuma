@@ -70,6 +70,7 @@ export interface AgentWorkspaceView {
   readonly simulated: boolean;
   readonly banner: string | null;
   readonly resumeNote: string | null;
+  readonly historyNote: string | null;
   readonly nextAction: string;
   readonly run: {
     readonly id: string;
@@ -286,6 +287,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     resumeNote: snapshot.resumeGap
       ? '已恢复事实：有一次运行仍未结束。没有把它推断成完成。请核实为执行器已断开。'
       : null,
+    historyNote: snapshot.historyNote ?? null,
     nextAction: hint.label,
     run: active
       ? {
