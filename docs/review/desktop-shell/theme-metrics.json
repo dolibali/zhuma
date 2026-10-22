@@ -1,0 +1,341 @@
+{
+  "upstream": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "osTheme": "dark",
+  "browserMediaEmulation": "cleared with colorScheme:null before final measurements",
+  "builtClientSha256": "7ed4cb21ec4261207efd7bd28a0fb32586121a240620b44b83d683f1c11345e2",
+  "servedCodeMatchesArtifact": true,
+  "comparison": "Exact executable code; server rewrites sourceMappingURL",
+  "before": [
+    {
+      "preference": "light",
+      "colorScheme": "light",
+      "mediaDark": false,
+      "sidebar": {
+        "color": "rgb(15, 17, 21)",
+        "background": "linear-gradient(rgba(122, 155, 240, 0.1), rgba(122, 155, 240, 0) 35%, rgba(143, 137, 184, 0) 68%, rgba(143, 137, 184, 0.09)) repeat scroll 0% 0% / auto padding-box border-box, color(srgb 0.961529 0.969216 0.98302 / 0.4) none repeat scroll 0% 0% / auto padding-box border-box",
+        "token": "#f9fafb"
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "dpr": 2
+      },
+      "native": {
+        "source": "light",
+        "dark": false,
+        "zoom": 1,
+        "focused": false,
+        "bounds": {
+          "x": 221,
+          "y": 60,
+          "width": 1280,
+          "height": 800
+        },
+        "fullscreen": false
+      },
+      "screenshot": "before-light.png",
+      "projectFilter": "所有项目\n⌄"
+    },
+    {
+      "preference": "dark",
+      "colorScheme": "dark",
+      "mediaDark": true,
+      "sidebar": {
+        "color": "rgb(249, 250, 251)",
+        "background": "linear-gradient(rgba(122, 155, 240, 0.08), rgba(122, 155, 240, 0) 35%, rgba(143, 137, 184, 0) 68%, rgba(143, 137, 184, 0.07)) repeat scroll 0% 0% / auto padding-box border-box, color(srgb 0.105882 0.105882 0.109804 / 0.5) none repeat scroll 0% 0% / auto padding-box border-box",
+        "token": "#1b1b1c"
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "dpr": 2
+      },
+      "native": {
+        "source": "dark",
+        "dark": true,
+        "zoom": 1,
+        "focused": false,
+        "bounds": {
+          "x": 221,
+          "y": 60,
+          "width": 1280,
+          "height": 800
+        },
+        "fullscreen": false
+      },
+      "screenshot": "before-dark.png",
+      "projectFilter": "所有项目\n⌄"
+    }
+  ],
+  "after": [
+    {
+      "preference": "light",
+      "colorScheme": "light",
+      "mediaDark": false,
+      "sidebar": {
+        "color": "rgb(15, 17, 21)",
+        "background": "rgb(249, 250, 251) none repeat scroll 0% 0% / auto padding-box border-box",
+        "token": "#f9fafb"
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "dpr": 2
+      },
+      "native": {
+        "source": "light",
+        "dark": false,
+        "zoom": 1,
+        "focused": false,
+        "bounds": {
+          "x": 221,
+          "y": 60,
+          "width": 1280,
+          "height": 800
+        },
+        "fullscreen": false
+      },
+      "screenshot": "after-light.png",
+      "projectFilter": "所有项目\n⌄"
+    },
+    {
+      "preference": "dark",
+      "colorScheme": "dark",
+      "mediaDark": true,
+      "sidebar": {
+        "color": "rgb(249, 250, 251)",
+        "background": "rgb(27, 27, 28) none repeat scroll 0% 0% / auto padding-box border-box",
+        "token": "#1b1b1c"
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "dpr": 2
+      },
+      "native": {
+        "source": "dark",
+        "dark": true,
+        "zoom": 1,
+        "focused": false,
+        "bounds": {
+          "x": 221,
+          "y": 60,
+          "width": 1280,
+          "height": 800
+        },
+        "fullscreen": false
+      },
+      "screenshot": "after-dark.png",
+      "projectFilter": "所有项目\n⌄"
+    },
+    {
+      "preference": "system",
+      "colorScheme": "dark",
+      "mediaDark": true,
+      "sidebar": {
+        "color": "rgb(249, 250, 251)",
+        "background": "rgb(27, 27, 28) none repeat scroll 0% 0% / auto padding-box border-box",
+        "token": "#1b1b1c"
+      },
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "dpr": 2
+      },
+      "native": {
+        "source": "system",
+        "dark": true,
+        "zoom": 1,
+        "focused": false,
+        "bounds": {
+          "x": 221,
+          "y": 60,
+          "width": 1280,
+          "height": 800
+        },
+        "fullscreen": false
+      },
+      "screenshot": "after-system.png",
+      "projectFilter": "所有项目\n⌄"
+    }
+  ],
+  "focusChecks": [
+    {
+      "preference": "light",
+      "focused": {
+        "preference": "light",
+        "colorScheme": "light",
+        "mediaDark": false,
+        "sidebar": {
+          "color": "rgb(15, 17, 21)",
+          "background": "rgb(249, 250, 251) none repeat scroll 0% 0% / auto padding-box border-box",
+          "token": "#f9fafb"
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 820,
+          "dpr": 2
+        },
+        "native": {
+          "source": "light",
+          "dark": false,
+          "zoom": 1,
+          "focused": true,
+          "bounds": {
+            "x": 221,
+            "y": 33,
+            "width": 1280,
+            "height": 820
+          },
+          "fullscreen": false
+        }
+      },
+      "blurred": {
+        "preference": "light",
+        "colorScheme": "light",
+        "mediaDark": false,
+        "sidebar": {
+          "color": "rgb(15, 17, 21)",
+          "background": "rgb(249, 250, 251) none repeat scroll 0% 0% / auto padding-box border-box",
+          "token": "#f9fafb"
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 820,
+          "dpr": 2
+        },
+        "native": {
+          "source": "light",
+          "dark": false,
+          "zoom": 1,
+          "focused": false,
+          "bounds": {
+            "x": 221,
+            "y": 33,
+            "width": 1280,
+            "height": 820
+          },
+          "fullscreen": false
+        }
+      }
+    },
+    {
+      "preference": "dark",
+      "focused": {
+        "preference": "dark",
+        "colorScheme": "dark",
+        "mediaDark": true,
+        "sidebar": {
+          "color": "rgb(249, 250, 251)",
+          "background": "rgb(27, 27, 28) none repeat scroll 0% 0% / auto padding-box border-box",
+          "token": "#1b1b1c"
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 820,
+          "dpr": 2
+        },
+        "native": {
+          "source": "dark",
+          "dark": true,
+          "zoom": 1,
+          "focused": true,
+          "bounds": {
+            "x": 221,
+            "y": 33,
+            "width": 1280,
+            "height": 820
+          },
+          "fullscreen": false
+        }
+      },
+      "blurred": {
+        "preference": "dark",
+        "colorScheme": "dark",
+        "mediaDark": true,
+        "sidebar": {
+          "color": "rgb(249, 250, 251)",
+          "background": "rgb(27, 27, 28) none repeat scroll 0% 0% / auto padding-box border-box",
+          "token": "#1b1b1c"
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 820,
+          "dpr": 2
+        },
+        "native": {
+          "source": "dark",
+          "dark": true,
+          "zoom": 1,
+          "focused": false,
+          "bounds": {
+            "x": 221,
+            "y": 33,
+            "width": 1280,
+            "height": 820
+          },
+          "fullscreen": false
+        }
+      }
+    },
+    {
+      "preference": "system",
+      "focused": {
+        "preference": "system",
+        "colorScheme": "dark",
+        "mediaDark": true,
+        "sidebar": {
+          "color": "rgb(249, 250, 251)",
+          "background": "rgb(27, 27, 28) none repeat scroll 0% 0% / auto padding-box border-box",
+          "token": "#1b1b1c"
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 820,
+          "dpr": 2
+        },
+        "native": {
+          "source": "system",
+          "dark": true,
+          "zoom": 1,
+          "focused": true,
+          "bounds": {
+            "x": 221,
+            "y": 33,
+            "width": 1280,
+            "height": 820
+          },
+          "fullscreen": false
+        }
+      },
+      "blurred": {
+        "preference": "system",
+        "colorScheme": "dark",
+        "mediaDark": true,
+        "sidebar": {
+          "color": "rgb(249, 250, 251)",
+          "background": "rgb(27, 27, 28) none repeat scroll 0% 0% / auto padding-box border-box",
+          "token": "#1b1b1c"
+        },
+        "viewport": {
+          "width": 1280,
+          "height": 820,
+          "dpr": 2
+        },
+        "native": {
+          "source": "system",
+          "dark": true,
+          "zoom": 1,
+          "focused": false,
+          "bounds": {
+            "x": 221,
+            "y": 33,
+            "width": 1280,
+            "height": 820
+          },
+          "fullscreen": false
+        }
+      }
+    }
+  ]
+}
