@@ -63,6 +63,7 @@ const seed = {
     skillRefs: [
       { id: 'test-design', version: '1' },
       { id: 'review-code', version: '1' },
+      { id: 'skill-office', version: '1' },
     ],
     mcpRefs: [
       { id: 'api-docs', version: '1' },
@@ -131,6 +132,14 @@ const seed = {
         label: '旧检索',
         available: false,
         unavailableReason: '资产已停用',
+      },
+      {
+        id: 'skill-office',
+        version: '1',
+        label: 'Office 文档',
+        available: true,
+        description: '处理文档、表格和演示',
+        body: '当前构建没有 Office 技能文件时不会加载。',
       },
     ],
     mcp: [

@@ -69,7 +69,13 @@ import {
   type AgentRunRequest,
   type ResourceGrant,
 } from './agent-executor.js';
-import { DshChatExecutor } from './dsh-sdk-executor.js';
+import {
+  DshChatExecutor,
+  OFFICE_SKILL_UNAVAILABLE,
+  attachmentRefusalReason,
+  mcpTransportReady,
+  officeSkillsReady,
+} from './dsh-sdk-executor.js';
 import { createFileJournal, type DeskJournal } from './file-journal.js';
 import { probeRelativeFile, readRelativeFile, type FileProbeResult } from './file-probe.js';
 
@@ -453,6 +459,15 @@ export class ExecutionDesk {
     }
     if (input.mediaType.trim().length === 0) {
       return this.fail('attachment-type', name, '缺少媒体类型', '重新选择文件');
+    }
+    const refused = attachmentRefusalReason(name, input.mediaType);
+    if (refused !== null) {
+      return this.fail(
+        'attachment-unsupported',
+        name,
+        refused,
+        '改用文本、JSON 或 png、jpeg、webp、gif 图片',
+      );
     }
     const id = this.deps.newId('file');
     const previewText =
@@ -999,6 +1014,7 @@ export class ExecutionDesk {
       );
       return;
     }
+    this.noteUnconnectedMcp(attempt);
     const resumeSessionId = this.previousSessionId(attempt.nodeId, runId);
     const request: AgentRunRequest = {
       runId,
@@ -1432,7 +1448,14 @@ export class ExecutionDesk {
           unavailableReason: expert.unavailableReason ?? '专家已停用',
         };
       }),
-      skills: this.seed.catalog.skills,
+      skills: this.seed.catalog.skills.map((skill) => {
+        if (skill.id !== 'skill-office' || this.officeReady()) return skill;
+        return {
+          ...skill,
+          available: false,
+          unavailableReason: OFFICE_SKILL_UNAVAILABLE,
+        };
+      }),
       mcp: this.seed.catalog.mcp,
       executors: this.seed.catalog.executors.map((executor) => {
         const connected = this.executorConnected.get(executor.id);
@@ -1665,8 +1688,34 @@ export class ExecutionDesk {
   }
 
   private previousSessionId(nodeId: string, runId: string): string | undefined {
-    return [...this.runs].reverse().find((run) => run.nodeId === nodeId && run.id !== runId)
+    return [...this.runs]
+      .reverse()
+      .find((run) => run.nodeId === nodeId && run.id !== runId && run.sessionId !== undefined)
       ?.sessionId;
+  }
+
+  private officeReady(): boolean {
+    const executor = this.deps.executors.find((item) => item instanceof DshChatExecutor);
+    return executor instanceof DshChatExecutor ? executor.officeReady() : officeSkillsReady();
+  }
+
+  private noteUnconnectedMcp(run: ExecutionAttempt): void {
+    const pending = this.authorized('mcp').filter((item) => !mcpTransportReady(item));
+    if (pending.length === 0) return;
+    const detail = pending
+      .map((item) => `${item.label ?? item.id}：未连接。没有配置传输，不会连接外部服务。`)
+      .join('');
+    this.activities.push(
+      normalizeActivity({
+        id: this.deps.newId('act'),
+        runId: run.id,
+        title: 'MCP',
+        detail,
+        simulated: run.simulated,
+        succeeded: false,
+      }),
+    );
+    this.persist();
   }
 
   private applyTransition(

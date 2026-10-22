@@ -111,6 +111,7 @@ export interface AgentWorkspaceView {
     readonly expertVersionId: string;
     readonly simulated: boolean;
     readonly attachmentIds: readonly string[];
+    readonly generating: boolean;
   }[];
   readonly activities: readonly {
     readonly id: string;
@@ -206,6 +207,7 @@ export interface AgentWorkspaceView {
     readonly reason: string | null;
     readonly selected: boolean;
     readonly origin: string | null;
+    readonly connection: string | null;
   }[];
   readonly modelText: string;
   readonly modelSource: string;
@@ -330,6 +332,11 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       expertVersionId: turn.expertVersionId,
       simulated: turn.simulated,
       attachmentIds: turn.attachmentIds,
+      generating:
+        active?.status === 'running' &&
+        turn.role === 'executor' &&
+        turn.runId === active.id &&
+        turn.body.trim().length === 0,
     })),
     activities: snapshot.activities.map((activity) => ({
       id: activity.id,
@@ -450,13 +457,20 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     }),
     mcp: snapshot.catalog.mcp.map((item) => {
       const selected = snapshot.config.mcp.find((entry) => entry.id === item.id);
+      const connected = mcpTransportReady(item);
+      const unconnected = item.available && !connected;
       return {
         id: item.id,
         label: item.label,
         available: item.available,
-        reason: item.available ? null : (item.unavailableReason ?? '不可用'),
+        reason: !item.available
+          ? (item.unavailableReason ?? '不可用')
+          : unconnected
+            ? '未连接：没有配置传输，不会连接外部服务。'
+            : null,
         selected: Boolean(selected),
         origin: selected ? (selected.origin === 'expert-preset' ? '专家预置' : '本次追加') : null,
+        connection: unconnected ? '未连接' : null,
       };
     }),
     modelText: snapshot.config.modelLabel,
@@ -487,6 +501,16 @@ export function phaseReached(
   if (item.phase === 'sent') return phase === 'sent';
   if (item.phase === 'received') return phase === 'sent' || phase === 'received';
   return phase === 'sent' || phase === 'received' || phase === 'applied';
+}
+
+function mcpTransportReady(item: {
+  readonly transport?: 'stdio' | 'streamable-http';
+  readonly command?: string;
+  readonly url?: string;
+}): boolean {
+  if (item.transport === 'stdio') return (item.command ?? '').length > 0;
+  if (item.transport === 'streamable-http') return (item.url ?? '').length > 0;
+  return false;
 }
 
 function humanizeLabel(value: string | undefined): string {

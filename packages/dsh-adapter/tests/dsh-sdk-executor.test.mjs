@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -157,8 +157,16 @@ function open(mode, extra = {}) {
   return { desk, pids, env };
 }
 
-function homeFor(runId, env) {
-  return dshSessionHome(`zhuma-${runId}`, env);
+function homeOf(desk, env, runId) {
+  const run = desk.snapshot().runs.find((item) => item.id === runId);
+  if (run?.sessionId === undefined) throw new Error(`运行没有会话标识：${runId}`);
+  return dshSessionHome(run.sessionId, env);
+}
+
+function sessionHomes(env) {
+  const root = path.join(env.ZHUMA_DATA_DIR, 'dsh-sessions');
+  if (!existsSync(root)) return [];
+  return readdirSync(root).filter((name) => name.startsWith('dsh-'));
 }
 
 function alive(pid) {
@@ -203,6 +211,8 @@ async function collect(mode, extra = {}) {
     resourceGrants: [],
     instruction: '整理字段',
     attachmentIds: [],
+    ...(extra.attachments !== undefined ? { attachments: extra.attachments } : {}),
+    ...(extra.skills !== undefined ? { skills: extra.skills } : {}),
     goal: '确认字段',
     simulatedRequested: false,
     signal: new AbortController().signal,
@@ -231,16 +241,23 @@ test('契约：未授权的技能和 MCP 进不了这次运行', async () => {
   });
   assert.equal(image.ok, true);
   assert.equal(other.ok, true);
-  assert.equal(pdf.ok, true);
+  assert.equal(pdf.ok, false);
+  assert.equal(pdf.code, 'attachment-unsupported');
+  assert.match(pdf.reason, /没有可发送的附件引用/);
+  assert.equal(
+    pdf.snapshot.attachments.some((item) => item.name === '说明.pdf'),
+    false,
+  );
+  assert.equal(pdf.snapshot.runs.length, 0);
   const imageId = image.snapshot.attachments[0].id;
   const sent = desk.send({
     text: '只带这一张图',
     idempotencyKey: 'grant-send',
-    attachmentIds: [imageId, pdf.snapshot.attachments.at(-1).id],
+    attachmentIds: [imageId],
   });
   assert.equal(sent.ok, true);
   await desk.flush();
-  const home = homeFor(sent.runId, env);
+  const home = homeOf(desk, env, sent.runId);
   const visible = JSON.parse(readFileSync(path.join(home, 'zhuma-visible.json'), 'utf8'));
   assert.deepEqual(visible.skills, [{ id: 'test-design', version: 'plan-skill-1' }]);
   assert.deepEqual(visible.mcp, []);
@@ -249,7 +266,7 @@ test('契约：未授权的技能和 MCP 进不了这次运行', async () => {
   assert.equal(visible.toolsDisabled.includes('tool-subagent'), true);
   const skill = readFileSync(path.join(home, 'granted-skills', 'test-design', 'SKILL.md'), 'utf8');
   assert.match(skill, /name: test-design/);
-  assert.match(skill, /description: 测试设计/);
+  assert.match(skill, /description: "测试设计"/);
   assert.match(skill, /版本：plan-skill-1/);
   assert.equal(existsSync(path.join(home, 'zhuma-mode.json')), false);
   const patch = readFileSync(path.join(home, 'cordis.patch.yml'), 'utf8');
@@ -270,7 +287,8 @@ test('契约：未授权的技能和 MCP 进不了这次运行', async () => {
   assert.equal(prompt.includes('不要进入提示'), false);
   assert.equal(prompt.includes('不要发给模型'), false);
   assert.equal(prompt.includes('%PDF-1.4'), false);
-  assert.match(prompt, /"type":"file"/);
+  assert.equal(prompt.includes('"type":"file"'), false);
+  assert.match(prompt, /"type":"image"/);
   const encoded = Buffer.from('zhuma-image-bytes', 'utf8').toString('base64');
   const admitted = readFileSync(path.join(home, 'zhuma-attachments', 'image-0'));
   assert.deepEqual(admitted, Buffer.from('zhuma-image-bytes', 'utf8'));
@@ -280,6 +298,15 @@ test('契约：未授权的技能和 MCP 进不了这次运行', async () => {
   );
   assert.equal(
     pids.every((pid) => !alive(pid)),
+    true,
+  );
+  assert.equal(
+    desk
+      .snapshot()
+      .activities.some(
+        (item) =>
+          item.title === 'MCP' && item.succeeded === false && item.detail.includes('未连接'),
+      ),
     true,
   );
   rmSync(home, { recursive: true, force: true });
@@ -293,7 +320,10 @@ test('契约：空的上下文引用不会把上下文包放进提示', async ()
   desk.updateConfig({ executorId: 'dsh', skillIds: ['test-design'], mcpIds: ['api-docs'] });
   const sent = desk.send({ text: '没有上下文包', idempotencyKey: 'empty-context' });
   await desk.flush();
-  const prompt = readFileSync(path.join(homeFor(sent.runId, env), 'zhuma-prompt.json'), 'utf8');
+  const prompt = readFileSync(
+    path.join(homeOf(desk, env, sent.runId), 'zhuma-prompt.json'),
+    'utf8',
+  );
   assert.equal(prompt.includes('应该进入提示'), false);
   assert.equal(desk.snapshot().citations.length, 0);
   assert.equal(desk.snapshot().runs[0].contextRefs.length, 0);
@@ -301,7 +331,7 @@ test('契约：空的上下文引用不会把上下文包放进提示', async ()
     pids.every((pid) => !alive(pid)),
     true,
   );
-  rmSync(homeFor(sent.runId, env), { recursive: true, force: true });
+  rmSync(homeOf(desk, env, sent.runId), { recursive: true, force: true });
 });
 
 test('契约：启动超时、握手失败和接收前停止都记为未应用', async () => {
@@ -326,7 +356,7 @@ test('契约：启动超时、握手失败和接收前停止都记为未应用',
       .nodeState.stored.some((item) => item.idempotencyKey.startsWith('ack:')),
     false,
   );
-  assert.equal(existsSync(homeFor(first.runId, timed.env)), false);
+  assert.deepEqual(sessionHomes(timed.env), []);
   assert.equal(
     timed.pids.every((pid) => !alive(pid)),
     true,
@@ -341,7 +371,7 @@ test('契约：启动超时、握手失败和接收前停止都记为未应用',
   assert.equal(crashed.desk.snapshot().node.status, 'ready');
   assert.equal(crashed.desk.snapshot().interventions[0].phase, 'not-applied');
   assert.match(crashed.desk.snapshot().faults[0].reason, /启动失败/);
-  assert.equal(existsSync(homeFor(crashSend.runId, crashed.env)), false);
+  assert.deepEqual(sessionHomes(crashed.env), []);
   assert.equal(
     crashed.pids.every((pid) => !alive(pid)),
     true,
@@ -367,7 +397,7 @@ test('契约：启动超时、握手失败和接收前停止都记为未应用',
     stopped.pids.every((pid) => !alive(pid)),
     true,
   );
-  rmSync(homeFor(stopSend.runId, stopped.env), { recursive: true, force: true });
+  assert.deepEqual(sessionHomes(stopped.env), []);
 });
 
 test('契约：停止后能恢复历史，进程表里没有残留', async () => {
@@ -379,7 +409,10 @@ test('契约：停止后能恢复历史，进程表里没有残留', async () =>
   try {
     const sent = desk.send({ text: '第一段历史', idempotencyKey: 'resume-send' });
     await desk.waitForRun(sent.runId, 'running');
-    const home = dshSessionHome(desk.snapshot().runs[0].sessionId, env);
+    const sessionId = desk.snapshot().runs[0].sessionId;
+    assert.match(sessionId, /^zhuma-[0-9a-f]{8}-[0-9a-f]{12}$/);
+    assert.notEqual(sessionId, `zhuma-${sent.runId}`);
+    const home = dshSessionHome(sessionId, env);
     const pid = Number(readFileSync(path.join(home, 'zhuma-pid'), 'utf8'));
     assert.equal(alive(pid), true);
     const cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'args=']).toString();
@@ -465,14 +498,17 @@ test('契约：非 JSON 行不会卡住，空回复和工具调用不算成功',
     false,
   );
   assert.match(missing.events.at(-1).message, /没有返回接收回执/);
-  for (const [runId, env] of [
-    ['noise-run', noise.env],
-    ['empty-run', empty.env],
-    ['tools-run', tools.env],
-    ['missing-id', missing.env],
-  ]) {
-    rmSync(homeFor(runId, env), { recursive: true, force: true });
+  for (const item of [noise, empty, tools, missing]) {
+    const accepted = item.events.find((event) => event.type === 'accepted');
+    if (accepted?.sessionId !== undefined) {
+      rmSync(dshSessionHome(accepted.sessionId, item.env), { recursive: true, force: true });
+    }
+    assert.equal(
+      item.events.some((event) => event.type === 'accepted') || sessionHomes(item.env).length === 0,
+      true,
+    );
   }
+  assert.deepEqual(sessionHomes(missing.env), []);
 });
 
 test('契约：找不到运行时会明确失败，不改用模拟', async () => {
@@ -511,6 +547,7 @@ test('契约：找不到运行时会明确失败，不改用模拟', async () =>
   assert.match(refused.reason, /pnpm upstream:build-dsh/);
   assert.equal(refused.reason.includes('模拟'), true);
   assert.equal(missing.capabilities.sessionResume, true);
+  assert.equal(missing.capabilities.streaming, false);
 });
 
 test('契约：录制的上游事件能读出正文和结束原因', () => {
@@ -548,7 +585,7 @@ test('契约：取消勾选后，提示、运行引用和界面引用是同一�
   desk.updateConfig({ executorId: 'dsh', skillIds: ['test-design'], mcpIds: [] });
   const sent = desk.send({ text: '带上可选项', idempotencyKey: 'opt-1' });
   await desk.flush();
-  const first = readFileSync(path.join(homeFor(sent.runId, env), 'zhuma-prompt.json'), 'utf8');
+  const first = readFileSync(path.join(homeOf(desk, env, sent.runId), 'zhuma-prompt.json'), 'utf8');
   assert.match(first, /OPTIONAL-BODY/);
   assert.match(first, /应该进入提示/);
   assert.equal(desk.snapshot().runs[0].contextRefs.includes('node-input:optional-source@1'), true);
@@ -598,7 +635,7 @@ test('契约：进程立即退出或不许执行时，这次运行失败且不�
   assert.match(boot.events.at(-1).message, /启动失败/);
   assert.match(boot.events.at(-1).message, /\[redacted\]/);
   assert.equal(boot.events.at(-1).message.includes(marker), false);
-  assert.equal(existsSync(homeFor('stderr-boot', env)), false);
+  assert.deepEqual(sessionHomes(env), []);
 
   const deniedAt = Date.now();
   const bin = path.join(env.ZHUMA_DATA_DIR, 'not-executable');
@@ -639,12 +676,359 @@ test('契约：启动时清掉孤儿会话目录', () => {
   assert.equal(existsSync(orphan), false);
 });
 
-async function assertUpstreamPatch(file) {
-  const built = path.resolve(
+test('契约：技能说明里的特殊字符仍会进入授权清单', async () => {
+  const input = seed();
+  input.catalog.skills[0].description = '字段: 必填 # 见 [规范] "信用代码"';
+  const { engine, env } = executor('ok');
+  const desk = ExecutionDesk.create(input, {
+    executors: [engine],
+    newId: ids('yaml-skill'),
+  });
+  desk.updateConfig({ executorId: 'dsh', skillIds: ['test-design'], mcpIds: [] });
+  const sent = desk.send({ text: '带上技能', idempotencyKey: 'yaml-skill' });
+  await desk.flush();
+  const home = homeOf(desk, env, sent.runId);
+  const visible = JSON.parse(readFileSync(path.join(home, 'zhuma-visible.json'), 'utf8'));
+  assert.deepEqual(visible.skills, [{ id: 'test-design', version: 'plan-skill-1' }]);
+  const skill = readFileSync(path.join(home, 'granted-skills', 'test-design', 'SKILL.md'), 'utf8');
+  assert.equal(skill.includes('name: test-design'), true);
+  assert.equal(skill.includes('description: "字段: 必填 # 见 [规范] \\"信用代码\\""'), true);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('契约：没有 Office 技能文件时不写占位条目', async () => {
+  const input = seed();
+  input.handoff.skillRefs.push({ id: 'skill-office', version: 'office-1' });
+  input.catalog.skills.push({
+    id: 'skill-office',
+    version: '1',
+    label: 'Office 文档',
+    available: true,
+  });
+  const { engine, env } = executor('ok');
+  const desk = ExecutionDesk.create(input, { executors: [engine], newId: ids('office-off') });
+  const shown = desk.snapshot().catalog.skills.find((item) => item.id === 'skill-office');
+  assert.equal(shown.available, false);
+  assert.match(shown.unavailableReason, /没有 Office 技能文件/);
+  desk.updateConfig({ executorId: 'dsh', skillIds: ['skill-office'], mcpIds: [] });
+  const sent = desk.send({ text: '不要占位', idempotencyKey: 'office-off' });
+  assert.equal(sent.ok, false);
+  assert.equal(sent.code, 'resource-unavailable');
+  assert.equal(sent.snapshot.runs.length, 0);
+  const direct = await collect('ok', {
+    env,
+    skills: [
+      {
+        id: 'skill-office',
+        version: 'office-1',
+        label: 'Office 文档',
+        description: '占位说明',
+        body: '不要写成占位技能',
+      },
+    ],
+  });
+  assert.equal(direct.events.at(-1).type, 'completed');
+  const home = dshSessionHome(
+    direct.events.find((event) => event.type === 'accepted').sessionId,
+    env,
+  );
+  assert.equal(existsSync(path.join(home, 'granted-skills', 'skill-office')), false);
+  const visible = JSON.parse(readFileSync(path.join(home, 'zhuma-visible.json'), 'utf8'));
+  assert.equal(
+    visible.skills.some((item) => item.id === 'skill-office'),
+    false,
+  );
+  assert.match(
+    readFileSync(path.join(home, 'cordis.patch.yml'), 'utf8'),
+    /id: skill-office[\s\S]*disabled: true/,
+  );
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('契约：已有 Office 技能文件时才打开插件', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'zhuma-office-'));
+  mkdirSync(path.join(root, 'office'));
+  writeFileSync(
+    path.join(root, 'office', 'SKILL.md'),
+    '---\nname: office\ndescription: docs\n---\n\nbody\n',
+  );
+  const env = modelEnv();
+  env.DSH_BUNDLED_OFFICE_SKILLS = root;
+  try {
+    const input = seed();
+    input.handoff.skillRefs.push({ id: 'skill-office', version: 'office-1' });
+    input.catalog.skills.push({
+      id: 'skill-office',
+      version: '1',
+      label: 'Office 文档',
+      available: true,
+    });
+    const { engine } = executor('ok', { env });
+    const desk = ExecutionDesk.create(input, { executors: [engine], newId: ids('office-on') });
+    assert.equal(
+      desk.snapshot().catalog.skills.find((item) => item.id === 'skill-office').available,
+      true,
+    );
+    desk.updateConfig({ executorId: 'dsh', skillIds: ['skill-office'], mcpIds: [] });
+    const sent = desk.send({ text: '打开文档技能', idempotencyKey: 'office-on' });
+    await desk.flush();
+    const home = homeOf(desk, env, sent.runId);
+    assert.equal(existsSync(path.join(home, 'granted-skills', 'skill-office')), false);
+    const visible = JSON.parse(readFileSync(path.join(home, 'zhuma-visible.json'), 'utf8'));
+    assert.equal(
+      visible.skills.some((item) => item.id === 'skill-office'),
+      true,
+    );
+    assert.match(
+      readFileSync(path.join(home, 'cordis.patch.yml'), 'utf8'),
+      /id: skill-office[\s\S]*disabled: false/,
+    );
+    rmSync(home, { recursive: true, force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('契约：相同运行标识不会共用会话目录', async () => {
+  const env = modelEnv();
+  const once = async () => {
+    const engine = new DshChatExecutor(env, {
+      bin: stub,
+      mode: 'ok',
+      initTimeoutMs: 2000,
+      promptTimeoutMs: 2000,
+    });
+    const events = [];
+    for await (const event of engine.run(runRequest('run-4'))) events.push(event);
+    return events;
+  };
+  const first = await once();
+  const second = await once();
+  assert.equal(first.at(-1).type, 'completed');
+  assert.equal(second.at(-1).type, 'completed');
+  const left = first.find((event) => event.type === 'accepted').sessionId;
+  const right = second.find((event) => event.type === 'accepted').sessionId;
+  assert.notEqual(left, right);
+  assert.notEqual(left, 'zhuma-run-4');
+  assert.equal(sessionHomes(env).length, 2);
+  rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+});
+
+test('契约：重启后从运行记录读回会话标识', async () => {
+  const { engine, env } = executor('ok');
+  const firstDesk = ExecutionDesk.create(seed(), {
+    executors: [engine],
+    newId: ids('keep-session'),
+  });
+  firstDesk.updateConfig({ executorId: 'dsh', skillIds: ['test-design'], mcpIds: [] });
+  const sent = firstDesk.send({ text: '第一段要留下来', idempotencyKey: 'keep-1' });
+  await firstDesk.flush();
+  const sessionId = firstDesk.snapshot().runs[0].sessionId;
+  assert.match(sessionId, /^zhuma-[0-9a-f]{8}-[0-9a-f]{12}$/);
+  const restored = ExecutionDesk.restore(firstDesk.persistence(), {
+    executors: [
+      new DshChatExecutor(env, {
+        bin: stub,
+        mode: 'ok',
+        initTimeoutMs: 2000,
+        promptTimeoutMs: 2000,
+      }),
+    ],
+    newId: ids('keep-session-2'),
+  });
+  restored.resumeInteraction();
+  const again = restored.send({ text: '第二段纯文本', idempotencyKey: 'keep-2' });
+  await restored.flush();
+  assert.equal(restored.snapshot().runs.at(-1).status, 'completed');
+  assert.equal(restored.snapshot().runs.at(-1).sessionId, sessionId);
+  const history = readFileSync(
+    path.join(dshSessionHome(sessionId, env), 'zhuma-history.json'),
+    'utf8',
+  );
+  assert.match(history, /第一段要留下来/);
+  rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+});
+
+test('契约：拒绝 PDF 不会留下让下一轮失败的会话', async () => {
+  const blocked = await collect('ok', {
+    runId: 'pdf-direct',
+    attachments: [
+      {
+        id: 'file-pdf',
+        name: '说明.pdf',
+        mediaType: 'application/pdf',
+        bytes: Buffer.from('%PDF-1.4'),
+      },
+    ],
+  });
+  assert.equal(
+    blocked.events.some((event) => event.type === 'accepted'),
+    false,
+  );
+  assert.equal(blocked.events.at(-1).type, 'failed');
+  assert.match(blocked.events.at(-1).message, /没有可发送的附件引用/);
+  assert.deepEqual(sessionHomes(blocked.env), []);
+  const followed = await collect('ok', { env: blocked.env, runId: 'pdf-direct' });
+  assert.equal(followed.events.at(-1).type, 'completed');
+  rmSync(blocked.env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+});
+
+test('契约：桩拒绝没有附件引用的 file 块，随后的文本仍能完成', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'zhuma-stub-file-'));
+  writeFileSync(
+    path.join(home, 'cordis.patch.yml'),
+    '- id: skill-office\n  disabled: true\n- id: skill-filesystem\n  config:\n    includeDefaultRoots: false\n    customSkillDirs:\n      - "/tmp/zhuma-none"\n',
+  );
+  const child = spawn(process.execPath, [stub], {
+    cwd: home,
+    env: { ...process.env, DSH_HOME: home, ZHUMA_DSH_STUB_MODE: 'ok' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const rpc = lineRpc(child);
+  const init = await rpc.request('initialize', {});
+  assert.equal(init.result.serverInfo.name, 'deepseek-harness-sdk-runtime');
+  const rejected = await rpc.request('session/prompt', {
+    sessionId: 's',
+    contentBlocks: [
+      { type: 'text', text: '看附件' },
+      {
+        type: 'file',
+        data: Buffer.from('%PDF-1.4').toString('base64'),
+        mimeType: 'application/pdf',
+        name: 'a.pdf',
+      },
+    ],
+  });
+  assert.equal(rejected.result, undefined);
+  assert.match(rejected.error.message, /attachment\.attachmentId/);
+  assert.equal(existsSync(path.join(home, 'zhuma-session.jsonl')), false);
+  const accepted = await rpc.request('session/prompt', {
+    sessionId: 's',
+    contentBlocks: [{ type: 'text', text: '纯文本还可以' }],
+  });
+  assert.equal(accepted.result.messageId, 'msg-1');
+  const prompt = readFileSync(path.join(home, 'zhuma-prompt.json'), 'utf8');
+  assert.match(prompt, /纯文本还可以/);
+  assert.equal(prompt.includes('a.pdf'), false);
+  let log = '';
+  for (let attempt = 0; attempt < 20 && !log.includes('纯文本还可以'); attempt += 1) {
+    log = existsSync(path.join(home, 'zhuma-session.jsonl'))
+      ? readFileSync(path.join(home, 'zhuma-session.jsonl'), 'utf8')
+      : '';
+    if (!log.includes('纯文本还可以')) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.match(log, /纯文本还可以/);
+  assert.equal(log.includes('a.pdf'), false);
+  await rpc.exited;
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('契约：上游未构建时补丁检查会写出跳过', async () => {
+  const messages = [];
+  const original = console.log;
+  console.log = (...args) => messages.push(args.join(' '));
+  try {
+    await assertUpstreamPatch('/tmp/zhuma-no-patch.yml', '/tmp/zhuma-no-app-boot.js');
+  } finally {
+    console.log = original;
+  }
+  assert.match(messages.join('\n'), /skip: 上游 app-boot 未构建/);
+  assert.match(messages.join('\n'), /pnpm upstream:build-dsh/);
+});
+
+test('契约：录制的内联 PDF 被上游拒绝', () => {
+  const file = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'dsh-pdf-rejected.json',
+  );
+  const notes = JSON.parse(readFileSync(file, 'utf8'));
+  const end = notes.find((note) => note.params?.event?.type === 'turn/end');
+  assert.equal(describeDshSessionEvent(end.params.event).reasonKind, 'error');
+  assert.match(end.params.event.data.reason.error.message, /attachmentId/);
+  const prompt = notes.find((note) => note.id === 2);
+  assert.equal(typeof prompt.result.messageId, 'string');
+  const text = JSON.stringify(notes);
+  assert.equal(/https?:\/\//.test(text), false);
+  assert.equal(text.includes('%PDF'), false);
+  assert.equal(text.includes('JVBERi'), false);
+});
+
+function runRequest(runId) {
+  return {
+    runId,
+    attempt: 1,
+    generation: 1,
+    taskId: 'task',
+    nodeId: 'node',
+    workflowVersionId: 'plan',
+    planRevision: 1,
+    contextReferences: [],
+    expertVersionId: 'expert-v1',
+    resourceGrants: [],
+    instruction: '整理字段',
+    attachmentIds: [],
+    goal: '确认字段',
+    simulatedRequested: false,
+    signal: new AbortController().signal,
+  };
+}
+
+function lineRpc(child) {
+  let buffer = '';
+  const notes = [];
+  let wake = () => {};
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk;
+    let newline = buffer.indexOf('\n');
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line.length > 0) {
+        notes.push(JSON.parse(line));
+        wake();
+      }
+      newline = buffer.indexOf('\n');
+    }
+  });
+  let nextId = 1;
+  return {
+    exited: new Promise((resolve) => child.on('exit', () => resolve())),
+    request(method, params) {
+      const id = nextId;
+      nextId += 1;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timeout')), 2000);
+        const pull = () => {
+          const found = notes.find((note) => note.id === id);
+          if (!found) return;
+          clearTimeout(timer);
+          wake = () => {};
+          resolve(found);
+        };
+        wake = pull;
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+        pull();
+      });
+    },
+  };
+}
+
+function upstreamPatchParser() {
+  return path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     '../../../upstream/deepseek-harness/packages/boot/app-boot/lib/index.js',
   );
-  if (!existsSync(built)) return;
+}
+
+async function assertUpstreamPatch(file, built = upstreamPatchParser()) {
+  if (!existsSync(built)) {
+    console.log(
+      'skip: 上游 app-boot 未构建，没有用 loadOverlayPatches 检查补丁。请先运行 pnpm upstream:build-dsh。',
+    );
+    return;
+  }
   const mod = await import(pathToFileURL(built).href);
   const patches = mod.loadOverlayPatches('zhuma', file);
   assert.equal(Array.isArray(patches), true);

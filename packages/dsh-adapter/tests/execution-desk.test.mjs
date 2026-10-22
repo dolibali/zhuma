@@ -216,10 +216,21 @@ test('契约：重复发送、上下文阻塞、两轮修改、刷新和切换�
   assert.equal(session.snapshot().runs.length, 1);
   await session.waitForRun(first.runId, 'running');
   assert.equal(session.snapshot().node.status, 'running');
+  const runningView = createAgentWorkspaceView(session.snapshot());
+  assert.equal(
+    runningView.turns.some((turn) => turn.role === 'executor' && turn.generating),
+    true,
+  );
+  assert.match(runningView.mcp.find((item) => item.id === 'api-docs')?.reason ?? '', /未连接/);
+  assert.equal(runningView.mcp.find((item) => item.id === 'api-docs')?.connection, '未连接');
   assert.equal(session.snapshot().config.simulated, true);
   session.releaseActive();
   await session.flush();
   assert.equal(session.snapshot().runs[0].status, 'completed');
+  assert.equal(
+    createAgentWorkspaceView(session.snapshot()).turns.some((turn) => turn.generating),
+    false,
+  );
   assert.equal(session.snapshot().node.status, 'ready');
   assert.equal(session.snapshot().delivered, false);
   assert.equal(session.snapshot().downstreamLaunches, 0);

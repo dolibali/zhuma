@@ -24,6 +24,8 @@ writeFileSync(
 writeFileSync(path.join(home, 'zhuma-visible.json'), JSON.stringify(visibleCatalog(home)), 'utf8');
 
 let prompted = false;
+let resumed = false;
+let acceptedPrompt = false;
 let buffer = '';
 let seq = 1;
 process.stdin.setEncoding('utf8');
@@ -66,6 +68,7 @@ function handle(line) {
     return;
   }
   if (message.method === 'session/resume') {
+    resumed = true;
     const history = readLog();
     writeFileSync(path.join(home, 'zhuma-history.json'), JSON.stringify(history), 'utf8');
     reply(message.id, {});
@@ -73,10 +76,23 @@ function handle(line) {
   }
   if (message.method === 'session/prompt') {
     if (mode === 'hang-prompt') return;
+    const blocks = message.params?.contentBlocks ?? [];
+    if (
+      blocks.some(
+        (block) => block?.type === 'file' && typeof block.attachment?.attachmentId !== 'string',
+      )
+    ) {
+      errorReply(message.id, 'file block requires attachment.attachmentId');
+      return;
+    }
+    if (priorTurn() && !resumed && !acceptedPrompt) {
+      errorReply(message.id, 'session already exists');
+      return;
+    }
     if (mode === 'stderr-leak' || mode === 'hold-after-messageId') {
       process.stderr.write(`${process.env.ZHUMA_MODEL_API_KEY ?? ''}\n`);
     }
-    const stored = admit(message.params?.contentBlocks ?? []);
+    const stored = admit(blocks);
     writeFileSync(path.join(home, 'zhuma-prompt.json'), JSON.stringify(stored), 'utf8');
     appendLog({ type: 'user', content: stored });
     if (mode === 'no-message-id') {
@@ -85,6 +101,7 @@ function handle(line) {
     }
     reply(message.id, { messageId: 'msg-1' });
     prompted = true;
+    acceptedPrompt = true;
     if (mode === 'hold-after-messageId') {
       waitRelease(() => finishTurn());
       return;
@@ -154,6 +171,19 @@ function reply(id, result) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
 }
 
+function errorReply(id, message) {
+  process.stdout.write(
+    `${JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32602, message } })}\n`,
+  );
+}
+
+function priorTurn() {
+  return readLog().some(
+    (entry) =>
+      entry.type === 'user' || entry.type === 'assistant/message' || entry.type === 'turn/end',
+  );
+}
+
 function notify(method, params) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
 }
@@ -218,10 +248,10 @@ function visibleCatalog(dir) {
       const file = path.join(root, name, 'SKILL.md');
       if (!exists(file)) continue;
       const text = readFileSync(file, 'utf8');
-      const skillName = text.match(/^name:\s*(\S+)/m)?.[1];
-      if (!skillName) continue;
+      const parsed = readSkill(text);
+      if (!parsed) continue;
       const version = text.match(/版本：(\S+)/)?.[1] ?? '';
-      skills.push({ id: skillName, version });
+      skills.push({ id: parsed.name, version });
     }
   }
   const office = section(patch, 'skill-office');
@@ -231,6 +261,34 @@ function visibleCatalog(dir) {
     mcp.push({ id: match[1], version: 'configured' });
   }
   return { skills, mcp, toolsDisabled: disabledTools(patch) };
+}
+
+function readSkill(text) {
+  const front = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!front) return null;
+  const fields = {};
+  for (const line of front[1].split(/\r?\n/)) {
+    if (line.trim().length === 0) continue;
+    const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!match) return null;
+    const raw = match[2];
+    if (raw.startsWith('"')) {
+      try {
+        const value = JSON.parse(raw);
+        if (typeof value !== 'string') return null;
+        fields[match[1]] = value;
+      } catch {
+        return null;
+      }
+    } else if (/[:#["]/.test(raw)) {
+      return null;
+    } else {
+      fields[match[1]] = raw.trim();
+    }
+  }
+  if (typeof fields.name !== 'string' || fields.name.length === 0) return null;
+  if (typeof fields.description !== 'string' || fields.description.length === 0) return null;
+  return fields;
 }
 
 function section(patch, id) {

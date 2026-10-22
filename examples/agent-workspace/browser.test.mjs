@@ -75,9 +75,25 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await page.locator('[data-testid="skill-chip"][data-id="review-code"]').waitFor();
     await page.getByTestId('skill-search').fill('');
     assert.equal(await page.locator('[data-testid="skill"][value="legacy"]').isDisabled(), true);
+    assert.equal(
+      await page.locator('[data-testid="skill"][value="skill-office"]').isDisabled(),
+      true,
+    );
+    assert.match(
+      await page.locator('[data-testid="skill"][value="skill-office"]').locator('..').innerText(),
+      /没有 Office 技能文件/,
+    );
     await page.getByTestId('mcp-search').fill('接口');
     await page.locator('[data-testid="mcp"][value="api-docs"]').check();
     await page.locator('[data-testid="mcp-chip"][data-id="api-docs"]').waitFor();
+    assert.match(
+      await page.locator('[data-testid="mcp-chip"][data-id="api-docs"]').innerText(),
+      /未连接/,
+    );
+    assert.match(
+      await page.locator('[data-testid="mcp"][value="api-docs"]').locator('..').innerText(),
+      /没有配置传输/,
+    );
     await page.getByTestId('mcp-search').fill('工单');
     await page.locator('[data-testid="mcp"][value="issue-search"]').check();
     await page.locator('[data-testid="mcp-chip"][data-id="issue-search"]').waitFor();

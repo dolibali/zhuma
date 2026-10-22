@@ -27,9 +27,9 @@
 
 生成的 `cordis.patch.yml` 是加载器补丁条目的顶层 YAML 数组，使用 `- id:` 和 `- insert:`。它不是映射。`llm-pi-ai` 写入模型路由、`apiKeyEnv: ZHUMA_MODEL_API_KEY`，以及 `input` 的 `text` 和 `image`。密钥不写进文件。
 
-模型可见的技能是专家实际授权、并且这次勾选的技能。内容写到会话目录下的 `granted-skills/<id>/SKILL.md`，包含 `name`、`description` 和正文。`skill-filesystem` 设置 `includeDefaultRoots: false`，只扫描这个目录。`skill-office` 默认 `disabled: true`，只有授权里有 `skill-office` 时才打开。
+模型可见的技能是专家实际授权、并且这次勾选的技能。内容写到会话目录下的 `granted-skills/<id>/SKILL.md`，包含 `name`、`description` 和正文。`description` 用 JSON 字符串写入，说明里的 `:`、`#`、`[`、`"` 不会让上游把这份技能丢掉。`skill-filesystem` 设置 `includeDefaultRoots: false`，只扫描这个目录。`skill-office` 保持 `disabled: true`，并且不写入占位 `SKILL.md`。当前源码构建没有 `office/SKILL.md`。界面把这项标成不可用，原因是当前构建没有 Office 技能文件，授权不会加载文档技能。只有环境里已经有 `DSH_BUNDLED_OFFICE_SKILLS`，或运行时旁的 `office-skills/office/SKILL.md` 时，授权才会打开这个插件。不会下载技能文件，也不改上游子模块。
 
-内置工具默认关闭。专家的 `toolAllowlist` 点名插件 id 或下面的名字时，打开对应的一组。`tool-skill` 保持开启，以便加载已授权技能。`agent-loop`、`llm` 和 `session` 不关闭。
+内置工具默认关闭。专家的 `toolAllowlist` 点名插件 id 或下面的名字时，打开对应的一组。`tool-skill` 保持开启，以便加载已授权技能。`agent-loop`、`llm` 和 `session` 不关闭。没有白名单时，模型仍然能看到六个会话工具：`create_goal`、`get_goal`、`update_goal`、`todo_write`、`exit_plan_mode`、`working_directory`，以及技能工具 `skill`。它们属于会话和技能，不在下面的关闭组里。`working_directory` 可以把当前目录改到一个已经存在的目录。
 
 | 白名单名字                       | 打开的插件                                                                                                                                                       |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -39,15 +39,15 @@
 | `subagent`                       | `subagent`、`subagent-spawn-in-process`、`subagent-fork-in-process`、`tool-subagent`、`tool-subagent-fork`、`tool-subagent-control`、`tool-subagent-list-agents` |
 | `workflow`                       | `tool-workflow`、`workflow-ptc`                                                                                                                                  |
 
-sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时才插入 `@deepseek-ai/dsh-mcp-client`：`stdio` 要有 `command`，`streamable-http` 要有 `url`。只有 id、版本和标签的授权写进提示，不连接外部服务。
+sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时才插入 `@deepseek-ai/dsh-mcp-client`：`stdio` 要有 `command`，`streamable-http` 要有 `url`。只有 id、版本和标签的授权写进提示，不连接外部服务。没有配传输、或传输不完整时，界面在该 MCP 上标出「未连接」和原因「没有配置传输，不会连接外部服务」。运行记录里追加一条未成功的 MCP 活动。不会把它从可选列表里去掉。
 
-会话事件是 `{type, seq, time, data}`。助手正文在 `data.message.content`。流式片段在 `data.stream`。一轮结束看 `data.reason.kind`，取值是 `completed`、`aborted` 或 `error`。
+会话事件是 `{type, seq, time, data}`。助手正文在 `data.message.content`，随整段 `assistant/message` 一次到达。`data.stream` 是这条事件上的事后记录，不是可以订阅的增量。上游 SDK 没有逐字通知，所以 DSH 的 `capabilities.streaming` 为 false。等待期间界面显示「生成中」。模拟执行器仍按片段交出正文，`streaming` 保持 true。一轮结束看 `data.reason.kind`，取值是 `completed`、`aborted` 或 `error`。
 
-图片以 `contentBlocks` 的 `image` 交给模型。文本和 JSON 仍是文本。PDF 和其他二进制是 `file`，不按文本解码。发出的上下文、运行记录里的引用和界面上的引用是同一组：已勾选且匹配 `inputRefs` 的条目。未勾选的不发。`inputRefs` 为空时不发上下文，界面也不引用。勾选了缺失文件仍然整次阻塞。
+图片以 `contentBlocks` 的 `image` 交给模型，媒体类型只接受 png、jpeg、webp、gif。文本和 JSON 仍是文本。PDF 和其他文件在上传时拒绝：上游协议的 file 块必须带已经入库的附件引用，客户端发不出这个引用。内联 file 块会在到达模型前失败，并留在会话里让之后的纯文本也失败。拒绝发生在写入会话之前。发出的上下文、运行记录里的引用和界面上的引用是同一组：已勾选且匹配 `inputRefs` 的条目。未勾选的不发。`inputRefs` 为空时不发上下文，界面也不引用。勾选了缺失文件仍然整次阻塞。
 
-`DSH_HOME` 在工作台数据目录下。数据目录依次取 `ZHUMA_DATA_DIR`、`ZHUMA_SESSION_FILE` 所在目录、`~/.zhuma/workbench`。每次会话用 `mkdtemp` 建在 `dsh-sessions/` 里。目录权限 `0700`，文件权限 `0600`。密钥不写入其中。接收前失败会删掉新建的目录。运行被核实为断开时删除。节点进入 `completed` 时删除。成功的一轮和停止之后保留，下一次显式运行用 `session/resume` 接回。工作台启动时清掉索引里没有的孤儿目录。
+`DSH_HOME` 在工作台数据目录下。数据目录依次取 `ZHUMA_DATA_DIR`、`ZHUMA_SESSION_FILE` 所在目录、`~/.zhuma/workbench`。每次会话用 `mkdtemp` 建在 `dsh-sessions/` 里。会话标识是 `zhuma-`、工作台实例随机段、再加一段随机，不从 `runId` 推导。工作台重启后从运行记录读取实际的 `sessionId`，再用 `session/resume` 接回。目录权限 `0700`，文件权限 `0600`。密钥不写入其中。接收前失败会删掉新建的目录。运行被核实为断开时删除。节点进入 `completed` 时删除。成功的一轮和停止之后保留，下一次显式运行用 `session/resume` 接回。工作台启动时清掉索引里没有的孤儿目录。
 
-`capabilities.sessionResume` 为 true，因为实现了 `session/resume`。工作台重启后子进程已经不在，仍然留下 `resumeGap`，不把未结束的运行当成还在执行。模拟执行器的 `sessionResume` 保持 false。自测使用本仓的 JSON-RPC 桩和从真实 DSH 录制的事件。桩的模式只经 `ZHUMA_DSH_STUB_MODE` 传入，不写进会话目录，也不传给真实子进程。上游包已经构建时，用它自己的 `loadOverlayPatches` 检查生成的补丁。
+`capabilities.sessionResume` 为 true，因为实现了 `session/resume`。工作台重启后子进程已经不在，仍然留下 `resumeGap`，不把未结束的运行当成还在执行。模拟执行器的 `sessionResume` 保持 false，`streaming` 保持 true。自测使用本仓的 JSON-RPC 桩和从真实 DSH 录制的事件。桩的模式只经 `ZHUMA_DSH_STUB_MODE` 传入，不写进会话目录，也不传给真实子进程。上游包已经构建时，用它自己的 `loadOverlayPatches` 检查生成的补丁。没有构建出 app-boot 时，检查打印 `skip`，并说明要先运行 `pnpm upstream:build-dsh`，不因此失败。
 
 `UnimplementedNativeExecutor` 仍覆盖 `codearts-cli`。`run()` 抛出未实现错误，`cancel()` 返回 `unsupported`。未验证或未配置的原生执行器在创建运行前被拒绝，不写入运行记录。
 

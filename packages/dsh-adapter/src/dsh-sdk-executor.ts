@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import {
   accessSync,
@@ -151,6 +152,44 @@ export function missingDshRuntimeReason(): string {
   return '没有找到 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。还需要 ZHUMA_MODEL_BASE_URL 和 ZHUMA_MODEL_API_KEY。不会改用模拟执行器。';
 }
 
+/** 源码构建没有随包的 Office 技能。界面和目录用这句话说明。 */
+export const OFFICE_SKILL_UNAVAILABLE = '当前构建没有 Office 技能文件，授权不会加载文档技能。';
+
+/** 上游插件只在 assetRoot 下有 office/SKILL.md 时才能加载文档技能。 */
+export function officeSkillsReady(env: NodeJS.ProcessEnv = process.env): boolean {
+  const bundled = env.DSH_BUNDLED_OFFICE_SKILLS?.trim() ?? '';
+  if (bundled.length > 0 && isOfficeRoot(bundled)) return true;
+  const runtime = (env.DSH_PRIMARY_RUNTIME ?? env.DSH_BUNDLED_PRIMARY_RUNTIME ?? '').trim();
+  if (runtime.length === 0) return false;
+  return isOfficeRoot(path.resolve(runtime, '..', 'office-skills'));
+}
+
+function isOfficeRoot(root: string): boolean {
+  return existsSync(path.join(root, 'office', 'SKILL.md'));
+}
+
+/**
+ * 上游 file 块必须带已经入库的附件引用。客户端发不出这个引用。
+ * 文本、JSON 和 png、jpeg、webp、gif 可以发送。其余在上传时拒绝。
+ */
+export function attachmentRefusalReason(name: string, mediaType: string): string | null {
+  const type = mediaType.trim().toLowerCase();
+  if (type.startsWith('text/') || type === 'application/json') return null;
+  if (isImageMime(type)) return null;
+  const label = name.trim().length > 0 ? name.trim() : '这个文件';
+  return `${label} 不能交给当前执行器。上游会话只接受文本和内联图片，PDF 及其他文件没有可发送的附件引用。`;
+}
+
+export function mcpTransportReady(item: {
+  readonly transport?: 'stdio' | 'streamable-http';
+  readonly command?: string;
+  readonly url?: string;
+}): boolean {
+  if (item.transport === 'stdio') return (item.command ?? '').length > 0;
+  if (item.transport === 'streamable-http') return (item.url ?? '').length > 0;
+  return false;
+}
+
 export function resolveDshDataDir(env: NodeJS.ProcessEnv, dataDir?: string): string {
   const explicit = dataDir?.trim() ?? '';
   if (explicit.length > 0) return path.resolve(explicit);
@@ -182,7 +221,9 @@ export function sweepDshSessionOrphans(root: string): void {
 
 /**
  * 从上游会话事件里取出正文和结束原因。
- * 正文在 `data.message.content`，流式片段在 `data.stream`，结束原因在 `data.reason.kind`。
+ * 正文在 `data.message.content`，随整段 `assistant/message` 到达。
+ * `data.stream` 是这条事件上的事后记录，没有单独的增量通知。
+ * 结束原因在 `data.reason.kind`。
  */
 export function describeDshSessionEvent(event: unknown): {
   type: string;
@@ -222,6 +263,8 @@ export class DshChatExecutor implements AgentExecutor {
   private readonly promptTimeoutMs: number;
   private readonly onSpawn?: (pid: number) => void;
   private readonly sessionsRoot: string;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly instanceId = randomBytes(4).toString('hex');
   private readonly known = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly stopping = new Set<string>();
@@ -229,6 +272,7 @@ export class DshChatExecutor implements AgentExecutor {
   private readonly earlyReceipt = new Map<string, (receipt: CancelReceipt) => void>();
 
   constructor(env: NodeJS.ProcessEnv = process.env, options: DshExecutorOptions = {}) {
+    this.env = env;
     this.configResult = readDshModelConfig(env);
     this.bin = options.bin ?? resolveDshBinary(env);
     if (options.mode !== undefined) this.mode = options.mode;
@@ -247,10 +291,15 @@ export class DshChatExecutor implements AgentExecutor {
       liveInjection: false,
       sessionResume: true,
       cancelReceipt: true,
-      streaming: true,
+      streaming: false,
       verified: this.configResult.ok && this.bin !== null,
       mode: 'native',
     });
+  }
+
+  /** 当前构建是否带有可加载的 Office 技能文件。 */
+  officeReady(): boolean {
+    return officeSkillsReady(this.env);
   }
 
   /** 运行作废或节点结束后删掉这次会话目录。 */
@@ -281,6 +330,20 @@ export class DshChatExecutor implements AgentExecutor {
     if (!this.configResult.ok) throw new ExecutorNotImplementedError(this.configResult.reason);
     if (this.bin === null) throw new ExecutorNotImplementedError(missingDshRuntimeReason());
     this.known.add(request.runId);
+    const unsupported = unsupportedAttachment(request);
+    if (unsupported !== null) {
+      this.finished.add(request.runId);
+      const pending = this.earlyReceipt.get(request.runId);
+      this.earlyReceipt.delete(request.runId);
+      pending?.({ receipt: 'rejected', reason: '运行已经结束。' });
+      yield {
+        type: 'failed',
+        fault: 'model-error',
+        message: unsupported,
+        simulated: false,
+      };
+      return;
+    }
     const bin = this.bin;
     if (!canExecute(bin)) {
       this.finished.add(request.runId);
@@ -293,17 +356,21 @@ export class DshChatExecutor implements AgentExecutor {
       return;
     }
     const config = this.configResult.config;
-    const sessionId = sanitizeId(request.resumeSessionId ?? `zhuma-${request.runId}`);
+    const sessionId = sanitizeId(request.resumeSessionId ?? this.allocateSessionId());
     const located = this.locate(sessionId);
     const home = located.home;
     const created = located.created;
-    writeRunHome(home, {
-      skills: request.skills ?? [],
-      mcp: request.mcp ?? [],
-      toolAllowlist: request.toolAllowlist ?? [],
-      modelId: config.modelId,
-      baseUrl: config.baseUrl,
-    });
+    writeRunHome(
+      home,
+      {
+        skills: request.skills ?? [],
+        mcp: request.mcp ?? [],
+        toolAllowlist: request.toolAllowlist ?? [],
+        modelId: config.modelId,
+        baseUrl: config.baseUrl,
+      },
+      this.env,
+    );
     const child = spawn(bin, ['--profile', 'sdk'], {
       cwd: home,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -430,6 +497,10 @@ export class DshChatExecutor implements AgentExecutor {
     }
   }
 
+  private allocateSessionId(): string {
+    return `zhuma-${this.instanceId}-${randomBytes(6).toString('hex')}`;
+  }
+
   private locate(sessionId: string): { home: string; created: boolean } {
     const existing = this.lookup(sessionId);
     if (existing !== null && existsSync(existing)) return { home: existing, created: false };
@@ -501,13 +572,6 @@ function promptBlocks(request: AgentRunRequest): readonly Record<string, unknown
       });
     } else if (isTextMedia(item.mediaType)) {
       blocks.push({ type: 'text', text: Buffer.from(item.bytes).toString('utf8') });
-    } else {
-      blocks.push({
-        type: 'file',
-        data: Buffer.from(item.bytes).toString('base64'),
-        mimeType: item.mediaType,
-        name: item.name ?? item.id,
-      });
     }
   }
   return blocks;
@@ -848,6 +912,7 @@ function writeRunHome(
     readonly modelId: string;
     readonly baseUrl: string;
   },
+  env: NodeJS.ProcessEnv,
 ): void {
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
@@ -855,6 +920,7 @@ function writeRunHome(
   mkdirSync(granted, { recursive: true, mode: 0o700 });
   chmodSync(granted, 0o700);
   for (const skill of input.skills) {
+    if (skill.id === 'skill-office') continue;
     const dir = path.join(granted, sanitizeId(skill.id));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
@@ -868,15 +934,15 @@ function writeRunHome(
       toolAllowlist: input.toolAllowlist,
     }),
   );
-  writePrivate(path.join(home, 'cordis.patch.yml'), renderPatch(home, input));
+  writePrivate(path.join(home, 'cordis.patch.yml'), renderPatch(home, input, env));
   restrictTree(home);
 }
 
 function skillDocument(skill: SkillGrant): string {
   const name = kebab(skill.id);
-  const description = oneLine(skill.description ?? skill.label ?? name);
-  const body = (skill.body ?? skill.label ?? description).trim();
-  return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n\n版本：${skill.version}\n`;
+  const plain = oneLine(skill.description ?? skill.label ?? name);
+  const body = (skill.body ?? skill.label ?? plain).trim();
+  return `---\nname: ${name}\ndescription: ${yamlQuote(plain)}\n---\n\n${body}\n\n版本：${skill.version}\n`;
 }
 
 function renderPatch(
@@ -888,6 +954,7 @@ function renderPatch(
     readonly modelId: string;
     readonly baseUrl: string;
   },
+  env: NodeJS.ProcessEnv,
 ): string {
   const allow = new Set(input.toolAllowlist);
   const lines = [
@@ -909,7 +976,11 @@ function renderPatch(
     '    customSkillDirs:',
     `      - ${yamlQuote(path.join(home, 'granted-skills'))}`,
     '- id: skill-office',
-    `  disabled: ${input.skills.some((skill) => skill.id === 'skill-office') ? 'false' : 'true'}`,
+    `  disabled: ${
+      input.skills.some((skill) => skill.id === 'skill-office') && officeSkillsReady(env)
+        ? 'false'
+        : 'true'
+    }`,
   ];
   for (const group of TOOL_GROUPS) {
     const enabled =
@@ -947,9 +1018,15 @@ function renderPatch(
 }
 
 function mcpReady(item: McpGrant): boolean {
-  if (item.transport === 'stdio') return (item.command ?? '').length > 0;
-  if (item.transport === 'streamable-http') return (item.url ?? '').length > 0;
-  return false;
+  return mcpTransportReady(item);
+}
+
+function unsupportedAttachment(request: AgentRunRequest): string | null {
+  for (const item of request.attachments ?? []) {
+    const reason = attachmentRefusalReason(item.name ?? item.id, item.mediaType);
+    if (reason !== null) return reason;
+  }
+  return null;
 }
 
 function writePrivate(file: string, text: string): void {

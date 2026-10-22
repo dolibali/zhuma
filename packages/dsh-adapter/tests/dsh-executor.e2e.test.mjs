@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   DshChatExecutor,
@@ -6,6 +9,14 @@ import {
   readDshModelConfig,
   resolveDshBinary,
 } from '@zhuma/dsh-adapter';
+
+function isolatedEnv(extra = {}) {
+  return {
+    ...process.env,
+    ZHUMA_DATA_DIR: mkdtempSync(path.join(tmpdir(), 'zhuma-e2e-')),
+    ...extra,
+  };
+}
 
 test('真实执行器：发送、停止回执、失败展示和重新开始', { timeout: 180_000 }, async (t) => {
   const config = readDshModelConfig(process.env);
@@ -19,7 +30,8 @@ test('真实执行器：发送、停止回执、失败展示和重新开始', { 
     );
   }
   const secrets = [config.config.baseUrl, config.config.apiKey];
-  const desk = openDesk(new DshChatExecutor(process.env));
+  const env = isolatedEnv();
+  const desk = openDesk(new DshChatExecutor(env));
 
   const sent = desk.send({ text: '用一句话回复：收到。', idempotencyKey: 'e2e-send' });
   assert.equal(sent.ok, true);
@@ -48,7 +60,7 @@ test('真实执行器：发送、停止回执、失败展示和重新开始', { 
   assertClean(stopped.snapshot, secrets);
   console.log('停止回执：通过');
 
-  await assertFailureDisplay(secrets);
+  await assertFailureDisplay(secrets, env);
   console.log('失败展示：通过');
 
   const restarted = desk.retry('e2e-restart');
@@ -73,8 +85,56 @@ test('真实执行器：发送、停止回执、失败展示和重新开始', { 
     true,
   );
   assertClean(afterRestart, secrets);
-  await assertRestartFromRevision(new DshChatExecutor(process.env));
+  await assertRestartFromRevision(new DshChatExecutor(env));
   console.log('重新开始：通过');
+});
+
+test('真实执行器：拒绝 PDF 后纯文本仍然成功', { timeout: 180_000 }, async (t) => {
+  const config = readDshModelConfig(process.env);
+  if (!config.ok) {
+    t.skip(`跳过真实执行器：${config.reason}`);
+    return;
+  }
+  if (resolveDshBinary(process.env) === null) {
+    throw new Error(
+      '模型环境已配置，但没有 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。',
+    );
+  }
+  const secrets = [config.config.baseUrl, config.config.apiKey];
+  const desk = openDesk(new DshChatExecutor(isolatedEnv()));
+  const pdf = desk.addAttachment({
+    name: '说明.pdf',
+    mediaType: 'application/pdf',
+    bytesBase64: Buffer.from('%PDF-1.4\n').toString('base64'),
+  });
+  assert.equal(pdf.ok, false);
+  assert.equal(pdf.code, 'attachment-unsupported');
+  assert.match(pdf.reason, /没有可发送的附件引用/);
+  assert.equal(desk.snapshot().runs.length, 0);
+  assert.equal(desk.snapshot().node.status, 'ready');
+  assertClean(pdf.snapshot, secrets);
+  console.log('上传 PDF：拒绝，没有运行');
+
+  const first = desk.send({ text: '用一句话回复：收到。', idempotencyKey: 'e2e-pdf-text' });
+  assert.equal(first.ok, true);
+  await desk.flush();
+  assert.equal(desk.snapshot().runs.find((run) => run.id === first.runId)?.status, 'completed');
+  assert.equal(desk.snapshot().node.status, 'ready');
+  assertClean(desk.snapshot(), secrets);
+  console.log('第一轮纯文本：通过');
+
+  const second = desk.send({ text: '用一句话回复：继续。', idempotencyKey: 'e2e-pdf-next' });
+  assert.equal(second.ok, true);
+  await desk.flush();
+  const after = desk.snapshot();
+  assert.equal(after.runs.find((run) => run.id === second.runId)?.status, 'completed');
+  assert.equal(
+    after.runs.find((run) => run.id === second.runId)?.sessionId,
+    after.runs[0].sessionId,
+  );
+  assert.equal(after.node.status, 'ready');
+  assertClean(after, secrets);
+  console.log('第二轮纯文本：通过');
 });
 
 function openDesk(executor, nodeStatus = 'ready') {
@@ -118,10 +178,10 @@ async function stopWhileRunning(desk) {
   throw new Error('三次都在停止前结束，没有取得停止回执');
 }
 
-async function assertFailureDisplay(secrets) {
+async function assertFailureDisplay(secrets, env) {
   const unknown = openDesk(
     new DshChatExecutor({
-      ...process.env,
+      ...env,
       ZHUMA_MODEL_ID: 'not-a-model',
     }),
   );
@@ -135,7 +195,7 @@ async function assertFailureDisplay(secrets) {
 
   const wrong = openDesk(
     new DshChatExecutor({
-      ...process.env,
+      ...env,
       ZHUMA_MODEL_API_KEY: 'invalid-key',
     }),
   );

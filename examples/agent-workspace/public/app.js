@@ -197,8 +197,11 @@ function renderThread() {
     );
   }
   for (const turn of view.turns) {
+    const body = turn.generating
+      ? '<p data-testid="generating">生成中</p>'
+      : `<p>${escapeHtml(turn.body)}</p>`;
     parts.push(
-      `<article class="turn${turn.simulated ? ' simulated' : ''}" data-testid="turn" data-role="${escapeHtml(turn.role)}"><header><strong>${escapeHtml(turn.roleLabel)}</strong>${turn.simulated ? '<span class="meta">模拟</span>' : ''}</header><p>${escapeHtml(turn.body)}</p></article>`,
+      `<article class="turn${turn.simulated ? ' simulated' : ''}" data-testid="turn" data-role="${escapeHtml(turn.role)}"><header><strong>${escapeHtml(turn.roleLabel)}</strong>${turn.simulated ? '<span class="meta">模拟</span>' : ''}</header>${body}</article>`,
     );
   }
   for (const activity of view.activities) {
@@ -320,7 +323,7 @@ function asideMarkup(view) {
       .filter((item) => item.selected)
       .map(
         (item) =>
-          `<button class="chip" type="button" data-testid="mcp-chip" data-remove="mcp" data-id="${escapeHtml(item.id)}">${escapeHtml(item.label)}${item.origin ? ` · ${escapeHtml(item.origin)}` : ''} ×</button>`,
+          `<button class="chip" type="button" data-testid="mcp-chip" data-remove="mcp" data-id="${escapeHtml(item.id)}">${escapeHtml(item.label)}${item.origin ? ` · ${escapeHtml(item.origin)}` : ''}${item.connection ? ` · ${escapeHtml(item.connection)}` : ''} ×</button>`,
       )
       .join('')}</div>`,
     '<h2>上下文</h2>',
@@ -366,7 +369,7 @@ function unavailableNotes(view) {
 }
 
 function choice(kind, item) {
-  return `<label class="choice"><input data-kind="${kind}" data-testid="${kind}" value="${escapeHtml(item.id)}" type="checkbox"${item.selected ? ' checked' : ''}${item.available ? '' : ' disabled'} /><span>${escapeHtml(item.label)}${item.origin ? ` · ${escapeHtml(item.origin)}` : ''}${item.reason ? `<small>${escapeHtml(item.reason)}</small>` : ''}</span></label>`;
+  return `<label class="choice"><input data-kind="${kind}" data-testid="${kind}" value="${escapeHtml(item.id)}" type="checkbox"${item.selected ? ' checked' : ''}${item.available ? '' : ' disabled'} /><span>${escapeHtml(item.label)}${item.origin ? ` · ${escapeHtml(item.origin)}` : ''}${item.connection ? ` · ${escapeHtml(item.connection)}` : ''}${item.reason ? `<small>${escapeHtml(item.reason)}</small>` : ''}</span></label>`;
 }
 
 composer.addEventListener('submit', (event) => {
