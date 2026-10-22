@@ -19,6 +19,7 @@ export const PlanRequestSchema = z.strictObject({
   taskId: z.string().min(1).max(100),
   expectedRevision: z.number().int().nonnegative(),
   instruction: z.string().max(8000),
+  baseProposalId: z.string().uuid().optional(),
 });
 export type PlanRequest = z.infer<typeof PlanRequestSchema>;
 export const PlanProposalSchema = z.strictObject({
@@ -31,7 +32,12 @@ export const PlanProposalSchema = z.strictObject({
 export type PlanProposal = z.infer<typeof PlanProposalSchema>;
 
 /** Only selected, available identities and non-secret resource definitions enter the prompt. */
-export function buildPlanningContext(state: Workbench, task: WorkTask, instruction: string) {
+export function buildPlanningContext(
+  state: Workbench,
+  task: WorkTask,
+  instruction: string,
+  baseProposal?: PlanProposal,
+) {
   const participants = state.participants
     .filter((p) => task.participantIds.includes(p.id) && p.available)
     .map((p) => ({
@@ -53,7 +59,15 @@ export function buildPlanningContext(state: Workbench, task: WorkTask, instructi
     project: state.projects.find((p) => p.id === task.projectId),
     participants,
     assets: state.assets.filter((a) => a.available),
-    currentWorkflows: task.workflows,
+    currentWorkflows: baseProposal?.result.workflows ?? task.workflows,
+    previousProposal: baseProposal
+      ? {
+          id: baseProposal.id,
+          summary: baseProposal.result.summary,
+          questions: baseProposal.result.questions,
+          assumptions: baseProposal.result.assumptions,
+        }
+      : null,
     instruction,
   };
   if (JSON.stringify(context).length > 90000)
@@ -72,17 +86,19 @@ reviewRequired=true 时 reviewerIds 至少一人，可多选人或专家，所�
 questions 只用于阻碍“编排”本身的关键问题，例如任务目标不明、缺少必须的负责人或独立评审能力、两项强制要求冲突，最多 3 个。不能把每个执行细节都变成前置问卷。
 若已有合适的人负责需求或接口确认，CSV 列名、编码、掩码格式、错误文案、测试账号等实现细节应写入相应节点要确认的工作与交付说明，由后续节点消费确认结果；不要因此阻止整个工作流应用，也不要擅自当成已定规则。
 完全无法确定范围或合理分工时 workflows=[] 并提问。合理推断写入 assumptions，明确尚待相应节点确认。存在 questions 时草案不能被应用。
-已有工作流时按补充要求改进，尽量保留未变节点的 ID、配置及分工。position 使用适合画布的坐标：按依赖从左到右、并行分支从上到下。`;
+currentWorkflows 是本次调整的工作流基线；previousProposal 存在时，它来自用户正在审阅但尚未应用的草案。上一轮的问题与推断仍是待确认信息，结合用户本轮要求处理。
+已有工作流时只修改补充要求涉及的部分，保留其余工作流和节点的 ID、依赖、配置及分工，不要重新从空白生成。position 使用适合画布的坐标：按依赖从左到右、并行分支从上到下。`;
 
 export function planningPrompt(
   state: Workbench,
   task: WorkTask,
   instruction: string,
+  baseProposal?: PlanProposal,
 ): { system: string; input: string } {
   return {
     system: PLANNING_SYSTEM,
     input: JSON.stringify({
-      context: buildPlanningContext(state, task, instruction),
+      context: buildPlanningContext(state, task, instruction, baseProposal),
       outputSchema: z.toJSONSchema(PlanningResultSchema),
     }),
   };

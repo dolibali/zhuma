@@ -6,7 +6,7 @@ import { WorkbenchService } from '../dist/workbench-service.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
 function createService(options = {}) {
-  let state = fixture().state;
+  let state = options.state ?? fixture().state;
   const audits = new Map();
   const service = new WorkbenchService(
     {
@@ -170,4 +170,213 @@ test('planning contract: cancellation and stale input never call the model or ap
   );
   assert.equal(calls, 0);
   assert.equal(service.snapshot().revision, 0);
+});
+
+const planRequest = (overrides = {}) => ({
+  requestId: randomUUID(),
+  taskId: 'task',
+  expectedRevision: 0,
+  instruction: '',
+  ...overrides,
+});
+const planningResult = (workflows = fixture().task.workflows) => ({
+  summary: '按能力分配',
+  questions: [],
+  assumptions: ['沿用现有接口'],
+  workflows,
+});
+const resultModel = (result) => ({
+  name: 'contract-fixture',
+  generate: async () => JSON.stringify(result),
+});
+
+test('planning adjustment contract: ten-node un-applied proposal is the full baseline, including nested work; only requested assignment changes', async () => {
+  const { state, task, node } = fixture();
+  task.participantIds.push('outside');
+  task.workflows[0].nodes = [];
+  const { service, audits } = createService({ state });
+  const before = service.snapshot();
+  const workflows = [
+    {
+      ...task.workflows[0],
+      nodes: Array.from({ length: 10 }, (_, index) => ({
+        ...structuredClone(node),
+        id: `step-${index + 1}`,
+        title: `第 ${index + 1} 步`,
+        description: '保留完整工作说明。'.repeat(120),
+        assigneeId: index === 2 ? 'qa' : 'chen',
+        reviewerIds: ['outside'],
+        dependsOn: index > 0 ? [`step-${index}`] : [],
+        position: { x: index * 260, y: 80 },
+      })),
+    },
+    {
+      id: 'nested',
+      name: '细化实施',
+      parentNodeId: 'step-8',
+      nodes: [{ ...node, id: 'nested-step' }],
+    },
+  ];
+  const initial = await service.plan(
+    planRequest(),
+    resultModel(planningResult(workflows)),
+    signal(),
+  );
+  // Resolve the reference from durable audits even in a new service instance, not a UI/session cache.
+  const restarted = new WorkbenchService(
+    { read: () => service.snapshot(), write: async () => assert.fail('planning wrote a workflow') },
+    {
+      get: (id) => audits.get(id),
+      put: async (audit) => audits.set(audit.id, structuredClone(audit)),
+    },
+  );
+  let calls = 0;
+  const instruction = '第三步换陈宁，其余不变。';
+  const model = {
+    name: 'contract-adjustment',
+    generate: async (_system, input) => {
+      calls++;
+      const { context } = JSON.parse(input);
+      assert.equal(context.instruction, instruction);
+      assert.deepEqual(context.currentWorkflows, workflows);
+      assert.ok(JSON.stringify(context.currentWorkflows).length > 8000);
+      assert.deepEqual(context.previousProposal, {
+        id: initial.id,
+        summary: initial.result.summary,
+        questions: initial.result.questions,
+        assumptions: initial.result.assumptions,
+      });
+      const adjusted = structuredClone(context.currentWorkflows);
+      adjusted[0].nodes[2].assigneeId = 'chen';
+      return JSON.stringify(planningResult(adjusted));
+    },
+  };
+  const request = planRequest({ baseProposalId: initial.id, instruction });
+  const adjusted = await restarted.plan(request, model, signal());
+  const expected = structuredClone(workflows);
+  expected[0].nodes[2].assigneeId = 'chen';
+  assert.deepEqual(adjusted.result.workflows, expected);
+  assert.deepEqual(service.snapshot(), before);
+  assert.deepEqual(audits.get(initial.id).proposal, initial);
+  assert.deepEqual(await restarted.plan(request, model, signal()), adjusted);
+  assert.equal(calls, 1);
+  await assert.rejects(
+    restarted.plan({ ...request, baseProposalId: adjusted.id }, model, signal()),
+    { code: 'request-reused' },
+  );
+});
+
+test('planning adjustment contract: unknown, wrong-task and unfinished proposal references fail before model calls', async () => {
+  const { state, task } = fixture();
+  state.tasks.push({ ...structuredClone(task), id: 'another-task' });
+  const { service, audits } = createService({ state });
+  const initial = await service.plan(planRequest(), resultModel(planningResult()), signal());
+  const unfinishedId = randomUUID();
+  audits.set(unfinishedId, { ...audits.get(initial.id), id: unfinishedId, status: 'failed' });
+  let calls = 0;
+  const model = {
+    name: 'must-not-run',
+    generate: async () => {
+      calls++;
+      return '{}';
+    },
+  };
+  for (const [reference, code] of [
+    [{ baseProposalId: randomUUID() }, 'proposal-unavailable'],
+    [{ baseProposalId: initial.id, taskId: 'another-task' }, 'proposal-mismatch'],
+    [{ baseProposalId: unfinishedId }, 'proposal-unavailable'],
+  ]) {
+    await assert.rejects(service.plan(planRequest(reference), model, signal()), { code });
+  }
+  assert.equal(calls, 0);
+  assert.equal(service.snapshot().revision, 0);
+});
+
+test('planning adjustment contract: a proposal becomes stale when the task or catalog revision changes', async () => {
+  const { service } = createService();
+  const initial = await service.plan(planRequest(), resultModel(planningResult()), signal());
+  await service.command(
+    { requestId: randomUUID(), expectedRevision: 0, command: command() },
+    signal(),
+  );
+  const before = service.snapshot();
+  await assert.rejects(
+    service.plan(
+      planRequest({ expectedRevision: 1, baseProposalId: initial.id }),
+      { name: 'must-not-run', generate: async () => assert.fail('stale reference called model') },
+      signal(),
+    ),
+    { code: 'conflict' },
+  );
+  assert.deepEqual(service.snapshot(), before);
+});
+
+test('planning adjustment contract: questions and assumptions travel separately from the full-length instruction', async () => {
+  const { service } = createService();
+  const result = { ...planningResult([]), questions: ['需要哪个成员确认范围？'] };
+  const initial = await service.plan(planRequest(), resultModel(result), signal());
+  const instruction = '请陈宁确认范围。'.padEnd(8000, '补');
+  await service.plan(
+    planRequest({ baseProposalId: initial.id, instruction }),
+    {
+      name: 'contract-answer',
+      generate: async (_system, input) => {
+        const { context } = JSON.parse(input);
+        assert.equal(context.instruction, instruction);
+        assert.deepEqual(context.currentWorkflows, []);
+        assert.deepEqual(context.previousProposal.questions, result.questions);
+        assert.deepEqual(context.previousProposal.assumptions, result.assumptions);
+        return JSON.stringify(planningResult());
+      },
+    },
+    signal(),
+  );
+  assert.equal(service.snapshot().revision, 0);
+});
+
+test('planning adjustment contract: failed or cancelled replacements retain the original proposal and persisted workflow', async () => {
+  const { service, audits } = createService();
+  const initial = await service.plan(planRequest(), resultModel(planningResult()), signal());
+  const before = service.snapshot();
+  const originalAudit = structuredClone(audits.get(initial.id));
+  const failure = planRequest({ baseProposalId: initial.id });
+  await assert.rejects(
+    service.plan(
+      failure,
+      {
+        name: 'failure',
+        generate: async () => {
+          throw Error('model unavailable');
+        },
+      },
+      signal(),
+    ),
+    /model unavailable/,
+  );
+  const controller = new AbortController();
+  const cancellation = planRequest({ baseProposalId: initial.id });
+  await assert.rejects(
+    service.plan(
+      cancellation,
+      {
+        name: 'cancelled',
+        generate: async () => {
+          controller.abort();
+          return JSON.stringify(planningResult());
+        },
+      },
+      controller.signal,
+    ),
+    { name: 'AbortError' },
+  );
+  assert.equal(audits.get(failure.requestId).status, 'failed');
+  assert.equal(audits.get(cancellation.requestId).status, 'failed');
+  assert.deepEqual(audits.get(initial.id), originalAudit);
+  assert.deepEqual(service.snapshot(), before);
+  const retry = await service.plan(
+    planRequest({ baseProposalId: initial.id }),
+    resultModel(planningResult()),
+    signal(),
+  );
+  assert.deepEqual(retry.result, initial.result);
 });

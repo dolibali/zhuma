@@ -242,22 +242,23 @@ export function TaskEditor({
     setMessage('');
     const abort = new AbortController();
     controller.current = abort;
-    const prior = proposal
-      ? `\n上一轮问题：${proposal.result.questions.join('；')}\n上一轮推断：${proposal.result.assumptions.join('；')}`
-      : '';
     // Keep the reviewed proposal available if this replacement fails or is cancelled.
     try {
-      setProposal(
-        await api.plan(
-          task.id,
-          result.revision,
-          `${instruction}${prior}`.slice(0, 8000),
-          abort.signal,
-        ),
+      const next = await api.plan(
+        task.id,
+        result.revision,
+        instruction,
+        abort.signal,
+        proposal?.id,
       );
+      abort.signal.throwIfAborted();
+      setProposal(next);
     } catch (error) {
       if (abort.signal.aborted) setMessage('已取消规划');
-      else setError(error instanceof Error ? error.message : '规划失败。');
+      else {
+        setError(error instanceof Error ? error.message : '规划失败。');
+        setConflict(error instanceof WorkbenchError && error.code === 'conflict');
+      }
     } finally {
       setPlanning(false);
       controller.current = null;
@@ -860,6 +861,7 @@ export function TaskEditor({
                 >
                   <textarea
                     rows={3}
+                    maxLength={8000}
                     value={instruction}
                     disabled={busy || planning}
                     onChange={(e) => setInstruction(e.target.value)}
@@ -877,8 +879,16 @@ export function TaskEditor({
                     }
                     busy={planning}
                     busyLabel="正在规划…"
-                    title={!members.length ? '请先添加任务参与者' : undefined}
-                    disabled={busy || planning || task.status === 'ready' || !members.length}
+                    title={
+                      conflict
+                        ? '请先读取最新版本，再重新生成草案'
+                        : !members.length
+                          ? '请先添加任务参与者'
+                          : undefined
+                    }
+                    disabled={
+                      busy || planning || conflict || task.status === 'ready' || !members.length
+                    }
                     onClick={() => void generate()}
                   >
                     {proposal ? '重新规划' : '生成工作流草案'}
@@ -894,11 +904,16 @@ export function TaskEditor({
                       busy={busy}
                       busyLabel="应用中…"
                       title={
-                        proposal.result.questions.length ? '请先回答关键问题并重新规划' : undefined
+                        conflict
+                          ? '请先读取最新版本，再重新生成草案'
+                          : proposal.result.questions.length
+                            ? '请先回答关键问题并重新规划'
+                            : undefined
                       }
                       disabled={
                         busy ||
                         planning ||
+                        conflict ||
                         !!proposal.result.questions.length ||
                         !proposal.result.workflows.length
                       }

@@ -100,7 +100,21 @@ export class WorkbenchService {
     if (!task) throw new WorkbenchError('not-found', '任务不存在。');
     if (task.status !== 'draft')
       throw new WorkbenchError('not-draft', '请先将工作流切回草稿，再重新规划。');
-    const prompt = planningPrompt(state, task, request.instruction);
+    let baseProposal: PlanProposal | undefined;
+    if (request.baseProposalId) {
+      const base = this.audits.get(request.baseProposalId);
+      if (!base || base.status !== 'completed' || !base.proposal)
+        throw new WorkbenchError('proposal-unavailable', '原草案已不可用，请放弃草案后重新生成。');
+      if (base.taskId !== task.id || base.proposal.taskId !== task.id)
+        throw new WorkbenchError('proposal-mismatch', '原草案不属于当前任务，不能用于调整。');
+      if (base.baseRevision !== state.revision || base.proposal.baseRevision !== state.revision)
+        throw new WorkbenchError(
+          'conflict',
+          '原草案的规划依据已经变化，请读取最新版本后重新生成。',
+        );
+      baseProposal = base.proposal;
+    }
+    const prompt = planningPrompt(state, task, request.instruction, baseProposal);
     const audit: PlanningAudit = {
       id: request.requestId,
       fingerprint: hash,

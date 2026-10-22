@@ -16,6 +16,7 @@ export interface WorkbenchApi {
     revision: number,
     instruction: string,
     signal: AbortSignal,
+    baseProposalId?: string,
   ): Promise<PlanProposal>;
 }
 export function createWorkbenchApi(rpc: ClientConnectionRpc): WorkbenchApi {
@@ -40,11 +41,11 @@ export function createWorkbenchApi(rpc: ClientConnectionRpc): WorkbenchApi {
     async save(expectedRevision, command, requestId) {
       return WorkbenchSchema.parse(await call('command', { expectedRevision, command, requestId }));
     },
-    async plan(taskId, expectedRevision, instruction, signal) {
+    async plan(taskId, expectedRevision, instruction, signal, baseProposalId) {
       return PlanProposalSchema.parse(
         await call(
           'plan',
-          { requestId: crypto.randomUUID(), taskId, expectedRevision, instruction },
+          { requestId: crypto.randomUUID(), taskId, expectedRevision, instruction, baseProposalId },
           signal,
         ),
       );
