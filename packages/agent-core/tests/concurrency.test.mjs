@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   appendDomainEvent,
+  canonicalPayload,
   decideCommand,
   eventsAfter,
   recordCommandEvent,
@@ -196,4 +197,47 @@ test('appends an event only for an accepted command and supports incremental rec
     seen.map((item) => item.eventId),
     ['evt-1'],
   );
+});
+
+test('canonical payload keeps top-level and nested __proto__ keys', () => {
+  const nestedFirst = JSON.parse('{"input":{"__proto__":{"value":"first"}}}');
+  const nestedDifferent = JSON.parse('{"input":{"__proto__":{"value":"different"}}}');
+  const firstText = canonicalPayload(nestedFirst);
+  const differentText = canonicalPayload(nestedDifferent);
+  assert.notEqual(firstText, differentText);
+  assert.match(firstText, /__proto__/);
+  assert.match(firstText, /first/);
+  assert.match(differentText, /different/);
+  const topFirst = canonicalPayload(JSON.parse('{"__proto__":{"v":1}}'));
+  const topSecond = canonicalPayload(JSON.parse('{"__proto__":{"v":2}}'));
+  assert.notEqual(topFirst, topSecond);
+  assert.match(topFirst, /__proto__/);
+  assert.match(topSecond, /"v":2/);
+});
+
+test('the same idempotency key with a different __proto__ payload mismatches', () => {
+  const envelope = (payload) => ({
+    idempotencyKey: 'k',
+    actorId: 'u',
+    objectId: 'o',
+    expectedVersion: 0,
+    payload,
+  });
+  const firstPayload = JSON.parse('{"input":{"__proto__":{"value":"first"}}}');
+  const differentPayload = JSON.parse('{"input":{"__proto__":{"value":"different"}}}');
+  const first = decideCommand({
+    envelope: envelope(firstPayload),
+    currentVersion: 0,
+    stored: [],
+    apply: () => ({ disposition: 'accept', result: 'ok' }),
+  });
+  assert.equal(first.decision.status, 'applied');
+  const second = decideCommand({
+    envelope: envelope(differentPayload),
+    currentVersion: first.version,
+    stored: first.stored,
+    apply: () => ({ disposition: 'accept', result: 'ok2' }),
+  });
+  assert.equal(second.decision.status, 'idempotency-mismatch');
+  assert.equal(second.version, first.version);
 });

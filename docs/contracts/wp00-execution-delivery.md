@@ -181,7 +181,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 - 已解决评论不进入汇总。把评论标成已解决不会产生通过票。
 - 投票人必须就是当前 actor。`actorId` 为空，或与 `ballot.reviewerId` 不同，返回 `actor-mismatch`，票不写入。
 
-`applyReviewToNode` 只接受当前轮次。轮次为 `voided` 返回 `voided-round`。轮次标识或产物版本与节点当前值不一致，分别返回 `stale-round`、`stale-version`。轮次带有选票时，结局按选票重算，不信任调用方写入的 `round.status`。调用方给的结局与重算不一致返回 `unbound-evaluation`，因此一份伪造的 `approved` 状态若票里仍有退回，不能把节点完成。没有选票字段的旧形状才退回按状态核对。通过后节点到 `completed`，效果 `accept-handoff`。退回后节点到 `needs-revision`，效果 `block-downstream`。`pending` 和 `invalid-policy` 不推进节点。
+`applyReviewToNode` 只接受当前轮次。轮次为 `voided` 返回 `voided-round`。轮次标识或产物版本与节点当前值不一致，分别返回 `stale-round`、`stale-version`。推进必须带完整轮次：`reviewerIds` 和 `ballots` 都要在。结局只按选票重算，不信任调用方写入的 `round.status`，也不再按状态核对缺少名单或选票的旧形状。调用方给的结局与重算不一致、名单缺失、选票缺失，或通过票为零，都返回 `unbound-evaluation`，节点不能到 `completed`。因此一份伪造的 `approved` 状态若票里仍有退回，或根本没有通过票，不能把节点完成。名单为空是 `invalid-policy`，节点保持 `in-review`。通过后节点到 `completed`，效果 `accept-handoff`。退回后节点到 `needs-revision`，效果 `block-downstream`。`pending` 和 `invalid-policy` 不推进节点。
 
 `applyReviewSettlementCommand` 把同一次结算放进命令信封。载荷是 `{ roundId, artifactVersionId }`。期望版本不符返回 `conflict` 且不保存。同一键、同一 actor、同一载荷重放第一次的结果。键相同但轮次、版本或 actor 不同返回 `idempotency-mismatch`。尚未全员表态时命令为 `ignored`，不占版本。陈旧轮次、作废轮次和非法节点状态为 `rejected`，也不占版本。
 
@@ -224,7 +224,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 | `rejected`             | 领域拒绝，例如非法迁移                       | 不占版本，不保存                                                       |
 | `ignored`              | 领域判定没有新事实，例如依赖状态没有变化     | 不占版本，不保存                                                       |
 
-冲突不写入幂等记录，调用方重新加载后可以用同一键带上新的期望版本再试。非法迁移也不占用键。已经接受的键即使之后携带另一个期望版本，也只重放，不会第二次生效。
+冲突不写入幂等记录，调用方重新加载后可以用同一键带上新的期望版本再试。非法迁移也不占用键。已经接受的键即使之后携带另一个期望版本，也只重放，不会第二次生效。`canonicalPayload` 保留载荷里每一个自有 JSON 键，包括顶层和嵌套的 `__proto__`。同键不同内容返回 `idempotency-mismatch`，不会因为键名被丢掉而重放。
 
 节点命令版本从 0 开始。`applyNodeTransitionCommand` 负责除评审结算以外的节点迁移。`applyReviewSettlementCommand` 负责 `in-review` 的通过和退回，使用同一套期望版本、actor 和幂等键。两条命令的重放都不改变状态、版本和 `upstreamAffected`。原始 `review-resolved` 不能代替结算命令。
 

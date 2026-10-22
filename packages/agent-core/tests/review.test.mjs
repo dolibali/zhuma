@@ -395,9 +395,17 @@ test('review cannot be required without reviewers, and abnormal agent output is 
   assert.equal(invalid.outcome, 'invalid-policy');
   const stayed = settle(
     'in-review',
-    { id: 'round-1', artifactVersionId: 'art-1', status: 'open' },
+    {
+      id: 'round-1',
+      artifactVersionId: 'art-1',
+      status: 'open',
+      reviewerIds: [],
+      ballots: [],
+    },
     invalid,
   );
+  assert.equal(stayed.ok, true);
+  assert.equal(stayed.to, 'in-review');
   assert.equal(stayed.changed, false);
   assert.equal(
     transitionForSubmission('ready', { reviewRequired: true, reviewerIds: [] }).code,
@@ -424,6 +432,49 @@ test('review cannot be required without reviewers, and abnormal agent output is 
   });
   assert.equal(accepted.ok, true);
   assert.equal(accepted.action, 'approve');
+});
+
+test('a missing roster, missing ballots, or zero approvals never complete the node', () => {
+  const approved = { outcome: 'approved', approvedBy: [] };
+  const cases = [
+    {
+      label: 'missing roster and ballots',
+      round: { id: 'r', artifactVersionId: 'v', status: 'approved' },
+      evaluation: approved,
+    },
+    {
+      label: 'missing roster',
+      round: { id: 'r', artifactVersionId: 'v', status: 'approved', ballots: [] },
+      evaluation: approved,
+    },
+    {
+      label: 'missing ballots',
+      round: { id: 'r', artifactVersionId: 'v', status: 'approved', reviewerIds: ['h1'] },
+      evaluation: { outcome: 'approved', approvedBy: ['h1'] },
+    },
+    {
+      label: 'zero approvals',
+      round: {
+        id: 'round-1',
+        artifactVersionId: 'art-1',
+        status: 'approved',
+        reviewerIds: ['h1'],
+        ballots: [],
+      },
+      evaluation: approved,
+    },
+  ];
+  for (const item of cases) {
+    const result = applyReviewToNode('in-review', {
+      evaluation: item.evaluation,
+      round: item.round,
+      currentRoundId: item.round.id,
+      currentArtifactVersionId: item.round.artifactVersionId,
+    });
+    assert.equal(result.ok, false, item.label);
+    assert.equal(result.code, 'unbound-evaluation', item.label);
+    assert.notEqual(result.to, 'completed', item.label);
+  }
 });
 
 test('a forged approved status cannot complete a round that still has a send-back', () => {

@@ -122,10 +122,21 @@ function normalizePayload(value: unknown): unknown {
     });
   }
   if (typeof value === 'object' && value !== null && isPlainObject(value)) {
-    const normalized: Record<string, unknown> = {};
+    // A plain {} drops "__proto__" through the prototype setter. Null-prototype
+    // storage plus defineProperty keeps every own JSON key, including that one.
+    const normalized: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value).sort()) {
-      const child = value[key];
-      if (child !== undefined) normalized[key] = normalizePayload(child);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
+      const child = descriptor.value;
+      if (child !== undefined) {
+        Object.defineProperty(normalized, key, {
+          value: normalizePayload(child),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
     }
     return normalized;
   }

@@ -417,15 +417,6 @@ export function replaceReviewRound(
 export type ReviewApplicationRejection =
   'stale-round' | 'stale-version' | 'voided-round' | 'unbound-evaluation';
 
-function evaluationMatchesRound(
-  round: Pick<ReviewRound, 'status'>,
-  evaluation: ReviewEvaluation,
-): boolean {
-  if (evaluation.outcome === 'approved') return round.status === 'approved';
-  if (evaluation.outcome === 'changes-requested') return round.status === 'changes-requested';
-  return round.status === 'open';
-}
-
 function hasBallotRecord(
   round: Pick<ReviewRound, 'id' | 'artifactVersionId'> &
     Partial<Pick<ReviewRound, 'reviewerIds' | 'ballots'>>,
@@ -435,18 +426,17 @@ function hasBallotRecord(
 
 /**
  * Outcome comes from the ballots. A caller-supplied evaluation or round status
- * that disagrees with that tally is rejected. A round without ballot fields
- * falls back to matching the supplied evaluation against its status.
+ * that disagrees with that tally is rejected. A round missing its roster or
+ * ballots cannot advance by matching the supplied evaluation to its status.
  */
 function resolveEvaluation(
   round: Pick<ReviewRound, 'id' | 'artifactVersionId' | 'status'> &
     Partial<Pick<ReviewRound, 'reviewerIds' | 'ballots'>>,
   supplied: ReviewEvaluation,
 ): ReviewEvaluation | undefined {
-  if (!hasBallotRecord(round)) {
-    return evaluationMatchesRound(round, supplied) ? supplied : undefined;
-  }
+  if (!hasBallotRecord(round)) return undefined;
   const recomputed = aggregateReview(round);
+  if (recomputed.outcome === 'approved' && recomputed.approvedBy.length === 0) return undefined;
   return recomputed.outcome === supplied.outcome ? recomputed : undefined;
 }
 
