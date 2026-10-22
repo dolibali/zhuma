@@ -24,7 +24,16 @@ export function Modal({
     ref.current?.showModal();
   }, []);
   return (
-    <dialog className="zm-dialog" ref={ref} onCancel={close} aria-labelledby={titleId}>
+    <dialog
+      className="zm-dialog"
+      ref={ref}
+      onCancel={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      }}
+      aria-labelledby={titleId}
+    >
       <header>
         <h2 id={titleId}>{title}</h2>
         <button type="button" aria-label="关闭" onClick={close}>
@@ -119,30 +128,52 @@ export function MultiSelect({
   selected: string[];
   change(ids: string[]): void;
 }) {
+  const [search, setSearch] = useState('');
+  const matching = options.filter((option) =>
+    option.name.toLowerCase().includes(search.trim().toLowerCase()),
+  );
   return (
     <details className="zm-multiselect">
       <summary>
         {label}
         <span>已选 {selected.length}</span>
       </summary>
-      <div>
-        {options.map((option) => (
-          <label key={option.id}>
-            <input
-              type="checkbox"
-              checked={selected.includes(option.id)}
-              onChange={(e) =>
-                change(
-                  e.target.checked
-                    ? [...selected, option.id]
-                    : selected.filter((id) => id !== option.id),
-                )
-              }
-            />
-            {option.name}
-          </label>
-        ))}
-        {!options.length && <small>暂无可用选项</small>}
+      <div className="zm-choice-panel">
+        {options.length > 6 && (
+          <input
+            aria-label={`搜索${label}`}
+            placeholder={`搜索${label}…`}
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        )}
+        <div className="zm-choice-options">
+          {matching.map((option) => (
+            <label key={option.id} title={option.name}>
+              <input
+                type="checkbox"
+                checked={selected.includes(option.id)}
+                onChange={(e) =>
+                  change(
+                    e.target.checked
+                      ? [...selected, option.id]
+                      : selected.filter((id) => id !== option.id),
+                  )
+                }
+              />
+              <span>{option.name}</span>
+            </label>
+          ))}
+          {!options.length && <small>暂无可用选项</small>}
+          {!!options.length && !matching.length && (
+            <div className="zm-choice-empty">
+              <small>没有匹配项</small>
+              <button type="button" className="zm-quiet" onClick={() => setSearch('')}>
+                清除搜索
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </details>
   );

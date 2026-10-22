@@ -212,7 +212,7 @@ export function TaskEditor({
     }
   }
   async function readLatest() {
-    if (!confirm('读取最新版本会丢弃当前未保存的修改，确定继续吗？')) return;
+    if (!confirm('读取最新版本会放弃未保存的修改和未应用草案，确定继续吗？')) return;
     setBusy(true);
     try {
       const latest = await api.snapshot();
@@ -366,6 +366,11 @@ export function TaskEditor({
         </span>
         <span className="zm-spacer" />
         <Appearance store={appearance} />
+        {conflict && (
+          <Button disabled={busy || planning} onClick={() => void readLatest()}>
+            读取最新版本
+          </Button>
+        )}
         <span className="zm-save-state zm-muted" role="status">
           {dirty ? '未保存' : message || '已保存'}
         </span>
@@ -467,11 +472,6 @@ export function TaskEditor({
       {error && (
         <div role="alert" className="zm-error">
           {error}
-          {conflict && (
-            <button disabled={busy} onClick={() => void readLatest()}>
-              读取最新版本
-            </button>
-          )}
           <button onClick={() => setError('')} aria-label="关闭错误">
             ×
           </button>
