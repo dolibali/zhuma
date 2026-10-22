@@ -33,6 +33,8 @@
 
 当前 `ExecutionResult.completed` 是执行端口的结束状态，不是任务交付状态。图校验也不等于权限、预算或业务验收。
 
+节点执行、产物、评审和并发契约由成员 B 起草，见 [WP00 执行与交付契约](contracts/wp00-execution-delivery.md)。骨架里的 `TaskStatus` 仍是任务快照，不是该契约的节点状态机。项目、任务、计划版本和节点编排字段待成员 A 对齐。
+
 ## 插件与发行
 
 四个代码包不要求与插件数量相同。Host 插件可以组合核心服务；Client 插件显示相应模型；Rules、Skills、专家与模板是资源。实际插件声明、Peer dependencies、Bundle 配置以固定上游接口的集成测试为准。

@@ -1,6 +1,6 @@
 # A/B 交接提案与首个联调样例
 
-状态：2026-10-22，A 本批开发中。子任务容器及首轮行为边界已由协调侧确认，具体转换、权限和执行尚未实现。已读取 B PR #1 的 `80b1ff2` 公开契约。本文是 A 的交接方案，不代表 PR 已合入或双方全部冻结。B 的状态机、产物、投票和待办规则由 B 维护，A 不另写。
+状态：2026-10-22，B PR #1 已合入 main（`acdd5ef`），develop 正常合并该基线，保留双方导出与检查。单层已确认计划到最终 `NodeHandoff` 的纯映射已实现；真实执行 Host 服务与页面闭环仍待 B-M1 接入。子任务容器及首轮行为边界已由协调侧确认，具体转换、权限和调度尚未实现。B 的状态机、产物、投票和待办规则由 B 维护，A 不另写。
 
 ## 分层版本与身份
 
@@ -38,7 +38,7 @@ AI 输出可继续使用“嵌套草案”形状，作为一次提案的中间�
 
 ## 最小交接样例
 
-以下是边界提案，`inputDescription/outputDescription/assetRefs/expertRef` 为待补到 B NodeHandoff 的字段，**不是声称 B 已支持**。
+以下对齐已合入的 `NodeHandoff`：输入文字用 `inputNote`，交付说明用 `expectedOutput`；技能、MCP 与专家各自引用已确认快照。`revision` 是计划版本，不能代替 B 命令对象版本。
 
 ```json
 {
@@ -51,14 +51,17 @@ AI 输出可继续使用“嵌套草案”形状，作为一次提案的中间�
   "dependencyNodeIds": ["node-contract"],
   "reviewRequired": true,
   "reviewerIds": ["lin", "qa"],
-  "inputDescription": "读取已通过评审的接口约定",
-  "outputDescription": "接口实现与测试说明",
+  "inputNote": "读取已通过评审的接口约定",
+  "expectedOutput": "接口实现与测试说明",
   "inputRefs": [],
-  "assetRefs": [{ "id": "api-skill", "kind": "skill", "planSnapshotId": "task-orders-v1" }]
+  "skillRefs": [{ "id": "api-skill", "version": "task-orders-v1" }],
+  "mcpRefs": []
 }
 ```
 
-当前 A 通过 `createExecutionHandoff()` 导出 AppliedPlan，含不可变人员/资产内容快照。第一版资产版本用“计划快照 ID + 资产 ID”定位历史定义，不把可编辑的目录 ID 伪装成不可变版本；后续独立资产版本库可无损替代。专家定义同理。输入文字说明与可读取的 ArtifactVersion/ContextPack 引用分开；空 inputRefs 不是产物缺失的自动补造。真实引用由 B/context 按依赖、版本和权限解析。凭据不进入快照。
+入口均从 `@zhuma/agent-core` 导出：`createExecutionHandoff(task, state)` 取得持久化的 `AppliedPlan`，`createNodeHandoffs(appliedPlan)` 映射为 B 的节点定义。它校验快照中的人员、资产、依赖和评审，拒绝未确认、错任务或缺失引用；包含嵌套草稿时返回 `child-task-required`，不把子流程偷偷摊平成可派发节点。
+
+第一版 `VersionedRef.version = AppliedPlan.id`，资源 ID 在该快照内定位历史内容，不把可编辑的目录 ID 当成不可变版本。真人节点省略 engine/model/expertRef；专家节点必须携带 `{ id: assignee.id, version: AppliedPlan.id }` 的 `expertRef`。输入文字说明与可读取的 ArtifactVersion/ContextPack 引用分开，初始 `inputRefs=[]`，真实引用由 B/context 按依赖、版本和权限解析。转换不生成 actor、Run、待办或完成状态；可信身份、项目访问和派发门槛仍由 Host 验证。凭据不进入快照。
 
 ## 首次联调与集成
 
@@ -66,4 +69,4 @@ AI 输出可继续使用“嵌套草案”形状，作为一次提案的中间�
 
 联调检查：双窗口版本冲突；同请求重试；修改草稿不改变执行快照；任意一票未通过不推进；旧提交/旧轮次不改变当前状态；子任务返回不跳过父评审。
 
-B PR 目标 main，A 分支 develop。可选择 B 修复并审核合入 main 后将 main 正常合并进 develop，或在独立集成分支合并已验证的两方提交。前者基线更简单；不在带未提交改动的工作区直接拉入 PR。`agent-core/src/index.ts` 保留双方导出，文档状态需要合并。本文不执行合并或重置。
+B 的领域契约与只读执行视图已合入 develop；集成保留 A 的 zod 依赖、B 的类型契约检查和双方公开导出。`client` 共享 UI 入口为 `@zhuma/client/workbench/ui`，具体样式与接入约定见 [UI 设计](ui-design.md)。B-M1 在独立服务/组件文件提供持久化、提交与评审能力，A 统一接入插件与页面注册。上述人工节点业务链路仍需联调，不能以领域测试或正常合并代表已经运行通过。
