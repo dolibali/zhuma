@@ -223,3 +223,16 @@ function workspaceSnapshot(overrides = {}) {
     ...overrides,
   };
 }
+
+test('契约：接收回执之前显示启动中', () => {
+  const snapshot = workspaceSnapshot();
+  snapshot.node = { status: 'ready', version: 1, upstreamAffected: false };
+  snapshot.runs[0].status = 'requested';
+  snapshot.runs[0].acknowledged = false;
+  const view = createAgentWorkspaceView(snapshot);
+  assert.equal(view.nodeStatusText, '状态：启动中');
+  assert.equal(view.nodeStatusKey, 'starting');
+  assert.equal(view.nodeStatusText.includes('执行中'), false);
+  const running = createAgentWorkspaceView(workspaceSnapshot());
+  assert.equal(running.nodeStatusText, '状态：执行中');
+});

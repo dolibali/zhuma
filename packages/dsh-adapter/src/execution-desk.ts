@@ -86,6 +86,10 @@ export interface DeskContextSeed {
   readonly required: boolean;
   readonly includedByDefault: boolean;
   readonly relativePath?: string;
+  readonly body?: string;
+  readonly sourceNodeId?: string;
+  readonly artifactVersionId?: string;
+  readonly contextPackId?: string;
 }
 
 export interface DeskSeed {
@@ -193,6 +197,7 @@ export class ExecutionDesk {
   private readonly queueApply = new Map<string, string>();
   private readonly aborts = new Map<string, AbortController>();
   private inflight: Promise<void>[] = [];
+  private readonly attachmentBytes = new Map<string, Uint8Array>();
   private sequence = 0;
   private draftRoundId: string | null = null;
 
@@ -428,12 +433,14 @@ export class ExecutionDesk {
       reference: `attachment:${id}`,
       ...(previewText.length > 0 ? { previewText } : {}),
     });
+    this.attachmentBytes.set(id, Buffer.from(input.text, 'utf8'));
     return this.succeed();
   }
 
   removeAttachment(id: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     this.attachments = this.attachments.filter((item) => item.id !== id);
+    this.attachmentBytes.delete(id);
     return this.succeed();
   }
 
@@ -736,7 +743,7 @@ export class ExecutionDesk {
       return this.fail(
         'executor-unverified',
         executor.id,
-        '该执行器尚未实现或尚未验证',
+        executor.unavailableReason ?? '该执行器尚未实现或尚未验证',
         '不要伪造运行。可以改选已明确标注的模拟执行器。',
       );
     }
@@ -940,6 +947,7 @@ export class ExecutionDesk {
       );
       return;
     }
+    const resumeSessionId = this.previousSessionId(attempt.nodeId, runId);
     const request: AgentRunRequest = {
       runId,
       attempt: attempt.attempt,
@@ -956,6 +964,11 @@ export class ExecutionDesk {
       goal: this.seed.handoff.goal,
       simulatedRequested: attempt.simulated,
       signal,
+      skills: this.authorized('skill'),
+      mcp: this.authorized('mcp'),
+      attachments: this.attachmentPayloads(attachmentIds),
+      promptContext: this.promptContext(),
+      ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
     };
     try {
       for await (const event of executor.run(request)) this.applyExecutorEvent(runId, event);
@@ -973,7 +986,11 @@ export class ExecutionDesk {
         this.addLate(attempt, 'output-arrived', '执行器在运行结束后才回执接收。', 'terminal-run');
         return;
       }
-      const acked = acknowledgeRun(attempt, { accepted: true, executorRunId: event.executorRunId });
+      const acked = acknowledgeRun(attempt, {
+        accepted: true,
+        executorRunId: event.executorRunId,
+        ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+      });
       if (!acked.ok || !acked.mayMarkNodeRunning) {
         if (!acked.ok) this.addLate(attempt, 'output-arrived', '接收回执已迟到。', 'terminal-run');
         return;
@@ -1442,17 +1459,17 @@ export class ExecutionDesk {
   private grants(attachmentIds: readonly string[]): ResourceGrant[] {
     const config = this.buildConfig();
     return [
-      ...config.skills.map((skill) => ({
+      ...this.authorized('skill').map((skill) => ({
         kind: 'skill' as const,
         id: skill.id,
         version: skill.version,
         toolsAuthorized: false,
       })),
-      ...config.mcp.map((item) => ({
+      ...this.authorized('mcp').map((item) => ({
         kind: 'mcp' as const,
         id: item.id,
         version: item.version,
-        toolsAuthorized: item.toolsAuthorized,
+        toolsAuthorized: false,
       })),
       ...attachmentIds.map((id) => ({
         kind: 'attachment' as const,
@@ -1467,6 +1484,44 @@ export class ExecutionDesk {
         toolsAuthorized: false,
       })),
     ];
+  }
+
+  private authorized(kind: 'skill' | 'mcp'): { id: string; version: string }[] {
+    const refs = kind === 'skill' ? this.seed.handoff.skillRefs : this.seed.handoff.mcpRefs;
+    const selected = new Set(kind === 'skill' ? this.selections.skillIds : this.selections.mcpIds);
+    return refs
+      .filter((ref) => selected.has(ref.id))
+      .map((ref) => ({ id: ref.id, version: ref.version }));
+  }
+
+  private promptContext(): { id: string; body: string }[] {
+    const refs = this.seed.handoff.inputRefs;
+    if (refs.length === 0) return [];
+    const blocks: { id: string; body: string }[] = [];
+    for (const item of this.seed.contextItems) {
+      if (item.body === undefined) continue;
+      if (!refs.some((ref) => inputRefMatches(item, ref))) continue;
+      blocks.push({ id: item.id, body: item.body });
+    }
+    return blocks;
+  }
+
+  private attachmentPayloads(
+    attachmentIds: readonly string[],
+  ): { id: string; mediaType: string; bytes: Uint8Array }[] {
+    const payloads: { id: string; mediaType: string; bytes: Uint8Array }[] = [];
+    for (const id of attachmentIds) {
+      const fact = this.attachments.find((item) => item.id === id);
+      const bytes = this.attachmentBytes.get(id);
+      if (!fact || bytes === undefined) continue;
+      payloads.push({ id, mediaType: fact.mediaType, bytes });
+    }
+    return payloads;
+  }
+
+  private previousSessionId(nodeId: string, runId: string): string | undefined {
+    return [...this.runs].reverse().find((run) => run.nodeId === nodeId && run.id !== runId)
+      ?.sessionId;
   }
 
   private applyTransition(transition: NodeTransition, key: string): boolean {
@@ -1706,6 +1761,22 @@ function openRunReason(code: string): string {
   if (code === 'idempotency-mismatch') return '同一个请求标识对应了不同内容';
   if (code === 'node-not-executable') return '节点当前不能启动执行';
   return '没有创建运行';
+}
+
+function inputRefMatches(
+  item: DeskContextSeed,
+  ref: {
+    readonly sourceNodeId?: string;
+    readonly artifactVersionId?: string;
+    readonly contextPackId?: string;
+  },
+): boolean {
+  const checks: boolean[] = [];
+  if (ref.sourceNodeId !== undefined) checks.push(item.sourceNodeId === ref.sourceNodeId);
+  if (ref.artifactVersionId !== undefined)
+    checks.push(item.artifactVersionId === ref.artifactVersionId);
+  if (ref.contextPackId !== undefined) checks.push(item.contextPackId === ref.contextPackId);
+  return checks.length > 0 && checks.every(Boolean);
 }
 
 function isReviewRoundStatus(value: string): value is ReviewRound['status'] {

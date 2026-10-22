@@ -35,7 +35,7 @@
 
 节点执行、产物、评审和并发契约由成员 B 起草，见 [WP00 执行与交付契约](contracts/wp00-execution-delivery.md)。骨架里的 `TaskStatus` 仍是任务快照，不是该契约的节点状态机。项目、任务、计划版本和节点编排字段待成员 A 对齐。
 
-WP03 的运行、停止恢复和上下文装配见 [WP03 执行与上下文](contracts/wp03-execution-context.md)。本地演示必须显式选择模拟执行器，这不表示真实 DSH 已经接通。
+WP03 的运行、停止恢复和上下文装配见 [WP03 执行与上下文](contracts/wp03-execution-context.md)。本地演示必须显式选择执行器。选择 DSH 会启动 `dsh --profile sdk`。自测使用桩，没有对真实网关做过验收。
 
 ## 插件与发行
 

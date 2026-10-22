@@ -11,6 +11,7 @@ import {
   createWorkbenchServer,
   probeRelativeFile,
   readDshModelConfig,
+  resolveDshBinary,
 } from '../../packages/dsh-adapter/dist/index.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,13 @@ function newId(prefix) {
 }
 
 const dshConfig = readDshModelConfig(process.env);
+const dshBinary = resolveDshBinary(process.env);
+const dshReady = dshConfig.ok && dshBinary !== null;
+const dshReason = dshConfig.ok
+  ? dshBinary === null
+    ? '没有找到 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。还需要 ZHUMA_MODEL_BASE_URL 和 ZHUMA_MODEL_API_KEY。'
+    : undefined
+  : dshConfig.reason;
 
 const seed = {
   handoff: {
@@ -115,10 +123,10 @@ const seed = {
       {
         id: 'dsh',
         label: 'DSH',
-        available: dshConfig.ok,
-        verified: dshConfig.ok,
+        available: dshReady,
+        verified: dshReady,
         simulated: false,
-        ...(dshConfig.ok ? {} : { unavailableReason: dshConfig.reason }),
+        ...(dshReason === undefined ? {} : { unavailableReason: dshReason }),
       },
       {
         id: 'codearts-cli',
@@ -212,7 +220,9 @@ const saved = journal.load();
 const dependencies = {
   executors: [
     new SimulatedAgentExecutor(
-      hold ? { pauseAfterAccept: true, chunkDelayMs: 0 } : { chunkDelayMs: 70 },
+      hold
+        ? { pauseBeforeAccept: true, pauseAfterAccept: true, chunkDelayMs: 0 }
+        : { chunkDelayMs: 70 },
     ),
     new DshChatExecutor(process.env),
     new UnimplementedNativeExecutor('codearts-cli'),

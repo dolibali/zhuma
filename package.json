@@ -24,6 +24,7 @@
     "doctor": "node scripts/doctor.mjs",
     "upstream:init": "git submodule update --init --recursive",
     "upstream:check": "node scripts/check-upstream.mjs",
+    "upstream:build-dsh": "node scripts/build-upstream-dsh.mjs",
     "desktop:prepare": "node scripts/desktop/prepare.mjs",
     "desktop:dev": "node scripts/desktop/run.mjs dev",
     "desktop:package:mac": "node scripts/desktop/run.mjs package",

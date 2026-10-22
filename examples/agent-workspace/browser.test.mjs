@@ -109,7 +109,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await page.locator('[data-testid="context"][value="missing"]').uncheck();
 
     await send(page, '第一轮：整理开户必填字段');
-    await waitStatus(page, '执行中');
+    await waitRunning(page);
     await page.screenshot({ path: path.join(artifacts, 'wp03-running-1280.png') });
     await page.route('**/api/workspace', (route) => route.abort());
     await page.getByTestId('banner').filter({ hasText: '页面与服务断开' }).waitFor();
@@ -133,7 +133,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     assert.equal((await workspace(page)).runs.length, 1);
 
     await send(page, '第二轮：补充统一社会信用代码的校验');
-    await waitStatus(page, '执行中');
+    await waitRunning(page);
     await release(page);
     await waitStatus(page, '待处理');
     assert.equal((await workspace(page)).runs.length, 2);
@@ -166,7 +166,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
 
     await page.setViewportSize({ width: 1280, height: 800 });
     await send(page, '第三轮：运行中再改一版');
-    await waitStatus(page, '执行中');
+    await waitRunning(page);
     const runningId = await page.getByTestId('active-run').getAttribute('data-run-id');
     await page.locator('#message').fill('补充：开户日期不必填');
     await page.getByTestId('intent').selectOption('supplement');
@@ -214,7 +214,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await page.screenshot({ path: path.join(artifacts, 'wp03-stopped-1280.png') });
 
     await page.getByTestId('retry').click();
-    await waitStatus(page, '执行中');
+    await waitRunning(page);
     const retriedId = await page.getByTestId('active-run').getAttribute('data-run-id');
     assert.notEqual(retriedId, '');
     assert.notEqual(retriedId, runningId);
@@ -236,7 +236,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
 
     await page.locator('#message').fill('键盘再发一轮');
     await page.locator('#message').press('Control+Enter');
-    await waitStatus(page, '执行中');
+    await waitRunning(page);
     await release(page);
     await waitStatus(page, '待处理');
     assert.equal((await workspace(page)).runs.length, beforeTask + 1);
@@ -252,7 +252,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     });
 
     await send(page, '跑到一半丢掉入口');
-    await waitStatus(page, '执行中');
+    await waitRunning(page);
     const dropped = await page.request.post(api(page, '/api/test/drop-entry'));
     if (!dropped.ok()) throw new Error(await dropped.text());
     await release(page);
@@ -283,6 +283,14 @@ async function send(page, text) {
 
 async function waitStatus(page, text) {
   await page.getByTestId('node-status').filter({ hasText: text }).waitFor({ timeout: 20000 });
+}
+
+async function waitRunning(page) {
+  await waitStatus(page, '启动中');
+  const starting = await page.getByTestId('node-status').innerText();
+  assert.equal(starting.includes('执行中'), false);
+  await release(page);
+  await waitStatus(page, '执行中');
 }
 
 async function release(page) {

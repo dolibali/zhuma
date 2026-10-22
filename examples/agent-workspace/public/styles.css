@@ -154,6 +154,10 @@ h2 {
   background: var(--amber-soft);
   color: var(--amber);
 }
+.status-pill[data-status='starting'] {
+  background: var(--teal-soft);
+  color: var(--teal-ink);
+}
 .status-pill[data-status='failed'],
 .status-pill[data-status='cancelled'],
 .status-pill[data-status='record-broken'] {

@@ -1,12 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DshChatExecutor, ExecutionDesk, readDshModelConfig } from '@zhuma/dsh-adapter';
+import {
+  DshChatExecutor,
+  ExecutionDesk,
+  readDshModelConfig,
+  resolveDshBinary,
+} from '@zhuma/dsh-adapter';
 
 test('真实执行器：发送、停止回执、失败展示和重新开始', { timeout: 180_000 }, async (t) => {
   const config = readDshModelConfig(process.env);
   if (!config.ok) {
     t.skip(`跳过真实执行器：${config.reason}`);
     return;
+  }
+  if (resolveDshBinary(process.env) === null) {
+    throw new Error(
+      '模型环境已配置，但没有 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。',
+    );
   }
   const secrets = [config.config.baseUrl, config.config.apiKey];
   const desk = openDesk(new DshChatExecutor(process.env));
@@ -64,7 +74,6 @@ test('真实执行器：发送、停止回执、失败展示和重新开始', { 
   );
   assertClean(afterRestart, secrets);
   await assertRestartFromRevision(new DshChatExecutor(process.env));
-  await assertGatewayRejectsUnlistedModel(config.config);
   console.log('重新开始：通过');
 });
 
@@ -142,9 +151,8 @@ async function assertFailureDisplay(secrets) {
   assert.notEqual(snapshot.node.status, 'completed');
   assert.equal(snapshot.faults[0]?.forgesRun, false);
   const reason = snapshot.faults[0]?.reason ?? '';
-  const http = reason.match(/HTTP (\d+)/);
-  if (http && Number(http[1]) >= 500) throw new Error(`模型网关返回 HTTP ${http[1]}`);
-  assert.match(reason, /模型网关返回 HTTP|模型调用失败/);
+  assert.match(reason, /模型调用失败|执行器启动失败|执行器没有在时限内/);
+  assert.equal(reason.includes('invalid-key'), false);
   assertClean(snapshot, [...secrets, 'invalid-key']);
 }
 
@@ -173,29 +181,6 @@ async function assertRestartFromRevision(executor) {
   assert.equal(desk.snapshot().runs.find((run) => run.id === restarted.runId)?.status, 'completed');
   assert.equal(desk.snapshot().node.status, 'needs-revision');
   assert.equal(desk.persistence().nodeState.entryStatus, 'needs-revision');
-}
-
-async function assertGatewayRejectsUnlistedModel(config) {
-  let response;
-  try {
-    response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(30_000),
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'zhuma-not-in-allowlist',
-        stream: false,
-        messages: [{ role: 'user', content: 'ping' }],
-      }),
-    });
-  } catch {
-    throw new Error('模型网关没有返回拒绝');
-  }
-  if (response.status >= 500) throw new Error(`模型网关返回 HTTP ${response.status}`);
-  assert.equal(response.ok, false);
 }
 
 function assertClean(value, secrets) {

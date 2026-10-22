@@ -1,8 +1,4 @@
-import {
-  classifyExecutorFailure,
-  type ExecutionEngine,
-  type ExecutionFaultKind,
-} from '@zhuma/agent-core';
+import type { ExecutionEngine, ExecutionFaultKind } from '@zhuma/agent-core';
 
 /**
  * `verified` 表示这条原生路由在本进程里已经配好，不是评审签字。
@@ -41,6 +37,15 @@ export interface AgentRunRequest {
   readonly goal: string;
   readonly simulatedRequested: boolean;
   readonly signal: AbortSignal;
+  readonly resumeSessionId?: string;
+  readonly skills?: readonly { readonly id: string; readonly version: string }[];
+  readonly mcp?: readonly { readonly id: string; readonly version: string }[];
+  readonly attachments?: readonly {
+    readonly id: string;
+    readonly mediaType: string;
+    readonly bytes: Uint8Array;
+  }[];
+  readonly promptContext?: readonly { readonly id: string; readonly body: string }[];
 }
 
 export interface AgentActivity {
@@ -65,7 +70,12 @@ export interface AgentRunResult {
 }
 
 export type AgentRunEvent =
-  | { readonly type: 'accepted'; readonly executorRunId: string; readonly simulated: boolean }
+  | {
+      readonly type: 'accepted';
+      readonly executorRunId: string;
+      readonly simulated: boolean;
+      readonly sessionId?: string;
+    }
   | { readonly type: 'delta'; readonly text: string; readonly simulated: boolean }
   | { readonly type: 'activity'; readonly activity: AgentActivity }
   | { readonly type: 'completed'; readonly result: AgentRunResult }
@@ -86,6 +96,7 @@ export interface CancelReceipt {
 export interface AgentExecutor {
   readonly id: ExecutionEngine;
   readonly capabilities: ExecutorCapabilities;
+  readonly unavailableReason?: string;
   run(request: AgentRunRequest): AsyncIterable<AgentRunEvent>;
   cancel(runId: string): Promise<CancelReceipt>;
 }
@@ -128,6 +139,7 @@ export class UnimplementedNativeExecutor implements AgentExecutor {
 
 export interface SimulatedExecutorOptions {
   readonly chunkDelayMs?: number;
+  readonly pauseBeforeAccept?: boolean;
   readonly pauseAfterAccept?: boolean;
 }
 
@@ -162,6 +174,21 @@ export class SimulatedAgentExecutor implements AgentExecutor {
       return;
     }
     this.earlyRelease.add(runId);
+  }
+
+  private async waitGate(runId: string, enabled: boolean): Promise<void> {
+    if (!enabled) return;
+    if (this.earlyRelease.has(runId)) {
+      this.earlyRelease.delete(runId);
+      return;
+    }
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.gates.set(runId, { promise, release });
+    await promise;
+    this.gates.delete(runId);
   }
 
   async cancel(runId: string): Promise<CancelReceipt> {
@@ -200,18 +227,10 @@ export class SimulatedAgentExecutor implements AgentExecutor {
       finish({ receipt: 'cancelled' });
       return;
     }
+    await this.waitGate(request.runId, this.options.pauseBeforeAccept === true);
     const executorRunId = `sim-${request.runId}`;
     yield { type: 'accepted', executorRunId, simulated: true };
-    if (this.options.pauseAfterAccept && !this.earlyRelease.has(request.runId)) {
-      let release = () => {};
-      const promise = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      this.gates.set(request.runId, { promise, release });
-      await promise;
-      this.gates.delete(request.runId);
-    }
-    this.earlyRelease.delete(request.runId);
+    await this.waitGate(request.runId, this.options.pauseAfterAccept === true);
     if (aborted()) {
       yield { type: 'cancelled', simulated: true };
       yield {
@@ -314,169 +333,6 @@ export function readDshModelConfig(env: NodeJS.ProcessEnv = process.env): DshMod
 
 function isDshModelId(value: string): value is DshModelConfig['modelId'] {
   return (DSH_MODEL_IDS as readonly string[]).includes(value);
-}
-
-/**
- * 向 OpenAI 兼容的 `/chat/completions` 发一次非流式请求。
- * 配置缺失时 `run` 直接失败，不会改用模拟执行器。
- */
-const GATEWAY_TIMEOUT_MS = 30_000;
-
-export class DshChatExecutor implements AgentExecutor {
-  readonly id = 'dsh' as const;
-  readonly capabilities: ExecutorCapabilities;
-  private readonly configResult: DshModelConfigResult;
-  private readonly timeoutMs: number;
-  private readonly known = new Set<string>();
-  private readonly finished = new Set<string>();
-  private readonly aborts = new Map<string, AbortController>();
-  private readonly receipts = new Map<string, (receipt: CancelReceipt) => void>();
-
-  constructor(env: NodeJS.ProcessEnv = process.env, timeoutMs = GATEWAY_TIMEOUT_MS) {
-    this.configResult = readDshModelConfig(env);
-    this.timeoutMs = timeoutMs;
-    this.capabilities = Object.freeze({
-      liveInjection: false,
-      sessionResume: false,
-      cancelReceipt: true,
-      streaming: false,
-      verified: this.configResult.ok,
-      mode: 'native',
-    });
-  }
-
-  async cancel(runId: string): Promise<CancelReceipt> {
-    if (!this.known.has(runId)) {
-      return { receipt: 'rejected', reason: '没有这次运行。' };
-    }
-    if (this.finished.has(runId)) {
-      return { receipt: 'rejected', reason: '运行已经结束，迟到的停止不能改写结果。' };
-    }
-    return new Promise((resolve) => {
-      this.receipts.set(runId, resolve);
-      this.aborts.get(runId)?.abort();
-    });
-  }
-
-  async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
-    if (!this.configResult.ok) {
-      throw new ExecutorNotImplementedError(this.configResult.reason);
-    }
-    this.known.add(request.runId);
-    const local = new AbortController();
-    this.aborts.set(request.runId, local);
-    const timedOut = AbortSignal.timeout(this.timeoutMs);
-    const signal = AbortSignal.any([request.signal, local.signal, timedOut]);
-    const config = this.configResult.config;
-    const executorRunId = `dsh-${request.runId}`;
-    let receipt: CancelReceipt = { receipt: 'rejected', reason: '运行已经结束。' };
-    try {
-      yield { type: 'accepted', executorRunId, simulated: false };
-      const response = await fetch(`${config.baseUrl}/chat/completions`, {
-        method: 'POST',
-        signal,
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: config.modelId,
-          stream: false,
-          messages: [{ role: 'user', content: `${request.goal}\n${request.instruction}` }],
-        }),
-      });
-      if (!response.ok) {
-        yield {
-          type: 'failed',
-          fault: 'model-error',
-          message: `模型网关返回 HTTP ${response.status}`,
-          simulated: false,
-        };
-        return;
-      }
-      const contentType = response.headers.get('content-type') ?? '';
-      if (contentType.includes('text/event-stream')) {
-        yield {
-          type: 'failed',
-          fault: 'model-error',
-          message: '模型网关返回了流式响应，当前只接受一次完整回复。',
-          simulated: false,
-        };
-        return;
-      }
-      let payload: {
-        choices?: readonly {
-          message?: { content?: unknown; tool_calls?: readonly unknown[] };
-        }[];
-      };
-      try {
-        payload = (await response.json()) as typeof payload;
-      } catch {
-        yield {
-          type: 'failed',
-          fault: 'model-error',
-          message: '模型网关返回的内容无法读取。',
-          simulated: false,
-        };
-        return;
-      }
-      const message = payload.choices?.[0]?.message;
-      const text = typeof message?.content === 'string' ? message.content.trim() : '';
-      const toolCalls = message?.tool_calls;
-      const toolsOnly = Array.isArray(toolCalls) && toolCalls.length > 0 && text.length === 0;
-      if (text.length === 0) {
-        yield {
-          type: 'failed',
-          fault: toolsOnly ? 'tool-failure' : 'model-error',
-          message: toolsOnly ? '模型只返回了工具调用，没有可展示的正文。' : '模型没有返回正文。',
-          simulated: false,
-        };
-        return;
-      }
-      yield { type: 'delta', text, simulated: false };
-      yield {
-        type: 'completed',
-        result: {
-          executorRunId,
-          simulated: false,
-          summary: text,
-          draftText: text,
-          sourceReferences: [...request.contextReferences],
-          verification: [],
-        },
-      };
-    } catch (error) {
-      if (local.signal.aborted || request.signal.aborted) {
-        receipt = { receipt: 'cancelled' };
-        yield { type: 'cancelled', simulated: false };
-        return;
-      }
-      if (timedOut.aborted) {
-        yield {
-          type: 'failed',
-          fault: 'network-interruption',
-          message: '模型网关超时。',
-          simulated: false,
-        };
-        return;
-      }
-      const detail = error instanceof Error ? error.message : '模型调用失败';
-      yield {
-        type: 'failed',
-        fault: classifyExecutorFailure(detail),
-        message: '模型调用失败。',
-        simulated: false,
-      };
-    } finally {
-      this.finished.add(request.runId);
-      this.aborts.delete(request.runId);
-      const resolve = this.receipts.get(request.runId);
-      if (resolve) {
-        this.receipts.delete(request.runId);
-        resolve(receipt);
-      }
-    }
-  }
 }
 
 export function selectAgentExecutor(

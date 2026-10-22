@@ -1,7 +1,7 @@
 import type { ActorRef, ExecutionEngine } from '@zhuma/agent-core';
 import type { ContextPack } from '@zhuma/context';
 
-/** Future adapters implement this port; no DSH or CLI is executed by this scaffold. */
+/** DSH runs only when this port is given an explicit native engine. */
 export interface ExecutionRequest {
   readonly taskId: string;
   readonly instruction: string;
@@ -65,13 +65,13 @@ export type {
 export {
   DSH_DEFAULT_MODEL_ID,
   DSH_MODEL_IDS,
-  DshChatExecutor,
   ExecutorNotImplementedError,
   SimulatedAgentExecutor,
   UnimplementedNativeExecutor,
   readDshModelConfig,
   selectAgentExecutor,
 } from './agent-executor.js';
+export { DshChatExecutor, dshSessionHome, resolveDshBinary } from './dsh-sdk-executor.js';
 
 export type { FileProbeResult } from './file-probe.js';
 export { probeRelativeFile } from './file-probe.js';

@@ -928,69 +928,6 @@ test('契约：入口不一致时拒绝发送，运行中丢记录则停在人�
   assert.equal(after.lastError.reason, '节点记录异常，需要人工处理');
 });
 
-test('契约：坏的网关响应不算成功，也不会记成断开', async () => {
-  const original = globalThis.fetch;
-  const env = {
-    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
-    ZHUMA_MODEL_API_KEY: 'test-key',
-  };
-  async function collect(executor) {
-    const events = [];
-    for await (const event of executor.run(runRequest('dsh-gateway'))) events.push(event);
-    return events;
-  }
-  try {
-    globalThis.fetch = async () =>
-      new Response('not-json', { status: 200, headers: { 'content-type': 'application/json' } });
-    const badJson = await collect(new DshChatExecutor(env));
-    assert.equal(badJson.at(-1).type, 'failed');
-    assert.equal(badJson.at(-1).fault, 'model-error');
-    assert.match(badJson.at(-1).message, /无法读取/);
-
-    globalThis.fetch = async () =>
-      new Response('data: {}\n', {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      });
-    const stream = await collect(new DshChatExecutor(env));
-    assert.equal(stream.at(-1).fault, 'model-error');
-    assert.match(stream.at(-1).message, /流式/);
-
-    globalThis.fetch = async () => Response.json({ choices: [{ message: { content: '  ' } }] });
-    const empty = await collect(new DshChatExecutor(env));
-    assert.equal(empty.at(-1).type, 'failed');
-    assert.equal(
-      empty.some((event) => event.type === 'completed'),
-      false,
-    );
-
-    globalThis.fetch = async () =>
-      Response.json({
-        choices: [{ message: { content: null, tool_calls: [{ id: 'call-1' }] } }],
-      });
-    const tools = await collect(new DshChatExecutor(env));
-    assert.equal(tools.at(-1).fault, 'tool-failure');
-    assert.equal(
-      tools.some((event) => event.type === 'completed'),
-      false,
-    );
-
-    globalThis.fetch = (_url, init) =>
-      new Promise((_resolve, reject) => {
-        init.signal.addEventListener('abort', () => {
-          const error = new Error('The operation was aborted');
-          error.name = 'AbortError';
-          reject(error);
-        });
-      });
-    const timed = await collect(new DshChatExecutor(env, 30));
-    assert.equal(timed.at(-1).fault, 'network-interruption');
-    assert.match(timed.at(-1).message, /超时/);
-  } finally {
-    globalThis.fetch = original;
-  }
-});
-
 test('契约：人工交接可以不带专家引用', () => {
   const bare = seed();
   delete bare.handoff.expertRef;
