@@ -1,0 +1,831 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  validateWorkTask,
+  WorkbenchError,
+  type Workbench,
+  type WorkTask,
+  type Workflow,
+  type WorkNode,
+  type PlanProposal,
+} from '@zhuma/agent-core';
+import type { WorkbenchApi } from './api.js';
+import { Field, MemberPicker, Modal, MultiSelect } from './controls.js';
+import { WorkflowCanvas } from './WorkflowCanvas.js';
+
+export function newNode(): WorkNode {
+  return {
+    id: crypto.randomUUID(),
+    title: '新工作节点',
+    description: '',
+    assigneeId: null,
+    reviewerIds: [],
+    reviewRequired: false,
+    dependsOn: [],
+    skillIds: [],
+    mcpIds: [],
+    input: '',
+    output: '',
+    rationale: '',
+    position: { x: 60, y: 60 },
+  };
+}
+
+export function TaskEditor({
+  original,
+  state,
+  api,
+  model,
+  saved,
+  close,
+}: {
+  original: WorkTask;
+  state: Workbench;
+  api: WorkbenchApi;
+  model: string;
+  saved(state: Workbench): void;
+  close(): void;
+}) {
+  const [task, setTask] = useState(() => structuredClone(original));
+  const [baseline, setBaseline] = useState(() => JSON.stringify(original));
+  const [revision, setRevision] = useState(state.revision);
+  const [workflowId, setWorkflowId] = useState(original.workflows.find((w) => !w.parentNodeId)!.id);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    original.workflows[0]?.nodes[0]?.id ?? null,
+  );
+  const [view, setView] = useState<'list' | 'workflow'>('list');
+  const [tree, setTree] = useState(false);
+  const [panel, setPanel] = useState<'config' | 'plan'>('config');
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [memberDraft, setMemberDraft] = useState(task.participantIds);
+  const [error, setError] = useState('');
+  const [memberError, setMemberError] = useState('');
+  const [conflict, setConflict] = useState(false);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [planning, setPlanning] = useState(false);
+  const [instruction, setInstruction] = useState('');
+  const [proposal, setProposal] = useState<PlanProposal | null>(null);
+  const controller = useRef<AbortController | null>(null);
+  const pendingSave = useRef<{
+    content: string;
+    requestId: string;
+    revision: number;
+    task: WorkTask;
+  } | null>(null);
+  const dirty = JSON.stringify(task) !== baseline;
+  const previewTask = proposal?.result.workflows.length
+    ? { ...task, workflows: proposal.result.workflows }
+    : null;
+  const displayTask = previewTask ?? task;
+  const locked = busy || planning || task.status === 'ready' || !!previewTask;
+  const workflow =
+    displayTask.workflows.find((w) => w.id === workflowId) ??
+    displayTask.workflows.find((w) => !w.parentNodeId)!;
+  const node = workflow.nodes.find((n) => n.id === selectedId);
+  const members = state.participants.filter((m) => task.participantIds.includes(m.id));
+  useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => {
+    const guard = (e: BeforeUnloadEvent) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [dirty]);
+
+  function edit(next: WorkTask) {
+    setTask(next);
+    setProposal(null);
+    setMessage('');
+  }
+  function changeWorkflow(next: Workflow) {
+    const candidate = {
+      ...task,
+      workflows: task.workflows.map((w) => (w.id === next.id ? next : w)),
+    };
+    const errors = validateWorkTask(candidate, state).filter(
+      (e) => e.includes('循环') || e.includes('无效依赖'),
+    );
+    if (errors.length) {
+      setError(errors.join('\n'));
+      return;
+    }
+    setError('');
+    edit(candidate);
+  }
+  function updateNode(patch: Partial<WorkNode>) {
+    if (node)
+      changeWorkflow({
+        ...workflow,
+        nodes: workflow.nodes.map((n) => (n.id === node.id ? { ...n, ...patch } : n)),
+      });
+  }
+  async function persist(next = task, expectedRevision = revision): Promise<Workbench | null> {
+    const errors = validateWorkTask(next, state);
+    if (errors.length) {
+      setError(errors.join('\n'));
+      return null;
+    }
+    setBusy(true);
+    setError('');
+    setMessage('');
+    const content = JSON.stringify(next);
+    if (pendingSave.current?.content !== content)
+      pendingSave.current = {
+        content,
+        requestId: crypto.randomUUID(),
+        revision: expectedRevision,
+        task: { ...next, updatedAt: new Date().toISOString() },
+      };
+    try {
+      const result = await api.save(
+        pendingSave.current.revision,
+        { type: 'save-task', task: pendingSave.current.task },
+        pendingSave.current.requestId,
+      );
+      const committed = result.tasks.find((t) => t.id === next.id)!;
+      setTask(structuredClone(committed));
+      setBaseline(JSON.stringify(committed));
+      setRevision(result.revision);
+      saved(result);
+      pendingSave.current = null;
+      setMessage('已保存');
+      setConflict(false);
+      return result;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '保存失败，请重试。');
+      setConflict(error instanceof WorkbenchError && error.code === 'conflict');
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function readLatest() {
+    if (!confirm('读取最新版本会丢弃当前未保存的修改，确定继续吗？')) return;
+    setBusy(true);
+    try {
+      const latest = await api.snapshot();
+      const current = latest.state.tasks.find((t) => t.id === task.id);
+      if (!current) throw new Error('任务已不存在。');
+      setTask(structuredClone(current));
+      setBaseline(JSON.stringify(current));
+      setRevision(latest.state.revision);
+      saved(latest.state);
+      pendingSave.current = null;
+      setProposal(null);
+      setConflict(false);
+      setError('');
+      setWorkflowId(current.workflows.find((w) => !w.parentNodeId)!.id);
+      setSelectedId(null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '读取失败。');
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generate() {
+    const result = dirty ? await persist() : state;
+    if (!result) return;
+    setPlanning(true);
+    setError('');
+    setMessage('');
+    const abort = new AbortController();
+    controller.current = abort;
+    const prior = proposal
+      ? `\n上一轮问题：${proposal.result.questions.join('；')}\n上一轮推断：${proposal.result.assumptions.join('；')}`
+      : '';
+    setProposal(null);
+    try {
+      setProposal(
+        await api.plan(
+          task.id,
+          result.revision,
+          `${instruction}${prior}`.slice(0, 8000),
+          abort.signal,
+        ),
+      );
+    } catch (error) {
+      setError(
+        abort.signal.aborted
+          ? '已取消规划。'
+          : error instanceof Error
+            ? error.message
+            : '规划失败。',
+      );
+    } finally {
+      setPlanning(false);
+      controller.current = null;
+    }
+  }
+  async function applyProposal() {
+    if (!proposal || proposal.result.questions.length) return;
+    if (dirty) {
+      setError('工作流已有未保存修改，请先保存后重新规划。');
+      return;
+    }
+    const next = { ...task, workflows: proposal.result.workflows, status: 'draft' as const };
+    const result = await persist(next, proposal.baseRevision);
+    if (result) {
+      setWorkflowId(next.workflows.find((w) => !w.parentNodeId)!.id);
+      setSelectedId(next.workflows[0]?.nodes[0]?.id ?? null);
+      setProposal(null);
+      setPanel('config');
+      setMessage('草案已应用，可继续编辑。');
+    }
+  }
+  function addNode() {
+    const next = newNode();
+    next.position = { x: workflow.nodes.length * 260 + 40, y: 80 };
+    changeWorkflow({ ...workflow, nodes: [...workflow.nodes, next] });
+    setSelectedId(next.id);
+    setPanel('config');
+  }
+  function splitNode() {
+    if (!node) return;
+    const existing = task.workflows.find((w) => w.parentNodeId === node.id);
+    if (existing) {
+      setWorkflowId(existing.id);
+      setSelectedId(existing.nodes[0]?.id ?? null);
+      return;
+    }
+    const child: Workflow = {
+      id: crypto.randomUUID(),
+      name: node.title,
+      parentNodeId: node.id,
+      nodes: [],
+    };
+    edit({ ...task, workflows: [...task.workflows, child] });
+    setWorkflowId(child.id);
+    setSelectedId(null);
+  }
+  function removeSubworkflow() {
+    if (!workflow.parentNodeId || locked) return;
+    if (!confirm('移除此子工作流及其下级工作流？上级工作节点会保留。')) return;
+    const removed = new Set([workflow.id]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      const parentNodes = new Set(
+        task.workflows.filter((w) => removed.has(w.id)).flatMap((w) => w.nodes.map((n) => n.id)),
+      );
+      for (const candidate of task.workflows)
+        if (
+          candidate.parentNodeId &&
+          parentNodes.has(candidate.parentNodeId) &&
+          !removed.has(candidate.id)
+        ) {
+          removed.add(candidate.id);
+          expanded = true;
+        }
+    }
+    const parent = task.workflows.find((w) => w.nodes.some((n) => n.id === workflow.parentNodeId))!;
+    edit({ ...task, workflows: task.workflows.filter((w) => !removed.has(w.id)) });
+    setWorkflowId(parent.id);
+    setSelectedId(workflow.parentNodeId);
+  }
+  function moveNode(id: string, offset: number) {
+    const index = workflow.nodes.findIndex((n) => n.id === id);
+    const next = [...workflow.nodes];
+    const target = index + offset;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target]!, next[index]!];
+    changeWorkflow({ ...workflow, nodes: next });
+  }
+  const ancestors: Workflow[] = [];
+  let ancestor: Workflow | undefined = workflow;
+  while (ancestor && !ancestors.some((w) => w.id === ancestor?.id)) {
+    ancestors.unshift(ancestor);
+    const parent: string | null = ancestor.parentNodeId;
+    ancestor = parent
+      ? displayTask.workflows.find((w) => w.nodes.some((n) => n.id === parent))
+      : undefined;
+  }
+  return (
+    <div className="zm-editor">
+      <div className="zm-toolbar">
+        <button
+          onClick={() => {
+            if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
+          }}
+        >
+          ← 任务清单
+        </button>
+        <span className={`zm-status ${task.status}`}>
+          {task.status === 'ready'
+            ? `已确认 v${state.appliedPlans.filter((p) => p.taskId === task.id).at(-1)?.revision ?? 1} · 待执行接入`
+            : '计划草稿'}
+        </span>
+        <span className="zm-spacer" />
+        <span className="zm-muted">{dirty ? '未保存' : message || '已保存'}</span>
+        <button
+          disabled={locked}
+          onClick={() => {
+            setMemberDraft(task.participantIds);
+            setMemberError('');
+            setMembersOpen(true);
+          }}
+        >
+          参与者 {members.length}
+        </button>
+        {task.status === 'ready' ? (
+          <button
+            disabled={busy || planning}
+            onClick={() => void persist({ ...task, status: 'draft' })}
+          >
+            继续编辑
+          </button>
+        ) : (
+          <>
+            <button disabled={locked || !dirty} onClick={() => void persist()}>
+              保存草稿
+            </button>
+            <button
+              className="primary"
+              disabled={locked}
+              onClick={() => void persist({ ...task, status: 'ready' })}
+            >
+              确认工作流
+            </button>
+          </>
+        )}
+      </div>
+      <div className="zm-editor-heading">
+        <input
+          className="zm-title-input"
+          aria-label="任务标题"
+          value={task.title}
+          disabled={locked}
+          onChange={(e) => edit({ ...task, title: e.target.value })}
+        />
+        <textarea
+          aria-label="任务目标"
+          rows={2}
+          disabled={locked}
+          value={task.goal}
+          onChange={(e) => edit({ ...task, goal: e.target.value })}
+          placeholder="描述目标、背景和预期结果"
+        />
+      </div>
+      {error && (
+        <div role="alert" className="zm-error">
+          {error}
+          {conflict && (
+            <button disabled={busy} onClick={() => void readLatest()}>
+              读取最新版本
+            </button>
+          )}
+          <button onClick={() => setError('')} aria-label="关闭错误">
+            ×
+          </button>
+        </div>
+      )}
+      <div className="zm-editor-layout">
+        <section className="zm-workflow">
+          <div className="zm-workflow-tools">
+            <nav aria-label="工作树路径">
+              {ancestors.map((w, i) => (
+                <span key={w.id}>
+                  {i > 0 && ' / '}
+                  <button
+                    onClick={() => {
+                      setWorkflowId(w.id);
+                      setSelectedId(null);
+                    }}
+                  >
+                    {i === 0 ? '主工作流' : w.name}
+                  </button>
+                </span>
+              ))}
+            </nav>
+            <span className="zm-spacer" />
+            <button
+              className={tree ? 'active' : ''}
+              onClick={() => {
+                setTree(!tree);
+                setView('workflow');
+              }}
+            >
+              工作树定位
+            </button>
+          </div>
+          <div className="zm-workflow-tools">
+            <h2>
+              {tree ? '完整工作树' : previewTask ? '草案预览' : '工作流'}{' '}
+              <small>
+                {tree ? task.workflows.length + ' 层级分支' : workflow.nodes.length + ' 个节点'}
+              </small>
+            </h2>
+            <span className="zm-spacer" />
+            <div className="zm-segment">
+              <button
+                aria-pressed={view === 'list'}
+                onClick={() => {
+                  setView('list');
+                  setTree(false);
+                }}
+              >
+                列表
+              </button>
+              <button aria-pressed={view === 'workflow'} onClick={() => setView('workflow')}>
+                工作流
+              </button>
+            </div>
+            {workflow.parentNodeId && !tree && (
+              <button disabled={locked} onClick={removeSubworkflow}>
+                移除子工作流
+              </button>
+            )}
+            <button disabled={locked || tree} onClick={addNode}>
+              ＋ 节点
+            </button>
+          </div>
+          {tree && (
+            <p className="zm-hint">实线为工作依赖，虚线为逐级拆分。点击节点定位到所属工作流。</p>
+          )}
+          {view === 'workflow' ? (
+            <WorkflowCanvas
+              key={`${workflow.id}-${tree}`}
+              workflow={workflow}
+              task={displayTask}
+              members={members}
+              selectedId={selectedId}
+              select={(id) => {
+                setSelectedId(id);
+                setPanel(proposal ? 'plan' : 'config');
+              }}
+              change={changeWorkflow}
+              locked={locked}
+              tree={tree}
+              openWorkflow={(id) => {
+                setWorkflowId(id);
+                setTree(false);
+              }}
+            />
+          ) : (
+            <div className="zm-node-list">
+              {workflow.nodes.map((n, i) => (
+                <div
+                  key={n.id}
+                  className={`zm-node-row ${n.id === selectedId ? 'selected' : ''}`}
+                  draggable={!locked}
+                  onDragStart={(e) => e.dataTransfer.setData('text/plain', n.id)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (locked) return;
+                    const source = e.dataTransfer.getData('text/plain');
+                    if (!workflow.nodes.some((n) => n.id === source)) return;
+                    const ordered = [...workflow.nodes];
+                    const item = ordered.splice(
+                      ordered.findIndex((n) => n.id === source),
+                      1,
+                    )[0]!;
+                    ordered.splice(i, 0, item);
+                    changeWorkflow({ ...workflow, nodes: ordered });
+                  }}
+                >
+                  <span className="zm-order">{String(i + 1).padStart(2, '0')}</span>
+                  <button
+                    className="zm-node-main"
+                    onClick={() => {
+                      setSelectedId(n.id);
+                      setPanel(proposal ? 'plan' : 'config');
+                    }}
+                  >
+                    <strong>{n.title}</strong>
+                    <span>
+                      {members.find((m) => m.id === n.assigneeId)?.name ?? '未分配'}
+                      <i>·</i>
+                      {n.dependsOn.length ? `依赖 ${n.dependsOn.length} 个节点` : '可独立开始'}
+                      {displayTask.workflows.some((w) => w.parentNodeId === n.id) &&
+                        ' · 含子工作流'}
+                    </span>
+                  </button>
+                  <small>{n.reviewRequired ? `${n.reviewerIds.length} 人评审` : '无需评审'}</small>
+                  <div className="zm-row-actions">
+                    <button
+                      aria-label={`上移 ${n.title}`}
+                      disabled={locked || i === 0}
+                      onClick={() => moveNode(n.id, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      aria-label={`下移 ${n.title}`}
+                      disabled={locked || i === workflow.nodes.length - 1}
+                      onClick={() => moveNode(n.id, 1)}
+                    >
+                      ↓
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {!workflow.nodes.length && !tree && (
+            <div className="zm-empty">
+              <h3>从一个清晰的工作节点开始</h3>
+              <p>手动编排，或让 AI 根据任务和团队情况生成草案。</p>
+              <button onClick={() => setPanel('plan')}>AI 规划</button>
+              <button className="primary" disabled={locked} onClick={addNode}>
+                添加节点
+              </button>
+            </div>
+          )}
+        </section>
+        <aside className="zm-config">
+          <div className="zm-panel-tabs">
+            <button aria-pressed={panel === 'config'} onClick={() => setPanel('config')}>
+              配置
+            </button>
+            <button aria-pressed={panel === 'plan'} onClick={() => setPanel('plan')}>
+              ✧ AI 规划
+            </button>
+          </div>
+          {panel === 'config' ? (
+            node ? (
+              <fieldset disabled={locked} className="zm-config-form">
+                <Field label="节点名称">
+                  <input
+                    value={node.title}
+                    onChange={(e) => updateNode({ title: e.target.value })}
+                  />
+                </Field>
+                <Field label="要完成的工作">
+                  <textarea
+                    rows={3}
+                    value={node.description}
+                    onChange={(e) => updateNode({ description: e.target.value })}
+                  />
+                </Field>
+                <Field label="执行者">
+                  <select
+                    value={node.assigneeId ?? ''}
+                    onChange={(e) =>
+                      updateNode({
+                        assigneeId: e.target.value || null,
+                        reviewerIds: node.reviewerIds.filter((id) => id !== e.target.value),
+                      })
+                    }
+                  >
+                    <option value="">选择参与者</option>
+                    {(['human', 'expert'] as const).map((kind) => (
+                      <optgroup key={kind} label={kind === 'human' ? '团队成员' : 'Agent 专家'}>
+                        {members
+                          .filter((m) => m.kind === kind)
+                          .map((m) => (
+                            <option key={m.id} value={m.id} disabled={!m.available}>
+                              {m.name} · {m.role}
+                            </option>
+                          ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </Field>
+                <button
+                  className="zm-text-button"
+                  onClick={() => {
+                    setMemberDraft(task.participantIds);
+                    setMemberError('');
+                    setMembersOpen(true);
+                  }}
+                >
+                  管理任务参与者
+                </button>
+                <Field label="交付内容">
+                  <textarea
+                    value={node.output}
+                    onChange={(e) => updateNode({ output: e.target.value })}
+                    placeholder="例如：接口说明文档与字段映射表"
+                    rows={2}
+                  />
+                </Field>
+                <Field label="输入材料">
+                  <textarea
+                    value={node.input}
+                    onChange={(e) => updateNode({ input: e.target.value })}
+                    placeholder="需要读取的前序产物"
+                    rows={2}
+                  />
+                </Field>
+                <div className="zm-review">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={node.reviewRequired}
+                      onChange={(e) =>
+                        updateNode({
+                          reviewRequired: e.target.checked,
+                          reviewerIds: e.target.checked ? node.reviewerIds : [],
+                        })
+                      }
+                    />
+                    完成后需要评审
+                  </label>
+                  {node.reviewRequired && (
+                    <>
+                      <MultiSelect
+                        label="评审人"
+                        options={members
+                          .filter((m) => m.id !== node.assigneeId && m.available)
+                          .map((m) => ({
+                            id: m.id,
+                            name: `${m.name}${m.kind === 'expert' ? ' · Agent' : ''}`,
+                          }))}
+                        selected={node.reviewerIds}
+                        change={(reviewerIds) => updateNode({ reviewerIds })}
+                      />
+                      <small>所有评审人通过后，才交接给后续节点。</small>
+                    </>
+                  )}
+                </div>
+                <MultiSelect
+                  label="Skills"
+                  options={state.assets.filter((a) => a.kind === 'skill' && a.available)}
+                  selected={node.skillIds}
+                  change={(skillIds) => updateNode({ skillIds })}
+                />
+                <MultiSelect
+                  label="MCP"
+                  options={state.assets.filter((a) => a.kind === 'mcp' && a.available)}
+                  selected={node.mcpIds}
+                  change={(mcpIds) => updateNode({ mcpIds })}
+                />
+                <MultiSelect
+                  label="前置依赖"
+                  options={workflow.nodes
+                    .filter((n) => n.id !== node.id)
+                    .map((n) => ({ id: n.id, name: n.title }))}
+                  selected={node.dependsOn}
+                  change={(dependsOn) => updateNode({ dependsOn })}
+                />
+                {node.rationale && (
+                  <details className="zm-rationale">
+                    <summary>分工依据</summary>
+                    <p>{node.rationale}</p>
+                  </details>
+                )}
+                <button onClick={splitNode}>
+                  {task.workflows.some((w) => w.parentNodeId === node.id)
+                    ? '打开子工作流 →'
+                    : '拆分为子工作流'}
+                </button>
+                <button
+                  className="danger"
+                  disabled={task.workflows.some((w) => w.parentNodeId === node.id)}
+                  onClick={() => {
+                    if (confirm(`删除「${node.title}」及其依赖连线？`)) {
+                      changeWorkflow({
+                        ...workflow,
+                        nodes: workflow.nodes
+                          .filter((n) => n.id !== node.id)
+                          .map((n) => ({
+                            ...n,
+                            dependsOn: n.dependsOn.filter((id) => id !== node.id),
+                          })),
+                      });
+                      setSelectedId(null);
+                    }
+                  }}
+                >
+                  删除节点
+                </button>
+              </fieldset>
+            ) : (
+              <div className="zm-empty">
+                <p>选择工作节点进行配置。</p>
+              </div>
+            )
+          ) : (
+            <div className="zm-planner">
+              <h3>结合团队情况编排</h3>
+              <p className="zm-muted">
+                {members.length} 位参与者 · {state.assets.filter((a) => a.available).length}{' '}
+                项可用资产
+              </p>
+              <details>
+                <summary>本次规划依据</summary>
+                <ul>
+                  {members.map((m) => (
+                    <li key={m.id}>
+                      {m.name} · {m.role || m.capabilities.join('、') || '尚无职责说明'}
+                    </li>
+                  ))}
+                </ul>
+                <p>模型：{model}</p>
+                <p>模型只读取任务、人员职责和资产定义，不获得工具授权。</p>
+              </details>
+              <Field label={proposal?.result.questions.length ? '回答问题或补充要求' : '补充要求'}>
+                <textarea
+                  rows={4}
+                  value={instruction}
+                  onChange={(e) => setInstruction(e.target.value)}
+                  placeholder="例如：前后端并行，陈宁负责接口，测试专家做独立评审"
+                />
+              </Field>
+              {planning ? (
+                <>
+                  <div role="status" className="zm-planning">
+                    正在分析目标与团队能力…
+                  </div>
+                  <button onClick={() => controller.current?.abort()}>取消规划</button>
+                </>
+              ) : (
+                <button
+                  className="primary"
+                  disabled={busy || task.status === 'ready' || !members.length}
+                  onClick={() => void generate()}
+                >
+                  {proposal ? '重新规划' : '生成工作流草案'}
+                </button>
+              )}
+              {proposal && (
+                <div className="zm-proposal">
+                  <h3>规划草案</h3>
+                  <p>{proposal.result.summary}</p>
+                  {proposal.result.questions.length > 0 && (
+                    <div className="zm-questions">
+                      <strong>需要你确认</strong>
+                      <ol>
+                        {proposal.result.questions.map((q) => (
+                          <li key={q}>{q}</li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+                  {proposal.result.assumptions.length > 0 && (
+                    <details open>
+                      <summary>规划中的假设</summary>
+                      <ul>
+                        {proposal.result.assumptions.map((a) => (
+                          <li key={a}>{a}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {previewTask && (
+                    <div className="zm-proposal-node">
+                      <strong>{(node ?? workflow.nodes[0])?.title}</strong>
+                      <p>{(node ?? workflow.nodes[0])?.rationale}</p>
+                      <small>交付：{(node ?? workflow.nodes[0])?.output}</small>
+                    </div>
+                  )}
+                  <button
+                    className="primary"
+                    disabled={
+                      busy ||
+                      !!proposal.result.questions.length ||
+                      !proposal.result.workflows.length
+                    }
+                    onClick={() => void applyProposal()}
+                  >
+                    应用草案
+                  </button>
+                  <button onClick={() => setProposal(null)}>放弃草案</button>
+                </div>
+              )}
+            </div>
+          )}
+        </aside>
+      </div>
+      {membersOpen && (
+        <Modal title="任务参与者" close={() => setMembersOpen(false)}>
+          {memberError && (
+            <p role="alert" className="zm-error">
+              {memberError}
+            </p>
+          )}
+          <MemberPicker
+            members={state.participants}
+            selected={memberDraft}
+            change={setMemberDraft}
+          />
+          <footer>
+            <button onClick={() => setMembersOpen(false)}>取消</button>
+            <button
+              className="primary"
+              onClick={() => {
+                const referenced = task.workflows.flatMap((w) =>
+                  w.nodes.flatMap((n) => [
+                    ...(n.assigneeId ? [n.assigneeId] : []),
+                    ...n.reviewerIds,
+                  ]),
+                );
+                if (referenced.some((id) => !memberDraft.includes(id))) {
+                  setMemberError('被移除的参与者仍承担节点或评审，请先重新分配。');
+                  return;
+                }
+                edit({ ...task, participantIds: memberDraft });
+                setMembersOpen(false);
+              }}
+            >
+              更新参与者
+            </button>
+          </footer>
+        </Modal>
+      )}
+    </div>
+  );
+}

@@ -25,6 +25,15 @@ const run = (args) => {
     throw new Error(`pnpm ${args.join(' ')} failed with ${String(p.error?.message ?? p.status)}`);
 };
 run(['install', '--frozen-lockfile']);
+for (const script of ['workbench/build.mjs', 'workbench/install-stage.mjs']) {
+  const result = spawnSync(process.execPath, [join(root, 'scripts', script)], {
+    cwd: root,
+    stdio: 'inherit',
+    env,
+  });
+  if (result.error || result.status !== 0)
+    throw new Error(`Workbench preparation failed: ${script}`);
+}
 if (task === 'dev') {
   // Upstream's dev launcher imports compiled workspace libraries before its own build begins.
   run(['--config.verifyDepsBeforeRun=false', 'run', 'build:lib:host']);

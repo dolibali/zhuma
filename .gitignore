@@ -24,3 +24,6 @@ logs/
 .idea/
 .vscode/
 local-overrides/
+
+.playwright-cli/
+output/playwright/
