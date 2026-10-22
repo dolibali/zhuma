@@ -43,6 +43,7 @@ export function WorkbenchPage({
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
+  const [dialogError, setDialogError] = useState('');
   const pending = useRef<{ content: string; id: string; revision: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -50,6 +51,53 @@ export function WorkbenchPage({
   const [projectFilter, setProjectFilter] = useState('');
   const [search, setSearch] = useState('');
   const [assetKind, setAssetKind] = useState('all');
+  const [memberKind, setMemberKind] = useState('all');
+  const [importing, setImporting] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+  function openDialog(next: Dialog) {
+    setDialog(structuredClone(next));
+    setError('');
+    setDialogError('');
+    pending.current = null;
+  }
+  function createCatalogItem() {
+    if (section === 'projects')
+      openDialog({ kind: 'project', value: { id: uid(), name: '', description: '' } });
+    else if (section === 'members')
+      openDialog({
+        kind: 'member',
+        value: {
+          id: uid(),
+          name: '',
+          kind: memberKind === 'expert' ? 'expert' : 'human',
+          role: '',
+          capabilities: [],
+          instructions: '',
+          available: true,
+        },
+      });
+    else if (section === 'assets')
+      openDialog({
+        kind: 'asset',
+        value: {
+          id: uid(),
+          name: '',
+          kind: assetKind === 'all' ? 'skill' : (assetKind as TeamAsset['kind']),
+          description: '',
+          content: '',
+          available: true,
+        },
+      });
+    else newTask();
+  }
+  const createLabel =
+    section === 'projects'
+      ? '新建项目'
+      : section === 'members'
+        ? '添加成员或专家'
+        : section === 'assets'
+          ? '新建资产'
+          : '创建任务';
   async function refresh(signal?: AbortSignal) {
     setLoading(true);
     setError('');
@@ -71,7 +119,7 @@ export function WorkbenchPage({
   }, [api]);
   async function submit(command: WorkbenchCommand): Promise<boolean> {
     setSaving(true);
-    setError('');
+    setDialogError('');
     const content = JSON.stringify(command);
     if (pending.current?.content !== content)
       pending.current = { content, id: uid(), revision: state.revision };
@@ -81,7 +129,7 @@ export function WorkbenchPage({
       setDialog(null);
       return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : '保存失败。');
+      setDialogError(e instanceof Error ? e.message : '保存失败，请重试。');
       return false;
     } finally {
       setSaving(false);
@@ -89,10 +137,10 @@ export function WorkbenchPage({
   }
   function newTask(projectId = projectFilter || state.projects[0]?.id) {
     if (!projectId) {
-      setDialog({ kind: 'project', value: { id: uid(), name: '', description: '' } });
+      openDialog({ kind: 'project', value: { id: uid(), name: '', description: '' } });
       return;
     }
-    setDialog({
+    openDialog({
       kind: 'task',
       value: {
         id: uid(),
@@ -108,11 +156,43 @@ export function WorkbenchPage({
     });
   }
   const activeTask = state.tasks.find((t) => t.id === activeTaskId);
+  const matches = (value: string) => value.toLowerCase().includes(search.trim().toLowerCase());
+  const projects = state.projects.filter((p) => matches(`${p.name} ${p.description}`));
+  const members = state.participants.filter(
+    (p) =>
+      (memberKind === 'all' || p.kind === memberKind) &&
+      matches(`${p.name} ${p.role} ${p.capabilities.join(' ')}`),
+  );
+  const assets = state.assets.filter(
+    (a) => (assetKind === 'all' || a.kind === assetKind) && matches(`${a.name} ${a.description}`),
+  );
+  const total =
+    section === 'projects'
+      ? state.projects.length
+      : section === 'members'
+        ? state.participants.length
+        : section === 'assets'
+          ? state.assets.length
+          : state.tasks.length;
+  const visibleCount =
+    section === 'projects'
+      ? projects.length
+      : section === 'members'
+        ? members.length
+        : assets.length;
+  const dialogExists =
+    dialog &&
+    (dialog.kind === 'project'
+      ? state.projects
+      : dialog.kind === 'member'
+        ? state.participants
+        : dialog.kind === 'asset'
+          ? state.assets
+          : state.tasks
+    ).some((item) => item.id === dialog.value.id);
   const tasks = state.tasks
     .filter(
-      (t) =>
-        (!projectFilter || t.projectId === projectFilter) &&
-        `${t.title} ${t.goal}`.includes(search),
+      (t) => (!projectFilter || t.projectId === projectFilter) && matches(`${t.title} ${t.goal}`),
     )
     .reverse();
   if (loading)
@@ -149,55 +229,63 @@ export function WorkbenchPage({
         <header className="zm-page-heading">
           <div className="zm-page-title">
             <h1>{labels[section]}</h1>
-            {section === 'tasks' && <span>{state.tasks.length}</span>}
+            <span>{total}</span>
           </div>
           <div className="zm-actions">
             <Appearance store={appearance} />
             <Button variant="quiet" onClick={() => void refresh()}>
               刷新
             </Button>
-            <button
-              className="primary"
-              onClick={() =>
-                section === 'projects'
-                  ? setDialog({ kind: 'project', value: { id: uid(), name: '', description: '' } })
-                  : section === 'members'
-                    ? setDialog({
-                        kind: 'member',
+            {section === 'assets' && (
+              <>
+                <Button
+                  busy={importing}
+                  busyLabel="正在读取…"
+                  onClick={() => importRef.current?.click()}
+                >
+                  导入定义
+                </Button>
+                <input
+                  hidden
+                  ref={importRef}
+                  aria-label="导入资产定义"
+                  type="file"
+                  accept=".json,.md,.txt"
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = '';
+                    if (!file) return;
+                    setError('');
+                    if (file.size > 8000) {
+                      setError('文件超过 8 KB，请精简后重新导入。');
+                      return;
+                    }
+                    setImporting(true);
+                    try {
+                      const content = await file.text();
+                      openDialog({
+                        kind: 'asset',
                         value: {
                           id: uid(),
-                          name: '',
-                          kind: 'human',
-                          role: '',
-                          capabilities: [],
-                          instructions: '',
+                          name: file.name.replace(/\.[^.]+$/u, '').slice(0, 160),
+                          kind: assetKind === 'all' ? 'skill' : (assetKind as TeamAsset['kind']),
+                          description: '',
+                          content,
                           available: true,
                         },
-                      })
-                    : section === 'assets'
-                      ? setDialog({
-                          kind: 'asset',
-                          value: {
-                            id: uid(),
-                            name: '',
-                            kind: 'skill',
-                            description: '',
-                            content: '',
-                            available: true,
-                          },
-                        })
-                      : newTask()
-              }
-            >
-              ＋{' '}
-              {section === 'projects'
-                ? '新建项目'
-                : section === 'members'
-                  ? '添加成员或专家'
-                  : section === 'assets'
-                    ? '新建资产'
-                    : '创建任务'}
-            </button>
+                      });
+                    } catch {
+                      setError('读取文件失败，请重新选择文件。');
+                    } finally {
+                      setImporting(false);
+                    }
+                  }}
+                />
+              </>
+            )}
+            <Button variant="primary" onClick={createCatalogItem}>
+              ＋ {createLabel}
+            </Button>
           </div>
         </header>
         <div className="zm-page-bar">
@@ -246,52 +334,91 @@ export function WorkbenchPage({
               </select>
             </div>
           )}
+          {section !== 'tasks' && (
+            <div className="zm-filter">
+              <input
+                type="search"
+                aria-label={
+                  section === 'projects'
+                    ? '搜索项目'
+                    : section === 'members'
+                      ? '搜索成员与专家'
+                      : '搜索资产'
+                }
+                placeholder={
+                  section === 'projects'
+                    ? '搜索项目…'
+                    : section === 'members'
+                      ? '搜索姓名、职责或能力…'
+                      : '搜索资产…'
+                }
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {section === 'members' && (
+                <select
+                  aria-label="成员类型"
+                  value={memberKind}
+                  onChange={(event) => setMemberKind(event.target.value)}
+                >
+                  <option value="all">所有成员与专家</option>
+                  <option value="human">团队成员</option>
+                  <option value="expert">Agent 专家</option>
+                </select>
+              )}
+              {section === 'assets' && (
+                <select
+                  aria-label="资产类型"
+                  value={assetKind}
+                  onChange={(event) => setAssetKind(event.target.value)}
+                >
+                  <option value="all">全部类型</option>
+                  <option value="skill">Skills</option>
+                  <option value="mcp">MCP</option>
+                  <option value="template">工作流模板</option>
+                </select>
+              )}
+            </div>
+          )}
         </div>
         {error && (
           <div role="alert" className="zm-error">
             {error}
           </div>
         )}
-        {section === 'projects' && (
-          <>
-            <div className="zm-project-grid">
-              {state.projects.map((p) => (
-                <article className="zm-project" key={p.id}>
-                  <div className="zm-project-icon">▱</div>
-                  <button
-                    className="zm-card-title"
+        {section === 'projects' && !!projects.length && (
+          <div className="zm-directory zm-project-directory">
+            {projects.map((p) => (
+              <article className="zm-directory-row" key={p.id} aria-label={p.name}>
+                <span className="zm-directory-symbol" aria-hidden>
+                  ▱
+                </span>
+                <div className="zm-directory-content">
+                  <Button
+                    variant="quiet"
+                    className="zm-directory-title"
                     onClick={() => {
                       setProjectFilter(p.id);
+                      setSearch('');
                       setSection('tasks');
                     }}
                   >
                     {p.name}
-                  </button>
-                  <p>{p.description || '添加项目背景，让团队和 AI 了解工作上下文。'}</p>
-                  <footer>
-                    <span>{state.tasks.filter((t) => t.projectId === p.id).length} 项任务</span>
-                    <button onClick={() => setDialog({ kind: 'project', value: p })}>编辑</button>
-                    <button onClick={() => newTask(p.id)}>创建任务 →</button>
-                  </footer>
-                </article>
-              ))}
-            </div>
-            {!state.projects.length && (
-              <div className="zm-welcome">
-                <span className="zm-welcome-symbol">▱</span>
-                <h2>先为工作建立一个项目</h2>
-                <p>把相关任务、团队分工和工作流放在一起。</p>
-                <button
-                  className="primary"
-                  onClick={() =>
-                    setDialog({ kind: 'project', value: { id: uid(), name: '', description: '' } })
-                  }
-                >
-                  新建项目
-                </button>
-              </div>
-            )}
-          </>
+                  </Button>
+                  <p title={p.description}>{p.description || '暂无项目背景'}</p>
+                </div>
+                <span className="zm-directory-meta">
+                  {state.tasks.filter((t) => t.projectId === p.id).length} 项任务
+                </span>
+                <div className="zm-directory-actions">
+                  <Button variant="quiet" onClick={() => openDialog({ kind: 'project', value: p })}>
+                    编辑
+                  </Button>
+                  <Button onClick={() => newTask(p.id)}>创建任务</Button>
+                </div>
+              </article>
+            ))}
+          </div>
         )}
         {section === 'tasks' && (
           <>
@@ -366,136 +493,114 @@ export function WorkbenchPage({
             )}
           </>
         )}
-        {section === 'members' && (
-          <>
-            <p className="zm-section-note">维护职责与能力，供任务分配和 AI 规划使用。</p>
-            <div className="zm-project-grid">
-              {state.participants.map((p) => (
-                <article className="zm-person-card" key={p.id}>
-                  <header>
-                    <span className={`zm-avatar ${p.kind}`}>
-                      {p.kind === 'expert' ? 'AI' : p.name[0]}
-                    </span>
-                    <div>
-                      <h3>{p.name}</h3>
-                      <small>
-                        {p.kind === 'expert' ? 'Agent 专家' : '团队成员'} ·{' '}
-                        {p.available ? '可参与' : '暂不可用'}
-                      </small>
-                    </div>
-                    <button onClick={() => setDialog({ kind: 'member', value: p })}>编辑</button>
-                  </header>
-                  <p>{p.role || '尚未填写职责'}</p>
+        {section === 'members' && !!members.length && (
+          <div className="zm-directory zm-member-directory">
+            <div className="zm-directory-heading">
+              <span>成员 / 专家</span>
+              <span>职责与能力</span>
+              <span>状态</span>
+              <span />
+            </div>
+            {members.map((p) => (
+              <article className="zm-directory-row" key={p.id} aria-label={p.name}>
+                <div className="zm-directory-identity">
+                  <span className={`zm-avatar ${p.kind}`}>
+                    {p.kind === 'expert' ? 'AI' : p.name[0]}
+                  </span>
+                  <div>
+                    <h3>{p.name}</h3>
+                    <small>{p.kind === 'expert' ? 'Agent 专家' : '团队成员'}</small>
+                  </div>
+                </div>
+                <div className="zm-directory-content">
+                  <p title={p.role}>{p.role || '暂无职责说明'}</p>
                   <div className="zm-tags">
-                    {p.capabilities.map((c) => (
+                    {p.capabilities.slice(0, 3).map((c) => (
                       <span key={c}>{c}</span>
                     ))}
+                    {p.capabilities.length > 3 && (
+                      <span title={p.capabilities.join('、')}>+{p.capabilities.length - 3}</span>
+                    )}
                   </div>
-                </article>
-              ))}
-            </div>
-            {!state.participants.length && (
-              <div className="zm-empty">
-                <h3>团队里有哪些人和专家？</h3>
-                <p>填写他们擅长的工作，AI 才能做出有依据的分工。</p>
-              </div>
-            )}
-          </>
+                </div>
+                <span className={`zm-availability ${p.available ? '' : 'unavailable'}`}>
+                  {p.available ? '可参与' : '暂不可用'}
+                </span>
+                <Button variant="quiet" onClick={() => openDialog({ kind: 'member', value: p })}>
+                  编辑
+                </Button>
+              </article>
+            ))}
+          </div>
         )}
-        {section === 'assets' && (
-          <>
-            <div className="zm-filter">
-              <input
-                aria-label="搜索资产"
-                placeholder="搜索资产…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <select
-                aria-label="资产类型"
-                value={assetKind}
-                onChange={(e) => setAssetKind(e.target.value)}
+        {section === 'assets' && !!assets.length && (
+          <div className="zm-directory zm-asset-directory">
+            <div className="zm-directory-heading">
+              <span>类型</span>
+              <span>名称与用途</span>
+              <span>状态</span>
+              <span />
+            </div>
+            {assets.map((a) => (
+              <article className="zm-directory-row" key={a.id} aria-label={a.name}>
+                <span className="zm-kind">
+                  {a.kind === 'template' ? '工作流模板' : a.kind === 'skill' ? 'Skill' : 'MCP'}
+                </span>
+                <div className="zm-directory-content">
+                  <h3>{a.name}</h3>
+                  <p title={a.description}>{a.description || '暂无用途说明'}</p>
+                </div>
+                <span className={`zm-availability ${a.available ? '' : 'unavailable'}`}>
+                  {a.available ? '已启用' : '已停用'}
+                </span>
+                <Button variant="quiet" onClick={() => openDialog({ kind: 'asset', value: a })}>
+                  编辑
+                </Button>
+              </article>
+            ))}
+          </div>
+        )}
+        {section !== 'tasks' && !visibleCount && (
+          <div className="zm-empty zm-directory-empty">
+            <h3>{total ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
+            <p>
+              {total
+                ? '换个关键词，或清除筛选。'
+                : section === 'projects'
+                  ? '创建项目，集中管理相关工作。'
+                  : section === 'members'
+                    ? '添加团队成员或 Agent 专家，填写职责后参与分工。'
+                    : '新建或导入 Skill、MCP 能力定义和工作流模板。'}
+            </p>
+            {total ? (
+              <Button
+                onClick={() => {
+                  setSearch('');
+                  setMemberKind('all');
+                  setAssetKind('all');
+                }}
               >
-                <option value="all">全部类型</option>
-                <option value="skill">Skills</option>
-                <option value="mcp">MCP</option>
-                <option value="template">工作流模板</option>
-              </select>
-              <label className="zm-upload">
-                导入定义
-                <input
-                  aria-label="导入资产定义"
-                  type="file"
-                  accept=".json,.md,.txt"
-                  onChange={async (e) => {
-                    const f = e.target.files?.[0];
-                    if (!f) return;
-                    if (f.size > 8000) {
-                      setError('当前单份定义限制为 8 KB，请精简后导入。');
-                      return;
-                    }
-                    const content = await f.text();
-                    setDialog({
-                      kind: 'asset',
-                      value: {
-                        id: uid(),
-                        name: f.name.replace(/\.[^.]+$/u, ''),
-                        kind: 'skill',
-                        description: '',
-                        content,
-                        available: true,
-                      },
-                    });
-                  }}
-                />
-              </label>
-            </div>
-            <div className="zm-project-grid">
-              {state.assets
-                .filter(
-                  (a) =>
-                    (assetKind === 'all' || a.kind === assetKind) &&
-                    `${a.name} ${a.description}`.includes(search),
-                )
-                .map((a) => (
-                  <article className="zm-asset" key={a.id}>
-                    <header>
-                      <span className="zm-kind">
-                        {a.kind === 'template' ? '工作流模板' : a.kind.toUpperCase()}
-                      </span>
-                      <small>{a.available ? '可用于规划' : '已停用'}</small>
-                    </header>
-                    <h3>{a.name}</h3>
-                    <p>{a.description || '尚未填写用途'}</p>
-                    <button onClick={() => setDialog({ kind: 'asset', value: a })}>
-                      查看与编辑 →
-                    </button>
-                  </article>
-                ))}
-            </div>
-            {!state.assets.length && (
-              <div className="zm-empty">
-                <h3>把团队的方法变成可复用资产</h3>
-                <p>添加 Skill、MCP 能力说明或工作流模板，用于节点配置和自动规划。</p>
-              </div>
+                清除筛选
+              </Button>
+            ) : (
+              <Button variant="primary" onClick={createCatalogItem}>
+                {createLabel}
+              </Button>
             )}
-          </>
+          </div>
         )}
       </div>
       {dialog && (
         <Modal
           title={
-            dialog.kind === 'project'
-              ? '项目'
-              : dialog.kind === 'member'
-                ? '成员与专家'
-                : dialog.kind === 'asset'
-                  ? '团队资产'
-                  : '创建任务'
+            dialog.kind === 'task'
+              ? '创建任务'
+              : `${dialogExists ? '编辑' : '新建'}${dialog.kind === 'project' ? '项目' : dialog.kind === 'member' ? (dialog.value.kind === 'expert' ? '专家' : '成员') : '资产'}`
           }
           close={() => !saving && setDialog(null)}
         >
           <form
+            className={dialog.kind === 'task' ? 'zm-task-form' : 'zm-catalog-form'}
             onSubmit={(e: FormEvent) => {
               e.preventDefault();
               const d = dialog;
@@ -520,12 +625,7 @@ export function WorkbenchPage({
                 });
             }}
           >
-            <div className="zm-form-body">
-              {error && (
-                <div role="alert" className="zm-error">
-                  {error}
-                </div>
-              )}
+            <fieldset className="zm-form-body" disabled={saving}>
               {dialog.kind === 'project' && (
                 <>
                   <Field label="项目名称">
@@ -556,30 +656,33 @@ export function WorkbenchPage({
               )}
               {dialog.kind === 'member' && (
                 <>
-                  <Field label="类型">
-                    <select
-                      value={dialog.value.kind}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, kind: e.target.value as Participant['kind'] },
-                        })
-                      }
-                    >
-                      <option value="human">团队成员</option>
-                      <option value="expert">Agent 专家</option>
-                    </select>
-                  </Field>
-                  <Field label="名称">
-                    <input
-                      required
-                      maxLength={160}
-                      value={dialog.value.name}
-                      onChange={(e) =>
-                        setDialog({ ...dialog, value: { ...dialog.value, name: e.target.value } })
-                      }
-                    />
-                  </Field>
+                  <div className="zm-form-row">
+                    <Field label="名称">
+                      <input
+                        autoFocus
+                        required
+                        maxLength={160}
+                        value={dialog.value.name}
+                        onChange={(e) =>
+                          setDialog({ ...dialog, value: { ...dialog.value, name: e.target.value } })
+                        }
+                      />
+                    </Field>
+                    <Field label="类型">
+                      <select
+                        value={dialog.value.kind}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, kind: e.target.value as Participant['kind'] },
+                          })
+                        }
+                      >
+                        <option value="human">团队成员</option>
+                        <option value="expert">Agent 专家</option>
+                      </select>
+                    </Field>
+                  </div>
                   <Field label="职责">
                     <input
                       maxLength={300}
@@ -618,7 +721,7 @@ export function WorkbenchPage({
                       }
                     />
                   </Field>
-                  <label>
+                  <label className="zm-check-row">
                     <input
                       type="checkbox"
                       checked={dialog.value.available}
@@ -635,31 +738,34 @@ export function WorkbenchPage({
               )}
               {dialog.kind === 'asset' && (
                 <>
-                  <Field label="类型">
-                    <select
-                      value={dialog.value.kind}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, kind: e.target.value as TeamAsset['kind'] },
-                        })
-                      }
-                    >
-                      <option value="skill">Skill</option>
-                      <option value="mcp">MCP 能力定义</option>
-                      <option value="template">工作流模板</option>
-                    </select>
-                  </Field>
-                  <Field label="名称">
-                    <input
-                      required
-                      maxLength={160}
-                      value={dialog.value.name}
-                      onChange={(e) =>
-                        setDialog({ ...dialog, value: { ...dialog.value, name: e.target.value } })
-                      }
-                    />
-                  </Field>
+                  <div className="zm-form-row">
+                    <Field label="名称">
+                      <input
+                        autoFocus
+                        required
+                        maxLength={160}
+                        value={dialog.value.name}
+                        onChange={(e) =>
+                          setDialog({ ...dialog, value: { ...dialog.value, name: e.target.value } })
+                        }
+                      />
+                    </Field>
+                    <Field label="类型">
+                      <select
+                        value={dialog.value.kind}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, kind: e.target.value as TeamAsset['kind'] },
+                          })
+                        }
+                      >
+                        <option value="skill">Skill</option>
+                        <option value="mcp">MCP 能力定义</option>
+                        <option value="template">工作流模板</option>
+                      </select>
+                    </Field>
+                  </div>
                   <Field label="用途与适用场景">
                     <textarea
                       rows={2}
@@ -691,7 +797,7 @@ export function WorkbenchPage({
                       }
                     />
                   </Field>
-                  <label>
+                  <label className="zm-check-row">
                     <input
                       type="checkbox"
                       checked={dialog.value.available}
@@ -771,14 +877,19 @@ export function WorkbenchPage({
                   {!dialog.value.ownerId && <small>可先保存草稿，确认工作流前需选择负责人。</small>}
                 </>
               )}
-            </div>
+            </fieldset>
+            {dialogError && (
+              <div role="alert" className="zm-error zm-dialog-error">
+                {dialogError}
+              </div>
+            )}
             <footer>
-              <button type="button" disabled={saving} onClick={() => setDialog(null)}>
+              <Button disabled={saving} onClick={() => setDialog(null)}>
                 取消
-              </button>
-              <button type="submit" disabled={saving} className="primary">
-                {saving ? '正在保存…' : dialog.kind === 'task' ? '创建并编排' : '保存'}
-              </button>
+              </Button>
+              <Button type="submit" variant="primary" busy={saving} busyLabel="正在保存…">
+                {dialog.kind === 'task' ? '创建并编排' : '保存'}
+              </Button>
             </footer>
           </form>
         </Modal>
