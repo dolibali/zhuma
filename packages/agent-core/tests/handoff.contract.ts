@@ -90,6 +90,18 @@ const indexed: PayloadExcludesCredentials<{ [key: string]: string }> = true;
 // @ts-expect-error a credential nested in an array is still a credential
 const listed: PayloadExcludesCredentials<{ items: readonly { token: string }[] }> = true;
 
+// @ts-expect-error api_key is a credential field
+const apiKey: PayloadExcludesCredentials<{ api_key: string }> = true;
+
+// @ts-expect-error refreshToken is a credential field
+const refreshToken: PayloadExcludesCredentials<{ refreshToken: string }> = true;
+
+// @ts-expect-error privateKey is a credential field
+const privateKey: PayloadExcludesCredentials<{ privateKey: string }> = true;
+
+// @ts-expect-error cookie is a credential field
+const cookie: PayloadExcludesCredentials<{ cookie: string }> = true;
+
 void human;
 void expert;
 void expertWithoutRef;
@@ -105,3 +117,7 @@ void accessToken;
 void upperPassword;
 void indexed;
 void listed;
+void apiKey;
+void refreshToken;
+void privateKey;
+void cookie;

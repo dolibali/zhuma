@@ -149,6 +149,9 @@ function reviewerDecision(
 export function aggregateReview(
   round: Pick<ReviewRound, 'id' | 'artifactVersionId' | 'reviewerIds' | 'ballots'>,
 ): ReviewEvaluation {
+  if (!Array.isArray(round.reviewerIds) || !Array.isArray(round.ballots)) {
+    return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
+  }
   if (round.reviewerIds.length === 0) {
     return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
   }
@@ -170,7 +173,8 @@ export function aggregateReview(
 }
 
 function duplicateReviewer(reviewerIds: readonly string[]): boolean {
-  return new Set(reviewerIds).size !== reviewerIds.length;
+  const keys = reviewerIds.map((id) => id.trim());
+  return new Set(keys).size !== keys.length;
 }
 
 function blank(value: string): boolean {
@@ -521,6 +525,9 @@ export function applyReviewSettlementCommand(
     currentVersion: state.version,
     stored: state.stored,
     apply: (_nextVersion) => {
+      if (!Array.isArray(round.reviewerIds) || !Array.isArray(round.ballots)) {
+        return { disposition: 'reject', code: 'unbound-evaluation' };
+      }
       if (envelope.payload.roundId !== round.id) {
         return { disposition: 'reject', code: 'stale-round' };
       }

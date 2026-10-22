@@ -381,9 +381,41 @@ test('cancelling, restarting, or resubmitting voids the open round', () => {
   );
 });
 
+test('settlement rejects a round that has no ballots', () => {
+  const state = { ...initialNodeCommandState(), status: 'in-review', version: 4 };
+  const round = {
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    status: 'open',
+    reviewerIds: ['h1'],
+  };
+  const settled = applyReviewSettlementCommand(
+    state,
+    {
+      idempotencyKey: 'missing-ballots',
+      actorId: 'svc',
+      objectId: 'node-1',
+      expectedVersion: 4,
+      payload: { roundId: 'round-1', artifactVersionId: 'art-1' },
+    },
+    round,
+    { roundId: 'round-1', artifactVersionId: 'art-1' },
+  );
+  assert.equal(settled.decision.status, 'rejected');
+  assert.equal(settled.decision.code, 'unbound-evaluation');
+  assert.equal(settled.state.status, 'in-review');
+  assert.equal(settled.state.version, 4);
+  assert.equal(settled.state.stored.length, 0);
+  assert.equal(aggregateReview(round).outcome, 'invalid-policy');
+});
+
 test('a duplicate reviewer roster cannot be completed by one vote', () => {
   assert.equal(
     openReviewRound({ id: 'round-1', artifactVersionId: 'art-1', reviewerIds: ['a', 'a'] }).code,
+    'duplicate-reviewer',
+  );
+  assert.equal(
+    openReviewRound({ id: 'round-1', artifactVersionId: 'art-1', reviewerIds: ['a', ' a '] }).code,
     'duplicate-reviewer',
   );
   const round = {

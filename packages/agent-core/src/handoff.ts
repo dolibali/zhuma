@@ -111,9 +111,13 @@ type CredentialName =
   | 'secret'
   | 'token'
   | 'apikey'
+  | 'api_key'
   | 'password'
   | 'authorization'
-  | 'accesstoken';
+  | 'accesstoken'
+  | 'refreshtoken'
+  | 'privatekey'
+  | 'cookie';
 
 type IsCredential<K extends string> = Lowercase<K> extends CredentialName ? true : false;
 
@@ -159,10 +163,24 @@ export interface NodeHandoffInput extends NodeHandoffFields {
   readonly engine?: string;
 }
 
-function usableRef(ref: VersionedRef | undefined): 'missing' | 'blank' | VersionedRef {
+function usableRef(ref: unknown): 'missing' | 'blank' | 'invalid' | VersionedRef {
   if (ref === undefined) return 'missing';
-  if (ref.id.trim() === '' || ref.version.trim() === '') return 'blank';
-  return { id: ref.id, version: ref.version };
+  if (ref === null || typeof ref !== 'object') return 'invalid';
+  const candidate = ref as { id?: unknown; version?: unknown };
+  if (typeof candidate.id !== 'string' || typeof candidate.version !== 'string') return 'invalid';
+  if (candidate.id.trim() === '' || candidate.version.trim() === '') return 'blank';
+  return { id: candidate.id, version: candidate.version };
+}
+
+function copyRefs(refs: unknown): readonly VersionedRef[] | undefined {
+  if (!Array.isArray(refs)) return undefined;
+  const copied: VersionedRef[] = [];
+  for (const ref of refs) {
+    const usable = usableRef(ref);
+    if (usable === 'missing' || usable === 'blank' || usable === 'invalid') return undefined;
+    copied.push(usable);
+  }
+  return copied;
 }
 
 /**
@@ -174,6 +192,16 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
   if (kind === 'agent') return { ok: false, code: 'agent-not-identity' };
   if (kind !== 'human' && kind !== 'expert') return { ok: false, code: 'invalid-handoff' };
   const ref = usableRef(input.expertRef);
+  const skillRefs = copyRefs(input.skillRefs);
+  const mcpRefs = copyRefs(input.mcpRefs);
+  if (skillRefs === undefined || mcpRefs === undefined)
+    return { ok: false, code: 'invalid-handoff' };
+  if (ref === 'invalid' || (kind === 'human' && ref === 'blank')) {
+    return { ok: false, code: 'invalid-handoff' };
+  }
+  if (kind === 'expert' && (ref === 'missing' || ref === 'blank')) {
+    return { ok: false, code: 'expert-ref-required' };
+  }
   const fields: NodeHandoffFields = {
     nodeId: input.nodeId,
     taskId: input.taskId,
@@ -184,23 +212,22 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
     reviewRequired: input.reviewRequired,
     reviewerIds: input.reviewerIds,
     inputRefs: input.inputRefs,
-    skillRefs: input.skillRefs,
-    mcpRefs: input.mcpRefs,
+    skillRefs,
+    mcpRefs,
     inputNote: input.inputNote,
     expectedOutput: input.expectedOutput,
     ...(input.childTaskId === undefined ? {} : { childTaskId: input.childTaskId }),
   };
+  if (kind === 'human' && ref === 'missing') {
+    return { ok: true, handoff: { ...fields, assignee: { id: input.assignee.id, kind: 'human' } } };
+  }
+  if (typeof ref !== 'object') return { ok: false, code: 'invalid-handoff' };
   if (kind === 'human') {
-    if (ref === 'blank') return { ok: false, code: 'invalid-handoff' };
-    if (ref === 'missing') {
-      return { ok: true, handoff: { ...fields, assignee: { id: input.assignee.id, kind } } };
-    }
     return {
       ok: true,
-      handoff: { ...fields, assignee: { id: input.assignee.id, kind }, expertRef: ref },
+      handoff: { ...fields, assignee: { id: input.assignee.id, kind: 'human' }, expertRef: ref },
     };
   }
-  if (ref === 'missing' || ref === 'blank') return { ok: false, code: 'expert-ref-required' };
   return {
     ok: true,
     handoff: { ...fields, assignee: { id: input.assignee.id, kind: 'expert' }, expertRef: ref },
@@ -208,14 +235,16 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
 }
 
 /**
- * Read the frozen snapshot named by `VersionedRef.version` (an AppliedPlan.id).
- * Later catalog entries are other ids. This is not an asset-version store.
+ * Read one frozen snapshot.
+ * `id` on the snapshot is the AppliedPlan.id (`VersionedRef.version`).
+ * `assetId` is the asset (`VersionedRef.id`). Both must match.
+ * This is not an asset-version store.
  */
-export function readVersionedSnapshot<T extends { readonly id: string }>(
+export function readVersionedSnapshot<T extends { readonly assetId: string; readonly id: string }>(
   ref: VersionedRef,
   snapshots: readonly T[],
 ): T | undefined {
-  return snapshots.find((snapshot) => snapshot.id === ref.version);
+  return snapshots.find((snapshot) => snapshot.assetId === ref.id && snapshot.id === ref.version);
 }
 
 /**

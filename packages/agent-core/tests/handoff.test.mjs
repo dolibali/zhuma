@@ -57,4 +57,29 @@ test('a human handoff may omit expertRef and an expert handoff may not', () => {
   const agent = readNodeHandoff(handoff({ id: 'run-1', kind: 'agent' }));
   assert.equal(agent.ok, false);
   assert.equal(agent.code, 'agent-not-identity');
+
+  for (const expertRef of [
+    { id: 'expert-1' },
+    { id: 'expert-1', version: null },
+    { id: 'expert-1', version: 1 },
+  ]) {
+    const malformed = readNodeHandoff(handoff({ id: 'expert-1', kind: 'expert' }, { expertRef }));
+    assert.equal(malformed.ok, false);
+    assert.equal(malformed.code, 'invalid-handoff');
+  }
+
+  const leaked = readNodeHandoff(
+    handoff(
+      { id: 'human-1', kind: 'human' },
+      {
+        skillRefs: [{ id: 'skill-1', version: 'applied-plan-1', token: 'secret' }],
+        mcpRefs: [{ id: 'mcp-1', version: 'applied-plan-1', token: 'secret' }],
+      },
+    ),
+  );
+  assert.equal(leaked.ok, true);
+  assert.deepEqual(leaked.handoff.skillRefs, [{ id: 'skill-1', version: 'applied-plan-1' }]);
+  assert.deepEqual(leaked.handoff.mcpRefs, [{ id: 'mcp-1', version: 'applied-plan-1' }]);
+  assert.equal(Object.hasOwn(leaked.handoff.skillRefs[0], 'token'), false);
+  assert.equal(Object.hasOwn(leaked.handoff.mcpRefs[0], 'token'), false);
 });

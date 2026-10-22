@@ -53,11 +53,11 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 | InboxItem       | B                                    | `deriveInbox`                                                      | 由节点、轮次和确认事实派生，不另存一套执行事实                  |
 | Command / Event | B 维护信封；A 的编排命令复用同一信封 | `CommandEnvelope`、`DomainEvent`                                   | 见第 8 节                                                       |
 
-`NodeHandoff` 是 A 交给 B 的边界：目标、执行者、依赖、评审策略、输入引用，以及与 `inputRefs` 分开的专家、技能和 MCP 引用。人工节点的 `assignee.kind` 是 `human`，可以不带 `expertRef`，也不需要选择引擎。专家节点的 `assignee.kind` 是 `expert`，`expertRef` 必须是 `{ id, version }`。`skillRefs` 与 `mcpRefs` 都是 `{ id, version }`，可以是空数组。`inputNote` 与 `expectedOutput` 可以是空字符串。这些字段不含凭据、密钥、令牌或授权材料，也不使用 `skillIds`。`PayloadExcludesCredentials` 递归、不区分大小写地检查每一层字段，覆盖 `credential`、`credentials`、`secret`、`token`、`apiKey`、`password`、`authorization`、`accessToken`，并拒绝字符串索引签名。`handoffPayloadExcludesCredentials` 锁定 `NodeHandoff`、`VersionedRef`、`ContextInputRef` 和 `ActorRef`。
+`NodeHandoff` 是 A 交给 B 的边界：目标、执行者、依赖、评审策略、输入引用，以及与 `inputRefs` 分开的专家、技能和 MCP 引用。人工节点的 `assignee.kind` 是 `human`，可以不带 `expertRef`，也不需要选择引擎。专家节点的 `assignee.kind` 是 `expert`，`expertRef` 必须是 `{ id, version }`。`skillRefs` 与 `mcpRefs` 都是 `{ id, version }`，可以是空数组。`inputNote` 与 `expectedOutput` 可以是空字符串。这些字段不含凭据、密钥、令牌或授权材料，也不使用 `skillIds`。`PayloadExcludesCredentials` 递归、不区分大小写地检查每一层字段，覆盖 `credential`、`credentials`、`secret`、`token`、`apiKey`、`api_key`、`password`、`authorization`、`accessToken`、`refreshToken`、`privateKey`、`cookie`，并拒绝字符串索引签名。`handoffPayloadExcludesCredentials` 锁定 `NodeHandoff`、`VersionedRef`、`ContextInputRef` 和 `ActorRef`。
 
 `NodeHandoff.revision` 是切出这份交接时的已应用计划修订号。它不是节点命令版本，也不是 A 的草稿并发版本。
 
-`VersionedRef.version` 等于对应的 `AppliedPlan.id`。它是计划内容快照的 id，不是需求第 12 节里的资产版本号，也不是 Skill 的版本号。资产 id 和这份快照 id 一起定位冻结内容。以后若建立独立的资产版本库，按显式迁移处理；本契约不另建版本库。节点的 `inputNote` 与版本化产物引用保持分开。`readVersionedSnapshot` 按 `version` 读取已发布快照。目录或清单随后改变、或追加了新的快照 id 时，原来的 id 仍读到原来的内容。
+`VersionedRef.version` 等于对应的 `AppliedPlan.id`。它是计划内容快照的 id，不是需求第 12 节里的资产版本号，也不是 Skill 的版本号。资产 id 和这份快照 id 一起定位冻结内容。以后若建立独立的资产版本库，按显式迁移处理；本契约不另建版本库。节点的 `inputNote` 与版本化产物引用保持分开。`readVersionedSnapshot` 同时匹配资产 id（`VersionedRef.id`，快照上的 `assetId`）和快照 id（`VersionedRef.version`，快照上的 `id`，即 `AppliedPlan.id`）。只命中其中一个，或没有这条组合时，返回 `undefined`。同一份已应用计划下的专家和技能是不同资产，不能互相读到对方的快照。目录或清单随后改变、或追加了新的快照 id 时，原来的资产 id 加原来的快照 id 仍读到原来的内容。
 
 `NodeExecutionReport` 是 B 交回 A 的边界：节点状态、阻塞原因、已接受产物版本、有效运行、评审结局、上游受影响标记。节点状态以 `NodeExecutionReport.status` 为准。A 只投影这份报告，并计算任务汇总。B 不计算任务汇总，也不渲染编排。
 
@@ -68,7 +68,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 - `'human'` 是人工执行者。人工节点可以不选专家，也可以不选引擎。
 - `'expert'` 是 A 目录里的专家配置，不是一次运行实例。专家配置和运行实例分开。专家节点必须带可解析的 `expertRef`。
 - `agent` 不是第三种参与者身份。B 内部若仍把一次执行标成 agent，由 `dsh-adapter` 的 `toHandoffActor` 映射：人工执行保持 `human`；agent 运行带有非空专家 id 时映射为该专家，否则映射为人类负责人。映射结果不是 `agent`。
-- `assigneeUsesAgentRuntime` 仍把内部运行分类 `'agent'` 和目录身份 `'expert'` 视为非人工。`deriveInbox` 的行为不变：不为这两种执行者本人生成交付待办；节点在等待输入或失败时，写授权的 `ownerId` 收到负责人待办。
+- `assigneeUsesAgentRuntime` 接受内部运行分类 `'agent'` 和目录身份 `'expert'`，供适配层判断非人工运行。`deriveInbox` 的 `InboxNodeFact.assignee` 类型是 `ActorRef`，只有 `human` 和 `expert`，不把内部 `agent` 当作入参。内部 agent 先由 `toHandoffActor` 映射，再进入待办。映射后的 `expert` 本人不产生交付待办；节点在等待输入或失败时，有写授权的 `ownerId` 收到负责人待办。
 
 ### 3.2 三层版本
 
@@ -106,7 +106,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 | 子任务无权读取祖先材料     | `canReadFile` 不因 `referencedByUpstream` 授权；无权时 `projectWorkTreeNode` 只返回 id                   | 祖先任务的授权如何赋给子任务                 | A                                 |
 | 人工节点不必选择专家或引擎 | 人工交接可以省略 `expertRef`，结果里也没有引擎字段                                                       | 无                                           | B，本包                           |
 | 子返回不跳过父提交与评审   | `child-workflow-returned` 的效果只有 `await-parent-submit`                                               | 无                                           | B，本包                           |
-| 旧快照不随目录改动         | `readVersionedSnapshot` 按 `AppliedPlan.id` 读到原快照                                                   | 目录持久化和快照导出                         | A。独立资产版本库是以后的显式迁移 |
+| 旧快照不随目录改动         | `readVersionedSnapshot` 用资产 id 和 `AppliedPlan.id` 一起读到原快照                                     | 目录持久化和快照导出                         | A。独立资产版本库是以后的显式迁移 |
 | 取消回执前不显示已停止     | `cancel-unconfirmed` 不改变节点；只有 `cancel-confirmed` 进入 `cancelled`                                | 父任务取消后代、取消处理中的展示、归档拦截   | 后续执行工作包                    |
 
 ## 4. 节点状态机
@@ -127,7 +127,9 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 | `failed`            | 失败           | 核实后的执行失败                       | 只有显式 `retry`，并带 `returnTo`                  |
 | `cancelled`         | 已取消         | 取消已经确认                           | 只有显式 `restart`，并带 `returnTo`                |
 
-`transitionNode` 是节点状态的迁移函数。合法迁移返回下一个状态和推进效果；非法迁移返回 `illegal-transition`，不修改调用方状态。`review-resolved` 仍留在迁移联合类型里，使旧载荷失败关闭而不是抛出；这条迁移一律返回 `illegal-transition`。`in-review` 的通过或退回由 `applyReviewSettlementCommand` 写入：信封带 actor、期望版本和幂等键，内部经 `decideCommand` 调用 `applyReviewToNode`，并从选票重算结局。它必须绑定节点当前轮次。
+`applyNodeTransitionCommand` 是提交和恢复（`retry`、`restart`）的唯一权威入口。存储层保存和恢复 `NodeCommandState` 时必须带上 `entryStatus`；缺了这份记录，后续提交和恢复会拒绝推进。`transitionNode` 和 `transitionForSubmission` 是无状态的底层函数，只根据当次参数计算，不读取也不写入 `entryStatus`。调用方不能用它们直接落库。
+
+`transitionNode` 是节点状态的迁移函数。合法迁移返回下一个状态和推进效果；非法迁移返回 `illegal-transition`，不修改调用方状态。`review-resolved` 仍留在迁移联合类型里，使旧载荷失败关闭而不是抛出；这条迁移一律返回 `illegal-transition`。`in-review` 的通过或退回由 `applyReviewSettlementCommand` 写入：信封带 actor、期望版本和幂等键，内部经 `decideCommand` 调用 `applyReviewToNode`，并从选票重算结局。它必须绑定节点当前轮次。轮次没有 `ballots` 数组时，结算命令返回拒绝，不抛出。
 
 推进效果：
 
@@ -149,7 +151,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 
 - 需要评审的提交进入 `in-review` 并 `block-downstream`。入口不是 `needs-revision` 的 `ready` 或 `running`，不需要评审的提交进入 `completed` 并 `accept-handoff`。评审开关打开时评审人不能为空，否则返回 `review-requires-reviewers`，节点不动。
 - `needs-revision` 的 `submit-artifact` 必须 `reviewRequired: true`，进入 `in-review`，效果是 `open-review` 和 `block-downstream`。同一次提交若 `reviewRequired: false`，返回 `illegal-transition`，节点保持需修改。关闭评审要另有授权命令，不能借这次提交跳过。
-- 进入 `running` 或 `child-workflow` 时，`NodeCommandState.entryStatus` 记下入口，取值是 `ready` 或 `needs-revision`。等待输入、补充输入、失败和确认取消都保留这份记录。子流程返回后节点状态可以是 `ready`；若入口是 `needs-revision`，`entryStatus` 仍是 `needs-revision`。公开命令 `applyNodeTransitionCommand` 只读领域状态里的记录。载荷里的 `entryStatus`、`returnTo` 和 `reviewRequired: false` 都不能覆盖或清除它。记录缺失时，`running` 上的提交，以及 `failed`、`cancelled` 上的 `retry`、`restart`，拒绝推进。载荷入口与记录不一致时返回 `illegal-transition`。`entryStatus` 为 `needs-revision` 时必须再评审，`reviewRequired: false` 不能进入 `completed`。`ready` 声称入口是 `needs-revision`，或 `needs-revision` 声称入口是 `ready`，同样返回 `illegal-transition`。`transitionNode` 在 `running` 上缺少入口时也返回 `illegal-transition`，不抛出。
+- 下面这条只在命令层成立。进入 `running` 或 `child-workflow` 时，`applyNodeTransitionCommand` 把入口写入 `NodeCommandState.entryStatus`，取值是 `ready` 或 `needs-revision`。存储层必须持久化这个字段。等待输入、补充输入、失败和确认取消都保留这份记录。子流程返回后节点状态可以是 `ready`；若入口是 `needs-revision`，`entryStatus` 仍是 `needs-revision`。命令只读领域状态里的记录。载荷里的 `entryStatus`、`returnTo` 和 `reviewRequired: false` 都不能覆盖或清除它。记录缺失时，`running` 上的提交，以及 `failed`、`cancelled` 上的 `retry`、`restart`，拒绝推进。载荷入口与记录不一致时返回 `illegal-transition`。`entryStatus` 为 `needs-revision` 时必须再评审，`reviewRequired: false` 不能进入 `completed`。`ready` 声称入口是 `needs-revision`，或 `needs-revision` 声称入口是 `ready`，同样返回 `illegal-transition`。`transitionNode` 不保存这份记录；它在 `running` 上缺少当次参数里的入口时返回 `illegal-transition`，不抛出，也不能代替命令落库。
 - 只有评审通过会清掉这份需修改记录。`applyReviewToNode` 的结果是 `completed` 时，`applyReviewSettlementCommand` 写入的状态不再带 `entryStatus`。退回会把 `entryStatus` 写成 `needs-revision`。其它命令不能清除它。
 - 依赖未满足时停在 `blocked`。全部依赖满足后才进入 `ready`。`ready` 若依赖再次失效，回到 `blocked`。已经开始、评审中或已结束的节点只打 `upstreamAffected`，不静默重跑。
 - 人工节点可以从 `ready` 直接提交。`needs-revision` 的提交会打开新一轮评审。Agent 对话结束、进程退出成功、文件上传完成，都不会把节点送去评审或完成。
@@ -252,7 +254,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 
 冲突不写入幂等记录，调用方重新加载后可以用同一键带上新的期望版本再试。非法迁移也不占用键。已经接受的键即使之后携带另一个期望版本，也只重放，不会第二次生效。`canonicalPayload` 保留载荷里每一个自有 JSON 键，包括顶层和嵌套的 `__proto__`。同键不同内容返回 `idempotency-mismatch`，不会因为键名被丢掉而重放。访问器属性会抛出 `Accessor properties cannot be command payloads.`，不跳过。JSON 载荷没有访问器，这条规则不改变它们的指纹。数组里的反馈指纹仍按原顺序保留。
 
-节点命令版本从 0 开始。`applyNodeTransitionCommand` 负责除评审结算以外的节点迁移。`applyReviewSettlementCommand` 负责 `in-review` 的通过和退回，使用同一套期望版本、actor 和幂等键。两条命令的重放都不改变状态、版本和 `upstreamAffected`。原始 `review-resolved` 不能代替结算命令。
+节点命令版本从 0 开始。`applyNodeTransitionCommand` 是提交和恢复的唯一权威入口，负责除评审结算以外的节点迁移。`applyReviewSettlementCommand` 负责 `in-review` 的通过和退回，使用同一套期望版本、actor 和幂等键。两条命令的重放都不改变状态、版本、`upstreamAffected` 和 `entryStatus`。存储层必须把 `entryStatus` 和其余命令状态一起保存。`transitionNode` 与 `transitionForSubmission` 无状态，不能直接用来持久化。原始 `review-resolved` 不能代替结算命令。评审轮次缺少 `ballots` 时，结算返回 `unbound-evaluation`，不抛出。
 
 `DomainEvent` 包含 `eventId`、`sequence`、`occurredAt`、`actorId`、对象引用、类型、载荷，以及可选的 `runId`。`occurredAt` 由调用方传入，领域层不读时钟。它必须是带日历校验的 ISO-8601 时间：`YYYY-MM-DDTHH:mm:ss`，可选小数秒，时区为 `Z` 或 `±HH:MM`。`2026-99-99T99:99:99` 这类值返回 `invalid-event`。`appendDomainEvent` 同时拒绝重复 `eventId`、空字段和非递增 `sequence`。`recordCommandEvent` 只在命令状态为 `applied` 时追加事件；重放、冲突和拒绝不产生新事件。`eventsAfter` 按序号返回游标之后且调用方尚未见过的事件。
 
@@ -262,20 +264,20 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 
 `deriveInbox` 为当前 actor 派生三类事项，每条都带 `action`。同一任务的两个待交付节点是两条。
 
-| 种类      | 条件                                                                                 | `action`             |
-| --------- | ------------------------------------------------------------------------------------ | -------------------- |
-| `deliver` | 有写授权的人类执行者，节点为 `ready`                                                 | `submit`             |
-| `deliver` | 同上，节点为 `needs-revision`                                                        | `revise`             |
-| `deliver` | 同上，节点为 `running`                                                               | `continue-handling`  |
-| `deliver` | 同上，节点为 `waiting-for-input`                                                     | `provide-input`      |
-| `deliver` | 同上，节点为 `failed`                                                                | `retry-or-take-back` |
-| `deliver` | 执行者是内部 `agent` 分类或目录 `expert`，actor 是有写授权的 `ownerId`，节点等待输入 | `provide-input`      |
-| `deliver` | 同上，节点为 `failed`                                                                | `retry-or-take-back` |
-| `review`  | 节点为 `in-review`，当前轮次为 `open`，actor 在名单中且尚未终态                      | `review`             |
-| `confirm` | `ready` 且 `awaitingParentConfirmation`                                              | `confirm`            |
-| `confirm` | 调用方给出的未确认事项，节点不是 `completed` 或 `cancelled`                          | `confirm`            |
+| 种类      | 条件                                                              | `action`             |
+| --------- | ----------------------------------------------------------------- | -------------------- |
+| `deliver` | 有写授权的人类执行者，节点为 `ready`                              | `submit`             |
+| `deliver` | 同上，节点为 `needs-revision`                                     | `revise`             |
+| `deliver` | 同上，节点为 `running`                                            | `continue-handling`  |
+| `deliver` | 同上，节点为 `waiting-for-input`                                  | `provide-input`      |
+| `deliver` | 同上，节点为 `failed`                                             | `retry-or-take-back` |
+| `deliver` | 执行者是目录 `expert`，actor 是有写授权的 `ownerId`，节点等待输入 | `provide-input`      |
+| `deliver` | 同上，节点为 `failed`                                             | `retry-or-take-back` |
+| `review`  | 节点为 `in-review`，当前轮次为 `open`，actor 在名单中且尚未终态   | `review`             |
+| `confirm` | `ready` 且 `awaitingParentConfirmation`                           | `confirm`            |
+| `confirm` | 调用方给出的未确认事项，节点不是 `completed` 或 `cancelled`       | `confirm`            |
 
-父节点确认的原因是 `parent-confirmation`。调用方显式确认的原因是 `explicit-confirmation`，`detail` 保存调用方原文。评审待办只认节点的 `currentRoundId`；节点没有该字段时，只认 `current: true` 的轮次。没有标记的开放轮次不按数组顺序猜测。同一节点至多一条评审待办。`voided` 轮次不产生待办。`blocked` 和 `child-workflow` 不产生交付待办。只读授权和已完成节点不产生交付待办。内部 `agent` 分类与目录 `expert` 执行者自己不产生交付待办；节点在等待输入或失败时，任务负责人收到原因分别为 `owner-input-required` 和 `owner-take-back` 的待办。`expert` 是目录中的专家配置，不是运行实例。`agent` 不是 `ActorRef` 的种类。只评论还没有终态票的评审人仍保留当前轮次的评审待办。
+父节点确认的原因是 `parent-confirmation`。调用方显式确认的原因是 `explicit-confirmation`，`detail` 保存调用方原文。评审待办只认节点的 `currentRoundId`；节点没有该字段时，只认 `current: true` 的轮次。没有标记的开放轮次不按数组顺序猜测。同一节点至多一条评审待办。`voided` 轮次不产生待办。`blocked` 和 `child-workflow` 不产生交付待办。只读授权和已完成节点不产生交付待办。目录 `expert` 执行者自己不产生交付待办；节点在等待输入或失败时，任务负责人收到原因分别为 `owner-input-required` 和 `owner-take-back` 的待办。`expert` 是目录中的专家配置，不是运行实例。`deriveInbox` 的执行者类型是 `ActorRef`，没有内部 `agent` 这一种类；内部 agent 在进入待办前由 `toHandoffActor` 映射。`assigneeUsesAgentRuntime` 可以识别内部 `agent`，那是适配层的分类，不是 `deriveInbox` 的入参。只评论还没有终态票的评审人仍保留当前轮次的评审待办。
 
 ## 10. 权限与可见性
 
