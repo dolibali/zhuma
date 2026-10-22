@@ -30,9 +30,12 @@
     "brand:check": "node scripts/desktop/check-icons.mjs",
     "desktop:verify:icons": "node scripts/desktop/check-running-icons.mjs",
     "workbench:build": "node scripts/workbench/build.mjs",
-    "workbench:stage": "pnpm workbench:build && node scripts/workbench/install-stage.mjs"
+    "workbench:stage": "pnpm workbench:build && node scripts/workbench/install-stage.mjs",
+    "test:ui": "pnpm workbench:build && pnpm test:ui:run",
+    "test:ui:run": "playwright test --config packages/client/tests/browser/playwright.config.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@types/node": "24.19.2",
     "esbuild": "0.25.12",
     "prettier": "3.9.10",
