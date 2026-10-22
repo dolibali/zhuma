@@ -58,6 +58,9 @@ export type {
   AgentReviewOutput,
   CitedComment,
   ReviewApplicationRejection,
+  ReviewerChangeAuthorization,
+  ReviewSettlement,
+  ReviewSettlementCurrent,
 } from './review.js';
 export {
   REVIEW_ACTIONS,
@@ -68,7 +71,9 @@ export {
   interpretAgentReview,
   voidOpenRound,
   reviewRoundAfterNodeTransition,
+  replaceReviewRound,
   applyReviewToNode,
+  applyReviewSettlementCommand,
   transitionForSubmission,
 } from './review.js';
 

@@ -35,7 +35,7 @@ export type RunTransitionResult =
 
 const TERMINAL_RUN: readonly RunStatus[] = ['completed', 'failed', 'cancelled'];
 
-/** Run lifecycle. A terminal run cannot move again, and requested stays until the executor acks. */
+/** Run lifecycle. A terminal run cannot move again. Requested can fail if the executor never starts, and it cannot succeed before the ack. */
 export function transitionRun(from: RunStatus, transition: RunTransition): RunTransitionResult {
   const accept = (to: RunStatus): RunTransitionResult => ({ ok: true, from, to });
   const reject = (): RunTransitionResult => ({
@@ -54,7 +54,9 @@ export function transitionRun(from: RunStatus, transition: RunTransition): RunTr
     case 'succeeded':
       return from === 'running' ? accept('completed') : reject();
     case 'failed':
-      return from === 'running' || from === 'waiting-for-input' ? accept('failed') : reject();
+      return from === 'requested' || from === 'running' || from === 'waiting-for-input'
+        ? accept('failed')
+        : reject();
     case 'cancel-confirmed':
       return from === 'requested' || from === 'running' || from === 'waiting-for-input'
         ? accept('cancelled')
@@ -144,6 +146,28 @@ export function observeRunSignal(input: {
     return observe(held, { reason: 'stale-generation' });
   }
   if (TERMINAL_RUN.includes(input.runStatus)) return observe(held, { reason: 'terminal-run' });
+  if (input.runStatus === 'requested') {
+    if (input.signal === 'failed') {
+      return {
+        mayUpdateRunRecord: true,
+        mayChangeNodeStatus: false,
+        mayTriggerDownstream: false,
+        attachOnly: false,
+      };
+    }
+    if (input.signal === 'cancel-confirmed') {
+      return observe(
+        {
+          mayUpdateRunRecord: true,
+          mayChangeNodeStatus: true,
+          mayTriggerDownstream: false,
+          attachOnly: false,
+        },
+        { suggestedTransition: 'cancel-confirmed' },
+      );
+    }
+    return observe(held);
+  }
   if (input.signal === 'failed') {
     return observe(
       {
@@ -247,7 +271,8 @@ export function validateDeliveryContent(
   for (const link of links) {
     if (!isDeliverableLink(link)) return { ok: false, code: 'invalid-link' };
   }
-  if (text.length === 0 && draft.files.length === 0 && links.length === 0) {
+  const substantiveFile = draft.files.some((file) => file.byteSize > 0);
+  if (text.length === 0 && !substantiveFile && links.length === 0) {
     return { ok: false, code: 'empty-delivery' };
   }
   return { ok: true };
@@ -256,7 +281,8 @@ export function validateDeliveryContent(
 function isDeliverableLink(link: string): boolean {
   try {
     const url = new URL(link);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    return url.username === '' && url.password === '';
   } catch {
     return false;
   }
@@ -362,7 +388,10 @@ export interface AppliedFeedbackBatch {
   readonly fingerprint: string;
 }
 
-/** Content identity for one batch. The idempotency key is compared separately. */
+/**
+ * Content identity for one batch. The idempotency key is compared separately.
+ * Array order of comment ids and dispositions is part of the identity.
+ */
 export function feedbackBatchFingerprint(batch: FeedbackBatch): string {
   return canonicalPayload({
     id: batch.id,
@@ -463,7 +492,9 @@ export type DerivedInboxReason =
   | 'retry-or-take-back'
   | 'review-assigned'
   | 'parent-confirmation'
-  | 'explicit-confirmation';
+  | 'explicit-confirmation'
+  | 'owner-input-required'
+  | 'owner-take-back';
 
 export interface InboxItem {
   readonly id: string;
@@ -483,6 +514,8 @@ export interface InboxNodeFact {
   readonly assignee: ActorRef;
   readonly access: 'read' | 'write';
   readonly awaitingParentConfirmation: boolean;
+  readonly currentRoundId?: string;
+  readonly ownerId?: string;
 }
 
 export interface InboxRoundFact {
@@ -492,6 +525,7 @@ export interface InboxRoundFact {
   readonly status: 'open' | 'approved' | 'changes-requested' | 'voided';
   readonly reviewerIds: readonly string[];
   readonly terminalReviewerIds: readonly string[];
+  readonly current?: boolean;
 }
 
 export interface InboxConfirmationFact {
@@ -504,6 +538,11 @@ export interface InboxConfirmationFact {
 }
 
 const KIND_ORDER: Record<InboxKind, number> = { deliver: 0, review: 1, confirm: 2 };
+
+function isCurrentReviewRound(node: InboxNodeFact, round: InboxRoundFact): boolean {
+  if (node.currentRoundId !== undefined) return round.roundId === node.currentRoundId;
+  return round.current === true;
+}
 
 function deliveryTodo(
   status: NodeStatus,
@@ -569,6 +608,32 @@ export function deriveInbox(input: {
       });
     }
   }
+  for (const node of input.nodes) {
+    if (
+      node.access !== 'write' ||
+      node.assignee.kind !== 'agent' ||
+      node.ownerId === undefined ||
+      node.ownerId !== input.actorId
+    ) {
+      continue;
+    }
+    const ownerTodo =
+      node.status === 'waiting-for-input'
+        ? { reason: 'owner-input-required' as const, action: 'provide-input' as const }
+        : node.status === 'failed'
+          ? { reason: 'owner-take-back' as const, action: 'retry-or-take-back' as const }
+          : undefined;
+    if (!ownerTodo) continue;
+    items.push({
+      id: `deliver:${node.nodeId}:${input.actorId}`,
+      kind: 'deliver',
+      actorId: input.actorId,
+      nodeId: node.nodeId,
+      taskId: node.taskId,
+      reason: ownerTodo.reason,
+      action: ownerTodo.action,
+    });
+  }
   const reviewByNode = new Map<string, InboxItem>();
   for (const round of input.rounds) {
     const node = nodes.get(round.nodeId);
@@ -576,7 +641,8 @@ export function deriveInbox(input: {
       !node ||
       node.status !== 'in-review' ||
       node.taskId !== round.taskId ||
-      round.status !== 'open'
+      round.status !== 'open' ||
+      !isCurrentReviewRound(node, round)
     ) {
       continue;
     }

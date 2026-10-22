@@ -73,7 +73,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 | `failed`            | 失败           | 核实后的执行失败                       | 只有显式 `retry`                                   |
 | `cancelled`         | 已取消         | 取消已经确认                           | 只有显式 `restart`                                 |
 
-`transitionNode` 是节点状态的迁移函数。合法迁移返回下一个状态和推进效果；非法迁移返回 `illegal-transition`，不修改调用方状态。`review-resolved` 仍留在迁移联合类型里，使旧载荷失败关闭而不是抛出；这条迁移一律返回 `illegal-transition`。`in-review` 的通过或退回只由 `applyReviewToNode` 写入，并且必须绑定节点当前轮次。
+`transitionNode` 是节点状态的迁移函数。合法迁移返回下一个状态和推进效果；非法迁移返回 `illegal-transition`，不修改调用方状态。`review-resolved` 仍留在迁移联合类型里，使旧载荷失败关闭而不是抛出；这条迁移一律返回 `illegal-transition`。`in-review` 的通过或退回由 `applyReviewSettlementCommand` 写入：信封带 actor、期望版本和幂等键，内部经 `decideCommand` 调用 `applyReviewToNode`，并从选票重算结局。它必须绑定节点当前轮次。
 
 推进效果：
 
@@ -111,25 +111,27 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 `requested`、`running`、`waiting-for-input` 是有效运行。`requestNodeRun` 在节点不是 `ready` 或 `needs-revision` 时返回 `node-not-executable`；该节点已有有效运行时返回 `active-run-exists`。已结束的运行不占用这个名额。
 
-`transitionRun` 是运行自己的状态机。`requested` 只有 `executor-acknowledged` 之后才到 `running`。`input-required` 从 `running` 到 `waiting-for-input`，`input-supplied` 回到 `running`。`succeeded` 只从 `running` 到 `completed`。`failed` 可以从 `running` 或 `waiting-for-input` 到 `failed`。`cancel-confirmed` 可以从 `requested`、`running` 或 `waiting-for-input` 到 `cancelled`。`completed`、`failed`、`cancelled` 没有出口，再迁移返回 `illegal-run-transition`。
+`transitionRun` 是运行自己的状态机。`requested` 只有 `executor-acknowledged` 之后才到 `running`。`input-required` 从 `running` 到 `waiting-for-input`，`input-supplied` 回到 `running`。`succeeded` 只从 `running` 到 `completed`。`failed` 可以从 `requested`、`running` 或 `waiting-for-input` 到 `failed`。执行器拒绝启动时，运行进入 `failed` 并让出有效名额，节点保持原状。`cancel-confirmed` 可以从 `requested`、`running` 或 `waiting-for-input` 到 `cancelled`。`completed`、`failed`、`cancelled` 没有出口，再迁移返回 `illegal-run-transition`。
 
 `observeRunSignal` 先看世代，再看运行是否已经结束：
 
 | 信号                                         | 节点                             | 下游   |
 | -------------------------------------------- | -------------------------------- | ------ |
-| 当前世代、运行仍有效，进程成功或产物到达     | 不改节点                         | 不触发 |
-| 当前世代、运行仍有效，核实失败               | 允许随后使用 `execution-failed`  | 不触发 |
+| 当前世代、运行已开始，进程成功或产物到达     | 不改节点                         | 不触发 |
+| 当前世代、运行已开始，核实失败               | 允许随后使用 `execution-failed`  | 不触发 |
 | 当前世代、运行仍有效，取消已确认             | 允许随后使用 `cancel-confirmed`  | 不触发 |
+| `requested` 上的核实失败                     | 只把运行记为失败，不改节点       | 不触发 |
+| `requested` 上的进程成功或产物到达           | 只作附属记录，运行还不能成功     | 不触发 |
 | 世代不一致                                   | 只作附属记录，`stale-generation` | 不触发 |
 | 运行已完成、已失败或已取消之后的任何迟到信号 | 只作附属记录，`terminal-run`     | 不触发 |
 
-`terminal-run` 时 `mayChangeNodeStatus` 和 `mayTriggerDownstream` 都是 false，调用方不能借迟到的失败或取消确认去改节点。有效运行上，失败和取消的 `mayChangeNodeStatus` 只表示可以再提交对应的已核实迁移。观察函数本身不改节点。
+`terminal-run` 时 `mayChangeNodeStatus` 和 `mayTriggerDownstream` 都是 false，调用方不能借迟到的失败或取消确认去改节点。已经开始的运行上，失败和取消的 `mayChangeNodeStatus` 只表示可以再提交对应的已核实迁移。`requested` 的失败与 `transitionRun` 一致，只更新运行记录。观察函数本身不改节点。
 
 ## 6. 产物版本
 
 `createArtifactVersion` 生成该节点的下一个版本，并复制文字、文件和链接。调用方之后修改草稿，不会改已生成的版本。版本号只增不改。
 
-提交内容至少包含一项：非空白文字、已完成上传的文件，或 `http` / `https` 链接。`javascript:` 以及其他不能解析成这两种协议的字符串返回 `invalid-link`。任一文件未完成上传时返回 `upload-incomplete`，即使文字已经填写。文件必须有稳定 `id`、媒体类型、非负字节数、校验值和 `accessPolicyId`。同一版本内文件标识不能重复。零字节文件当前仍接受，见第 11.1 节。
+提交内容至少包含一项有效内容：非空白文字、字节数大于 0 且已完成上传的文件，或 `http` / `https` 链接。零字节文件可以和其他有效内容一起提交，单独出现时与纯空白文字一样返回 `empty-delivery`。`javascript:`、带用户名或密码的链接，以及其他不能解析成这两种协议的字符串返回 `invalid-link`。任一文件未完成上传时返回 `upload-incomplete`，即使文字已经填写。文件必须有稳定 `id`、媒体类型、非负字节数、校验值和 `accessPolicyId`。同一版本内文件标识不能重复。
 
 预览失败不是交付失败。大小、格式和保留周期是产品配置，不写进领域规则。
 
@@ -145,21 +147,23 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 - 没有投票视为未回复，留在 `outstandingReviewerIds`，轮次保持 `pending`，节点保持 `in-review`。
 - `availability` 为 `timed-out` 或 `unavailable` 的 `approve` 直接拒绝，代码 `non-passing-availability`，不能算通过。
 - 评审人名单为空是 `invalid-policy`，不能被汇总成通过。
-- 退回必须有意见正文，或引用至少一条未解决评论。引用的每条标识都要出现在调用方给出的评论快照里，且状态为 `open`。缺失或已解决返回 `comment-not-unresolved`，整张票不写入。只写正文、不引用评论，仍然是有效退回。空退回返回 `empty-request-changes`。
+- 退回必须有意见正文，或引用至少一条未解决评论。引用的每条标识都要出现在调用方给出的评论快照里，且状态为 `open`。快照若带 `versionId` 或 `targetId`，它们必须等于本轮产物版本，否则不算属于这一轮。缺失、已解决或不属于本轮返回 `comment-not-unresolved`，整张票不写入。只写正文、不引用评论，仍然是有效退回。空退回返回 `empty-request-changes`。
 - 已解决评论不进入汇总。把评论标成已解决不会产生通过票。
 - 投票人必须就是当前 actor。`actorId` 为空，或与 `ballot.reviewerId` 不同，返回 `actor-mismatch`，票不写入。
 
-`applyReviewToNode` 只接受当前轮次上、且与该轮次状态一致的汇总结局。轮次为 `voided` 返回 `voided-round`。轮次标识或产物版本与节点当前值不一致，分别返回 `stale-round`、`stale-version`。结局与轮次状态对不上返回 `unbound-evaluation`。通过后节点到 `completed`，效果 `accept-handoff`。退回后节点到 `needs-revision`，效果 `block-downstream`。`pending` 和 `invalid-policy` 不推进节点。
+`applyReviewToNode` 只接受当前轮次。轮次为 `voided` 返回 `voided-round`。轮次标识或产物版本与节点当前值不一致，分别返回 `stale-round`、`stale-version`。轮次带有选票时，结局按选票重算，不信任调用方写入的 `round.status`。调用方给的结局与重算不一致返回 `unbound-evaluation`，因此一份伪造的 `approved` 状态若票里仍有退回，不能把节点完成。没有选票字段的旧形状才退回按状态核对。通过后节点到 `completed`，效果 `accept-handoff`。退回后节点到 `needs-revision`，效果 `block-downstream`。`pending` 和 `invalid-policy` 不推进节点。
+
+`applyReviewSettlementCommand` 把同一次结算放进命令信封。载荷是 `{ roundId, artifactVersionId }`。期望版本不符返回 `conflict` 且不保存。同一键、同一 actor、同一载荷重放第一次的结果。键相同但轮次、版本或 actor 不同返回 `idempotency-mismatch`。尚未全员表态时命令为 `ignored`，不占版本。陈旧轮次、作废轮次和非法节点状态为 `rejected`，也不占版本。
 
 ### 7.2 表 9 的并发规则
 
 - 轮次状态是 `open`、`approved`、`changes-requested` 或 `voided`。新版本必须 `openReviewRound`。新轮次的投票列表为空，旧通过票不继承。
-- 取消已确认、重新开始，或再次 `submit-artifact`，并且节点迁移成功时，`reviewRoundAfterNodeTransition` 把仍开放的轮次标成 `voided`。已关闭的轮次保持原状态。迁移被拒绝时轮次不动。`voided` 轮次上的后续票返回 `voided-round`。
+- 取消已确认或重新开始，并且节点迁移成功时，`reviewRoundAfterNodeTransition` 把仍开放的轮次标成 `voided`。再次 `submit-artifact` 时，只有传入的 `currentRoundId` 指向另一轮，才会把这一轮标成 `voided`。不传当前轮次，或传入的就是这一轮，轮次保持开放，避免刚打开的新轮次被误作废。`replaceReviewRound` 打开下一轮，并且只在上一轮仍开放且标识不同时作废它。已关闭的轮次保持原状态。迁移被拒绝时轮次不动。`voided` 轮次上的后续票返回 `voided-round`。调整作废轮次的名单也返回 `voided-round`。
 - `submitBallot` 在写入前核对轮次、产物版本和 actor。轮次不一致返回 `stale-round`，版本不一致返回 `stale-version`，actor 不是投票人返回 `actor-mismatch`。这些票都不写入。
 - 轮次已经通过或退回后，后续裁决返回 `round-closed`。因此同一轮里先退回、后到达的通过不会把节点改成完成。已经作废的轮次也不能再被拿来结算。
 - 同一评审人的第一次终态票有效。相同动作再次提交不追加；改成另一种终态返回 `conflicting-ballot`。通过之后不能在同一开放轮次里改成退回。是否允许改票见第 11.1 节。
 - 不在名单中的人返回 `not-assigned-reviewer`，不能替他人投票。
-- `changeReviewers` 不能拿掉已经退回的评审人来让当前轮次通过，返回 `cannot-drop-rejection`。已经关闭的轮次也不能靠调整名单重开。换人继续必须新建轮次。开放轮次里尚未投票的人可以被调整；若剩下的人都已通过，当前轮次可以变为通过。是否改成不能靠缩名单结束评审，见第 11.1 节。
+- `changeReviewers` 需要 `{ actorId, authorized }`。未授权、空 actor 返回 `unauthorized`。不能拿掉已经退回的评审人来让当前轮次通过，返回 `cannot-drop-rejection`。已经关闭的轮次也不能靠调整名单重开。只从开放轮次里移除评审人返回 `requires-new-round`，轮次保持开放，未回复和超时不会因此变成通过。显式改派是同时移除并加入评审人，新加入的人没有旧票，轮次不会因此自动通过。换人继续也可以 `replaceReviewRound` 新建轮次，旧票不继承。
 - 专家输出走 `interpretAgentReview`。缺少结论、理由，或在通过/退回时缺少定位与证据，返回 `abnormal-output`，不能当成批准。
 
 ### 7.3 评论与反馈批次
@@ -169,7 +173,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 `evaluateFeedbackApplication`：
 
 - 未授权返回 `unauthorized`。授权检查先于幂等比对。
-- 同一幂等键且内容指纹相同，返回 `replayed`，即使当前目标版本后来变了，也不再写一版。指纹覆盖批次 `id`、评论标识、目标版本、每条处置，以及可选的 `proposal`。
+- 同一幂等键且内容指纹相同，返回 `replayed`，即使当前目标版本后来变了，也不再写一版。指纹覆盖批次 `id`、评论标识、目标版本、每条处置，以及可选的 `proposal`。`commentIds` 和 `dispositions` 的数组顺序也是内容的一部分，重排后再用同一键会得到 `idempotency-mismatch`，领域层不把它们排序成重放。
 - 同一幂等键但指纹不同，返回 `idempotency-mismatch`。新批次不写入，也不当成重放丢掉。
 - 新键遇到目标版本不一致，返回 `version-conflict`。`commentIds` 为空返回 `invalid-batch`。
 - 每条评论恰好一条处置，且回复非空。冲突处置使用 `conflict-pending`，批次仍可记录，但不能把冲突意见悄悄覆盖掉。
@@ -192,7 +196,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 冲突不写入幂等记录，调用方重新加载后可以用同一键带上新的期望版本再试。非法迁移也不占用键。已经接受的键即使之后携带另一个期望版本，也只重放，不会第二次生效。
 
-节点命令版本从 0 开始。`applyNodeTransitionCommand` 是节点状态上的这套规则。重放不改变状态、版本和 `upstreamAffected`。
+节点命令版本从 0 开始。`applyNodeTransitionCommand` 负责除评审结算以外的节点迁移。`applyReviewSettlementCommand` 负责 `in-review` 的通过和退回，使用同一套期望版本、actor 和幂等键。两条命令的重放都不改变状态、版本和 `upstreamAffected`。原始 `review-resolved` 不能代替结算命令。
 
 `DomainEvent` 包含 `eventId`、`sequence`、`occurredAt`、`actorId`、对象引用、类型、载荷，以及可选的 `runId`。`occurredAt` 由调用方传入，领域层不读时钟。它必须是带日历校验的 ISO-8601 时间：`YYYY-MM-DDTHH:mm:ss`，可选小数秒，时区为 `Z` 或 `±HH:MM`。`2026-99-99T99:99:99` 这类值返回 `invalid-event`。`appendDomainEvent` 同时拒绝重复 `eventId`、空字段和非递增 `sequence`。`recordCommandEvent` 只在命令状态为 `applied` 时追加事件；重放、冲突和拒绝不产生新事件。`eventsAfter` 按序号返回游标之后且调用方尚未见过的事件。
 
@@ -202,18 +206,20 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 `deriveInbox` 为当前 actor 派生三类事项，每条都带 `action`。同一任务的两个待交付节点是两条。
 
-| 种类      | 条件                                                        | `action`             |
-| --------- | ----------------------------------------------------------- | -------------------- |
-| `deliver` | 有写授权的人类执行者，节点为 `ready`                        | `submit`             |
-| `deliver` | 同上，节点为 `needs-revision`                               | `revise`             |
-| `deliver` | 同上，节点为 `running`                                      | `continue-handling`  |
-| `deliver` | 同上，节点为 `waiting-for-input`                            | `provide-input`      |
-| `deliver` | 同上，节点为 `failed`                                       | `retry-or-take-back` |
-| `review`  | 节点为 `in-review`，轮次为 `open`，actor 在名单中且尚未终态 | `review`             |
-| `confirm` | `ready` 且 `awaitingParentConfirmation`                     | `confirm`            |
-| `confirm` | 调用方给出的未确认事项，节点不是 `completed` 或 `cancelled` | `confirm`            |
+| 种类      | 条件                                                                     | `action`             |
+| --------- | ------------------------------------------------------------------------ | -------------------- |
+| `deliver` | 有写授权的人类执行者，节点为 `ready`                                     | `submit`             |
+| `deliver` | 同上，节点为 `needs-revision`                                            | `revise`             |
+| `deliver` | 同上，节点为 `running`                                                   | `continue-handling`  |
+| `deliver` | 同上，节点为 `waiting-for-input`                                         | `provide-input`      |
+| `deliver` | 同上，节点为 `failed`                                                    | `retry-or-take-back` |
+| `deliver` | 执行者是 Agent，actor 是有写授权的 `ownerId`，节点为 `waiting-for-input` | `provide-input`      |
+| `deliver` | 同上，节点为 `failed`                                                    | `retry-or-take-back` |
+| `review`  | 节点为 `in-review`，当前轮次为 `open`，actor 在名单中且尚未终态          | `review`             |
+| `confirm` | `ready` 且 `awaitingParentConfirmation`                                  | `confirm`            |
+| `confirm` | 调用方给出的未确认事项，节点不是 `completed` 或 `cancelled`              | `confirm`            |
 
-父节点确认的原因是 `parent-confirmation`。调用方显式确认的原因是 `explicit-confirmation`，`detail` 保存调用方原文。同一节点即使输入里有多条开放轮次，也只保留最后一条评审待办。`voided` 轮次不产生待办。`blocked` 和 `child-workflow` 不产生交付待办。只读授权、已完成节点、Agent 执行者的节点不产生交付待办。只评论还没有终态票的评审人仍保留评审待办。
+父节点确认的原因是 `parent-confirmation`。调用方显式确认的原因是 `explicit-confirmation`，`detail` 保存调用方原文。评审待办只认节点的 `currentRoundId`；节点没有该字段时，只认 `current: true` 的轮次。没有标记的开放轮次不按数组顺序猜测。同一节点至多一条评审待办。`voided` 轮次不产生待办。`blocked` 和 `child-workflow` 不产生交付待办。只读授权和已完成节点不产生交付待办。Agent 执行者自己不产生交付待办；节点在等待输入或失败时，任务负责人收到原因分别为 `owner-input-required` 和 `owner-take-back` 的待办。只评论还没有终态票的评审人仍保留当前轮次的评审待办。
 
 ## 10. 权限与可见性
 
@@ -243,16 +249,14 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 12. 骨架 `TaskStatus` / `TaskSnapshot` 是保留、映射，还是被任务汇总状态替换。
 13. 「待我确认」里哪些计划确认属于 A。B 目前只派生交付、评审、父节点确认，以及调用方显式给出的确认事实。
 
-### 11.1 仍由 B 决定、本次保持现状
+### 11.1 仍待对齐、本次保持现状
 
-下列行为已经写进代码或明确不建模。后续若要改，先改本文再改规则。
+下列事项留到后续工作包。先改本文再改规则。
 
-1. 开放轮次把名单缩到只剩已通过的人时，当前轮次立即通过。本次不改成「不能靠缩名单结束评审」。
-2. 同一开放轮次里，通过之后不能改成退回，返回 `conflicting-ballot`。本次不增加改票。
-3. 子流程返回后等待父节点确认，仍是 `ready` 加上 `awaitingParentConfirmation`，不新增节点状态。
-4. 表 6 的「手动开始」和「保留阻塞原因」还没有落在 `NodeCommandState` 上。阻塞原因仍由调用方放在执行报告里。
-5. 零字节、字段完整且上传已完成的文件，当前仍算有效交付。
-6. 需修改之后若要关闭评审，不通过 `submit-artifact` 且 `reviewRequired: false` 表达。那次提交固定返回 `illegal-transition`。单独的授权命令留给后续工作包。
+1. 同一开放轮次里，通过之后不能改成退回，返回 `conflicting-ballot`。改票规则在 WP05 前与产品确认。
+2. 子流程返回后等待父节点确认，仍是 `ready` 加上 `awaitingParentConfirmation`。WP06 前把该标记放进节点状态。
+3. 表 6 的「手动开始」和「保留阻塞原因」延到 WP04。届时 `blocked`、`waiting-for-input`、`failed` 的阻塞原因改为必填。
+4. 需修改之后关闭评审，不通过 `submit-artifact` 且 `reviewRequired: false` 表达。那次提交固定返回 `illegal-transition`。单独的授权命令仍待后续决定。
 
 在上述项对齐前，WP03–WP05 应依赖本文的类型和函数，不要在适配层或客户端复制一套节点状态、评审结局或版本号。
 

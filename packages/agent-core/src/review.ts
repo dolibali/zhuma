@@ -1,5 +1,8 @@
+import { decideCommand, type CommandDecision, type CommandEnvelope } from './concurrency.js';
 import {
   transitionNode,
+  type AppliedNodeTransition,
+  type NodeCommandState,
   type NodeStatus,
   type NodeTransition,
   type NodeTransitionResult,
@@ -33,6 +36,10 @@ export interface ReviewRound {
 export interface CitedComment {
   readonly id: string;
   readonly status: 'open' | 'resolved';
+  /** When set, must be this round's artifact version. */
+  readonly versionId?: string;
+  /** When set, must name that same artifact version. */
+  readonly targetId?: string;
 }
 
 export type ReviewEvaluation =
@@ -77,14 +84,25 @@ function trimmed(value: string | undefined): string {
   return value?.trim() ?? '';
 }
 
+function commentBelongsToRound(comment: CitedComment, artifactVersionId: string): boolean {
+  if (comment.versionId !== undefined && comment.versionId !== artifactVersionId) return false;
+  if (comment.targetId !== undefined && comment.targetId !== artifactVersionId) return false;
+  return true;
+}
+
 function citedUnresolved(
   ids: readonly string[] | undefined,
   comments: readonly CitedComment[],
+  artifactVersionId: string,
 ): 'none' | 'valid' | 'invalid' {
   const meaningful = (ids ?? []).map((id) => id.trim()).filter((id) => id.length > 0);
   if (meaningful.length === 0) return 'none';
   const openIds = new Set(
-    comments.filter((comment) => comment.status === 'open').map((comment) => comment.id),
+    comments
+      .filter(
+        (comment) => comment.status === 'open' && commentBelongsToRound(comment, artifactVersionId),
+      )
+      .map((comment) => comment.id),
   );
   return meaningful.every((id) => openIds.has(id)) ? 'valid' : 'invalid';
 }
@@ -216,7 +234,11 @@ export function submitBallot(
   if (!round.reviewerIds.includes(ballot.reviewerId))
     return { ok: false, code: 'not-assigned-reviewer' };
   if (ballot.action === 'request-changes') {
-    const citation = citedUnresolved(ballot.unresolvedCommentIds, comments);
+    const citation = citedUnresolved(
+      ballot.unresolvedCommentIds,
+      comments,
+      round.artifactVersionId,
+    );
     if (citation === 'invalid') return { ok: false, code: 'comment-not-unresolved' };
     if (trimmed(ballot.comment).length === 0 && citation !== 'valid') {
       return { ok: false, code: 'empty-request-changes' };
@@ -255,13 +277,21 @@ export function submitBallot(
   return { ok: true, round: withStatus(next, evaluation), evaluation, recorded: true };
 }
 
+export interface ReviewerChangeAuthorization {
+  readonly actorId: string;
+  readonly authorized: boolean;
+}
+
 /**
- * Reviewer edits apply to the open round only.
- * Dropping someone who already requested changes cannot turn the round into a pass.
+ * Roster edits apply to the open round only, and only for an authorized actor.
+ * Removing reviewers is a new round, not an in-place shrink. A shrink must not
+ * turn silence or a timeout into approval. Dropping someone who already
+ * requested changes cannot turn the round into a pass.
  */
 export function changeReviewers(
   round: ReviewRound,
   nextReviewerIds: readonly string[],
+  authorization?: ReviewerChangeAuthorization,
 ):
   | { readonly ok: true; readonly round: ReviewRound; readonly evaluation: ReviewEvaluation }
   | {
@@ -269,13 +299,20 @@ export function changeReviewers(
       readonly code:
         | 'cannot-drop-rejection'
         | 'round-closed'
+        | 'voided-round'
         | 'review-requires-reviewers'
-        | 'duplicate-reviewer';
+        | 'duplicate-reviewer'
+        | 'unauthorized'
+        | 'requires-new-round';
       readonly rejectedBy?: readonly string[];
     } {
   if (nextReviewerIds.length === 0) return { ok: false, code: 'review-requires-reviewers' };
   if (nextReviewerIds.some((id) => blank(id)) || duplicateReviewer(nextReviewerIds)) {
     return { ok: false, code: 'duplicate-reviewer' };
+  }
+  if (round.status === 'voided') return { ok: false, code: 'voided-round' };
+  if (authorization === undefined || !authorization.authorized || blank(authorization.actorId)) {
+    return { ok: false, code: 'unauthorized' };
   }
   const rejectedBy = round.reviewerIds.filter(
     (reviewerId) =>
@@ -284,8 +321,14 @@ export function changeReviewers(
   );
   if (rejectedBy.length > 0) return { ok: false, code: 'cannot-drop-rejection', rejectedBy };
   if (round.status !== 'open') return { ok: false, code: 'round-closed' };
+  const removed = round.reviewerIds.filter((reviewerId) => !nextReviewerIds.includes(reviewerId));
+  const added = nextReviewerIds.filter((reviewerId) => !round.reviewerIds.includes(reviewerId));
+  if (removed.length > 0 && added.length === 0) return { ok: false, code: 'requires-new-round' };
   const next: ReviewRound = { ...round, reviewerIds: Object.freeze([...nextReviewerIds]) };
   const evaluation = aggregateReview(next);
+  if (removed.length > 0 && evaluation.outcome === 'approved') {
+    return { ok: false, code: 'requires-new-round' };
+  }
   return { ok: true, round: withStatus(next, evaluation), evaluation };
 }
 
@@ -315,12 +358,6 @@ export function interpretAgentReview(
   return { ok: true, action: output.conclusion, rationale };
 }
 
-const ROUND_VOIDING_TRANSITIONS = new Set<NodeTransition['type']>([
-  'cancel-confirmed',
-  'restart',
-  'submit-artifact',
-]);
-
 /** An open round becomes voided. Closed rounds stay closed so their record remains. */
 export function voidOpenRound(round: ReviewRound): ReviewRound {
   if (round.status !== 'open') return round;
@@ -328,16 +365,53 @@ export function voidOpenRound(round: ReviewRound): ReviewRound {
 }
 
 /**
- * Cancelling, restarting, or submitting a new version voids the open round.
+ * Cancel and restart void the open round, because the node has left review.
+ * A new submission voids a round only when it is not the current round.
+ * Passing the round just opened, or omitting the current id, leaves it open.
  * A rejected node transition leaves the round untouched.
  */
 export function reviewRoundAfterNodeTransition(
   round: ReviewRound,
   result: NodeTransitionResult,
   transition: NodeTransition,
+  currentRoundId?: string,
 ): ReviewRound {
-  if (!result.ok || !ROUND_VOIDING_TRANSITIONS.has(transition.type)) return round;
+  if (!result.ok || round.status !== 'open') return round;
+  if (transition.type === 'cancel-confirmed' || transition.type === 'restart') {
+    return voidOpenRound(round);
+  }
+  if (transition.type !== 'submit-artifact') return round;
+  if (currentRoundId === undefined || round.id === currentRoundId) return round;
   return voidOpenRound(round);
+}
+
+/**
+ * Open the next round and void the previous one only when it is a different open round.
+ * The new round is never voided by being passed through this function.
+ */
+export function replaceReviewRound(
+  previous: ReviewRound | undefined,
+  next: {
+    readonly id: string;
+    readonly artifactVersionId: string;
+    readonly reviewerIds: readonly string[];
+  },
+):
+  | {
+      readonly ok: true;
+      readonly round: ReviewRound;
+      readonly superseded?: ReviewRound;
+    }
+  | {
+      readonly ok: false;
+      readonly code: 'review-requires-reviewers' | 'duplicate-reviewer' | 'invalid-round';
+    } {
+  const opened = openReviewRound(next);
+  if (!opened.ok) return opened;
+  if (previous === undefined || previous.status !== 'open' || previous.id === opened.round.id) {
+    return { ok: true, round: opened.round };
+  }
+  return { ok: true, round: opened.round, superseded: voidOpenRound(previous) };
 }
 
 export type ReviewApplicationRejection =
@@ -352,15 +426,40 @@ function evaluationMatchesRound(
   return round.status === 'open';
 }
 
+function hasBallotRecord(
+  round: Pick<ReviewRound, 'id' | 'artifactVersionId'> &
+    Partial<Pick<ReviewRound, 'reviewerIds' | 'ballots'>>,
+): round is Pick<ReviewRound, 'id' | 'artifactVersionId' | 'reviewerIds' | 'ballots'> {
+  return Array.isArray(round.reviewerIds) && Array.isArray(round.ballots);
+}
+
+/**
+ * Outcome comes from the ballots. A caller-supplied evaluation or round status
+ * that disagrees with that tally is rejected. A round without ballot fields
+ * falls back to matching the supplied evaluation against its status.
+ */
+function resolveEvaluation(
+  round: Pick<ReviewRound, 'id' | 'artifactVersionId' | 'status'> &
+    Partial<Pick<ReviewRound, 'reviewerIds' | 'ballots'>>,
+  supplied: ReviewEvaluation,
+): ReviewEvaluation | undefined {
+  if (!hasBallotRecord(round)) {
+    return evaluationMatchesRound(round, supplied) ? supplied : undefined;
+  }
+  const recomputed = aggregateReview(round);
+  return recomputed.outcome === supplied.outcome ? recomputed : undefined;
+}
+
 /**
  * Apply a review result only when it belongs to the node's current, non-voided round.
- * Pending and invalid policies do not advance the node.
+ * The outcome is recomputed from the ballots. Pending and invalid policies do not advance the node.
  */
 export function applyReviewToNode(
   status: NodeStatus,
   input: {
     readonly evaluation: ReviewEvaluation;
-    readonly round: Pick<ReviewRound, 'id' | 'artifactVersionId' | 'status'>;
+    readonly round: Pick<ReviewRound, 'id' | 'artifactVersionId' | 'status'> &
+      Partial<Pick<ReviewRound, 'reviewerIds' | 'ballots'>>;
     readonly currentRoundId: string;
     readonly currentArtifactVersionId: string;
   },
@@ -370,10 +469,9 @@ export function applyReviewToNode(
   if (input.round.artifactVersionId !== input.currentArtifactVersionId) {
     return { ok: false, code: 'stale-version' };
   }
-  if (!evaluationMatchesRound(input.round, input.evaluation)) {
-    return { ok: false, code: 'unbound-evaluation' };
-  }
-  if (input.evaluation.outcome === 'pending' || input.evaluation.outcome === 'invalid-policy') {
+  const evaluation = resolveEvaluation(input.round, input.evaluation);
+  if (!evaluation) return { ok: false, code: 'unbound-evaluation' };
+  if (evaluation.outcome === 'pending' || evaluation.outcome === 'invalid-policy') {
     if (status !== 'in-review') {
       return { ok: false, code: 'illegal-transition', from: status, transition: 'review-resolved' };
     }
@@ -382,7 +480,7 @@ export function applyReviewToNode(
   if (status !== 'in-review') {
     return { ok: false, code: 'illegal-transition', from: status, transition: 'review-resolved' };
   }
-  if (input.evaluation.outcome === 'approved') {
+  if (evaluation.outcome === 'approved') {
     return {
       ok: true,
       from: status,
@@ -397,6 +495,76 @@ export function applyReviewToNode(
     to: 'needs-revision',
     changed: true,
     effects: Object.freeze(['block-downstream']),
+  };
+}
+
+export interface ReviewSettlement {
+  readonly roundId: string;
+  readonly artifactVersionId: string;
+}
+
+export interface ReviewSettlementCurrent {
+  readonly roundId: string;
+  readonly artifactVersionId: string;
+}
+
+/**
+ * Settle the current round through the same compare-and-set and idempotency
+ * path as other node commands. The outcome is recomputed from the round's
+ * ballots. The envelope payload is the round id and artifact version, so a
+ * repeated settlement replays and a different round under the same key mismatches.
+ */
+export function applyReviewSettlementCommand(
+  state: NodeCommandState,
+  envelope: CommandEnvelope<ReviewSettlement>,
+  round: ReviewRound,
+  current: ReviewSettlementCurrent,
+): { readonly state: NodeCommandState; readonly decision: CommandDecision<AppliedNodeTransition> } {
+  const outcome = decideCommand({
+    envelope,
+    currentVersion: state.version,
+    stored: state.stored,
+    apply: (_nextVersion) => {
+      if (envelope.payload.roundId !== round.id) {
+        return { disposition: 'reject', code: 'stale-round' };
+      }
+      if (envelope.payload.artifactVersionId !== round.artifactVersionId) {
+        return { disposition: 'reject', code: 'stale-version' };
+      }
+      const result = applyReviewToNode(state.status, {
+        evaluation: aggregateReview(round),
+        round,
+        currentRoundId: current.roundId,
+        currentArtifactVersionId: current.artifactVersionId,
+      });
+      if (!result.ok) return { disposition: 'reject', code: result.code };
+      if (!result.changed && result.effects.length === 0) {
+        return { disposition: 'ignore', code: 'no-effect' };
+      }
+      return {
+        disposition: 'accept',
+        result: {
+          from: result.from,
+          to: result.to,
+          changed: result.changed,
+          effects: result.effects,
+          upstreamAffected: state.upstreamAffected,
+        },
+      };
+    },
+  });
+  if (outcome.decision.status !== 'applied') {
+    return { state: { ...state, stored: outcome.stored }, decision: outcome.decision };
+  }
+  const applied = outcome.decision.result;
+  return {
+    decision: outcome.decision,
+    state: {
+      status: applied.to,
+      version: outcome.version,
+      upstreamAffected: applied.upstreamAffected,
+      stored: outcome.stored,
+    },
   };
 }
 

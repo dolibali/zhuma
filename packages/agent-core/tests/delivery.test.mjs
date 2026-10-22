@@ -53,6 +53,22 @@ test('accepts text, files, or links and refuses an empty or unfinished submissio
   );
   assert.equal(validateDeliveryContent({ files: [], links: ['not a url'] }).code, 'invalid-link');
   assert.equal(validateDeliveryContent({ files: [], links: ['http://example.test/a'] }).ok, true);
+  assert.equal(
+    validateDeliveryContent({ files: [file({ byteSize: 0 })], links: [] }).code,
+    'empty-delivery',
+  );
+  assert.equal(
+    validateDeliveryContent({ text: '还有文字', files: [file({ byteSize: 0 })], links: [] }).ok,
+    true,
+  );
+  assert.equal(
+    validateDeliveryContent({ files: [], links: ['https://user:p4ss@example.test/x'] }).code,
+    'invalid-link',
+  );
+  assert.equal(
+    validateDeliveryContent({ files: [], links: ['https://user@example.test/x'] }).code,
+    'invalid-link',
+  );
 });
 
 test('creates the next immutable artifact version without rewriting the previous one', () => {
@@ -169,11 +185,40 @@ test('a late signal on any finished run is recorded as an attachment only', () =
 test('a run moves only after the executor acknowledges it and a finished run stays finished', () => {
   assert.equal(transitionRun('requested', { type: 'executor-acknowledged' }).to, 'running');
   assert.equal(transitionRun('requested', { type: 'succeeded' }).code, 'illegal-run-transition');
+  assert.equal(transitionRun('requested', { type: 'failed' }).to, 'failed');
   assert.equal(transitionRun('running', { type: 'input-required' }).to, 'waiting-for-input');
   assert.equal(transitionRun('waiting-for-input', { type: 'input-supplied' }).to, 'running');
   assert.equal(transitionRun('running', { type: 'succeeded' }).to, 'completed');
   assert.equal(transitionRun('waiting-for-input', { type: 'failed' }).to, 'failed');
   assert.equal(transitionRun('requested', { type: 'cancel-confirmed' }).to, 'cancelled');
+  const refused = observeRunSignal({
+    runStatus: 'requested',
+    runGeneration: 1,
+    currentGeneration: 1,
+    signal: 'failed',
+  });
+  assert.equal(refused.mayUpdateRunRecord, true);
+  assert.equal(refused.mayChangeNodeStatus, false);
+  assert.equal(refused.attachOnly, false);
+  assert.equal(refused.suggestedTransition, undefined);
+  const earlySuccess = observeRunSignal({
+    runStatus: 'requested',
+    runGeneration: 1,
+    currentGeneration: 1,
+    signal: 'succeeded',
+  });
+  assert.equal(earlySuccess.attachOnly, true);
+  assert.equal(earlySuccess.mayUpdateRunRecord, false);
+  assert.equal(earlySuccess.mayChangeNodeStatus, false);
+  assert.equal(
+    requestNodeRun({
+      nodeId: 'node-1',
+      nodeStatus: 'ready',
+      runs: [{ id: 'run-refused', nodeId: 'node-1', status: 'failed' }],
+    }).ok,
+    true,
+  );
+
   for (const status of ['completed', 'failed', 'cancelled']) {
     assert.equal(transitionRun(status, { type: 'cancel-confirmed' }).ok, false, status);
     assert.equal(transitionRun(status, { type: 'failed' }).ok, false, status);
@@ -265,7 +310,7 @@ test('derives separate inbox rows and omits read-only, finished, and agent deliv
       node('n4', 'ready', { access: 'read' }),
       node('n5', 'ready', { assignee: { id: 'human-1', kind: 'agent' } }),
       node('n6', 'ready', { awaitingParentConfirmation: true }),
-      node('n7', 'in-review'),
+      node('n7', 'in-review', { currentRoundId: 'round-1' }),
       node('n8', 'running'),
       node('n9', 'waiting-for-input'),
       node('n10', 'failed'),
@@ -296,6 +341,16 @@ test('derives separate inbox rows and omits read-only, finished, and agent deliv
         status: 'open',
         reviewerIds: ['human-1', 'human-2'],
         terminalReviewerIds: [],
+        current: false,
+      },
+      {
+        roundId: 'round-old',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1', 'human-2'],
+        terminalReviewerIds: [],
+        current: true,
       },
     ],
     confirmations: [
@@ -331,6 +386,114 @@ test('derives separate inbox rows and omits read-only, finished, and agent deliv
   assert.equal(
     items.some((item) => item.nodeId === 'n11' || item.nodeId === 'n12'),
     false,
+  );
+});
+
+test('review to-dos follow the current round, and an agent stall notifies the owner', () => {
+  const nodes = [
+    node('n7', 'in-review'),
+    node('agent-wait', 'waiting-for-input', {
+      assignee: { id: 'agent-1', kind: 'agent' },
+      ownerId: 'human-1',
+    }),
+    node('agent-fail', 'failed', {
+      assignee: { id: 'agent-1', kind: 'agent' },
+      ownerId: 'human-1',
+    }),
+    node('agent-run', 'running', {
+      assignee: { id: 'agent-1', kind: 'agent' },
+      ownerId: 'human-1',
+    }),
+  ];
+  const unmarked = deriveInbox({
+    actorId: 'human-1',
+    nodes,
+    rounds: [
+      {
+        roundId: 'r1',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1'],
+        terminalReviewerIds: [],
+      },
+      {
+        roundId: 'r2',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1'],
+        terminalReviewerIds: ['human-1'],
+      },
+    ],
+    confirmations: [],
+  });
+  assert.equal(
+    unmarked.some((item) => item.kind === 'review'),
+    false,
+  );
+  const flagged = deriveInbox({
+    actorId: 'human-1',
+    nodes,
+    rounds: [
+      {
+        roundId: 'r2',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1'],
+        terminalReviewerIds: ['human-1'],
+        current: true,
+      },
+      {
+        roundId: 'r1',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1'],
+        terminalReviewerIds: [],
+        current: false,
+      },
+    ],
+    confirmations: [],
+  });
+  assert.equal(flagged.filter((item) => item.kind === 'review').length, 0);
+  const current = deriveInbox({
+    actorId: 'human-1',
+    nodes: [node('n7', 'in-review')],
+    rounds: [
+      {
+        roundId: 'r1',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1'],
+        terminalReviewerIds: [],
+      },
+      {
+        roundId: 'r2',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1'],
+        terminalReviewerIds: [],
+        current: true,
+      },
+    ],
+    confirmations: [],
+  });
+  assert.deepEqual(
+    current.filter((item) => item.kind === 'review').map((item) => item.id),
+    ['review:r2:human-1'],
+  );
+  assert.deepEqual(
+    unmarked
+      .filter((item) => item.kind === 'deliver')
+      .map((item) => [item.nodeId, item.reason, item.action]),
+    [
+      ['agent-fail', 'owner-take-back', 'retry-or-take-back'],
+      ['agent-wait', 'owner-input-required', 'provide-input'],
+    ],
   );
 });
 
