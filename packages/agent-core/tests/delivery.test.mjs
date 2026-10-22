@@ -11,6 +11,7 @@ import {
   projectWorkTreeNode,
   requestNodeRun,
   taskAccess,
+  transitionRun,
   validateDeliveryContent,
 } from '@zhuma/agent-core';
 
@@ -46,6 +47,12 @@ test('accepts text, files, or links and refuses an empty or unfinished submissio
     validateDeliveryContent({ files: [file({ checksum: ' ' })], links: [] }).code,
     'invalid-file',
   );
+  assert.equal(
+    validateDeliveryContent({ files: [], links: ['javascript:alert(1)'] }).code,
+    'invalid-link',
+  );
+  assert.equal(validateDeliveryContent({ files: [], links: ['not a url'] }).code, 'invalid-link');
+  assert.equal(validateDeliveryContent({ files: [], links: ['http://example.test/a'] }).ok, true);
 });
 
 test('creates the next immutable artifact version without rewriting the previous one', () => {
@@ -124,7 +131,7 @@ test('keeps one active run and does not let stale or cancelled output advance wo
     currentGeneration: 2,
     signal: 'output-arrived',
   });
-  assert.equal(cancelled.reason, 'cancelled-run');
+  assert.equal(cancelled.reason, 'terminal-run');
   assert.equal(cancelled.mayChangeNodeStatus, false);
   assert.equal(cancelled.mayTriggerDownstream, false);
   assert.equal(cancelled.attachOnly, true);
@@ -138,6 +145,40 @@ test('keeps one active run and does not let stale or cancelled output advance wo
   assert.equal(failure.mayChangeNodeStatus, true);
   assert.equal(failure.mayTriggerDownstream, false);
   assert.equal(failure.suggestedTransition, 'execution-failed');
+});
+
+test('a late signal on any finished run is recorded as an attachment only', () => {
+  for (const runStatus of ['completed', 'failed', 'cancelled']) {
+    for (const signal of ['failed', 'cancel-confirmed', 'succeeded', 'output-arrived']) {
+      const observed = observeRunSignal({
+        runStatus,
+        runGeneration: 2,
+        currentGeneration: 2,
+        signal,
+      });
+      assert.equal(observed.reason, 'terminal-run', `${runStatus} ${signal}`);
+      assert.equal(observed.attachOnly, true);
+      assert.equal(observed.mayUpdateRunRecord, false);
+      assert.equal(observed.mayChangeNodeStatus, false);
+      assert.equal(observed.mayTriggerDownstream, false);
+      assert.equal(observed.suggestedTransition, undefined);
+    }
+  }
+});
+
+test('a run moves only after the executor acknowledges it and a finished run stays finished', () => {
+  assert.equal(transitionRun('requested', { type: 'executor-acknowledged' }).to, 'running');
+  assert.equal(transitionRun('requested', { type: 'succeeded' }).code, 'illegal-run-transition');
+  assert.equal(transitionRun('running', { type: 'input-required' }).to, 'waiting-for-input');
+  assert.equal(transitionRun('waiting-for-input', { type: 'input-supplied' }).to, 'running');
+  assert.equal(transitionRun('running', { type: 'succeeded' }).to, 'completed');
+  assert.equal(transitionRun('waiting-for-input', { type: 'failed' }).to, 'failed');
+  assert.equal(transitionRun('requested', { type: 'cancel-confirmed' }).to, 'cancelled');
+  for (const status of ['completed', 'failed', 'cancelled']) {
+    assert.equal(transitionRun(status, { type: 'cancel-confirmed' }).ok, false, status);
+    assert.equal(transitionRun(status, { type: 'failed' }).ok, false, status);
+    assert.equal(transitionRun(status, { type: 'succeeded' }).ok, false, status);
+  }
 });
 
 test('replays one feedback batch and refuses a moved target version', () => {
@@ -155,37 +196,63 @@ test('replays one feedback batch and refuses a moved target version', () => {
     batch,
     currentTargetVersionId: 'art-1',
     authorized: true,
-    appliedKeys: [],
+    appliedBatches: [],
   });
   assert.equal(applied.effect, 'applied');
+  const stored = [{ idempotencyKey: 'batch-key', fingerprint: applied.fingerprint }];
   const replay = evaluateFeedbackApplication({
     batch,
     currentTargetVersionId: 'art-2',
     authorized: true,
-    appliedKeys: ['batch-key'],
+    appliedBatches: stored,
   });
   assert.equal(replay.effect, 'replayed');
+  const mismatch = evaluateFeedbackApplication({
+    batch: {
+      ...batch,
+      dispositions: [{ commentId: 'c1', kind: 'declined', reply: '不改' }, batch.dispositions[1]],
+    },
+    currentTargetVersionId: 'art-1',
+    authorized: true,
+    appliedBatches: stored,
+  });
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.code, 'idempotency-mismatch');
+  const proposalMismatch = evaluateFeedbackApplication({
+    batch: { ...batch, proposal: { summary: '另一方案' } },
+    currentTargetVersionId: 'art-1',
+    authorized: true,
+    appliedBatches: stored,
+  });
+  assert.equal(proposalMismatch.code, 'idempotency-mismatch');
   const conflict = evaluateFeedbackApplication({
     batch: { ...batch, idempotencyKey: 'batch-key-2' },
     currentTargetVersionId: 'art-2',
     authorized: true,
-    appliedKeys: [],
+    appliedBatches: [],
   });
   assert.equal(conflict.code, 'version-conflict');
   const forbidden = evaluateFeedbackApplication({
     batch,
     currentTargetVersionId: 'art-1',
     authorized: false,
-    appliedKeys: [],
+    appliedBatches: [],
   });
   assert.equal(forbidden.code, 'unauthorized');
   const incomplete = evaluateFeedbackApplication({
     batch: { ...batch, idempotencyKey: 'batch-key-3', dispositions: [batch.dispositions[0]] },
     currentTargetVersionId: 'art-1',
     authorized: true,
-    appliedKeys: [],
+    appliedBatches: [],
   });
   assert.equal(incomplete.code, 'incomplete-disposition');
+  const empty = evaluateFeedbackApplication({
+    batch: { ...batch, idempotencyKey: 'batch-key-4', commentIds: [], dispositions: [] },
+    currentTargetVersionId: 'art-1',
+    authorized: true,
+    appliedBatches: [],
+  });
+  assert.equal(empty.code, 'invalid-batch');
 });
 
 test('derives separate inbox rows and omits read-only, finished, and agent delivery', () => {
@@ -199,8 +266,29 @@ test('derives separate inbox rows and omits read-only, finished, and agent deliv
       node('n5', 'ready', { assignee: { id: 'human-1', kind: 'agent' } }),
       node('n6', 'ready', { awaitingParentConfirmation: true }),
       node('n7', 'in-review'),
+      node('n8', 'running'),
+      node('n9', 'waiting-for-input'),
+      node('n10', 'failed'),
+      node('n11', 'blocked'),
+      node('n12', 'child-workflow'),
     ],
     rounds: [
+      {
+        roundId: 'round-old',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'open',
+        reviewerIds: ['human-1', 'human-2'],
+        terminalReviewerIds: [],
+      },
+      {
+        roundId: 'round-void',
+        nodeId: 'n7',
+        taskId: 'task-1',
+        status: 'voided',
+        reviewerIds: ['human-1'],
+        terminalReviewerIds: [],
+      },
       {
         roundId: 'round-1',
         nodeId: 'n7',
@@ -222,14 +310,27 @@ test('derives separate inbox rows and omits read-only, finished, and agent deliv
     ],
   });
   assert.deepEqual(
-    items.map((item) => [item.kind, item.nodeId, item.reason]),
+    items.map((item) => [item.kind, item.nodeId, item.reason, item.action]),
     [
-      ['deliver', 'n1', 'assignee-delivery'],
-      ['deliver', 'n2', 'revision-delivery'],
-      ['review', 'n7', 'review-assigned'],
-      ['confirm', 'n2', '确认反馈方案'],
-      ['confirm', 'n6', 'parent-confirmation'],
+      ['deliver', 'n1', 'assignee-delivery', 'submit'],
+      ['deliver', 'n10', 'retry-or-take-back', 'retry-or-take-back'],
+      ['deliver', 'n2', 'revision-delivery', 'revise'],
+      ['deliver', 'n8', 'agent-assisted-delivery', 'continue-handling'],
+      ['deliver', 'n9', 'input-required', 'provide-input'],
+      ['review', 'n7', 'review-assigned', 'review'],
+      ['confirm', 'n2', 'explicit-confirmation', 'confirm'],
+      ['confirm', 'n6', 'parent-confirmation', 'confirm'],
     ],
+  );
+  assert.equal(items.filter((item) => item.kind === 'review').length, 1);
+  assert.equal(items.find((item) => item.kind === 'review').id, 'review:round-1:human-1');
+  assert.equal(
+    items.find((item) => item.nodeId === 'n2' && item.kind === 'confirm').detail,
+    '确认反馈方案',
+  );
+  assert.equal(
+    items.some((item) => item.nodeId === 'n11' || item.nodeId === 'n12'),
+    false,
   );
 });
 

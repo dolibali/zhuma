@@ -1,6 +1,7 @@
 import type { ExecutionEngine } from './types.js';
 import type { ActorRef } from './handoff.js';
 import type { NodeStatus } from './node-status.js';
+import { canonicalPayload } from './concurrency.js';
 
 export const RUN_STATUSES = [
   'requested',
@@ -14,6 +15,56 @@ export const RUN_STATUSES = [
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 export type RunSignal = 'succeeded' | 'failed' | 'cancel-confirmed' | 'output-arrived';
+
+export type RunTransition =
+  | { readonly type: 'executor-acknowledged' }
+  | { readonly type: 'input-required' }
+  | { readonly type: 'input-supplied' }
+  | { readonly type: 'succeeded' }
+  | { readonly type: 'failed' }
+  | { readonly type: 'cancel-confirmed' };
+
+export type RunTransitionResult =
+  | { readonly ok: true; readonly from: RunStatus; readonly to: RunStatus }
+  | {
+      readonly ok: false;
+      readonly code: 'illegal-run-transition';
+      readonly from: RunStatus;
+      readonly transition: RunTransition['type'];
+    };
+
+const TERMINAL_RUN: readonly RunStatus[] = ['completed', 'failed', 'cancelled'];
+
+/** Run lifecycle. A terminal run cannot move again, and requested stays until the executor acks. */
+export function transitionRun(from: RunStatus, transition: RunTransition): RunTransitionResult {
+  const accept = (to: RunStatus): RunTransitionResult => ({ ok: true, from, to });
+  const reject = (): RunTransitionResult => ({
+    ok: false,
+    code: 'illegal-run-transition',
+    from,
+    transition: transition.type,
+  });
+  switch (transition.type) {
+    case 'executor-acknowledged':
+      return from === 'requested' ? accept('running') : reject();
+    case 'input-required':
+      return from === 'running' ? accept('waiting-for-input') : reject();
+    case 'input-supplied':
+      return from === 'waiting-for-input' ? accept('running') : reject();
+    case 'succeeded':
+      return from === 'running' ? accept('completed') : reject();
+    case 'failed':
+      return from === 'running' || from === 'waiting-for-input' ? accept('failed') : reject();
+    case 'cancel-confirmed':
+      return from === 'requested' || from === 'running' || from === 'waiting-for-input'
+        ? accept('cancelled')
+        : reject();
+    default: {
+      const unexpected: never = transition;
+      throw new Error(`Unknown run transition: ${JSON.stringify(unexpected)}`);
+    }
+  }
+}
 
 /** One execution attempt. Completion of the run is not node delivery. */
 export interface RunRecord {
@@ -57,7 +108,7 @@ export interface RunObservation {
   readonly mayChangeNodeStatus: boolean;
   readonly mayTriggerDownstream: boolean;
   readonly attachOnly: boolean;
-  readonly reason?: 'stale-generation' | 'cancelled-run';
+  readonly reason?: 'stale-generation' | 'terminal-run';
   readonly suggestedTransition?: 'execution-failed' | 'cancel-confirmed';
 }
 
@@ -69,9 +120,9 @@ function observe(
 }
 
 /**
- * Classify a run signal. Stale and cancelled-run outputs are kept as attachments.
+ * Classify a run signal. Stale generations and any terminal run are attachments only.
  * They must not advance the node or release downstream work.
- * A successful process exit updates the run record only.
+ * A successful process exit updates an active run record only.
  */
 export function observeRunSignal(input: {
   readonly runStatus: RunStatus;
@@ -92,7 +143,7 @@ export function observeRunSignal(input: {
   ) {
     return observe(held, { reason: 'stale-generation' });
   }
-  if (input.runStatus === 'cancelled') return observe(held, { reason: 'cancelled-run' });
+  if (TERMINAL_RUN.includes(input.runStatus)) return observe(held, { reason: 'terminal-run' });
   if (input.signal === 'failed') {
     return observe(
       {
@@ -150,7 +201,12 @@ export interface ArtifactVersion {
 }
 
 export type ArtifactIssue =
-  'empty-delivery' | 'upload-incomplete' | 'invalid-file' | 'invalid-artifact' | 'invalid-history';
+  | 'empty-delivery'
+  | 'upload-incomplete'
+  | 'invalid-file'
+  | 'invalid-link'
+  | 'invalid-artifact'
+  | 'invalid-history';
 
 function blank(value: string | undefined): boolean {
   return value === undefined || value.trim().length === 0;
@@ -188,10 +244,22 @@ export function validateDeliveryContent(
   }
   const text = draft.text?.trim() ?? '';
   const links = draft.links.map((link) => link.trim()).filter((link) => link.length > 0);
+  for (const link of links) {
+    if (!isDeliverableLink(link)) return { ok: false, code: 'invalid-link' };
+  }
   if (text.length === 0 && draft.files.length === 0 && links.length === 0) {
     return { ok: false, code: 'empty-delivery' };
   }
   return { ok: true };
+}
+
+function isDeliverableLink(link: string): boolean {
+  try {
+    const url = new URL(link);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 /** Next immutable artifact version. Previous versions are not rewritten. */
@@ -276,25 +344,51 @@ export interface CommentDisposition {
   readonly reply: string;
 }
 
+export interface FeedbackProposal {
+  readonly summary: string;
+}
+
 export interface FeedbackBatch {
   readonly id: string;
   readonly commentIds: readonly string[];
   readonly targetVersionId: string;
   readonly idempotencyKey: string;
   readonly dispositions: readonly CommentDisposition[];
+  readonly proposal?: FeedbackProposal;
+}
+
+export interface AppliedFeedbackBatch {
+  readonly idempotencyKey: string;
+  readonly fingerprint: string;
+}
+
+/** Content identity for one batch. The idempotency key is compared separately. */
+export function feedbackBatchFingerprint(batch: FeedbackBatch): string {
+  return canonicalPayload({
+    id: batch.id,
+    commentIds: [...batch.commentIds],
+    targetVersionId: batch.targetVersionId,
+    dispositions: batch.dispositions.map((item) => ({
+      commentId: item.commentId,
+      kind: item.kind,
+      reply: item.reply,
+    })),
+    ...(batch.proposal !== undefined ? { proposal: { summary: batch.proposal.summary } } : {}),
+  });
 }
 
 /**
  * Preconditions for applying one feedback batch.
- * A repeated key reports replay and must not write another version.
+ * The same key and the same content replay. Different content under that key mismatches.
  */
 export function evaluateFeedbackApplication(input: {
   readonly batch: FeedbackBatch;
   readonly currentTargetVersionId: string;
   readonly authorized: boolean;
-  readonly appliedKeys: readonly string[];
+  readonly appliedBatches: readonly AppliedFeedbackBatch[];
 }):
-  | { readonly ok: true; readonly effect: 'applied' | 'replayed' }
+  | { readonly ok: true; readonly effect: 'applied'; readonly fingerprint: string }
+  | { readonly ok: true; readonly effect: 'replayed' }
   | {
       readonly ok: false;
       readonly code:
@@ -302,7 +396,8 @@ export function evaluateFeedbackApplication(input: {
         | 'unauthorized'
         | 'incomplete-disposition'
         | 'duplicate-comment'
-        | 'invalid-batch';
+        | 'invalid-batch'
+        | 'idempotency-mismatch';
     } {
   if (
     blank(input.batch.id) ||
@@ -312,8 +407,15 @@ export function evaluateFeedbackApplication(input: {
     return { ok: false, code: 'invalid-batch' };
   }
   if (!input.authorized) return { ok: false, code: 'unauthorized' };
-  if (input.appliedKeys.includes(input.batch.idempotencyKey))
+  const fingerprint = feedbackBatchFingerprint(input.batch);
+  const existing = input.appliedBatches.find(
+    (item) => item.idempotencyKey === input.batch.idempotencyKey,
+  );
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) return { ok: false, code: 'idempotency-mismatch' };
     return { ok: true, effect: 'replayed' };
+  }
+  if (input.batch.commentIds.length === 0) return { ok: false, code: 'invalid-batch' };
   if (input.batch.targetVersionId !== input.currentTargetVersionId) {
     return { ok: false, code: 'version-conflict' };
   }
@@ -335,14 +437,33 @@ export function evaluateFeedbackApplication(input: {
     seen.add(disposition.commentId);
   }
   if (seen.size !== expected.size) return { ok: false, code: 'incomplete-disposition' };
-  return { ok: true, effect: 'applied' };
+  return { ok: true, effect: 'applied', fingerprint };
 }
 
 export const INBOX_KINDS = ['deliver', 'review', 'confirm'] as const;
 export type InboxKind = (typeof INBOX_KINDS)[number];
 
+export const INBOX_ACTIONS = [
+  'submit',
+  'revise',
+  'continue-handling',
+  'provide-input',
+  'retry-or-take-back',
+  'review',
+  'confirm',
+] as const;
+
+export type InboxAction = (typeof INBOX_ACTIONS)[number];
+
 export type DerivedInboxReason =
-  'assignee-delivery' | 'revision-delivery' | 'review-assigned' | 'parent-confirmation';
+  | 'assignee-delivery'
+  | 'revision-delivery'
+  | 'agent-assisted-delivery'
+  | 'input-required'
+  | 'retry-or-take-back'
+  | 'review-assigned'
+  | 'parent-confirmation'
+  | 'explicit-confirmation';
 
 export interface InboxItem {
   readonly id: string;
@@ -350,7 +471,9 @@ export interface InboxItem {
   readonly actorId: string;
   readonly nodeId: string;
   readonly taskId: string;
-  readonly reason: DerivedInboxReason | string;
+  readonly reason: DerivedInboxReason;
+  readonly action: InboxAction;
+  readonly detail?: string;
 }
 
 export interface InboxNodeFact {
@@ -366,7 +489,7 @@ export interface InboxRoundFact {
   readonly roundId: string;
   readonly nodeId: string;
   readonly taskId: string;
-  readonly status: 'open' | 'approved' | 'changes-requested';
+  readonly status: 'open' | 'approved' | 'changes-requested' | 'voided';
   readonly reviewerIds: readonly string[];
   readonly terminalReviewerIds: readonly string[];
 }
@@ -381,6 +504,25 @@ export interface InboxConfirmationFact {
 }
 
 const KIND_ORDER: Record<InboxKind, number> = { deliver: 0, review: 1, confirm: 2 };
+
+function deliveryTodo(
+  status: NodeStatus,
+): { readonly reason: DerivedInboxReason; readonly action: InboxAction } | undefined {
+  switch (status) {
+    case 'ready':
+      return { reason: 'assignee-delivery', action: 'submit' };
+    case 'needs-revision':
+      return { reason: 'revision-delivery', action: 'revise' };
+    case 'running':
+      return { reason: 'agent-assisted-delivery', action: 'continue-handling' };
+    case 'waiting-for-input':
+      return { reason: 'input-required', action: 'provide-input' };
+    case 'failed':
+      return { reason: 'retry-or-take-back', action: 'retry-or-take-back' };
+    default:
+      return undefined;
+  }
+}
 
 /**
  * Inbox rows are derived from node, review, and confirmation facts.
@@ -410,29 +552,24 @@ export function deriveInbox(input: {
         nodeId: node.nodeId,
         taskId: node.taskId,
         reason: 'parent-confirmation',
+        action: 'confirm',
       });
       continue;
     }
-    if (node.status === 'ready') {
+    const delivery = deliveryTodo(node.status);
+    if (delivery) {
       items.push({
         id: `deliver:${node.nodeId}:${input.actorId}`,
         kind: 'deliver',
         actorId: input.actorId,
         nodeId: node.nodeId,
         taskId: node.taskId,
-        reason: 'assignee-delivery',
-      });
-    } else if (node.status === 'needs-revision') {
-      items.push({
-        id: `deliver:${node.nodeId}:${input.actorId}`,
-        kind: 'deliver',
-        actorId: input.actorId,
-        nodeId: node.nodeId,
-        taskId: node.taskId,
-        reason: 'revision-delivery',
+        reason: delivery.reason,
+        action: delivery.action,
       });
     }
   }
+  const reviewByNode = new Map<string, InboxItem>();
   for (const round of input.rounds) {
     const node = nodes.get(round.nodeId);
     if (
@@ -449,15 +586,17 @@ export function deriveInbox(input: {
     ) {
       continue;
     }
-    items.push({
+    reviewByNode.set(round.nodeId, {
       id: `review:${round.roundId}:${input.actorId}`,
       kind: 'review',
       actorId: input.actorId,
       nodeId: round.nodeId,
       taskId: round.taskId,
       reason: 'review-assigned',
+      action: 'review',
     });
   }
+  items.push(...reviewByNode.values());
   for (const confirmation of input.confirmations) {
     if (
       confirmation.actorId !== input.actorId ||
@@ -475,7 +614,9 @@ export function deriveInbox(input: {
       actorId: input.actorId,
       nodeId: confirmation.nodeId,
       taskId: confirmation.taskId,
-      reason: confirmation.reason,
+      reason: 'explicit-confirmation',
+      action: 'confirm',
+      detail: confirmation.reason,
     });
   }
   return Object.freeze(
@@ -531,9 +672,9 @@ export function canReadFile(input: {
   readonly grants: readonly TaskGrant[];
   readonly referencedByUpstream: boolean;
 }): boolean {
-  const access = taskAccess(input.actorId, input.fileTaskId, input.grants);
-  // An upstream citation never adds a grant; both branches use the file's own task.
-  return input.referencedByUpstream ? access !== 'none' : access !== 'none';
+  // The flag is part of the call so an upstream citation is considered and then ignored.
+  void input.referencedByUpstream;
+  return taskAccess(input.actorId, input.fileTaskId, input.grants) !== 'none';
 }
 
 export interface WorkTreeNodeProjection {

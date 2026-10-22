@@ -1,4 +1,10 @@
-import type { InboxItem, InboxKind, NodeExecutionReport, NodeStatus } from '@zhuma/agent-core';
+import type {
+  InboxAction,
+  InboxItem,
+  InboxKind,
+  NodeExecutionReport,
+  NodeStatus,
+} from '@zhuma/agent-core';
 
 /** Labels for the node state machine. These do not replace task snapshot labels. */
 export const NODE_STATUS_LABELS: Record<NodeStatus, string> = {
@@ -19,6 +25,16 @@ export const INBOX_KIND_LABELS: Record<InboxKind, string> = {
   deliver: '待我交付',
   review: '待我评审',
   confirm: '待我确认',
+};
+
+export const INBOX_ACTION_LABELS: Record<InboxAction, string> = {
+  submit: '提交产物',
+  revise: '提交新版本',
+  'continue-handling': '继续处理',
+  'provide-input': '补充输入',
+  'retry-or-take-back': '重试或接回',
+  review: '提交评审',
+  confirm: '确认',
 };
 
 export interface NodeExecutionView {
@@ -43,6 +59,9 @@ export interface InboxItemView {
   readonly nodeId: string;
   readonly taskId: string;
   readonly reason: string;
+  readonly action: InboxAction;
+  readonly actionLabel: string;
+  readonly detail?: string;
 }
 
 /** Read-only projection. Rendering a node does not start work or change execution facts. */
@@ -74,5 +93,8 @@ export function createInboxItemView(item: InboxItem): InboxItemView {
     nodeId: item.nodeId,
     taskId: item.taskId,
     reason: item.reason,
+    action: item.action,
+    actionLabel: INBOX_ACTION_LABELS[item.action],
+    ...(item.detail !== undefined ? { detail: item.detail } : {}),
   };
 }

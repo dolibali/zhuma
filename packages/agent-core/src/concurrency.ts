@@ -29,6 +29,7 @@ export interface CommandEnvelope<TPayload> {
 export interface StoredCommand<TResult> {
   readonly idempotencyKey: string;
   readonly payloadFingerprint: string;
+  readonly actorId: string;
   readonly objectId: string;
   readonly version: number;
   readonly result: TResult;
@@ -63,7 +64,34 @@ export interface DomainEvent<TPayload = unknown> {
   readonly runId?: string;
 }
 
-const TIMESTAMP_PREFIX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+const TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/** Calendar check only. This does not read the clock. */
+function isRealTimestamp(value: string): boolean {
+  const match = TIMESTAMP.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const zone = match[8];
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+  if (zone !== 'Z' && zone !== undefined) {
+    const zoneHour = Number(zone.slice(1, 3));
+    const zoneMinute = Number(zone.slice(4, 6));
+    if (zoneHour > 23 || zoneMinute > 59) return false;
+  }
+  const days = [0, 31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const limit = days[month];
+  return limit !== undefined && day >= 1 && day <= limit;
+}
 
 function isBlank(value: string): boolean {
   return value.trim().length === 0;
@@ -144,6 +172,7 @@ export function decideCommand<TResult>(input: {
   if (existing) {
     if (
       existing.objectId !== input.envelope.objectId ||
+      existing.actorId !== input.envelope.actorId ||
       existing.payloadFingerprint !== fingerprint
     ) {
       return {
@@ -199,6 +228,7 @@ export function decideCommand<TResult>(input: {
   const record: StoredCommand<TResult> = {
     idempotencyKey: input.envelope.idempotencyKey,
     payloadFingerprint: fingerprint,
+    actorId: input.envelope.actorId,
     objectId: input.envelope.objectId,
     version: nextVersion,
     result: applied.result,
@@ -228,7 +258,7 @@ function eventError<TPayload>(event: DomainEvent<TPayload>): 'invalid-event' | u
     return 'invalid-event';
   }
   if (!Number.isSafeInteger(event.sequence) || event.sequence < 1) return 'invalid-event';
-  if (!TIMESTAMP_PREFIX.test(event.occurredAt)) return 'invalid-event';
+  if (!isRealTimestamp(event.occurredAt)) return 'invalid-event';
   if (event.runId !== undefined && isBlank(event.runId)) return 'invalid-event';
   return undefined;
 }

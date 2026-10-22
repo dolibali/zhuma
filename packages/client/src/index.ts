@@ -2,6 +2,7 @@ import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export type { InboxItemView, NodeExecutionView } from './execution-view.js';
 export {
+  INBOX_ACTION_LABELS,
   INBOX_KIND_LABELS,
   NODE_STATUS_LABELS,
   createInboxItemView,

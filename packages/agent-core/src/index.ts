@@ -56,6 +56,8 @@ export type {
   BallotRejectionCode,
   BallotDecision,
   AgentReviewOutput,
+  CitedComment,
+  ReviewApplicationRejection,
 } from './review.js';
 export {
   REVIEW_ACTIONS,
@@ -64,6 +66,8 @@ export {
   submitBallot,
   changeReviewers,
   interpretAgentReview,
+  voidOpenRound,
+  reviewRoundAfterNodeTransition,
   applyReviewToNode,
   transitionForSubmission,
 } from './review.js';
@@ -82,6 +86,8 @@ export type {
 export type {
   RunStatus,
   RunSignal,
+  RunTransition,
+  RunTransitionResult,
   RunRecord,
   RunObservation,
   ArtifactFileRef,
@@ -95,8 +101,11 @@ export type {
   Comment,
   DispositionKind,
   CommentDisposition,
+  FeedbackProposal,
   FeedbackBatch,
+  AppliedFeedbackBatch,
   InboxKind,
+  InboxAction,
   DerivedInboxReason,
   InboxItem,
   InboxNodeFact,
@@ -107,13 +116,16 @@ export type {
 } from './delivery.js';
 export {
   RUN_STATUSES,
+  transitionRun,
   requestNodeRun,
   observeRunSignal,
   validateDeliveryContent,
   createArtifactVersion,
   DISPOSITION_KINDS,
+  feedbackBatchFingerprint,
   evaluateFeedbackApplication,
   INBOX_KINDS,
+  INBOX_ACTIONS,
   deriveInbox,
   taskAccess,
   canSubmitNode,

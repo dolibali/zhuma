@@ -60,27 +60,15 @@ test('follows the legal node transitions and their effects', () => {
     ],
     [
       'needs-revision',
-      { type: 'submit-artifact', reviewRequired: false },
-      'completed',
-      ['accept-handoff'],
+      { type: 'submit-artifact', reviewRequired: true },
+      'in-review',
+      ['open-review', 'block-downstream'],
     ],
     ['running', { type: 'input-required' }, 'waiting-for-input', []],
     ['waiting-for-input', { type: 'input-supplied' }, 'running', ['resume-execution']],
     ['ready', { type: 'child-workflow-started' }, 'child-workflow', []],
     ['needs-revision', { type: 'child-workflow-started' }, 'child-workflow', []],
     ['child-workflow', { type: 'child-workflow-returned' }, 'ready', ['await-parent-submit']],
-    [
-      'in-review',
-      { type: 'review-resolved', outcome: 'approved' },
-      'completed',
-      ['accept-handoff'],
-    ],
-    [
-      'in-review',
-      { type: 'review-resolved', outcome: 'changes-requested' },
-      'needs-revision',
-      ['block-downstream'],
-    ],
     ['running', { type: 'execution-failed' }, 'failed', ['record-failure', 'block-downstream']],
     [
       'waiting-for-input',
@@ -132,7 +120,10 @@ test('rejects transitions that would skip review, delivery, or an explicit resta
     ['child-workflow', { type: 'review-resolved', outcome: 'approved' }],
     ['in-review', { type: 'submit-artifact', reviewRequired: true }],
     ['in-review', { type: 'execution-failed' }],
+    ['needs-revision', { type: 'submit-artifact', reviewRequired: false }],
     ['needs-revision', { type: 'review-resolved', outcome: 'approved' }],
+    ['in-review', { type: 'review-resolved', outcome: 'approved' }],
+    ['in-review', { type: 'review-resolved', outcome: 'changes-requested' }],
     ['completed', { type: 'submit-artifact', reviewRequired: true }],
     ['completed', { type: 'execution-acknowledged' }],
     ['completed', { type: 'plan-started', dependenciesSatisfied: true }],
@@ -233,6 +224,43 @@ test('an accepted command is not applied twice and an illegal one does not bump 
   assert.equal(illegal.state.version, 2);
   assert.equal(illegal.state.status, 'in-review');
   assert.equal(illegal.state.stored.length, 2);
+});
+
+test('needs-revision can only submit a new version that opens another review', () => {
+  const state = { ...initialNodeCommandState(), status: 'needs-revision', version: 5 };
+  const skipped = applyNodeTransitionCommand(
+    state,
+    envelope({ type: 'submit-artifact', reviewRequired: false }, 'skip-review', 5),
+  );
+  assert.equal(skipped.decision.status, 'rejected');
+  assert.equal(skipped.decision.code, 'illegal-transition');
+  assert.equal(skipped.state.status, 'needs-revision');
+  assert.equal(skipped.state.version, 5);
+  assert.equal(skipped.state.stored.length, 0);
+
+  const reviewed = applyNodeTransitionCommand(
+    state,
+    envelope({ type: 'submit-artifact', reviewRequired: true }, 'resubmit', 5),
+  );
+  assert.equal(reviewed.decision.status, 'applied');
+  assert.equal(reviewed.state.status, 'in-review');
+  assert.deepEqual(reviewed.decision.result.effects, ['open-review', 'block-downstream']);
+  assert.equal(reviewed.state.version, 6);
+});
+
+test('a self-reported review result cannot bypass aggregation', () => {
+  const state = { ...initialNodeCommandState(), status: 'in-review', version: 2 };
+  for (const outcome of ['approved', 'changes-requested']) {
+    const reported = applyNodeTransitionCommand(
+      state,
+      envelope({ type: 'review-resolved', outcome }, `self-${outcome}`, 2),
+    );
+    assert.equal(reported.decision.status, 'rejected');
+    assert.equal(reported.decision.code, 'illegal-transition');
+    assert.equal(reported.state.status, 'in-review');
+    assert.equal(reported.state.version, 2);
+    assert.equal(reported.state.stored.length, 0);
+  }
 });
 
 test('marking a completed node as upstream-affected does not execute it again', () => {

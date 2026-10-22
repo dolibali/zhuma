@@ -19,14 +19,14 @@
 
 关联验收用例只锁定领域规则，不能代替 AC 的端到端验证：
 
-| 用例 | 本次锁定的规则                                             | 仍未做               |
-| ---- | ---------------------------------------------------------- | -------------------- |
-| AC04 | 文字、文件、链接至少一项；未完成上传不能形成版本           | 预览、存储、草稿恢复 |
-| AC06 | 全员通过才交接；任一退回进入需修改；旧轮次和旧版本投票无效 | 页面、下游调度       |
-| AC07 | 反馈批次逐条处置；同键重放不改写；目标版本变化则冲突       | 方案生成与差异界面   |
-| AC08 | 过期运行和已取消运行的迟到结果不推进、不触发下游           | 真实执行器与停止回执 |
-| AC11 | 期望版本、幂等键、eventId 与 sequence                      | 多用户服务、断网恢复 |
-| AC12 | 任务授权、提交人、评审人、文件与工作树裁剪的判定           | 页面和下载接口       |
+| 用例 | 本次锁定的规则                                                               | 仍未做               |
+| ---- | ---------------------------------------------------------------------------- | -------------------- |
+| AC04 | 文字、文件、链接至少一项；未完成上传不能形成版本                             | 预览、存储、草稿恢复 |
+| AC06 | 全员通过才交接；任一退回进入需修改；旧轮次、作废轮次和旧版本的结果无效       | 页面、下游调度       |
+| AC07 | 反馈批次逐条处置；同键同内容重放不改写；同键不同内容冲突；目标版本变化则冲突 | 方案生成与差异界面   |
+| AC08 | 过期运行和任何已结束运行的迟到结果不推进、不触发下游                         | 真实执行器与停止回执 |
+| AC11 | 期望版本、幂等键、eventId 与 sequence                                        | 多用户服务、断网恢复 |
+| AC12 | 任务授权、提交人、评审人、文件与工作树裁剪的判定                             | 页面和下载接口       |
 
 FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开建模」在类型上分开。骨架里的 `TaskStatus` 仍是任务快照词汇，不是表 6 的节点状态，也不充当任务汇总。任务汇总待 A 对齐。
 
@@ -38,20 +38,20 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 ## 3. 对象与维护者
 
-| 对象            | 维护者                               | 公开形状                                          | 约束                                                    |
-| --------------- | ------------------------------------ | ------------------------------------------------- | ------------------------------------------------------- |
-| Project         | A                                    | `ProjectDependency`                               | 待 A 对齐。B 只读 `id` 与 `active` / `archived`         |
-| Task            | A                                    | `TaskDependency`                                  | 待 A 对齐。父级唯一、根任务可追溯由 A 保证              |
-| WorkflowVersion | A                                    | `WorkflowVersionDependency`                       | 待 A 对齐。应用版本不可原地覆盖、边无环、布局与依赖分离 |
-| Node 编排字段   | A                                    | `NodeHandoff`                                     | 待 A 对齐。目标、执行者、依赖、评审人、输入、子任务引用 |
-| Node 执行状态   | B                                    | `NodeStatus`、`transitionNode`                    | 表 6。同一节点只有一条执行状态                          |
-| Run             | B                                    | `RunRecord`、`requestNodeRun`、`observeRunSignal` | 同一节点至多一个有效运行                                |
-| ArtifactVersion | B                                    | `ArtifactVersion`、`createArtifactVersion`        | 内容不覆盖；新提交生成下一个版本号                      |
-| ReviewRound     | B                                    | `ReviewRound`、`submitBallot`、`aggregateReview`  | 票绑定轮次和产物版本                                    |
-| Comment         | B                                    | `Comment`                                         | 锚点带版本；已解决不是评审通过                          |
-| FeedbackBatch   | B                                    | `FeedbackBatch`、`evaluateFeedbackApplication`    | 每条意见有处置；应用检查版本和幂等键                    |
-| InboxItem       | B                                    | `deriveInbox`                                     | 由节点、轮次和确认事实派生，不另存一套执行事实          |
-| Command / Event | B 维护信封；A 的编排命令复用同一信封 | `CommandEnvelope`、`DomainEvent`                  | 见第 8 节                                               |
+| 对象            | 维护者                               | 公开形状                                                           | 约束                                                    |
+| --------------- | ------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------- |
+| Project         | A                                    | `ProjectDependency`                                                | 待 A 对齐。B 只读 `id` 与 `active` / `archived`         |
+| Task            | A                                    | `TaskDependency`                                                   | 待 A 对齐。父级唯一、根任务可追溯由 A 保证              |
+| WorkflowVersion | A                                    | `WorkflowVersionDependency`                                        | 待 A 对齐。应用版本不可原地覆盖、边无环、布局与依赖分离 |
+| Node 编排字段   | A                                    | `NodeHandoff`                                                      | 待 A 对齐。目标、执行者、依赖、评审人、输入、子任务引用 |
+| Node 执行状态   | B                                    | `NodeStatus`、`transitionNode`                                     | 表 6。同一节点只有一条执行状态                          |
+| Run             | B                                    | `RunRecord`、`transitionRun`、`requestNodeRun`、`observeRunSignal` | 同一节点至多一个有效运行                                |
+| ArtifactVersion | B                                    | `ArtifactVersion`、`createArtifactVersion`                         | 内容不覆盖；新提交生成下一个版本号                      |
+| ReviewRound     | B                                    | `ReviewRound`、`submitBallot`、`aggregateReview`                   | 票绑定轮次和产物版本                                    |
+| Comment         | B                                    | `Comment`                                                          | 锚点带版本；已解决不是评审通过                          |
+| FeedbackBatch   | B                                    | `FeedbackBatch`、`evaluateFeedbackApplication`                     | 每条意见有处置；应用检查版本和幂等键                    |
+| InboxItem       | B                                    | `deriveInbox`                                                      | 由节点、轮次和确认事实派生，不另存一套执行事实          |
+| Command / Event | B 维护信封；A 的编排命令复用同一信封 | `CommandEnvelope`、`DomainEvent`                                   | 见第 8 节                                               |
 
 `NodeHandoff` 是 A 交给 B 的边界：目标、执行者、依赖、评审策略、输入引用。`NodeExecutionReport` 是 B 交回 A 的边界：节点状态、阻塞原因、已接受产物版本、有效运行、评审结局、上游受影响标记。A 把它投影到工作流和工作树。B 不计算任务汇总，也不渲染编排。
 
@@ -59,21 +59,21 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 状态与表 6 对应。`failed` 与 `cancelled` 分成两个状态，因为离开条件不同：失败可显式重试，取消后重新开始必须显式操作。
 
-| 状态                | 含义           | 进入                               | 离开                                             |
-| ------------------- | -------------- | ---------------------------------- | ------------------------------------------------ |
-| `draft`             | 草稿           | 计划节点尚未启动                   | `plan-started`                                   |
-| `blocked`           | 等待前置       | 至少一个上游尚未交接               | 依赖满足后到 `ready`；或确认取消                 |
-| `ready`             | 待处理         | 依赖已满足，等待人工或调度         | 执行回执、直接提交、拆分、依赖再次失效、确认取消 |
-| `running`           | 执行中         | 执行器已经接收                     | 提交、等待输入、核实失败、确认取消               |
-| `waiting-for-input` | 等待输入       | 运行中缺少信息或权限               | 补充后继续、核实失败、确认取消                   |
-| `child-workflow`    | 子工作流处理中 | 子流程已关联                       | 子流程返回后回到 `ready`；或确认取消             |
-| `in-review`         | 待评审         | 已提交且需要评审                   | 全员通过，或任一有效退回                         |
-| `needs-revision`    | 需修改         | 评审退回                           | 新版本、改用 Agent、再拆分、确认取消             |
-| `completed`         | 已完成         | 无需评审的有效提交，或评审全员通过 | 只有显式 `reopen-for-rework`                     |
-| `failed`            | 失败           | 核实后的执行失败                   | 只有显式 `retry`                                 |
-| `cancelled`         | 已取消         | 取消已经确认                       | 只有显式 `restart`                               |
+| 状态                | 含义           | 进入                                   | 离开                                               |
+| ------------------- | -------------- | -------------------------------------- | -------------------------------------------------- |
+| `draft`             | 草稿           | 计划节点尚未启动                       | `plan-started`                                     |
+| `blocked`           | 等待前置       | 至少一个上游尚未交接                   | 依赖满足后到 `ready`；或确认取消                   |
+| `ready`             | 待处理         | 依赖已满足，等待人工或调度             | 执行回执、直接提交、拆分、依赖再次失效、确认取消   |
+| `running`           | 执行中         | 执行器已经接收                         | 提交、等待输入、核实失败、确认取消                 |
+| `waiting-for-input` | 等待输入       | 运行中缺少信息或权限                   | 补充后继续、核实失败、确认取消                     |
+| `child-workflow`    | 子工作流处理中 | 子流程已关联                           | 子流程返回后回到 `ready`；或确认取消               |
+| `in-review`         | 待评审         | 已提交且需要评审                       | 当前轮次全员通过，或任一有效退回                   |
+| `needs-revision`    | 需修改         | 评审退回                               | 提交新版本并重新评审、改用 Agent、再拆分、确认取消 |
+| `completed`         | 已完成         | 无需评审的有效提交，或当前轮次全员通过 | 只有显式 `reopen-for-rework`                       |
+| `failed`            | 失败           | 核实后的执行失败                       | 只有显式 `retry`                                   |
+| `cancelled`         | 已取消         | 取消已经确认                           | 只有显式 `restart`                                 |
 
-`transitionNode` 是唯一的节点迁移函数。合法迁移返回下一个状态和推进效果；非法迁移返回 `illegal-transition`，不修改调用方状态。
+`transitionNode` 是节点状态的迁移函数。合法迁移返回下一个状态和推进效果；非法迁移返回 `illegal-transition`，不修改调用方状态。`review-resolved` 仍留在迁移联合类型里，使旧载荷失败关闭而不是抛出；这条迁移一律返回 `illegal-transition`。`in-review` 的通过或退回只由 `applyReviewToNode` 写入，并且必须绑定节点当前轮次。
 
 推进效果：
 
@@ -93,9 +93,10 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 对应需求 6.1 与表 13。
 
-- 需要评审的提交进入 `in-review` 并 `block-downstream`。不需要评审的提交进入 `completed` 并 `accept-handoff`。评审开关打开时评审人不能为空，否则返回 `review-requires-reviewers`，节点不动。
+- 需要评审的提交进入 `in-review` 并 `block-downstream`。`ready` 或 `running` 上不需要评审的提交进入 `completed` 并 `accept-handoff`。评审开关打开时评审人不能为空，否则返回 `review-requires-reviewers`，节点不动。
+- `needs-revision` 的 `submit-artifact` 必须 `reviewRequired: true`，进入 `in-review`，效果是 `open-review` 和 `block-downstream`。同一次提交若 `reviewRequired: false`，返回 `illegal-transition`，节点保持需修改。关闭评审要另有授权命令，不能借这次提交跳过。
 - 依赖未满足时停在 `blocked`。全部依赖满足后才进入 `ready`。`ready` 若依赖再次失效，回到 `blocked`。已经开始、评审中或已结束的节点只打 `upstreamAffected`，不静默重跑。
-- 人工节点可以从 `ready` 或 `needs-revision` 直接提交。Agent 对话结束、进程退出成功、文件上传完成，都不会把节点送去评审或完成。
+- 人工节点可以从 `ready` 直接提交。`needs-revision` 的提交会打开新一轮评审。Agent 对话结束、进程退出成功、文件上传完成，都不会把节点送去评审或完成。
 - 执行器实际接收后，`execution-acknowledged` 才把 `ready` 或 `needs-revision` 变成 `running`。仅创建运行请求时节点仍停留在可执行状态。
 - 子流程返回使用 `child-workflow-returned`，节点回到 `ready`，效果只有 `await-parent-submit`。父节点原有评审仍要走。停止子流程并接回，也回到父节点的可处理入口，不自动交付。
 - `completed` 保持完成。返工必须走 `reopen-for-rework`，进入 `needs-revision`，不自动调度。
@@ -110,23 +111,25 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 `requested`、`running`、`waiting-for-input` 是有效运行。`requestNodeRun` 在节点不是 `ready` 或 `needs-revision` 时返回 `node-not-executable`；该节点已有有效运行时返回 `active-run-exists`。已结束的运行不占用这个名额。
 
-`observeRunSignal` 按运行世代和运行状态分类：
+`transitionRun` 是运行自己的状态机。`requested` 只有 `executor-acknowledged` 之后才到 `running`。`input-required` 从 `running` 到 `waiting-for-input`，`input-supplied` 回到 `running`。`succeeded` 只从 `running` 到 `completed`。`failed` 可以从 `running` 或 `waiting-for-input` 到 `failed`。`cancel-confirmed` 可以从 `requested`、`running` 或 `waiting-for-input` 到 `cancelled`。`completed`、`failed`、`cancelled` 没有出口，再迁移返回 `illegal-run-transition`。
 
-| 信号                       | 节点                             | 下游   |
-| -------------------------- | -------------------------------- | ------ |
-| 当前世代进程成功或产物到达 | 不改节点                         | 不触发 |
-| 当前世代核实失败           | 允许随后使用 `execution-failed`  | 不触发 |
-| 当前世代取消已确认         | 允许随后使用 `cancel-confirmed`  | 不触发 |
-| 世代不一致                 | 只作附属记录，`stale-generation` | 不触发 |
-| 运行已取消后的迟到输出     | 只作附属记录，`cancelled-run`    | 不触发 |
+`observeRunSignal` 先看世代，再看运行是否已经结束：
 
-失败和取消的 `mayChangeNodeStatus` 只表示调用方可以再提交对应的已核实迁移。观察函数本身不改节点。
+| 信号                                         | 节点                             | 下游   |
+| -------------------------------------------- | -------------------------------- | ------ |
+| 当前世代、运行仍有效，进程成功或产物到达     | 不改节点                         | 不触发 |
+| 当前世代、运行仍有效，核实失败               | 允许随后使用 `execution-failed`  | 不触发 |
+| 当前世代、运行仍有效，取消已确认             | 允许随后使用 `cancel-confirmed`  | 不触发 |
+| 世代不一致                                   | 只作附属记录，`stale-generation` | 不触发 |
+| 运行已完成、已失败或已取消之后的任何迟到信号 | 只作附属记录，`terminal-run`     | 不触发 |
+
+`terminal-run` 时 `mayChangeNodeStatus` 和 `mayTriggerDownstream` 都是 false，调用方不能借迟到的失败或取消确认去改节点。有效运行上，失败和取消的 `mayChangeNodeStatus` 只表示可以再提交对应的已核实迁移。观察函数本身不改节点。
 
 ## 6. 产物版本
 
 `createArtifactVersion` 生成该节点的下一个版本，并复制文字、文件和链接。调用方之后修改草稿，不会改已生成的版本。版本号只增不改。
 
-提交内容至少包含一项：非空白文字、已完成上传的文件，或非空白链接。任一文件未完成上传时返回 `upload-incomplete`，即使文字已经填写。文件必须有稳定 `id`、媒体类型、非负字节数、校验值和 `accessPolicyId`。同一版本内文件标识不能重复。
+提交内容至少包含一项：非空白文字、已完成上传的文件，或 `http` / `https` 链接。`javascript:` 以及其他不能解析成这两种协议的字符串返回 `invalid-link`。任一文件未完成上传时返回 `upload-incomplete`，即使文字已经填写。文件必须有稳定 `id`、媒体类型、非负字节数、校验值和 `accessPolicyId`。同一版本内文件标识不能重复。零字节文件当前仍接受，见第 11.1 节。
 
 预览失败不是交付失败。大小、格式和保留周期是产品配置，不写进领域规则。
 
@@ -142,19 +145,21 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 - 没有投票视为未回复，留在 `outstandingReviewerIds`，轮次保持 `pending`，节点保持 `in-review`。
 - `availability` 为 `timed-out` 或 `unavailable` 的 `approve` 直接拒绝，代码 `non-passing-availability`，不能算通过。
 - 评审人名单为空是 `invalid-policy`，不能被汇总成通过。
-- 退回必须有意见正文，或引用至少一条未解决评论。空退回返回 `empty-request-changes`。
+- 退回必须有意见正文，或引用至少一条未解决评论。引用的每条标识都要出现在调用方给出的评论快照里，且状态为 `open`。缺失或已解决返回 `comment-not-unresolved`，整张票不写入。只写正文、不引用评论，仍然是有效退回。空退回返回 `empty-request-changes`。
 - 已解决评论不进入汇总。把评论标成已解决不会产生通过票。
+- 投票人必须就是当前 actor。`actorId` 为空，或与 `ballot.reviewerId` 不同，返回 `actor-mismatch`，票不写入。
 
-`applyReviewToNode` 只在结局为 `approved` 或 `changes-requested` 时迁移节点。
+`applyReviewToNode` 只接受当前轮次上、且与该轮次状态一致的汇总结局。轮次为 `voided` 返回 `voided-round`。轮次标识或产物版本与节点当前值不一致，分别返回 `stale-round`、`stale-version`。结局与轮次状态对不上返回 `unbound-evaluation`。通过后节点到 `completed`，效果 `accept-handoff`。退回后节点到 `needs-revision`，效果 `block-downstream`。`pending` 和 `invalid-policy` 不推进节点。
 
 ### 7.2 表 9 的并发规则
 
-- 新版本必须 `openReviewRound`。新轮次的投票列表为空，旧通过票不继承。
-- `submitBallot` 在写入前核对轮次和产物版本。轮次不一致返回 `stale-round`，版本不一致返回 `stale-version`。两种票都不写入。
-- 轮次已经通过或退回后，后续裁决返回 `round-closed`。因此同一轮里先退回、后到达的通过不会把节点改成完成。
-- 同一评审人的第一次终态票有效。相同动作再次提交不追加；改成另一种终态返回 `conflicting-ballot`。
+- 轮次状态是 `open`、`approved`、`changes-requested` 或 `voided`。新版本必须 `openReviewRound`。新轮次的投票列表为空，旧通过票不继承。
+- 取消已确认、重新开始，或再次 `submit-artifact`，并且节点迁移成功时，`reviewRoundAfterNodeTransition` 把仍开放的轮次标成 `voided`。已关闭的轮次保持原状态。迁移被拒绝时轮次不动。`voided` 轮次上的后续票返回 `voided-round`。
+- `submitBallot` 在写入前核对轮次、产物版本和 actor。轮次不一致返回 `stale-round`，版本不一致返回 `stale-version`，actor 不是投票人返回 `actor-mismatch`。这些票都不写入。
+- 轮次已经通过或退回后，后续裁决返回 `round-closed`。因此同一轮里先退回、后到达的通过不会把节点改成完成。已经作废的轮次也不能再被拿来结算。
+- 同一评审人的第一次终态票有效。相同动作再次提交不追加；改成另一种终态返回 `conflicting-ballot`。通过之后不能在同一开放轮次里改成退回。是否允许改票见第 11.1 节。
 - 不在名单中的人返回 `not-assigned-reviewer`，不能替他人投票。
-- `changeReviewers` 不能拿掉已经退回的评审人来让当前轮次通过，返回 `cannot-drop-rejection`。已经关闭的轮次也不能靠调整名单重开。换人继续必须新建轮次。开放轮次里尚未投票的人可以被调整；若剩下的人都已通过，当前轮次可以变为通过。
+- `changeReviewers` 不能拿掉已经退回的评审人来让当前轮次通过，返回 `cannot-drop-rejection`。已经关闭的轮次也不能靠调整名单重开。换人继续必须新建轮次。开放轮次里尚未投票的人可以被调整；若剩下的人都已通过，当前轮次可以变为通过。是否改成不能靠缩名单结束评审，见第 11.1 节。
 - 专家输出走 `interpretAgentReview`。缺少结论、理由，或在通过/退回时缺少定位与证据，返回 `abnormal-output`，不能当成批准。
 
 ### 7.3 评论与反馈批次
@@ -163,11 +168,12 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 `evaluateFeedbackApplication`：
 
-- 未授权返回 `unauthorized`。
-- 同一幂等键已经应用过，返回 `replayed`，即使当前目标版本后来变了，也不再写一版。
-- 新键遇到目标版本不一致，返回 `version-conflict`。
+- 未授权返回 `unauthorized`。授权检查先于幂等比对。
+- 同一幂等键且内容指纹相同，返回 `replayed`，即使当前目标版本后来变了，也不再写一版。指纹覆盖批次 `id`、评论标识、目标版本、每条处置，以及可选的 `proposal`。
+- 同一幂等键但指纹不同，返回 `idempotency-mismatch`。新批次不写入，也不当成重放丢掉。
+- 新键遇到目标版本不一致，返回 `version-conflict`。`commentIds` 为空返回 `invalid-batch`。
 - 每条评论恰好一条处置，且回复非空。冲突处置使用 `conflict-pending`，批次仍可记录，但不能把冲突意见悄悄覆盖掉。
-- 应用成功只表示可以写入新版本及处置关联。原始评论保留。本函数不生成方案，也不修改产物。
+- 应用成功只表示可以写入新版本及处置关联。原始评论保留。`proposal` 由调用方放入，本函数不生成方案，也不修改产物。
 
 ## 8. 命令、事件与幂等
 
@@ -175,34 +181,39 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 `decideCommand` 的结果：
 
-| 状态                   | 条件                                       | 版本与存储                                                             |
-| ---------------------- | ------------------------------------------ | ---------------------------------------------------------------------- |
-| `applied`              | 键首次出现，期望版本等于当前版本，领域接受 | 版本加一，并保存结果                                                   |
-| `replayed`             | 同一对象、同一键、同一规范化载荷           | 返回第一次的结果，不再调用应用                                         |
-| `conflict`             | 键是新的，但期望版本不等于当前版本         | 返回 `currentVersion`、`expectedVersion` 和 `version-mismatch`；不保存 |
-| `idempotency-mismatch` | 键已存在，但对象或载荷不同                 | 不应用                                                                 |
-| `rejected`             | 领域拒绝，例如非法迁移                     | 不占版本，不保存                                                       |
-| `ignored`              | 领域判定没有新事实，例如依赖状态没有变化   | 不占版本，不保存                                                       |
+| 状态                   | 条件                                         | 版本与存储                                                             |
+| ---------------------- | -------------------------------------------- | ---------------------------------------------------------------------- |
+| `applied`              | 键首次出现，期望版本等于当前版本，领域接受   | 版本加一，并保存结果                                                   |
+| `replayed`             | 同一对象、同一 actor、同一键、同一规范化载荷 | 返回第一次的结果，不再调用应用                                         |
+| `conflict`             | 键是新的，但期望版本不等于当前版本           | 返回 `currentVersion`、`expectedVersion` 和 `version-mismatch`；不保存 |
+| `idempotency-mismatch` | 键已存在，但对象、actor 或载荷不同           | 不应用                                                                 |
+| `rejected`             | 领域拒绝，例如非法迁移                       | 不占版本，不保存                                                       |
+| `ignored`              | 领域判定没有新事实，例如依赖状态没有变化     | 不占版本，不保存                                                       |
 
 冲突不写入幂等记录，调用方重新加载后可以用同一键带上新的期望版本再试。非法迁移也不占用键。已经接受的键即使之后携带另一个期望版本，也只重放，不会第二次生效。
 
 节点命令版本从 0 开始。`applyNodeTransitionCommand` 是节点状态上的这套规则。重放不改变状态、版本和 `upstreamAffected`。
 
-`DomainEvent` 包含 `eventId`、`sequence`、`occurredAt`、`actorId`、对象引用、类型、载荷，以及可选的 `runId`。`occurredAt` 由调用方传入，领域层不读时钟。`appendDomainEvent` 拒绝重复 `eventId`、空字段和非递增 `sequence`。`recordCommandEvent` 只在命令状态为 `applied` 时追加事件；重放、冲突和拒绝不产生新事件。`eventsAfter` 按序号返回游标之后且调用方尚未见过的事件。
+`DomainEvent` 包含 `eventId`、`sequence`、`occurredAt`、`actorId`、对象引用、类型、载荷，以及可选的 `runId`。`occurredAt` 由调用方传入，领域层不读时钟。它必须是带日历校验的 ISO-8601 时间：`YYYY-MM-DDTHH:mm:ss`，可选小数秒，时区为 `Z` 或 `±HH:MM`。`2026-99-99T99:99:99` 这类值返回 `invalid-event`。`appendDomainEvent` 同时拒绝重复 `eventId`、空字段和非递增 `sequence`。`recordCommandEvent` 只在命令状态为 `applied` 时追加事件；重放、冲突和拒绝不产生新事件。`eventsAfter` 按序号返回游标之后且调用方尚未见过的事件。
 
 任务推进、评审汇总和下游待办的持久化事务不在本层。调用方必须把一次已接受命令、它的事件，以及由此派生的待办放进同一个可恢复边界。
 
 ## 9. 待办
 
-`deriveInbox` 为当前 actor 派生三类事项。同一任务的两个待交付节点是两条。
+`deriveInbox` 为当前 actor 派生三类事项，每条都带 `action`。同一任务的两个待交付节点是两条。
 
-| 种类      | 条件                                                           |
-| --------- | -------------------------------------------------------------- |
-| `deliver` | 有写授权的人类执行者，节点为 `ready` 或 `needs-revision`       |
-| `review`  | 节点为 `in-review`，轮次开放，actor 在名单中且尚未给出终态票   |
-| `confirm` | 父节点已从子流程返回并等待负责人确认；或调用方给出的未确认事项 |
+| 种类      | 条件                                                        | `action`             |
+| --------- | ----------------------------------------------------------- | -------------------- |
+| `deliver` | 有写授权的人类执行者，节点为 `ready`                        | `submit`             |
+| `deliver` | 同上，节点为 `needs-revision`                               | `revise`             |
+| `deliver` | 同上，节点为 `running`                                      | `continue-handling`  |
+| `deliver` | 同上，节点为 `waiting-for-input`                            | `provide-input`      |
+| `deliver` | 同上，节点为 `failed`                                       | `retry-or-take-back` |
+| `review`  | 节点为 `in-review`，轮次为 `open`，actor 在名单中且尚未终态 | `review`             |
+| `confirm` | `ready` 且 `awaitingParentConfirmation`                     | `confirm`            |
+| `confirm` | 调用方给出的未确认事项，节点不是 `completed` 或 `cancelled` | `confirm`            |
 
-只读授权、已完成节点、Agent 执行者的节点不产生交付待办。只评论还没有终态票的评审人仍保留评审待办。已完成或已取消节点上的确认事项不再出现。
+父节点确认的原因是 `parent-confirmation`。调用方显式确认的原因是 `explicit-confirmation`，`detail` 保存调用方原文。同一节点即使输入里有多条开放轮次，也只保留最后一条评审待办。`voided` 轮次不产生待办。`blocked` 和 `child-workflow` 不产生交付待办。只读授权、已完成节点、Agent 执行者的节点不产生交付待办。只评论还没有终态票的评审人仍保留评审待办。
 
 ## 10. 权限与可见性
 
@@ -232,6 +243,17 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 12. 骨架 `TaskStatus` / `TaskSnapshot` 是保留、映射，还是被任务汇总状态替换。
 13. 「待我确认」里哪些计划确认属于 A。B 目前只派生交付、评审、父节点确认，以及调用方显式给出的确认事实。
 
+### 11.1 仍由 B 决定、本次保持现状
+
+下列行为已经写进代码或明确不建模。后续若要改，先改本文再改规则。
+
+1. 开放轮次把名单缩到只剩已通过的人时，当前轮次立即通过。本次不改成「不能靠缩名单结束评审」。
+2. 同一开放轮次里，通过之后不能改成退回，返回 `conflicting-ballot`。本次不增加改票。
+3. 子流程返回后等待父节点确认，仍是 `ready` 加上 `awaitingParentConfirmation`，不新增节点状态。
+4. 表 6 的「手动开始」和「保留阻塞原因」还没有落在 `NodeCommandState` 上。阻塞原因仍由调用方放在执行报告里。
+5. 零字节、字段完整且上传已完成的文件，当前仍算有效交付。
+6. 需修改之后若要关闭评审，不通过 `submit-artifact` 且 `reviewRequired: false` 表达。那次提交固定返回 `illegal-transition`。单独的授权命令留给后续工作包。
+
 在上述项对齐前，WP03–WP05 应依赖本文的类型和函数，不要在适配层或客户端复制一套节点状态、评审结局或版本号。
 
 ## 12. 已知限制
@@ -239,7 +261,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 - 没有数据库、接口、文件存储、执行器或界面流程。契约测试只证明纯函数，不证明 AC 的端到端场景。
 - 幂等记录和事件日志都由调用方保存。本层不提供跨进程去重。
 - 领域层不读取时钟，因此超时投票必须由调用方先变成 `timed-out` 再传入。
-- 反馈批次只检查能否应用，不生成方案，也不创建新产物。
+- 反馈批次只检查能否应用。方案由调用方放进可选的 `proposal`，领域层不生成方案，也不创建新产物。
 - 待办确认事项里，除父节点返回外，其余确认事实要由后续工作包放入输入。
 - 文件大小、预览器和真实权限服务都还没有。`accessPolicyId` 只是引用。
 - 模拟执行与真实执行的区分属于后续运行适配，不在本次结果类型里伪造成功。

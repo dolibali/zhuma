@@ -1,4 +1,9 @@
-import { transitionNode, type NodeStatus, type NodeTransitionResult } from './node-status.js';
+import {
+  transitionNode,
+  type NodeStatus,
+  type NodeTransition,
+  type NodeTransitionResult,
+} from './node-status.js';
 
 export const REVIEW_ACTIONS = ['approve', 'request-changes', 'comment'] as const;
 export type ReviewAction = (typeof REVIEW_ACTIONS)[number];
@@ -22,7 +27,12 @@ export interface ReviewRound {
   readonly artifactVersionId: string;
   readonly reviewerIds: readonly string[];
   readonly ballots: readonly ReviewBallot[];
-  readonly status: 'open' | 'approved' | 'changes-requested';
+  readonly status: 'open' | 'approved' | 'changes-requested' | 'voided';
+}
+
+export interface CitedComment {
+  readonly id: string;
+  readonly status: 'open' | 'resolved';
 }
 
 export type ReviewEvaluation =
@@ -38,9 +48,12 @@ export type ReviewEvaluation =
 export type BallotRejectionCode =
   | 'stale-round'
   | 'stale-version'
+  | 'voided-round'
   | 'round-closed'
+  | 'actor-mismatch'
   | 'not-assigned-reviewer'
   | 'empty-request-changes'
+  | 'comment-not-unresolved'
   | 'non-passing-availability'
   | 'conflicting-ballot';
 
@@ -64,9 +77,16 @@ function trimmed(value: string | undefined): string {
   return value?.trim() ?? '';
 }
 
-function hasOpinion(ballot: Pick<ReviewBallot, 'comment' | 'unresolvedCommentIds'>): boolean {
-  if (trimmed(ballot.comment).length > 0) return true;
-  return (ballot.unresolvedCommentIds ?? []).some((id) => trimmed(id).length > 0);
+function citedUnresolved(
+  ids: readonly string[] | undefined,
+  comments: readonly CitedComment[],
+): 'none' | 'valid' | 'invalid' {
+  const meaningful = (ids ?? []).map((id) => id.trim()).filter((id) => id.length > 0);
+  if (meaningful.length === 0) return 'none';
+  const openIds = new Set(
+    comments.filter((comment) => comment.status === 'open').map((comment) => comment.id),
+  );
+  return meaningful.every((id) => openIds.has(id)) ? 'valid' : 'invalid';
 }
 
 function countsAsApproval(ballot: ReviewBallot): boolean {
@@ -77,7 +97,9 @@ function countsAsApproval(ballot: ReviewBallot): boolean {
 }
 
 function countsAsRejection(ballot: ReviewBallot): boolean {
-  return ballot.action === 'request-changes' && hasOpinion(ballot);
+  if (ballot.action !== 'request-changes') return false;
+  if (trimmed(ballot.comment).length > 0) return true;
+  return (ballot.unresolvedCommentIds ?? []).some((id) => trimmed(id).length > 0);
 }
 
 function boundBallots(
@@ -179,15 +201,26 @@ function withStatus(round: ReviewRound, evaluation: ReviewEvaluation): ReviewRou
  * Record one reviewer's action on the open round.
  * Votes aimed at another round or artifact version are refused and not stored.
  */
-export function submitBallot(round: ReviewRound, ballot: ReviewBallot): BallotDecision {
+export function submitBallot(
+  round: ReviewRound,
+  ballot: ReviewBallot,
+  actorId: string,
+  comments: readonly CitedComment[] = [],
+): BallotDecision {
   if (ballot.roundId !== round.id) return { ok: false, code: 'stale-round' };
   if (ballot.artifactVersionId !== round.artifactVersionId)
     return { ok: false, code: 'stale-version' };
+  if (round.status === 'voided') return { ok: false, code: 'voided-round' };
   if (round.status !== 'open') return { ok: false, code: 'round-closed' };
+  if (blank(actorId) || actorId !== ballot.reviewerId) return { ok: false, code: 'actor-mismatch' };
   if (!round.reviewerIds.includes(ballot.reviewerId))
     return { ok: false, code: 'not-assigned-reviewer' };
-  if (ballot.action === 'request-changes' && !hasOpinion(ballot)) {
-    return { ok: false, code: 'empty-request-changes' };
+  if (ballot.action === 'request-changes') {
+    const citation = citedUnresolved(ballot.unresolvedCommentIds, comments);
+    if (citation === 'invalid') return { ok: false, code: 'comment-not-unresolved' };
+    if (trimmed(ballot.comment).length === 0 && citation !== 'valid') {
+      return { ok: false, code: 'empty-request-changes' };
+    }
   }
   if (
     ballot.action === 'approve' &&
@@ -282,21 +315,89 @@ export function interpretAgentReview(
   return { ok: true, action: output.conclusion, rationale };
 }
 
-/** Map a settled review onto the node machine. Pending reviews do not advance the node. */
+const ROUND_VOIDING_TRANSITIONS = new Set<NodeTransition['type']>([
+  'cancel-confirmed',
+  'restart',
+  'submit-artifact',
+]);
+
+/** An open round becomes voided. Closed rounds stay closed so their record remains. */
+export function voidOpenRound(round: ReviewRound): ReviewRound {
+  if (round.status !== 'open') return round;
+  return { ...round, status: 'voided' };
+}
+
+/**
+ * Cancelling, restarting, or submitting a new version voids the open round.
+ * A rejected node transition leaves the round untouched.
+ */
+export function reviewRoundAfterNodeTransition(
+  round: ReviewRound,
+  result: NodeTransitionResult,
+  transition: NodeTransition,
+): ReviewRound {
+  if (!result.ok || !ROUND_VOIDING_TRANSITIONS.has(transition.type)) return round;
+  return voidOpenRound(round);
+}
+
+export type ReviewApplicationRejection =
+  'stale-round' | 'stale-version' | 'voided-round' | 'unbound-evaluation';
+
+function evaluationMatchesRound(
+  round: Pick<ReviewRound, 'status'>,
+  evaluation: ReviewEvaluation,
+): boolean {
+  if (evaluation.outcome === 'approved') return round.status === 'approved';
+  if (evaluation.outcome === 'changes-requested') return round.status === 'changes-requested';
+  return round.status === 'open';
+}
+
+/**
+ * Apply a review result only when it belongs to the node's current, non-voided round.
+ * Pending and invalid policies do not advance the node.
+ */
 export function applyReviewToNode(
   status: NodeStatus,
-  evaluation: ReviewEvaluation,
-): NodeTransitionResult {
-  if (evaluation.outcome === 'pending' || evaluation.outcome === 'invalid-policy') {
+  input: {
+    readonly evaluation: ReviewEvaluation;
+    readonly round: Pick<ReviewRound, 'id' | 'artifactVersionId' | 'status'>;
+    readonly currentRoundId: string;
+    readonly currentArtifactVersionId: string;
+  },
+): NodeTransitionResult | { readonly ok: false; readonly code: ReviewApplicationRejection } {
+  if (input.round.status === 'voided') return { ok: false, code: 'voided-round' };
+  if (input.round.id !== input.currentRoundId) return { ok: false, code: 'stale-round' };
+  if (input.round.artifactVersionId !== input.currentArtifactVersionId) {
+    return { ok: false, code: 'stale-version' };
+  }
+  if (!evaluationMatchesRound(input.round, input.evaluation)) {
+    return { ok: false, code: 'unbound-evaluation' };
+  }
+  if (input.evaluation.outcome === 'pending' || input.evaluation.outcome === 'invalid-policy') {
     if (status !== 'in-review') {
       return { ok: false, code: 'illegal-transition', from: status, transition: 'review-resolved' };
     }
     return { ok: true, from: status, to: status, changed: false, effects: Object.freeze([]) };
   }
-  return transitionNode(status, {
-    type: 'review-resolved',
-    outcome: evaluation.outcome === 'approved' ? 'approved' : 'changes-requested',
-  });
+  if (status !== 'in-review') {
+    return { ok: false, code: 'illegal-transition', from: status, transition: 'review-resolved' };
+  }
+  if (input.evaluation.outcome === 'approved') {
+    return {
+      ok: true,
+      from: status,
+      to: 'completed',
+      changed: true,
+      effects: Object.freeze(['accept-handoff']),
+    };
+  }
+  return {
+    ok: true,
+    from: status,
+    to: 'needs-revision',
+    changed: true,
+    effects: Object.freeze(['block-downstream']),
+  };
 }
 
 /** Review cannot be required with an empty roster. The node does not move in that case. */

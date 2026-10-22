@@ -44,10 +44,14 @@ test('inbox labels distinguish delivery, review, and confirmation', () => {
     nodeId: 'node-1',
     taskId: 'task-1',
     reason: 'assignee-delivery',
+    action: 'submit',
   };
   const before = structuredClone(item);
   const view = createInboxItemView(item);
   assert.deepEqual(item, before);
   assert.equal(view.kindLabel, '待我交付');
   assert.equal(view.reason, 'assignee-delivery');
+  assert.equal(view.action, 'submit');
+  assert.equal(view.actionLabel, '提交产物');
+  assert.equal('detail' in view, false);
 });

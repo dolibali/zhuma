@@ -146,9 +146,11 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
       if (from === 'ready' || from === 'needs-revision') return done(from, 'running', []);
       return illegal(from, transition.type);
     case 'submit-artifact':
-      if (from !== 'ready' && from !== 'running' && from !== 'needs-revision') {
-        return illegal(from, transition.type);
+      if (from === 'needs-revision') {
+        if (!transition.reviewRequired) return illegal(from, transition.type);
+        return done(from, 'in-review', ['open-review', 'block-downstream']);
       }
+      if (from !== 'ready' && from !== 'running') return illegal(from, transition.type);
       return transition.reviewRequired
         ? done(from, 'in-review', ['open-review', 'block-downstream'])
         : done(from, 'completed', ['accept-handoff']);
@@ -165,10 +167,8 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
       if (from !== 'child-workflow') return illegal(from, transition.type);
       return done(from, 'ready', ['await-parent-submit']);
     case 'review-resolved':
-      if (from !== 'in-review') return illegal(from, transition.type);
-      return transition.outcome === 'approved'
-        ? done(from, 'completed', ['accept-handoff'])
-        : done(from, 'needs-revision', ['block-downstream']);
+      // Settlement comes only from applyReviewToNode, which checks the current round.
+      return illegal(from, transition.type);
     case 'execution-failed':
       if (from !== 'running' && from !== 'waiting-for-input') return illegal(from, transition.type);
       return done(from, 'failed', ['record-failure', 'block-downstream']);

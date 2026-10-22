@@ -126,6 +126,24 @@ test('rejects a reused idempotency key whose payload differs', () => {
   assert.equal(mismatch.decision.status, 'idempotency-mismatch');
   assert.equal(mismatch.version, 1);
   assert.equal(calls, 0);
+
+  const otherActor = decideCommand({
+    envelope: {
+      idempotencyKey: 'same',
+      actorId: 'human-2',
+      objectId: 'node-1',
+      expectedVersion: 1,
+      payload: { text: '一版' },
+    },
+    currentVersion: 1,
+    stored: first.stored,
+    apply: () => {
+      calls += 1;
+      return { disposition: 'accept', result: { versionId: 'art-2' } };
+    },
+  });
+  assert.equal(otherActor.decision.status, 'idempotency-mismatch');
+  assert.equal(calls, 0);
 });
 
 test('appends an event only for an accepted command and supports incremental recovery', () => {
@@ -152,6 +170,21 @@ test('appends an event only for an accepted command and supports incremental rec
   assert.equal(rewound.code, 'non-monotonic-sequence');
   const invalid = appendDomainEvent(second.log, { ...event('evt-3', 4), occurredAt: 'tomorrow' });
   assert.equal(invalid.code, 'invalid-event');
+  const impossible = appendDomainEvent(second.log, {
+    ...event('evt-3', 4),
+    occurredAt: '2026-99-99T99:99:99',
+  });
+  assert.equal(impossible.code, 'invalid-event');
+  const missingDay = appendDomainEvent(second.log, {
+    ...event('evt-3', 4),
+    occurredAt: '2026-02-29T00:00:00Z',
+  });
+  assert.equal(missingDay.code, 'invalid-event');
+  const zoned = appendDomainEvent(second.log, {
+    ...event('evt-3', 4),
+    occurredAt: '2024-02-29T23:59:59+08:00',
+  });
+  assert.equal(zoned.ok, true);
 
   const recovered = eventsAfter(second.log, { sequence: 1, seenEventIds: [] });
   assert.deepEqual(
