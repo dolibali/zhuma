@@ -244,7 +244,7 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
  * Read one frozen snapshot.
  * `id` on the snapshot is the AppliedPlan.id (`VersionedRef.version`).
  * `assetId` is the asset (`VersionedRef.id`). Both must match.
- * The result is a copy, so a caller cannot edit the stored snapshot.
+ * The result is a deep copy, so a caller cannot edit the stored snapshot.
  * This is not an asset-version store.
  */
 export function readVersionedSnapshot<T extends { readonly assetId: string; readonly id: string }>(
@@ -255,7 +255,7 @@ export function readVersionedSnapshot<T extends { readonly assetId: string; read
     (snapshot) => snapshot.assetId === ref.id && snapshot.id === ref.version,
   );
   if (found === undefined) return undefined;
-  return { ...found };
+  return structuredClone(found);
 }
 
 /**

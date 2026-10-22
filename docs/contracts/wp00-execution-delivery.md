@@ -57,7 +57,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 
 `NodeHandoff.revision` 是切出这份交接时的已应用计划修订号。它不是节点命令版本，也不是 A 的草稿并发版本。
 
-`VersionedRef.version` 等于对应的 `AppliedPlan.id`。它是计划内容快照的 id，不是需求第 12 节里的资产版本号，也不是 Skill 的版本号。资产 id 和这份快照 id 一起定位冻结内容。以后若建立独立的资产版本库，按显式迁移处理；本契约不另建版本库。节点的 `inputNote` 与版本化产物引用保持分开。`readVersionedSnapshot` 同时匹配资产 id（`VersionedRef.id`，快照上的 `assetId`）和快照 id（`VersionedRef.version`，快照上的 `id`，即 `AppliedPlan.id`）。只命中其中一个，或没有这条组合时，返回 `undefined`。命中时返回该条目的副本，调用方修改副本不会改目录里的快照。同一份已应用计划下的专家和技能是不同资产，不能互相读到对方的快照。目录或清单随后改变、或追加了新的快照 id 时，原来的资产 id 加原来的快照 id 仍读到原来的内容。
+`VersionedRef.version` 等于对应的 `AppliedPlan.id`。它是计划内容快照的 id，不是需求第 12 节里的资产版本号，也不是 Skill 的版本号。资产 id 和这份快照 id 一起定位冻结内容。以后若建立独立的资产版本库，按显式迁移处理；本契约不另建版本库。节点的 `inputNote` 与版本化产物引用保持分开。`readVersionedSnapshot` 同时匹配资产 id（`VersionedRef.id`，快照上的 `assetId`）和快照 id（`VersionedRef.version`，快照上的 `id`，即 `AppliedPlan.id`）。只命中其中一个，或没有这条组合时，返回 `undefined`。命中时返回该条目的深拷贝，调用方修改副本上的嵌套对象或数组也不会改目录里的快照。同一份已应用计划下的专家和技能是不同资产，不能互相读到对方的快照。目录或清单随后改变、或追加了新的快照 id 时，原来的资产 id 加原来的快照 id 仍读到原来的内容。
 
 `NodeExecutionReport` 是 B 交回 A 的边界：节点状态、阻塞原因、已接受产物版本、有效运行、评审结局、上游受影响标记。节点状态以 `NodeExecutionReport.status` 为准。A 只投影这份报告，并计算任务汇总。B 不计算任务汇总，也不渲染编排。
 
@@ -204,7 +204,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 - `comment` 只保留意见，不占通过票。
 - 没有投票视为未回复，留在 `outstandingReviewerIds`，轮次保持 `pending`，节点保持 `in-review`。
 - `availability` 为 `timed-out` 或 `unavailable` 的 `approve` 直接拒绝，代码 `non-passing-availability`，不能算通过。
-- 评审人名单为空是 `invalid-policy`，不能被汇总成通过。名单里出现非字符串 id 也是 `invalid-policy`，`aggregateReview` 不抛出。
+- 评审人名单为空是 `invalid-policy`，不能被汇总成通过。名单里出现非字符串 id 也是 `invalid-policy`，原因是 `invalid-reviewer-id`，`aggregateReview` 不抛出。
 - 退回必须有意见正文，或引用至少一条未解决评论。引用的每条标识都要出现在调用方给出的评论快照里，且状态为 `open`。快照若带 `versionId` 或 `targetId`，它们必须等于本轮产物版本，否则不算属于这一轮。缺失、已解决或不属于本轮返回 `comment-not-unresolved`，整张票不写入。只写正文、不引用评论，仍然是有效退回。空退回返回 `empty-request-changes`。
 - 已解决评论不进入汇总。把评论标成已解决不会产生通过票。
 - 投票人必须就是当前 actor。`actorId` 为空，或与 `ballot.reviewerId` 不同，返回 `actor-mismatch`，票不写入。

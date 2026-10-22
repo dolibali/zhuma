@@ -201,6 +201,23 @@ test('an old snapshot stays after the catalog changes', () => {
   );
 });
 
+test('a snapshot copy keeps nested content out of the catalog', () => {
+  const stored = {
+    assetId: 'expert-1',
+    id: 'applied-plan-1',
+    content: { text: 'original' },
+    tags: ['kept'],
+  };
+  const catalog = [stored];
+  const read = readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, catalog);
+  read.content.text = 'changed';
+  read.tags.push('x');
+  assert.equal(stored.content.text, 'original');
+  assert.deepEqual(stored.tags, ['kept']);
+  assert.equal(catalog[0].content.text, 'original');
+  assert.deepEqual(catalog[0].tags, ['kept']);
+});
+
 test('cancel is not shown as stopped before the receipt', () => {
   let state = { status: 'draft', version: 0, upstreamAffected: false, stored: [] };
   state = applyNodeTransitionCommand(

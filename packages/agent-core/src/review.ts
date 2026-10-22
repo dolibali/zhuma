@@ -52,7 +52,7 @@ export type ReviewEvaluation =
   | { readonly outcome: 'approved'; readonly approvedBy: readonly string[] }
   | {
       readonly outcome: 'invalid-policy';
-      readonly reason: 'review-requires-reviewers' | 'duplicate-reviewer';
+      readonly reason: 'review-requires-reviewers' | 'duplicate-reviewer' | 'invalid-reviewer-id';
     };
 
 export type BallotRejectionCode =
@@ -156,7 +156,7 @@ export function aggregateReview(
     return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
   }
   if (round.reviewerIds.some((id) => typeof id !== 'string')) {
-    return { outcome: 'invalid-policy', reason: 'duplicate-reviewer' };
+    return { outcome: 'invalid-policy', reason: 'invalid-reviewer-id' };
   }
   if (duplicateReviewer(round.reviewerIds) || round.reviewerIds.some((id) => blank(id))) {
     return { outcome: 'invalid-policy', reason: 'duplicate-reviewer' };

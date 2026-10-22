@@ -450,7 +450,7 @@ test('a non-string reviewer id is rejected and does not throw', () => {
     ballots: [],
   });
   assert.equal(evaluation.outcome, 'invalid-policy');
-  assert.equal(evaluation.reason, 'duplicate-reviewer');
+  assert.equal(evaluation.reason, 'invalid-reviewer-id');
   const state = { ...initialNodeCommandState(), status: 'in-review', version: 4 };
   const settled = applyReviewSettlementCommand(
     state,
