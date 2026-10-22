@@ -17,5 +17,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.contract.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
   }
 }

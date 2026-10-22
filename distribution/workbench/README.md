@@ -1,7 +1,29 @@
 # 工作台组合发行
 
-这里将维护本产品的 DSH Bundle／Profile、Host 和 Client 插件装载及默认资源。
+工作台使用 `@zhuma` 自有领域、Host 和 Client 代码，装载于固定版本 DSH 官方 Web/Desktop Bundle。
 
-当前目录是发行边界说明，**不是已可安装的 Bundle**。真实插件入口完成并验证后，再按锁定版本生成 `package.json` 的 `dsh.bundle` 元数据、依赖和 `cordis.patch.yml`，避免提交看似可运行但接口虚构的配置。
+## 开发
 
-最终安装必须来自固定版本的打包产物，不依赖开发机器的 Workspace symlink、绝对路径或参考仓库。未配置外部执行器不影响将来的 DSH 原生路径，但不得在已选择码道的任务中静默切换。
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm check
+pnpm desktop:prepare
+pnpm desktop:dev
+```
+
+`desktop:dev` 在隔离的官方构建树完成上游依赖和编译，自有插件从源码构建后自动安装。已有构建树只刷新插件可运行 `pnpm workbench:stage`；Host 代码更新后需要重启开发进程，客户端热更新不能证明 Host 已换代。没有准备构建树时该命令失败，不隐式创建第二套运行时。
+
+组合补丁隐藏定时任务、插件市场和账号设置入口，保留对话、模型设置与执行能力。配置由 `cordis.patch.yml` 管理；品牌和原有上游必要补丁仍由桌面发行层维护。
+
+## 边界
+
+- `.build/workbench` 是可再生的 Host/Client 插件产物；安装脚本只修改 `.build/desktop/deepseek-harness` 的 Web Bundle，不修改 `upstream/deepseek-harness`。
+- 浏览器 React 由 DSH 的模块加载器提供，避免加载第二个 React。画布使用 React Flow。
+- HTTP 接入采用 Connection 公开的 exact Fetch routes，路径 `/api/zhuma/{snapshot,command,plan}`，使用官方 RPC 请求/响应信封。认证、Host/Origin 校验和 owner-only 限制由 Connection 执行。已有 `/api` RPC 拦截器保留给官方网关。
+- 数据保存在当前 DSH home 的 `zhuma_workbench` storage domain，关闭重开继续读取。真实凭据继续由 DSH 的凭据服务管理，不在工作台目录模型中保存。
+- 已确认计划是不可变快照；任务草稿和执行端状态分开。A/B 接口方案见 [交接提案](../../docs/ab-handoff-proposal.md)。
+- `desktop:package:mac` 已挂接插件构建与组合，但本批没有生成或安装新的 macOS 包；开发环境加载成功不替代安装包验收。
+
+## 验证
+
+`pnpm check` 不调用付费模型。规划测试使用明确命名的契约 fixture，覆盖非法引用、循环、缺失输出、一次修复、取消、版本冲突和幂等。真实模型和浏览器结果另记在 [验证记录](../../docs/workbench-validation.md)。

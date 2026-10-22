@@ -42,3 +42,9 @@
 根 Workspace 不包含上游。上游源码仅作为固定构建输入，使用其自己的 pnpm 锁文件。桌面源码不复制到自有 `apps/desktop/`；品牌和必要补丁在临时构建树应用，不污染上游检出。
 
 详细决策见 [ADR-0001](decisions/0001-repository-layout.md)。
+
+## 组织与编排首批实现
+
+`agent-core/workbench` 与 `planning` 保存可序列化目录、草稿、确认快照和规划协议。`dsh-adapter/workbench-service` 串行处理带版本/幂等键的持久化命令；`workbench-plugin` 通过 DSH Connection、storageDomain 和 llm 接入真实 Host。`client/workbench` 仅调用公共 RPC 并渲染工作流，不导入 Host。
+
+当前是本地 Host owner 模式；已确认计划独立版本化，不能据此宣称多人权限或执行调度已完成。子任务容器方向及 A/B 分工见 [交接方案](ab-handoff-proposal.md)；当前同任务嵌套只用于编辑草稿，不冻结为执行树模型。

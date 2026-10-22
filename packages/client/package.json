@@ -5,6 +5,10 @@
   "license": "UNLICENSED",
   "type": "module",
   "exports": {
+    "./workbench/ui": {
+      "types": "./dist/workbench/components.d.ts",
+      "import": "./dist/workbench/components.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -19,6 +23,19 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@zhuma/agent-core": "workspace:*"
+    "@xyflow/react": "12.11.1",
+    "@zhuma/agent-core": "workspace:*",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-theme": "0.2.1-rc.2",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7"
   }
 }

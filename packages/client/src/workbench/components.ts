@@ -1,0 +1,11 @@
+/** Shared client-only UI surface. Theme CSS is installed once by the workbench plugin. */
+export {
+  Modal,
+  Field,
+  MemberPicker,
+  ParticipantSelect,
+  MultiSelect,
+  ExpandableText,
+} from './controls.js';
+export { Appearance, type AppearancePreference, type AppearanceStore } from './Appearance.js';
+export { Button } from './Button.js';

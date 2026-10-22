@@ -19,7 +19,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.2",
     "@zhuma/agent-core": "workspace:*",
-    "@zhuma/context": "workspace:*"
+    "@zhuma/context": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-agent-default-model": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.1-rc.2"
   }
 }

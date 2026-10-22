@@ -3,4 +3,5 @@ packages:
 
 # The upstream checkout has its own workspace, lockfile and package manager.
 # Do not add upstream/** or distribution/** to these globs.
-allowBuilds: {}
+allowBuilds:
+  esbuild: false

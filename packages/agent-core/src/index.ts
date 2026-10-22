@@ -8,6 +8,9 @@ export type {
   PlanIssue,
 } from './types.js';
 export { validatePlan } from './plan.js';
+export * from './workbench.js';
+export * from './planning.js';
+export { createNodeHandoffs } from './applied-handoff.js';
 
 export type {
   NodeStatus,
