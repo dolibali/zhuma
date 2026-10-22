@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assigneeUsesAgentRuntime, readNodeHandoff } from '@zhuma/agent-core';
+import {
+  assigneeUsesAgentRuntime,
+  readNodeHandoff,
+  readVersionedSnapshot,
+} from '@zhuma/agent-core';
 
 const handoff = (assignee, extra = {}) => ({
   nodeId: 'node-1',
@@ -57,4 +61,118 @@ test('a human handoff may omit expertRef and an expert handoff may not', () => {
   const agent = readNodeHandoff(handoff({ id: 'run-1', kind: 'agent' }));
   assert.equal(agent.ok, false);
   assert.equal(agent.code, 'agent-not-identity');
+
+  for (const expertRef of [
+    { id: 'expert-1' },
+    { id: 'expert-1', version: null },
+    { id: 'expert-1', version: 1 },
+  ]) {
+    const malformed = readNodeHandoff(handoff({ id: 'expert-1', kind: 'expert' }, { expertRef }));
+    assert.equal(malformed.ok, false);
+    assert.equal(malformed.code, 'invalid-handoff');
+  }
+
+  const leaked = readNodeHandoff(
+    handoff(
+      { id: 'human-1', kind: 'human' },
+      {
+        skillRefs: [{ id: 'skill-1', version: 'applied-plan-1', token: 'secret' }],
+        mcpRefs: [{ id: 'mcp-1', version: 'applied-plan-1', token: 'secret' }],
+      },
+    ),
+  );
+  assert.equal(leaked.ok, true);
+  assert.deepEqual(leaked.handoff.skillRefs, [{ id: 'skill-1', version: 'applied-plan-1' }]);
+  assert.deepEqual(leaked.handoff.mcpRefs, [{ id: 'mcp-1', version: 'applied-plan-1' }]);
+  assert.equal(Object.hasOwn(leaked.handoff.skillRefs[0], 'token'), false);
+  assert.equal(Object.hasOwn(leaked.handoff.mcpRefs[0], 'token'), false);
+});
+
+test('context input refs keep their whitelist fields and drop extras', () => {
+  const rebuilt = readNodeHandoff(
+    handoff(
+      { id: 'human-1', kind: 'human' },
+      {
+        inputRefs: [
+          {
+            sourceNodeId: 'upstream',
+            artifactVersionId: 'artifact-v2',
+            contextPackId: 'context-1',
+            token: 'secret',
+            id: 'a',
+            version: 't-v1',
+          },
+        ],
+      },
+    ),
+  );
+  assert.equal(rebuilt.ok, true);
+  assert.deepEqual(rebuilt.handoff.inputRefs, [
+    {
+      sourceNodeId: 'upstream',
+      artifactVersionId: 'artifact-v2',
+      contextPackId: 'context-1',
+    },
+  ]);
+  assert.equal(Object.hasOwn(rebuilt.handoff.inputRefs[0], 'token'), false);
+  assert.equal(Object.hasOwn(rebuilt.handoff.inputRefs[0], 'id'), false);
+  assert.equal(Object.hasOwn(rebuilt.handoff.inputRefs[0], 'version'), false);
+
+  const partial = readNodeHandoff(
+    handoff(
+      { id: 'human-1', kind: 'human' },
+      { inputRefs: [{ sourceNodeId: 'node-0', artifactVersionId: 'art-1' }] },
+    ),
+  );
+  assert.equal(partial.ok, true);
+  assert.deepEqual(partial.handoff.inputRefs, [
+    { sourceNodeId: 'node-0', artifactVersionId: 'art-1' },
+  ]);
+});
+
+test('invalid context input refs are rejected without throwing', () => {
+  for (const inputRefs of [
+    null,
+    [null],
+    ['upstream'],
+    [[]],
+    [{}],
+    [{ token: 'secret' }],
+    [{ id: 'artifact-1', version: 'applied-plan-1' }],
+    [{ sourceNodeId: 1, artifactVersionId: 'art-1' }],
+    [{ sourceNodeId: 'node-0', artifactVersionId: null }],
+  ]) {
+    const invalid = readNodeHandoff(handoff({ id: 'human-1', kind: 'human' }, { inputRefs }));
+    assert.equal(invalid.ok, false, JSON.stringify(inputRefs));
+    assert.equal(invalid.code, 'invalid-handoff');
+  }
+});
+
+test('null handoff and snapshot arguments are rejected without throwing', () => {
+  assert.equal(readNodeHandoff(null).code, 'invalid-handoff');
+  assert.equal(
+    readNodeHandoff({ ...handoff({ id: 'human-1', kind: 'human' }), assignee: null }).code,
+    'invalid-handoff',
+  );
+  assert.equal(readVersionedSnapshot(null, []), undefined);
+  assert.equal(
+    readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, null),
+    undefined,
+  );
+});
+
+test('an uncloneable snapshot reads as undefined', () => {
+  const catalog = [
+    {
+      assetId: 'expert-1',
+      id: 'applied-plan-1',
+      work() {
+        return 'no';
+      },
+    },
+  ];
+  assert.equal(
+    readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, catalog),
+    undefined,
+  );
 });

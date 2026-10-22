@@ -127,6 +127,9 @@ function illegal(from: NodeStatus, transition: NodeTransition['type']): NodeTran
 
 /** Pure node transition. Does not read a clock, store, or executor. */
 export function transitionNode(from: NodeStatus, transition: NodeTransition): NodeTransitionResult {
+  if (transition == null || typeof transition !== 'object') {
+    return illegal(from, 'unknown' as NodeTransition['type']);
+  }
   switch (transition.type) {
     case 'plan-started':
       if (from !== 'draft') return illegal(from, transition.type);
@@ -219,7 +222,9 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
       return done(from, 'needs-revision', ['block-downstream']);
     default: {
       const unexpected: never = transition;
-      throw new Error(`Unknown node transition: ${JSON.stringify(unexpected)}`);
+      const recorded = unexpected as { readonly type?: unknown };
+      const name = typeof recorded.type === 'string' ? recorded.type : 'unknown';
+      return illegal(from, name as NodeTransition['type']);
     }
   }
 }
@@ -265,12 +270,40 @@ export function initialNodeCommandState(): NodeCommandState {
   return { status: 'draft', version: 0, upstreamAffected: false, stored: [] };
 }
 
-/** Entry the command layer will trust. A needs-revision status is itself that entry. */
+const ENTRY_REQUIRED: readonly NodeStatus[] = [
+  'blocked',
+  'ready',
+  'running',
+  'waiting-for-input',
+  'child-workflow',
+  'in-review',
+  'failed',
+  'cancelled',
+];
+
+/**
+ * Statuses that have left draft must already carry an entry.
+ * `needs-revision` is itself the record. `draft` and `completed` are not.
+ * A missing record is not repaired by the next command.
+ */
+function entryIsConsistent(state: NodeCommandState): boolean {
+  if (
+    state.status === 'draft' ||
+    state.status === 'completed' ||
+    state.status === 'needs-revision'
+  ) {
+    return true;
+  }
+  if (!ENTRY_REQUIRED.includes(state.status)) return true;
+  return state.entryStatus === 'ready' || state.entryStatus === 'needs-revision';
+}
+
+/** Entry the command layer will trust. `ready` counts only when it was persisted. */
 function recordedEntry(state: NodeCommandState): NodeEntryStatus | undefined {
   if (state.entryStatus === 'needs-revision' || state.status === 'needs-revision') {
     return 'needs-revision';
   }
-  if (state.entryStatus === 'ready' || state.status === 'ready') return 'ready';
+  if (state.entryStatus === 'ready') return 'ready';
   return undefined;
 }
 
@@ -283,27 +316,16 @@ function nextEntryStatus(
   transition: NodeTransition,
   to: NodeStatus,
 ): NodeEntryStatus | undefined {
-  if (state.entryStatus === 'needs-revision' || state.status === 'needs-revision') {
+  if (to === 'completed' || to === 'draft') return undefined;
+  if (
+    to === 'needs-revision' ||
+    state.status === 'needs-revision' ||
+    state.entryStatus === 'needs-revision'
+  ) {
     return 'needs-revision';
   }
-  if (to === 'needs-revision') return 'needs-revision';
-  if (to === 'completed' || to === 'draft' || to === 'blocked') return undefined;
-  if (
-    (transition.type === 'execution-acknowledged' ||
-      transition.type === 'child-workflow-started') &&
-    state.status === 'ready'
-  ) {
-    return 'ready';
-  }
-  if (
-    transition.type === 'plan-started' ||
-    (transition.type === 'dependencies-changed' && to === 'ready')
-  ) {
-    return 'ready';
-  }
-  if (transition.type === 'retry' || transition.type === 'restart') return state.entryStatus;
-  if (state.entryStatus !== undefined) return state.entryStatus;
-  if (state.status === 'ready') return 'ready';
+  if (state.status === 'draft' && transition.type === 'plan-started') return 'ready';
+  if (state.entryStatus === 'ready') return 'ready';
   return undefined;
 }
 
@@ -334,6 +356,9 @@ function prepareTransition(
     const entry = recordedEntry(state);
     const inFlight = state.status === 'running' || state.status === 'waiting-for-input';
     if (inFlight && entry === undefined) return { ok: false, code: 'illegal-transition' };
+    if (entry === undefined && transition.reviewRequired !== true) {
+      return { ok: false, code: 'illegal-transition' };
+    }
     if (
       transition.entryStatus !== undefined &&
       entry !== undefined &&
@@ -370,15 +395,35 @@ function prepareTransition(
  * accepted result and does not move the node again. Conflicts and illegal
  * transitions leave the version unchanged.
  */
+function rejectedCommand(
+  state: NodeCommandState | null,
+  code: string,
+): { readonly state: NodeCommandState; readonly decision: CommandDecision<AppliedNodeTransition> } {
+  const kept = state != null && typeof state === 'object' ? state : initialNodeCommandState();
+  const version = typeof kept.version === 'number' ? kept.version : 0;
+  return { state: kept, decision: { status: 'rejected', code, version } };
+}
+
 export function applyNodeTransitionCommand(
   state: NodeCommandState,
   envelope: CommandEnvelope<NodeTransition>,
 ): { readonly state: NodeCommandState; readonly decision: CommandDecision<AppliedNodeTransition> } {
+  if (
+    state == null ||
+    typeof state !== 'object' ||
+    envelope == null ||
+    typeof envelope !== 'object' ||
+    envelope.payload == null ||
+    typeof envelope.payload !== 'object'
+  ) {
+    return rejectedCommand(state, 'illegal-transition');
+  }
   const outcome = decideCommand({
     envelope,
     currentVersion: state.version,
     stored: state.stored,
     apply: (_nextVersion) => {
+      if (!entryIsConsistent(state)) return { disposition: 'reject', code: 'illegal-transition' };
       const prepared = prepareTransition(state, envelope.payload);
       if (!prepared.ok) return { disposition: 'reject', code: prepared.code };
       const result = transitionNode(state.status, prepared.transition);

@@ -212,6 +212,18 @@ test('revision entry survives stop and restart, and a later submit must be revie
   assert.equal(retried.to, undefined);
 });
 
+test('an unknown transition type is illegal and does not throw', () => {
+  const named = transitionNode('running', { type: 'cancel-unconfirmed' });
+  assert.equal(named.ok, false);
+  assert.equal(named.code, 'illegal-transition');
+  assert.equal(named.from, 'running');
+  assert.equal(named.transition, 'cancel-unconfirmed');
+  const unnamed = transitionNode('running', { type: 1 });
+  assert.equal(unnamed.ok, false);
+  assert.equal(unnamed.code, 'illegal-transition');
+  assert.equal(unnamed.transition, 'unknown');
+});
+
 test('a returned child workflow waits for the parent submit and does not hand off', () => {
   const result = transitionNode('child-workflow', { type: 'child-workflow-returned' });
   assert.equal(result.to, 'ready');
@@ -236,6 +248,43 @@ test('unverified external signals never change a node', () => {
   for (const signal of UNVERIFIED_EXTERNAL_SIGNALS) {
     assert.equal(unverifiedSignalChangesNode(signal), false);
   }
+});
+
+test('null transition inputs are rejected and do not throw', () => {
+  const state = {
+    status: 'ready',
+    version: 3,
+    upstreamAffected: false,
+    stored: [],
+    entryStatus: 'ready',
+  };
+  const missingPayload = applyNodeTransitionCommand(state, {
+    idempotencyKey: 'null-payload',
+    actorId: 'human-1',
+    objectId: 'node-1',
+    expectedVersion: 3,
+    payload: null,
+  });
+  assert.equal(missingPayload.decision.status, 'rejected');
+  assert.equal(missingPayload.decision.code, 'illegal-transition');
+  assert.equal(missingPayload.state.status, 'ready');
+  assert.equal(missingPayload.state.version, 3);
+  const missingEnvelope = applyNodeTransitionCommand(state, null);
+  assert.equal(missingEnvelope.decision.code, 'illegal-transition');
+  assert.equal(missingEnvelope.state.status, 'ready');
+  assert.equal(missingEnvelope.state.version, 3);
+  const missingState = applyNodeTransitionCommand(null, {
+    idempotencyKey: 'null-state',
+    actorId: 'human-1',
+    objectId: 'node-1',
+    expectedVersion: 0,
+    payload: { type: 'plan-started', dependenciesSatisfied: true },
+  });
+  assert.equal(missingState.decision.status, 'rejected');
+  assert.equal(missingState.decision.code, 'illegal-transition');
+  const direct = transitionNode('running', null);
+  assert.equal(direct.ok, false);
+  assert.equal(direct.code, 'illegal-transition');
 });
 
 test('an accepted command is not applied twice and an illegal one does not bump the version', () => {

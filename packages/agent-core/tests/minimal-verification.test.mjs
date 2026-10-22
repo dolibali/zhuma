@@ -8,7 +8,6 @@ import {
   readVersionedSnapshot,
   requestNodeRun,
   transitionNode,
-  unverifiedSignalChangesNode,
 } from '@zhuma/agent-core';
 
 const envelope = (payload, idempotencyKey, expectedVersion) => ({
@@ -105,11 +104,13 @@ test('a human node does not need an expert or an engine', () => {
     mcpRefs: [],
     inputNote: '',
     expectedOutput: '',
+    engine: 'dsh',
   });
   assert.equal(human.ok, true);
   assert.equal(human.handoff.assignee.kind, 'human');
   assert.equal(human.handoff.expertRef, undefined);
-  assert.equal('engine' in human.handoff, false);
+  assert.equal(human.handoff.engine, undefined);
+  assert.equal(Object.hasOwn(human.handoff, 'engine'), false);
 });
 
 test('a child return does not skip the parent submit or review', () => {
@@ -117,7 +118,6 @@ test('a child return does not skip the parent submit or review', () => {
   assert.equal(returned.ok, true);
   assert.equal(returned.to, 'ready');
   assert.deepEqual(returned.effects, ['await-parent-submit']);
-  assert.equal(returned.effects.includes('accept-handoff'), false);
 
   let state = {
     status: 'ready',
@@ -136,54 +136,114 @@ test('a child return does not skip the parent submit or review', () => {
   );
   assert.equal(back.decision.status, 'applied');
   assert.equal(back.state.status, 'ready');
-  assert.equal(back.state.status === 'completed', false);
   assert.deepEqual(back.decision.result.effects, ['await-parent-submit']);
-  assert.equal(back.decision.result.effects.includes('accept-handoff'), false);
 });
 
 test('an old snapshot stays after the catalog changes', () => {
   const source = {
+    assetId: 'expert-1',
     id: 'applied-plan-1',
-    expertId: 'expert-1',
     goal: 'original goal',
     note: 'original note',
   };
   const published = Object.freeze({ ...source });
-  const ref = { id: source.expertId, version: published.id };
   source.goal = 'edited in the directory';
   source.note = 'edited note';
   const catalog = [
     published,
     Object.freeze({
+      assetId: 'expert-2',
+      id: 'applied-plan-1',
+      goal: 'expert two',
+      note: 'same plan',
+    }),
+    Object.freeze({
+      assetId: 'skill-x',
+      id: 'applied-plan-1',
+      goal: 'skill body',
+      note: 'same plan',
+    }),
+    Object.freeze({
+      assetId: 'expert-1',
       id: 'applied-plan-2',
-      expertId: 'expert-1',
       goal: 'replacement goal',
       note: 'replacement note',
     }),
   ];
-  const read = readVersionedSnapshot(ref, catalog);
+  const read = readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, catalog);
+  assert.equal(read.assetId, 'expert-1');
   assert.equal(read.id, 'applied-plan-1');
   assert.equal(read.goal, 'original goal');
   assert.equal(read.note, 'original note');
+  assert.notEqual(read, published);
+  read.goal = 'caller edit';
+  assert.equal(published.goal, 'original goal');
+  assert.equal(catalog[0].goal, 'original goal');
+  assert.equal(
+    readVersionedSnapshot({ id: 'expert-2', version: 'applied-plan-1' }, catalog).goal,
+    'expert two',
+  );
+  assert.equal(
+    readVersionedSnapshot({ id: 'skill-x', version: 'applied-plan-1' }, catalog).goal,
+    'skill body',
+  );
   assert.equal(
     readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-2' }, catalog).goal,
     'replacement goal',
   );
+  assert.equal(
+    readVersionedSnapshot({ id: 'expert-2', version: 'applied-plan-2' }, catalog),
+    undefined,
+  );
+  assert.equal(
+    readVersionedSnapshot({ id: 'missing-asset', version: 'applied-plan-1' }, catalog),
+    undefined,
+  );
+});
+
+test('a snapshot copy keeps nested content out of the catalog', () => {
+  const stored = {
+    assetId: 'expert-1',
+    id: 'applied-plan-1',
+    content: { text: 'original' },
+    tags: ['kept'],
+  };
+  const catalog = [stored];
+  const read = readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, catalog);
+  read.content.text = 'changed';
+  read.tags.push('x');
+  assert.equal(stored.content.text, 'original');
+  assert.deepEqual(stored.tags, ['kept']);
+  assert.equal(catalog[0].content.text, 'original');
+  assert.deepEqual(catalog[0].tags, ['kept']);
 });
 
 test('cancel is not shown as stopped before the receipt', () => {
-  assert.equal(unverifiedSignalChangesNode('cancel-unconfirmed'), false);
-  const before = {
-    status: 'running',
-    version: 1,
-    upstreamAffected: false,
-    stored: [],
-    entryStatus: 'ready',
-  };
-  assert.equal(before.status, 'running');
+  let state = { status: 'draft', version: 0, upstreamAffected: false, stored: [] };
+  state = applyNodeTransitionCommand(
+    state,
+    envelope({ type: 'plan-started', dependenciesSatisfied: true }, 'cancel-start', 0),
+  ).state;
+  state = applyNodeTransitionCommand(
+    state,
+    envelope({ type: 'execution-acknowledged' }, 'cancel-ack', state.version),
+  ).state;
+  const version = state.version;
+  const stored = state.stored.length;
+  assert.equal(state.status, 'running');
+  const unconfirmed = applyNodeTransitionCommand(
+    state,
+    envelope({ type: 'cancel-unconfirmed' }, 'cancel-unconfirmed', state.version),
+  );
+  assert.equal(unconfirmed.decision.status, 'rejected');
+  assert.equal(unconfirmed.decision.code, 'illegal-transition');
+  assert.equal(unconfirmed.state.status, 'running');
+  assert.equal(unconfirmed.state.version, version);
+  assert.equal(unconfirmed.state.stored.length, stored);
+  state = unconfirmed.state;
   const confirmed = applyNodeTransitionCommand(
-    before,
-    envelope({ type: 'cancel-confirmed' }, 'cancel-receipt', 1),
+    state,
+    envelope({ type: 'cancel-confirmed' }, 'cancel-receipt', state.version),
   );
   assert.equal(confirmed.decision.status, 'applied');
   assert.equal(confirmed.state.status, 'cancelled');
