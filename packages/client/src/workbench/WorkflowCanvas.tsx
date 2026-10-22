@@ -1,13 +1,15 @@
+import { useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
-  Controls,
   MiniMap,
+  Panel,
   MarkerType,
   Position,
   type Node,
   type Edge,
   type Connection,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import type { WorkTask, Workflow, Participant } from '@zhuma/agent-core';
 
@@ -32,43 +34,66 @@ export function WorkflowCanvas({
   tree: boolean;
   openWorkflow(id: string): void;
 }) {
-  const nodes: Node[] = tree
-    ? task.workflows.flatMap((w, index) =>
-        w.nodes.map((n, j) => ({
-          id: n.id,
-          position: { x: index * 300, y: j * 140 },
-          data: {
-            label: (
-              <>
-                <small>{w.name}</small>
-                <strong>{n.title}</strong>
-                <span>{members.find((m) => m.id === n.assigneeId)?.name ?? '未分配'}</span>
-              </>
-            ),
-          },
-          className: `zm-flow-node ${w.id === workflow.id ? 'zm-tree-current' : ''}`,
-          selected: n.id === selectedId,
-        })),
-      )
-    : workflow.nodes.map((n) => ({
+  const canvas = useRef<HTMLDivElement>(null);
+  const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>(
+    {},
+  );
+  const columns = new Map<number, number>();
+  const depths = new Map<string, number>();
+  function depth(w: Workflow): number {
+    if (depths.has(w.id)) return depths.get(w.id)!;
+    const parent = task.workflows.find((candidate) =>
+      candidate.nodes.some((n) => n.id === w.parentNodeId),
+    );
+    const value = parent ? depth(parent) + 1 : 0;
+    depths.set(w.id, value);
+    return value;
+  }
+  const flows = tree ? task.workflows : [workflow];
+  const nodes: Node[] = flows.flatMap((w) => {
+    const level = tree ? depth(w) : 0;
+    const offset = columns.get(level) ?? 0;
+    columns.set(level, offset + w.nodes.length * 164 + 60);
+    return w.nodes.map((n, index) => {
+      const member = members.find((m) => m.id === n.assigneeId);
+      return {
         id: n.id,
-        position: n.position,
+        initialWidth: 240,
+        initialHeight: 164,
+        ...(dimensions[n.id] ? { measured: dimensions[n.id] } : {}),
+        position: tree ? { x: level * 340, y: offset + index * 164 } : n.position,
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
         data: {
           label: (
             <>
-              <strong>{n.title}</strong>
-              <span>{members.find((m) => m.id === n.assigneeId)?.name ?? '未分配'}</span>
-              <small>
-                {n.reviewRequired ? `${n.reviewerIds.length} 位评审人` : '无需评审'}
-                {task.workflows.some((w) => w.parentNodeId === n.id) ? ' · 含子工作流' : ''}
-              </small>
+              {tree && <small className="zm-flow-context">{w.name}</small>}
+              <strong title={n.title}>{n.title}</strong>
+              <div className="zm-flow-assignee">
+                <span className={`zm-avatar ${member?.kind ?? 'human'}`}>
+                  {member?.kind === 'expert' ? 'AI' : (member?.name.slice(0, 1) ?? '—')}
+                </span>
+                <span>
+                  {member?.name ?? '未分配'}
+                  <small>{member?.kind === 'expert' ? 'Agent 专家' : '团队成员'}</small>
+                </span>
+              </div>
+              <div className="zm-flow-footer">
+                <span>{n.reviewRequired ? `${n.reviewerIds.length} 位评审人` : '无需评审'}</span>
+                {task.workflows.some((child) => child.parentNodeId === n.id) && (
+                  <span>含子工作流 ↗</span>
+                )}
+              </div>
             </>
           ),
         },
-        className: 'zm-flow-node',
+        className: `zm-flow-node ${tree && w.id === workflow.id ? 'zm-tree-current' : ''}`,
         selected: n.id === selectedId,
-      }));
-  const flows = tree ? task.workflows : [workflow];
+      };
+    });
+  });
   const edges: Edge[] = flows.flatMap((w) =>
     w.nodes.flatMap((n) =>
       n.dependsOn.map((source) => ({
@@ -76,8 +101,8 @@ export function WorkflowCanvas({
         source,
         target: n.id,
         type: 'smoothstep',
-        markerEnd: { type: MarkerType.ArrowClosed },
-        style: { stroke: '#438d88', strokeWidth: 2 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--zm-edge)' },
+        style: { stroke: 'var(--zm-edge)', strokeWidth: 1.5 },
       })),
     ),
   );
@@ -90,11 +115,20 @@ export function WorkflowCanvas({
             source: w.parentNodeId,
             target: n.id,
             label: '拆分',
-            style: { strokeDasharray: '5 5', stroke: '#a096be' },
             type: 'smoothstep',
+            style: { strokeDasharray: '5 5', stroke: 'var(--zm-expert)' },
+            labelStyle: { fill: 'var(--zm-muted)', fontSize: 12 },
+            labelBgStyle: { fill: 'var(--zm-paper)' },
           });
   function connect(connection: Connection) {
-    if (!connection.source || !connection.target || connection.source === connection.target) return;
+    if (
+      locked ||
+      tree ||
+      !connection.source ||
+      !connection.target ||
+      connection.source === connection.target
+    )
+      return;
     change({
       ...workflow,
       nodes: workflow.nodes.map((n) =>
@@ -104,18 +138,28 @@ export function WorkflowCanvas({
       ),
     });
   }
+  const current = nodes.find((n) => n.id === selectedId) ?? nodes[0];
+  function locate(instance = flow) {
+    if (!instance || !current) return;
+    void instance.setViewport({
+      x: 40 - current.position.x,
+      y: Math.max(70, (canvas.current?.clientHeight ?? 500) / 2 - 70) - current.position.y,
+      zoom: 1,
+    });
+    setZoom(1);
+  }
   return (
-    <div className="zm-canvas">
+    <div className="zm-canvas" ref={canvas}>
       <ReactFlow
-        nodes={nodes.map((n) => ({
-          ...n,
-          sourcePosition: Position.Right,
-          targetPosition: Position.Left,
-        }))}
+        nodes={nodes}
         edges={edges}
-        fitView
         minZoom={0.15}
         maxZoom={1.8}
+        onInit={(instance) => {
+          setFlow(instance);
+          locate(instance);
+        }}
+        onMoveEnd={(_, viewport) => setZoom(viewport.zoom)}
         nodesDraggable={!locked && !tree}
         nodesConnectable={!locked && !tree}
         deleteKeyCode={null}
@@ -127,6 +171,23 @@ export function WorkflowCanvas({
           select(n.id);
         }}
         onNodesChange={(changes) => {
+          const measured = changes.filter((c) => c.type === 'dimensions' && c.dimensions);
+          if (measured.length)
+            setDimensions((current) => {
+              const next = { ...current };
+              let changed = false;
+              for (const change of measured)
+                if (
+                  change.type === 'dimensions' &&
+                  change.dimensions &&
+                  (next[change.id]?.width !== change.dimensions.width ||
+                    next[change.id]?.height !== change.dimensions.height)
+                ) {
+                  next[change.id] = change.dimensions;
+                  changed = true;
+                }
+              return changed ? next : current;
+            });
           if (locked || tree) return;
           const positions = new Map(
             changes.flatMap((c) =>
@@ -141,14 +202,6 @@ export function WorkflowCanvas({
               ),
             });
         }}
-        onNodeDragStop={(_, n) =>
-          change({
-            ...workflow,
-            nodes: workflow.nodes.map((node) =>
-              node.id === n.id ? { ...node, position: n.position } : node,
-            ),
-          })
-        }
         onConnect={connect}
         onEdgeDoubleClick={(_, edge) => {
           if (!locked && !tree)
@@ -162,9 +215,28 @@ export function WorkflowCanvas({
             });
         }}
       >
-        <Background gap={22} size={1} />
-        <Controls showInteractive={false} />
-        <MiniMap pannable zoomable />
+        <Background gap={24} size={1} color="var(--zm-grid)" />
+        <Panel position="bottom-left" className="zm-canvas-controls">
+          <button aria-label="缩小画布" onClick={() => void flow?.zoomOut()}>
+            −
+          </button>
+          <span>{Math.round(zoom * 100)}%</span>
+          <button aria-label="放大画布" onClick={() => void flow?.zoomIn()}>
+            ＋
+          </button>
+          <button onClick={() => locate()}>定位当前</button>
+          <button onClick={() => void flow?.fitView({ padding: 0.15, maxZoom: 1 })}>
+            适应全图
+          </button>
+        </Panel>
+        <MiniMap
+          style={{ width: 130, height: 86 }}
+          pannable
+          zoomable
+          nodeColor="var(--zm-minimap-node)"
+          maskColor="var(--zm-minimap-mask)"
+          bgColor="var(--zm-paper)"
+        />
       </ReactFlow>
     </div>
   );

@@ -11,6 +11,7 @@ import {
 import type { WorkbenchApi } from './api.js';
 import { Field, MemberPicker, Modal } from './controls.js';
 import { TaskEditor } from './TaskEditor.js';
+import { Appearance, type AppearanceStore } from './Appearance.js';
 
 type Section = 'projects' | 'tasks' | 'assets' | 'members';
 type Dialog =
@@ -29,9 +30,11 @@ const labels: Record<Section, string> = {
 export function WorkbenchPage({
   api,
   initialSection,
+  appearance,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
+  appearance: AppearanceStore;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
@@ -134,6 +137,7 @@ export function WorkbenchPage({
           api={api}
           saved={setState}
           close={() => setActiveTaskId(null)}
+          appearance={appearance}
         />
       </div>
     );
@@ -142,10 +146,11 @@ export function WorkbenchPage({
       <div className="zm-page">
         <header className="zm-page-heading">
           <div>
-            <span className="zm-eyebrow">ZHUMA WORKBENCH</span>
+            <span className="zm-eyebrow">团队工作台</span>
             <h1>{labels[section]}</h1>
           </div>
           <div className="zm-actions">
+            <Appearance store={appearance} />
             <span className="zm-local">本地工作台</span>
             <button onClick={() => void refresh()}>刷新</button>
             <button
@@ -319,10 +324,25 @@ export function WorkbenchPage({
             {!tasks.length && (
               <div className="zm-empty">
                 <h3>{search ? '没有匹配的任务' : '开始下一项工作'}</h3>
-                <p>创建任务后，选择参与者，再由 AI 或你自己编排工作流。</p>
-                <button onClick={() => newTask()} className="primary">
-                  创建任务
-                </button>
+                <p>
+                  {search
+                    ? '换个关键词，或清除筛选查看全部任务。'
+                    : '创建任务后，选择参与者，再由 AI 或你自己编排工作流。'}
+                </p>
+                {search ? (
+                  <button
+                    onClick={() => {
+                      setSearch('');
+                      setProjectFilter('');
+                    }}
+                  >
+                    清除筛选
+                  </button>
+                ) : (
+                  <button onClick={() => newTask()} className="primary">
+                    创建任务
+                  </button>
+                )}
               </div>
             )}
           </>

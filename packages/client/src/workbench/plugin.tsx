@@ -3,17 +3,24 @@ import type {} from '@deepseek-ai/dsh-client-connection/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
+import type {} from '@deepseek-ai/dsh-client-ui-theme/client';
+import type { AppearanceStore } from './Appearance.js';
 import { createWorkbenchApi } from './api.js';
 import { WorkbenchPage } from './WorkbenchPage.js';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 
-export const inject = ['slots', 'layout', 'connection'];
+export const inject = ['slots', 'layout', 'connection', 'theme'];
 export function apply(ctx: Context): void {
   const connection = ctx.get(
     'connection',
   ) as import('@deepseek-ai/dsh-client-connection/client').ConnectionHandle;
   const api = createWorkbenchApi(connection.rpc);
+  const appearance: AppearanceStore = {
+    getSnapshot: () => ctx.theme.getTheme().preference,
+    subscribe: (listener) => ctx.on('theme/change', listener),
+    set: (preference) => ctx.theme.setTheme(preference),
+  };
   ctx.effect(() => {
     const style = document.createElement('style');
     style.textContent = `${flowStyles}\n${workbenchStyles}`;
@@ -23,7 +30,11 @@ export function apply(ctx: Context): void {
   const panelId = 'zhuma-workbench' as MainPanelId;
   ctx.slots.inject('main', () => {
     const dispose = ctx.slots.register(
-      { name: 'main', key: panelId, inject: () => ({ api, initialSection: 'projects' as const }) },
+      {
+        name: 'main',
+        key: panelId,
+        inject: () => ({ api, appearance, initialSection: 'tasks' as const }),
+      },
       WorkbenchPage,
     );
     // Initial product landing only; selecting DSH conversations remains available.

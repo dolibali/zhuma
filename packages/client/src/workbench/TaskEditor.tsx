@@ -9,8 +9,11 @@ import {
   type PlanProposal,
 } from '@zhuma/agent-core';
 import type { WorkbenchApi } from './api.js';
-import { Field, MemberPicker, Modal, MultiSelect } from './controls.js';
+import { Field, MemberPicker, Modal } from './controls.js';
 import { WorkflowCanvas } from './WorkflowCanvas.js';
+import { NodeInspector } from './NodeInspector.js';
+import { Button } from './Button.js';
+import { Appearance, type AppearanceStore } from './Appearance.js';
 
 export function newNode(): WorkNode {
   return {
@@ -37,6 +40,7 @@ export function TaskEditor({
   model,
   saved,
   close,
+  appearance,
 }: {
   original: WorkTask;
   state: Workbench;
@@ -44,6 +48,7 @@ export function TaskEditor({
   model: string;
   saved(state: Workbench): void;
   close(): void;
+  appearance: AppearanceStore;
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
@@ -52,7 +57,28 @@ export function TaskEditor({
   const [selectedId, setSelectedId] = useState<string | null>(
     original.workflows[0]?.nodes[0]?.id ?? null,
   );
-  const [view, setView] = useState<'list' | 'workflow'>('list');
+  const [view, setView] = useState<'list' | 'workflow'>('workflow');
+  const [inspectorOpen, setInspectorOpen] = useState(() => window.innerWidth > 1100);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const inspectorRef = useRef<HTMLElement>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const element = editorRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) =>
+      setCompact((entry?.contentRect.width ?? 0) <= 980),
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!compact || !inspectorOpen) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inspectorRef.current?.querySelector<HTMLElement>('button, input, textarea, select')?.focus();
+    return () => {
+      if (inspectorRef.current?.contains(document.activeElement)) previous?.focus();
+    };
+  }, [compact, inspectorOpen]);
   const [tree, setTree] = useState(false);
   const [panel, setPanel] = useState<'config' | 'plan'>('config');
   const [membersOpen, setMembersOpen] = useState(false);
@@ -123,9 +149,31 @@ export function TaskEditor({
       });
   }
   async function persist(next = task, expectedRevision = revision): Promise<Workbench | null> {
+    if (!next.title.trim()) {
+      setError('请填写任务标题。');
+      return null;
+    }
+    const unnamed = next.workflows.flatMap((w) => w.nodes).find((n) => !n.title.trim());
+    if (unnamed) {
+      setSelectedId(unnamed.id);
+      setWorkflowId(next.workflows.find((w) => w.nodes.includes(unnamed))!.id);
+      setPanel('config');
+      setInspectorOpen(true);
+      setError('请填写所选工作节点的名称。');
+      return null;
+    }
     const errors = validateWorkTask(next, state);
     if (errors.length) {
       setError(errors.join('\n'));
+      const invalid = next.workflows
+        .flatMap((w) => w.nodes)
+        .find((n) => errors.some((e) => e.includes(`「${n.title}」`)));
+      if (invalid) {
+        setSelectedId(invalid.id);
+        setWorkflowId(next.workflows.find((w) => w.nodes.includes(invalid))!.id);
+        setPanel('config');
+        setInspectorOpen(true);
+      }
       return null;
     }
     setBusy(true);
@@ -150,6 +198,7 @@ export function TaskEditor({
       setBaseline(JSON.stringify(committed));
       setRevision(result.revision);
       saved(result);
+      if (committed.status === 'ready') setPanel('config');
       pendingSave.current = null;
       setMessage('已保存');
       setConflict(false);
@@ -232,6 +281,7 @@ export function TaskEditor({
       setSelectedId(next.workflows[0]?.nodes[0]?.id ?? null);
       setProposal(null);
       setPanel('config');
+      setInspectorOpen(true);
       setMessage('草案已应用，可继续编辑。');
     }
   }
@@ -241,6 +291,7 @@ export function TaskEditor({
     changeWorkflow({ ...workflow, nodes: [...workflow.nodes, next] });
     setSelectedId(next.id);
     setPanel('config');
+    setInspectorOpen(true);
   }
   function splitNode() {
     if (!node) return;
@@ -303,7 +354,7 @@ export function TaskEditor({
       : undefined;
   }
   return (
-    <div className="zm-editor">
+    <div className="zm-editor" ref={editorRef}>
       <div className="zm-toolbar">
         <button
           onClick={() => {
@@ -318,9 +369,12 @@ export function TaskEditor({
             : '计划草稿'}
         </span>
         <span className="zm-spacer" />
-        <span className="zm-muted">{dirty ? '未保存' : message || '已保存'}</span>
+        <Appearance store={appearance} />
+        <span className="zm-save-state zm-muted" role="status">
+          {dirty ? '未保存' : message || '已保存'}
+        </span>
         <button
-          disabled={locked}
+          disabled={busy || planning || !!previewTask}
           onClick={() => {
             setMemberDraft(task.participantIds);
             setMemberError('');
@@ -338,9 +392,15 @@ export function TaskEditor({
           </button>
         ) : (
           <>
-            <button disabled={locked || !dirty} onClick={() => void persist()}>
+            <Button
+              title={!dirty ? '当前没有未保存的修改' : locked ? '请先完成当前操作' : undefined}
+              disabled={locked || !dirty}
+              busy={busy && task.status === 'draft' && !previewTask}
+              busyLabel="保存中…"
+              onClick={() => void persist()}
+            >
               保存草稿
-            </button>
+            </Button>
             <button
               className="primary"
               disabled={locked}
@@ -352,21 +412,42 @@ export function TaskEditor({
         )}
       </div>
       <div className="zm-editor-heading">
-        <input
-          className="zm-title-input"
-          aria-label="任务标题"
-          value={task.title}
-          disabled={locked}
-          onChange={(e) => edit({ ...task, title: e.target.value })}
-        />
-        <textarea
-          aria-label="任务目标"
-          rows={2}
-          disabled={locked}
-          value={task.goal}
-          onChange={(e) => edit({ ...task, goal: e.target.value })}
-          placeholder="描述目标、背景和预期结果"
-        />
+        <p className="zm-project-location">
+          {state.projects.find((p) => p.id === task.projectId)?.name}
+        </p>
+        {task.status === 'ready' ? (
+          <h1>{task.title}</h1>
+        ) : (
+          <input
+            className="zm-title-input"
+            aria-label="任务标题"
+            maxLength={160}
+            value={task.title}
+            disabled={locked}
+            onChange={(e) => edit({ ...task, title: e.target.value })}
+          />
+        )}
+        <details className="zm-goal">
+          <summary>
+            <span>
+              {task.goal.slice(0, 120) || '补充任务目标'}
+              {task.goal.length > 120 && '…'}
+            </span>
+            <b>需求详情</b>
+          </summary>
+          {task.status === 'ready' ? (
+            <p className="zm-prewrap">{task.goal}</p>
+          ) : (
+            <textarea
+              aria-label="任务目标"
+              rows={5}
+              disabled={locked}
+              value={task.goal}
+              onChange={(e) => edit({ ...task, goal: e.target.value })}
+              placeholder="描述目标、背景和预期结果"
+            />
+          )}
+        </details>
       </div>
       {error && (
         <div role="alert" className="zm-error">
@@ -381,17 +462,19 @@ export function TaskEditor({
           </button>
         </div>
       )}
-      <div className="zm-editor-layout">
+      <div className={`zm-editor-layout ${inspectorOpen ? 'inspector-open' : 'inspector-closed'}`}>
         <section className="zm-workflow">
           <div className="zm-workflow-tools">
             <nav aria-label="工作树路径">
               {ancestors.map((w, i) => (
                 <span key={w.id}>
-                  {i > 0 && ' / '}
+                  {i > 0 && <span className="zm-path-divider">/</span>}
                   <button
+                    title={w.name}
                     onClick={() => {
                       setWorkflowId(w.id);
                       setSelectedId(null);
+                      setTree(false);
                     }}
                   >
                     {i === 0 ? '主工作流' : w.name}
@@ -399,24 +482,9 @@ export function TaskEditor({
                 </span>
               ))}
             </nav>
-            <span className="zm-spacer" />
-            <button
-              className={tree ? 'active' : ''}
-              onClick={() => {
-                setTree(!tree);
-                setView('workflow');
-              }}
-            >
-              工作树定位
-            </button>
-          </div>
-          <div className="zm-workflow-tools">
-            <h2>
-              {tree ? '完整工作树' : previewTask ? '草案预览' : '工作流'}{' '}
-              <small>
-                {tree ? task.workflows.length + ' 层级分支' : workflow.nodes.length + ' 个节点'}
-              </small>
-            </h2>
+            <span className="zm-node-count">
+              {tree ? `${task.workflows.length} 个工作流` : `${workflow.nodes.length} 节点`}
+            </span>
             <span className="zm-spacer" />
             <div className="zm-segment">
               <button
@@ -428,23 +496,79 @@ export function TaskEditor({
               >
                 列表
               </button>
-              <button aria-pressed={view === 'workflow'} onClick={() => setView('workflow')}>
+              <button
+                aria-pressed={view === 'workflow' && !tree}
+                onClick={() => {
+                  setView('workflow');
+                  setTree(false);
+                }}
+              >
                 工作流
               </button>
+              <button
+                aria-pressed={tree}
+                onClick={() => {
+                  setTree(!tree);
+                  setView('workflow');
+                }}
+              >
+                工作树定位
+              </button>
             </div>
-            {workflow.parentNodeId && !tree && (
-              <button disabled={locked} onClick={removeSubworkflow}>
-                移除子工作流
+            {!locked && !tree && (
+              <button className="zm-quiet" onClick={addNode}>
+                ＋ 节点
               </button>
             )}
-            <button disabled={locked || tree} onClick={addNode}>
-              ＋ 节点
+            <button
+              className="zm-quiet"
+              aria-pressed={inspectorOpen && panel === 'config'}
+              onClick={() => {
+                setPanel('config');
+                setInspectorOpen(!inspectorOpen || panel !== 'config');
+              }}
+            >
+              {task.status === 'ready' ? '节点详情' : '配置'}
             </button>
+            {task.status !== 'ready' && (
+              <button
+                className="zm-quiet"
+                aria-pressed={inspectorOpen && panel === 'plan'}
+                onClick={() => {
+                  setPanel('plan');
+                  setInspectorOpen(true);
+                }}
+              >
+                ✧ AI 规划
+              </button>
+            )}
           </div>
+          {previewTask && (
+            <div className="zm-preview-banner">
+              <strong>AI 草案</strong>
+              <span>正在预览，应用后可继续编辑</span>
+              <button
+                onClick={() => {
+                  setPanel('plan');
+                  setInspectorOpen(true);
+                }}
+              >
+                审阅草案 →
+              </button>
+            </div>
+          )}
+          {workflow.parentNodeId && !tree && !locked && (
+            <details className="zm-flow-more">
+              <summary>子工作流操作</summary>
+              <button className="danger" onClick={removeSubworkflow}>
+                移除子工作流
+              </button>
+            </details>
+          )}
           {tree && (
             <p className="zm-hint">实线为工作依赖，虚线为逐级拆分。点击节点定位到所属工作流。</p>
           )}
-          {view === 'workflow' ? (
+          {view === 'workflow' && (workflow.nodes.length > 0 || tree) ? (
             <WorkflowCanvas
               key={`${workflow.id}-${tree}`}
               workflow={workflow}
@@ -454,6 +578,7 @@ export function TaskEditor({
               select={(id) => {
                 setSelectedId(id);
                 setPanel(proposal ? 'plan' : 'config');
+                setInspectorOpen(true);
               }}
               change={changeWorkflow}
               locked={locked}
@@ -492,6 +617,7 @@ export function TaskEditor({
                     onClick={() => {
                       setSelectedId(n.id);
                       setPanel(proposal ? 'plan' : 'config');
+                      setInspectorOpen(true);
                     }}
                   >
                     <strong>{n.title}</strong>
@@ -504,22 +630,24 @@ export function TaskEditor({
                     </span>
                   </button>
                   <small>{n.reviewRequired ? `${n.reviewerIds.length} 人评审` : '无需评审'}</small>
-                  <div className="zm-row-actions">
-                    <button
-                      aria-label={`上移 ${n.title}`}
-                      disabled={locked || i === 0}
-                      onClick={() => moveNode(n.id, -1)}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      aria-label={`下移 ${n.title}`}
-                      disabled={locked || i === workflow.nodes.length - 1}
-                      onClick={() => moveNode(n.id, 1)}
-                    >
-                      ↓
-                    </button>
-                  </div>
+                  {!locked && (
+                    <div className="zm-row-actions">
+                      <button
+                        aria-label={`上移 ${n.title}`}
+                        disabled={locked || i === 0}
+                        onClick={() => moveNode(n.id, -1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        aria-label={`下移 ${n.title}`}
+                        disabled={locked || i === workflow.nodes.length - 1}
+                        onClick={() => moveNode(n.id, 1)}
+                      >
+                        ↓
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -528,171 +656,100 @@ export function TaskEditor({
             <div className="zm-empty">
               <h3>从一个清晰的工作节点开始</h3>
               <p>手动编排，或让 AI 根据任务和团队情况生成草案。</p>
-              <button onClick={() => setPanel('plan')}>AI 规划</button>
+              <button
+                onClick={() => {
+                  setPanel('plan');
+                  setInspectorOpen(true);
+                }}
+              >
+                AI 规划
+              </button>
               <button className="primary" disabled={locked} onClick={addNode}>
                 添加节点
               </button>
             </div>
           )}
         </section>
-        <aside className="zm-config">
+        {inspectorOpen && (
+          <button
+            className="zm-drawer-scrim"
+            aria-label="关闭配置面板"
+            onClick={() => setInspectorOpen(false)}
+          />
+        )}
+        <aside
+          className="zm-config"
+          ref={inspectorRef}
+          role={compact && inspectorOpen ? 'dialog' : undefined}
+          aria-modal={compact && inspectorOpen ? true : undefined}
+          aria-label={panel === 'config' ? '节点配置面板' : 'AI 规划面板'}
+          hidden={!inspectorOpen}
+          onKeyDown={(event) => {
+            if (!compact) return;
+            if (event.target instanceof HTMLElement && event.target.closest('dialog')) return;
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setInspectorOpen(false);
+            }
+            if (event.key === 'Tab') {
+              const items = [
+                ...event.currentTarget.querySelectorAll<HTMLElement>(
+                  'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary',
+                ),
+              ].filter((e) => e.getClientRects().length > 0);
+              const first = items[0],
+                last = items.at(-1);
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+              }
+            }
+          }}
+        >
           <div className="zm-panel-tabs">
-            <button aria-pressed={panel === 'config'} onClick={() => setPanel('config')}>
-              配置
-            </button>
-            <button aria-pressed={panel === 'plan'} onClick={() => setPanel('plan')}>
-              ✧ AI 规划
+            <strong>
+              {panel === 'config' ? (task.status === 'ready' ? '节点详情' : '配置') : 'AI 规划'}
+            </strong>
+            <span className="zm-spacer" />
+            <button aria-label="收起侧栏" onClick={() => setInspectorOpen(false)}>
+              ×
             </button>
           </div>
           {panel === 'config' ? (
             node ? (
-              <fieldset disabled={locked} className="zm-config-form">
-                <Field label="节点名称">
-                  <input
-                    value={node.title}
-                    onChange={(e) => updateNode({ title: e.target.value })}
-                  />
-                </Field>
-                <Field label="要完成的工作">
-                  <textarea
-                    rows={3}
-                    value={node.description}
-                    onChange={(e) => updateNode({ description: e.target.value })}
-                  />
-                </Field>
-                <Field label="执行者">
-                  <select
-                    value={node.assigneeId ?? ''}
-                    onChange={(e) =>
-                      updateNode({
-                        assigneeId: e.target.value || null,
-                        reviewerIds: node.reviewerIds.filter((id) => id !== e.target.value),
-                      })
-                    }
-                  >
-                    <option value="">选择参与者</option>
-                    {(['human', 'expert'] as const).map((kind) => (
-                      <optgroup key={kind} label={kind === 'human' ? '团队成员' : 'Agent 专家'}>
-                        {members
-                          .filter((m) => m.kind === kind)
-                          .map((m) => (
-                            <option key={m.id} value={m.id} disabled={!m.available}>
-                              {m.name} · {m.role}
-                            </option>
-                          ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </Field>
-                <button
-                  className="zm-text-button"
-                  onClick={() => {
-                    setMemberDraft(task.participantIds);
-                    setMemberError('');
-                    setMembersOpen(true);
-                  }}
-                >
-                  管理任务参与者
-                </button>
-                <Field label="交付内容">
-                  <textarea
-                    value={node.output}
-                    onChange={(e) => updateNode({ output: e.target.value })}
-                    placeholder="例如：接口说明文档与字段映射表"
-                    rows={2}
-                  />
-                </Field>
-                <Field label="输入材料">
-                  <textarea
-                    value={node.input}
-                    onChange={(e) => updateNode({ input: e.target.value })}
-                    placeholder="需要读取的前序产物"
-                    rows={2}
-                  />
-                </Field>
-                <div className="zm-review">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={node.reviewRequired}
-                      onChange={(e) =>
-                        updateNode({
-                          reviewRequired: e.target.checked,
-                          reviewerIds: e.target.checked ? node.reviewerIds : [],
-                        })
-                      }
-                    />
-                    完成后需要评审
-                  </label>
-                  {node.reviewRequired && (
-                    <>
-                      <MultiSelect
-                        label="评审人"
-                        options={members
-                          .filter((m) => m.id !== node.assigneeId && m.available)
-                          .map((m) => ({
-                            id: m.id,
-                            name: `${m.name}${m.kind === 'expert' ? ' · Agent' : ''}`,
-                          }))}
-                        selected={node.reviewerIds}
-                        change={(reviewerIds) => updateNode({ reviewerIds })}
-                      />
-                      <small>所有评审人通过后，才交接给后续节点。</small>
-                    </>
-                  )}
-                </div>
-                <MultiSelect
-                  label="Skills"
-                  options={state.assets.filter((a) => a.kind === 'skill' && a.available)}
-                  selected={node.skillIds}
-                  change={(skillIds) => updateNode({ skillIds })}
-                />
-                <MultiSelect
-                  label="MCP"
-                  options={state.assets.filter((a) => a.kind === 'mcp' && a.available)}
-                  selected={node.mcpIds}
-                  change={(mcpIds) => updateNode({ mcpIds })}
-                />
-                <MultiSelect
-                  label="前置依赖"
-                  options={workflow.nodes
-                    .filter((n) => n.id !== node.id)
-                    .map((n) => ({ id: n.id, name: n.title }))}
-                  selected={node.dependsOn}
-                  change={(dependsOn) => updateNode({ dependsOn })}
-                />
-                {node.rationale && (
-                  <details className="zm-rationale">
-                    <summary>分工依据</summary>
-                    <p>{node.rationale}</p>
-                  </details>
-                )}
-                <button onClick={splitNode}>
-                  {task.workflows.some((w) => w.parentNodeId === node.id)
-                    ? '打开子工作流 →'
-                    : '拆分为子工作流'}
-                </button>
-                <button
-                  className="danger"
-                  disabled={task.workflows.some((w) => w.parentNodeId === node.id)}
-                  onClick={() => {
-                    if (confirm(`删除「${node.title}」及其依赖连线？`)) {
-                      changeWorkflow({
-                        ...workflow,
-                        nodes: workflow.nodes
-                          .filter((n) => n.id !== node.id)
-                          .map((n) => ({
-                            ...n,
-                            dependsOn: n.dependsOn.filter((id) => id !== node.id),
-                          })),
-                      });
-                      setSelectedId(null);
-                    }
-                  }}
-                >
-                  删除节点
-                </button>
-              </fieldset>
+              <NodeInspector
+                node={node}
+                workflow={workflow}
+                members={members}
+                state={state}
+                readOnly={task.status === 'ready' || !!previewTask}
+                disabled={locked}
+                hasChild={displayTask.workflows.some((w) => w.parentNodeId === node.id)}
+                update={updateNode}
+                manageMembers={() => {
+                  setMemberDraft(task.participantIds);
+                  setMemberError('');
+                  setMembersOpen(true);
+                }}
+                split={splitNode}
+                remove={() => {
+                  if (confirm(`删除「${node.title}」及其依赖连线？`)) {
+                    changeWorkflow({
+                      ...workflow,
+                      nodes: workflow.nodes
+                        .filter((n) => n.id !== node.id)
+                        .map((n) => ({
+                          ...n,
+                          dependsOn: n.dependsOn.filter((id) => id !== node.id),
+                        })),
+                    });
+                    setSelectedId(null);
+                  }
+                }}
+              />
             ) : (
               <div className="zm-empty">
                 <p>选择工作节点进行配置。</p>
@@ -725,26 +782,38 @@ export function TaskEditor({
                   placeholder="例如：前后端并行，陈宁负责接口，测试专家做独立评审"
                 />
               </Field>
-              {planning ? (
-                <>
-                  <div role="status" className="zm-planning">
-                    正在分析目标与团队能力…
-                  </div>
-                  <button onClick={() => controller.current?.abort()}>取消规划</button>
-                </>
-              ) : (
-                <button
-                  className="primary"
+              <div className="zm-planning-actions">
+                <Button
+                  variant={proposal ? 'secondary' : 'primary'}
+                  busy={planning}
+                  busyLabel="正在规划…"
+                  title={!members.length ? '请先添加任务参与者' : undefined}
                   disabled={busy || task.status === 'ready' || !members.length}
                   onClick={() => void generate()}
                 >
                   {proposal ? '重新规划' : '生成工作流草案'}
-                </button>
+                </Button>
+                {planning && (
+                  <Button variant="quiet" onClick={() => controller.current?.abort()}>
+                    取消
+                  </Button>
+                )}
+              </div>
+              {planning && (
+                <p role="status" className="zm-muted">
+                  正在分析目标与团队能力…
+                </p>
               )}
               {proposal && (
                 <div className="zm-proposal">
                   <h3>规划草案</h3>
-                  <p>{proposal.result.summary}</p>
+                  <details className="zm-plan-summary">
+                    <summary>
+                      {proposal.result.summary.slice(0, 150)}
+                      {proposal.result.summary.length > 150 && '…'}
+                    </summary>
+                    <p>{proposal.result.summary}</p>
+                  </details>
                   {proposal.result.questions.length > 0 && (
                     <div className="zm-questions">
                       <strong>需要你确认</strong>
@@ -756,7 +825,7 @@ export function TaskEditor({
                     </div>
                   )}
                   {proposal.result.assumptions.length > 0 && (
-                    <details open>
+                    <details>
                       <summary>规划中的假设</summary>
                       <ul>
                         {proposal.result.assumptions.map((a) => (
@@ -772,18 +841,27 @@ export function TaskEditor({
                       <small>交付：{(node ?? workflow.nodes[0])?.output}</small>
                     </div>
                   )}
-                  <button
-                    className="primary"
-                    disabled={
-                      busy ||
-                      !!proposal.result.questions.length ||
-                      !proposal.result.workflows.length
-                    }
-                    onClick={() => void applyProposal()}
-                  >
-                    应用草案
-                  </button>
-                  <button onClick={() => setProposal(null)}>放弃草案</button>
+                  <div className="zm-proposal-actions">
+                    <Button
+                      variant="primary"
+                      busy={busy}
+                      busyLabel="应用中…"
+                      title={
+                        proposal.result.questions.length ? '请先回答关键问题并重新规划' : undefined
+                      }
+                      disabled={
+                        busy ||
+                        !!proposal.result.questions.length ||
+                        !proposal.result.workflows.length
+                      }
+                      onClick={() => void applyProposal()}
+                    >
+                      应用草案
+                    </Button>
+                    <Button variant="quiet" disabled={busy} onClick={() => setProposal(null)}>
+                      放弃草案
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -806,6 +884,7 @@ export function TaskEditor({
             <button onClick={() => setMembersOpen(false)}>取消</button>
             <button
               className="primary"
+              disabled={locked}
               onClick={() => {
                 const referenced = task.workflows.flatMap((w) =>
                   w.nodes.flatMap((n) => [
