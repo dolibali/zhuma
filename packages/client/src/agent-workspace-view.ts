@@ -233,10 +233,10 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
         : humanizeLabel(issue?.target);
   const terminalNode = snapshot.node.status === 'cancelled' || snapshot.node.status === 'completed';
   const recordBroken =
-    snapshot.node.status === 'running' &&
+    (snapshot.node.status === 'running' || snapshot.node.status === 'waiting-for-input') &&
     snapshot.lastError?.code === 'entry-inconsistent' &&
-    snapshot.runs.some((run) => run.status === 'failed') &&
     active === undefined;
+  const entryMissing = snapshot.lastError?.code === 'entry-inconsistent';
   const sendBlocked = issue
     ? `${issueTarget}：${issue.reason}。修正后再发送，未配置时不会改用模拟执行器。`
     : snapshot.resumeGap
@@ -245,12 +245,12 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
         ? '正在等待停止回执，不能再发送。'
         : !snapshot.interactionReady
           ? '正在恢复事实，恢复完成前不能发送。'
-          : terminalNode
-            ? snapshot.node.status === 'completed'
-              ? '节点已完成，不能再发送。'
-              : '节点已取消。请使用重新开始。'
-            : recordBroken
-              ? '节点记录异常，需要人工处理。不要按这份记录重试或结束运行。'
+          : recordBroken
+            ? '节点记录异常，需要人工处理。不要按这份记录发送、重试或停止。'
+            : terminalNode
+              ? snapshot.node.status === 'completed'
+                ? '节点已完成，不能再发送。'
+                : '节点已取消。请使用重新开始。'
               : null;
   const starting = active?.status === 'requested';
   const nodeLabel = recordBroken
@@ -303,15 +303,18 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       disabledReason: sendBlocked,
     },
     stop: {
-      visible: Boolean(active),
-      enabled: Boolean(active) && !stopPending,
+      visible: Boolean(active) && !recordBroken,
+      enabled: Boolean(active) && !stopPending && !recordBroken,
       disabledReason: stopPending ? '正在等待执行器的停止回执。关闭页面不会取消运行。' : null,
     },
     retry: {
       visible: snapshot.node.status === 'failed' || snapshot.node.status === 'cancelled',
       label: snapshot.node.status === 'cancelled' ? '重新开始' : '重试',
-      enabled: snapshot.node.status === 'failed' || snapshot.node.status === 'cancelled',
-      disabledReason: null,
+      enabled:
+        (snapshot.node.status === 'failed' || snapshot.node.status === 'cancelled') &&
+        !entryMissing &&
+        !recordBroken,
+      disabledReason: entryMissing ? '没有记下进入运行前的状态，不能重试或重新开始。' : null,
     },
     reassignEnabled: true,
     humanTakeoverEnabled: true,

@@ -857,7 +857,9 @@ export function classifyExecutorFailure(message: string): ExecutionFaultKind {
     text.includes('enotfound') ||
     text.includes('超时') ||
     text.includes('timeout') ||
-    text.includes('abort')
+    text.includes('abort') ||
+    text.includes('hang up') ||
+    text.includes('socket')
   ) {
     return 'network-interruption';
   }

@@ -113,6 +113,8 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await page.screenshot({ path: path.join(artifacts, 'wp03-running-1280.png') });
     await page.route('**/api/workspace', (route) => route.abort());
     await page.getByTestId('banner').filter({ hasText: '页面与服务断开' }).waitFor();
+    assert.equal(await page.getByTestId('primary').isDisabled(), true);
+    assert.equal(await page.getByTestId('stop').isDisabled(), true);
     await page.unroute('**/api/workspace');
     await page.waitForFunction(
       () =>
@@ -255,17 +257,30 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await waitRunning(page);
     const dropped = await page.request.post(api(page, '/api/test/drop-entry'));
     if (!dropped.ok()) throw new Error(await dropped.text());
-    await release(page);
+    await page.getByTestId('stop').click();
     await waitStatus(page, '节点记录异常，需要人工处理');
     const status = page.getByTestId('node-status');
     const statusText = await status.innerText();
     assert.equal(statusText.includes('执行中'), false);
     assert.match(statusText, /节点记录异常，需要人工处理/);
     assert.equal(await status.getAttribute('data-status'), 'record-broken');
-    assert.match(await page.getByTestId('error').innerText(), /节点记录异常，需要人工处理/);
+    assert.equal(await page.getByTestId('primary').isDisabled(), true);
     const broken = await workspace(page);
     assert.equal(broken.node.status, 'running');
-    assert.equal(broken.runs.at(-1).status, 'failed');
+    assert.equal(broken.runs.at(-1).status, 'cancelled');
+    await page.locator('[data-testid="context"]:not([disabled])').first().click();
+    await page.getByTestId('node-status').filter({ hasText: '节点记录异常' }).waitFor();
+    assert.equal((await status.innerText()).includes('执行中'), false);
+    assert.equal(await status.getAttribute('data-status'), 'record-broken');
+    assert.equal(await page.getByTestId('primary').isDisabled(), true);
+    await page.reload();
+    await page.getByTestId('node-status').filter({ hasText: '节点记录异常' }).waitFor();
+    assert.equal(
+      await page.getByTestId('node-status').getAttribute('data-status'),
+      'record-broken',
+    );
+    assert.equal((await page.getByTestId('node-status').innerText()).includes('执行中'), false);
+    assert.equal(await page.getByTestId('primary').isDisabled(), true);
   } finally {
     await browser.close();
     child.kill();

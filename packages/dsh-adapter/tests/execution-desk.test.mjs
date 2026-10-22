@@ -14,6 +14,7 @@ import {
   readDshModelConfig,
   selectAgentExecutor,
 } from '@zhuma/dsh-adapter';
+import { createAgentWorkspaceView } from '../../client/dist/index.js';
 
 function ids() {
   let n = 0;
@@ -717,6 +718,19 @@ test('契约：入口、版本、评审轮次和幂等回执随正式命令落�
   assert.deepEqual(after.reviewRounds, before.reviewRounds);
   assert.equal(after.activeRoundId, null);
   assert.equal(after.nodeState.stored.length, cancelled.nodeState.stored.length + 1);
+  const kept = journal.load();
+  kept.activeRoundId = 'round-kept';
+  journal.save(kept);
+  const roundTrip = ExecutionDesk.restore(journal.load(), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+    journal,
+  });
+  assert.equal(roundTrip.persistence().activeRoundId, 'round-kept');
+  assert.equal(journal.load().activeRoundId, 'round-kept');
+  roundTrip.resumeInteraction();
+  roundTrip.setContextIncluded('goal', true);
+  assert.equal(journal.load().activeRoundId, 'round-kept');
 });
 
 test('契约：核实断开、下一轮启动失败和接收前停止都把队列标成未应用', async () => {
@@ -748,6 +762,8 @@ test('契约：核实断开、下一轮启动失败和接收前停止都把队�
   assert.equal(blocked.snapshot().runs.length, 1);
   assert.equal(blocked.snapshot().runs[0].status, 'completed');
   assert.equal(blocked.snapshot().interventions[0].phase, 'not-applied');
+  assert.match(blocked.snapshot().interventions[0].notice, /下一轮没有启动/);
+  assert.match(blocked.snapshot().interventions[0].notice, /专家/);
 
   const { desk: context } = desk();
   const contextRun = context.send({ text: '第一轮', idempotencyKey: 'context-run' });
@@ -758,6 +774,7 @@ test('契约：核实断开、下一轮启动失败和接收前停止都把队�
   await context.flush();
   assert.equal(context.snapshot().runs.length, 1);
   assert.equal(context.snapshot().interventions[0].phase, 'not-applied');
+  assert.match(context.snapshot().interventions[0].notice, /下一轮没有启动/);
 
   const gates = new Map();
   const cancelled = new Set();
@@ -965,3 +982,198 @@ function runRequest(runId) {
     signal: new AbortController().signal,
   };
 }
+
+async function assertRecordBroken(session, label) {
+  const view = createAgentWorkspaceView(session.snapshot());
+  assert.equal(view.nodeStatusKey, 'record-broken', label);
+  assert.match(view.nodeStatusText, /节点记录异常/);
+  assert.equal(view.nodeStatusText.includes('执行中'), false, label);
+  assert.equal(view.primary.enabled, false, label);
+  assert.equal(view.stop.enabled, false, label);
+  assert.equal(view.retry.enabled, false, label);
+  const sent = session.send({ text: '不要再发', idempotencyKey: `${label}-send` });
+  assert.equal(sent.ok, false, label);
+  assert.equal(sent.code, 'entry-inconsistent', label);
+  const retried = session.retry(`${label}-retry`);
+  assert.equal(retried.ok, false, label);
+  const stopped = await session.stop();
+  assert.equal(stopped.ok, false, label);
+  assert.equal(session.snapshot().node.status, 'running', label);
+  assert.equal(createAgentWorkspaceView(session.snapshot()).nodeStatusKey, 'record-broken', label);
+}
+
+test('契约：丢失入口后停止仍是节点记录异常', async () => {
+  const { desk: session } = desk();
+  const started = session.send({ text: '停之前丢入口', idempotencyKey: 'rb-stop' });
+  await session.waitForRun(started.runId, 'running');
+  session.dropRecordedEntry();
+  const stopped = await session.stop();
+  assert.equal(stopped.snapshot.runs.at(-1).status, 'cancelled');
+  assert.equal(stopped.snapshot.node.status, 'running');
+  await assertRecordBroken(session, 'stop');
+});
+
+test('契约：丢失入口后执行失败仍是节点记录异常', async () => {
+  const gates = new Map();
+  const executor = {
+    id: 'simulated',
+    capabilities: {
+      liveInjection: false,
+      sessionResume: false,
+      cancelReceipt: true,
+      streaming: false,
+      verified: false,
+      mode: 'simulated',
+    },
+    release(runId) {
+      gates.get(runId)?.();
+    },
+    async cancel() {
+      return { receipt: 'rejected', reason: '没有这次运行。' };
+    },
+    async *run(request) {
+      yield { type: 'accepted', executorRunId: `fail-${request.runId}`, simulated: true };
+      await new Promise((resolve) => {
+        gates.set(request.runId, resolve);
+      });
+      yield {
+        type: 'failed',
+        fault: 'network-interruption',
+        message: '请求超时',
+        simulated: false,
+      };
+    },
+  };
+  const session = ExecutionDesk.create(seed(), {
+    executors: [executor],
+    newId: ids(),
+  });
+  session.updateConfig({ executorId: 'simulated' });
+  const started = session.send({ text: '失败前丢入口', idempotencyKey: 'rb-fail' });
+  await session.waitForRun(started.runId, 'running');
+  session.dropRecordedEntry();
+  executor.release(started.runId);
+  await session.flush();
+  assert.equal(session.snapshot().runs.at(-1).status, 'failed');
+  assert.equal(session.snapshot().node.status, 'running');
+  assert.equal(session.snapshot().faults.length > 0, true);
+  await assertRecordBroken(session, 'fail');
+});
+
+test('契约：丢失入口后核实断开仍是节点记录异常', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-record-abandon-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
+  const { desk: session } = desk({ journal });
+  const started = session.send({ text: '重启前丢入口', idempotencyKey: 'rb-abandon' });
+  await session.waitForRun(started.runId, 'running');
+  const data = journal.load();
+  delete data.nodeState.entryStatus;
+  journal.save(data);
+  const restored = ExecutionDesk.restore(journal.load(), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+    journal,
+  });
+  restored.resumeInteraction();
+  const verified = restored.verifyAbandoned();
+  assert.equal(verified.snapshot.runs[0].status, 'failed');
+  assert.equal(verified.snapshot.node.status, 'running');
+  assert.equal(verified.snapshot.lastError.code, 'entry-inconsistent');
+  await assertRecordBroken(restored, 'abandon');
+  const again = ExecutionDesk.restore(journal.load(), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+    journal,
+  });
+  again.resumeInteraction();
+  assert.equal(createAgentWorkspaceView(again.snapshot()).nodeStatusKey, 'record-broken');
+});
+
+test('契约：节点记录异常不会被后续成功操作清掉', async () => {
+  const { desk: session } = desk();
+  const started = session.send({ text: '结束时丢入口', idempotencyKey: 'rb-follow' });
+  await session.waitForRun(started.runId, 'running');
+  session.dropRecordedEntry();
+  session.releaseActive();
+  await session.flush();
+  assert.equal(session.snapshot().runs.at(-1).status, 'failed');
+  const toggled = session.setContextIncluded('missing', true);
+  assert.equal(toggled.ok, true);
+  assert.equal(toggled.snapshot.lastError.code, 'entry-inconsistent');
+  assert.equal(createAgentWorkspaceView(toggled.snapshot).nodeStatusKey, 'record-broken');
+  const drafted = session.saveDraft('仍然不能当成执行中');
+  assert.equal(drafted.ok, true);
+  assert.equal(createAgentWorkspaceView(drafted.snapshot).nodeStatusKey, 'record-broken');
+  assert.equal(createAgentWorkspaceView(drafted.snapshot).primary.enabled, false);
+});
+
+test('契约：交接引用先复制，畸形引用被拒绝', () => {
+  const refs = [{ sourceNodeId: 'n0', artifactVersionId: 'av1', secretToken: 'x' }, { bogus: 1 }];
+  const bad = seed();
+  bad.handoff = { ...bad.handoff, inputRefs: refs };
+  assert.throws(
+    () =>
+      ExecutionDesk.create(bad, {
+        executors: [new SimulatedAgentExecutor()],
+        newId: ids(),
+      }),
+    /invalid-handoff/,
+  );
+  const goodRefs = [{ sourceNodeId: 'n0' }];
+  const good = seed();
+  good.handoff = { ...good.handoff, inputRefs: goodRefs };
+  const session = ExecutionDesk.create(good, {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  goodRefs[0].sourceNodeId = 'MUTATED';
+  assert.equal(session.snapshot().handoff.inputRefs[0].sourceNodeId, 'n0');
+  assert.equal(session.persistence().seed.handoff.inputRefs[0].sourceNodeId, 'n0');
+});
+
+test('契约：没有入口记录时重试不可用', () => {
+  const session = ExecutionDesk.create(seed({ nodeStatus: 'failed' }), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  const view = createAgentWorkspaceView(session.snapshot());
+  assert.equal(view.retry.visible, true);
+  assert.equal(view.retry.enabled, false);
+  const retried = session.retry('missing-entry');
+  assert.equal(retried.ok, false);
+  assert.equal(retried.code, 'recovery-not-available');
+  assert.equal(createAgentWorkspaceView(session.snapshot()).retry.enabled, false);
+});
+
+test('契约：重复恢复被拒时说明是哪一次请求', async () => {
+  const { desk: session } = desk();
+  const started = session.send({ text: '先取消', idempotencyKey: 'rb-recovery' });
+  await session.waitForRun(started.runId, 'running');
+  const stopped = await session.stop();
+  assert.equal(stopped.snapshot.node.status, 'cancelled');
+  session.nodeState = {
+    ...session.nodeState,
+    stored: [
+      ...session.nodeState.stored,
+      {
+        idempotencyKey: 'recovery:again',
+        objectId: 'node-fields',
+        actorId: 'chen-ning',
+        payloadFingerprint: 'different',
+        version: session.nodeState.version,
+        result: {
+          from: 'cancelled',
+          to: 'ready',
+          changed: true,
+          effects: [],
+          upstreamAffected: false,
+        },
+      },
+    ],
+  };
+  const rejected = session.retry('again');
+  assert.equal(rejected.code, 'recovery-rejected');
+  assert.match(rejected.reason, /again/);
+  assert.match(rejected.reason, /不同的迁移/);
+  assert.equal(session.snapshot().node.status, 'cancelled');
+});

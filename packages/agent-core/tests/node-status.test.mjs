@@ -413,3 +413,29 @@ test('marking a completed node as upstream-affected does not execute it again', 
   assert.equal(replay.state.version, 4);
   assert.equal(replay.state.status, 'completed');
 });
+
+test('契约：execution-finished 拒绝和入口不一致的 returnTo', () => {
+  const running = {
+    status: 'running',
+    version: 4,
+    upstreamAffected: false,
+    stored: [],
+    entryStatus: 'needs-revision',
+  };
+  const forged = applyNodeTransitionCommand(
+    running,
+    envelope({ type: 'execution-finished', returnTo: 'ready' }, 'finish-forged', 4),
+  );
+  assert.equal(forged.decision.status, 'rejected');
+  assert.equal(forged.decision.code, 'illegal-transition');
+  assert.equal(forged.state.status, 'running');
+  assert.equal(forged.state.entryStatus, 'needs-revision');
+  assert.equal(forged.state.version, 4);
+  const matched = applyNodeTransitionCommand(
+    running,
+    envelope({ type: 'execution-finished', returnTo: 'needs-revision' }, 'finish-matched', 4),
+  );
+  assert.equal(matched.decision.status, 'applied');
+  assert.equal(matched.state.status, 'needs-revision');
+  assert.equal(matched.decision.result.effects.includes('accept-handoff'), false);
+});

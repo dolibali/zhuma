@@ -145,11 +145,11 @@ function render() {
 function renderComposer() {
   const view = state.view;
   primary.textContent = view.primary.label;
-  primary.disabled = busy || !view.primary.enabled;
+  primary.disabled = busy || state.disconnected || !view.primary.enabled;
   primary.title = view.primary.disabledReason ?? '';
   primaryReason.textContent = view.primary.disabledReason ?? view.stop.disabledReason ?? '';
   stopButton.hidden = !view.stop.visible;
-  stopButton.disabled = busy || !view.stop.enabled;
+  stopButton.disabled = busy || state.disconnected || !view.stop.enabled;
   stopButton.title = view.stop.disabledReason ?? '停止后等待执行器回执。关闭页面不会取消运行。';
   intentWrap.hidden = !view.run;
   intentNote.hidden = !view.run;

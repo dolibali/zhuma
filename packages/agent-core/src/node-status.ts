@@ -395,6 +395,13 @@ function prepareTransition(
     }
     return { ok: true, transition: { type: transition.type, returnTo: entry } };
   }
+  if (transition.type === 'execution-finished') {
+    const entry = recordedEntry(state);
+    if (entry === undefined || transition.returnTo !== entry) {
+      return { ok: false, code: 'illegal-transition' };
+    }
+    return { ok: true, transition: { type: 'execution-finished', returnTo: entry } };
+  }
   return { ok: true, transition };
 }
 

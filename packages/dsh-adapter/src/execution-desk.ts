@@ -16,6 +16,7 @@ import {
   openRunAttempt,
   prepareArtifactDraft,
   presentExecutionFault,
+  readNodeHandoff,
   preservedTurnsAfterExpertSwitch,
   recordRecoveryRequest,
   recoveryCommandFor,
@@ -201,11 +202,23 @@ export class ExecutionDesk {
   private sequence = 0;
   private draftRoundId: string | null = null;
 
+  private readonly seed: DeskSeed;
+
   private constructor(
-    private readonly seed: DeskSeed,
+    inputSeed: DeskSeed,
     private readonly deps: DeskDependencies,
     restored: DeskPersistence | null,
   ) {
+    const handoff = inputSeed.handoff;
+    const read = readNodeHandoff({
+      ...handoff,
+      inputRefs: handoff.inputRefs ?? [],
+      skillRefs: handoff.skillRefs ?? [],
+      mcpRefs: handoff.mcpRefs ?? [],
+    });
+    if (!read.ok) throw new Error('invalid-handoff');
+    const seed = { ...inputSeed, handoff: read.handoff };
+    this.seed = seed;
     const expert = seed.catalog.experts.find((item) => item.enabled) ?? seed.catalog.experts[0];
     this.selections = {
       expertId: expert?.id ?? '',
@@ -460,6 +473,7 @@ export class ExecutionDesk {
 
   async stop(): Promise<DeskResult> {
     if (!this.interactionReady) return this.blockedRestore();
+    if (this.brokenRecord()) return this.recordBlocked();
     if (this.resumeGap) return this.gapBlocked();
     const active = this.activeRun();
     if (!active) {
@@ -501,6 +515,7 @@ export class ExecutionDesk {
 
   retry(idempotencyKey: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
+    if (this.brokenRecord()) return this.recordBlocked();
     const returnTo = recordedEntryStatus(this.nodeState);
     if (returnTo === undefined) {
       return this.fail(
@@ -522,8 +537,13 @@ export class ExecutionDesk {
     const transition: NodeTransition =
       recovery.transition === 'retry' ? { type: 'retry', returnTo } : { type: 'restart', returnTo };
     const applied = this.applyTransition(transition, `recovery:${idempotencyKey}`);
-    if (!applied) {
-      return this.fail('recovery-rejected', '节点', '恢复命令没有被接受', '刷新事实后再试');
+    if (!applied.ok) {
+      return this.fail(
+        'recovery-rejected',
+        '节点',
+        recoveryRejectedReason(idempotencyKey, applied.code),
+        '刷新事实后再看节点是否已经恢复。不要重复使用同一个请求标识。',
+      );
     }
     const last = [...this.turns].reverse().find((turn) => turn.role === 'user');
     if (!last) return this.succeed();
@@ -561,7 +581,8 @@ export class ExecutionDesk {
     }
     this.putRun(settled.attempt);
     if (settled.nodeTransition.type === 'execution-failed') {
-      this.applyTransition(settled.nodeTransition, `abandon:${run.id}`);
+      const moved = this.applyTransition(settled.nodeTransition, `abandon:${run.id}`);
+      if (!moved.ok) this.preserveRecordError();
     }
     const fault = presentExecutionFault('executor-disconnected');
     this.faults.push({
@@ -641,8 +662,11 @@ export class ExecutionDesk {
       return this.fail(marked.code, active.id, '运行还不能进入等待输入', '先取得执行回执');
     }
     const applied = this.applyTransition({ type: 'input-required' }, `wait:${active.id}`);
-    if (!applied)
+    if (!applied.ok) {
+      this.preserveRecordError();
+      this.persist();
       return this.fail('illegal-transition', '节点', '节点不能进入等待输入', '刷新事实');
+    }
     this.putRun(marked.attempt);
     return this.succeed({ runId: active.id });
   }
@@ -695,6 +719,7 @@ export class ExecutionDesk {
 
   private beginRun(input: SendInput): DeskResult {
     if (!entryIsConsistent(this.nodeState)) {
+      if (this.brokenRecord()) return this.recordBlocked();
       return this.fail(
         'entry-inconsistent',
         '节点',
@@ -903,7 +928,10 @@ export class ExecutionDesk {
         return this.fail('not-waiting', active.id, '运行并不在等待输入', '消息留在已接收，未应用');
       }
       const applied = this.applyTransition({ type: 'input-supplied' }, `resume:${record.id}`);
-      if (!applied) return this.succeed({ runId: active.id });
+      if (!applied.ok) {
+        this.preserveRecordError();
+        return this.succeed({ runId: active.id });
+      }
       const done = advanceIntervention(record.phase, 'apply');
       if (done.ok) {
         this.interventions = this.interventions.map((item) =>
@@ -996,7 +1024,11 @@ export class ExecutionDesk {
         return;
       }
       const applied = this.applyTransition({ type: 'execution-acknowledged' }, `ack:${runId}`);
-      if (!applied) return;
+      if (!applied.ok) {
+        this.preserveRecordError();
+        this.persist();
+        return;
+      }
       this.putRun(acked.attempt);
       this.noteQueueApplied(runId);
       this.ensureExecutorTurn(acked.attempt, '');
@@ -1065,7 +1097,8 @@ export class ExecutionDesk {
     }
     this.putRun(settled.attempt);
     if (settled.nodeTransition.type === 'cancel-confirmed') {
-      this.applyTransition(settled.nodeTransition, `cancel:${runId}`);
+      const moved = this.applyTransition(settled.nodeTransition, `cancel:${runId}`);
+      if (!moved.ok) this.preserveRecordError();
     }
     this.dropPending(runId);
     this.releaseClaim(runId);
@@ -1092,8 +1125,15 @@ export class ExecutionDesk {
         this.failInconsistentRun(attempt.id);
         return;
       }
+      const moved = this.applyTransition(
+        { type: 'execution-finished', returnTo },
+        `finish:${attempt.id}`,
+      );
+      if (!moved.ok) {
+        this.failInconsistentRun(attempt.id);
+        return;
+      }
       this.putRun(settled.attempt);
-      this.applyTransition({ type: 'execution-finished', returnTo }, `finish:${attempt.id}`);
       this.releaseClaim(attempt.id);
       this.persist();
       this.consumeQueue(attempt.id);
@@ -1115,7 +1155,7 @@ export class ExecutionDesk {
       intent: 'new',
     });
     if (!opened.ok) {
-      this.dropPending(finishedRunId);
+      this.dropPending(finishedRunId, opened.reason);
       this.persist();
       return;
     }
@@ -1131,14 +1171,15 @@ export class ExecutionDesk {
     this.startDrive(nextRunId, first.body, []);
   }
 
-  private dropPending(runId: string): void {
+  private dropPending(runId: string, blockedReason?: string): void {
     const applying = this.queueApply.get(runId);
+    const notice = blockedReason
+      ? `下一轮没有启动：${blockedReason}`
+      : '这次运行已结束，队列里的内容未应用。';
     this.interventions = this.interventions.map((item) => {
       const tied = item.runId === runId || item.id === applying;
       if (!tied || item.phase !== 'pending') return item;
-      return copyIntervention(item, 'not-applied', {
-        notice: '这次运行已结束，队列里的内容未应用。',
-      });
+      return copyIntervention(item, 'not-applied', { notice });
     });
     if (applying) this.queueApply.delete(runId);
   }
@@ -1181,7 +1222,8 @@ export class ExecutionDesk {
     }
     this.putRun(settled.attempt);
     if (settled.nodeTransition.type === 'execution-failed') {
-      this.applyTransition(settled.nodeTransition, `fail:${runId}`);
+      const moved = this.applyTransition(settled.nodeTransition, `fail:${runId}`);
+      if (!moved.ok) this.preserveRecordError();
     }
     const presented = presentExecutionFault(kind);
     this.faults.push({
@@ -1524,7 +1566,10 @@ export class ExecutionDesk {
       ?.sessionId;
   }
 
-  private applyTransition(transition: NodeTransition, key: string): boolean {
+  private applyTransition(
+    transition: NodeTransition,
+    key: string,
+  ): { readonly ok: boolean; readonly code: string } {
     const outcome = applyNodeTransitionCommand(this.nodeState, {
       idempotencyKey: key,
       actorId: this.seed.actorId,
@@ -1535,9 +1580,14 @@ export class ExecutionDesk {
     this.nodeState = outcome.state;
     if (outcome.decision.status === 'applied') {
       if (outcome.decision.result.effects.includes('accept-handoff')) this.downstreamLaunches += 1;
-      return true;
+      return { ok: true, code: 'applied' };
     }
-    return outcome.decision.status === 'replayed';
+    if (outcome.decision.status === 'replayed') return { ok: true, code: 'replayed' };
+    return {
+      ok: false,
+      code:
+        outcome.decision.status === 'rejected' ? outcome.decision.code : outcome.decision.status,
+    };
   }
 
   private activeRun(): ExecutionAttempt | undefined {
@@ -1603,12 +1653,14 @@ export class ExecutionDesk {
 
   private fail(code: string, objectLabel: string, reason: string, nextStep: string): DeskResult {
     this.lastError = { code, objectLabel, reason, nextStep };
+    this.preserveRecordError();
     this.persist();
     return { ok: false, code, objectLabel, reason, nextStep, snapshot: this.snapshot() };
   }
 
   private succeed(extra: { replayed?: boolean; runId?: string } = {}): DeskResult {
     this.lastError = null;
+    this.preserveRecordError();
     this.persist();
     return {
       ok: true,
@@ -1622,9 +1674,35 @@ export class ExecutionDesk {
     this.deps.journal?.save(this.persistence());
   }
 
+  /** 应带入口的执行态丢了记录，且没有进行中的运行。人工处理前一直成立。 */
+  private brokenRecord(): boolean {
+    if (entryIsConsistent(this.nodeState)) return false;
+    const status = this.nodeState.status;
+    if (status !== 'running' && status !== 'waiting-for-input') return false;
+    return this.activeRun() === undefined;
+  }
+
+  private recordBlocked(): DeskResult {
+    return this.fail(
+      'entry-inconsistent',
+      '节点',
+      '节点记录异常，需要人工处理',
+      '不要按这份记录发送、重试、重新开始或停止。',
+    );
+  }
+
+  private preserveRecordError(): void {
+    if (entryIsConsistent(this.nodeState)) return;
+    if (this.brokenRecord()) {
+      this.lastError = missingRecord();
+      return;
+    }
+    if (this.lastError?.code !== 'entry-inconsistent') this.lastError = entryMismatch();
+  }
+
   private noteEntry(): void {
     if (entryIsConsistent(this.nodeState)) return;
-    this.lastError = entryMismatch();
+    this.lastError = this.brokenRecord() ? missingRecord() : entryMismatch();
   }
 }
 
@@ -1721,6 +1799,19 @@ function recordedEntryStatus(state: NodeCommandState): 'ready' | 'needs-revision
     return state.entryStatus;
   }
   return undefined;
+}
+
+function recoveryRejectedReason(idempotencyKey: string, code: string): string {
+  if (code === 'idempotency-mismatch') {
+    return `恢复请求 ${idempotencyKey} 已经对应过不同的迁移，不能再改写节点。`;
+  }
+  if (code === 'version-conflict') {
+    return `恢复请求 ${idempotencyKey} 和当前节点版本不一致，没有再次改写。`;
+  }
+  if (code === 'illegal-transition') {
+    return `恢复请求 ${idempotencyKey} 和记下的入口不一致，节点保持原状。`;
+  }
+  return `恢复请求 ${idempotencyKey} 没有被接受（${code}）。`;
 }
 
 function entryMismatch(): CommandErrorFact {

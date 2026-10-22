@@ -327,6 +327,7 @@ test('契约：故障分开呈现且不伪造运行，切换专家不丢历史�
   assert.equal(classifyExecutorFailure('Unexpected token { in JSON'), 'model-error');
   assert.equal(classifyExecutorFailure('text/event-stream'), 'model-error');
   assert.equal(classifyExecutorFailure('请求超时'), 'network-interruption');
+  assert.equal(classifyExecutorFailure('socket hang up'), 'network-interruption');
   assert.deepEqual(assigneeAfterAgentAssist({ id: 'chen-ning', kind: 'human' }), {
     id: 'chen-ning',
     kind: 'human',
@@ -403,4 +404,36 @@ test('契约：模拟配置不能声称真实模型已经生效', () => {
   assert.equal(issues.ok, false);
   assert.ok(issues.issues.some((issue) => issue.code === 'model-claims-real-success'));
   assert.ok(issues.issues.some((issue) => issue.code === 'mcp-not-auto-authorized'));
+});
+
+test('契约：simulated 不是未配置时的回退', () => {
+  const issues = validateExecutionConfig({
+    id: 'cfg',
+    expertId: 'ex',
+    expertVersionId: 'ex-v',
+    expertLabel: '接口实现',
+    expertSummary: '字段',
+    expertEnabled: true,
+    executorId: 'dsh',
+    executorLabel: 'DSH',
+    executorAvailable: true,
+    executorVerified: false,
+    simulated: false,
+    modelLabel: '',
+    modelInheritance: 'executor-managed',
+    modelCompatible: false,
+    skills: [],
+    mcp: [],
+    attachmentIds: [],
+    contextSummaries: [],
+  });
+  assert.equal(issues.ok, false);
+  assert.equal(
+    issues.issues.some((issue) => issue.code === 'executor-unverified'),
+    true,
+  );
+  assert.equal(
+    issues.issues.some((issue) => issue.code === 'simulated-mismatch'),
+    false,
+  );
 });
