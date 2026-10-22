@@ -109,6 +109,9 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
       await page.locator('[data-testid="mcp"][value="billing"]').locator('..').innerText(),
       /没有工具授权/,
     );
+    const accept = await page.locator('#file').getAttribute('accept');
+    assert.equal(accept.includes('.pdf'), false);
+    assert.equal(accept.includes('application/pdf'), false);
     await page.locator('#file').setInputFiles({
       name: 'fields.csv',
       mimeType: 'text/csv',
