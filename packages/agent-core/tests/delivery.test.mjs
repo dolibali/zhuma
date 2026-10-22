@@ -404,6 +404,14 @@ test('review to-dos follow the current round, and an agent stall notifies the ow
       assignee: { id: 'agent-1', kind: 'agent' },
       ownerId: 'human-1',
     }),
+    node('expert-wait', 'waiting-for-input', {
+      assignee: { id: 'expert-cfg', kind: 'expert' },
+      ownerId: 'human-1',
+    }),
+    node('expert-fail', 'failed', {
+      assignee: { id: 'expert-cfg', kind: 'expert' },
+      ownerId: 'human-1',
+    }),
   ];
   const unmarked = deriveInbox({
     actorId: 'human-1',
@@ -493,8 +501,17 @@ test('review to-dos follow the current round, and an agent stall notifies the ow
     [
       ['agent-fail', 'owner-take-back', 'retry-or-take-back'],
       ['agent-wait', 'owner-input-required', 'provide-input'],
+      ['expert-fail', 'owner-take-back', 'retry-or-take-back'],
+      ['expert-wait', 'owner-input-required', 'provide-input'],
     ],
   );
+  const asExpert = deriveInbox({
+    actorId: 'expert-cfg',
+    nodes,
+    rounds: [],
+    confirmations: [],
+  });
+  assert.equal(asExpert.length, 0);
 });
 
 test('keeps task access, submission, review votes, and files on their own grant', () => {

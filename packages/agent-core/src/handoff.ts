@@ -1,6 +1,16 @@
 import type { NodeStatus } from './node-status.js';
 
-export type ParticipantKind = 'human' | 'agent';
+/**
+ * `human` is a person. `agent` is B's runtime marker for a run.
+ * `expert` is A's directory expert config, not a run instance.
+ * Identifiers are A's directory ids. B does not keep an identity directory.
+ */
+export type ParticipantKind = 'human' | 'agent' | 'expert';
+
+/** Agent runs and expert configs both leave delivery to the task owner. */
+export function assigneeUsesAgentRuntime(kind: ParticipantKind): boolean {
+  return kind === 'agent' || kind === 'expert';
+}
 
 export interface ActorRef {
   readonly id: string;
@@ -46,8 +56,17 @@ export interface ContextInputRef {
   readonly contextPackId?: string;
 }
 
+/** Versioned resource pointer. Credentials stay outside this object. */
+export interface VersionedRef {
+  readonly id: string;
+  readonly version: string;
+}
+
 /**
- * What A hands to B at a node boundary: goal, assignee, dependencies, reviewers, inputs.
+ * What A hands to B at a node boundary.
+ * `revision` is the applied plan revision this handoff was cut from.
+ * It is not the node command version and not A's draft concurrency version.
+ * Resource refs are separate from `inputRefs` and carry no credentials.
  * 待 A 对齐：这些字段的编辑、授权和计划差异不在本契约中实现。
  */
 export interface NodeHandoff {
@@ -61,8 +80,26 @@ export interface NodeHandoff {
   readonly reviewRequired: boolean;
   readonly reviewerIds: readonly string[];
   readonly inputRefs: readonly ContextInputRef[];
+  readonly expertRef: VersionedRef;
+  readonly skillRefs: readonly VersionedRef[];
+  readonly mcpRefs: readonly VersionedRef[];
+  readonly inputNote: string;
+  readonly expectedOutput: string;
   readonly childTaskId?: string;
 }
+
+type CredentialField =
+  'credential' | 'credentials' | 'secret' | 'token' | 'apiKey' | 'password' | 'authorization';
+
+type ExcludesCredentialFields<T> = Extract<keyof T, CredentialField> extends never ? true : never;
+
+/**
+ * Compile-time lock: handoff payloads cannot grow credential fields.
+ * Empty strings and empty ref arrays are valid; secrets are not part of the shape.
+ */
+export const handoffPayloadExcludesCredentials: ExcludesCredentialFields<NodeHandoff> &
+  ExcludesCredentialFields<VersionedRef> &
+  ExcludesCredentialFields<ContextInputRef> = true;
 
 /**
  * What B returns to A. A renders this; B does not compute task rollup status.

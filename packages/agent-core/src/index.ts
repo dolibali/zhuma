@@ -11,6 +11,7 @@ export { validatePlan } from './plan.js';
 
 export type {
   NodeStatus,
+  NodeEntryStatus,
   UnverifiedExternalSignal,
   NodeTransition,
   AdvancementEffect,
@@ -84,9 +85,11 @@ export type {
   TaskDependency,
   WorkflowVersionDependency,
   ContextInputRef,
+  VersionedRef,
   NodeHandoff,
   NodeExecutionReport,
 } from './handoff.js';
+export { assigneeUsesAgentRuntime, handoffPayloadExcludesCredentials } from './handoff.js';
 
 export type {
   RunStatus,

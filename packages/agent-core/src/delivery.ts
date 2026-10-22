@@ -1,5 +1,5 @@
 import type { ExecutionEngine } from './types.js';
-import type { ActorRef } from './handoff.js';
+import { assigneeUsesAgentRuntime, type ActorRef } from './handoff.js';
 import type { NodeStatus } from './node-status.js';
 import { canonicalPayload } from './concurrency.js';
 
@@ -611,7 +611,7 @@ export function deriveInbox(input: {
   for (const node of input.nodes) {
     if (
       node.access !== 'write' ||
-      node.assignee.kind !== 'agent' ||
+      !assigneeUsesAgentRuntime(node.assignee.kind) ||
       node.ownerId === undefined ||
       node.ownerId !== input.actorId
     ) {

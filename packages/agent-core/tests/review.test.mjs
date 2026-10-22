@@ -286,7 +286,7 @@ test('cancelling, restarting, or resubmitting voids the open round', () => {
   assert.equal(voided.status, 'voided');
   assert.equal(cast(voided, ballot('h1', 'approve')).code, 'voided-round');
 
-  const restart = transitionNode('cancelled', { type: 'restart' });
+  const restart = transitionNode('cancelled', { type: 'restart', returnTo: 'ready' });
   assert.equal(
     reviewRoundAfterNodeTransition(voided, restart, { type: 'restart' }).status,
     'voided',

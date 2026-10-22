@@ -22,6 +22,9 @@ export const NODE_STATUSES = [
 
 export type NodeStatus = (typeof NODE_STATUSES)[number];
 
+/** Status a run was entered from. Recovery and later submit must name it. */
+export type NodeEntryStatus = 'ready' | 'needs-revision';
+
 /**
  * Signals that must never move a node by themselves.
  * A process exit, an upload, or a child finishing is not delivery.
@@ -40,7 +43,11 @@ export type NodeTransition =
   | { readonly type: 'plan-started'; readonly dependenciesSatisfied: boolean }
   | { readonly type: 'dependencies-changed'; readonly dependenciesSatisfied: boolean }
   | { readonly type: 'execution-acknowledged' }
-  | { readonly type: 'submit-artifact'; readonly reviewRequired: boolean }
+  | {
+      readonly type: 'submit-artifact';
+      readonly reviewRequired: boolean;
+      readonly entryStatus?: NodeEntryStatus;
+    }
   | { readonly type: 'input-required' }
   | { readonly type: 'input-supplied' }
   | { readonly type: 'child-workflow-started' }
@@ -48,8 +55,8 @@ export type NodeTransition =
   | { readonly type: 'review-resolved'; readonly outcome: 'approved' | 'changes-requested' }
   | { readonly type: 'execution-failed' }
   | { readonly type: 'cancel-confirmed' }
-  | { readonly type: 'retry' }
-  | { readonly type: 'restart' }
+  | { readonly type: 'retry'; readonly returnTo?: NodeEntryStatus }
+  | { readonly type: 'restart'; readonly returnTo?: NodeEntryStatus }
   | { readonly type: 'reopen-for-rework' };
 
 export type AdvancementEffect =
@@ -145,8 +152,14 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
     case 'execution-acknowledged':
       if (from === 'ready' || from === 'needs-revision') return done(from, 'running', []);
       return illegal(from, transition.type);
-    case 'submit-artifact':
-      if (from === 'needs-revision') {
+    case 'submit-artifact': {
+      const entry = transition.entryStatus;
+      if (entry !== undefined && entry !== 'ready' && entry !== 'needs-revision') {
+        return illegal(from, transition.type);
+      }
+      const enteredFromRevision =
+        from === 'needs-revision' || (from === 'running' && entry === 'needs-revision');
+      if (enteredFromRevision) {
         if (!transition.reviewRequired) return illegal(from, transition.type);
         return done(from, 'in-review', ['open-review', 'block-downstream']);
       }
@@ -154,6 +167,7 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
       return transition.reviewRequired
         ? done(from, 'in-review', ['open-review', 'block-downstream'])
         : done(from, 'completed', ['accept-handoff']);
+    }
     case 'input-required':
       if (from !== 'running') return illegal(from, transition.type);
       return done(from, 'waiting-for-input', []);
@@ -176,11 +190,15 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
       if (!CANCELLABLE.includes(from)) return illegal(from, transition.type);
       return done(from, 'cancelled', ['record-cancellation', 'block-downstream']);
     case 'retry':
-      if (from !== 'failed') return illegal(from, transition.type);
-      return done(from, 'ready', ['become-actionable']);
-    case 'restart':
-      if (from !== 'cancelled') return illegal(from, transition.type);
-      return done(from, 'ready', ['become-actionable']);
+    case 'restart': {
+      const expected = transition.type === 'retry' ? 'failed' : 'cancelled';
+      if (from !== expected) return illegal(from, transition.type);
+      if (transition.returnTo === 'ready') return done(from, 'ready', ['become-actionable']);
+      if (transition.returnTo === 'needs-revision') {
+        return done(from, 'needs-revision', ['block-downstream']);
+      }
+      return illegal(from, transition.type);
+    }
     case 'reopen-for-rework':
       if (from !== 'completed') return illegal(from, transition.type);
       return done(from, 'needs-revision', ['block-downstream']);

@@ -88,8 +88,32 @@ test('follows the legal node transitions and their effects', () => {
       'cancelled',
       ['record-cancellation', 'block-downstream'],
     ],
-    ['failed', { type: 'retry' }, 'ready', ['become-actionable']],
-    ['cancelled', { type: 'restart' }, 'ready', ['become-actionable']],
+    ['failed', { type: 'retry', returnTo: 'ready' }, 'ready', ['become-actionable']],
+    [
+      'failed',
+      { type: 'retry', returnTo: 'needs-revision' },
+      'needs-revision',
+      ['block-downstream'],
+    ],
+    ['cancelled', { type: 'restart', returnTo: 'ready' }, 'ready', ['become-actionable']],
+    [
+      'cancelled',
+      { type: 'restart', returnTo: 'needs-revision' },
+      'needs-revision',
+      ['block-downstream'],
+    ],
+    [
+      'running',
+      { type: 'submit-artifact', reviewRequired: true, entryStatus: 'needs-revision' },
+      'in-review',
+      ['open-review', 'block-downstream'],
+    ],
+    [
+      'running',
+      { type: 'submit-artifact', reviewRequired: false, entryStatus: 'ready' },
+      'completed',
+      ['accept-handoff'],
+    ],
     ['completed', { type: 'reopen-for-rework' }, 'needs-revision', ['block-downstream']],
   ];
   for (const [from, transition, to, effects] of legal) {
@@ -121,6 +145,12 @@ test('rejects transitions that would skip review, delivery, or an explicit resta
     ['in-review', { type: 'submit-artifact', reviewRequired: true }],
     ['in-review', { type: 'execution-failed' }],
     ['needs-revision', { type: 'submit-artifact', reviewRequired: false }],
+    ['running', { type: 'submit-artifact', reviewRequired: false, entryStatus: 'needs-revision' }],
+    ['running', { type: 'submit-artifact', reviewRequired: true, entryStatus: 'blocked' }],
+    ['failed', { type: 'retry' }],
+    ['failed', { type: 'retry', returnTo: 'running' }],
+    ['cancelled', { type: 'restart' }],
+    ['cancelled', { type: 'restart', returnTo: 'completed' }],
     ['needs-revision', { type: 'review-resolved', outcome: 'approved' }],
     ['in-review', { type: 'review-resolved', outcome: 'approved' }],
     ['in-review', { type: 'review-resolved', outcome: 'changes-requested' }],
@@ -142,6 +172,40 @@ test('rejects transitions that would skip review, delivery, or an explicit resta
     assert.equal(result.from, from);
     assert.equal(result.transition, transition.type);
   }
+});
+
+test('revision entry survives stop and restart, and a later submit must be reviewed', () => {
+  const acknowledged = transitionNode('needs-revision', { type: 'execution-acknowledged' });
+  assert.equal(acknowledged.to, 'running');
+  const cancelled = transitionNode('running', { type: 'cancel-confirmed' });
+  assert.equal(cancelled.to, 'cancelled');
+  const restarted = transitionNode('cancelled', { type: 'restart', returnTo: 'needs-revision' });
+  assert.equal(restarted.ok, true);
+  assert.equal(restarted.to, 'needs-revision');
+  assert.deepEqual(restarted.effects, ['block-downstream']);
+
+  const skipped = transitionNode('running', {
+    type: 'submit-artifact',
+    reviewRequired: false,
+    entryStatus: 'needs-revision',
+  });
+  assert.equal(skipped.ok, false);
+  assert.equal(skipped.code, 'illegal-transition');
+  const reviewed = transitionNode('running', {
+    type: 'submit-artifact',
+    reviewRequired: true,
+    entryStatus: 'needs-revision',
+  });
+  assert.equal(reviewed.to, 'in-review');
+
+  const missing = transitionNode('cancelled', { type: 'restart' });
+  assert.equal(missing.ok, false);
+  const follow = transitionNode(missing.to, { type: 'submit-artifact', reviewRequired: false });
+  assert.equal(follow.ok, false);
+  assert.equal(follow.code, 'illegal-transition');
+  const retried = transitionNode('failed', { type: 'retry' });
+  assert.equal(retried.ok, false);
+  assert.equal(retried.to, undefined);
 });
 
 test('a returned child workflow waits for the parent submit and does not hand off', () => {

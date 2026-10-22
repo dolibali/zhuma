@@ -571,12 +571,20 @@ export function applyReviewSettlementCommand(
 /** Review cannot be required with an empty roster. The node does not move in that case. */
 export function transitionForSubmission(
   from: NodeStatus,
-  input: { readonly reviewRequired: boolean; readonly reviewerIds: readonly string[] },
+  input: {
+    readonly reviewRequired: boolean;
+    readonly reviewerIds: readonly string[];
+    readonly entryStatus?: 'ready' | 'needs-revision';
+  },
 ):
   | NodeTransitionResult
   | { readonly ok: false; readonly code: 'review-requires-reviewers'; readonly from: NodeStatus } {
   if (input.reviewRequired && input.reviewerIds.length === 0) {
     return { ok: false, code: 'review-requires-reviewers', from };
   }
-  return transitionNode(from, { type: 'submit-artifact', reviewRequired: input.reviewRequired });
+  return transitionNode(from, {
+    type: 'submit-artifact',
+    reviewRequired: input.reviewRequired,
+    ...(input.entryStatus === undefined ? {} : { entryStatus: input.entryStatus }),
+  });
 }
