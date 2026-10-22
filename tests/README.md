@@ -14,7 +14,7 @@ pnpm exec playwright install --with-deps chromium
 pnpm test:ui
 ```
 
-`test:ui` 先构建工作台，再运行 Chromium 浅色和深色场景（7 个场景 × 2 个主题）。统一使用 Playwright 的 `chromium` channel，即完整 Chromium 的新 headless 模式；本地与 CI 使用相同配置，不依赖已安装的 Chrome。已完成构建时可用 `pnpm test:ui:run`；只跑一组用 `pnpm test:ui:run --project=chromium-light`。测试文件在 `packages/client/tests/browser/`，不属于 `pnpm test` 的 Node 用例发现范围。
+`test:ui` 先构建工作台，再运行 Chromium 浅色和深色场景（10 个场景 × 2 个主题）。统一使用 Playwright 的 `chromium` channel，即完整 Chromium 的新 headless 模式；本地与 CI 使用相同配置，不依赖已安装的 Chrome。已完成构建时可用 `pnpm test:ui:run`；只跑一组用 `pnpm test:ui:run --project=chromium-light`。测试文件在 `packages/client/tests/browser/`，不属于 `pnpm test` 的 Node 用例发现范围。
 
 临时静态服务由 Playwright 启停，只监听 `127.0.0.1:8796`；端口占用直接失败，不复用未知进程。需要换端口时设置 `ZHUMA_UI_TEST_PORT`。它只提供测试页面和打包脚本，未配置的 API 返回 404。所有 RPC 在每个用例内拦截；非本地网络请求、意外 API 或页面异常都会使测试失败。
 
@@ -26,6 +26,9 @@ pnpm test:ui
 | 冲突恢复       | 关闭错误提示后仍有恢复入口；取消确认保留预览，接受后读取最新快照                                         |
 | 目录与表单     | 26 人目录筛选、长中文能力搜索多选；取消/错误保留原值和输入；保存中禁止 Escape 关闭；720×450 仍能操作保存 |
 | 连接状态       | 等待、错误重试、空目录和创建入口                                                                         |
+| 三层工作树     | 全树点击保持、路径/每层选择恢复、搜索/折叠/依赖跳转不写入、正常入口保存重开                              |
+| 定位失效       | 新版本删除子树后回到可见上级，搜索和右栏不残留已不可见内容                                               |
+| 小屏树导航     | 720×600 键盘定位/进入，抽屉关闭与进入本层后恢复触发按钮焦点                                              |
 | 长任务表单     | 720×450、26 位参与者，真实滚轮滚动正文并露出末项；逐项 Tab 到负责人，footer 贴底且不随焦点偏移           |
 
 用例运行真实的 `WorkbenchPage`、`TaskEditor`、`createWorkbenchApi`、公共控件、画布和 CSS。测试传输与主题服务替代官方 Host 边界；命令复用 `agent-core` 的纯 reducer，并只保存在每个用例的内存快照中；规划使用预设响应，不调用模型。刷新重开是客户端读写契约验证，不是磁盘持久化、真实模型规划质量、官方 DSH 认证/主题持久化/插件注册或安装版桌面验收。

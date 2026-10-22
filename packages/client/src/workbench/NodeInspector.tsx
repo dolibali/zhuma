@@ -88,6 +88,11 @@ export function NodeInspector({
     );
   return (
     <fieldset className="zm-config-form" disabled={disabled}>
+      {hasChild && (
+        <button className="zm-child-entry" onClick={split}>
+          打开子工作流 →
+        </button>
+      )}
       <Field label="节点名称">
         <input
           maxLength={160}
@@ -186,7 +191,7 @@ export function NodeInspector({
       )}
       <details className="zm-node-more">
         <summary>更多操作</summary>
-        <button onClick={split}>{hasChild ? '打开子工作流 →' : '拆分为子工作流'}</button>
+        {!hasChild && <button onClick={split}>拆分为子工作流</button>}
         <button
           className="danger"
           disabled={hasChild}

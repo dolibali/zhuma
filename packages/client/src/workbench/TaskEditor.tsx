@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   validateWorkTask,
   WorkbenchError,
@@ -12,6 +12,8 @@ import type { WorkbenchApi } from './api.js';
 import { Field, MemberPicker, Modal, ParticipantSelect } from './controls.js';
 import { WorkflowCanvas } from './WorkflowCanvas.js';
 import { NodeInspector } from './NodeInspector.js';
+import { TreeNavigator } from './TreeNavigator.js';
+import { indexWorkTree, resolveWorkLocation, workflowPath } from './navigation.js';
 import { Button } from './Button.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 
@@ -55,8 +57,13 @@ export function TaskEditor({
   const [revision, setRevision] = useState(state.revision);
   const [workflowId, setWorkflowId] = useState(original.workflows.find((w) => !w.parentNodeId)!.id);
   const [selectedId, setSelectedId] = useState<string | null>(
-    original.workflows[0]?.nodes[0]?.id ?? null,
+    original.workflows.find((w) => !w.parentNodeId)?.nodes[0]?.id ?? null,
   );
+  const selectionMemory = useRef(new Map<string, string | null>());
+  const previousPath = useRef<string[]>([]);
+  const [navigationNotice, setNavigationNotice] = useState('');
+  const [expanded, setExpanded] = useState(() => new Set(original.workflows.map((w) => w.id)));
+  const [locateRequest, setLocateRequest] = useState(0);
   const [view, setView] = useState<'list' | 'workflow'>('workflow');
   const [inspectorOpen, setInspectorOpen] = useState(() => window.innerWidth > 1100);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -76,7 +83,12 @@ export function TaskEditor({
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     inspectorRef.current?.querySelector<HTMLElement>('button, input, textarea, select')?.focus();
     return () => {
-      if (inspectorRef.current?.contains(document.activeElement)) previous?.focus();
+      if (
+        previous?.isConnected &&
+        (inspectorRef.current?.contains(document.activeElement) ||
+          document.activeElement === document.body)
+      )
+        previous.focus();
     };
   }, [compact, inspectorOpen]);
   const [tree, setTree] = useState(false);
@@ -99,15 +111,46 @@ export function TaskEditor({
     task: WorkTask;
   } | null>(null);
   const dirty = JSON.stringify(task) !== baseline;
-  const previewTask = proposal?.result.workflows.length
-    ? { ...task, workflows: proposal.result.workflows }
-    : null;
+  const previewTask = useMemo(
+    () =>
+      proposal?.result.workflows.length ? { ...task, workflows: proposal.result.workflows } : null,
+    [proposal, task],
+  );
   const displayTask = previewTask ?? task;
+  const workTree = useMemo(() => indexWorkTree(displayTask), [displayTask]);
   const locked = busy || planning || task.status === 'ready' || !!previewTask;
-  const workflow =
-    displayTask.workflows.find((w) => w.id === workflowId) ??
-    displayTask.workflows.find((w) => !w.parentNodeId)!;
+  const workflow = workTree.workflows.get(workflowId) ?? workTree.root;
   const node = workflow.nodes.find((n) => n.id === selectedId);
+  const ancestors = workflowPath(workTree, workflow.id);
+  useEffect(() => {
+    const location = resolveWorkLocation(
+      workTree,
+      { workflowId, nodeId: selectedId },
+      selectionMemory.current,
+      previousPath.current,
+    );
+    if (location.workflowId !== workflowId || location.nodeId !== selectedId) {
+      setWorkflowId(location.workflowId);
+      setSelectedId(location.nodeId);
+      setLocateRequest((request) => request + 1);
+      if (selectedId || workflowId !== location.workflowId)
+        setNavigationNotice('原定位在当前版本中不可用，已返回可见工作流。');
+    }
+    const path = workflowPath(workTree, location.workflowId).map((w) => w.id);
+    for (let i = 1; i < path.length; i++) {
+      const parentId = path[i - 1]!;
+      if (!selectionMemory.current.has(parentId))
+        selectionMemory.current.set(
+          parentId,
+          workTree.workflows.get(path[i]!)?.parentNodeId ?? null,
+        );
+    }
+    previousPath.current = path;
+    selectionMemory.current.set(location.workflowId, location.nodeId);
+    setExpanded((current) =>
+      path.every((id) => current.has(id)) ? current : new Set([...current, ...path]),
+    );
+  }, [workTree, workflowId, selectedId]);
   const members = state.participants.filter((m) => task.participantIds.includes(m.id));
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
@@ -125,6 +168,34 @@ export function TaskEditor({
     setTask(next);
     setProposal(null);
     setMessage('');
+  }
+  function navigate(id: string, nodeId?: string | null, local = false, locate = true) {
+    selectionMemory.current.set(workflow.id, node?.id ?? null);
+    const location = resolveWorkLocation(
+      workTree,
+      { workflowId: id, nodeId: nodeId ?? null },
+      selectionMemory.current,
+    );
+    setWorkflowId(location.workflowId);
+    setSelectedId(location.nodeId);
+    setExpanded(
+      (current) =>
+        new Set([...current, ...workflowPath(workTree, location.workflowId).map((w) => w.id)]),
+    );
+    setNavigationNotice('');
+    if (locate) setLocateRequest((request) => request + 1);
+    if (local) {
+      setTree(false);
+      setPanel('config');
+      if (compact) setInspectorOpen(false);
+    }
+  }
+  function selectNode(id: string, locate = false) {
+    const owner = workTree.owner.get(id);
+    if (!owner) return;
+    navigate(owner.id, id, false, locate);
+    setPanel(proposal ? 'plan' : 'config');
+    if (!tree) setInspectorOpen(true);
   }
   function changeWorkflow(next: Workflow) {
     const candidate = {
@@ -226,8 +297,7 @@ export function TaskEditor({
       setProposal(null);
       setConflict(false);
       setError('');
-      setWorkflowId(current.workflows.find((w) => !w.parentNodeId)!.id);
-      setSelectedId(null);
+      // Reconcile against the new snapshot in the navigation effect, keeping a surviving ancestor.
     } catch (error) {
       setError(error instanceof Error ? error.message : '读取失败。');
     } finally {
@@ -293,8 +363,7 @@ export function TaskEditor({
     if (!node) return;
     const existing = task.workflows.find((w) => w.parentNodeId === node.id);
     if (existing) {
-      setWorkflowId(existing.id);
-      setSelectedId(existing.nodes[0]?.id ?? null);
+      navigate(existing.id, undefined, true);
       return;
     }
     const child: Workflow = {
@@ -339,15 +408,6 @@ export function TaskEditor({
     if (target < 0 || target >= next.length) return;
     [next[index], next[target]] = [next[target]!, next[index]!];
     changeWorkflow({ ...workflow, nodes: next });
-  }
-  const ancestors: Workflow[] = [];
-  let ancestor: Workflow | undefined = workflow;
-  while (ancestor && !ancestors.some((w) => w.id === ancestor?.id)) {
-    ancestors.unshift(ancestor);
-    const parent: string | null = ancestor.parentNodeId;
-    ancestor = parent
-      ? displayTask.workflows.find((w) => w.nodes.some((n) => n.id === parent))
-      : undefined;
   }
   return (
     <div className="zm-editor" ref={editorRef}>
@@ -486,11 +546,8 @@ export function TaskEditor({
                   {i > 0 && <span className="zm-path-divider">/</span>}
                   <button
                     title={w.name}
-                    onClick={() => {
-                      setWorkflowId(w.id);
-                      setSelectedId(null);
-                      setTree(false);
-                    }}
+                    aria-current={w.id === workflow.id ? 'location' : undefined}
+                    onClick={() => navigate(w.id)}
                   >
                     {i === 0 ? '主工作流' : w.name}
                   </button>
@@ -498,8 +555,19 @@ export function TaskEditor({
               ))}
             </nav>
             <span className="zm-node-count">
-              {tree ? `${task.workflows.length} 个工作流` : `${workflow.nodes.length} 节点`}
+              {tree ? `${workTree.workflows.size} 个工作流` : `${workflow.nodes.length} 节点`}
             </span>
+            {workflow.parentNodeId && (
+              <button
+                className="zm-quiet"
+                onClick={() => {
+                  const parent = workTree.owner.get(workflow.parentNodeId!);
+                  if (parent) navigate(parent.id);
+                }}
+              >
+                ↑ 上一级
+              </button>
+            )}
             <span className="zm-spacer" />
             <div className="zm-segment">
               <button
@@ -525,6 +593,8 @@ export function TaskEditor({
                 onClick={() => {
                   setTree(!tree);
                   setView('workflow');
+                  setPanel('config');
+                  if (!tree && !compact) setInspectorOpen(true);
                 }}
               >
                 工作树定位
@@ -543,7 +613,7 @@ export function TaskEditor({
                 setInspectorOpen(!inspectorOpen || panel !== 'config');
               }}
             >
-              {task.status === 'ready' ? '节点详情' : '配置'}
+              {tree ? '层级导航' : task.status === 'ready' ? '节点详情' : '配置'}
             </button>
             {task.status !== 'ready' && (
               <button
@@ -580,28 +650,32 @@ export function TaskEditor({
               </button>
             </details>
           )}
+          {navigationNotice && (
+            <p role="status" className="zm-hint">
+              {navigationNotice}
+            </p>
+          )}
           {tree && (
-            <p className="zm-hint">实线为工作依赖，虚线为逐级拆分。点击节点定位到所属工作流。</p>
+            <div className="zm-tree-legend">
+              <span>— 工作依赖</span>
+              <span>┄ 层级拆分</span>
+              <span className="zm-tree-path-key">当前位置与上级路径</span>
+            </div>
           )}
           {view === 'workflow' && (workflow.nodes.length > 0 || tree) ? (
             <WorkflowCanvas
-              key={`${workflow.id}-${tree}`}
+              key={tree ? 'tree' : workflow.id}
               workflow={workflow}
               task={displayTask}
               members={members}
               selectedId={selectedId}
-              select={(id) => {
-                setSelectedId(id);
-                setPanel(proposal ? 'plan' : 'config');
-                setInspectorOpen(true);
-              }}
+              select={selectNode}
               change={changeWorkflow}
               locked={locked}
               tree={tree}
-              openWorkflow={(id) => {
-                setWorkflowId(id);
-                setTree(false);
-              }}
+              workTree={workTree}
+              expanded={expanded}
+              locateRequest={locateRequest}
             />
           ) : (
             <div className="zm-node-list">
@@ -627,19 +701,12 @@ export function TaskEditor({
                   }}
                 >
                   <span className="zm-order">{String(i + 1).padStart(2, '0')}</span>
-                  <button
-                    className="zm-node-main"
-                    onClick={() => {
-                      setSelectedId(n.id);
-                      setPanel(proposal ? 'plan' : 'config');
-                      setInspectorOpen(true);
-                    }}
-                  >
+                  <button className="zm-node-main" onClick={() => selectNode(n.id)}>
                     <strong>{n.title}</strong>
                     <span>
                       {members.find((m) => m.id === n.assigneeId)?.name ?? '未分配'}
                       <i>·</i>
-                      {n.dependsOn.length ? `依赖 ${n.dependsOn.length} 个节点` : '可独立开始'}
+                      {n.dependsOn.length ? `依赖 ${n.dependsOn.length} 个节点` : '无前置依赖'}
                       {displayTask.workflows.some((w) => w.parentNodeId === n.id) &&
                         ' · 含子工作流'}
                     </span>
@@ -698,7 +765,9 @@ export function TaskEditor({
           ref={inspectorRef}
           role={compact && inspectorOpen ? 'dialog' : undefined}
           aria-modal={compact && inspectorOpen ? true : undefined}
-          aria-label={panel === 'config' ? '节点配置面板' : 'AI 规划面板'}
+          aria-label={
+            panel === 'config' ? (tree ? '工作树导航面板' : '节点配置面板') : 'AI 规划面板'
+          }
           hidden={!inspectorOpen}
           onKeyDown={(event) => {
             if (!compact) return;
@@ -727,14 +796,39 @@ export function TaskEditor({
         >
           <div className="zm-panel-tabs">
             <strong>
-              {panel === 'config' ? (task.status === 'ready' ? '节点详情' : '配置') : 'AI 规划'}
+              {panel === 'config'
+                ? tree
+                  ? '工作树导航'
+                  : task.status === 'ready'
+                    ? '节点详情'
+                    : '配置'
+                : 'AI 规划'}
             </strong>
             <span className="zm-spacer" />
             <button aria-label="收起侧栏" onClick={() => setInspectorOpen(false)}>
               ×
             </button>
           </div>
-          {panel === 'config' ? (
+          {panel === 'config' && tree ? (
+            <TreeNavigator
+              tree={workTree}
+              workflow={workflow}
+              selectedId={node?.id ?? null}
+              expanded={expanded}
+              toggle={(id) => {
+                setLocateRequest((request) => request + 1);
+                setExpanded((current) => {
+                  const next = new Set(current);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return next;
+                });
+              }}
+              expandAll={() => setExpanded(new Set(workTree.workflows.keys()))}
+              select={(id) => selectNode(id, true)}
+              enter={(id) => navigate(id, undefined, true)}
+            />
+          ) : panel === 'config' ? (
             node ? (
               <NodeInspector
                 node={node}
