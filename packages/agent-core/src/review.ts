@@ -50,7 +50,10 @@ export type ReviewEvaluation =
     }
   | { readonly outcome: 'changes-requested'; readonly rejectedBy: readonly string[] }
   | { readonly outcome: 'approved'; readonly approvedBy: readonly string[] }
-  | { readonly outcome: 'invalid-policy'; readonly reason: 'review-requires-reviewers' };
+  | {
+      readonly outcome: 'invalid-policy';
+      readonly reason: 'review-requires-reviewers' | 'duplicate-reviewer';
+    };
 
 export type BallotRejectionCode =
   | 'stale-round'
@@ -148,6 +151,9 @@ export function aggregateReview(
 ): ReviewEvaluation {
   if (round.reviewerIds.length === 0) {
     return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
+  }
+  if (duplicateReviewer(round.reviewerIds) || round.reviewerIds.some((id) => blank(id))) {
+    return { outcome: 'invalid-policy', reason: 'duplicate-reviewer' };
   }
   const rejectedBy = round.reviewerIds.filter(
     (reviewerId) => reviewerDecision(round, reviewerId) === 'request-changes',
@@ -547,15 +553,21 @@ export function applyReviewSettlementCommand(
     return { state: { ...state, stored: outcome.stored }, decision: outcome.decision };
   }
   const applied = outcome.decision.result;
-  return {
-    decision: outcome.decision,
-    state: {
-      status: applied.to,
-      version: outcome.version,
-      upstreamAffected: applied.upstreamAffected,
-      stored: outcome.stored,
-    },
+  const base = {
+    status: applied.to,
+    version: outcome.version,
+    upstreamAffected: applied.upstreamAffected,
+    stored: outcome.stored,
   };
+  // Only an approved review (completed) clears a needs-revision entry.
+  // A send-back records it. No other command outcome may clear it.
+  if (applied.to === 'needs-revision') {
+    return {
+      decision: outcome.decision,
+      state: { ...base, entryStatus: 'needs-revision' },
+    };
+  }
+  return { decision: outcome.decision, state: base };
 }
 
 /** Review cannot be required with an empty roster. The node does not move in that case. */

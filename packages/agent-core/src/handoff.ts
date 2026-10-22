@@ -1,14 +1,17 @@
 import type { NodeStatus } from './node-status.js';
 
 /**
- * `human` is a person. `agent` is B's runtime marker for a run.
- * `expert` is A's directory expert config, not a run instance.
- * Identifiers are A's directory ids. B does not keep an identity directory.
+ * External directory identity only.
+ * `human` is a person. `expert` is A's directory expert config, not a run.
+ * Agent execution is not an identity. Runs live on Run; the adapter maps them.
  */
-export type ParticipantKind = 'human' | 'agent' | 'expert';
+export type ParticipantKind = 'human' | 'expert';
+
+/** Internal classification. `agent` is not an ActorRef kind. */
+export type RuntimeAssigneeKind = ParticipantKind | 'agent';
 
 /** Agent runs and expert configs both leave delivery to the task owner. */
-export function assigneeUsesAgentRuntime(kind: ParticipantKind): boolean {
+export function assigneeUsesAgentRuntime(kind: RuntimeAssigneeKind): boolean {
   return kind === 'agent' || kind === 'expert';
 }
 
@@ -28,6 +31,7 @@ export interface ProjectDependency {
 
 /**
  * Minimal task fact B can read.
+ * `parentNodeId` / `rootTaskId` name the same tree as `NodeHandoff.childTaskId`.
  * 待 A 对齐：目标正文、参与者明细和任务汇总状态由 A 维护。
  */
 export interface TaskDependency {
@@ -56,31 +60,26 @@ export interface ContextInputRef {
   readonly contextPackId?: string;
 }
 
-/** Versioned resource pointer. Credentials stay outside this object. */
+/**
+ * Versioned resource pointer. Credentials stay outside this object.
+ * `version` is an AppliedPlan.id: a frozen plan snapshot, not a skill version
+ * and not a separate asset-version number. A later asset-version store is a migration.
+ */
 export interface VersionedRef {
   readonly id: string;
   readonly version: string;
 }
 
-/**
- * What A hands to B at a node boundary.
- * `revision` is the applied plan revision this handoff was cut from.
- * It is not the node command version and not A's draft concurrency version.
- * Resource refs are separate from `inputRefs` and carry no credentials.
- * 待 A 对齐：这些字段的编辑、授权和计划差异不在本契约中实现。
- */
-export interface NodeHandoff {
+interface NodeHandoffFields {
   readonly nodeId: string;
   readonly taskId: string;
   readonly workflowVersionId: string;
   readonly revision: number;
   readonly goal: string;
-  readonly assignee: ActorRef;
   readonly dependencyNodeIds: readonly string[];
   readonly reviewRequired: boolean;
   readonly reviewerIds: readonly string[];
   readonly inputRefs: readonly ContextInputRef[];
-  readonly expertRef: VersionedRef;
   readonly skillRefs: readonly VersionedRef[];
   readonly mcpRefs: readonly VersionedRef[];
   readonly inputNote: string;
@@ -88,18 +87,136 @@ export interface NodeHandoff {
   readonly childTaskId?: string;
 }
 
-type CredentialField =
-  'credential' | 'credentials' | 'secret' | 'token' | 'apiKey' | 'password' | 'authorization';
+/**
+ * What A hands to B at a node boundary.
+ * A human assignee may omit `expertRef`. An expert assignee must carry one.
+ * `revision` is the applied plan revision this handoff was cut from.
+ * It is not the node command version and not A's draft concurrency version.
+ * Resource refs are separate from `inputRefs` and carry no credentials.
+ * 待 A 对齐：这些字段的编辑、授权和计划差异不在本契约中实现。
+ */
+export type NodeHandoff =
+  | (NodeHandoffFields & {
+      readonly assignee: { readonly id: string; readonly kind: 'human' };
+      readonly expertRef?: VersionedRef;
+    })
+  | (NodeHandoffFields & {
+      readonly assignee: { readonly id: string; readonly kind: 'expert' };
+      readonly expertRef: VersionedRef;
+    });
 
-type ExcludesCredentialFields<T> = Extract<keyof T, CredentialField> extends never ? true : never;
+type CredentialName =
+  | 'credential'
+  | 'credentials'
+  | 'secret'
+  | 'token'
+  | 'apikey'
+  | 'password'
+  | 'authorization'
+  | 'accesstoken';
+
+type IsCredential<K extends string> = Lowercase<K> extends CredentialName ? true : false;
+
+type ForbiddenCredential<T> = T extends readonly (infer Item)[]
+  ? ForbiddenCredential<Item>
+  : T extends object
+    ? string extends keyof T
+      ? 'index-signature'
+      : {
+          [K in keyof T]-?: K extends string
+            ? IsCredential<K> extends true
+              ? K
+              : ForbiddenCredential<NonNullable<T[K]>> extends never
+                ? never
+                : ForbiddenCredential<NonNullable<T[K]>>
+            : never;
+        }[keyof T]
+    : never;
+
+/** `true` when T has no credential-shaped field at any depth. */
+export type PayloadExcludesCredentials<T> = [ForbiddenCredential<T>] extends [never] ? true : never;
 
 /**
  * Compile-time lock: handoff payloads cannot grow credential fields.
+ * The check is recursive and case-insensitive, and it rejects string index signatures.
  * Empty strings and empty ref arrays are valid; secrets are not part of the shape.
  */
-export const handoffPayloadExcludesCredentials: ExcludesCredentialFields<NodeHandoff> &
-  ExcludesCredentialFields<VersionedRef> &
-  ExcludesCredentialFields<ContextInputRef> = true;
+export const handoffPayloadExcludesCredentials: PayloadExcludesCredentials<NodeHandoff> &
+  PayloadExcludesCredentials<VersionedRef> &
+  PayloadExcludesCredentials<ContextInputRef> &
+  PayloadExcludesCredentials<ActorRef> = true;
+
+export type NodeHandoffRead =
+  | { readonly ok: true; readonly handoff: NodeHandoff }
+  | {
+      readonly ok: false;
+      readonly code: 'agent-not-identity' | 'expert-ref-required' | 'invalid-handoff';
+    };
+
+export interface NodeHandoffInput extends NodeHandoffFields {
+  readonly assignee: { readonly id: string; readonly kind: string };
+  readonly expertRef?: VersionedRef;
+  readonly engine?: string;
+}
+
+function usableRef(ref: VersionedRef | undefined): 'missing' | 'blank' | VersionedRef {
+  if (ref === undefined) return 'missing';
+  if (ref.id.trim() === '' || ref.version.trim() === '') return 'blank';
+  return { id: ref.id, version: ref.version };
+}
+
+/**
+ * Accept a human handoff without an expert or an engine.
+ * An expert handoff must name a versioned expert. `agent` is not an identity.
+ */
+export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
+  const kind = input.assignee.kind;
+  if (kind === 'agent') return { ok: false, code: 'agent-not-identity' };
+  if (kind !== 'human' && kind !== 'expert') return { ok: false, code: 'invalid-handoff' };
+  const ref = usableRef(input.expertRef);
+  const fields: NodeHandoffFields = {
+    nodeId: input.nodeId,
+    taskId: input.taskId,
+    workflowVersionId: input.workflowVersionId,
+    revision: input.revision,
+    goal: input.goal,
+    dependencyNodeIds: input.dependencyNodeIds,
+    reviewRequired: input.reviewRequired,
+    reviewerIds: input.reviewerIds,
+    inputRefs: input.inputRefs,
+    skillRefs: input.skillRefs,
+    mcpRefs: input.mcpRefs,
+    inputNote: input.inputNote,
+    expectedOutput: input.expectedOutput,
+    ...(input.childTaskId === undefined ? {} : { childTaskId: input.childTaskId }),
+  };
+  if (kind === 'human') {
+    if (ref === 'blank') return { ok: false, code: 'invalid-handoff' };
+    if (ref === 'missing') {
+      return { ok: true, handoff: { ...fields, assignee: { id: input.assignee.id, kind } } };
+    }
+    return {
+      ok: true,
+      handoff: { ...fields, assignee: { id: input.assignee.id, kind }, expertRef: ref },
+    };
+  }
+  if (ref === 'missing' || ref === 'blank') return { ok: false, code: 'expert-ref-required' };
+  return {
+    ok: true,
+    handoff: { ...fields, assignee: { id: input.assignee.id, kind: 'expert' }, expertRef: ref },
+  };
+}
+
+/**
+ * Read the frozen snapshot named by `VersionedRef.version` (an AppliedPlan.id).
+ * Later catalog entries are other ids. This is not an asset-version store.
+ */
+export function readVersionedSnapshot<T extends { readonly id: string }>(
+  ref: VersionedRef,
+  snapshots: readonly T[],
+): T | undefined {
+  return snapshots.find((snapshot) => snapshot.id === ref.version);
+}
 
 /**
  * What B returns to A. A renders this; B does not compute task rollup status.

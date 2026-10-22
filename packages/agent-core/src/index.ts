@@ -80,6 +80,7 @@ export {
 
 export type {
   ParticipantKind,
+  RuntimeAssigneeKind,
   ActorRef,
   ProjectDependency,
   TaskDependency,
@@ -87,9 +88,17 @@ export type {
   ContextInputRef,
   VersionedRef,
   NodeHandoff,
+  NodeHandoffInput,
+  NodeHandoffRead,
+  PayloadExcludesCredentials,
   NodeExecutionReport,
 } from './handoff.js';
-export { assigneeUsesAgentRuntime, handoffPayloadExcludesCredentials } from './handoff.js';
+export {
+  assigneeUsesAgentRuntime,
+  handoffPayloadExcludesCredentials,
+  readNodeHandoff,
+  readVersionedSnapshot,
+} from './handoff.js';
 
 export type {
   RunStatus,

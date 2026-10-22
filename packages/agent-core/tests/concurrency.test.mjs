@@ -199,6 +199,17 @@ test('appends an event only for an accepted command and supports incremental rec
   );
 });
 
+test('canonical payload rejects accessor properties', () => {
+  const payload = {};
+  Object.defineProperty(payload, 'token', {
+    enumerable: true,
+    get() {
+      return 'hidden';
+    },
+  });
+  assert.throws(() => canonicalPayload(payload), /Accessor properties cannot be command payloads/);
+});
+
 test('canonical payload keeps top-level and nested __proto__ keys', () => {
   const nestedFirst = JSON.parse('{"input":{"__proto__":{"value":"first"}}}');
   const nestedDifferent = JSON.parse('{"input":{"__proto__":{"value":"different"}}}');

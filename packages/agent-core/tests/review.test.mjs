@@ -381,6 +381,43 @@ test('cancelling, restarting, or resubmitting voids the open round', () => {
   );
 });
 
+test('a duplicate reviewer roster cannot be completed by one vote', () => {
+  assert.equal(
+    openReviewRound({ id: 'round-1', artifactVersionId: 'art-1', reviewerIds: ['a', 'a'] }).code,
+    'duplicate-reviewer',
+  );
+  const round = {
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    status: 'open',
+    reviewerIds: ['a', 'a'],
+    ballots: [
+      { reviewerId: 'a', roundId: 'round-1', artifactVersionId: 'art-1', action: 'approve' },
+    ],
+  };
+  const evaluation = aggregateReview(round);
+  assert.equal(evaluation.outcome, 'invalid-policy');
+  assert.equal(evaluation.reason, 'duplicate-reviewer');
+  const stayed = applyReviewToNode('in-review', {
+    evaluation,
+    round,
+    currentRoundId: round.id,
+    currentArtifactVersionId: round.artifactVersionId,
+  });
+  assert.equal(stayed.ok, true);
+  assert.equal(stayed.to, 'in-review');
+  assert.equal(stayed.changed, false);
+  const forged = applyReviewToNode('in-review', {
+    evaluation: { outcome: 'approved', approvedBy: ['a', 'a'] },
+    round,
+    currentRoundId: round.id,
+    currentArtifactVersionId: round.artifactVersionId,
+  });
+  assert.equal(forged.ok, false);
+  assert.equal(forged.code, 'unbound-evaluation');
+  assert.notEqual(forged.to, 'completed');
+});
+
 test('review cannot be required without reviewers, and abnormal agent output is not approval', () => {
   assert.equal(
     openReviewRound({ id: 'round-1', artifactVersionId: 'art-1', reviewerIds: [] }).code,

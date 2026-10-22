@@ -54,7 +54,7 @@ test('follows the legal node transitions and their effects', () => {
     ['ready', { type: 'submit-artifact', reviewRequired: false }, 'completed', ['accept-handoff']],
     [
       'running',
-      { type: 'submit-artifact', reviewRequired: true },
+      { type: 'submit-artifact', reviewRequired: true, entryStatus: 'ready' },
       'in-review',
       ['open-review', 'block-downstream'],
     ],
@@ -145,8 +145,12 @@ test('rejects transitions that would skip review, delivery, or an explicit resta
     ['in-review', { type: 'submit-artifact', reviewRequired: true }],
     ['in-review', { type: 'execution-failed' }],
     ['needs-revision', { type: 'submit-artifact', reviewRequired: false }],
+    ['running', { type: 'submit-artifact', reviewRequired: false }],
+    ['running', { type: 'submit-artifact', reviewRequired: true }],
     ['running', { type: 'submit-artifact', reviewRequired: false, entryStatus: 'needs-revision' }],
     ['running', { type: 'submit-artifact', reviewRequired: true, entryStatus: 'blocked' }],
+    ['ready', { type: 'submit-artifact', reviewRequired: false, entryStatus: 'needs-revision' }],
+    ['needs-revision', { type: 'submit-artifact', reviewRequired: true, entryStatus: 'ready' }],
     ['failed', { type: 'retry' }],
     ['failed', { type: 'retry', returnTo: 'running' }],
     ['cancelled', { type: 'restart' }],
@@ -200,11 +204,11 @@ test('revision entry survives stop and restart, and a later submit must be revie
 
   const missing = transitionNode('cancelled', { type: 'restart' });
   assert.equal(missing.ok, false);
-  const follow = transitionNode(missing.to, { type: 'submit-artifact', reviewRequired: false });
-  assert.equal(follow.ok, false);
-  assert.equal(follow.code, 'illegal-transition');
+  assert.equal(missing.code, 'illegal-transition');
+  assert.equal(missing.to, undefined);
   const retried = transitionNode('failed', { type: 'retry' });
   assert.equal(retried.ok, false);
+  assert.equal(retried.code, 'illegal-transition');
   assert.equal(retried.to, undefined);
 });
 

@@ -127,7 +127,10 @@ function normalizePayload(value: unknown): unknown {
     const normalized: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value).sort()) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
+      if (descriptor === undefined) continue;
+      if (!Object.hasOwn(descriptor, 'value')) {
+        throw new Error('Accessor properties cannot be command payloads.');
+      }
       const child = descriptor.value;
       if (child !== undefined) {
         Object.defineProperty(normalized, key, {
