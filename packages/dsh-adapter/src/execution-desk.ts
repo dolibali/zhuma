@@ -275,7 +275,8 @@ export class ExecutionDesk {
     this.citations = restored.citations;
     this.contextBlocks = restored.contextBlocks;
     this.draftRoundId = restored.draftRoundId ?? null;
-    this.historyNote = restored.historyNote ?? null;
+    // 横幅只覆盖「下一轮还没有自己的历史」。重启后不再显示。
+    this.historyNote = null;
     this.sequence = restored.turns.reduce((max, turn) => Math.max(max, turn.sequence), 0);
     this.noteEntry();
     if (this.handoffInvalid) this.lastError = invalidHandoffError();
@@ -698,8 +699,8 @@ export class ExecutionDesk {
   }
 
   /**
-   * 把节点标成已完成。进入 `completed` 时删除会话目录，并清掉运行记录里的会话引用。
-   * 正式评审提交仍属于后续工作包。这里只走状态机里不要求评审的完成迁移。
+   * 把不要求评审的节点标成已完成。进入 `completed` 时删除会话目录。
+   * 历史运行仍保留 sessionId，并标成已丢弃。交接要求评审时拒绝，不直接完成。
    */
   confirmCompleted(): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
@@ -708,6 +709,14 @@ export class ExecutionDesk {
       return this.fail('run-active', '节点', '还有运行没有结束', '先结束运行再确认完成');
     }
     if (this.nodeState.status === 'completed') return this.succeed();
+    if (this.seed.handoff.reviewRequired) {
+      return this.fail(
+        'review-required',
+        '节点',
+        '交接要求评审，不能直接完成',
+        '请走评审路径。不要跳过评审把节点标成完成。',
+      );
+    }
     const moved = this.applyTransition(
       { type: 'submit-artifact', reviewRequired: false },
       `complete:${this.deps.newId('complete')}`,
@@ -1078,6 +1087,8 @@ export class ExecutionDesk {
       instruction,
       attachmentIds,
       goal: this.seed.handoff.goal,
+      inputNote: this.seed.handoff.inputNote,
+      expectedOutput: this.seed.handoff.expectedOutput,
       simulatedRequested: attempt.simulated,
       signal,
       skills: this.authorized('skill'),
@@ -1166,7 +1177,7 @@ export class ExecutionDesk {
     }
     if (event.type === 'failed') {
       if (event.droppedSessionId !== undefined) {
-        this.clearSessionReferences(event.droppedSessionId);
+        this.retireSession(event.droppedSessionId);
         this.rememberHistoryOmitted();
         const executor = this.deps.executors.find((item) => item instanceof DshChatExecutor);
         if (executor instanceof DshChatExecutor) executor.discardSession(event.droppedSessionId);
@@ -1201,6 +1212,7 @@ export class ExecutionDesk {
       const moved = this.applyTransition(settled.nodeTransition, `cancel:${runId}`);
       if (!moved.ok) this.preserveRecordError();
     }
+    this.dropEmptyExecutorTurn(runId);
     this.dropPending(runId);
     this.releaseClaim(runId);
     this.persist();
@@ -1236,11 +1248,13 @@ export class ExecutionDesk {
       }
       this.putRun(settled.attempt);
       this.releaseClaim(attempt.id);
+      this.noteFreshHistory(settled.attempt);
       this.persist();
       this.consumeQueue(attempt.id);
       return;
     }
     this.putRun(settled.attempt);
+    this.noteFreshHistory(settled.attempt);
     this.persist();
   }
 
@@ -1740,11 +1754,11 @@ export class ExecutionDesk {
   }
 
   private discardRunSession(run: ExecutionAttempt): void {
-    if (run.sessionId === undefined) return;
+    if (run.sessionId === undefined || run.sessionDiscarded === true) return;
     const sessionId = run.sessionId;
     const executor = this.deps.executors.find((item) => item.id === run.executor);
     if (executor instanceof DshChatExecutor) executor.discardSession(sessionId);
-    this.clearSessionReferences(sessionId);
+    this.retireSession(sessionId);
     this.rememberHistoryOmitted();
   }
 
@@ -1752,12 +1766,21 @@ export class ExecutionDesk {
     for (const run of this.runs) this.discardRunSession(run);
   }
 
-  private clearSessionReferences(sessionId: string): void {
-    this.runs = this.runs.map((run) => (run.sessionId === sessionId ? withoutSessionId(run) : run));
+  /** 不再恢复这个会话。历史运行仍保留 sessionId，并标成已丢弃。 */
+  private retireSession(sessionId: string): void {
+    this.runs = this.runs.map((run) =>
+      run.sessionId === sessionId ? markSessionDiscarded(run) : run,
+    );
   }
 
   private rememberHistoryOmitted(): void {
     this.historyNote = '没有带上之前的历史。';
+  }
+
+  /** 新会话已经有自己的一轮结果，横幅不再表示「下一轮没有历史」。 */
+  private noteFreshHistory(attempt: ExecutionAttempt): void {
+    if (attempt.sessionId === undefined || attempt.sessionDiscarded === true) return;
+    this.historyNote = null;
   }
 
   private sessionDirectoryExists(sessionId: string): boolean {
@@ -1770,11 +1793,15 @@ export class ExecutionDesk {
     const candidate = [...this.runs]
       .reverse()
       .find(
-        (run) => run.nodeId === nodeId && run.id !== runId && run.sessionId !== undefined,
+        (run) =>
+          run.nodeId === nodeId &&
+          run.id !== runId &&
+          run.sessionId !== undefined &&
+          run.sessionDiscarded !== true,
       )?.sessionId;
     if (candidate === undefined) return undefined;
     if (this.sessionDirectoryExists(candidate)) return candidate;
-    this.clearSessionReferences(candidate);
+    this.retireSession(candidate);
     this.rememberHistoryOmitted();
     return undefined;
   }
@@ -1790,10 +1817,6 @@ export class ExecutionDesk {
     const detail = pending
       .map((item) => `${item.label ?? item.id}：未连接。没有配置传输，不会连接外部服务。`)
       .join('');
-    const duplicate = this.activities.some(
-      (item) => item.title === 'MCP' && item.detail === detail && item.succeeded === false,
-    );
-    if (duplicate) return;
     this.activities.push(
       normalizeActivity({
         id: this.deps.newId('act'),
@@ -1976,10 +1999,9 @@ export function executionHint(snapshot: ExecutionDeskSnapshot) {
   });
 }
 
-function withoutSessionId(attempt: ExecutionAttempt): ExecutionAttempt {
-  if (attempt.sessionId === undefined) return attempt;
-  const { sessionId: _sessionId, ...rest } = attempt;
-  return rest;
+function markSessionDiscarded(attempt: ExecutionAttempt): ExecutionAttempt {
+  if (attempt.sessionDiscarded === true) return attempt;
+  return { ...attempt, sessionDiscarded: true };
 }
 
 function copyIntervention(

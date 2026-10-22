@@ -148,7 +148,12 @@ function seed() {
 
 function open(mode, extra = {}) {
   const { engine, pids, env } = executor(mode, extra);
-  const desk = ExecutionDesk.create(seed(), { executors: [engine], newId: ids(mode) });
+  const planted = seed();
+  if (extra.reviewRequired !== undefined) planted.handoff.reviewRequired = extra.reviewRequired;
+  if (extra.reviewerIds !== undefined) planted.handoff.reviewerIds = extra.reviewerIds;
+  if (extra.inputNote !== undefined) planted.handoff.inputNote = extra.inputNote;
+  if (extra.expectedOutput !== undefined) planted.handoff.expectedOutput = extra.expectedOutput;
+  const desk = ExecutionDesk.create(planted, { executors: [engine], newId: ids(mode) });
   desk.updateConfig({
     executorId: 'dsh',
     skillIds: extra.skillIds ?? ['test-design', 'billing'],
@@ -849,8 +854,8 @@ test('契约：重启后从运行记录读回会话标识', async () => {
   rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
 });
 
-test('契约：节点完成时删除会话目录并清掉引用', async () => {
-  const { desk, env } = open('ok', { mcpIds: [] });
+test('契约：节点完成时删除会话目录，历史记录保留已丢弃的会话标识', async () => {
+  const { desk, env } = open('ok', { mcpIds: [], reviewRequired: false, reviewerIds: [] });
   const sent = desk.send({ text: '完成这一轮', idempotencyKey: 'complete-1' });
   await desk.flush();
   const sessionId = desk.snapshot().runs[0].sessionId;
@@ -860,12 +865,15 @@ test('契约：节点完成时删除会话目录并清掉引用', async () => {
   assert.equal(done.ok, true);
   assert.equal(desk.snapshot().node.status, 'completed');
   assert.equal(existsSync(home), false);
-  assert.equal(desk.snapshot().runs[0].sessionId, undefined);
+  assert.equal(desk.snapshot().runs[0].sessionId, sessionId);
+  assert.equal(desk.snapshot().runs[0].sessionDiscarded, true);
+  assert.equal(createAgentWorkspaceView(desk.snapshot()).runs[0].sessionDiscarded, true);
   assert.deepEqual(sessionHomes(env), []);
   const index = JSON.parse(
     readFileSync(path.join(env.ZHUMA_DATA_DIR, 'dsh-sessions', 'index.json'), 'utf8'),
   );
   assert.equal(index.sessions[sessionId], undefined);
+  assert.match(desk.snapshot().historyNote, /没有带上之前的历史/);
   const reopened = desk.reopenForRework();
   assert.equal(reopened.ok, true);
   assert.equal(desk.snapshot().node.status, 'needs-revision');
@@ -875,12 +883,49 @@ test('契约：节点完成时删除会话目录并清掉引用', async () => {
   const next = desk.snapshot().runs.at(-1);
   assert.equal(next.status, 'completed');
   assert.notEqual(next.sessionId, sessionId);
-  assert.match(desk.snapshot().historyNote, /没有带上之前的历史/);
-  assert.match(createAgentWorkspaceView(desk.snapshot()).historyNote, /没有带上之前的历史/);
+  assert.equal(desk.snapshot().runs[0].sessionId, sessionId);
+  assert.equal(desk.snapshot().runs[0].sessionDiscarded, true);
+  assert.equal(desk.snapshot().historyNote, undefined);
+  assert.equal(createAgentWorkspaceView(desk.snapshot()).historyNote, null);
   assert.equal(
     existsSync(path.join(dshSessionHome(next.sessionId, env), 'zhuma-history.json')),
     false,
   );
+  rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+});
+
+test('契约：交接要求评审时不能直接完成', async () => {
+  const { desk, env } = open('ok', { mcpIds: [] });
+  const sent = desk.send({ text: '先跑完再试图跳过评审', idempotencyKey: 'review-1' });
+  await desk.flush();
+  const sessionId = desk.snapshot().runs[0].sessionId;
+  const home = dshSessionHome(sessionId, env);
+  assert.equal(existsSync(home), true);
+  const refused = desk.confirmCompleted();
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'review-required');
+  assert.match(refused.reason, /交接要求评审/);
+  assert.equal(desk.snapshot().node.status, 'ready');
+  assert.equal(existsSync(home), true);
+  assert.equal(desk.snapshot().runs[0].sessionId, sessionId);
+  assert.equal(desk.snapshot().runs[0].sessionDiscarded, undefined);
+  rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+});
+
+test('契约：输入说明和交付说明进入提示', async () => {
+  const inputNote = '读取已通过评审的开户字段说明';
+  const expectedOutput = '开户字段校验规则说明';
+  const { desk, env } = open('ok', { mcpIds: [], inputNote, expectedOutput });
+  const sent = desk.send({ text: '按说明整理', idempotencyKey: 'notes-1' });
+  await desk.flush();
+  const prompt = readFileSync(
+    path.join(homeOf(desk, env, sent.runId), 'zhuma-prompt.json'),
+    'utf8',
+  );
+  assert.match(prompt, /输入说明：读取已通过评审的开户字段说明/);
+  assert.match(prompt, /交付说明：开户字段校验规则说明/);
+  assert.match(prompt, /节点目标：确认企业开户字段与校验规则/);
+  assert.match(prompt, /本轮要求：按说明整理/);
   rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
 });
 
@@ -913,28 +958,52 @@ test('契约：核实断开后清掉会话引用，再发送会新建会话', as
   const verified = restored.verifyAbandoned();
   assert.equal(verified.ok, true);
   assert.equal(existsSync(dshSessionHome(sessionId, env)), false);
-  assert.equal(
-    restored.snapshot().runs.every((run) => run.sessionId === undefined),
-    true,
-  );
+  assert.equal(restored.snapshot().runs[0].sessionId, sessionId);
+  assert.equal(restored.snapshot().runs[0].sessionDiscarded, true);
+  assert.match(restored.snapshot().historyNote, /没有带上之前的历史/);
   assert.equal(
     restored.snapshot().turns.some((turn) => turn.role === 'executor' && turn.body.trim() === ''),
     false,
   );
-  const again = restored.retry('abandon-retry');
+  const restarted = ExecutionDesk.restore(restored.persistence(), {
+    executors: [
+      new DshChatExecutor(env, {
+        bin: stub,
+        mode: 'ok',
+        initTimeoutMs: 2000,
+        promptTimeoutMs: 2000,
+      }),
+    ],
+    newId: ids('abandon-3'),
+  });
+  restarted.resumeInteraction();
+  assert.equal(restarted.snapshot().historyNote, undefined);
+  assert.equal(restarted.snapshot().runs[0].sessionId, sessionId);
+  assert.equal(restarted.snapshot().runs[0].sessionDiscarded, true);
+  const again = restarted.retry('abandon-retry');
   assert.equal(again.ok, true);
-  await restored.flush();
-  const next = restored.snapshot().runs.at(-1);
+  await restarted.flush();
+  const next = restarted.snapshot().runs.at(-1);
   assert.equal(next.status, 'completed');
   assert.notEqual(next.sessionId, sessionId);
-  assert.match(restored.snapshot().historyNote, /没有带上之前的历史/);
-  assert.match(createAgentWorkspaceView(restored.snapshot()).historyNote, /没有带上之前的历史/);
-  assert.equal(restored.snapshot().activities.filter((item) => item.title === 'MCP').length, 1);
-  const followed = restored.send({ text: '再发一轮', idempotencyKey: 'abandon-3' });
+  assert.equal(restarted.snapshot().historyNote, undefined);
+  assert.equal(createAgentWorkspaceView(restarted.snapshot()).historyNote, null);
+  assert.equal(restarted.snapshot().activities.filter((item) => item.title === 'MCP').length, 2);
+  assert.equal(
+    createAgentWorkspaceView(restarted.snapshot()).activities.filter((item) => item.title === 'MCP')
+      .length,
+    1,
+  );
+  const followed = restarted.send({ text: '再发一轮', idempotencyKey: 'abandon-4' });
   assert.equal(followed.ok, true);
-  await restored.flush();
-  assert.equal(restored.snapshot().runs.at(-1).status, 'completed');
-  assert.equal(restored.snapshot().activities.filter((item) => item.title === 'MCP').length, 1);
+  await restarted.flush();
+  assert.equal(restarted.snapshot().runs.at(-1).status, 'completed');
+  assert.equal(restarted.snapshot().activities.filter((item) => item.title === 'MCP').length, 3);
+  assert.equal(
+    createAgentWorkspaceView(restarted.snapshot()).activities.filter((item) => item.title === 'MCP')
+      .length,
+    1,
+  );
   rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
 });
 
@@ -966,10 +1035,12 @@ test('契约：resume 失败后清掉引用，下一轮可以新建会话', asyn
   await second.flush();
   assert.equal(second.snapshot().runs.at(-1).status, 'failed');
   assert.equal(second.snapshot().node.status, 'ready');
-  assert.equal(
-    second.snapshot().runs.every((run) => run.sessionId === undefined),
-    true,
-  );
+  assert.equal(second.snapshot().runs[0].sessionId, sessionId);
+  assert.equal(second.snapshot().runs[0].sessionDiscarded, true);
+  assert.equal(second.snapshot().runs.at(-1).sessionId, undefined);
+  assert.match(second.snapshot().faults.at(-1).reason, /恢复会话失败，已改用新会话/);
+  assert.equal(second.snapshot().faults.at(-1).reason.includes('执行器启动失败'), false);
+  assert.match(second.snapshot().historyNote, /没有带上之前的历史/);
   assert.equal(existsSync(dshSessionHome(sessionId, env)), false);
   assert.equal(
     second.snapshot().turns.some((turn) => turn.role === 'executor' && turn.body.trim() === ''),
@@ -981,7 +1052,8 @@ test('契约：resume 失败后清掉引用，下一轮可以新建会话', asyn
   const next = second.snapshot().runs.at(-1);
   assert.equal(next.status, 'completed');
   assert.notEqual(next.sessionId, sessionId);
-  assert.match(second.snapshot().historyNote, /没有带上之前的历史/);
+  assert.equal(second.snapshot().historyNote, undefined);
+  assert.equal(second.snapshot().runs[0].sessionId, sessionId);
   rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
 });
 

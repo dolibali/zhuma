@@ -39,19 +39,19 @@
 | `subagent`                       | `subagent`、`subagent-spawn-in-process`、`subagent-fork-in-process`、`tool-subagent`、`tool-subagent-fork`、`tool-subagent-control`、`tool-subagent-list-agents` |
 | `workflow`                       | `tool-workflow`、`workflow-ptc`                                                                                                                                  |
 
-sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时才插入 `@deepseek-ai/dsh-mcp-client`：`stdio` 要有 `command`，`streamable-http` 要有 `url`。只有 id、版本和标签的授权写进提示，不连接外部服务。没有配传输、或传输不完整时，界面在该 MCP 上标出「未连接」和原因「没有配置传输，不会连接外部服务」。运行记录里追加一条未成功的 MCP 活动。同一条说明已经在记录里时，后面的轮次不再追加。不会把它从可选列表里去掉。
+sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时才插入 `@deepseek-ai/dsh-mcp-client`：`stdio` 要有 `command`，`streamable-http` 要有 `url`。只有 id、版本和标签的授权写进提示，不连接外部服务。没有配传输、或传输不完整时，界面在该 MCP 上标出「未连接」和原因「没有配置传输，不会连接外部服务」。运行记录里每次运行都追加一条未成功的 MCP 活动。界面上同一条说明只显示一次。不会把它从可选列表里去掉。
 
 会话事件是 `{type, seq, time, data}`。助手正文在 `data.message.content`，随整段 `assistant/message` 一次到达。`data.stream` 是这条事件上的事后记录，不是可以订阅的增量。当前 SDK 接入方式不支持逐字通知，所以 DSH 的 `capabilities.streaming` 为 false。等待期间界面显示「生成中」。模拟执行器仍按片段交出正文，`streaming` 保持 true。一轮结束看 `data.reason.kind`，取值是 `completed`、`aborted` 或 `error`。
 
 图片以 `contentBlocks` 的 `image` 交给模型，媒体类型只接受 png、jpeg、webp、gif。文本和 JSON 仍是文本。PDF 和其他文件在上传时拒绝：当前 SDK 接入方式不支持没有附件引用的 file 块，客户端发不出这个引用。内联 file 块会在到达模型前失败，并留在会话里让之后的纯文本也失败。拒绝发生在写入会话之前。文件选择器也不提供 PDF。执行器若仍收到这种附件，故障种类是 `attachment-rejected`，不是 `model-error`。发出的上下文、运行记录里的引用和界面上的引用是同一组：已勾选且匹配 `inputRefs` 的条目。未勾选的不发。`inputRefs` 为空时不发上下文，界面也不引用。勾选了缺失文件仍然整次阻塞。
 
-`DSH_HOME` 在工作台数据目录下。数据目录依次取 `ZHUMA_DATA_DIR`、`ZHUMA_SESSION_FILE` 所在目录、`~/.zhuma/workbench`。每次会话用 `mkdtemp` 建在 `dsh-sessions/` 里。会话标识是 `zhuma-`、工作台实例随机段、再加一段随机，不从 `runId` 推导。工作台重启后从运行记录读取实际的 `sessionId`，再用 `session/resume` 接回。目录权限 `0700`，文件权限 `0600`。密钥不写入其中。接收前失败会删掉新建的目录。运行被核实为断开时删除会话目录，并清掉运行记录里的会话引用。节点进入 `completed` 时同样删除并清掉引用。引用已经清掉，或目录已经不在时，下一次显式运行新建会话，不再 `session/resume`。界面说明没有带上之前的历史。`session/resume` 本身失败时也删掉这次目录、清掉引用，节点可以再运行。成功的一轮和停止之后保留，下一次显式运行用 `session/resume` 接回。工作台启动时清掉索引里没有的孤儿目录。
+`DSH_HOME` 在工作台数据目录下。数据目录依次取 `ZHUMA_DATA_DIR`、`ZHUMA_SESSION_FILE` 所在目录、`~/.zhuma/workbench`。每次会话用 `mkdtemp` 建在 `dsh-sessions/` 里。会话标识是 `zhuma-`、工作台实例随机段、再加一段随机，不从 `runId` 推导。工作台重启后从运行记录读取实际的 `sessionId`，再用 `session/resume` 接回。目录权限 `0700`，文件权限 `0600`。密钥不写入其中。接收前失败会删掉新建的目录。运行被核实为断开时删除会话目录。节点进入 `completed` 时同样删除。历史运行仍保留原来的 `sessionId`，并标成已丢弃，不再用于 `session/resume`。目录已经不在时，下一次显式运行新建会话。新会话还没有自己的结果时，界面说明没有带上之前的历史；这一轮成功，或工作台重启之后，这条说明消失。`session/resume` 失败时删掉这次目录，历史记录标成已丢弃，原因写「恢复会话失败，已改用新会话。」，节点可以再运行。成功的一轮和停止之后保留，下一次显式运行用 `session/resume` 接回。工作台启动时清掉索引里没有的孤儿目录。
 
 `capabilities.sessionResume` 为 true，因为实现了 `session/resume`。工作台重启后子进程已经不在，仍然留下 `resumeGap`，不把未结束的运行当成还在执行。模拟执行器的 `sessionResume` 保持 false，`streaming` 保持 true。自测使用本仓的 JSON-RPC 桩和从真实 DSH 录制的事件。桩的模式只经 `ZHUMA_DSH_STUB_MODE` 传入，不写进会话目录，也不传给真实子进程。没有附件引用的 file 块，桩先返回 `messageId`，再以 `turn/end` 的 `error` 结束，消息含 `attachmentId`，并把这块留在会话里，使之后的文本也失败。这和录制的 `dsh-pdf-rejected.json` 一致。产品路径仍然在写入会话之前拒绝这种文件。上游包已经构建时，用它自己的 `loadOverlayPatches` 检查生成的补丁。没有构建出 app-boot，或库已经构建但依赖没有安装时，检查打印 `skip`，并说明要先运行 `pnpm upstream:build-dsh`，不因此失败。
 
 `UnimplementedNativeExecutor` 仍覆盖 `codearts-cli`。`run()` 抛出未实现错误，`cancel()` 返回 `unsupported`。未验证或未配置的原生执行器在创建运行前被拒绝，不写入运行记录。
 
-真实 DSH 和模拟执行器使用同一个 `AgentRunRequest`：任务、节点、计划版本、上下文引用、专家版本、资源授权、取消信号。结果包含运行身份、产物草稿、来源引用和验证说明。每次运行只加载交接引用与当前选择的交集；版本用交接引用上的版本。上下文包按 `ContextInputRef` 已填写的来源和版本取，空引用不放入提示。`session/prompt` 返回 `messageId` 之后才发出 `accepted`。在此之前崩溃、握手失败、超时或停止，都不会把节点标成执行中，队列记为未应用。
+真实 DSH 和模拟执行器使用同一个 `AgentRunRequest`：任务、节点、计划版本、上下文引用、专家版本、资源授权、取消信号。结果包含运行身份、产物草稿、来源引用和验证说明。每次运行只加载交接引用与当前选择的交集；版本用交接引用上的版本。上下文包按 `ContextInputRef` 已填写的来源和版本取，空引用不放入提示。交接的 `inputNote` 和 `expectedOutput` 非空时写进提示，分别标成输入说明和交付说明。`session/prompt` 返回 `messageId` 之后才发出 `accepted`。在此之前崩溃、握手失败、超时或停止，都不会把节点标成执行中，队列记为未应用。
 
 ## 3. 运行生命周期
 
@@ -61,7 +61,7 @@ sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时�
 
 运行正常结束时，`settleExecutionRun(..., 'completed')` 发出 `execution-finished`，节点回到进入运行前的 `ready` 或 `needs-revision`。`waiting-for-input` 上的正常结束也走这条迁移。效果只有 `await-human-submit`。这不是 `accept-handoff`，不打开评审，不触发下游，也不自动开始下一次调度。多轮对话因此可以再次显式发送。WP00 原来没有「执行结束但继续由人决定是否提交」的出口，所以增加了这条迁移。
 
-已确认完成的节点不能再次 `openRunAttempt`。
+已确认完成的节点不能再次 `openRunAttempt`。交接 `reviewRequired` 为 true 时，`confirmCompleted()` 拒绝，节点不进入 `completed`，会话目录也不删除。不要求评审时，它才用 `submit-artifact` 且 `reviewRequired: false` 进入 `completed`。
 
 ## 4. 终态信号、停止与恢复
 

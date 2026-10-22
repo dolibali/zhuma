@@ -161,10 +161,9 @@ test('真实执行器：核实断开后再发一轮成功', { timeout: 180_000 }
   const verified = restored.verifyAbandoned();
   assert.equal(verified.ok, true);
   assert.equal(existsSync(dshSessionHome(captured.sessionId, env)), false);
-  assert.equal(
-    restored.snapshot().runs.every((run) => run.sessionId === undefined),
-    true,
-  );
+  assert.equal(restored.snapshot().runs[0].sessionId, captured.sessionId);
+  assert.equal(restored.snapshot().runs[0].sessionDiscarded, true);
+  assert.match(restored.snapshot().historyNote ?? '', /没有带上之前的历史/);
   assert.equal(
     restored
       .snapshot()
@@ -177,7 +176,8 @@ test('真实执行器：核实断开后再发一轮成功', { timeout: 180_000 }
   const next = restored.snapshot().runs.at(-1);
   assert.equal(next?.status, 'completed');
   assert.notEqual(next?.sessionId, captured.sessionId);
-  assert.match(restored.snapshot().historyNote ?? '', /没有带上之前的历史/);
+  assert.equal(restored.snapshot().runs[0].sessionId, captured.sessionId);
+  assert.equal(restored.snapshot().historyNote, undefined);
   assert.equal(restored.snapshot().node.status, 'ready');
   assertClean(restored.snapshot(), secrets);
   console.log('核实断开后再发一轮：通过');
@@ -187,7 +187,10 @@ test('真实执行器：完成后被退回再发一轮成功', { timeout: 180_00
   const ready = realReady(t);
   if (!ready) return;
   const { secrets, env } = ready;
-  const desk = openDesk(new DshChatExecutor(env));
+  const desk = openDesk(new DshChatExecutor(env), 'ready', {
+    reviewRequired: false,
+    reviewerIds: [],
+  });
   const sent = desk.send({ text: '用一句话回复：收到。', idempotencyKey: 'e2e-done-1' });
   assert.equal(sent.ok, true);
   await desk.flush();
@@ -198,18 +201,20 @@ test('真实执行器：完成后被退回再发一轮成功', { timeout: 180_00
   assert.equal(completed.ok, true);
   assert.equal(desk.snapshot().node.status, 'completed');
   assert.equal(existsSync(dshSessionHome(sessionId, env)), false);
-  assert.equal(desk.snapshot().runs[0].sessionId, undefined);
+  assert.equal(desk.snapshot().runs[0].sessionId, sessionId);
+  assert.equal(desk.snapshot().runs[0].sessionDiscarded, true);
   console.log('节点完成删除会话目录：通过');
   const reopened = desk.reopenForRework();
   assert.equal(reopened.ok, true);
   assert.equal(desk.snapshot().node.status, 'needs-revision');
+  assert.match(desk.snapshot().historyNote ?? '', /没有带上之前的历史/);
   const again = desk.send({ text: '用一句话回复：继续。', idempotencyKey: 'e2e-done-2' });
   assert.equal(again.ok, true);
   await desk.flush();
   const next = desk.snapshot().runs.at(-1);
   assert.equal(next?.status, 'completed');
   assert.notEqual(next?.sessionId, sessionId);
-  assert.match(desk.snapshot().historyNote ?? '', /没有带上之前的历史/);
+  assert.equal(desk.snapshot().historyNote, undefined);
   assert.equal(desk.snapshot().node.status, 'needs-revision');
   assertClean(desk.snapshot(), secrets);
   console.log('完成后被退回再发一轮：通过');
@@ -249,9 +254,11 @@ async function captureRunning(desk) {
   throw new Error('三次都没有停在执行中');
 }
 
-function openDesk(executor, nodeStatus = 'ready') {
+function openDesk(executor, nodeStatus = 'ready', handoffPatch = {}) {
   let n = 0;
-  const desk = ExecutionDesk.create(realSeed(nodeStatus), {
+  const planted = realSeed(nodeStatus);
+  Object.assign(planted.handoff, handoffPatch);
+  const desk = ExecutionDesk.create(planted, {
     executors: [executor],
     newId: (prefix) => `${prefix}-${++n}`,
   });
@@ -379,8 +386,8 @@ function realSeed(nodeStatus = 'ready') {
       expertRef: { id: 'api-impl', version: 'api-impl-v1' },
       skillRefs: [],
       mcpRefs: [],
-      inputNote: '',
-      expectedOutput: '',
+      inputNote: '读取已通过评审的开户字段说明',
+      expectedOutput: '开户字段校验规则说明',
     },
     taskTitle: '企业客户门户季度交付',
     taskGoal: '完成企业客户开户闭环',

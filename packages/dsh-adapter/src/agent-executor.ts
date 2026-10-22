@@ -35,6 +35,10 @@ export interface AgentRunRequest {
   readonly instruction: string;
   readonly attachmentIds: readonly string[];
   readonly goal: string;
+  /** 节点输入说明。非空时写入执行提示。 */
+  readonly inputNote?: string;
+  /** 节点交付说明。非空时写入执行提示。 */
+  readonly expectedOutput?: string;
   readonly simulatedRequested: boolean;
   readonly signal: AbortSignal;
   readonly resumeSessionId?: string;
@@ -373,6 +377,19 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+/** 节点目标、输入说明、交付说明和本轮要求。空的说明不写入。 */
+export function taskPrompt(
+  request: Pick<AgentRunRequest, 'goal' | 'instruction' | 'inputNote' | 'expectedOutput'>,
+): string {
+  const parts = [`节点目标：${request.goal}`];
+  const inputNote = request.inputNote?.trim() ?? '';
+  const expectedOutput = request.expectedOutput?.trim() ?? '';
+  if (inputNote.length > 0) parts.push(`输入说明：${inputNote}`);
+  if (expectedOutput.length > 0) parts.push(`交付说明：${expectedOutput}`);
+  parts.push(`本轮要求：${request.instruction}`);
+  return parts.join('\n');
+}
+
 function simulatedReply(request: AgentRunRequest): string {
   const attachments =
     request.attachmentIds.length === 0 ? '无' : `${request.attachmentIds.length} 个`;
@@ -381,8 +398,7 @@ function simulatedReply(request: AgentRunRequest): string {
   return [
     '【模拟】这是模拟执行器的回复，不是模型输出。',
     '没有调用真实模型，也没有真实工具调用成功。',
-    `节点目标：${request.goal}`,
-    `本轮要求：${request.instruction}`,
+    taskPrompt(request),
     `附件：${attachments}`,
     `上下文：${context}`,
     '可编辑草稿：',

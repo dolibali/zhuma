@@ -184,7 +184,7 @@ function renderThread() {
   );
   for (const run of view.runs) {
     parts.push(
-      `<p class="note" data-testid="run" data-run-id="${escapeHtml(run.id)}">第 ${run.attempt} 次 · ${escapeHtml(run.label)}${run.simulated ? ' · 模拟' : ''}</p>`,
+      `<p class="note" data-testid="run" data-run-id="${escapeHtml(run.id)}">第 ${run.attempt} 次 · ${escapeHtml(run.label)}${run.simulated ? ' · 模拟' : ''}${run.sessionDiscarded ? ' · 已丢弃' : ''}</p>`,
     );
   }
   if (state.localError) parts.push(errorBlock(state.localError));

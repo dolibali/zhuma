@@ -232,6 +232,68 @@ test('契约：会话历史没有带入时，投影写出说明', () => {
   assert.equal(createAgentWorkspaceView(workspaceSnapshot()).historyNote, null);
 });
 
+test('契约：已丢弃的会话在运行记录上标出，取消后的空执行器气泡不显示', () => {
+  const snapshot = workspaceSnapshot();
+  snapshot.runs[0].status = 'cancelled';
+  snapshot.runs[0].sessionId = 'zhuma-old';
+  snapshot.runs[0].sessionDiscarded = true;
+  snapshot.turns = [
+    {
+      id: 'turn-empty',
+      runId: 'run-1',
+      nodeId: 'node-fields',
+      role: 'executor',
+      body: '',
+      attachmentIds: [],
+      expertVersionId: 'api-impl-v1',
+      configSnapshotId: 'cfg-1',
+      simulated: false,
+      sequence: 1,
+    },
+    {
+      id: 'turn-user',
+      runId: 'run-1',
+      nodeId: 'node-fields',
+      role: 'user',
+      body: '停止',
+      attachmentIds: [],
+      expertVersionId: 'api-impl-v1',
+      configSnapshotId: 'cfg-1',
+      simulated: false,
+      sequence: 2,
+    },
+  ];
+  snapshot.activities = [
+    {
+      id: 'mcp-1',
+      runId: 'run-1',
+      title: 'MCP',
+      detail: '接口文档只读：未连接。没有配置传输，不会连接外部服务。',
+      simulated: false,
+      succeeded: false,
+    },
+    {
+      id: 'mcp-2',
+      runId: 'run-2',
+      title: 'MCP',
+      detail: '接口文档只读：未连接。没有配置传输，不会连接外部服务。',
+      simulated: false,
+      succeeded: false,
+    },
+  ];
+  const view = createAgentWorkspaceView(snapshot);
+  assert.equal(view.runs[0].sessionDiscarded, true);
+  assert.equal(
+    view.turns.some((turn) => turn.role === 'executor'),
+    false,
+  );
+  assert.equal(
+    view.turns.some((turn) => turn.role === 'user'),
+    true,
+  );
+  assert.equal(view.activities.filter((item) => item.title === 'MCP').length, 1);
+});
+
 test('契约：接收回执之前显示启动中', () => {
   const snapshot = workspaceSnapshot();
   snapshot.node = { status: 'ready', version: 1, upstreamAffected: false };

@@ -19,6 +19,7 @@ import type { ExecutionFaultKind } from '@zhuma/agent-core';
 import {
   ExecutorNotImplementedError,
   readDshModelConfig,
+  taskPrompt,
   type AgentExecutor,
   type AgentRunEvent,
   type AgentRunRequest,
@@ -478,13 +479,15 @@ export class DshChatExecutor implements AgentExecutor {
       const timedOut = error instanceof Error && error.message === 'timeout';
       const failed = fail(
         timedOut ? 'network-interruption' : 'executor-disconnected',
-        timedOut
-          ? initialized
-            ? state.accepted
-              ? '执行器没有在时限内返回结果。'
-              : '执行器没有在时限内接收。'
-            : '执行器启动超时。'
-          : '执行器启动失败。',
+        droppedSessionId !== undefined
+          ? '恢复会话失败，已改用新会话。'
+          : timedOut
+            ? initialized
+              ? state.accepted
+                ? '执行器没有在时限内返回结果。'
+                : '执行器没有在时限内接收。'
+              : '执行器启动超时。'
+            : '执行器启动失败。',
       );
       if (failed.type === 'failed' && droppedSessionId !== undefined) {
         yield { ...failed, droppedSessionId };
@@ -574,9 +577,7 @@ function childEnv(home: string, apiKey: string, mode: string | undefined): NodeJ
 }
 
 function promptBlocks(request: AgentRunRequest): readonly Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [
-    { type: 'text', text: `${request.goal}\n${request.instruction}` },
-  ];
+  const blocks: Record<string, unknown>[] = [{ type: 'text', text: taskPrompt(request) }];
   const mcpNote = mcpPrompt(request.mcp ?? []);
   if (mcpNote.length > 0) blocks.push({ type: 'text', text: mcpNote });
   for (const item of request.promptContext ?? []) {

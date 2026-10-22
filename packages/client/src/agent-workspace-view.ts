@@ -84,6 +84,7 @@ export interface AgentWorkspaceView {
     readonly attempt: number;
     readonly label: string;
     readonly simulated: boolean;
+    readonly sessionDiscarded: boolean;
   }[];
   readonly primary: {
     readonly label: string;
@@ -215,6 +216,33 @@ export interface AgentWorkspaceView {
   readonly mcpNote: string;
 }
 
+function keepTurn(
+  snapshot: ExecutionDeskSnapshot,
+  turn: ExecutionDeskSnapshot['turns'][number],
+): boolean {
+  if (turn.role !== 'executor' || turn.body.trim().length > 0) return true;
+  const run = snapshot.runs.find((item) => item.id === turn.runId);
+  if (run === undefined) return true;
+  return run.status !== 'cancelled' && run.status !== 'failed';
+}
+
+/** 运行记录保留每一次未连接说明。界面上相同说明只出现一次。 */
+function visibleActivities(
+  activities: ExecutionDeskSnapshot['activities'],
+): ExecutionDeskSnapshot['activities'][number][] {
+  const seen = new Set<string>();
+  const visible: ExecutionDeskSnapshot['activities'][number][] = [];
+  for (const activity of activities) {
+    if (activity.title === 'MCP' && activity.succeeded === false) {
+      const key = `${activity.title}\n${activity.detail}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    visible.push(activity);
+  }
+  return visible;
+}
+
 /** 只读投影。调用它不会创建运行，也不会把发送成功写成已应用。 */
 export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): AgentWorkspaceView {
   const gapId = snapshot.resumeGap?.runId ?? null;
@@ -303,6 +331,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       attempt: run.attempt,
       label: run.id === gapId ? '待核实' : RUN_LABELS[run.status],
       simulated: run.simulated,
+      sessionDiscarded: run.sessionDiscarded === true,
     })),
     primary: {
       label: active ? '发送补充' : '发送',
@@ -326,21 +355,23 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     reassignEnabled: true,
     humanTakeoverEnabled: true,
     verifyAbandoned: snapshot.resumeGap !== null,
-    turns: snapshot.turns.map((turn) => ({
-      id: turn.id,
-      role: turn.role,
-      roleLabel: turn.role === 'user' ? '我' : turn.simulated ? '模拟执行器' : '执行器',
-      body: turn.body,
-      expertVersionId: turn.expertVersionId,
-      simulated: turn.simulated,
-      attachmentIds: turn.attachmentIds,
-      generating:
-        active?.status === 'running' &&
-        turn.role === 'executor' &&
-        turn.runId === active.id &&
-        turn.body.trim().length === 0,
-    })),
-    activities: snapshot.activities.map((activity) => ({
+    turns: snapshot.turns
+      .filter((turn) => keepTurn(snapshot, turn))
+      .map((turn) => ({
+        id: turn.id,
+        role: turn.role,
+        roleLabel: turn.role === 'user' ? '我' : turn.simulated ? '模拟执行器' : '执行器',
+        body: turn.body,
+        expertVersionId: turn.expertVersionId,
+        simulated: turn.simulated,
+        attachmentIds: turn.attachmentIds,
+        generating:
+          active?.status === 'running' &&
+          turn.role === 'executor' &&
+          turn.runId === active.id &&
+          turn.body.trim().length === 0,
+      })),
+    activities: visibleActivities(snapshot.activities).map((activity) => ({
       id: activity.id,
       title: activity.title,
       detail: activity.detail,

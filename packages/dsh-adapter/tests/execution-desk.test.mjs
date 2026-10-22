@@ -282,6 +282,15 @@ test('契约：补充进入队列，停止有回执，迟到结果不推进，�
   const { desk: session } = desk();
   const started = session.send({ text: '第一轮', idempotencyKey: 'run-a' });
   await session.waitForRun(started.runId, 'running');
+  assert.equal(
+    session
+      .snapshot()
+      .turns.some(
+        (turn) =>
+          turn.runId === started.runId && turn.role === 'executor' && turn.body.trim() === '',
+      ),
+    true,
+  );
   const queued = session.send({
     text: '补充异常分支',
     idempotencyKey: 'queue-1',
@@ -299,6 +308,18 @@ test('契约：补充进入队列，停止有回执，迟到结果不推进，�
   assert.equal(snapshot.node.status, 'cancelled');
   assert.equal(snapshot.runs[0].status, 'cancelled');
   assert.equal(snapshot.runs[0].stopPhase, 'confirmed');
+  assert.equal(
+    snapshot.turns.some(
+      (turn) => turn.runId === started.runId && turn.role === 'executor' && turn.body.trim() === '',
+    ),
+    false,
+  );
+  assert.equal(
+    createAgentWorkspaceView(snapshot).turns.some(
+      (turn) => turn.role === 'executor' && turn.body.trim() === '',
+    ),
+    false,
+  );
   assert.equal(snapshot.lateRecords.length > 0, true);
   assert.equal(
     snapshot.lateRecords.every((record) => record.mayChangeNodeStatus === false),
@@ -1274,4 +1295,64 @@ test('契约：恢复非法交接时该节点记录异常，其他节点仍能�
   assert.equal(createAgentWorkspaceView(other.snapshot()).nodeStatusKey, 'ready');
   const opened = other.send({ text: '其他节点可以发送', idempotencyKey: 'other-node' });
   assert.equal(opened.ok, true);
+});
+
+test('契约：输入说明和交付说明进入模拟执行', async () => {
+  const planted = seed();
+  planted.handoff.inputNote = '需求文档';
+  planted.handoff.expectedOutput = '接口定义';
+  const session = ExecutionDesk.create(planted, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true })],
+    newId: ids(),
+  });
+  session.updateConfig({ executorId: 'simulated', skillIds: [], mcpIds: [] });
+  const sent = session.send({ text: '开始实现', idempotencyKey: 'notes' });
+  await session.waitForRun(sent.runId, 'running');
+  session.releaseActive();
+  await session.flush();
+  const body = session.snapshot().turns.find((turn) => turn.role === 'executor')?.body ?? '';
+  assert.match(body, /输入说明：需求文档/);
+  assert.match(body, /交付说明：接口定义/);
+  assert.match(body, /【模拟】/);
+});
+
+test('契约：未连接的 MCP 每次运行都记下，界面只显示一次', async () => {
+  const planted = seed();
+  planted.handoff.mcpRefs = [{ id: 'api-docs', version: '1' }];
+  const session = ExecutionDesk.create(planted, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true })],
+    newId: ids(),
+  });
+  session.updateConfig({ executorId: 'simulated', skillIds: [], mcpIds: ['api-docs'] });
+  const first = session.send({ text: '第一轮', idempotencyKey: 'mcp-1' });
+  await session.waitForRun(first.runId, 'running');
+  session.releaseActive();
+  await session.flush();
+  const second = session.send({ text: '第二轮', idempotencyKey: 'mcp-2' });
+  await session.waitForRun(second.runId, 'running');
+  session.releaseActive();
+  await session.flush();
+  const recorded = session.snapshot().activities.filter((item) => item.title === 'MCP');
+  assert.equal(recorded.length, 2);
+  assert.deepEqual(
+    recorded.map((item) => item.runId),
+    [first.runId, second.runId],
+  );
+  assert.equal(
+    createAgentWorkspaceView(session.snapshot()).activities.filter((item) => item.title === 'MCP')
+      .length,
+    1,
+  );
+});
+
+test('契约：交接要求评审时确认完成被拒绝', async () => {
+  const { desk: session } = desk();
+  const sent = session.send({ text: '做完这一轮', idempotencyKey: 'review-gate' });
+  await session.waitForRun(sent.runId, 'running');
+  session.releaseActive();
+  await session.flush();
+  const refused = session.confirmCompleted();
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'review-required');
+  assert.equal(session.snapshot().node.status, 'ready');
 });

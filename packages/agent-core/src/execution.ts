@@ -79,6 +79,8 @@ export interface ExecutionAttempt {
   readonly stopPhase: StopPhase;
   readonly entryNodeStatus: 'ready' | 'needs-revision';
   readonly sessionId?: string;
+  /** 会话目录已删除。标识仍留在这条历史记录上，但不再用于恢复。 */
+  readonly sessionDiscarded?: true;
   readonly executorRunId?: string;
   readonly modelLabel?: string;
 }
@@ -374,6 +376,7 @@ function replaceAttempt(
     stopPhase: patch.stopPhase,
     entryNodeStatus: attempt.entryNodeStatus,
     ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(attempt.sessionDiscarded === true ? { sessionDiscarded: true as const } : {}),
     ...(executorRunId !== undefined ? { executorRunId } : {}),
     ...(modelLabel !== undefined ? { modelLabel } : {}),
   });
