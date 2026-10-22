@@ -141,38 +141,3 @@ node examples/agent-workspace/server.mjs
 浏览器打开标准输出里的 `url`。先在配置里选择「模拟执行器」，再发送。未选择时发送按钮禁用。停止会等待回执。编辑并提交只保存草稿。
 
 `ZHUMA_HOLD_RUNS=1` 让运行在接收回执后暂停，`POST /api/release` 才继续。`ZHUMA_SESSION_FILE` 把会话写到调用方指定的临时文件，不要提交该文件。
-
-## Real executor verification steps
-
-本侧自测只选择模拟执行器。下面的步骤留给持有网关配置的评审。不要把地址或密钥写进仓库、命令回显或失败说明。
-
-1. 准备上游 DSH（筑玛的执行器不会启动这个进程，只向配置的网关发 `POST {ZHUMA_MODEL_BASE_URL}/chat/completions`）：
-
-```bash
-cd upstream/deepseek-harness
-pnpm install
-pnpm dsh
-```
-
-`pnpm dsh` 对应 `node --import tsx/esm apps/cli/src/bin.ts`。需要构建时在同一目录执行 `pnpm build`。包管理器是 `pnpm@11.28.5`。
-
-2. 在另一个终端配置筑玛并启动演示。把示例地址换成评审环境自己的网关，模型可以省略，省略时使用 `zhanlu/glm-5.3-flash`。
-
-```bash
-export ZHUMA_MODEL_BASE_URL='https://example.invalid/v1'
-export ZHUMA_MODEL_API_KEY='replace-with-the-reviewer-key'
-export ZHUMA_MODEL_ID='zhanlu/glm-5.3-flash'
-pnpm exec tsc -b
-node examples/agent-workspace/server.mjs
-```
-
-可选模型：`zhanlu/glm-5.3-flash`、`zhanlu/glm-5.3`、`zhanlu/deepseek-v4.1-flash`、`zhanlu/kimi-k3`。
-
-3. 核对：
-
-- 发送：在页面选择 DSH，发送一条消息。出现执行器回复，运行记录增加，节点在结束后回到进入前的待处理或需修改。页面不出现网关地址或密钥。
-- 停止回执：在运行中点击停止。运行变为已取消，并有停止回执。关闭页面不会把运行标成已取消。
-- 失败展示：去掉 `ZHUMA_MODEL_API_KEY` 后重启再选 DSH 发送。发送被拒绝，运行数不变，说明里点名缺少的环境变量，并且没有改用模拟执行器。把密钥设回、把地址指到一个不可达位置时，失败说明是模型或网关错误，不把节点标成已完成。
-- 重新开始：停止成功后点重新开始。新运行的标识与被取消的那次不同，`returnTo` 带回进入运行前的状态。
-
-4. 只想跑跳过逻辑时，不设置上述变量，执行 `pnpm test`。`dsh-executor.e2e.test.mjs` 会跳过，并说明缺少配置或网关不可达。跳过不是失败。
