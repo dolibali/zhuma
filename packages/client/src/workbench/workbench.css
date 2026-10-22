@@ -678,7 +678,7 @@ body[data-ds-dark-theme] {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow: clip;
 }
 .zm-dialog .zm-form-body {
   min-height: 0;
@@ -687,6 +687,12 @@ body[data-ds-dark-theme] {
   overscroll-behavior: contain;
   border: 0;
   margin: 0;
+}
+.zm-form-fields {
+  min-inline-size: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
 }
 .zm-dialog:has(.zm-catalog-form) {
   width: 680px;

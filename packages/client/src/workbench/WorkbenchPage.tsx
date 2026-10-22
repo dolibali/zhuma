@@ -625,42 +625,14 @@ export function WorkbenchPage({
                 });
             }}
           >
-            <fieldset className="zm-form-body" disabled={saving}>
-              {dialog.kind === 'project' && (
-                <>
-                  <Field label="项目名称">
-                    <input
-                      required
-                      autoFocus
-                      maxLength={160}
-                      value={dialog.value.name}
-                      onChange={(e) =>
-                        setDialog({ ...dialog, value: { ...dialog.value, name: e.target.value } })
-                      }
-                    />
-                  </Field>
-                  <Field label="背景与目标">
-                    <textarea
-                      rows={4}
-                      maxLength={8000}
-                      value={dialog.value.description}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, description: e.target.value },
-                        })
-                      }
-                    />
-                  </Field>
-                </>
-              )}
-              {dialog.kind === 'member' && (
-                <>
-                  <div className="zm-form-row">
-                    <Field label="名称">
+            <div className="zm-form-body">
+              <fieldset className="zm-form-fields" disabled={saving}>
+                {dialog.kind === 'project' && (
+                  <>
+                    <Field label="项目名称">
                       <input
-                        autoFocus
                         required
+                        autoFocus
                         maxLength={160}
                         value={dialog.value.name}
                         onChange={(e) =>
@@ -668,216 +640,266 @@ export function WorkbenchPage({
                         }
                       />
                     </Field>
-                    <Field label="类型">
-                      <select
-                        value={dialog.value.kind}
+                    <Field label="背景与目标">
+                      <textarea
+                        rows={4}
+                        maxLength={8000}
+                        value={dialog.value.description}
                         onChange={(e) =>
                           setDialog({
                             ...dialog,
-                            value: { ...dialog.value, kind: e.target.value as Participant['kind'] },
+                            value: { ...dialog.value, description: e.target.value },
                           })
-                        }
-                      >
-                        <option value="human">团队成员</option>
-                        <option value="expert">Agent 专家</option>
-                      </select>
-                    </Field>
-                  </div>
-                  <Field label="职责">
-                    <input
-                      maxLength={300}
-                      placeholder="例如：后端开发，负责接口和数据模型"
-                      value={dialog.value.role}
-                      onChange={(e) =>
-                        setDialog({ ...dialog, value: { ...dialog.value, role: e.target.value } })
-                      }
-                    />
-                  </Field>
-                  <Field label="擅长的工作（逗号分隔）">
-                    <input
-                      value={dialog.value.capabilities.join('，')}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, capabilities: e.target.value.split(/[,，]/u) },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label={
-                      dialog.value.kind === 'expert' ? '专家说明与工作方法' : '分工偏好与补充说明'
-                    }
-                  >
-                    <textarea
-                      rows={3}
-                      maxLength={8000}
-                      value={dialog.value.instructions}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, instructions: e.target.value },
-                        })
-                      }
-                    />
-                  </Field>
-                  <label className="zm-check-row">
-                    <input
-                      type="checkbox"
-                      checked={dialog.value.available}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, available: e.target.checked },
-                        })
-                      }
-                    />
-                    可以参与新任务
-                  </label>
-                </>
-              )}
-              {dialog.kind === 'asset' && (
-                <>
-                  <div className="zm-form-row">
-                    <Field label="名称">
-                      <input
-                        autoFocus
-                        required
-                        maxLength={160}
-                        value={dialog.value.name}
-                        onChange={(e) =>
-                          setDialog({ ...dialog, value: { ...dialog.value, name: e.target.value } })
                         }
                       />
                     </Field>
-                    <Field label="类型">
-                      <select
-                        value={dialog.value.kind}
+                  </>
+                )}
+                {dialog.kind === 'member' && (
+                  <>
+                    <div className="zm-form-row">
+                      <Field label="名称">
+                        <input
+                          autoFocus
+                          required
+                          maxLength={160}
+                          value={dialog.value.name}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: { ...dialog.value, name: e.target.value },
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label="类型">
+                        <select
+                          value={dialog.value.kind}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: {
+                                ...dialog.value,
+                                kind: e.target.value as Participant['kind'],
+                              },
+                            })
+                          }
+                        >
+                          <option value="human">团队成员</option>
+                          <option value="expert">Agent 专家</option>
+                        </select>
+                      </Field>
+                    </div>
+                    <Field label="职责">
+                      <input
+                        maxLength={300}
+                        placeholder="例如：后端开发，负责接口和数据模型"
+                        value={dialog.value.role}
+                        onChange={(e) =>
+                          setDialog({ ...dialog, value: { ...dialog.value, role: e.target.value } })
+                        }
+                      />
+                    </Field>
+                    <Field label="擅长的工作（逗号分隔）">
+                      <input
+                        value={dialog.value.capabilities.join('，')}
                         onChange={(e) =>
                           setDialog({
                             ...dialog,
-                            value: { ...dialog.value, kind: e.target.value as TeamAsset['kind'] },
+                            value: {
+                              ...dialog.value,
+                              capabilities: e.target.value.split(/[,，]/u),
+                            },
                           })
                         }
-                      >
-                        <option value="skill">Skill</option>
-                        <option value="mcp">MCP 能力定义</option>
-                        <option value="template">工作流模板</option>
-                      </select>
+                      />
                     </Field>
-                  </div>
-                  <Field label="用途与适用场景">
-                    <textarea
-                      rows={2}
-                      maxLength={8000}
-                      value={dialog.value.description}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, description: e.target.value },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="定义内容">
-                    <textarea
-                      rows={8}
-                      maxLength={8000}
-                      value={dialog.value.content}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, content: e.target.value },
-                        })
-                      }
-                      placeholder={
-                        dialog.value.kind === 'mcp'
-                          ? '描述可提供的工具与访问范围；凭据在连接设置中配置'
-                          : '填写执行方法、工作步骤或模板内容'
-                      }
-                    />
-                  </Field>
-                  <label className="zm-check-row">
-                    <input
-                      type="checkbox"
-                      checked={dialog.value.available}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, available: e.target.checked },
-                        })
-                      }
-                    />
-                    可用于规划
-                  </label>
-                </>
-              )}
-              {dialog.kind === 'task' && (
-                <>
-                  <Field label="所属项目">
-                    <select
-                      value={dialog.value.projectId}
-                      onChange={(e) =>
-                        setDialog({
-                          ...dialog,
-                          value: { ...dialog.value, projectId: e.target.value },
-                        })
+                    <Field
+                      label={
+                        dialog.value.kind === 'expert' ? '专家说明与工作方法' : '分工偏好与补充说明'
                       }
                     >
-                      {state.projects.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="任务名称">
-                    <input
-                      required
-                      maxLength={160}
-                      autoFocus
-                      value={dialog.value.title}
-                      onChange={(e) =>
-                        setDialog({ ...dialog, value: { ...dialog.value, title: e.target.value } })
+                      <textarea
+                        rows={3}
+                        maxLength={8000}
+                        value={dialog.value.instructions}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, instructions: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                    <label className="zm-check-row">
+                      <input
+                        type="checkbox"
+                        checked={dialog.value.available}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, available: e.target.checked },
+                          })
+                        }
+                      />
+                      可以参与新任务
+                    </label>
+                  </>
+                )}
+                {dialog.kind === 'asset' && (
+                  <>
+                    <div className="zm-form-row">
+                      <Field label="名称">
+                        <input
+                          autoFocus
+                          required
+                          maxLength={160}
+                          value={dialog.value.name}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: { ...dialog.value, name: e.target.value },
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label="类型">
+                        <select
+                          value={dialog.value.kind}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: { ...dialog.value, kind: e.target.value as TeamAsset['kind'] },
+                            })
+                          }
+                        >
+                          <option value="skill">Skill</option>
+                          <option value="mcp">MCP 能力定义</option>
+                          <option value="template">工作流模板</option>
+                        </select>
+                      </Field>
+                    </div>
+                    <Field label="用途与适用场景">
+                      <textarea
+                        rows={2}
+                        maxLength={8000}
+                        value={dialog.value.description}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, description: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="定义内容">
+                      <textarea
+                        rows={8}
+                        maxLength={8000}
+                        value={dialog.value.content}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, content: e.target.value },
+                          })
+                        }
+                        placeholder={
+                          dialog.value.kind === 'mcp'
+                            ? '描述可提供的工具与访问范围；凭据在连接设置中配置'
+                            : '填写执行方法、工作步骤或模板内容'
+                        }
+                      />
+                    </Field>
+                    <label className="zm-check-row">
+                      <input
+                        type="checkbox"
+                        checked={dialog.value.available}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, available: e.target.checked },
+                          })
+                        }
+                      />
+                      可用于规划
+                    </label>
+                  </>
+                )}
+                {dialog.kind === 'task' && (
+                  <>
+                    <Field label="所属项目">
+                      <select
+                        value={dialog.value.projectId}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, projectId: e.target.value },
+                          })
+                        }
+                      >
+                        {state.projects.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="任务名称">
+                      <input
+                        required
+                        maxLength={160}
+                        autoFocus
+                        value={dialog.value.title}
+                        onChange={(e) =>
+                          setDialog({
+                            ...dialog,
+                            value: { ...dialog.value, title: e.target.value },
+                          })
+                        }
+                        placeholder="这次想完成什么？"
+                      />
+                    </Field>
+                    <Field label="任务目标">
+                      <textarea
+                        rows={3}
+                        maxLength={8000}
+                        value={dialog.value.goal}
+                        onChange={(e) =>
+                          setDialog({ ...dialog, value: { ...dialog.value, goal: e.target.value } })
+                        }
+                        placeholder="描述背景和预期结果"
+                      />
+                    </Field>
+                    <h3>
+                      参与者 <small>{dialog.value.participantIds.length} 位</small>
+                    </h3>
+                    <MemberPicker
+                      members={state.participants}
+                      selected={dialog.value.participantIds}
+                      change={(participantIds) =>
+                        setDialog({ ...dialog, value: { ...dialog.value, participantIds } })
                       }
-                      placeholder="这次想完成什么？"
                     />
-                  </Field>
-                  <Field label="任务目标">
-                    <textarea
-                      rows={3}
-                      maxLength={8000}
-                      value={dialog.value.goal}
-                      onChange={(e) =>
-                        setDialog({ ...dialog, value: { ...dialog.value, goal: e.target.value } })
+                    <ParticipantSelect
+                      label="任务负责人"
+                      members={state.participants.filter(
+                        (p) => p.kind === 'human' && dialog.value.participantIds.includes(p.id),
+                      )}
+                      selected={dialog.value.ownerId ? [dialog.value.ownerId] : []}
+                      change={(ids) =>
+                        setDialog({
+                          ...dialog,
+                          value: { ...dialog.value, ownerId: ids[0] ?? null },
+                        })
                       }
-                      placeholder="描述背景和预期结果"
                     />
-                  </Field>
-                  <h3>
-                    参与者 <small>{dialog.value.participantIds.length} 位</small>
-                  </h3>
-                  <MemberPicker
-                    members={state.participants}
-                    selected={dialog.value.participantIds}
-                    change={(participantIds) =>
-                      setDialog({ ...dialog, value: { ...dialog.value, participantIds } })
-                    }
-                  />
-                  <ParticipantSelect
-                    label="任务负责人"
-                    members={state.participants.filter(
-                      (p) => p.kind === 'human' && dialog.value.participantIds.includes(p.id),
+                    {!dialog.value.ownerId && (
+                      <small>可先保存草稿，确认工作流前需选择负责人。</small>
                     )}
-                    selected={dialog.value.ownerId ? [dialog.value.ownerId] : []}
-                    change={(ids) =>
-                      setDialog({ ...dialog, value: { ...dialog.value, ownerId: ids[0] ?? null } })
-                    }
-                  />
-                  {!dialog.value.ownerId && <small>可先保存草稿，确认工作流前需选择负责人。</small>}
-                </>
-              )}
-            </fieldset>
+                  </>
+                )}
+              </fieldset>
+            </div>
             {dialogError && (
               <div role="alert" className="zm-error zm-dialog-error">
                 {dialogError}
