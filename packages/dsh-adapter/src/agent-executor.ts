@@ -1,6 +1,13 @@
-import type { ExecutionEngine, ExecutionFaultKind } from '@zhuma/agent-core';
+import {
+  classifyExecutorFailure,
+  type ExecutionEngine,
+  type ExecutionFaultKind,
+} from '@zhuma/agent-core';
 
-/** 真实执行器尚未验证前，verified 必须保持 false。 */
+/**
+ * `verified` 表示这条原生路由在本进程里已经配好，不是评审签字。
+ * 模拟执行器保持 false。缺配置的 DSH 也保持 false，并且不会改用模拟。
+ */
 export interface ExecutorCapabilities {
   readonly liveInjection: boolean;
   readonly sessionResume: boolean;
@@ -17,7 +24,7 @@ export interface ResourceGrant {
   readonly toolsAuthorized: boolean;
 }
 
-/** 后续真实 DSH 执行器使用同一请求形状。本文件的原生实现仍未接入。 */
+/** 模拟执行器和 DSH 聊天执行器使用同一请求形状。码道仍未接入。 */
 export interface AgentRunRequest {
   readonly runId: string;
   readonly attempt: number;
@@ -139,18 +146,28 @@ export class SimulatedAgentExecutor implements AgentExecutor {
     mode: 'simulated',
   });
 
+  private readonly known = new Set<string>();
   private readonly cancelled = new Set<string>();
   private readonly finished = new Set<string>();
+  private readonly earlyRelease = new Set<string>();
   private readonly gates = new Map<string, { promise: Promise<void>; release: () => void }>();
   private readonly receipts = new Map<string, (receipt: CancelReceipt) => void>();
 
   constructor(private readonly options: SimulatedExecutorOptions = {}) {}
 
   release(runId: string): void {
-    this.gates.get(runId)?.release();
+    const gate = this.gates.get(runId);
+    if (gate) {
+      gate.release();
+      return;
+    }
+    this.earlyRelease.add(runId);
   }
 
   async cancel(runId: string): Promise<CancelReceipt> {
+    if (!this.known.has(runId)) {
+      return { receipt: 'rejected', reason: '没有这次运行。' };
+    }
     if (this.finished.has(runId)) {
       return { receipt: 'rejected', reason: '运行已经结束，迟到的停止不能改写结果。' };
     }
@@ -162,6 +179,7 @@ export class SimulatedAgentExecutor implements AgentExecutor {
   }
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    this.known.add(request.runId);
     const finish = (receipt: CancelReceipt) => {
       this.finished.add(request.runId);
       const resolve = this.receipts.get(request.runId);
@@ -184,7 +202,7 @@ export class SimulatedAgentExecutor implements AgentExecutor {
     }
     const executorRunId = `sim-${request.runId}`;
     yield { type: 'accepted', executorRunId, simulated: true };
-    if (this.options.pauseAfterAccept) {
+    if (this.options.pauseAfterAccept && !this.earlyRelease.has(request.runId)) {
       let release = () => {};
       const promise = new Promise<void>((resolve) => {
         release = resolve;
@@ -193,6 +211,7 @@ export class SimulatedAgentExecutor implements AgentExecutor {
       await promise;
       this.gates.delete(request.runId);
     }
+    this.earlyRelease.delete(request.runId);
     if (aborted()) {
       yield { type: 'cancelled', simulated: true };
       yield {
@@ -247,6 +266,168 @@ export class SimulatedAgentExecutor implements AgentExecutor {
       },
     };
     finish({ receipt: 'rejected', reason: '运行已按模拟结果结束，没有待确认的取消。' });
+  }
+}
+
+export const DSH_MODEL_IDS = [
+  'zhanlu/glm-5.3-flash',
+  'zhanlu/glm-5.3',
+  'zhanlu/deepseek-v4.1-flash',
+  'zhanlu/kimi-k3',
+] as const;
+
+export const DSH_DEFAULT_MODEL_ID = 'zhanlu/glm-5.3-flash';
+
+export interface DshModelConfig {
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  readonly modelId: (typeof DSH_MODEL_IDS)[number];
+}
+
+export type DshModelConfigResult =
+  | { readonly ok: true; readonly config: DshModelConfig }
+  | { readonly ok: false; readonly reason: string };
+
+/** 只读环境变量。缺哪一项就在原因里点名，不写出地址和密钥。 */
+export function readDshModelConfig(env: NodeJS.ProcessEnv = process.env): DshModelConfigResult {
+  const baseUrl = env.ZHUMA_MODEL_BASE_URL?.trim() ?? '';
+  const apiKey = env.ZHUMA_MODEL_API_KEY?.trim() ?? '';
+  const requested = env.ZHUMA_MODEL_ID?.trim() ?? '';
+  const missing: string[] = [];
+  if (baseUrl.length === 0) missing.push('ZHUMA_MODEL_BASE_URL');
+  if (apiKey.length === 0) missing.push('ZHUMA_MODEL_API_KEY');
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `缺少 ${missing.join('、')}。不会改用模拟执行器。模型用 ZHUMA_MODEL_ID 选择，未设置时使用 ${DSH_DEFAULT_MODEL_ID}。`,
+    };
+  }
+  const modelId = requested.length > 0 ? requested : DSH_DEFAULT_MODEL_ID;
+  if (!isDshModelId(modelId)) {
+    return {
+      ok: false,
+      reason: `模型不在可选列表。可选 ${DSH_MODEL_IDS.join('、')}。不会改用模拟执行器。`,
+    };
+  }
+  return { ok: true, config: { baseUrl: baseUrl.replace(/\/+$/, ''), apiKey, modelId } };
+}
+
+function isDshModelId(value: string): value is DshModelConfig['modelId'] {
+  return (DSH_MODEL_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * 向 OpenAI 兼容的 `/chat/completions` 发一次非流式请求。
+ * 配置缺失时 `run` 直接失败，不会改用模拟执行器。
+ */
+export class DshChatExecutor implements AgentExecutor {
+  readonly id = 'dsh' as const;
+  readonly capabilities: ExecutorCapabilities;
+  private readonly configResult: DshModelConfigResult;
+  private readonly known = new Set<string>();
+  private readonly finished = new Set<string>();
+  private readonly aborts = new Map<string, AbortController>();
+  private readonly receipts = new Map<string, (receipt: CancelReceipt) => void>();
+
+  constructor(env: NodeJS.ProcessEnv = process.env) {
+    this.configResult = readDshModelConfig(env);
+    this.capabilities = Object.freeze({
+      liveInjection: false,
+      sessionResume: false,
+      cancelReceipt: true,
+      streaming: false,
+      verified: this.configResult.ok,
+      mode: 'native',
+    });
+  }
+
+  async cancel(runId: string): Promise<CancelReceipt> {
+    if (!this.known.has(runId)) {
+      return { receipt: 'rejected', reason: '没有这次运行。' };
+    }
+    if (this.finished.has(runId)) {
+      return { receipt: 'rejected', reason: '运行已经结束，迟到的停止不能改写结果。' };
+    }
+    return new Promise((resolve) => {
+      this.receipts.set(runId, resolve);
+      this.aborts.get(runId)?.abort();
+    });
+  }
+
+  async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    if (!this.configResult.ok) {
+      throw new ExecutorNotImplementedError(this.configResult.reason);
+    }
+    this.known.add(request.runId);
+    const local = new AbortController();
+    this.aborts.set(request.runId, local);
+    const signal = AbortSignal.any([request.signal, local.signal]);
+    const config = this.configResult.config;
+    const executorRunId = `dsh-${request.runId}`;
+    let receipt: CancelReceipt = { receipt: 'rejected', reason: '运行已经结束。' };
+    try {
+      yield { type: 'accepted', executorRunId, simulated: false };
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        signal,
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.modelId,
+          stream: false,
+          messages: [{ role: 'user', content: `${request.goal}\n${request.instruction}` }],
+        }),
+      });
+      if (!response.ok) {
+        yield {
+          type: 'failed',
+          fault: 'model-error',
+          message: `模型网关返回 HTTP ${response.status}`,
+          simulated: false,
+        };
+        return;
+      }
+      const payload = (await response.json()) as {
+        choices?: readonly { message?: { content?: unknown } }[];
+      };
+      const content = payload.choices?.[0]?.message?.content;
+      const text = typeof content === 'string' ? content : '';
+      if (text.length > 0) yield { type: 'delta', text, simulated: false };
+      yield {
+        type: 'completed',
+        result: {
+          executorRunId,
+          simulated: false,
+          summary: text.length > 0 ? text : '模型没有返回正文。',
+          draftText: text,
+          sourceReferences: [...request.contextReferences],
+          verification: [],
+        },
+      };
+    } catch (error) {
+      if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        receipt = { receipt: 'cancelled' };
+        yield { type: 'cancelled', simulated: false };
+        return;
+      }
+      const message = error instanceof Error ? error.message : '模型调用失败';
+      yield {
+        type: 'failed',
+        fault: classifyExecutorFailure(message),
+        message: '模型调用失败。',
+        simulated: false,
+      };
+    } finally {
+      this.finished.add(request.runId);
+      this.aborts.delete(request.runId);
+      const resolve = this.receipts.get(request.runId);
+      if (resolve) {
+        this.receipts.delete(request.runId);
+        resolve(receipt);
+      }
+    }
   }
 }
 

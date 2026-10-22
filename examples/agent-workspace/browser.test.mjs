@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const artifacts = '/opt/cursor/artifacts';
+const artifacts =
+  process.env.ZHUMA_BROWSER_ARTIFACTS ?? path.join(tmpdir(), 'zhuma-browser-artifacts');
 
 test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、补充排队、停止与迟到结果', async () => {
   mkdirSync(artifacts, { recursive: true });
@@ -214,7 +215,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
       document.documentElement.style.zoom = '2';
       return document.documentElement.scrollWidth <= window.innerWidth + 1;
     });
-    console.log(`zoom-200-no-horizontal-overflow=${zoomFits}`);
+    assert.equal(zoomFits, true);
   } finally {
     await browser.close();
     child.kill();

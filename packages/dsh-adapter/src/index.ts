@@ -56,14 +56,20 @@ export type {
   AgentRunRequest,
   AgentRunResult,
   CancelReceipt,
+  DshModelConfig,
+  DshModelConfigResult,
   ExecutorCapabilities,
   ResourceGrant,
   SimulatedExecutorOptions,
 } from './agent-executor.js';
 export {
+  DSH_DEFAULT_MODEL_ID,
+  DSH_MODEL_IDS,
+  DshChatExecutor,
   ExecutorNotImplementedError,
   SimulatedAgentExecutor,
   UnimplementedNativeExecutor,
+  readDshModelConfig,
   selectAgentExecutor,
 } from './agent-executor.js';
 

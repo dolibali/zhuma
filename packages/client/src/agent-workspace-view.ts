@@ -31,12 +31,19 @@ const RUN_LABELS = {
   cancelled: '已取消',
 } as const;
 
-const PHASES: readonly InterventionPhase[] = ['sent', 'received', 'pending', 'applied'];
+const PHASES: readonly InterventionPhase[] = [
+  'sent',
+  'received',
+  'pending',
+  'applied',
+  'not-applied',
+];
 const PHASE_LABELS: Record<InterventionPhase, string> = {
   sent: '已发送',
   received: '已接收',
   pending: '待生效',
   applied: '已应用',
+  'not-applied': '未应用',
 };
 
 const BLOCK_LABELS: Record<string, string> = {
@@ -113,6 +120,7 @@ export interface AgentWorkspaceView {
   }[];
   readonly interventions: readonly {
     readonly id: string;
+    readonly body: string;
     readonly notice: string | null;
     readonly phases: readonly {
       readonly id: InterventionPhase;
@@ -156,6 +164,7 @@ export interface AgentWorkspaceView {
     readonly id: string;
     readonly name: string;
     readonly reference: string;
+    readonly preview: string | null;
   }[];
   readonly drafts: readonly {
     readonly text: string;
@@ -204,7 +213,8 @@ export interface AgentWorkspaceView {
 
 /** 只读投影。调用它不会创建运行，也不会把发送成功写成已应用。 */
 export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): AgentWorkspaceView {
-  const active = snapshot.runs.find((run) => !isTerminalRunStatus(run.status));
+  const gapId = snapshot.resumeGap?.runId ?? null;
+  const active = snapshot.runs.find((run) => !isTerminalRunStatus(run.status) && run.id !== gapId);
   const hint = executionTodoHint({
     nodeStatus: snapshot.node.status,
     actorId: snapshot.actorId,
@@ -215,15 +225,27 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
   const issue = configIssues.ok ? undefined : configIssues.issues[0];
   const stopPending = active?.stopPhase === 'requested';
   const issueTarget =
-    issue?.target === 'executor' ? '执行器' : issue?.target === 'model' ? '模型' : issue?.target;
+    issue?.target === 'executor'
+      ? '执行器'
+      : issue?.target === 'model'
+        ? '模型'
+        : humanizeLabel(issue?.target);
+  const terminalNode = snapshot.node.status === 'cancelled' || snapshot.node.status === 'completed';
   const sendBlocked = issue
     ? `${issueTarget}：${issue.reason}。修正后再发送，未配置时不会改用模拟执行器。`
-    : stopPending
-      ? '正在等待停止回执，不能再发送。'
-      : !snapshot.interactionReady
-        ? '正在恢复事实，恢复完成前不能发送。'
-        : null;
+    : snapshot.resumeGap
+      ? '原运行仍未结束。请核实为执行器已断开后再发送。'
+      : stopPending
+        ? '正在等待停止回执，不能再发送。'
+        : !snapshot.interactionReady
+          ? '正在恢复事实，恢复完成前不能发送。'
+          : terminalNode
+            ? snapshot.node.status === 'completed'
+              ? '节点已完成，不能再发送。'
+              : '节点已取消。请使用重新开始。'
+            : null;
   const nodeLabel = NODE_LABELS[snapshot.node.status];
+  const unavailable = snapshot.config.executorUnavailableReason ?? null;
   return {
     pageTitle: 'Agent 处理',
     backHref: `?view=task&task=${encodeURIComponent(snapshot.handoff.taskId)}`,
@@ -235,15 +257,15 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     nodeStatus: snapshot.node.status,
     nodeStatusLabel: nodeLabel,
     nodeStatusText: `状态：${nodeLabel}`,
-    assigneeNote: `责任人仍是 ${snapshot.assignee.id}。使用 Agent 不改变责任人。`,
+    assigneeNote: '责任人不变。使用 Agent 不改变责任人。',
     simulated: snapshot.config.simulated,
     banner: snapshot.config.simulated
       ? '当前是模拟执行器。回复、工具活动和结果都是模拟，不代表模型或工具调用成功。'
       : snapshot.config.executorId === null
         ? '尚未选择执行器。未配置时不会自动改用模拟执行器。'
-        : null,
+        : unavailable,
     resumeNote: snapshot.resumeGap
-      ? `已恢复事实：运行 ${snapshot.resumeGap.runId} 仍未结束。执行器不支持会话恢复，没有把它推断成完成。`
+      ? '已恢复事实：有一次运行仍未结束。执行器不支持会话恢复，没有把它推断成完成。请核实为执行器已断开。'
       : null,
     nextAction: hint.label,
     run: active
@@ -258,7 +280,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     runs: snapshot.runs.map((run) => ({
       id: run.id,
       attempt: run.attempt,
-      label: RUN_LABELS[run.status],
+      label: run.id === gapId ? '待核实' : RUN_LABELS[run.status],
       simulated: run.simulated,
     })),
     primary: {
@@ -298,6 +320,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     })),
     interventions: snapshot.interventions.map((item) => ({
       id: item.id,
+      body: item.body,
       notice: item.notice ?? null,
       phases: PHASES.map((phase) => ({
         id: phase,
@@ -324,7 +347,9 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       reason: fault.reason,
       nextStep: fault.nextStep,
     })),
-    error: snapshot.lastError,
+    error: snapshot.lastError
+      ? { ...snapshot.lastError, objectLabel: humanizeLabel(snapshot.lastError.objectLabel) }
+      : null,
     contextItems: snapshot.contextItems.map((item) => ({
       id: item.id,
       summary: item.summary,
@@ -358,6 +383,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       id: item.id,
       name: item.name,
       reference: item.reference,
+      preview: item.previewText ?? null,
     })),
     drafts: snapshot.drafts.map((draft) => ({
       text: draft.text,
@@ -421,17 +447,26 @@ export function phaseReached(
   item: Pick<InterventionRecord, 'phase' | 'kind'>,
   phase: InterventionPhase,
 ): boolean {
+  if (item.phase === 'not-applied') return phase !== 'applied';
   if (item.kind === 'next-turn') {
-    const order: Record<InterventionPhase, number> = {
+    const order: Record<Exclude<InterventionPhase, 'not-applied'>, number> = {
       sent: 0,
       received: 1,
       pending: 2,
       applied: 3,
     };
+    if (phase === 'not-applied') return false;
     return order[phase] <= order[item.phase];
   }
-  if (phase === 'pending') return false;
+  if (phase === 'pending' || phase === 'not-applied') return false;
   if (item.phase === 'sent') return phase === 'sent';
   if (item.phase === 'received') return phase === 'sent' || phase === 'received';
   return phase === 'sent' || phase === 'received' || phase === 'applied';
+}
+
+function humanizeLabel(value: string | undefined): string {
+  if (value === 'codearts-cli') return '码道';
+  if (value === 'dsh') return 'DSH';
+  if (value === 'simulated') return '模拟执行器';
+  return value ?? '配置';
 }

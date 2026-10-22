@@ -49,6 +49,15 @@ async function handle(
     return;
   }
   if (request.method === 'POST' && url.pathname.startsWith('/api/')) {
+    if (!originAllowed(request)) {
+      sendJson(response, 403, {
+        ok: false,
+        objectLabel: '来源',
+        reason: '跨站请求被拒绝',
+        nextStep: '从本机页面操作。',
+      });
+      return;
+    }
     const body = (await readBody(request)) as Record<string, unknown>;
     const result = await dispatch(options.desk, url.pathname, body);
     sendJson(response, result.ok ? 200 : 409, {
@@ -67,6 +76,19 @@ async function handle(
     reason: '没有这个路径',
     nextStep: '返回 Agent 处理页',
   });
+}
+
+function originAllowed(request: IncomingMessage): boolean {
+  const origin = request.headers.origin;
+  if (origin === undefined) return true;
+  if (Array.isArray(origin)) return false;
+  const host = request.headers.host;
+  if (typeof host !== 'string' || host.length === 0) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
 }
 
 function payload(options: WorkbenchServerOptions) {

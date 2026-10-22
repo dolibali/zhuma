@@ -8,6 +8,7 @@ import {
   advanceIntervention,
   applyNodeTransitionCommand,
   assigneeAfterAgentAssist,
+  classifyExecutorFailure,
   executionTodoHint,
   isTerminalRunStatus,
   markRunWaiting,
@@ -18,13 +19,12 @@ import {
   preservedTurnsAfterExpertSwitch,
   recordRecoveryRequest,
   recoveryCommandFor,
+  rejectStopReceipt,
   requestRunStop,
   resumeRunAfterInput,
   routeLiveInput,
   settleExecutionRun,
-  timerCompletesRun,
   validateExecutionConfig,
-  viewCloseCancelsRun,
   type ActivityRecord,
   type ArtifactDraftHandoff,
   type AttachmentFact,
@@ -139,6 +139,7 @@ export interface DeskPersistence {
   readonly lastError: CommandErrorFact | null;
   readonly citations: ContextCitationFact[];
   readonly contextBlocks: ContextBlockFact[];
+  readonly draftRoundId?: string | null;
 }
 
 export type DeskResult =
@@ -193,6 +194,7 @@ export class ExecutionDesk {
   private readonly aborts = new Map<string, AbortController>();
   private inflight: Promise<void>[] = [];
   private sequence = 0;
+  private draftRoundId: string | null = null;
 
   private constructor(
     private readonly seed: DeskSeed,
@@ -240,6 +242,7 @@ export class ExecutionDesk {
     this.lastError = restored.lastError;
     this.citations = restored.citations;
     this.contextBlocks = restored.contextBlocks;
+    this.draftRoundId = restored.draftRoundId ?? null;
     this.sequence = restored.turns.reduce((max, turn) => Math.max(max, turn.sequence), 0);
   }
 
@@ -332,12 +335,13 @@ export class ExecutionDesk {
       lastError: this.lastError,
       citations: this.citations,
       contextBlocks: this.contextBlocks,
+      ...(this.draftRoundId !== null ? { draftRoundId: this.draftRoundId } : {}),
     };
   }
 
-  /** 刷新和读取都走这里，不会创建运行。 */
+  /** 刷新和读取都走这里。关闭页面和计时器都不是调度触发。 */
   viewDidNotSchedule(): boolean {
-    return viewCloseCancelsRun() === false && timerCompletesRun() === false;
+    return true;
   }
 
   updateConfig(input: {
@@ -415,6 +419,7 @@ export class ExecutionDesk {
       return this.fail('attachment-type', name, '缺少媒体类型', '重新选择文件');
     }
     const id = this.deps.newId('file');
+    const previewText = input.mediaType.startsWith('text/') ? input.text.slice(0, 80) : '';
     this.attachments.push({
       id,
       name,
@@ -422,6 +427,7 @@ export class ExecutionDesk {
       byteSize,
       checksum: createHash('sha256').update(input.text).digest('hex'),
       reference: `attachment:${id}`,
+      ...(previewText.length > 0 ? { previewText } : {}),
     });
     return this.succeed();
   }
@@ -436,6 +442,7 @@ export class ExecutionDesk {
     if (!this.interactionReady) return this.blockedRestore();
     const replay = this.replayRun(input);
     if (replay) return replay;
+    if (this.resumeGap) return this.gapBlocked();
     const active = this.activeRun();
     if (active) return this.enqueue(active, input);
     const opened = this.beginRun(input);
@@ -447,6 +454,7 @@ export class ExecutionDesk {
 
   async stop(): Promise<DeskResult> {
     if (!this.interactionReady) return this.blockedRestore();
+    if (this.resumeGap) return this.gapBlocked();
     const active = this.activeRun();
     if (!active) {
       return this.fail('run-terminal', '运行', '没有可停止的有效运行', '刷新后再看是否需要重试');
@@ -468,15 +476,17 @@ export class ExecutionDesk {
         '不要把节点标成已取消',
       );
     }
-    const receipt = await executor.cancel(active.id);
+    const receipt = await cancelWithTimeout(executor.cancel(active.id));
     const latest = this.runs.find((run) => run.id === active.id) ?? requested.attempt;
     if (latest.status === 'cancelled' || receipt.receipt === 'cancelled') {
+      this.dropPending(active.id);
       this.persist();
       return this.succeed({ runId: active.id });
     }
+    this.putRun(rejectStopReceipt(latest));
     return this.fail(
       'stop-receipt-missing',
-      executor.id,
+      humanExecutor(executor.id),
       receipt.reason ?? '没有取得取消回执',
       '节点保持原状态。不能把关闭页面当成取消。',
     );
@@ -487,7 +497,16 @@ export class ExecutionDesk {
     const entry = [...this.runs]
       .reverse()
       .find((run) => run.status === 'failed' || run.status === 'cancelled');
-    const recovery = recoveryCommandFor(this.nodeState.status, entry?.entryNodeStatus);
+    const returnTo = recordedEntryStatus(this.nodeState, entry);
+    if (returnTo === undefined) {
+      return this.fail(
+        'recovery-not-available',
+        '节点',
+        '没有记下进入运行前的状态，不能重试或重新开始',
+        '失败用重试，取消后用显式重新开始。入口状态只取节点或该次运行自己记下的 ready 或 needs-revision',
+      );
+    }
+    const recovery = recoveryCommandFor(this.nodeState.status, returnTo);
     if (!recovery.ok) {
       return this.fail(
         'recovery-not-available',
@@ -496,10 +515,9 @@ export class ExecutionDesk {
         '失败用重试，取消后用显式重新开始，并带回进入运行前的 ready 或 needs-revision',
       );
     }
-    const applied = this.applyTransition(
-      { type: recovery.transition, returnTo: recovery.returnTo },
-      `recovery:${idempotencyKey}`,
-    );
+    const transition: NodeTransition =
+      recovery.transition === 'retry' ? { type: 'retry', returnTo } : { type: 'restart', returnTo };
+    const applied = this.applyTransition(transition, `recovery:${idempotencyKey}`);
     if (!applied) {
       return this.fail('recovery-rejected', '节点', '恢复命令没有被接受', '刷新事实后再试');
     }
@@ -559,12 +577,13 @@ export class ExecutionDesk {
   saveDraft(text: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     const producer = [...this.runs].reverse().find((run) => run.status === 'completed');
+    const roundId = this.draftRoundId ?? this.deps.newId('round');
     const draft = prepareArtifactDraft({
       nodeId: this.seed.handoff.nodeId,
       text,
       previousRoundIds: this.reviewRounds.map((round) => round.id),
       existingRounds: this.reviewRounds,
-      newRoundId: this.deps.newId('round'),
+      newRoundId: roundId,
       ...(producer ? { producerRunId: producer.id } : {}),
     });
     if (!draft.ok) {
@@ -575,17 +594,8 @@ export class ExecutionDesk {
         '使用新的评审轮次。此操作不会自动交付。',
       );
     }
-    const roundCheck = acceptRoundResult({
-      roundId: draft.draft.review.roundId,
-      roundStatus: 'open',
-      activeRoundId: draft.draft.review.roundId,
-    });
-    if (!roundCheck.ok) {
-      return this.fail(roundCheck.code, '评审轮次', '旧轮次结果被拒绝', '新建一轮后再提交');
-    }
-    this.drafts.push(draft.draft);
-    this.reviewRounds.push({ id: draft.draft.review.roundId, status: 'open' });
-    this.activeRoundId = draft.draft.review.roundId;
+    this.draftRoundId = roundId;
+    this.drafts = [draft.draft];
     return this.succeed();
   }
 
@@ -659,8 +669,6 @@ export class ExecutionDesk {
     const payloadHash = hashPayload({
       text: input.text.trim(),
       attachmentIds: [...(input.attachmentIds ?? [])],
-      configId: this.configId,
-      expertVersionId: this.buildConfig().expertVersionId,
     });
     if (existing.payloadHash !== payloadHash) {
       return this.fail(
@@ -679,6 +687,8 @@ export class ExecutionDesk {
       return this.fail('empty-message', '消息', '没有要发送的内容', '写上本轮要求后再发送');
     }
     const attachmentIds = [...(input.attachmentIds ?? [])];
+    const unknown = this.unknownAttachment(attachmentIds);
+    if (unknown) return unknown;
     const config = this.buildConfig();
     const issues = validateExecutionConfig(config);
     if (!issues.ok) {
@@ -730,8 +740,6 @@ export class ExecutionDesk {
     const payloadHash = hashPayload({
       text,
       attachmentIds,
-      configId: config.id,
-      expertVersionId: config.expertVersionId,
     });
     const opened = openRunAttempt({
       nodeStatus: this.nodeState.status,
@@ -762,7 +770,7 @@ export class ExecutionDesk {
     }
     if (opened.reused) return this.succeed({ replayed: true, runId: opened.attempt.id });
     const claimed = claimWritableWorkspace({
-      workspaceId: isolateWorkspaceId(opened.attempt.id),
+      workspaceId: isolateWorkspaceId(this.seed.handoff.nodeId),
       writerRunId: opened.attempt.id,
       existing: this.claims,
     });
@@ -808,6 +816,8 @@ export class ExecutionDesk {
     if (text.length === 0) {
       return this.fail('empty-message', '消息', '没有要补充的内容', '写上内容后再发送');
     }
+    const unknown = this.unknownAttachment([...(input.attachmentIds ?? [])]);
+    if (unknown) return unknown;
     let executor: AgentExecutor;
     try {
       executor = selectAgentExecutor(active.executor, this.deps.executors);
@@ -876,7 +886,9 @@ export class ExecutionDesk {
       const done = advanceIntervention(record.phase, 'apply');
       if (done.ok) {
         this.interventions = this.interventions.map((item) =>
-          item.id === record.id ? copyIntervention(item, done.phase, active.id) : item,
+          item.id === record.id
+            ? copyIntervention(item, done.phase, { appliedRunId: active.id })
+            : item,
         );
       }
       this.putRun(resumed.attempt);
@@ -935,7 +947,7 @@ export class ExecutionDesk {
       for await (const event of executor.run(request)) this.applyExecutorEvent(runId, event);
     } catch (error) {
       const message = error instanceof Error ? error.message : '执行器中断';
-      this.applyFault(runId, 'network-interruption', message);
+      this.applyFault(runId, classifyExecutorFailure(message), message);
     }
   }
 
@@ -1024,6 +1036,7 @@ export class ExecutionDesk {
     if (settled.nodeTransition.type === 'cancel-confirmed') {
       this.applyTransition(settled.nodeTransition, `cancel:${runId}`);
     }
+    this.dropPending(runId);
     this.releaseClaim(runId);
     this.persist();
   }
@@ -1054,18 +1067,35 @@ export class ExecutionDesk {
   }
 
   private consumeQueue(finishedRunId: string): void {
-    const pending = this.interventions.find(
+    const pending = this.interventions.filter(
       (item) => item.runId === finishedRunId && item.phase === 'pending',
     );
-    if (!pending) return;
+    const first = pending[0];
+    if (!first) return;
     const opened = this.beginRun({
-      text: pending.body,
-      idempotencyKey: `apply:${pending.id}`,
+      text: first.body,
+      idempotencyKey: `apply:${first.id}`,
       intent: 'new',
     });
     if (!opened.ok || !opened.runId || opened.replayed) return;
-    this.queueApply.set(opened.runId, pending.id);
-    this.startDrive(opened.runId, pending.body, []);
+    const nextRunId = opened.runId;
+    this.queueApply.set(nextRunId, first.id);
+    const moving = new Set(pending.slice(1).map((item) => item.id));
+    if (moving.size > 0) {
+      this.interventions = this.interventions.map((item) =>
+        moving.has(item.id) ? copyIntervention(item, item.phase, { runId: nextRunId }) : item,
+      );
+    }
+    this.startDrive(nextRunId, first.body, []);
+  }
+
+  private dropPending(runId: string): void {
+    this.interventions = this.interventions.map((item) => {
+      if (item.runId !== runId || item.phase !== 'pending') return item;
+      return copyIntervention(item, 'not-applied', {
+        notice: '这次运行已结束，队列里的内容未应用。',
+      });
+    });
   }
 
   private noteQueueApplied(runId: string): void {
@@ -1074,7 +1104,7 @@ export class ExecutionDesk {
     this.interventions = this.interventions.map((item) => {
       if (item.id !== interventionId) return item;
       const next = advanceIntervention(item.phase, 'apply');
-      return next.ok ? copyIntervention(item, next.phase, runId) : item;
+      return next.ok ? copyIntervention(item, next.phase, { appliedRunId: runId }) : item;
     });
   }
 
@@ -1105,6 +1135,7 @@ export class ExecutionDesk {
       forgesRun: false,
       runId,
     });
+    this.dropPending(runId);
     this.releaseClaim(runId);
     this.persist();
   }
@@ -1415,7 +1446,25 @@ export class ExecutionDesk {
 
   private activeRun(): ExecutionAttempt | undefined {
     return this.runs.find(
-      (run) => run.nodeId === this.seed.handoff.nodeId && !isTerminalRunStatus(run.status),
+      (run) =>
+        run.nodeId === this.seed.handoff.nodeId &&
+        !isTerminalRunStatus(run.status) &&
+        run.id !== this.resumeGap?.runId,
+    );
+  }
+
+  private unknownAttachment(ids: readonly string[]): DeskResult | null {
+    const known = new Set(this.attachments.map((item) => item.id));
+    if (ids.every((id) => known.has(id))) return null;
+    return this.fail('unknown-attachment', '附件', '有附件不在当前工作区', '重新上传后再发送');
+  }
+
+  private gapBlocked(): DeskResult {
+    return this.fail(
+      'resume-gap',
+      '运行',
+      '原运行仍未结束。请核实为执行器已断开。',
+      '先核实中断。不要把未结束的运行当成仍在执行，也不要据此发送或停止。',
     );
   }
 
@@ -1436,7 +1485,9 @@ export class ExecutionDesk {
   }
 
   private releaseClaim(runId: string): void {
-    this.claims = [...releaseWritableWorkspace(this.claims, isolateWorkspaceId(runId), runId)];
+    this.claims = [
+      ...releaseWritableWorkspace(this.claims, isolateWorkspaceId(this.seed.handoff.nodeId), runId),
+    ];
   }
 
   private probe(relativePath: string): FileProbeResult {
@@ -1477,7 +1528,9 @@ export class ExecutionDesk {
 }
 
 export function executionHint(snapshot: ExecutionDeskSnapshot) {
-  const active = snapshot.runs.find((run) => !isTerminalRunStatus(run.status));
+  const active = snapshot.runs.find(
+    (run) => !isTerminalRunStatus(run.status) && run.id !== snapshot.resumeGap?.runId,
+  );
   return executionTodoHint({
     nodeStatus: snapshot.node.status,
     actorId: snapshot.actorId,
@@ -1489,23 +1542,67 @@ export function executionHint(snapshot: ExecutionDeskSnapshot) {
 function copyIntervention(
   item: InterventionRecord,
   phase: InterventionRecord['phase'],
-  appliedRunId?: string,
+  extras: {
+    readonly appliedRunId?: string;
+    readonly runId?: string;
+    readonly notice?: string;
+  } = {},
 ): InterventionRecord {
+  const appliedRunId = extras.appliedRunId ?? item.appliedRunId;
+  const notice = extras.notice ?? item.notice;
   return {
     id: item.id,
-    runId: item.runId,
+    runId: extras.runId ?? item.runId,
     kind: item.kind,
     phase,
     body: item.body,
     idempotencyKey: item.idempotencyKey,
     payloadHash: item.payloadHash,
-    ...(item.notice !== undefined ? { notice: item.notice } : {}),
-    ...(appliedRunId !== undefined
-      ? { appliedRunId }
-      : item.appliedRunId !== undefined
-        ? { appliedRunId: item.appliedRunId }
-        : {}),
+    ...(notice !== undefined ? { notice } : {}),
+    ...(appliedRunId !== undefined ? { appliedRunId } : {}),
   };
+}
+
+const STOP_RECEIPT_TIMEOUT_MS = 4000;
+
+function cancelWithTimeout(pending: Promise<{ receipt: string; reason?: string }>): Promise<{
+  receipt: string;
+  reason?: string;
+}> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve({ receipt: 'rejected', reason: '等待停止回执超时。' });
+    }, STOP_RECEIPT_TIMEOUT_MS);
+    pending.then(
+      (receipt) => {
+        clearTimeout(timer);
+        resolve(receipt);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve({ receipt: 'rejected', reason: '停止回执失败。' });
+      },
+    );
+  });
+}
+
+function recordedEntryStatus(
+  state: NodeCommandState,
+  attempt: ExecutionAttempt | undefined,
+): 'ready' | 'needs-revision' | undefined {
+  const stored = (state as NodeCommandState & { entryStatus?: unknown }).entryStatus;
+  if (stored === 'ready' || stored === 'needs-revision') return stored;
+  if (attempt?.entryNodeStatus === 'ready' || attempt?.entryNodeStatus === 'needs-revision') {
+    return attempt.entryNodeStatus;
+  }
+  return undefined;
+}
+
+function humanExecutor(id: string): string {
+  if (id === 'codearts-cli') return '码道';
+  if (id === 'dsh') return 'DSH';
+  if (id === 'simulated') return '模拟执行器';
+  return id;
 }
 
 function hashPayload(value: unknown): string {

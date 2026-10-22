@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  DshChatExecutor,
   ExecutionDesk,
   SimulatedAgentExecutor,
   UnimplementedNativeExecutor,
   createFileJournal,
+  createWorkbenchServer,
   probeRelativeFile,
+  readDshModelConfig,
   selectAgentExecutor,
 } from '@zhuma/dsh-adapter';
 
@@ -30,6 +33,11 @@ function seed(overrides = {}) {
       reviewRequired: true,
       reviewerIds: ['lin-ke'],
       inputRefs: [],
+      expertRef: { id: 'api-impl', version: 'api-impl-v1' },
+      skillRefs: [],
+      mcpRefs: [],
+      inputNote: '',
+      expectedOutput: '',
     },
     taskTitle: '企业客户门户季度交付',
     taskGoal: '完成企业客户开户闭环',
@@ -239,12 +247,20 @@ test('契约：重复发送、上下文阻塞、两轮修改、刷新和切换�
   assert.equal(restored.snapshot().turns.length, turnsBefore);
   assert.equal(restored.snapshot().config.expertVersionId, 'reviewer-v2');
   assert.equal(restored.snapshot().assignee.id, 'chen-ning');
+  const roundsBefore = restored.snapshot().reviewRounds.length;
   const draft = restored.saveDraft('手工修订后的字段说明');
   assert.equal(draft.ok, true);
   assert.equal(draft.snapshot.drafts[0].autoDeliver, false);
   assert.equal(draft.snapshot.drafts[0].skipReview, false);
   assert.equal(draft.snapshot.node.status, 'ready');
   assert.notEqual(draft.snapshot.drafts[0].review.roundId, 'round-old');
+  assert.equal(draft.snapshot.reviewRounds.length, roundsBefore);
+  const again = restored.saveDraft('第二次只替换草稿');
+  assert.equal(again.ok, true);
+  assert.equal(again.snapshot.drafts.length, 1);
+  assert.equal(again.snapshot.drafts[0].text, '第二次只替换草稿');
+  assert.equal(again.snapshot.drafts[0].review.roundId, draft.snapshot.drafts[0].review.roundId);
+  assert.equal(again.snapshot.reviewRounds.length, roundsBefore);
   const old = restored.acceptReviewResult('round-old', 'open');
   assert.equal(old.code, 'old-round-rejected');
   assert.equal(restored.snapshot().node.status, 'ready');
@@ -282,7 +298,9 @@ test('契约：补充进入队列，停止有回执，迟到结果不推进，�
   );
   assert.equal(snapshot.downstreamLaunches, 0);
   assert.equal(snapshot.delivered, false);
-  assert.equal(snapshot.interventions[0].phase, 'pending');
+  assert.equal(snapshot.interventions[0].phase, 'not-applied');
+  assert.equal(snapshot.interventions[0].body, '补充异常分支');
+  assert.match(snapshot.interventions[0].notice, /未应用/);
   assert.equal(snapshot.runs.length, runsDuring);
   assert.equal(
     snapshot.activities.every((activity) => activity.succeeded === false),
@@ -350,4 +368,233 @@ test('契约：文件探针拒绝逃出工作区的路径，且不返回绝对�
   const missing = probeRelativeFile(directory, 'missing.csv');
   assert.deepEqual(missing, { ok: true, exists: false, readable: false });
   assert.equal(readFileSync(path.join(directory, 'spec.md'), 'utf8'), '字段规范');
+  symlinkSync('/etc/passwd', path.join(directory, 'escape.md'));
+  assert.equal(probeRelativeFile(directory, 'escape.md').code, 'path-rejected');
+  symlinkSync(path.join(directory, 'spec.md'), path.join(directory, 'inside.md'));
+  assert.deepEqual(probeRelativeFile(directory, 'inside.md'), {
+    ok: true,
+    exists: true,
+    readable: true,
+  });
 });
+
+test('契约：队列按顺序消费每一条，同一请求在更换技能后仍然重放', async () => {
+  const { desk: session } = desk();
+  const started = session.send({ text: '第一轮', idempotencyKey: 'fifo-run' });
+  await session.waitForRun(started.runId, 'running');
+  session.send({ text: '补充一', idempotencyKey: 'q1', intent: 'supplement' });
+  session.send({ text: '补充二', idempotencyKey: 'q2', intent: 'supplement' });
+  assert.equal(session.snapshot().interventions.length, 2);
+  session.releaseActive();
+  await session.flush();
+  const second = session.snapshot().runs[1];
+  await session.waitForRun(second.id, 'running');
+  const mid = session.snapshot();
+  assert.equal(mid.interventions.find((item) => item.body === '补充一').phase, 'applied');
+  const rest = mid.interventions.find((item) => item.body === '补充二');
+  assert.equal(rest.phase, 'pending');
+  assert.equal(rest.runId, second.id);
+  session.releaseActive();
+  await session.flush();
+  const third = session.snapshot().runs[2];
+  await session.waitForRun(third.id, 'running');
+  assert.equal(
+    session.snapshot().interventions.find((item) => item.body === '补充二').phase,
+    'applied',
+  );
+  session.releaseActive();
+  await session.flush();
+  session.updateConfig({ skillIds: ['review-code'] });
+  const replay = session.send({ text: '第一轮', idempotencyKey: 'fifo-run' });
+  assert.equal(replay.replayed, true);
+  assert.equal(
+    session.snapshot().runs.filter((run) => run.idempotencyKey === 'fifo-run').length,
+    1,
+  );
+});
+
+test('契约：等待输入结束后回到入口状态，未知附件不创建运行', async () => {
+  const { desk: session } = desk();
+  const started = session.send({ text: '等待后再结束', idempotencyKey: 'wait-finish' });
+  await session.waitForRun(started.runId, 'running');
+  const waiting = session.markWaitingForInput();
+  assert.equal(waiting.ok, true);
+  assert.equal(waiting.snapshot.node.status, 'waiting-for-input');
+  session.releaseActive();
+  await session.flush();
+  assert.equal(session.snapshot().runs[0].status, 'completed');
+  assert.equal(session.snapshot().node.status, 'ready');
+  const missing = session.send({
+    text: '带上不存在的附件',
+    idempotencyKey: 'missing-file',
+    attachmentIds: ['no-such-file'],
+  });
+  assert.equal(missing.code, 'unknown-attachment');
+  assert.equal(missing.snapshot.runs.length, 1);
+});
+
+test('契约：重启后的未结束运行不再显示为可发送，停止不会改写停止阶段', async () => {
+  const journalState = { value: null };
+  const journal = {
+    load: () => journalState.value,
+    save: (value) => {
+      journalState.value = JSON.parse(JSON.stringify(value));
+    },
+  };
+  const { desk: session } = desk({ journal });
+  const started = session.send({ text: '保持运行', idempotencyKey: 'gap-run' });
+  await session.waitForRun(started.runId, 'running');
+  const restored = ExecutionDesk.restore(journal.load(), {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true })],
+    newId: ids(),
+  });
+  restored.resumeInteraction();
+  const sent = restored.send({ text: '不要发', idempotencyKey: 'gap-send' });
+  assert.equal(sent.code, 'resume-gap');
+  assert.equal(sent.snapshot.runs.length, 1);
+  assert.equal(sent.snapshot.runs[0].stopPhase, 'none');
+  const stopped = await restored.stop();
+  assert.equal(stopped.code, 'resume-gap');
+  assert.equal(stopped.snapshot.runs[0].stopPhase, 'none');
+  assert.equal(stopped.snapshot.runs[0].status, 'running');
+});
+
+test('契约：未知运行的取消立即返回，提前释放不会卡住', async () => {
+  const executor = new SimulatedAgentExecutor({ pauseAfterAccept: true });
+  const started = Date.now();
+  const missing = await executor.cancel('missing-run');
+  assert.equal(missing.receipt, 'rejected');
+  assert.equal(Date.now() - started < 1000, true);
+  executor.release('run-early');
+  const events = [];
+  for await (const event of executor.run(runRequest('run-early'))) {
+    events.push(event.type);
+  }
+  assert.equal(events.includes('completed'), true);
+  assert.equal(events.includes('accepted'), true);
+});
+
+test('契约：缺少模型配置时 DSH 明确失败且不降级', async () => {
+  const missing = readDshModelConfig({});
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /ZHUMA_MODEL_BASE_URL/);
+  assert.match(missing.reason, /ZHUMA_MODEL_API_KEY/);
+  assert.equal(missing.reason.includes('http'), false);
+  const executor = new DshChatExecutor({});
+  assert.equal(executor.capabilities.verified, false);
+  await assert.rejects(async () => {
+    for await (const event of executor.run(runRequest('dsh-missing'))) void event;
+  }, /ZHUMA_MODEL_BASE_URL/);
+  const unknown = await executor.cancel('dsh-missing');
+  assert.equal(unknown.receipt, 'rejected');
+  const badModel = readDshModelConfig({
+    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
+    ZHUMA_MODEL_API_KEY: 'test-key',
+    ZHUMA_MODEL_ID: 'not-a-model',
+  });
+  assert.equal(badModel.ok, false);
+  const configured = readDshModelConfig({
+    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1/',
+    ZHUMA_MODEL_API_KEY: 'test-key',
+  });
+  assert.equal(configured.ok, true);
+  assert.equal(configured.config.modelId, 'zhanlu/glm-5.3-flash');
+  assert.equal(configured.config.baseUrl.endsWith('/'), false);
+  const { desk: session } = desk();
+  session.updateConfig({ executorId: 'dsh' });
+  const refused = session.send({ text: '不要调用', idempotencyKey: 'dsh-refused' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.snapshot.runs.length, 0);
+  assert.match(refused.reason, /尚未实现|尚未验证|ZHUMA_MODEL_BASE_URL|不可用/);
+});
+
+test('契约：跨站 POST 被拒绝，没有 Origin 的请求可以进入', async () => {
+  const session = ExecutionDesk.create(seed(), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  const server = createWorkbenchServer({
+    desk: session,
+    present: (snapshot) => ({ runs: snapshot.runs.length }),
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const cross = await fetch(`${base}/api/config`, {
+      method: 'POST',
+      headers: {
+        origin: 'https://evil.example',
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    });
+    assert.equal(cross.status, 403);
+    const local = await fetch(`${base}/api/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ executorId: 'simulated' }),
+    });
+    assert.equal(local.status, 200);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('契约：停止回执超时后不把节点标成已取消', async () => {
+  const hanging = {
+    id: 'simulated',
+    capabilities: {
+      liveInjection: false,
+      sessionResume: false,
+      cancelReceipt: true,
+      streaming: false,
+      verified: false,
+      mode: 'simulated',
+    },
+    async *run(request) {
+      yield { type: 'accepted', executorRunId: `held-${request.runId}`, simulated: true };
+      await new Promise(() => {});
+    },
+    cancel() {
+      return new Promise(() => {});
+    },
+  };
+  const session = ExecutionDesk.create(seed(), {
+    executors: [hanging],
+    newId: ids(),
+  });
+  session.updateConfig({
+    executorId: 'simulated',
+    skillIds: ['test-design'],
+    mcpIds: ['api-docs'],
+  });
+  const started = session.send({ text: '卡住', idempotencyKey: 'hang' });
+  await session.waitForRun(started.runId, 'running');
+  const stopped = await session.stop();
+  assert.equal(stopped.code, 'stop-receipt-missing');
+  assert.equal(stopped.snapshot.node.status, 'running');
+  assert.equal(stopped.snapshot.runs[0].status, 'running');
+  assert.equal(stopped.snapshot.runs[0].stopPhase, 'receipt-rejected');
+});
+
+function runRequest(runId) {
+  return {
+    runId,
+    attempt: 1,
+    generation: 1,
+    taskId: 'task',
+    nodeId: 'node',
+    workflowVersionId: 'plan',
+    planRevision: 1,
+    contextReferences: [],
+    expertVersionId: 'expert-v1',
+    resourceGrants: [],
+    instruction: '整理字段',
+    attachmentIds: [],
+    goal: '确认字段',
+    simulatedRequested: true,
+    signal: new AbortController().signal,
+  };
+}

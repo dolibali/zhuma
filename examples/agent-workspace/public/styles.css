@@ -406,6 +406,15 @@ select {
 button.chip {
   cursor: pointer;
 }
+.chip small {
+  display: block;
+  max-width: 16em;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .phase {
   display: flex;
   flex-wrap: wrap;

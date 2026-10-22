@@ -33,7 +33,13 @@ export const EXECUTION_FAULTS = [
 
 export type ExecutionFaultKind = (typeof EXECUTION_FAULTS)[number];
 
-export const INTERVENTION_PHASES = ['sent', 'received', 'pending', 'applied'] as const;
+export const INTERVENTION_PHASES = [
+  'sent',
+  'received',
+  'pending',
+  'applied',
+  'not-applied',
+] as const;
 export type InterventionPhase = (typeof INTERVENTION_PHASES)[number];
 
 export const EXECUTION_NEXT_ACTIONS = [
@@ -163,16 +169,6 @@ export function isTerminalRunStatus(status: RunStatus): status is TerminalRunSta
 /** 刷新、切换视图和恢复会话都不是运行请求。 */
 export function triggerMayCreateRun(trigger: ScheduleTrigger): boolean {
   return trigger === 'explicit-run-request';
-}
-
-/** 关闭页面不是取消回执。 */
-export function viewCloseCancelsRun(): false {
-  return false;
-}
-
-/** 页面计时器不能把运行推断成完成。 */
-export function timerCompletesRun(): false {
-  return false;
 }
 
 export function assigneeAfterAgentAssist(assignee: ActorRef): ActorRef {
@@ -477,7 +473,7 @@ export function settleExecutionRun(
     }
     return {
       ok: true,
-      nodeTransition: { type: 'cancel-confirmed' },
+      nodeTransition: attempt.acknowledged ? { type: 'cancel-confirmed' } : { type: 'none' },
       attempt: replaceAttempt(attempt, {
         status: 'cancelled',
         acknowledged: attempt.acknowledged,
@@ -595,7 +591,7 @@ export function advanceIntervention(
 ):
   | { readonly ok: true; readonly phase: InterventionPhase; readonly replayed: boolean }
   | { readonly ok: false; readonly code: 'send-is-not-adoption' | 'phase-conflict' } {
-  if (phase === 'applied') return { ok: true, phase, replayed: true };
+  if (phase === 'applied' || phase === 'not-applied') return { ok: true, phase, replayed: true };
   if (step === 'apply' && phase === 'sent') return { ok: false, code: 'send-is-not-adoption' };
   if (step === 'receive' && phase === 'sent')
     return { ok: true, phase: 'received', replayed: false };
@@ -834,7 +830,28 @@ export function recordRecoveryRequest(input: {
   };
 }
 
-/** 切换专家只影响下一次配置，不删除已有轮次。 */
-export function preservedTurnsAfterExpertSwitch<T>(turns: readonly T[]): readonly T[] {
-  return turns;
+/** 执行器抛出的原文分成故障种类。无法归类时记为断开，避免把未知错误写成网络中断。 */
+export function classifyExecutorFailure(message: string): ExecutionFaultKind {
+  const text = message.toLowerCase();
+  if (text.includes('未实现') || text.includes('尚未实现') || text.includes('unsupported')) {
+    return 'executor-disconnected';
+  }
+  if (text.includes('工具') || text.includes('tool')) return 'tool-failure';
+  if (text.includes('模型') || text.includes('model')) return 'model-error';
+  if (
+    text.includes('网络') ||
+    text.includes('network') ||
+    text.includes('fetch') ||
+    text.includes('econn') ||
+    text.includes('etimedout') ||
+    text.includes('enotfound')
+  ) {
+    return 'network-interruption';
+  }
+  return 'executor-disconnected';
+}
+
+/** 切换专家只影响下一次配置。返回副本，调用方改输入不会改到已保留的轮次。 */
+export function preservedTurnsAfterExpertSwitch<T extends object>(turns: readonly T[]): T[] {
+  return turns.map((turn) => ({ ...turn }));
 }

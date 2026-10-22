@@ -2,6 +2,7 @@ const state = {
   view: null,
   snapshot: null,
   localError: null,
+  disconnected: false,
   skillQuery: '',
   mcpQuery: '',
   skillIds: [],
@@ -48,6 +49,7 @@ function adopt(payload, fromUser) {
   if (fromUser) {
     state.localError = payload.ok === false && !payload.view?.error ? payload : null;
   }
+  state.disconnected = false;
   render();
   schedule();
 }
@@ -73,9 +75,15 @@ function schedule() {
 
 async function refresh() {
   if (busy) return;
-  const response = await fetch('/api/workspace');
-  const payload = await response.json();
-  adopt(payload, false);
+  try {
+    const response = await fetch('/api/workspace');
+    if (!response.ok) throw new Error('工作区没有响应');
+    const payload = await response.json();
+    adopt(payload, false);
+  } catch {
+    state.disconnected = true;
+    render();
+  }
 }
 
 async function post(pathname, body) {
@@ -116,7 +124,11 @@ function render() {
   const status = document.querySelector('#node-status');
   status.textContent = view.nodeStatusText;
   status.dataset.status = view.nodeStatus;
-  const notes = [view.banner, view.resumeNote].filter(Boolean);
+  const notes = [
+    view.banner,
+    state.disconnected ? '页面与服务断开。当前显示的是断开前的事实。' : null,
+    view.resumeNote,
+  ].filter(Boolean);
   banner.textContent = notes.join(' ');
   document.querySelector('#task-page').hidden = !task;
   document.querySelector('#workspace').hidden = task;
@@ -148,7 +160,7 @@ function renderComposer() {
   attachmentList.innerHTML = view.attachments
     .map(
       (item) =>
-        `<button class="chip" type="button" data-testid="attachment" data-remove-attachment="${escapeHtml(item.id)}">${escapeHtml(item.name)}</button>`,
+        `<button class="chip" type="button" data-testid="attachment" data-remove-attachment="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}">${escapeHtml(item.name)}${item.preview ? `<small>${escapeHtml(item.preview)}</small>` : ''}</button>`,
     )
     .join('');
 }
@@ -162,7 +174,7 @@ function renderThread() {
   );
   if (view.run) {
     parts.push(
-      `<p class="note" data-testid="active-run" data-run-id="${escapeHtml(view.run.id)}">运行 ${escapeHtml(view.run.id)} · 第 ${view.run.attempt} 次 · ${escapeHtml(view.run.label)}${view.run.simulated ? ' · 模拟' : ''}</p>`,
+      `<p class="note" data-testid="active-run" data-run-id="${escapeHtml(view.run.id)}">第 ${view.run.attempt} 次 · ${escapeHtml(view.run.label)}${view.run.simulated ? ' · 模拟' : ''}</p>`,
     );
   } else {
     parts.push('<p class="note" data-testid="active-run" data-run-id="">没有正在执行的运行</p>');
@@ -172,7 +184,7 @@ function renderThread() {
   );
   for (const run of view.runs) {
     parts.push(
-      `<p class="note" data-testid="run" data-run-id="${escapeHtml(run.id)}">${escapeHtml(run.id)} · ${escapeHtml(run.label)}${run.simulated ? ' · 模拟' : ''}</p>`,
+      `<p class="note" data-testid="run" data-run-id="${escapeHtml(run.id)}">第 ${run.attempt} 次 · ${escapeHtml(run.label)}${run.simulated ? ' · 模拟' : ''}</p>`,
     );
   }
   if (state.localError) parts.push(errorBlock(state.localError));
@@ -187,7 +199,7 @@ function renderThread() {
   }
   for (const turn of view.turns) {
     parts.push(
-      `<article class="turn${turn.simulated ? ' simulated' : ''}" data-testid="turn" data-role="${escapeHtml(turn.role)}"><header><strong>${escapeHtml(turn.roleLabel)}</strong><span class="meta">${escapeHtml(turn.expertVersionId)}${turn.simulated ? ' · 模拟' : ''}</span></header><p>${escapeHtml(turn.body)}</p></article>`,
+      `<article class="turn${turn.simulated ? ' simulated' : ''}" data-testid="turn" data-role="${escapeHtml(turn.role)}"><header><strong>${escapeHtml(turn.roleLabel)}</strong>${turn.simulated ? '<span class="meta">模拟</span>' : ''}</header><p>${escapeHtml(turn.body)}</p></article>`,
     );
   }
   for (const activity of view.activities) {
@@ -203,7 +215,7 @@ function renderThread() {
       )
       .join('');
     parts.push(
-      `<article class="panel" data-testid="intervention"><div class="phase">${phases}</div>${item.notice ? `<p data-testid="intervention-notice">${escapeHtml(item.notice)}</p>` : ''}</article>`,
+      `<article class="panel" data-testid="intervention"><p data-testid="intervention-body">${escapeHtml(item.body)}</p><div class="phase">${phases}</div>${item.notice ? `<p data-testid="intervention-notice">${escapeHtml(item.notice)}</p>` : ''}</article>`,
     );
   }
   for (const record of view.lateRecords) {
@@ -213,12 +225,12 @@ function renderThread() {
   }
   for (const draft of view.drafts) {
     parts.push(
-      `<article class="turn draft" data-testid="draft"><header><strong>产物草稿</strong><span class="meta">${escapeHtml(draft.roundId)}</span></header><p>${escapeHtml(draft.text)}</p><p class="note">${escapeHtml(draft.note)}</p></article>`,
+      `<article class="turn draft" data-testid="draft"><header><strong>产物草稿</strong></header><p>${escapeHtml(draft.text)}</p><p class="note">${escapeHtml(draft.note)}</p></article>`,
     );
   }
   if (view.citations.length > 0) {
     parts.push(
-      `<p class="note" data-testid="citations">上下文引用：${view.citations.map((item) => escapeHtml(item.reference)).join('、')}</p>`,
+      `<p class="note" data-testid="citations">上下文引用：${view.citations.map((item) => escapeHtml(item.summary)).join('、')}</p>`,
     );
   }
   for (const request of snapshot?.recoveryRequests ?? []) {
@@ -274,7 +286,7 @@ function asideMarkup(view) {
       `<select id="expert" data-testid="expert">${view.experts
         .map(
           (expert) =>
-            `<option value="${escapeHtml(expert.id)}"${expert.selected ? ' selected' : ''}${expert.enabled ? '' : ' disabled'}>${escapeHtml(expert.label)}${expert.reason ? `（${escapeHtml(expert.reason)}）` : ''}</option>`,
+            `<option value="${escapeHtml(expert.id)}"${expert.selected ? ' selected' : ''}${expert.enabled ? '' : ' disabled'}>${escapeHtml(expert.label)}${expert.summary ? `：${escapeHtml(expert.summary)}` : ''}${expert.reason ? `（${escapeHtml(expert.reason)}）` : ''}</option>`,
         )
         .join('')}</select>`,
     ),
@@ -418,6 +430,11 @@ fileInput.addEventListener('change', () => {
 attachmentList.addEventListener('click', (event) => {
   const button = event.target.closest('[data-remove-attachment]');
   if (!button) return;
+  if (button.dataset.confirm !== 'yes') {
+    button.dataset.confirm = 'yes';
+    button.textContent = `确认移除 ${button.dataset.name ?? ''}`;
+    return;
+  }
   void post('/api/attachments/remove', { id: button.dataset.removeAttachment });
 });
 

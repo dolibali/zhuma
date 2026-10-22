@@ -66,6 +66,12 @@ test('follows the legal node transitions and their effects', () => {
     ],
     ['running', { type: 'execution-finished', returnTo: 'ready' }, 'ready', ['await-human-submit']],
     [
+      'waiting-for-input',
+      { type: 'execution-finished', returnTo: 'ready' },
+      'ready',
+      ['await-human-submit'],
+    ],
+    [
       'running',
       { type: 'execution-finished', returnTo: 'needs-revision' },
       'needs-revision',

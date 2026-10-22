@@ -1,6 +1,6 @@
 # WP03 执行与上下文
 
-状态：成员 B 实现。日期：2026-10-22。基线是 `b/wp00-contracts` 的 `80b1ff2bf708b254ebbc79dcaed77cd58677e28a`。
+状态：成员 B 实现。日期：2026-10-22。基线是 `b/wp00-contracts` 的 `b3c3875fc85625f7c3d4846a52cc9ba5c61f791e`。
 
 本文说明 FR05、FR07、FR10 的 P0，以及 FR13 在本仓里的落点。FR10 的 P1（安全点暂停、方案重排）不在本期。产物正式提交属于 WP04，评审执行属于 WP05。
 
@@ -23,9 +23,11 @@
 
 模拟执行器的能力声明：不支持实时注入，不支持会话恢复，支持取消回执和流式输出，`verified: false`，`mode: 'simulated'`。回复、工具活动和结果都带模拟标识。模拟活动的 `succeeded` 保持 false。
 
-`UnimplementedNativeExecutor` 覆盖 `dsh` 和 `codearts-cli`。`run()` 抛出未实现错误，`cancel()` 返回 `unsupported`。未验证的原生执行器在创建运行前被拒绝，不写入运行记录。
+`DshChatExecutor` 读取 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY` 和可选的 `ZHUMA_MODEL_ID`。三项里缺地址或密钥时，`run()` 直接失败，原因里点名缺少的变量，不写出地址或密钥，也不改用模拟执行器。模型未设置时使用 `zhanlu/glm-5.3-flash`。可选模型还有 `zhanlu/glm-5.3`、`zhanlu/deepseek-v4.1-flash`、`zhanlu/kimi-k3`。未知模型失败。请求发到 `{ZHUMA_MODEL_BASE_URL}/chat/completions`，按 OpenAI 兼容的聊天补全。`verified` 只表示本进程已经配好这条路由。
 
-后续真实 DSH 使用同一个 `AgentRunRequest`：任务、节点、计划版本、上下文引用、专家版本、资源授权、取消信号。结果包含运行身份、产物草稿、来源引用和验证说明。当前没有真实回执，不能把这个接口写成已接通。
+`UnimplementedNativeExecutor` 仍覆盖 `codearts-cli`。`run()` 抛出未实现错误，`cancel()` 返回 `unsupported`。未验证或未配置的原生执行器在创建运行前被拒绝，不写入运行记录。
+
+真实 DSH 和模拟执行器使用同一个 `AgentRunRequest`：任务、节点、计划版本、上下文引用、专家版本、资源授权、取消信号。结果包含运行身份、产物草稿、来源引用和验证说明。本侧验收只跑模拟执行器。
 
 ## 3. 运行生命周期
 
@@ -33,7 +35,7 @@
 
 同一幂等键、同一内容重放，不创建第二条运行。同一幂等键、不同内容返回 `idempotency-mismatch`。刷新、切换视图和读取快照使用 `view-refresh` / `view-switch` 一类触发，`triggerMayCreateRun` 为 false。关闭页面不取消运行，页面计时器不把运行标成完成。
 
-运行正常结束时，`settleExecutionRun(..., 'completed')` 发出 `execution-finished`，节点回到进入运行前的 `ready` 或 `needs-revision`。效果只有 `await-human-submit`。这不是 `accept-handoff`，不打开评审，不触发下游，也不自动开始下一次调度。多轮对话因此可以再次显式发送。WP00 原来没有「执行结束但继续由人决定是否提交」的出口，所以增加了这条迁移。
+运行正常结束时，`settleExecutionRun(..., 'completed')` 发出 `execution-finished`，节点回到进入运行前的 `ready` 或 `needs-revision`。`waiting-for-input` 上的正常结束也走这条迁移。效果只有 `await-human-submit`。这不是 `accept-handoff`，不打开评审，不触发下游，也不自动开始下一次调度。多轮对话因此可以再次显式发送。WP00 原来没有「执行结束但继续由人决定是否提交」的出口，所以增加了这条迁移。
 
 已确认完成的节点不能再次 `openRunAttempt`。
 
@@ -48,11 +50,11 @@
 - 已经开始的运行上，核实失败可以随后使用 `execution-failed`。
 - `cancel-confirmed` 在观察函数允许改节点时，`requiresStopRequest` 为 true。没有 `requestRunStop` 就收到取消，`settleExecutionRun` 记为 `cancel-unconfirmed`，节点不动。
 
-`requestRunStop` 只把 `stopPhase` 设为 `requested`，节点仍保持 `running`，直到取消回执到达。停止按钮会等待这个回执。模拟执行器在回执之前先交出取消事件和一条迟到输出，上层把迟到输出记成附属记录。
+`requestRunStop` 只把 `stopPhase` 设为 `requested`，节点仍保持 `running`，直到取消回执到达。停止会等这个回执，最多 4 秒。未知运行的取消立即返回拒绝，不挂起。超时或回执被拒绝时记为 `stop-receipt-missing`，`stopPhase` 回到 `receipt-rejected`，节点不标成已取消。模拟执行器在回执之前先交出取消事件和一条迟到输出，上层把迟到输出记成附属记录。执行器尚未回执接收就取消时，运行可以结束，但节点迁移是 `none`，不发 `cancel-confirmed`。
 
-失败后的恢复命令是 `retry`，取消后是 `restart`，其他状态拒绝。二者都回到 `ready`，然后由调用方显式再发送，才会有新的运行标识。改派和人工接回只记录 `RecoveryRequest`：`changesAssignee` 和 `forgesRun` 都是 false。谁真正改派由成员 A 决定。
+失败后的恢复命令是 `retry`，取消后是 `restart`。二者都必须带上 `returnTo`，取值只来自节点自己记下的入口，或该次运行在启动时抄下的 `entryNodeStatus`。调用方不能另供一个 `entryStatus`。没有记下 `ready` 或 `needs-revision` 时恢复失败，不发出缺 `returnTo` 的命令。然后由调用方显式再发送，才会有新的运行标识。改派和人工接回只记录 `RecoveryRequest`：`changesAssignee` 和 `forgesRun` 都是 false。谁真正改派由成员 A 决定。演示交接的责任人种类是 `human`。
 
-服务重启时 `ExecutionDesk.restore` 先装回事实，`interactionReady` 为 false，并在执行器不支持会话恢复时留下 `resumeGap`。此阶段拒绝新命令，不推断完成，也不自动续跑。用户继续交互后，才能另行核实为 `executor-disconnected`。这是核实后的失败，不是完成。
+服务重启时 `ExecutionDesk.restore` 先装回事实，`interactionReady` 为 false，并在执行器不支持会话恢复时留下 `resumeGap`。此阶段拒绝新命令，不推断完成，也不自动续跑。继续交互之后，这条中断运行不再当作当前可补充的运行：发送和停止都要求先核实为执行器已断开，并且不会把 `stopPhase` 写成 `requested`。核实结果是失败，不是完成。
 
 模型错误、工具失败、网络中断、执行器断开和专家停用分开呈现。故障 `forgesRun` 为 false，并带对象、原因和下一步。
 
@@ -70,7 +72,7 @@
 
 模拟执行器 `liveInjection` 为 false。运行中的补充或排队都变成 `next-turn`，阶段走到 `pending`，并提示执行器不支持实时注入、发送成功不等于已应用。`advanceIntervention(..., 'apply')` 在仍处于 `sent` 时返回 `send-is-not-adoption`。
 
-阶段顺序是已发送、已接收、待生效、已应用。待生效时「已应用」未到达。队列只在当前运行以 `execution-finished` 正常结束后才开始下一轮；取消不消费队列。已应用只发生在下一轮被执行器接收之后。
+阶段顺序是已发送、已接收、待生效、已应用。取消或失败时，仍待生效的条目改成未应用，并写明未应用。待生效时「已应用」未到达。队列在当前运行以 `execution-finished` 正常结束后按先后消费每一条：第一条启动为新运行，其余仍待生效的条目改挂到这次新运行上，等它结束后再继续。已应用只发生在下一轮被执行器接收之后。
 
 等待输入时的补充是 `resume-input`。节点迁移 `input-supplied` 成功后才标成已应用。
 
@@ -89,9 +91,9 @@
 
 `assembleRunContext` 读取目标、父级目标摘要、节点输入、已接受的上游产物、项目知识和本轮评审意见。引用形如 `kind:sourceId@version`，带权限和版本。成功清单不包含本机路径。
 
-缺文件、不可读、无权限、路径被拒绝或缺必需项时，整次为 `context-blocked`，不创建运行。`probeRelativeFile` 拒绝绝对路径、`..`、空段和空字节，结果里也不返回绝对路径。
+缺文件、不可读、无权限、路径被拒绝或缺必需项时，整次为 `context-blocked`，不创建运行。`probeRelativeFile` 拒绝绝对路径、`..`、空段和空字节。符号链接会先解析，解析后的路径若离开工作区也拒绝。缺文件仍是不存在，结果里不返回绝对路径。
 
-`isolateWorkspaceId(runId)` 为每次运行生成独立工作区。`claimWritableWorkspace` 拒绝第二个有效写入者。
+`isolateWorkspaceId(nodeId)` 按节点生成工作区。同一节点上第二个有效写入者得到 `workspace-busy`，直到前一个释放。
 
 ## 9. 下一步提示
 
@@ -123,7 +125,7 @@
 
 ## 11. 验证与未验证
 
-领域规则的测试名称以「契约：」开头，只证明纯函数和内存事务。`examples/agent-workspace/browser.test.mjs` 用浏览器操作显式选择的模拟执行器，覆盖打开处理、多选资源、附件、两轮修改、刷新、补充排队、停止、迟到结果和重试。它不是真实执行器测试。
+领域规则的测试名称以「契约：」开头，只证明纯函数和内存事务。`examples/agent-workspace/browser.test.mjs` 用浏览器操作显式选择的模拟执行器，覆盖打开处理、多选资源、附件、两轮修改、刷新、补充排队、停止、迟到结果和重试。截图目录来自 `ZHUMA_BROWSER_ARTIFACTS`，未设置时用系统临时目录。200% 缩放下不允许出现横向溢出。它不是真实执行器测试。`dsh-executor.e2e.test.mjs` 在缺少配置或网关不可达时跳过。
 
 尚未验证：真实 DSH、真实模型、码道、真实多人、真实文件存储和预览、WP04 提交、WP05 评审执行、FR10 P1。服务重启不会自动续跑模拟会话。页面沿用参考工作区的青绿、浅底和组件间距，没有把原型包或设计技能文件提交进仓库。
 
@@ -139,3 +141,38 @@ node examples/agent-workspace/server.mjs
 浏览器打开标准输出里的 `url`。先在配置里选择「模拟执行器」，再发送。未选择时发送按钮禁用。停止会等待回执。编辑并提交只保存草稿。
 
 `ZHUMA_HOLD_RUNS=1` 让运行在接收回执后暂停，`POST /api/release` 才继续。`ZHUMA_SESSION_FILE` 把会话写到调用方指定的临时文件，不要提交该文件。
+
+## Real executor verification steps
+
+本侧自测只选择模拟执行器。下面的步骤留给持有网关配置的评审。不要把地址或密钥写进仓库、命令回显或失败说明。
+
+1. 准备上游 DSH（筑玛的执行器不会启动这个进程，只向配置的网关发 `POST {ZHUMA_MODEL_BASE_URL}/chat/completions`）：
+
+```bash
+cd upstream/deepseek-harness
+pnpm install
+pnpm dsh
+```
+
+`pnpm dsh` 对应 `node --import tsx/esm apps/cli/src/bin.ts`。需要构建时在同一目录执行 `pnpm build`。包管理器是 `pnpm@11.28.5`。
+
+2. 在另一个终端配置筑玛并启动演示。把示例地址换成评审环境自己的网关，模型可以省略，省略时使用 `zhanlu/glm-5.3-flash`。
+
+```bash
+export ZHUMA_MODEL_BASE_URL='https://example.invalid/v1'
+export ZHUMA_MODEL_API_KEY='replace-with-the-reviewer-key'
+export ZHUMA_MODEL_ID='zhanlu/glm-5.3-flash'
+pnpm exec tsc -b
+node examples/agent-workspace/server.mjs
+```
+
+可选模型：`zhanlu/glm-5.3-flash`、`zhanlu/glm-5.3`、`zhanlu/deepseek-v4.1-flash`、`zhanlu/kimi-k3`。
+
+3. 核对：
+
+- 发送：在页面选择 DSH，发送一条消息。出现执行器回复，运行记录增加，节点在结束后回到进入前的待处理或需修改。页面不出现网关地址或密钥。
+- 停止回执：在运行中点击停止。运行变为已取消，并有停止回执。关闭页面不会把运行标成已取消。
+- 失败展示：去掉 `ZHUMA_MODEL_API_KEY` 后重启再选 DSH 发送。发送被拒绝，运行数不变，说明里点名缺少的环境变量，并且没有改用模拟执行器。把密钥设回、把地址指到一个不可达位置时，失败说明是模型或网关错误，不把节点标成已完成。
+- 重新开始：停止成功后点重新开始。新运行的标识与被取消的那次不同，`returnTo` 带回进入运行前的状态。
+
+4. 只想跑跳过逻辑时，不设置上述变量，执行 `pnpm test`。`dsh-executor.e2e.test.mjs` 会跳过，并说明缺少配置或网关不可达。跳过不是失败。

@@ -104,10 +104,13 @@ test('契约：缺文件、不可读或无权限时阻塞，并指出来源', ()
   assert.equal(JSON.stringify(rejected.manifest).includes('/Users/'), false);
 });
 
-test('契约：同一可写工作区只有一个有效写入者，每次运行隔离工作区', () => {
-  const first = isolateWorkspaceId('run-1');
-  const second = isolateWorkspaceId('run-2');
-  assert.notEqual(first, second);
+test('契约：同一节点共用工作区，第二个写入者在释放前被拒绝', () => {
+  const first = isolateWorkspaceId('node-1');
+  const second = isolateWorkspaceId('node-1');
+  const other = isolateWorkspaceId('node-2');
+  assert.equal(first, 'node-workspace:node-1');
+  assert.equal(first, second);
+  assert.notEqual(first, other);
   const claimed = claimWritableWorkspace({
     workspaceId: first,
     writerRunId: 'run-1',

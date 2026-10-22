@@ -1,11 +1,11 @@
-import { accessSync, constants, statSync } from 'node:fs';
+import { accessSync, constants, lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 export type FileProbeResult =
   | { readonly ok: true; readonly exists: boolean; readonly readable: boolean }
   | { readonly ok: false; readonly code: 'path-rejected' };
 
-/** 只接受工作区内的相对路径。结果不返回绝对路径。 */
+/** 只接受工作区内的相对路径。符号链接解析后仍必须留在工作区内。结果不返回绝对路径。 */
 export function probeRelativeFile(root: string, relativePath: string): FileProbeResult {
   if (
     relativePath.includes('\0') ||
@@ -27,14 +27,46 @@ export function probeRelativeFile(root: string, relativePath: string): FileProbe
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     return { ok: false, code: 'path-rejected' };
   }
+  let rootReal: string;
   try {
-    const stat = statSync(target);
-    if (!stat.isFile()) return { ok: true, exists: false, readable: false };
-    accessSync(target, constants.R_OK);
+    rootReal = realpathSync(rootResolved);
+  } catch {
+    return { ok: false, code: 'path-rejected' };
+  }
+  try {
+    const listed = lstatSync(target);
+    if (!listed.isFile() && !listed.isSymbolicLink()) {
+      return { ok: true, exists: false, readable: false };
+    }
+  } catch (error) {
+    return missingOrUnreadable(error);
+  }
+  let resolved: string;
+  try {
+    resolved = realpathSync(target);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === 'ENOENT') return { ok: true, exists: false, readable: false };
+    return { ok: false, code: 'path-rejected' };
+  }
+  const relativeResolved = path.relative(rootReal, resolved);
+  if (relativeResolved.startsWith('..') || path.isAbsolute(relativeResolved)) {
+    return { ok: false, code: 'path-rejected' };
+  }
+  try {
+    if (!statSync(resolved).isFile()) return { ok: true, exists: false, readable: false };
+    accessSync(resolved, constants.R_OK);
     return { ok: true, exists: true, readable: true };
   } catch (error) {
-    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
-    if (code === 'ENOENT') return { ok: true, exists: false, readable: false };
-    return { ok: true, exists: true, readable: false };
+    return missingOrUnreadable(error);
   }
+}
+
+function missingOrUnreadable(error: unknown): FileProbeResult {
+  if (errorCode(error) === 'ENOENT') return { ok: true, exists: false, readable: false };
+  return { ok: true, exists: true, readable: false };
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
 }

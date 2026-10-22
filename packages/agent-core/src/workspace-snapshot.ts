@@ -64,6 +64,7 @@ export interface AttachmentFact {
   readonly byteSize: number;
   readonly checksum: string;
   readonly reference: string;
+  readonly previewText?: string;
 }
 
 export interface ContextItemFact {

@@ -12,16 +12,15 @@ import {
   normalizeActivity,
   openRunAttempt,
   prepareArtifactDraft,
+  classifyExecutorFailure,
   presentExecutionFault,
   preservedTurnsAfterExpertSwitch,
   recoveryCommandFor,
   requestRunStop,
   routeLiveInput,
   settleExecutionRun,
-  timerCompletesRun,
   triggerMayCreateRun,
   validateExecutionConfig,
-  viewCloseCancelsRun,
 } from '@zhuma/agent-core';
 
 const base = {
@@ -70,8 +69,6 @@ test('契约：重复请求不创建第二次运行，刷新和切换视图也�
     });
     assert.equal(refused.code, 'trigger-does-not-schedule');
   }
-  assert.equal(viewCloseCancelsRun(), false);
-  assert.equal(timerCompletesRun(), false);
 });
 
 test('契约：已完成节点、停用专家和断开的执行器都不会创建运行', () => {
@@ -186,6 +183,13 @@ test('契约：停止先等待回执，未确认的取消和结束后的回执�
   assert.equal(confirmed.ok, true);
   assert.equal(confirmed.attempt.status, 'cancelled');
   assert.equal(confirmed.nodeTransition.type, 'cancel-confirmed');
+  const quiet = settleExecutionRun(
+    requestRunStop({ ...running, acknowledged: false, status: 'requested' }).attempt,
+    'cancelled',
+  );
+  assert.equal(quiet.ok, true);
+  assert.equal(quiet.nodeTransition.type, 'none');
+  assert.equal(quiet.attempt.status, 'cancelled');
   const late = settleExecutionRun(confirmed.attempt, 'completed');
   assert.equal(late.code, 'terminal-run');
   assert.equal(late.mayChangeNodeStatus, false);
@@ -299,8 +303,21 @@ test('契约：故障分开呈现且不伪造运行，切换专家不丢历史�
     presentExecutionFault('tool-failure').reason,
     presentExecutionFault('network-interruption').reason,
   );
-  const turns = [{ id: 't1' }, { id: 't2' }];
-  assert.equal(preservedTurnsAfterExpertSwitch(turns).length, 2);
+  const turns = [
+    { id: 't1', body: '第一轮' },
+    { id: 't2', body: '第二轮' },
+  ];
+  const copied = preservedTurnsAfterExpertSwitch(turns);
+  assert.equal(copied.length, 2);
+  assert.equal(copied[0].id, 't1');
+  assert.equal(copied[0].body, '第一轮');
+  copied[0].body = '改写';
+  assert.equal(turns[0].body, '第一轮');
+  assert.equal(classifyExecutorFailure('网络超时 ETIMEDOUT'), 'network-interruption');
+  assert.equal(classifyExecutorFailure('工具调用失败'), 'tool-failure');
+  assert.equal(classifyExecutorFailure('模型拒绝'), 'model-error');
+  assert.equal(classifyExecutorFailure('尚未实现'), 'executor-disconnected');
+  assert.equal(classifyExecutorFailure('未知错误'), 'executor-disconnected');
   assert.deepEqual(assigneeAfterAgentAssist({ id: 'chen-ning', kind: 'human' }), {
     id: 'chen-ning',
     kind: 'human',

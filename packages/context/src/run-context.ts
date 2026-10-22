@@ -172,9 +172,9 @@ export function assembleRunContext(input: {
   return { ok: true, manifest: Object.freeze(manifest) };
 }
 
-/** 每次运行使用各自的工作区标识。 */
-export function isolateWorkspaceId(runId: string): string {
-  return `run-workspace:${runId}`;
+/** 同一节点的各次运行共用一个可写工作区。第二个写入者要等前一个释放。 */
+export function isolateWorkspaceId(nodeId: string): string {
+  return `node-workspace:${nodeId}`;
 }
 
 export function claimWritableWorkspace(input: {

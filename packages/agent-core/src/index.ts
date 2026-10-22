@@ -181,8 +181,6 @@ export {
   EXECUTION_NEXT_ACTIONS,
   isTerminalRunStatus,
   triggerMayCreateRun,
-  viewCloseCancelsRun,
-  timerCompletesRun,
   assigneeAfterAgentAssist,
   admitExecutionSignal,
   openRunAttempt,
@@ -202,6 +200,7 @@ export {
   executionTodoHint,
   recoveryCommandFor,
   recordRecoveryRequest,
+  classifyExecutorFailure,
   preservedTurnsAfterExpertSwitch,
 } from './execution.js';
 

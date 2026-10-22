@@ -204,7 +204,10 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
       // Settlement comes only from applyReviewToNode, which checks the current round.
       return illegal(from, transition.type);
     case 'execution-finished':
-      if (from !== 'running') return illegal(from, transition.type);
+      if (from !== 'running' && from !== 'waiting-for-input') return illegal(from, transition.type);
+      if (transition.returnTo !== 'ready' && transition.returnTo !== 'needs-revision') {
+        return illegal(from, transition.type);
+      }
       return done(from, transition.returnTo, ['await-human-submit']);
     case 'execution-failed':
       if (from !== 'running' && from !== 'waiting-for-input') return illegal(from, transition.type);

@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createAgentWorkspaceView } from '../../packages/client/dist/index.js';
 import {
+  DshChatExecutor,
   ExecutionDesk,
   SimulatedAgentExecutor,
   UnimplementedNativeExecutor,
   createFileJournal,
   createWorkbenchServer,
   probeRelativeFile,
+  readDshModelConfig,
 } from '../../packages/dsh-adapter/dist/index.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +26,8 @@ function newId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${sequence}`;
 }
 
+const dshConfig = readDshModelConfig(process.env);
+
 const seed = {
   handoff: {
     nodeId: 'node-fields',
@@ -36,6 +40,11 @@ const seed = {
     reviewRequired: true,
     reviewerIds: ['lin-ke'],
     inputRefs: [],
+    expertRef: { id: 'api-impl', version: 'api-impl-v1' },
+    skillRefs: [],
+    mcpRefs: [],
+    inputNote: '',
+    expectedOutput: '',
   },
   taskTitle: '企业客户门户季度交付',
   taskGoal: '完成企业客户开户闭环',
@@ -105,11 +114,11 @@ const seed = {
       },
       {
         id: 'dsh',
-        label: 'DSH 原生',
-        available: false,
-        verified: false,
+        label: 'DSH',
+        available: dshConfig.ok,
+        verified: dshConfig.ok,
         simulated: false,
-        unavailableReason: '尚未实现，也未验证',
+        ...(dshConfig.ok ? {} : { unavailableReason: dshConfig.reason }),
       },
       {
         id: 'codearts-cli',
@@ -205,7 +214,7 @@ const dependencies = {
     new SimulatedAgentExecutor(
       hold ? { pauseAfterAccept: true, chunkDelayMs: 0 } : { chunkDelayMs: 70 },
     ),
-    new UnimplementedNativeExecutor('dsh'),
+    new DshChatExecutor(process.env),
     new UnimplementedNativeExecutor('codearts-cli'),
   ],
   newId,
