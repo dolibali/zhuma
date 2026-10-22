@@ -1,0 +1,128 @@
+[
+  {
+    "preference": "light",
+    "zoom": 1,
+    "popup": {
+      "x": 919.5,
+      "y": 178.5,
+      "width": 332.40625,
+      "height": 368,
+      "top": 178.5,
+      "right": 1251.90625,
+      "bottom": 546.5,
+      "left": 919.5
+    },
+    "font": "13px",
+    "viewport": {
+      "width": 1280,
+      "height": 820,
+      "dpr": 2
+    },
+    "searchSelect": true
+  },
+  {
+    "preference": "light",
+    "zoom": 1.25,
+    "popup": {
+      "x": 496.3999938964844,
+      "y": 222.40000915527344,
+      "width": 331.8062438964844,
+      "height": 367.6000061035156,
+      "top": 222.40000915527344,
+      "right": 828.2062377929688,
+      "bottom": 590.0000152587891,
+      "left": 496.3999938964844
+    },
+    "font": "13px",
+    "viewport": {
+      "width": 1024,
+      "height": 656,
+      "dpr": 2.5
+    },
+    "searchSelect": true
+  },
+  {
+    "preference": "light",
+    "zoom": 2,
+    "popup": {
+      "x": 175.5,
+      "y": 218.5,
+      "width": 332.40625,
+      "height": 183.40234375,
+      "top": 218.5,
+      "right": 507.90625,
+      "bottom": 401.90234375,
+      "left": 175.5
+    },
+    "font": "13px",
+    "viewport": {
+      "width": 640,
+      "height": 410,
+      "dpr": 4
+    },
+    "searchSelect": true
+  },
+  {
+    "preference": "dark",
+    "zoom": 1,
+    "popup": {
+      "x": 919.5,
+      "y": 178.5,
+      "width": 332.40625,
+      "height": 368,
+      "top": 178.5,
+      "right": 1251.90625,
+      "bottom": 546.5,
+      "left": 919.5
+    },
+    "font": "13px",
+    "viewport": {
+      "width": 1280,
+      "height": 820,
+      "dpr": 2
+    },
+    "searchSelect": true
+  },
+  {
+    "preference": "dark",
+    "zoom": 1.25,
+    "popup": {
+      "x": 496.3999938964844,
+      "y": 222.40000915527344,
+      "width": 331.8062438964844,
+      "height": 367.6000061035156,
+      "top": 222.40000915527344,
+      "right": 828.2062377929688,
+      "bottom": 590.0000152587891,
+      "left": 496.3999938964844
+    },
+    "font": "13px",
+    "viewport": {
+      "width": 1024,
+      "height": 656,
+      "dpr": 2.5
+    },
+    "searchSelect": true
+  },
+  {
+    "preference": "dark",
+    "zoom": 2,
+    "popup": {
+      "x": 175.5,
+      "y": 218.5,
+      "width": 332.40625,
+      "height": 183.40234375,
+      "top": 218.5,
+      "right": 507.90625,
+      "bottom": 401.90234375,
+      "left": 175.5
+    },
+    "font": "13px",
+    "viewport": {
+      "width": 640,
+      "height": 410,
+      "dpr": 4
+    },
+    "searchSelect": true
+  }
+]
