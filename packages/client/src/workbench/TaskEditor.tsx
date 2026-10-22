@@ -245,7 +245,7 @@ export function TaskEditor({
     const prior = proposal
       ? `\n上一轮问题：${proposal.result.questions.join('；')}\n上一轮推断：${proposal.result.assumptions.join('；')}`
       : '';
-    setProposal(null);
+    // Keep the reviewed proposal available if this replacement fails or is cancelled.
     try {
       setProposal(
         await api.plan(
@@ -256,13 +256,8 @@ export function TaskEditor({
         ),
       );
     } catch (error) {
-      setError(
-        abort.signal.aborted
-          ? '已取消规划。'
-          : error instanceof Error
-            ? error.message
-            : '规划失败。',
-      );
+      if (abort.signal.aborted) setMessage('已取消规划');
+      else setError(error instanceof Error ? error.message : '规划失败。');
     } finally {
       setPlanning(false);
       controller.current = null;
@@ -357,32 +352,22 @@ export function TaskEditor({
     <div className="zm-editor" ref={editorRef}>
       <div className="zm-toolbar">
         <button
+          className="zm-quiet"
           onClick={() => {
             if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
           }}
         >
           ← 任务清单
         </button>
-        <span className={`zm-status ${task.status}`}>
-          {task.status === 'ready'
-            ? `已确认 v${state.appliedPlans.filter((p) => p.taskId === task.id).at(-1)?.revision ?? 1} · 待执行接入`
-            : '计划草稿'}
+        <span className="zm-path-divider">/</span>
+        <span className="zm-editor-project">
+          {state.projects.find((p) => p.id === task.projectId)?.name}
         </span>
         <span className="zm-spacer" />
         <Appearance store={appearance} />
         <span className="zm-save-state zm-muted" role="status">
           {dirty ? '未保存' : message || '已保存'}
         </span>
-        <button
-          disabled={busy || planning || !!previewTask}
-          onClick={() => {
-            setMemberDraft(task.participantIds);
-            setMemberError('');
-            setMembersOpen(true);
-          }}
-        >
-          参与者 {members.length}
-        </button>
         {task.status === 'ready' ? (
           <button
             disabled={busy || planning}
@@ -412,25 +397,6 @@ export function TaskEditor({
         )}
       </div>
       <div className="zm-editor-heading">
-        <div className="zm-task-meta">
-          <p className="zm-project-location">
-            {state.projects.find((p) => p.id === task.projectId)?.name}
-          </p>
-          {locked ? (
-            <span className="zm-muted">
-              {task.ownerId
-                ? `负责人 ${members.find((p) => p.id === task.ownerId)?.name ?? '不可用成员'}`
-                : '负责人待补选 · 继续编辑后选择'}
-            </span>
-          ) : (
-            <ParticipantSelect
-              label="负责人"
-              members={members.filter((p) => p.kind === 'human')}
-              selected={task.ownerId ? [task.ownerId] : []}
-              change={(ids) => edit({ ...task, ownerId: ids[0] ?? null })}
-            />
-          )}
-        </div>
         {task.status === 'ready' ? (
           <h1>{task.title}</h1>
         ) : (
@@ -443,6 +409,38 @@ export function TaskEditor({
             onChange={(e) => edit({ ...task, title: e.target.value })}
           />
         )}
+        <div className="zm-task-meta">
+          <span className={`zm-status ${task.status}`}>
+            {task.status === 'ready'
+              ? `已确认 v${state.appliedPlans.filter((p) => p.taskId === task.id).at(-1)?.revision ?? 1} · 待执行接入`
+              : '计划草稿'}
+          </span>
+          {locked ? (
+            <span className="zm-muted">
+              {task.ownerId
+                ? `负责人 ${members.find((p) => p.id === task.ownerId)?.name ?? '不可用成员'}`
+                : '负责人待补选'}
+            </span>
+          ) : (
+            <ParticipantSelect
+              label="负责人"
+              members={members.filter((p) => p.kind === 'human')}
+              selected={task.ownerId ? [task.ownerId] : []}
+              change={(ids) => edit({ ...task, ownerId: ids[0] ?? null })}
+            />
+          )}
+          <Button
+            variant="quiet"
+            disabled={busy || planning || !!previewTask}
+            onClick={() => {
+              setMemberDraft(task.participantIds);
+              setMemberError('');
+              setMembersOpen(true);
+            }}
+          >
+            参与者 {members.length}
+          </Button>
+        </div>
         <details className="zm-goal">
           <summary>
             <span>
@@ -695,6 +693,7 @@ export function TaskEditor({
         )}
         <aside
           className="zm-config"
+          data-panel={panel}
           ref={inspectorRef}
           role={compact && inspectorOpen ? 'dialog' : undefined}
           aria-modal={compact && inspectorOpen ? true : undefined}
@@ -773,91 +772,123 @@ export function TaskEditor({
             )
           ) : (
             <div className="zm-planner">
-              <h3>结合团队情况编排</h3>
-              <p className="zm-muted">
-                {members.length} 位参与者 · {state.assets.filter((a) => a.available).length}{' '}
-                项可用资产
-              </p>
-              <details>
-                <summary>本次规划依据</summary>
-                <ul>
-                  {members.map((m) => (
-                    <li key={m.id}>
-                      {m.name} · {m.role || m.capabilities.join('、') || '尚无职责说明'}
-                    </li>
-                  ))}
-                </ul>
-                <p>模型：{model}</p>
-                <p>模型只读取任务、人员职责和资产定义，不获得工具授权。</p>
-              </details>
-              <Field label={proposal?.result.questions.length ? '回答问题或补充要求' : '补充要求'}>
-                <textarea
-                  rows={4}
-                  value={instruction}
-                  onChange={(e) => setInstruction(e.target.value)}
-                  placeholder="例如：前后端并行，陈宁负责接口，测试专家做独立评审"
-                />
-              </Field>
-              <div className="zm-planning-actions">
-                <Button
-                  variant={proposal ? 'secondary' : 'primary'}
-                  busy={planning}
-                  busyLabel="正在规划…"
-                  title={!members.length ? '请先添加任务参与者' : undefined}
-                  disabled={busy || task.status === 'ready' || !members.length}
-                  onClick={() => void generate()}
-                >
-                  {proposal ? '重新规划' : '生成工作流草案'}
-                </Button>
+              <div className="zm-planner-body">
+                <details className="zm-planning-context">
+                  <summary>
+                    <span>规划依据</span>
+                    <span>
+                      {members.length} 位参与者 · {state.assets.filter((a) => a.available).length}{' '}
+                      项资产
+                    </span>
+                  </summary>
+                  <ul>
+                    {members.map((m) => (
+                      <li key={m.id}>
+                        {m.name} · {m.role || m.capabilities.join('、') || '尚无职责说明'}
+                      </li>
+                    ))}
+                  </ul>
+                  <p>模型：{model}</p>
+                  <p>模型只读取任务、人员职责和资产定义，不获得工具授权。</p>
+                </details>
+                {!proposal && !planning && (
+                  <div className="zm-planning-intro">
+                    <span aria-hidden="true">✧</span>
+                    <h3>把目标拆成可执行的工作</h3>
+                    <p>结合参与者的职责与团队资产，组织分工、依赖和交付。</p>
+                  </div>
+                )}
                 {planning && (
-                  <Button variant="quiet" onClick={() => controller.current?.abort()}>
-                    取消
-                  </Button>
+                  <div role="status" className="zm-planning-progress">
+                    <span className="zm-spinner" aria-hidden="true" />
+                    正在分析目标与团队能力…
+                  </div>
+                )}
+                {proposal && (
+                  <div className="zm-proposal">
+                    <div className="zm-proposal-heading">
+                      <h3>规划草案</h3>
+                      <Button
+                        variant="quiet"
+                        disabled={busy || planning}
+                        onClick={() => setProposal(null)}
+                      >
+                        放弃草案
+                      </Button>
+                    </div>
+                    <details className="zm-plan-summary">
+                      <summary>
+                        {proposal.result.summary.slice(0, 150)}
+                        {proposal.result.summary.length > 150 && '…'}
+                      </summary>
+                      <p>{proposal.result.summary}</p>
+                    </details>
+                    {proposal.result.questions.length > 0 && (
+                      <div className="zm-questions">
+                        <strong>需要你确认</strong>
+                        <ol>
+                          {proposal.result.questions.map((q) => (
+                            <li key={q}>{q}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+                    {proposal.result.assumptions.length > 0 && (
+                      <details>
+                        <summary>规划中的假设</summary>
+                        <ul>
+                          {proposal.result.assumptions.map((a) => (
+                            <li key={a}>{a}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                    {previewTask && (
+                      <div className="zm-proposal-node">
+                        <span className="zm-current-node-label">当前节点</span>
+                        <strong>{(node ?? workflow.nodes[0])?.title}</strong>
+                        <p>{(node ?? workflow.nodes[0])?.rationale}</p>
+                        <small>交付：{(node ?? workflow.nodes[0])?.output}</small>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-              {planning && (
-                <p role="status" className="zm-muted">
-                  正在分析目标与团队能力…
-                </p>
-              )}
-              {proposal && (
-                <div className="zm-proposal">
-                  <h3>规划草案</h3>
-                  <details className="zm-plan-summary">
-                    <summary>
-                      {proposal.result.summary.slice(0, 150)}
-                      {proposal.result.summary.length > 150 && '…'}
-                    </summary>
-                    <p>{proposal.result.summary}</p>
-                  </details>
-                  {proposal.result.questions.length > 0 && (
-                    <div className="zm-questions">
-                      <strong>需要你确认</strong>
-                      <ol>
-                        {proposal.result.questions.map((q) => (
-                          <li key={q}>{q}</li>
-                        ))}
-                      </ol>
-                    </div>
+              <div className="zm-planner-composer">
+                <Field
+                  label={proposal?.result.questions.length ? '回答问题或补充要求' : '补充要求'}
+                >
+                  <textarea
+                    rows={3}
+                    value={instruction}
+                    disabled={busy || planning}
+                    onChange={(e) => setInstruction(e.target.value)}
+                    placeholder={
+                      proposal
+                        ? '调整这份计划，例如：让前后端并行…'
+                        : '例如：前后端并行，测试专家独立评审…'
+                    }
+                  />
+                </Field>
+                <div className="zm-planning-actions">
+                  <Button
+                    variant={
+                      proposal && !proposal.result.questions.length ? 'secondary' : 'primary'
+                    }
+                    busy={planning}
+                    busyLabel="正在规划…"
+                    title={!members.length ? '请先添加任务参与者' : undefined}
+                    disabled={busy || planning || task.status === 'ready' || !members.length}
+                    onClick={() => void generate()}
+                  >
+                    {proposal ? '重新规划' : '生成工作流草案'}
+                  </Button>
+                  {planning && (
+                    <Button variant="quiet" onClick={() => controller.current?.abort()}>
+                      取消
+                    </Button>
                   )}
-                  {proposal.result.assumptions.length > 0 && (
-                    <details>
-                      <summary>规划中的假设</summary>
-                      <ul>
-                        {proposal.result.assumptions.map((a) => (
-                          <li key={a}>{a}</li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                  {previewTask && (
-                    <div className="zm-proposal-node">
-                      <strong>{(node ?? workflow.nodes[0])?.title}</strong>
-                      <p>{(node ?? workflow.nodes[0])?.rationale}</p>
-                      <small>交付：{(node ?? workflow.nodes[0])?.output}</small>
-                    </div>
-                  )}
-                  <div className="zm-proposal-actions">
+                  {previewTask && proposal && (
                     <Button
                       variant="primary"
                       busy={busy}
@@ -867,6 +898,7 @@ export function TaskEditor({
                       }
                       disabled={
                         busy ||
+                        planning ||
                         !!proposal.result.questions.length ||
                         !proposal.result.workflows.length
                       }
@@ -874,12 +906,9 @@ export function TaskEditor({
                     >
                       应用草案
                     </Button>
-                    <Button variant="quiet" disabled={busy} onClick={() => setProposal(null)}>
-                      放弃草案
-                    </Button>
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           )}
         </aside>

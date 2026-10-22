@@ -12,6 +12,7 @@ import type { WorkbenchApi } from './api.js';
 import { Field, MemberPicker, Modal, ParticipantSelect } from './controls.js';
 import { TaskEditor } from './TaskEditor.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
+import { Button } from './Button.js';
 
 type Section = 'projects' | 'tasks' | 'assets' | 'members';
 type Dialog =
@@ -146,14 +147,15 @@ export function WorkbenchPage({
     <div className="zhuma">
       <div className="zm-page">
         <header className="zm-page-heading">
-          <div>
-            <span className="zm-eyebrow">团队工作台</span>
+          <div className="zm-page-title">
             <h1>{labels[section]}</h1>
+            {section === 'tasks' && <span>{state.tasks.length}</span>}
           </div>
           <div className="zm-actions">
             <Appearance store={appearance} />
-            <span className="zm-local">本地工作台</span>
-            <button onClick={() => void refresh()}>刷新</button>
+            <Button variant="quiet" onClick={() => void refresh()}>
+              刷新
+            </Button>
             <button
               className="primary"
               onClick={() =>
@@ -198,29 +200,53 @@ export function WorkbenchPage({
             </button>
           </div>
         </header>
-        <nav className="zm-tabs" aria-label="工作台导航">
-          {(Object.keys(labels) as Section[]).map((s) => (
-            <button
-              key={s}
-              aria-current={s === section ? 'page' : undefined}
-              onClick={() => {
-                setSection(s);
-                setSearch('');
-              }}
-            >
-              {labels[s]}
-              <span>
-                {s === 'projects'
-                  ? state.projects.length
-                  : s === 'tasks'
-                    ? state.tasks.length
-                    : s === 'members'
-                      ? state.participants.length
-                      : state.assets.length}
-              </span>
-            </button>
-          ))}
-        </nav>
+        <div className="zm-page-bar">
+          <nav className="zm-tabs" aria-label="工作台导航">
+            {(Object.keys(labels) as Section[]).map((s) => (
+              <button
+                key={s}
+                aria-current={s === section ? 'page' : undefined}
+                onClick={() => {
+                  setSection(s);
+                  setSearch('');
+                }}
+              >
+                {labels[s]}
+                <span>
+                  {s === 'projects'
+                    ? state.projects.length
+                    : s === 'tasks'
+                      ? state.tasks.length
+                      : s === 'members'
+                        ? state.participants.length
+                        : state.assets.length}
+                </span>
+              </button>
+            ))}
+          </nav>
+          {section === 'tasks' && (
+            <div className="zm-filter">
+              <input
+                aria-label="搜索任务"
+                placeholder="搜索任务…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <select
+                aria-label="筛选项目"
+                value={projectFilter}
+                onChange={(e) => setProjectFilter(e.target.value)}
+              >
+                <option value="">所有项目</option>
+                {state.projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
         {error && (
           <div role="alert" className="zm-error">
             {error}
@@ -269,26 +295,6 @@ export function WorkbenchPage({
         )}
         {section === 'tasks' && (
           <>
-            <div className="zm-filter">
-              <input
-                aria-label="搜索任务"
-                placeholder="搜索任务…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <select
-                aria-label="筛选项目"
-                value={projectFilter}
-                onChange={(e) => setProjectFilter(e.target.value)}
-              >
-                <option value="">所有项目</option>
-                {state.projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
             <div className="zm-task-table">
               <div className="zm-table-heading">
                 <span>工作事项</span>
@@ -300,17 +306,29 @@ export function WorkbenchPage({
                 <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
                   <span>
                     <strong>{t.title}</strong>
-                    <small>{state.projects.find((p) => p.id === t.projectId)?.name}</small>
+                    <small>
+                      {state.projects.find((p) => p.id === t.projectId)?.name}
+                      <span className="zm-meta-dot">·</span>
+                      {state.participants.find((p) => p.id === t.ownerId)?.name ?? '负责人待定'}
+                    </small>
                   </span>
                   <span className="zm-avatars">
                     {state.participants
                       .filter((p) => t.participantIds.includes(p.id))
-                      .slice(0, 4)
+                      .slice(0, 3)
                       .map((p) => (
                         <span title={p.name} className={`zm-avatar ${p.kind}`} key={p.id}>
                           {p.kind === 'expert' ? 'AI' : p.name[0]}
                         </span>
                       ))}
+                    {t.participantIds.length > 3 && (
+                      <span
+                        className="zm-avatar zm-avatar-overflow"
+                        title={`${t.participantIds.length} 位参与者`}
+                      >
+                        +{t.participantIds.length - 3}
+                      </span>
+                    )}
                   </span>
                   <span>
                     {t.workflows.flatMap((w) => w.nodes).length} 节点

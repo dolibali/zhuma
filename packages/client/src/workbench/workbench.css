@@ -3,6 +3,7 @@
   --zm-ink: #252a30;
   --zm-muted: #66717c;
   --zm-line: #e3e6e9;
+  --zm-line-subtle: #f0f1f3;
   --zm-line-strong: #c4cbd1;
   --zm-paper: #ffffff;
   --zm-bg: #f5f6f7;
@@ -44,6 +45,7 @@ body[data-ds-dark-theme] {
   --zm-ink: #e6e8ec;
   --zm-muted: #a0a8b3;
   --zm-line: #363b43;
+  --zm-line-subtle: #292d34;
   --zm-line-strong: #545c68;
   --zm-paper: #1b1d21;
   --zm-bg: #22252b;
@@ -293,7 +295,7 @@ body[data-ds-dark-theme] {
 }
 .zm-page {
   max-width: 1400px;
-  padding: 24px 24px 48px;
+  padding: 28px 28px 48px;
   margin: auto;
 }
 .zm-page-heading {
@@ -301,7 +303,59 @@ body[data-ds-dark-theme] {
   gap: 20px;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
+}
+.zm-page-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.zm-page-title > span {
+  color: var(--zm-muted);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.zm-page-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-bottom: 24px;
+}
+.zm-page-bar .zm-tabs {
+  margin: 0;
+  padding: 4px 0;
+  border: 0;
+}
+.zm-page-bar .zm-filter {
+  margin: 0;
+  flex: 0 1 340px;
+}
+.zm-page-bar .zm-filter input {
+  min-width: 120px;
+  flex: 1;
+}
+.zm-page-bar .zm-filter select {
+  width: 144px;
+}
+.zhuma .zm-page-bar .zm-filter input,
+.zhuma .zm-page-bar .zm-filter select {
+  padding: 7px 10px;
+  font-size: 13px;
+  border-color: transparent;
+  background: var(--zm-bg);
+}
+.zm-page-bar .zm-filter input:hover,
+.zm-page-bar .zm-filter select:hover {
+  border-color: var(--zm-line-strong);
+}
+.zm-meta-dot {
+  margin: 0 7px;
+}
+.zm-avatar-overflow {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 .zm-eyebrow {
   font:
@@ -830,13 +884,18 @@ body[data-ds-dark-theme] {
 }
 .zm-table-heading {
   background: transparent;
-  border-bottom: 1px solid var(--zm-line);
+  border-bottom: 1px solid var(--zm-line-subtle);
   padding: 10px 12px;
 }
 .zhuma .zm-task-row {
-  padding: 14px 12px;
+  padding: 17px 12px;
   border-top: 0;
-  border-bottom: 1px solid var(--zm-line);
+  border-bottom: 1px solid var(--zm-line-subtle);
+  box-shadow: none;
+}
+.zhuma .zm-task-row:hover:not(:disabled) {
+  border-color: var(--zm-line-subtle);
+  background: var(--zm-hover);
 }
 .zm-table-heading,
 .zm-task-row {
@@ -864,6 +923,7 @@ body[data-ds-dark-theme] {
 .zm-editor {
   height: 100%;
   min-height: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
   container-type: inline-size;
@@ -873,21 +933,23 @@ body[data-ds-dark-theme] {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding: 10px 24px;
-  border-bottom: 1px solid var(--zm-line);
+  padding: 10px 24px 4px;
 }
 .zm-toolbar > button:first-child {
-  border: 0;
-  padding-left: 0;
-  background: transparent;
+  margin-left: -8px;
+  padding: 5px 8px;
 }
-.zm-toolbar .zm-status {
-  max-width: 220px;
+.zm-editor-project {
+  max-width: 240px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--zm-muted);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .zm-editor-heading {
-  padding: 16px 24px;
+  padding: 12px 24px 20px;
   flex: none;
 }
 .zm-project-location {
@@ -899,9 +961,14 @@ body[data-ds-dark-theme] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 5px;
+  gap: 8px 16px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.zm-task-meta > .zm-button {
+  min-height: 28px;
+  padding: 2px 7px;
+  font-size: 12px;
 }
 .zm-task-meta .zm-field {
   display: flex;
@@ -976,9 +1043,11 @@ body[data-ds-dark-theme] {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) 344px;
+  gap: 12px;
+  padding: 12px 16px 16px;
+  background: var(--zm-bg);
   position: relative;
-  border-top: 1px solid var(--zm-line);
 }
 .zm-editor-layout.inspector-closed {
   grid-template-columns: minmax(0, 1fr);
@@ -989,14 +1058,18 @@ body[data-ds-dark-theme] {
   display: flex;
   flex-direction: column;
   position: relative;
+  background: var(--zm-paper);
+  border: 1px solid var(--zm-line);
+  border-radius: 12px;
+  overflow: hidden;
 }
 .zm-workflow-tools {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 6px;
+  padding: 8px 12px;
   min-height: 50px;
-  border-bottom: 1px solid var(--zm-line);
+  border-bottom: 1px solid var(--zm-line-subtle);
   flex-wrap: wrap;
 }
 .zm-workflow-tools nav {
@@ -1019,6 +1092,7 @@ body[data-ds-dark-theme] {
   padding: 3px 4px;
   background: transparent;
   font-size: 12px;
+  box-shadow: none;
 }
 .zm-path-divider {
   color: var(--zm-muted);
@@ -1034,13 +1108,14 @@ body[data-ds-dark-theme] {
   gap: 2px;
   align-items: center;
 }
-.zm-segment button {
+.zhuma .zm-segment button {
   font-size: 12px;
   padding: 4px 8px;
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
-.zm-segment button[aria-pressed='true'] {
+.zhuma .zm-segment button[aria-pressed='true'] {
   background: var(--zm-bg);
   color: var(--zm-ink);
 }
@@ -1152,7 +1227,8 @@ body[data-ds-dark-theme] {
   min-height: 0;
   min-width: 0;
   overflow: auto;
-  border-left: 1px solid var(--zm-line);
+  border: 1px solid var(--zm-line);
+  border-radius: 12px;
   background: var(--zm-paper);
   scrollbar-gutter: stable;
 }
@@ -1163,14 +1239,14 @@ body[data-ds-dark-theme] {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--zm-line);
+  padding: 12px 12px 6px;
   background: var(--zm-paper);
 }
 .zm-panel-tabs button {
   border: 0;
   background: transparent;
   font-size: 13px;
+  box-shadow: none;
 }
 .zm-panel-tabs button[aria-pressed='true'] {
   color: var(--zm-accent);
@@ -1269,7 +1345,7 @@ body[data-ds-dark-theme] {
   text-align: left;
 }
 .zm-node-summary {
-  padding: 20px;
+  padding: 12px 20px 24px;
   font-size: 13px;
 }
 .zm-node-summary h3 {
@@ -1278,8 +1354,7 @@ body[data-ds-dark-theme] {
   line-height: 1.5;
 }
 .zm-node-summary section {
-  padding: 12px 0;
-  border-top: 1px solid var(--zm-line);
+  padding: 10px 0;
 }
 .zm-node-summary section h4 {
   margin: 0 0 8px;
@@ -1309,9 +1384,85 @@ body[data-ds-dark-theme] {
   display: none;
 }
 
-/* AI proposal is a distinct, unapplied state in the main working area. */
+/* The result scrolls independently; the input and next action stay in reach. */
+.zm-config[data-panel='plan'] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+.zm-config[data-panel='plan'] .zm-panel-tabs {
+  flex: none;
+}
 .zm-planner {
-  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.zm-planner-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 20px 20px;
+}
+.zm-planner-composer {
+  flex: none;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--zm-line-subtle);
+  background: var(--zm-paper);
+}
+.zm-planner-composer .zm-field {
+  margin-bottom: 12px;
+}
+.zm-planner-composer textarea {
+  resize: vertical;
+  min-height: 76px;
+  max-height: 140px;
+  font-size: 13px;
+  border-radius: 10px;
+  background: var(--zm-bg);
+}
+.zm-planner-composer .zm-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--zm-muted);
+}
+.zm-planning-intro {
+  padding: 36px 0;
+}
+.zm-planning-intro > span {
+  display: block;
+  font-size: 28px;
+  margin-bottom: 16px;
+  color: var(--zm-muted);
+}
+.zm-planning-intro p {
+  color: var(--zm-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.zm-planning-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 0;
+  font-size: 13px;
+  color: var(--zm-muted);
+}
+.zm-planning-context > summary > span:last-child {
+  display: inline-block;
+  margin-left: 8px;
+}
+.zm-proposal-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.zm-proposal-heading > button {
+  font-size: 12px;
+  color: var(--zm-muted);
 }
 .zm-planner h3 {
   font-size: 15px;
@@ -1335,15 +1486,15 @@ body[data-ds-dark-theme] {
   display: flex;
   gap: 8px;
   align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
 }
 .zm-planning {
   padding: 16px 0;
   color: var(--zm-accent);
 }
 .zm-proposal {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--zm-line);
+  margin-top: 22px;
   font-size: 13px;
 }
 .zm-plan-summary {
@@ -1354,9 +1505,16 @@ body[data-ds-dark-theme] {
   line-height: 1.6;
 }
 .zm-proposal-node {
-  margin: 14px 0;
-  padding-left: 12px;
-  border-left: 2px solid var(--zm-accent);
+  margin: 20px 0 0;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--zm-bg);
+}
+.zm-current-node-label {
+  display: block;
+  color: var(--zm-muted);
+  font-size: 11px;
+  margin-bottom: 8px;
 }
 .zm-proposal-node p {
   font-size: 13px;
@@ -1367,16 +1525,6 @@ body[data-ds-dark-theme] {
   background: var(--zm-warning-soft);
   color: var(--zm-warning);
   border-radius: 6px;
-}
-.zm-proposal-actions {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 14px 0;
-  background: var(--zm-paper);
-  border-top: 1px solid var(--zm-line);
 }
 
 /* Keep node text readable; zoom-to-fit is an explicit overview action. */
@@ -1493,10 +1641,11 @@ body[data-ds-dark-theme] {
 @container (max-width: 980px) {
   .zm-editor-layout {
     grid-template-columns: minmax(0, 1fr);
+    position: static;
   }
   .zm-config {
     position: absolute;
-    inset: 0 0 0 auto;
+    inset: 8px 8px 8px auto;
     width: 360px;
     max-width: 94%;
     z-index: 12;
@@ -1516,6 +1665,9 @@ body[data-ds-dark-theme] {
   .zm-toolbar {
     flex-wrap: wrap;
     padding: 8px 16px;
+  }
+  .zm-editor-project {
+    max-width: 160px;
   }
   .zm-editor-heading {
     padding: 12px 16px;
@@ -1551,6 +1703,9 @@ body[data-ds-dark-theme] {
   .zm-page-heading .zm-actions {
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+  .zm-page-bar .zm-filter {
+    flex: 1 1 100%;
   }
   .zm-table-heading,
   .zm-task-row {
