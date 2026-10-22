@@ -67,8 +67,13 @@ test('主题切换保留节点草稿、选择和画布位置，不触发保存�
   const transform = await page.locator('.react-flow__viewport').getAttribute('style');
   const before = replay.requests.length;
   for (const theme of ['dark', 'light', 'system']) {
-    await page.getByLabel('外观', { exact: true }).selectOption(theme);
-    await expect(page.getByLabel('外观', { exact: true })).toHaveValue(theme);
+    await page.getByLabel('外观', { exact: true }).click();
+    const caption = { light: '浅色', dark: '深色', system: '跟随系统' }[theme];
+    await page.getByRole('option', { name: caption, exact: true }).click();
+    await expect(page.getByLabel('外观', { exact: true })).toHaveAttribute(
+      'title',
+      `外观：${caption}`,
+    );
     await expect(page.getByLabel('节点名称', { exact: true })).toHaveValue('尚未保存的节点修改');
     await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', 'node-0');
     await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', transform);
@@ -193,7 +198,8 @@ test('目录筛选、长表单错误与保存中关闭保护；多选搜索保�
   await page.getByLabel('搜索成员与专家', { exact: true }).fill('不存在的名字');
   await button(page, '清除筛选').click();
   await expect(page.getByRole('article')).toHaveCount(26);
-  await page.getByLabel('成员类型', { exact: true }).selectOption('expert');
+  await page.getByLabel('成员类型', { exact: true }).click();
+  await page.getByRole('option', { name: 'Agent 专家', exact: true }).click();
   await expect(page.getByRole('article')).toHaveCount(2);
   await page.getByRole('button', { name: /^团队资产/ }).click();
   await page.getByLabel('搜索资产', { exact: true }).fill('01 版');

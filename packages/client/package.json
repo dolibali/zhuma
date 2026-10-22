@@ -23,6 +23,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@base-ui/react": "1.9.0",
     "@xyflow/react": "12.11.1",
     "@zhuma/agent-core": "workspace:*",
     "react": "18.3.1",

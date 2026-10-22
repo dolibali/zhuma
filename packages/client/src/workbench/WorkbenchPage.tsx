@@ -13,6 +13,7 @@ import { Field, Modal, ParticipantSelect } from './controls.js';
 import { TaskEditor, type InitialPlanning } from './TaskEditor.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 import { Button } from './Button.js';
+import { SingleSelect } from './SingleSelect.js';
 
 type Section = 'projects' | 'tasks' | 'assets' | 'members';
 type Dialog =
@@ -378,18 +379,15 @@ export function WorkbenchPage({
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
-              <select
-                aria-label="筛选项目"
+              <SingleSelect
+                label="筛选项目"
                 value={projectFilter}
-                onChange={(e) => setProjectFilter(e.target.value)}
-              >
-                <option value="">所有项目</option>
-                {state.projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+                onValueChange={setProjectFilter}
+                options={[
+                  { value: '', label: '所有项目' },
+                  ...state.projects.map((p) => ({ value: p.id, label: p.name })),
+                ]}
+              />
             </div>
           )}
           {section !== 'tasks' && (
@@ -414,27 +412,29 @@ export function WorkbenchPage({
                 onChange={(event) => setSearch(event.target.value)}
               />
               {section === 'members' && (
-                <select
-                  aria-label="成员类型"
+                <SingleSelect
+                  label="成员类型"
                   value={memberKind}
-                  onChange={(event) => setMemberKind(event.target.value)}
-                >
-                  <option value="all">所有成员与专家</option>
-                  <option value="human">团队成员</option>
-                  <option value="expert">Agent 专家</option>
-                </select>
+                  onValueChange={setMemberKind}
+                  options={[
+                    { value: 'all', label: '所有成员与专家' },
+                    { value: 'human', label: '团队成员' },
+                    { value: 'expert', label: 'Agent 专家' },
+                  ]}
+                />
               )}
               {section === 'assets' && (
-                <select
-                  aria-label="资产类型"
+                <SingleSelect
+                  label="资产类型"
                   value={assetKind}
-                  onChange={(event) => setAssetKind(event.target.value)}
-                >
-                  <option value="all">全部类型</option>
-                  <option value="skill">Skills</option>
-                  <option value="mcp">MCP</option>
-                  <option value="template">工作流模板</option>
-                </select>
+                  onValueChange={setAssetKind}
+                  options={[
+                    { value: 'all', label: '全部类型' },
+                    { value: 'skill', label: 'Skills' },
+                    { value: 'mcp', label: 'MCP' },
+                    { value: 'template', label: '工作流模板' },
+                  ]}
+                />
               )}
             </div>
           )}
@@ -725,21 +725,20 @@ export function WorkbenchPage({
                         />
                       </Field>
                       <Field label="类型">
-                        <select
+                        <SingleSelect
+                          label="类型"
                           value={dialog.value.kind}
-                          onChange={(e) =>
+                          onValueChange={(kind) =>
                             setDialog({
                               ...dialog,
-                              value: {
-                                ...dialog.value,
-                                kind: e.target.value as Participant['kind'],
-                              },
+                              value: { ...dialog.value, kind: kind as Participant['kind'] },
                             })
                           }
-                        >
-                          <option value="human">团队成员</option>
-                          <option value="expert">Agent 专家</option>
-                        </select>
+                          options={[
+                            { value: 'human', label: '团队成员' },
+                            { value: 'expert', label: 'Agent 专家' },
+                          ]}
+                        />
                       </Field>
                     </div>
                     <Field label="职责">
@@ -816,19 +815,21 @@ export function WorkbenchPage({
                         />
                       </Field>
                       <Field label="类型">
-                        <select
+                        <SingleSelect
+                          label="类型"
                           value={dialog.value.kind}
-                          onChange={(e) =>
+                          onValueChange={(kind) =>
                             setDialog({
                               ...dialog,
-                              value: { ...dialog.value, kind: e.target.value as TeamAsset['kind'] },
+                              value: { ...dialog.value, kind: kind as TeamAsset['kind'] },
                             })
                           }
-                        >
-                          <option value="skill">Skill</option>
-                          <option value="mcp">MCP 能力定义</option>
-                          <option value="template">工作流模板</option>
-                        </select>
+                          options={[
+                            { value: 'skill', label: 'Skill' },
+                            { value: 'mcp', label: 'MCP 能力定义' },
+                            { value: 'template', label: '工作流模板' },
+                          ]}
+                        />
                       </Field>
                     </div>
                     <Field label="用途与适用场景">
@@ -895,21 +896,14 @@ export function WorkbenchPage({
                     </Field>
                     <div className="zm-creation-context">
                       <Field label="所属项目">
-                        <select
+                        <SingleSelect
+                          label="所属项目"
                           value={dialog.value.projectId}
-                          onChange={(e) =>
-                            setDialog({
-                              ...dialog,
-                              value: { ...dialog.value, projectId: e.target.value },
-                            })
+                          onValueChange={(projectId) =>
+                            setDialog({ ...dialog, value: { ...dialog.value, projectId } })
                           }
-                        >
-                          {state.projects.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name}
-                            </option>
-                          ))}
-                        </select>
+                          options={state.projects.map((p) => ({ value: p.id, label: p.name }))}
+                        />
                       </Field>
                       <div className="zm-creation-participants">
                         <span>参与者 · {dialog.value.participantIds.length} 位</span>
