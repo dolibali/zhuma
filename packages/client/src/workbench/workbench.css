@@ -1673,9 +1673,6 @@ body[data-ds-dark-theme] {
   font-size: 12px;
   color: var(--zm-muted);
 }
-.zm-flow-node.zm-tree-current {
-  border-left: 3px solid var(--zm-accent);
-}
 .zm-canvas .react-flow__handle {
   width: 8px;
   height: 8px;
@@ -1875,4 +1872,209 @@ body[data-ds-dark-theme] {
   .zm-dialog .zm-form-body {
     padding: 16px;
   }
+}
+
+/* A single inspector serves configuration or hierarchy navigation, never two competing sidebars. */
+.zm-workflow-tools nav button {
+  padding: 5px 8px;
+}
+.zm-workflow-tools nav button[aria-current] {
+  background: var(--zm-soft);
+  color: var(--zm-accent);
+}
+.zm-workflow-tools nav {
+  flex-basis: 100%;
+  max-width: 100%;
+  overflow: auto;
+}
+.zm-workflow-tools nav > span {
+  flex-shrink: 0;
+}
+.zm-tree-legend {
+  display: flex;
+  gap: 18px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--zm-muted);
+  border-bottom: 1px solid var(--zm-line-subtle);
+  flex-wrap: wrap;
+}
+.zm-tree-path-key {
+  color: var(--zm-accent);
+}
+.zm-flow-node.zm-tree-ancestor {
+  border-color: var(--zm-accent);
+  border-left-width: 3px;
+}
+.zm-flow-context {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--zm-muted);
+}
+.zm-flow-context > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.zm-flow-context b {
+  font-size: 10px;
+  color: var(--zm-accent);
+  white-space: nowrap;
+  margin-left: auto;
+}
+.zm-child-entry {
+  width: 100%;
+  margin-bottom: 16px;
+  text-align: left;
+}
+.zm-tree-navigator {
+  padding: 8px 14px 16px;
+}
+.zm-tree-selection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+  background: var(--zm-bg);
+}
+.zm-tree-selection > small {
+  color: var(--zm-accent);
+}
+.zm-tree-selection > strong {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.zm-tree-selection > span {
+  color: var(--zm-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.zm-tree-selection .zm-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.zm-tree-selection .zm-actions button {
+  font-size: 12px;
+}
+.zm-tree-dependencies {
+  border-top: 1px solid var(--zm-line);
+  padding-top: 8px;
+}
+.zm-tree-dependencies summary {
+  font-size: 12px;
+}
+.zm-tree-dependencies summary small {
+  margin-left: 8px;
+  color: var(--zm-muted);
+}
+.zm-tree-relations {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.zm-tree-relations > small {
+  width: 28px;
+  color: var(--zm-muted);
+}
+.zm-tree-relations button {
+  border: 0;
+  padding: 3px 4px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--zm-accent);
+}
+.zm-tree-search {
+  margin-top: 16px;
+}
+.zm-tree-search-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  gap: 8px;
+  color: var(--zm-muted);
+}
+.zm-tree-search-tools button {
+  padding: 4px 8px;
+  font-size: 12px;
+  background: transparent;
+  border-color: transparent;
+}
+.zm-tree-branch,
+.zm-tree-results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.zm-tree-row {
+  display: flex;
+  align-items: flex-start;
+  padding-left: min(calc(var(--tree-depth) * 16px), 96px);
+}
+.zhuma .zm-tree-toggle,
+.zm-tree-leaf {
+  flex: 0 0 24px;
+  min-height: 36px;
+  padding: 8px 0;
+  text-align: center;
+  color: var(--zm-muted);
+}
+.zhuma .zm-tree-toggle {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.zhuma .zm-tree-item {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  padding: 8px;
+  background: transparent;
+  text-align: left;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  box-shadow: none;
+}
+.zm-tree-item > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.zm-tree-item > small {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--zm-accent);
+}
+.zhuma .zm-tree-item[aria-current] {
+  background: var(--zm-soft);
+  border-color: var(--zm-accent);
+}
+.zm-tree-results li {
+  margin-bottom: 8px;
+}
+.zm-tree-results .zhuma .zm-tree-item {
+  width: 100%;
+}
+.zm-tree-results li > small {
+  display: block;
+  margin: 4px 8px 12px;
+  color: var(--zm-muted);
+  overflow-wrap: anywhere;
+}
+.zm-tree-empty {
+  padding: 12px 8px;
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+
+.zhuma .zm-tree-toggle:disabled {
+  background: transparent;
+  border-color: transparent;
+  cursor: default;
 }

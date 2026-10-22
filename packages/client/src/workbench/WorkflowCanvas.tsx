@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -12,6 +12,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import type { WorkTask, Workflow, Participant } from '@zhuma/agent-core';
+import { visibleWorkflows, workflowPath, type WorkTree } from './navigation.js';
 
 export function WorkflowCanvas({
   workflow,
@@ -22,7 +23,9 @@ export function WorkflowCanvas({
   locked,
   task,
   tree,
-  openWorkflow,
+  workTree,
+  expanded,
+  locateRequest,
 }: {
   workflow: Workflow;
   members: Participant[];
@@ -32,7 +35,9 @@ export function WorkflowCanvas({
   locked: boolean;
   task: WorkTask;
   tree: boolean;
-  openWorkflow(id: string): void;
+  workTree: WorkTree;
+  expanded: ReadonlySet<string>;
+  locateRequest: number;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
@@ -41,21 +46,13 @@ export function WorkflowCanvas({
     {},
   );
   const columns = new Map<number, number>();
-  const depths = new Map<string, number>();
-  function depth(w: Workflow): number {
-    if (depths.has(w.id)) return depths.get(w.id)!;
-    const parent = task.workflows.find((candidate) =>
-      candidate.nodes.some((n) => n.id === w.parentNodeId),
-    );
-    const value = parent ? depth(parent) + 1 : 0;
-    depths.set(w.id, value);
-    return value;
-  }
-  const flows = tree ? task.workflows : [workflow];
+  const path = workflowPath(workTree, workflow.id);
+  const parentNodes = new Set(path.flatMap((w) => (w.parentNodeId ? [w.parentNodeId] : [])));
+  const flows = tree ? visibleWorkflows(workTree, expanded) : [workflow];
   const nodes: Node[] = flows.flatMap((w) => {
-    const level = tree ? depth(w) : 0;
+    const level = tree ? workflowPath(workTree, w.id).length - 1 : 0;
     const offset = columns.get(level) ?? 0;
-    columns.set(level, offset + w.nodes.length * 164 + 60);
+    columns.set(level, offset + w.nodes.length * 210 + 60);
     return w.nodes.map((n, index) => {
       const member = members.find((m) => m.id === n.assigneeId);
       return {
@@ -63,13 +60,19 @@ export function WorkflowCanvas({
         initialWidth: 240,
         initialHeight: 164,
         ...(dimensions[n.id] ? { measured: dimensions[n.id] } : {}),
-        position: tree ? { x: level * 340, y: offset + index * 164 } : n.position,
+        position: tree ? { x: level * 340, y: offset + index * 210 } : n.position,
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
+        ariaLabel: `${n.title}，${w.name}`,
         data: {
           label: (
             <>
-              {tree && <small className="zm-flow-context">{w.name}</small>}
+              {tree && (
+                <small className="zm-flow-context">
+                  <span>{w.name}</span>
+                  {n.id === selectedId && <b>当前定位</b>}
+                </small>
+              )}
               <strong title={n.title}>{n.title}</strong>
               <div className="zm-flow-assignee">
                 <span className={`zm-avatar ${member?.kind ?? 'human'}`}>
@@ -89,25 +92,34 @@ export function WorkflowCanvas({
             </>
           ),
         },
-        className: `zm-flow-node ${tree && w.id === workflow.id ? 'zm-tree-current' : ''}`,
+        className: `zm-flow-node ${tree && parentNodes.has(n.id) ? 'zm-tree-ancestor' : ''}`,
         selected: n.id === selectedId,
       };
     });
   });
   const edges: Edge[] = flows.flatMap((w) =>
     w.nodes.flatMap((n) =>
-      n.dependsOn.map((source) => ({
-        id: `${source}-${n.id}`,
-        source,
-        target: n.id,
-        type: 'smoothstep',
-        markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--zm-edge)' },
-        style: { stroke: 'var(--zm-edge)', strokeWidth: 1.5 },
-      })),
+      n.dependsOn
+        .filter((source) => w.nodes.some((node) => node.id === source))
+        .map((source) => ({
+          id: `${source}-${n.id}`,
+          source,
+          target: n.id,
+          type: 'smoothstep',
+          markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--zm-edge)' },
+          style: {
+            stroke:
+              tree && (n.id === selectedId || source === selectedId)
+                ? 'var(--zm-accent)'
+                : 'var(--zm-edge)',
+            strokeWidth: tree && (n.id === selectedId || source === selectedId) ? 2.5 : 1.5,
+          },
+          ariaLabel: `工作依赖：${workTree.nodes.get(source)?.title} → ${n.title}`,
+        })),
     ),
   );
   if (tree)
-    for (const w of task.workflows)
+    for (const w of flows)
       if (w.parentNodeId)
         for (const n of w.nodes.filter((n) => !n.dependsOn.length))
           edges.push({
@@ -116,7 +128,12 @@ export function WorkflowCanvas({
             target: n.id,
             label: '拆分',
             type: 'smoothstep',
-            style: { strokeDasharray: '5 5', stroke: 'var(--zm-expert)' },
+            style: {
+              strokeDasharray: '5 5',
+              stroke: path.some((p) => p.id === w.id) ? 'var(--zm-accent)' : 'var(--zm-expert)',
+              strokeWidth: path.some((p) => p.id === w.id) ? 2.5 : 1,
+            },
+            ariaLabel: `层级拆分：${workTree.nodes.get(w.parentNodeId)?.title} → ${n.title}`,
             labelStyle: { fill: 'var(--zm-muted)', fontSize: 12 },
             labelBgStyle: { fill: 'var(--zm-paper)' },
           });
@@ -142,12 +159,16 @@ export function WorkflowCanvas({
   function locate(instance = flow) {
     if (!instance || !current) return;
     void instance.setViewport({
-      x: 40 - current.position.x,
+      x:
+        (tree ? Math.max(40, (canvas.current?.clientWidth ?? 400) - 280) : 40) - current.position.x,
       y: Math.max(70, (canvas.current?.clientHeight ?? 500) / 2 - 70) - current.position.y,
       zoom: 1,
     });
     setZoom(1);
   }
+  useEffect(() => {
+    locate();
+  }, [flow, locateRequest]);
   return (
     <div className="zm-canvas" ref={canvas}>
       <ReactFlow
@@ -163,14 +184,20 @@ export function WorkflowCanvas({
         nodesDraggable={!locked && !tree}
         nodesConnectable={!locked && !tree}
         deleteKeyCode={null}
-        onNodeClick={(_, n) => {
-          if (tree) {
-            const owner = task.workflows.find((w) => w.nodes.some((node) => node.id === n.id));
-            if (owner) openWorkflow(owner.id);
-          }
-          select(n.id);
+        multiSelectionKeyCode={null}
+        selectionKeyCode={null}
+        ariaLabelConfig={{
+          'node.a11yDescription.default': '按回车或空格定位工作节点。',
+          'node.a11yDescription.keyboardDisabled':
+            '按回车或空格定位工作节点；方向键移动可编辑节点。',
+          'minimap.ariaLabel': '工作流缩略图',
         }}
+        onNodeClick={(_, n) => select(n.id)}
         onNodesChange={(changes) => {
+          const selected = changes.find(
+            (c) => c.type === 'select' && c.selected && c.id !== selectedId,
+          );
+          if (selected?.type === 'select') select(selected.id);
           const measured = changes.filter((c) => c.type === 'dimensions' && c.dimensions);
           if (measured.length)
             setDimensions((current) => {
