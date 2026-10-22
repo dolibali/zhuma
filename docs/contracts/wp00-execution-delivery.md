@@ -53,7 +53,7 @@ FR05 的「任务汇总状态、节点状态、运行状态、评审状态分开
 | InboxItem       | B                                    | `deriveInbox`                                                      | 由节点、轮次和确认事实派生，不另存一套执行事实                  |
 | Command / Event | B 维护信封；A 的编排命令复用同一信封 | `CommandEnvelope`、`DomainEvent`                                   | 见第 8 节                                                       |
 
-`NodeHandoff` 是 A 交给 B 的边界：目标、执行者、依赖、评审策略、输入引用，以及与 `inputRefs` 分开的专家、技能和 MCP 引用。人工节点的 `assignee.kind` 是 `human`，可以不带 `expertRef`，也不需要选择引擎。专家节点的 `assignee.kind` 是 `expert`，`expertRef` 必须是 `{ id, version }`。`readNodeHandoff` 把 `inputRefs`、`skillRefs` 与 `mcpRefs` 都重建为 `{ id, version }`，可以是空数组。多出来的字段，包括 `token`，不会留在结果里。缺 `id` 或缺 `version` 的引用返回 `invalid-handoff`。`ContextInputRef` 仍单独导出，不再作为 `NodeHandoff.inputRefs` 的元素类型。`inputNote` 与 `expectedOutput` 可以是空字符串。这些字段不含凭据、密钥、令牌或授权材料，也不使用 `skillIds`。`PayloadExcludesCredentials` 递归、不区分大小写地检查每一层字段，覆盖 `credential`、`credentials`、`secret`、`token`、`apiKey`、`api_key`、`password`、`authorization`、`accessToken`、`refreshToken`、`refresh_token`、`privateKey`、`private_key`、`sessionToken`、`bearer`、`cookie`，并拒绝字符串索引签名。`handoffPayloadExcludesCredentials` 锁定 `NodeHandoff`、`VersionedRef`、`ContextInputRef` 和 `ActorRef`。
+`NodeHandoff` 是 A 交给 B 的边界：目标、执行者、依赖、评审策略、输入引用，以及与 `inputRefs` 分开的专家、技能和 MCP 引用。人工节点的 `assignee.kind` 是 `human`，可以不带 `expertRef`，也不需要选择引擎。专家节点的 `assignee.kind` 是 `expert`，`expertRef` 必须是 `{ id, version }`。`readNodeHandoff` 把 `inputRefs`、`skillRefs` 与 `mcpRefs` 都重建为 `{ id, version }`，可以是空数组。多出来的字段，包括 `token`，不会留在结果里。缺 `id` 或缺 `version` 的引用返回 `invalid-handoff`。`ContextInputRef` 仍单独导出，不再作为 `NodeHandoff.inputRefs` 的元素类型。`inputNote` 与 `expectedOutput` 可以是空字符串。这些字段不含凭据、密钥、令牌或授权材料，也不使用 `skillIds`。`PayloadExcludesCredentials` 递归检查每一层字段。比较前去掉 `_` 和 `-`，并且不区分大小写，覆盖 `credential`、`credentials`、`secret`、`secretKey`、`token`、`apiKey`、`api_key`、`password`、`passwd`、`authorization`、`auth`、`accessToken`、`access_token`、`access-token`、`refreshToken`、`refresh_token`、`privateKey`、`private_key`、`sessionToken`、`session_token`、`session-token`、`client_secret`、`client-secret`、`id_token`、`idToken`、`id-token`、`bearer`、`bearerToken`、`bearer-token`、`sessionId`、`session-id`、`cookie`，并拒绝字符串索引签名。`handoffPayloadExcludesCredentials` 锁定 `NodeHandoff`、`VersionedRef`、`ContextInputRef` 和 `ActorRef`。`readNodeHandoff` 收到 null 输入或 null `assignee` 时返回 `invalid-handoff`，不抛出。`readVersionedSnapshot` 收到 null 引用或 null 目录时返回 `undefined`，不抛出。
 
 `NodeHandoff.revision` 是切出这份交接时的已应用计划修订号。它不是节点命令版本，也不是 A 的草稿并发版本。
 
@@ -127,7 +127,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 | `failed`            | 失败           | 核实后的执行失败                       | 只有显式 `retry`，并带 `returnTo`                  |
 | `cancelled`         | 已取消         | 取消已经确认                           | 只有显式 `restart`，并带 `returnTo`                |
 
-`applyNodeTransitionCommand` 是提交和恢复（`retry`、`restart`）的唯一权威入口。下面这条只在命令层成立：存储层保存和恢复 `NodeCommandState` 时必须带上 `entryStatus`；缺了这份记录，后续提交和恢复会拒绝推进。`transitionNode` 和 `transitionForSubmission` 是无状态的底层函数，只根据当次参数计算，不读取也不写入 `entryStatus`。调用方不能用它们直接落库。
+`applyNodeTransitionCommand` 是提交和恢复（`retry`、`restart`）的唯一权威入口。下面这条只在命令层成立：存储层保存和恢复 `NodeCommandState` 时必须带上 `entryStatus`。命令不把状态 `ready` 本身当成已记下的入口。缺了这份记录时，`reviewRequired: false` 的提交返回 `illegal-transition`，不能进入 `completed`；`running` 上的提交，以及 `failed`、`cancelled` 上的 `retry`、`restart`，也拒绝推进。已经记下 `entryStatus: 'ready'` 的节点仍可以不评审完成。载荷里的 `entryStatus` 不能把丢失的记录补回去。`transitionNode` 和 `transitionForSubmission` 是无状态的底层函数，只根据当次参数计算，不读取也不写入 `entryStatus`。调用方不能用它们直接落库。null 状态、信封或载荷返回 `illegal-transition`，不抛出。
 
 `transitionNode` 是节点状态的迁移函数。合法迁移返回下一个状态和推进效果；非法迁移返回 `illegal-transition`，不修改调用方状态。`review-resolved` 仍留在迁移联合类型里，使旧载荷失败关闭而不是抛出；这条迁移一律返回 `illegal-transition`。联合类型之外的迁移类型同样返回 `illegal-transition`，不抛出。`in-review` 的通过或退回由 `applyReviewSettlementCommand` 写入：信封带 actor、期望版本和幂等键，内部经 `decideCommand` 调用 `applyReviewToNode`，并从选票重算结局。它必须绑定节点当前轮次。轮次没有 `ballots` 数组时，结算命令返回拒绝，不抛出。
 
@@ -151,7 +151,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 
 - 需要评审的提交进入 `in-review` 并 `block-downstream`。入口不是 `needs-revision` 的 `ready` 或 `running`，不需要评审的提交进入 `completed` 并 `accept-handoff`。评审开关打开时评审人不能为空，否则返回 `review-requires-reviewers`，节点不动。
 - `needs-revision` 的 `submit-artifact` 必须 `reviewRequired: true`，进入 `in-review`，效果是 `open-review` 和 `block-downstream`。同一次提交若 `reviewRequired: false`，返回 `illegal-transition`，节点保持需修改。关闭评审要另有授权命令，不能借这次提交跳过。
-- 下面这条只在命令层成立。进入 `running` 或 `child-workflow` 时，`applyNodeTransitionCommand` 把入口写入 `NodeCommandState.entryStatus`，取值是 `ready` 或 `needs-revision`。存储层必须持久化这个字段。等待输入、补充输入、失败和确认取消都保留这份记录。子流程返回后节点状态可以是 `ready`；若入口是 `needs-revision`，`entryStatus` 仍是 `needs-revision`。命令只读领域状态里的记录。载荷里的 `entryStatus`、`returnTo` 和 `reviewRequired: false` 都不能覆盖或清除它。记录缺失时，`running` 上的提交，以及 `failed`、`cancelled` 上的 `retry`、`restart`，拒绝推进。载荷入口与记录不一致时返回 `illegal-transition`。`entryStatus` 为 `needs-revision` 时必须再评审，`reviewRequired: false` 不能进入 `completed`。`ready` 声称入口是 `needs-revision`，或 `needs-revision` 声称入口是 `ready`，同样返回 `illegal-transition`。`transitionNode` 不保存这份记录；它在 `running` 上缺少当次参数里的入口时返回 `illegal-transition`，不抛出，也不能代替命令落库。
+- 下面这条只在命令层成立。进入 `running` 或 `child-workflow` 时，`applyNodeTransitionCommand` 把入口写入 `NodeCommandState.entryStatus`，取值是 `ready` 或 `needs-revision`。存储层必须持久化这个字段。等待输入、补充输入、失败和确认取消都保留这份记录。子流程返回后节点状态可以是 `ready`；若入口是 `needs-revision`，`entryStatus` 仍是 `needs-revision`。命令只读领域状态里的记录。载荷里的 `entryStatus`、`returnTo` 和 `reviewRequired: false` 都不能覆盖或清除它。记录缺失时，状态即使已经是 `ready`，`reviewRequired: false` 的提交也返回 `illegal-transition`，不能进入 `completed`。这包括子流程返回到 `ready` 之后丢掉记录，以及从 `blocked` 进入 `ready` 之后丢掉记录。公开命令进入 `ready` 时会写下 `entryStatus`：普通入口是 `ready`，需修改入口仍是 `needs-revision`。记下 `ready` 的节点仍可以不评审完成。`running` 上缺记录的提交，以及 `failed`、`cancelled` 上缺记录的 `retry`、`restart`，拒绝推进。载荷入口与记录不一致时返回 `illegal-transition`。`entryStatus` 为 `needs-revision` 时必须再评审，`reviewRequired: false` 不能进入 `completed`。`ready` 声称入口是 `needs-revision`，或 `needs-revision` 声称入口是 `ready`，同样返回 `illegal-transition`。`transitionNode` 不保存这份记录；它在 `running` 上缺少当次参数里的入口时返回 `illegal-transition`，不抛出，也不能代替命令落库。
 - 只有评审通过会清掉这份需修改记录。`applyReviewToNode` 的结果是 `completed` 时，`applyReviewSettlementCommand` 写入的状态不再带 `entryStatus`。退回会把 `entryStatus` 写成 `needs-revision`。其它命令不能清除它。
 - 依赖未满足时停在 `blocked`。全部依赖满足后才进入 `ready`。`ready` 若依赖再次失效，回到 `blocked`。已经开始、评审中或已结束的节点只打 `upstreamAffected`，不静默重跑。
 - 人工节点可以从 `ready` 直接提交。`needs-revision` 的提交会打开新一轮评审。Agent 对话结束、进程退出成功、文件上传完成，都不会把节点送去评审或完成。
@@ -221,7 +221,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 - 轮次已经通过或退回后，后续裁决返回 `round-closed`。因此同一轮里先退回、后到达的通过不会把节点改成完成。已经作废的轮次也不能再被拿来结算。
 - 同一评审人的第一次终态票有效。相同动作再次提交不追加；改成另一种终态返回 `conflicting-ballot`。通过之后不能在同一开放轮次里改成退回。是否允许改票见第 11.1 节。
 - 不在名单中的人返回 `not-assigned-reviewer`，不能替他人投票。
-- `openReviewRound` 和 `changeReviewers` 去掉评审人 id 两端空白后再保存。空白，或去空白后重复，返回 `duplicate-reviewer`，不把两个席位合成一个。非字符串 id 返回 `invalid-round`，不抛出。结算命令遇到非字符串 id 同样返回 `invalid-round`，不抛出。
+- `openReviewRound` 和 `changeReviewers` 先去掉评审人 id 里的零宽字符（U+200B、U+200C、U+200D、U+FEFF、U+2060、U+180E），再去掉两端空白，然后保存。评审人 id 区分大小写，`A` 与 `a` 是两个席位。空白，或规范化后重复，返回 `duplicate-reviewer`，不把两个席位合成一个。非字符串 id 返回 `invalid-round`，不抛出。结算命令遇到非字符串 id，或选票的 `reviewerId` 不是字符串，同样返回 `invalid-round`，不抛出。`submitBallot` 收到 null 轮次、null 票，或 `reviewerId` 不是字符串时返回 `invalid-ballot`，不抛出。`aggregateReview` 收到 null 轮次返回 `invalid-policy`。选票为 null 或选票 `reviewerId` 不是字符串时，原因是 `invalid-reviewer-id`。`applyReviewToNode` 与结算命令收到 null 输入返回 `unbound-evaluation`，不抛出。
 - `changeReviewers` 需要 `{ actorId, authorized }`。未授权、空 actor 返回 `unauthorized`。不能拿掉已经退回的评审人来让当前轮次通过，返回 `cannot-drop-rejection`。已经关闭的轮次也不能靠调整名单重开。只从开放轮次里移除评审人返回 `requires-new-round`，轮次保持开放，未回复和超时不会因此变成通过。显式改派是同时移除并加入评审人，新加入的人没有旧票，轮次不会因此自动通过。换人继续也可以 `replaceReviewRound` 新建轮次，旧票不继承。
 - 专家输出走 `interpretAgentReview`。缺少结论、理由，或在通过/退回时缺少定位与证据，返回 `abnormal-output`，不能当成批准。
 
@@ -324,7 +324,7 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 ## 12. 已知限制
 
 - 没有数据库、接口、文件存储、执行器或界面流程。契约测试只证明纯函数，不证明 AC 的端到端场景。
-- 节点离开 `needs-revision` 之后，如果存储丢掉 `entryStatus`，命令层无法把需修改义务重算回来。此后 `running` 上的提交，以及 `failed`、`cancelled` 上的 `retry`、`restart`，都会拒绝推进。调用方在载荷里补 `entryStatus` 或 `returnTo` 不能把义务填回去，节点也不会因此静默完成。
+- 节点处于 `ready` 时，丢失的 `entryStatus` 不会从状态名补回来。子流程返回到 `ready` 之后，或从 `blocked` 进入 `ready` 之后，如果存储丢掉这份记录，`reviewRequired: false` 的提交返回 `illegal-transition`，节点不会静默完成。载荷里的 `entryStatus` 或 `returnTo` 不能把记录填回去。公开命令进入 `ready` 时会写下记录：普通入口是 `ready`，需修改入口仍是 `needs-revision`。记下 `ready` 的节点可以不评审提交。`running` 上缺记录的提交，以及 `failed`、`cancelled` 上缺记录的 `retry`、`restart`，同样拒绝。
 - 幂等记录和事件日志都由调用方保存。本层不提供跨进程去重。
 - 领域层不读取时钟，因此超时投票必须由调用方先变成 `timed-out` 再传入。
 - 反馈批次只检查能否应用。方案由调用方放进可选的 `proposal`，领域层不生成方案，也不创建新产物。

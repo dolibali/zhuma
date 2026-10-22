@@ -114,6 +114,57 @@ const sessionToken: PayloadExcludesCredentials<{ sessionToken: string }> = true;
 // @ts-expect-error bearer is a credential field
 const bearer: PayloadExcludesCredentials<{ bearer: string }> = true;
 
+// @ts-expect-error access_token is a credential field
+const accessTokenSnake: PayloadExcludesCredentials<{ access_token: string }> = true;
+
+// @ts-expect-error access-token is a credential field
+const accessTokenHyphen: PayloadExcludesCredentials<{ 'access-token': string }> = true;
+
+// @ts-expect-error session_token is a credential field
+const sessionTokenSnake: PayloadExcludesCredentials<{ session_token: string }> = true;
+
+// @ts-expect-error session-token is a credential field
+const sessionTokenHyphen: PayloadExcludesCredentials<{ 'session-token': string }> = true;
+
+// @ts-expect-error client_secret is a credential field
+const clientSecret: PayloadExcludesCredentials<{ client_secret: string }> = true;
+
+// @ts-expect-error client-secret is a credential field
+const clientSecretHyphen: PayloadExcludesCredentials<{ 'client-secret': string }> = true;
+
+// @ts-expect-error id_token is a credential field
+const idTokenSnake: PayloadExcludesCredentials<{ id_token: string }> = true;
+
+// @ts-expect-error idToken is a credential field
+const idToken: PayloadExcludesCredentials<{ idToken: string }> = true;
+
+// @ts-expect-error id-token is a credential field
+const idTokenHyphen: PayloadExcludesCredentials<{ 'id-token': string }> = true;
+
+// @ts-expect-error bearerToken is a credential field
+const bearerToken: PayloadExcludesCredentials<{ bearerToken: string }> = true;
+
+// @ts-expect-error bearer-token is a credential field
+const bearerTokenHyphen: PayloadExcludesCredentials<{ 'bearer-token': string }> = true;
+
+// @ts-expect-error sessionId is a credential field
+const sessionId: PayloadExcludesCredentials<{ sessionId: string }> = true;
+
+// @ts-expect-error session-id is a credential field
+const sessionIdHyphen: PayloadExcludesCredentials<{ 'session-id': string }> = true;
+
+// @ts-expect-error secretKey is a credential field
+const secretKey: PayloadExcludesCredentials<{ secretKey: string }> = true;
+
+// @ts-expect-error secret-key is a credential field
+const secretKeyHyphen: PayloadExcludesCredentials<{ 'secret-key': string }> = true;
+
+// @ts-expect-error passwd is a credential field
+const passwd: PayloadExcludesCredentials<{ passwd: string }> = true;
+
+// @ts-expect-error auth is a credential field
+const auth: PayloadExcludesCredentials<{ auth: string }> = true;
+
 void human;
 void expert;
 void expertWithoutRef;
@@ -137,3 +188,20 @@ void refreshTokenSnake;
 void privateKeySnake;
 void sessionToken;
 void bearer;
+void accessTokenSnake;
+void accessTokenHyphen;
+void sessionTokenSnake;
+void sessionTokenHyphen;
+void clientSecret;
+void clientSecretHyphen;
+void idTokenSnake;
+void idToken;
+void idTokenHyphen;
+void bearerToken;
+void bearerTokenHyphen;
+void sessionId;
+void sessionIdHyphen;
+void secretKey;
+void secretKeyHyphen;
+void passwd;
+void auth;

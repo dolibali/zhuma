@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assigneeUsesAgentRuntime, readNodeHandoff } from '@zhuma/agent-core';
+import {
+  assigneeUsesAgentRuntime,
+  readNodeHandoff,
+  readVersionedSnapshot,
+} from '@zhuma/agent-core';
 
 const handoff = (assignee, extra = {}) => ({
   nodeId: 'node-1',
@@ -105,4 +109,17 @@ test('input refs are rebuilt as id and version only', () => {
   );
   assert.equal(contextShaped.ok, false);
   assert.equal(contextShaped.code, 'invalid-handoff');
+});
+
+test('null handoff and snapshot arguments are rejected without throwing', () => {
+  assert.equal(readNodeHandoff(null).code, 'invalid-handoff');
+  assert.equal(
+    readNodeHandoff({ ...handoff({ id: 'human-1', kind: 'human' }), assignee: null }).code,
+    'invalid-handoff',
+  );
+  assert.equal(readVersionedSnapshot(null, []), undefined);
+  assert.equal(
+    readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, null),
+    undefined,
+  );
 });

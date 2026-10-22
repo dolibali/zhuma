@@ -109,21 +109,32 @@ type CredentialName =
   | 'credential'
   | 'credentials'
   | 'secret'
+  | 'secretkey'
   | 'token'
   | 'apikey'
-  | 'api_key'
   | 'password'
+  | 'passwd'
   | 'authorization'
+  | 'auth'
   | 'accesstoken'
   | 'refreshtoken'
-  | 'refresh_token'
   | 'privatekey'
-  | 'private_key'
   | 'sessiontoken'
+  | 'sessionid'
+  | 'clientsecret'
+  | 'idtoken'
   | 'bearer'
+  | 'bearertoken'
   | 'cookie';
 
-type IsCredential<K extends string> = Lowercase<K> extends CredentialName ? true : false;
+type StripSeparators<S extends string> = S extends `${infer Head}_${infer Tail}`
+  ? StripSeparators<`${Head}${Tail}`>
+  : S extends `${infer Head}-${infer Tail}`
+    ? StripSeparators<`${Head}${Tail}`>
+    : S;
+
+type IsCredential<K extends string> =
+  StripSeparators<Lowercase<K>> extends CredentialName ? true : false;
 
 type ForbiddenCredential<T> = T extends readonly (infer Item)[]
   ? ForbiddenCredential<Item>
@@ -146,7 +157,8 @@ export type PayloadExcludesCredentials<T> = [ForbiddenCredential<T>] extends [ne
 
 /**
  * Compile-time lock: handoff payloads cannot grow credential fields.
- * The check is recursive and case-insensitive, and it rejects string index signatures.
+ * The check is recursive, ignores case, and ignores `_` and `-` in field names.
+ * It also rejects string index signatures.
  * Empty strings and empty ref arrays are valid; secrets are not part of the shape.
  */
 export const handoffPayloadExcludesCredentials: PayloadExcludesCredentials<NodeHandoff> &
@@ -192,6 +204,14 @@ function copyRefs(refs: unknown): readonly VersionedRef[] | undefined {
  * An expert handoff must name a versioned expert. `agent` is not an identity.
  */
 export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
+  if (
+    input == null ||
+    typeof input !== 'object' ||
+    input.assignee == null ||
+    typeof input.assignee !== 'object'
+  ) {
+    return { ok: false, code: 'invalid-handoff' };
+  }
   const kind = input.assignee.kind;
   if (kind === 'agent') return { ok: false, code: 'agent-not-identity' };
   if (kind !== 'human' && kind !== 'expert') return { ok: false, code: 'invalid-handoff' };
@@ -251,6 +271,7 @@ export function readVersionedSnapshot<T extends { readonly assetId: string; read
   ref: VersionedRef,
   snapshots: readonly T[],
 ): T | undefined {
+  if (ref == null || typeof ref !== 'object' || !Array.isArray(snapshots)) return undefined;
   const found = snapshots.find(
     (snapshot) => snapshot.assetId === ref.id && snapshot.id === ref.version,
   );

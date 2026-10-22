@@ -250,6 +250,43 @@ test('unverified external signals never change a node', () => {
   }
 });
 
+test('null transition inputs are rejected and do not throw', () => {
+  const state = {
+    status: 'ready',
+    version: 3,
+    upstreamAffected: false,
+    stored: [],
+    entryStatus: 'ready',
+  };
+  const missingPayload = applyNodeTransitionCommand(state, {
+    idempotencyKey: 'null-payload',
+    actorId: 'human-1',
+    objectId: 'node-1',
+    expectedVersion: 3,
+    payload: null,
+  });
+  assert.equal(missingPayload.decision.status, 'rejected');
+  assert.equal(missingPayload.decision.code, 'illegal-transition');
+  assert.equal(missingPayload.state.status, 'ready');
+  assert.equal(missingPayload.state.version, 3);
+  const missingEnvelope = applyNodeTransitionCommand(state, null);
+  assert.equal(missingEnvelope.decision.code, 'illegal-transition');
+  assert.equal(missingEnvelope.state.status, 'ready');
+  assert.equal(missingEnvelope.state.version, 3);
+  const missingState = applyNodeTransitionCommand(null, {
+    idempotencyKey: 'null-state',
+    actorId: 'human-1',
+    objectId: 'node-1',
+    expectedVersion: 0,
+    payload: { type: 'plan-started', dependenciesSatisfied: true },
+  });
+  assert.equal(missingState.decision.status, 'rejected');
+  assert.equal(missingState.decision.code, 'illegal-transition');
+  const direct = transitionNode('running', null);
+  assert.equal(direct.ok, false);
+  assert.equal(direct.code, 'illegal-transition');
+});
+
 test('an accepted command is not applied twice and an illegal one does not bump the version', () => {
   let state = initialNodeCommandState();
   const started = applyNodeTransitionCommand(

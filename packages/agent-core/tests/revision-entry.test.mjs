@@ -30,6 +30,67 @@ function assertRejected(result) {
   assert.notEqual(result.state.status, 'completed');
 }
 
+test('a lost entry after child return cannot complete from ready', () => {
+  let state = sentBack();
+  state = command(state, { type: 'child-workflow-started' }, 'lost-child').state;
+  state = command(state, { type: 'child-workflow-returned' }, 'lost-back').state;
+  assert.equal(state.status, 'ready');
+  assert.equal(state.entryStatus, 'needs-revision');
+  const lost = { ...state };
+  delete lost.entryStatus;
+  const version = lost.version;
+  const submitted = command(
+    lost,
+    { type: 'submit-artifact', reviewRequired: false },
+    'lost-submit',
+  );
+  assertRejected(submitted);
+  assert.equal(submitted.state.status, 'ready');
+  assert.equal(submitted.state.version, version);
+  const forged = command(
+    lost,
+    { type: 'submit-artifact', reviewRequired: false, entryStatus: 'ready' },
+    'lost-forge',
+  );
+  assertRejected(forged);
+  assert.equal(forged.state.status, 'ready');
+  assert.equal(forged.state.version, version);
+});
+
+test('a lost entry after blocked becomes ready cannot complete', () => {
+  let state = initialNodeCommandState();
+  state = command(
+    state,
+    { type: 'plan-started', dependenciesSatisfied: false },
+    'block-start',
+  ).state;
+  assert.equal(state.status, 'blocked');
+  state = command(
+    state,
+    { type: 'dependencies-changed', dependenciesSatisfied: true },
+    'block-ready',
+  ).state;
+  assert.equal(state.status, 'ready');
+  assert.equal(state.entryStatus, 'ready');
+  const kept = command(state, { type: 'submit-artifact', reviewRequired: false }, 'block-keep');
+  assert.equal(kept.decision.status, 'applied');
+  assert.equal(kept.state.status, 'completed');
+  const lost = { ...state };
+  delete lost.entryStatus;
+  const version = lost.version;
+  const submitted = command(lost, { type: 'submit-artifact', reviewRequired: false }, 'block-lose');
+  assertRejected(submitted);
+  assert.equal(submitted.state.status, 'ready');
+  assert.equal(submitted.state.version, version);
+  const forged = command(
+    lost,
+    { type: 'submit-artifact', reviewRequired: false, entryStatus: 'ready' },
+    'block-forge',
+  );
+  assertRejected(forged);
+  assert.equal(forged.state.status, 'ready');
+});
+
 test('P1 child return after send-back cannot submit without review', () => {
   let state = sentBack();
   state = command(state, { type: 'child-workflow-started' }, 'p1-start').state;
@@ -302,6 +363,7 @@ test('approved review clears the revision obligation and a normal submit complet
     version: approved.state.version,
     upstreamAffected: approved.state.upstreamAffected,
     stored: approved.state.stored,
+    entryStatus: 'ready',
   };
   const normal = command(
     readyAgain,
@@ -311,4 +373,13 @@ test('approved review clears the revision obligation and a normal submit complet
   assert.equal(normal.decision.status, 'applied');
   assert.equal(normal.state.status, 'completed');
   assert.equal(normal.state.entryStatus, undefined);
+  const withoutRecord = { ...readyAgain };
+  delete withoutRecord.entryStatus;
+  const skippedReady = command(
+    withoutRecord,
+    { type: 'submit-artifact', reviewRequired: false },
+    'rev-no-record',
+  );
+  assertRejected(skippedReady);
+  assert.equal(skippedReady.state.status, 'ready');
 });

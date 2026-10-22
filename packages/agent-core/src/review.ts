@@ -1,5 +1,6 @@
 import { decideCommand, type CommandDecision, type CommandEnvelope } from './concurrency.js';
 import {
+  initialNodeCommandState,
   transitionNode,
   type AppliedNodeTransition,
   type NodeCommandState,
@@ -65,7 +66,8 @@ export type BallotRejectionCode =
   | 'empty-request-changes'
   | 'comment-not-unresolved'
   | 'non-passing-availability'
-  | 'conflicting-ballot';
+  | 'conflicting-ballot'
+  | 'invalid-ballot';
 
 export type BallotDecision =
   | {
@@ -85,6 +87,13 @@ export interface AgentReviewOutput {
 
 function trimmed(value: string | undefined): string {
   return value?.trim() ?? '';
+}
+
+const ZERO_WIDTH = /[\u200B-\u200D\uFEFF\u2060\u180E]/g;
+
+/** Reviewer ids stay case-sensitive. Zero-width characters are not part of the id. */
+function normalizeReviewerId(id: string): string {
+  return id.replace(ZERO_WIDTH, '').trim();
 }
 
 function commentBelongsToRound(comment: CitedComment, artifactVersionId: string): boolean {
@@ -149,6 +158,9 @@ function reviewerDecision(
 export function aggregateReview(
   round: Pick<ReviewRound, 'id' | 'artifactVersionId' | 'reviewerIds' | 'ballots'>,
 ): ReviewEvaluation {
+  if (round == null || typeof round !== 'object') {
+    return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
+  }
   if (!Array.isArray(round.reviewerIds) || !Array.isArray(round.ballots)) {
     return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
   }
@@ -156,6 +168,14 @@ export function aggregateReview(
     return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
   }
   if (round.reviewerIds.some((id) => typeof id !== 'string')) {
+    return { outcome: 'invalid-policy', reason: 'invalid-reviewer-id' };
+  }
+  if (
+    round.ballots.some(
+      (ballot) =>
+        ballot == null || typeof ballot !== 'object' || typeof ballot.reviewerId !== 'string',
+    )
+  ) {
     return { outcome: 'invalid-policy', reason: 'invalid-reviewer-id' };
   }
   if (duplicateReviewer(round.reviewerIds) || round.reviewerIds.some((id) => blank(id))) {
@@ -183,9 +203,9 @@ function normalizeReviewerIds(
   const ids: string[] = [];
   for (const id of reviewerIds) {
     if (typeof id !== 'string') return { ok: false, code: 'invalid-round' };
-    const trimmed = id.trim();
-    if (trimmed.length === 0) return { ok: false, code: 'duplicate-reviewer' };
-    ids.push(trimmed);
+    const trimmedId = normalizeReviewerId(id);
+    if (trimmedId.length === 0) return { ok: false, code: 'duplicate-reviewer' };
+    ids.push(trimmedId);
   }
   if (new Set(ids).size !== ids.length) return { ok: false, code: 'duplicate-reviewer' };
   return { ok: true, ids: Object.freeze(ids) };
@@ -254,6 +274,17 @@ export function submitBallot(
   actorId: string,
   comments: readonly CitedComment[] = [],
 ): BallotDecision {
+  if (
+    round == null ||
+    typeof round !== 'object' ||
+    ballot == null ||
+    typeof ballot !== 'object' ||
+    !Array.isArray(round.ballots) ||
+    !Array.isArray(round.reviewerIds)
+  ) {
+    return { ok: false, code: 'invalid-ballot' };
+  }
+  if (typeof ballot.reviewerId !== 'string') return { ok: false, code: 'invalid-ballot' };
   if (ballot.roundId !== round.id) return { ok: false, code: 'stale-round' };
   if (ballot.artifactVersionId !== round.artifactVersionId)
     return { ok: false, code: 'stale-version' };
@@ -485,6 +516,15 @@ export function applyReviewToNode(
     readonly currentArtifactVersionId: string;
   },
 ): NodeTransitionResult | { readonly ok: false; readonly code: ReviewApplicationRejection } {
+  if (
+    input == null ||
+    typeof input !== 'object' ||
+    input.round == null ||
+    typeof input.round !== 'object' ||
+    input.evaluation == null
+  ) {
+    return { ok: false, code: 'unbound-evaluation' };
+  }
   if (input.round.status === 'voided') return { ok: false, code: 'voided-round' };
   if (input.round.id !== input.currentRoundId) return { ok: false, code: 'stale-round' };
   if (input.round.artifactVersionId !== input.currentArtifactVersionId) {
@@ -541,6 +581,25 @@ export function applyReviewSettlementCommand(
   round: ReviewRound,
   current: ReviewSettlementCurrent,
 ): { readonly state: NodeCommandState; readonly decision: CommandDecision<AppliedNodeTransition> } {
+  if (
+    state == null ||
+    typeof state !== 'object' ||
+    envelope == null ||
+    typeof envelope !== 'object' ||
+    envelope.payload == null ||
+    typeof envelope.payload !== 'object' ||
+    round == null ||
+    typeof round !== 'object' ||
+    current == null ||
+    typeof current !== 'object'
+  ) {
+    const kept = state != null && typeof state === 'object' ? state : initialNodeCommandState();
+    const version = typeof kept.version === 'number' ? kept.version : 0;
+    return {
+      state: kept,
+      decision: { status: 'rejected', code: 'unbound-evaluation', version },
+    };
+  }
   const outcome = decideCommand({
     envelope,
     currentVersion: state.version,
@@ -550,6 +609,14 @@ export function applyReviewSettlementCommand(
         return { disposition: 'reject', code: 'unbound-evaluation' };
       }
       if (round.reviewerIds.some((id) => typeof id !== 'string')) {
+        return { disposition: 'reject', code: 'invalid-round' };
+      }
+      if (
+        round.ballots.some(
+          (ballot) =>
+            ballot == null || typeof ballot !== 'object' || typeof ballot.reviewerId !== 'string',
+        )
+      ) {
         return { disposition: 'reject', code: 'invalid-round' };
       }
       if (envelope.payload.roundId !== round.id) {

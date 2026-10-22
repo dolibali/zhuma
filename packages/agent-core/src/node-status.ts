@@ -127,6 +127,9 @@ function illegal(from: NodeStatus, transition: NodeTransition['type']): NodeTran
 
 /** Pure node transition. Does not read a clock, store, or executor. */
 export function transitionNode(from: NodeStatus, transition: NodeTransition): NodeTransitionResult {
+  if (transition == null || typeof transition !== 'object') {
+    return illegal(from, 'unknown' as NodeTransition['type']);
+  }
   switch (transition.type) {
     case 'plan-started':
       if (from !== 'draft') return illegal(from, transition.type);
@@ -267,12 +270,16 @@ export function initialNodeCommandState(): NodeCommandState {
   return { status: 'draft', version: 0, upstreamAffected: false, stored: [] };
 }
 
-/** Entry the command layer will trust. A needs-revision status is itself that entry. */
+/**
+ * Entry the command layer will trust.
+ * `needs-revision` status is itself that entry. `ready` is not: only a
+ * persisted `entryStatus` of `ready` may skip review.
+ */
 function recordedEntry(state: NodeCommandState): NodeEntryStatus | undefined {
   if (state.entryStatus === 'needs-revision' || state.status === 'needs-revision') {
     return 'needs-revision';
   }
-  if (state.entryStatus === 'ready' || state.status === 'ready') return 'ready';
+  if (state.entryStatus === 'ready') return 'ready';
   return undefined;
 }
 
@@ -290,22 +297,9 @@ function nextEntryStatus(
   }
   if (to === 'needs-revision') return 'needs-revision';
   if (to === 'completed' || to === 'draft' || to === 'blocked') return undefined;
-  if (
-    (transition.type === 'execution-acknowledged' ||
-      transition.type === 'child-workflow-started') &&
-    state.status === 'ready'
-  ) {
-    return 'ready';
-  }
-  if (
-    transition.type === 'plan-started' ||
-    (transition.type === 'dependencies-changed' && to === 'ready')
-  ) {
-    return 'ready';
-  }
+  if (to === 'ready') return 'ready';
   if (transition.type === 'retry' || transition.type === 'restart') return state.entryStatus;
   if (state.entryStatus !== undefined) return state.entryStatus;
-  if (state.status === 'ready') return 'ready';
   return undefined;
 }
 
@@ -336,6 +330,9 @@ function prepareTransition(
     const entry = recordedEntry(state);
     const inFlight = state.status === 'running' || state.status === 'waiting-for-input';
     if (inFlight && entry === undefined) return { ok: false, code: 'illegal-transition' };
+    if (entry === undefined && transition.reviewRequired !== true) {
+      return { ok: false, code: 'illegal-transition' };
+    }
     if (
       transition.entryStatus !== undefined &&
       entry !== undefined &&
@@ -372,10 +369,29 @@ function prepareTransition(
  * accepted result and does not move the node again. Conflicts and illegal
  * transitions leave the version unchanged.
  */
+function rejectedCommand(
+  state: NodeCommandState | null,
+  code: string,
+): { readonly state: NodeCommandState; readonly decision: CommandDecision<AppliedNodeTransition> } {
+  const kept = state != null && typeof state === 'object' ? state : initialNodeCommandState();
+  const version = typeof kept.version === 'number' ? kept.version : 0;
+  return { state: kept, decision: { status: 'rejected', code, version } };
+}
+
 export function applyNodeTransitionCommand(
   state: NodeCommandState,
   envelope: CommandEnvelope<NodeTransition>,
 ): { readonly state: NodeCommandState; readonly decision: CommandDecision<AppliedNodeTransition> } {
+  if (
+    state == null ||
+    typeof state !== 'object' ||
+    envelope == null ||
+    typeof envelope !== 'object' ||
+    envelope.payload == null ||
+    typeof envelope.payload !== 'object'
+  ) {
+    return rejectedCommand(state, 'illegal-transition');
+  }
   const outcome = decideCommand({
     envelope,
     currentVersion: state.version,
