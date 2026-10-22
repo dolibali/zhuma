@@ -1,0 +1,66 @@
+{
+  "fullscreen": {
+    "fullscreen": true,
+    "bounds": {
+      "x": 0,
+      "y": 33,
+      "width": 1512,
+      "height": 949
+    },
+    "zoom": 1
+  },
+  "restored": {
+    "fullscreen": false,
+    "bounds": {
+      "x": 232,
+      "y": 80,
+      "width": 1280,
+      "height": 800
+    },
+    "zoom": 1
+  },
+  "menuSearchDuringFullscreen": "passed",
+  "drag": {
+    "status": "not-verified",
+    "attempts": [
+      {
+        "build": "earlier stage",
+        "before": {
+          "x": 250,
+          "y": 80
+        },
+        "after": {
+          "x": 250,
+          "y": 80
+        }
+      },
+      {
+        "build": "earlier stage",
+        "before": {
+          "x": 250,
+          "y": 80
+        },
+        "after": {
+          "x": 250,
+          "y": 80
+        }
+      },
+      {
+        "build": "verified final client",
+        "before": {
+          "x": 232,
+          "y": 80
+        },
+        "after": {
+          "x": 232,
+          "y": 80
+        }
+      }
+    ],
+    "movable": true,
+    "computedRegion": "drag",
+    "note": "No actual movement observed. Product-versus-automation cause remains unresolved."
+  },
+  "clientSha256": "38d9beea30de4729fc1ddc039fe8d545b324cba664d6cad181fe65e94a745298",
+  "createDialogInputAndCancel": "passed"
+}

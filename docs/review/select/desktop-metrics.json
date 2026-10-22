@@ -1,1 +1,338 @@
-[]
+[
+  {
+    "phase": "final",
+    "theme": "light",
+    "zoom": 1,
+    "file": "final-desktop-light-100.png",
+    "sidebar": "expanded",
+    "searchSelection": "passed",
+    "popup": {
+      "x": 919.5,
+      "y": 178.5,
+      "width": 332.40625,
+      "height": 368,
+      "top": 178.5,
+      "right": 1251.90625,
+      "bottom": 546.5,
+      "left": 919.5
+    },
+    "trigger": {
+      "x": 1108,
+      "y": 139.3984375,
+      "width": 144,
+      "height": 34.1953125,
+      "top": 139.3984375,
+      "right": 1252,
+      "bottom": 173.59375,
+      "left": 1108
+    },
+    "viewport": {
+      "width": 1280,
+      "height": 800,
+      "dpr": 2
+    },
+    "fontSize": "13px",
+    "title": {
+      "x": 308.5,
+      "y": 80.046875,
+      "width": 86.6015625,
+      "height": 28.59375,
+      "top": 80.046875,
+      "right": 395.1015625,
+      "bottom": 108.640625,
+      "left": 308.5
+    },
+    "content": {
+      "x": 280.5,
+      "y": 48,
+      "width": 999.5,
+      "height": 752,
+      "top": 48,
+      "right": 1280,
+      "bottom": 800,
+      "left": 280.5
+    },
+    "clientSha256": "38d9beea30de4729fc1ddc039fe8d545b324cba664d6cad181fe65e94a745298",
+    "servedContentMatchesArtifact": true
+  },
+  {
+    "phase": "final",
+    "theme": "light",
+    "zoom": 1.25,
+    "file": "final-desktop-light-125.png",
+    "sidebar": "expanded",
+    "searchSelection": "passed",
+    "popup": {
+      "x": 496.3999938964844,
+      "y": 222.40000915527344,
+      "width": 331.8062438964844,
+      "height": 367.6000061035156,
+      "top": 222.40000915527344,
+      "right": 828.2062377929688,
+      "bottom": 590.0000152587891,
+      "left": 496.3999938964844
+    },
+    "trigger": {
+      "x": 496.3999938964844,
+      "y": 183.5,
+      "width": 144,
+      "height": 33.79999923706055,
+      "top": 183.5,
+      "right": 640.3999938964844,
+      "bottom": 217.29999923706055,
+      "left": 496.3999938964844
+    },
+    "viewport": {
+      "width": 1024,
+      "height": 640,
+      "dpr": 2.5
+    },
+    "fontSize": "13px",
+    "title": {
+      "x": 300.3999938964844,
+      "y": 72.25,
+      "width": 86.5999984741211,
+      "height": 28.600000381469727,
+      "top": 72.25,
+      "right": 386.99999237060547,
+      "bottom": 100.85000038146973,
+      "left": 300.3999938964844
+    },
+    "content": {
+      "x": 280.3999938964844,
+      "y": 48,
+      "width": 743.6000366210938,
+      "height": 592,
+      "top": 48,
+      "right": 1024.0000305175781,
+      "bottom": 640,
+      "left": 280.3999938964844
+    },
+    "clientSha256": "38d9beea30de4729fc1ddc039fe8d545b324cba664d6cad181fe65e94a745298",
+    "servedContentMatchesArtifact": true
+  },
+  {
+    "phase": "final",
+    "theme": "light",
+    "zoom": 2,
+    "file": "final-desktop-light-200.png",
+    "sidebar": "collapsed",
+    "searchSelection": "passed",
+    "popup": {
+      "x": 175.5,
+      "y": 218.5,
+      "width": 332.40625,
+      "height": 173.40234375,
+      "top": 218.5,
+      "right": 507.90625,
+      "bottom": 391.90234375,
+      "left": 175.5
+    },
+    "trigger": {
+      "x": 364,
+      "y": 179.3984375,
+      "width": 144,
+      "height": 34.19921875,
+      "top": 179.3984375,
+      "right": 508,
+      "bottom": 213.59765625,
+      "left": 364
+    },
+    "viewport": {
+      "width": 640,
+      "height": 400,
+      "dpr": 4
+    },
+    "fontSize": "13px",
+    "title": {
+      "x": 16,
+      "y": 68,
+      "width": 86.6015625,
+      "height": 28.59765625,
+      "top": 68,
+      "right": 102.6015625,
+      "bottom": 96.59765625,
+      "left": 16
+    },
+    "content": {
+      "x": 0,
+      "y": 48,
+      "width": 640,
+      "height": 352,
+      "top": 48,
+      "right": 640,
+      "bottom": 400,
+      "left": 0
+    },
+    "clientSha256": "38d9beea30de4729fc1ddc039fe8d545b324cba664d6cad181fe65e94a745298",
+    "servedContentMatchesArtifact": true
+  },
+  {
+    "phase": "final",
+    "theme": "dark",
+    "zoom": 1,
+    "file": "final-desktop-dark-100.png",
+    "sidebar": "expanded",
+    "searchSelection": "passed",
+    "popup": {
+      "x": 919.5,
+      "y": 178.5,
+      "width": 332.40625,
+      "height": 368,
+      "top": 178.5,
+      "right": 1251.90625,
+      "bottom": 546.5,
+      "left": 919.5
+    },
+    "trigger": {
+      "x": 1108,
+      "y": 139.3984375,
+      "width": 144,
+      "height": 34.1953125,
+      "top": 139.3984375,
+      "right": 1252,
+      "bottom": 173.59375,
+      "left": 1108
+    },
+    "viewport": {
+      "width": 1280,
+      "height": 800,
+      "dpr": 2
+    },
+    "fontSize": "13px",
+    "title": {
+      "x": 308.5,
+      "y": 80.046875,
+      "width": 86.6015625,
+      "height": 28.59375,
+      "top": 80.046875,
+      "right": 395.1015625,
+      "bottom": 108.640625,
+      "left": 308.5
+    },
+    "content": {
+      "x": 280.5,
+      "y": 48,
+      "width": 999.5,
+      "height": 752,
+      "top": 48,
+      "right": 1280,
+      "bottom": 800,
+      "left": 280.5
+    },
+    "clientSha256": "38d9beea30de4729fc1ddc039fe8d545b324cba664d6cad181fe65e94a745298",
+    "servedContentMatchesArtifact": true
+  },
+  {
+    "phase": "final",
+    "theme": "dark",
+    "zoom": 1.25,
+    "file": "final-desktop-dark-125.png",
+    "sidebar": "expanded",
+    "searchSelection": "passed",
+    "popup": {
+      "x": 496.3999938964844,
+      "y": 222.40000915527344,
+      "width": 331.8062438964844,
+      "height": 367.6000061035156,
+      "top": 222.40000915527344,
+      "right": 828.2062377929688,
+      "bottom": 590.0000152587891,
+      "left": 496.3999938964844
+    },
+    "trigger": {
+      "x": 496.3999938964844,
+      "y": 183.5,
+      "width": 144,
+      "height": 33.79999923706055,
+      "top": 183.5,
+      "right": 640.3999938964844,
+      "bottom": 217.29999923706055,
+      "left": 496.3999938964844
+    },
+    "viewport": {
+      "width": 1024,
+      "height": 640,
+      "dpr": 2.5
+    },
+    "fontSize": "13px",
+    "title": {
+      "x": 300.3999938964844,
+      "y": 72.25,
+      "width": 86.5999984741211,
+      "height": 28.600000381469727,
+      "top": 72.25,
+      "right": 386.99999237060547,
+      "bottom": 100.85000038146973,
+      "left": 300.3999938964844
+    },
+    "content": {
+      "x": 280.3999938964844,
+      "y": 48,
+      "width": 743.6000366210938,
+      "height": 592,
+      "top": 48,
+      "right": 1024.0000305175781,
+      "bottom": 640,
+      "left": 280.3999938964844
+    },
+    "clientSha256": "38d9beea30de4729fc1ddc039fe8d545b324cba664d6cad181fe65e94a745298",
+    "servedContentMatchesArtifact": true
+  },
+  {
+    "phase": "final",
+    "theme": "dark",
+    "zoom": 2,
+    "file": "final-desktop-dark-200.png",
+    "sidebar": "collapsed",
+    "searchSelection": "passed",
+    "popup": {
+      "x": 175.5,
+      "y": 218.5,
+      "width": 332.40625,
+      "height": 173.40234375,
+      "top": 218.5,
+      "right": 507.90625,
+      "bottom": 391.90234375,
+      "left": 175.5
+    },
+    "trigger": {
+      "x": 364,
+      "y": 179.3984375,
+      "width": 144,
+      "height": 34.19921875,
+      "top": 179.3984375,
+      "right": 508,
+      "bottom": 213.59765625,
+      "left": 364
+    },
+    "viewport": {
+      "width": 640,
+      "height": 400,
+      "dpr": 4
+    },
+    "fontSize": "13px",
+    "title": {
+      "x": 16,
+      "y": 68,
+      "width": 86.6015625,
+      "height": 28.59765625,
+      "top": 68,
+      "right": 102.6015625,
+      "bottom": 96.59765625,
+      "left": 16
+    },
+    "content": {
+      "x": 0,
+      "y": 48,
+      "width": 640,
+      "height": 352,
+      "top": 48,
+      "right": 640,
+      "bottom": 400,
+      "left": 0
+    },
+    "clientSha256": "38d9beea30de4729fc1ddc039fe8d545b324cba664d6cad181fe65e94a745298",
+    "servedContentMatchesArtifact": true
+  }
+]

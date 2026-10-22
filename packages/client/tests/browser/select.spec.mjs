@@ -2,12 +2,24 @@ import { test, expect } from './replay.mjs';
 const trigger = (page, name) => page.getByLabel(name, { exact: true });
 const popup = (page) => page.locator('.zm-select-popup');
 async function withinViewport(page) {
-  const box = await popup(page).boundingBox();
-  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-  expect(box.x).toBeGreaterThanOrEqual(0);
-  expect(box.y).toBeGreaterThanOrEqual(0);
-  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
-  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  // Resize and floating-position updates settle separately. Sample both geometries
+  // in the same renderer turn, retaining every edge check while waiting for layout.
+  await expect
+    .poll(
+      () =>
+        popup(page).evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return {
+            visible: box.width > 0 && box.height > 0,
+            left: box.left >= 0,
+            top: box.top >= 0,
+            right: box.right <= innerWidth,
+            bottom: box.bottom <= innerHeight,
+          };
+        }),
+      { timeout: 2000, message: '菜单应在重新定位后完整保留在当前可视区内' },
+    )
+    .toEqual({ visible: true, left: true, top: true, right: true, bottom: true });
 }
 function manyProjects(replay) {
   replay.state.projects.push(
