@@ -53,6 +53,7 @@ export type NodeTransition =
   | { readonly type: 'child-workflow-started' }
   | { readonly type: 'child-workflow-returned' }
   | { readonly type: 'review-resolved'; readonly outcome: 'approved' | 'changes-requested' }
+  | { readonly type: 'execution-finished'; readonly returnTo: 'ready' | 'needs-revision' }
   | { readonly type: 'execution-failed' }
   | { readonly type: 'cancel-confirmed' }
   | { readonly type: 'retry'; readonly returnTo: NodeEntryStatus }
@@ -69,7 +70,8 @@ export type AdvancementEffect =
   | 'record-failure'
   | 'record-cancellation'
   | 'mark-upstream-affected'
-  | 'resume-execution';
+  | 'resume-execution'
+  | 'await-human-submit';
 
 export type NodeTransitionResult =
   | {
@@ -201,6 +203,9 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
     case 'review-resolved':
       // Settlement comes only from applyReviewToNode, which checks the current round.
       return illegal(from, transition.type);
+    case 'execution-finished':
+      if (from !== 'running') return illegal(from, transition.type);
+      return done(from, transition.returnTo, ['await-human-submit']);
     case 'execution-failed':
       if (from !== 'running' && from !== 'waiting-for-input') return illegal(from, transition.type);
       return done(from, 'failed', ['record-failure', 'block-downstream']);

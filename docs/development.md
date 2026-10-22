@@ -24,10 +24,12 @@ pnpm upstream:check
 | `pnpm check:repo`                   | 检查目录、包名、版本和源码依赖方向                  |
 | `pnpm format` / `pnpm format:check` | 处理自有文件，排除上游和生成目录                    |
 | `pnpm check`                        | 仓库边界、格式、类型和单元测试                      |
+| `pnpm workspace:demo`               | 构建后启动 Agent 处理演示，地址打印在标准输出       |
+| `pnpm test:browser`                 | 构建后用本机 Chrome 跑模拟执行器的浏览器流程        |
 | `pnpm upstream:check`               | 核对子模块 URL、gitlink、HEAD、包版本及上游干净状态 |
 | `pnpm clean`                        | 只删除四个自研包的 dist                             |
 
-测试验证的是初始契约和纯逻辑。当前没有真实 DSH 插件、桌面 E2E、模型调用或 CLI 联动测试，不将这些项目计为通过。
+`pnpm test` 验证契约和内存事务，不调用模型。`pnpm test:browser` 用浏览器操作显式选择的模拟执行器，不计入 `pnpm check`。真实 DSH 插件、桌面安装、模型调用和 CLI 联动仍未验证，不把这些项目计为通过。
 
 ## DSH 的工具链
 

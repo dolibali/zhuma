@@ -14,6 +14,8 @@
     "build": "tsc -b",
     "typecheck": "pnpm build && pnpm -r --if-present run typecheck",
     "test": "pnpm build && node scripts/run-tests.mjs",
+    "test:browser": "pnpm build && node --test examples/agent-workspace/browser.test.mjs",
+    "workspace:demo": "pnpm build && node examples/agent-workspace/server.mjs",
     "check": "pnpm check:repo && pnpm brand:check && pnpm format:check && pnpm typecheck && pnpm test",
     "check:repo": "node scripts/check-repo.mjs",
     "format": "prettier --write .",
@@ -38,6 +40,7 @@
     "@playwright/test": "1.64.1",
     "@types/node": "24.19.2",
     "esbuild": "0.25.12",
+    "playwright": "1.64.1",
     "prettier": "3.9.10",
     "typescript": "6.0.3"
   }

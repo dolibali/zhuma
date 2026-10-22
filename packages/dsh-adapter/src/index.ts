@@ -48,3 +48,39 @@ export function selectExecutor(
   if (!executor) throw new Error(`Executor is not configured: ${engine}`);
   return executor;
 }
+
+export type {
+  AgentActivity,
+  AgentExecutor,
+  AgentRunEvent,
+  AgentRunRequest,
+  AgentRunResult,
+  CancelReceipt,
+  ExecutorCapabilities,
+  ResourceGrant,
+  SimulatedExecutorOptions,
+} from './agent-executor.js';
+export {
+  ExecutorNotImplementedError,
+  SimulatedAgentExecutor,
+  UnimplementedNativeExecutor,
+  selectAgentExecutor,
+} from './agent-executor.js';
+
+export type { FileProbeResult } from './file-probe.js';
+export { probeRelativeFile } from './file-probe.js';
+
+export type { DeskJournal } from './file-journal.js';
+export { createFileJournal } from './file-journal.js';
+
+export type {
+  DeskContextSeed,
+  DeskDependencies,
+  DeskPersistence,
+  DeskResult,
+  DeskSeed,
+} from './execution-desk.js';
+export { ExecutionDesk, executionHint } from './execution-desk.js';
+
+export type { WorkbenchServerOptions } from './workbench-server.js';
+export { createWorkbenchServer } from './workbench-server.js';
