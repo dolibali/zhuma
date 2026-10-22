@@ -109,13 +109,32 @@ type CredentialName =
   | 'credential'
   | 'credentials'
   | 'secret'
+  | 'secretkey'
   | 'token'
   | 'apikey'
   | 'password'
+  | 'passwd'
   | 'authorization'
-  | 'accesstoken';
+  | 'auth'
+  | 'accesstoken'
+  | 'refreshtoken'
+  | 'privatekey'
+  | 'sessiontoken'
+  | 'sessionid'
+  | 'clientsecret'
+  | 'idtoken'
+  | 'bearer'
+  | 'bearertoken'
+  | 'cookie';
 
-type IsCredential<K extends string> = Lowercase<K> extends CredentialName ? true : false;
+type StripSeparators<S extends string> = S extends `${infer Head}_${infer Tail}`
+  ? StripSeparators<`${Head}${Tail}`>
+  : S extends `${infer Head}-${infer Tail}`
+    ? StripSeparators<`${Head}${Tail}`>
+    : S;
+
+type IsCredential<K extends string> =
+  StripSeparators<Lowercase<K>> extends CredentialName ? true : false;
 
 type ForbiddenCredential<T> = T extends readonly (infer Item)[]
   ? ForbiddenCredential<Item>
@@ -138,7 +157,8 @@ export type PayloadExcludesCredentials<T> = [ForbiddenCredential<T>] extends [ne
 
 /**
  * Compile-time lock: handoff payloads cannot grow credential fields.
- * The check is recursive and case-insensitive, and it rejects string index signatures.
+ * The check is recursive, ignores case, and ignores `_` and `-` in field names.
+ * It also rejects string index signatures.
  * Empty strings and empty ref arrays are valid; secrets are not part of the shape.
  */
 export const handoffPayloadExcludesCredentials: PayloadExcludesCredentials<NodeHandoff> &
@@ -159,10 +179,52 @@ export interface NodeHandoffInput extends NodeHandoffFields {
   readonly engine?: string;
 }
 
-function usableRef(ref: VersionedRef | undefined): 'missing' | 'blank' | VersionedRef {
+function usableRef(ref: unknown): 'missing' | 'blank' | 'invalid' | VersionedRef {
   if (ref === undefined) return 'missing';
-  if (ref.id.trim() === '' || ref.version.trim() === '') return 'blank';
-  return { id: ref.id, version: ref.version };
+  if (ref === null || typeof ref !== 'object') return 'invalid';
+  const candidate = ref as { id?: unknown; version?: unknown };
+  if (typeof candidate.id !== 'string' || typeof candidate.version !== 'string') return 'invalid';
+  if (candidate.id.trim() === '' || candidate.version.trim() === '') return 'blank';
+  return { id: candidate.id, version: candidate.version };
+}
+
+function copyInputRefs(refs: unknown): readonly ContextInputRef[] | undefined {
+  if (!Array.isArray(refs)) return undefined;
+  const copied: ContextInputRef[] = [];
+  for (const ref of refs) {
+    if (ref === null || typeof ref !== 'object' || Array.isArray(ref)) return undefined;
+    const candidate = ref as {
+      sourceNodeId?: unknown;
+      artifactVersionId?: unknown;
+      contextPackId?: unknown;
+    };
+    const next: {
+      sourceNodeId?: string;
+      artifactVersionId?: string;
+      contextPackId?: string;
+    } = {};
+    const fields = ['sourceNodeId', 'artifactVersionId', 'contextPackId'] as const;
+    for (const field of fields) {
+      const value = candidate[field];
+      if (value === undefined) continue;
+      if (typeof value !== 'string') return undefined;
+      next[field] = value;
+    }
+    if (Object.keys(next).length === 0) return undefined;
+    copied.push(next);
+  }
+  return copied;
+}
+
+function copyRefs(refs: unknown): readonly VersionedRef[] | undefined {
+  if (!Array.isArray(refs)) return undefined;
+  const copied: VersionedRef[] = [];
+  for (const ref of refs) {
+    const usable = usableRef(ref);
+    if (usable === 'missing' || usable === 'blank' || usable === 'invalid') return undefined;
+    copied.push(usable);
+  }
+  return copied;
 }
 
 /**
@@ -170,10 +232,30 @@ function usableRef(ref: VersionedRef | undefined): 'missing' | 'blank' | Version
  * An expert handoff must name a versioned expert. `agent` is not an identity.
  */
 export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
+  if (
+    input == null ||
+    typeof input !== 'object' ||
+    input.assignee == null ||
+    typeof input.assignee !== 'object'
+  ) {
+    return { ok: false, code: 'invalid-handoff' };
+  }
   const kind = input.assignee.kind;
   if (kind === 'agent') return { ok: false, code: 'agent-not-identity' };
   if (kind !== 'human' && kind !== 'expert') return { ok: false, code: 'invalid-handoff' };
   const ref = usableRef(input.expertRef);
+  const inputRefs = copyInputRefs(input.inputRefs);
+  const skillRefs = copyRefs(input.skillRefs);
+  const mcpRefs = copyRefs(input.mcpRefs);
+  if (inputRefs === undefined || skillRefs === undefined || mcpRefs === undefined) {
+    return { ok: false, code: 'invalid-handoff' };
+  }
+  if (ref === 'invalid' || (kind === 'human' && ref === 'blank')) {
+    return { ok: false, code: 'invalid-handoff' };
+  }
+  if (kind === 'expert' && (ref === 'missing' || ref === 'blank')) {
+    return { ok: false, code: 'expert-ref-required' };
+  }
   const fields: NodeHandoffFields = {
     nodeId: input.nodeId,
     taskId: input.taskId,
@@ -183,24 +265,23 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
     dependencyNodeIds: input.dependencyNodeIds,
     reviewRequired: input.reviewRequired,
     reviewerIds: input.reviewerIds,
-    inputRefs: input.inputRefs,
-    skillRefs: input.skillRefs,
-    mcpRefs: input.mcpRefs,
+    inputRefs,
+    skillRefs,
+    mcpRefs,
     inputNote: input.inputNote,
     expectedOutput: input.expectedOutput,
     ...(input.childTaskId === undefined ? {} : { childTaskId: input.childTaskId }),
   };
+  if (kind === 'human' && ref === 'missing') {
+    return { ok: true, handoff: { ...fields, assignee: { id: input.assignee.id, kind: 'human' } } };
+  }
+  if (typeof ref !== 'object') return { ok: false, code: 'invalid-handoff' };
   if (kind === 'human') {
-    if (ref === 'blank') return { ok: false, code: 'invalid-handoff' };
-    if (ref === 'missing') {
-      return { ok: true, handoff: { ...fields, assignee: { id: input.assignee.id, kind } } };
-    }
     return {
       ok: true,
-      handoff: { ...fields, assignee: { id: input.assignee.id, kind }, expertRef: ref },
+      handoff: { ...fields, assignee: { id: input.assignee.id, kind: 'human' }, expertRef: ref },
     };
   }
-  if (ref === 'missing' || ref === 'blank') return { ok: false, code: 'expert-ref-required' };
   return {
     ok: true,
     handoff: { ...fields, assignee: { id: input.assignee.id, kind: 'expert' }, expertRef: ref },
@@ -208,14 +289,26 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
 }
 
 /**
- * Read the frozen snapshot named by `VersionedRef.version` (an AppliedPlan.id).
- * Later catalog entries are other ids. This is not an asset-version store.
+ * Read one frozen snapshot.
+ * `id` on the snapshot is the AppliedPlan.id (`VersionedRef.version`).
+ * `assetId` is the asset (`VersionedRef.id`). Both must match.
+ * The result is a deep copy, so a caller cannot edit the stored snapshot.
+ * This is not an asset-version store.
  */
-export function readVersionedSnapshot<T extends { readonly id: string }>(
+export function readVersionedSnapshot<T extends { readonly assetId: string; readonly id: string }>(
   ref: VersionedRef,
   snapshots: readonly T[],
 ): T | undefined {
-  return snapshots.find((snapshot) => snapshot.id === ref.version);
+  if (ref == null || typeof ref !== 'object' || !Array.isArray(snapshots)) return undefined;
+  const found = snapshots.find(
+    (snapshot) => snapshot.assetId === ref.id && snapshot.id === ref.version,
+  );
+  if (found === undefined) return undefined;
+  try {
+    return structuredClone(found);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

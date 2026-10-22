@@ -381,9 +381,220 @@ test('cancelling, restarting, or resubmitting voids the open round', () => {
   );
 });
 
+test('settlement rejects a round that has no ballots', () => {
+  const state = { ...initialNodeCommandState(), status: 'in-review', version: 4 };
+  const round = {
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    status: 'open',
+    reviewerIds: ['h1'],
+  };
+  const settled = applyReviewSettlementCommand(
+    state,
+    {
+      idempotencyKey: 'missing-ballots',
+      actorId: 'svc',
+      objectId: 'node-1',
+      expectedVersion: 4,
+      payload: { roundId: 'round-1', artifactVersionId: 'art-1' },
+    },
+    round,
+    { roundId: 'round-1', artifactVersionId: 'art-1' },
+  );
+  assert.equal(settled.decision.status, 'rejected');
+  assert.equal(settled.decision.code, 'unbound-evaluation');
+  assert.equal(settled.state.status, 'in-review');
+  assert.equal(settled.state.version, 4);
+  assert.equal(settled.state.stored.length, 0);
+  assert.equal(aggregateReview(round).outcome, 'invalid-policy');
+});
+
+test('null review inputs are rejected and do not throw', () => {
+  const round = {
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    status: 'open',
+    reviewerIds: ['h1'],
+    ballots: [],
+  };
+  const ballot = {
+    reviewerId: 'h1',
+    roundId: 'round-1',
+    artifactVersionId: 'art-1',
+    action: 'approve',
+  };
+  assert.equal(submitBallot(null, ballot, 'h1').code, 'invalid-ballot');
+  assert.equal(submitBallot(round, null, 'h1').code, 'invalid-ballot');
+  assert.equal(submitBallot(round, { ...ballot, reviewerId: 1 }, 'h1').code, 'invalid-ballot');
+  assert.equal(aggregateReview(null).outcome, 'invalid-policy');
+  assert.equal(aggregateReview({ ...round, ballots: null }).reason, 'review-requires-reviewers');
+  const nullBallot = aggregateReview({ ...round, ballots: [null] });
+  assert.equal(nullBallot.outcome, 'invalid-policy');
+  assert.equal(nullBallot.reason, 'invalid-reviewer-id');
+  const badBallot = aggregateReview({
+    ...round,
+    ballots: [{ ...ballot, reviewerId: 1 }],
+  });
+  assert.equal(badBallot.reason, 'invalid-reviewer-id');
+  const state = { ...initialNodeCommandState(), status: 'in-review', version: 4 };
+  const envelope = {
+    idempotencyKey: 'null-settle',
+    actorId: 'svc',
+    objectId: 'node-1',
+    expectedVersion: 4,
+    payload: { roundId: 'round-1', artifactVersionId: 'art-1' },
+  };
+  const current = { roundId: 'round-1', artifactVersionId: 'art-1' };
+  assert.equal(
+    applyReviewSettlementCommand(null, envelope, round, current).decision.code,
+    'unbound-evaluation',
+  );
+  assert.equal(
+    applyReviewSettlementCommand(state, null, round, current).decision.code,
+    'unbound-evaluation',
+  );
+  assert.equal(
+    applyReviewSettlementCommand(state, envelope, null, current).decision.code,
+    'unbound-evaluation',
+  );
+  const nullBallots = applyReviewSettlementCommand(
+    state,
+    envelope,
+    { ...round, ballots: null },
+    current,
+  );
+  assert.equal(nullBallots.decision.status, 'rejected');
+  assert.equal(nullBallots.decision.code, 'unbound-evaluation');
+  assert.equal(nullBallots.state.version, 4);
+  const badVote = applyReviewSettlementCommand(
+    state,
+    envelope,
+    { ...round, ballots: [{ ...ballot, reviewerId: 1 }] },
+    current,
+  );
+  assert.equal(badVote.decision.status, 'rejected');
+  assert.equal(badVote.decision.code, 'invalid-round');
+  assert.equal(badVote.state.status, 'in-review');
+  const applied = applyReviewToNode('in-review', null);
+  assert.equal(applied.ok, false);
+  assert.equal(applied.code, 'unbound-evaluation');
+  const appliedRound = applyReviewToNode('in-review', {
+    evaluation: { outcome: 'approved', approvedBy: ['h1'] },
+    round: null,
+    currentRoundId: 'round-1',
+    currentArtifactVersionId: 'art-1',
+  });
+  assert.equal(appliedRound.ok, false);
+  assert.equal(appliedRound.code, 'unbound-evaluation');
+  const appliedBallot = applyReviewToNode('in-review', {
+    evaluation: { outcome: 'approved', approvedBy: ['h1'] },
+    round: { ...round, ballots: [{ ...ballot, reviewerId: 1 }] },
+    currentRoundId: 'round-1',
+    currentArtifactVersionId: 'art-1',
+  });
+  assert.equal(appliedBallot.ok, false);
+  assert.equal(appliedBallot.code, 'unbound-evaluation');
+});
+
+test('reviewer ids are stored without surrounding spaces', () => {
+  const opened = openReviewRound({
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    reviewerIds: [' a ', 'b'],
+  });
+  assert.equal(opened.ok, true);
+  assert.deepEqual(opened.round.reviewerIds, ['a', 'b']);
+  const changed = changeReviewers(opened.round, [' a ', ' c '], lead);
+  assert.equal(changed.ok, true);
+  assert.deepEqual(changed.round.reviewerIds, ['a', 'c']);
+});
+
+test('reviewer ids drop zero-width characters and stay case-sensitive', () => {
+  const opened = openReviewRound({
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    reviewerIds: ['\u200Ba\u200B', 'b'],
+  });
+  assert.equal(opened.ok, true);
+  assert.deepEqual(opened.round.reviewerIds, ['a', 'b']);
+  assert.equal(
+    openReviewRound({
+      id: 'round-2',
+      artifactVersionId: 'art-1',
+      reviewerIds: ['a\u200B', 'a'],
+    }).code,
+    'duplicate-reviewer',
+  );
+  const cases = openReviewRound({
+    id: 'round-3',
+    artifactVersionId: 'art-1',
+    reviewerIds: ['A', 'a'],
+  });
+  assert.equal(cases.ok, true);
+  assert.deepEqual(cases.round.reviewerIds, ['A', 'a']);
+});
+
+test('a non-string reviewer id is rejected and does not throw', () => {
+  const opened = openReviewRound({
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    reviewerIds: [1],
+  });
+  assert.equal(opened.ok, false);
+  assert.equal(opened.code, 'invalid-round');
+  const changed = changeReviewers(
+    {
+      id: 'round-1',
+      artifactVersionId: 'art-1',
+      status: 'open',
+      reviewerIds: ['a'],
+      ballots: [],
+    },
+    [1, 'a'],
+    lead,
+  );
+  assert.equal(changed.ok, false);
+  assert.equal(changed.code, 'invalid-round');
+  const evaluation = aggregateReview({
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    reviewerIds: [1],
+    ballots: [],
+  });
+  assert.equal(evaluation.outcome, 'invalid-policy');
+  assert.equal(evaluation.reason, 'invalid-reviewer-id');
+  const state = { ...initialNodeCommandState(), status: 'in-review', version: 4 };
+  const settled = applyReviewSettlementCommand(
+    state,
+    {
+      idempotencyKey: 'bad-reviewer',
+      actorId: 'svc',
+      objectId: 'node-1',
+      expectedVersion: 4,
+      payload: { roundId: 'round-1', artifactVersionId: 'art-1' },
+    },
+    {
+      id: 'round-1',
+      artifactVersionId: 'art-1',
+      status: 'open',
+      reviewerIds: [1],
+      ballots: [],
+    },
+    { roundId: 'round-1', artifactVersionId: 'art-1' },
+  );
+  assert.equal(settled.decision.status, 'rejected');
+  assert.equal(settled.decision.code, 'invalid-round');
+  assert.equal(settled.state.status, 'in-review');
+  assert.equal(settled.state.version, 4);
+});
+
 test('a duplicate reviewer roster cannot be completed by one vote', () => {
   assert.equal(
     openReviewRound({ id: 'round-1', artifactVersionId: 'art-1', reviewerIds: ['a', 'a'] }).code,
+    'duplicate-reviewer',
+  );
+  assert.equal(
+    openReviewRound({ id: 'round-1', artifactVersionId: 'art-1', reviewerIds: ['a', ' a '] }).code,
     'duplicate-reviewer',
   );
   const round = {
