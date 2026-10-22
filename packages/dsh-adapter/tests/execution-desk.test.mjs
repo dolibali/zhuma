@@ -618,6 +618,47 @@ test('契约：重新开始只带回节点记下的需修改入口', async () =>
   assert.equal(missing.snapshot().runs.length, blocked.runs.length);
 });
 
+test('契约：新建节点命令带上入口，读回不一致时不改写也不信任', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-entry-init-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
+  desk({ journal });
+  const created = journal.load();
+  assert.equal(created.nodeState.status, 'ready');
+  assert.equal(created.nodeState.entryStatus, 'ready');
+
+  const revisionDir = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-entry-rev-'));
+  const revisionJournal = createFileJournal(path.join(revisionDir, 'session.json'));
+  desk({ journal: revisionJournal, seed: { nodeStatus: 'needs-revision' } });
+  assert.equal(revisionJournal.load().nodeState.entryStatus, 'needs-revision');
+
+  created.nodeState.status = 'needs-revision';
+  created.nodeState.entryStatus = 'ready';
+  const restored = ExecutionDesk.restore(created, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+  });
+  assert.equal(restored.snapshot().lastError.code, 'entry-inconsistent');
+  assert.equal(restored.snapshot().node.status, 'needs-revision');
+  assert.equal(created.nodeState.entryStatus, 'ready');
+  restored.resumeInteraction();
+  const retried = restored.retry('retry-inconsistent');
+  assert.equal(retried.ok, false);
+  assert.equal(retried.code, 'recovery-not-available');
+  assert.equal(restored.snapshot().node.status, 'needs-revision');
+});
+
+test('契约：运行结束的 returnTo 等于记下的入口', async () => {
+  const { desk: session } = desk({ seed: { nodeStatus: 'needs-revision' } });
+  const started = session.send({ text: '结束时对一下入口', idempotencyKey: 'finish-entry' });
+  await session.waitForRun(started.runId, 'running');
+  const index = session.runs.findIndex((item) => item.id === started.runId);
+  session.runs[index] = { ...session.runs[index], entryNodeStatus: 'ready' };
+  session.releaseActive();
+  await session.flush();
+  assert.equal(session.snapshot().runs[0].status, 'completed');
+  assert.equal(session.snapshot().node.status, 'needs-revision');
+});
+
 test('契约：人工交接可以不带专家引用', () => {
   const bare = seed();
   delete bare.handoff.expertRef;

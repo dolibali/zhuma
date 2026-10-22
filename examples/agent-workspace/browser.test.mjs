@@ -48,6 +48,10 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
   try {
     await page.goto(url);
     await page.getByTestId('banner').filter({ hasText: '不会自动改用模拟' }).waitFor();
+    assert.match(
+      await page.locator('[data-testid="expert"] option[value="api-impl"]').innerText(),
+      /整理接口字段与校验/,
+    );
     assert.equal(await page.getByTestId('primary').isDisabled(), true);
     assert.equal(await fitsViewport(page), true);
     await page.screenshot({ path: path.join(artifacts, 'wp03-config-1280.png') });
@@ -80,7 +84,9 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
       mimeType: 'text/csv',
       buffer: Buffer.from('字段,必填\n企业名称,是\n'),
     });
-    await page.getByTestId('attachment').filter({ hasText: 'fields.csv' }).waitFor();
+    const attachment = page.getByTestId('attachment').filter({ hasText: 'fields.csv' });
+    await attachment.waitFor();
+    assert.match(await attachment.innerText(), /企业名称/);
 
     await page.locator('[data-testid="context"][value="missing"]').check();
     await send(page, '带上不存在的映射表');
@@ -91,6 +97,13 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     await send(page, '第一轮：整理开户必填字段');
     await waitStatus(page, '执行中');
     await page.screenshot({ path: path.join(artifacts, 'wp03-running-1280.png') });
+    await page.route('**/api/workspace', (route) => route.abort());
+    await page.getByTestId('banner').filter({ hasText: '页面与服务断开' }).waitFor();
+    await page.unroute('**/api/workspace');
+    await page.waitForFunction(
+      () =>
+        !document.querySelector('[data-testid="banner"]')?.textContent?.includes('页面与服务断开'),
+    );
     await release(page);
     await waitStatus(page, '待处理');
     await page.getByTestId('activity').filter({ hasText: '没有调用真实模型' }).waitFor();

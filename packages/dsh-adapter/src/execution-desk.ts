@@ -213,13 +213,11 @@ export class ExecutionDesk {
       if (item.includedByDefault) this.included.add(item.id);
     }
     this.reviewRounds = seed.reviewRounds.map((round) => ({ ...round }));
-    this.nodeState = {
-      status: seed.nodeStatus,
-      version: 1,
-      upstreamAffected: false,
-      stored: [],
-    };
-    if (!restored) return;
+    this.nodeState = initialNodeState(seed.nodeStatus);
+    if (!restored) {
+      this.noteEntry();
+      return;
+    }
     this.nodeState = restored.nodeState;
     this.runs = restored.runs;
     this.turns = restored.turns;
@@ -244,6 +242,7 @@ export class ExecutionDesk {
     this.contextBlocks = restored.contextBlocks;
     this.draftRoundId = restored.draftRoundId ?? null;
     this.sequence = restored.turns.reduce((max, turn) => Math.max(max, turn.sequence), 0);
+    this.noteEntry();
   }
 
   static create(seed: DeskSeed, deps: DeskDependencies): ExecutionDesk {
@@ -1052,14 +1051,21 @@ export class ExecutionDesk {
       return;
     }
     this.appendExecutorText(attempt, '', simulated, draftText);
-    this.putRun(settled.attempt);
     if (settled.nodeTransition.type === 'execution-finished') {
-      this.applyTransition(settled.nodeTransition, `finish:${attempt.id}`);
+      const returnTo = recordedEntryStatus(this.nodeState);
+      if (returnTo === undefined) {
+        this.lastError = entryMismatch();
+        this.persist();
+        return;
+      }
+      this.putRun(settled.attempt);
+      this.applyTransition({ type: 'execution-finished', returnTo }, `finish:${attempt.id}`);
       this.releaseClaim(attempt.id);
       this.persist();
       this.consumeQueue(attempt.id);
       return;
     }
+    this.putRun(settled.attempt);
     this.persist();
   }
 
@@ -1522,6 +1528,11 @@ export class ExecutionDesk {
   private persist(): void {
     this.deps.journal?.save(this.persistence());
   }
+
+  private noteEntry(): void {
+    if (entryIsConsistent(this.nodeState)) return;
+    this.lastError = entryMismatch();
+  }
 }
 
 export function executionHint(snapshot: ExecutionDeskSnapshot) {
@@ -1583,12 +1594,49 @@ function cancelWithTimeout(pending: Promise<{ receipt: string; reason?: string }
   });
 }
 
+function initialNodeState(status: NodeStatus): NodeCommandState {
+  if (status === 'ready' || status === 'needs-revision') {
+    return { status, version: 1, upstreamAffected: false, stored: [], entryStatus: status };
+  }
+  return { status, version: 1, upstreamAffected: false, stored: [] };
+}
+
+function entryIsConsistent(state: NodeCommandState): boolean {
+  const entry = state.entryStatus;
+  const recorded = entry === 'ready' || entry === 'needs-revision';
+  if (state.status === 'completed' || state.status === 'draft' || state.status === 'blocked') {
+    return entry === undefined;
+  }
+  if (state.status === 'needs-revision') return entry === 'needs-revision';
+  if (
+    state.status === 'ready' ||
+    state.status === 'running' ||
+    state.status === 'waiting-for-input' ||
+    state.status === 'failed' ||
+    state.status === 'cancelled' ||
+    state.status === 'child-workflow' ||
+    state.status === 'in-review'
+  ) {
+    return recorded;
+  }
+  return false;
+}
+
 function recordedEntryStatus(state: NodeCommandState): 'ready' | 'needs-revision' | undefined {
+  if (!entryIsConsistent(state)) return undefined;
   if (state.entryStatus === 'ready' || state.entryStatus === 'needs-revision') {
     return state.entryStatus;
   }
-  if (state.status === 'needs-revision') return 'needs-revision';
   return undefined;
+}
+
+function entryMismatch(): CommandErrorFact {
+  return {
+    code: 'entry-inconsistent',
+    objectLabel: '节点',
+    reason: '读回的入口和节点状态对不上',
+    nextStep: '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
+  };
 }
 
 function humanExecutor(id: string): string {
