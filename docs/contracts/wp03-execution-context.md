@@ -23,7 +23,31 @@
 
 模拟执行器的能力声明：不支持实时注入，不支持会话恢复，支持取消回执和流式输出，`verified: false`，`mode: 'simulated'`。回复、工具活动和结果都带模拟标识。模拟活动的 `succeeded` 保持 false。
 
-`DshChatExecutor` 在显式选择后启动 `dsh --profile sdk`，经 stdio 上的 JSON-RPC 对话。它读取 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY` 和可选的 `ZHUMA_MODEL_ID`。缺地址或密钥时，`run()` 直接失败，原因里点名缺少的变量，不写出地址或密钥，也不改用模拟执行器。密钥只放进子进程环境变量 `ZHUMA_MODEL_API_KEY`。模型未设置时使用 `zhanlu/glm-5.3-flash`。可选模型还有 `zhanlu/glm-5.3`、`zhanlu/deepseek-v4.1-flash`、`zhanlu/kimi-k3`。未知模型失败。运行时取 `ZHUMA_DSH_BIN`，否则取上游构建出的 CLI。`verified` 表示这条路由已经配好，并且运行时文件存在。找不到运行时时，原因里点名 `pnpm upstream:build-dsh` 和 `ZHUMA_DSH_BIN`。自测使用本仓的 JSON-RPC 桩，不依赖上游构建，也没有对真实网关做过验收。
+`DshChatExecutor` 在显式选择后启动 `dsh --profile sdk`，经 stdio 上的 JSON-RPC 对话。它读取 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY` 和可选的 `ZHUMA_MODEL_ID`。缺地址或密钥时，`run()` 直接失败，原因里点名缺少的变量，不写出地址或密钥，也不改用模拟执行器。密钥只放进子进程环境变量 `ZHUMA_MODEL_API_KEY`。模型未设置时使用 `zhanlu/glm-5.3-flash`。可选模型还有 `zhanlu/glm-5.3`、`zhanlu/deepseek-v4.1-flash`、`zhanlu/kimi-k3`。未知模型失败。运行时取 `ZHUMA_DSH_BIN`，否则取上游构建出的 CLI。`verified` 表示这条路由已经配好，并且运行时文件存在。找不到运行时时，原因里点名 `pnpm upstream:build-dsh` 和 `ZHUMA_DSH_BIN`。二进制不可执行时立即失败，不等初始化超时。进程在接收前退出时，stdin 上的 EPIPE 只让这次运行失败，脱敏后的 stderr 留在失败原因里。子进程环境设置 `DSH_TELEMETRY_DISABLED=1` 和 `DSH_TELEMETRY_MODE=DISABLED`。
+
+生成的 `cordis.patch.yml` 是加载器补丁条目的顶层 YAML 数组，使用 `- id:` 和 `- insert:`。它不是映射。`llm-pi-ai` 写入模型路由、`apiKeyEnv: ZHUMA_MODEL_API_KEY`，以及 `input` 的 `text` 和 `image`。密钥不写进文件。
+
+模型可见的技能是专家实际授权、并且这次勾选的技能。内容写到会话目录下的 `granted-skills/<id>/SKILL.md`，包含 `name`、`description` 和正文。`skill-filesystem` 设置 `includeDefaultRoots: false`，只扫描这个目录。`skill-office` 默认 `disabled: true`，只有授权里有 `skill-office` 时才打开。
+
+内置工具默认关闭。专家的 `toolAllowlist` 点名插件 id 或下面的名字时，打开对应的一组。`tool-skill` 保持开启，以便加载已授权技能。`agent-loop`、`llm` 和 `session` 不关闭。
+
+| 白名单名字                       | 打开的插件                                                                                                                                                       |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bash`、`shell`                  | `tool-bash`、`tool-pwsh`、`tool-jobs`                                                                                                                            |
+| `write`、`edit`、`read`、`fs`    | `tool-fs`、`tool-fs-search`                                                                                                                                      |
+| `web`、`web_fetch`、`web_search` | `web`、`web-search-deepseek`、`web-deepseek-api`、`web-fetch-http`、`tool-web`                                                                                   |
+| `subagent`                       | `subagent`、`subagent-spawn-in-process`、`subagent-fork-in-process`、`tool-subagent`、`tool-subagent-fork`、`tool-subagent-control`、`tool-subagent-list-agents` |
+| `workflow`                       | `tool-workflow`、`workflow-ptc`                                                                                                                                  |
+
+sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时才插入 `@deepseek-ai/dsh-mcp-client`：`stdio` 要有 `command`，`streamable-http` 要有 `url`。只有 id、版本和标签的授权写进提示，不连接外部服务。
+
+会话事件是 `{type, seq, time, data}`。助手正文在 `data.message.content`。流式片段在 `data.stream`。一轮结束看 `data.reason.kind`，取值是 `completed`、`aborted` 或 `error`。
+
+图片以 `contentBlocks` 的 `image` 交给模型。文本和 JSON 仍是文本。PDF 和其他二进制是 `file`，不按文本解码。发出的上下文、运行记录里的引用和界面上的引用是同一组：已勾选且匹配 `inputRefs` 的条目。未勾选的不发。`inputRefs` 为空时不发上下文，界面也不引用。勾选了缺失文件仍然整次阻塞。
+
+`DSH_HOME` 在工作台数据目录下。数据目录依次取 `ZHUMA_DATA_DIR`、`ZHUMA_SESSION_FILE` 所在目录、`~/.zhuma/workbench`。每次会话用 `mkdtemp` 建在 `dsh-sessions/` 里。目录权限 `0700`，文件权限 `0600`。密钥不写入其中。接收前失败会删掉新建的目录。运行被核实为断开时删除。节点进入 `completed` 时删除。成功的一轮和停止之后保留，下一次显式运行用 `session/resume` 接回。工作台启动时清掉索引里没有的孤儿目录。
+
+`capabilities.sessionResume` 为 true，因为实现了 `session/resume`。工作台重启后子进程已经不在，仍然留下 `resumeGap`，不把未结束的运行当成还在执行。模拟执行器的 `sessionResume` 保持 false。自测使用本仓的 JSON-RPC 桩和从真实 DSH 录制的事件。桩的模式只经 `ZHUMA_DSH_STUB_MODE` 传入，不写进会话目录，也不传给真实子进程。上游包已经构建时，用它自己的 `loadOverlayPatches` 检查生成的补丁。
 
 `UnimplementedNativeExecutor` 仍覆盖 `codearts-cli`。`run()` 抛出未实现错误，`cancel()` 返回 `unsupported`。未验证或未配置的原生执行器在创建运行前被拒绝，不写入运行记录。
 
@@ -52,11 +76,11 @@
 
 `requestRunStop` 只把 `stopPhase` 设为 `requested`，节点仍保持 `running`，直到取消回执到达。停止会等这个回执，最多 4 秒。未知运行的取消立即返回拒绝，不挂起。超时或回执被拒绝时记为 `stop-receipt-missing`，`stopPhase` 回到 `receipt-rejected`，节点不标成已取消。模拟执行器在回执之前先交出取消事件和一条迟到输出，上层把迟到输出记成附属记录。执行器尚未回执接收就取消时，运行可以结束，但节点迁移是 `none`，不发 `cancel-confirmed`。
 
-上游协议没有取消一轮的请求，通知里也没有。`upstream/deepseek-harness/packages/sdk/protocol/README.md` 写明客户端放弃一轮只能关掉运行时进程。`upstream/deepseek-harness/packages/sdk/server/README.md` 写明协议 `shutdown` 会结束整个进程，不是取消一轮。`session/resume` 从持久化会话恢复，历史留在日志里，不会作为新通知重放。因此 DSH 的停止是结束子进程。回执只认进程退出，或 `turn/end` 且 `reason.kind` 为 `aborted`。同一 `DSH_HOME` 在停止后保留，下一轮用 `session/resume` 接回。接收回执之前失败会删掉这次临时目录。页面在 `requested` 时显示「启动中」，`accepted` 之后才显示「执行中」。初始化超时走未应用。
+上游协议没有取消一轮的请求，通知里也没有。`upstream/deepseek-harness/packages/sdk/protocol/README.md` 写明客户端放弃一轮只能关掉运行时进程。`upstream/deepseek-harness/packages/sdk/server/README.md` 写明协议 `shutdown` 会结束整个进程，不是取消一轮。`session/resume` 从持久化会话恢复，历史留在日志里，不会作为新通知重放。因此 DSH 的停止是结束子进程。回执只认进程退出，或 `turn/end` 且 `data.reason.kind` 为 `aborted`。停止后保留这次 `DSH_HOME`，下一轮用 `session/resume` 接回。接收回执之前失败会删掉这次新建的目录，并把脱敏后的 stderr 留在失败原因里。页面在 `requested` 时显示「启动中」，`accepted` 之后才显示「执行中」。初始化超时走未应用。启动期间入口丢失、`execution-acknowledged` 被拒绝时，停掉执行器，这次运行失败，界面显示节点记录异常。
 
 失败后的恢复命令是 `retry`，取消后是 `restart`。二者的 `returnTo` 必填，并且必须等于 `NodeCommandState.entryStatus`。记录是 `needs-revision` 时，`returnTo: 'ready'` 会被拒绝。新建时，`ready` 或 `needs-revision` 的节点命令带上同名的 `entryStatus`。读回或恢复时，入口必须和节点状态一致：`needs-revision` 不能配 `ready`，进行中、失败和已取消必须有入口，已完成、草稿和阻塞不能留下入口。`ready` 可以保留 `needs-revision`。对不上时记 `entry-inconsistent`，不改写记录，也不拿它重试或结束运行。正常结束的 `execution-finished.returnTo` 也等于这份入口，不用运行上抄下的 `entryNodeStatus`。然后由调用方显式再发送，才会有新的运行标识。需修改义务一直留到 `applyReviewSettlementCommand` 通过；子流程返回、失败重试和取消后重新开始都不能靠 `reviewRequired: false` 完成。改派和人工接回只记录 `RecoveryRequest`：`changesAssignee` 和 `forgesRun` 都是 false。谁真正改派由成员 A 决定。演示交接的责任人种类是 `human`，可以不带 `expertRef`。内部 agent 运行由 `toHandoffActor` 映射成 `human` 或 `expert`。
 
-服务重启时 `ExecutionDesk.restore` 先装回事实，`interactionReady` 为 false，并在执行器不支持会话恢复时留下 `resumeGap`。此阶段拒绝新命令，不推断完成，也不自动续跑。继续交互之后，这条中断运行不再当作当前可补充的运行：发送和停止都要求先核实为执行器已断开，并且不会把 `stopPhase` 写成 `requested`。核实结果是失败，不是完成。
+服务重启时 `ExecutionDesk.restore` 先装回事实，`interactionReady` 为 false，并留下 `resumeGap`。DSH 虽然实现了 `session/resume`，重启后子进程已经不在，所以这次中断仍然要核实为断开，不会自动续跑。继续交互之后，这条中断运行不再当作当前可补充的运行：发送和停止都要求先核实为执行器已断开，并且不会把 `stopPhase` 写成 `requested`。核实结果是失败，不是完成。恢复时读到非法交接不会让服务起不来：该节点标成记录异常，其他节点照常装入。新建时畸形交接仍然拒绝。快照里的交接引用是副本。
 
 模型错误、工具失败、网络中断、执行器断开和专家停用分开呈现。故障 `forgesRun` 为 false，并带对象、原因和下一步。
 
@@ -127,7 +151,7 @@
 
 ## 11. 验证与未验证
 
-领域规则的测试名称以「契约：」开头，只证明纯函数和内存事务。`examples/agent-workspace/browser.test.mjs` 用浏览器操作显式选择的模拟执行器，覆盖打开处理、多选资源、附件、两轮修改、刷新、补充排队、停止、迟到结果和重试。发送后先看到「启动中」，放开后才是「执行中」。截图目录来自 `ZHUMA_BROWSER_ARTIFACTS`，未设置时用系统临时目录。200% 缩放下不允许出现横向溢出。它不是真实执行器测试。`dsh-executor.e2e.test.mjs` 只在缺少 `ZHUMA_MODEL_BASE_URL` 或 `ZHUMA_MODEL_API_KEY` 时跳过。环境已经配好但找不到运行时，测试失败。密钥错误或网关失败时，运行记为失败，不改用模拟。
+领域规则的测试名称以「契约：」开头，只证明纯函数和内存事务。`examples/agent-workspace/browser.test.mjs` 用浏览器操作显式选择的模拟执行器，覆盖打开处理、多选资源、附件、两轮修改、刷新、补充排队、停止、迟到结果和重试。发送后先看到「启动中」，放开后才是「执行中」。截图目录来自 `ZHUMA_BROWSER_ARTIFACTS`，未设置时用系统临时目录。200% 缩放下不允许出现横向溢出。它不是真实执行器测试。`dsh-executor.e2e.test.mjs` 只在缺少 `ZHUMA_MODEL_BASE_URL` 或 `ZHUMA_MODEL_API_KEY` 时跳过。环境已经配好但找不到运行时，测试失败。密钥错误或网关失败时，运行记为失败，不改用模拟。对本地假网关跑真实 DSH 是单独的检查，不访问真实模型网关。
 
 尚未验证：真实模型网关、码道、真实多人、真实文件存储和预览、WP04 提交、WP05 评审执行、FR10 P1。服务重启不会自动续跑未结束的运行。页面沿用参考工作区的青绿、浅底和组件间距，没有把原型包或设计技能文件提交进仓库。
 
@@ -142,4 +166,4 @@ node examples/agent-workspace/server.mjs
 
 浏览器打开标准输出里的 `url`。先在配置里选择「模拟执行器」，再发送。未选择时发送按钮禁用。停止会等待回执。编辑并提交只保存草稿。
 
-`ZHUMA_HOLD_RUNS=1` 让运行在接收回执前后各停一次。第一次页面显示启动中，`POST /api/release` 之后显示执行中，再释放才结束。`ZHUMA_SESSION_FILE` 把会话写到调用方指定的临时文件，不要提交该文件。构建上游 CLI 用 `pnpm upstream:build-dsh`。模型路由使用 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY`、可选的 `ZHUMA_MODEL_ID`，运行时文件使用 `ZHUMA_DSH_BIN`。
+`ZHUMA_HOLD_RUNS=1` 让运行在接收回执前后各停一次。第一次页面显示启动中，`POST /api/release` 之后显示执行中，再释放才结束。`ZHUMA_SESSION_FILE` 把会话写到调用方指定的文件，不要提交该文件。未设置时，会话放在 `~/.zhuma/workbench`。构建上游 CLI 用 `pnpm upstream:build-dsh`。上游依赖缺失时，该脚本用 pnpm 11.28.5 和 `CI=true` 安装后再构建。模型路由使用 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY`、可选的 `ZHUMA_MODEL_ID`，运行时文件使用 `ZHUMA_DSH_BIN`。

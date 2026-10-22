@@ -6,4 +6,4 @@ Host 侧接入 DSH 的边界，未来负责插件注册、服务与工具、会�
 
 下一步按锁定提交的 DSH 公开接口注册一个最小 Host 插件，再验证构建、加载、卸载和清理；届时按上游要求声明宿主 peer dependencies。不得直接相对引用 `upstream/` 的源码。
 
-模拟执行器必须显式选择，未配置时不会改用它。DSH 与码道执行器保持未实现、未验证，调用会失败，而不是伪造成功。运行事务在 `ExecutionDesk`。可操作演示在 `examples/agent-workspace`。
+模拟执行器必须显式选择，未配置时不会改用它。`DshChatExecutor` 在显式选择后启动 `dsh --profile sdk`。码道执行器保持未实现、未验证，调用会失败，而不是伪造成功。运行事务在 `ExecutionDesk`。可操作演示在 `examples/agent-workspace`。授权、补丁、事件字段和 `DSH_HOME` 的清理时机见 `docs/contracts/wp03-execution-context.md`。

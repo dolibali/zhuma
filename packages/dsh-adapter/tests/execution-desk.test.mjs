@@ -1177,3 +1177,90 @@ test('契约：重复恢复被拒时说明是哪一次请求', async () => {
   assert.match(rejected.reason, /不同的迁移/);
   assert.equal(session.snapshot().node.status, 'cancelled');
 });
+
+test('契约：启动期间入口丢失且接收被拒时停掉执行器并标成记录异常', async () => {
+  const cancelled = [];
+  const executor = new SimulatedAgentExecutor({ pauseBeforeAccept: true, chunkDelayMs: 0 });
+  const cancel = executor.cancel.bind(executor);
+  executor.cancel = async (runId) => {
+    cancelled.push(runId);
+    return cancel(runId);
+  };
+  const session = ExecutionDesk.create(seed(), {
+    executors: [executor],
+    newId: ids(),
+  });
+  session.updateConfig({ executorId: 'simulated' });
+  const started = session.send({ text: '启动中丢掉入口', idempotencyKey: 'n23' });
+  assert.equal(started.ok, true);
+  assert.equal(session.snapshot().runs.at(-1).status, 'requested');
+  assert.equal(createAgentWorkspaceView(session.snapshot()).nodeStatusKey, 'starting');
+  session.dropRecordedEntry();
+  executor.release(started.runId);
+  await session.flush();
+  const snap = session.snapshot();
+  assert.equal(snap.runs.at(-1).status, 'failed');
+  assert.equal(snap.node.status, 'ready');
+  assert.equal(snap.lastError.code, 'entry-inconsistent');
+  const view = createAgentWorkspaceView(snap);
+  assert.equal(view.nodeStatusKey, 'record-broken');
+  assert.equal(view.primary.enabled, false);
+  assert.equal(view.stop.visible, false);
+  assert.deepEqual(cancelled, [started.runId]);
+  const sent = session.send({ text: '不要再发', idempotencyKey: 'n23-send' });
+  assert.equal(sent.ok, false);
+  assert.equal(sent.code, 'entry-inconsistent');
+  const stopped = await session.stop();
+  assert.equal(stopped.ok, false);
+  assert.equal(stopped.code, 'entry-inconsistent');
+});
+
+test('契约：快照交出的交接引用是副本', () => {
+  const input = seed();
+  input.handoff.inputRefs = [{ sourceNodeId: 'n0', artifactVersionId: 'av1' }];
+  const session = ExecutionDesk.create(input, {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  const exposed = session.snapshot().handoff.inputRefs;
+  exposed[0].sourceNodeId = 'MUTATED';
+  exposed.push({ sourceNodeId: 'extra' });
+  assert.equal(session.snapshot().handoff.inputRefs.length, 1);
+  assert.equal(session.snapshot().handoff.inputRefs[0].sourceNodeId, 'n0');
+  assert.equal(session.persistence().seed.handoff.inputRefs[0].sourceNodeId, 'n0');
+});
+
+test('契约：恢复非法交接时该节点记录异常，其他节点仍能装入', () => {
+  const good = ExecutionDesk.create(seed(), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  const saved = JSON.parse(JSON.stringify(good.persistence()));
+  saved.seed.handoff.inputRefs = [{ bogus: 1 }];
+  const broken = ExecutionDesk.restore(saved, {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  assert.equal(broken.snapshot().lastError.code, 'invalid-handoff');
+  assert.equal(createAgentWorkspaceView(broken.snapshot()).nodeStatusKey, 'record-broken');
+  broken.resumeInteraction();
+  const sent = broken.send({ text: '不要发送', idempotencyKey: 'bad-handoff' });
+  assert.equal(sent.ok, false);
+  assert.equal(sent.code, 'invalid-handoff');
+  const reloaded = ExecutionDesk.restore(broken.persistence(), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  assert.equal(reloaded.snapshot().lastError.code, 'invalid-handoff');
+  assert.equal(createAgentWorkspaceView(reloaded.snapshot()).nodeStatusKey, 'record-broken');
+  const other = ExecutionDesk.restore(JSON.parse(JSON.stringify(good.persistence())), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  other.resumeInteraction();
+  other.updateConfig({ executorId: 'simulated' });
+  assert.equal(other.snapshot().lastError, null);
+  assert.equal(createAgentWorkspaceView(other.snapshot()).nodeStatusKey, 'ready');
+  const opened = other.send({ text: '其他节点可以发送', idempotencyKey: 'other-node' });
+  assert.equal(opened.ok, true);
+});

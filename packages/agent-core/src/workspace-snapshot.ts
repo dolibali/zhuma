@@ -23,6 +23,8 @@ export interface ExpertOption {
   readonly unavailableReason?: string;
   readonly presetSkillIds: readonly string[];
   readonly presetMcpIds: readonly string[];
+  /** 内置工具白名单。缺省表示全部关闭。名字见 WP03 契约里的授权映射。 */
+  readonly toolAllowlist?: readonly string[];
 }
 
 export interface SkillOption {
@@ -31,6 +33,10 @@ export interface SkillOption {
   readonly label: string;
   readonly available: boolean;
   readonly unavailableReason?: string;
+  /** 写入 SKILL.md 的说明。缺省时用 label。 */
+  readonly description?: string;
+  /** 写入 SKILL.md 的正文。缺省时用 label。 */
+  readonly body?: string;
 }
 
 export interface McpOption {
@@ -39,6 +45,11 @@ export interface McpOption {
   readonly label: string;
   readonly available: boolean;
   readonly unavailableReason?: string;
+  /** 只有带传输时才会插入上游 MCP 客户端。没有传输时只把身份放进提示。 */
+  readonly transport?: 'stdio' | 'streamable-http';
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly url?: string;
 }
 
 export interface ExecutorOption {

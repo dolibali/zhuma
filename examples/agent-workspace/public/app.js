@@ -417,14 +417,39 @@ fileInput.addEventListener('change', () => {
     render();
     return;
   }
-  void item.text().then((text) =>
-    post('/api/attachments', {
-      name: item.name,
-      mediaType: item.type || 'text/plain',
-      text,
-    }),
-  );
+  void attachmentPayload(item).then((payload) => post('/api/attachments', payload));
 });
+
+function isTextUpload(file) {
+  const type = file.type || '';
+  if (type.startsWith('text/') || type === 'application/json') return true;
+  const name = file.name.toLowerCase();
+  return (
+    name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.csv') || name.endsWith('.json')
+  );
+}
+
+function bytesToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const size = 0x8000;
+  for (let index = 0; index < bytes.length; index += size) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + size));
+  }
+  return btoa(binary);
+}
+
+function attachmentPayload(file) {
+  const mediaType = file.type || (isTextUpload(file) ? 'text/plain' : 'application/octet-stream');
+  if (isTextUpload(file)) {
+    return file.text().then((text) => ({ name: file.name, mediaType, text }));
+  }
+  return file.arrayBuffer().then((buffer) => ({
+    name: file.name,
+    mediaType,
+    bytesBase64: bytesToBase64(buffer),
+  }));
+}
 
 attachmentList.addEventListener('click', (event) => {
   const button = event.target.closest('[data-remove-attachment]');

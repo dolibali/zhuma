@@ -71,10 +71,17 @@ export {
   readDshModelConfig,
   selectAgentExecutor,
 } from './agent-executor.js';
-export { DshChatExecutor, dshSessionHome, resolveDshBinary } from './dsh-sdk-executor.js';
+export {
+  DshChatExecutor,
+  describeDshSessionEvent,
+  dshSessionHome,
+  resolveDshBinary,
+  resolveDshDataDir,
+  sweepDshSessionOrphans,
+} from './dsh-sdk-executor.js';
 
 export type { FileProbeResult } from './file-probe.js';
-export { probeRelativeFile } from './file-probe.js';
+export { probeRelativeFile, readRelativeFile } from './file-probe.js';
 
 export type { DeskJournal } from './file-journal.js';
 export { createFileJournal } from './file-journal.js';

@@ -69,8 +69,9 @@ import {
   type AgentRunRequest,
   type ResourceGrant,
 } from './agent-executor.js';
+import { DshChatExecutor } from './dsh-sdk-executor.js';
 import { createFileJournal, type DeskJournal } from './file-journal.js';
-import { probeRelativeFile, type FileProbeResult } from './file-probe.js';
+import { probeRelativeFile, readRelativeFile, type FileProbeResult } from './file-probe.js';
 
 export type { DeskJournal } from './file-journal.js';
 export { createFileJournal } from './file-journal.js';
@@ -145,6 +146,7 @@ export interface DeskPersistence {
   readonly citations: ContextCitationFact[];
   readonly contextBlocks: ContextBlockFact[];
   readonly draftRoundId?: string | null;
+  readonly handoffInvalid?: boolean;
 }
 
 export type DeskResult =
@@ -201,6 +203,7 @@ export class ExecutionDesk {
   private readonly attachmentBytes = new Map<string, Uint8Array>();
   private sequence = 0;
   private draftRoundId: string | null = null;
+  private handoffInvalid = false;
 
   private readonly seed: DeskSeed;
 
@@ -216,8 +219,13 @@ export class ExecutionDesk {
       skillRefs: handoff.skillRefs ?? [],
       mcpRefs: handoff.mcpRefs ?? [],
     });
-    if (!read.ok) throw new Error('invalid-handoff');
-    const seed = { ...inputSeed, handoff: read.handoff };
+    const restoring = restored !== null;
+    if (!read.ok && !restoring) throw new Error('invalid-handoff');
+    this.handoffInvalid = restoring && (restored.handoffInvalid === true || !read.ok);
+    const seed = {
+      ...inputSeed,
+      handoff: read.ok ? read.handoff : fallbackHandoff(handoff),
+    };
     this.seed = seed;
     const expert = seed.catalog.experts.find((item) => item.enabled) ?? seed.catalog.experts[0];
     this.selections = {
@@ -261,6 +269,7 @@ export class ExecutionDesk {
     this.draftRoundId = restored.draftRoundId ?? null;
     this.sequence = restored.turns.reduce((max, turn) => Math.max(max, turn.sequence), 0);
     this.noteEntry();
+    if (this.handoffInvalid) this.lastError = invalidHandoffError();
   }
 
   static create(seed: DeskSeed, deps: DeskDependencies): ExecutionDesk {
@@ -291,7 +300,7 @@ export class ExecutionDesk {
       taskTitle: this.seed.taskTitle,
       taskGoal: this.seed.taskGoal,
       actorId: this.seed.actorId,
-      handoff: this.seed.handoff,
+      handoff: copyHandoff(this.seed.handoff),
       node: {
         status: this.nodeState.status,
         version: this.nodeState.version,
@@ -353,6 +362,7 @@ export class ExecutionDesk {
       citations: this.citations,
       contextBlocks: this.contextBlocks,
       ...(this.draftRoundId !== null ? { draftRoundId: this.draftRoundId } : {}),
+      ...(this.handoffInvalid ? { handoffInvalid: true } : {}),
     };
   }
 
@@ -416,15 +426,24 @@ export class ExecutionDesk {
   addAttachment(input: {
     readonly name: string;
     readonly mediaType: string;
-    readonly text: string;
+    readonly text?: string;
+    readonly bytesBase64?: string;
   }): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     const name = path.posix.basename(input.name.replaceAll('\\', '/'));
     if (name.length === 0 || name === '.' || name === '..') {
       return this.fail('attachment-name', '附件', '文件名无效', '换一个文件名后再上传');
     }
-    const byteSize = Buffer.byteLength(input.text);
-    if (byteSize > ATTACHMENT_LIMIT) {
+    const encoded =
+      typeof input.bytesBase64 === 'string'
+        ? Buffer.from(input.bytesBase64, 'base64')
+        : typeof input.text === 'string'
+          ? Buffer.from(input.text, 'utf8')
+          : null;
+    if (encoded === null) {
+      return this.fail('attachment-type', name, '缺少文件内容', '重新选择文件');
+    }
+    if (encoded.byteLength > ATTACHMENT_LIMIT) {
       return this.fail(
         'attachment-too-large',
         name,
@@ -436,17 +455,20 @@ export class ExecutionDesk {
       return this.fail('attachment-type', name, '缺少媒体类型', '重新选择文件');
     }
     const id = this.deps.newId('file');
-    const previewText = input.mediaType.startsWith('text/') ? input.text.slice(0, 80) : '';
+    const previewText =
+      input.mediaType.startsWith('text/') && typeof input.text === 'string'
+        ? input.text.slice(0, 80)
+        : '';
     this.attachments.push({
       id,
       name,
       mediaType: input.mediaType,
-      byteSize,
-      checksum: createHash('sha256').update(input.text).digest('hex'),
+      byteSize: encoded.byteLength,
+      checksum: createHash('sha256').update(encoded).digest('hex'),
       reference: `attachment:${id}`,
       ...(previewText.length > 0 ? { previewText } : {}),
     });
-    this.attachmentBytes.set(id, Buffer.from(input.text, 'utf8'));
+    this.attachmentBytes.set(id, encoded);
     return this.succeed();
   }
 
@@ -459,6 +481,7 @@ export class ExecutionDesk {
 
   send(input: SendInput): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
+    if (this.brokenRecord()) return this.recordBlocked();
     const replay = this.replayRun(input);
     if (replay) return replay;
     if (this.resumeGap) return this.gapBlocked();
@@ -597,6 +620,7 @@ export class ExecutionDesk {
     this.resumeGap = null;
     this.dropPending(run.id);
     this.releaseClaim(run.id);
+    this.discardRunSession(run);
     return this.succeed({ runId: run.id });
   }
 
@@ -994,6 +1018,7 @@ export class ExecutionDesk {
       signal,
       skills: this.authorized('skill'),
       mcp: this.authorized('mcp'),
+      toolAllowlist: this.toolAllowlist(),
       attachments: this.attachmentPayloads(attachmentIds),
       promptContext: this.promptContext(),
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
@@ -1025,7 +1050,13 @@ export class ExecutionDesk {
       }
       const applied = this.applyTransition({ type: 'execution-acknowledged' }, `ack:${runId}`);
       if (!applied.ok) {
-        this.preserveRecordError();
+        const executor = this.deps.executors.find((item) => item.id === attempt.executor);
+        if (executor) void executor.cancel(runId);
+        const settled = settleExecutionRun(attempt, 'failed');
+        if (settled.ok) this.putRun(settled.attempt);
+        this.dropPending(runId);
+        this.releaseClaim(runId);
+        this.lastError = missingRecord();
         this.persist();
         return;
       }
@@ -1306,6 +1337,7 @@ export class ExecutionDesk {
 
   private assemble() {
     const items: ContextSourceInput[] = [];
+    const referenced = new Set(this.referencedContext().map((item) => item.id));
     for (const item of this.seed.contextItems) {
       if (!this.included.has(item.id)) continue;
       const source: ContextSourceInput = {
@@ -1345,17 +1377,23 @@ export class ExecutionDesk {
       }));
       this.citations = [];
     }
-    return result.ok
-      ? { ok: true as const, manifest: result.manifest, blocks: [] as ContextBlockFact[] }
-      : {
-          ok: false as const,
-          blocks: result.manifest.blocks.map((block) => ({
-            sourceId: block.sourceId,
-            kind: block.kind,
-            version: block.version,
-            reason: block.reason,
-          })),
-        };
+    if (!result.ok) {
+      return {
+        ok: false as const,
+        blocks: result.manifest.blocks.map((block) => ({
+          sourceId: block.sourceId,
+          kind: block.kind,
+          version: block.version,
+          reason: block.reason,
+        })),
+      };
+    }
+    const citations = result.manifest.citations.filter((item) => referenced.has(item.id));
+    return {
+      ok: true as const,
+      manifest: { ...result.manifest, citations: Object.freeze(citations) },
+      blocks: [] as ContextBlockFact[],
+    };
   }
 
   private contextFacts(): ContextItemFact[] {
@@ -1528,37 +1566,102 @@ export class ExecutionDesk {
     ];
   }
 
-  private authorized(kind: 'skill' | 'mcp'): { id: string; version: string }[] {
+  private authorized(kind: 'skill'): {
+    id: string;
+    version: string;
+    label?: string;
+    description?: string;
+    body?: string;
+  }[];
+  private authorized(kind: 'mcp'): {
+    id: string;
+    version: string;
+    label?: string;
+    transport?: 'stdio' | 'streamable-http';
+    command?: string;
+    args?: readonly string[];
+    url?: string;
+  }[];
+  private authorized(kind: 'skill' | 'mcp') {
     const refs = kind === 'skill' ? this.seed.handoff.skillRefs : this.seed.handoff.mcpRefs;
     const selected = new Set(kind === 'skill' ? this.selections.skillIds : this.selections.mcpIds);
     return refs
       .filter((ref) => selected.has(ref.id))
-      .map((ref) => ({ id: ref.id, version: ref.version }));
+      .map((ref) => {
+        if (kind === 'skill') {
+          const skill = this.seed.catalog.skills.find((item) => item.id === ref.id);
+          return {
+            id: ref.id,
+            version: ref.version,
+            ...(skill?.label !== undefined ? { label: skill.label } : {}),
+            ...(skill?.description !== undefined ? { description: skill.description } : {}),
+            ...(skill?.body !== undefined ? { body: skill.body } : {}),
+          };
+        }
+        const mcp = this.seed.catalog.mcp.find((item) => item.id === ref.id);
+        return {
+          id: ref.id,
+          version: ref.version,
+          ...(mcp?.label !== undefined ? { label: mcp.label } : {}),
+          ...(mcp?.transport !== undefined ? { transport: mcp.transport } : {}),
+          ...(mcp?.command !== undefined ? { command: mcp.command } : {}),
+          ...(mcp?.args !== undefined ? { args: mcp.args } : {}),
+          ...(mcp?.url !== undefined ? { url: mcp.url } : {}),
+        };
+      });
+  }
+
+  private toolAllowlist(): readonly string[] {
+    const expert = this.seed.catalog.experts.find((item) => item.id === this.selections.expertId);
+    return expert?.toolAllowlist ?? [];
+  }
+
+  private referencedContext(): DeskContextSeed[] {
+    const refs = this.seed.handoff.inputRefs;
+    if (refs.length === 0) return [];
+    return this.seed.contextItems.filter(
+      (item) => this.included.has(item.id) && refs.some((ref) => inputRefMatches(item, ref)),
+    );
   }
 
   private promptContext(): { id: string; body: string }[] {
-    const refs = this.seed.handoff.inputRefs;
-    if (refs.length === 0) return [];
     const blocks: { id: string; body: string }[] = [];
-    for (const item of this.seed.contextItems) {
-      if (item.body === undefined) continue;
-      if (!refs.some((ref) => inputRefMatches(item, ref))) continue;
-      blocks.push({ id: item.id, body: item.body });
+    for (const item of this.referencedContext()) {
+      let body = item.body;
+      if (body === undefined && item.relativePath !== undefined && this.seed.fileRoot) {
+        const read = readRelativeFile(this.seed.fileRoot, item.relativePath);
+        if (read.ok) body = read.text;
+      }
+      if (body === undefined) body = item.summary;
+      blocks.push({ id: item.id, body });
     }
     return blocks;
   }
 
-  private attachmentPayloads(
-    attachmentIds: readonly string[],
-  ): { id: string; mediaType: string; bytes: Uint8Array }[] {
-    const payloads: { id: string; mediaType: string; bytes: Uint8Array }[] = [];
+  private attachmentPayloads(attachmentIds: readonly string[]): {
+    id: string;
+    name: string;
+    mediaType: string;
+    bytes: Uint8Array;
+  }[] {
+    const payloads: { id: string; name: string; mediaType: string; bytes: Uint8Array }[] = [];
     for (const id of attachmentIds) {
       const fact = this.attachments.find((item) => item.id === id);
       const bytes = this.attachmentBytes.get(id);
       if (!fact || bytes === undefined) continue;
-      payloads.push({ id, mediaType: fact.mediaType, bytes });
+      payloads.push({ id, name: fact.name, mediaType: fact.mediaType, bytes });
     }
     return payloads;
+  }
+
+  private discardRunSession(run: ExecutionAttempt): void {
+    if (run.sessionId === undefined) return;
+    const executor = this.deps.executors.find((item) => item.id === run.executor);
+    if (executor instanceof DshChatExecutor) executor.discardSession(run.sessionId);
+  }
+
+  private discardNodeSessions(): void {
+    for (const run of this.runs) this.discardRunSession(run);
   }
 
   private previousSessionId(nodeId: string, runId: string): string | undefined {
@@ -1580,6 +1683,7 @@ export class ExecutionDesk {
     this.nodeState = outcome.state;
     if (outcome.decision.status === 'applied') {
       if (outcome.decision.result.effects.includes('accept-handoff')) this.downstreamLaunches += 1;
+      if (this.nodeState.status === 'completed') this.discardNodeSessions();
       return { ok: true, code: 'applied' };
     }
     if (outcome.decision.status === 'replayed') return { ok: true, code: 'replayed' };
@@ -1617,8 +1721,7 @@ export class ExecutionDesk {
   private abandonedRun(): { runId: string; reason: 'session-not-resumed' } | null {
     const run = [...this.runs].reverse().find((item) => !isTerminalRunStatus(item.status));
     if (!run) return null;
-    const executor = this.deps.executors.find((item) => item.id === run.executor);
-    if (executor?.capabilities.sessionResume) return null;
+    // 进程已经不在。DSH 仍可在下一次显式运行里 session/resume，但这次中断不能当成还在执行。
     return { runId: run.id, reason: 'session-not-resumed' };
   }
 
@@ -1676,13 +1779,22 @@ export class ExecutionDesk {
 
   /** 应带入口的执行态丢了记录，且没有进行中的运行。人工处理前一直成立。 */
   private brokenRecord(): boolean {
+    if (this.handoffInvalid) return true;
     if (entryIsConsistent(this.nodeState)) return false;
     const status = this.nodeState.status;
-    if (status !== 'running' && status !== 'waiting-for-input') return false;
+    if (status !== 'running' && status !== 'waiting-for-input' && status !== 'ready') return false;
     return this.activeRun() === undefined;
   }
 
   private recordBlocked(): DeskResult {
+    if (this.handoffInvalid) {
+      return this.fail(
+        'invalid-handoff',
+        '节点',
+        '节点记录异常，需要人工处理',
+        '交接记录无法读取。不要按这份记录发送、重试或停止。',
+      );
+    }
     return this.fail(
       'entry-inconsistent',
       '节点',
@@ -1692,6 +1804,10 @@ export class ExecutionDesk {
   }
 
   private preserveRecordError(): void {
+    if (this.handoffInvalid) {
+      this.lastError = invalidHandoffError();
+      return;
+    }
     if (entryIsConsistent(this.nodeState)) return;
     if (this.brokenRecord()) {
       this.lastError = missingRecord();
@@ -1701,6 +1817,10 @@ export class ExecutionDesk {
   }
 
   private noteEntry(): void {
+    if (this.handoffInvalid) {
+      this.lastError = invalidHandoffError();
+      return;
+    }
     if (entryIsConsistent(this.nodeState)) return;
     this.lastError = this.brokenRecord() ? missingRecord() : entryMismatch();
   }
@@ -1821,6 +1941,91 @@ function entryMismatch(): CommandErrorFact {
     reason: '读回的入口和节点状态对不上',
     nextStep: '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
   };
+}
+
+function invalidHandoffError(): CommandErrorFact {
+  return {
+    code: 'invalid-handoff',
+    objectLabel: '节点',
+    reason: '节点记录异常，需要人工处理',
+    nextStep: '交接记录无法读取。不要按这份记录发送、重试或停止。',
+  };
+}
+
+function copyHandoff(handoff: NodeHandoff): NodeHandoff {
+  const fields = {
+    nodeId: handoff.nodeId,
+    taskId: handoff.taskId,
+    workflowVersionId: handoff.workflowVersionId,
+    revision: handoff.revision,
+    goal: handoff.goal,
+    dependencyNodeIds: [...handoff.dependencyNodeIds],
+    reviewRequired: handoff.reviewRequired,
+    reviewerIds: [...handoff.reviewerIds],
+    inputRefs: handoff.inputRefs.map((ref) => ({ ...ref })),
+    skillRefs: handoff.skillRefs.map((ref) => ({ ...ref })),
+    mcpRefs: handoff.mcpRefs.map((ref) => ({ ...ref })),
+    inputNote: handoff.inputNote,
+    expectedOutput: handoff.expectedOutput,
+    ...(handoff.childTaskId !== undefined ? { childTaskId: handoff.childTaskId } : {}),
+  };
+  if (handoff.assignee.kind === 'expert' && handoff.expertRef !== undefined) {
+    return {
+      ...fields,
+      assignee: { id: handoff.assignee.id, kind: 'expert' },
+      expertRef: { id: handoff.expertRef.id, version: handoff.expertRef.version },
+    };
+  }
+  return {
+    ...fields,
+    assignee: { id: handoff.assignee.id, kind: 'human' },
+    ...(handoff.expertRef !== undefined
+      ? { expertRef: { id: handoff.expertRef.id, version: handoff.expertRef.version } }
+      : {}),
+  };
+}
+
+function fallbackHandoff(input: NodeHandoff): NodeHandoff {
+  const read = readNodeHandoff({
+    nodeId:
+      typeof input?.nodeId === 'string' && input.nodeId.length > 0 ? input.nodeId : 'unknown-node',
+    taskId:
+      typeof input?.taskId === 'string' && input.taskId.length > 0 ? input.taskId : 'unknown-task',
+    workflowVersionId:
+      typeof input?.workflowVersionId === 'string' && input.workflowVersionId.length > 0
+        ? input.workflowVersionId
+        : 'unknown-plan',
+    revision: typeof input?.revision === 'number' ? input.revision : 0,
+    goal: typeof input?.goal === 'string' ? input.goal : '',
+    assignee: { id: 'unknown', kind: 'human' },
+    dependencyNodeIds: [],
+    reviewRequired: false,
+    reviewerIds: [],
+    inputRefs: [],
+    skillRefs: [],
+    mcpRefs: [],
+    inputNote: '',
+    expectedOutput: '',
+  });
+  if (!read.ok) {
+    return {
+      nodeId: 'unknown-node',
+      taskId: 'unknown-task',
+      workflowVersionId: 'unknown-plan',
+      revision: 0,
+      goal: '',
+      assignee: { id: 'unknown', kind: 'human' },
+      dependencyNodeIds: [],
+      reviewRequired: false,
+      reviewerIds: [],
+      inputRefs: [],
+      skillRefs: [],
+      mcpRefs: [],
+      inputNote: '',
+      expectedOutput: '',
+    };
+  }
+  return read.handoff;
 }
 
 function missingRecord(): CommandErrorFact {

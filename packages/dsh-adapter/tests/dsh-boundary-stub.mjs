@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 
 const home = process.env.DSH_HOME ?? process.cwd();
-const mode = readMode(home);
+const mode = process.env.ZHUMA_DSH_STUB_MODE ?? 'ok';
+if (mode === 'stderr-boot') {
+  writeSync(2, `${process.env.ZHUMA_MODEL_API_KEY ?? ''}\n`);
+  process.exit(1);
+}
 writeFileSync(path.join(home, 'zhuma-pid'), String(process.pid), 'utf8');
 writeFileSync(path.join(home, 'zhuma-argv.json'), JSON.stringify(process.argv.slice(2)), 'utf8');
 writeFileSync(
@@ -14,20 +18,26 @@ writeFileSync(
 mkdirSync(path.join(home, 'decoy-skills', 'skill-evil'), { recursive: true });
 writeFileSync(
   path.join(home, 'decoy-skills', 'skill-evil', 'SKILL.md'),
-  '---\nid: skill-evil\nversion: evil-1\n---\n',
+  '---\nname: skill-evil\ndescription: evil\n---\n\nevil\n',
   'utf8',
 );
 writeFileSync(path.join(home, 'zhuma-visible.json'), JSON.stringify(visibleCatalog(home)), 'utf8');
 
 let prompted = false;
 let buffer = '';
+let seq = 1;
 process.stdin.setEncoding('utf8');
 process.on('SIGTERM', () => {
   if (!prompted) {
     process.exit(0);
     return;
   }
-  const event = { type: 'turn/end', reason: { kind: 'aborted' } };
+  const event = {
+    type: 'turn/end',
+    seq: seq++,
+    time: Date.now(),
+    data: { reason: { kind: 'aborted' } },
+  };
   appendLog(event);
   process.stdout.write(
     `${JSON.stringify({ jsonrpc: '2.0', method: 'session.event', params: { sessionId: 'stopped', event } })}\n`,
@@ -85,15 +95,22 @@ function handle(line) {
 
 function finishTurn() {
   if (mode === 'empty') {
-    emit('assistant/message', { content: [{ type: 'text', text: '   ' }] });
+    emit('assistant/message', {
+      message: { role: 'assistant', content: [{ type: 'text', text: '   ' }] },
+    });
   } else if (mode === 'tools') {
-    emit('assistant/message', { content: [{ type: 'tool-call', id: 'call-1' }] });
+    emit('assistant/message', {
+      message: { role: 'assistant', content: [{ type: 'tool-call', id: 'call-1' }] },
+    });
   } else if (mode === 'error') {
     emit('turn/end', { reason: { kind: 'error' } });
     exitSoon();
     return;
   } else {
-    emit('assistant/message', { content: [{ type: 'text', text: '桩回复' }] });
+    emit('assistant/message', {
+      message: { role: 'assistant', content: [{ type: 'text', text: '桩回复' }] },
+      stream: [{ type: 'text-chunks', texts: ['桩', '回复'] }],
+    });
   }
   emit('turn/end', { reason: { kind: 'completed' } });
   exitSoon();
@@ -104,7 +121,7 @@ function exitSoon() {
 }
 
 function emit(type, data) {
-  const event = { type, ...data };
+  const event = { type, seq: seq++, time: Date.now(), data };
   appendLog(event);
   notify('session.event', { sessionId: 'live', event });
 }
@@ -113,13 +130,18 @@ function admit(blocks) {
   const stored = [];
   let index = 0;
   for (const block of blocks) {
-    if (block?.type === 'image') {
+    if (block?.type === 'image' || block?.type === 'file') {
       const bytes = Buffer.from(String(block.data ?? ''), 'base64');
-      const id = `image-${index}`;
+      const id = `${block.type}-${index}`;
       const dir = path.join(home, 'zhuma-attachments');
       mkdirSync(dir, { recursive: true });
       writeFileSync(path.join(dir, id), bytes);
-      stored.push({ type: 'image', attachmentId: id });
+      stored.push({
+        type: block.type,
+        attachmentId: id,
+        ...(typeof block.name === 'string' ? { name: block.name } : {}),
+        ...(typeof block.mimeType === 'string' ? { mimeType: block.mimeType } : {}),
+      });
       index += 1;
     } else {
       stored.push(block);
@@ -173,29 +195,53 @@ function exists(file) {
   }
 }
 
-function readMode(dir) {
-  try {
-    return JSON.parse(readFileSync(path.join(dir, 'zhuma-mode.json'), 'utf8')).mode ?? 'ok';
-  } catch {
-    return 'ok';
-  }
-}
-
 function visibleCatalog(dir) {
-  const grant = JSON.parse(readFileSync(path.join(dir, 'zhuma-grant.json'), 'utf8'));
   const patch = readFileSync(path.join(dir, 'cordis.patch.yml'), 'utf8');
-  const skills = [...grant.skills];
-  const sections = patch.split(/\n\s*- id:/);
-  const office = sections.find((section) => section.includes('skill-office')) ?? '';
-  if (!/disabled:\s*true/.test(office)) skills.push({ id: 'skill-office', version: 'bundled' });
-  const filesystem = sections.find((section) => section.includes('skill-filesystem')) ?? '';
+  const skills = [];
+  const filesystem = section(patch, 'skill-filesystem');
+  const roots = [...filesystem.matchAll(/customSkillDirs:[\s\S]*?(?=\n- id:|\n- insert:|$)/g)];
+  const dirs = [];
+  for (const match of roots) {
+    for (const found of match[0].matchAll(/- "([^"]+)"/g)) dirs.push(found[1]);
+  }
   if (!/includeDefaultRoots:\s*false/.test(filesystem)) {
-    const decoy = path.join(dir, 'decoy-skills');
-    for (const name of readdirSync(decoy)) {
-      const text = readFileSync(path.join(decoy, name, 'SKILL.md'), 'utf8');
-      const version = text.match(/version:\s*(\S+)/)?.[1] ?? '';
-      skills.push({ id: name, version });
+    dirs.push(path.join(dir, 'decoy-skills'));
+  }
+  for (const root of dirs) {
+    let names = [];
+    try {
+      names = readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const file = path.join(root, name, 'SKILL.md');
+      if (!exists(file)) continue;
+      const text = readFileSync(file, 'utf8');
+      const skillName = text.match(/^name:\s*(\S+)/m)?.[1];
+      if (!skillName) continue;
+      const version = text.match(/版本：(\S+)/)?.[1] ?? '';
+      skills.push({ id: skillName, version });
     }
   }
-  return { skills, mcp: grant.mcp };
+  const office = section(patch, 'skill-office');
+  if (/disabled:\s*false/.test(office)) skills.push({ id: 'skill-office', version: 'bundled' });
+  const mcp = [];
+  for (const match of patch.matchAll(/serverName:\s*"([^"]+)"/g)) {
+    mcp.push({ id: match[1], version: 'configured' });
+  }
+  return { skills, mcp, toolsDisabled: disabledTools(patch) };
+}
+
+function section(patch, id) {
+  const match = patch.match(new RegExp(`- id: ${id}\\n([\\s\\S]*?)(?=\\n- id:|\\n- insert:|$)`));
+  return match?.[1] ?? '';
+}
+
+function disabledTools(patch) {
+  const disabled = [];
+  for (const match of patch.matchAll(/- id: (\S+)\n  disabled: (true|false)/g)) {
+    if (match[2] === 'true') disabled.push(match[1]);
+  }
+  return disabled;
 }

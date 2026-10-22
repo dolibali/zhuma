@@ -38,10 +38,26 @@ export interface AgentRunRequest {
   readonly simulatedRequested: boolean;
   readonly signal: AbortSignal;
   readonly resumeSessionId?: string;
-  readonly skills?: readonly { readonly id: string; readonly version: string }[];
-  readonly mcp?: readonly { readonly id: string; readonly version: string }[];
+  readonly skills?: readonly {
+    readonly id: string;
+    readonly version: string;
+    readonly label?: string;
+    readonly description?: string;
+    readonly body?: string;
+  }[];
+  readonly mcp?: readonly {
+    readonly id: string;
+    readonly version: string;
+    readonly label?: string;
+    readonly transport?: 'stdio' | 'streamable-http';
+    readonly command?: string;
+    readonly args?: readonly string[];
+    readonly url?: string;
+  }[];
+  readonly toolAllowlist?: readonly string[];
   readonly attachments?: readonly {
     readonly id: string;
+    readonly name?: string;
     readonly mediaType: string;
     readonly bytes: Uint8Array;
   }[];

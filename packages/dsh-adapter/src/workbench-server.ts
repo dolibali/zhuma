@@ -151,7 +151,9 @@ async function dispatch(desk: ExecutionDesk, pathname: string, body: Record<stri
     return desk.addAttachment({
       name: stringField(body, 'name'),
       mediaType: stringField(body, 'mediaType'),
-      text: stringField(body, 'text'),
+      ...(typeof body.bytesBase64 === 'string'
+        ? { bytesBase64: body.bytesBase64 }
+        : { text: stringField(body, 'text') }),
     });
   }
   if (pathname === '/api/attachments/remove') return desk.removeAttachment(stringField(body, 'id'));

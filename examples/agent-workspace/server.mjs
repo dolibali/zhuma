@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createAgentWorkspaceView } from '../../packages/client/dist/index.js';
 import {
@@ -17,9 +17,13 @@ import {
 const root = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.join(root, 'fixture');
 const hold = process.env.ZHUMA_HOLD_RUNS === '1';
+const dataDir =
+  process.env.ZHUMA_DATA_DIR ??
+  (process.env.ZHUMA_SESSION_FILE
+    ? path.dirname(process.env.ZHUMA_SESSION_FILE)
+    : path.join(homedir(), '.zhuma', 'workbench'));
 const sessionFile =
-  process.env.ZHUMA_SESSION_FILE ??
-  path.join(tmpdir(), `zhuma-agent-workspace-${process.pid}.json`);
+  process.env.ZHUMA_SESSION_FILE ?? path.join(dataDir, `session-${process.pid}.json`);
 
 let sequence = 0;
 function newId(prefix) {
@@ -47,10 +51,23 @@ const seed = {
     dependencyNodeIds: [],
     reviewRequired: true,
     reviewerIds: ['lin-ke'],
-    inputRefs: [],
+    inputRefs: [
+      { contextPackId: 'pack-goal' },
+      { contextPackId: 'pack-parent' },
+      { contextPackId: 'pack-input' },
+      { artifactVersionId: 'av-glossary' },
+      { contextPackId: 'pack-spec' },
+      { contextPackId: 'pack-review' },
+    ],
     expertRef: { id: 'api-impl', version: 'api-impl-v1' },
-    skillRefs: [],
-    mcpRefs: [],
+    skillRefs: [
+      { id: 'test-design', version: '1' },
+      { id: 'review-code', version: '1' },
+    ],
+    mcpRefs: [
+      { id: 'api-docs', version: '1' },
+      { id: 'issue-search', version: '1' },
+    ],
     inputNote: '',
     expectedOutput: '',
   },
@@ -69,6 +86,7 @@ const seed = {
         enabled: true,
         presetSkillIds: ['test-design'],
         presetMcpIds: ['api-docs'],
+        toolAllowlist: [],
       },
       {
         id: 'reviewer',
@@ -91,8 +109,22 @@ const seed = {
       },
     ],
     skills: [
-      { id: 'test-design', version: '1', label: '测试设计', available: true },
-      { id: 'review-code', version: '1', label: '代码审阅', available: true },
+      {
+        id: 'test-design',
+        version: '1',
+        label: '测试设计',
+        available: true,
+        description: '为开户字段设计校验用例',
+        body: '按字段清单列出必填、格式和校验位用例。',
+      },
+      {
+        id: 'review-code',
+        version: '1',
+        label: '代码审阅',
+        available: true,
+        description: '核对接口字段与校验是否一致',
+        body: '对照字段规范检查命名、必填和校验位。',
+      },
       {
         id: 'legacy',
         version: '1',
@@ -148,6 +180,8 @@ const seed = {
       summary: '确认企业开户字段与校验规则',
       required: true,
       includedByDefault: true,
+      contextPackId: 'pack-goal',
+      body: '确认企业开户字段与校验规则',
     },
     {
       id: 'parent',
@@ -158,6 +192,8 @@ const seed = {
       summary: '企业客户门户季度交付',
       required: true,
       includedByDefault: true,
+      contextPackId: 'pack-parent',
+      body: '企业客户门户季度交付',
     },
     {
       id: 'input',
@@ -168,6 +204,8 @@ const seed = {
       summary: '本节点输入：开户字段清单',
       required: true,
       includedByDefault: true,
+      contextPackId: 'pack-input',
+      body: '本节点输入：开户字段清单',
     },
     {
       id: 'upstream',
@@ -178,6 +216,8 @@ const seed = {
       summary: '已接受的上游术语表',
       required: false,
       includedByDefault: true,
+      artifactVersionId: 'av-glossary',
+      body: '已接受的上游术语表',
     },
     {
       id: 'knowledge',
@@ -189,6 +229,7 @@ const seed = {
       required: true,
       includedByDefault: true,
       relativePath: '开户字段规范.md',
+      contextPackId: 'pack-spec',
     },
     {
       id: 'review',
@@ -199,6 +240,8 @@ const seed = {
       summary: '上一轮评审：统一社会信用代码需要校验位',
       required: false,
       includedByDefault: true,
+      contextPackId: 'pack-review',
+      body: '上一轮评审：统一社会信用代码需要校验位',
     },
     {
       id: 'missing',
@@ -224,7 +267,10 @@ const dependencies = {
         ? { pauseBeforeAccept: true, pauseAfterAccept: true, chunkDelayMs: 0 }
         : { chunkDelayMs: 70 },
     ),
-    new DshChatExecutor(process.env),
+    new DshChatExecutor(process.env, {
+      dataDir: path.dirname(sessionFile),
+      sweepOrphans: true,
+    }),
     new UnimplementedNativeExecutor('codearts-cli'),
   ],
   newId,

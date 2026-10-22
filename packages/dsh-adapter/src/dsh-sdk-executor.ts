@@ -1,6 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExecutionFaultKind } from '@zhuma/agent-core';
@@ -24,6 +35,28 @@ export interface DshExecutorOptions {
   readonly initTimeoutMs?: number;
   readonly promptTimeoutMs?: number;
   readonly onSpawn?: (pid: number) => void;
+  /** 工作台数据目录。会话家目录在其下用 mkdtemp 生成。 */
+  readonly dataDir?: string;
+  /** 进程启动时清掉索引里没有的会话目录。 */
+  readonly sweepOrphans?: boolean;
+}
+
+interface SkillGrant {
+  readonly id: string;
+  readonly version: string;
+  readonly label?: string;
+  readonly description?: string;
+  readonly body?: string;
+}
+
+interface McpGrant {
+  readonly id: string;
+  readonly version: string;
+  readonly label?: string;
+  readonly transport?: 'stdio' | 'streamable-http';
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly url?: string;
 }
 
 interface LiveRun {
@@ -33,13 +66,79 @@ interface LiveRun {
   receipt?: (receipt: CancelReceipt) => void;
 }
 
+interface SessionEvent {
+  readonly type?: string;
+  readonly data?: {
+    readonly message?: { readonly content?: unknown };
+    readonly reason?: { readonly kind?: string };
+    readonly stream?: unknown;
+  };
+}
+
 interface RpcMessage {
   id?: number;
   method?: string;
-  params?: { event?: { type?: string; reason?: { kind?: string }; content?: unknown } };
+  params?: { event?: SessionEvent };
   result?: unknown;
   error?: { message?: string };
 }
+
+interface SessionIndex {
+  sessions: Record<string, string>;
+}
+
+/** 内置工具默认关闭。白名单里的名字或插件 id 打开对应的一组。 */
+const TOOL_GROUPS: readonly {
+  readonly ids: readonly string[];
+  readonly names: readonly string[];
+}[] = [
+  {
+    ids: ['tool-bash', 'tool-pwsh', 'tool-jobs'],
+    names: ['bash', 'shell', 'tool-bash', 'tool-pwsh', 'tool-jobs'],
+  },
+  {
+    ids: ['tool-fs', 'tool-fs-search'],
+    names: ['write', 'edit', 'read', 'fs', 'tool-fs', 'tool-fs-search'],
+  },
+  {
+    ids: ['web', 'web-search-deepseek', 'web-deepseek-api', 'web-fetch-http', 'tool-web'],
+    names: [
+      'web',
+      'web_fetch',
+      'web_search',
+      'web-fetch',
+      'web-search',
+      'tool-web',
+      'web-fetch-http',
+      'web-search-deepseek',
+      'web-deepseek-api',
+    ],
+  },
+  {
+    ids: [
+      'subagent',
+      'subagent-spawn-in-process',
+      'subagent-fork-in-process',
+      'tool-subagent',
+      'tool-subagent-fork',
+      'tool-subagent-control',
+      'tool-subagent-list-agents',
+    ],
+    names: [
+      'subagent',
+      'tool-subagent',
+      'tool-subagent-fork',
+      'tool-subagent-control',
+      'tool-subagent-list-agents',
+      'subagent-spawn-in-process',
+      'subagent-fork-in-process',
+    ],
+  },
+  {
+    ids: ['tool-workflow', 'workflow-ptc'],
+    names: ['workflow', 'tool-workflow', 'workflow-ptc'],
+  },
+];
 
 /** `ZHUMA_DSH_BIN`，否则使用上游构建出的 CLI。两者都不存在时返回 null。 */
 export function resolveDshBinary(env: NodeJS.ProcessEnv = process.env): string | null {
@@ -52,10 +151,65 @@ export function missingDshRuntimeReason(): string {
   return '没有找到 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。还需要 ZHUMA_MODEL_BASE_URL 和 ZHUMA_MODEL_API_KEY。不会改用模拟执行器。';
 }
 
+export function resolveDshDataDir(env: NodeJS.ProcessEnv, dataDir?: string): string {
+  const explicit = dataDir?.trim() ?? '';
+  if (explicit.length > 0) return path.resolve(explicit);
+  const fromEnv = env.ZHUMA_DATA_DIR?.trim() ?? '';
+  if (fromEnv.length > 0) return path.resolve(fromEnv);
+  const sessionFile = env.ZHUMA_SESSION_FILE?.trim() ?? '';
+  if (sessionFile.length > 0) return path.dirname(path.resolve(sessionFile));
+  return path.join(homedir(), '.zhuma', 'workbench');
+}
+
+/** 启动时清掉会话根目录里不在索引中的目录。 */
+export function sweepDshSessionOrphans(root: string): void {
+  if (!existsSync(root)) return;
+  const index = readIndex(root);
+  const live = new Set(Object.values(index.sessions));
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (live.has(entry.name)) continue;
+    rmSync(path.join(root, entry.name), { recursive: true, force: true });
+  }
+  let changed = false;
+  for (const [id, name] of Object.entries(index.sessions)) {
+    if (existsSync(path.join(root, name))) continue;
+    delete index.sessions[id];
+    changed = true;
+  }
+  if (changed) writeIndex(root, index);
+}
+
+/**
+ * 从上游会话事件里取出正文和结束原因。
+ * 正文在 `data.message.content`，流式片段在 `data.stream`，结束原因在 `data.reason.kind`。
+ */
+export function describeDshSessionEvent(event: unknown): {
+  type: string;
+  text: string;
+  tools: boolean;
+  reasonKind: string | null;
+} {
+  if (event === null || typeof event !== 'object') {
+    return { type: '', text: '', tools: false, reasonKind: null };
+  }
+  const record = event as SessionEvent;
+  const data = record.data;
+  const reason = data?.reason && typeof data.reason.kind === 'string' ? data.reason.kind : null;
+  const read = readAssistantPayload(data);
+  return {
+    type: typeof record.type === 'string' ? record.type : '',
+    text: read.text,
+    tools: read.tools,
+    reasonKind: reason,
+  };
+}
+
 /**
  * 显式选择后启动 `dsh --profile sdk`，经 stdio JSON-RPC 对话。
  * `accepted` 只在 `session/prompt` 返回 messageId 之后发出。
  * 停止没有协议方法：结束子进程，回执来自进程退出或 `turn/end` 的 `aborted`。
+ * 会话可以 `session/resume`，所以 `sessionResume` 为 true。
  */
 export class DshChatExecutor implements AgentExecutor {
   readonly id = 'dsh' as const;
@@ -63,10 +217,11 @@ export class DshChatExecutor implements AgentExecutor {
   readonly unavailableReason?: string;
   private readonly configResult: DshModelConfigResult;
   private readonly bin: string | null;
-  private readonly mode: string;
+  private readonly mode?: string;
   private readonly initTimeoutMs: number;
   private readonly promptTimeoutMs: number;
   private readonly onSpawn?: (pid: number) => void;
+  private readonly sessionsRoot: string;
   private readonly known = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly stopping = new Set<string>();
@@ -76,10 +231,12 @@ export class DshChatExecutor implements AgentExecutor {
   constructor(env: NodeJS.ProcessEnv = process.env, options: DshExecutorOptions = {}) {
     this.configResult = readDshModelConfig(env);
     this.bin = options.bin ?? resolveDshBinary(env);
-    this.mode = options.mode ?? 'ok';
+    if (options.mode !== undefined) this.mode = options.mode;
     this.initTimeoutMs = options.initTimeoutMs ?? 30_000;
     this.promptTimeoutMs = options.promptTimeoutMs ?? 30_000;
     if (options.onSpawn !== undefined) this.onSpawn = options.onSpawn;
+    this.sessionsRoot = path.join(resolveDshDataDir(env, options.dataDir), 'dsh-sessions');
+    if (options.sweepOrphans) sweepDshSessionOrphans(this.sessionsRoot);
     const reason = !this.configResult.ok
       ? this.configResult.reason
       : this.bin === null
@@ -88,12 +245,19 @@ export class DshChatExecutor implements AgentExecutor {
     if (reason !== undefined) this.unavailableReason = reason;
     this.capabilities = Object.freeze({
       liveInjection: false,
-      sessionResume: false,
+      sessionResume: true,
       cancelReceipt: true,
       streaming: true,
       verified: this.configResult.ok && this.bin !== null,
       mode: 'native',
     });
+  }
+
+  /** 运行作废或节点结束后删掉这次会话目录。 */
+  discardSession(sessionId: string): void {
+    const home = this.lookup(sessionId);
+    this.forget(sessionId);
+    if (home !== null) rmSync(home, { recursive: true, force: true });
   }
 
   async cancel(runId: string): Promise<CancelReceipt> {
@@ -118,21 +282,32 @@ export class DshChatExecutor implements AgentExecutor {
     if (this.bin === null) throw new ExecutorNotImplementedError(missingDshRuntimeReason());
     this.known.add(request.runId);
     const bin = this.bin;
+    if (!canExecute(bin)) {
+      this.finished.add(request.runId);
+      yield {
+        type: 'failed',
+        fault: 'executor-disconnected',
+        message: '执行器启动失败。',
+        simulated: false,
+      };
+      return;
+    }
     const config = this.configResult.config;
     const sessionId = sanitizeId(request.resumeSessionId ?? `zhuma-${request.runId}`);
-    const home = path.join(tmpdir(), 'zhuma-dsh-sessions', sessionId);
-    const created = !existsSync(path.join(home, 'zhuma-session.jsonl'));
+    const located = this.locate(sessionId);
+    const home = located.home;
+    const created = located.created;
     writeRunHome(home, {
       skills: request.skills ?? [],
       mcp: request.mcp ?? [],
+      toolAllowlist: request.toolAllowlist ?? [],
       modelId: config.modelId,
       baseUrl: config.baseUrl,
-      mode: this.mode,
     });
     const child = spawn(bin, ['--profile', 'sdk'], {
       cwd: home,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: childEnv(home, config.apiKey),
+      env: childEnv(home, config.apiKey, this.mode),
     });
     if (child.pid !== undefined) this.onSpawn?.(child.pid);
     const early = this.earlyReceipt.get(request.runId);
@@ -148,6 +323,12 @@ export class DshChatExecutor implements AgentExecutor {
     const rpc = new StdioRpc(child, (text) => redact(text, config.apiKey));
     let cancelYielded = false;
     let initialized = false;
+    const fail = (fault: ExecutionFaultKind, message: string): AgentRunEvent => ({
+      type: 'failed',
+      fault,
+      message: state.accepted ? message : withStderr(message, rpc.stderr),
+      simulated: false,
+    });
     try {
       await rpc.request(
         'initialize',
@@ -155,6 +336,7 @@ export class DshChatExecutor implements AgentExecutor {
         this.initTimeoutMs,
       );
       initialized = true;
+      restrictTree(home);
       if (request.resumeSessionId !== undefined) {
         await rpc.request('session/resume', { sessionId }, this.promptTimeoutMs);
       }
@@ -171,18 +353,14 @@ export class DshChatExecutor implements AgentExecutor {
       }
       const messageId = messageIdOf(prompted);
       if (messageId === null) {
-        yield {
-          type: 'failed',
-          fault: 'model-error',
-          message: '执行器没有返回接收回执。',
-          simulated: false,
-        };
+        await stopChild(child, rpc);
+        yield fail('model-error', '执行器没有返回接收回执。');
         return;
       }
       state.accepted = true;
       yield* noiseActivities(request.runId, rpc);
       yield { type: 'accepted', executorRunId: messageId, sessionId, simulated: false };
-      const outcome = await readTurn(rpc, state, this.promptTimeoutMs);
+      const outcome = yield* readTurn(rpc, state, this.promptTimeoutMs);
       yield* noiseActivities(request.runId, rpc);
       if (outcome.kind === 'cancelled') {
         cancelYielded = true;
@@ -198,7 +376,6 @@ export class DshChatExecutor implements AgentExecutor {
         };
         return;
       }
-      yield { type: 'delta', text: outcome.text, simulated: false };
       yield {
         type: 'completed',
         result: {
@@ -211,38 +388,39 @@ export class DshChatExecutor implements AgentExecutor {
         },
       };
     } catch (error) {
+      if (!rpc.closed) await stopChild(child, rpc);
       if (state.stopping) {
-        await rpc.exited;
         cancelYielded = true;
         yield { type: 'cancelled', simulated: false };
         return;
       }
       const timedOut = error instanceof Error && error.message === 'timeout';
-      yield {
-        type: 'failed',
-        fault: timedOut ? 'network-interruption' : 'executor-disconnected',
-        message: timedOut
+      yield fail(
+        timedOut ? 'network-interruption' : 'executor-disconnected',
+        timedOut
           ? initialized
             ? state.accepted
               ? '执行器没有在时限内返回结果。'
               : '执行器没有在时限内接收。'
             : '执行器启动超时。'
           : '执行器启动失败。',
-        simulated: false,
-      };
+      );
     } finally {
-      if (!rpc.closed) {
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          // 进程已经退出。
-        }
-        await rpc.exited;
-      }
+      if (!rpc.closed) await stopChild(child, rpc);
       if (existsSync(home)) {
-        writeFileSync(path.join(home, 'zhuma-collected-stderr.txt'), rpc.stderr, 'utf8');
+        if (state.accepted) {
+          writeFileSync(path.join(home, 'zhuma-collected-stderr.txt'), rpc.stderr, {
+            encoding: 'utf8',
+            mode: 0o600,
+          });
+          restrictTree(home);
+        } else if (created) {
+          rmSync(home, { recursive: true, force: true });
+          this.forget(sessionId);
+        } else {
+          restrictTree(home);
+        }
       }
-      if (!state.accepted && created) rmSync(home, { recursive: true, force: true });
       this.finished.add(request.runId);
       this.live.delete(request.runId);
       state.receipt?.({
@@ -251,23 +429,66 @@ export class DshChatExecutor implements AgentExecutor {
       });
     }
   }
+
+  private locate(sessionId: string): { home: string; created: boolean } {
+    const existing = this.lookup(sessionId);
+    if (existing !== null && existsSync(existing)) return { home: existing, created: false };
+    mkdirSync(this.sessionsRoot, { recursive: true, mode: 0o700 });
+    chmodSync(this.sessionsRoot, 0o700);
+    const home = mkdtempSync(path.join(this.sessionsRoot, 'dsh-'));
+    chmodSync(home, 0o700);
+    this.remember(sessionId, path.basename(home));
+    return { home, created: true };
+  }
+
+  private lookup(sessionId: string): string | null {
+    const name = readIndex(this.sessionsRoot).sessions[sanitizeId(sessionId)];
+    if (name === undefined) return null;
+    return path.join(this.sessionsRoot, name);
+  }
+
+  private remember(sessionId: string, dirName: string): void {
+    const index = readIndex(this.sessionsRoot);
+    index.sessions[sanitizeId(sessionId)] = dirName;
+    writeIndex(this.sessionsRoot, index);
+  }
+
+  private forget(sessionId: string): void {
+    const index = readIndex(this.sessionsRoot);
+    if (index.sessions[sanitizeId(sessionId)] === undefined) return;
+    delete index.sessions[sanitizeId(sessionId)];
+    writeIndex(this.sessionsRoot, index);
+  }
 }
 
-function childEnv(home: string, apiKey: string): NodeJS.ProcessEnv {
-  return {
+export function dshSessionHome(sessionId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const root = path.join(resolveDshDataDir(env), 'dsh-sessions');
+  const name = readIndex(root).sessions[sanitizeId(sessionId)];
+  if (name === undefined) return path.join(root, 'missing', sanitizeId(sessionId));
+  return path.join(root, name);
+}
+
+function childEnv(home: string, apiKey: string, mode: string | undefined): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
     TMPDIR: process.env.TMPDIR ?? tmpdir(),
     LANG: process.env.LANG ?? 'C.UTF-8',
     DSH_HOME: home,
+    DSH_TELEMETRY_DISABLED: '1',
+    DSH_TELEMETRY_MODE: 'DISABLED',
     ZHUMA_MODEL_API_KEY: apiKey,
   };
+  if (mode !== undefined) env.ZHUMA_DSH_STUB_MODE = mode;
+  return env;
 }
 
 function promptBlocks(request: AgentRunRequest): readonly Record<string, unknown>[] {
   const blocks: Record<string, unknown>[] = [
     { type: 'text', text: `${request.goal}\n${request.instruction}` },
   ];
+  const mcpNote = mcpPrompt(request.mcp ?? []);
+  if (mcpNote.length > 0) blocks.push({ type: 'text', text: mcpNote });
   for (const item of request.promptContext ?? []) {
     blocks.push({ type: 'text', text: item.body });
   }
@@ -278,11 +499,28 @@ function promptBlocks(request: AgentRunRequest): readonly Record<string, unknown
         data: Buffer.from(item.bytes).toString('base64'),
         mimeType: item.mediaType,
       });
-    } else {
+    } else if (isTextMedia(item.mediaType)) {
       blocks.push({ type: 'text', text: Buffer.from(item.bytes).toString('utf8') });
+    } else {
+      blocks.push({
+        type: 'file',
+        data: Buffer.from(item.bytes).toString('base64'),
+        mimeType: item.mediaType,
+        name: item.name ?? item.id,
+      });
     }
   }
   return blocks;
+}
+
+function mcpPrompt(items: readonly McpGrant[]): string {
+  if (items.length === 0) return '';
+  const lines = items.map((item) => {
+    const ready = mcpReady(item);
+    const access = ready ? '已按配置的传输接入' : '没有配置传输，不会连接外部服务';
+    return `${item.id}（${item.label ?? item.id}，版本 ${item.version}，${access}）`;
+  });
+  return `本次运行已授权的 MCP：${lines.join('、')}。`;
 }
 
 function isImageMime(
@@ -294,6 +532,10 @@ function isImageMime(
     value === 'image/webp' ||
     value === 'image/gif'
   );
+}
+
+function isTextMedia(value: string): boolean {
+  return value.startsWith('text/') || value === 'application/json';
 }
 
 function messageIdOf(value: unknown): string | null {
@@ -323,7 +565,11 @@ type TurnOutcome =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'failed'; readonly fault: ExecutionFaultKind; readonly message: string };
 
-async function readTurn(rpc: StdioRpc, state: LiveRun, timeoutMs: number): Promise<TurnOutcome> {
+async function* readTurn(
+  rpc: StdioRpc,
+  state: LiveRun,
+  timeoutMs: number,
+): AsyncGenerator<AgentRunEvent, TurnOutcome> {
   let text = '';
   let tools = false;
   while (!rpc.closed) {
@@ -347,18 +593,23 @@ async function readTurn(rpc: StdioRpc, state: LiveRun, timeoutMs: number): Promi
     }
     const event = note.params?.event;
     if (event?.type === 'assistant/message') {
-      const read = readAssistant(event.content);
-      text += read.text;
+      const read = readAssistantPayload(event.data);
       tools = tools || read.tools;
+      const next = mergeAssistantText(text, read.text);
+      if (next.delta.length > 0) {
+        text = next.text;
+        yield { type: 'delta', text: next.delta, simulated: false };
+      }
     }
     if (event?.type === 'turn/end') {
-      const kind = event.reason?.kind;
+      const kind = event.data?.reason?.kind;
       if (kind === 'aborted' || state.stopping) {
         await rpc.exited;
         return { kind: 'cancelled' };
       }
-      if (kind === 'error')
+      if (kind === 'error') {
         return { kind: 'failed', fault: 'model-error', message: '模型调用失败。' };
+      }
       if (tools && text.trim().length === 0) {
         return {
           kind: 'failed',
@@ -378,7 +629,20 @@ async function readTurn(rpc: StdioRpc, state: LiveRun, timeoutMs: number): Promi
     : { kind: 'failed', fault: 'executor-disconnected', message: '执行器启动失败。' };
 }
 
-function readAssistant(content: unknown): { text: string; tools: boolean } {
+function mergeAssistantText(seen: string, incoming: string): { text: string; delta: string } {
+  if (incoming.length === 0) return { text: seen, delta: '' };
+  if (incoming.startsWith(seen)) return { text: incoming, delta: incoming.slice(seen.length) };
+  if (seen.endsWith(incoming) || seen.includes(incoming)) return { text: seen, delta: '' };
+  return { text: seen + incoming, delta: incoming };
+}
+
+function readAssistantPayload(data: SessionEvent['data']): { text: string; tools: boolean } {
+  const content = readBlocks(data?.message?.content);
+  if (content.text.length > 0 || content.tools) return content;
+  return { text: textFromStream(data?.stream), tools: false };
+}
+
+function readBlocks(content: unknown): { text: string; tools: boolean } {
   if (!Array.isArray(content)) return { text: '', tools: false };
   let text = '';
   let tools = false;
@@ -395,6 +659,30 @@ function readAssistant(content: unknown): { text: string; tools: boolean } {
     }
   }
   return { text, tools };
+}
+
+function textFromStream(stream: unknown): string {
+  if (!Array.isArray(stream)) return '';
+  let pieces = '';
+  let block = '';
+  for (const item of stream) {
+    if (item === null || typeof item !== 'object') continue;
+    if ('texts' in item && Array.isArray(item.texts)) {
+      for (const piece of item.texts) {
+        if (typeof piece === 'string') pieces += piece;
+      }
+    }
+    const chunk = 'chunk' in item ? item.chunk : undefined;
+    if (
+      chunk !== null &&
+      typeof chunk === 'object' &&
+      'text' in chunk &&
+      typeof chunk.text === 'string'
+    ) {
+      block = chunk.text;
+    }
+  }
+  return pieces.length > 0 ? pieces : block;
 }
 
 class StdioRpc {
@@ -423,27 +711,29 @@ class StdioRpc {
     });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
+    child.stdin.on('error', () => {
+      // 子进程已经退出时，写入会得到 EPIPE。运行失败由退出路径处理，不能打垮工作台。
+    });
     child.stdout.on('data', (chunk: string) => this.push(chunk));
     child.stderr.on('data', (chunk: string) => {
       this.stderr += this.redactText(chunk);
     });
-    child.on('exit', (code) => {
+    const close = (code: number) => {
+      if (this.closed) return;
       this.closed = true;
-      this.finish(code ?? 1);
+      this.finish(code);
       for (const waiter of this.pending.values()) waiter.reject(new Error('closed'));
       this.pending.clear();
       this.noteWait?.();
-    });
-    child.on('error', () => {
-      this.closed = true;
-      this.finish(1);
-    });
+    };
+    child.on('exit', (code) => close(code ?? 1));
+    child.on('error', () => close(1));
   }
 
   request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+    if (this.closed) return Promise.reject(new Error('closed'));
     const id = this.nextId;
     this.nextId += 1;
-    this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -459,6 +749,13 @@ class StdioRpc {
           reject(error);
         },
       });
+      try {
+        this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      } catch {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(new Error('closed'));
+      }
     });
   }
 
@@ -517,69 +814,175 @@ class StdioRpc {
   }
 }
 
+async function stopChild(child: ChildProcessWithoutNullStreams, rpc: StdioRpc): Promise<void> {
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // 进程已经退出。
+  }
+  await rpc.exited;
+}
+
+function withStderr(message: string, stderr: string): string {
+  const extra = stderr.trim();
+  if (extra.length === 0) return message;
+  const clipped = extra.length > 2000 ? extra.slice(0, 2000) : extra;
+  return `${message}\n${clipped}`;
+}
+
+function canExecute(file: string): boolean {
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function writeRunHome(
   home: string,
   input: {
-    readonly skills: readonly { readonly id: string; readonly version: string }[];
-    readonly mcp: readonly { readonly id: string; readonly version: string }[];
+    readonly skills: readonly SkillGrant[];
+    readonly mcp: readonly McpGrant[];
+    readonly toolAllowlist: readonly string[];
     readonly modelId: string;
     readonly baseUrl: string;
-    readonly mode: string;
   },
 ): void {
-  mkdirSync(home, { recursive: true });
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  chmodSync(home, 0o700);
   const granted = path.join(home, 'granted-skills');
-  mkdirSync(granted, { recursive: true });
+  mkdirSync(granted, { recursive: true, mode: 0o700 });
+  chmodSync(granted, 0o700);
   for (const skill of input.skills) {
     const dir = path.join(granted, sanitizeId(skill.id));
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      path.join(dir, 'SKILL.md'),
-      `---\nid: ${skill.id}\nversion: ${skill.version}\n---\n`,
-      'utf8',
-    );
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    writePrivate(path.join(dir, 'SKILL.md'), skillDocument(skill));
   }
-  writeFileSync(
+  writePrivate(
     path.join(home, 'zhuma-grant.json'),
-    JSON.stringify({ skills: input.skills, mcp: input.mcp }),
-    'utf8',
+    JSON.stringify({
+      skills: input.skills.map((skill) => ({ id: skill.id, version: skill.version })),
+      mcp: input.mcp.map((item) => ({ id: item.id, version: item.version })),
+      toolAllowlist: input.toolAllowlist,
+    }),
   );
-  writeFileSync(path.join(home, 'zhuma-mode.json'), JSON.stringify({ mode: input.mode }), 'utf8');
-  const servers = input.mcp
-    .map((item) => `        - id: ${item.id}\n          version: ${item.version}`)
-    .join('\n');
-  writeFileSync(
-    path.join(home, 'cordis.patch.yml'),
-    [
-      'plugins:',
-      '  - id: skill-office',
-      '    name: "@deepseek-ai/dsh-skill-office"',
-      '    disabled: true',
-      '  - id: skill-filesystem',
-      '    name: "@deepseek-ai/dsh-skill-filesystem"',
-      '    config:',
-      '      includeDefaultRoots: false',
-      '      customSkillDirs:',
-      '        - granted-skills',
-      '  - id: mcp-client',
-      '    name: "@deepseek-ai/dsh-mcp-client"',
-      '    config:',
-      '      servers:',
-      servers.length > 0 ? servers : '        []',
-      '  - id: llm',
-      '    name: "@deepseek-ai/dsh-llm-pi-ai"',
-      '    config:',
-      '      providers:',
-      '        zhuma:',
-      '          api: openai-completions',
-      '          apiKeyEnv: ZHUMA_MODEL_API_KEY',
-      `          baseURL: "${input.baseUrl}"`,
-      '          models:',
-      `            - id: "${input.modelId}"`,
-      '',
-    ].join('\n'),
-    'utf8',
-  );
+  writePrivate(path.join(home, 'cordis.patch.yml'), renderPatch(home, input));
+  restrictTree(home);
+}
+
+function skillDocument(skill: SkillGrant): string {
+  const name = kebab(skill.id);
+  const description = oneLine(skill.description ?? skill.label ?? name);
+  const body = (skill.body ?? skill.label ?? description).trim();
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n\n版本：${skill.version}\n`;
+}
+
+function renderPatch(
+  home: string,
+  input: {
+    readonly skills: readonly SkillGrant[];
+    readonly mcp: readonly McpGrant[];
+    readonly toolAllowlist: readonly string[];
+    readonly modelId: string;
+    readonly baseUrl: string;
+  },
+): string {
+  const allow = new Set(input.toolAllowlist);
+  const lines = [
+    '- id: llm-pi-ai',
+    '  config:',
+    '    providers:',
+    '      zhuma:',
+    '        api: openai-completions',
+    '        apiKeyEnv: ZHUMA_MODEL_API_KEY',
+    `        baseURL: ${yamlQuote(input.baseUrl)}`,
+    '        models:',
+    `          - id: ${yamlQuote(input.modelId)}`,
+    '            input:',
+    '              - text',
+    '              - image',
+    '- id: skill-filesystem',
+    '  config:',
+    '    includeDefaultRoots: false',
+    '    customSkillDirs:',
+    `      - ${yamlQuote(path.join(home, 'granted-skills'))}`,
+    '- id: skill-office',
+    `  disabled: ${input.skills.some((skill) => skill.id === 'skill-office') ? 'false' : 'true'}`,
+  ];
+  for (const group of TOOL_GROUPS) {
+    const enabled =
+      group.ids.some((id) => allow.has(id)) || group.names.some((name) => allow.has(name));
+    for (const id of group.ids) {
+      lines.push(`- id: ${id}`, `  disabled: ${enabled ? 'false' : 'true'}`);
+    }
+  }
+  const ready = input.mcp.filter(mcpReady);
+  if (ready.length > 0) {
+    lines.push('- insert:');
+    for (const item of ready) {
+      const serverName = sanitizeId(item.id).slice(0, 32);
+      lines.push(
+        `  - id: mcp-${serverName}`,
+        '    name: "@deepseek-ai/dsh-mcp-client"',
+        '    config:',
+        `      serverName: ${yamlQuote(serverName)}`,
+        `      transport: ${item.transport}`,
+      );
+      if (item.transport === 'stdio' && item.command !== undefined) {
+        lines.push(`      command: ${yamlQuote(item.command)}`);
+        if (item.args !== undefined && item.args.length > 0) {
+          lines.push('      args:');
+          for (const arg of item.args) lines.push(`        - ${yamlQuote(arg)}`);
+        }
+      }
+      if (item.transport === 'streamable-http' && item.url !== undefined) {
+        lines.push(`      url: ${yamlQuote(item.url)}`);
+      }
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function mcpReady(item: McpGrant): boolean {
+  if (item.transport === 'stdio') return (item.command ?? '').length > 0;
+  if (item.transport === 'streamable-http') return (item.url ?? '').length > 0;
+  return false;
+}
+
+function writePrivate(file: string, text: string): void {
+  writeFileSync(file, text, { encoding: 'utf8', mode: 0o600 });
+  chmodSync(file, 0o600);
+}
+
+function restrictTree(root: string): void {
+  if (!existsSync(root)) return;
+  chmodSync(root, 0o700);
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) restrictTree(full);
+    else if (entry.isFile()) chmodSync(full, 0o600);
+  }
+}
+
+function readIndex(root: string): SessionIndex {
+  try {
+    const parsed = JSON.parse(readFileSync(path.join(root, 'index.json'), 'utf8')) as SessionIndex;
+    if (parsed === null || typeof parsed !== 'object' || parsed.sessions === null) {
+      return { sessions: {} };
+    }
+    return { sessions: { ...parsed.sessions } };
+  } catch {
+    return { sessions: {} };
+  }
+}
+
+function writeIndex(root: string, index: SessionIndex): void {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  chmodSync(root, 0o700);
+  writePrivate(path.join(root, 'index.json'), JSON.stringify(index));
 }
 
 function sanitizeId(value: string): string {
@@ -587,11 +990,25 @@ function sanitizeId(value: string): string {
   return cleaned.length > 0 ? cleaned : 'session';
 }
 
+function kebab(value: string): string {
+  const cleaned = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return cleaned.length > 0 ? cleaned : 'skill';
+}
+
+function oneLine(value: string): string {
+  const cleaned = value.replace(/[\r\n]+/g, ' ').trim();
+  return cleaned.length > 0 ? cleaned : 'skill';
+}
+
+function yamlQuote(value: string): string {
+  return JSON.stringify(value);
+}
+
 function redact(text: string, secret: string): string {
   if (secret.length === 0) return text;
   return text.split(secret).join('[redacted]');
-}
-
-export function dshSessionHome(sessionId: string): string {
-  return path.join(tmpdir(), 'zhuma-dsh-sessions', sanitizeId(sessionId));
 }

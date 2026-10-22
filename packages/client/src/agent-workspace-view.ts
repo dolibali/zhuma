@@ -233,9 +233,12 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
         : humanizeLabel(issue?.target);
   const terminalNode = snapshot.node.status === 'cancelled' || snapshot.node.status === 'completed';
   const recordBroken =
-    (snapshot.node.status === 'running' || snapshot.node.status === 'waiting-for-input') &&
-    snapshot.lastError?.code === 'entry-inconsistent' &&
-    active === undefined;
+    snapshot.lastError?.code === 'invalid-handoff' ||
+    ((snapshot.node.status === 'running' ||
+      snapshot.node.status === 'waiting-for-input' ||
+      snapshot.node.status === 'ready') &&
+      snapshot.lastError?.code === 'entry-inconsistent' &&
+      active === undefined);
   const entryMissing = snapshot.lastError?.code === 'entry-inconsistent';
   const sendBlocked = issue
     ? `${issueTarget}：${issue.reason}。修正后再发送，未配置时不会改用模拟执行器。`
@@ -279,7 +282,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
         ? '尚未选择执行器。未配置时不会自动改用模拟执行器。'
         : unavailable,
     resumeNote: snapshot.resumeGap
-      ? '已恢复事实：有一次运行仍未结束。执行器不支持会话恢复，没有把它推断成完成。请核实为执行器已断开。'
+      ? '已恢复事实：有一次运行仍未结束。没有把它推断成完成。请核实为执行器已断开。'
       : null,
     nextAction: hint.label,
     run: active
