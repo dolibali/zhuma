@@ -88,27 +88,64 @@ test('a human handoff may omit expertRef and an expert handoff may not', () => {
   assert.equal(Object.hasOwn(leaked.handoff.mcpRefs[0], 'token'), false);
 });
 
-test('input refs are rebuilt as id and version only', () => {
+test('context input refs keep their whitelist fields and drop extras', () => {
   const rebuilt = readNodeHandoff(
     handoff(
       { id: 'human-1', kind: 'human' },
       {
-        inputRefs: [{ id: 'artifact-1', version: 'applied-plan-1', token: 'secret' }],
+        inputRefs: [
+          {
+            sourceNodeId: 'upstream',
+            artifactVersionId: 'artifact-v2',
+            contextPackId: 'context-1',
+            token: 'secret',
+            id: 'a',
+            version: 't-v1',
+          },
+        ],
       },
     ),
   );
   assert.equal(rebuilt.ok, true);
-  assert.deepEqual(rebuilt.handoff.inputRefs, [{ id: 'artifact-1', version: 'applied-plan-1' }]);
+  assert.deepEqual(rebuilt.handoff.inputRefs, [
+    {
+      sourceNodeId: 'upstream',
+      artifactVersionId: 'artifact-v2',
+      contextPackId: 'context-1',
+    },
+  ]);
   assert.equal(Object.hasOwn(rebuilt.handoff.inputRefs[0], 'token'), false);
+  assert.equal(Object.hasOwn(rebuilt.handoff.inputRefs[0], 'id'), false);
+  assert.equal(Object.hasOwn(rebuilt.handoff.inputRefs[0], 'version'), false);
 
-  const contextShaped = readNodeHandoff(
+  const partial = readNodeHandoff(
     handoff(
       { id: 'human-1', kind: 'human' },
       { inputRefs: [{ sourceNodeId: 'node-0', artifactVersionId: 'art-1' }] },
     ),
   );
-  assert.equal(contextShaped.ok, false);
-  assert.equal(contextShaped.code, 'invalid-handoff');
+  assert.equal(partial.ok, true);
+  assert.deepEqual(partial.handoff.inputRefs, [
+    { sourceNodeId: 'node-0', artifactVersionId: 'art-1' },
+  ]);
+});
+
+test('invalid context input refs are rejected without throwing', () => {
+  for (const inputRefs of [
+    null,
+    [null],
+    ['upstream'],
+    [[]],
+    [{}],
+    [{ token: 'secret' }],
+    [{ id: 'artifact-1', version: 'applied-plan-1' }],
+    [{ sourceNodeId: 1, artifactVersionId: 'art-1' }],
+    [{ sourceNodeId: 'node-0', artifactVersionId: null }],
+  ]) {
+    const invalid = readNodeHandoff(handoff({ id: 'human-1', kind: 'human' }, { inputRefs }));
+    assert.equal(invalid.ok, false, JSON.stringify(inputRefs));
+    assert.equal(invalid.code, 'invalid-handoff');
+  }
 });
 
 test('null handoff and snapshot arguments are rejected without throwing', () => {
@@ -120,6 +157,22 @@ test('null handoff and snapshot arguments are rejected without throwing', () => 
   assert.equal(readVersionedSnapshot(null, []), undefined);
   assert.equal(
     readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, null),
+    undefined,
+  );
+});
+
+test('an uncloneable snapshot reads as undefined', () => {
+  const catalog = [
+    {
+      assetId: 'expert-1',
+      id: 'applied-plan-1',
+      work() {
+        return 'no';
+      },
+    },
+  ];
+  assert.equal(
+    readVersionedSnapshot({ id: 'expert-1', version: 'applied-plan-1' }, catalog),
     undefined,
   );
 });

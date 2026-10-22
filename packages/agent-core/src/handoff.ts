@@ -79,7 +79,7 @@ interface NodeHandoffFields {
   readonly dependencyNodeIds: readonly string[];
   readonly reviewRequired: boolean;
   readonly reviewerIds: readonly string[];
-  readonly inputRefs: readonly VersionedRef[];
+  readonly inputRefs: readonly ContextInputRef[];
   readonly skillRefs: readonly VersionedRef[];
   readonly mcpRefs: readonly VersionedRef[];
   readonly inputNote: string;
@@ -188,6 +188,34 @@ function usableRef(ref: unknown): 'missing' | 'blank' | 'invalid' | VersionedRef
   return { id: candidate.id, version: candidate.version };
 }
 
+function copyInputRefs(refs: unknown): readonly ContextInputRef[] | undefined {
+  if (!Array.isArray(refs)) return undefined;
+  const copied: ContextInputRef[] = [];
+  for (const ref of refs) {
+    if (ref === null || typeof ref !== 'object' || Array.isArray(ref)) return undefined;
+    const candidate = ref as {
+      sourceNodeId?: unknown;
+      artifactVersionId?: unknown;
+      contextPackId?: unknown;
+    };
+    const next: {
+      sourceNodeId?: string;
+      artifactVersionId?: string;
+      contextPackId?: string;
+    } = {};
+    const fields = ['sourceNodeId', 'artifactVersionId', 'contextPackId'] as const;
+    for (const field of fields) {
+      const value = candidate[field];
+      if (value === undefined) continue;
+      if (typeof value !== 'string') return undefined;
+      next[field] = value;
+    }
+    if (Object.keys(next).length === 0) return undefined;
+    copied.push(next);
+  }
+  return copied;
+}
+
 function copyRefs(refs: unknown): readonly VersionedRef[] | undefined {
   if (!Array.isArray(refs)) return undefined;
   const copied: VersionedRef[] = [];
@@ -216,7 +244,7 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
   if (kind === 'agent') return { ok: false, code: 'agent-not-identity' };
   if (kind !== 'human' && kind !== 'expert') return { ok: false, code: 'invalid-handoff' };
   const ref = usableRef(input.expertRef);
-  const inputRefs = copyRefs(input.inputRefs);
+  const inputRefs = copyInputRefs(input.inputRefs);
   const skillRefs = copyRefs(input.skillRefs);
   const mcpRefs = copyRefs(input.mcpRefs);
   if (inputRefs === undefined || skillRefs === undefined || mcpRefs === undefined) {
@@ -276,7 +304,11 @@ export function readVersionedSnapshot<T extends { readonly assetId: string; read
     (snapshot) => snapshot.assetId === ref.id && snapshot.id === ref.version,
   );
   if (found === undefined) return undefined;
-  return structuredClone(found);
+  try {
+    return structuredClone(found);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

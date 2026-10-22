@@ -30,6 +30,141 @@ function assertRejected(result) {
   assert.notEqual(result.state.status, 'completed');
 }
 
+test('a lost record cannot be rewritten by a child workflow round trip', () => {
+  let state = sentBack();
+  state = command(state, { type: 'child-workflow-started' }, 'trip-child').state;
+  state = command(state, { type: 'child-workflow-returned' }, 'trip-back').state;
+  assert.equal(state.status, 'ready');
+  assert.equal(state.entryStatus, 'needs-revision');
+  const lost = { ...state };
+  delete lost.entryStatus;
+  const version = lost.version;
+  const started = command(lost, { type: 'child-workflow-started' }, 'trip-again');
+  assertRejected(started);
+  assert.equal(started.state.status, 'ready');
+  assert.equal(started.state.entryStatus, undefined);
+  assert.equal(started.state.version, version);
+  const returned = command(started.state, { type: 'child-workflow-returned' }, 'trip-return');
+  assertRejected(returned);
+  assert.equal(returned.state.status, 'ready');
+  assert.equal(returned.state.entryStatus, undefined);
+  const submitted = command(
+    returned.state,
+    { type: 'submit-artifact', reviewRequired: false },
+    'trip-submit',
+  );
+  assertRejected(submitted);
+  assert.equal(submitted.state.status, 'ready');
+});
+
+test('a lost record cannot be rewritten by a dependency round trip', () => {
+  let state = sentBack();
+  state = command(state, { type: 'child-workflow-started' }, 'dep-child').state;
+  state = command(state, { type: 'child-workflow-returned' }, 'dep-back').state;
+  const lost = { ...state };
+  delete lost.entryStatus;
+  const version = lost.version;
+  const blocked = command(
+    lost,
+    { type: 'dependencies-changed', dependenciesSatisfied: false },
+    'dep-down',
+  );
+  assertRejected(blocked);
+  assert.equal(blocked.state.status, 'ready');
+  assert.equal(blocked.state.entryStatus, undefined);
+  assert.equal(blocked.state.version, version);
+  const reopened = command(
+    blocked.state,
+    { type: 'dependencies-changed', dependenciesSatisfied: true },
+    'dep-up',
+  );
+  assertRejected(reopened);
+  assert.equal(reopened.state.status, 'ready');
+  assert.equal(reopened.state.entryStatus, undefined);
+  const submitted = command(
+    reopened.state,
+    { type: 'submit-artifact', reviewRequired: false },
+    'dep-submit',
+  );
+  assertRejected(submitted);
+  assert.equal(submitted.state.status, 'ready');
+});
+
+test('a plan-started node records ready and can finish without review', () => {
+  let state = initialNodeCommandState();
+  state = command(state, { type: 'plan-started', dependenciesSatisfied: true }, 'born').state;
+  assert.equal(state.status, 'ready');
+  assert.equal(state.entryStatus, 'ready');
+  const submitted = command(
+    state,
+    { type: 'submit-artifact', reviewRequired: false },
+    'born-submit',
+  );
+  assert.equal(submitted.decision.status, 'applied');
+  assert.equal(submitted.state.status, 'completed');
+});
+
+test('a recorded block and a recorded child trip keep their entry', () => {
+  let fresh = initialNodeCommandState();
+  fresh = command(
+    fresh,
+    { type: 'plan-started', dependenciesSatisfied: false },
+    'keep-block',
+  ).state;
+  assert.equal(fresh.status, 'blocked');
+  assert.equal(fresh.entryStatus, 'ready');
+  fresh = command(
+    fresh,
+    { type: 'dependencies-changed', dependenciesSatisfied: true },
+    'keep-ready',
+  ).state;
+  assert.equal(fresh.status, 'ready');
+  assert.equal(fresh.entryStatus, 'ready');
+  const finished = command(fresh, { type: 'submit-artifact', reviewRequired: false }, 'keep-done');
+  assert.equal(finished.decision.status, 'applied');
+  assert.equal(finished.state.status, 'completed');
+
+  let child = initialNodeCommandState();
+  child = command(child, { type: 'plan-started', dependenciesSatisfied: true }, 'keep-start').state;
+  child = command(child, { type: 'child-workflow-started' }, 'keep-split').state;
+  child = command(child, { type: 'child-workflow-returned' }, 'keep-join').state;
+  assert.equal(child.status, 'ready');
+  assert.equal(child.entryStatus, 'ready');
+  const childDone = command(
+    child,
+    { type: 'submit-artifact', reviewRequired: false },
+    'keep-child',
+  );
+  assert.equal(childDone.decision.status, 'applied');
+  assert.equal(childDone.state.status, 'completed');
+
+  let sent = sentBack();
+  sent = command(sent, { type: 'child-workflow-started' }, 'keep-rev-child').state;
+  sent = command(sent, { type: 'child-workflow-returned' }, 'keep-rev-back').state;
+  sent = command(
+    sent,
+    { type: 'dependencies-changed', dependenciesSatisfied: false },
+    'keep-rev-down',
+  ).state;
+  assert.equal(sent.status, 'blocked');
+  assert.equal(sent.entryStatus, 'needs-revision');
+  sent = command(
+    sent,
+    { type: 'dependencies-changed', dependenciesSatisfied: true },
+    'keep-rev-up',
+  ).state;
+  assert.equal(sent.status, 'ready');
+  assert.equal(sent.entryStatus, 'needs-revision');
+  const still = command(
+    sent,
+    { type: 'submit-artifact', reviewRequired: false },
+    'keep-rev-submit',
+  );
+  assertRejected(still);
+  assert.equal(still.state.status, 'ready');
+  assert.equal(still.state.entryStatus, 'needs-revision');
+});
+
 test('a lost entry after child return cannot complete from ready', () => {
   let state = sentBack();
   state = command(state, { type: 'child-workflow-started' }, 'lost-child').state;

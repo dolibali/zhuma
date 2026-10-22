@@ -270,11 +270,35 @@ export function initialNodeCommandState(): NodeCommandState {
   return { status: 'draft', version: 0, upstreamAffected: false, stored: [] };
 }
 
+const ENTRY_REQUIRED: readonly NodeStatus[] = [
+  'blocked',
+  'ready',
+  'running',
+  'waiting-for-input',
+  'child-workflow',
+  'in-review',
+  'failed',
+  'cancelled',
+];
+
 /**
- * Entry the command layer will trust.
- * `needs-revision` status is itself that entry. `ready` is not: only a
- * persisted `entryStatus` of `ready` may skip review.
+ * Statuses that have left draft must already carry an entry.
+ * `needs-revision` is itself the record. `draft` and `completed` are not.
+ * A missing record is not repaired by the next command.
  */
+function entryIsConsistent(state: NodeCommandState): boolean {
+  if (
+    state.status === 'draft' ||
+    state.status === 'completed' ||
+    state.status === 'needs-revision'
+  ) {
+    return true;
+  }
+  if (!ENTRY_REQUIRED.includes(state.status)) return true;
+  return state.entryStatus === 'ready' || state.entryStatus === 'needs-revision';
+}
+
+/** Entry the command layer will trust. `ready` counts only when it was persisted. */
 function recordedEntry(state: NodeCommandState): NodeEntryStatus | undefined {
   if (state.entryStatus === 'needs-revision' || state.status === 'needs-revision') {
     return 'needs-revision';
@@ -292,14 +316,16 @@ function nextEntryStatus(
   transition: NodeTransition,
   to: NodeStatus,
 ): NodeEntryStatus | undefined {
-  if (state.entryStatus === 'needs-revision' || state.status === 'needs-revision') {
+  if (to === 'completed' || to === 'draft') return undefined;
+  if (
+    to === 'needs-revision' ||
+    state.status === 'needs-revision' ||
+    state.entryStatus === 'needs-revision'
+  ) {
     return 'needs-revision';
   }
-  if (to === 'needs-revision') return 'needs-revision';
-  if (to === 'completed' || to === 'draft' || to === 'blocked') return undefined;
-  if (to === 'ready') return 'ready';
-  if (transition.type === 'retry' || transition.type === 'restart') return state.entryStatus;
-  if (state.entryStatus !== undefined) return state.entryStatus;
+  if (state.status === 'draft' && transition.type === 'plan-started') return 'ready';
+  if (state.entryStatus === 'ready') return 'ready';
   return undefined;
 }
 
@@ -397,6 +423,7 @@ export function applyNodeTransitionCommand(
     currentVersion: state.version,
     stored: state.stored,
     apply: (_nextVersion) => {
+      if (!entryIsConsistent(state)) return { disposition: 'reject', code: 'illegal-transition' };
       const prepared = prepareTransition(state, envelope.payload);
       if (!prepared.ok) return { disposition: 'reject', code: prepared.code };
       const result = transitionNode(state.status, prepared.transition);
