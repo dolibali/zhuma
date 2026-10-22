@@ -219,7 +219,9 @@ export function transitionNode(from: NodeStatus, transition: NodeTransition): No
       return done(from, 'needs-revision', ['block-downstream']);
     default: {
       const unexpected: never = transition;
-      throw new Error(`Unknown node transition: ${JSON.stringify(unexpected)}`);
+      const recorded = unexpected as { readonly type?: unknown };
+      const name = typeof recorded.type === 'string' ? recorded.type : 'unknown';
+      return illegal(from, name as NodeTransition['type']);
     }
   }
 }

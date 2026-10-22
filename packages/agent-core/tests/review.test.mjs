@@ -409,6 +409,73 @@ test('settlement rejects a round that has no ballots', () => {
   assert.equal(aggregateReview(round).outcome, 'invalid-policy');
 });
 
+test('reviewer ids are stored without surrounding spaces', () => {
+  const opened = openReviewRound({
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    reviewerIds: [' a ', 'b'],
+  });
+  assert.equal(opened.ok, true);
+  assert.deepEqual(opened.round.reviewerIds, ['a', 'b']);
+  const changed = changeReviewers(opened.round, [' a ', ' c '], lead);
+  assert.equal(changed.ok, true);
+  assert.deepEqual(changed.round.reviewerIds, ['a', 'c']);
+});
+
+test('a non-string reviewer id is rejected and does not throw', () => {
+  const opened = openReviewRound({
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    reviewerIds: [1],
+  });
+  assert.equal(opened.ok, false);
+  assert.equal(opened.code, 'invalid-round');
+  const changed = changeReviewers(
+    {
+      id: 'round-1',
+      artifactVersionId: 'art-1',
+      status: 'open',
+      reviewerIds: ['a'],
+      ballots: [],
+    },
+    [1, 'a'],
+    lead,
+  );
+  assert.equal(changed.ok, false);
+  assert.equal(changed.code, 'invalid-round');
+  const evaluation = aggregateReview({
+    id: 'round-1',
+    artifactVersionId: 'art-1',
+    reviewerIds: [1],
+    ballots: [],
+  });
+  assert.equal(evaluation.outcome, 'invalid-policy');
+  assert.equal(evaluation.reason, 'duplicate-reviewer');
+  const state = { ...initialNodeCommandState(), status: 'in-review', version: 4 };
+  const settled = applyReviewSettlementCommand(
+    state,
+    {
+      idempotencyKey: 'bad-reviewer',
+      actorId: 'svc',
+      objectId: 'node-1',
+      expectedVersion: 4,
+      payload: { roundId: 'round-1', artifactVersionId: 'art-1' },
+    },
+    {
+      id: 'round-1',
+      artifactVersionId: 'art-1',
+      status: 'open',
+      reviewerIds: [1],
+      ballots: [],
+    },
+    { roundId: 'round-1', artifactVersionId: 'art-1' },
+  );
+  assert.equal(settled.decision.status, 'rejected');
+  assert.equal(settled.decision.code, 'invalid-round');
+  assert.equal(settled.state.status, 'in-review');
+  assert.equal(settled.state.version, 4);
+});
+
 test('a duplicate reviewer roster cannot be completed by one vote', () => {
   assert.equal(
     openReviewRound({ id: 'round-1', artifactVersionId: 'art-1', reviewerIds: ['a', 'a'] }).code,

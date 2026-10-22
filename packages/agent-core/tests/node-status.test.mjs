@@ -212,6 +212,18 @@ test('revision entry survives stop and restart, and a later submit must be revie
   assert.equal(retried.to, undefined);
 });
 
+test('an unknown transition type is illegal and does not throw', () => {
+  const named = transitionNode('running', { type: 'cancel-unconfirmed' });
+  assert.equal(named.ok, false);
+  assert.equal(named.code, 'illegal-transition');
+  assert.equal(named.from, 'running');
+  assert.equal(named.transition, 'cancel-unconfirmed');
+  const unnamed = transitionNode('running', { type: 1 });
+  assert.equal(unnamed.ok, false);
+  assert.equal(unnamed.code, 'illegal-transition');
+  assert.equal(unnamed.transition, 'unknown');
+});
+
 test('a returned child workflow waits for the parent submit and does not hand off', () => {
   const result = transitionNode('child-workflow', { type: 'child-workflow-returned' });
   assert.equal(result.to, 'ready');

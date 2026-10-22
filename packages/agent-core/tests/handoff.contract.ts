@@ -102,6 +102,18 @@ const privateKey: PayloadExcludesCredentials<{ privateKey: string }> = true;
 // @ts-expect-error cookie is a credential field
 const cookie: PayloadExcludesCredentials<{ cookie: string }> = true;
 
+// @ts-expect-error refresh_token is a credential field
+const refreshTokenSnake: PayloadExcludesCredentials<{ refresh_token: string }> = true;
+
+// @ts-expect-error private_key is a credential field
+const privateKeySnake: PayloadExcludesCredentials<{ private_key: string }> = true;
+
+// @ts-expect-error sessionToken is a credential field
+const sessionToken: PayloadExcludesCredentials<{ sessionToken: string }> = true;
+
+// @ts-expect-error bearer is a credential field
+const bearer: PayloadExcludesCredentials<{ bearer: string }> = true;
+
 void human;
 void expert;
 void expertWithoutRef;
@@ -121,3 +133,7 @@ void apiKey;
 void refreshToken;
 void privateKey;
 void cookie;
+void refreshTokenSnake;
+void privateKeySnake;
+void sessionToken;
+void bearer;

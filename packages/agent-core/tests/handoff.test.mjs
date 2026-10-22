@@ -83,3 +83,26 @@ test('a human handoff may omit expertRef and an expert handoff may not', () => {
   assert.equal(Object.hasOwn(leaked.handoff.skillRefs[0], 'token'), false);
   assert.equal(Object.hasOwn(leaked.handoff.mcpRefs[0], 'token'), false);
 });
+
+test('input refs are rebuilt as id and version only', () => {
+  const rebuilt = readNodeHandoff(
+    handoff(
+      { id: 'human-1', kind: 'human' },
+      {
+        inputRefs: [{ id: 'artifact-1', version: 'applied-plan-1', token: 'secret' }],
+      },
+    ),
+  );
+  assert.equal(rebuilt.ok, true);
+  assert.deepEqual(rebuilt.handoff.inputRefs, [{ id: 'artifact-1', version: 'applied-plan-1' }]);
+  assert.equal(Object.hasOwn(rebuilt.handoff.inputRefs[0], 'token'), false);
+
+  const contextShaped = readNodeHandoff(
+    handoff(
+      { id: 'human-1', kind: 'human' },
+      { inputRefs: [{ sourceNodeId: 'node-0', artifactVersionId: 'art-1' }] },
+    ),
+  );
+  assert.equal(contextShaped.ok, false);
+  assert.equal(contextShaped.code, 'invalid-handoff');
+});

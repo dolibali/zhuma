@@ -79,7 +79,7 @@ interface NodeHandoffFields {
   readonly dependencyNodeIds: readonly string[];
   readonly reviewRequired: boolean;
   readonly reviewerIds: readonly string[];
-  readonly inputRefs: readonly ContextInputRef[];
+  readonly inputRefs: readonly VersionedRef[];
   readonly skillRefs: readonly VersionedRef[];
   readonly mcpRefs: readonly VersionedRef[];
   readonly inputNote: string;
@@ -116,7 +116,11 @@ type CredentialName =
   | 'authorization'
   | 'accesstoken'
   | 'refreshtoken'
+  | 'refresh_token'
   | 'privatekey'
+  | 'private_key'
+  | 'sessiontoken'
+  | 'bearer'
   | 'cookie';
 
 type IsCredential<K extends string> = Lowercase<K> extends CredentialName ? true : false;
@@ -192,10 +196,12 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
   if (kind === 'agent') return { ok: false, code: 'agent-not-identity' };
   if (kind !== 'human' && kind !== 'expert') return { ok: false, code: 'invalid-handoff' };
   const ref = usableRef(input.expertRef);
+  const inputRefs = copyRefs(input.inputRefs);
   const skillRefs = copyRefs(input.skillRefs);
   const mcpRefs = copyRefs(input.mcpRefs);
-  if (skillRefs === undefined || mcpRefs === undefined)
+  if (inputRefs === undefined || skillRefs === undefined || mcpRefs === undefined) {
     return { ok: false, code: 'invalid-handoff' };
+  }
   if (ref === 'invalid' || (kind === 'human' && ref === 'blank')) {
     return { ok: false, code: 'invalid-handoff' };
   }
@@ -211,7 +217,7 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
     dependencyNodeIds: input.dependencyNodeIds,
     reviewRequired: input.reviewRequired,
     reviewerIds: input.reviewerIds,
-    inputRefs: input.inputRefs,
+    inputRefs,
     skillRefs,
     mcpRefs,
     inputNote: input.inputNote,
@@ -238,13 +244,18 @@ export function readNodeHandoff(input: NodeHandoffInput): NodeHandoffRead {
  * Read one frozen snapshot.
  * `id` on the snapshot is the AppliedPlan.id (`VersionedRef.version`).
  * `assetId` is the asset (`VersionedRef.id`). Both must match.
+ * The result is a copy, so a caller cannot edit the stored snapshot.
  * This is not an asset-version store.
  */
 export function readVersionedSnapshot<T extends { readonly assetId: string; readonly id: string }>(
   ref: VersionedRef,
   snapshots: readonly T[],
 ): T | undefined {
-  return snapshots.find((snapshot) => snapshot.assetId === ref.id && snapshot.id === ref.version);
+  const found = snapshots.find(
+    (snapshot) => snapshot.assetId === ref.id && snapshot.id === ref.version,
+  );
+  if (found === undefined) return undefined;
+  return { ...found };
 }
 
 /**

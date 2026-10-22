@@ -8,7 +8,6 @@ import {
   readVersionedSnapshot,
   requestNodeRun,
   transitionNode,
-  unverifiedSignalChangesNode,
 } from '@zhuma/agent-core';
 
 const envelope = (payload, idempotencyKey, expectedVersion) => ({
@@ -176,6 +175,10 @@ test('an old snapshot stays after the catalog changes', () => {
   assert.equal(read.id, 'applied-plan-1');
   assert.equal(read.goal, 'original goal');
   assert.equal(read.note, 'original note');
+  assert.notEqual(read, published);
+  read.goal = 'caller edit';
+  assert.equal(published.goal, 'original goal');
+  assert.equal(catalog[0].goal, 'original goal');
   assert.equal(
     readVersionedSnapshot({ id: 'expert-2', version: 'applied-plan-1' }, catalog).goal,
     'expert two',
@@ -209,10 +212,18 @@ test('cancel is not shown as stopped before the receipt', () => {
     envelope({ type: 'execution-acknowledged' }, 'cancel-ack', state.version),
   ).state;
   const version = state.version;
+  const stored = state.stored.length;
   assert.equal(state.status, 'running');
-  assert.equal(unverifiedSignalChangesNode('cancel-unconfirmed'), false);
-  assert.equal(state.status, 'running');
-  assert.equal(state.version, version);
+  const unconfirmed = applyNodeTransitionCommand(
+    state,
+    envelope({ type: 'cancel-unconfirmed' }, 'cancel-unconfirmed', state.version),
+  );
+  assert.equal(unconfirmed.decision.status, 'rejected');
+  assert.equal(unconfirmed.decision.code, 'illegal-transition');
+  assert.equal(unconfirmed.state.status, 'running');
+  assert.equal(unconfirmed.state.version, version);
+  assert.equal(unconfirmed.state.stored.length, stored);
+  state = unconfirmed.state;
   const confirmed = applyNodeTransitionCommand(
     state,
     envelope({ type: 'cancel-confirmed' }, 'cancel-receipt', state.version),

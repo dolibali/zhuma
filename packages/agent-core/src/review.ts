@@ -155,6 +155,9 @@ export function aggregateReview(
   if (round.reviewerIds.length === 0) {
     return { outcome: 'invalid-policy', reason: 'review-requires-reviewers' };
   }
+  if (round.reviewerIds.some((id) => typeof id !== 'string')) {
+    return { outcome: 'invalid-policy', reason: 'duplicate-reviewer' };
+  }
   if (duplicateReviewer(round.reviewerIds) || round.reviewerIds.some((id) => blank(id))) {
     return { outcome: 'invalid-policy', reason: 'duplicate-reviewer' };
   }
@@ -172,9 +175,24 @@ export function aggregateReview(
   return { outcome: 'pending', approvedBy, outstandingReviewerIds };
 }
 
+function normalizeReviewerIds(
+  reviewerIds: readonly unknown[],
+):
+  | { readonly ok: true; readonly ids: readonly string[] }
+  | { readonly ok: false; readonly code: 'invalid-round' | 'duplicate-reviewer' } {
+  const ids: string[] = [];
+  for (const id of reviewerIds) {
+    if (typeof id !== 'string') return { ok: false, code: 'invalid-round' };
+    const trimmed = id.trim();
+    if (trimmed.length === 0) return { ok: false, code: 'duplicate-reviewer' };
+    ids.push(trimmed);
+  }
+  if (new Set(ids).size !== ids.length) return { ok: false, code: 'duplicate-reviewer' };
+  return { ok: true, ids: Object.freeze(ids) };
+}
+
 function duplicateReviewer(reviewerIds: readonly string[]): boolean {
-  const keys = reviewerIds.map((id) => id.trim());
-  return new Set(keys).size !== keys.length;
+  return !normalizeReviewerIds(reviewerIds).ok;
 }
 
 function blank(value: string): boolean {
@@ -193,16 +211,17 @@ export function openReviewRound(input: {
     } {
   if (blank(input.id) || blank(input.artifactVersionId))
     return { ok: false, code: 'invalid-round' };
-  if (input.reviewerIds.length === 0) return { ok: false, code: 'review-requires-reviewers' };
-  if (input.reviewerIds.some((id) => blank(id)) || duplicateReviewer(input.reviewerIds)) {
-    return { ok: false, code: 'duplicate-reviewer' };
+  if (!Array.isArray(input.reviewerIds) || input.reviewerIds.length === 0) {
+    return { ok: false, code: 'review-requires-reviewers' };
   }
+  const reviewers = normalizeReviewerIds(input.reviewerIds);
+  if (!reviewers.ok) return { ok: false, code: reviewers.code };
   return {
     ok: true,
     round: {
       id: input.id,
       artifactVersionId: input.artifactVersionId,
-      reviewerIds: Object.freeze([...input.reviewerIds]),
+      reviewerIds: reviewers.ids,
       ballots: Object.freeze([]),
       status: 'open',
     },
@@ -312,29 +331,31 @@ export function changeReviewers(
         | 'voided-round'
         | 'review-requires-reviewers'
         | 'duplicate-reviewer'
+        | 'invalid-round'
         | 'unauthorized'
         | 'requires-new-round';
       readonly rejectedBy?: readonly string[];
     } {
-  if (nextReviewerIds.length === 0) return { ok: false, code: 'review-requires-reviewers' };
-  if (nextReviewerIds.some((id) => blank(id)) || duplicateReviewer(nextReviewerIds)) {
-    return { ok: false, code: 'duplicate-reviewer' };
+  if (!Array.isArray(nextReviewerIds) || nextReviewerIds.length === 0) {
+    return { ok: false, code: 'review-requires-reviewers' };
   }
+  const reviewers = normalizeReviewerIds(nextReviewerIds);
+  if (!reviewers.ok) return { ok: false, code: reviewers.code };
+  const roster = reviewers.ids;
   if (round.status === 'voided') return { ok: false, code: 'voided-round' };
   if (authorization === undefined || !authorization.authorized || blank(authorization.actorId)) {
     return { ok: false, code: 'unauthorized' };
   }
   const rejectedBy = round.reviewerIds.filter(
     (reviewerId) =>
-      reviewerDecision(round, reviewerId) === 'request-changes' &&
-      !nextReviewerIds.includes(reviewerId),
+      reviewerDecision(round, reviewerId) === 'request-changes' && !roster.includes(reviewerId),
   );
   if (rejectedBy.length > 0) return { ok: false, code: 'cannot-drop-rejection', rejectedBy };
   if (round.status !== 'open') return { ok: false, code: 'round-closed' };
-  const removed = round.reviewerIds.filter((reviewerId) => !nextReviewerIds.includes(reviewerId));
-  const added = nextReviewerIds.filter((reviewerId) => !round.reviewerIds.includes(reviewerId));
+  const removed = round.reviewerIds.filter((reviewerId) => !roster.includes(reviewerId));
+  const added = roster.filter((reviewerId) => !round.reviewerIds.includes(reviewerId));
   if (removed.length > 0 && added.length === 0) return { ok: false, code: 'requires-new-round' };
-  const next: ReviewRound = { ...round, reviewerIds: Object.freeze([...nextReviewerIds]) };
+  const next: ReviewRound = { ...round, reviewerIds: roster };
   const evaluation = aggregateReview(next);
   if (removed.length > 0 && evaluation.outcome === 'approved') {
     return { ok: false, code: 'requires-new-round' };
@@ -527,6 +548,9 @@ export function applyReviewSettlementCommand(
     apply: (_nextVersion) => {
       if (!Array.isArray(round.reviewerIds) || !Array.isArray(round.ballots)) {
         return { disposition: 'reject', code: 'unbound-evaluation' };
+      }
+      if (round.reviewerIds.some((id) => typeof id !== 'string')) {
+        return { disposition: 'reject', code: 'invalid-round' };
       }
       if (envelope.payload.roundId !== round.id) {
         return { disposition: 'reject', code: 'stale-round' };
