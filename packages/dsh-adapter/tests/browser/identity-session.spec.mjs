@@ -4,7 +4,8 @@
  *
  * Re-run just this project:
  *   pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity
- * `pnpm test:ui` includes the same project.
+ * That config's globalSetup runs `tsc -b` from the repo root first.
+ * The fixture listens on port 0. `pnpm test:ui` includes the same project.
  */
 import { expect, test } from '@playwright/test';
 import { startIdentitySite } from './server.mjs';

@@ -8,6 +8,7 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error('Invalid
 export default defineConfig({
   testDir: '.',
   testMatch: '*.spec.mjs',
+  globalSetup: fileURLToPath(new URL('./global-setup.mjs', import.meta.url)),
   outputDir: `${root}/test-results/workbench`,
   timeout: 45_000,
   expect: { timeout: 5000 },
@@ -32,7 +33,6 @@ export default defineConfig({
       name: 'identity',
       testDir: fileURLToPath(new URL('../../../dsh-adapter/tests/browser/', import.meta.url)),
       testMatch: '*.spec.mjs',
-      use: { baseURL: 'http://127.0.0.1:3080' },
     },
   ],
   webServer: {

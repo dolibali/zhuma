@@ -14,9 +14,6 @@ import {
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../../dist/identity-session.js';
 
-const PORT = Number(process.env.ZHUMA_ID_BROWSER_PORT ?? 3080);
-const AUTHORITY = `127.0.0.1:${PORT}`;
-
 function randomPassword() {
   return randomBytes(24).toString('base64url');
 }
@@ -159,12 +156,17 @@ function createAccess() {
   };
 }
 
-function listen(server, port) {
+function listen(server) {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(0, '127.0.0.1', () => {
       server.off('error', reject);
-      resolve();
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        reject(new Error('identity browser fixture did not bind a tcp port'));
+        return;
+      }
+      resolve(address.port);
     });
   });
 }
@@ -257,13 +259,14 @@ export async function startIdentitySite() {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end('<!doctype html><title>other</title>');
   });
-  await listen(server, PORT);
-  await listen(other, PORT + 1);
+  const port = await listen(server);
+  const otherPort = await listen(other);
+  const authority = `127.0.0.1:${port}`;
   return {
-    baseURL: `http://${AUTHORITY}`,
-    otherURL: `http://127.0.0.1:${PORT + 1}/`,
+    baseURL: `http://${authority}`,
+    otherURL: `http://127.0.0.1:${otherPort}/`,
     passwords,
-    authenticatedURL: connection.authenticatedUrl(`http://${AUTHORITY}/`),
+    authenticatedURL: connection.authenticatedUrl(`http://${authority}/`),
     async close() {
       server.close();
       other.close();

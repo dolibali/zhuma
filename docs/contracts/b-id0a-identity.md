@@ -86,7 +86,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 没有装进本包、因此用同形替身的部分：
 
-- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。
+- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。两个服务都 `listen(0)`，端口由系统分配。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。这条配置的 globalSetup 会先在仓库根目录执行 `tsc -b`，所以单独重跑之前不必再手动构建。
 - `modifyRecord` 是按 key 分开的内存表，不是 `.credentials.yaml`。Connection 的 `client-connection/browser-session` 和本模块的 `zhuma-identity/member-session` 各占一条。
 - KV 介质是内存 Map。domain 的校验和写链是真的，json/sqlite 后端不是。
 - `decide` 按 `remote-access` 源码里的规则实现：owner 直接允许，其他 kind 走已注册策略的 `bindings` 和 `condition`。策略对象是 `applyIdentity` 注册的。没有加载 `RemoteAccessService` 类。
