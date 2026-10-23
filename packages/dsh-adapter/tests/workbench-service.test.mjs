@@ -152,6 +152,86 @@ test('planning contract: failed repair does not replace workflow and stops after
   assert.equal(audits.get(request.requestId).status, 'failed');
 });
 
+test('planning quality contract: repair is constrained to the exact budgeted resource candidates', async () => {
+  const { state, task } = fixture();
+  state.assets.push({
+    ...state.assets[0],
+    id: 'outside-candidates',
+    name: '咖啡烘焙',
+    description: '咖啡',
+    content: '',
+  });
+  const { service, audits } = createService({ state });
+  const before = service.snapshot();
+  const request = {
+    requestId: randomUUID(),
+    taskId: task.id,
+    expectedRevision: 0,
+    instruction: '',
+  };
+  let calls = 0;
+  const proposal = await service.plan(
+    request,
+    {
+      name: 'contract-candidates',
+      generate: async (_system, input) => {
+        calls++;
+        const captured = JSON.parse(calls === 1 ? input : JSON.parse(input).original).context;
+        assert.deepEqual(
+          captured.assets.map((a) => a.id),
+          ['api-skill'],
+        );
+        if (calls === 2) assert.match(JSON.parse(input).validationErrors, /未提供/);
+        const output = {
+          summary: '修复资源范围',
+          questions: [],
+          assumptions: [],
+          workflows: structuredClone(task.workflows),
+        };
+        if (calls === 1) output.workflows[0].nodes[0].skillIds = ['outside-candidates'];
+        return JSON.stringify(output);
+      },
+    },
+    signal(),
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(proposal.result.workflows[0].nodes[0].skillIds, ['api-skill']);
+  assert.deepEqual(service.snapshot(), before);
+  assert.equal(audits.get(request.requestId).attempts.length, 2);
+  assert.deepEqual(
+    await service.plan(
+      request,
+      { name: 'unused', generate: async () => assert.fail('idempotent retry called a model') },
+      signal(),
+    ),
+    proposal,
+  );
+});
+
+test('planning quality contract: an oversized user baseline fails before model or audit writes', async () => {
+  const { state, task, node } = fixture();
+  task.workflows[0].nodes = Array.from({ length: 15 }, (_, index) => ({
+    ...node,
+    id: `large-${index}`,
+    description: '完整人工说明'.repeat(1300),
+  }));
+  const { service, audits } = createService({ state });
+  const before = service.snapshot();
+  await assert.rejects(
+    service.plan(
+      { requestId: randomUUID(), taskId: task.id, expectedRevision: 0, instruction: '' },
+      {
+        name: 'never-called',
+        generate: async () => assert.fail('budget rejection called a model'),
+      },
+      signal(),
+    ),
+    { code: 'context-limit' },
+  );
+  assert.deepEqual(service.snapshot(), before);
+  assert.equal(audits.size, 0);
+});
+
 test('planning contract: cancellation and stale input never call the model or apply a plan', async () => {
   const { service } = createService();
   let calls = 0;
