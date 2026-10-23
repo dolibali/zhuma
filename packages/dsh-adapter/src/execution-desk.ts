@@ -925,6 +925,7 @@ export class ExecutionDesk {
         '等待对方结束，或使用本次运行自己的隔离工作区',
       );
     }
+    const checkpoint = this.captureAccept();
     this.claims = [...this.claims, claimed.claim];
     this.runs = [...this.runs, opened.attempt];
     this.turns = [
@@ -951,7 +952,12 @@ export class ExecutionDesk {
       reference: item.reference,
     }));
     this.contextBlocks = [];
-    return this.succeed({ runId: opened.attempt.id });
+    try {
+      return this.succeed({ runId: opened.attempt.id });
+    } catch (error) {
+      this.restoreAccept(checkpoint);
+      return this.persistRejected(error);
+    }
   }
 
   private enqueue(active: ExecutionAttempt, input: SendInput): DeskResult {
@@ -1936,6 +1942,57 @@ export class ExecutionDesk {
     };
   }
 
+  /** 这次受理改过的运行、写权和轮次。落盘失败时整段退回，避免同键重放伪报已启动。 */
+  private captureAccept(): {
+    claims: WorkspaceClaim[];
+    runs: ExecutionAttempt[];
+    turns: ConversationTurn[];
+    citations: ContextCitationFact[];
+    contextBlocks: ContextBlockFact[];
+    sequence: number;
+    lastError: CommandErrorFact | null;
+  } {
+    return {
+      claims: this.claims,
+      runs: this.runs,
+      turns: this.turns,
+      citations: this.citations,
+      contextBlocks: this.contextBlocks,
+      sequence: this.sequence,
+      lastError: this.lastError,
+    };
+  }
+
+  private restoreAccept(checkpoint: {
+    claims: WorkspaceClaim[];
+    runs: ExecutionAttempt[];
+    turns: ConversationTurn[];
+    citations: ContextCitationFact[];
+    contextBlocks: ContextBlockFact[];
+    sequence: number;
+    lastError: CommandErrorFact | null;
+  }): void {
+    this.claims = checkpoint.claims;
+    this.runs = checkpoint.runs;
+    this.turns = checkpoint.turns;
+    this.citations = checkpoint.citations;
+    this.contextBlocks = checkpoint.contextBlocks;
+    this.sequence = checkpoint.sequence;
+    this.lastError = checkpoint.lastError;
+  }
+
+  private persistRejected(error: unknown): DeskResult {
+    const fault = persistenceFaultFrom(error);
+    return {
+      ok: false,
+      code: 'persist-failed',
+      objectLabel: fault.objectLabel,
+      reason: fault.reason,
+      nextStep: fault.nextStep,
+      snapshot: this.snapshot(),
+    };
+  }
+
   private persist(): void {
     this.deps.journal?.save(this.persistence());
   }
@@ -2213,6 +2270,25 @@ function missingRecord(): CommandErrorFact {
     objectLabel: '节点',
     reason: '节点记录异常，需要人工处理',
     nextStep: '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
+  };
+}
+
+function persistenceFaultFrom(error: unknown): CommandErrorFact {
+  const code =
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    error.code.length > 0
+      ? error.code
+      : 'persist-failed';
+  const detail =
+    error instanceof Error && error.message.length > 0 ? error.message : '日志没有写进去';
+  return {
+    code: 'persist-failed',
+    objectLabel: '日志',
+    reason: `日志没有写进去（${code}）。${detail}`,
+    nextStep: '存储恢复后重写这份日志。重写成功前，不要把界面上的运行当成已经受理或已经落盘。',
   };
 }
 
