@@ -84,7 +84,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `comments`：被引用的未解决评论
 - `receipts`：业务幂等回执，指纹覆盖 actor、交付正文或票面，不覆盖 `expectedVersion`
 
-计划表 `plans`。键：`{taskId}:{planId}:{revision}`。值：`{ idempotencyKey, fingerprint, nodeIds }`。指纹只覆盖 `taskId`、`planId`、`revision`。节点已经启动后，再用来启动同一修订会重放。幂等键只在本空间内判重：同一个键配上本空间的另一个修订返回 `idempotency-mismatch`；别的空间里的同一个键不影响本空间，响应里也看不出那个键。查本空间里另一个项目时目录抛错，启动返回 `unavailable`，这个键不能再拿去启动。
+计划表 `plans`。键：`{taskId}:{planId}:{revision}`。值：`{ idempotencyKey, fingerprint, nodeIds }`。指纹只覆盖 `taskId`、`planId`、`revision`。节点已经启动后，再用来启动同一修订会重放。幂等键只在本空间内判重：同一个键配上本空间的另一个修订返回 `idempotency-mismatch`；别的空间里的同一个键不影响本空间，响应里也看不出那个键。计时上看得出。例如目录慢 2ms 时，中位数大约是 5057µs 对 2866µs。查本空间里另一个项目时目录抛错，启动返回 `unavailable`，这个键不能再拿去启动。
 
 下游解锁的幂等键是 `unlock:{sourceId}:{downstreamNodeId}`。`sourceId` 在有评审轮次时是 `currentRoundId`，没有轮次时是 `artifact:{acceptedArtifactVersionId}`。依赖没有全部接受时，解锁结果是 `ignored`，不写回执。全部接受后把 `{ sourceNodeId, artifactVersionId }` 经 `readNodeHandoff` 写入该下游的 `inputRefs`，并把还处在 `blocked` 的下游推进到 `ready` 一次。下游若已经是 `ready` 但 `inputRefs` 仍空，同一次解锁补上这些引用，不再改状态。同一键再请求则重放。
 
@@ -197,7 +197,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 在 A 的 Host／空间模块把 `projectSpaces` 接入执行入口之前，`legacy-single-user` 和 `multi-member` 一样：没有注入目录时，该入口对所有项目全部拒绝。
 
-「别的空间」的判定路径大约慢 5–10µs。
+别的空间里的同一个幂等键，响应里看不出来，计时上看得出。例如目录慢 2ms 时，中位数大约是 5057µs 对 2866µs。
 
 这些行为在本切片里保持原样：
 
