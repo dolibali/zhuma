@@ -154,7 +154,11 @@ function open(mode, extra = {}) {
   if (extra.reviewerIds !== undefined) planted.handoff.reviewerIds = extra.reviewerIds;
   if (extra.inputNote !== undefined) planted.handoff.inputNote = extra.inputNote;
   if (extra.expectedOutput !== undefined) planted.handoff.expectedOutput = extra.expectedOutput;
-  const desk = ExecutionDesk.create(planted, { executors: [engine], newId: ids(mode) });
+  const desk = ExecutionDesk.create(planted, {
+    executors: [engine],
+    newId: ids(mode),
+    journal: extra.journal,
+  });
   desk.updateConfig({
     executorId: 'dsh',
     skillIds: extra.skillIds ?? ['test-design', 'billing'],
@@ -937,6 +941,44 @@ test('契约：节点完成时删除会话目录，历史记录保留已丢弃�
     existsSync(path.join(dshSessionHome(next.sessionId, env), 'zhuma-history.json')),
     false,
   );
+  rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+});
+
+test('契约：确认完成没写上日志时不删会话目录', async () => {
+  const state = { value: null, failNext: false };
+  const journal = {
+    load: () => state.value,
+    save(value) {
+      if (state.failNext) {
+        state.failNext = false;
+        const error = new Error('ENOSPC: no space left');
+        error.code = 'ENOSPC';
+        throw error;
+      }
+      state.value = JSON.parse(JSON.stringify(value));
+    },
+  };
+  const { desk, env } = open('ok', {
+    mcpIds: [],
+    reviewRequired: false,
+    reviewerIds: [],
+    journal,
+  });
+  desk.send({ text: '完成前先写上', idempotencyKey: 'complete-fail' });
+  await desk.flush();
+  const sessionId = desk.snapshot().runs[0].sessionId;
+  const home = dshSessionHome(sessionId, env);
+  assert.equal(existsSync(home), true);
+  const before = JSON.parse(JSON.stringify(desk.persistence()));
+  state.failNext = true;
+  const completed = desk.confirmCompleted();
+  assert.equal(completed.ok, false);
+  assert.equal(completed.code, 'persist-failed');
+  assert.equal(existsSync(home), true);
+  assert.deepEqual(desk.persistence(), before);
+  assert.equal(desk.snapshot().node.status, 'ready');
+  assert.equal(desk.snapshot().runs[0].sessionDiscarded, undefined);
+  assert.equal(desk.snapshot().downstreamLaunches, before.downstreamLaunches);
   rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
 });
 

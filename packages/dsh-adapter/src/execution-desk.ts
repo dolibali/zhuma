@@ -244,6 +244,8 @@ export class ExecutionDesk {
   private historyNote: string | null = null;
   private persistenceFault: CommandErrorFact | null = null;
   private lastSaveFailed = false;
+  /** 完成或核实已经记在内存里、但要等日志写上才真正删除的会话。 */
+  private pendingSessionDeletes: string[] = [];
 
   private readonly seed: DeskSeed;
 
@@ -1935,10 +1937,20 @@ export class ExecutionDesk {
   private discardRunSession(run: ExecutionAttempt): void {
     if (run.sessionId === undefined || run.sessionDiscarded === true) return;
     const sessionId = run.sessionId;
-    const executor = this.deps.executors.find((item) => item.id === run.executor);
-    if (executor instanceof DshChatExecutor) executor.discardSession(sessionId);
+    if (!this.pendingSessionDeletes.includes(sessionId)) this.pendingSessionDeletes.push(sessionId);
     this.retireSession(sessionId);
     this.rememberHistoryOmitted();
+  }
+
+  /** 日志已经记下丢弃之后才删目录。写失败则放弃这次删除。 */
+  private flushSessionDeletes(): void {
+    const pending = this.pendingSessionDeletes;
+    this.pendingSessionDeletes = [];
+    for (const sessionId of pending) {
+      for (const executor of this.deps.executors) {
+        if (executor instanceof DshChatExecutor) executor.discardSession(sessionId);
+      }
+    }
   }
 
   private discardNodeSessions(): void {
@@ -2332,15 +2344,18 @@ export class ExecutionDesk {
     if (!this.deps.journal) {
       this.persistenceFault = null;
       this.lastSaveFailed = false;
+      this.flushSessionDeletes();
       return true;
     }
     try {
       this.deps.journal.save(this.persistence());
       this.lastSaveFailed = false;
+      this.flushSessionDeletes();
       if (reconcile) this.persistenceFault = null;
       return true;
     } catch (error) {
       this.lastSaveFailed = true;
+      this.pendingSessionDeletes = [];
       this.persistenceFault = persistenceFaultFrom(error);
       return false;
     }
