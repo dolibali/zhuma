@@ -257,18 +257,26 @@ function withPasswordHashSlot<T>(work: () => Promise<T>): Promise<T> {
 const DUMMY_VERIFIER = parseVerifier(hashPassword(randomBytes(32).toString('base64url')));
 if (DUMMY_VERIFIER === undefined) throw new Error('identity dummy verifier was not created');
 
-let passwordHashAttempts = 0;
-
-/** How many password hashes this process has started. Tests use it to see that unknown accounts hash too. */
-export function passwordHashAttemptCount(): number {
-  return passwordHashAttempts;
+interface PasswordHashProbe {
+  note(): void;
 }
 
-async function passwordMatches(stored: string | undefined, password: string): Promise<boolean> {
+/** Tests can `ctx.provide('zhumaIdentityHashProbe', { note })`. Hosts omit it. */
+function passwordHashProbeOf(ctx: Context): PasswordHashProbe | undefined {
+  const probe = ctx.get('zhumaIdentityHashProbe', false) as PasswordHashProbe | undefined;
+  if (probe === undefined || typeof probe.note !== 'function') return undefined;
+  return probe;
+}
+
+async function passwordMatches(
+  stored: string | undefined,
+  password: string,
+  probe: PasswordHashProbe | undefined,
+): Promise<boolean> {
   const parsed = parseVerifier(stored) ?? DUMMY_VERIFIER;
   if (parsed === undefined) return false;
   const actual = await withPasswordHashSlot(() => {
-    passwordHashAttempts += 1;
+    probe?.note();
     return deriveKey(password, parsed.salt);
   });
   const matches = actual.length === parsed.hash.length && timingSafeEqual(actual, parsed.hash);
@@ -677,7 +685,11 @@ async function handle(
         fail(res, 429, 'login-rate-limited');
         return;
       }
-      const passwordOk = await passwordMatches(account?.passwordHash, parsed.data.password);
+      const passwordOk = await passwordMatches(
+        account?.passwordHash,
+        parsed.data.password,
+        passwordHashProbeOf(ctx),
+      );
       if (account === undefined || !passwordOk) {
         fail(res, 401, 'invalid-login');
         return;
