@@ -23,7 +23,11 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { PeerScope, Principal } from '@deepseek-ai/dsh-client-connection';
 import { defineDomain, type Domain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import { clearLoginAttempts, loginClientAddress, reserveLoginAttempt } from './login-limiter.js';
+import {
+  createLoginFailureTable,
+  loginClientAddress,
+  type LoginFailureTable,
+} from './login-limiter.js';
 import {
   installMemberResolver,
   memberCookieHeader,
@@ -543,6 +547,7 @@ function explicitSingleUser(domain: IdentityDomain): string | undefined {
 /** Mount an explicit account import, member cookies, and space checks. */
 export async function applyIdentity(ctx: Context, imported?: IdentityImport): Promise<void> {
   const domain = await ctx.storageDomain.open(identityDomainSpec);
+  const attempts = createLoginFailureTable();
   try {
     const { credentials, webServer, remoteAccess } = seams(ctx);
     const secret = await signingSecret(credentials);
@@ -563,7 +568,7 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
       const disposeRoute = webServer.register({
         kind: 'prefix',
         path: PREFIX,
-        handler: (req, res) => handle(ctx, domain, secret, remoteAccess, req, res),
+        handler: (req, res) => handle(ctx, domain, secret, remoteAccess, attempts, req, res),
       });
       return async () => {
         uninstallMemberResolver(ctx);
@@ -583,6 +588,7 @@ async function handle(
   domain: IdentityDomain,
   secret: Buffer,
   remoteAccess: RemoteAccessLike,
+  attempts: LoginFailureTable,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -632,7 +638,7 @@ async function handle(
       }
       const account = domain.table('accounts').get(parsed.data.accountId);
       const address = loginClientAddress(req);
-      if (reserveLoginAttempt(address, parsed.data.accountId) === 'limited') {
+      if (attempts.reserve(address, parsed.data.accountId) === 'limited') {
         fail(res, 429, 'login-rate-limited');
         return;
       }
@@ -641,7 +647,7 @@ async function handle(
         fail(res, 401, 'invalid-login');
         return;
       }
-      clearLoginAttempts(address, parsed.data.accountId);
+      attempts.clear(address, parsed.data.accountId);
       await purgeExpiredSessions(domain);
       const sessionId = randomUUID();
       const expiresAt = Date.now() + SESSION_TTL_MS;
