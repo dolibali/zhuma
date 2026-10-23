@@ -171,7 +171,16 @@ export function createFileJournal<T>(filePath: string): DeskJournal<T> {
       mkdirSync(path.dirname(filePath), { recursive: true });
       const temporary = `${filePath}.${process.pid}.tmp`;
       writeFileSync(temporary, JSON.stringify(value));
-      renameSync(temporary, filePath);
+      try {
+        renameSync(temporary, filePath);
+      } catch (error) {
+        try {
+          unlinkSync(temporary);
+        } catch {
+          // 清理失败不掩盖原来的改名错误。
+        }
+        throw error;
+      }
     },
   };
 }

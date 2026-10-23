@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -510,6 +517,21 @@ test('契约：写锁在进程退出时释放，同机已死或别的主机都�
   assert.equal(foreign.writable, false);
   const still = JSON.parse(readFileSync(`${foreignFile}.write.lock`, 'utf8'));
   assert.equal(still.hostname, 'not-this-host');
+});
+
+test('契约：日志改名失败时清掉临时文件', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-journal-tmp-'));
+  const file = path.join(directory, 'session.json');
+  mkdirSync(file);
+  const journal = createFileJournal(file);
+  const temporary = `${file}.${process.pid}.tmp`;
+  assert.equal(journal.writable, true);
+  assert.throws(
+    () => journal.save({ kept: false }),
+    (error) => error.code === 'EISDIR',
+  );
+  assert.equal(existsSync(temporary), false);
+  assert.equal(existsSync(file), true);
 });
 
 test('契约：文件探针拒绝逃出工作区的路径，且不返回绝对路径', () => {
