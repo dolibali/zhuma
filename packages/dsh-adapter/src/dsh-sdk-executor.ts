@@ -1119,13 +1119,20 @@ async function stopChild(child: ChildProcessWithoutNullStreams, rpc: StdioRpc): 
 /** 启动前失败要把原因留下来，但不能带出本机路径。 */
 function startupFailureMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  const detail = raw
-    .replace(/'(?:[/\\])[^']*'/g, "''")
-    .replace(/(?:[/\\])(?:[\w.+@=-]+[/\\])*[\w.+@=-]+/g, '')
+  const detail = stripLocalPaths(raw)
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (detail.length === 0) return '执行器启动失败。';
   return `执行器启动失败。\n${detail}`;
+}
+
+/** 引号里的路径整段去掉。不带引号的路径按分隔符切段，段里可以有空格、括号和非 ASCII。 */
+function stripLocalPaths(text: string): string {
+  const quoted = /(?:[/\\]|[A-Za-z]:[/\\])[^'"]*/;
+  return text
+    .replace(new RegExp(`'${quoted.source}'`, 'g'), "''")
+    .replace(new RegExp(`"${quoted.source}"`, 'g'), '""')
+    .replace(/(?<=^|[\s=])(?:[/\\]|[A-Za-z]:[/\\])(?:[^/\\\n'"]+[/\\])*[^/\\\n'"]*/g, '');
 }
 
 /** 启动前失败附带的标准错误上限，按 UTF-8 字节计。超出后保留开头和最新结尾。 */

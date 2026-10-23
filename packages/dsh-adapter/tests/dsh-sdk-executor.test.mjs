@@ -1313,7 +1313,7 @@ async function driveWithBlockedRemove(env, sessionId, blocked) {
   return JSON.parse(stdout);
 }
 
-async function driveFreshHomeFault(env) {
+async function driveFreshHomeFault(env, faultText = '') {
   const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-home-fault-'));
   const preload = path.join(dir, 'preload.mjs');
   const script = path.join(dir, 'drive.mjs');
@@ -1328,7 +1328,10 @@ async function driveFreshHomeFault(env) {
       'fs.writeFileSync = (target, data, options) => {',
       '  const text = String(target);',
       '  if (text.endsWith(path.sep + "zhuma-grant.json")) {',
-      "    const error = new Error(`EACCES: permission denied, open '${text}'`);",
+      '    const detail = process.env.ZHUMA_FAULT_TEXT ?? "";',
+      '    const error = new Error(',
+      "      detail.length > 0 ? detail : `EACCES: permission denied, open '${text}'`,",
+      '    );',
       "    error.code = 'EACCES';",
       '    throw error;',
       '  }',
@@ -1398,6 +1401,7 @@ async function driveFreshHomeFault(env) {
       ZHUMA_MODEL_BASE_URL: env.ZHUMA_MODEL_BASE_URL,
       ZHUMA_MODEL_API_KEY: env.ZHUMA_MODEL_API_KEY,
       ZHUMA_DATA_DIR: env.ZHUMA_DATA_DIR,
+      ...(faultText.length > 0 ? { ZHUMA_FAULT_TEXT: faultText } : {}),
       ZHUMA_STUB: stub,
       ZHUMA_ADAPTER: pathToFileURL(
         path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
@@ -1435,6 +1439,24 @@ test('契约：新建会话还没写好家目录就失败时，目录和索引�
     assert.equal(failed.events[0].message.includes(env.ZHUMA_DATA_DIR), false);
     assert.deepEqual(failed.homes, []);
     assert.deepEqual(failed.sessions, {});
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里不带引号的路径，空格、括号和汉字也会被剥掉', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  const leaked = '/tmp/zhuma home/会话(目录)';
+  try {
+    const failed = await driveFreshHomeFault(env, `EACCES: permission denied, mkdir ${leaked}`);
+    const message = failed.events[0].message;
+    assert.match(message, /^执行器启动失败。/);
+    assert.match(message, /EACCES/);
+    assert.equal(message.includes('会话'), false);
+    assert.equal(message.includes('(目录)'), false);
+    assert.equal(message.includes(' home/'), false);
+    assert.equal(message.includes(leaked), false);
+    assert.equal(message.includes(env.ZHUMA_DATA_DIR), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
