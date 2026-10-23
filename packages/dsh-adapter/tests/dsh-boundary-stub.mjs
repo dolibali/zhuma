@@ -100,6 +100,16 @@ if (mode.startsWith('stderr-boot-prefix-len:')) {
   writeSync(2, `preface-${secret.slice(0, length)}`);
   process.exit(1);
 }
+if (mode.startsWith('stderr-prefix-end:') || mode.startsWith('stderr-prefix-mid:')) {
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  const mid = mode.startsWith('stderr-prefix-mid:');
+  const length = Number(
+    mode.slice(mid ? 'stderr-prefix-mid:'.length : 'stderr-prefix-end:'.length),
+  );
+  const prefix = secret.slice(0, length);
+  writeSync(2, mid ? `mid-${prefix}zz\nnext\n` : `tail-${prefix}`);
+  process.exit(1);
+}
 if (mode.startsWith('stderr-boot-split:')) {
   const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
   const at = Number(mode.slice('stderr-boot-split:'.length));

@@ -1486,42 +1486,65 @@ function redact(text: string, secret: string): string {
   return text.split(secret).join('[redacted]');
 }
 
-/** 未凑齐的密钥前缀先留着。凑齐后整段替换。收尾时只把长度达到 4 的前缀换成 [redacted]。 */
+/**
+ * 完整密钥换成 [redacted]。
+ * 还没写完的前缀先留着，下一块能接上就继续匹配。
+ * 流中间一旦确认不是完整密钥，以及收尾时还剩下的前缀，长度达到 4 就替换。
+ * 不足 4 的前缀原样留下。
+ */
 class StderrRedactor {
   private pending = '';
 
   constructor(private readonly secret: string) {}
 
   push(chunk: string): string {
-    return this.consume(this.pending + chunk);
+    const raw = this.pending + chunk;
+    this.pending = '';
+    return this.scan(raw, false);
   }
 
   flush(): string {
-    const pending = this.pending;
+    const raw = this.pending;
     this.pending = '';
-    if (this.secret.length === 0) return pending;
-    if (pending.length >= 4 && this.secret.startsWith(pending)) return '[redacted]';
-    return pending.split(this.secret).join('[redacted]');
+    return this.scan(raw, true);
   }
 
-  private consume(raw: string): string {
-    if (this.secret.length === 0) {
-      this.pending = '';
-      return raw;
+  private scan(raw: string, ending: boolean): string {
+    if (this.secret.length === 0 || raw.length === 0) return raw;
+    let out = '';
+    let index = 0;
+    while (index < raw.length) {
+      if (raw.startsWith(this.secret, index)) {
+        out += '[redacted]';
+        index += this.secret.length;
+        continue;
+      }
+      let matched = 0;
+      const limit = Math.min(this.secret.length - 1, raw.length - index);
+      while (matched < limit && raw[index + matched] === this.secret[matched]) matched += 1;
+      if (matched === 0) {
+        out += raw[index];
+        index += 1;
+        continue;
+      }
+      const atEnd = index + matched === raw.length;
+      if (atEnd && !ending) {
+        this.pending = raw.slice(index);
+        return out;
+      }
+      if (ending && matched >= 4) {
+        out += '[redacted]';
+        index += matched;
+        continue;
+      }
+      if (!atEnd && matched >= 4) {
+        out += '[redacted]';
+        index += matched;
+        continue;
+      }
+      out += raw.slice(index, index + matched);
+      index += matched;
     }
-    const parts = raw.split(this.secret);
-    const tail = parts[parts.length - 1] ?? '';
-    const hold = heldSecretPrefix(tail, this.secret);
-    this.pending = tail.slice(tail.length - hold);
-    parts[parts.length - 1] = tail.slice(0, tail.length - hold);
-    return parts.join('[redacted]');
+    return out;
   }
-}
-
-function heldSecretPrefix(tail: string, secret: string): number {
-  const max = Math.min(secret.length - 1, tail.length);
-  for (let size = max; size > 0; size -= 1) {
-    if (secret.startsWith(tail.slice(tail.length - size))) return size;
-  }
-  return 0;
 }

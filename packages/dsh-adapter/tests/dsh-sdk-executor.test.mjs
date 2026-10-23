@@ -19,6 +19,8 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import {
   DshChatExecutor,
   ExecutionDesk,
+  createFileJournal,
+  createWorkbenchServer,
   describeDshSessionEvent,
   dshSessionHome,
   sweepDshSessionOrphans,
@@ -1236,6 +1238,53 @@ test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async
   assert.equal(message.includes(secret), false);
   assert.equal(message.includes(prefix), false);
   assert.equal(JSON.stringify(boot.events).includes(prefix), false);
+});
+
+async function assertPrefixHidden(kind, length) {
+  const secret = 'K1-synthetic-0123456789abcdefX-TAIL';
+  const prefix = secret.slice(0, length);
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-prefix-http-'));
+  const sessionFile = path.join(directory, 'session.json');
+  const { desk } = open(`stderr-prefix-${kind}:${length}`, {
+    env: modelEnv(secret),
+    journal: createFileJournal(sessionFile),
+    initTimeoutMs: 20_000,
+  });
+  const server = createWorkbenchServer({
+    desk,
+    present: (snapshot) => snapshot,
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  try {
+    const posted = await fetch(`http://127.0.0.1:${port}/api/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '不要带出前缀', idempotencyKey: `prefix-${kind}-${length}` }),
+    });
+    assert.equal(posted.ok, true);
+    await desk.flush();
+    const loaded = await fetch(`http://127.0.0.1:${port}/api/workspace`);
+    const body = await loaded.text();
+    const saved = readFileSync(sessionFile, 'utf8');
+    assert.equal(body.includes(prefix), false, `${kind}-${length} http`);
+    assert.equal(saved.includes(prefix), false, `${kind}-${length} session`);
+    assert.equal(body.includes(secret), false, `${kind}-${length} http`);
+    assert.equal(saved.includes(secret), false, `${kind}-${length} session`);
+    assert.equal(body.includes('[redacted]'), true, `${kind}-${length} http`);
+    assert.equal(saved.includes('[redacted]'), true, `${kind}-${length} session`);
+  } finally {
+    server.close();
+  }
+}
+
+test('契约：收尾剩下的 4、12、30 位密钥前缀不会进入 HTTP 响应或会话文件', async () => {
+  for (const length of [4, 12, 30]) await assertPrefixHidden('end', length);
+});
+
+test('契约：流中间的 4、12、30 位密钥前缀不会进入 HTTP 响应或会话文件', async () => {
+  for (const length of [4, 12, 30]) await assertPrefixHidden('mid', length);
 });
 
 test('契约：封口超时时跨在缓冲边界上的密钥不会漏出', async () => {
