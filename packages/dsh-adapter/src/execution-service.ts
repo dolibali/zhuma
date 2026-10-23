@@ -483,10 +483,9 @@ export class ExecutionService {
       if (!parsed.ok) return parsed;
       const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
       if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
       const current = this.storage.readNode(nodeRecordKey(parsed.value));
-      if (!current || !intactNode(current) || space === 'missing' || !space.ok) {
-        return fail('not-found');
-      }
+      if (!current || !intactNode(current)) return fail('not-found');
       const membership = planMembership(
         this.workbench.readWorkbench(),
         current.taskId,
