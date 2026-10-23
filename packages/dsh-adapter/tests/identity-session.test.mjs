@@ -819,7 +819,7 @@ test('logout invalidates a member session and reopen keeps the space resource', 
   await second.dispose();
 });
 
-test('the member cookie is limited to Path=/zhuma-id', async () => {
+test('the member cookie is Path=/ so other product entries receive it', async () => {
   const host = await mount();
   const response = await call(host.web, {
     method: 'POST',
@@ -828,8 +828,10 @@ test('the member cookie is limited to Path=/zhuma-id', async () => {
   });
   assert.equal(response.status, 200);
   const setCookie = response.headers?.['set-cookie'];
-  assert.match(setCookie, /(?:^|;\s*)Path=\/zhuma-id(?:;|$)/);
-  assert.doesNotMatch(setCookie, /(?:^|;\s*)Path=\/(?:;|$)/);
+  assert.match(setCookie, /(?:^|;\s*)Path=\/(?:;|$)/);
+  assert.doesNotMatch(setCookie, /Path=\/zhuma-id/);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /SameSite=Strict/);
   assert.doesNotMatch(setCookie, /;\s*Secure(?:;|$)/);
   const loggedOut = await call(host.web, {
     method: 'POST',
@@ -837,7 +839,8 @@ test('the member cookie is limited to Path=/zhuma-id', async () => {
     cookie: cookiePair(setCookie),
     body: {},
   });
-  assert.match(loggedOut.headers?.['set-cookie'], /(?:^|;\s*)Path=\/zhuma-id(?:;|$)/);
+  assert.match(loggedOut.headers?.['set-cookie'], /(?:^|;\s*)Path=\/(?:;|$)/);
+  assert.match(loggedOut.headers?.['set-cookie'], /Max-Age=0/);
   await host.dispose();
 });
 

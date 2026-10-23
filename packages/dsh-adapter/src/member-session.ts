@@ -6,14 +6,14 @@
  * single-user mode). Multi-member mode returns 401 when the member cookie is
  * missing, deleted, expired, revoked, or forged.
  *
- * The cookie Path is `/zhuma-id`. HttpOnly and SameSite=Strict stay. Secure
- * waits for a TLS listener.
+ * The cookie Path is `/` so `/zhuma-exec` receives it. HttpOnly and
+ * SameSite=Strict stay. Secure waits for a TLS listener.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 
 export const MEMBER_COOKIE_NAME = 'zhuma-member';
-export const MEMBER_COOKIE_PATH = '/zhuma-id';
+export const MEMBER_COOKIE_PATH = '/';
 
 export interface MemberRequest {
   readonly headers: IncomingHttpHeaders;
