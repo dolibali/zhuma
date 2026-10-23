@@ -3,11 +3,13 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
@@ -1309,6 +1311,128 @@ test('契约：丢失入口后核实断开仍是节点记录异常', async () =>
   assert.equal(verified.snapshot.runs[0].status, 'failed');
   assert.equal(verified.snapshot.lastError.code, 'entry-inconsistent');
   assertLostRecordClosed(restored, journal, 'abandon', 'failed');
+});
+
+test('契约：上游文件读失败时阻塞，不把摘要当成正文', async () => {
+  const summary = '上游字段表（标签摘要）';
+  const text = 'field,rule\nname,required\n';
+  const open = (fileName, content, probe) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'zhuma-ctx-read-'));
+    if (content !== null) writeFileSync(path.join(root, fileName), content);
+    const planted = seed();
+    planted.fileRoot = root;
+    planted.handoff = {
+      ...planted.handoff,
+      inputRefs: [{ sourceNodeId: 'node-a', artifactVersionId: 'art-1' }],
+    };
+    planted.contextItems = [
+      ...planted.contextItems.filter((item) => item.sourceNodeId === undefined),
+      {
+        id: 'need',
+        kind: 'upstream-artifact',
+        sourceId: 'node-a',
+        sourceNodeId: 'node-a',
+        artifactVersionId: 'art-1',
+        version: '1',
+        permission: 'granted',
+        summary,
+        required: true,
+        includedByDefault: true,
+        relativePath: fileName,
+      },
+    ];
+    const requests = [];
+    const simulated = new SimulatedAgentExecutor({ chunkDelayMs: 0 });
+    const run = simulated.run.bind(simulated);
+    simulated.run = (request) => {
+      requests.push(request);
+      return run(request);
+    };
+    const session = ExecutionDesk.create(planted, {
+      executors: [simulated, new UnimplementedNativeExecutor('dsh')],
+      newId: ids('ctx-read'),
+      ...(probe !== undefined ? { probe } : {}),
+    });
+    session.updateConfig({
+      executorId: 'simulated',
+      skillIds: ['test-design'],
+      mcpIds: ['api-docs'],
+    });
+    return { session, requests, root };
+  };
+  const quiet = (snapshot) => ({
+    node: snapshot.node.status,
+    runs: snapshot.runs.length,
+    turns: snapshot.turns.length,
+    citations: snapshot.citations.length,
+    blocks: snapshot.contextBlocks.length,
+    claims: snapshot.claims.length,
+    interventions: snapshot.interventions.length,
+  });
+  const blocked = async (opened, key) => {
+    const before = quiet(opened.session.snapshot());
+    const result = opened.session.send({ text: '开始', idempotencyKey: key });
+    await opened.session.flush();
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'context-blocked');
+    assert.match(result.reason, /来源节点 node-a/);
+    assert.match(result.reason, /art-1/);
+    assert.match(result.reason, /不会改用摘要/);
+    assert.equal(result.reason.includes(summary), false);
+    assert.equal(opened.requests.length, 0);
+    assert.deepEqual(quiet(result.snapshot), before);
+    assert.deepEqual(quiet(opened.session.snapshot()), before);
+    assert.equal(
+      result.snapshot.runs.some((run) => run.contextRefs?.length > 0),
+      false,
+    );
+  };
+  const readable = () => ({ ok: true, exists: true, readable: true });
+
+  await blocked(open('need.csv', 'abc\u0000def'), 'nul');
+  await blocked(
+    open('need.csv', null, () => readable()),
+    'missing',
+  );
+  const denied = open('need.csv', 'secret-body\n', () => readable());
+  chmodSync(path.join(denied.root, 'need.csv'), 0);
+  await blocked(denied, 'denied');
+  let dropOnAccept = false;
+  let dropRoot = '';
+  const timed = open('need.csv', text, (relativePath) => {
+    if (dropOnAccept && relativePath === 'need.csv') {
+      const file = path.join(dropRoot, relativePath);
+      if (existsSync(file)) unlinkSync(file);
+    }
+    return readable();
+  });
+  dropRoot = timed.root;
+  dropOnAccept = true;
+  const deleted = timed.session.send({ text: '开始', idempotencyKey: 'deleted' });
+  await timed.session.flush();
+  assert.equal(deleted.ok, false);
+  assert.equal(deleted.code, 'context-blocked');
+  assert.match(deleted.reason, /来源节点 node-a/);
+  assert.match(deleted.reason, /art-1/);
+  assert.match(deleted.reason, /不会改用摘要/);
+  assert.equal(timed.requests.length, 0);
+  assert.equal(deleted.snapshot.runs.length, 0);
+  assert.equal(deleted.snapshot.turns.length, 0);
+  assert.equal(deleted.snapshot.citations.length, 0);
+  assert.equal(deleted.snapshot.node.status, 'ready');
+  assert.equal(existsSync(path.join(dropRoot, 'need.csv')), false);
+
+  const ok = open('need.csv', text);
+  const before = quiet(ok.session.snapshot());
+  const sent = ok.session.send({ text: '开始', idempotencyKey: 'plain' });
+  assert.equal(sent.ok, true);
+  await ok.session.flush();
+  assert.equal(ok.requests.length, 1);
+  const block = ok.requests[0].promptContext.find((item) => item.id === 'need');
+  assert.equal(block.body, text);
+  assert.equal(block.body.includes(summary), false);
+  assert.deepEqual(ok.requests[0].contextReferences, ['upstream-artifact:node-a@1']);
+  assert.equal(quiet(ok.session.snapshot()).runs, before.runs + 1);
 });
 
 test('契约：节点记录异常不会被后续成功操作清掉', async () => {

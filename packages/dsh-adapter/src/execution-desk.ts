@@ -247,6 +247,8 @@ export class ExecutionDesk {
   private lastPersistError: unknown = null;
   /** 完成或核实已经记在内存里、但要等日志写上才真正删除的会话。 */
   private pendingSessionDeletes: string[] = [];
+  /** 启动前读好的本轮正文。读失败的文件不会改用摘要。 */
+  private readonly pinnedPrompt = new Map<string, { id: string; body: string }[]>();
   /** 执行器收尾后的下一轮没写上日志。存储恢复后继续消费。 */
   private deferredQueueRunId: string | null = null;
   private consumingQueue = false;
@@ -1038,6 +1040,8 @@ export class ExecutionDesk {
       );
     }
     if (opened.reused) return this.succeed({ replayed: true, runId: opened.attempt.id });
+    const frozen = this.freezePromptContext();
+    if (!frozen.ok) return this.unreadableContext(frozen.item);
     const claimed = claimWritableWorkspace({
       workspaceId: isolateWorkspaceId(this.seed.handoff.nodeId),
       writerRunId: opened.attempt.id,
@@ -1078,8 +1082,10 @@ export class ExecutionDesk {
       reference: item.reference,
     }));
     this.contextBlocks = [];
+    this.pinnedPrompt.set(opened.attempt.id, frozen.blocks);
     const committed = this.succeed({ runId: opened.attempt.id });
     if (!committed.ok) {
+      this.pinnedPrompt.delete(opened.attempt.id);
       this.restoreAccept(checkpoint);
       return this.persistRejected();
     }
@@ -1255,7 +1261,7 @@ export class ExecutionDesk {
       mcp: this.authorized('mcp'),
       toolAllowlist: this.toolAllowlist(),
       attachments: this.attachmentPayloads(attachmentIds),
-      promptContext: this.promptContext(),
+      promptContext: this.promptContext(runId),
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
     };
     try {
@@ -1913,18 +1919,39 @@ export class ExecutionDesk {
     );
   }
 
-  private promptContext(): { id: string; body: string }[] {
+  private promptContext(runId: string): { id: string; body: string }[] {
+    return this.pinnedPrompt.get(runId) ?? [];
+  }
+
+  /** 受理时读完本轮要交给执行器的正文。文件读失败则整次不启动。 */
+  private freezePromptContext():
+    { ok: true; blocks: { id: string; body: string }[] } | { ok: false; item: DeskContextSeed } {
     const blocks: { id: string; body: string }[] = [];
     for (const item of this.referencedContext()) {
       let body = item.body;
       if (body === undefined && item.relativePath !== undefined && this.seed.fileRoot) {
         const read = readRelativeFile(this.seed.fileRoot, item.relativePath);
-        if (read.ok) body = read.text;
+        if (!read.ok) return { ok: false, item };
+        body = read.text;
       }
       if (body === undefined) body = item.summary;
       blocks.push({ id: item.id, body });
     }
-    return blocks;
+    return { ok: true, blocks };
+  }
+
+  private unreadableContext(item: DeskContextSeed): DeskResult {
+    const node = item.sourceNodeId ?? item.sourceId;
+    const version =
+      item.artifactVersionId !== undefined && item.artifactVersionId !== item.version
+        ? `${item.version}（产物 ${item.artifactVersionId}）`
+        : (item.artifactVersionId ?? item.version);
+    return this.fail(
+      'context-blocked',
+      node,
+      `来源节点 ${node} 的版本 ${version} 读取失败，不会改用摘要。`,
+      '补齐文件或权限，或移除此来源后再运行。不会传出不可访问的本机路径。',
+    );
   }
 
   private attachmentPayloads(attachmentIds: readonly string[]): {
