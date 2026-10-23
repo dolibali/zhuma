@@ -822,13 +822,13 @@ export class ExecutionService {
     if (!actor.ok) return actor;
     const parsed = parseBody(schema, body);
     if (!parsed.ok) return parsed;
-    const current = this.storage.readNode(nodeRecordKey(parsed.value));
-    if (!current || !intactNode(current)) return fail('not-found');
-    const space = await this.gateSpace(current.taskId, actor.value.spaceIds);
-    if (space === 'missing' || !space.ok) {
-      if (space !== 'missing' && space.error.code === 'unavailable') return space;
+    const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+    if (space !== 'missing' && !space.ok) {
+      if (space.error.code === 'unavailable') return space;
       return fail('not-found');
     }
+    const current = this.storage.readNode(nodeRecordKey(parsed.value));
+    if (space === 'missing' || !current || !intactNode(current)) return fail('not-found');
     const membership = planMembership(
       this.workbench.readWorkbench(),
       current.taskId,

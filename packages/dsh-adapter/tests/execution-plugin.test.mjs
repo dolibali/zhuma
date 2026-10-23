@@ -472,7 +472,7 @@ test('http inbox uses this plan when another task reuses the node id', async () 
       sourceNodeId: 'node-1',
       sourceGoal: '本计划目标',
       version: 2,
-      name: '第2版',
+      name: '第 2 版',
     },
   ]);
   for (const secret of [
