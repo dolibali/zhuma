@@ -1299,3 +1299,74 @@ test('submit, ballot, and settle leave the storage snapshot unchanged when the d
   assert.equal(JSON.stringify(submitted).includes('space-directory-down'), false);
   assert.deepEqual(store.snapshot(), before);
 });
+
+test('start-plan checks an idempotency key only inside the caller space', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '南队项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'south-task',
+      projectId: 'harbor',
+      title: '南队任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const southPlan = ready.appliedPlans.find((plan) => plan.taskId === 'south-task');
+  assert.ok(northPlan);
+  assert.ok(southPlan);
+  const spaces = boundedProjectSpaces([
+    { projectId: 'portal', spaceId: 'team-north' },
+    { projectId: 'harbor', spaceId: 'team-south' },
+  ]);
+  const probed = create(ready, spaces);
+  const control = create(ready, spaces);
+  const northStart = await probed.service.startPlan(session('chen', ['team-north']), {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(northStart.ok, true, northStart.ok ? '' : northStart.error.code);
+  const southBody = {
+    taskId: southPlan.taskId,
+    planId: southPlan.id,
+    revision: southPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const south = await probed.service.startPlan(session('chen', ['team-south']), southBody);
+  const alone = await control.service.startPlan(session('chen', ['team-south']), southBody);
+  assert.equal(south.ok, true, south.ok ? '' : south.error.code);
+  assert.equal(south.value.disposition, 'applied');
+  sameBytes(south, alone, 'start-plan');
+  assert.equal(JSON.stringify(south).includes('北队专有'), false);
+  assert.equal(JSON.stringify(south).includes('north-task'), false);
+  const replay = await probed.service.startPlan(session('chen', ['team-south']), {
+    ...southBody,
+    idempotencyKey: 'shared-key-replay',
+  });
+  assert.equal(replay.value.disposition, 'replayed');
+  const clash = await probed.service.startPlan(session('chen', ['team-south']), {
+    ...southBody,
+    revision: southPlan.revision + 1,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(clash.error.code, 'idempotency-mismatch');
+});

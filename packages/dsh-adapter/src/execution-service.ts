@@ -219,6 +219,22 @@ function planKey(taskId: string, planId: string, revision: number): string {
   return `${taskId}:${planId}:${revision}`;
 }
 
+function taskForPlanKey<T extends { readonly id: string }>(
+  key: string,
+  tasks: readonly T[],
+): T | undefined {
+  let found: T | undefined;
+  for (const task of tasks) {
+    if (!key.startsWith(`${task.id}:`)) continue;
+    const rest = key.slice(task.id.length + 1);
+    const splitAt = rest.lastIndexOf(':');
+    if (splitAt <= 0) continue;
+    if (!/^\d+$/.test(rest.slice(splitAt + 1))) continue;
+    if (!found || task.id.length > found.id.length) found = task;
+  }
+  return found;
+}
+
 function directoryIds(workbench: Workbench): readonly string[] {
   return workbench.participants
     .filter((participant) => participant.kind === 'human')
@@ -546,6 +562,42 @@ export class ExecutionService {
     return fail('not-found');
   }
 
+  /**
+   * Another plan in this space already used the key.
+   * Plans that cannot be placed in this space are ignored, so a foreign key
+   * neither blocks the start nor changes the response.
+   */
+  private async sameSpaceIdempotencyConflict(
+    idempotencyKey: string,
+    key: string,
+    spaceId: string,
+    projectId: string,
+  ): Promise<boolean> {
+    const directory = this.projectSpaceDirectory();
+    const tasks = this.workbench.readWorkbench().tasks;
+    const spaceByProject = new Map<string, string | undefined>([[projectId, spaceId]]);
+    for (const item of this.storage.listPlans()) {
+      if (item.receipt.idempotencyKey !== idempotencyKey || item.key === key) continue;
+      const task = taskForPlanKey(item.key, tasks);
+      if (!task) continue;
+      let owner = spaceByProject.get(task.projectId);
+      if (!spaceByProject.has(task.projectId)) {
+        owner = undefined;
+        if (directory) {
+          try {
+            const lookup = await directory.spaceForProject(task.projectId);
+            owner = lookup.ok ? lookup.spaceId : undefined;
+          } catch {
+            owner = undefined;
+          }
+        }
+        spaceByProject.set(task.projectId, owner);
+      }
+      if (owner === spaceId) return true;
+    }
+    return false;
+  }
+
   private async startPlanNow(caller: ExecutionCaller, body: unknown) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -560,10 +612,11 @@ export class ExecutionService {
     if (membership === 'not-participant') return fail('not-participant');
     const fingerprint = canonicalPayload({ taskId, planId, revision });
     const key = planKey(taskId, planId, revision);
-    const reused = this.storage
-      .listPlans()
-      .find((item) => item.receipt.idempotencyKey === idempotencyKey && item.key !== key);
-    if (reused) return fail('idempotency-mismatch');
+    const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
+    if (!task) return fail('not-found');
+    if (await this.sameSpaceIdempotencyConflict(idempotencyKey, key, space.value, task.projectId)) {
+      return fail('idempotency-mismatch');
+    }
     const prior = this.storage.readPlan(key);
     if (prior?.fingerprint === fingerprint) {
       return {
