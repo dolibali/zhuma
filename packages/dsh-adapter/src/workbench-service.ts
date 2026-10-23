@@ -6,6 +6,10 @@ import {
   WorkbenchError,
   planningPrompt,
   parsePlanningResult,
+  previewResourcePackage,
+  parseWorkflowTemplate,
+  StoredAssetPackageSchema,
+  type StoredAssetPackage,
   type Workbench,
   type PlanProposal,
 } from '@zhuma/agent-core';
@@ -33,6 +37,10 @@ export interface PlanningModel {
   readonly name: string;
   generate(system: string, input: string, signal: AbortSignal): Promise<string>;
 }
+export interface AssetPackageStorage {
+  get(versionId: string): StoredAssetPackage | undefined;
+  put(value: StoredAssetPackage): Promise<void>;
+}
 const fingerprint = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -43,6 +51,7 @@ export class WorkbenchService {
   constructor(
     private readonly storage: WorkbenchStorage,
     private readonly audits: PlanningAuditStorage,
+    private readonly packages?: AssetPackageStorage,
   ) {}
   snapshot(): Workbench {
     return structuredClone(this.storage.read());
@@ -69,6 +78,24 @@ export class WorkbenchService {
       if (state.revision !== request.expectedRevision)
         throw new WorkbenchError('conflict', '内容已被其他窗口修改。请先刷新，再应用你的更改。');
       const next = applyWorkbenchCommand(state, request.command);
+      if (request.command.type === 'import-package') {
+        if (!this.packages) throw new WorkbenchError('asset-storage', '资产包存储尚未接入。');
+        const files = previewResourcePackage(
+          request.command.input.files,
+          parseWorkflowTemplate,
+        ).files.sort((a, b) => a.path.localeCompare(b.path, 'en'));
+        const record = StoredAssetPackageSchema.parse({
+          versionId: request.command.input.versionId,
+          files,
+          digest: fingerprint(files),
+        });
+        const previous = this.packages.get(record.versionId);
+        if (previous && previous.digest !== record.digest)
+          throw new WorkbenchError('asset-version', '来源包版本已存在，不能替换已固定的文件。');
+        // Persist immutable files first. A failed catalog write leaves no visible resource;
+        // the same command can reuse these bytes and publish once on retry.
+        if (!previous) await this.packages.put(record);
+      }
       next.receipts = [
         ...state.receipts,
         { id: request.requestId, fingerprint: hash, revision: next.revision },
@@ -79,6 +106,25 @@ export class WorkbenchService {
     });
     this.writes = operation.catch(() => undefined);
     return operation;
+  }
+
+  resourceFiles(
+    kind: 'asset' | 'expert',
+    id: string,
+  ): { versionId: string; files: StoredAssetPackage['files'] } {
+    const state = this.storage.read();
+    const resource =
+      kind === 'asset'
+        ? state.assets.find((a) => a.id === id)
+        : state.participants.find((p) => p.id === id && p.kind === 'expert');
+    if (!resource?.origin) throw new WorkbenchError('not-found', '当前定义没有来源包。');
+    const stored = this.packages?.get(resource.origin.versionId);
+    if (!stored) throw new WorkbenchError('asset-unavailable', '来源文件暂不可用，请重新导入。');
+    const allowed = new Set(resource.origin.filePaths);
+    const files = stored.files.filter((f) => allowed.has(f.path));
+    if (files.length !== allowed.size)
+      throw new WorkbenchError('asset-unavailable', '来源文件不完整，请重新导入。');
+    return structuredClone({ versionId: stored.versionId, files });
   }
 
   async plan(raw: unknown, model: PlanningModel, signal: AbortSignal): Promise<PlanProposal> {
@@ -137,7 +183,7 @@ export class WorkbenchService {
         audit.attempts[attempt]!.output = output;
         await this.audits.put(structuredClone(audit));
         try {
-          const result = parsePlanningResult(output, state, task);
+          const result = parsePlanningResult(output, state, task, prompt.context);
           const proposal: PlanProposal = {
             id: request.requestId,
             taskId: task.id,

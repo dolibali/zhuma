@@ -13,6 +13,7 @@ export function NodeInspector({
   manageMembers,
   split,
   remove,
+  roleMode = false,
 }: {
   node: WorkNode;
   workflow: Workflow;
@@ -25,6 +26,7 @@ export function NodeInspector({
   manageMembers(): void;
   split(): void;
   remove(): void;
+  roleMode?: boolean;
 }) {
   const assignee = members.find((m) => m.id === node.assigneeId);
   const names = (ids: string[]) =>
@@ -101,7 +103,8 @@ export function NodeInspector({
         />
       </Field>
       <ParticipantSelect
-        label="执行者"
+        label={roleMode ? '执行角色' : '执行者'}
+        roleMode={roleMode}
         members={members}
         selected={node.assigneeId ? [node.assigneeId] : []}
         change={(ids) =>
@@ -112,7 +115,7 @@ export function NodeInspector({
         }
       />
       <button className="zm-text-button" onClick={manageMembers}>
-        管理任务参与者
+        {roleMode ? '管理模板角色' : '管理任务参与者'}
       </button>
       <ExpandableText
         label="要完成的工作"
@@ -144,7 +147,8 @@ export function NodeInspector({
         </label>
         {node.reviewRequired && (
           <ParticipantSelect
-            label="评审人"
+            label={roleMode ? '评审角色' : '评审人'}
+            roleMode={roleMode}
             multiple
             hint="全部通过后交接"
             members={members.filter((m) => m.id !== node.assigneeId)}
@@ -153,7 +157,11 @@ export function NodeInspector({
           />
         )}
         {node.reviewRequired && !node.reviewerIds.length && (
-          <small className="zm-warning">确认工作流前，请选择至少一位评审人。</small>
+          <small className="zm-warning">
+            {roleMode
+              ? '保存模板前，请选择至少一个评审角色。'
+              : '确认工作流前，请选择至少一位评审人。'}
+          </small>
         )}
       </div>
       <details className="zm-config-group">
@@ -165,13 +173,17 @@ export function NodeInspector({
         </summary>
         <MultiSelect
           label="Skills"
-          options={state.assets.filter((a) => a.kind === 'skill' && a.available)}
+          options={state.assets.filter(
+            (a) => a.kind === 'skill' && (a.available || node.skillIds.includes(a.id)),
+          )}
           selected={node.skillIds}
           change={(skillIds) => update({ skillIds })}
         />
         <MultiSelect
           label="MCP"
-          options={state.assets.filter((a) => a.kind === 'mcp' && a.available)}
+          options={state.assets.filter(
+            (a) => a.kind === 'mcp' && (a.available || node.mcpIds.includes(a.id)),
+          )}
           selected={node.mcpIds}
           change={(mcpIds) => update({ mcpIds })}
         />

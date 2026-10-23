@@ -1,0 +1,294 @@
+{
+  "kind": "deterministic-context-contract",
+  "modelCalled": false,
+  "cases": [
+    {
+      "id": "csv-import",
+      "goal": "导入 CSV，预览缺失字段并确认映射规则",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "CSV 字段映射",
+          "kind": "skill",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1333,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    },
+    {
+      "id": "report-privacy",
+      "goal": "报表导出增加敏感字段脱敏，财务确认可见范围",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "敏感字段脱敏",
+          "kind": "skill",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1329,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    },
+    {
+      "id": "login-api",
+      "goal": "设计账号登录 API 与错误响应",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "API 接口约定",
+          "kind": "skill",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1325,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    },
+    {
+      "id": "research",
+      "goal": "研究公开市场数据并整理来源",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "公开市场数据",
+          "kind": "mcp",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1311,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    },
+    {
+      "id": "prototype",
+      "goal": "制作采购审批界面原型，检查交互",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "界面原型设计",
+          "kind": "skill",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1317,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    },
+    {
+      "id": "release",
+      "goal": "准备版本发布清单与回滚说明",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "版本发布清单",
+          "kind": "template",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1316,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    },
+    {
+      "id": "copy-edit",
+      "goal": "校对一段帮助文案",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "文案校对",
+          "kind": "skill",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1297,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    },
+    {
+      "id": "parallel-api-sdk",
+      "goal": "并行开发订单 API、SDK 和 Web，再集成验证",
+      "candidates": [
+        {
+          "id": "relevant",
+          "name": "SDK 开发与集成",
+          "kind": "skill",
+          "selection": "related",
+          "excerpted": false
+        }
+      ],
+      "participants": [
+        {
+          "id": "chen",
+          "kind": "human",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        },
+        {
+          "id": "qa",
+          "kind": "expert",
+          "runtimeAvailability": "unknown",
+          "liveWorkload": "unknown"
+        }
+      ],
+      "contextChars": 1348,
+      "omittedAssetCount": 1,
+      "modelQuality": {
+        "status": "not-run",
+        "coverage": null,
+        "assignment": null,
+        "handoff": null,
+        "overDecomposition": null
+      }
+    }
+  ]
+}
