@@ -191,6 +191,7 @@ test('start accepts only the requested revision and replays a partial write', as
     idempotencyKey: 'start-1',
   });
   assert.equal(failed.error.code, 'unavailable');
+  assert.equal(failed.error.message, '执行记录暂时写不进去，请用同一个请求再试一次。');
   assert.equal(store.planCount(), 0);
   assert.equal(store.node('design').command.version, 1);
   assert.equal(store.node('publish'), undefined);
@@ -370,6 +371,7 @@ test('authorization, stale delivery, and a failed write leave the node unchanged
   store.arm(1);
   const failed = await service.submit(session('chen'), { ...body, text: '接口说明' });
   assert.equal(failed.error.code, 'unavailable');
+  assert.equal(failed.error.message, '执行记录暂时写不进去，请用同一个请求再试一次。');
   assert.equal(store.node('design').command.version, 1);
   assert.equal(store.node('design').receipts.length, 0);
 
@@ -1258,6 +1260,10 @@ test('a directory fault returns the same unavailable bytes whether or not the ta
     for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
       sameBytes(present[endpoint], absent[endpoint], endpoint);
       assert.equal(present[endpoint].error.code, 'unavailable');
+      assert.equal(
+        present[endpoint].error.message,
+        '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+      );
     }
   }
 });

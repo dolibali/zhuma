@@ -166,6 +166,15 @@ const MESSAGES = {
 
 export type ExecutionMessageCode = keyof typeof MESSAGES;
 
+const DIRECTORY_UNAVAILABLE_MESSAGE = '执行记录暂时不可用，请稍后用同一个请求再试一次。';
+
+function directoryUnavailable(): { ok: false; error: ExecutionFailure } {
+  return {
+    ok: false,
+    error: { code: 'unavailable', message: DIRECTORY_UNAVAILABLE_MESSAGE, details: {} },
+  };
+}
+
 function fail(
   code: string,
   details: Record<string, unknown> = {},
@@ -546,19 +555,19 @@ export class ExecutionService {
     try {
       lookup = await directory.spaceForProject(task ? task.projectId : '');
     } catch {
-      return fail('unavailable');
+      return directoryUnavailable();
     }
     if (
       lookup == null ||
       typeof lookup !== 'object' ||
       (!lookup.ok && lookup.reason !== 'unknown')
     ) {
-      return fail('unavailable');
+      return directoryUnavailable();
     }
     if (!task) return 'missing';
     const decision = decideProjectSpace(lookup, spaceIds);
     if (decision === 'ok' && lookup.ok) return { ok: true, value: lookup.spaceId };
-    if (decision === 'unavailable') return fail('unavailable');
+    if (decision === 'unavailable') return directoryUnavailable();
     return fail('not-found');
   }
 
