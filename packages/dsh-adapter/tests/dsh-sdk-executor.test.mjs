@@ -1102,6 +1102,52 @@ test('契约：受理后的标准错误超过 8KB 时保留结尾原因，切口
   assert.equal(stderr.includes(suffix), false);
 });
 
+// 回归：545ee34 的切口会落在 emoji 两个代理字符中间。下游按每次输出计字节、取码点，开头收进半个 emoji。
+test('契约：stderr 每次输出都不把代理字符对切开', () => {
+  const secret = `QA-SK-${'A'.repeat(32)}`;
+  assert.equal(secret.length, 38);
+  const lone = (text) => /[\uD800-\uDBFF]$/.test(text) || /^[\uDC00-\uDFFF]/.test(text);
+  const pushAll = (chunks) => {
+    const redactor = new StderrRedactor(secret);
+    const pieces = [];
+    for (const chunk of chunks) {
+      const out = redactor.push(chunk);
+      if (out.length > 0) pieces.push(out);
+    }
+    const tail = redactor.flush();
+    if (tail.length > 0) pieces.push(tail);
+    return pieces;
+  };
+  const assertIntact = (chunks, label) => {
+    const pieces = pushAll(chunks);
+    const joined = pieces.join('');
+    assert.equal(joined, chunks.join(''), label);
+    for (const piece of pieces) assert.equal(lone(piece), false, label);
+    const bytes = pieces.reduce((sum, piece) => sum + Buffer.byteLength(piece), 0);
+    assert.equal(bytes, Buffer.byteLength(joined), label);
+  };
+  for (const prefix of [2040, 2041, 2042, 2043, 2044, 2045, 2046]) {
+    for (const pad of [34, 35, 36, 37, 38]) {
+      const text = `${'a'.repeat(prefix)}😀${'x'.repeat(pad)}`;
+      assertIntact([text], `p${prefix}-pad${pad}`);
+      assertIntact([text.slice(0, 5), text.slice(5)], `p${prefix}-pad${pad}-split5`);
+      assertIntact(
+        [text.slice(0, prefix + 1), text.slice(prefix + 1)],
+        `p${prefix}-pad${pad}-pair`,
+      );
+    }
+  }
+  for (const parts of [2, 3, 7]) {
+    const count = 2048;
+    const per = Math.ceil(count / parts);
+    const chunks = [];
+    for (let index = 0; index < count; index += per) {
+      chunks.push('😀'.repeat(Math.min(per, count - index)));
+    }
+    assertIntact(chunks, `exact-8192-${parts}`);
+  }
+});
+
 // 回归：改回 .length / .slice 后，落盘超过 8192 字节，标注的省略数对不上，并且切开 emoji 得到 U+FFFD。
 test('契约：标准错误按 UTF-8 字节截断，中文和 emoji 的切口不拆开字符', async () => {
   const done = await collect('stderr-cap-utf8', {
@@ -1180,6 +1226,60 @@ test('契约：标准错误开头放不下一个码点后封口，后面的写�
     assert.equal(Buffer.byteLength(head) + Buffer.byteLength(next) > 2048, true, name);
     rmSync(done.env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
+});
+
+test('契约：受理后的标准错误切口避开代理字符对，8KB 与码点封口保持不变', async () => {
+  const secret = `QA-SK-${'A'.repeat(32)}`;
+  const lone = (text) =>
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+  const head = await collect('stderr-surrogate:head', {
+    env: modelEnv(secret),
+    initTimeoutMs: 20_000,
+    promptTimeoutMs: 20_000,
+    runId: 'stderr-surrogate-head',
+  });
+  assert.equal(head.events.at(-1).type, 'completed');
+  const headHome = dshSessionHome(
+    head.events.find((event) => event.type === 'accepted').sessionId,
+    head.env,
+  );
+  const headFile = readFileSync(path.join(headHome, 'zhuma-collected-stderr.txt'), 'utf8');
+  const headSource = readFileSync(path.join(headHome, 'zhuma-stderr-source.txt'), 'utf8');
+  const marked = headFile.match(/（已截断 (\d+) 字节）/);
+  assert.notEqual(marked, null);
+  const headText = headFile.slice(0, marked.index);
+  const tailText = headFile.slice(marked.index + marked[0].length);
+  assert.equal(headFile.includes('\uFFFD'), false);
+  assert.equal(lone(headFile), false);
+  assert.equal(headSource.startsWith(headText), true);
+  assert.equal(headSource.endsWith(tailText), true);
+  assert.equal(
+    Number(marked[1]),
+    Buffer.byteLength(headSource) - Buffer.byteLength(headText + tailText),
+  );
+  assert.equal(Buffer.byteLength(headText) <= 2048, true);
+  const next = String.fromCodePoint(headSource.codePointAt(headText.length));
+  assert.equal(Buffer.byteLength(headText) + Buffer.byteLength(next) > 2048, true);
+  assert.equal(headText.includes('😀'), true);
+  rmSync(head.env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+
+  const exact = await collect('stderr-surrogate:exact', {
+    env: modelEnv(secret),
+    initTimeoutMs: 20_000,
+    promptTimeoutMs: 20_000,
+    runId: 'stderr-surrogate-exact',
+  });
+  assert.equal(exact.events.at(-1).type, 'completed');
+  const exactHome = dshSessionHome(
+    exact.events.find((event) => event.type === 'accepted').sessionId,
+    exact.env,
+  );
+  const exactFile = readFileSync(path.join(exactHome, 'zhuma-collected-stderr.txt'), 'utf8');
+  assert.equal(exactFile, '😀'.repeat(2048));
+  assert.equal(Buffer.byteLength(exactFile), 8192);
+  assert.equal(exactFile.includes('（已截断'), false);
+  assert.equal(exactFile.includes('\uFFFD'), false);
+  rmSync(exact.env.ZHUMA_DATA_DIR, { recursive: true, force: true });
 });
 
 // 回归：改回 slice(0, 2000) 后，最后一行 cause 不在失败消息里。

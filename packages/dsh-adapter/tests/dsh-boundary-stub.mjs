@@ -344,6 +344,12 @@ async function handlePrompt(message) {
     writeFileSync(path.join(home, 'zhuma-stderr-source.txt'), original, 'utf8');
     await writeStderrChunks(chunks);
   }
+  if (mode.startsWith('stderr-surrogate:')) {
+    const chunks = surrogateChunks(mode.slice('stderr-surrogate:'.length));
+    const original = chunks.join('');
+    writeFileSync(path.join(home, 'zhuma-stderr-source.txt'), original, 'utf8');
+    await writeStderrChunks(chunks);
+  }
   finishTurn();
 }
 
@@ -352,6 +358,18 @@ function headSealChunks(kind) {
   if (kind === 'emoji-gap') return ['a'.repeat(2045), '😀'.repeat(1800), '\nEND'];
   if (kind === 'cause-line') return ['磁盘'.repeat(2000), '磁盘'.repeat(2000), '\ncause: 磁盘已满'];
   return ['\nEND'];
+}
+
+function surrogateChunks(kind) {
+  if (kind === 'head') return ['a'.repeat(2043) + '😀' + 'x'.repeat(36), 'y'.repeat(7000), '\nEND'];
+  const count = 2048;
+  const parts = 3;
+  const per = Math.ceil(count / parts);
+  const chunks = [];
+  for (let index = 0; index < count; index += per) {
+    chunks.push('😀'.repeat(Math.min(per, count - index)));
+  }
+  return chunks;
 }
 
 function delay(ms) {

@@ -1619,7 +1619,12 @@ export class StderrRedactor {
     const mask = prefixMask(raw, secret);
     const emitStart = this.carry.length;
     const retain = secret.length - 1;
-    const cut = ending ? raw.length : Math.max(emitStart, raw.length - retain);
+    let cut = ending ? raw.length : Math.max(emitStart, raw.length - retain);
+    // 切口前一位是高代理时往前退一位，同一次输出不把 emoji 拆成两半。
+    if (!ending && cut > emitStart && cut < raw.length) {
+      const before = raw.charCodeAt(cut - 1);
+      if (before >= 0xd800 && before <= 0xdbff) cut -= 1;
+    }
     let out = '';
     let index = emitStart;
     while (index < cut) {
