@@ -441,13 +441,15 @@ export class ExecutionService {
       const parsed = parseBody(reportSchema, body);
       if (!parsed.ok) return parsed;
       const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
-      if (space !== 'missing' && !space.ok) return space;
+      if (space === 'missing' || !space.ok) {
+        return space === 'missing' ? fail('not-found') : space;
+      }
       const membership = planMembership(
         this.workbench.readWorkbench(),
         parsed.value.taskId,
         actor.value.actorId,
       );
-      if (membership === 'missing') return fail('plan-not-found');
+      if (membership === 'missing') return fail('not-found');
       if (membership === 'not-participant') return fail('not-participant');
       const { taskId, planId, revision } = parsed.value;
       const reports = this.storage
@@ -540,7 +542,9 @@ export class ExecutionService {
     if (!parsed.ok) return parsed;
     const { taskId, planId, revision, idempotencyKey } = parsed.value;
     const space = await this.gateSpace(taskId, actor.value.spaceIds);
-    if (space !== 'missing' && !space.ok) return space;
+    if (space === 'missing' || !space.ok) {
+      return space === 'missing' ? fail('not-found') : space;
+    }
     const membership = planMembership(this.workbench.readWorkbench(), taskId, actor.value.actorId);
     if (membership === 'not-participant') return fail('not-participant');
     const fingerprint = canonicalPayload({ taskId, planId, revision });

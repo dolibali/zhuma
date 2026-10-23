@@ -1096,3 +1096,91 @@ test('rejected submit, ballot, and settle leave the storage snapshot unchanged',
   assert.equal(settled.error.code, 'not-assigned-reviewer');
   assert.deepEqual(store.snapshot(), before);
 });
+
+test('a missing task and a task in another space return the same body', async () => {
+  const spaceId = 'team-north';
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId }]);
+  const { service, store } = create(state, spaces);
+  const started = await service.startPlan(session('chen', [spaceId]), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-visible',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const before = store.snapshot();
+  const hiddenCaller = session('chen', ['team-south']);
+  const notFound = {
+    ok: false,
+    error: { code: 'not-found', message: '找不到这个节点。', details: {} },
+  };
+
+  async function probe(taskId, idempotencyKey) {
+    const located = {
+      taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      nodeId: 'design',
+      expectedVersion: 1,
+    };
+    return {
+      'start-plan': await service.startPlan(hiddenCaller, {
+        taskId,
+        planId: applied.id,
+        revision: applied.revision,
+        idempotencyKey: `${idempotencyKey}-start`,
+      }),
+      submit: await service.submit(hiddenCaller, {
+        ...located,
+        idempotencyKey: `${idempotencyKey}-submit`,
+        text: '不应写入',
+      }),
+      ballot: await service.ballot(hiddenCaller, {
+        ...located,
+        idempotencyKey: `${idempotencyKey}-ballot`,
+        roundId: 'round-probe',
+        artifactVersionId: 'artifact-probe',
+        action: 'approve',
+      }),
+      settle: await service.settle(hiddenCaller, {
+        ...located,
+        idempotencyKey: `${idempotencyKey}-settle`,
+        roundId: 'round-probe',
+        artifactVersionId: 'artifact-probe',
+      }),
+      report: await service.report(hiddenCaller, {
+        taskId,
+        planId: applied.id,
+        revision: applied.revision,
+      }),
+    };
+  }
+
+  const hidden = await probe(applied.taskId, 'hidden');
+  const missing = await probe('absent-task', 'missing');
+  for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+    assert.deepEqual(hidden[endpoint], missing[endpoint]);
+    assert.deepEqual(hidden[endpoint], notFound);
+  }
+
+  const hiddenInbox = await service.inbox(hiddenCaller, {});
+  const removed = state.tasks.splice(0, state.tasks.length);
+  const missingInbox = await service.inbox(hiddenCaller, {});
+  state.tasks.push(...removed);
+  assert.deepEqual(hiddenInbox, missingInbox);
+  assert.equal(hiddenInbox.ok, true);
+  assert.deepEqual(hiddenInbox.value.items, []);
+  assert.deepEqual(hiddenInbox.value.nodes, []);
+
+  const wrongRevision = await service.startPlan(session('chen', [spaceId]), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision + 1,
+    idempotencyKey: 'start-wrong-revision',
+  });
+  assert.equal(wrongRevision.ok, false);
+  assert.equal(wrongRevision.error.code, 'plan-not-found');
+  assert.equal(wrongRevision.error.message, '找不到指定的已确认计划版本。');
+  assert.deepEqual(store.snapshot(), before);
+});

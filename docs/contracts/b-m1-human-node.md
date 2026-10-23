@@ -43,7 +43,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。项目属于哪个空间，只问调用方注入的 `ProjectSpaceDirectory`。执行服务把 `spaceForProject(projectId)` 返回的空间 id 和这次成员的 `spaceIds` 做精确比较。没有注入这份目录时，不把 `projectId` 当作空间 id，启动、提交、投票、结算、报告和待办全部拒绝，也不写入。
 3. `legacy-single-user` 并且导入恰好一个账户、`ownerAccountId` 写明是这个账户时，owner cookie 才解析成那个账户。`multi-member` 即使导入是这个形状，也不把 DSH owner cookie 当成成员。
-4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。目录没有这个项目或空间对不上时，前五个命令返回 `not-found`，待办不列出这些任务。目录抛错或返回 `unavailable` 时，这些命令和待办都返回 `unavailable`，不写入。空间通过之后才检查任务成员，然后才检查节点角色。
+4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。任务不存在、目录没有这个项目，或空间对不上时，前五个命令返回同一份 `not-found`（`code`、`message`、`details` 都相同），待办不列出这些任务，也不能靠响应区分任务不存在和任务在别的空间。目录抛错或返回 `unavailable` 时，这些命令和待办都返回 `unavailable`，不写入。空间通过之后才检查任务成员，然后才检查节点角色。已经通过空间核对的任务，修订对不上时 `start-plan` 仍返回 `plan-not-found`。
 
 官方 `rpc.handle` 的 Peer 没有请求头，所以执行通道不用它。`connection.fetch.register` 的 Fetch `Request` 保留 `cookie` 和 `host`。Connection 的精确路由仍然只把 owner Peer 送进处理函数；成员身份只从 `resolveMember` 来。
 
@@ -52,7 +52,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 | 操作         | 谁可以                                                                                                                                                                           |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `start-plan` | 任务 `ownerId`，或 `participantIds` 里的目录成员。其他人返回 `not-participant`                                                                                                   |
-| `report`     | 与 `start-plan` 相同。任务不存在返回 `plan-not-found`                                                                                                                            |
+| `report`     | 与 `start-plan` 相同。任务不存在与其他空间返回同一份 `not-found`                                                                                                                 |
 | `inbox`      | 已解析的目录 human，并且仍是该任务的负责人或参与者。待办只列出该 actor 自己的项，节点视图只附带这些项。移出参与者后该项消失，响应不带交付正文。非目录成员返回 `not-in-directory` |
 | `submit`     | 先是任务成员，然后是该节点的 human 执行者。不是参与者返回 `not-participant`。不是执行者返回 `not-assignee`。计划回执缺失时返回 `plan-incomplete`                                 |
 | `ballot`     | 先是任务成员，然后必须在该节点 `reviewerIds` 里，且票面评审人就是这个 actor。从参与者里移除后再投票返回 `not-participant`。计划回执缺失时返回 `plan-incomplete`                  |
