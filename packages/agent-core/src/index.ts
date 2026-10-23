@@ -153,3 +153,11 @@ export {
   canReadFile,
   projectWorkTreeNode,
 } from './delivery.js';
+
+export type {
+  ExecutionNodeRecord,
+  ExecutionReceipt,
+  NodeCommandResult,
+  PlanStartResult,
+} from './human-node.js';
+export { nodeRecordKey, startAppliedPlan } from './human-node.js';
