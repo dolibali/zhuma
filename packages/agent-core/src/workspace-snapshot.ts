@@ -156,4 +156,6 @@ export interface ExecutionDeskSnapshot {
   readonly contextBlocks: readonly ContextBlockFact[];
   readonly catalog: WorkspaceCatalog;
   readonly claims: readonly WorkspaceClaimFact[];
+  /** 最近一次日志写入失败。成功写入后清空。不单独占一份存储。 */
+  readonly persistenceFault?: CommandErrorFact | null;
 }

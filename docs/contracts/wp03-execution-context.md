@@ -59,6 +59,8 @@ sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时�
 
 同一幂等键、同一内容重放，不创建第二条运行。同一幂等键、不同内容返回 `idempotency-mismatch`。刷新、切换视图和读取快照使用 `view-refresh` / `view-switch` 一类触发，`triggerMayCreateRun` 为 false。关闭页面不取消运行，页面计时器不把运行标成完成。
 
+受理一次发送时，运行、写权和幂等键与这次日志写入是同一边界。`journal.save` 失败则回滚这次对 claims、runs 和 turns 的修改，返回 `persist-failed`，不启动执行器。存储恢复后的同键再试是一次新的受理，不能当成已经启动的重放。执行器事件写日志失败时不抛出未处理拒绝：内存保留这次事件，并标出持久化故障。故障还在时，界面上的状态不是已经落盘的成功回执。存储恢复后重写同一份日志，成功后故障消失。不另建存储。
+
 运行正常结束时，`settleExecutionRun(..., 'completed')` 发出 `execution-finished`，节点回到进入运行前的 `ready` 或 `needs-revision`。`waiting-for-input` 上的正常结束也走这条迁移。效果只有 `await-human-submit`。这不是 `accept-handoff`，不打开评审，不触发下游，也不自动开始下一次调度。多轮对话因此可以再次显式发送。WP00 原来没有「执行结束但继续由人决定是否提交」的出口，所以增加了这条迁移。
 
 已确认完成的节点不能再次 `openRunAttempt`。交接 `reviewRequired` 为 true 时，`confirmCompleted()` 拒绝，节点不进入 `completed`，会话目录也不删除。不要求评审时，它才用 `submit-artifact` 且 `reviewRequired: false` 进入 `completed`。

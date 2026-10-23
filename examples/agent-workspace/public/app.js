@@ -187,6 +187,11 @@ function renderThread() {
       `<p class="note" data-testid="run" data-run-id="${escapeHtml(run.id)}">第 ${run.attempt} 次 · ${escapeHtml(run.label)}${run.simulated ? ' · 模拟' : ''}${run.sessionDiscarded ? ' · 已丢弃' : ''}</p>`,
     );
   }
+  if (view.persistenceFault) {
+    parts.push(
+      `<article class="error" data-testid="persistence-fault"><strong>${escapeHtml(view.persistenceFault.objectLabel)}</strong><p>${escapeHtml(view.persistenceFault.reason)}</p><p>下一步：${escapeHtml(view.persistenceFault.nextStep)}</p><button class="btn" type="button" id="rewrite-persistence" data-testid="rewrite-persistence">重写日志</button></article>`,
+    );
+  }
   if (state.localError) parts.push(errorBlock(state.localError));
   if (view.error) parts.push(errorBlock(view.error));
   for (const block of view.blocks) {
@@ -454,6 +459,12 @@ function attachmentPayload(file) {
     bytesBase64: bytesToBase64(buffer),
   }));
 }
+
+thread.addEventListener('click', (event) => {
+  const button = event.target.closest('#rewrite-persistence');
+  if (!button) return;
+  void post('/api/persistence/rewrite');
+});
 
 attachmentList.addEventListener('click', (event) => {
   const button = event.target.closest('[data-remove-attachment]');

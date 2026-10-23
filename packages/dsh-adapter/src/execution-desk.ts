@@ -212,6 +212,7 @@ export class ExecutionDesk {
   private draftRoundId: string | null = null;
   private handoffInvalid = false;
   private historyNote: string | null = null;
+  private persistenceFault: CommandErrorFact | null = null;
 
   private readonly seed: DeskSeed;
 
@@ -285,7 +286,10 @@ export class ExecutionDesk {
   static create(seed: DeskSeed, deps: DeskDependencies): ExecutionDesk {
     const desk = new ExecutionDesk(seed, deps, null);
     desk.interactionReady = true;
-    desk.persist();
+    if (!desk.persist()) {
+      const reason = desk.persistenceFault?.reason ?? 'persist-failed';
+      throw Object.assign(new Error(reason), { code: 'persist-failed' });
+    }
     return desk;
   }
 
@@ -297,9 +301,17 @@ export class ExecutionDesk {
     return desk;
   }
 
-  resumeInteraction(): void {
+  resumeInteraction(): DeskResult {
     this.interactionReady = true;
-    this.persist();
+    if (!this.persist()) return this.persistRejected();
+    return { ok: true, replayed: false, snapshot: this.snapshot() };
+  }
+
+  /** 存储恢复后，把当前内存事实重写进同一份日志。 */
+  rewritePersistence(): DeskResult {
+    if (!this.interactionReady) return this.blockedRestore();
+    if (!this.persist()) return this.persistRejected();
+    return { ok: true, replayed: false, snapshot: this.snapshot() };
   }
 
   snapshot(): ExecutionDeskSnapshot {
@@ -343,6 +355,7 @@ export class ExecutionDesk {
         writerRunId: claim.writerRunId,
         active: claim.active,
       })),
+      persistenceFault: this.persistenceFault,
     };
   }
 
@@ -527,8 +540,12 @@ export class ExecutionDesk {
     if (!requested.ok) {
       return this.fail('terminal-run', active.id, '运行已经结束，停止不能改写它', '查看附属记录');
     }
+    const previous = active;
     this.putRun(requested.attempt);
-    this.persist();
+    if (!this.persist()) {
+      this.putRun(previous);
+      return this.persistRejected();
+    }
     let executor: AgentExecutor;
     try {
       executor = selectAgentExecutor(active.executor, this.deps.executors);
@@ -544,7 +561,7 @@ export class ExecutionDesk {
     const latest = this.runs.find((run) => run.id === active.id) ?? requested.attempt;
     if (latest.status === 'cancelled' || receipt.receipt === 'cancelled') {
       this.dropPending(active.id);
-      this.persist();
+      if (!this.persist()) return this.persistRejected();
       return this.succeed({ runId: active.id });
     }
     this.putRun(rejectStopReceipt(latest));
@@ -952,12 +969,19 @@ export class ExecutionDesk {
       reference: item.reference,
     }));
     this.contextBlocks = [];
+    let committed: DeskResult;
     try {
-      return this.succeed({ runId: opened.attempt.id });
+      committed = this.succeed({ runId: opened.attempt.id });
     } catch (error) {
       this.restoreAccept(checkpoint);
-      return this.persistRejected(error);
+      this.persistenceFault = persistenceFaultFrom(error);
+      return this.persistRejected();
     }
+    if (!committed.ok) {
+      this.restoreAccept(checkpoint);
+      return this.persistRejected();
+    }
+    return committed;
   }
 
   private enqueue(active: ExecutionAttempt, input: SendInput): DeskResult {
@@ -1053,10 +1077,14 @@ export class ExecutionDesk {
     this.aborts.set(runId, controller);
     const promise = this.drive(runId, instruction, attachmentIds, controller.signal);
     this.inflight.push(promise);
-    void promise.finally(() => {
-      this.inflight = this.inflight.filter((item) => item !== promise);
-      this.aborts.delete(runId);
-    });
+    void promise
+      .catch((error: unknown) => {
+        if (this.persistenceFault === null) this.persistenceFault = persistenceFaultFrom(error);
+      })
+      .finally(() => {
+        this.inflight = this.inflight.filter((item) => item !== promise);
+        this.aborts.delete(runId);
+      });
   }
 
   private async drive(
@@ -1933,7 +1961,7 @@ export class ExecutionDesk {
   private succeed(extra: { replayed?: boolean; runId?: string } = {}): DeskResult {
     this.lastError = null;
     this.preserveRecordError();
-    this.persist();
+    if (!this.persist()) return this.persistRejected();
     return {
       ok: true,
       replayed: extra.replayed ?? false,
@@ -1981,8 +2009,9 @@ export class ExecutionDesk {
     this.lastError = checkpoint.lastError;
   }
 
-  private persistRejected(error: unknown): DeskResult {
-    const fault = persistenceFaultFrom(error);
+  private persistRejected(): DeskResult {
+    const fault = this.persistenceFault ?? persistenceFaultFrom(new Error('persist-failed'));
+    this.persistenceFault = fault;
     return {
       ok: false,
       code: 'persist-failed',
@@ -1993,8 +2022,20 @@ export class ExecutionDesk {
     };
   }
 
-  private persist(): void {
-    this.deps.journal?.save(this.persistence());
+  /** 失败只记持久化故障，不向外抛。受理路径另行回滚；执行器事件保留内存事实。 */
+  private persist(): boolean {
+    if (!this.deps.journal) {
+      this.persistenceFault = null;
+      return true;
+    }
+    try {
+      this.deps.journal.save(this.persistence());
+      this.persistenceFault = null;
+      return true;
+    } catch (error) {
+      this.persistenceFault = persistenceFaultFrom(error);
+      return false;
+    }
   }
 
   /**

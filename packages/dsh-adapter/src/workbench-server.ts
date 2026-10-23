@@ -120,10 +120,8 @@ async function dispatch(desk: ExecutionDesk, pathname: string, body: Record<stri
     desk.dropRecordedEntry();
     return { ok: true as const, replayed: false, snapshot: desk.snapshot() };
   }
-  if (pathname === '/api/resume') {
-    desk.resumeInteraction();
-    return { ok: true as const, replayed: false, snapshot: desk.snapshot() };
-  }
+  if (pathname === '/api/resume') return desk.resumeInteraction();
+  if (pathname === '/api/persistence/rewrite') return desk.rewritePersistence();
   if (pathname === '/api/config') {
     return desk.updateConfig({
       ...(typeof body.expertId === 'string' ? { expertId: body.expertId } : {}),

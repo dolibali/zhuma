@@ -333,3 +333,18 @@ test('契约：接收回执之前显示启动中', () => {
   const running = createAgentWorkspaceView(workspaceSnapshot());
   assert.equal(running.nodeStatusText, '状态：执行中');
 });
+
+test('契约：持久化故障出现在投影里', () => {
+  const snapshot = workspaceSnapshot();
+  assert.equal(createAgentWorkspaceView(snapshot).persistenceFault, null);
+  snapshot.persistenceFault = {
+    code: 'persist-failed',
+    objectLabel: '日志',
+    reason: '日志没有写进去（EACCES）。EACCES: permission denied',
+    nextStep: '存储恢复后重写这份日志。重写成功前，不要把界面上的运行当成已经受理或已经落盘。',
+  };
+  const view = createAgentWorkspaceView(snapshot);
+  assert.equal(view.persistenceFault.objectLabel, '日志');
+  assert.match(view.persistenceFault.reason, /EACCES/);
+  assert.match(view.persistenceFault.nextStep, /重写/);
+});

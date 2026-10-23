@@ -149,6 +149,11 @@ export interface AgentWorkspaceView {
     readonly reason: string;
     readonly nextStep: string;
   } | null;
+  readonly persistenceFault: {
+    readonly objectLabel: string;
+    readonly reason: string;
+    readonly nextStep: string;
+  } | null;
   readonly contextItems: readonly {
     readonly id: string;
     readonly summary: string;
@@ -413,6 +418,13 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     })),
     error: snapshot.lastError
       ? { ...snapshot.lastError, objectLabel: humanizeLabel(snapshot.lastError.objectLabel) }
+      : null,
+    persistenceFault: snapshot.persistenceFault
+      ? {
+          objectLabel: snapshot.persistenceFault.objectLabel,
+          reason: snapshot.persistenceFault.reason,
+          nextStep: snapshot.persistenceFault.nextStep,
+        }
       : null,
     contextItems: snapshot.contextItems.map((item) => ({
       id: item.id,
