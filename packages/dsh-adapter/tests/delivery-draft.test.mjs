@@ -172,6 +172,45 @@ test('missing task and another space return the same not-found bytes and do not 
   assert.equal(JSON.stringify(store.node('design')), before);
 });
 
+test('an illegal directory answer is the same unavailable bytes whether or not the task exists', async () => {
+  const shapes = [{ ok: true, spaceId: '' }, { ok: true }, { ok: 'yes', spaceId: 5 }];
+  for (const shape of shapes) {
+    const { state, applied, store } = await opened();
+    const node = store.node('design');
+    node.handoff = null;
+    await store.storage.writeNode(
+      `${applied.taskId}:${applied.id}:${applied.revision}:design`,
+      node,
+    );
+    const before = JSON.stringify(store.node('design'));
+    const directory = {
+      async spaceForProject() {
+        return shape;
+      },
+    };
+    const service = new ExecutionService(store.storage, { readWorkbench: () => state }, directory);
+    const write = { expectedVersion: 0, idempotencyKey: 'draft-illegal', text: '不该写-4e1' };
+    const present = await service.draft(session('chen', ['elsewhere']), locate(applied, write));
+    const missing = await service.draft(session('chen', ['elsewhere']), {
+      ...locate(applied, write),
+      taskId: 'absent-task',
+    });
+    assert.equal(Buffer.compare(bytes(present), bytes(missing)), 0);
+    assert.deepEqual(missing, {
+      ok: false,
+      error: {
+        code: 'unavailable',
+        message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+        details: {},
+      },
+    });
+    assert.equal(JSON.stringify(missing).includes('absent-task'), false);
+    assert.equal(JSON.stringify(missing).includes('不该写-4e1'), false);
+    assert.equal(JSON.stringify(store.node('design')), before);
+    assert.equal(store.node('design').deliveryDraft, undefined);
+  }
+});
+
 test('a directory failure stays unavailable whether or not the node exists', async () => {
   const { state, applied, store } = await opened();
   const down = {
