@@ -1,41 +1,44 @@
 # 实施顺序
 
-以 [产品能力覆盖账本](product-coverage.md) 追踪 FR01–17 的实际状态、主责和退出条件。原型主要能力是范围基线，UI/UE 可重做；不能以目录 CRUD、领域契约或布局完善代替用户任务闭环。
+以 [产品能力覆盖账本](product-coverage.md) 保留 FR01–17 的范围、证据基线与退出条件；[总索引 #25](https://github.com/dolibali/zhuma/issues/25)及对应 Issue 是实时阶段、依赖和阻塞的唯一入口。原型主要能力是范围基线，UI/UE 可重做；不能以目录 CRUD、领域契约或布局完善代替用户任务闭环。
 
 任务 → 同一 workspace 持续会话 → 固定产物 → 多人评审的补充范围与分期见[联动方案](architecture/task-session-delivery/development-plan.md)（PR #13 范围、[PR #15](https://github.com/dolibali/zhuma/pull/15) S1 接入分工与 [PR #16](https://github.com/dolibali/zhuma/pull/16) LC-11 同页 CLI 交接均已合入；这只是方案基线）。保留六工具逐一验证、本地专家及项目四入口的范围，按原批次接入，先完成首个正式身份／人工交付／评审切片，再接原生会话和一个外部工具；不等待六工具全部完成才联调。
 
 ## 已有基础与边界
 
-四包依赖、固定官方 DSH、Host/Client 插件、组织目录、计划编排与模型规划提案已建立。A 的组织数据由 Host 持久化；B 的执行/交付/评审状态机和并发契约已有纯逻辑测试。实际执行、我的工作项、人工产物与内容评审尚待 B 的 Host 与页面切片接入。当前不称为完整产品。
+四包依赖、固定官方 DSH、Host/Client 插件、组织目录、计划编排与模型规划提案已建立。A 的组织数据由 Host 持久化；B 除状态机／并发契约外，已发布 M1 执行服务、草稿、退回意见、待办分组及事件等候选，累计交付与证据见 [#30](https://github.com/dolibali/zhuma/issues/30)。这些模块仍需正式 Host／正常入口组合验收，不将发布误记为集成，也不将待集成写成没有实现。当前不称为完整产品。
 
-B 的 [PR #10](https://github.com/dolibali/zhuma/pull/10) 持续迭代；`82bbeee` 是早期核对快照，不能认证后续 head。已有人工链服务及页面切片，身份另见待审 [PR #18](https://github.com/dolibali/zhuma/pull/18)，按各 PR 当前 head 独立增量审查与正式 Host 接入；独立 HTTP／文件演示不认证原生会话。PR #11／12 已分别随主线 `5bcd3f2`／`0d3b70a` 同步，节点输入引用与缺记录终态修订由 B 维护；其余业务 DTO 继续按合入版本核对。
+执行适配 [PR #10](https://github.com/dolibali/zhuma/pull/10) 与身份 [PR #18](https://github.com/dolibali/zhuma/pull/18) 的交付通过 [#26](https://github.com/dolibali/zhuma/issues/26)／[#27](https://github.com/dolibali/zhuma/issues/27) 跟踪。PR #11／12 已分别合入 `5bcd3f2`／`0d3b70a`；具体候选、累计 head 与正式验证以对应工作项引用为准，独立演示不认证原生会话。
 
 A-UX2a 目录/表单及浏览器 CI 已合入；A-UX2b 导航见 PR #6，已合入并完成三层草稿导航验证，不追加装饰性范围。执行状态只有权威服务确认后才展示。
 
-## 当前批次
+## 工作项入口
 
-| 顺序                | 主责 / 批次                           | 必须交付的用户结果                                                                                                                                     |
-| ------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 已合入 PR #7        | A-ENTRY / FR02                        | 目标为主，默认“生成计划”创建一次草稿后直接进入规划；失败保留同一任务，可重试或手动；打开/刷新不发模型请求。入口首批完成；工作流复用另见已合入 PR #17。 |
-| 已合入 PR #14       | A-PLANQ 首批 / FR02/04/13             | 有界候选／正文预算、完整编辑基线、未知运行事实及提案交接约束；契约检查与模型质量分开。首批 `5aa75c0` 已集成；真实模型质量和局部修改保护仍未验收。      |
-| 当前并行            | B-M1 / FR05/06/08                     | 可运行的人工闭环：可信身份→我的节点→文字/文件提交→真人评审→退回/重提→下游；持久化、幂等与权限有真实 Host 证据。                                        |
-| 已合入 PR #17       | A-TEMPLATE / FR02/12                  | 首批随 `759270d` 合入：搜索／实际图预览、映射、缺项补齐、资产编排与从草稿保存；画布按钮不提交表单，分层证据单列。                                      |
-| 紧随                | B-AGENT / FR07/10/13                  | 从同一工作项打开真实 Agent 处理；多轮/附件/专家/能力/停止/恢复及产物交付，运行接收与生效分开。                                                         |
-| 当前 A 小批次       | A-PROJECT / FR01/03                   | 首批 `83ab303` 待审：四入口、项目内创建、默认参与者与资料／资产关联；真实成果、工程连接、归档和运行期职责仍需 B 权威事实。                             |
-| 后续独立小批次      | A-ASSET / FR12                        | 导入首批 PR #19 已合入 `fddf6b8`；后续复制／发布／维护者及运行版本物化。B 提供连接／授权事实，定义启用不等于连接成功。                                 |
-| 依赖人工与 Agent 链 | B-REVIEW / B-FEEDBACK / FR08/09       | Agent 评审、内容锚点、成批评论分析和逐条回复；修改方案预览应用，不直接覆盖正式产物。                                                                   |
-| 依赖交付与评审      | A-TREE + B / FR11                     | 子任务容器、权限、参与者、执行与原父节点交接；四层真实样例，子流程结束不等同于父级通过。                                                               |
-| 随闭环补齐          | A+B-DEMO / FR15                       | 正常入口的多阶段/多角色/四层演示数据，隔离重置及完整退回重提。                                                                                         |
-| 事件先行、看板另批  | B 事件 + B-METRICS（A 接导航） / FR14 | M1 开始记录真实周期、等待、返工、操作和用量，基础看板再独立验收；缺数据展示不可用。                                                                    |
+此表只映射范围，阶段、优先级和依赖读取 Issue，不在这里手抄。后续项不是同时开工指令；先按 #25 拉取一个主要切片。
 
-补充当前前置与下一批次：
+| 范围                                 | 工作项                                                                                                                                                                                                                                                                 |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 身份与共享接入                       | [#27](https://github.com/dolibali/zhuma/issues/27) / [#28](https://github.com/dolibali/zhuma/issues/28) / [#29](https://github.com/dolibali/zhuma/issues/29) / [#31](https://github.com/dolibali/zhuma/issues/31) / [#32](https://github.com/dolibali/zhuma/issues/32) |
+| 执行适配、人工／文件交付和持续 Agent | [#26](https://github.com/dolibali/zhuma/issues/26) / [#30](https://github.com/dolibali/zhuma/issues/30) / [#33](https://github.com/dolibali/zhuma/issues/33) / [#35](https://github.com/dolibali/zhuma/issues/35)                                                      |
+| 权威视图与多层树                     | [#34](https://github.com/dolibali/zhuma/issues/34) / [#40](https://github.com/dolibali/zhuma/issues/40)                                                                                                                                                                |
+| 工作流复用、资产与个人专家           | [#36](https://github.com/dolibali/zhuma/issues/36) / [#37](https://github.com/dolibali/zhuma/issues/37)                                                                                                                                                                |
+| 编排质量                             | [#38](https://github.com/dolibali/zhuma/issues/38)                                                                                                                                                                                                                     |
+| 项目权威成果                         | [#39](https://github.com/dolibali/zhuma/issues/39)                                                                                                                                                                                                                     |
+| 专家评审与批量反馈                   | [#41](https://github.com/dolibali/zhuma/issues/41)                                                                                                                                                                                                                     |
+| 协作统计与外部集成                   | [#42](https://github.com/dolibali/zhuma/issues/42)                                                                                                                                                                                                                     |
+| 多账号样例及部署恢复                 | [#43](https://github.com/dolibali/zhuma/issues/43) / [#44](https://github.com/dolibali/zhuma/issues/44)                                                                                                                                                                |
+| 桌面遗留验收                         | [#45](https://github.com/dolibali/zhuma/issues/45)                                                                                                                                                                                                                     |
+
+首批已集成的历史证据：[入口 PR #7](https://github.com/dolibali/zhuma/pull/7)、[规划上下文 PR #14](https://github.com/dolibali/zhuma/pull/14)、[模板 PR #17](https://github.com/dolibali/zhuma/pull/17)、[资产 PR #19](https://github.com/dolibali/zhuma/pull/19)、[专家目录 PR #21](https://github.com/dolibali/zhuma/pull/21)、[项目 PR #22](https://github.com/dolibali/zhuma/pull/22)（`79a4466`）及[局部配置调整 PR #24](https://github.com/dolibali/zhuma/pull/24)（`f90f2d8`）。这些切片不关闭整项产品退出条件。
+
+范围与接入约束：
 
 - **A-UI-controls**：PR #8 已合入统一锚定选择控件及标题避让；实际 macOS 三档缩放、长目录和浅深展开证据已记录。PR #9 已合入中性侧栏；拖窗和真实系统浅色／切换仍属 A-DESKTOP1 未验收项，不通过 CSS 或媒体模拟关闭。
-- **A-PLANQ / FR02/04/13**：首批已合入 `5aa75c0`；复用现有规划器，按参与范围、相关性和预算构建候选，保留完整编辑基线；8 类固定候选检索与预算契约通过。模型质量、局部差异展示与无关人工配置保护继续未验收。缺少 B 的权威连接/忙闲事实保持未知，不另建 Agent 循环或向量库。 后续局部配置调整 `900d05d` 已独立实现待审：[显式范围、前后值与保护](planning-adjustments.md)；不含结构局部调整或模型效果验收。
+- **A-PLANQ / FR02/04/13**：上下文首批已合入 `5aa75c0`；显式局部配置范围、变更前后值和保护已随 PR #24 合入 `f90f2d8`，见[接口与证据](planning-adjustments.md)。真实模型质量、语义候选效果与结构局部调整由 #38 继续验收。缺少 B 的权威连接／忙闲事实时保持未知，不另建 Agent 循环或向量库。
 
 - **B-ID0 / FR16**：预置账号、真实会话与可信 actor、个人/团队成员授权、空间隔离。先给固定 DSH 的最小适配证据；不把模型平台账号或 browserPeer owner 当产品账号。
-- **B-VIEWS + A 共享接入 / FR05/06**：B 业务页面接“需要我处理”的具体工作项，以及“我参与的/全部”的列表/阶段看板；同源筛选与计数、下一动作和 B 处理页入口。B 维护业务页面和任务阶段投影，A 只接公共导航／注册／导出；不从 draft/ready 猜执行，禁止拖卡绕过评审。
-- **B-ID0 + A 共享接入 / FR16**：B 提供登录／个人团队切换业务组件及权限，A 接公共入口；树深链与刷新偏好按账号/空间/任务隔离，失效位置回退。
+- **权威视图 / FR05/06**：A 在 #34 接同源任务列表／阶段看板和待办深链，消费 B 的权威任务阶段及业务投影；#32 仅挂接 B 的具体待办／交付／评审业务页。不从 draft/ready 猜执行，禁止拖卡绕过评审。
+- **身份与空间 UI / FR16**：B 在 #27／#29 提供可信会话和空间授权接口，A 在 #31 实现登录、个人／团队切换与成员入口。树深链与刷新偏好按账号／空间／任务隔离，失效位置回退。
 - **B-ID0 + A 集成 / FR17**：本地单实例可启动和重启恢复先行，K8s 为后续指定测试环境目标。演示至少 3 账号/2 团队并有人跨团队；双账号退回重提与第三账号越权拒绝必须真实验证。
 
 下一可用版本必须包含人与 Agent 协作链。A/B 不互相造服务：A 实现组织、规划和共享入口，B 实现可信运行、产物、评审与状态；联合验收从普通任务入口走完整路径。
@@ -64,8 +67,8 @@ A-UX2a 目录/表单及浏览器 CI 已合入；A-UX2b 导航见 PR #6，已合�
 
 ## A-INTEGRATE-S1 与后续会话交接
 
-原目标 2026-10-24，满足契约与组合验证后立即接入。B 已提供模块／DTO／业务组件候选，显式部署模式与可信产品空间映射仍须按实际组合通过；项目 ID 不能替代空间身份。可编译签名、DI／加载顺序／导出及 Inbox／提交／评审 props 清单核对后，A 在独立批次从已打开 WorkbenchService 的 snapshot 闭包提供 Host-only readWorkbench，挂 identity/execution 并注册 B 业务组件。各 domain 只打开一次，浏览器不获全量读取接缝；B 负责成员 cookie、空间过滤及旧 exact API 的门禁适配，A 单写共享整合。成员模式缺 cookie、身份加载失败或卸载都不回落 owner；模式必须显式配置。门禁覆盖 snapshot／command／plan／preview-import／resource-files 五个 exact 入口及 import-package，在解压、读取或写包前拒绝无权请求。B PR #18 的测试配置还含构建与端口改动，由 A 在此独立批次统一审阅，不能只复制项目注册。
+Host 身份装配及执行装配分别由 #28／#32 跟踪，依赖与集成顺序以 #25 为准。B 已提供模块／DTO／业务组件候选，显式部署模式与可信产品空间映射仍须按实际组合通过；项目 ID 不能替代空间身份；#29 的可信归属事实由 B-ID0 提供，A 只作 Host 注入，不新建授权库。可编译签名、DI／加载顺序／导出及 Inbox／提交／评审 props 清单核对后，A 在独立批次从已打开 WorkbenchService 的 snapshot 闭包提供 Host-only readWorkbench，挂 identity/execution 并注册 B 业务组件。各 domain 只打开一次，浏览器不获全量读取接缝；B 负责成员 cookie、空间过滤及旧 exact API 的门禁适配，A 单写共享整合。成员模式缺 cookie、身份加载失败或卸载都不回落 owner；模式必须显式配置。门禁覆盖 snapshot／command／plan／preview-import／resource-files 五个 exact 入口及 import-package，在解压、读取或写包前拒绝无权请求。B PR #18 的测试配置还含构建与端口改动，由 A 在此独立批次统一审阅，不能只复制项目注册。
 
 S2 的 [LC-11／LC-T11](architecture/task-session-delivery/test-plan.md) 先做 Zhuma 加一种外部 CLI 的同工作会话交接：真实停止／写权释放、目标实际受理后切换当前执行段，原责任、历史、提交版本及评审义务保持。其余工具逐项补齐；不另建聊天库或默认 Host factory。此项只有方案，尚未实现验收。
 
-A-PROJECT 首批 `83ab303` 的[交互／兼容边界](project-hub.md)与[分层证据](review/project-hub/README.md)单列。项目 ID 与产品空间保持独立；项目默认参与者仅初始化新草稿，显式关联资产进入现有规划预算，链接正文不自动抓取。当前不实现归档或运行中职责变更，不能据草稿／已确认推断真实阶段与已接受产物。
+A-PROJECT 首批已随 PR #22 合入 `79a4466`；`83ab303` 的[交互／兼容边界](project-hub.md)与[分层证据](review/project-hub/README.md)单列。项目 ID 与产品空间保持独立；项目默认参与者仅初始化新草稿，显式关联资产进入现有规划预算，链接正文不自动抓取。当前不实现归档或运行中职责变更，不能据草稿／已确认推断真实阶段与已接受产物。
