@@ -3,11 +3,11 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -1313,6 +1313,139 @@ test('契约：丢失入口后核实断开仍是节点记录异常', async () =>
   assertLostRecordClosed(restored, journal, 'abandon', 'failed');
 });
 
+async function driveUnreadableRead(summary) {
+  const root = mkdtempSync(path.join(tmpdir(), 'zhuma-ctx-read-'));
+  writeFileSync(path.join(root, 'need.csv'), 'secret-body\n');
+  const planted = seed();
+  planted.fileRoot = root;
+  planted.handoff = {
+    ...planted.handoff,
+    inputRefs: [{ sourceNodeId: 'node-a', artifactVersionId: 'art-1' }],
+  };
+  planted.contextItems = [
+    ...planted.contextItems.filter((item) => item.sourceNodeId === undefined),
+    {
+      id: 'need',
+      kind: 'upstream-artifact',
+      sourceId: 'node-a',
+      sourceNodeId: 'node-a',
+      artifactVersionId: 'art-1',
+      version: '1',
+      permission: 'granted',
+      summary,
+      required: true,
+      includedByDefault: true,
+      relativePath: 'need.csv',
+    },
+  ];
+  const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-read-fault-'));
+  const preload = path.join(dir, 'preload.mjs');
+  const script = path.join(dir, 'drive.mjs');
+  const plantedFile = path.join(dir, 'planted.json');
+  writeFileSync(plantedFile, JSON.stringify(planted));
+  const needle = JSON.stringify(`${path.sep}need.csv`);
+  writeFileSync(
+    preload,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      `const denied = (target) => String(target).endsWith(${needle});`,
+      'const refuse = (target, verb) => {',
+      "  const error = new Error(`EACCES: permission denied, ${verb} '${target}'`);",
+      "  error.code = 'EACCES';",
+      '  throw error;',
+      '};',
+      'const originalAccess = fs.accessSync;',
+      'fs.accessSync = (target, mode) => {',
+      "  if (denied(target)) refuse(target, 'access');",
+      '  return originalAccess(target, mode);',
+      '};',
+      'const originalRead = fs.readFileSync;',
+      'fs.readFileSync = (target, options) => {',
+      "  if (denied(target)) refuse(target, 'open');",
+      '  return originalRead(target, options);',
+      '};',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(
+    script,
+    [
+      'const { ExecutionDesk, SimulatedAgentExecutor, UnimplementedNativeExecutor } = await import(process.env.ZHUMA_ADAPTER);',
+      "const { readFileSync } = await import('node:fs');",
+      'const planted = JSON.parse(readFileSync(process.env.ZHUMA_PLANTED, "utf8"));',
+      'const requests = [];',
+      'const simulated = new SimulatedAgentExecutor({ chunkDelayMs: 0 });',
+      'const run = simulated.run.bind(simulated);',
+      'simulated.run = (request) => {',
+      '  requests.push(request);',
+      '  return run(request);',
+      '};',
+      'let n = 0;',
+      'const session = ExecutionDesk.create(planted, {',
+      "  executors: [simulated, new UnimplementedNativeExecutor('dsh')],",
+      '  newId: (prefix) => `${prefix}-${++n}`,',
+      '  probe: () => ({ ok: true, exists: true, readable: true }),',
+      '});',
+      'session.updateConfig({',
+      "  executorId: 'simulated',",
+      "  skillIds: ['test-design'],",
+      "  mcpIds: ['api-docs'],",
+      '});',
+      'const quiet = (snapshot) => ({',
+      '  node: snapshot.node.status,',
+      '  runs: snapshot.runs.length,',
+      '  turns: snapshot.turns.length,',
+      '  citations: snapshot.citations.length,',
+      '  blocks: snapshot.contextBlocks.length,',
+      '  claims: snapshot.claims.length,',
+      '  interventions: snapshot.interventions.length,',
+      '});',
+      'const before = quiet(session.snapshot());',
+      "const result = session.send({ text: '开始', idempotencyKey: 'denied' });",
+      'await session.flush();',
+      'process.stdout.write(JSON.stringify({',
+      '  ok: result.ok,',
+      '  code: result.code,',
+      '  reason: result.reason,',
+      '  requests: requests.length,',
+      '  before,',
+      '  after: quiet(session.snapshot()),',
+      '  resultQuiet: quiet(result.snapshot),',
+      '  runsWithContext: result.snapshot.runs.some((item) => item.contextRefs?.length > 0),',
+      '}));',
+      '',
+    ].join('\n'),
+  );
+  const adapter = pathToFileURL(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
+  ).href;
+  const env = {
+    ...process.env,
+    ZHUMA_ADAPTER: adapter,
+    ZHUMA_PLANTED: plantedFile,
+  };
+  delete env.ZHUMA_MODEL_API_KEY;
+  const child = spawn(process.execPath, ['--import', preload, script], { env });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  const [code] = await once(child, 'exit');
+  clearTimeout(timer);
+  rmSync(dir, { recursive: true, force: true });
+  if (code !== 0) throw new Error(`读取故障注入进程退出 ${code}\n${stderr}\n${stdout}`);
+  return JSON.parse(stdout);
+}
+
 test('契约：上游文件读失败时阻塞，不把摘要当成正文', async () => {
   const summary = '上游字段表（标签摘要）';
   const text = 'field,rule\nname,required\n';
@@ -1394,9 +1527,17 @@ test('契约：上游文件读失败时阻塞，不把摘要当成正文', async
     open('need.csv', null, () => readable()),
     'missing',
   );
-  const denied = open('need.csv', 'secret-body\n', () => readable());
-  chmodSync(path.join(denied.root, 'need.csv'), 0);
-  await blocked(denied, 'denied');
+  const denied = await driveUnreadableRead(summary);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.code, 'context-blocked');
+  assert.match(denied.reason, /来源节点 node-a/);
+  assert.match(denied.reason, /art-1/);
+  assert.match(denied.reason, /不会改用摘要/);
+  assert.equal(denied.reason.includes(summary), false);
+  assert.equal(denied.requests, 0);
+  assert.deepEqual(denied.resultQuiet, denied.before);
+  assert.deepEqual(denied.after, denied.before);
+  assert.equal(denied.runsWithContext, false);
   let dropOnAccept = false;
   let dropRoot = '';
   const timed = open('need.csv', text, (relativePath) => {
