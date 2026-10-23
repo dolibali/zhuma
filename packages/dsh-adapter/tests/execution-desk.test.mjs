@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   DshChatExecutor,
   ExecutionDesk,
@@ -388,6 +391,125 @@ test('契约：服务重启先恢复事实，专家停用和执行器断开不�
   const disconnected = another.send({ text: '不应运行', idempotencyKey: 'disconnected' });
   assert.equal(disconnected.ok, false);
   assert.equal(disconnected.snapshot.runs.length, 0);
+});
+
+test('契约：同一目录上的第二个工作台拿不到写锁，不能把仍在运行的会话标成放弃', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-lock-'));
+  const file = path.join(directory, 'session.json');
+  const journal = createFileJournal(file);
+  const { desk: owner } = desk({ journal });
+  const started = owner.send({ text: '保持运行', idempotencyKey: 'locked-run' });
+  await owner.waitForRun(started.runId, 'running');
+  const before = readFileSync(file, 'utf8');
+  assert.equal(JSON.parse(before).runs[0].status, 'running');
+  assert.equal(
+    JSON.parse(before).claims.some((claim) => claim.active),
+    true,
+  );
+
+  const intruder = createFileJournal(file);
+  assert.equal(journal.writable, true);
+  assert.equal(intruder.writable, false);
+  const restored = ExecutionDesk.restore(intruder.load(), {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+    journal: intruder,
+  });
+  const verified = restored.verifyAbandoned();
+  assert.equal(verified.ok, false);
+  assert.equal(verified.code, 'write-locked');
+  assert.equal(restored.snapshot().runs[0].status, 'running');
+  assert.equal(restored.snapshot().node.status, 'running');
+  assert.equal(restored.snapshot().faults.length, 0);
+  assert.equal(readFileSync(file, 'utf8'), before);
+
+  const stopped = await owner.stop();
+  assert.equal(stopped.ok, true);
+  const after = journal.load();
+  assert.equal(after.runs[0].status, 'cancelled');
+  assert.equal(after.nodeState.status, 'cancelled');
+});
+
+test('契约：写锁在进程退出时释放，同机已死或别的主机都不能被误抢', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-lock-exit-'));
+  const file = path.join(directory, 'session.json');
+  const ready = path.join(directory, 'ready');
+  const adapter = pathToFileURL(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
+  ).href;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { writeFileSync } from 'node:fs';
+       import { createFileJournal } from ${JSON.stringify(adapter)};
+       const journal = createFileJournal(${JSON.stringify(file)});
+       if (journal.writable !== true) process.exit(2);
+       journal.save({ held: true });
+       writeFileSync(${JSON.stringify(ready)}, 'held');
+       setInterval(() => {}, 1000);`,
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const startedAt = Date.now();
+  while (!existsSync(ready)) {
+    if (Date.now() - startedAt > 5000) {
+      child.kill();
+      throw new Error(stderr || '子进程没有拿到写锁');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const blocked = createFileJournal(file);
+  assert.equal(blocked.writable, false);
+  assert.throws(
+    () => blocked.save({ no: true }),
+    (error) => error.code === 'ELOCKED',
+  );
+  child.kill();
+  await once(child, 'exit');
+  assert.equal(existsSync(`${file}.write.lock`), false);
+  const taken = createFileJournal(file);
+  assert.equal(taken.writable, true);
+  assert.equal(taken.load().held, true);
+
+  let deadPid = 0;
+  for (let attempt = 0; attempt < 5 && deadPid === 0; attempt += 1) {
+    const dead = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    await once(dead, 'exit');
+    try {
+      process.kill(dead.pid, 0);
+    } catch (error) {
+      if (error.code === 'ESRCH') deadPid = dead.pid;
+    }
+  }
+  assert.notEqual(deadPid, 0);
+  const staleDir = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-lock-stale-'));
+  const staleFile = path.join(staleDir, 'session.json');
+  writeFileSync(
+    `${staleFile}.write.lock`,
+    JSON.stringify({ pid: deadPid, hostname: hostname(), startedAt: '2026-10-23T00:00:00.000Z' }),
+  );
+  const stolen = createFileJournal(staleFile);
+  assert.equal(stolen.writable, true);
+  const lock = JSON.parse(readFileSync(`${staleFile}.write.lock`, 'utf8'));
+  assert.equal(lock.pid, process.pid);
+  assert.equal(lock.hostname, hostname());
+
+  const foreignDir = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-lock-host-'));
+  const foreignFile = path.join(foreignDir, 'session.json');
+  writeFileSync(
+    `${foreignFile}.write.lock`,
+    JSON.stringify({ pid: 1, hostname: 'not-this-host', startedAt: '2026-10-23T00:00:00.000Z' }),
+  );
+  const foreign = createFileJournal(foreignFile);
+  assert.equal(foreign.writable, false);
+  const still = JSON.parse(readFileSync(`${foreignFile}.write.lock`, 'utf8'));
+  assert.equal(still.hostname, 'not-this-host');
 });
 
 test('契约：文件探针拒绝逃出工作区的路径，且不返回绝对路径', () => {

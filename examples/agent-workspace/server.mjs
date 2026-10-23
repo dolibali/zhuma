@@ -280,6 +280,10 @@ const seed = {
 
 const journal = createFileJournal(sessionFile);
 const saved = journal.load();
+if (journal.writable === false && saved === null) {
+  process.stderr.write('另一个进程正持有这份会话的写权，本次启动已拒绝。\n');
+  process.exit(1);
+}
 const dependencies = {
   executors: [
     new SimulatedAgentExecutor(

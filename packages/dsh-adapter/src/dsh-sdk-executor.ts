@@ -16,6 +16,7 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExecutionFaultKind } from '@zhuma/agent-core';
+import { foreignWriteLockHeld } from './file-journal.js';
 import {
   ExecutorNotImplementedError,
   readDshModelConfig,
@@ -201,8 +202,9 @@ export function resolveDshDataDir(env: NodeJS.ProcessEnv, dataDir?: string): str
   return path.join(homedir(), '.zhuma', 'workbench');
 }
 
-/** 启动时清掉会话根目录里不在索引中的目录。 */
+/** 启动时清掉会话根目录里不在索引中的目录。别的活进程持有写锁时整次跳过。 */
 export function sweepDshSessionOrphans(root: string): void {
+  if (foreignWriteLockHeld(path.dirname(root))) return;
   if (!existsSync(root)) return;
   const index = readIndex(root);
   const live = new Set(Object.values(index.sessions));

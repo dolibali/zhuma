@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -11,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -688,6 +689,42 @@ test('契约：启动时清掉孤儿会话目录', () => {
   sweepDshSessionOrphans(root);
   assert.equal(existsSync(live), true);
   assert.equal(existsSync(orphan), false);
+});
+
+test('契约：别的活进程持有写锁时不清它的会话目录', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'zhuma-sweep-lock-'));
+  const root = path.join(dataDir, 'dsh-sessions');
+  mkdirSync(root, { recursive: true });
+  const live = path.join(root, 'dsh-live');
+  const orphan = path.join(root, 'dsh-orphan');
+  mkdirSync(live);
+  mkdirSync(orphan);
+  writeFileSync(path.join(root, 'index.json'), JSON.stringify({ sessions: { s1: 'dsh-live' } }));
+  const lockPath = path.join(dataDir, 'session.json.write.lock');
+  writeFileSync(lockPath, 'not-json');
+  sweepDshSessionOrphans(root);
+  assert.equal(existsSync(orphan), true);
+
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  writeFileSync(
+    lockPath,
+    JSON.stringify({
+      pid: child.pid,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+    }),
+  );
+  try {
+    sweepDshSessionOrphans(root);
+    assert.equal(existsSync(orphan), true);
+    assert.equal(existsSync(live), true);
+  } finally {
+    child.kill();
+    await once(child, 'exit');
+  }
+  sweepDshSessionOrphans(root);
+  assert.equal(existsSync(orphan), false);
+  assert.equal(existsSync(live), true);
 });
 
 test('契约：技能说明里的特殊字符仍会进入授权清单', async () => {

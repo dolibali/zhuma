@@ -684,6 +684,7 @@ export class ExecutionDesk {
   }
 
   verifyAbandoned(): DeskResult {
+    if (this.deps.journal?.writable === false) return this.writeLocked();
     if (!this.interactionReady) return this.blockedRestore();
     const gap = this.resumeGap;
     if (!gap) {
@@ -2117,6 +2118,18 @@ export class ExecutionDesk {
     if (this.deps.probe) return this.deps.probe(relativePath);
     if (!this.seed.fileRoot) return { ok: false, code: 'path-rejected' };
     return probeRelativeFile(this.seed.fileRoot, relativePath);
+  }
+
+  /** 没拿到写锁。不改运行、不释放写权、不写日志。 */
+  private writeLocked(): DeskResult {
+    return {
+      ok: false,
+      code: 'write-locked',
+      objectLabel: '会话',
+      reason: '另一个进程正持有这份会话的写权',
+      nextStep: '不要把仍在运行的执行标成放弃。',
+      snapshot: this.snapshot(),
+    };
   }
 
   private blockedRestore(): DeskResult {
