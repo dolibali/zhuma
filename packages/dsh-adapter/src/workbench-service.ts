@@ -137,7 +137,7 @@ export class WorkbenchService {
         audit.attempts[attempt]!.output = output;
         await this.audits.put(structuredClone(audit));
         try {
-          const result = parsePlanningResult(output, state, task);
+          const result = parsePlanningResult(output, state, task, prompt.context);
           const proposal: PlanProposal = {
             id: request.requestId,
             taskId: task.id,
