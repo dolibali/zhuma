@@ -1,6 +1,6 @@
 # B-M1 人工节点执行契约（S1）
 
-切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，组合现有 WP00 导出。`node-status.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts` 没有改。`packages/agent-core/src/review.ts` 相对当时的 develop 是 +16/−2：`BallotRejectionCode` 增加 `empty-comment`；私有 `commentText` 去掉零宽字符和 U+00AD 后再 trim，用来判断评论和退回意见是不是空的。这处待 A 确认。
+切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，组合现有 WP00 导出。`node-status.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts` 没有改。`packages/agent-core/src/review.ts` 相对 `55ebf8b...HEAD` 是 +14/−2：`BallotRejectionCode` 增加 `empty-comment`；私有 `commentText` 去掉零宽字符和 U+00AD 后再 trim，用来判断评论和退回意见是不是空的。这处待 A 确认。
 
 带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。待办、交付和评审界面在 `packages/client/src/execution/`。`createExecutionApi` 调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
 
