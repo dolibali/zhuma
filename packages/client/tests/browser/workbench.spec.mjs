@@ -36,7 +36,7 @@ test('创建任务、分工和多人评审配置可保存并在刷新后重开',
   await expect(button(page, '选择任务负责人')).not.toContainText('陈宁');
   await expect(page.getByLabel('任务名称', { exact: true })).toHaveValue('订单导出字段核对');
   await selectPeople(page, '任务负责人', ['陈宁']);
-  await page.getByRole('radio', { name: /^自定义/ }).check();
+  await page.getByRole('radio', { name: '从空白开始' }).check();
   await button(page, '创建工作流').click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByLabel('任务标题', { exact: true })).toHaveValue('订单导出字段核对');

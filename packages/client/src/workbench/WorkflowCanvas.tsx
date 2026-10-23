@@ -26,6 +26,8 @@ export function WorkflowCanvas({
   workTree,
   expanded,
   locateRequest,
+  fitInitially = false,
+  roleMode = false,
 }: {
   workflow: Workflow;
   members: Participant[];
@@ -38,10 +40,13 @@ export function WorkflowCanvas({
   workTree: WorkTree;
   expanded: ReadonlySet<string>;
   locateRequest: number;
+  fitInitially?: boolean;
+  roleMode?: boolean;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
   const [zoom, setZoom] = useState(1);
+  const initiallyFitted = useRef(false);
   const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>(
     {},
   );
@@ -80,11 +85,17 @@ export function WorkflowCanvas({
                 </span>
                 <span>
                   {member?.name ?? '未分配'}
-                  <small>{member?.kind === 'expert' ? 'Agent 专家' : '团队成员'}</small>
+                  <small>
+                    {roleMode ? '模板角色' : member?.kind === 'expert' ? 'Agent 专家' : '团队成员'}
+                  </small>
                 </span>
               </div>
               <div className="zm-flow-footer">
-                <span>{n.reviewRequired ? `${n.reviewerIds.length} 位评审人` : '无需评审'}</span>
+                <span>
+                  {n.reviewRequired
+                    ? `${n.reviewerIds.length} ${roleMode ? '个评审角色' : '位评审人'}`
+                    : '无需评审'}
+                </span>
                 {task.workflows.some((child) => child.parentNodeId === n.id) && (
                   <span>含子工作流 ↗</span>
                 )}
@@ -167,10 +178,51 @@ export function WorkflowCanvas({
     setZoom(1);
   }
   useEffect(() => {
-    locate();
+    if (!fitInitially || locateRequest > 0) locate();
   }, [flow, locateRequest]);
+  useEffect(() => {
+    const element = canvas.current;
+    if (!fitInitially || !flow || !element || initiallyFitted.current) return;
+    // Native dialogs open after child effects. Fit only after their real viewport
+    // and node measurements exist; never replace a user's later pan/zoom.
+    let frame = 0;
+    const fit = () => {
+      if (!element.clientWidth || !element.clientHeight || initiallyFitted.current) return;
+      if (!workflow.nodes.every((n) => dimensions[n.id])) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        void flow.fitView({ padding: 0.2, maxZoom: 1 }).then((done) => {
+          if (done) initiallyFitted.current = true;
+        });
+      });
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(element);
+    fit();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [flow, fitInitially, dimensions, workflow.nodes]);
+  const controls = (
+    <>
+      <button type="button" aria-label="缩小画布" onClick={() => void flow?.zoomOut()}>
+        −
+      </button>
+      <span>{Math.round(zoom * 100)}%</span>
+      <button type="button" aria-label="放大画布" onClick={() => void flow?.zoomIn()}>
+        ＋
+      </button>
+      <button type="button" onClick={() => locate()}>
+        定位当前
+      </button>
+      <button type="button" onClick={() => void flow?.fitView({ padding: 0.2, maxZoom: 1 })}>
+        适应全图
+      </button>
+    </>
+  );
   return (
-    <div className="zm-canvas" ref={canvas}>
+    <div className={`zm-canvas ${fitInitially ? 'zm-canvas-overview' : ''}`} ref={canvas}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -178,7 +230,7 @@ export function WorkflowCanvas({
         maxZoom={1.8}
         onInit={(instance) => {
           setFlow(instance);
-          locate(instance);
+          if (!fitInitially) locate(instance);
         }}
         onMoveEnd={(_, viewport) => setZoom(viewport.zoom)}
         nodesDraggable={!locked && !tree}
@@ -243,28 +295,23 @@ export function WorkflowCanvas({
         }}
       >
         <Background gap={24} size={1} color="var(--zm-grid)" />
-        <Panel position="bottom-left" className="zm-canvas-controls">
-          <button aria-label="缩小画布" onClick={() => void flow?.zoomOut()}>
-            −
-          </button>
-          <span>{Math.round(zoom * 100)}%</span>
-          <button aria-label="放大画布" onClick={() => void flow?.zoomIn()}>
-            ＋
-          </button>
-          <button onClick={() => locate()}>定位当前</button>
-          <button onClick={() => void flow?.fitView({ padding: 0.15, maxZoom: 1 })}>
-            适应全图
-          </button>
-        </Panel>
-        <MiniMap
-          style={{ width: 130, height: 86 }}
-          pannable
-          zoomable
-          nodeColor="var(--zm-minimap-node)"
-          maskColor="var(--zm-minimap-mask)"
-          bgColor="var(--zm-paper)"
-        />
+        {!fitInitially && (
+          <Panel position="bottom-left" className="zm-canvas-controls">
+            {controls}
+          </Panel>
+        )}
+        {!fitInitially && (
+          <MiniMap
+            style={{ width: 130, height: 86 }}
+            pannable
+            zoomable
+            nodeColor="var(--zm-minimap-node)"
+            maskColor="var(--zm-minimap-mask)"
+            bgColor="var(--zm-paper)"
+          />
+        )}
       </ReactFlow>
+      {fitInitially && <div className="zm-canvas-controls zm-canvas-dock">{controls}</div>}
     </div>
   );
 }

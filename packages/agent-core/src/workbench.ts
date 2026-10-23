@@ -19,14 +19,19 @@ export const ParticipantSchema = z.strictObject({
   instructions: description,
   available: z.boolean(),
 });
-export const AssetSchema = z.strictObject({
-  id,
-  name: title,
-  kind: z.enum(['skill', 'mcp', 'template']),
-  description,
-  content: description,
-  available: z.boolean(),
-});
+export const AssetSchema = z
+  .strictObject({
+    id,
+    name: title,
+    kind: z.enum(['skill', 'mcp', 'template']),
+    description,
+    content: z.string().max(150000),
+    available: z.boolean(),
+  })
+  .refine((a) => a.kind === 'template' || a.content.length <= 8000, {
+    path: ['content'],
+    message: 'Skill 和 MCP 正文最多 8000 字符。',
+  });
 export const ProjectSchema = z.strictObject({ id, name: title, description });
 export const WorkNodeSchema = z.strictObject({
   id,
@@ -52,6 +57,43 @@ export const WorkflowSchema = z.strictObject({
   parentNodeId: id.nullable(),
   nodes: z.array(WorkNodeSchema).max(80),
 });
+export const WorkflowTemplateSchema = z.strictObject({
+  format: z.literal('zhuma-workflow-template'),
+  schemaVersion: z.literal(1),
+  roles: z
+    .array(
+      z.strictObject({
+        id,
+        name: title,
+        preferredKind: z.enum(['human', 'expert', 'any']),
+        capabilities: z.array(z.string().trim().min(1).max(80)).max(30),
+      }),
+    )
+    .max(100),
+  resources: z
+    .array(
+      z.strictObject({
+        id,
+        name: title,
+        kind: z.enum(['skill', 'mcp']),
+        suggestedAssetId: id.optional(),
+      }),
+    )
+    .max(100),
+  workflows: z.array(WorkflowSchema).min(1).max(30),
+});
+export type WorkflowTemplate = z.infer<typeof WorkflowTemplateSchema>;
+export const TemplateSourceSchema = z.strictObject({
+  assetId: id,
+  sourceWorkbenchRevision: z.number().int().nonnegative(),
+  definition: WorkflowTemplateSchema,
+  pendingParticipants: z
+    .array(z.strictObject({ id, name: title, kind: z.enum(['human', 'expert']) }))
+    .max(100),
+  pendingAssets: z
+    .array(z.strictObject({ id, name: title, kind: z.enum(['skill', 'mcp']) }))
+    .max(100),
+});
 export const WorkTaskSchema = z.strictObject({
   id,
   projectId: id,
@@ -63,6 +105,7 @@ export const WorkTaskSchema = z.strictObject({
   workflows: z.array(WorkflowSchema).min(1).max(30),
   status: z.enum(['draft', 'ready']),
   updatedAt: z.string().datetime(),
+  templateSource: TemplateSourceSchema.optional(),
 });
 export const AppliedPlanSchema = z.strictObject({
   id,
@@ -112,6 +155,17 @@ export const CommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('save-participant'), participant: ParticipantSchema }),
   z.strictObject({ type: z.literal('save-asset'), asset: AssetSchema }),
   z.strictObject({ type: z.literal('save-task'), task: WorkTaskSchema }),
+  z.strictObject({
+    type: z.literal('instantiate-template'),
+    input: z.strictObject({
+      templateId: id,
+      task: WorkTaskSchema.omit({ workflows: true, status: true, templateSource: true }).extend({
+        id: z.uuid(),
+      }),
+      roleBindings: z.record(id, id.nullable()),
+      resourceBindings: z.record(id, id.nullable()),
+    }),
+  }),
 ]);
 export const CommandRequestSchema = z.strictObject({
   requestId: id,
@@ -202,6 +256,12 @@ export function validateWorkTask(
       if (node.reviewerIds.includes(node.assigneeId ?? ''))
         errors.push(`「${node.title}」执行者不能同时评审自己。`);
       for (const memberId of [...(node.assigneeId ? [node.assigneeId] : []), ...node.reviewerIds]) {
+        const pending = task.templateSource?.pendingParticipants.find((p) => p.id === memberId);
+        if (pending) {
+          if (task.status === 'ready')
+            errors.push(`「${node.title}」请绑定角色：${pending.name}。`);
+          continue;
+        }
         if (!participantIds.has(memberId)) errors.push(`「${node.title}」引用了未参与任务的成员。`);
         if (
           task.status === 'ready' &&
@@ -218,6 +278,14 @@ export function validateWorkTask(
         if (new Set(references).size !== references.length) errors.push('资产引用不能重复。');
         for (const assetId of references) {
           const asset = state.assets.find((a) => a.id === assetId && a.kind === kind);
+          const pending = task.templateSource?.pendingAssets.find(
+            (a) => a.id === assetId && a.kind === kind,
+          );
+          if (pending) {
+            if (task.status === 'ready')
+              errors.push(`「${node.title}」请绑定资源：${pending.name}。`);
+            continue;
+          }
           if (!asset || (task.status === 'ready' && !asset.available))
             errors.push(`「${node.title}」引用的 ${kind} 不存在或不可用。`);
         }
@@ -225,6 +293,293 @@ export function validateWorkTask(
     }
   }
   return [...new Set(errors)];
+}
+
+/** Validate the reusable graph using role/resource slots, never live execution identities. */
+export function parseWorkflowTemplate(content: string): WorkflowTemplate {
+  if (content.length > 150000)
+    throw new WorkbenchError('template-invalid', '工作流模板超过大小限制。');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch {
+    throw new WorkbenchError('template-legacy', '这是文字模板，请先转换成结构化工作流。');
+  }
+  const parsed = WorkflowTemplateSchema.safeParse(raw);
+  if (!parsed.success)
+    throw new WorkbenchError('template-invalid', '工作流模板格式不完整，请检查角色、资源和节点。');
+  const definition = parsed.data;
+  if (new Set(definition.resources.map((a) => a.id)).size !== definition.resources.length)
+    throw new WorkbenchError('template-invalid', '模板资源标识不能重复。');
+  const task: WorkTask = {
+    id: 'template-validation',
+    projectId: 'template-project',
+    title: '模板',
+    goal: '',
+    participantIds: definition.roles.map((r) => r.id),
+    ownerId: null,
+    workflows: definition.workflows,
+    status: 'ready',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const catalog: Workbench = {
+    ...emptyWorkbench(),
+    projects: [{ id: task.projectId, name: '模板结构验证', description: '' }],
+    participants: definition.roles.map((r) => ({
+      id: r.id,
+      name: r.name,
+      kind: r.preferredKind === 'expert' ? 'expert' : 'human',
+      role: '',
+      capabilities: r.capabilities,
+      instructions: '',
+      available: true,
+    })),
+    assets: definition.resources.map((a) => ({
+      ...a,
+      description: '',
+      content: '',
+      available: true,
+    })),
+  };
+  const errors = validateWorkTask(task, catalog, { requireOwner: false });
+  if (errors.length) throw new WorkbenchError('template-invalid', errors.join('\n'));
+  return definition;
+}
+
+/** Capture definitions and role slots; no task owner, sessions, artifacts or personal instructions. */
+export function captureWorkflowTemplate(
+  task: WorkTask,
+  state: Workbench,
+  options: {
+    rolePreferences?: Record<string, 'human' | 'expert' | 'any'>;
+    resourceHints?: Record<string, string>;
+  } = {},
+): WorkflowTemplate {
+  const roles: WorkflowTemplate['roles'] = [];
+  const resources: WorkflowTemplate['resources'] = [];
+  const roleIds = new Map<string, string>();
+  const resourceIds = new Map<string, string>();
+  function role(sourceId: string | null, missingKey: string, review = false): string {
+    const key = sourceId ?? missingKey;
+    const known = roleIds.get(key);
+    if (known) return known;
+    const person = state.participants.find((p) => p.id === sourceId);
+    const pending = task.templateSource?.pendingParticipants.find((p) => p.id === sourceId);
+    const roleId = `role-${roles.length + 1}`;
+    const baseName = (
+      person?.role.trim() ||
+      pending?.name ||
+      `${review ? '评审' : '执行'}角色 ${roles.length + 1}`
+    ).slice(0, 150);
+    let name = baseName;
+    for (let suffix = 2; roles.some((r) => r.name === name); suffix++)
+      name = `${baseName} · ${suffix}`;
+    roles.push({
+      id: roleId,
+      name,
+      preferredKind: options.rolePreferences?.[key] ?? person?.kind ?? 'any',
+      capabilities: [...(person?.capabilities ?? [])],
+    });
+    roleIds.set(key, roleId);
+    return roleId;
+  }
+  function resource(sourceId: string, kind: 'skill' | 'mcp'): string {
+    const key = `${kind}:${sourceId}`;
+    const known = resourceIds.get(key);
+    if (known) return known;
+    const asset = state.assets.find((a) => a.id === sourceId && a.kind === kind);
+    const pending = task.templateSource?.pendingAssets.find(
+      (a) => a.id === sourceId && a.kind === kind,
+    );
+    const resourceId = `resource-${resources.length + 1}`;
+    resources.push({
+      id: resourceId,
+      kind,
+      name: asset?.name ?? pending?.name ?? '待绑定资源',
+      ...(asset || options.resourceHints?.[sourceId]
+        ? { suggestedAssetId: asset?.id ?? options.resourceHints![sourceId]! }
+        : {}),
+    });
+    resourceIds.set(key, resourceId);
+    return resourceId;
+  }
+  const flowIds = new Map(task.workflows.map((w, i) => [w.id, `flow-${i + 1}`]));
+  const nodeIds = new Map(
+    task.workflows.flatMap((w) => w.nodes).map((n, i) => [n.id, `node-${i + 1}`]),
+  );
+  const workflows = task.workflows.map((w) => ({
+    ...w,
+    id: flowIds.get(w.id)!,
+    parentNodeId: w.parentNodeId ? nodeIds.get(w.parentNodeId)! : null,
+    nodes: w.nodes.map((n) => ({
+      ...structuredClone(n),
+      id: nodeIds.get(n.id)!,
+      assigneeId: role(n.assigneeId, `assignee:${n.id}`),
+      reviewerIds: n.reviewRequired
+        ? n.reviewerIds.length
+          ? n.reviewerIds.map((id) => role(id, id, true))
+          : [role(null, `review:${n.id}`, true)]
+        : [],
+      skillIds: n.skillIds.map((id) => resource(id, 'skill')),
+      mcpIds: n.mcpIds.map((id) => resource(id, 'mcp')),
+      dependsOn: n.dependsOn.map((id) => nodeIds.get(id) ?? id),
+      rationale: '',
+    })),
+  }));
+  return parseWorkflowTemplate(
+    JSON.stringify({
+      format: 'zhuma-workflow-template',
+      schemaVersion: 1,
+      roles,
+      resources,
+      workflows,
+    }),
+  );
+}
+
+type TemplateInput = Extract<WorkbenchCommand, { type: 'instantiate-template' }>['input'];
+
+/** Pure preview and Host construction share this function; applying the command is atomic. */
+export function instantiateWorkflowTemplate(state: Workbench, input: TemplateInput): WorkTask {
+  const source = state.assets.find(
+    (a) => a.id === input.templateId && a.kind === 'template' && a.available,
+  );
+  if (!source)
+    throw new WorkbenchError('template-unavailable', '该工作流模板已不可用，请重新选择。');
+  if (state.tasks.some((t) => t.id === input.task.id))
+    throw new WorkbenchError('task-exists', '任务标识已被使用，请重新创建。');
+  const definition = parseWorkflowTemplate(source.content);
+  for (const key of Object.keys(input.roleBindings))
+    if (!definition.roles.some((r) => r.id === key))
+      throw new WorkbenchError('template-binding', '角色映射引用了未知角色。');
+  for (const key of Object.keys(input.resourceBindings))
+    if (!definition.resources.some((r) => r.id === key))
+      throw new WorkbenchError('template-binding', '资源映射引用了未知资源。');
+  const pendingParticipants: z.infer<typeof TemplateSourceSchema>['pendingParticipants'] = [];
+  const pendingAssets: z.infer<typeof TemplateSourceSchema>['pendingAssets'] = [];
+  const roleMap = new Map(
+    definition.roles.map((r, i) => {
+      const target = input.roleBindings[r.id];
+      if (target) {
+        if (
+          !input.task.participantIds.includes(target) ||
+          !state.participants.some((p) => p.id === target && p.available)
+        )
+          throw new WorkbenchError('template-binding', `「${r.name}」请选择已参与任务的可用成员。`);
+        return [r.id, target];
+      }
+      const pendingId = `${input.task.id}-p-${i}`;
+      if (state.participants.some((p) => p.id === pendingId))
+        throw new WorkbenchError('template-binding', '角色占位标识冲突，请重新创建任务。');
+      pendingParticipants.push({
+        id: pendingId,
+        name: r.name,
+        kind: r.preferredKind === 'expert' ? 'expert' : 'human',
+      });
+      return [r.id, pendingId];
+    }),
+  );
+  const resourceMap = new Map(
+    definition.resources.map((r, i) => {
+      const target = input.resourceBindings[r.id];
+      if (target) {
+        if (!state.assets.some((a) => a.id === target && a.kind === r.kind && a.available))
+          throw new WorkbenchError('template-binding', `「${r.name}」请选择同类型的可用资源。`);
+        return [r.id, target];
+      }
+      const pendingId = `${input.task.id}-a-${i}`;
+      if (state.assets.some((a) => a.id === pendingId))
+        throw new WorkbenchError('template-binding', '资源占位标识冲突，请重新创建任务。');
+      pendingAssets.push({ id: pendingId, name: r.name, kind: r.kind });
+      return [r.id, pendingId];
+    }),
+  );
+  const flowMap = new Map(definition.workflows.map((w, i) => [w.id, `${input.task.id}-f-${i}`]));
+  const nodeMap = new Map(
+    definition.workflows.flatMap((w) => w.nodes).map((n, i) => [n.id, `${input.task.id}-n-${i}`]),
+  );
+  const task = WorkTaskSchema.parse({
+    ...input.task,
+    status: 'draft',
+    workflows: definition.workflows.map((w) => ({
+      ...w,
+      id: flowMap.get(w.id)!,
+      parentNodeId: w.parentNodeId ? nodeMap.get(w.parentNodeId)! : null,
+      nodes: w.nodes.map((n) => ({
+        ...structuredClone(n),
+        id: nodeMap.get(n.id)!,
+        assigneeId: roleMap.get(n.assigneeId!)!,
+        reviewerIds: n.reviewerIds.map((id) => roleMap.get(id)!),
+        skillIds: n.skillIds.map((id) => resourceMap.get(id)!),
+        mcpIds: n.mcpIds.map((id) => resourceMap.get(id)!),
+        dependsOn: n.dependsOn.map((id) => nodeMap.get(id)!),
+      })),
+    })),
+    templateSource: {
+      assetId: source.id,
+      sourceWorkbenchRevision: state.revision,
+      definition,
+      pendingParticipants,
+      pendingAssets,
+    },
+  });
+  const errors = validateWorkTask(task, state);
+  if (errors.length) throw new WorkbenchError('template-binding', errors.join('\n'));
+  return task;
+}
+
+/** Replace only still-present placeholders, preserving later manual edits and all graph IDs. */
+export function resolveTemplateBindings(
+  task: WorkTask,
+  state: Workbench,
+  roles: Record<string, string>,
+  resources: Record<string, string>,
+): WorkTask {
+  const next = structuredClone(task);
+  const participantMap = new Map<string, string>();
+  const assetMap = new Map<string, string>();
+  for (const [from, to] of Object.entries(roles)) {
+    if (
+      !task.templateSource?.pendingParticipants.some((p) => p.id === from) ||
+      !task.participantIds.includes(to) ||
+      !state.participants.some((p) => p.id === to && p.available)
+    )
+      throw new WorkbenchError('template-binding', '角色映射需要已参与任务的可用成员。');
+    participantMap.set(from, to);
+  }
+  for (const [from, to] of Object.entries(resources)) {
+    const pending = task.templateSource?.pendingAssets.find((a) => a.id === from);
+    if (
+      !pending ||
+      !state.assets.some((a) => a.id === to && a.kind === pending.kind && a.available)
+    )
+      throw new WorkbenchError('template-binding', '资源映射需要同类型的可用资源。');
+    assetMap.set(from, to);
+  }
+  for (const node of next.workflows.flatMap((w) => w.nodes)) {
+    node.assigneeId = node.assigneeId
+      ? (participantMap.get(node.assigneeId) ?? node.assigneeId)
+      : null;
+    node.reviewerIds = node.reviewerIds.map((id) => participantMap.get(id) ?? id);
+    node.skillIds = [...new Set(node.skillIds.map((id) => assetMap.get(id) ?? id))];
+    node.mcpIds = [...new Set(node.mcpIds.map((id) => assetMap.get(id) ?? id))];
+  }
+  const errors = validateWorkTask(next, state);
+  if (errors.length) throw new WorkbenchError('template-binding', errors.join('\n'));
+  return next;
+}
+
+/** Draft UI projection only. Placeholders never become runtime participants or resources. */
+export function templateBindingGaps(task: WorkTask) {
+  const nodes = task.workflows.flatMap((w) => w.nodes);
+  const people = new Set(
+    nodes.flatMap((n) => [...(n.assigneeId ? [n.assigneeId] : []), ...n.reviewerIds]),
+  );
+  const assets = new Set(nodes.flatMap((n) => [...n.skillIds, ...n.mcpIds]));
+  return {
+    participants: task.templateSource?.pendingParticipants.filter((p) => people.has(p.id)) ?? [],
+    assets: task.templateSource?.pendingAssets.filter((a) => assets.has(a.id)) ?? [],
+  };
 }
 
 /** Pure command application. Caller serializes writes and commits revision + receipt atomically. */
@@ -248,6 +603,14 @@ export function applyWorkbenchCommand(state: Workbench, command: WorkbenchComman
       const errors = validateWorkTask(command.task, next);
       if (errors.length) throw new WorkbenchError('validation', errors.join('\n'));
       const prior = state.tasks.find((t) => t.id === command.task.id);
+      if (
+        JSON.stringify(prior?.templateSource ?? null) !==
+        JSON.stringify(command.task.templateSource ?? null)
+      )
+        throw new WorkbenchError(
+          'template-source',
+          '模板来源快照不能通过任务编辑改写，请从工作流模板创建任务。',
+        );
       if (prior?.status === 'ready' && command.task.status === 'ready')
         throw new WorkbenchError('confirmed-plan', '请先创建编辑草稿，再确认新的计划版本。');
       if (command.task.status === 'ready') {
@@ -268,6 +631,11 @@ export function applyWorkbenchCommand(state: Workbench, command: WorkbenchComman
         });
       }
       next.tasks = upsert(next.tasks, command.task);
+      break;
+    }
+    case 'instantiate-template': {
+      const task = instantiateWorkflowTemplate(state, command.input);
+      next.tasks = upsert(next.tasks, task);
       break;
     }
   }
