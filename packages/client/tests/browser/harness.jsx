@@ -3,6 +3,7 @@ import { StrictMode, useState } from 'react';
 import { SelectProbe } from './select-probe.jsx';
 import { ExecutionWorkspace } from '../../src/execution/ExecutionWorkspace.js';
 import { createExecutionApi } from '../../src/execution/ExecutionApi.js';
+import { MemberLoginProbe } from './member-login-probe.jsx';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
 import styles from '../../src/workbench/workbench.css';
@@ -57,7 +58,9 @@ function MountProbe() {
     </>
   );
 }
-const content = new URL(location.href).searchParams.has('mount-probe') ? (
+const content = new URL(location.href).searchParams.has('member-login') ? (
+  <MemberLoginProbe />
+) : new URL(location.href).searchParams.has('mount-probe') ? (
   <MountProbe />
 ) : new URL(location.href).searchParams.has('select-probe') ? (
   <SelectProbe />

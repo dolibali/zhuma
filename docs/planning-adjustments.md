@@ -1,6 +1,6 @@
 # 局部规划与变更预览
 
-状态：A-PLANQ 后续待审切片，基于已合入 `79a4466`，代码 `900d05d`。没有合入待审身份／执行代码；FR02／04／13 的其余退出条件继续保留。界面对照和验证边界见[证据](review/planning-adjustments/README.md)。
+集成基线：[PR #24](https://github.com/dolibali/zhuma/pull/24) 已随 `f90f2d8` 合入 develop；首批代码 `900d05d`，恢复修复 `2af0c35`。该切片没有包含待审身份／执行代码。FR02／04／13 的其余退出条件由[编排质量 #38](https://github.com/dolibali/zhuma/issues/38)保留，实时阶段读 Issue 标签。界面对照和验证边界见[证据](review/planning-adjustments/README.md)。
 
 ## 操作与范围
 

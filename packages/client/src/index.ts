@@ -1,5 +1,7 @@
 import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
+export * from './identity/index.js';
+
 export type { InboxItemView, NodeExecutionView } from './execution-view.js';
 export type {
   DeliveryDraft,
