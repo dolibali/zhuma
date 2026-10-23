@@ -84,7 +84,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `comments`：被引用的未解决评论
 - `receipts`：业务幂等回执，指纹覆盖 actor、交付正文或票面，不覆盖 `expectedVersion`
 
-计划表 `plans`。键：`{taskId}:{planId}:{revision}`。值：`{ idempotencyKey, fingerprint, nodeIds }`。指纹只覆盖 `taskId`、`planId`、`revision`。节点已经启动后，再用来启动同一修订会重放。先判断重放，再查重，别的项目的目录故障不会改变这次重试。幂等键只在本空间内判重：同一个键配上本空间的另一个修订返回 `idempotency-mismatch`。别的空间里的同一个键，在那个空间的目录正常应答时，不影响本空间，响应里也看不出那个键。计时上看得出。例如目录慢 2ms 时，中位数大约是 5057µs 对 2866µs。查本空间里另一个项目时，目录抛错、返回 `unavailable` 或 `unknown`、结果是 null 或字符串、reason 无法识别，或空间 id 无法使用，启动都返回 `unavailable`。目录恢复前，这个键不能再拿去启动。只有目录明确给出另一个空间 id 时才忽略。
+计划表 `plans`。键：`{taskId}:{planId}:{revision}`。值：`{ idempotencyKey, fingerprint, nodeIds }`。指纹只覆盖 `taskId`、`planId`、`revision`。同一个键、同一个修订先重放，别的项目的目录故障不会改变这次重试。别的键先查重：本空间另一个计划用过的键返回 `idempotency-mismatch`，查重时目录不可用返回 `unavailable`；没有冲突的键也重放。幂等键只在本空间内判重：同一个键配上本空间的另一个修订，以及另一个计划的键配上已经启动的修订，都返回 `idempotency-mismatch`。别的空间里的同一个键，在那个空间的目录正常应答时，不影响本空间，响应里也看不出那个键。计时上看得出。例如目录慢 2ms 时，中位数大约是 5057µs 对 2866µs。查本空间里另一个项目时，目录抛错、返回 `unavailable` 或 `unknown`、结果是 null 或字符串、reason 无法识别，或空间 id 无法使用，启动都返回 `unavailable`。目录恢复前，这个键不能再拿去启动。只有目录明确给出另一个空间 id 时才忽略。
 
 下游解锁的幂等键是 `unlock:{sourceId}:{downstreamNodeId}`。`sourceId` 在有评审轮次时是 `currentRoundId`，没有轮次时是 `artifact:{acceptedArtifactVersionId}`。依赖没有全部接受时，解锁结果是 `ignored`，不写回执。全部接受后把 `{ sourceNodeId, artifactVersionId }` 经 `readNodeHandoff` 写入该下游的 `inputRefs`，并把还处在 `blocked` 的下游推进到 `ready` 一次。下游若已经是 `ready` 但 `inputRefs` 仍空，同一次解锁补上这些引用，不再改状态。同一键再请求则重放。
 

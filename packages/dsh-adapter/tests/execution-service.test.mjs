@@ -1335,6 +1335,48 @@ test('a task id that was not generated is not-found and is not sent to the direc
   assert.deepEqual(store.snapshot(), before);
 });
 
+test('a task id is accepted only inside the workbench length and character rule', async () => {
+  const hundred = 'a'.repeat(100);
+  const seen = [];
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service, store } = create(state, {
+    async spaceForProject(projectId) {
+      seen.push(projectId);
+      if (projectId === 'project') return { ok: true, spaceId: 'project' };
+      if (projectId === hundred) return { ok: false, reason: 'unknown' };
+      throw new Error('untrusted-id');
+    },
+  });
+  await startChen(service, applied);
+  seen.length = 0;
+  const before = store.snapshot();
+  const caller = session('chen');
+  const endpoints = ['start-plan', 'submit', 'ballot', 'settle', 'report'];
+  const accepted = await commandProbe(service, hundred, applied, 'hundred', caller);
+  for (const endpoint of endpoints) {
+    assert.equal(accepted[endpoint].error.code, 'not-found', endpoint);
+    assert.equal(accepted[endpoint].error.message, '找不到这个节点。');
+  }
+  assert.deepEqual(seen, Array(endpoints.length).fill(hundred));
+  assert.deepEqual(store.snapshot(), before);
+
+  const rejected = ['a'.repeat(101), 'é', '\u212A', '\u017F', '中文', '.', '/', '%'];
+  for (const taskId of rejected) {
+    const illegal = await commandProbe(service, taskId, applied, 'ruled-out', caller);
+    for (const endpoint of endpoints) {
+      assert.equal(
+        illegal[endpoint].error.code,
+        'not-found',
+        `${endpoint} ${JSON.stringify(taskId)}`,
+      );
+      assert.equal(illegal[endpoint].error.message, '找不到这个节点。');
+      assert.equal(JSON.stringify(illegal[endpoint]).includes('untrusted-id'), false);
+    }
+  }
+  assert.deepEqual(seen, Array(endpoints.length).fill(hundred));
+  assert.deepEqual(store.snapshot(), before);
+});
+
 test('a directory fault returns the same bytes for a non-uuid task id whether or not the task exists', async () => {
   const plainId = 'task';
   const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
