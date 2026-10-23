@@ -366,10 +366,12 @@ export class DshChatExecutor implements AgentExecutor {
     }
     const config = this.configResult.config;
     const sessionId = sanitizeId(request.resumeSessionId ?? this.allocateSessionId());
-    const located = this.locate(sessionId);
-    const home = located.home;
-    const created = located.created;
+    let home: string;
+    let created: boolean;
     try {
+      const located = this.locate(sessionId);
+      home = located.home;
+      created = located.created;
       writeRunHome(
         home,
         {

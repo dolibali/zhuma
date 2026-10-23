@@ -1293,6 +1293,40 @@ test('契约：同一会话撤掉的技能不会在下一轮被扫描', async ()
   }
 });
 
+test('契约：数据目录不是目录时，定位失败变成启动失败，消息里没有绝对路径', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'zhuma-locate-'));
+  const dataDir = path.join(parent, 'not-a-dir');
+  writeFileSync(dataDir, 'x');
+  const engine = new DshChatExecutor(
+    {
+      ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
+      ZHUMA_MODEL_API_KEY: 'test-key',
+      ZHUMA_DATA_DIR: dataDir,
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+    },
+    { bin: stub, mode: 'ok', initTimeoutMs: 2000 },
+  );
+  const events = [];
+  let thrown = null;
+  try {
+    for await (const event of engine.run(runInput('locate-not-dir'))) events.push(event);
+  } catch (error) {
+    thrown = error;
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+  assert.equal(thrown, null);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'failed');
+  assert.equal(events[0].fault, 'executor-disconnected');
+  assert.match(events[0].message, /^执行器启动失败。/);
+  assert.match(events[0].message, /ENOTDIR/);
+  assert.equal(events[0].message.includes(dataDir), false);
+  assert.equal(events[0].message.includes(parent), false);
+});
+
 test('契约：启动时清掉孤儿会话目录', () => {
   const root = path.join(mkdtempSync(path.join(tmpdir(), 'zhuma-sweep-')), 'dsh-sessions');
   mkdirSync(root, { recursive: true });
