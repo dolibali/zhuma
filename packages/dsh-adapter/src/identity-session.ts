@@ -220,9 +220,17 @@ function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
 const DUMMY_VERIFIER = parseVerifier(hashPassword(randomBytes(32).toString('base64url')));
 if (DUMMY_VERIFIER === undefined) throw new Error('identity dummy verifier was not created');
 
+let passwordHashAttempts = 0;
+
+/** How many password hashes this process has started. Tests use it to see that unknown accounts hash too. */
+export function passwordHashAttemptCount(): number {
+  return passwordHashAttempts;
+}
+
 async function passwordMatches(stored: string | undefined, password: string): Promise<boolean> {
   const parsed = parseVerifier(stored) ?? DUMMY_VERIFIER;
   if (parsed === undefined) return false;
+  passwordHashAttempts += 1;
   const actual = await deriveKey(password, parsed.salt);
   const matches = actual.length === parsed.hash.length && timingSafeEqual(actual, parsed.hash);
   return matches && stored !== undefined && parseVerifier(stored) !== undefined;
@@ -628,10 +636,8 @@ async function handle(
         fail(res, 429, 'login-rate-limited');
         return;
       }
-      if (
-        account === undefined ||
-        !(await passwordMatches(account.passwordHash, parsed.data.password))
-      ) {
+      const passwordOk = await passwordMatches(account?.passwordHash, parsed.data.password);
+      if (account === undefined || !passwordOk) {
         fail(res, 401, 'invalid-login');
         return;
       }

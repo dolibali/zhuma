@@ -28,7 +28,12 @@ import {
   inject as connectionInject,
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
-import { applyIdentity, hashPassword, identityInject } from '../dist/identity-session.js';
+import {
+  applyIdentity,
+  hashPassword,
+  identityInject,
+  passwordHashAttemptCount,
+} from '../dist/identity-session.js';
 import { resolveMember } from '../dist/member-session.js';
 
 const AUTHORITY = '127.0.0.1:3080';
@@ -460,6 +465,28 @@ test('a malformed identity import is rejected', async () => {
       }),
     /note n member is not an imported account/,
   );
+});
+
+test('an unknown account still runs scrypt', async () => {
+  const host = await mount();
+  const before = passwordHashAttemptCount();
+  const unknown = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.90',
+    body: { accountId: 'ghost', password: 'wrong-password' },
+  });
+  assert.equal(unknown.status, 401);
+  assert.equal(unknown.json.error.code, 'invalid-login');
+  const known = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.91',
+    body: { accountId: 'chen', password: 'wrong-password' },
+  });
+  assert.equal(known.status, 401);
+  assert.equal(passwordHashAttemptCount() - before, 2);
+  await host.dispose();
 });
 
 test('repeated failed logins from one address are limited', async () => {
