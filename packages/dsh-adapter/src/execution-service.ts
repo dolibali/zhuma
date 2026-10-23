@@ -1,0 +1,395 @@
+import { z } from 'zod';
+import {
+  canonicalPayload,
+  completionSource,
+  createExecutionHandoff,
+  downstreamRecords,
+  nodeRecordKey,
+  settleReview,
+  startAppliedPlan,
+  submitDelivery,
+  toNodeExecutionReport,
+  unlockDownstream,
+  unlockKey,
+  castBallot,
+  WorkbenchError,
+  type ExecutionNodeRecord,
+  type NodeExecutionReport,
+  type Workbench,
+} from '@zhuma/agent-core';
+import { resolveActor, scanActorField, type MemberResolution } from './execution-identity.js';
+
+/** The actor is only `member`, the result of identity's `resolveMember`. */
+export interface ExecutionCaller {
+  readonly member?: MemberResolution;
+}
+
+const id = z.string().min(1);
+const TEXT_LIMIT = 100_000;
+const boundedText = z.string().max(TEXT_LIMIT);
+const fileSchema = z.strictObject({
+  id,
+  mediaType: z.string().min(1),
+  byteSize: z.number().int().nonnegative(),
+  checksum: z.string().min(1),
+  accessPolicyId: z.string().min(1),
+  uploadComplete: z.boolean(),
+});
+const locate = {
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+  expectedVersion: z.number().int().nonnegative(),
+  idempotencyKey: id,
+};
+const startSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int(),
+  idempotencyKey: id,
+});
+const submitSchema = z.strictObject({
+  ...locate,
+  text: boundedText.optional(),
+  files: z.array(fileSchema).max(20).optional(),
+  links: z.array(z.string()).max(20).optional(),
+});
+const ballotSchema = z.strictObject({
+  ...locate,
+  roundId: id,
+  artifactVersionId: id,
+  action: z.enum(['approve', 'request-changes', 'comment']),
+  comment: boundedText.optional(),
+  unresolvedCommentIds: z.array(z.string()).max(50).optional(),
+});
+const settleSchema = z.strictObject({
+  ...locate,
+  roundId: id,
+  artifactVersionId: id,
+});
+export interface PlanReceipt {
+  readonly idempotencyKey: string;
+  readonly fingerprint: string;
+  readonly nodeIds: readonly string[];
+}
+
+export interface ExecutionStorage {
+  readNode(key: string): ExecutionNodeRecord | undefined;
+  writeNode(key: string, value: ExecutionNodeRecord): Promise<void>;
+  listNodes(): readonly ExecutionNodeRecord[];
+  readPlan(key: string): PlanReceipt | undefined;
+  writePlan(key: string, value: PlanReceipt): Promise<void>;
+  listPlans(): readonly { readonly key: string; readonly receipt: PlanReceipt }[];
+}
+
+export interface ExecutionFailure {
+  readonly code: string;
+  readonly message: string;
+  readonly details: Readonly<Record<string, unknown>>;
+}
+
+export type ExecutionResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: ExecutionFailure };
+
+const MESSAGES: Record<string, string> = {
+  'actor-from-body': '不能在请求里指定操作者。',
+  unauthenticated: '请先登录。',
+  'untrusted-request': '这次请求不可信。',
+  'not-assignee': '只有该节点的执行者可以提交。',
+  'not-assigned-reviewer': '你不是这一轮的评审人。',
+  'actor-mismatch': '不能代替其他评审人投票。',
+  'upload-incomplete': '文件还没有上传完成，不能提交。',
+  'empty-delivery': '请填写交付说明，或附上已上传完成的文件。',
+  conflict: '内容已变化，请刷新后再试。',
+  'idempotency-mismatch': '这个请求标识已经用于另一项操作。',
+  'plan-not-found': '找不到指定的已确认计划版本。',
+  'plan-reference-required': '请提供任务、计划标识和精确计划版本。',
+  'stale-round': '这不是当前评审轮次。',
+  'stale-version': '这不是当前产物版本。',
+  'voided-round': '这一轮评审已作废。',
+  'not-in-directory': '当前登录身份不在团队目录里。',
+  'not-participant': '只有这项任务的负责人或参与者可以执行这个操作。',
+  'plan-incomplete': '计划还没有完整启动，暂时不能查看或写入。',
+  unavailable: '执行记录暂时写不进去，请用同一个请求再试一次。',
+  'not-found': '找不到这个节点。',
+  validation: '提交的数据格式不正确。',
+  'unknown-field': '请求里有无法识别的字段。',
+  'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
+  cancelled: '操作已取消。',
+};
+
+function fail(
+  code: string,
+  details: Record<string, unknown> = {},
+): { ok: false; error: ExecutionFailure } {
+  return {
+    ok: false,
+    error: { code, message: MESSAGES[code] ?? '执行请求没有被接受。', details },
+  };
+}
+
+function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
+  const parsed = schema.safeParse(body);
+  if (parsed.success) return { ok: true, value: parsed.data };
+  const unknown = parsed.error.issues.some((issue) => issue.code === 'unrecognized_keys');
+  return fail(unknown ? 'unknown-field' : 'validation');
+}
+
+function planKey(taskId: string, planId: string, revision: number): string {
+  return `${taskId}:${planId}:${revision}`;
+}
+
+function directoryIds(workbench: Workbench): readonly string[] {
+  return workbench.participants
+    .filter((participant) => participant.kind === 'human')
+    .map((participant) => participant.id);
+}
+
+function planMembership(
+  workbench: Workbench,
+  taskId: string,
+  actorId: string,
+): 'allowed' | 'missing' | 'not-participant' {
+  const task = workbench.tasks.find((item) => item.id === taskId);
+  if (!task) return 'missing';
+  if (task.ownerId === actorId || task.participantIds.includes(actorId)) return 'allowed';
+  return 'not-participant';
+}
+
+function maySettle(record: ExecutionNodeRecord, actorId: string): boolean {
+  const assignee = record.handoff.assignee;
+  if (assignee.kind === 'human' && assignee.id === actorId) return true;
+  return record.handoff.reviewerIds.includes(actorId);
+}
+
+function recordedPlan(storage: ExecutionStorage, record: ExecutionNodeRecord): boolean {
+  return storage.readPlan(planKey(record.taskId, record.planId, record.revision)) !== undefined;
+}
+
+/** Writes skip a record that is not an object with a command and a handoff. */
+function intactNode(record: ExecutionNodeRecord): boolean {
+  return (
+    record != null &&
+    typeof record === 'object' &&
+    record.handoff != null &&
+    typeof record.handoff === 'object' &&
+    record.command != null &&
+    typeof record.command.status === 'string' &&
+    typeof record.command.version === 'number' &&
+    Array.isArray(record.rounds) &&
+    Array.isArray(record.receipts)
+  );
+}
+
+function samePlan(record: ExecutionNodeRecord, taskId: string, planId: string, revision: number) {
+  return record.taskId === taskId && record.planId === planId && record.revision === revision;
+}
+
+function rejectionDetails(
+  code: string,
+  current: ExecutionNodeRecord,
+  request: { expectedVersion: number },
+): Record<string, unknown> {
+  if (code === 'not-assignee') return { canSubmitNode: false };
+  if (code === 'conflict') {
+    return { currentVersion: current.command.version, expectedVersion: request.expectedVersion };
+  }
+  return {};
+}
+
+/** Serializes durable execution commands. One user command writes one node record. */
+export class ExecutionService {
+  private writes: Promise<unknown> = Promise.resolve();
+  constructor(
+    private readonly storage: ExecutionStorage,
+    private readonly workbench: { readWorkbench(): Workbench },
+  ) {}
+
+  startPlan(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ disposition: string; reports: NodeExecutionReport[] }>> {
+    return this.enqueue(() => this.startPlanNow(caller, body));
+  }
+
+  /** Fill unlocks that were settled before their downstream write landed. */
+  reconcile(): Promise<ExecutionResult<{ unlocked: number }>> {
+    return this.enqueue(() => this.reconcileNow());
+  }
+
+  private enqueue<T>(work: () => Promise<ExecutionResult<T>>): Promise<ExecutionResult<T>> {
+    const operation = this.writes.then(work, work);
+    this.writes = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  private directory(): readonly string[] {
+    return directoryIds(this.workbench.readWorkbench());
+  }
+
+  private actorField(
+    body: unknown,
+  ): { readonly ok: false; readonly error: ExecutionFailure } | undefined {
+    const scan = scanActorField(body);
+    if (scan === 'too-deep') return fail('validation');
+    if (scan === 'present') return fail('actor-from-body');
+    return undefined;
+  }
+
+  private actor(
+    input: ExecutionCaller,
+    body: unknown,
+  ): ExecutionResult<{ readonly actorId: string; readonly spaceIds: readonly string[] }> {
+    const actorField = this.actorField(body);
+    if (actorField) return actorField;
+    const resolved = resolveActor(input.member, this.directory());
+    if (!resolved.ok) return fail(resolved.code);
+    return {
+      ok: true,
+      value: { actorId: resolved.actorId, spaceIds: resolved.spaceIds },
+    };
+  }
+
+  private spaceOf(taskId: string, spaceIds: readonly string[]): 'ok' | 'missing' | 'hidden' {
+    const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
+    if (!task) return 'missing';
+    return spaceIds.includes(task.projectId) ? 'ok' : 'hidden';
+  }
+
+  private async startPlanNow(caller: ExecutionCaller, body: unknown) {
+    const actor = this.actor(caller, body);
+    if (!actor.ok) return actor;
+    const parsed = parseBody(startSchema, body);
+    if (!parsed.ok) return parsed;
+    const { taskId, planId, revision, idempotencyKey } = parsed.value;
+    const space = this.spaceOf(taskId, actor.value.spaceIds);
+    if (space === 'hidden') return fail('not-found');
+    const membership = planMembership(this.workbench.readWorkbench(), taskId, actor.value.actorId);
+    if (membership === 'not-participant') return fail('not-participant');
+    const fingerprint = canonicalPayload({ taskId, planId, revision });
+    const key = planKey(taskId, planId, revision);
+    const reused = this.storage
+      .listPlans()
+      .find((item) => item.receipt.idempotencyKey === idempotencyKey && item.key !== key);
+    if (reused) return fail('idempotency-mismatch');
+    const prior = this.storage.readPlan(key);
+    if (prior?.fingerprint === fingerprint) {
+      return {
+        ok: true as const,
+        value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
+      };
+    }
+    let applied;
+    try {
+      applied = createExecutionHandoff(
+        { taskId, planId, revision },
+        this.workbench.readWorkbench(),
+      );
+    } catch (error) {
+      if (error instanceof WorkbenchError) return fail(error.code);
+      return fail('unavailable');
+    }
+    const started = startAppliedPlan({
+      requested: { taskId, planId, revision },
+      applied,
+      actorId: actor.value.actorId,
+      existing: this.storage
+        .listNodes()
+        .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision)),
+    });
+    if (!started.ok) return fail(started.code);
+    for (const record of started.records) {
+      const key = nodeRecordKey(record);
+      if (this.storage.readNode(key) === record) continue;
+      const stored = await this.persist(() => this.storage.writeNode(key, record));
+      if (!stored.ok) return stored;
+    }
+    for (const record of started.records) {
+      const latest = this.storage.readNode(nodeRecordKey(record));
+      if (!latest || latest.command.status !== 'completed') continue;
+      const unlocked = await this.unlockFrom(latest);
+      if (!unlocked.ok) return unlocked;
+    }
+    const receipt: PlanReceipt = {
+      idempotencyKey,
+      fingerprint,
+      nodeIds: started.records.map((record) => record.nodeId),
+    };
+    const stored = await this.persist(() => this.storage.writePlan(key, receipt));
+    if (!stored.ok) return stored;
+    return {
+      ok: true as const,
+      value: {
+        disposition: started.disposition,
+        reports: started.records.map(toNodeExecutionReport),
+      },
+    };
+  }
+
+  private async unlockFrom(completed: ExecutionNodeRecord): Promise<ExecutionResult<number>> {
+    const source = completionSource(completed);
+    if (!source || completed.ownerId === null) return { ok: true, value: 0 };
+    let unlocked = 0;
+    const peers = () =>
+      this.storage
+        .listNodes()
+        .filter(
+          (record) =>
+            intactNode(record) &&
+            samePlan(record, completed.taskId, completed.planId, completed.revision),
+        );
+    for (const downstream of downstreamRecords(peers(), completed.nodeId)) {
+      const latest = this.storage.readNode(nodeRecordKey(downstream)) ?? downstream;
+      const moved = unlockDownstream({
+        record: latest,
+        dependencies: peers(),
+        actorId: completed.ownerId,
+        idempotencyKey: unlockKey(source, downstream.nodeId),
+        expectedVersion: latest.command.version,
+      });
+      if (!moved.ok || moved.disposition !== 'applied') continue;
+      const stored = await this.persist(() =>
+        this.storage.writeNode(nodeRecordKey(moved.record), moved.record),
+      );
+      if (!stored.ok) return stored;
+      unlocked += 1;
+    }
+    return { ok: true, value: unlocked };
+  }
+
+  private async reconcileNow() {
+    let unlocked = 0;
+    for (const record of [...this.storage.listNodes()]) {
+      if (!intactNode(record) || record.command.status !== 'completed') continue;
+      try {
+        const result = await this.unlockFrom(record);
+        if (!result.ok) return result;
+        unlocked += result.value;
+      } catch {
+        continue;
+      }
+    }
+    return { ok: true as const, value: { unlocked } };
+  }
+
+  private reportsFor(taskId: string, planId: string, revision: number) {
+    return this.storage
+      .listNodes()
+      .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision))
+      .map(toNodeExecutionReport);
+  }
+
+  private async persist(write: () => Promise<void>): Promise<ExecutionResult<void>> {
+    try {
+      await write();
+      return { ok: true, value: undefined };
+    } catch {
+      return fail('unavailable');
+    }
+  }
+}

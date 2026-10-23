@@ -60,3 +60,11 @@ export {
   type MemberResolution,
   type MemberResolver,
 } from './execution-identity.js';
+
+export {
+  ExecutionService,
+  type ExecutionFailure,
+  type ExecutionResult as ExecutionCommandResult,
+  type ExecutionStorage,
+  type PlanReceipt,
+} from './execution-service.js';
