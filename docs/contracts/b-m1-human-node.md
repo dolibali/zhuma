@@ -122,7 +122,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。`untrusted-request` 保持原代码。`containsActorField` 拒绝正文里的 actor 字段
 - `ExecutionService` 串行写。一次用户命令写一条节点；`start-plan` 再另写计划回执。每条写入先核对空间和任务成员，再核对节点角色。从参与者里移除的评审人再投票得到 `not-participant`
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
-- `revision` 读取退回时的被评审版本、上一版和退回意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。目录不可用时先查目录，不论节点是否存在都返回同一份 `unavailable`。目录正常时，节点不存在和在别的空间返回同一份 `not-found`
+- `revision` 读取退回时的被评审版本、上一版和退回意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。目录不可用时先查目录，不论节点是否存在都返回同一份 `unavailable`。目录正常时，任务不存在、节点不存在和在别的空间返回同一份 `not-found`
 - 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名是版本序号，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
 
 未实现（后续切片）：

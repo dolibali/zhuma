@@ -318,3 +318,30 @@ test('revision returns the same not-found bytes for a missing node and another s
     details: {},
   });
 });
+
+test('revision returns the same not-found bytes when the task is missing or in another space', async () => {
+  const { state } = confirm();
+  const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+  const store = memory();
+  const node = record();
+  node.handoff.dependencyNodeIds = [];
+  await store.storage.writeNode(nodeRecordKey(node), node);
+  await store.storage.writePlan('task:plan:1', {
+    idempotencyKey: 'plan-key',
+    fingerprint: 'plan',
+    nodeIds: ['design'],
+  });
+  const service = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
+  const caller = session('chen', ['elsewhere']);
+  const ask = (taskId) =>
+    service.revision(caller, { taskId, planId: 'plan', revision: 1, nodeId: 'design' });
+  const hidden = await ask('task');
+  const missing = await ask('absent-task');
+  assert.equal(Buffer.compare(responseBytes(hidden), responseBytes(missing)), 0);
+  assert.deepEqual(hidden, {
+    ok: false,
+    error: { code: 'not-found', message: '找不到这个节点。', details: {} },
+  });
+  assert.equal(JSON.stringify(hidden).includes('错误码还没写'), false);
+  assert.equal(JSON.stringify(hidden).includes('absent-task'), false);
+});
