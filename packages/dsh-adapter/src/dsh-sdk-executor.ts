@@ -1550,116 +1550,96 @@ function redact(text: string, secret: string): string {
   return text.split(secret).join('[redacted]');
 }
 
-/** 失配表：secret[0..i] 的最长真前缀，同时也是它的后缀。 */
-function secretBorder(secret: string): number[] {
-  const border = new Array<number>(secret.length).fill(0);
-  let length = 0;
-  for (let index = 1; index < secret.length; index += 1) {
-    while (length > 0 && secret[index] !== secret[length]) length = border[length - 1] ?? 0;
-    if (secret[index] === secret[length]) {
-      length += 1;
-      border[index] = length;
+/**
+ * 从每个位置取和密钥开头连续相符的最长一段。
+ * 长度达到 4，或者已经等于整条密钥，这一段全部标上。连在一起的标结合成一段 [redacted]。
+ */
+function prefixMask(raw: string, secret: string): boolean[] {
+  const mask = new Array<boolean>(raw.length).fill(false);
+  const limit = secret.length;
+  for (let start = 0; start < raw.length; start += 1) {
+    if (raw[start] !== secret[0]) continue;
+    let matched = 0;
+    while (
+      matched < limit &&
+      start + matched < raw.length &&
+      raw[start + matched] === secret[matched]
+    ) {
+      matched += 1;
+    }
+    if (matched >= 4 || matched === limit) {
+      const end = start + matched;
+      for (let index = start; index < end; index += 1) mask[index] = true;
     }
   }
-  return border;
+  return mask;
 }
 
 /**
  * 完整密钥换成 [redacted]。
- * 还没写完的前缀先留着，下一块能接上就继续匹配。
- * 流中间一旦确认不是完整密钥，以及收尾时还剩下的前缀，长度达到 4 就替换。
- * 不足 4 的前缀原样留下。
- * 失配表会标出从失败前缀中间开始的完整密钥；遮盖或放出一段之前先让出这些起点。
- * 因此输出里不留下密钥中任何达到 4 位的片段。
+ * 任何一个位置上，和密钥开头连续相符的那段，只要确认不是更长的匹配、长度达到 4，就换成占位。
+ * 整条密钥即使短于 4 也换成占位。挨在一起的占位合成一段。
+ * 不足 4 且还不是整条密钥的前缀原样留下。
+ * 流中间还可能被后面的字符盖住的部分先留着，最多留密钥长度减 1 个字符，并保留同样长的已输出上下文。
+ * 因此整块写入和任意拆块写入的输出一致，输出里不留下达到 4 位的密钥前缀。
  */
 export class StderrRedactor {
   private pending = '';
-  private readonly border: readonly number[];
+  private carry = '';
+  /** 已经输出的占位还可能和后面新盖上的字符连成同一段。 */
+  private openRedaction = false;
 
-  constructor(private readonly secret: string) {
-    this.border = secretBorder(secret);
-  }
+  constructor(private readonly secret: string) {}
 
   push(chunk: string): string {
-    const raw = this.pending + chunk;
-    this.pending = '';
-    return this.scan(raw, false);
+    return this.consume(chunk, false);
   }
 
   flush(): string {
-    const raw = this.pending;
+    const out = this.consume('', true);
     this.pending = '';
-    return this.scan(raw, true);
+    this.carry = '';
+    this.openRedaction = false;
+    return out;
   }
 
-  private locate(raw: string): { starts: number[]; state: number } {
-    const starts: number[] = [];
+  private consume(chunk: string, ending: boolean): string {
     const secret = this.secret;
-    const border = this.border;
-    let state = 0;
-    for (let index = 0; index < raw.length; index += 1) {
-      while (state > 0 && raw[index] !== secret[state]) state = border[state - 1] ?? 0;
-      if (raw[index] === secret[state]) state += 1;
-      if (state === secret.length) {
-        starts.push(index - secret.length + 1);
-        state = border[state - 1] ?? 0;
-      }
+    const raw = this.carry + this.pending + chunk;
+    if (secret.length === 0) {
+      this.pending = '';
+      this.carry = '';
+      return raw;
     }
-    return { starts, state };
-  }
-
-  private scan(raw: string, ending: boolean): string {
-    if (this.secret.length === 0 || raw.length === 0) return raw;
-    const secret = this.secret;
-    const { starts, state } = this.locate(raw);
-    const hold = ending ? 0 : state;
-    const limit = raw.length - hold;
+    if (raw.length === 0) return '';
+    const mask = prefixMask(raw, secret);
+    const emitStart = this.carry.length;
+    const retain = secret.length - 1;
+    const cut = ending ? raw.length : Math.max(emitStart, raw.length - retain);
     let out = '';
-    let index = 0;
-    const inside = (at: number) => starts.some((start) => at > start && at < start + secret.length);
-    while (index < limit) {
-      if (starts.includes(index)) {
-        out += '[redacted]';
-        index = Math.min(index + secret.length, limit);
+    let index = emitStart;
+    while (index < cut) {
+      if (mask[index] === true) {
+        if (!this.openRedaction) out += '[redacted]';
+        while (index < cut && mask[index] === true) index += 1;
+        const reachesCut = index === cut;
+        const nextMasked = reachesCut && cut < raw.length && mask[cut] === true;
+        const bufferEndedOpen = reachesCut && cut === raw.length && !ending;
+        this.openRedaction = nextMasked || bufferEndedOpen;
         continue;
       }
-      if (inside(index)) {
-        index += 1;
-        continue;
-      }
-      let matched = 0;
-      const max = Math.min(secret.length, raw.length - index);
-      while (matched < max && raw[index + matched] === secret[matched]) matched += 1;
-      const inner = starts.find((start) => start > index && start < index + matched);
-      if (inner !== undefined) {
-        if (inner >= limit) {
-          this.pending = raw.slice(index);
-          return out;
-        }
-        if (inner - index >= 4) out += '[redacted]';
-        else out += raw.slice(index, inner);
-        index = inner;
-        continue;
-      }
-      if (matched === secret.length) {
-        out += '[redacted]';
-        index = Math.min(index + matched, limit);
-        continue;
-      }
-      if (index + matched > limit) {
-        this.pending = raw.slice(index);
-        return out;
-      }
-      if (matched >= 4) {
-        out += '[redacted]';
-        index += matched;
-        continue;
-      }
-      const step = matched === 0 ? 1 : matched;
-      out += raw.slice(index, index + step);
-      index += step;
+      out += raw[index] ?? '';
+      this.openRedaction = false;
+      index += 1;
     }
-    this.pending = raw.slice(limit);
+    if (ending) {
+      this.pending = '';
+      this.carry = '';
+    } else {
+      this.pending = raw.slice(cut);
+      const carryStart = Math.max(0, cut - retain);
+      this.carry = raw.slice(carryStart, cut);
+    }
     return out;
   }
 }

@@ -746,7 +746,7 @@ test('契约：密钥跨数据块时不会进入失败消息或收集的标准�
   assert.equal(repeated.events.at(-1).type, 'failed');
   assert.equal(
     repeated.events.at(-1).message,
-    '执行器启动失败。\nhead [redacted][redacted] gap [redacted] tail',
+    '执行器启动失败。\nhead [redacted] gap [redacted] tail',
   );
   assert.equal(JSON.stringify(repeated.events).includes(secret), false);
 
@@ -1373,7 +1373,7 @@ test('契约：达到 4 位的重叠前缀不会把密钥后半段放出来', ()
       repeated.slice(0, 4),
       `${repeated.slice(4)} y\n`,
     ]),
-    'x [redacted][redacted] y\n',
+    'x [redacted] y\n',
   );
   const head = 'abcabc';
   const tail = 'z0123456789abcdef0123456789abcdefX';
@@ -1382,7 +1382,8 @@ test('契约：达到 4 位的重叠前缀不会把密钥后半段放出来', ()
   const folded = `${head}${tail}`;
   const foldedOut = assertRedactedChunks(folded, [`${folded.slice(0, 3)}${folded} end\n`]);
   assert.equal(foldedOut.includes(tail), false);
-  assert.equal(foldedOut, 'abc[redacted] end\n');
+  // 前面 3 位自己也是达到 4 位的前缀的一部分，和后面的完整密钥连成同一段。
+  assert.equal(foldedOut, '[redacted] end\n');
 });
 
 async function assertOverlapHidden(mode, secret) {
@@ -1442,6 +1443,154 @@ test('契约：abc 重复前缀的重叠不会进入 HTTP 响应或会话文件'
   const secret = 'abcabcz0123456789abcdef0123456789abcdefX';
   await assertOverlapHidden('stderr-overlap:lead:3', secret);
 });
+
+/** 朴素参考：每个位置取最长密钥前缀，达到 4 位或等于整条密钥就遮住，相邻遮盖合成一段。 */
+function referenceRedaction(raw, secret) {
+  if (secret.length === 0) return raw;
+  const mask = new Array(raw.length).fill(false);
+  for (let start = 0; start < raw.length; start += 1) {
+    let matched = 0;
+    while (
+      matched < secret.length &&
+      start + matched < raw.length &&
+      raw[start + matched] === secret[matched]
+    ) {
+      matched += 1;
+    }
+    if (matched >= 4 || matched === secret.length) {
+      for (let index = start; index < start + matched; index += 1) mask[index] = true;
+    }
+  }
+  let out = '';
+  for (let index = 0; index < raw.length; index += 1) {
+    if (mask[index]) {
+      if (index === 0 || !mask[index - 1]) out += '[redacted]';
+    } else out += raw[index];
+  }
+  return out;
+}
+
+function assertNoKeyPrefix(text, secret, label) {
+  if (secret.length < 4) return;
+  const cleared = text.split('[redacted]').join('\u0000');
+  assert.equal(cleared.includes(secret.slice(0, 4)), false, `${label} 留下密钥前缀`);
+}
+
+function chunkings(text) {
+  const ways = [[text], [...text]];
+  if (text.length > 5) ways.push([text.slice(0, 5), text.slice(5)]);
+  return ways;
+}
+
+function assertMatchesReference(secret, text) {
+  const expected = referenceRedaction(text, secret);
+  for (const chunks of chunkings(text)) {
+    const out = redactChunks(secret, chunks);
+    assert.equal(out, expected, `拆成 ${chunks.length} 段`);
+    assertNoKeyPrefix(out, secret, 'stderr');
+  }
+  return expected;
+}
+
+test('契约：重叠起点上不完整的长前缀在整块、逐字符和第 5 个字符切开时输出一致', () => {
+  const secret = 'aab-synthetic-marker-0123456789';
+  assert.equal(
+    assertMatchesReference(secret, `${secret.slice(0, 1)}${secret.slice(0, 22)}c\n`),
+    'a[redacted]c\n',
+  );
+  assert.equal(
+    assertMatchesReference(secret, `${secret.slice(0, 1)}${secret.slice(0, 30)}\n`),
+    'a[redacted]\n',
+  );
+  assert.equal(
+    assertMatchesReference(secret, `${secret.slice(0, 1)}${secret.slice(0, 7)}`),
+    'a[redacted]',
+  );
+  assert.equal(assertMatchesReference(secret, `${secret.slice(0, 22)}c\n`), '[redacted]c\n');
+  assertMatchesReference(secret, `x ${secret.slice(0, 1)}${secret.slice(0, 12)}zz more\n`);
+  assertMatchesReference(secret, `x ${secret.slice(0, 1)}${secret.slice(0, 12)}`);
+  const repeated = 'qrsqrsqrt-synthetic-marker-0123456789';
+  assertMatchesReference(repeated, `x ${repeated.slice(0, 3)}${repeated.slice(0, 20)}zz\n`);
+  const keyed = 'qrstuvwxyzqabcdefghijabcdefghijabcdefghi';
+  assert.equal(keyed.length, 40);
+  assert.equal(keyed[10], keyed[0]);
+  assert.equal(keyed.slice(1, 10).includes(keyed[0]), false);
+  assert.equal(keyed.slice(11).includes(keyed[0]), false);
+  assertMatchesReference(keyed, `x ${keyed.slice(0, 11)}${keyed.slice(1, 25)}zz\n`);
+});
+
+test('契约：完整密钥内部的字符不会在重叠的下一次匹配里漏出来', () => {
+  const secret = 'abcdabcd';
+  const text = `${secret}abcd`;
+  assert.equal(assertMatchesReference(secret, text), '[redacted]');
+  assert.equal(redactChunks(secret, [secret.slice(0, 6), text.slice(6)]), '[redacted]');
+});
+
+test('契约：固定种子的随机拆块和朴素参考输出一致', () => {
+  let seed = 20261023;
+  const rnd = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const ri = (n) => Math.floor(rnd() * n);
+  const forms = [
+    'aab-synthetic-marker-0123456789',
+    'qrsqrsqrt-synthetic-marker-0123456789',
+    'aaaaaaabfghijkfghijk',
+    'abaababaabxyzxyz',
+    'abcabcabdzzzzzzzzzzzzzzzzzzz',
+    '密钥密钥密x甲乙丙丁戊',
+    'abcdabcd',
+  ];
+  for (const secret of forms) {
+    for (let index = 0; index < 80; index += 1) {
+      const parts = [];
+      const count = 1 + ri(6);
+      for (let part = 0; part < count; part += 1) {
+        const kind = ri(6);
+        if (kind === 0) parts.push(secret);
+        else if (kind === 1) parts.push(secret.slice(0, 1 + ri(secret.length)));
+        else if (kind === 2)
+          parts.push(
+            secret.slice(0, 1 + ri(Math.min(3, secret.length))) +
+              secret.slice(0, 1 + ri(secret.length)),
+          );
+        else if (kind === 3) parts.push(secret.slice(0, Math.max(0, secret.length - 1)));
+        else parts.push(' #=:'.slice(ri(4), ri(4) + 1));
+      }
+      const text = parts.join('');
+      const expected = referenceRedaction(text, secret);
+      const chunks = [];
+      let cursor = 0;
+      while (cursor < text.length) {
+        const step = 1 + ri(5);
+        chunks.push(text.slice(cursor, cursor + step));
+        cursor += step;
+      }
+      const out = redactChunks(secret, chunks.length > 0 ? chunks : ['']);
+      assert.equal(out, expected);
+      assertNoKeyPrefix(out, secret, secret.slice(0, 4));
+    }
+  }
+});
+
+for (const [kind, how] of [
+  ['0c', ''],
+  ['0c', 'bytes'],
+  ['0c', 'split5'],
+  ['almost', ''],
+  ['almost', 'bytes'],
+  ['almost', 'split5'],
+  ['end', ''],
+  ['end', 'bytes'],
+  ['end', 'split5'],
+]) {
+  const mode =
+    how.length === 0 ? `stderr-overlap:review:${kind}` : `stderr-overlap:review:${kind}:${how}`;
+  test(`契约：重叠长前缀 ${kind} ${how || 'same'} 不会进入 HTTP 响应或会话文件`, async () => {
+    await assertOverlapHidden(mode, 'aab-synthetic-marker-0123456789');
+  });
+}
 
 test('契约：封口超时时跨在缓冲边界上的密钥不会漏出', async () => {
   const pidFile = grandchildPidFile();

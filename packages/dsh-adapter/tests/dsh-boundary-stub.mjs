@@ -130,6 +130,22 @@ if (mode.startsWith('stderr-boot-split:')) {
   await writeStderrChunks([`preface-${secret.slice(0, at)}`, `${secret.slice(at)}-tail`]);
   process.exit(1);
 }
+if (mode.startsWith('stderr-overlap:review:')) {
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  const spec = mode.slice('stderr-overlap:review:'.length);
+  const split = spec.indexOf(':');
+  const kind = split < 0 ? spec : spec.slice(0, split);
+  const how = split < 0 ? '' : spec.slice(split + 1);
+  let text = '';
+  if (kind === '0c') text = `${secret.slice(0, 1)}${secret.slice(0, 22)}c\n`;
+  else if (kind === 'almost')
+    text = `${secret.slice(0, 1)}${secret.slice(0, Math.max(0, secret.length - 1))}\n`;
+  else text = `${secret.slice(0, 1)}${secret.slice(0, 7)}`;
+  if (how === 'bytes') await writeStderrChunks([...text]);
+  else if (how === 'split5') await writeStderrChunks([text.slice(0, 5), text.slice(5)]);
+  else writeSync(2, text);
+  process.exit(1);
+}
 if (mode.startsWith('stderr-overlap:')) {
   const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
   const spec = mode.slice('stderr-overlap:'.length);
