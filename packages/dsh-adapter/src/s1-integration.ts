@@ -59,14 +59,16 @@ export type ExecutionInject = readonly ['connection', 'storageDomain'];
 /** A wraps `WorkbenchService.snapshot()` and passes that closure here. */
 export interface ExecutionApplyOptions {
   readWorkbench(): Workbench;
-  readonly projectSpaces: ProjectSpaceDirectory;
+  /** Omission rejects every project. The official catalog comes from A's Host/space module. */
+  readonly projectSpaces?: ProjectSpaceDirectory;
 }
 export type ApplyExecution = (ctx: Context, options: ExecutionApplyOptions) => Promise<void>;
 /** Host object passed to `applyExecution`. The plugin reads `readWorkbench` and calls `resolveMember`. */
 export interface S1ExecutionOptions {
   readonly memberResolver: MemberResolver;
   readWorkbench(): Workbench;
-  readonly projectSpaces: ProjectSpaceDirectory;
+  /** Omission rejects every project. The official catalog comes from A's Host/space module. */
+  readonly projectSpaces?: ProjectSpaceDirectory;
 }
 export interface ApplyWorkbench {
   (ctx: Context): Promise<void>;

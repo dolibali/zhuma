@@ -29,7 +29,7 @@ mount({ api: createExecutionApi(rpc) });
 
 `readWorkbench` 的类型是 `() => Workbench`。A 在宿主闭包里保住 `WorkbenchService`，传入 `() => service.snapshot()`。`snapshot()` 返回已存储工作台的结构化克隆。`workbench-plugin.ts` 仍把服务留在自己的 `apply` 里，这份清单只声明这个函数类型。
 
-插件参数 `ExecutionApplyOptions` 是 `readWorkbench` 和 `projectSpaces`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。`projectSpaces.spaceForProject(projectId)` 返回该项目所属空间，或 `unknown` / `unavailable`。执行服务不把 `projectId` 当作空间 id。单人还是多人在当前合并的 `f0eac0f` 上由 `identityAccessMode` 决定。`'unmounted'` 表示解析器还没装上，这时不调用 `applyExecution`。`bb3f847` 改为先看 `deploymentMode`。
+插件参数 `ExecutionApplyOptions` 是 `readWorkbench`，以及可选的 `projectSpaces`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。`projectSpaces` 的正式内容由 A 的 Host／空间模块注入。省略它时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。单人还是多人在当前合并的 `f0eac0f` 上由 `identityAccessMode` 决定。`'unmounted'` 表示解析器还没装上，这时不调用 `applyExecution`。`bb3f847` 改为先看 `deploymentMode`。
 
 执行插件的 `inject` 是 `['connection', 'storageDomain']`。宿主把身份的 `connection`、`storageDomain`、`credentials`、`webServer`、`remoteAccess` 和工作台的 `llm`、`agentDefaultModel` 放在同一个插件上时，执行只用前两项。
 

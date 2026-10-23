@@ -71,8 +71,11 @@ export const inject = ['connection', 'storageDomain'] as const;
 /** Reads the workbench A already opened. The member comes from `resolveMember`. */
 export interface ExecutionPluginConfig {
   readWorkbench(): Workbench;
-  /** Explicit project-to-space catalog. A project id is not treated as a space id. */
-  readonly projectSpaces: ProjectSpaceDirectory;
+  /**
+   * Injected by A's Host/space module. Omission rejects every project.
+   * This plugin does not store the mapping or treat a project id as a space id.
+   */
+  readonly projectSpaces?: ProjectSpaceDirectory;
 }
 
 function fetchHeaders(request: Request): IncomingHttpHeaders {
@@ -130,9 +133,8 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   if (typeof config?.readWorkbench !== 'function') {
     throw new WorkbenchError('unavailable', '执行插件需要读取已打开的工作台。');
   }
-  if (typeof config.projectSpaces?.spaceForProject !== 'function') {
-    throw new WorkbenchError('unavailable', '执行插件需要项目所属空间的归属目录。');
-  }
+  const projectSpaces =
+    typeof config.projectSpaces?.spaceForProject === 'function' ? config.projectSpaces : undefined;
   const domain = await ctx.storageDomain.open(domainSpec);
   ctx.effect(() => () => domain.close());
   const lifetime = new AbortController();
@@ -151,7 +153,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   const service = new ExecutionService(
     storage,
     { readWorkbench: () => config.readWorkbench() },
-    config.projectSpaces,
+    projectSpaces,
   );
   const reconciled = await service.reconcile();
   if (!reconciled.ok) throw new WorkbenchError(reconciled.error.code, reconciled.error.message);

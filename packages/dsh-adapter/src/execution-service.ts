@@ -308,7 +308,7 @@ export class ExecutionService {
   constructor(
     private readonly storage: ExecutionStorage,
     private readonly workbench: { readWorkbench(): Workbench },
-    private readonly projectSpaces: ProjectSpaceDirectory,
+    private readonly projectSpaces: ProjectSpaceDirectory | undefined,
   ) {}
 
   startPlan(
@@ -329,6 +329,7 @@ export class ExecutionService {
       if (!actor.ok) return actor;
       const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
+      if (!this.projectSpaceDirectory()) return fail('not-found');
       const records: ExecutionNodeRecord[] = [];
       for (const record of this.storage.listNodes()) {
         if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
@@ -501,9 +502,16 @@ export class ExecutionService {
     };
   }
 
+  /** Absent or unusable injection. Callers do not fall back to the project id. */
+  private projectSpaceDirectory(): ProjectSpaceDirectory | undefined {
+    const directory = this.projectSpaces;
+    if (typeof directory?.spaceForProject !== 'function') return undefined;
+    return directory;
+  }
+
   /**
-   * Ask the project-space directory which space owns this task's project.
-   * Unknown and mismatch are not-found. A failed lookup is unavailable. The project id is not a space id.
+   * Ask the injected directory which space owns this task's project.
+   * No directory, an unknown project, or a mismatch is not-found. A failed lookup is unavailable.
    */
   private async gateSpace(
     taskId: string,
@@ -511,9 +519,11 @@ export class ExecutionService {
   ): Promise<'missing' | ExecutionResult<void>> {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
     if (!task) return 'missing';
+    const directory = this.projectSpaceDirectory();
+    if (!directory) return fail('not-found');
     let lookup: ProjectSpaceLookup;
     try {
-      lookup = await this.projectSpaces.spaceForProject(task.projectId);
+      lookup = await directory.spaceForProject(task.projectId);
     } catch {
       return fail('unavailable');
     }

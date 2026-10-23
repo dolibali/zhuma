@@ -1016,3 +1016,39 @@ test('a failed project-space lookup is refused and does not write', async () => 
   assert.equal(report.error.code, 'unavailable');
   assert.equal(JSON.stringify(report).includes('设计登录流程'), false);
 });
+
+test('a missing project-space directory refuses start, submit, inbox, and report', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const store = memory();
+  const service = new ExecutionService(store.storage, { readWorkbench: () => state }, undefined);
+  const member = session('chen', ['project']);
+  const started = await service.startPlan(member, {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-uninjected',
+  });
+  assert.equal(started.ok, false);
+  assert.equal(started.error.code, 'not-found');
+  assert.equal(JSON.stringify(started).includes('设计登录流程'), false);
+  const submitted = await service.submit(member, {
+    ...locate(applied, 'design', 1, 'submit-uninjected'),
+    text: '未注入目录的交付',
+  });
+  assert.equal(submitted.ok, false);
+  assert.equal(submitted.error.code, 'not-found');
+  assert.equal(JSON.stringify(submitted).includes('未注入目录的交付'), false);
+  const inbox = await service.inbox(member, {});
+  assert.equal(inbox.ok, false);
+  assert.equal(inbox.error.code, 'not-found');
+  const report = await service.report(member, {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(report.ok, false);
+  assert.equal(report.error.code, 'not-found');
+  assert.equal(JSON.stringify(report).includes('设计登录流程'), false);
+  assert.equal(store.planCount(), 0);
+  assert.equal(store.node('design'), undefined);
+});
