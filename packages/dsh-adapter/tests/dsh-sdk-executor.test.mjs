@@ -1313,6 +1313,133 @@ async function driveWithBlockedRemove(env, sessionId, blocked) {
   return JSON.parse(stdout);
 }
 
+async function driveFreshHomeFault(env) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-home-fault-'));
+  const preload = path.join(dir, 'preload.mjs');
+  const script = path.join(dir, 'drive.mjs');
+  writeFileSync(
+    preload,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      'const original = fs.writeFileSync;',
+      'fs.writeFileSync = (target, data, options) => {',
+      '  const text = String(target);',
+      '  if (text.endsWith(path.sep + "zhuma-grant.json")) {',
+      "    const error = new Error(`EACCES: permission denied, open '${text}'`);",
+      "    error.code = 'EACCES';",
+      '    throw error;',
+      '  }',
+      '  return original(target, data, options);',
+      '};',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(
+    script,
+    [
+      "const { readdirSync, readFileSync, existsSync } = await import('node:fs');",
+      "const path = await import('node:path');",
+      'const { DshChatExecutor } = await import(process.env.ZHUMA_ADAPTER);',
+      'const pids = [];',
+      'const engine = new DshChatExecutor(',
+      '  {',
+      '    ZHUMA_MODEL_BASE_URL: process.env.ZHUMA_MODEL_BASE_URL,',
+      '    ZHUMA_MODEL_API_KEY: process.env.ZHUMA_MODEL_API_KEY,',
+      '    ZHUMA_DATA_DIR: process.env.ZHUMA_DATA_DIR,',
+      '    PATH: process.env.PATH,',
+      '    HOME: process.env.HOME,',
+      '    TMPDIR: process.env.TMPDIR,',
+      '  },',
+      '  {',
+      '    bin: process.env.ZHUMA_STUB,',
+      "    mode: 'ok',",
+      '    initTimeoutMs: 10000,',
+      '    onSpawn: (pid) => pids.push(pid),',
+      '  },',
+      ');',
+      'const events = [];',
+      'for await (const event of engine.run({',
+      "  runId: 'fresh-home-cleanup',",
+      '  attempt: 1,',
+      '  generation: 1,',
+      "  taskId: 'task',",
+      "  nodeId: 'node',",
+      "  workflowVersionId: 'plan',",
+      '  planRevision: 1,',
+      '  contextReferences: [],',
+      "  expertVersionId: 'expert-v1',",
+      '  resourceGrants: [],',
+      "  instruction: '整理字段',",
+      '  attachmentIds: [],',
+      "  goal: '确认字段',",
+      '  simulatedRequested: false,',
+      '  signal: new AbortController().signal,',
+      '})) {',
+      '  events.push({ type: event.type, fault: event.fault, message: event.message });',
+      '}',
+      'const root = path.join(process.env.ZHUMA_DATA_DIR, "dsh-sessions");',
+      'const homes = existsSync(root)',
+      '  ? readdirSync(root).filter((name) => name.startsWith("dsh-"))',
+      '  : [];',
+      'let sessions = {};',
+      'try {',
+      '  sessions = JSON.parse(readFileSync(path.join(root, "index.json"), "utf8")).sessions ?? {};',
+      '} catch {}',
+      'process.stdout.write(JSON.stringify({ spawned: pids.length, events, homes, sessions }));',
+      '',
+    ].join('\n'),
+  );
+  const child = spawn(process.execPath, ['--import', preload, script], {
+    env: {
+      ...process.env,
+      ZHUMA_MODEL_BASE_URL: env.ZHUMA_MODEL_BASE_URL,
+      ZHUMA_MODEL_API_KEY: env.ZHUMA_MODEL_API_KEY,
+      ZHUMA_DATA_DIR: env.ZHUMA_DATA_DIR,
+      ZHUMA_STUB: stub,
+      ZHUMA_ADAPTER: pathToFileURL(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
+      ).href,
+    },
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  const [code] = await once(child, 'exit');
+  clearTimeout(timer);
+  rmSync(dir, { recursive: true, force: true });
+  if (code !== 0) throw new Error(`新建会话清理注入进程退出 ${code}\n${stderr}\n${stdout}`);
+  return JSON.parse(stdout);
+}
+
+test('契约：新建会话还没写好家目录就失败时，目录和索引记录都清掉', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env);
+    assert.equal(failed.spawned, 0);
+    assert.equal(failed.events.length, 1);
+    assert.equal(failed.events[0].type, 'failed');
+    assert.equal(failed.events[0].fault, 'executor-disconnected');
+    assert.match(failed.events[0].message, /^执行器启动失败。/);
+    assert.match(failed.events[0].message, /EACCES/);
+    assert.equal(failed.events[0].message.includes(env.ZHUMA_DATA_DIR), false);
+    assert.deepEqual(failed.homes, []);
+    assert.deepEqual(failed.sessions, {});
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
 test('契约：同一会话撤掉的技能不会在下一轮被扫描', async () => {
   const { engine, pids, env } = executor('ok', {
     initTimeoutMs: 10_000,

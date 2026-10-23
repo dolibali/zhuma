@@ -366,8 +366,8 @@ export class DshChatExecutor implements AgentExecutor {
     }
     const config = this.configResult.config;
     const sessionId = sanitizeId(request.resumeSessionId ?? this.allocateSessionId());
-    let home: string;
-    let created: boolean;
+    let home = '';
+    let created = false;
     try {
       const located = this.locate(sessionId);
       home = located.home;
@@ -388,6 +388,7 @@ export class DshChatExecutor implements AgentExecutor {
       const pending = this.earlyReceipt.get(request.runId);
       this.earlyReceipt.delete(request.runId);
       pending?.({ receipt: 'rejected', reason: '运行已经结束。' });
+      if (created) this.discardCreatedHome(home, sessionId);
       yield {
         type: 'failed',
         fault: 'executor-disconnected',
@@ -573,6 +574,20 @@ export class DshChatExecutor implements AgentExecutor {
     if (index.sessions[sanitizeId(sessionId)] === undefined) return;
     delete index.sessions[sanitizeId(sessionId)];
     writeIndex(this.sessionsRoot, index);
+  }
+
+  /** 新建会话还没启动就失败时，目录和索引记录一起清掉。已有会话不动。 */
+  private discardCreatedHome(home: string, sessionId: string): void {
+    try {
+      if (home.length > 0 && existsSync(home)) rmSync(home, { recursive: true, force: true });
+    } catch {
+      // 清目录失败不能盖住原来的启动错误。
+    }
+    try {
+      this.forget(sessionId);
+    } catch {
+      // 清索引失败不能盖住原来的启动错误。
+    }
   }
 }
 
