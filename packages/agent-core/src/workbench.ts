@@ -1,5 +1,13 @@
 import { z } from 'zod';
 import { validatePlan } from './plan.js';
+import {
+  ResourceOriginSchema,
+  ImportPackageInputSchema,
+  previewResourcePackage,
+  packageFileBytes,
+  AssetImportError,
+  type ImportPackageInput,
+} from './asset-package.js';
 
 const id = z
   .string()
@@ -10,15 +18,27 @@ const title = z.string().trim().min(1).max(160);
 const description = z.string().max(8000);
 const ids = z.array(id).max(100);
 
-export const ParticipantSchema = z.strictObject({
-  id,
-  name: title,
-  kind: z.enum(['human', 'expert']),
-  role: z.string().max(300),
-  capabilities: z.array(z.string().trim().min(1).max(80)).max(30),
-  instructions: description,
-  available: z.boolean(),
-});
+export const ParticipantSchema = z
+  .strictObject({
+    id,
+    name: title,
+    kind: z.enum(['human', 'expert']),
+    role: z.string().max(300),
+    capabilities: z.array(z.string().trim().min(1).max(80)).max(30),
+    instructions: z.string().max(32000),
+    available: z.boolean(),
+    origin: ResourceOriginSchema.optional(),
+    resourceBindings: z.strictObject({ skillIds: ids, mcpIds: ids }).optional(),
+  })
+  .refine(
+    (p) =>
+      p.kind === 'expert' || (!p.origin && !p.resourceBindings && p.instructions.length <= 8000),
+    '真人成员不能携带专家来源／能力，说明最多 8000 字符。',
+  )
+  .refine(
+    (p) => !p.available || !p.origin?.missing.length,
+    '来源仍有缺项，需重新导入补齐后才能启用。',
+  );
 export const AssetSchema = z
   .strictObject({
     id,
@@ -27,11 +47,23 @@ export const AssetSchema = z
     description,
     content: z.string().max(150000),
     available: z.boolean(),
+    origin: ResourceOriginSchema.optional(),
   })
-  .refine((a) => a.kind === 'template' || a.content.length <= 8000, {
+  .refine((a) => a.kind === 'template' || a.content.length <= (a.kind === 'skill' ? 60000 : 8000), {
     path: ['content'],
-    message: 'Skill 和 MCP 正文最多 8000 字符。',
-  });
+    message: 'Skill 正文最多 60000 字符，MCP 正文最多 8000 字符。',
+  })
+  .refine(
+    (a) => !a.available || !a.origin?.missing.length,
+    '来源仍有缺项，需重新导入补齐后才能启用。',
+  )
+  .refine(
+    (a) =>
+      !a.origin ||
+      (a.kind === 'skill' && a.origin.format === 'agent-skill') ||
+      (a.kind === 'template' && a.origin.format === 'workflow'),
+    '定义类型与来源格式不一致。',
+  );
 export const ProjectSchema = z.strictObject({ id, name: title, description });
 export const WorkNodeSchema = z.strictObject({
   id,
@@ -155,6 +187,7 @@ export const CommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('save-participant'), participant: ParticipantSchema }),
   z.strictObject({ type: z.literal('save-asset'), asset: AssetSchema }),
   z.strictObject({ type: z.literal('save-task'), task: WorkTaskSchema }),
+  z.strictObject({ type: z.literal('import-package'), input: ImportPackageInputSchema }),
   z.strictObject({
     type: z.literal('instantiate-template'),
     input: z.strictObject({
@@ -582,6 +615,131 @@ export function templateBindingGaps(task: WorkTask) {
   };
 }
 
+/** Same domain command and revision; package bytes are stored separately by the Host. */
+export function applyResourceImport(state: Workbench, input: ImportPackageInput): Workbench {
+  const preview = previewResourcePackage(input.files, parseWorkflowTemplate);
+  const next = structuredClone(state);
+  const chosen = new Map(input.choices.map((c) => [c.key, c]));
+  if (
+    chosen.size !== input.choices.length ||
+    new Set(input.choices.map((c) => c.id)).size !== input.choices.length
+  )
+    throw new WorkbenchError('asset-import', '不能重复选择定义或目标标识。');
+  for (const choice of input.choices) {
+    const item = preview.items.find((i) => i.key === choice.key);
+    if (!item) throw new WorkbenchError('asset-import', '选择的定义不属于当前资产包。');
+    const all = [...next.assets, ...next.participants];
+    const existing = all.find((r) => r.id === choice.id);
+    const sameKind =
+      item.kind === 'expert'
+        ? next.participants.some((p) => p.id === choice.id && p.kind === 'expert')
+        : next.assets.some((a) => a.id === choice.id && a.kind === item.kind);
+    if ((choice.replace && (!existing || !sameKind)) || (!choice.replace && existing))
+      throw new WorkbenchError('asset-import', '新建标识已存在，或更新目标的类型不匹配。');
+    const catalog =
+      item.kind === 'expert'
+        ? next.participants.filter((p) => p.kind === 'expert')
+        : next.assets.filter((a) => a.kind === item.kind);
+    if (
+      catalog.some(
+        (r) =>
+          r.id !== choice.id &&
+          r.name.normalize('NFC').toLowerCase() === choice.name.normalize('NFC').toLowerCase(),
+      )
+    )
+      throw new WorkbenchError(
+        'asset-import',
+        `「${choice.name}」已存在，请改名或明确更新已有定义。`,
+      );
+    const skillIds = item.skillKeys.flatMap((key) =>
+      chosen.has(key) ? [chosen.get(key)!.id] : [],
+    );
+    const missingPaths = [
+      ...item.missing,
+      ...item.skillKeys.filter((key) => {
+        const choice = chosen.get(key);
+        const skill = preview.items.find((i) => i.key === key);
+        return !choice?.available || !!skill?.missing.length;
+      }),
+    ];
+    const missing = missingPaths.length > 0 || skillIds.length !== item.skillKeys.length;
+    const origin = ResourceOriginSchema.parse({
+      versionId: input.versionId,
+      format: item.format,
+      entryPath: item.key,
+      filePaths: item.filePaths,
+      totalBytes: preview.files
+        .filter((f) => item.filePaths.includes(f.path))
+        .reduce((sum, f) => sum + packageFileBytes(f), 0),
+      missing: [...new Set(missingPaths)],
+      ...(item.sourceVersion ? { sourceVersion: item.sourceVersion } : {}),
+      ...(item.sourceId ? { sourceId: item.sourceId } : {}),
+    });
+    if (item.kind === 'expert') {
+      const previous = state.participants.find((p) => p.id === choice.id && p.kind === 'expert');
+      const expert = ParticipantSchema.parse({
+        id: choice.id,
+        name: choice.name,
+        kind: 'expert',
+        role: choice.role,
+        capabilities: choice.capabilities,
+        instructions: item.content,
+        available: choice.available && !missing,
+        origin,
+        resourceBindings: {
+          skillIds: item.skillKeys.length ? skillIds : (previous?.resourceBindings?.skillIds ?? []),
+          mcpIds: previous?.resourceBindings?.mcpIds ?? [],
+        },
+      });
+      next.participants = [...next.participants.filter((p) => p.id !== expert.id), expert];
+    } else {
+      const asset = AssetSchema.parse({
+        id: choice.id,
+        name: choice.name,
+        kind: item.kind,
+        description: choice.description,
+        content: item.content,
+        available: choice.available && !missing,
+        origin,
+      });
+      next.assets = [...next.assets.filter((a) => a.id !== asset.id), asset];
+    }
+  }
+  return next;
+}
+
+function keepImportedBody(
+  previous: { origin?: unknown; content?: string; instructions?: string } | undefined,
+  next: { origin?: unknown; content?: string; instructions?: string },
+) {
+  if (
+    JSON.stringify(previous?.origin ?? null) !== JSON.stringify(next.origin ?? null) ||
+    (previous?.origin &&
+      (previous.content !== next.content || previous.instructions !== next.instructions))
+  )
+    throw new WorkbenchError(
+      'asset-source',
+      '包文件和来源版本需通过重新导入更新；名称、用途和可用性可直接编辑。',
+    );
+}
+
+function validateDefaultResources(participant: Participant, state: Workbench) {
+  if (!participant.resourceBindings) return;
+  for (const [refs, kind] of [
+    [participant.resourceBindings.skillIds, 'skill'],
+    [participant.resourceBindings.mcpIds, 'mcp'],
+  ] as const) {
+    if (
+      new Set(refs).size !== refs.length ||
+      refs.some((id) => !state.assets.some((a) => a.id === id && a.kind === kind))
+    )
+      throw new WorkbenchError(
+        'asset-binding',
+        '专家默认能力不存在、类型不匹配或重复，请重新选择。',
+      );
+  }
+}
+
 /** Pure command application. Caller serializes writes and commits revision + receipt atomically. */
 export function applyWorkbenchCommand(state: Workbench, command: WorkbenchCommand): Workbench {
   const next = structuredClone(state);
@@ -594,11 +752,37 @@ export function applyWorkbenchCommand(state: Workbench, command: WorkbenchComman
       next.projects = upsert(next.projects, command.project);
       break;
     case 'save-participant':
+      keepImportedBody(
+        state.participants.find((p) => p.id === command.participant.id),
+        command.participant,
+      );
+      if (
+        command.participant.kind === 'human' &&
+        (command.participant.origin || command.participant.resourceBindings)
+      )
+        throw new WorkbenchError('asset-source', '真人成员不能携带专家包或默认能力。');
+      validateDefaultResources(command.participant, state);
       next.participants = upsert(next.participants, command.participant);
       break;
     case 'save-asset':
+      keepImportedBody(
+        state.assets.find((a) => a.id === command.asset.id),
+        command.asset,
+      );
       next.assets = upsert(next.assets, command.asset);
       break;
+    case 'import-package': {
+      try {
+        const imported = applyResourceImport(state, command.input);
+        next.assets = imported.assets;
+        next.participants = imported.participants;
+      } catch (error) {
+        if (error instanceof AssetImportError)
+          throw new WorkbenchError('asset-import', error.message);
+        throw error;
+      }
+      break;
+    }
     case 'save-task': {
       const errors = validateWorkTask(command.task, next);
       if (errors.length) throw new WorkbenchError('validation', errors.join('\n'));
