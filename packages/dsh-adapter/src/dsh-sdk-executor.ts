@@ -369,17 +369,31 @@ export class DshChatExecutor implements AgentExecutor {
     const located = this.locate(sessionId);
     const home = located.home;
     const created = located.created;
-    writeRunHome(
-      home,
-      {
-        skills: request.skills ?? [],
-        mcp: request.mcp ?? [],
-        toolAllowlist: request.toolAllowlist ?? [],
-        modelId: config.modelId,
-        baseUrl: config.baseUrl,
-      },
-      this.env,
-    );
+    try {
+      writeRunHome(
+        home,
+        {
+          skills: request.skills ?? [],
+          mcp: request.mcp ?? [],
+          toolAllowlist: request.toolAllowlist ?? [],
+          modelId: config.modelId,
+          baseUrl: config.baseUrl,
+        },
+        this.env,
+      );
+    } catch {
+      this.finished.add(request.runId);
+      const pending = this.earlyReceipt.get(request.runId);
+      this.earlyReceipt.delete(request.runId);
+      pending?.({ receipt: 'rejected', reason: '运行已经结束。' });
+      yield {
+        type: 'failed',
+        fault: 'executor-disconnected',
+        message: '执行器启动失败。',
+        simulated: false,
+      };
+      return;
+    }
     const child = spawn(bin, ['--profile', 'sdk'], {
       cwd: home,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -966,15 +980,7 @@ function writeRunHome(
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
   const granted = path.join(home, 'granted-skills');
-  mkdirSync(granted, { recursive: true, mode: 0o700 });
-  chmodSync(granted, 0o700);
-  for (const skill of input.skills) {
-    if (skill.id === 'skill-office') continue;
-    const dir = path.join(granted, sanitizeId(skill.id));
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    chmodSync(dir, 0o700);
-    writePrivate(path.join(dir, 'SKILL.md'), skillDocument(skill));
-  }
+  convergeGrantedSkills(granted, input.skills);
   writePrivate(
     path.join(home, 'zhuma-grant.json'),
     JSON.stringify({
@@ -985,6 +991,29 @@ function writeRunHome(
   );
   writePrivate(path.join(home, 'cordis.patch.yml'), renderPatch(home, input, env));
   restrictTree(home);
+}
+
+function convergeGrantedSkills(granted: string, skills: readonly SkillGrant[]): void {
+  mkdirSync(granted, { recursive: true, mode: 0o700 });
+  chmodSync(granted, 0o700);
+  const keep = new Set<string>();
+  for (const skill of skills) {
+    if (skill.id === 'skill-office') continue;
+    keep.add(sanitizeId(skill.id));
+  }
+  for (const entry of readdirSync(granted, { withFileTypes: true })) {
+    const realDirectory = entry.isDirectory() && !entry.isSymbolicLink();
+    if (!realDirectory && !entry.isSymbolicLink()) continue;
+    if (realDirectory && keep.has(entry.name)) continue;
+    rmSync(path.join(granted, entry.name), { recursive: true, force: true });
+  }
+  for (const skill of skills) {
+    if (skill.id === 'skill-office') continue;
+    const dir = path.join(granted, sanitizeId(skill.id));
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    writePrivate(path.join(dir, 'SKILL.md'), skillDocument(skill));
+  }
 }
 
 function skillDocument(skill: SkillGrant): string {

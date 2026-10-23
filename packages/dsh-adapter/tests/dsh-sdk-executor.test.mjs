@@ -735,6 +735,113 @@ test('契约：密钥跨数据块时不会进入失败消息或收集的标准�
   );
 });
 
+test('契约：同一会话撤掉的技能不会在下一轮被扫描', async () => {
+  const { engine, pids, env } = executor('ok', {
+    initTimeoutMs: 10_000,
+    promptTimeoutMs: 10_000,
+  });
+  const skill = (id, version) => ({ id, version, label: id, description: id, body: id });
+  const drive = async (runId, skills, resumeSessionId) => {
+    const events = [];
+    for await (const event of engine.run({
+      runId,
+      attempt: 1,
+      generation: 1,
+      taskId: 'task',
+      nodeId: 'node',
+      workflowVersionId: 'plan',
+      planRevision: 1,
+      contextReferences: [],
+      expertVersionId: 'expert-v1',
+      resourceGrants: [],
+      instruction: '整理字段',
+      attachmentIds: [],
+      skills,
+      goal: '确认字段',
+      simulatedRequested: false,
+      signal: new AbortController().signal,
+      ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
+    })) {
+      events.push(event);
+    }
+    return events;
+  };
+  const visibleSkills = (home) =>
+    JSON.parse(readFileSync(path.join(home, 'zhuma-visible.json'), 'utf8')).skills;
+  const skillDirs = (home) =>
+    readdirSync(path.join(home, 'granted-skills'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+
+  const first = await drive('skill-round-a', [skill('skill-a', 'v1')]);
+  const accepted = first.find((event) => event.type === 'accepted');
+  assert.equal(accepted?.type, 'accepted');
+  const sessionId = accepted.sessionId;
+  const home = dshSessionHome(sessionId, env);
+  writeFileSync(path.join(home, 'keep-me.txt'), 'keep\n', { encoding: 'utf8', mode: 0o600 });
+  try {
+    const replaced = await drive('skill-round-b', [skill('skill-b', 'v2')], sessionId);
+    assert.equal(replaced.at(-1).type, 'completed');
+    assert.deepEqual(visibleSkills(home), [{ id: 'skill-b', version: 'v2' }]);
+    assert.deepEqual(skillDirs(home), ['skill-b']);
+    assert.equal(existsSync(path.join(home, 'granted-skills', 'skill-a')), false);
+    assert.match(
+      readFileSync(path.join(home, 'granted-skills', 'skill-b', 'SKILL.md'), 'utf8'),
+      /版本：v2/,
+    );
+    assert.deepEqual(JSON.parse(readFileSync(path.join(home, 'zhuma-grant.json'), 'utf8')).skills, [
+      { id: 'skill-b', version: 'v2' },
+    ]);
+    assert.equal(readFileSync(path.join(home, 'keep-me.txt'), 'utf8'), 'keep\n');
+    assert.equal(existsSync(path.join(home, 'decoy-skills', 'skill-evil', 'SKILL.md')), true);
+
+    const emptied = await drive('skill-round-empty', [], sessionId);
+    assert.equal(emptied.at(-1).type, 'completed');
+    assert.deepEqual(visibleSkills(home), []);
+    assert.deepEqual(skillDirs(home), []);
+    assert.deepEqual(
+      JSON.parse(readFileSync(path.join(home, 'zhuma-grant.json'), 'utf8')).skills,
+      [],
+    );
+    assert.equal(readFileSync(path.join(home, 'keep-me.txt'), 'utf8'), 'keep\n');
+    assert.equal(existsSync(path.join(home, 'decoy-skills', 'skill-evil', 'SKILL.md')), true);
+
+    assert.equal(
+      (await drive('skill-round-v9', [skill('skill-a', 'v9')], sessionId)).at(-1).type,
+      'completed',
+    );
+    assert.equal(
+      (await drive('skill-round-v10', [skill('skill-a', 'v10')], sessionId)).at(-1).type,
+      'completed',
+    );
+    const document = readFileSync(path.join(home, 'granted-skills', 'skill-a', 'SKILL.md'), 'utf8');
+    assert.match(document, /版本：v10/);
+    assert.equal(document.includes('版本：v9'), false);
+    assert.deepEqual(visibleSkills(home), [{ id: 'skill-a', version: 'v10' }]);
+    assert.deepEqual(skillDirs(home), ['skill-a']);
+
+    const blocked = path.join(home, 'granted-skills', 'skill-a');
+    execFileSync('sudo', ['-n', 'chown', '-R', 'root:root', blocked]);
+    execFileSync('sudo', ['-n', 'chmod', '555', blocked]);
+    execFileSync('sudo', ['-n', 'chmod', '444', path.join(blocked, 'SKILL.md')]);
+    const before = pids.length;
+    const failed = await drive('skill-round-cleanup', [skill('skill-b', 'v3')], sessionId);
+    assert.equal(pids.length, before);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].type, 'failed');
+    assert.equal(failed[0].fault, 'executor-disconnected');
+    assert.equal(failed[0].message, '执行器启动失败。');
+    assert.equal(existsSync(home), true);
+    assert.equal(readFileSync(path.join(home, 'keep-me.txt'), 'utf8'), 'keep\n');
+    assert.equal(existsSync(path.join(blocked, 'SKILL.md')), true);
+    assert.equal(existsSync(path.join(home, 'granted-skills', 'skill-b')), false);
+    assert.equal(existsSync(path.join(home, 'decoy-skills', 'skill-evil', 'SKILL.md')), true);
+  } finally {
+    execFileSync('sudo', ['-n', 'rm', '-rf', home]);
+  }
+});
+
 test('契约：启动时清掉孤儿会话目录', () => {
   const root = path.join(mkdtempSync(path.join(tmpdir(), 'zhuma-sweep-')), 'dsh-sessions');
   mkdirSync(root, { recursive: true });
