@@ -10,6 +10,7 @@ import {
   type Workbench,
   type WorkbenchCommand,
   type PlanProposal,
+  type PlanningAdjustment,
 } from '@zhuma/agent-core';
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
 
@@ -28,6 +29,7 @@ export interface WorkbenchApi {
     instruction: string,
     signal: AbortSignal,
     baseProposalId?: string,
+    adjustment?: PlanningAdjustment,
   ): Promise<PlanProposal>;
 }
 export function createWorkbenchApi(rpc: ClientConnectionRpc): WorkbenchApi {
@@ -58,11 +60,18 @@ export function createWorkbenchApi(rpc: ClientConnectionRpc): WorkbenchApi {
     async resourceFiles(kind, id, signal) {
       return ResourceFilesReplySchema.parse(await call('resource-files', { kind, id }, signal));
     },
-    async plan(taskId, expectedRevision, instruction, signal, baseProposalId) {
+    async plan(taskId, expectedRevision, instruction, signal, baseProposalId, adjustment) {
       return PlanProposalSchema.parse(
         await call(
           'plan',
-          { requestId: crypto.randomUUID(), taskId, expectedRevision, instruction, baseProposalId },
+          {
+            requestId: crypto.randomUUID(),
+            taskId,
+            expectedRevision,
+            instruction,
+            baseProposalId,
+            adjustment,
+          },
           signal,
         ),
       );

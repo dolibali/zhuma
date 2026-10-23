@@ -1961,6 +1961,115 @@ html[data-platform='darwin'] .zm-shell-chrome {
   font-size: 13px;
   color: var(--zm-muted);
 }
+.zm-plan-preview-version {
+  margin: 12px 0;
+}
+.zm-planning-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.zm-planning-scope > span {
+  color: var(--zm-muted);
+}
+.zm-planning-scope .zm-single-select {
+  flex: 1;
+  min-width: 150px;
+  width: auto;
+}
+.zm-planning-scope > small {
+  flex-basis: 100%;
+  color: var(--zm-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zm-plan-changes {
+  border-top: 1px solid var(--zm-line);
+  margin-top: 20px;
+  padding-top: 16px;
+}
+.zm-plan-changes h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.zm-change-caption {
+  font-size: 11px;
+  color: var(--zm-muted);
+}
+.zm-change-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.zm-planner .zm-change-entry {
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+  color: var(--zm-ink);
+  margin: 10px 0;
+  padding: 10px;
+}
+.zm-change-entry > summary {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.zm-change-kind {
+  color: var(--zm-accent);
+  margin-right: 6px;
+  font-size: 11px;
+}
+.zm-change-entry.removed .zm-change-kind {
+  color: var(--zm-danger);
+}
+.zm-change-location {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 8px 0;
+  color: var(--zm-muted);
+}
+.zm-change-location > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.zm-change-location > button {
+  flex-shrink: 0;
+}
+.zm-change-field {
+  margin-top: 10px;
+}
+.zm-change-field > strong {
+  font-size: 11px;
+}
+.zm-change-values {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+.zm-change-values > div {
+  border-left: 2px solid var(--zm-line-strong);
+  padding-left: 8px;
+}
+.zm-change-values > div:last-child {
+  border-left-color: var(--zm-accent);
+}
+.zm-change-values small {
+  color: var(--zm-muted);
+  font-size: 10px;
+}
+.zm-change-entry p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
 .zm-questions {
   padding: 12px;
   background: var(--zm-warning-soft);
