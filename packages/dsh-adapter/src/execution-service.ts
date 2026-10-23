@@ -110,6 +110,7 @@ const DRAFT_LINK_MAX = 2048;
 const DRAFT_LINK_TOTAL_MAX = 8192;
 const DRAFT_FILE_FIELD_MAX = 2048;
 const DRAFT_BODY_MAX = 262_144;
+const DRAFT_KEY_MAX = 200;
 const draftWriteSchema = z.strictObject({
   ...draftLocate,
   expectedVersion: z.number().int().nonnegative(),
@@ -290,6 +291,18 @@ function draftFileLimit(
     return {
       ok: false,
       error: { code: 'validation', message: '草稿合计不能超过 262144 个字符。', details: {} },
+    };
+  }
+  return undefined;
+}
+
+function draftKeyLimit(
+  idempotencyKey: string,
+): { readonly ok: false; readonly error: ExecutionFailure } | undefined {
+  if (idempotencyKey.length > DRAFT_KEY_MAX) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '幂等键不能超过 200 个字符。', details: {} },
     };
   }
   return undefined;
@@ -648,6 +661,11 @@ export class ExecutionService {
         parsed.value.files ?? [],
       );
       if (sized) return sized;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
+      const keyed = draftKeyLimit(parsed.value.idempotencyKey);
+      if (keyed) return keyed;
       const opened = await this.prepareDraft(
         actor.value.spaceIds,
         actor.value.actorId,
