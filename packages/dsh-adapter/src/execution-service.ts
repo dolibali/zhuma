@@ -26,6 +26,7 @@ import {
   type ProjectSpaceLookup,
 } from './project-space.js';
 import { readRevisionView, type RevisionView } from './revision-view.js';
+import { upstreamInputsFor, type UpstreamInputView } from './upstream-inputs.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -143,6 +144,7 @@ export interface ExecutionNodeView {
   readonly acceptedArtifactVersionId?: string;
   readonly reviewOutcome?: NodeExecutionReport['reviewOutcome'];
   readonly blockReason?: string;
+  readonly inputs?: readonly UpstreamInputView[];
 }
 
 const MESSAGES = {
@@ -362,7 +364,7 @@ export class ExecutionService {
         .filter((record) =>
           items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
         )
-        .map(toNodeView);
+        .map((record) => ({ ...toNodeView(record), inputs: upstreamInputsFor(record, records) }));
       return { ok: true, value: { actorId: actor.value.actorId, items, nodes } };
     });
   }
