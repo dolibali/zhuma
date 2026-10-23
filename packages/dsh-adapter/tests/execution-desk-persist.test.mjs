@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import test from 'node:test';
-import { ExecutionDesk, SimulatedAgentExecutor } from '@zhuma/dsh-adapter';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { ExecutionDesk, SimulatedAgentExecutor, createFileJournal } from '@zhuma/dsh-adapter';
 import { createAgentWorkspaceView } from '../../client/dist/index.js';
 
 function ids() {
@@ -455,4 +461,117 @@ test('契约：移除或重新打开后缺失的附件字节不会启动执行�
   assert.match(rejected.reason, /需重新上传/);
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(restoredRequests.length, 0);
+});
+
+test('契约：正常落盘后从真实文件重新打开', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-reopen-'));
+  const file = path.join(directory, 'session.json');
+  const journal = createFileJournal(file);
+  const simulated = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const session = openDesk(journal, simulated);
+  const started = session.send({ text: '整理开户字段', idempotencyKey: 'flush-run' });
+  await session.waitForRun(started.runId, 'running');
+  session.releaseActive();
+  await session.flush();
+  const flushed = session.persistence();
+  const fromDisk = JSON.parse(readFileSync(file, 'utf8'));
+  assert.deepEqual(fromDisk, flushed);
+  assert.equal(fromDisk.runs[0].status, 'completed');
+  assert.equal(fromDisk.nodeState.status, 'ready');
+
+  const reopened = ExecutionDesk.restore(fromDisk, {
+    executors: [new SimulatedAgentExecutor({ chunkDelayMs: 0 })],
+    newId: ids(),
+    journal,
+  });
+  assert.equal(reopened.snapshot().resumeGap, null);
+  assert.deepEqual(reopened.persistence(), flushed);
+  assert.equal(reopened.resumeInteraction().ok, true);
+  assert.deepEqual(journal.load(), reopened.persistence());
+});
+
+test('契约：运行中崩溃后重新打开，核实放弃并释放写权', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-crash-'));
+  const file = path.join(directory, 'session.json');
+  const ready = path.join(directory, 'ready');
+  const adapter = pathToFileURL(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
+  ).href;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { writeFileSync } from 'node:fs';
+       import { ExecutionDesk, SimulatedAgentExecutor, createFileJournal } from ${JSON.stringify(adapter)};
+       const journal = createFileJournal(${JSON.stringify(file)});
+       const simulated = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+       let n = 0;
+       const session = ExecutionDesk.create(${JSON.stringify(seed())}, {
+         executors: [simulated],
+         newId: (prefix) => prefix + '-' + (++n),
+         journal,
+       });
+       session.updateConfig({ executorId: 'simulated', skillIds: ['test-design'], mcpIds: ['api-docs'] });
+       const started = session.send({ text: '运行中崩溃', idempotencyKey: 'crash-run' });
+       if (!started.ok) process.exit(2);
+       await session.waitForRun(started.runId, 'running');
+       writeFileSync(${JSON.stringify(ready)}, 'running');
+       setInterval(() => {}, 1000);`,
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const startedAt = Date.now();
+  while (!existsSync(ready)) {
+    if (Date.now() - startedAt > 5000) {
+      child.kill('SIGKILL');
+      throw new Error(stderr || '子进程没有把运行中的日志写到磁盘');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  child.kill('SIGKILL');
+  await once(child, 'exit');
+  assert.equal(existsSync(`${file}.write.lock`), true);
+  try {
+    process.kill(child.pid, 0);
+    assert.fail('崩溃进程的 pid 仍然活着');
+  } catch (error) {
+    assert.equal(error.code, 'ESRCH');
+  }
+
+  const journal = createFileJournal(file);
+  assert.equal(journal.writable, true);
+  const crashed = journal.load();
+  assert.equal(crashed.runs[0].status, 'running');
+  assert.equal(
+    crashed.claims.some((claim) => claim.active),
+    true,
+  );
+  const restored = ExecutionDesk.restore(crashed, {
+    executors: [new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+    journal,
+  });
+  assert.equal(restored.snapshot().resumeGap.reason, 'session-not-resumed');
+  assert.equal(restored.snapshot().resumeGap.runId, crashed.runs[0].id);
+  assert.equal(restored.resumeInteraction().ok, true);
+  const verified = restored.verifyAbandoned();
+  assert.equal(verified.ok, true);
+  assert.equal(verified.snapshot.resumeGap, null);
+  assert.equal(verified.snapshot.runs[0].status, 'failed');
+  assert.equal(verified.snapshot.node.status, 'failed');
+  assert.equal(
+    verified.snapshot.claims.some((claim) => claim.active),
+    false,
+  );
+  const saved = journal.load();
+  assert.equal(saved.runs[0].status, 'failed');
+  assert.equal(
+    saved.claims.some((claim) => claim.active),
+    false,
+  );
 });
