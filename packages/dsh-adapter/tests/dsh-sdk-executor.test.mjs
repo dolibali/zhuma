@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
+  mkdtempSync as makeScratch,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -24,6 +24,20 @@ import {
   sweepDshSessionOrphans,
 } from '@zhuma/dsh-adapter';
 import { createAgentWorkspaceView } from '../../client/dist/index.js';
+
+const scratchDirs = [];
+function mkdtempSync(prefix) {
+  const dir = makeScratch(prefix);
+  scratchDirs.push(dir);
+  return dir;
+}
+function discardScratch(dir) {
+  spawnSync('chmod', ['-R', 'u+rwx', dir], { stdio: 'ignore' });
+  rmSync(dir, { recursive: true, force: true });
+}
+test.after(() => {
+  for (const dir of scratchDirs) discardScratch(dir);
+});
 
 const stub = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dsh-boundary-stub.mjs');
 chmodSync(stub, 0o755);
@@ -948,6 +962,7 @@ test('契约：孙进程占着三条管道时，一轮结束后这三条管道�
     );
     const grandchild = Number(readFileSync(pidFile, 'utf8'));
     assert.equal(alive(grandchild), true);
+    assert.equal(readFileSync(`${pidFile}.held`, 'utf8'), '1');
     assert.equal(reported.spawned, 1);
     assert.equal(reported.stdoutClosed, true);
     assert.equal(reported.stderrClosed, true);
@@ -1114,6 +1129,42 @@ test('契约：标准错误按 UTF-8 字节截断，中文和 emoji 的切口不
   assert.equal(Buffer.byteLength(tail) <= room, true);
   assert.equal(Buffer.byteLength(tail) + Buffer.byteLength(before) > room, true);
   assert.equal(stderr.split('\n').at(-1), 'cause: disk-full-reason');
+});
+
+// 回归：开头剩下的字节放不下下一个码点时不封口，后一次写入会补进开头，最后一行不再是原因。
+test('契约：标准错误开头放不下一个码点后封口，后面的写入不再拼进开头', async () => {
+  const cases = [
+    ['cjk-gap', 'END'],
+    ['emoji-gap', 'END'],
+    ['cause-line', 'cause: 磁盘已满'],
+  ];
+  for (const [name, lastLine] of cases) {
+    const done = await collect(`stderr-head-seal:${name}`, {
+      env: modelEnv('zhuma-synthetic-marker-0123456789abcde'),
+      initTimeoutMs: 20_000,
+      promptTimeoutMs: 20_000,
+      runId: `stderr-head-seal-${name}`,
+    });
+    assert.equal(done.events.at(-1).type, 'completed', name);
+    const accepted = done.events.find((event) => event.type === 'accepted');
+    const home = dshSessionHome(accepted.sessionId, done.env);
+    const file = readFileSync(path.join(home, 'zhuma-collected-stderr.txt'));
+    const source = readFileSync(path.join(home, 'zhuma-stderr-source.txt'));
+    const stderr = file.toString('utf8');
+    const original = source.toString('utf8');
+    const matched = stderr.match(/（已截断 (\d+) 字节）/);
+    assert.notEqual(matched, null, name);
+    const head = stderr.slice(0, matched.index);
+    const tail = stderr.slice(matched.index + matched[0].length);
+    assert.equal(original.startsWith(head), true, name);
+    assert.equal(original.endsWith(tail), true, name);
+    assert.equal(stderr.split('\n').at(-1), lastLine, name);
+    assert.equal(Number(matched[1]), source.length - Buffer.byteLength(head + tail), name);
+    const next = String.fromCodePoint(original.codePointAt(head.length));
+    assert.equal(Buffer.byteLength(head) <= 2048, true, name);
+    assert.equal(Buffer.byteLength(head) + Buffer.byteLength(next) > 2048, true, name);
+    rmSync(done.env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
 });
 
 // 回归：改回 slice(0, 2000) 后，最后一行 cause 不在失败消息里。
@@ -1469,6 +1520,84 @@ test('契约：启动失败里不带引号的路径，空格、括号和汉字�
     assert.equal(message.includes(' home/'), false);
     assert.equal(message.includes(leaked), false);
     assert.equal(message.includes(env.ZHUMA_DATA_DIR), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里 cwd: 后面的绝对路径会剥掉，后面的说明留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env, 'cwd:/home/qa/secret-project/x failed');
+    assert.equal(failed.events[0].message, '执行器启动失败。\ncwd: failed');
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里括号中的绝对路径会剥掉，括号留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env, '(/home/qa/secret-project/file.txt)');
+    assert.equal(failed.events[0].message, '执行器启动失败。\n()');
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里调用栈的绝对路径会剥掉，行号留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(
+      env,
+      'at Object.<anonymous> (/home/qa/proj/node_modules/x/index.js:10:5)',
+    );
+    assert.equal(failed.events[0].message, '执行器启动失败。\nat Object.<anonymous> (:10:5)');
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里 file:// 后面的绝对路径会剥掉，说明留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env, 'file:///home/qa/x.mjs failed');
+    assert.equal(failed.events[0].message, '执行器启动失败。\nfile:// failed');
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里带空格、括号和汉字的路径会剥掉，后面的 ENOENT 留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(
+      env,
+      'spawn /home/qa user/My Docs (x)/数据/dsh ENOENT',
+    );
+    assert.equal(failed.events[0].message, '执行器启动失败。\nspawn ENOENT');
+    assert.equal(failed.events[0].message.includes('My Docs'), false);
+    assert.equal(failed.events[0].message.includes('数据'), false);
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里路径后面的普通说明会留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(
+      env,
+      'open /home/qa/.zhuma/sessions/a b/home.json and then exit',
+    );
+    assert.equal(failed.events[0].message, '执行器启动失败。\nopen and then exit');
+    assert.equal(failed.events[0].message.includes('home.json'), false);
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }

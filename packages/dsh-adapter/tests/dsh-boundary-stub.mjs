@@ -16,11 +16,32 @@ function holdGrandchild(pidFile, script = 'setTimeout(() => {}, 8000)', stdio) {
 }
 
 if (mode.startsWith('stdio-gc:')) {
-  holdGrandchild(mode.slice('stdio-gc:'.length), 'setTimeout(() => {}, 8000)', [
-    'inherit',
-    'inherit',
-    'inherit',
-  ]);
+  const pidFile = mode.slice('stdio-gc:'.length);
+  const heldFile = `${pidFile}.held`;
+  const scriptFile = `${pidFile}.mjs`;
+  writeFileSync(
+    scriptFile,
+    [
+      "import { fstatSync, writeFileSync } from 'node:fs';",
+      'const pipe = (fd) => {',
+      '  try {',
+      '    const stat = fstatSync(fd);',
+      '    return stat.isFIFO() || stat.isSocket();',
+      '  } catch {',
+      '    return false;',
+      '  }',
+      '};',
+      `writeFileSync(${JSON.stringify(heldFile)}, pipe(0) && pipe(1) && pipe(2) ? '1' : '0');`,
+      'setTimeout(() => {}, 8000);',
+      '',
+    ].join('\n'),
+  );
+  const grandchild = spawn(process.execPath, [scriptFile], {
+    stdio: ['inherit', 'inherit', 'inherit'],
+    detached: true,
+  });
+  writeFileSync(pidFile, String(grandchild.pid ?? ''));
+  grandchild.unref();
   writeSync(1, 'stdout-held\n');
   writeSync(2, 'stderr-held\n');
   setTimeout(() => process.exit(1), 30);
@@ -254,7 +275,20 @@ async function handlePrompt(message) {
     writeFileSync(path.join(home, 'zhuma-stderr-source.txt'), original, 'utf8');
     writeSync(2, original);
   }
+  if (mode.startsWith('stderr-head-seal:')) {
+    const chunks = headSealChunks(mode.slice('stderr-head-seal:'.length));
+    const original = chunks.join('');
+    writeFileSync(path.join(home, 'zhuma-stderr-source.txt'), original, 'utf8');
+    await writeStderrChunks(chunks);
+  }
   finishTurn();
+}
+
+function headSealChunks(kind) {
+  if (kind === 'cjk-gap') return ['a'.repeat(2046), '错'.repeat(2500), '\nEND'];
+  if (kind === 'emoji-gap') return ['a'.repeat(2045), '😀'.repeat(1800), '\nEND'];
+  if (kind === 'cause-line') return ['磁盘'.repeat(2000), '磁盘'.repeat(2000), '\ncause: 磁盘已满'];
+  return ['\nEND'];
 }
 
 function delay(ms) {

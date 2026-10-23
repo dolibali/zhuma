@@ -864,6 +864,7 @@ class StdioRpc {
   private stderrFlushed = false;
   private stderrTruncated = false;
   private stderrHead = '';
+  private stderrHeadClosed = false;
   private stderrTail = '';
   private stderrOmitted = 0;
   private stderrTimer: ReturnType<typeof setTimeout> | null = null;
@@ -969,15 +970,23 @@ class StdioRpc {
     this.publishCollectedStderr();
   }
 
-  /** 开头按字节留满之后，其余只进固定字节数的尾部窗口。切口落在完整码点上。 */
+  /**
+   * 开头按字节留到放不下下一个码点为止，然后封口。
+   * 封口之后的写入只进尾部，不再补进开头剩下的字节。切口落在完整码点上。
+   */
   private keepBounded(text: string): void {
     if (text.length === 0) return;
-    const headBytes = utf8Bytes(this.stderrHead);
-    if (headBytes < stderrHeadLimit) {
-      const { taken, rest } = takeUtf8Prefix(text, stderrHeadLimit - headBytes);
-      this.stderrHead += taken;
-      if (rest.length > 0) this.pushTail(rest);
-      return;
+    if (!this.stderrHeadClosed) {
+      const room = stderrHeadLimit - utf8Bytes(this.stderrHead);
+      if (room > 0) {
+        const { taken, rest } = takeUtf8Prefix(text, room);
+        this.stderrHead += taken;
+        if (rest.length === 0) return;
+        this.stderrHeadClosed = true;
+        this.pushTail(rest);
+        return;
+      }
+      this.stderrHeadClosed = true;
     }
     this.pushTail(text);
   }
@@ -1126,13 +1135,114 @@ function startupFailureMessage(error: unknown): string {
   return `执行器启动失败。\n${detail}`;
 }
 
-/** 引号里的路径整段去掉。不带引号的路径按分隔符切段，段里可以有空格、括号和非 ASCII。 */
+/**
+ * 引号里的路径整段去掉。
+ * 不带引号的绝对路径可以从行首、空白、冒号、括号或 file:// 后面开始。
+ * 段里可以有空格、括号和非 ASCII；只有后面还有分隔符时，这些字符才算在路径里。
+ * 路径结束后的说明文字留下。
+ */
 function stripLocalPaths(text: string): string {
   const quoted = /(?:[/\\]|[A-Za-z]:[/\\])[^'"]*/;
-  return text
-    .replace(new RegExp(`'${quoted.source}'`, 'g'), "''")
-    .replace(new RegExp(`"${quoted.source}"`, 'g'), '""')
-    .replace(/(?<=^|[\s=])(?:[/\\]|[A-Za-z]:[/\\])(?:[^/\\\n'"]+[/\\])*[^/\\\n'"]*/g, '');
+  return stripUnquotedLocalPaths(
+    text
+      .replace(new RegExp(`'${quoted.source}'`, 'g'), "''")
+      .replace(new RegExp(`"${quoted.source}"`, 'g'), '""'),
+  );
+}
+
+function stripUnquotedLocalPaths(text: string): string {
+  let result = '';
+  let index = 0;
+  while (index < text.length) {
+    const start = findLocalPathStart(text, index);
+    if (start < 0) {
+      result += text.slice(index);
+      break;
+    }
+    result += text.slice(index, start);
+    index = localPathEnd(text, start);
+  }
+  return result;
+}
+
+function findLocalPathStart(text: string, from: number): number {
+  for (let index = from; index < text.length; index += 1) {
+    const previous = index === 0 ? '' : text[index - 1];
+    if (previous !== undefined && /[\w.]/.test(previous)) continue;
+    const char = text[index];
+    if ((char === '/' || char === '\\') && localPathEnd(text, index) > index) return index;
+    if (
+      char !== undefined &&
+      /[A-Za-z]/.test(char) &&
+      text[index + 1] === ':' &&
+      (text[index + 2] === '/' || text[index + 2] === '\\') &&
+      localPathEnd(text, index) > index
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function localPathEnd(text: string, start: number): number {
+  let index = start;
+  const drive = text[index];
+  if (
+    drive !== undefined &&
+    /[A-Za-z]/.test(drive) &&
+    text[index + 1] === ':' &&
+    (text[index + 2] === '/' || text[index + 2] === '\\')
+  ) {
+    index += 2;
+  }
+  if (text[index] !== '/' && text[index] !== '\\') return start;
+  if (text[index + 1] === '/' || text[index + 1] === '\\') return start;
+  let lastGood = start;
+  let cursor = index + 1;
+  while (cursor < text.length) {
+    const char = text[cursor];
+    if (char === '\n' || char === "'" || char === '"') break;
+    if (char === '/' || char === '\\') {
+      cursor += 1;
+      lastGood = cursor;
+      continue;
+    }
+    if (char === ':' || (char !== undefined && /\s/.test(char))) {
+      let ahead = cursor;
+      while (
+        ahead < text.length &&
+        text[ahead] !== '/' &&
+        text[ahead] !== '\\' &&
+        text[ahead] !== '\n' &&
+        text[ahead] !== "'" &&
+        text[ahead] !== '"'
+      ) {
+        ahead += 1;
+      }
+      if (text[ahead] === '/' || text[ahead] === '\\') {
+        cursor = ahead;
+        continue;
+      }
+      break;
+    }
+    cursor += 1;
+    lastGood = cursor;
+  }
+  if (lastGood <= index) return start;
+  return trimWrappingParen(text, start, lastGood);
+}
+
+function trimWrappingParen(text: string, start: number, end: number): number {
+  if (start === 0 || text[start - 1] !== '(') return end;
+  let depth = 1;
+  for (let index = start; index < end; index += 1) {
+    if (text[index] === '(') depth += 1;
+    else if (text[index] === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return end;
 }
 
 /** 启动前失败附带的标准错误上限，按 UTF-8 字节计。超出后保留开头和最新结尾。 */
