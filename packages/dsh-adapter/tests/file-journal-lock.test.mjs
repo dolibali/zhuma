@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -547,5 +554,78 @@ test('契约：锁文件不在时保存得到 ELOCKED 并变成只读', async ()
     assert.equal(existsSync(lockPath), false);
   } finally {
     if (!existsSync(go)) writeFileSync(go, 'go');
+  }
+});
+
+function completeLock(body) {
+  assert.notEqual(body, '');
+  const parsed = JSON.parse(body);
+  assert.match(parsed.token, /^[0-9a-f]{32}$/);
+  assert.equal(Number.isInteger(parsed.pid) && parsed.pid > 0, true);
+  assert.equal(typeof parsed.hostname, 'string');
+  assert.equal(parsed.hostname.length > 0, true);
+  assert.match(parsed.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(Object.keys(parsed).sort(), ['hostname', 'pid', 'startedAt', 'token']);
+  return parsed;
+}
+
+// 回归：改回先 openSync(lockPath, 'wx') 再 writeSync 后，子进程不会停在发布前，本用例超时失败。
+test('契约：写锁路径在内容发布前不存在，发布后一次就是完整记录', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-publish-'));
+  const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
+  const arrived = path.join(directory, 'publish-arrived');
+  const waitFile = path.join(directory, 'publish-wait');
+  const ready = path.join(directory, 'ready');
+  const release = path.join(directory, 'release');
+  const observations = [];
+  const reader = setInterval(() => {
+    if (!existsSync(lockPath)) return;
+    observations.push(readFileSync(lockPath, 'utf8'));
+  }, 1);
+  const source = `
+    import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
+    const file = ${JSON.stringify(file)};
+    const journal = createFileJournal(file);
+    if (journal.writable !== true) process.exit(2);
+    journal.save({ held: true });
+    writeFileSync(${JSON.stringify(ready)}, readFileSync(${JSON.stringify(lockPath)}, 'utf8'));
+    pause(${JSON.stringify(release)});
+  `;
+  const child = spawnJournal(source, {
+    ZHUMA_LOCK_PUBLISH_ARRIVED: arrived,
+    ZHUMA_LOCK_PUBLISH_WAIT: waitFile,
+  });
+  try {
+    await wait(arrived, '子进程没有停在锁内容发布前');
+    assert.equal(existsSync(lockPath), false, '锁路径在内容发布前就已经出现');
+    assert.equal(observations.length, 0);
+    const temps = readdirSync(directory).filter(
+      (name) => name.endsWith('.tmp') && name.includes('.write.lock.'),
+    );
+    assert.equal(temps.length, 1);
+    const staged = readFileSync(path.join(directory, temps[0]), 'utf8');
+    const record = completeLock(staged);
+    assert.equal(record.pid, Number(readFileSync(arrived, 'utf8')));
+    writeFileSync(waitFile, 'go');
+    await wait(ready, '子进程没有在持锁期间交出锁内容');
+    const published = completeLock(readFileSync(lockPath, 'utf8'));
+    assert.deepEqual(published, record);
+    assert.deepEqual(completeLock(readFileSync(ready, 'utf8')), record);
+    for (const body of observations) assert.deepEqual(completeLock(body), record);
+    assert.equal(
+      readdirSync(directory).some((name) => name.endsWith('.tmp')),
+      false,
+    );
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).held, true);
+    writeFileSync(release, 'go');
+    const outcome = await child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    clearInterval(reader);
+    if (!existsSync(waitFile)) writeFileSync(waitFile, 'go');
+    if (!existsSync(release)) writeFileSync(release, 'go');
   }
 });

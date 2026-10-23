@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 import {
   closeSync,
   existsSync,
+  fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -155,7 +157,7 @@ function errorCode(error: unknown): string {
 }
 
 /**
- * 互斥文件用 O_EXCL 创建，已存在就失败，不会覆盖。
+ * 互斥文件整段挂上，已存在就失败，不会覆盖。
  * 读得出活进程则让开。死进程或读不出持有者时保持只读，并给出要删除的路径。
  */
 function mutexBlock(lockPath: string): AcquireResult | null {
@@ -166,16 +168,43 @@ function mutexBlock(lockPath: string): AcquireResult | null {
   return { token: null, refusal: abandonedMutexMessage(mutexPath) };
 }
 
-function writeRecord(fd: number, token: string): void {
-  writeSync(
-    fd,
-    JSON.stringify({
-      token,
-      pid: process.pid,
-      hostname: hostname(),
-      startedAt: new Date().toISOString(),
-    }),
-  );
+/**
+ * 记录先写进同目录临时文件并同步，再硬链接到目标路径。
+ * 目标要么还不存在，要么一次出现完整内容。已存在则 EEXIST，不覆盖。
+ * 读者不会看到空文件或半截 JSON。
+ */
+function publishRecord(targetPath: string, token: string): void {
+  const temporary = `${targetPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  const payload = JSON.stringify({
+    token,
+    pid: process.pid,
+    hostname: hostname(),
+    startedAt: new Date().toISOString(),
+  });
+  const fd = openSync(temporary, 'wx');
+  try {
+    writeSync(fd, payload);
+    fsyncSync(fd);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // 临时文件已经不在。
+    }
+    throw error;
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    reachBarrier('ZHUMA_LOCK_PUBLISH_ARRIVED', 'ZHUMA_LOCK_PUBLISH_WAIT');
+    linkSync(temporary, targetPath);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // 临时文件已经不在。链接错误仍向外抛。
+    }
+  }
 }
 
 /** 互斥只在令牌仍是自己的时候删除。不改名。 */
@@ -190,8 +219,8 @@ function releaseMutex(mutexPath: string, token: string): void {
 }
 
 /**
- * 先独占 `<lock>.reclaim`，再读锁。确认仍是同一个已死持有者后才删除并创建新锁。
- * 活锁留在原地，不改名。
+ * 先独占 `<lock>.reclaim`，再读锁。确认仍是同一个已死持有者后才删除并挂上新锁。
+ * 活锁留在原地，不改名。互斥和新锁都整段发布，不会先露出空文件。
  */
 function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
   reachBarrier('ZHUMA_LOCK_ARRIVED', 'ZHUMA_LOCK_WAIT_FILE');
@@ -199,17 +228,11 @@ function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
   if (blocked) return blocked;
   const mutexPath = reclaimMutexPath(lockPath);
   const mutexToken = randomBytes(16).toString('hex');
-  let mutexFd: number;
   try {
-    mutexFd = openSync(mutexPath, 'wx');
+    publishRecord(mutexPath, mutexToken);
   } catch (error) {
     if (errorCode(error) !== 'EEXIST') throw error;
     return mutexBlock(lockPath) ?? { token: null };
-  }
-  try {
-    writeRecord(mutexFd, mutexToken);
-  } finally {
-    closeSync(mutexFd);
   }
   try {
     const current = readLock(lockPath);
@@ -223,16 +246,10 @@ function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
       return { token: null };
     }
     const lockToken = randomBytes(16).toString('hex');
-    let lockFd: number;
     try {
-      lockFd = openSync(lockPath, 'wx');
+      publishRecord(lockPath, lockToken);
     } catch {
       return { token: null };
-    }
-    try {
-      writeRecord(lockFd, lockToken);
-    } finally {
-      closeSync(lockFd);
     }
     heldLocks.set(lockPath, lockToken);
     return { token: lockToken };
@@ -247,13 +264,8 @@ function acquireLock(lockPath: string): AcquireResult {
   const blocked = mutexBlock(lockPath);
   if (blocked) return blocked;
   try {
-    const fd = openSync(lockPath, 'wx');
     const token = randomBytes(16).toString('hex');
-    try {
-      writeRecord(fd, token);
-    } finally {
-      closeSync(fd);
-    }
+    publishRecord(lockPath, token);
     heldLocks.set(lockPath, token);
     return { token };
   } catch (error) {
