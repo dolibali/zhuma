@@ -196,7 +196,7 @@ interface ExecutionWorkspaceProps {
 
 请求体仍是 `StartPlanRequest`、`InboxRequest`、`SubmitRequest`、`BallotRequest`、`SettleRequest`、`ReportRequest`。没有 `BindOwnerRequest`。通道结果仍是 `{ ok: true, value } | { ok: false, error: { code, message, details } }`。`readWorkbench` 由 A 包住 `WorkbenchService.snapshot()`。界面挂 `ExecutionWorkspace`，它使用 `createExecutionApi(rpc)`。这些类型的其余字段在 `b/s1-signatures` 的 `packages/dsh-adapter/src/s1-integration.ts`；本分支不实现执行插件。
 
-本 PR 不改 `workbench-plugin.ts`、宿主构建和包的公开 exports。相对 develop，本 PR 新增 `packages/client/tests/browser/global-setup.mjs`，并在 `playwright.config.mjs` 里加上 `globalSetup` 和 `identity` project。这两个文件是 A 的公共配置，内容取自 A 的 `52d0ac0` 和 `5d356fb`，B 没有做任何另外的修改。A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
+本 PR 不改 `workbench-plugin.ts`、宿主构建和包的公开 exports。相对 develop，本 PR 新增 `packages/client/tests/browser/global-setup.mjs`，并在 `playwright.config.mjs` 里加上 `globalSetup` 和 `identity` project，也改了 webServer 的命令和 timeout。这些都是 B 加的或改的。`identity` project 是 B 在 `7668a2c` 加上的。`global-setup.mjs` 和 `globalSetup` 是 B 在 `f0eac0f` 加上的。A 的 `52d0ac0` 只把 global-setup 改成用当前 Node 跑 `tsc`；A 的 `5d356fb` 只改了 webServer 的命令和 timeout。这两个提交不是本 PR 的祖先，也没有进入 develop。B 在 `9767529` 和 `4e6a055` 里重做了同样的改动，之后没有再改这两处，所以现在的内容与 A 的 `52d0ac0`、`5d356fb` 对齐。A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
 
 ```ts
 import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
