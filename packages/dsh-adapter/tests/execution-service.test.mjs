@@ -1523,3 +1523,22 @@ test('a thrown lookup for another project in the same space refuses the idempote
   assert.equal(clash.error.code, 'idempotency-mismatch');
   assert.deepEqual(store.snapshot(), before);
 });
+
+test('an unexpected handoff failure says the record is unavailable, not that the write failed', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  Object.defineProperty(applied, 'probe', { enumerable: true, value() {} });
+  const { service, store } = create(state);
+  const before = store.snapshot();
+  const failed = await service.startPlan(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-uncloneable',
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error.code, 'unavailable');
+  assert.equal(failed.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(failed).includes('could not be cloned'), false);
+  assert.equal(JSON.stringify(failed).includes('写不进去'), false);
+  assert.deepEqual(store.snapshot(), before);
+});

@@ -651,7 +651,7 @@ export class ExecutionService {
       );
     } catch (error) {
       if (error instanceof WorkbenchError) return fail(error.code);
-      return fail('unavailable');
+      return directoryUnavailable();
     }
     const started = startAppliedPlan({
       requested: { taskId, planId, revision },
