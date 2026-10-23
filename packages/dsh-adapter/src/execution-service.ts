@@ -27,6 +27,12 @@ import {
 } from './project-space.js';
 import { readRevisionView, type RevisionView } from './revision-view.js';
 import {
+  applyDeliveryDraft,
+  deliveryDraftView,
+  withoutDeliveryDraft,
+  type DeliveryDraftView,
+} from './delivery-draft.js';
+import {
   upstreamBlockMessage,
   upstreamInputsFor,
   type UpstreamInputView,
@@ -91,6 +97,21 @@ const revisionSchema = z.strictObject({
   planId: id,
   revision: z.number().int().positive(),
   nodeId: id,
+});
+const draftLocate = {
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+};
+const draftReadSchema = z.strictObject(draftLocate);
+const draftWriteSchema = z.strictObject({
+  ...draftLocate,
+  expectedVersion: z.number().int().nonnegative(),
+  idempotencyKey: id,
+  text: boundedText.optional(),
+  files: z.array(fileSchema).max(20).optional(),
+  links: z.array(z.string().min(1)).max(20).optional(),
 });
 const inboxSchema = z.strictObject({});
 
@@ -174,6 +195,7 @@ const MESSAGES = {
   'not-found': '找不到这个节点。',
   'not-revision-reader': '只有负责人和当前评审人可以查看退回意见。',
   'not-returned': '这项工作还没有被退回。',
+  'not-deliverable': '这项工作现在不能保存交付草稿。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',
   'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
@@ -468,6 +490,88 @@ export class ExecutionService {
     });
   }
 
+  /** Space, membership, and assignee checks shared by reading and saving a draft. */
+  private async prepareDraft(
+    spaceIds: readonly string[],
+    actorId: string,
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+  ): Promise<ExecutionResult<ExecutionNodeRecord>> {
+    const space = await this.gateSpace(query.taskId, spaceIds);
+    if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+    if (space === 'missing' || !space.ok) return fail('not-found');
+    const current = this.storage.readNode(nodeRecordKey(query));
+    if (!current || !intactNode(current)) return fail('not-found');
+    const membership = planMembership(this.workbench.readWorkbench(), current.taskId, actorId);
+    if (membership === 'missing') return fail('not-found');
+    if (membership === 'not-participant') return fail('not-participant');
+    if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
+    const assignee = current.handoff.assignee;
+    if (assignee.kind !== 'human' || assignee.id !== actorId) return fail('not-assignee');
+    if (current.command.status !== 'ready' && current.command.status !== 'needs-revision') {
+      return fail('not-deliverable');
+    }
+    return { ok: true, value: current };
+  }
+
+  /** Read or save the assignee's delivery draft. A read does not write. */
+  draft(caller: ExecutionCaller, body: unknown): Promise<ExecutionResult<DeliveryDraftView>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const writing = body !== null && typeof body === 'object' && 'idempotencyKey' in body;
+      if (!writing) {
+        const parsed = parseBody(draftReadSchema, body);
+        if (!parsed.ok) return parsed;
+        const opened = await this.prepareDraft(
+          actor.value.spaceIds,
+          actor.value.actorId,
+          parsed.value,
+        );
+        if (!opened.ok) return opened;
+        return { ok: true, value: deliveryDraftView(opened.value.deliveryDraft) };
+      }
+      const parsed = parseBody(draftWriteSchema, body);
+      if (!parsed.ok) return parsed;
+      const opened = await this.prepareDraft(
+        actor.value.spaceIds,
+        actor.value.actorId,
+        parsed.value,
+      );
+      if (!opened.ok) return opened;
+      const current = opened.value;
+      const text = parsed.value.text ?? '';
+      const links = parsed.value.links ?? [];
+      const files = parsed.value.files ?? [];
+      const applied = applyDeliveryDraft({
+        current: current.deliveryDraft,
+        expectedVersion: parsed.value.expectedVersion,
+        idempotencyKey: parsed.value.idempotencyKey,
+        fingerprint: canonicalPayload({
+          kind: 'delivery-draft',
+          actorId: actor.value.actorId,
+          nodeId: current.nodeId,
+          text,
+          links,
+          files,
+        }),
+        text,
+        links,
+        files,
+      });
+      if (!applied.ok) return fail(applied.code);
+      if (applied.disposition === 'applied') {
+        const stored = await this.persist(() =>
+          this.storage.writeNode(nodeRecordKey(current), {
+            ...current,
+            deliveryDraft: applied.draft,
+          }),
+        );
+        if (!stored.ok) return stored;
+      }
+      return { ok: true, value: deliveryDraftView(applied.draft) };
+    });
+  }
+
   /** Return notes and the two newest relevant versions. Does not write. */
   revision(
     caller: ExecutionCaller,
@@ -752,6 +856,7 @@ export class ExecutionService {
           current,
         );
         if (blocked) return blocked;
+        record = withoutDeliveryDraft(record);
       }
       const stored = await this.persist(() =>
         this.storage.writeNode(nodeRecordKey(record), record),

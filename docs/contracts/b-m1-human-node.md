@@ -124,6 +124,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
 - `revision` 读取退回时的被评审版本、上一版和退回意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。目录不可用时先查目录，不论节点是否存在都返回同一份 `unavailable`：「执行记录暂时不可用，请稍后用同一个请求再试一次。」目录正常时，任务不存在、节点不存在和在别的空间返回同一份 `not-found`
 - 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名是版本序号，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
+- 人工执行者把交付草稿写在节点记录上。关闭后再打开，包括退回后，仍能读到自己的草稿。只有这位执行者能读写。空间不对和任务不存在，在写之前返回同一份 `not-found`。不是参与者要等空间通过之后才拒绝。节点不是 `ready` 或 `needs-revision` 时不写。草稿版本不符，或同一个幂等键被拿去写另一份内容时，不覆盖。提交成功后清掉草稿
 
 未实现（后续切片）：
 
@@ -192,7 +193,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 ## 界面
 
-`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。退回待办会先打开修订视图，再打开原来的交付表单。修订视图不从包入口另导出。交付表单显示节点目标。同一任务、同一计划和同一版本的已接受上游列出来源节点、版本和产物名，产物名不带幂等键。尚无已接受版本或引用已被取代时只提示来源节点，提交仍然可用。无权或缺失的来源只显示个数，提交按钮停用。
+`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。退回待办会先打开修订视图，再打开原来的交付表单。修订视图不从包入口另导出。交付表单显示节点目标。同一任务、同一计划和同一版本的已接受上游列出来源节点、版本和产物名，产物名不带幂等键。尚无已接受版本或引用已被取代时只提示来源节点，提交仍然可用。无权或缺失的来源只显示个数，提交按钮停用。交付表单会读回节点上的草稿，也可以保存草稿；提交成功后草稿被清掉。
 
 面板使用工作台已经导出的 `Button` 和 `Field`，以及 `.zhuma`、`.zm-page`、`.zm-directory`、`.zm-status`、`.zm-error`、`.zm-review` 这些现有类。不另写颜色。包内引用这些控件用相对路径，因为仓库边界不允许 `@zhuma/client` 导入自己。
 

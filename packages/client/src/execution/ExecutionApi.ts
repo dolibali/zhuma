@@ -109,6 +109,25 @@ export interface ReviewDraft {
   readonly comment?: string;
 }
 
+export interface SavedDeliveryDraft {
+  readonly version: number;
+  readonly text: string;
+  readonly links: readonly string[];
+  readonly files: readonly ArtifactFileRef[];
+}
+
+export interface DeliveryDraftWrite {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly text?: string;
+  readonly files?: readonly ArtifactFileRef[];
+  readonly links?: readonly string[];
+}
+
 export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
@@ -117,6 +136,11 @@ export interface ExecutionApi {
     query: { taskId: string; planId: string; revision: number; nodeId: string },
     signal?: AbortSignal,
   ): Promise<RevisionViewWire>;
+  readDeliveryDraft(
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+    signal?: AbortSignal,
+  ): Promise<SavedDeliveryDraft>;
+  saveDeliveryDraft(draft: DeliveryDraftWrite, signal?: AbortSignal): Promise<SavedDeliveryDraft>;
 }
 
 export interface RevisionContentWire {
@@ -392,6 +416,43 @@ export function readRevisionView(value: unknown): RevisionViewWire {
   };
 }
 
+export function readSavedDeliveryDraft(value: unknown): SavedDeliveryDraft {
+  if (value === null || typeof value !== 'object') invalid('返回的交付草稿不正确。');
+  const record = value as Record<string, unknown>;
+  if (typeof record.version !== 'number' || !Number.isSafeInteger(record.version)) {
+    invalid('返回的交付草稿不正确。');
+  }
+  if (
+    typeof record.text !== 'string' ||
+    !Array.isArray(record.links) ||
+    !Array.isArray(record.files)
+  ) {
+    invalid('返回的交付草稿不正确。');
+  }
+  return {
+    version: record.version,
+    text: record.text,
+    links: record.links.map((item) => text(item, '链接')),
+    files: record.files.map(readDraftFile),
+  };
+}
+
+function readDraftFile(value: unknown): ArtifactFileRef {
+  if (value === null || typeof value !== 'object') invalid('返回的文件信息不正确。');
+  const file = value as Record<string, unknown>;
+  if (typeof file.byteSize !== 'number' || typeof file.uploadComplete !== 'boolean') {
+    invalid('返回的文件信息不正确。');
+  }
+  return {
+    id: text(file.id, '文件'),
+    mediaType: text(file.mediaType, '媒体类型'),
+    byteSize: file.byteSize,
+    checksum: text(file.checksum, '校验'),
+    accessPolicyId: text(file.accessPolicyId, '访问策略'),
+    uploadComplete: file.uploadComplete,
+  };
+}
+
 function readCommand(value: unknown): ExecutionNodeWire {
   if (value === null || typeof value !== 'object' || !('node' in value))
     invalid('返回的节点不正确。');
@@ -431,6 +492,39 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
         nodeId: query.nodeId,
       };
       return readRevisionView(await call('revision', payload, signal));
+    },
+    async readDeliveryDraft(query, signal) {
+      return readSavedDeliveryDraft(
+        await call(
+          'draft',
+          {
+            taskId: query.taskId,
+            planId: query.planId,
+            revision: query.revision,
+            nodeId: query.nodeId,
+          },
+          signal,
+        ),
+      );
+    },
+    async saveDeliveryDraft(draft, signal) {
+      return readSavedDeliveryDraft(
+        await call(
+          'draft',
+          {
+            taskId: draft.taskId,
+            planId: draft.planId,
+            revision: draft.revision,
+            nodeId: draft.nodeId,
+            expectedVersion: draft.expectedVersion,
+            idempotencyKey: draft.idempotencyKey,
+            files: [...(draft.files ?? [])],
+            links: [...(draft.links ?? [])],
+            ...(draft.text === undefined ? {} : { text: draft.text }),
+          },
+          signal,
+        ),
+      );
     },
     async ballot(draft, signal) {
       const payload = {

@@ -6,6 +6,7 @@ import {
   deriveInbox,
   taskAccess,
   type ArtifactDraft,
+  type ArtifactFileRef,
   type ArtifactVersion,
   type InboxItem,
   type InboxNodeFact,
@@ -54,6 +55,15 @@ export interface ExecutionNodeRecord {
   readonly acceptedArtifactVersionId?: string;
   readonly comments: readonly CitedComment[];
   readonly receipts: readonly ExecutionReceipt[];
+  /** Human assignee's unsent delivery. Cleared when a submit is stored. */
+  readonly deliveryDraft?: {
+    readonly version: number;
+    readonly idempotencyKey: string;
+    readonly fingerprint: string;
+    readonly text: string;
+    readonly links: readonly string[];
+    readonly files: readonly ArtifactFileRef[];
+  };
 }
 
 /** Business idempotency. Node command receipts do not cover delivery text. */

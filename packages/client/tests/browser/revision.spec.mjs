@@ -30,6 +30,10 @@ test.beforeEach(async ({ page, replay }) => {
     reason: index === 10 ? 'revision-delivery' : 'assignee-delivery',
     action: index === 10 ? 'revise' : 'submit',
   }));
+  replay.handlers.draft = async () => ({
+    ok: true,
+    value: { version: 0, text: '', links: [], files: [] },
+  });
   replay.handlers.inbox = async () => ({
     ok: true,
     value: {
