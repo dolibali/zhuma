@@ -92,6 +92,14 @@ function trimmed(value: string | undefined): string {
 
 const ZERO_WIDTH = /[\u200B-\u200D\uFEFF\u2060\u180E]/g;
 
+/** Zero-width characters and a soft hyphen do not count as comment text. */
+function commentText(value: string | undefined): string {
+  return (value ?? '')
+    .replace(ZERO_WIDTH, '')
+    .replace(/\u00ad/g, '')
+    .trim();
+}
+
 /** Reviewer ids stay case-sensitive. Zero-width characters are not part of the id. */
 function normalizeReviewerId(id: string): string {
   return id.replace(ZERO_WIDTH, '').trim();
@@ -129,7 +137,7 @@ function countsAsApproval(ballot: ReviewBallot): boolean {
 
 function countsAsRejection(ballot: ReviewBallot): boolean {
   if (ballot.action !== 'request-changes') return false;
-  if (trimmed(ballot.comment).length > 0) return true;
+  if (commentText(ballot.comment).length > 0) return true;
   return (ballot.unresolvedCommentIds ?? []).some((id) => trimmed(id).length > 0);
 }
 
@@ -301,11 +309,11 @@ export function submitBallot(
       round.artifactVersionId,
     );
     if (citation === 'invalid') return { ok: false, code: 'comment-not-unresolved' };
-    if (trimmed(ballot.comment).length === 0 && citation !== 'valid') {
+    if (commentText(ballot.comment).length === 0 && citation !== 'valid') {
       return { ok: false, code: 'empty-request-changes' };
     }
   }
-  if (ballot.action === 'comment' && trimmed(ballot.comment).length === 0) {
+  if (ballot.action === 'comment' && commentText(ballot.comment).length === 0) {
     return { ok: false, code: 'empty-comment' };
   }
   if (
