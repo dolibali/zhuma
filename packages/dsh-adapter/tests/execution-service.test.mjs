@@ -1268,6 +1268,37 @@ test('a directory fault returns the same unavailable bytes whether or not the ta
   }
 });
 
+test('a missing task asks the directory with the task id and never an empty project id', async () => {
+  const seen = [];
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service, store } = create(state, {
+    async spaceForProject(projectId) {
+      seen.push(projectId);
+      if (projectId === 'project') return { ok: true, spaceId: 'project' };
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  await startChen(service, applied);
+  seen.length = 0;
+  const before = store.snapshot();
+  const absent = await service.report(session('chen'), {
+    taskId: 'absent-task',
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  const otherSpace = await service.report(session('chen', ['team-south']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(absent.error.code, 'not-found');
+  assert.equal(otherSpace.error.code, 'not-found');
+  assert.deepEqual(absent, otherSpace);
+  assert.deepEqual(seen, ['absent-task', 'project']);
+  assert.equal(seen.includes(''), false);
+  assert.deepEqual(store.snapshot(), before);
+});
+
 test('an unusable ok from the directory is the same unavailable bytes whether or not the task exists', async () => {
   const { state, applied } = confirm(
     [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],

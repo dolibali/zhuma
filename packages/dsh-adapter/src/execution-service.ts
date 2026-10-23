@@ -541,6 +541,7 @@ export class ExecutionService {
    * A thrown lookup, `unavailable`, or an ok answer whose space id cannot be
    * used is the same answer either way.
    * No directory, an unknown project, or a mismatch is not-found.
+   * A missing task is asked with its task id. An empty string is never sent.
    */
   private async gateSpace(
     taskId: string,
@@ -554,7 +555,9 @@ export class ExecutionService {
     }
     let lookup: ProjectSpaceLookup;
     try {
-      lookup = await directory.spaceForProject(task ? task.projectId : '');
+      const projectId = task ? task.projectId : taskId;
+      if (projectId === '') return task ? fail('not-found') : 'missing';
+      lookup = await directory.spaceForProject(projectId);
     } catch {
       return directoryUnavailable();
     }
