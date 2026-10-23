@@ -9,8 +9,11 @@ import {
   WorkbenchSchema,
   WorkbenchError,
   PlanProposalSchema,
+  StoredAssetPackageSchema,
+  AssetImportError,
 } from '@zhuma/agent-core';
 import { WorkbenchService, type PlanningModel } from './workbench-service.js';
+import { previewAssetImport } from './asset-import.js';
 
 const AuditSchema = z.object({
   id: z.string(),
@@ -29,6 +32,12 @@ const domainSpec = {
   global: { schema: WorkbenchSchema, initial: emptyWorkbench() },
   tables: { planning: { valueSchema: AuditSchema } },
 };
+const packageDomainSpec = {
+  name: 'zhuma_asset_packages',
+  version: 1,
+  layout: 'per-record' as const,
+  tables: { versions: { valueSchema: StoredAssetPackageSchema } },
+};
 
 export const inject = ['connection', 'storageDomain', 'llm', 'agentDefaultModel'];
 
@@ -36,6 +45,8 @@ export const inject = ['connection', 'storageDomain', 'llm', 'agentDefaultModel'
 export async function apply(ctx: Context): Promise<void> {
   const domain = await ctx.storageDomain.open(domainSpec);
   ctx.effect(() => () => domain.close());
+  const packageDomain = await ctx.storageDomain.open(packageDomainSpec);
+  ctx.effect(() => () => packageDomain.close());
   const lifetime = new AbortController();
   ctx.effect(() => () => lifetime.abort());
   const service = new WorkbenchService(
@@ -50,12 +61,31 @@ export async function apply(ctx: Context): Promise<void> {
           await domain.table('planning').delete(key);
       },
     },
+    {
+      get: (id) => packageDomain.table('versions').get(id),
+      put: (record) => packageDomain.table('versions').put(record.versionId, record),
+    },
   );
   async function handle(endpoint: string, payload: unknown, callerSignal: AbortSignal) {
     const signal = AbortSignal.any([callerSignal, lifetime.signal, AbortSignal.timeout(120000)]);
     try {
       signal.throwIfAborted();
       switch (endpoint) {
+        case 'preview-import':
+          return { ok: true, value: await previewAssetImport(payload, signal) };
+        case 'resource-files': {
+          const input = z
+            .strictObject({
+              kind: z.enum(['asset', 'expert']),
+              id: z
+                .string()
+                .min(1)
+                .max(100)
+                .regex(/^[\w-]+$/u),
+            })
+            .parse(payload);
+          return { ok: true, value: service.resourceFiles(input.kind, input.id) };
+        }
         case 'snapshot': {
           z.strictObject({}).parse(payload);
           const selection = ctx.agentDefaultModel.currentSelection();
@@ -106,14 +136,16 @@ export async function apply(ctx: Context): Promise<void> {
       const code =
         error instanceof WorkbenchError
           ? error.code
-          : signal.aborted
-            ? 'cancelled'
-            : error instanceof z.ZodError
-              ? 'validation'
-              : 'unavailable';
+          : error instanceof AssetImportError
+            ? 'asset-import'
+            : signal.aborted
+              ? 'cancelled'
+              : error instanceof z.ZodError
+                ? 'validation'
+                : 'unavailable';
       // Provider/IO exceptions can contain private paths or request headers. Do not forward them.
       const message =
-        error instanceof WorkbenchError
+        error instanceof WorkbenchError || error instanceof AssetImportError
           ? error.message
           : signal.aborted
             ? '操作已取消或超时，原工作流未被规划修改。'
@@ -125,7 +157,7 @@ export async function apply(ctx: Context): Promise<void> {
   }
   // Connection exact routes retain its Host/Origin and owner-only authentication.
   // /api's single RPC interceptor belongs to the official Typert gateway.
-  for (const endpoint of ['snapshot', 'command', 'plan']) {
+  for (const endpoint of ['snapshot', 'command', 'plan', 'preview-import', 'resource-files']) {
     ctx.connection.fetch.register({
       path: `/api/zhuma/${endpoint}`,
       methods: ['POST'],

@@ -28,20 +28,31 @@ function workflowNode(partial) {
 
 test('a real connection and member cookie run start, report, and review', async () => {
   const { state, task } = fixture();
-  state.participants.push({
-    id: 'lin',
-    name: '林夏',
-    kind: 'human',
-    role: '复核',
-    capabilities: [],
-    instructions: '',
-    available: true,
-  });
+  state.participants.push(
+    {
+      id: 'lin',
+      name: '林夏',
+      kind: 'human',
+      role: '复核',
+      capabilities: [],
+      instructions: '',
+      available: true,
+    },
+    {
+      id: 'zhao',
+      name: '赵衡',
+      kind: 'human',
+      role: '同项目',
+      capabilities: [],
+      instructions: '',
+      available: true,
+    },
+  );
   const workbench = applyWorkbenchCommand(state, {
     type: 'save-task',
     task: {
       ...task,
-      participantIds: ['chen', 'lin'],
+      participantIds: ['chen', 'lin', 'zhao'],
       workflows: [
         {
           ...task.workflows[0],
@@ -69,14 +80,22 @@ test('a real connection and member cookie run start, report, and review', async 
         accounts: [
           { id: 'chen', passwordHash },
           { id: 'lin', passwordHash },
+          { id: 'zhao', passwordHash },
         ],
         notes: [
           {
             id: 'note',
-            spaceId: 'project',
+            spaceId: 'team-north',
             ownerId: 'chen',
             teamMemberIds: ['chen', 'lin'],
             text: 'shared',
+          },
+          {
+            id: 'project-alias',
+            spaceId: 'project',
+            ownerId: 'zhao',
+            teamMemberIds: ['zhao'],
+            text: 'same id as the project',
           },
         ],
       },
@@ -86,13 +105,14 @@ test('a real connection and member cookie run start, report, and review', async 
       { inject: [...executionInject], apply: applyExecution },
       {
         readWorkbench: () => workbench,
-        projectSpaces: boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]),
+        projectSpaces: boundedProjectSpaces([{ projectId: 'project', spaceId: 'team-north' }]),
       },
     );
     await executionFiber;
     executionStarted = true;
     const chen = await host.login('chen', password);
     const lin = await host.login('lin', password);
+    const zhao = await host.login('zhao', password);
     const owner = host.ownerCookie();
     async function exec(endpoint, payload, memberCookie) {
       const headers = {
@@ -169,6 +189,41 @@ test('a real connection and member cookie run start, report, and review', async 
     );
     assert.equal(reviewed.body.result.ok, true, JSON.stringify(reviewed.body));
     assert.equal(reviewed.body.result.value.disposition, 'applied');
+    const beforeAlias = await exec(
+      'report',
+      { taskId: applied.taskId, planId: applied.id, revision: applied.revision },
+      chen,
+    );
+    assert.equal(beforeAlias.body.result.ok, true, JSON.stringify(beforeAlias.body));
+    const aliasBody = {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+    };
+    const aliasStart = await exec(
+      'start-plan',
+      { ...aliasBody, idempotencyKey: 'start-alias' },
+      zhao,
+    );
+    assert.equal(aliasStart.body.result.ok, false, JSON.stringify(aliasStart.body));
+    assert.equal(aliasStart.body.result.error.code, 'not-found');
+    const aliasReport = await exec('report', aliasBody, zhao);
+    assert.equal(aliasReport.body.result.error.code, 'not-found');
+    const aliasSubmit = await exec(
+      'submit',
+      {
+        ...aliasBody,
+        nodeId: 'design',
+        expectedVersion: reviewed.body.result.value.node.version,
+        idempotencyKey: 'alias-submit',
+        text: '把项目 id 当成空间',
+      },
+      zhao,
+    );
+    assert.equal(aliasSubmit.body.result.error.code, 'not-found');
+    assert.equal(JSON.stringify(aliasSubmit.body).includes('把项目 id 当成空间'), false);
+    const afterAlias = await exec('report', aliasBody, chen);
+    assert.deepEqual(afterAlias.body, beforeAlias.body);
     const forged = await exec(
       'report',
       { taskId: applied.taskId, planId: applied.id, revision: applied.revision },

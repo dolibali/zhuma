@@ -62,8 +62,9 @@ export function buildPlanningContext(
 ) {
   const participants = state.participants
     .filter((p) => task.participantIds.includes(p.id) && p.available)
-    .map((p) => ({
+    .map(({ origin, ...p }) => ({
       ...p,
+      ...(origin ? { sourcePackageVersionId: origin.versionId } : {}),
       runtimeAvailability: 'unknown' as const,
       liveWorkload: 'unknown' as const,
     }));
@@ -71,9 +72,14 @@ export function buildPlanningContext(
     throw new WorkbenchError('participants-required', '请先选择至少一位可参与的人或专家。');
   const project = state.projects.find((p) => p.id === task.projectId);
   const currentWorkflows = baseProposal?.result.workflows ?? task.workflows;
-  const boundIds = new Set(
-    currentWorkflows.flatMap((w) => w.nodes.flatMap((n) => [...n.skillIds, ...n.mcpIds])),
-  );
+  const boundIds = new Set([
+    ...(project?.assetIds ?? []),
+    ...currentWorkflows.flatMap((w) => w.nodes.flatMap((n) => [...n.skillIds, ...n.mcpIds])),
+    ...participants.flatMap((p) => [
+      ...(p.resourceBindings?.skillIds ?? []),
+      ...(p.resourceBindings?.mcpIds ?? []),
+    ]),
+  ]);
   const goalTerms = terms(`${task.title}\n${task.goal}\n${instruction}`);
   const supportingTerms = terms(
     [
@@ -132,6 +138,7 @@ export function buildPlanningContext(
       omittedAssetCount: available.length - selected.length,
       unavailableBindingIds: [...boundIds].filter((id) => !available.some((a) => a.id === id)),
       directoryAvailabilityIsRuntimeReadiness: false,
+      projectReferenceContentsFetched: false,
       executionAuthorization: 'unknown' as const,
       budget: PLANNING_BUDGET,
     },
