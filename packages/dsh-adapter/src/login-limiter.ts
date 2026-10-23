@@ -9,8 +9,11 @@ import type { IncomingMessage } from 'node:http';
  * 8 attempts in 60 seconds, including ids that are not accounts. The reserve
  * happens before the password hash. A limited reserve does not add another
  * count. Expired keys are removed on the next reserve, clear, or count read.
- * `clear` drops both keys. A shared source address on one host therefore locks
- * every login from that address; see the identity contract.
+ * `clear` drops the address key and that account's key. Another account's
+ * counter on the same address stays, so one successful login does not reset
+ * a different account that already failed. A shared source address on one
+ * host therefore locks every login from that address until it is cleared;
+ * see the identity contract.
  */
 export function loginClientAddress(req: IncomingMessage): string {
   const address = req.socket?.remoteAddress;

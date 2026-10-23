@@ -75,9 +75,9 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 `packages/dsh-adapter/src/identity-session.ts` 的 `applyIdentity`，测试在 `packages/dsh-adapter/tests/identity-session.test.mjs`。没有改子模块，也没有新依赖。
 
-生产路径没有默认账号。`applyIdentity(ctx)` 不传导入时不写账号、不写笔记、也不保存任何口令。`seedIfEmpty` 不使用内置口令。调用方只能显式传入已经算好的 `{ id, passwordHash }`。已有账号的 domain 不会被这次导入覆盖。
+生产路径没有默认账号。`applyIdentity(ctx)` 不传导入时不写账号、不写笔记、也不保存任何口令。`seedIfEmpty` 不使用内置口令。调用方只能显式传入已经算好的 `{ id, passwordHash }`。导入先写账号和笔记，最后才把 global 的 `importComplete` 写成 true。标记还没写上时，下一次用同一份导入打开会把缺的行补上。标记已经是 true 的 domain 不会被另一份导入覆盖。
 
-测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。没有写死的 `lin` 默认账号。多人导入（两个及以上账号）如果再写 `ownerAccountId`，导入直接拒绝。没有导入，或导入没有把 `ownerAccountId` 设成唯一账号时，DSH cookie 不是产品账号，`/session` 返回 401。只有导入恰好一个账号，并且 `ownerAccountId` 就是这个账号时，隔离的本机单人模式才接受这张 DSH cookie。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。拼错的键、空的账号列表、重复的 id，以及笔记引用了未导入的账号，都会拒绝并报错。请求体超过 64KiB 时先返回 413，带 `Connection: close`，响应结束后再停止读取并关闭连接。真实的 `node:http` 客户端能收到这个 413。登录核对走异步 `scrypt`，次数在计算摘要之前先占名额，所以同一地址的并发登录也不能全部越过限额。同一个来源地址在 60 秒内的登录合计达到 8 次后，该地址再登录返回 429，不再计算摘要；账号 id 是否存在、是否换一个账号，都数进这一窗口，所以 429 出现的时刻不能用来判断账号在不在。同一地址上的单个账号另外还有一份计数，上限同样是 8。登录成功会同时清掉该地址和该账号的计数。过期的计数会在下一次占名额、清除或读取时删掉。失败计数表由每次 `applyIdentity` 各自创建，同一个进程里的两个宿主不共用一张表。进程里同时进行的口令摘要最多 4 路，多出来的登录会排队等待，不会因为排队而被拒绝。同一个宿主上，本地部署通常共用一个来源地址，因此这一地址上连续 8 次登录就会把该地址锁 60 秒，锁定期内换账号或使用正确口令也是 429。`hashPassword` 仍是同步的，只给准备导入的调用方使用，请求处理不会调用它。登录成功时删掉 `expiresAt` 已经过去的会话行。没有定时器。只读请求和过期 cookie 的 401 不会删行；没有人登录时，过期行会留到下一次成功登录。成员 cookie 的 `Path` 是 `/`，这样 `/zhuma-exec` 也能带上它；`HttpOnly` 和 `SameSite=Strict` 保留。`Secure` 仍是待办：在 0.2.1-rc.2 上 DSH 只在监听协议为 https 时才加 `Secure`，这里同样留到 TLS 监听接上之后。
+测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。没有写死的 `lin` 默认账号。多人导入（两个及以上账号）如果再写 `ownerAccountId`，导入直接拒绝。没有导入，或导入没有把 `ownerAccountId` 设成唯一账号时，DSH cookie 不是产品账号，`/session` 返回 401。只有导入恰好一个账号，并且 `ownerAccountId` 就是这个账号时，隔离的本机单人模式才接受这张 DSH cookie。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。拼错的键、空的账号列表、重复的 id，以及笔记引用了未导入的账号，都会拒绝并报错。请求体超过 64KiB 时先把完整的 413 写出去，带 `Content-Length`，这个值等于响应正文的字节数，并且不带 `Connection: close`。对端还可能继续上传时不调用 `res.end()`。Node 会在响应结束时收起套接字；分块上传还没写完就被收起时，解析失败，客户端看到 ECONNRESET 或 EPIPE，状态是 0，读不到 413。正文用 `data`/`end` 读取；超限后停止解析，继续把剩余正文读完并丢掉。客户端把请求写完之后才 `res.end()`。丢掉的上限是再读 32MiB，时间上限是 5 秒，用来挡住一直不写完的连接。先碰到上限时，要等这 413 的字节已经写出，再留 500 毫秒给客户端读完，然后才 `destroy`。不能用 `for await` 读请求：循环抛错时异步迭代器会销毁 `IncomingMessage`，套接字在 413 写出之前就被拆掉。声明了超限 `Content-Length` 的请求和分块超限请求都会收到完整的 413，客户端仍在按大块写入并占用事件循环时也一样，之后正常登录仍然成功。登录核对走异步 `scrypt`，次数在计算摘要之前先占名额，所以同一地址的并发登录也不能全部越过限额。同一个来源地址在 60 秒内的登录合计达到 8 次后，该地址再登录返回 429，不再计算摘要；账号 id 是否存在、是否换一个账号，都数进这一窗口，所以 429 出现的时刻不能用来判断账号在不在。同一地址上的单个账号另外还有一份计数，上限同样是 8。登录成功会清掉该地址的计数和这次登录的账号计数，另一个账号在同一地址上已经累计的失败次数还留着，所以这个账号仍会在 8 次后得到 429，而该地址上的其他账号还可以登录。过期的计数会在下一次占名额、清除或读取时删掉。失败计数表由每次 `applyIdentity` 各自创建，同一个进程里的两个宿主不共用一张表。进程里同时进行的口令摘要最多 4 路。再多的登录排队，队列最多 32 个。队列已满时这次登录返回 503 `login-unavailable`，不计算摘要，也不占用上面的 8 次名额。账号是否存在，503 的状态和正文都一样。同一个宿主上，本地部署通常共用一个来源地址，因此这一地址上连续 8 次登录就会把该地址锁 60 秒，锁定期内换账号或使用正确口令也是 429。`hashPassword` 仍是同步的，只给准备导入的调用方使用，请求处理不会调用它。登录成功时删掉 `expiresAt` 已经过去的会话行。没有定时器。只读请求和过期 cookie 的 401 不会删行；没有人登录时，过期行会留到下一次成功登录。成员 cookie 的 `Path` 是 `/`，这样 `/zhuma-exec` 也能带上它；`HttpOnly` 和 `SameSite=Strict` 保留。`Secure` 仍是待办：在 0.2.1-rc.2 上 DSH 只在监听协议为 https 时才加 `Secure`，这里同样留到 TLS 监听接上之后。
 
 探针里真实跑到的 DSH 层：
 
@@ -86,7 +86,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 没有装进本包、因此用同形替身的部分：
 
-- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。两个服务都 `listen(0)`，端口由系统分配。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。这条配置的 globalSetup 会先在仓库根目录执行 `tsc -b`，所以单独重跑之前不必再手动构建。
+- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。两个服务都 `listen(0)`，端口由系统分配。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。Playwright 先启动 webServer，再跑 globalSetup。webServer 的命令会先在仓库根目录执行 `tsc -b`，再启动页面服务，所以 dist 被删掉之后这条命令仍能解析 `@zhuma/agent-core`。globalSetup 里还有一次 `tsc -b`。单独重跑之前不必再手动构建。
 - `modifyRecord` 是按 key 分开的内存表，不是 `.credentials.yaml`。Connection 的 `client-connection/browser-session` 和本模块的 `zhuma-identity/member-session` 各占一条。
 - KV 介质是内存 Map。domain 的校验和写链是真的，json/sqlite 后端不是。
 - `decide` 按 `remote-access` 源码里的规则实现：owner 直接允许，其他 kind 走已注册策略的 `bindings` 和 `condition`。策略对象是 `applyIdentity` 注册的。没有加载 `RemoteAccessService` 类。
@@ -123,11 +123,104 @@ function memberResolver(ctx: object): MemberResolver;
 
 `applyIdentity` 挂上之后，`memberResolver(ctx)` 就是可注入的对象，`resolveMember(ctx, { headers })` 是同一条规则的函数。`ctx` 可以是宿主根上下文，也可以是 Cordis 插件拿到的子上下文，解析登记在宿主根上。`headers` 用 Node 的请求头，至少要有这次请求的 `cookie`，以及 Host/Origin 检查要用的 `host`、`origin`、`sec-fetch-site`。成功时 `memberId` 是账号 id，`spaceIds` 是该账号作为 owner 或团队成员能够触及的空间 id，按字母序。403 表示 Host/Origin 不被 Connection 信任。401 表示没有有效成员会话。未挂载 identity 时也是 401。
 
-多人模式下，没有成员 cookie、cookie 被删、`Max-Age=0` 登出、超过 12 小时、签名不对或会话已撤销，都是 401。同时带成员 cookie 和 DSH cookie 时按成员处理。DSH owner 不会自动等于某个成员。`identityAccessMode(ctx)` 返回 `unmounted`、`single-user` 或 `multi-member`，供旧 exact 路由决定是否仍只留给隔离的本机宿主。
+多人模式下，没有成员 cookie、cookie 被删、`Max-Age=0` 登出、超过 12 小时、签名不对或会话已撤销，都是 401。同时带成员 cookie 和 DSH cookie 时按成员处理。DSH owner 不会自动等于某个成员。
 
-这个模式看的是当前进程里有没有登记解析，不看一份配置开关。identity 还没启动、`applyIdentity` 中途失败而没有留下登记、或者插件 dispose 之后，都是 `unmounted`。这时旧的 exact 路由仍只认 DSH owner，门是开的。这就是“未挂载时行为不变”，也是失败即放开。
+部署模式由宿主在启动时显式选定，登记在宿主根上，和成员解析器分开存放。解析器在不在，不能推出当前是单人还是多人。
 
-`b/id0a-legacy-gate` 在 `multi-member` 时关掉 `/api/zhuma/snapshot`、`command` 和 `plan`。它 import `./member-session.js`，必须接在本分支之后。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
+```ts
+type DeploymentMode = 'legacy-single-user' | 'multi-member';
+function configureDeploymentMode(ctx: object, mode: DeploymentMode): void;
+function deploymentMode(ctx: object): DeploymentMode | undefined;
+
+type LegacyOwnerRouteDecision =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly status: 401 | 404;
+      readonly code: 'deployment-mode-unset' | 'not-found';
+    };
+function authorizeLegacyOwnerRoutes(ctx: object): LegacyOwnerRouteDecision;
+
+type IdentityAccessMode = 'unmounted' | 'single-user' | 'multi-member';
+function identityAccessMode(ctx: object): IdentityAccessMode;
+```
+
+`configureDeploymentMode(ctx, mode)` 只接受 `legacy-single-user` 或 `multi-member`。同一个宿主再设一次相同的模式可以；改成另一种模式会抛 `identity startup refused: deployment mode is already configured`。传入其他值会抛 `identity startup refused: deployment mode is not configured`，并且不写入。`deploymentMode(ctx)` 在还没选定的时候返回 `undefined`。
+
+`applyIdentity` 在打开 domain 之前读取这个模式。没有选定就抛同一句未配置错误，不会打开身份库，也不会改去单人模式。`legacy-single-user` 并且导入恰好一个账号、`ownerAccountId` 指向该账号时，owner cookie 才映射成这个成员。`multi-member` 下即使导入满足这个形状，owner cookie 仍是 401。
+
+`LEGACY_OWNER_ROUTES` 是仍走 DSH owner carrier 的 exact 路由：`snapshot`、`command`、`plan`、`preview-import`、`resource-files`。`LEGACY_OWNER_PACKAGE_COMMANDS` 是 `import-package`。它没有单独的路由，写在 `command` 的载荷里，和这五条路由一起关闭。
+
+`authorizeLegacyOwnerRoutes(ctx)` 是这些入口的门。它只看部署模式，不读 cookie：
+
+- `legacy-single-user` 返回 `{ ok: true }`。这五条路由仍按原来的 owner 入口处理，`import-package` 也一样。
+- `multi-member` 返回 `{ ok: false, status: 404, code: 'not-found' }`。身份还没挂上、`applyIdentity` 抛错、正在 dispose、dispose 完成、以及重新挂载的整个过程，都是这个结果。没有 cookie、cookie 无效、或成员 cookie 有效，都一样，不退回 owner。这五条路由不返回工作台快照，也不解析导入包。
+- 模式还没选定时返回 `{ ok: false, status: 401, code: 'deployment-mode-unset' }`。启动拒绝继续，路由也不放行。
+
+门必须写在 `request.json()` 和 `handle()` 之前。这样超限或失败时不会解压 ZIP，不会读出文件字节，也不会把包写入 `zhuma_asset_packages`。
+
+`zhuma_asset_packages`（version 1，per-record，`versions` 表）只保存不可变字节，自己不做授权。字段、限额和 Host 形状由 A 的 IF04 维护，见 `docs/asset-import.md` 提交 `e3916fa`（「本地专家与资产包导入：首批接口」）的「Host 与 S1 接缝」。本文不复制那份定义。旧版本在运行时的物化要经过 B 的服务，用 `deploymentMode(ctx)` 和 `resolveMember` / `memberResolver` 做授权，不能直接扫这张表。普通成员不能用这五条路由读全局目录，也不能按任意 versionId 取包；那会另走空间授权入口。`resource-files` 在单人旧入口里也只返回当前定义 origin 允许的文件，不是目录列举。
+
+`identityAccessMode(ctx)` 的声明返回类型仍包含 `unmounted`，以便和既有 S1 签名互认。运行时它只读 `deploymentMode`：`legacy-single-user` 得到 `single-user`，`multi-member` 得到 `multi-member`，未选定则抛未配置错误。授权决定用 `authorizeLegacyOwnerRoutes`。
+
+宿主装配顺序：
+
+1. `configureDeploymentMode(ctx, mode)`，在宿主 setup 选定。
+2. `applyIdentity(ctx, imported?)`。
+3. `memberResolver(ctx)` 可以注入。它和 `resolveMember(ctx, request)` 是同一条规则。
+4. `applyWorkbench`。A 的工作台插件在这里挂上。
+5. `applyExecution`。执行插件从 `deploymentMode(ctx)` 和 `resolveMember` / `memberResolver` 读取模式和成员。
+6. UI mount。
+
+执行侧使用的导出是 `DeploymentMode`、`configureDeploymentMode`、`deploymentMode`、`resolveMember`、`memberResolver`、`MemberResolver`、`MemberRequest`、`MemberResolution`。`applyIdentity` 的签名仍是 `(ctx: Context, imported?: IdentityImport) => Promise<void>`。
+
+执行插件不再接受 `singleUser`，也不再提供 `bind-owner`。模式和成员只从上面的 `deploymentMode`、`resolveMember` 和 `memberResolver` 读取。对应的模块签名：
+
+```ts
+interface ExecutionApplyOptions {
+  readWorkbench(): Workbench;
+  memberResolver?: MemberResolver;
+}
+type ApplyExecution = (ctx: Context, options: ExecutionApplyOptions) => Promise<void>;
+type ExecutionEndpoints = readonly ['start-plan', 'inbox', 'submit', 'ballot', 'settle', 'report'];
+interface ExecutionApi {
+  inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
+  submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+}
+type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
+interface ExecutionWorkspaceProps {
+  api: ExecutionApi;
+}
+```
+
+请求体仍是 `StartPlanRequest`、`InboxRequest`、`SubmitRequest`、`BallotRequest`、`SettleRequest`、`ReportRequest`。没有 `BindOwnerRequest`。通道结果仍是 `{ ok: true, value } | { ok: false, error: { code, message, details } }`。`readWorkbench` 由 A 包住 `WorkbenchService.snapshot()`。界面挂 `ExecutionWorkspace`，它使用 `createExecutionApi(rpc)`。这些类型的其余字段在 `b/s1-signatures` 的 `packages/dsh-adapter/src/s1-integration.ts`；本分支不实现执行插件。
+
+本 PR 不改 `workbench-plugin.ts`、宿主构建、包的公开 exports 和 Playwright 注册。A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
+
+```ts
+import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
+
+for (const endpoint of LEGACY_OWNER_ROUTES) {
+  ctx.connection.fetch.register({
+    path: `/api/zhuma/${endpoint}`,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      const gate = authorizeLegacyOwnerRoutes(ctx);
+      if (!gate.ok) {
+        return Response.json(
+          { ok: false, error: { code: gate.code } },
+          { status: gate.status, headers: { 'cache-control': 'no-store' } },
+        );
+      }
+      // JSON、ZIP、文件字节和 packages.put 都在这之后。
+    },
+  });
+}
+```
+
+可运行的那份在 `b/id0a-legacy-gate`。它 import `./member-session.js`，接在本分支之后，并盖住 `e3916fa` 的这五条路由和 `import-package`。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
 
 ## 6. A 需要提供的挂载
 
@@ -135,7 +228,7 @@ function memberResolver(ctx: object): MemberResolver;
 
 A 在官方 Host 上已经具备 `connection`、`storageDomain`、`credentials`、`webServer` 时，需要：
 
-1. 在现有 `apply` 里调用一次 `applyIdentity`。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。
+1. 按上一节的顺序装配：`configureDeploymentMode(ctx, mode)`，再 `applyIdentity`，再 `memberResolver(ctx)`，再 `applyWorkbench`，再 `applyExecution`（不传 `singleUser`，不注册 `bind-owner`），最后挂 UI。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。`LEGACY_OWNER_ROUTES` 和 `import-package` 用上一节的 `authorizeLegacyOwnerRoutes`，并且放在解析正文之前。
 2. 构建入口要能带到 `packages/dsh-adapter/src/identity-session.ts`。现在的 esbuild 入口只有 `workbench-plugin.ts`。
 3. 登录页、空间切换和成员入口仍由 A-SPACE 做。cookie 由 `Set-Cookie` 写入，页面不提交 actor。
 4. 若要把 `registerPolicy` 写成对真实 `RemoteAccessService` 的类型检查，需要在宿主编译里合并 `PrincipalMap` 的 `zhuma-member`。运行时 `createPeer` 不依赖这次合并；本包用了断言，因为 `@deepseek-ai/dsh-typert-protocol` 不是直接依赖。
@@ -159,6 +252,6 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 
 1. M+ 这种由 B 签发的成员 cookie，是否接受为 FR16 的登录，还是必须等 U，在 `admit` 里区分用户？
 2. `decide` 对 owner 一律允许。空间隔离放在路由里、不单放在 `registerPolicy`，是否符合预期？
-3. 无成员 cookie 即未登录。这已按 main `656bb61`（PR #15）实现，不再请 dolibali 决定：缺失、删除、过期、撤销或伪造的成员 cookie 都返回 401，不退回 DSH owner。多人导入不能再靠 `ownerAccountId` 把 owner 映射成 `lin`。只有恰好一个账号且 `ownerAccountId` 指向该账号时，隔离的本机单人模式才做这层映射。
+3. 无成员 cookie 即未登录。这已按 main `656bb61`（PR #15）实现，不再请 dolibali 决定：缺失、删除、过期、撤销或伪造的成员 cookie 都返回 401，不退回 DSH owner。多人导入不能再靠 `ownerAccountId` 把 owner 映射成 `lin`。宿主显式选定 `legacy-single-user`，并且恰好一个账号、`ownerAccountId` 指向该账号时，隔离的本机单人模式才做这层映射。
 4. 生产路径已经不放默认账号。导入是调用方传入的 `{ id, passwordHash }`，且不覆盖已有账号。宿主是否就用这个导入作为种子入口？
 5. `applyIdentity` 的挂载和构建入口是否由 A 加进 `workbench-plugin.ts`？B 这次没有改那个文件，也没有改 `scripts/workbench/build.mjs`。

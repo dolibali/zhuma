@@ -30,6 +30,19 @@ test('one address is limited across account ids', () => {
   assert.equal(attempts.count(address, 'chen', 1_000), 1);
 });
 
+test('a successful login clears the address without clearing another account', () => {
+  const attempts = createLoginFailureTable();
+  const address = '198.51.100.40';
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    assert.equal(attempts.reserve(address, 'chen', 1_000), 'allowed');
+  }
+  attempts.clear(address, 'zhao');
+  assert.equal(attempts.count(address, 'chen', 1_000), 7);
+  assert.equal(attempts.reserve(address, 'chen', 1_000), 'allowed');
+  assert.equal(attempts.reserve(address, 'chen', 1_000), 'limited');
+  assert.equal(attempts.reserve(address, 'lin', 1_000), 'allowed');
+});
+
 test('two hosts do not share login-failure counts', () => {
   const first = createLoginFailureTable();
   const second = createLoginFailureTable();

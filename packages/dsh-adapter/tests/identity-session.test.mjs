@@ -30,7 +30,16 @@ import {
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../dist/identity-session.js';
-import { resolveMember } from '../dist/member-session.js';
+import {
+  authorizeLegacyOwnerRoutes,
+  configureDeploymentMode,
+  deploymentMode,
+  identityAccessMode,
+  installMemberResolver,
+  LEGACY_OWNER_PACKAGE_COMMANDS,
+  LEGACY_OWNER_ROUTES,
+  resolveMember,
+} from '../dist/member-session.js';
 
 const AUTHORITY = '127.0.0.1:3080';
 
@@ -82,7 +91,7 @@ function memoryCredentials(records = new Map()) {
   };
 }
 
-function memoryKv(media = new Map()) {
+function memoryKv(media = new Map(), faults = {}) {
   return {
     media,
     async open(descriptor) {
@@ -95,6 +104,10 @@ function memoryKv(media = new Map()) {
       return {
         async loadAll() {
           if (closed) throw new Error('closed');
+          if (typeof faults.load === 'function') {
+            const error = await faults.load();
+            if (error !== undefined) throw error;
+          }
           const tables = {};
           for (const table of descriptor.tables) {
             tables[table] = Object.fromEntries(medium.tables.get(table) ?? []);
@@ -103,6 +116,10 @@ function memoryKv(media = new Map()) {
         },
         async putRecord(table, key, value) {
           if (closed) throw new Error('closed');
+          if (typeof faults.put === 'function') {
+            const error = await faults.put(table, key);
+            if (error !== undefined) throw error;
+          }
           const records = medium.tables.get(table) ?? new Map();
           medium.tables.set(table, records);
           records.set(key, structuredClone(value));
@@ -113,10 +130,18 @@ function memoryKv(media = new Map()) {
         },
         async setGlobal(value) {
           if (closed) throw new Error('closed');
+          if (typeof faults.global === 'function') {
+            const error = await faults.global(value);
+            if (error !== undefined) throw error;
+          }
           medium.global = structuredClone(value);
         },
         async close() {
           closed = true;
+          if (typeof faults.close === 'function') {
+            const error = await faults.close();
+            if (error !== undefined) throw error;
+          }
         },
       };
     },
@@ -235,10 +260,13 @@ function cookiePair(setCookie) {
 
 async function mount(shared = {}) {
   const credentials = shared.credentials ?? memoryCredentials();
-  const kv = memoryKv(shared.media);
+  const kv = memoryKv(shared.media, shared.faults);
   const web = createWebServer();
   const access = createAccess();
-  const ctx = new Context();
+  const ctx = shared.ctx ?? new Context();
+  if (shared.deploymentMode !== null) {
+    configureDeploymentMode(ctx, shared.deploymentMode ?? 'multi-member');
+  }
   ctx.provide('credentials', credentials);
   ctx.provide('webServer', web);
   ctx.provide('remoteAccess', access);
@@ -272,6 +300,7 @@ async function mount(shared = {}) {
     connection: ctx.connection,
     credentials,
     media: kv.media,
+    identityFiber,
     dispose: async () => {
       await identityFiber.dispose();
       await connectionFiber.dispose();
@@ -676,6 +705,124 @@ test('concurrent failed logins cannot all skip the limiter', async () => {
   await host.dispose();
 });
 
+test('one account stays limited after another account clears the address', async () => {
+  const host = await mount();
+  const address = '203.0.113.55';
+  const wrong = randomBytes(18).toString('base64url');
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const refused = await call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: address,
+      body: { accountId: 'chen', password: wrong },
+    });
+    assert.equal(refused.status, 401);
+  }
+  const zhao = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'zhao', password: passwords.zhao },
+  });
+  assert.equal(zhao.status, 200);
+  const eighth = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: wrong },
+  });
+  assert.equal(eighth.status, 401);
+  const limited = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.json.error.code, 'login-rate-limited');
+  const lin = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'lin', password: passwords.lin },
+  });
+  assert.equal(lin.status, 200);
+  assert.equal(lin.json.accountId, 'lin');
+  await host.dispose();
+});
+
+test('at most four password hashes run at once', async () => {
+  let active = 0;
+  let max = 0;
+  let block = true;
+  const held = [];
+  const host = await mount({
+    hashProbe: {
+      note() {
+        active += 1;
+        if (active > max) max = active;
+      },
+      hold() {
+        if (!block) return undefined;
+        return new Promise((resolve) => {
+          held.push(resolve);
+        });
+      },
+      done() {
+        active -= 1;
+      },
+    },
+  });
+  const wrong = randomBytes(18).toString('base64url');
+  const pending = [];
+  const start = (accountId, address, password = wrong) => {
+    const task = call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: address,
+      body: { accountId, password },
+    });
+    pending.push(task);
+    return task;
+  };
+  try {
+    for (let index = 0; index < 4; index += 1) start('chen', `203.0.113.${index}`);
+    await new Promise((resolve) => {
+      const watch = () => {
+        if (held.length >= 4) resolve();
+        else setImmediate(watch);
+      };
+      watch();
+    });
+    for (let index = 0; index < 32; index += 1) start('ghost', `198.51.100.${index}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(active, 4);
+    assert.equal(max, 4);
+    assert.equal(held.length, 4);
+    const known = await start('chen', '203.0.113.200', passwords.chen);
+    const unknown = await start('ghost', '203.0.113.201');
+    assert.equal(known.status, 503);
+    assert.equal(unknown.status, 503);
+    assert.deepEqual(known.json, unknown.json);
+    assert.equal(known.json.error.code, 'login-unavailable');
+    assert.equal(active, 4);
+    assert.equal(max, 4);
+    block = false;
+    for (const release of held.splice(0)) release();
+    const settled = await Promise.all(pending);
+    assert.equal(max, 4);
+    assert.equal(
+      settled.every((response) => response.status === 401 || response.status === 503),
+      true,
+    );
+  } finally {
+    block = false;
+    for (const release of held.splice(0)) release();
+    await Promise.allSettled(pending);
+    await host.dispose();
+  }
+});
+
 test('password checking yields while the hash is in flight', async () => {
   const host = await mount();
   const wrong = randomBytes(18).toString('base64url');
@@ -707,8 +854,87 @@ test('password checking yields while the hash is in flight', async () => {
   await host.dispose();
 });
 
-test('a real http client receives 413 before the socket closes', async () => {
-  const host = await mount();
+function postHttp(port, body, chunked = false) {
+  return postUpload(port, Buffer.from(body), { chunked });
+}
+
+function postUpload(port, payload, { chunked = false, paceMs = 0 } = {}) {
+  const buffer = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  return new Promise((resolve) => {
+    let settled = false;
+    let responseSeen = false;
+    let writeDone = false;
+    let responseStatus;
+    let responseBody = '';
+    let contentLength;
+    const finish = (status, text) => {
+      if (settled) return;
+      settled = true;
+      resolve({ status, body: text, responseSeen, contentLength });
+    };
+    const tryFinish = () => {
+      if (writeDone && responseStatus !== undefined) finish(responseStatus, responseBody);
+    };
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        method: 'POST',
+        path: '/zhuma-id/login',
+        headers: {
+          'content-type': 'application/json',
+          host: AUTHORITY,
+          ...(chunked ? {} : { 'content-length': String(buffer.length) }),
+        },
+      },
+      (res) => {
+        responseSeen = true;
+        const rawLength = res.headers['content-length'];
+        contentLength = Array.isArray(rawLength) ? rawLength[0] : rawLength;
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => {
+          responseStatus = res.statusCode ?? 0;
+          responseBody = Buffer.concat(chunks).toString('utf8');
+          tryFinish();
+        });
+        res.on('error', (error) => finish(0, error.code ?? error.message));
+      },
+    );
+    req.on('error', (error) => finish(0, error.code ?? error.message));
+    let offset = 0;
+    const step = paceMs > 0 ? 1024 : 16 * 1024;
+    const tick = () => {
+      if (settled) return;
+      if (offset >= buffer.length) {
+        writeDone = true;
+        req.end();
+        tryFinish();
+        return;
+      }
+      const ok = req.write(buffer.subarray(offset, offset + step));
+      offset += step;
+      const again = () => {
+        if (settled) return;
+        if (paceMs > 0) setTimeout(tick, paceMs);
+        else setImmediate(tick);
+      };
+      if (ok) again();
+      else req.once('drain', again);
+    };
+    tick();
+  });
+}
+
+function assertTooLarge(result) {
+  assert.equal(result.responseSeen, true);
+  assert.equal(result.status, 413);
+  assert.equal(JSON.parse(result.body).error.code, 'body-too-large');
+  assert.equal(typeof result.contentLength, 'string');
+  assert.equal(result.contentLength, String(Buffer.byteLength(result.body)));
+}
+
+async function listenForHost(host) {
   const server = http.createServer((req, res) => {
     host.web.dispatch(req, res).catch(() => {
       if (res.headersSent !== true) {
@@ -722,59 +948,188 @@ test('a real http client receives 413 before the socket closes', async () => {
   });
   const address = server.address();
   assert.equal(typeof address, 'object');
-  const port = address.port;
-  const send = (body, chunked = false) =>
-    new Promise((resolve) => {
-      const req = http.request(
-        {
-          host: '127.0.0.1',
-          port,
-          method: 'POST',
-          path: '/zhuma-id/login',
-          headers: { 'content-type': 'application/json', host: AUTHORITY },
-        },
-        (res) => {
-          const chunks = [];
-          res.on('data', (chunk) => chunks.push(chunk));
-          res.on('end', () => {
-            resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') });
-          });
-        },
-      );
-      req.on('error', (error) => resolve({ status: 0, body: error.code ?? error.message }));
-      if (!chunked) {
-        req.end(body);
-        return;
-      }
-      const buffer = Buffer.from(body);
-      let offset = 0;
-      const tick = () => {
-        if (offset >= buffer.length) {
-          req.end();
-          return;
-        }
-        const ok = req.write(buffer.subarray(offset, offset + 4096));
-        offset += 4096;
-        if (ok) setImmediate(tick);
-        else req.once('drain', tick);
-      };
-      tick();
-    });
+  return {
+    port: address.port,
+    close: () => server.close(),
+  };
+}
+
+test('a real http client receives 413 before the socket closes', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
   try {
-    const ok = await send(JSON.stringify({ accountId: 'chen', password: passwords.chen }));
+    const ok = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'chen', password: passwords.chen }),
+    );
     assert.equal(ok.status, 200);
     const bulky = JSON.stringify({
       accountId: 'a',
       password: randomBytes(70_000).toString('base64url').slice(0, 70_000),
     });
-    const declared = await send(bulky);
-    assert.equal(declared.status, 413);
-    assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
-    const chunked = await send(bulky, true);
-    assert.equal(chunked.status, 413);
-    assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
-    const again = await send(JSON.stringify({ accountId: 'zhao', password: passwords.zhao }));
+    const declared = await postHttp(server.port, bulky);
+    assertTooLarge(declared);
+    const chunked = await postHttp(server.port, bulky, true);
+    assertTooLarge(chunked);
+    const again = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'zhao', password: passwords.zhao }),
+    );
     assert.equal(again.status, 200);
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+// Mutation: socket.end() inside the res.end callback fails this loop on the
+// client. The peer is still uploading, the reset arrives as EPIPE, and there
+// is no 'response' event, so status stays 0. Pass only when each attempt
+// observes that event with status 413. No retry and no skipped attempt.
+test('over-limit bodies get 413 on every attempt, then a normal login works', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  const bulky = JSON.stringify({
+    accountId: 'a',
+    password: randomBytes(70_000).toString('base64url').slice(0, 70_000),
+  });
+  try {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const declared = await postHttp(server.port, bulky);
+      assertTooLarge(declared);
+      const chunked = await postHttp(server.port, bulky, true);
+      assertTooLarge(chunked);
+    }
+    const again = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'chen', password: passwords.chen }),
+    );
+    assert.equal(again.responseSeen, true);
+    assert.equal(again.status, 200);
+    assert.equal(JSON.parse(again.body).accountId, 'chen');
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+test('a client that keeps uploading after the 413 still reads the full body', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  const payload = Buffer.alloc(128 * 1024, 0x61);
+  try {
+    const declared = await postUpload(server.port, payload, { paceMs: 5 });
+    assertTooLarge(declared);
+    const chunked = await postUpload(server.port, payload, { chunked: true, paceMs: 5 });
+    assertTooLarge(chunked);
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+function busyWait(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    /* block the event loop the way a loaded client does */
+  }
+}
+
+function postLoaded(
+  port,
+  { chunked, runs = 1, chunkBytes = 256 * 1024, timerMs = 5, busyMs = 30 },
+) {
+  const once = () =>
+    new Promise((resolve) => {
+      let done = false;
+      const fin = (outcome) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        clearInterval(iv);
+        resolve(outcome);
+      };
+      const timer = setTimeout(
+        () => fin({ status: 0, err: 'timeout', responseSeen: false }),
+        15_000,
+      );
+      const headers = { host: AUTHORITY, 'content-type': 'application/json' };
+      const bodyBytes = 4 * 1024 * 1024;
+      if (!chunked) headers['content-length'] = String(bodyBytes);
+      let responseSeen = false;
+      const req = http.request(
+        { host: '127.0.0.1', port, method: 'POST', path: '/zhuma-id/login', headers },
+        (res) => {
+          responseSeen = true;
+          const rawLength = res.headers['content-length'];
+          const contentLength = Array.isArray(rawLength) ? rawLength[0] : rawLength;
+          res.resume();
+          res.on('end', () =>
+            fin({ status: res.statusCode ?? 0, responseSeen: true, contentLength }),
+          );
+          res.on('error', () =>
+            fin({
+              status: res.statusCode ?? 0,
+              err: 'res-error',
+              responseSeen: true,
+              contentLength,
+            }),
+          );
+        },
+      );
+      req.on('error', (error) => fin({ status: 0, err: error.code, responseSeen }));
+      const piece = Buffer.alloc(chunkBytes, 120);
+      const iv = setInterval(() => {
+        if (done || req.destroyed) {
+          clearInterval(iv);
+          return;
+        }
+        req.write(piece);
+        if (busyMs > 0) busyWait(busyMs);
+      }, timerMs);
+    });
+  return (async () => {
+    const results = [];
+    for (let run = 0; run < runs; run += 1) results.push(await once());
+    return results;
+  })();
+}
+
+test('a loaded client still receives 413 while it keeps writing', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  try {
+    const declared = await postLoaded(server.port, { chunked: false, runs: 10 });
+    const chunked = await postLoaded(server.port, { chunked: true, runs: 10 });
+    const expectedLength = String(
+      Buffer.byteLength(JSON.stringify({ ok: false, error: { code: 'body-too-large' } })),
+    );
+    for (const result of [...declared, ...chunked]) {
+      assert.equal(result.responseSeen, true);
+      assert.equal(result.status, 413);
+      assert.equal(result.contentLength, expectedLength);
+    }
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+test('a multi-megabyte upload still receives the full 413 while the client writes', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  const payload = Buffer.alloc(5 * 1024 * 1024, 0x62);
+  try {
+    const declared = await postUpload(server.port, payload);
+    assertTooLarge(declared);
+    const chunked = await postUpload(server.port, payload, { chunked: true });
+    assertTooLarge(chunked);
+    const again = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'lin', password: passwords.lin }),
+    );
+    assert.equal(again.status, 200);
+    assert.equal(JSON.parse(again.body).accountId, 'lin');
   } finally {
     server.close();
     await host.dispose();
@@ -1121,15 +1476,19 @@ test('a request body over 64KiB is refused', async () => {
     await host.web.dispatch(req, captured.response);
     return {
       status: captured.state.status,
+      headers: captured.state.headers,
+      body: captured.state.body,
       json: JSON.parse(captured.state.body),
     };
   }
   const declared = await post({ 'content-length': String(payload.length) });
   assert.equal(declared.status, 413);
   assert.equal(declared.json.error.code, 'body-too-large');
+  assert.equal(declared.headers['content-length'], String(Buffer.byteLength(declared.body)));
   const streamed = await post({});
   assert.equal(streamed.status, 413);
   assert.equal(streamed.json.error.code, 'body-too-large');
+  assert.equal(streamed.headers['content-length'], String(Buffer.byteLength(streamed.body)));
   await host.dispose();
 });
 
@@ -1359,6 +1718,7 @@ test('resolveMember reports the member and their spaces', async () => {
 test('a single-user owner mapping exists only when the import names that one account', async () => {
   const password = randomBytes(18).toString('base64url');
   const named = await mount({
+    deploymentMode: 'legacy-single-user',
     imported: {
       ownerAccountId: 'lin',
       accounts: [{ id: 'lin', passwordHash: hashPassword(password) }],
@@ -1404,6 +1764,242 @@ test('a single-user owner mapping exists only when the import names that one acc
   await unnamed.dispose();
 });
 
+function closedLegacy(status, code) {
+  return { ok: false, status, code };
+}
+
+test('legacy owner routes include the asset import reads and the import-package write', () => {
+  assert.deepEqual(
+    [...LEGACY_OWNER_ROUTES],
+    ['snapshot', 'command', 'plan', 'preview-import', 'resource-files'],
+  );
+  assert.deepEqual([...LEGACY_OWNER_PACKAGE_COMMANDS], ['import-package']);
+});
+
+test('an unset deployment mode refuses identity startup and legacy owner routes', async () => {
+  const ctx = new Context();
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+  assert.throws(
+    () => identityAccessMode(ctx),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.throws(
+    () => configureDeploymentMode(ctx, 'single-user'),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.equal(deploymentMode(ctx), undefined);
+  await assert.rejects(
+    () => mount({ ctx, deploymentMode: null }),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+});
+
+test('a registered resolver does not select the deployment mode', () => {
+  const ctx = new Context();
+  installMemberResolver(ctx, {
+    secret: randomBytes(32),
+    requestRejection: () => undefined,
+    findSession: () => undefined,
+    spaceIdsFor: () => [],
+    singleUserAccountId: () => 'lin',
+    admitOwner: () => true,
+  });
+  assert.throws(
+    () => identityAccessMode(ctx),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+  configureDeploymentMode(ctx, 'multi-member');
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+});
+
+test('multi-member denies legacy owner routes while identity is not mounted', () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'multi-member');
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+});
+
+test('a failed identity mount keeps legacy owner routes denied', async () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'multi-member');
+  await assert.rejects(
+    () => mount({ ctx, deploymentMode: null, imported: { accounts: [] } }),
+    /identity import was rejected: accounts is empty/,
+  );
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const member = await resolveMember(ctx, { headers: { host: AUTHORITY } });
+  assert.deepEqual(member, { ok: false, status: 401, code: 'unauthenticated' });
+});
+
+test('legacy owner routes stay denied while multi-member identity disposes and remounts', async () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  let closeCount = 0;
+  let releaseClose;
+  let closeEntered;
+  const closeReady = new Promise((resolve) => {
+    closeEntered = resolve;
+  });
+  let opens = 0;
+  let releaseLoad;
+  let loadEntered;
+  const loadReady = new Promise((resolve) => {
+    loadEntered = resolve;
+  });
+  const host = await mount({
+    ctx,
+    deploymentMode: null,
+    faults: {
+      close: () => {
+        closeCount += 1;
+        if (closeCount > 1) return undefined;
+        return new Promise((resolve) => {
+          closeEntered();
+          releaseClose = () => resolve(undefined);
+        });
+      },
+      load: () => {
+        opens += 1;
+        if (opens === 1) return undefined;
+        return new Promise((resolve) => {
+          loadEntered();
+          releaseLoad = () => resolve(undefined);
+        });
+      },
+    },
+  });
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const closing = host.identityFiber.dispose();
+  await closeReady;
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const duringDispose = await resolveMember(ctx, { headers: { host: AUTHORITY } });
+  assert.deepEqual(duringDispose, { ok: false, status: 401, code: 'unauthenticated' });
+  releaseClose();
+  await closing;
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const remounting = ctx.plugin(
+    { inject: [...identityInject], apply: applyIdentity },
+    fixtureImport(),
+  );
+  await loadReady;
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const duringRemount = await resolveMember(ctx, { headers: { host: AUTHORITY } });
+  assert.deepEqual(duringRemount, { ok: false, status: 401, code: 'unauthenticated' });
+  releaseLoad();
+  await remounting;
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  await remounting.dispose();
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  await host.dispose();
+  assert.equal(deploymentMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+});
+
+test('multi-member does not map an owner cookie onto its one named account', async () => {
+  const password = randomBytes(18).toString('base64url');
+  const host = await mount({
+    deploymentMode: 'multi-member',
+    imported: {
+      ownerAccountId: 'lin',
+      accounts: [{ id: 'lin', passwordHash: hashPassword(password) }],
+      notes: [
+        {
+          id: 'solo-note',
+          spaceId: 'solo-space',
+          ownerId: 'lin',
+          teamMemberIds: ['lin'],
+          text: 'solo',
+        },
+      ],
+    },
+  });
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: ownerCookie(host.connection),
+  });
+  assert.equal(session.status, 401);
+  assert.equal(session.json.error.code, 'unauthenticated');
+  const loggedIn = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: randomBytes(8).toString('hex'),
+    body: { accountId: 'lin', password },
+  });
+  assert.equal(loggedIn.status, 200);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(host.ctx), closedLegacy(404, 'not-found'));
+  await host.dispose();
+});
+
+test('legacy-single-user keeps owner routes open across mount and dispose', async () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'legacy-single-user');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), { ok: true });
+  assert.equal(identityAccessMode(ctx), 'single-user');
+  const password = randomBytes(18).toString('base64url');
+  const host = await mount({
+    ctx,
+    deploymentMode: null,
+    imported: {
+      ownerAccountId: 'lin',
+      accounts: [{ id: 'lin', passwordHash: hashPassword(password) }],
+      notes: [
+        {
+          id: 'solo-note',
+          spaceId: 'solo-space',
+          ownerId: 'lin',
+          teamMemberIds: ['lin'],
+          text: 'solo',
+        },
+      ],
+    },
+  });
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), { ok: true });
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: ownerCookie(host.connection),
+  });
+  assert.equal(session.status, 200);
+  assert.equal(session.json.accountId, 'lin');
+  await host.dispose();
+  assert.equal(deploymentMode(ctx), 'legacy-single-user');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), { ok: true });
+});
+
+test('deployment mode is stored on the host root', async () => {
+  const root = new Context();
+  configureDeploymentMode(root, 'multi-member');
+  let child;
+  const fiber = root.plugin({
+    apply(pluginCtx) {
+      child = pluginCtx;
+    },
+  });
+  await fiber;
+  assert.notEqual(child, root);
+  assert.equal(deploymentMode(child), 'multi-member');
+  assert.equal(identityAccessMode(child), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(child), closedLegacy(404, 'not-found'));
+  configureDeploymentMode(child, 'multi-member');
+  assert.throws(
+    () => configureDeploymentMode(child, 'legacy-single-user'),
+    /identity startup refused: deployment mode is already configured/,
+  );
+  assert.equal(deploymentMode(root), 'multi-member');
+  await fiber.dispose();
+});
+
 test('a pre-seeded domain with several accounts does not map the owner cookie', async () => {
   const hash = hashPassword(randomBytes(18).toString('base64url'));
   const accounts = new Map(['lin', 'zhao', 'chen'].map((id) => [id, { id, passwordHash: hash }]));
@@ -1429,6 +2025,148 @@ test('a pre-seeded domain with several accounts does not map the owner cookie', 
   assert.equal(session.status, 401);
   assert.equal(session.json.error.code, 'unauthenticated');
   await host.dispose();
+});
+
+function failNthPut(tableName, nth) {
+  let seen = 0;
+  return {
+    put(table) {
+      if (table !== tableName) return undefined;
+      seen += 1;
+      if (seen === nth) return new Error('injected identity write failure');
+      return undefined;
+    },
+  };
+}
+
+function identityRows(media) {
+  const medium = media.get('zhuma_identity');
+  const accounts = medium?.tables.get('accounts') ?? new Map();
+  const notes = medium?.tables.get('notes') ?? new Map();
+  const sorted = (table) =>
+    Object.fromEntries([...table.entries()].sort(([left], [right]) => left.localeCompare(right)));
+  return {
+    accounts: sorted(accounts),
+    notes: sorted(notes),
+    global: medium?.global ?? null,
+  };
+}
+
+async function expectFixtureMembers(host) {
+  const lin = await login(host.web, 'lin');
+  const zhao = await login(host.web, 'zhao');
+  const chen = await login(host.web, 'chen');
+  const north = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: lin,
+  });
+  assert.equal(north.status, 200);
+  assert.equal(north.json.note.text, 'north-initial');
+  const zhaoNorth = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(zhaoNorth.status, 200);
+  const south = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/south-note',
+    cookie: chen,
+  });
+  assert.equal(south.status, 200);
+  assert.equal(south.json.note.text, 'south-initial');
+  const chenNorth = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+  });
+  assert.equal(chenNorth.status, 404);
+}
+
+async function resumeSameImport(faults, assertPartial) {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  await assert.rejects(
+    () => mount({ media, credentials, imported, faults }),
+    /injected identity write failure/,
+  );
+  assertPartial(media);
+  const recovered = await mount({ media, credentials, imported });
+  const saved = identityRows(recovered.media);
+  assert.equal(saved.global.importComplete, true);
+  assert.deepEqual(Object.keys(saved.accounts), ['chen', 'lin', 'zhao']);
+  assert.deepEqual(Object.keys(saved.notes), ['north-note', 'south-note']);
+  await expectFixtureMembers(recovered);
+  await recovered.dispose();
+  const retried = await mount({ media, credentials, imported });
+  assert.deepEqual(identityRows(retried.media), saved);
+  await expectFixtureMembers(retried);
+  await retried.dispose();
+}
+
+test('an accounts put failure resumes the same import', async () => {
+  await resumeSameImport(failNthPut('accounts', 2), (media) => {
+    assert.deepEqual([...media.get('zhuma_identity').tables.get('accounts').keys()], ['lin']);
+  });
+});
+
+test('a notes put failure resumes the same import', async () => {
+  await resumeSameImport(failNthPut('notes', 1), (media) => {
+    const medium = media.get('zhuma_identity');
+    assert.deepEqual([...medium.tables.get('accounts').keys()].sort(), ['chen', 'lin', 'zhao']);
+    assert.equal(medium.tables.get('notes')?.size ?? 0, 0);
+  });
+});
+
+test('a completion marker failure resumes the same import', async () => {
+  await resumeSameImport(
+    {
+      global() {
+        return new Error('injected identity write failure');
+      },
+    },
+    (media) => {
+      const medium = media.get('zhuma_identity');
+      assert.equal(medium.global, null);
+      assert.deepEqual([...medium.tables.get('notes').keys()].sort(), ['north-note', 'south-note']);
+    },
+  );
+});
+
+test('a completed import is left untouched by a different import', async () => {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  const first = await mount({ media, credentials, imported });
+  const saved = identityRows(first.media);
+  await first.dispose();
+  const otherPassword = randomPassword();
+  const other = {
+    accounts: [{ id: 'other', passwordHash: hashPassword(otherPassword) }],
+    notes: [
+      {
+        id: 'north-note',
+        spaceId: 'team-north',
+        ownerId: 'other',
+        teamMemberIds: ['other'],
+        text: 'replaced',
+      },
+    ],
+  };
+  const second = await mount({ media, credentials, imported: other });
+  assert.deepEqual(identityRows(second.media), saved);
+  await expectFixtureMembers(second);
+  const refused = await call(second.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.88',
+    body: { accountId: 'other', password: otherPassword },
+  });
+  assert.equal(refused.status, 401);
+  assert.equal(refused.json.error.code, 'invalid-login');
+  await second.dispose();
 });
 
 test('a successful login clears earlier failures from that address', async () => {

@@ -29,6 +29,7 @@ import {
   type LoginFailureTable,
 } from './login-limiter.js';
 import {
+  deploymentMode,
   installMemberResolver,
   memberCookieHeader,
   memberCookiePresent,
@@ -40,6 +41,13 @@ import {
 
 const PREFIX = '/zhuma-id';
 const MAX_BODY_BYTES = 64 * 1024;
+// After the 413 bytes are written, keep reading and discard the rest so the
+// peer can finish uploading and read the response. There is no Connection: close.
+// The socket is destroyed only when this cap or BODY_DISCARD_MS is hit, and
+// only after the 413 has flushed and BODY_READ_WINDOW_MS has elapsed.
+const BODY_DISCARD_LIMIT = 32 * 1024 * 1024;
+const BODY_DISCARD_MS = 5_000;
+const BODY_READ_WINDOW_MS = 500;
 const SECRET_KEY = 'zhuma-identity/member-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const ACTOR_FIELDS = ['actor', 'actorId', 'memberId'] as const;
@@ -70,6 +78,7 @@ const NoteSchema = z.object({
 });
 const GlobalSchema = z.object({
   ownerAccountId: z.string(),
+  importComplete: z.boolean().default(false),
 });
 const LoginSchema = z.strictObject({
   accountId: z.string().min(1).max(64),
@@ -100,7 +109,7 @@ export interface IdentityImport {
 export const identityDomainSpec = defineDomain({
   name: 'zhuma_identity',
   version: 1,
-  global: { schema: GlobalSchema, initial: { ownerAccountId: '' } },
+  global: { schema: GlobalSchema, initial: { ownerAccountId: '', importComplete: false } },
   tables: {
     accounts: { valueSchema: AccountSchema },
     sessions: { valueSchema: SessionSchema },
@@ -220,10 +229,18 @@ function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
   });
 }
 
-/** Process-wide cap. The libuv pool is shared, so a full queue waits instead of refusing another address. */
+/** Process-wide cap. The libuv pool is shared. */
 const PASSWORD_HASH_CONCURRENCY = 4;
+/** Logins waiting for a hash slot. The next arrival is refused, not queued. */
+const PASSWORD_HASH_QUEUE_LIMIT = 32;
 let passwordHashActive = 0;
 const passwordHashWaiters: Array<() => void> = [];
+
+class PasswordHashBusyError extends Error {}
+
+function passwordHashSaturated(): boolean {
+  return passwordHashWaiters.length >= PASSWORD_HASH_QUEUE_LIMIT;
+}
 
 function releasePasswordHashSlot(): void {
   const next = passwordHashWaiters.shift();
@@ -249,6 +266,10 @@ function withPasswordHashSlot<T>(work: () => Promise<T>): Promise<T> {
       run();
       return;
     }
+    if (passwordHashWaiters.length >= PASSWORD_HASH_QUEUE_LIMIT) {
+      reject(new PasswordHashBusyError());
+      return;
+    }
     passwordHashWaiters.push(run);
   });
 }
@@ -259,6 +280,8 @@ if (DUMMY_VERIFIER === undefined) throw new Error('identity dummy verifier was n
 
 interface PasswordHashProbe {
   note(): void;
+  hold?(): Promise<void> | void;
+  done?(): void;
 }
 
 /** Tests can `ctx.provide('zhumaIdentityHashProbe', { note })`. Hosts omit it. */
@@ -275,9 +298,14 @@ async function passwordMatches(
 ): Promise<boolean> {
   const parsed = parseVerifier(stored) ?? DUMMY_VERIFIER;
   if (parsed === undefined) return false;
-  const actual = await withPasswordHashSlot(() => {
+  const actual = await withPasswordHashSlot(async () => {
     probe?.note();
-    return deriveKey(password, parsed.salt);
+    try {
+      await probe?.hold?.();
+      return await deriveKey(password, parsed.salt);
+    } finally {
+      probe?.done?.();
+    }
   });
   const matches = actual.length === parsed.hash.length && timingSafeEqual(actual, parsed.hash);
   return matches && stored !== undefined && parseVerifier(stored) !== undefined;
@@ -381,7 +409,9 @@ async function seedIfEmpty(
   domain: IdentityDomain,
   imported: IdentityImport | undefined,
 ): Promise<void> {
-  if (domain.table('accounts').size > 0) return;
+  // The marker is the last write. A domain that already finished is never
+  // overwritten. A domain that stopped midway is continued from this import.
+  if (domain.global.get().importComplete) return;
   if (imported === undefined) return;
   for (const account of imported.accounts) {
     const value: AccountRecord = { id: account.id, passwordHash: account.passwordHash };
@@ -397,9 +427,10 @@ async function seedIfEmpty(
     };
     await domain.table('notes').put(note.id, value);
   }
-  if (imported.ownerAccountId !== undefined) {
-    await domain.global.set({ ownerAccountId: imported.ownerAccountId });
-  }
+  await domain.global.set({
+    ownerAccountId: imported.ownerAccountId ?? '',
+    importComplete: true,
+  });
 }
 
 function memberPrincipal(memberId: string): Principal {
@@ -492,21 +523,96 @@ function fail(res: ServerResponse, status: number, code: string, setCookie?: str
 }
 
 function failTooLarge(req: IncomingMessage, res: ServerResponse): void {
-  req.on('error', () => {});
   const body = JSON.stringify({ ok: false, error: { code: 'body-too-large' } });
-  res.writeHead(413, {
+  const headers = {
     'cache-control': 'no-store',
-    connection: 'close',
     'content-length': String(Buffer.byteLength(body)),
     'content-type': 'application/json; charset=utf-8',
-  });
-  res.end(body);
-  const stop = () => {
-    req.resume();
-    req.destroy();
   };
-  if (res.writableFinished === true) stop();
-  else res.on('finish', stop);
+  // Do not set Connection: close, and do not res.end() while a live peer may
+  // still be uploading. Node finishes the socket when the response ends, and
+  // a chunked upload still in progress is then a parse error and ECONNRESET
+  // before the client reads the 413. Write the bytes now; end the response
+  // only after the request body ends. A socket-less fixture has no peer.
+  if (req.socket === undefined || req.socket === null || req.readableEnded === true) {
+    res.writeHead(413, headers);
+    res.end(body);
+    return;
+  }
+  res.writeHead(413, headers);
+  let responseFlushed = false;
+  const flushedWait: Array<() => void> = [];
+  const whenFlushed = (fn: () => void) => {
+    if (responseFlushed) fn();
+    else flushedWait.push(fn);
+  };
+  res.on('error', () => {});
+  res.write(body, () => {
+    responseFlushed = true;
+    const waiting = flushedWait.splice(0);
+    for (const fn of waiting) fn();
+  });
+  drainRejectedBody(req, res, whenFlushed);
+}
+
+function drainRejectedBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  whenFlushed: (fn: () => void) => void,
+): void {
+  let discarded = 0;
+  let settled = false;
+  let readWindow: ReturnType<typeof setTimeout> | undefined;
+  const detach = () => {
+    req.off('data', onData);
+    req.off('end', onEnd);
+    req.off('error', onError);
+  };
+  const done = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(discardTimer);
+    if (readWindow !== undefined) clearTimeout(readWindow);
+    detach();
+  };
+  const destroySocket = () => {
+    const socket = req.socket;
+    if (socket === null || socket === undefined || socket.destroyed) return;
+    socket.on('error', () => {});
+    socket.destroy();
+  };
+  // Cap and timer are the slowloris bound. The cut waits until the 413 is
+  // flushed, then BODY_READ_WINDOW_MS, so the client can read it first.
+  const cut = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(discardTimer);
+    detach();
+    req.pause();
+    whenFlushed(() => {
+      readWindow = setTimeout(destroySocket, BODY_READ_WINDOW_MS);
+    });
+  };
+  const onData = (chunk: Buffer | string) => {
+    discarded += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+    if (discarded > BODY_DISCARD_LIMIT) cut();
+  };
+  const onEnd = () => {
+    if (settled) return;
+    done();
+    if (!res.writableEnded) res.end();
+  };
+  const onError = () => {
+    done();
+  };
+  const discardTimer = setTimeout(cut, BODY_DISCARD_MS);
+  req.on('error', onError);
+  req.on('data', onData);
+  req.on('end', onEnd);
+  if (req.readableEnded === true) {
+    onEnd();
+    return;
+  }
   req.resume();
 }
 
@@ -532,23 +638,67 @@ function permitted(
 
 class BodyTooLargeError extends Error {}
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+function readJson(req: IncomingMessage): Promise<unknown> {
   const declared = header(req.headers, 'content-length');
   if (declared !== undefined && (!/^[0-9]+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
-    throw new BodyTooLargeError();
+    return Promise.reject(new BodyTooLargeError());
   }
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buf.length;
-    if (total > MAX_BODY_BYTES) throw new BodyTooLargeError();
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return undefined;
-  const text = Buffer.concat(chunks).toString('utf8');
-  if (text.trim() === '') return undefined;
-  return JSON.parse(text) as unknown;
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const cleanup = () => {
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+    };
+    const finish = (error: Error | undefined, value?: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error !== undefined) {
+        // Stop parsing before the 413 is written. failTooLarge resumes the
+        // request and discards the rest. `for await` is not used here: its
+        // return() destroys the request, and the socket closes before the
+        // response is flushed.
+        req.pause();
+        reject(error);
+        return;
+      }
+      resolve(value);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.length;
+      if (total > MAX_BODY_BYTES) {
+        finish(new BodyTooLargeError());
+        return;
+      }
+      chunks.push(buf);
+    };
+    const onEnd = () => {
+      if (chunks.length === 0) {
+        finish(undefined, undefined);
+        return;
+      }
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (text.trim() === '') {
+        finish(undefined, undefined);
+        return;
+      }
+      try {
+        finish(undefined, JSON.parse(text) as unknown);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error('identity body was not json'));
+      }
+    };
+    const onError = (error: Error) => {
+      finish(error);
+    };
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+  });
 }
 
 function matchRoute(pathname: string): IdentityRoute | undefined {
@@ -589,6 +739,10 @@ function explicitSingleUser(domain: IdentityDomain): string | undefined {
 
 /** Mount an explicit account import, member cookies, and space checks. */
 export async function applyIdentity(ctx: Context, imported?: IdentityImport): Promise<void> {
+  const mode = deploymentMode(ctx);
+  if (mode === undefined) {
+    throw new Error('identity startup refused: deployment mode is not configured');
+  }
   const domain = await ctx.storageDomain.open(identityDomainSpec);
   const attempts = createLoginFailureTable();
   try {
@@ -601,7 +755,8 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
         requestRejection: (headers) => ctx.connection.requestRejection({ headers }),
         findSession: (sessionId) => domain.table('sessions').get(sessionId),
         spaceIdsFor: (accountId) => spaceIdsFor(domain, accountId),
-        singleUserAccountId: () => explicitSingleUser(domain),
+        singleUserAccountId: () =>
+          mode === 'legacy-single-user' ? explicitSingleUser(domain) : undefined,
         admitOwner: (headers) => {
           const admission = ctx.connection.admit({ headers });
           return 'peer' in admission && admission.peer.principal.kind === 'owner';
@@ -679,17 +834,30 @@ async function handle(
         fail(res, 400, 'validation');
         return;
       }
-      const account = domain.table('accounts').get(parsed.data.accountId);
       const address = loginClientAddress(req);
+      if (passwordHashSaturated()) {
+        fail(res, 503, 'login-unavailable');
+        return;
+      }
+      const account = domain.table('accounts').get(parsed.data.accountId);
       if (attempts.reserve(address, parsed.data.accountId) === 'limited') {
         fail(res, 429, 'login-rate-limited');
         return;
       }
-      const passwordOk = await passwordMatches(
-        account?.passwordHash,
-        parsed.data.password,
-        passwordHashProbeOf(ctx),
-      );
+      let passwordOk = false;
+      try {
+        passwordOk = await passwordMatches(
+          account?.passwordHash,
+          parsed.data.password,
+          passwordHashProbeOf(ctx),
+        );
+      } catch (error) {
+        if (error instanceof PasswordHashBusyError) {
+          fail(res, 503, 'login-unavailable');
+          return;
+        }
+        throw error;
+      }
       if (account === undefined || !passwordOk) {
         fail(res, 401, 'invalid-login');
         return;

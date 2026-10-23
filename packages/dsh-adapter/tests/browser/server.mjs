@@ -13,6 +13,7 @@ import {
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../../dist/identity-session.js';
+import { configureDeploymentMode } from '../../dist/member-session.js';
 
 function randomPassword() {
   return randomBytes(24).toString('base64url');
@@ -194,6 +195,7 @@ export async function startIdentitySite() {
   const web = createWebServer();
   const access = createAccess();
   const ctx = new Context();
+  configureDeploymentMode(ctx, 'multi-member');
   ctx.provide('credentials', credentials);
   ctx.provide('webServer', web);
   ctx.provide('remoteAccess', access);
@@ -234,7 +236,7 @@ export async function startIdentitySite() {
     }
     if (
       pathname === '/api/zhuma/snapshot' ||
-      pathname === '/zhuma-exec' ||
+      pathname.startsWith('/api/zhuma-exec/') ||
       pathname === '/echo-cookie-names'
     ) {
       const names = (req.headers.cookie ?? '')

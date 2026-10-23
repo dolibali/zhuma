@@ -1,12 +1,16 @@
 /**
  * Shared member-session resolution for `/zhuma-id` and later product entries.
  *
- * A DSH owner cookie is not a product member. The only exception is an import
- * that configures exactly one account as `ownerAccountId` (isolated local
- * single-user mode). Multi-member mode returns 401 when the member cookie is
- * missing, deleted, expired, revoked, or forged.
+ * A DSH owner cookie is not a product member. The host picks
+ * `legacy-single-user` or `multi-member` with `configureDeploymentMode`
+ * before `applyIdentity`. Only `legacy-single-user` maps an owner cookie, and
+ * only when the import names exactly one account. Multi-member mode returns
+ * 401 when the member cookie is missing, deleted, expired, revoked, or forged.
+ * Snapshot, command, plan, preview-import, and resource-files stay closed
+ * for every other mode. `import-package` is a command on that same command
+ * route, so it stays closed with them.
  *
- * The cookie Path is `/` so `/zhuma-exec` receives it. HttpOnly and
+ * The cookie Path is `/` so `/api/zhuma-exec/*` receives it. HttpOnly and
  * SameSite=Strict stay. Secure waits for a TLS listener.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -57,7 +61,39 @@ interface InstalledResolver {
 
 const installed = new WeakMap<object, InstalledResolver>();
 
+/** Explicit host setup. This is not inferred from whether a resolver is installed. */
+export type DeploymentMode = 'legacy-single-user' | 'multi-member';
+
+const deploymentModes = new WeakMap<object, DeploymentMode>();
+
 export type IdentityAccessMode = 'unmounted' | 'single-user' | 'multi-member';
+
+export type LegacyOwnerRouteDecision =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly status: 401 | 404;
+      readonly code: 'deployment-mode-unset' | 'not-found';
+    };
+
+/**
+ * Exact `/api/zhuma/*` routes that still belong to the DSH owner carrier.
+ * `preview-import` and `resource-files` are the asset-import reads.
+ * `import-package` is not its own route; it is a `command` payload and is
+ * listed separately so a host cannot leave that write on the owner path.
+ */
+export const LEGACY_OWNER_ROUTES = [
+  'snapshot',
+  'command',
+  'plan',
+  'preview-import',
+  'resource-files',
+] as const;
+
+export const LEGACY_OWNER_PACKAGE_COMMANDS = ['import-package'] as const;
+
+export type LegacyOwnerRoute = (typeof LEGACY_OWNER_ROUTES)[number];
+export type LegacyOwnerPackageCommand = (typeof LEGACY_OWNER_PACKAGE_COMMANDS)[number];
 
 /**
  * Cordis gives each plugin a child context. The host root is the object both
@@ -76,11 +112,43 @@ export function uninstallMemberResolver(ctx: object): void {
   installed.delete(resolverHost(ctx));
 }
 
-/** `unmounted` leaves an isolated local host on its existing owner routes. */
+export function configureDeploymentMode(ctx: object, mode: DeploymentMode): void {
+  if (mode !== 'legacy-single-user' && mode !== 'multi-member') {
+    throw new Error('identity startup refused: deployment mode is not configured');
+  }
+  const host = resolverHost(ctx);
+  const current = deploymentModes.get(host);
+  if (current !== undefined && current !== mode) {
+    throw new Error('identity startup refused: deployment mode is already configured');
+  }
+  deploymentModes.set(host, mode);
+}
+
+export function deploymentMode(ctx: object): DeploymentMode | undefined {
+  return deploymentModes.get(resolverHost(ctx));
+}
+
+/**
+ * Old owner routes named by `LEGACY_OWNER_ROUTES`, including the
+ * `import-package` command carried on `command`.
+ * `legacy-single-user` keeps them. Any other state denies them, including
+ * multi-member while identity is absent, failing, or between dispose and remount.
+ * The decision does not read cookies. Callers must run it before JSON parsing,
+ * ZIP extraction, file reads, and package persistence.
+ */
+export function authorizeLegacyOwnerRoutes(ctx: object): LegacyOwnerRouteDecision {
+  const mode = deploymentMode(ctx);
+  if (mode === 'legacy-single-user') return { ok: true };
+  if (mode === 'multi-member') return { ok: false, status: 404, code: 'not-found' };
+  return { ok: false, status: 401, code: 'deployment-mode-unset' };
+}
+
+/** Reads the configured mode. It does not look at the resolver map. */
 export function identityAccessMode(ctx: object): IdentityAccessMode {
-  const current = installed.get(resolverHost(ctx));
-  if (current === undefined) return 'unmounted';
-  return current.source.singleUserAccountId() !== undefined ? 'single-user' : 'multi-member';
+  const mode = deploymentMode(ctx);
+  if (mode === 'legacy-single-user') return 'single-user';
+  if (mode === 'multi-member') return 'multi-member';
+  throw new Error('identity startup refused: deployment mode is not configured');
 }
 
 export function memberResolver(ctx: object): MemberResolver {
