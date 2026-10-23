@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
+import { fstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 
 const home = process.env.DSH_HOME ?? process.cwd();
@@ -15,23 +15,37 @@ function holdGrandchild(pidFile, script = 'setTimeout(() => {}, 8000)', stdio) {
   child.unref();
 }
 
+function executorPipeId(fd) {
+  try {
+    const stat = fstatSync(fd);
+    if (!(stat.isFIFO() || stat.isSocket())) return '';
+    return `${stat.dev}:${stat.ino}`;
+  } catch {
+    return '';
+  }
+}
+
 if (mode.startsWith('stdio-gc:')) {
   const pidFile = mode.slice('stdio-gc:'.length);
   const heldFile = `${pidFile}.held`;
   const scriptFile = `${pidFile}.mjs`;
+  const expected = [0, 1, 2].map((fd) => executorPipeId(fd));
   writeFileSync(
     scriptFile,
     [
       "import { fstatSync, writeFileSync } from 'node:fs';",
-      'const pipe = (fd) => {',
+      `const expected = ${JSON.stringify(expected)};`,
+      'const same = (fd) => {',
+      '  const id = expected[fd];',
+      '  if (!id) return false;',
       '  try {',
       '    const stat = fstatSync(fd);',
-      '    return stat.isFIFO() || stat.isSocket();',
+      '    return (stat.isFIFO() || stat.isSocket()) && `${stat.dev}:${stat.ino}` === id;',
       '  } catch {',
       '    return false;',
       '  }',
       '};',
-      `writeFileSync(${JSON.stringify(heldFile)}, pipe(0) && pipe(1) && pipe(2) ? '1' : '0');`,
+      `writeFileSync(${JSON.stringify(heldFile)}, same(0) && same(1) && same(2) ? '1' : '0');`,
       'setTimeout(() => {}, 8000);',
       '',
     ].join('\n'),
