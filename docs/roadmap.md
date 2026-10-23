@@ -58,10 +58,12 @@ A-UX2a 目录/表单及浏览器 CI 已合入；A-UX2b 导航见 PR #6，已合�
 
 - A 先逐项核对已确认的既有研发专家清单、依赖与来源许可，再选择可迁入内容默认内置；稳定 ID／版本、复制修改与升级保护共同验收。没有实际迁入不能把原创示例或手工导入标为默认内置完成。
 - A 实现团队工作台下方的个人专家入口及搜索／分类／收藏／导入／详情；个人无需团队任务的直接使用和团队发布由 A 入口与 B 会话／授权共同接通，不能另造执行器或把 unknown 标成功。
-- 本批四个原创 [起步包](../resources/experts/starter-pack/README.md)是小型定义与导入样例，不改变以上两项退出条件。各包有来源与许可、单独导入所需的全部文件和待验场景，模型效果、原生运行和默认预装仍未验收。
+- PR #20 已合入 `e081b86`：四个原创 [起步包](../resources/experts/starter-pack/README.md)是小型定义与导入样例，不改变以上两项退出条件。各包有来源与许可、单独导入所需的全部文件和待验场景，模型效果、原生运行和默认预装仍未验收。
+
+- **A-EXPERT-BROWSE**：首批 `863deb3` 待审，先交独立浏览／定义维护入口，搜索和配置复用同一目录；[界面对照与分层验证](review/expert-library/README.md)。收藏与个人直接使用、真实既有专家迁入及默认内置／升级继续按原退出条件，不追加无效运行按钮。
 
 ## A-INTEGRATE-S1 与后续会话交接
 
-目标 2026-10-24：B 的可编译模块签名、DI／加载顺序／导出与 Inbox／提交／评审 props 清单可审后，A 在独立批次从已打开 WorkbenchService 的 snapshot 闭包提供 Host-only readWorkbench，挂 identity/execution 并注册 B 业务组件。各 domain 只打开一次，浏览器不获全量读取接缝；B 负责成员 cookie、空间过滤及旧 exact API 的门禁适配，A 单写共享整合。成员模式缺 cookie、身份加载失败或卸载都不回落 owner；模式必须显式配置。门禁覆盖 snapshot／command／plan／preview-import／resource-files 五个 exact 入口及 import-package，在解压、读取或写包前拒绝无权请求。B PR #18 的测试配置还含构建与端口改动，由 A 在此独立批次统一审阅，不能只复制项目注册。
+原目标 2026-10-24，满足契约与组合验证后立即接入。B 已提供模块／DTO／业务组件候选，显式部署模式与可信产品空间映射仍须按实际组合通过；项目 ID 不能替代空间身份。可编译签名、DI／加载顺序／导出及 Inbox／提交／评审 props 清单核对后，A 在独立批次从已打开 WorkbenchService 的 snapshot 闭包提供 Host-only readWorkbench，挂 identity/execution 并注册 B 业务组件。各 domain 只打开一次，浏览器不获全量读取接缝；B 负责成员 cookie、空间过滤及旧 exact API 的门禁适配，A 单写共享整合。成员模式缺 cookie、身份加载失败或卸载都不回落 owner；模式必须显式配置。门禁覆盖 snapshot／command／plan／preview-import／resource-files 五个 exact 入口及 import-package，在解压、读取或写包前拒绝无权请求。B PR #18 的测试配置还含构建与端口改动，由 A 在此独立批次统一审阅，不能只复制项目注册。
 
 S2 的 [LC-11／LC-T11](architecture/task-session-delivery/test-plan.md) 先做 Zhuma 加一种外部 CLI 的同工作会话交接：真实停止／写权释放、目标实际受理后切换当前执行段，原责任、历史、提交版本及评审义务保持。其余工具逐项补齐；不另建聊天库或默认 Host factory。此项只有方案，尚未实现验收。

@@ -20,6 +20,7 @@ import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings
 import { TemplateDefinitionEditor } from './TemplateDefinitionEditor.js';
 import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
+import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 
 type Section = 'projects' | 'tasks' | 'assets' | 'members';
 type Dialog =
@@ -48,10 +49,12 @@ export function WorkbenchPage({
   api,
   initialSection,
   appearance,
+  expertLibrary = false,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
   appearance: AppearanceStore;
+  expertLibrary?: boolean;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
@@ -98,8 +101,13 @@ export function WorkbenchPage({
   useEffect(() => () => initialPlanning?.controller.abort(), [initialPlanning]);
   const [projectFilter, setProjectFilter] = useState('');
   const [search, setSearch] = useState('');
-  const [assetKind, setAssetKind] = useState('all');
+  const [assetKind, setAssetKind] = useState(expertLibrary ? 'expert' : 'all');
   const [memberKind, setMemberKind] = useState('all');
+  const [expertView, setExpertView] = useState<ExpertBrowserView>({
+    search: '',
+    role: '',
+    selectedId: null,
+  });
   const [importOpen, setImportOpen] = useState(false);
   const [sourceDialog, setSourceDialog] = useState<{
     kind: 'asset' | 'expert';
@@ -224,6 +232,12 @@ export function WorkbenchPage({
     try {
       const committed = await api.save(pending.current.revision, command, pending.current.id);
       setState(committed);
+      if (
+        expertLibrary &&
+        command.type === 'save-participant' &&
+        command.participant.kind === 'expert'
+      )
+        setExpertView({ search: '', role: '', selectedId: command.participant.id });
       pending.current = null;
       setDialog(null);
       return committed;
@@ -425,100 +439,108 @@ export function WorkbenchPage({
       <div className="zm-page">
         <header className="zm-page-heading">
           <div className="zm-page-title">
-            <h1>{labels[section]}</h1>
-            <span>{total}</span>
+            <h1>{expertLibrary ? '专家' : labels[section]}</h1>
+            <span>
+              {expertLibrary ? state.participants.filter((p) => p.kind === 'expert').length : total}
+            </span>
           </div>
           <div className="zm-actions">
             <Appearance store={appearance} />
             <Button variant="quiet" onClick={() => void refresh()}>
               刷新
             </Button>
-            {section === 'assets' && <Button onClick={() => setImportOpen(true)}>导入定义</Button>}
+            {section === 'assets' && (
+              <Button onClick={() => setImportOpen(true)}>
+                {expertLibrary ? '导入专家' : '导入定义'}
+              </Button>
+            )}
             <Button variant="primary" onClick={createCatalogItem}>
               ＋ {createLabel}
             </Button>
           </div>
         </header>
-        <div className="zm-page-bar">
-          <nav className="zm-tabs" aria-label="工作台导航">
-            {(Object.keys(labels) as Section[]).map((s) => (
-              <button
-                key={s}
-                aria-current={s === section ? 'page' : undefined}
-                onClick={() => {
-                  setSection(s);
-                  setSearch('');
-                }}
-              >
-                {labels[s]}
-                <span>
-                  {s === 'projects'
-                    ? state.projects.length
-                    : s === 'tasks'
-                      ? state.tasks.length
-                      : s === 'members'
-                        ? state.participants.length
-                        : catalog.length}
-                </span>
-              </button>
-            ))}
-          </nav>
-          {section === 'tasks' && (
-            <div className="zm-filter">
-              <input
-                aria-label="搜索任务"
-                placeholder="搜索任务…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <SingleSelect
-                label="筛选项目"
-                value={projectFilter}
-                onValueChange={setProjectFilter}
-                options={[
-                  { value: '', label: '所有项目' },
-                  ...state.projects.map((p) => ({ value: p.id, label: p.name })),
-                ]}
-              />
-            </div>
-          )}
-          {section !== 'tasks' && (
-            <div className="zm-filter">
-              <input
-                type="search"
-                aria-label={
-                  section === 'projects'
-                    ? '搜索项目'
-                    : section === 'members'
-                      ? '搜索成员与专家'
-                      : '搜索资产'
-                }
-                placeholder={
-                  section === 'projects'
-                    ? '搜索项目…'
-                    : section === 'members'
-                      ? '搜索姓名、职责或能力…'
-                      : '搜索资产…'
-                }
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-              {section === 'members' && (
+        {!expertLibrary && (
+          <div className="zm-page-bar">
+            <nav className="zm-tabs" aria-label="工作台导航">
+              {(Object.keys(labels) as Section[]).map((s) => (
+                <button
+                  key={s}
+                  aria-current={s === section ? 'page' : undefined}
+                  onClick={() => {
+                    setSection(s);
+                    setSearch('');
+                  }}
+                >
+                  {labels[s]}
+                  <span>
+                    {s === 'projects'
+                      ? state.projects.length
+                      : s === 'tasks'
+                        ? state.tasks.length
+                        : s === 'members'
+                          ? state.participants.length
+                          : catalog.length}
+                  </span>
+                </button>
+              ))}
+            </nav>
+            {section === 'tasks' && (
+              <div className="zm-filter">
+                <input
+                  aria-label="搜索任务"
+                  placeholder="搜索任务…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
                 <SingleSelect
-                  label="成员类型"
-                  value={memberKind}
-                  onValueChange={setMemberKind}
+                  label="筛选项目"
+                  value={projectFilter}
+                  onValueChange={setProjectFilter}
                   options={[
-                    { value: 'all', label: '所有成员与专家' },
-                    { value: 'human', label: '团队成员' },
-                    { value: 'expert', label: 'Agent 专家' },
+                    { value: '', label: '所有项目' },
+                    ...state.projects.map((p) => ({ value: p.id, label: p.name })),
                   ]}
                 />
-              )}
-            </div>
-          )}
-        </div>
-        {section === 'assets' && (
+              </div>
+            )}
+            {section !== 'tasks' && (
+              <div className="zm-filter">
+                <input
+                  type="search"
+                  aria-label={
+                    section === 'projects'
+                      ? '搜索项目'
+                      : section === 'members'
+                        ? '搜索成员与专家'
+                        : '搜索资产'
+                  }
+                  placeholder={
+                    section === 'projects'
+                      ? '搜索项目…'
+                      : section === 'members'
+                        ? '搜索姓名、职责或能力…'
+                        : '搜索资产…'
+                  }
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+                {section === 'members' && (
+                  <SingleSelect
+                    label="成员类型"
+                    value={memberKind}
+                    onValueChange={setMemberKind}
+                    options={[
+                      { value: 'all', label: '所有成员与专家' },
+                      { value: 'human', label: '团队成员' },
+                      { value: 'expert', label: 'Agent 专家' },
+                    ]}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {!expertLibrary && section === 'assets' && (
           <nav className="zm-asset-categories" aria-label="资产分类">
             {[
               ['all', '全部'],
@@ -550,6 +572,24 @@ export function WorkbenchPage({
           <div role="alert" className="zm-error">
             {error}
           </div>
+        )}
+        {expertLibrary && (
+          <ExpertBrowser
+            experts={state.participants.filter((p) => p.kind === 'expert')}
+            assets={state.assets}
+            view={expertView}
+            change={setExpertView}
+            edit={(value) => openDialog({ kind: 'member', value })}
+            source={(value) =>
+              value.origin &&
+              setSourceDialog({
+                kind: 'expert',
+                id: value.id,
+                name: value.name,
+                versionId: value.origin.versionId,
+              })
+            }
+          />
         )}
         {section === 'projects' && !!projects.length && (
           <div className="zm-directory zm-project-directory">
@@ -698,7 +738,7 @@ export function WorkbenchPage({
             ))}
           </div>
         )}
-        {section === 'assets' && !!assets.length && (
+        {!expertLibrary && section === 'assets' && !!assets.length && (
           <div className="zm-directory zm-asset-directory">
             <div className="zm-directory-heading">
               <span>类型</span>
@@ -755,7 +795,7 @@ export function WorkbenchPage({
             ))}
           </div>
         )}
-        {section !== 'tasks' && !visibleCount && (
+        {!expertLibrary && section !== 'tasks' && !visibleCount && (
           <div className="zm-empty zm-directory-empty">
             <h3>{directoryTotal ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
             <p>
@@ -871,7 +911,7 @@ export function WorkbenchPage({
                         <SingleSelect
                           label="类型"
                           value={dialog.value.kind}
-                          disabled={!!dialog.value.origin}
+                          disabled={expertLibrary || !!dialog.value.origin}
                           onValueChange={(kind) =>
                             setDialog({
                               ...dialog,
@@ -1356,8 +1396,22 @@ export function WorkbenchPage({
         <AssetImportDialog
           state={state}
           api={api}
+          requireExpert={expertLibrary}
           close={() => setImportOpen(false)}
           saved={(next) => {
+            if (expertLibrary) {
+              const imported = next.participants.find(
+                (p) =>
+                  p.kind === 'expert' &&
+                  JSON.stringify(p) !==
+                    JSON.stringify(state.participants.find((old) => old.id === p.id)),
+              );
+              setExpertView({
+                search: '',
+                role: '',
+                selectedId: imported?.id ?? expertView.selectedId,
+              });
+            }
             setState(next);
             setImportOpen(false);
           }}

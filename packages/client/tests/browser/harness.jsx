@@ -59,6 +59,8 @@ const content = new URL(location.href).searchParams.has('mount-probe') ? (
   <MountProbe />
 ) : new URL(location.href).searchParams.has('select-probe') ? (
   <SelectProbe />
+) : new URL(location.href).searchParams.has('expert-library') ? (
+  <WorkbenchPage api={api} initialSection="assets" expertLibrary appearance={appearance} />
 ) : (
   <WorkbenchPage api={api} initialSection="tasks" appearance={appearance} />
 );
