@@ -1,6 +1,6 @@
 # S1 模块签名
 
-A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本分支上与真实导出双向对齐。身份签名按 `b/id0a-identity`（`a112561`）书写，在合并工作区里用 `packages/dsh-adapter/tsconfig.identity.json` 再查一次。那条分支留在原处。
+A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本分支上与真实导出双向对齐。身份签名按 `b/id0a-identity`（`f0eac0f`）书写，在合并工作区里用 `packages/dsh-adapter/tsconfig.identity.json` 再查一次。那条分支留在原处。
 
 ## 加载顺序
 
@@ -46,12 +46,12 @@ if (mode !== 'unmounted') {
 
 ## 遗留门
 
-T3 的多人遗留门在 `b/id0a-legacy-gate`（`f6482bd`，关闭多人模式下的旧工作台路由）。A 审查那条分支后接入。
+T3 的多人遗留门在 `b/id0a-legacy-gate`（`aa9060d`，关闭多人模式下的旧工作台路由）。A 审查那条分支后接入。
 
 ## 编译检查
 
 `packages/dsh-adapter/tests/types/s1-conformance.ts` 和 `packages/client/tests/types/s1-conformance.ts` 含在根 `tsc -b` 里。身份检查文件是 `packages/dsh-adapter/tests/types/s1-identity-conformance.ts`。它引用的 `member-session.ts` 在 `b/id0a-identity` 上，所以 `tsconfig.identity.json` 不进根项目引用。把那条分支合并进临时工作区后执行：
 
 ```sh
-tsc -b -p packages/dsh-adapter/tsconfig.identity.json --force
+tsc -b packages/dsh-adapter/tsconfig.identity.json --force
 ```
