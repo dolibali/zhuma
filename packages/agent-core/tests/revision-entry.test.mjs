@@ -603,6 +603,55 @@ test('other commands still reject a running node that lost its record', () => {
   }
 });
 
+test('record-less cancel-confirmed reaches cancelled without a new recovery', () => {
+  const cases = [
+    ['blocked', undefined],
+    ['ready', undefined],
+    ['child-workflow', undefined],
+    ['in-review', undefined],
+    ['needs-revision', 'needs-revision'],
+  ];
+  for (const [status, entry] of cases) {
+    const cancelled = command(bare(status), { type: 'cancel-confirmed' }, `lock-${status}`);
+    assert.equal(cancelled.decision.status, 'applied', status);
+    assert.equal(cancelled.state.status, 'cancelled', status);
+    assert.equal(cancelled.state.entryStatus, entry, status);
+    assert.equal(cancelled.state.version, 4, status);
+    assert.deepEqual(
+      cancelled.decision.result.effects,
+      ['record-cancellation', 'block-downstream'],
+      status,
+    );
+    for (const returnTo of ['ready', 'needs-revision']) {
+      const retried = command(
+        cancelled.state,
+        { type: 'retry', returnTo },
+        `lock-retry-${status}-${returnTo}`,
+      );
+      assertRejected(retried);
+      assert.equal(retried.state.status, 'cancelled', `${status} retry ${returnTo}`);
+      assert.equal(retried.state.version, cancelled.state.version, status);
+
+      const restarted = command(
+        cancelled.state,
+        { type: 'restart', returnTo },
+        `lock-restart-${status}-${returnTo}`,
+      );
+      const keepsObligation = entry === 'needs-revision' && returnTo === 'needs-revision';
+      if (keepsObligation) {
+        assert.equal(restarted.decision.status, 'applied', status);
+        assert.equal(restarted.state.status, 'needs-revision', status);
+        assert.equal(restarted.state.entryStatus, 'needs-revision', status);
+        continue;
+      }
+      assertRejected(restarted);
+      assert.equal(restarted.state.status, 'cancelled', `${status} restart ${returnTo}`);
+      assert.equal(restarted.state.entryStatus, entry, `${status} restart ${returnTo}`);
+      assert.equal(restarted.state.version, cancelled.state.version, status);
+    }
+  }
+});
+
 test('a recorded failure still keeps its entry and can retry', () => {
   const failed = command(
     { ...bare('running'), entryStatus: 'ready' },
