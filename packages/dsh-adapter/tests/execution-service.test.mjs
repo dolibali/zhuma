@@ -1054,3 +1054,109 @@ test('a missing project-space directory refuses start, submit, inbox, and report
   assert.equal(store.planCount(), 0);
   assert.equal(store.node('design'), undefined);
 });
+
+test('a failed unlock is repaired by the next read, and not while the directory is down', async () => {
+  const { state, applied } = confirm([
+    workflowNode({ id: 'design', title: '设计' }),
+    workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] }),
+  ]);
+  let down = false;
+  const spaces = {
+    async spaceForProject(projectId) {
+      if (down) throw new Error('space-down-4e1');
+      return projectSpaces.spaceForProject(projectId);
+    },
+  };
+  const { service, store } = create(state, spaces);
+  await startChen(service, applied);
+  store.arm(2);
+  const failed = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deliver-design'),
+    text: '设计说明-4e1',
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error.code, 'unavailable');
+  assert.equal(failed.error.message, '执行记录暂时写不进去，请用同一个请求再试一次。');
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  down = true;
+  const held = JSON.stringify(store.node('publish'));
+  const blocked = await service.inbox(session('chen'), {});
+  assert.equal(blocked.error.code, 'unavailable');
+  assert.equal(blocked.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(blocked).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(store.node('publish')), held);
+
+  down = false;
+  store.arm(1);
+  const retryFailed = await service.inbox(session('chen'), {});
+  assert.equal(retryFailed.ok, false);
+  assert.equal(retryFailed.error.code, 'unavailable');
+  assert.equal(retryFailed.error.message, '执行记录暂时写不进去，请用同一个请求再试一次。');
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  store.arm(0);
+  const inbox = await service.inbox(session('chen'), {});
+  assert.equal(inbox.ok, true);
+  assert.equal(store.node('publish').command.status, 'ready');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  assert.equal(
+    store.node('publish').handoff.inputRefs[0].artifactVersionId,
+    store.node('design').acceptedArtifactVersionId,
+  );
+  assert.equal(
+    inbox.value.items.some((item) => item.nodeId === 'publish' && item.action === 'submit'),
+    true,
+  );
+  const version = store.node('publish').command.version;
+  const again = await service.inbox(session('chen'), {});
+  assert.equal(again.ok, true);
+  assert.equal(store.node('publish').command.version, version);
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  assert.equal(JSON.stringify(inbox).includes('设计说明-4e1'), false);
+});
+
+test('a failed unlock is repaired by the next write, once', async () => {
+  const { state, applied } = confirm([
+    workflowNode({ id: 'design', title: '设计' }),
+    workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] }),
+    workflowNode({ id: 'notes', title: '备注' }),
+  ]);
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  store.arm(2);
+  const failed = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deliver-design'),
+    text: '设计说明',
+  });
+  assert.equal(failed.error.code, 'unavailable');
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  store.arm(0);
+  const written = await service.submit(session('chen'), {
+    ...locate(applied, 'notes', 1, 'deliver-notes'),
+    text: '备注说明',
+  });
+  assert.equal(written.value.disposition, 'applied');
+  assert.equal(store.node('notes').command.status, 'completed');
+  assert.equal(store.node('publish').command.status, 'ready');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  assert.equal(store.node('publish').handoff.inputRefs[0].sourceNodeId, 'design');
+  const version = store.node('publish').command.version;
+  const quiet = await service.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(quiet.ok, true);
+  assert.equal(
+    quiet.value.reports.find((item) => item.nodeId === 'publish').blockReason,
+    undefined,
+  );
+  assert.equal(store.node('publish').command.version, version);
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+});
