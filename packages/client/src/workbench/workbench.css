@@ -1,4 +1,147 @@
 /* Theme state belongs to the official DSH ui-theme service. These are presentation tokens only. */
+.zhuma .zm-expert-filter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 12px;
+  max-width: 760px;
+  margin: 24px 0;
+}
+.zhuma .zm-expert-filter > * {
+  min-width: 0;
+}
+.zhuma .zm-expert-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+.zhuma .zm-expert-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: calc(100dvh - 220px);
+  overflow: auto;
+}
+.zhuma .zm-expert-list button {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  white-space: normal;
+}
+.zhuma .zm-expert-list button:hover {
+  background: var(--zm-hover);
+}
+.zhuma .zm-expert-list button[aria-pressed='true'] {
+  background: var(--zm-soft);
+  border-color: var(--zm-line-strong);
+}
+.zhuma .zm-expert-list-content {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-expert-list-content small,
+.zhuma .zm-expert-list-content > span {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zhuma .zm-expert-detail {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--zm-line);
+  border-radius: 12px;
+}
+.zhuma .zm-expert-detail > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.zhuma .zm-expert-detail > header > div {
+  min-width: 0;
+}
+.zhuma .zm-expert-detail > header button {
+  flex-shrink: 0;
+}
+.zhuma .zm-expert-detail h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-expert-detail > header p {
+  margin: 6px 0 0;
+  color: var(--zm-muted);
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-expert-detail-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 16px 0;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zhuma .zm-expert-detail-meta button {
+  margin-left: auto;
+}
+.zhuma .zm-expert-detail h3 {
+  margin: 24px 0 10px;
+  font-size: 14px;
+}
+.zhuma .zm-expert-detail pre {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.7;
+}
+.zhuma .zm-expert-bindings > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 8px;
+}
+.zhuma .zm-expert-bindings h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.zhuma .zm-expert-bindings ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 860px) {
+  .zhuma .zm-expert-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .zhuma .zm-expert-list {
+    max-height: 240px;
+  }
+  .zhuma .zm-expert-detail {
+    padding: 18px;
+  }
+}
+@media (max-width: 520px) {
+  .zhuma .zm-expert-filter {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 :root {
   --zm-ink: #252a30;
   --zm-muted: #66717c;

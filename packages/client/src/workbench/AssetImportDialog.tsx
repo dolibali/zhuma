@@ -63,12 +63,14 @@ export function AssetImportDialog({
   saved,
   close,
   legacy,
+  requireExpert = false,
 }: {
   state: Workbench;
   api: WorkbenchApi;
   saved(state: Workbench): void;
   close(): void;
   legacy(name: string, content: string): void;
+  requireExpert?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null),
     folderRef = useRef<HTMLInputElement>(null);
@@ -89,6 +91,9 @@ export function AssetImportDialog({
   }, []);
   const item = preview?.items.find((i) => i.key === selected) ?? preview?.items[0];
   const choice = choices.find((c) => c.key === item?.key);
+  const hasExpertChoice = choices.some((c) =>
+    preview?.items.some((i) => i.key === c.key && i.kind === 'expert'),
+  );
   const change = (patch: Partial<ImportPackageInput['choices'][number]>) =>
     setChoices((current) => current.map((c) => (c.key === item?.key ? { ...c, ...patch } : c)));
   const targets =
@@ -144,6 +149,12 @@ export function AssetImportDialog({
       }
       const result = await api.previewImport(source, controller.signal);
       if (controller.signal.aborted) return;
+      if (requireExpert && !result.items.some((i) => i.kind === 'expert')) {
+        setPreview(null);
+        setChoices([]);
+        retry.current = null;
+        throw Error('所选包没有专家定义；单独的 Skill 或工作流请到团队资产导入。');
+      }
       setPreview(result);
       setChoices(
         result.items.map((i) => ({
@@ -171,6 +182,10 @@ export function AssetImportDialog({
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!preview || !choices.length || saving.current) return;
+    if (requireExpert && !hasExpertChoice) {
+      setError('请至少勾选一位专家。');
+      return;
+    }
     const command = {
       type: 'import-package' as const,
       input: { versionId, files: preview.files, choices },
@@ -192,7 +207,7 @@ export function AssetImportDialog({
   }
   return (
     <Modal
-      title="导入资产"
+      title={requireExpert ? '导入专家' : '导入资产'}
       close={() => {
         if (!saving.current) close();
       }}
@@ -205,7 +220,11 @@ export function AssetImportDialog({
           <Button disabled={busy || reading} onClick={() => folderRef.current?.click()}>
             选择文件夹
           </Button>
-          <span className="zm-muted">Agent Skills · OpenClaw · Zhuma 专家／工作流</span>
+          <span className="zm-muted">
+            {requireExpert
+              ? 'OpenClaw · Zhuma 专家（可包含 Skills）'
+              : 'Agent Skills · OpenClaw · Zhuma 专家／工作流'}
+          </span>
           <input
             hidden
             ref={fileRef}
@@ -244,8 +263,12 @@ export function AssetImportDialog({
         )}
         {!preview && !reading && (
           <div className="zm-import-empty">
-            <strong>把已有方法和专家带进来</strong>
-            <p>选择 SKILL.md、SOUL.md、定义文件，或包含附件的目录／ZIP。</p>
+            <strong>{requireExpert ? '导入已有专家' : '把已有方法和专家带进来'}</strong>
+            <p>
+              {requireExpert
+                ? '选择 SOUL.md、专家 JSON，或包含配套方法的目录／ZIP。'
+                : '选择 SKILL.md、SOUL.md、定义文件，或包含附件的目录／ZIP。'}
+            </p>
             <small className="zm-muted">最多 100 个文件 · 单文件 256 KiB · 总量 2 MiB</small>
           </div>
         )}
@@ -464,14 +487,18 @@ export function AssetImportDialog({
           </fieldset>
         )}
         <footer>
-          <span className="zm-muted">保存到当前工作台</span>
+          <span className="zm-muted">
+            {requireExpert && preview && !hasExpertChoice
+              ? '请至少勾选一位专家'
+              : '保存到当前工作台'}
+          </span>
           <Button disabled={busy} onClick={close}>
             取消
           </Button>
           <Button
             type="submit"
             variant="primary"
-            disabled={!choices.length || reading}
+            disabled={!choices.length || reading || (requireExpert && !hasExpertChoice)}
             busy={busy}
             busyLabel="正在导入…"
           >
