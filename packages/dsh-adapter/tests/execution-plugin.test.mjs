@@ -8,6 +8,7 @@ import {
   submitDelivery,
 } from '@zhuma/agent-core';
 import { apply, executionEndpoints } from '../dist/execution-plugin.js';
+import { boundedProjectSpaces } from '../dist/project-space.js';
 import {
   MEMBER_COOKIE_NAME,
   installMemberResolver,
@@ -127,6 +128,8 @@ async function mount(options = {}) {
       if (secret) throw new Error('secret-provider-path');
       return options.workbench;
     },
+    projectSpaces:
+      options.projectSpaces ?? boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]),
   });
   return {
     routes,

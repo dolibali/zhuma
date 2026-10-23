@@ -20,6 +20,11 @@ import {
   type Workbench,
 } from '@zhuma/agent-core';
 import { resolveActor, scanActorField, type MemberResolution } from './execution-identity.js';
+import {
+  decideProjectSpace,
+  type ProjectSpaceDirectory,
+  type ProjectSpaceLookup,
+} from './project-space.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -303,6 +308,7 @@ export class ExecutionService {
   constructor(
     private readonly storage: ExecutionStorage,
     private readonly workbench: { readWorkbench(): Workbench },
+    private readonly projectSpaces: ProjectSpaceDirectory,
   ) {}
 
   startPlan(
@@ -323,14 +329,23 @@ export class ExecutionService {
       if (!actor.ok) return actor;
       const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
-      const records = this.storage.listNodes().filter((record) => {
-        if (!intactNode(record) || !recordedPlan(this.storage, record)) return false;
-        if (this.spaceOf(record.taskId, actor.value.spaceIds) !== 'ok') return false;
-        return (
-          planMembership(this.workbench.readWorkbench(), record.taskId, actor.value.actorId) ===
+      const records: ExecutionNodeRecord[] = [];
+      for (const record of this.storage.listNodes()) {
+        if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
+        const space = await this.gateSpace(record.taskId, actor.value.spaceIds);
+        if (space === 'missing') continue;
+        if (!space.ok) {
+          if (space.error.code === 'unavailable') return space;
+          continue;
+        }
+        if (
+          planMembership(this.workbench.readWorkbench(), record.taskId, actor.value.actorId) !==
           'allowed'
-        );
-      });
+        ) {
+          continue;
+        }
+        records.push(record);
+      }
       const items = executionInbox({ actorId: actor.value.actorId, records });
       const nodes = records
         .filter((record) =>
@@ -424,8 +439,8 @@ export class ExecutionService {
       if (!actor.ok) return actor;
       const parsed = parseBody(reportSchema, body);
       if (!parsed.ok) return parsed;
-      const space = this.spaceOf(parsed.value.taskId, actor.value.spaceIds);
-      if (space === 'hidden') return fail('not-found');
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok) return space;
       const membership = planMembership(
         this.workbench.readWorkbench(),
         parsed.value.taskId,
@@ -486,10 +501,26 @@ export class ExecutionService {
     };
   }
 
-  private spaceOf(taskId: string, spaceIds: readonly string[]): 'ok' | 'missing' | 'hidden' {
+  /**
+   * Ask the project-space directory which space owns this task's project.
+   * Unknown and mismatch are not-found. A failed lookup is unavailable. The project id is not a space id.
+   */
+  private async gateSpace(
+    taskId: string,
+    spaceIds: readonly string[],
+  ): Promise<'missing' | ExecutionResult<void>> {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
     if (!task) return 'missing';
-    return spaceIds.includes(task.projectId) ? 'ok' : 'hidden';
+    let lookup: ProjectSpaceLookup;
+    try {
+      lookup = await this.projectSpaces.spaceForProject(task.projectId);
+    } catch {
+      return fail('unavailable');
+    }
+    const decision = decideProjectSpace(lookup, spaceIds);
+    if (decision === 'ok') return { ok: true, value: undefined };
+    if (decision === 'unavailable') return fail('unavailable');
+    return fail('not-found');
   }
 
   private async startPlanNow(caller: ExecutionCaller, body: unknown) {
@@ -498,8 +529,8 @@ export class ExecutionService {
     const parsed = parseBody(startSchema, body);
     if (!parsed.ok) return parsed;
     const { taskId, planId, revision, idempotencyKey } = parsed.value;
-    const space = this.spaceOf(taskId, actor.value.spaceIds);
-    if (space === 'hidden') return fail('not-found');
+    const space = await this.gateSpace(taskId, actor.value.spaceIds);
+    if (space !== 'missing' && !space.ok) return space;
     const membership = planMembership(this.workbench.readWorkbench(), taskId, actor.value.actorId);
     if (membership === 'not-participant') return fail('not-participant');
     const fingerprint = canonicalPayload({ taskId, planId, revision });
@@ -586,7 +617,11 @@ export class ExecutionService {
     if (!parsed.ok) return parsed;
     const current = this.storage.readNode(nodeRecordKey(parsed.value));
     if (!current || !intactNode(current)) return fail('not-found');
-    if (this.spaceOf(current.taskId, actor.value.spaceIds) !== 'ok') return fail('not-found');
+    const space = await this.gateSpace(current.taskId, actor.value.spaceIds);
+    if (space === 'missing' || !space.ok) {
+      if (space !== 'missing' && space.error.code === 'unavailable') return space;
+      return fail('not-found');
+    }
     const membership = planMembership(
       this.workbench.readWorkbench(),
       current.taskId,

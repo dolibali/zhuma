@@ -14,6 +14,8 @@ import type {
   NodeStatus,
   Workbench,
 } from '@zhuma/agent-core';
+import type { ProjectSpaceDirectory } from './project-space.js';
+export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 export interface MemberRequest {
   readonly headers: IncomingHttpHeaders;
 }
@@ -57,12 +59,14 @@ export type ExecutionInject = readonly ['connection', 'storageDomain'];
 /** A wraps `WorkbenchService.snapshot()` and passes that closure here. */
 export interface ExecutionApplyOptions {
   readWorkbench(): Workbench;
+  readonly projectSpaces: ProjectSpaceDirectory;
 }
 export type ApplyExecution = (ctx: Context, options: ExecutionApplyOptions) => Promise<void>;
 /** Host object passed to `applyExecution`. The plugin reads `readWorkbench` and calls `resolveMember`. */
 export interface S1ExecutionOptions {
   readonly memberResolver: MemberResolver;
   readWorkbench(): Workbench;
+  readonly projectSpaces: ProjectSpaceDirectory;
 }
 export interface ApplyWorkbench {
   (ctx: Context): Promise<void>;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyWorkbenchCommand, nodeRecordKey } from '@zhuma/agent-core';
 import { ExecutionService } from '../dist/execution-service.js';
+import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
 const lin = {
@@ -88,9 +89,11 @@ function confirm(nodes, extra = []) {
   return { state: ready, applied };
 }
 
-function create(state) {
+const projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+
+function create(state, spaces = projectSpaces) {
   const store = memory();
-  const service = new ExecutionService(store.storage, { readWorkbench: () => state });
+  const service = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
   return { service, store };
 }
 
@@ -859,4 +862,157 @@ test('a participant who is neither assignee nor reviewer cannot settle', async (
   assert.equal(JSON.stringify(settled).includes('只有执行者和评审人能结算'), false);
   assert.equal(store.node('design').command.version, version);
   assert.equal(store.node('design').command.status, 'in-review');
+});
+
+function confirmProject(projectId, nodes) {
+  const { state, task } = fixture();
+  state.projects = [{ id: projectId, name: '门户', description: '空间里的项目' }];
+  const ready = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      projectId,
+      workflows: [{ ...task.workflows[0], nodes }],
+      status: 'ready',
+    },
+  });
+  const applied = ready.appliedPlans.at(-1);
+  assert.ok(applied);
+  assert.notEqual(projectId, 'team-north');
+  return { state: ready, applied };
+}
+
+test('a project in a different space id is accepted only for that space', async () => {
+  const projectId = 'portal';
+  const spaceId = 'team-north';
+  const { state, applied } = confirmProject(projectId, [
+    workflowNode({ id: 'design', title: '设计' }),
+  ]);
+  const spaces = boundedProjectSpaces([{ projectId, spaceId }]);
+  const { service, store } = create(state, spaces);
+  const body = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-portal',
+  };
+  const started = await service.startPlan(session('chen', [spaceId]), body);
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const inbox = await service.inbox(session('chen', [spaceId]), {});
+  assert.equal(
+    inbox.value.items.some((item) => item.taskId === applied.taskId && item.nodeId === 'design'),
+    true,
+  );
+  const hiddenInbox = await service.inbox(session('chen', ['team-south']), {});
+  assert.equal(hiddenInbox.value.items.length, 0);
+  const report = await service.report(session('chen', [spaceId]), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(
+    report.value.reports.some((item) => item.nodeId === 'design'),
+    true,
+  );
+  const delivered = await service.submit(session('chen', [spaceId]), {
+    ...locate(applied, 'design', 1, 'portal-deliver'),
+    text: '北队交付',
+  });
+  assert.equal(delivered.ok, true);
+
+  const other = await service.startPlan(session('chen', ['team-south']), {
+    ...body,
+    idempotencyKey: 'start-south',
+  });
+  assert.equal(other.error.code, 'not-found');
+  assert.equal(JSON.stringify(other).includes('北队交付'), false);
+  assert.equal(JSON.stringify(other).includes('设计登录流程'), false);
+  const crossed = await service.submit(session('chen', ['team-south']), {
+    ...locate(applied, 'design', store.node('design').command.version, 'south-deliver'),
+    text: '南队越权',
+  });
+  assert.equal(crossed.error.code, 'not-found');
+  assert.equal(JSON.stringify(crossed).includes('北队交付'), false);
+  assert.equal(store.node('design').receipts.length, 1);
+  const aliased = await service.report(session('chen', [projectId]), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(aliased.error.code, 'not-found');
+  assert.equal(JSON.stringify(aliased).includes('北队交付'), false);
+});
+
+test('a project with no space record is refused even when the project id is offered as a space', async () => {
+  const { state, applied } = confirmProject('portal', [
+    workflowNode({ id: 'design', title: '设计' }),
+  ]);
+  const { service, store } = create(state, boundedProjectSpaces([]));
+  const started = await service.startPlan(session('chen', ['team-north', 'portal']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-unmapped',
+  });
+  assert.equal(started.error.code, 'not-found');
+  assert.equal(JSON.stringify(started).includes('设计登录流程'), false);
+  assert.equal(store.planCount(), 0);
+  assert.equal(store.node('design'), undefined);
+  const inbox = await service.inbox(session('chen', ['team-north', 'portal']), {});
+  assert.equal(inbox.ok, true);
+  assert.equal(inbox.value.items.length, 0);
+  assert.equal(JSON.stringify(inbox).includes('设计登录流程'), false);
+});
+
+test('a failed project-space lookup is refused and does not write', async () => {
+  const { state, applied } = confirmProject('portal', [
+    workflowNode({ id: 'design', title: '设计' }),
+  ]);
+  const denied = create(state, {
+    async spaceForProject() {
+      return { ok: false, reason: 'unavailable' };
+    },
+  });
+  const blocked = await denied.service.startPlan(session('chen', ['team-north', 'portal']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-unavailable',
+  });
+  assert.equal(blocked.error.code, 'unavailable');
+  assert.equal(denied.store.planCount(), 0);
+  assert.equal(denied.store.node('design'), undefined);
+
+  let fail = false;
+  const { service, store } = create(state, {
+    async spaceForProject() {
+      if (fail) throw new Error('space-directory-down');
+      return { ok: true, spaceId: 'team-north' };
+    },
+  });
+  const started = await service.startPlan(session('chen', ['team-north']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-then-down',
+  });
+  assert.equal(started.ok, true);
+  fail = true;
+  const submitted = await service.submit(session('chen', ['team-north', 'portal']), {
+    ...locate(applied, 'design', 1, 'after-down'),
+    text: '目录故障后的交付',
+  });
+  assert.equal(submitted.error.code, 'unavailable');
+  assert.equal(JSON.stringify(submitted).includes('space-directory-down'), false);
+  assert.equal(JSON.stringify(submitted).includes('目录故障后的交付'), false);
+  assert.equal(store.node('design').receipts.length, 0);
+  const inbox = await service.inbox(session('chen', ['team-north']), {});
+  assert.equal(inbox.error.code, 'unavailable');
+  const report = await service.report(session('chen', ['team-north']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(report.error.code, 'unavailable');
+  assert.equal(JSON.stringify(report).includes('设计登录流程'), false);
 });

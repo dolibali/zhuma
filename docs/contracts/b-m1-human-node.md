@@ -41,9 +41,9 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 单人还是多人、当前成员是谁，只来自 `b/id0a-identity`（`f0eac0f`）的 `resolveMember`。执行插件没有 `singleUser`，也没有 `bind-owner`。通道层合并了那条分支，身份文件属于那条分支，不在这里重写。同一来源地址 60 秒内登录满 8 次后返回 429。
 
 1. `applyIdentity` 先装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。
-2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。`spaceIds` 用任务的 `projectId` 当作空间 id。
+2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。任务的 `projectId` 不是空间 id。执行服务调用 `ProjectSpaceDirectory.spaceForProject(projectId)`，只把返回的空间 id 和这次成员的 `spaceIds` 做精确比较。
 3. 单人模式只在导入恰好一个账户、并且 `ownerAccountId` 写明是这个账户时成立。这时 owner cookie 解析成那个账户。多人模式不把 DSH owner cookie 当成成员。
-4. 空间对不上时，`start-plan`、`report`、`submit`、`ballot`、`settle` 返回 `not-found`。待办不列出这些任务。空间通过之后才检查任务成员，然后才检查节点角色。
+4. 空间对不上，或目录没有这个项目时，`start-plan`、`report`、`submit`、`ballot`、`settle` 返回 `not-found`。待办不列出这些任务。目录抛错或返回 `unavailable` 时，这些命令和待办都返回 `unavailable`，不写入。空间通过之后才检查任务成员，然后才检查节点角色。
 
 官方 `rpc.handle` 的 Peer 没有请求头，所以执行通道不用它。`connection.fetch.register` 的 Fetch `Request` 保留 `cookie` 和 `host`。Connection 的精确路由仍然只把 owner Peer 送进处理函数；成员身份只从 `resolveMember` 来。
 
@@ -135,10 +135,13 @@ B 不改 `workbench-plugin.ts` 的业务，也不把工作台域再 `open` 一�
 ```ts
 await applyIdentity(ctx, imported);
 await applyWorkbench(ctx);
-await applyExecution(ctx, { readWorkbench: () => service.snapshot() });
+await applyExecution(ctx, {
+  readWorkbench: () => service.snapshot(),
+  projectSpaces,
+});
 ```
 
-`applyExecution` 只接受 `readWorkbench`。不要传 `memberResolver` 或 `singleUser`。单人还是多人由身份模块决定。
+`applyExecution` 接受 `readWorkbench` 和 `projectSpaces`。不要传 `memberResolver` 或 `singleUser`。单人还是多人由身份模块决定。`projectSpaces` 是有界的 `ProjectSpaceDirectory`：最多 100 条，一个项目只属于一个空间，两个 id 可以不同。工作台里的项目没有空间字段，身份库的笔记空间也不能当作项目归属。A 传入这份目录，不复制身份库。没有记录就是未知，未知和不匹配都拒绝。
 
 `inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。
 

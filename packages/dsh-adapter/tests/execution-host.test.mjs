@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { apply as applyExecution, inject as executionInject } from '../dist/execution-plugin.js';
+import { boundedProjectSpaces } from '../dist/project-space.js';
 import { hashPassword } from '../dist/identity-session.js';
 import { AUTHORITY, bootIdentity } from './member-host.mjs';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
@@ -76,7 +77,10 @@ test('a real connection and member cookie run start, report, and review', async 
   });
   const executionFiber = host.ctx.plugin(
     { inject: [...executionInject], apply: applyExecution },
-    { readWorkbench: () => workbench },
+    {
+      readWorkbench: () => workbench,
+      projectSpaces: boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]),
+    },
   );
   await executionFiber;
   try {

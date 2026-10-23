@@ -45,6 +45,7 @@ import type {
   MemberRequest,
   MemberResolution,
   MemberResolver,
+  ProjectSpaceDirectory,
   ReportRequest,
   ReportValue,
   SettleRequest,
@@ -82,8 +83,9 @@ export function passExecutionOptions(
   ctx: Context,
   resolver: S1ExecutionOptions['memberResolver'],
   readWorkbench: () => Workbench,
+  projectSpaces: ProjectSpaceDirectory,
 ): Promise<void> {
-  const executionOptions = { memberResolver: resolver, readWorkbench };
+  const executionOptions = { memberResolver: resolver, readWorkbench, projectSpaces };
   return apply(ctx, executionOptions);
 }
 
