@@ -213,17 +213,20 @@ export function previewResourcePackage(
   const byPath = new Map(files.map((f) => [f.path, f]));
   const items: ImportPackageItem[] = [];
   const consumed = new Set<string>();
-  function add(item: ImportPackageItem) {
-    if (items.length >= ASSET_IMPORT_LIMITS.items) fail('一次最多导入 20 项定义，请拆分资产包。');
-    const legal = files
+  function legalFiles(entryPath: string): string[] {
+    return files
       .filter(
         (f) =>
           /^(?:licen[sc]e|notice|copying|copyright|readme)(?:\..*)?$/iu.test(
             f.path.split('/').at(-1)!,
           ) &&
-          (!parent(f.path) || inFolder(item.key, parent(f.path))),
+          (!parent(f.path) || inFolder(entryPath, parent(f.path))),
       )
       .map((f) => f.path);
+  }
+  function add(item: ImportPackageItem) {
+    if (items.length >= ASSET_IMPORT_LIMITS.items) fail('一次最多导入 20 项定义，请拆分资产包。');
+    const legal = legalFiles(item.key);
     item.filePaths = [...new Set([...item.filePaths, ...legal])];
     const result = ImportPackageItemSchema.safeParse(item);
     if (!result.success) fail(`「${item.key}」定义超出内容或数量限制，请拆分后导入。`);
@@ -275,11 +278,12 @@ export function previewResourcePackage(
     if (!content || text.length > ASSET_IMPORT_LIMITS.skillChars)
       fail(`「${file.path}」需要正文，且不得超过 60000 字符。`);
     const paths = files.filter((f) => inFolder(f.path, folder)).map((f) => f.path);
+    const allowedPaths = new Set([...paths, ...legalFiles(file.path)]);
     const missing: string[] = [];
     for (const ref of markdownReferences(content)) {
       if (/^(?:[a-z]+:|\/|#)/iu.test(ref)) continue;
       const target = resolveReference(folder, ref);
-      if (!target || !paths.includes(target)) missing.push(ref);
+      if (!target || !allowedPaths.has(target)) missing.push(ref);
     }
     const requirements = Object.keys(meta)
       .filter(
