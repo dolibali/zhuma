@@ -274,7 +274,10 @@ test('template schema: old text remains readable, structured content over 8KB is
   const { state, input, definition, template } = setup();
   assert.throws(() => parseWorkflowTemplate('原先的文字模板'), { code: 'template-legacy' });
   AssetSchema.parse({ ...template, content: '原先的文字模板' });
-  assert.throws(() => AssetSchema.parse({ ...template, kind: 'skill', content: 'x'.repeat(8001) }));
+  assert.throws(() => AssetSchema.parse({ ...template, kind: 'mcp', content: 'x'.repeat(8001) }));
+  assert.throws(() =>
+    AssetSchema.parse({ ...template, kind: 'skill', content: 'x'.repeat(60001) }),
+  );
   const long = structuredClone(definition);
   long.workflows[0].nodes.forEach((n) => (n.description = 'x'.repeat(4000)));
   const content = JSON.stringify(long);

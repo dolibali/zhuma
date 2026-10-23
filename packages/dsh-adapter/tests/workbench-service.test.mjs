@@ -57,6 +57,46 @@ test('durable commands: failed storage and cancelled requests preserve prior sta
   assert.equal(service.snapshot().projects.length, 1);
 });
 
+test('project service contract: failed save retries atomically, serialized reopen preserves the same references and receipt', async () => {
+  let state = fixture().state;
+  let fail = true;
+  let writes = 0;
+  const storage = {
+    read: () => state,
+    write: async (next) => {
+      if (fail) throw Error('synthetic write failure');
+      writes++;
+      state = WorkbenchSchema.parse(JSON.parse(JSON.stringify(next)));
+    },
+  };
+  const audits = { get: () => undefined, put: async () => {} };
+  const service = new WorkbenchService(storage, audits);
+  const request = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    command: {
+      type: 'save-project',
+      project: {
+        ...state.projects[0],
+        defaultParticipantIds: ['chen', 'qa'],
+        assetIds: ['api-skill'],
+        references: [{ id: 'api', name: 'API', url: 'https://example.com/api' }],
+      },
+    },
+  };
+  const original = structuredClone(state);
+  await assert.rejects(service.command(request, signal()), /synthetic write failure/);
+  assert.deepEqual(state, original);
+  fail = false;
+  await service.command(request, signal());
+  const reopened = new WorkbenchService(storage, audits);
+  assert.deepEqual(reopened.snapshot().projects[0], request.command.project);
+  assert.deepEqual(reopened.snapshot().tasks, original.tasks);
+  await reopened.command(request, signal());
+  assert.equal(writes, 1);
+  assert.equal(state.receipts.length, 1);
+});
+
 test('durable commands: legacy ownerless receipt survives schema defaults without a second write', async () => {
   const { state, task } = fixture();
   delete task.ownerId;
