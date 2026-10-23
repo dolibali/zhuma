@@ -2,15 +2,17 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-// 回归：屏障仍留在回收之前，把过期回收改回先 unlink 再 wx、释放改回无条件 unlink、
-// 保存不再核对令牌后，下面三则都失败。已改回跑过：
-// 跟随者的 writable 变成 true；正常退出和 SIGTERM 后新锁文件不存在；
-// 接走后的两次保存都写成 saved，没有变成只读。
+// 回归：屏障留在回收确认和释放的空隙。改回先把锁改名再核对、释放时把锁改走后无条件删除、
+// 不再理会死进程留下的互斥文件、保存把缺失的锁当成仍持有，然后重跑。已改回跑过，六则失败：
+// 同时回收时确认空隙里活锁不在；正常退出后新锁文件不在；
+// 过期观察碰上活锁时 twoWritersSavedSuccessfully 为 true；非持有者释放时第三人 saved 为 true；
+// 死进程留下的互斥没有拦住，writable 为 true；锁文件不在时 saved 为 true。
+// 锁文件还在、只是令牌被换掉的那则仍然得到 ELOCKED。
 
 const adapter = pathToFileURL(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
@@ -34,8 +36,13 @@ function wait(file, label) {
 }
 
 function spawnJournal(source, env) {
+  const childEnv = { ...process.env };
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith('ZHUMA_LOCK_')) delete childEnv[key];
+  }
+  Object.assign(childEnv, env);
   const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
-    env: { ...process.env, ...env },
+    env: childEnv,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let stderr = '';
@@ -59,40 +66,53 @@ async function deadPid() {
   throw new Error('没有找到已确认死亡的 pid');
 }
 
-function staleLock(file, pid) {
-  writeFileSync(
-    `${file}.write.lock`,
-    JSON.stringify({
-      pid,
-      hostname: hostname(),
-      startedAt: '2026-10-23T00:00:00.000Z',
-    }),
-  );
+function staleLock(file, pid, token = '') {
+  const record = {
+    pid,
+    hostname: hostname(),
+    startedAt: '2026-10-23T00:00:00.000Z',
+  };
+  if (token) record.token = token;
+  writeFileSync(`${file}.write.lock`, JSON.stringify(record));
+}
+
+function pauseSource() {
+  return `
+    function pause(file) {
+      const started = Date.now();
+      while (!existsSync(file)) {
+        if (Date.now() - started > 8000) process.exit(3);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+    }
+  `;
 }
 
 test('契约：两个进程同时回收同一把过期锁时只有一个能写', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-race-'));
   const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
   const arrived = path.join(directory, 'arrived');
-  const signal = path.join(directory, 'leader-saved');
+  const signal = path.join(directory, 'leader-holding');
+  const gapArrived = path.join(directory, 'gap-arrived');
+  const gapWait = path.join(directory, 'gap-wait');
+  const followerDone = path.join(directory, 'follower-done');
   const leaderResult = path.join(directory, 'leader.json');
   const followerResult = path.join(directory, 'follower.json');
-  staleLock(file, await deadPid());
+  staleLock(file, await deadPid(), 'dead-token');
 
-  const followerDone = path.join(directory, 'follower-done');
   const source = `
     import { existsSync, readFileSync, writeFileSync } from 'node:fs';
     import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
     const file = ${JSON.stringify(file)};
+    const lockPath = ${JSON.stringify(lockPath)};
     const role = process.env.ZHUMA_LOCK_ROLE;
     const journal = createFileJournal(file);
     if (process.env.ZHUMA_LOCK_SIGNAL) {
-      writeFileSync(process.env.ZHUMA_LOCK_SIGNAL, 'holding');
-      const started = Date.now();
-      while (!existsSync(process.env.ZHUMA_LOCK_FOLLOWER_DONE)) {
-        if (Date.now() - started > 8000) process.exit(3);
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-      }
+      const token = journal.writable === true ? JSON.parse(readFileSync(lockPath, 'utf8')).token : '';
+      writeFileSync(process.env.ZHUMA_LOCK_SIGNAL, token);
+      pause(process.env.ZHUMA_LOCK_FOLLOWER_DONE);
     }
     let code = '';
     let saved = false;
@@ -109,35 +129,48 @@ test('契约：两个进程同时回收同一把过期锁时只有一个能写',
       writable: journal.writable === true,
       saved,
       code,
-      body: saved ? readFileSync(file, 'utf8') : '',
+      body: existsSync(file) ? readFileSync(file, 'utf8') : '',
     }));
   `;
   const follower = spawnJournal(source, {
     ZHUMA_LOCK_ROLE: 'follower',
     ZHUMA_LOCK_ARRIVED: arrived,
     ZHUMA_LOCK_WAIT_FILE: signal,
+    ZHUMA_LOCK_GAP_ARRIVED: gapArrived,
+    ZHUMA_LOCK_GAP_WAIT: gapWait,
     ZHUMA_LOCK_FOLLOWER_DONE: followerDone,
     ZHUMA_LOCK_RESULT: followerResult,
   });
-  await wait(arrived, '跟随者没有停在回收前');
-  const leader = spawnJournal(source, {
-    ZHUMA_LOCK_ROLE: 'leader',
-    ZHUMA_LOCK_SIGNAL: signal,
-    ZHUMA_LOCK_FOLLOWER_DONE: followerDone,
-    ZHUMA_LOCK_RESULT: leaderResult,
-  });
-  const [leaderExit, followerExit] = await Promise.all([leader.exited, follower.exited]);
-  assert.equal(leaderExit.code, 0, leaderExit.stderr);
-  assert.equal(followerExit.code, 0, followerExit.stderr);
-  const leaderOut = JSON.parse(readFileSync(leaderResult, 'utf8'));
-  const followerOut = JSON.parse(readFileSync(followerResult, 'utf8'));
-  assert.equal(leaderOut.writable, true);
-  assert.equal(leaderOut.saved, true);
-  assert.equal(JSON.parse(leaderOut.body).role, 'leader');
-  assert.equal(followerOut.writable, false);
-  assert.equal(followerOut.saved, false);
-  assert.equal(followerOut.code, 'ELOCKED');
-  assert.equal(JSON.parse(readFileSync(file, 'utf8')).role, 'leader');
+  try {
+    await wait(arrived, '跟随者没有停在回收前');
+    const leader = spawnJournal(source, {
+      ZHUMA_LOCK_ROLE: 'leader',
+      ZHUMA_LOCK_SIGNAL: signal,
+      ZHUMA_LOCK_FOLLOWER_DONE: followerDone,
+      ZHUMA_LOCK_RESULT: leaderResult,
+    });
+    await wait(gapArrived, '跟随者没有停在确认活锁的空隙');
+    assert.equal(existsSync(lockPath), true, '确认期间活锁被挪走了');
+    const token = readFileSync(signal, 'utf8');
+    assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).token, token);
+    writeFileSync(gapWait, 'go');
+    const [leaderExit, followerExit] = await Promise.all([leader.exited, follower.exited]);
+    assert.equal(leaderExit.code, 0, leaderExit.stderr);
+    assert.equal(followerExit.code, 0, followerExit.stderr);
+    const leaderOut = JSON.parse(readFileSync(leaderResult, 'utf8'));
+    const followerOut = JSON.parse(readFileSync(followerResult, 'utf8'));
+    assert.equal(leaderOut.writable, true);
+    assert.equal(leaderOut.saved, true);
+    assert.equal(JSON.parse(leaderOut.body).role, 'leader');
+    assert.equal(followerOut.writable, false);
+    assert.equal(followerOut.saved, false);
+    assert.equal(followerOut.code, 'ELOCKED');
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).role, 'leader');
+  } finally {
+    if (!existsSync(signal)) writeFileSync(signal, 'missing');
+    if (!existsSync(gapWait)) writeFileSync(gapWait, 'go');
+    if (!existsSync(followerDone)) writeFileSync(followerDone, 'done');
+  }
 });
 
 test('契约：旧持有者退出不会删掉新持有者的写锁', async () => {
@@ -197,15 +230,12 @@ test('契约：写锁被接过后再次保存得到 ELOCKED 并变成只读', as
   const source = `
     import { existsSync, readFileSync, writeFileSync } from 'node:fs';
     import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
     const file = ${JSON.stringify(file)};
     const journal = createFileJournal(file);
     journal.save({ first: 1 });
     writeFileSync(${JSON.stringify(ready)}, 'ready');
-    const started = Date.now();
-    while (!existsSync(${JSON.stringify(go)})) {
-      if (Date.now() - started > 8000) process.exit(3);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-    }
+    pause(${JSON.stringify(go)});
     const codes = [];
     for (const body of [{ stolen: true }, { again: true }]) {
       try {
@@ -239,4 +269,283 @@ test('契约：写锁被接过后再次保存得到 ELOCKED 并变成只读', as
   assert.deepEqual(reported.codes, ['ELOCKED', 'ELOCKED']);
   assert.equal(reported.writable, false);
   assert.deepEqual(JSON.parse(reported.body), { first: 1 });
+});
+
+test('契约：过期观察碰上活锁时，空隙中的第三人不能和持有者一起写成功', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-live-gap-'));
+  const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
+  const arrived = path.join(directory, 'arrived');
+  const holding = path.join(directory, 'holding');
+  const gapArrived = path.join(directory, 'gap-arrived');
+  const gapWait = path.join(directory, 'gap-wait');
+  const saveWait = path.join(directory, 'save-wait');
+  const results = {
+    A: path.join(directory, 'a.json'),
+    B: path.join(directory, 'b.json'),
+    C: path.join(directory, 'c.json'),
+  };
+  staleLock(file, await deadPid(), 'dead-token');
+  const source = `
+    import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
+    const file = ${JSON.stringify(file)};
+    const lockPath = ${JSON.stringify(lockPath)};
+    const role = process.env.ZHUMA_LOCK_ROLE;
+    const journal = createFileJournal(file);
+    let token = '';
+    if (process.env.ZHUMA_LOCK_SIGNAL && journal.writable === true) {
+      token = JSON.parse(readFileSync(lockPath, 'utf8')).token;
+      writeFileSync(process.env.ZHUMA_LOCK_SIGNAL, token);
+      pause(process.env.ZHUMA_LOCK_SAVE_WAIT);
+    }
+    let code = '';
+    let saved = false;
+    try {
+      journal.save({ role });
+      saved = true;
+    } catch (error) {
+      code = error && error.code ? String(error.code) : 'throw';
+    }
+    writeFileSync(process.env.ZHUMA_LOCK_RESULT, JSON.stringify({
+      role,
+      token,
+      writable: journal.writable === true,
+      saved,
+      code,
+    }));
+  `;
+  const reclaimer = spawnJournal(source, {
+    ZHUMA_LOCK_ROLE: 'B',
+    ZHUMA_LOCK_ARRIVED: arrived,
+    ZHUMA_LOCK_WAIT_FILE: holding,
+    ZHUMA_LOCK_GAP_ARRIVED: gapArrived,
+    ZHUMA_LOCK_GAP_WAIT: gapWait,
+    ZHUMA_LOCK_RESULT: results.B,
+  });
+  try {
+    await wait(arrived, '回收方没有停在过期观察之后');
+    const holder = spawnJournal(source, {
+      ZHUMA_LOCK_ROLE: 'A',
+      ZHUMA_LOCK_SIGNAL: holding,
+      ZHUMA_LOCK_SAVE_WAIT: saveWait,
+      ZHUMA_LOCK_RESULT: results.A,
+    });
+    await wait(gapArrived, '回收方没有停在活锁确认之后');
+    const arriver = spawnJournal(source, {
+      ZHUMA_LOCK_ROLE: 'C',
+      ZHUMA_LOCK_RESULT: results.C,
+    });
+    const arriverExit = await arriver.exited;
+    assert.equal(arriverExit.code, 0, arriverExit.stderr);
+    writeFileSync(gapWait, 'go');
+    const reclaimerExit = await reclaimer.exited;
+    assert.equal(reclaimerExit.code, 0, reclaimerExit.stderr);
+    assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).token, readFileSync(holding, 'utf8'));
+    writeFileSync(saveWait, 'go');
+    const holderExit = await holder.exited;
+    assert.equal(holderExit.code, 0, holderExit.stderr);
+    const holderOut = JSON.parse(readFileSync(results.A, 'utf8'));
+    const reclaimerOut = JSON.parse(readFileSync(results.B, 'utf8'));
+    const arriverOut = JSON.parse(readFileSync(results.C, 'utf8'));
+    const twoWritersSavedSuccessfully = holderOut.saved === true && arriverOut.saved === true;
+    assert.equal(twoWritersSavedSuccessfully, false);
+    assert.equal(holderOut.saved, true);
+    assert.equal(holderOut.writable, true);
+    assert.equal(reclaimerOut.saved, false);
+    assert.equal(reclaimerOut.writable, false);
+    assert.equal(reclaimerOut.code, 'ELOCKED');
+    assert.equal(arriverOut.saved, false);
+    assert.equal(arriverOut.writable, false);
+    assert.equal(arriverOut.code, 'ELOCKED');
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).role, 'A');
+  } finally {
+    if (!existsSync(gapWait)) writeFileSync(gapWait, 'go');
+    if (!existsSync(saveWait)) writeFileSync(saveWait, 'go');
+    if (!existsSync(holding)) writeFileSync(holding, 'missing');
+  }
+});
+
+test('契约：非持有者释放时新锁不会被删掉或覆盖', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-release-gap-'));
+  const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
+  const ready = path.join(directory, 'ready');
+  const releaseGo = path.join(directory, 'release-go');
+  const releaseArrived = path.join(directory, 'release-arrived');
+  const releaseWait = path.join(directory, 'release-wait');
+  const holderResult = path.join(directory, 'holder.json');
+  const arriverResult = path.join(directory, 'arriver.json');
+  const replaced = {
+    token: 'new-holder',
+    pid: process.pid,
+    hostname: hostname(),
+    startedAt: '2026-10-23T00:00:00.000Z',
+  };
+  const holderSource = `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
+    const journal = createFileJournal(${JSON.stringify(file)});
+    if (journal.writable !== true) process.exit(2);
+    journal.save({ role: 'A' });
+    writeFileSync(${JSON.stringify(ready)}, 'held');
+    pause(${JSON.stringify(releaseGo)});
+    writeFileSync(${JSON.stringify(holderResult)}, JSON.stringify({ saved: true }));
+    process.exit(0);
+  `;
+  const arriverSource = `
+    import { writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    const journal = createFileJournal(${JSON.stringify(file)});
+    let code = '';
+    let saved = false;
+    try {
+      journal.save({ role: 'C' });
+      saved = true;
+    } catch (error) {
+      code = error && error.code ? String(error.code) : 'throw';
+    }
+    writeFileSync(${JSON.stringify(arriverResult)}, JSON.stringify({
+      writable: journal.writable === true,
+      saved,
+      code,
+    }));
+  `;
+  const holder = spawnJournal(holderSource, {
+    ZHUMA_LOCK_RELEASE_ARRIVED: releaseArrived,
+    ZHUMA_LOCK_RELEASE_WAIT: releaseWait,
+  });
+  try {
+    await wait(ready, '旧持有者没有拿到写锁');
+    writeFileSync(lockPath, JSON.stringify(replaced));
+    writeFileSync(releaseGo, 'go');
+    await wait(releaseArrived, '旧持有者没有停在释放非自己的锁之前');
+    const arriver = spawnJournal(arriverSource, {});
+    const arriverExit = await arriver.exited;
+    assert.equal(arriverExit.code, 0, arriverExit.stderr);
+    writeFileSync(releaseWait, 'go');
+    const holderExit = await holder.exited;
+    assert.equal(holderExit.code, 0, holderExit.stderr);
+    const arriverOut = JSON.parse(readFileSync(arriverResult, 'utf8'));
+    assert.equal(arriverOut.saved, false);
+    assert.equal(arriverOut.writable, false);
+    assert.equal(arriverOut.code, 'ELOCKED');
+    assert.equal(existsSync(lockPath), true);
+    assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).token, replaced.token);
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).role, 'A');
+  } finally {
+    if (!existsSync(releaseGo)) writeFileSync(releaseGo, 'go');
+    if (!existsSync(releaseWait)) writeFileSync(releaseWait, 'go');
+  }
+});
+
+test('契约：死进程留下的回收互斥保持只读并指出要删除的文件', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-mutex-'));
+  const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
+  const mutexPath = `${lockPath}.reclaim`;
+  const result = path.join(directory, 'result.json');
+  const pid = await deadPid();
+  const stale = {
+    token: 'dead-lock',
+    pid,
+    hostname: hostname(),
+    startedAt: '2026-10-23T00:00:00.000Z',
+  };
+  const mutex = {
+    token: 'dead-mutex',
+    pid,
+    hostname: hostname(),
+    startedAt: '2026-10-23T00:00:00.000Z',
+  };
+  writeFileSync(lockPath, JSON.stringify(stale));
+  writeFileSync(mutexPath, JSON.stringify(mutex));
+  const source = `
+    import { writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    const journal = createFileJournal(${JSON.stringify(file)});
+    let code = '';
+    let message = '';
+    let saved = false;
+    try {
+      journal.save({ role: 'intruder' });
+      saved = true;
+    } catch (error) {
+      code = error && error.code ? String(error.code) : 'throw';
+      message = error && error.message ? String(error.message) : '';
+    }
+    writeFileSync(${JSON.stringify(result)}, JSON.stringify({
+      writable: journal.writable === true,
+      refusal: journal.refusal || '',
+      saved,
+      code,
+      message,
+    }));
+  `;
+  const child = spawnJournal(source, {});
+  const outcome = await child.exited;
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const reported = JSON.parse(readFileSync(result, 'utf8'));
+  assert.equal(reported.writable, false);
+  assert.equal(reported.saved, false);
+  assert.equal(reported.code, 'ELOCKED');
+  assert.equal(
+    reported.refusal,
+    `回收互斥文件还在，不会自动删除。确认没有进程正在回收之后，删除 ${mutexPath}`,
+  );
+  assert.equal(reported.message, reported.refusal);
+  assert.deepEqual(JSON.parse(readFileSync(lockPath, 'utf8')), stale);
+  assert.deepEqual(JSON.parse(readFileSync(mutexPath, 'utf8')), mutex);
+  assert.equal(existsSync(file), false);
+});
+
+test('契约：锁文件不在时保存得到 ELOCKED 并变成只读', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-missing-'));
+  const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
+  const ready = path.join(directory, 'ready');
+  const go = path.join(directory, 'go');
+  const result = path.join(directory, 'result.json');
+  const source = `
+    import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
+    const file = ${JSON.stringify(file)};
+    const journal = createFileJournal(file);
+    journal.save({ first: 1 });
+    writeFileSync(${JSON.stringify(ready)}, 'ready');
+    pause(${JSON.stringify(go)});
+    let code = '';
+    let saved = false;
+    try {
+      journal.save({ missing: true });
+      saved = true;
+    } catch (error) {
+      code = error && error.code ? String(error.code) : 'throw';
+    }
+    writeFileSync(${JSON.stringify(result)}, JSON.stringify({
+      writable: journal.writable === true,
+      saved,
+      code,
+      body: readFileSync(file, 'utf8'),
+    }));
+  `;
+  const child = spawnJournal(source, {});
+  try {
+    await wait(ready, '子进程没有完成第一次保存');
+    unlinkSync(lockPath);
+    writeFileSync(go, 'go');
+    const outcome = await child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+    const reported = JSON.parse(readFileSync(result, 'utf8'));
+    assert.equal(reported.saved, false);
+    assert.equal(reported.code, 'ELOCKED');
+    assert.equal(reported.writable, false);
+    assert.deepEqual(JSON.parse(reported.body), { first: 1 });
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    if (!existsSync(go)) writeFileSync(go, 'go');
+  }
 });

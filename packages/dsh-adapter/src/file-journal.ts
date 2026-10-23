@@ -22,6 +22,11 @@ export interface DeskJournal<T> {
    * 内存日志省略，调用方视为可写。
    */
   readonly writable?: boolean;
+  /**
+   * 死进程留下回收互斥时，写出要删除的那个文件的完整路径。
+   * 没有这层互斥时省略。
+   */
+  readonly refusal?: string;
 }
 
 interface LockRecord {
@@ -29,6 +34,11 @@ interface LockRecord {
   pid: number;
   hostname: string;
   startedAt: string;
+}
+
+interface AcquireResult {
+  token: string | null;
+  refusal?: string;
 }
 
 const heldLocks = new Map<string, string>();
@@ -40,34 +50,35 @@ function lockFilePath(filePath: string): string {
   return path.join(path.dirname(resolved), `${path.basename(resolved)}.write.lock`);
 }
 
+function reclaimMutexPath(lockPath: string): string {
+  return `${lockPath}.reclaim`;
+}
+
+/** 死进程留下的互斥不做第二层回收。信息里是要删除的完整路径。 */
+function abandonedMutexMessage(mutexPath: string): string {
+  return `回收互斥文件还在，不会自动删除。确认没有进程正在回收之后，删除 ${mutexPath}`;
+}
+
 function releaseHeldLocks(): void {
   const held = [...heldLocks.entries()];
   heldLocks.clear();
   for (const [lockPath, token] of held) releaseOne(lockPath, token);
 }
 
-/** 先改名再核对令牌。对不上就放回去，避免退出时删掉新持有者的锁。 */
+/**
+ * 只读锁文件。令牌仍是自己的才删除。不改名，避免把别人的活锁挪走后再覆盖回去。
+ */
 function releaseOne(lockPath: string, token: string): void {
-  const temporary = `${lockPath}.${token}.releasing`;
-  try {
-    renameSync(lockPath, temporary);
-  } catch {
-    return;
-  }
-  const current = readLock(temporary);
+  const current = readLock(lockPath);
   if (current !== null && current.token === token) {
     try {
-      unlinkSync(temporary);
+      unlinkSync(lockPath);
     } catch {
       // 锁已经不在。
     }
     return;
   }
-  try {
-    renameSync(temporary, lockPath);
-  } catch {
-    // 原路径上已经有另一把锁。临时文件不是自己的令牌，不删除那把新锁。
-  }
+  reachBarrier('ZHUMA_LOCK_RELEASE_ARRIVED', 'ZHUMA_LOCK_RELEASE_WAIT');
 }
 
 function ensureExitHook(): void {
@@ -111,12 +122,12 @@ function sameHolder(left: LockRecord, right: LockRecord): boolean {
 
 /**
  * 测试用屏障。未设置环境变量时什么都不做。
- * 到达点写一个文件，然后等到另一个文件出现，用来钉死回收顺序，而不是靠睡眠碰运气。
+ * 到达点写一个文件，然后等到另一个文件出现，用来钉死顺序，而不是靠睡眠碰运气。
  */
-function reachReclaimBarrier(): void {
-  const arrived = process.env.ZHUMA_LOCK_ARRIVED;
+function reachBarrier(arrivedKey: string, waitKey: string): void {
+  const arrived = process.env[arrivedKey];
   if (arrived) writeFileSync(arrived, String(process.pid));
-  const waitFile = process.env.ZHUMA_LOCK_WAIT_FILE;
+  const waitFile = process.env[waitKey];
   if (!waitFile) return;
   const started = Date.now();
   while (!existsSync(waitFile)) {
@@ -139,77 +150,121 @@ function holderDead(record: LockRecord): boolean {
   }
 }
 
-function restoreRenamed(temporary: string, lockPath: string): void {
+function errorCode(error: unknown): string {
+  return error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+}
+
+/**
+ * 互斥文件用 O_EXCL 创建，已存在就失败，不会覆盖。
+ * 读得出活进程则让开。死进程或读不出持有者时保持只读，并给出要删除的路径。
+ */
+function mutexBlock(lockPath: string): AcquireResult | null {
+  const mutexPath = reclaimMutexPath(lockPath);
+  if (!existsSync(mutexPath)) return null;
+  const holder = readLock(mutexPath);
+  if (holder !== null && !holderDead(holder)) return { token: null };
+  return { token: null, refusal: abandonedMutexMessage(mutexPath) };
+}
+
+function writeRecord(fd: number, token: string): void {
+  writeSync(
+    fd,
+    JSON.stringify({
+      token,
+      pid: process.pid,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+    }),
+  );
+}
+
+/** 互斥只在令牌仍是自己的时候删除。不改名。 */
+function releaseMutex(mutexPath: string, token: string): void {
+  const current = readLock(mutexPath);
+  if (current === null || current.token !== token) return;
   try {
-    renameSync(temporary, lockPath);
+    unlinkSync(mutexPath);
   } catch {
-    // 原路径已经有新锁。不删除它。
+    // 互斥已经不在。
   }
 }
 
 /**
- * 过期锁先改名到唯一临时文件。rename 是原子的，只有一个进程能拿走这份文件。
- * 再读回，确认仍是刚才那个已死持有者，才丢掉。对不上就放回去。
+ * 先独占 `<lock>.reclaim`，再读锁。确认仍是同一个已死持有者后才删除并创建新锁。
+ * 活锁留在原地，不改名。
  */
-function reclaimStale(lockPath: string, holder: LockRecord): boolean {
-  reachReclaimBarrier();
-  const temporary = `${lockPath}.${randomBytes(8).toString('hex')}.reclaim`;
+function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
+  reachBarrier('ZHUMA_LOCK_ARRIVED', 'ZHUMA_LOCK_WAIT_FILE');
+  const blocked = mutexBlock(lockPath);
+  if (blocked) return blocked;
+  const mutexPath = reclaimMutexPath(lockPath);
+  const mutexToken = randomBytes(16).toString('hex');
+  let mutexFd: number;
   try {
-    renameSync(lockPath, temporary);
-  } catch {
-    return false;
-  }
-  const moved = readLock(temporary);
-  if (moved === null || !sameHolder(moved, holder) || !holderDead(moved)) {
-    restoreRenamed(temporary, lockPath);
-    return false;
+    mutexFd = openSync(mutexPath, 'wx');
+  } catch (error) {
+    if (errorCode(error) !== 'EEXIST') throw error;
+    return mutexBlock(lockPath) ?? { token: null };
   }
   try {
-    unlinkSync(temporary);
-  } catch {
-    restoreRenamed(temporary, lockPath);
-    return false;
+    writeRecord(mutexFd, mutexToken);
+  } finally {
+    closeSync(mutexFd);
   }
-  return true;
+  try {
+    const current = readLock(lockPath);
+    if (current === null || !sameHolder(current, holder) || !holderDead(current)) {
+      reachBarrier('ZHUMA_LOCK_GAP_ARRIVED', 'ZHUMA_LOCK_GAP_WAIT');
+      return { token: null };
+    }
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      return { token: null };
+    }
+    const lockToken = randomBytes(16).toString('hex');
+    let lockFd: number;
+    try {
+      lockFd = openSync(lockPath, 'wx');
+    } catch {
+      return { token: null };
+    }
+    try {
+      writeRecord(lockFd, lockToken);
+    } finally {
+      closeSync(lockFd);
+    }
+    heldLocks.set(lockPath, lockToken);
+    return { token: lockToken };
+  } finally {
+    releaseMutex(mutexPath, mutexToken);
+  }
 }
 
-function acquireLock(lockPath: string): string | null {
+function acquireLock(lockPath: string): AcquireResult {
   mkdirSync(path.dirname(lockPath), { recursive: true });
   ensureExitHook();
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let fd: number;
-    try {
-      fd = openSync(lockPath, 'wx');
-    } catch (error) {
-      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
-      if (code !== 'EEXIST') throw error;
-      const holder = readLock(lockPath);
-      if (holder !== null && holderDead(holder)) {
-        if (!reclaimStale(lockPath, holder)) return null;
-        continue;
-      }
-      return null;
-    }
+  const blocked = mutexBlock(lockPath);
+  if (blocked) return blocked;
+  try {
+    const fd = openSync(lockPath, 'wx');
     const token = randomBytes(16).toString('hex');
     try {
-      writeSync(
-        fd,
-        JSON.stringify({
-          token,
-          pid: process.pid,
-          hostname: hostname(),
-          startedAt: new Date().toISOString(),
-        }),
-      );
+      writeRecord(fd, token);
     } finally {
       closeSync(fd);
     }
     heldLocks.set(lockPath, token);
-    return token;
+    return { token };
+  } catch (error) {
+    if (errorCode(error) !== 'EEXIST') throw error;
   }
-  return null;
+  const holder = readLock(lockPath);
+  if (holder !== null && holderDead(holder)) return reclaimStale(lockPath, holder);
+  return { token: null };
 }
 
+/** 锁文件不在不是自己的。活锁不会被挪走，缺失就是写权已经丢了。 */
 function holdsLock(lockPath: string, token: string): boolean {
   const current = readLock(lockPath);
   return current !== null && current.token === token;
@@ -241,26 +296,30 @@ export function foreignWriteLockHeld(dataDir: string): boolean {
 /** 运行时日志。调用方负责把路径放在临时目录，不要提交这份文件。 */
 export function createFileJournal<T>(filePath: string): DeskJournal<T> {
   const lockPath = lockFilePath(filePath);
-  const token = acquireLock(lockPath);
+  const acquired = acquireLock(lockPath);
+  const token = acquired.token;
   const state = { writable: token !== null };
   return {
     get writable() {
       return state.writable;
     },
+    ...(acquired.refusal ? { refusal: acquired.refusal } : {}),
     load() {
       try {
         return JSON.parse(readFileSync(filePath, 'utf8')) as T;
       } catch (error) {
-        const code =
-          error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
-        if (code === 'ENOENT') return null;
+        if (errorCode(error) === 'ENOENT') return null;
         throw error;
       }
     },
     save(value: T) {
-      if (token === null || !state.writable || !holdsLock(lockPath, token)) {
+      // 核对通过之后才写会话文件。这段空隙不再加锁。活锁不会被挪走，
+      // 所以只有持有者已经死亡，别的进程才可能补上新锁；死亡的进程不会把这次保存写完。
+      if (acquired.refusal || token === null || !state.writable || !holdsLock(lockPath, token)) {
         state.writable = false;
-        throw Object.assign(new Error('另一个进程正持有这份会话的写权'), { code: 'ELOCKED' });
+        throw Object.assign(new Error(acquired.refusal ?? '另一个进程正持有这份会话的写权'), {
+          code: 'ELOCKED',
+        });
       }
       mkdirSync(path.dirname(filePath), { recursive: true });
       const temporary = `${filePath}.${process.pid}.tmp`;
