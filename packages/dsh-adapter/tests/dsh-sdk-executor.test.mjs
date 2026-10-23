@@ -868,10 +868,28 @@ test('契约：孙进程占着标准错误时停止回执仍在时限内', async
   }
 });
 
+test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async () => {
+  const secret = 'zhuma-synthetic-marker-0123456789abcde';
+  const prefix = secret.slice(0, secret.length - 1);
+  assert.equal(secret.length, 38);
+  assert.equal(prefix.length, 37);
+  const boot = await collect('stderr-boot-prefix', {
+    env: modelEnv(secret),
+    initTimeoutMs: 20_000,
+    runId: 'stderr-boot-prefix',
+  });
+  const message = boot.events.at(-1).message;
+  assert.equal(boot.events.at(-1).type, 'failed');
+  assert.equal(message, '执行器启动失败。\npreface-[redacted]');
+  assert.equal(message.includes(secret), false);
+  assert.equal(message.includes(prefix), false);
+  assert.equal(JSON.stringify(boot.events).includes(prefix), false);
+});
+
 test('契约：封口超时时跨在缓冲边界上的密钥不会漏出', async () => {
   const pidFile = grandchildPidFile();
-  const secret = 'zhuma-synthetic-marker';
-  const at = 10;
+  const secret = 'zhuma-synthetic-marker-0123456789abcde';
+  const at = secret.length - 1;
   const prefix = secret.slice(0, at);
   const started = Date.now();
   try {

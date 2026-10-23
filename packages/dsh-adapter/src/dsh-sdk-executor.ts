@@ -873,11 +873,10 @@ class StdioRpc {
     this.markStderr();
   }
 
-  /** 到点仍没关上：丢掉未凑齐的密钥前缀，不再读后续字节。 */
+  /** 到点仍没关上：按收尾规则处理未凑齐的前缀，不再读后续字节。 */
   private abandonStderr(): void {
     this.stderrTimer = null;
     if (this.stderrFlushed) return;
-    this.redactor.discardPending();
     this.flushStderr();
     const stderr = this.child.stderr;
     stderr.on('error', () => {});
@@ -1197,33 +1196,32 @@ function redact(text: string, secret: string): string {
   return text.split(secret).join('[redacted]');
 }
 
-/** 未凑齐的密钥前缀先留着，凑齐或管道关闭后再做一次整段替换。 */
+/** 未凑齐的密钥前缀先留着。凑齐后整段替换；收尾时前缀改成 [redacted]，不原样输出。 */
 class StderrRedactor {
   private pending = '';
 
   constructor(private readonly secret: string) {}
 
   push(chunk: string): string {
-    return this.consume(this.pending + chunk, false);
+    return this.consume(this.pending + chunk);
   }
 
   flush(): string {
-    return this.consume(this.pending, true);
-  }
-
-  /** 超时放弃时丢掉未凑齐的前缀，避免和稍后到达的后半段拼回密钥。 */
-  discardPending(): void {
+    const pending = this.pending;
     this.pending = '';
+    if (this.secret.length === 0) return pending;
+    if (pending.length > 0 && this.secret.startsWith(pending)) return '[redacted]';
+    return pending.split(this.secret).join('[redacted]');
   }
 
-  private consume(raw: string, flush: boolean): string {
+  private consume(raw: string): string {
     if (this.secret.length === 0) {
       this.pending = '';
       return raw;
     }
     const parts = raw.split(this.secret);
     const tail = parts[parts.length - 1] ?? '';
-    const hold = flush ? 0 : heldSecretPrefix(tail, this.secret);
+    const hold = heldSecretPrefix(tail, this.secret);
     this.pending = tail.slice(tail.length - hold);
     parts[parts.length - 1] = tail.slice(0, tail.length - hold);
     return parts.join('[redacted]');
