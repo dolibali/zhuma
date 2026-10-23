@@ -618,3 +618,41 @@ test('契约：运行中崩溃后重新打开，核实放弃并释放写权', as
     false,
   );
 });
+
+test('契约：驱动意外拒绝记成持久化故障，不产生未处理拒绝', async () => {
+  const unhandled = [];
+  const onUnhandled = (error) => {
+    unhandled.push(error instanceof Error ? error.message : String(error));
+  };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const base = ids();
+    const simulated = new SimulatedAgentExecutor({ chunkDelayMs: 0 });
+    simulated.run = async function* () {
+      throw new Error('executor-broke');
+    };
+    const session = ExecutionDesk.create(seed(), {
+      executors: [simulated],
+      newId: (prefix) => {
+        if (prefix === 'fault') throw new Error('fault-id-broke');
+        return base(prefix);
+      },
+      journal: { load: () => null, save() {} },
+    });
+    session.updateConfig({
+      executorId: 'simulated',
+      skillIds: ['test-design'],
+      mcpIds: ['api-docs'],
+    });
+    assert.equal(session.snapshot().persistenceFault, null);
+    const sent = session.send({ text: '整理开户字段', idempotencyKey: 'drive-catch' });
+    assert.equal(sent.ok, true);
+    assert.equal(session.snapshot().persistenceFault, null);
+    await assert.rejects(session.flush(), /fault-id-broke/);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
