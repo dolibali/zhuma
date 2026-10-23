@@ -15,7 +15,7 @@ const out = resolve(root, '.build/workbench');
 await mkdir(out, { recursive: true });
 const hostBuild = await build({
   absWorkingDir: root,
-  entryPoints: ['packages/dsh-adapter/src/workbench-plugin.ts'],
+  entryPoints: ['packages/dsh-adapter/src/host-plugin.ts'],
   outfile: resolve(out, 'index.js'),
   bundle: true,
   platform: 'node',

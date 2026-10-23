@@ -14,6 +14,13 @@ import {
 } from '@zhuma/agent-core';
 import { WorkbenchService, type PlanningModel } from './workbench-service.js';
 import { previewAssetImport } from './asset-import.js';
+import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
+import {
+  WORKBENCH_HTTP_LIMITS,
+  WorkbenchBodyError,
+  readWorkbenchBody,
+  type WorkbenchHttpLimits,
+} from './workbench-http.js';
 
 const AuditSchema = z.object({
   id: z.string(),
@@ -42,34 +49,19 @@ const packageDomainSpec = {
 export const inject = ['connection', 'storageDomain', 'llm', 'agentDefaultModel'];
 
 /** Loaded as an ordinary DSH Host/Client plugin; storage and transport remain DSH-owned. */
-export async function apply(ctx: Context): Promise<void> {
-  const domain = await ctx.storageDomain.open(domainSpec);
-  ctx.effect(() => () => domain.close());
-  const packageDomain = await ctx.storageDomain.open(packageDomainSpec);
-  ctx.effect(() => () => packageDomain.close());
+export async function openWorkbench(
+  ctx: Context,
+  limits: WorkbenchHttpLimits = WORKBENCH_HTTP_LIMITS,
+): Promise<{ readWorkbench(): ReturnType<WorkbenchService['snapshot']> }> {
+  let service: WorkbenchService | undefined;
   const lifetime = new AbortController();
   ctx.effect(() => () => lifetime.abort());
-  const service = new WorkbenchService(
-    { read: () => domain.global.get(), write: (value) => domain.global.set(value) },
-    {
-      get: (key) => domain.table('planning').get(key),
-      put: async (audit) => {
-        await domain.table('planning').put(audit.id, audit);
-        // Keep the latest 100 planning records; no credentials or filesystem data are included.
-        const entries = [...domain.table('planning').keys()];
-        for (const key of entries.slice(0, Math.max(0, entries.length - 100)))
-          await domain.table('planning').delete(key);
-      },
-    },
-    {
-      get: (id) => packageDomain.table('versions').get(id),
-      put: (record) => packageDomain.table('versions').put(record.versionId, record),
-    },
-  );
   async function handle(endpoint: string, payload: unknown, callerSignal: AbortSignal) {
     const signal = AbortSignal.any([callerSignal, lifetime.signal, AbortSignal.timeout(120000)]);
     try {
       signal.throwIfAborted();
+      const active = service;
+      if (!active) throw new WorkbenchError('unavailable', '工作台尚未就绪。');
       switch (endpoint) {
         case 'preview-import':
           return { ok: true, value: await previewAssetImport(payload, signal) };
@@ -84,7 +76,7 @@ export async function apply(ctx: Context): Promise<void> {
                 .regex(/^[\w-]+$/u),
             })
             .parse(payload);
-          return { ok: true, value: service.resourceFiles(input.kind, input.id) };
+          return { ok: true, value: active.resourceFiles(input.kind, input.id) };
         }
         case 'snapshot': {
           z.strictObject({}).parse(payload);
@@ -92,13 +84,13 @@ export async function apply(ctx: Context): Promise<void> {
           return {
             ok: true,
             value: {
-              state: service.snapshot(),
+              state: active.snapshot(),
               model: `${selection.provider} / ${selection.model}`,
             },
           };
         }
         case 'command':
-          return { ok: true, value: await service.command(payload, signal) };
+          return { ok: true, value: await active.command(payload, signal) };
         case 'plan': {
           const route = ctx.agentDefaultModel.currentSelection();
           const model: PlanningModel = {
@@ -127,7 +119,7 @@ export async function apply(ctx: Context): Promise<void> {
               return text;
             },
           };
-          return { ok: true, value: await service.plan(payload, model, signal) };
+          return { ok: true, value: await active.plan(payload, model, signal) };
         }
         default:
           throw new WorkbenchError('not-found', '不支持的工作台操作。');
@@ -157,19 +149,24 @@ export async function apply(ctx: Context): Promise<void> {
   }
   // Connection exact routes retain its Host/Origin and owner-only authentication.
   // /api's single RPC interceptor belongs to the official Typert gateway.
-  for (const endpoint of ['snapshot', 'command', 'plan', 'preview-import', 'resource-files']) {
+  for (const endpoint of LEGACY_OWNER_ROUTES) {
     ctx.connection.fetch.register({
       path: `/api/zhuma/${endpoint}`,
       methods: ['POST'],
-      requestBody: 'buffered',
+      requestBody: 'streaming',
       fetch: async (request) => {
+        const admission = authorizeLegacyOwnerRoutes(ctx);
+        if (!admission.ok) return new Response(null, { status: admission.status });
+        if (!service) return new Response(null, { status: 503 });
         if (request.headers.get('content-type')?.split(';')[0] !== 'application/json')
           return new Response(null, { status: 415 });
         let body: unknown;
         try {
-          body = await request.json();
-        } catch {
-          return new Response(null, { status: 400 });
+          body = await readWorkbenchBody(request, limits);
+        } catch (error) {
+          return new Response(null, {
+            status: error instanceof WorkbenchBodyError ? error.status : 400,
+          });
         }
         const envelope = clientRequestSchema.safeParse(body);
         if (!envelope.success || envelope.data.method !== `zhuma/${endpoint}`)
@@ -179,4 +176,38 @@ export async function apply(ctx: Context): Promise<void> {
       },
     });
   }
+  const domain = await ctx.storageDomain.open(domainSpec);
+  ctx.effect(() => () => domain.close());
+  const packageDomain = await ctx.storageDomain.open(packageDomainSpec);
+  ctx.effect(() => () => packageDomain.close());
+  service = new WorkbenchService(
+    { read: () => domain.global.get(), write: (value) => domain.global.set(value) },
+    {
+      get: (key) => domain.table('planning').get(key),
+      put: async (audit) => {
+        await domain.table('planning').put(audit.id, audit);
+        // Keep the latest 100 planning records; no credentials or filesystem data are included.
+        const entries = [...domain.table('planning').keys()];
+        for (const key of entries.slice(0, Math.max(0, entries.length - 100)))
+          await domain.table('planning').delete(key);
+      },
+    },
+    {
+      get: (id) => packageDomain.table('versions').get(id),
+      put: (record) => packageDomain.table('versions').put(record.versionId, record),
+    },
+  );
+
+  return {
+    readWorkbench: () => {
+      if (lifetime.signal.aborted || !service)
+        throw new WorkbenchError('unavailable', '工作台已关闭。');
+      return service.snapshot();
+    },
+  };
+}
+
+/** Internal compatibility entry; the distribution loads host-plugin's explicit composition. */
+export async function apply(ctx: Context): Promise<void> {
+  await openWorkbench(ctx);
 }
