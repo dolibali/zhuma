@@ -1001,10 +1001,18 @@ export class ExecutionDesk {
     if (!assembled.ok) {
       const block = assembled.blocks[0];
       const blockedItem = this.seed.contextItems.find((item) => item.sourceId === block?.sourceId);
+      const node = blockedItem?.sourceNodeId ?? blockedItem?.sourceId ?? block?.sourceId ?? '来源';
+      const version =
+        blockedItem === undefined
+          ? (block?.version ?? '')
+          : blockedItem.artifactVersionId !== undefined &&
+              blockedItem.artifactVersionId !== blockedItem.version
+            ? `${blockedItem.version}（产物 ${blockedItem.artifactVersionId}）`
+            : (blockedItem.artifactVersionId ?? blockedItem.version);
       return this.fail(
         'context-blocked',
-        blockedItem?.summary || '上下文',
-        `来源被阻塞：${block?.reason ?? 'context-blocked'}`,
+        node,
+        `来源节点 ${node} 的版本 ${version} 被阻塞：${block?.reason ?? 'context-blocked'}。`,
         '补齐文件或权限，或移除此来源后再运行。不会传出不可访问的本机路径。',
       );
     }

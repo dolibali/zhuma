@@ -218,7 +218,9 @@ test('契约：重复发送、上下文阻塞、两轮修改、刷新和切换�
   const blocked = session.send({ text: '带上缺失文件', idempotencyKey: 'k-block' });
   assert.equal(blocked.code, 'context-blocked');
   assert.equal(blocked.snapshot.runs.length, 0);
-  assert.match(blocked.reason, /外部映射表|missing-file/);
+  assert.match(blocked.reason, /来源节点 外部映射表/);
+  assert.match(blocked.reason, /版本 9/);
+  assert.match(blocked.reason, /missing-file/);
   assert.equal(JSON.stringify(blocked.snapshot).includes('missing.csv'), false);
   session.setContextIncluded('missing', false);
   const first = session.send({ text: '整理开户字段', idempotencyKey: 'k1', attachmentIds: [] });
