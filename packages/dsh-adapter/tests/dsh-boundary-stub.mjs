@@ -188,9 +188,35 @@ async function handlePrompt(message) {
   }
   if (mode === 'stderr-cap') {
     const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+    const headLimit = 2048;
     const limit = 8192;
-    const head = secret.slice(0, 10);
-    writeSync(2, `${'q'.repeat(limit - head.length)}${head}${'q'.repeat(200)}`);
+    const half = Math.floor(secret.length / 2);
+    const reason = 'cause: disk-full-reason';
+    const mark = (omitted) => `（已截断 ${omitted} 字节）`;
+    const fitTail = (total) => {
+      const cap = limit - headLimit;
+      let omitted = Math.max(0, total - headLimit - cap);
+      let tail = Math.min(cap, Math.max(0, total - headLimit));
+      while (headLimit + mark(omitted).length + tail > limit) {
+        const overflow = headLimit + mark(omitted).length + tail - limit;
+        omitted += overflow;
+        tail -= overflow;
+      }
+      return tail;
+    };
+    const headPad = headLimit - half;
+    const gap1 = 4000;
+    let gap2 = 1;
+    for (let step = 0; step < 6; step += 1) {
+      const total = headPad + secret.length + gap1 + secret.length + gap2 + 1 + reason.length;
+      const tail = fitTail(total);
+      const want = secret.length + gap2 + 1 + reason.length - half;
+      gap2 += tail - want;
+    }
+    writeSync(
+      2,
+      `${'a'.repeat(headPad)}${secret}${'b'.repeat(gap1)}${secret}${'b'.repeat(gap2)}\n${reason}`,
+    );
   }
   finishTurn();
 }

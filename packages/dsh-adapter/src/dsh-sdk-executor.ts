@@ -791,9 +791,9 @@ function textFromStream(stream: unknown): string {
 
 /** 子进程已经退出后，孙进程仍占着标准错误时最多再等多久。 */
 const stderrSealMs = 500;
-/** 受理后写入会话的标准错误上限。超出后截断并标明。 */
+/** 受理后写入会话的标准错误上限。超出后保留开头和最新结尾，中间写明省略了多少。 */
 const stderrCollectLimit = 8192;
-const stderrTruncatedMark = '（已截断）';
+const stderrHeadLimit = 2048;
 
 class StdioRpc {
   readonly exited: Promise<number>;
@@ -812,6 +812,9 @@ class StdioRpc {
   private readonly redactor: StderrRedactor;
   private stderrFlushed = false;
   private stderrTruncated = false;
+  private stderrHead = '';
+  private stderrTail = '';
+  private stderrOmitted = 0;
   private stderrTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly stderrDone: Promise<void>;
   private readonly markStderr: () => void;
@@ -839,6 +842,7 @@ class StdioRpc {
     child.stdout.on('data', (chunk: string) => this.push(chunk));
     child.stderr.on('data', (chunk: string) => {
       if (this.stderrFlushed) return;
+      // 先替换完整密钥，再按头尾切开。窗口切在密钥中间时，后半段不会留下来。
       this.appendStderr(this.redactor.push(chunk));
     });
     child.stderr.on('close', () => this.flushStderr());
@@ -878,15 +882,72 @@ class StdioRpc {
   }
 
   private appendStderr(text: string): void {
-    if (this.stderrTruncated || text.length === 0) return;
-    if (this.stderr.length + text.length <= stderrCollectLimit) {
-      this.stderr += text;
+    if (text.length === 0) return;
+    if (!this.stderrTruncated) {
+      if (this.stderr.length + text.length <= stderrCollectLimit) {
+        this.stderr += text;
+        return;
+      }
+      const already = this.stderr;
+      this.stderr = '';
+      this.stderrTruncated = true;
+      this.stderrHead = '';
+      this.stderrTail = '';
+      this.stderrOmitted = 0;
+      this.keepBounded(already);
+      this.keepBounded(text);
+      this.publishCollectedStderr();
       return;
     }
-    const room = Math.max(0, stderrCollectLimit - this.stderr.length);
-    const kept = this.redactor.dropPrefixTail(this.stderr + text.slice(0, room));
-    this.stderr = `${kept}${stderrTruncatedMark}`;
-    this.stderrTruncated = true;
+    this.keepBounded(text);
+    this.publishCollectedStderr();
+  }
+
+  /** 开头留满之后，其余只进固定长度的尾部窗口。 */
+  private keepBounded(text: string): void {
+    if (text.length === 0) return;
+    if (this.stderrHead.length < stderrHeadLimit) {
+      const need = stderrHeadLimit - this.stderrHead.length;
+      if (text.length <= need) {
+        this.stderrHead += text;
+        return;
+      }
+      this.stderrHead += text.slice(0, need);
+      this.pushTail(text.slice(need));
+      return;
+    }
+    this.pushTail(text);
+  }
+
+  private pushTail(text: string): void {
+    const cap = stderrCollectLimit - stderrHeadLimit;
+    if (text.length >= cap) {
+      this.stderrOmitted += this.stderrTail.length + text.length - cap;
+      this.stderrTail = text.slice(text.length - cap);
+      return;
+    }
+    const overflow = this.stderrTail.length + text.length - cap;
+    if (overflow <= 0) {
+      this.stderrTail += text;
+      return;
+    }
+    this.stderrOmitted += overflow;
+    this.stderrTail = this.stderrTail.slice(overflow) + text;
+  }
+
+  private publishCollectedStderr(): void {
+    let omitted = this.stderrOmitted;
+    let tail = this.stderrTail;
+    let mark = `（已截断 ${omitted} 字节）`;
+    while (this.stderrHead.length + mark.length + tail.length > stderrCollectLimit) {
+      const budget = stderrCollectLimit - this.stderrHead.length - mark.length;
+      const drop = tail.length - Math.max(0, budget);
+      if (drop <= 0) break;
+      omitted += drop;
+      tail = tail.slice(drop);
+      mark = `（已截断 ${omitted} 字节）`;
+    }
+    this.stderr = `${this.stderrHead}${mark}${tail}`;
   }
 
   /** 到点仍没关上：按收尾规则处理未凑齐的前缀，不再读后续字节。 */
@@ -1240,13 +1301,6 @@ class StderrRedactor {
     if (this.secret.length === 0) return pending;
     if (pending.length > 0 && this.secret.startsWith(pending)) return '[redacted]';
     return pending.split(this.secret).join('[redacted]');
-  }
-
-  /** 截断落在密钥前缀上时丢掉这段，避免收集文件里留下可拼回的片段。 */
-  dropPrefixTail(text: string): string {
-    const hold = heldSecretPrefix(text, this.secret);
-    if (hold === 0) return text;
-    return text.slice(0, text.length - hold);
   }
 
   private consume(raw: string): string {

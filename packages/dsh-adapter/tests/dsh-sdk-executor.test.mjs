@@ -868,9 +868,11 @@ test('契约：孙进程占着标准错误时停止回执仍在时限内', async
   }
 });
 
-test('契约：受理后收集的标准错误超过上限会截断，截断处不留下密钥前缀', async () => {
+test('契约：受理后的标准错误超过 8KB 时保留结尾原因，切口不留下密钥片段', async () => {
   const secret = 'zhuma-synthetic-marker-0123456789abcde';
-  const head = secret.slice(0, 10);
+  const half = Math.floor(secret.length / 2);
+  const prefix = secret.slice(0, half);
+  const suffix = secret.slice(half);
   const done = await collect('stderr-cap', {
     env: modelEnv(secret),
     initTimeoutMs: 20_000,
@@ -883,10 +885,13 @@ test('契约：受理后收集的标准错误超过上限会截断，截断处�
     path.join(dshSessionHome(accepted.sessionId, done.env), 'zhuma-collected-stderr.txt'),
     'utf8',
   );
-  assert.match(stderr, /（已截断）/);
+  assert.equal(stderr.split('\n').at(-1), 'cause: disk-full-reason');
+  assert.match(stderr, /（已截断 \d+ 字节）/);
+  assert.equal(stderr.length <= 8192, true);
+  assert.equal(stderr.startsWith('a'.repeat(64)), true);
   assert.equal(stderr.includes(secret), false);
-  assert.equal(stderr.includes(head), false);
-  assert.equal(stderr.length < 8192 + '（已截断）'.length, true);
+  assert.equal(stderr.includes(prefix), false);
+  assert.equal(stderr.includes(suffix), false);
 });
 
 test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async () => {
