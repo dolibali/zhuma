@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -132,10 +132,12 @@ try {
     await faultPage.screenshot({ path: shot('persistence-fault') });
   } finally {
     chmodSync(faultDir, 0o755);
+    rmSync(faultDir, { recursive: true, force: true });
     faultDemo.child.kill();
     if (faultPage) await faultPage.close();
   }
 } finally {
   await browser.close();
   demo.child.kill();
+  rmSync(sessionDir, { recursive: true, force: true });
 }

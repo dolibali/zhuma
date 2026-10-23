@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,6 +10,11 @@ import { chromium } from 'playwright';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const artifacts =
   process.env.ZHUMA_BROWSER_ARTIFACTS ?? path.join(tmpdir(), 'zhuma-browser-artifacts');
+const ownArtifacts = process.env.ZHUMA_BROWSER_ARTIFACTS === undefined;
+
+test.after(() => {
+  if (ownArtifacts) rmSync(artifacts, { recursive: true, force: true });
+});
 
 test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、补充排队、停止与迟到结果', async () => {
   mkdirSync(artifacts, { recursive: true });
@@ -320,6 +325,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
   } finally {
     await browser.close();
     child.kill();
+    rmSync(sessionDir, { recursive: true, force: true });
   }
 });
 
@@ -408,6 +414,7 @@ test('浏览器：慢请求成功时只清掉未再改的草稿，失败保留�
   } finally {
     await browser.close();
     child.kill();
+    rmSync(sessionDir, { recursive: true, force: true });
   }
 });
 
