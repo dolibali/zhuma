@@ -8,6 +8,7 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error('Invalid
 export default defineConfig({
   testDir: '.',
   testMatch: '*.spec.mjs',
+  globalSetup: fileURLToPath(new URL('./global-setup.mjs', import.meta.url)),
   outputDir: `${root}/test-results/workbench`,
   timeout: 45_000,
   expect: { timeout: 5000 },
@@ -28,6 +29,11 @@ export default defineConfig({
   projects: [
     { name: 'chromium-light', use: { browserName: 'chromium', colorScheme: 'light' } },
     { name: 'chromium-dark', use: { browserName: 'chromium', colorScheme: 'dark' } },
+    {
+      name: 'identity',
+      testDir: fileURLToPath(new URL('../../../dsh-adapter/tests/browser/', import.meta.url)),
+      testMatch: '*.spec.mjs',
+    },
   ],
   webServer: {
     command: 'node packages/client/tests/browser/server.mjs',
