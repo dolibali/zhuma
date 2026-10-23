@@ -41,10 +41,11 @@ import {
 
 const PREFIX = '/zhuma-id';
 const MAX_BODY_BYTES = 64 * 1024;
-// After the 413, keep reading so the client can finish the upload and read
-// the response. Past this cap, or past BODY_DISCARD_MS, the socket is cut
-// only once the 413 has been flushed and BODY_READ_WINDOW_MS has elapsed.
-const BODY_DISCARD_LIMIT = 8 * 1024 * 1024;
+// After the 413 bytes are written, keep reading and discard the rest so the
+// peer can finish uploading and read the response. There is no Connection: close.
+// The socket is destroyed only when this cap or BODY_DISCARD_MS is hit, and
+// only after the 413 has flushed and BODY_READ_WINDOW_MS has elapsed.
+const BODY_DISCARD_LIMIT = 32 * 1024 * 1024;
 const BODY_DISCARD_MS = 5_000;
 const BODY_READ_WINDOW_MS = 500;
 const SECRET_KEY = 'zhuma-identity/member-session';
@@ -228,10 +229,18 @@ function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
   });
 }
 
-/** Process-wide cap. The libuv pool is shared, so a full queue waits instead of refusing another address. */
+/** Process-wide cap. The libuv pool is shared. */
 const PASSWORD_HASH_CONCURRENCY = 4;
+/** Logins waiting for a hash slot. The next arrival is refused, not queued. */
+const PASSWORD_HASH_QUEUE_LIMIT = 32;
 let passwordHashActive = 0;
 const passwordHashWaiters: Array<() => void> = [];
+
+class PasswordHashBusyError extends Error {}
+
+function passwordHashSaturated(): boolean {
+  return passwordHashWaiters.length >= PASSWORD_HASH_QUEUE_LIMIT;
+}
 
 function releasePasswordHashSlot(): void {
   const next = passwordHashWaiters.shift();
@@ -257,6 +266,10 @@ function withPasswordHashSlot<T>(work: () => Promise<T>): Promise<T> {
       run();
       return;
     }
+    if (passwordHashWaiters.length >= PASSWORD_HASH_QUEUE_LIMIT) {
+      reject(new PasswordHashBusyError());
+      return;
+    }
     passwordHashWaiters.push(run);
   });
 }
@@ -267,6 +280,8 @@ if (DUMMY_VERIFIER === undefined) throw new Error('identity dummy verifier was n
 
 interface PasswordHashProbe {
   note(): void;
+  hold?(): Promise<void> | void;
+  done?(): void;
 }
 
 /** Tests can `ctx.provide('zhumaIdentityHashProbe', { note })`. Hosts omit it. */
@@ -283,9 +298,14 @@ async function passwordMatches(
 ): Promise<boolean> {
   const parsed = parseVerifier(stored) ?? DUMMY_VERIFIER;
   if (parsed === undefined) return false;
-  const actual = await withPasswordHashSlot(() => {
+  const actual = await withPasswordHashSlot(async () => {
     probe?.note();
-    return deriveKey(password, parsed.salt);
+    try {
+      await probe?.hold?.();
+      return await deriveKey(password, parsed.salt);
+    } finally {
+      probe?.done?.();
+    }
   });
   const matches = actual.length === parsed.hash.length && timingSafeEqual(actual, parsed.hash);
   return matches && stored !== undefined && parseVerifier(stored) !== undefined;
@@ -814,17 +834,30 @@ async function handle(
         fail(res, 400, 'validation');
         return;
       }
-      const account = domain.table('accounts').get(parsed.data.accountId);
       const address = loginClientAddress(req);
+      if (passwordHashSaturated()) {
+        fail(res, 503, 'login-unavailable');
+        return;
+      }
+      const account = domain.table('accounts').get(parsed.data.accountId);
       if (attempts.reserve(address, parsed.data.accountId) === 'limited') {
         fail(res, 429, 'login-rate-limited');
         return;
       }
-      const passwordOk = await passwordMatches(
-        account?.passwordHash,
-        parsed.data.password,
-        passwordHashProbeOf(ctx),
-      );
+      let passwordOk = false;
+      try {
+        passwordOk = await passwordMatches(
+          account?.passwordHash,
+          parsed.data.password,
+          passwordHashProbeOf(ctx),
+        );
+      } catch (error) {
+        if (error instanceof PasswordHashBusyError) {
+          fail(res, 503, 'login-unavailable');
+          return;
+        }
+        throw error;
+      }
       if (account === undefined || !passwordOk) {
         fail(res, 401, 'invalid-login');
         return;

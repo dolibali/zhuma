@@ -705,6 +705,124 @@ test('concurrent failed logins cannot all skip the limiter', async () => {
   await host.dispose();
 });
 
+test('one account stays limited after another account clears the address', async () => {
+  const host = await mount();
+  const address = '203.0.113.55';
+  const wrong = randomBytes(18).toString('base64url');
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const refused = await call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: address,
+      body: { accountId: 'chen', password: wrong },
+    });
+    assert.equal(refused.status, 401);
+  }
+  const zhao = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'zhao', password: passwords.zhao },
+  });
+  assert.equal(zhao.status, 200);
+  const eighth = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: wrong },
+  });
+  assert.equal(eighth.status, 401);
+  const limited = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.json.error.code, 'login-rate-limited');
+  const lin = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'lin', password: passwords.lin },
+  });
+  assert.equal(lin.status, 200);
+  assert.equal(lin.json.accountId, 'lin');
+  await host.dispose();
+});
+
+test('at most four password hashes run at once', async () => {
+  let active = 0;
+  let max = 0;
+  let block = true;
+  const held = [];
+  const host = await mount({
+    hashProbe: {
+      note() {
+        active += 1;
+        if (active > max) max = active;
+      },
+      hold() {
+        if (!block) return undefined;
+        return new Promise((resolve) => {
+          held.push(resolve);
+        });
+      },
+      done() {
+        active -= 1;
+      },
+    },
+  });
+  const wrong = randomBytes(18).toString('base64url');
+  const pending = [];
+  const start = (accountId, address, password = wrong) => {
+    const task = call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: address,
+      body: { accountId, password },
+    });
+    pending.push(task);
+    return task;
+  };
+  try {
+    for (let index = 0; index < 4; index += 1) start('chen', `203.0.113.${index}`);
+    await new Promise((resolve) => {
+      const watch = () => {
+        if (held.length >= 4) resolve();
+        else setImmediate(watch);
+      };
+      watch();
+    });
+    for (let index = 0; index < 32; index += 1) start('ghost', `198.51.100.${index}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(active, 4);
+    assert.equal(max, 4);
+    assert.equal(held.length, 4);
+    const known = await start('chen', '203.0.113.200', passwords.chen);
+    const unknown = await start('ghost', '203.0.113.201');
+    assert.equal(known.status, 503);
+    assert.equal(unknown.status, 503);
+    assert.deepEqual(known.json, unknown.json);
+    assert.equal(known.json.error.code, 'login-unavailable');
+    assert.equal(active, 4);
+    assert.equal(max, 4);
+    block = false;
+    for (const release of held.splice(0)) release();
+    const settled = await Promise.all(pending);
+    assert.equal(max, 4);
+    assert.equal(
+      settled.every((response) => response.status === 401 || response.status === 503),
+      true,
+    );
+  } finally {
+    block = false;
+    for (const release of held.splice(0)) release();
+    await Promise.allSettled(pending);
+    await host.dispose();
+  }
+});
+
 test('password checking yields while the hash is in flight', async () => {
   const host = await mount();
   const wrong = randomBytes(18).toString('base64url');
@@ -748,10 +866,11 @@ function postUpload(port, payload, { chunked = false, paceMs = 0 } = {}) {
     let writeDone = false;
     let responseStatus;
     let responseBody = '';
+    let contentLength;
     const finish = (status, text) => {
       if (settled) return;
       settled = true;
-      resolve({ status, body: text, responseSeen });
+      resolve({ status, body: text, responseSeen, contentLength });
     };
     const tryFinish = () => {
       if (writeDone && responseStatus !== undefined) finish(responseStatus, responseBody);
@@ -770,6 +889,8 @@ function postUpload(port, payload, { chunked = false, paceMs = 0 } = {}) {
       },
       (res) => {
         responseSeen = true;
+        const rawLength = res.headers['content-length'];
+        contentLength = Array.isArray(rawLength) ? rawLength[0] : rawLength;
         const chunks = [];
         res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
@@ -803,6 +924,14 @@ function postUpload(port, payload, { chunked = false, paceMs = 0 } = {}) {
     };
     tick();
   });
+}
+
+function assertTooLarge(result) {
+  assert.equal(result.responseSeen, true);
+  assert.equal(result.status, 413);
+  assert.equal(JSON.parse(result.body).error.code, 'body-too-large');
+  assert.equal(typeof result.contentLength, 'string');
+  assert.equal(result.contentLength, String(Buffer.byteLength(result.body)));
 }
 
 async function listenForHost(host) {
@@ -839,11 +968,9 @@ test('a real http client receives 413 before the socket closes', async () => {
       password: randomBytes(70_000).toString('base64url').slice(0, 70_000),
     });
     const declared = await postHttp(server.port, bulky);
-    assert.equal(declared.status, 413);
-    assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+    assertTooLarge(declared);
     const chunked = await postHttp(server.port, bulky, true);
-    assert.equal(chunked.status, 413);
-    assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+    assertTooLarge(chunked);
     const again = await postHttp(
       server.port,
       JSON.stringify({ accountId: 'zhao', password: passwords.zhao }),
@@ -869,13 +996,9 @@ test('over-limit bodies get 413 on every attempt, then a normal login works', as
   try {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const declared = await postHttp(server.port, bulky);
-      assert.equal(declared.responseSeen, true);
-      assert.equal(declared.status, 413);
-      assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+      assertTooLarge(declared);
       const chunked = await postHttp(server.port, bulky, true);
-      assert.equal(chunked.responseSeen, true);
-      assert.equal(chunked.status, 413);
-      assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+      assertTooLarge(chunked);
     }
     const again = await postHttp(
       server.port,
@@ -896,13 +1019,96 @@ test('a client that keeps uploading after the 413 still reads the full body', as
   const payload = Buffer.alloc(128 * 1024, 0x61);
   try {
     const declared = await postUpload(server.port, payload, { paceMs: 5 });
-    assert.equal(declared.responseSeen, true);
-    assert.equal(declared.status, 413);
-    assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+    assertTooLarge(declared);
     const chunked = await postUpload(server.port, payload, { chunked: true, paceMs: 5 });
-    assert.equal(chunked.responseSeen, true);
-    assert.equal(chunked.status, 413);
-    assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+    assertTooLarge(chunked);
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+function busyWait(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    /* block the event loop the way a loaded client does */
+  }
+}
+
+function postLoaded(
+  port,
+  { chunked, runs = 1, chunkBytes = 256 * 1024, timerMs = 5, busyMs = 30 },
+) {
+  const once = () =>
+    new Promise((resolve) => {
+      let done = false;
+      const fin = (outcome) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        clearInterval(iv);
+        resolve(outcome);
+      };
+      const timer = setTimeout(
+        () => fin({ status: 0, err: 'timeout', responseSeen: false }),
+        15_000,
+      );
+      const headers = { host: AUTHORITY, 'content-type': 'application/json' };
+      const bodyBytes = 4 * 1024 * 1024;
+      if (!chunked) headers['content-length'] = String(bodyBytes);
+      let responseSeen = false;
+      const req = http.request(
+        { host: '127.0.0.1', port, method: 'POST', path: '/zhuma-id/login', headers },
+        (res) => {
+          responseSeen = true;
+          const rawLength = res.headers['content-length'];
+          const contentLength = Array.isArray(rawLength) ? rawLength[0] : rawLength;
+          res.resume();
+          res.on('end', () =>
+            fin({ status: res.statusCode ?? 0, responseSeen: true, contentLength }),
+          );
+          res.on('error', () =>
+            fin({
+              status: res.statusCode ?? 0,
+              err: 'res-error',
+              responseSeen: true,
+              contentLength,
+            }),
+          );
+        },
+      );
+      req.on('error', (error) => fin({ status: 0, err: error.code, responseSeen }));
+      const piece = Buffer.alloc(chunkBytes, 120);
+      const iv = setInterval(() => {
+        if (done || req.destroyed) {
+          clearInterval(iv);
+          return;
+        }
+        req.write(piece);
+        if (busyMs > 0) busyWait(busyMs);
+      }, timerMs);
+    });
+  return (async () => {
+    const results = [];
+    for (let run = 0; run < runs; run += 1) results.push(await once());
+    return results;
+  })();
+}
+
+test('a loaded client still receives 413 while it keeps writing', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  try {
+    const declared = await postLoaded(server.port, { chunked: false, runs: 10 });
+    const chunked = await postLoaded(server.port, { chunked: true, runs: 10 });
+    const expectedLength = String(
+      Buffer.byteLength(JSON.stringify({ ok: false, error: { code: 'body-too-large' } })),
+    );
+    for (const result of [...declared, ...chunked]) {
+      assert.equal(result.responseSeen, true);
+      assert.equal(result.status, 413);
+      assert.equal(result.contentLength, expectedLength);
+    }
   } finally {
     server.close();
     await host.dispose();
@@ -915,13 +1121,9 @@ test('a multi-megabyte upload still receives the full 413 while the client write
   const payload = Buffer.alloc(5 * 1024 * 1024, 0x62);
   try {
     const declared = await postUpload(server.port, payload);
-    assert.equal(declared.responseSeen, true);
-    assert.equal(declared.status, 413);
-    assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+    assertTooLarge(declared);
     const chunked = await postUpload(server.port, payload, { chunked: true });
-    assert.equal(chunked.responseSeen, true);
-    assert.equal(chunked.status, 413);
-    assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+    assertTooLarge(chunked);
     const again = await postHttp(
       server.port,
       JSON.stringify({ accountId: 'lin', password: passwords.lin }),
@@ -1274,15 +1476,19 @@ test('a request body over 64KiB is refused', async () => {
     await host.web.dispatch(req, captured.response);
     return {
       status: captured.state.status,
+      headers: captured.state.headers,
+      body: captured.state.body,
       json: JSON.parse(captured.state.body),
     };
   }
   const declared = await post({ 'content-length': String(payload.length) });
   assert.equal(declared.status, 413);
   assert.equal(declared.json.error.code, 'body-too-large');
+  assert.equal(declared.headers['content-length'], String(Buffer.byteLength(declared.body)));
   const streamed = await post({});
   assert.equal(streamed.status, 413);
   assert.equal(streamed.json.error.code, 'body-too-large');
+  assert.equal(streamed.headers['content-length'], String(Buffer.byteLength(streamed.body)));
   await host.dispose();
 });
 
