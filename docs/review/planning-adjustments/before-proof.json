@@ -1,0 +1,8 @@
+{
+  "surface": "Chromium UI response replay; no Host or model",
+  "sourceHead": "79a4466f2dc26cedf8495be58a16078f663b9fa5",
+  "taskSha256": "59e06f2813f1eb496199139a97155bfd0e8bc41b8de23f1310b394f40291c882",
+  "proposedWorkflowsSha256": "6f1568158d7e6cfb8cbd4cdb9a1c8d19b3eba4d49acf627bf716fe0759f2d058",
+  "writes": 0,
+  "screenshots": ["before-chromium-light.png", "before-chromium-dark.png"]
+}

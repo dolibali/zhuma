@@ -1,6 +1,6 @@
 # Host 身份组合：S1a
 
-状态：独立开发分支上的待审实现，基于 main `79a4466` 和身份 PR #18 的 `b2b05d7`。本批只组合身份服务、显式部署模式和旧接口门禁；没有接入执行／待办／提交／评审页面。验证记录见[分层证据](review/s1a-host/README.md)。
+组合基线：已合入身份 PR #18 `eb25d30eae5d7758588c409b5c166808d9bb3068` 的 develop `772b59c41f1812051931348289f576aeadc5ae8f`，保留 PR #46 的 opt-in 客户端准备切片。当前 Host 装配仍由独立 PR #23／#28 复核。本批只组合身份服务、显式部署模式和旧接口门禁；没有接入执行／待办／提交／评审页面。验证记录见[分层证据](review/s1a-host/README.md)。
 
 ## 显式模式与服务生命周期
 
@@ -45,9 +45,10 @@
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
 pnpm test:host
-pnpm test:ui
 pnpm upstream:check
 ```
+
+本地不打开或自动化浏览器；界面契约由既有 CI 按其配置运行，额外界面验证在工作项中交协调者安排。本次同步不重跑未变化的旧桌面拖窗或系统主题。
 
 `test:host` 构建后验证完全相同的四个发行文件，使用临时 SDK 包作用域、私有测试 home 和真实已发布服务；不重打包源码或调用模型。可选环境变量 `S1A_PROOF_FILE` 将成功后的来源提交与构建摘要写到指定文件。CI 在构建后运行 `test:host:run`，失败阻止 `scaffold` 通过。
 

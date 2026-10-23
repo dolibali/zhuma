@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { WorkbenchSchema } from '@zhuma/agent-core';
+import { WorkbenchSchema, LOCAL_PLANNING_FIELDS } from '@zhuma/agent-core';
 import { WorkbenchService } from '../dist/workbench-service.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
@@ -292,6 +292,61 @@ test('planning contract: cancellation and stale input never call the model or ap
   assert.equal(service.snapshot().revision, 0);
 });
 
+const localAdjustment = (nodeId, fields = [...LOCAL_PLANNING_FIELDS]) => ({ nodeId, fields });
+test('local questions cannot replace the captured graph with an empty workflow', async () => {
+  const { service } = createService();
+  const captured = service.snapshot().tasks[0].workflows;
+  let calls = 0;
+  const result = await service.plan(
+    planRequest({ adjustment: localAdjustment('node-1') }),
+    {
+      name: 'contract-local-questions',
+      generate: async () => {
+        calls++;
+        return JSON.stringify({
+          summary: '需要明确范围',
+          assumptions: [],
+          questions: ['是否补充交付说明？'],
+          workflows: calls === 1 ? [] : captured,
+        });
+      },
+    },
+    signal(),
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(result.result.workflows, captured);
+  assert.equal(result.result.questions.length, 1);
+  assert.deepEqual(service.snapshot().tasks[0].workflows, captured);
+});
+
+test('assignment-only service scope repairs unrelated resource and output edits on the target', async () => {
+  const { state, task } = fixture();
+  task.participantIds.push('outside');
+  const { service } = createService({ state });
+  const expected = structuredClone(task.workflows);
+  expected[0].nodes[0].assigneeId = 'outside';
+  let calls = 0;
+  const result = await service.plan(
+    planRequest({ adjustment: localAdjustment('node-1', ['assigneeId', 'rationale']) }),
+    {
+      name: 'contract-assignment-scope',
+      generate: async () => {
+        calls++;
+        const candidate = structuredClone(expected);
+        if (calls === 1) {
+          candidate[0].nodes[0].skillIds = [];
+          candidate[0].nodes[0].output = '未授权交付';
+        }
+        return JSON.stringify(planningResult(candidate));
+      },
+    },
+    signal(),
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(result.result.workflows, expected);
+  assert.deepEqual(service.snapshot().tasks[0].workflows, task.workflows);
+});
+
 const planRequest = (overrides = {}) => ({
   requestId: randomUUID(),
   taskId: 'task',
@@ -308,6 +363,154 @@ const planningResult = (workflows = fixture().task.workflows) => ({
 const resultModel = (result) => ({
   name: 'contract-fixture',
   generate: async () => JSON.stringify(result),
+});
+
+test('local planning service contract: out-of-scope manual changes enter one repair; only the target configuration returns and nothing is saved', async () => {
+  const { state, task, node } = fixture();
+  task.workflows[0].nodes.push({
+    ...structuredClone(node),
+    id: 'manual',
+    title: '人工确认的交付',
+    dependsOn: ['node-1'],
+  });
+  task.workflows.push({
+    id: 'nested',
+    name: '人工拆分',
+    parentNodeId: 'manual',
+    nodes: [{ ...structuredClone(node), id: 'nested-node' }],
+  });
+  const { service, audits } = createService({ state });
+  const before = service.snapshot();
+  const expected = structuredClone(task.workflows);
+  expected[0].nodes[0].output = '补全后的接口定义';
+  let calls = 0;
+  const model = {
+    name: 'contract-local',
+    generate: async (_system, input) => {
+      calls++;
+      const parsed = JSON.parse(input);
+      if (calls === 1) {
+        assert.equal(parsed.adjustment.nodeId, 'node-1');
+        const bad = structuredClone(expected);
+        bad[1].nodes[0].description = '不应覆盖下层人工配置';
+        return JSON.stringify(planningResult(bad));
+      }
+      assert.match(parsed.validationErrors, /只允许修改指定节点/);
+      assert.deepEqual(JSON.parse(parsed.original).context.currentWorkflows, task.workflows);
+      return JSON.stringify(planningResult(expected));
+    },
+  };
+  const request = planRequest({
+    adjustment: localAdjustment('node-1'),
+    instruction: '补全交付说明',
+  });
+  const proposal = await service.plan(request, model, signal());
+  assert.equal(calls, 2);
+  assert.deepEqual(proposal.result.workflows, expected);
+  assert.deepEqual(service.snapshot(), before);
+  assert.equal(audits.get(request.requestId).attempts.length, 2);
+  assert.deepEqual(await service.plan(request, model, signal()), proposal);
+  assert.equal(calls, 2);
+  await assert.rejects(
+    service.plan({ ...request, adjustment: localAdjustment('manual') }, model, signal()),
+    (e) => e.code === 'request-reused',
+  );
+});
+
+test('local planning service contract: an unapplied proposal owns the target baseline; repeated violations and cancellation retain it', async () => {
+  const { service, audits } = createService();
+  const { node, task } = fixture();
+  const flows = structuredClone(task.workflows);
+  flows[0].nodes.push({ ...node, id: 'new-node', title: '草案中新节点', dependsOn: ['node-1'] });
+  const initial = await service.plan(planRequest(), resultModel(planningResult(flows)), signal());
+  const request = planRequest({
+    baseProposalId: initial.id,
+    adjustment: localAdjustment('new-node'),
+    instruction: '完善交付',
+  });
+  const expected = structuredClone(flows);
+  expected[0].nodes[1].output = '明确交付清单';
+  const adjusted = await service.plan(request, resultModel(planningResult(expected)), signal());
+  assert.deepEqual(adjusted.result.workflows, expected);
+  let calls = 0;
+  const invalid = structuredClone(expected);
+  invalid[0].nodes[0].skillIds = [];
+  await assert.rejects(
+    service.plan(
+      planRequest({ baseProposalId: adjusted.id, adjustment: localAdjustment('new-node') }),
+      {
+        name: 'contract-violation',
+        generate: async () => {
+          calls++;
+          return JSON.stringify(planningResult(invalid));
+        },
+      },
+      signal(),
+    ),
+    (e) => e.code === 'invalid-plan',
+  );
+  assert.equal(calls, 2);
+  const abort = new AbortController();
+  await assert.rejects(
+    service.plan(
+      planRequest({ baseProposalId: adjusted.id, adjustment: localAdjustment('new-node') }),
+      {
+        name: 'contract-cancel',
+        generate: async () => {
+          abort.abort();
+          return JSON.stringify(planningResult(invalid));
+        },
+      },
+      abort.signal,
+    ),
+  );
+  assert.deepEqual(audits.get(adjusted.id).proposal, adjusted);
+  assert.deepEqual(service.snapshot().tasks[0].workflows, task.workflows);
+});
+
+test('local planning service contract: unknown targets, wrong proposal baselines and stale versions never call the model', async () => {
+  const { service, audits } = createService();
+  const initial = await service.plan(planRequest(), resultModel(planningResult()), signal());
+  let calls = 0;
+  const model = {
+    name: 'must-not-run',
+    generate: async () => {
+      calls++;
+      assert.fail('model called');
+    },
+  };
+  const unknown = planRequest({ adjustment: localAdjustment('absent') });
+  await assert.rejects(service.plan(unknown, model, signal()), (e) => e.code === 'invalid-scope');
+  assert.equal(audits.has(unknown.requestId), false);
+  await assert.rejects(
+    service.plan(
+      planRequest({ adjustment: localAdjustment('node-1'), baseProposalId: randomUUID() }),
+      model,
+      signal(),
+    ),
+    (e) => e.code === 'proposal-unavailable',
+  );
+  await service.command(
+    { requestId: randomUUID(), expectedRevision: 0, command: command() },
+    signal(),
+  );
+  await assert.rejects(
+    service.plan(
+      planRequest({
+        expectedRevision: 1,
+        adjustment: localAdjustment('node-1'),
+        baseProposalId: initial.id,
+      }),
+      model,
+      signal(),
+    ),
+    (e) => e.code === 'conflict',
+  );
+  await assert.rejects(
+    service.plan(planRequest({ adjustment: localAdjustment('node-1') }), model, signal()),
+    (e) => e.code === 'conflict',
+  );
+  assert.equal(calls, 0);
 });
 
 test('planning adjustment contract: ten-node un-applied proposal is the full baseline, including nested work; only requested assignment changes', async () => {
