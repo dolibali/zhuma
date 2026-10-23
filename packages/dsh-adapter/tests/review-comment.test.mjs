@@ -173,6 +173,60 @@ test('a comment leaves the round and the existing ballots unchanged', async () =
   );
 });
 
+test('a whitespace-only comment is refused without writing the record', async () => {
+  const { applied, store, service, roundId, artifactVersionId } = await reviewing();
+  const version = store.node('design').command.version;
+  const before = JSON.stringify(store.node('design'));
+  let writes = 0;
+  const writeNode = store.storage.writeNode;
+  store.storage.writeNode = async (key, value) => {
+    writes += 1;
+    await writeNode(key, value);
+  };
+  const blanks = ['', ' ', '\n', '\t', ' \n\t '];
+  for (const [index, comment] of blanks.entries()) {
+    writes = 0;
+    const refused = await service.ballot(
+      session('lin'),
+      vote(applied, roundId, artifactVersionId, {
+        expectedVersion: version,
+        idempotencyKey: `vote-blank-${index}`,
+        action: 'comment',
+        comment,
+      }),
+    );
+    assert.equal(refused.ok, false);
+    assert.equal(refused.error.code, 'empty-comment');
+    assert.equal(refused.error.message, '只评论时要写下评论，不能只留空白。');
+    assert.equal(writes, 0);
+    assert.equal(JSON.stringify(store.node('design')), before);
+  }
+  writes = 0;
+  const omitted = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'vote-blank-omit',
+      action: 'comment',
+    }),
+  );
+  assert.equal(omitted.ok, false);
+  assert.equal(omitted.error.code, 'empty-comment');
+  assert.equal(writes, 0);
+  assert.equal(JSON.stringify(store.node('design')), before);
+  const kept = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'vote-blank-text',
+      action: 'comment',
+      comment: '  还有字-4e1  ',
+    }),
+  );
+  assert.equal(kept.ok, true, kept.ok ? '' : kept.error.code);
+  assert.equal(writes, 1);
+});
+
 test('a return with no opinion and no open comment is refused before any write', async () => {
   const { applied, store, service, roundId, artifactVersionId } = await reviewing();
   const version = store.node('design').command.version;

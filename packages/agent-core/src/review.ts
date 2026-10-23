@@ -64,6 +64,7 @@ export type BallotRejectionCode =
   | 'actor-mismatch'
   | 'not-assigned-reviewer'
   | 'empty-request-changes'
+  | 'empty-comment'
   | 'comment-not-unresolved'
   | 'non-passing-availability'
   | 'conflicting-ballot'
@@ -303,6 +304,9 @@ export function submitBallot(
     if (trimmed(ballot.comment).length === 0 && citation !== 'valid') {
       return { ok: false, code: 'empty-request-changes' };
     }
+  }
+  if (ballot.action === 'comment' && trimmed(ballot.comment).length === 0) {
+    return { ok: false, code: 'empty-comment' };
   }
   if (
     ballot.action === 'approve' &&

@@ -37,7 +37,7 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
       const inbox = await api.inbox(signal);
       if (signal?.aborted) return;
       setItems(inbox.items);
-      setPlaces(inbox.places);
+      setPlaces(inbox.places ?? []);
       setNodes(inbox.nodes);
     } catch (caught) {
       if (signal?.aborted) return;

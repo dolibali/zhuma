@@ -177,10 +177,10 @@ export type ExecutionMessageCode =
   | 'plan-incomplete'
   | 'unavailable'
   | 'not-found'
-  | 'not-revision-reader'
   | 'not-returned'
   | 'not-deliverable'
   | 'empty-request-changes'
+  | 'empty-comment'
   | 'comment-not-unresolved'
   | 'validation'
   | 'unknown-field'
@@ -265,7 +265,7 @@ export interface ChannelInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
-  readonly places: readonly InboxPlace[];
+  readonly places?: readonly InboxPlace[];
 }
 export interface ExecutionCommandValue {
   readonly disposition: 'applied' | 'replayed' | 'ignored';
@@ -381,7 +381,7 @@ export interface ExecutionInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
-  readonly places: readonly InboxPlace[];
+  readonly places?: readonly InboxPlace[];
 }
 export interface DeliveryDraft {
   readonly taskId: string;
