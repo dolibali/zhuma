@@ -220,6 +220,39 @@ function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
   });
 }
 
+/** Process-wide cap. The libuv pool is shared, so a full queue waits instead of refusing another address. */
+const PASSWORD_HASH_CONCURRENCY = 4;
+let passwordHashActive = 0;
+const passwordHashWaiters: Array<() => void> = [];
+
+function releasePasswordHashSlot(): void {
+  const next = passwordHashWaiters.shift();
+  if (next !== undefined) {
+    next();
+    return;
+  }
+  passwordHashActive -= 1;
+}
+
+function withPasswordHashSlot<T>(work: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      try {
+        work().then(resolve, reject).finally(releasePasswordHashSlot);
+      } catch (error) {
+        releasePasswordHashSlot();
+        reject(error);
+      }
+    };
+    if (passwordHashActive < PASSWORD_HASH_CONCURRENCY) {
+      passwordHashActive += 1;
+      run();
+      return;
+    }
+    passwordHashWaiters.push(run);
+  });
+}
+
 /** Random verifier so an unknown account still runs scrypt. */
 const DUMMY_VERIFIER = parseVerifier(hashPassword(randomBytes(32).toString('base64url')));
 if (DUMMY_VERIFIER === undefined) throw new Error('identity dummy verifier was not created');
@@ -234,8 +267,10 @@ export function passwordHashAttemptCount(): number {
 async function passwordMatches(stored: string | undefined, password: string): Promise<boolean> {
   const parsed = parseVerifier(stored) ?? DUMMY_VERIFIER;
   if (parsed === undefined) return false;
-  passwordHashAttempts += 1;
-  const actual = await deriveKey(password, parsed.salt);
+  const actual = await withPasswordHashSlot(() => {
+    passwordHashAttempts += 1;
+    return deriveKey(password, parsed.salt);
+  });
   const matches = actual.length === parsed.hash.length && timingSafeEqual(actual, parsed.hash);
   return matches && stored !== undefined && parseVerifier(stored) !== undefined;
 }

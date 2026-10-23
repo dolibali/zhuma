@@ -531,7 +531,91 @@ test('repeated failed logins from one address are limited', async () => {
     remoteAddress: '203.0.113.10',
     body: { accountId: 'zhao', password: passwords.zhao },
   });
-  assert.equal(otherAccount.status, 200);
+  assert.equal(otherAccount.status, 429);
+  assert.equal(otherAccount.json.error.code, 'login-rate-limited');
+  await host.dispose();
+});
+
+async function firstRateLimit(web, address, accountIdAt) {
+  for (let attempt = 1; attempt <= 16; attempt += 1) {
+    const response = await call(web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: address,
+      body: { accountId: accountIdAt(attempt), password: 'wrong-password' },
+    });
+    if (response.status === 429) {
+      assert.equal(response.json.error.code, 'login-rate-limited');
+      return attempt;
+    }
+    assert.equal(response.status, 401);
+    assert.equal(response.json.error.code, 'invalid-login');
+  }
+  assert.fail('login was not rate limited');
+}
+
+test('rotating nonexistent accounts from one address are limited', async () => {
+  const host = await mount();
+  const limitedAt = await firstRateLimit(
+    host.web,
+    '203.0.113.60',
+    (attempt) => `missing-${attempt}`,
+  );
+  assert.equal(limitedAt, 9);
+  await host.dispose();
+});
+
+test('a known account and unknown accounts reach the limit on the same attempt', async () => {
+  const host = await mount();
+  const knownIds = ['chen', 'zhao', 'lin'];
+  const oneKnown = await firstRateLimit(host.web, '203.0.113.61', () => 'chen');
+  const rotatedKnown = await firstRateLimit(
+    host.web,
+    '203.0.113.62',
+    (attempt) => knownIds[(attempt - 1) % knownIds.length],
+  );
+  const rotatedUnknown = await firstRateLimit(
+    host.web,
+    '203.0.113.63',
+    (attempt) => `missing-${attempt}`,
+  );
+  assert.equal(oneKnown, rotatedKnown);
+  assert.equal(rotatedKnown, rotatedUnknown);
+  await host.dispose();
+});
+
+test('a login from another address is not starved by unknown-account attempts', async () => {
+  const host = await mount();
+  const wrong = randomBytes(18).toString('base64url');
+  const flood = Promise.all(
+    Array.from({ length: 40 }, (_, index) =>
+      call(host.web, {
+        method: 'POST',
+        path: '/zhuma-id/login',
+        remoteAddress: '203.0.113.80',
+        body: { accountId: `missing-${index}`, password: wrong },
+      }),
+    ),
+  );
+  const started = Date.now();
+  const normal = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.81',
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(normal.status, 200);
+  assert.equal(elapsed < 3_000, true);
+  const responses = await flood;
+  assert.equal(
+    responses.some((response) => response.status === 429),
+    true,
+  );
+  assert.equal(
+    responses.every((response) => response.status === 401 || response.status === 429),
+    true,
+  );
   await host.dispose();
 });
 

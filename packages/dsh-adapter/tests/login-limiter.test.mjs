@@ -16,6 +16,20 @@ test('expired login-failure slots are removed', () => {
   assert.equal(attempts.count(address, 'chen', 1_000 + 60_000), 0);
 });
 
+test('one address is limited across account ids', () => {
+  const attempts = createLoginFailureTable();
+  const address = '198.51.100.10';
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    assert.equal(attempts.reserve(address, `missing-${attempt}`, 1_000), 'allowed');
+  }
+  assert.equal(attempts.reserve(address, 'missing-next', 1_000), 'limited');
+  assert.equal(attempts.reserve(address, 'chen', 1_000), 'limited');
+  assert.equal(attempts.count(address, 'chen', 1_000), 0);
+  attempts.clear(address, 'missing-0');
+  assert.equal(attempts.reserve(address, 'chen', 1_000), 'allowed');
+  assert.equal(attempts.count(address, 'chen', 1_000), 1);
+});
+
 test('two hosts do not share login-failure counts', () => {
   const first = createLoginFailureTable();
   const second = createLoginFailureTable();
