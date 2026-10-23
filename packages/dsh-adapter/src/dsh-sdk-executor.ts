@@ -1292,11 +1292,17 @@ function trailingFilenameEnd(text: string, from: number): number {
   while (rest < text.length && text[rest] !== '\n' && /\s/.test(text[rest] ?? '')) rest += 1;
   const closed =
     rest === text.length || text[rest] === '\n' || text[rest] === "'" || text[rest] === '"';
-  // 后面还有说明时，只有「名字.字母扩展名」才算文件名。v1.2、e.g.、3.5s 留在说明里。
+  // 后面还有说明时，只有「字母开头的名字.扩展名」才算文件名。
+  // 扩展名可以带数字或下划线（mp4、7z、v2、json_bak）。纯数字后缀的 v1.2、e.g.、3.5s 留在说明里。
   const dot = token.lastIndexOf('.');
-  const letterExtension =
-    dot > 0 && dot < token.length - 1 && /^[A-Za-z]+$/.test(token.slice(dot + 1));
-  if (!closed && !letterExtension) return -1;
+  const stem = token.slice(0, Math.max(dot, 0));
+  const extension = dot >= 0 ? token.slice(dot + 1) : '';
+  const namedFile =
+    dot > 0 &&
+    dot < token.length - 1 &&
+    /^[A-Za-z][A-Za-z0-9_.]*$/.test(stem) &&
+    /^[A-Za-z0-9_]*[A-Za-z][A-Za-z0-9_]*$/.test(extension);
+  if (!closed && !namedFile) return -1;
   return index;
 }
 

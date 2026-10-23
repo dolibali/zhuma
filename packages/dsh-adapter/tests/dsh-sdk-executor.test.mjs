@@ -2162,6 +2162,26 @@ test('契约：启动失败里带空格的文件名后面还有说明时，文�
   }
 });
 
+test('契约：启动失败里扩展名带数字或下划线的带空格文件名也剥掉', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  const lines = [
+    ['open /home/qa/My Docs/my clip.mp4 failed', 'clip.mp4'],
+    ['open /home/qa/a b.7z failed', 'b.7z'],
+    ['open /home/qa/My Docs/old notes.v2 failed', 'notes.v2'],
+    ['open /home/qa/My Docs/a b.json_bak failed', 'json_bak'],
+  ];
+  try {
+    for (const [input, leaked] of lines) {
+      const failed = await driveFreshHomeFault(env, input);
+      assert.equal(failed.events[0].message, '执行器启动失败。\nopen failed', input);
+      assert.equal(failed.events[0].message.includes(leaked), false, input);
+      assert.equal(failed.events[0].message.includes('/home'), false, input);
+    }
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
 test('契约：启动失败里路径后面的网址说明会整段留下', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
