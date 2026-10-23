@@ -1078,14 +1078,7 @@ export class ExecutionDesk {
       reference: item.reference,
     }));
     this.contextBlocks = [];
-    let committed: DeskResult;
-    try {
-      committed = this.succeed({ runId: opened.attempt.id });
-    } catch (error) {
-      this.restoreAccept(checkpoint);
-      this.persistenceFault = persistenceFaultFrom(error);
-      return this.persistRejected();
-    }
+    const committed = this.succeed({ runId: opened.attempt.id });
     if (!committed.ok) {
       this.restoreAccept(checkpoint);
       return this.persistRejected();
@@ -1196,15 +1189,7 @@ export class ExecutionDesk {
       }
       this.putRun(resumed.attempt);
     }
-    let committed: DeskResult;
-    try {
-      committed = this.succeed({ runId: active.id });
-    } catch (error) {
-      this.restoreQueue(checkpoint);
-      this.persistenceFault = persistenceFaultFrom(error);
-      this.lastSaveFailed = true;
-      return this.persistRejected();
-    }
+    const committed = this.succeed({ runId: active.id });
     if (!committed.ok || this.lastSaveFailed) {
       this.restoreQueue(checkpoint);
       return this.persistRejected();
