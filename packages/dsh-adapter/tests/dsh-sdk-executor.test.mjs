@@ -1136,7 +1136,10 @@ test('契约：同一会话撤掉的技能不会在下一轮被扫描', async ()
     assert.equal(failed.events.length, 1);
     assert.equal(failed.events[0].type, 'failed');
     assert.equal(failed.events[0].fault, 'executor-disconnected');
-    assert.equal(failed.events[0].message, '执行器启动失败。');
+    assert.match(failed.events[0].message, /^执行器启动失败。/);
+    assert.match(failed.events[0].message, /EACCES/);
+    assert.equal(failed.events[0].message.includes(home), false);
+    assert.equal(failed.events[0].message.includes(blocked), false);
     assert.equal(existsSync(home), true);
     assert.equal(readFileSync(path.join(home, 'keep-me.txt'), 'utf8'), 'keep\n');
     assert.equal(existsSync(path.join(blocked, 'SKILL.md')), true);

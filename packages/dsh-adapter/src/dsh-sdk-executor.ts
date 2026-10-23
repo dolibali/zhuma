@@ -381,7 +381,7 @@ export class DshChatExecutor implements AgentExecutor {
         },
         this.env,
       );
-    } catch {
+    } catch (error) {
       this.finished.add(request.runId);
       const pending = this.earlyReceipt.get(request.runId);
       this.earlyReceipt.delete(request.runId);
@@ -389,7 +389,7 @@ export class DshChatExecutor implements AgentExecutor {
       yield {
         type: 'failed',
         fault: 'executor-disconnected',
-        message: '执行器启动失败。',
+        message: startupFailureMessage(error),
         simulated: false,
       };
       return;
@@ -992,6 +992,18 @@ async function stopChild(child: ChildProcessWithoutNullStreams, rpc: StdioRpc): 
     // 进程已经退出。
   }
   await rpc.exited;
+}
+
+/** 启动前失败要把原因留下来，但不能带出本机路径。 */
+function startupFailureMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const detail = raw
+    .replace(/'(?:[/\\])[^']*'/g, "''")
+    .replace(/(?:[/\\])(?:[\w.+@=-]+[/\\])*[\w.+@=-]+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (detail.length === 0) return '执行器启动失败。';
+  return `执行器启动失败。\n${detail}`;
 }
 
 function withStderr(message: string, stderr: string): string {
