@@ -309,19 +309,10 @@ export class SimulatedAgentExecutor implements AgentExecutor {
   }
 }
 
-export const DSH_MODEL_IDS = [
-  'zhanlu/glm-5.3-flash',
-  'zhanlu/glm-5.3',
-  'zhanlu/deepseek-v4.1-flash',
-  'zhanlu/kimi-k3',
-] as const;
-
-export const DSH_DEFAULT_MODEL_ID = 'zhanlu/glm-5.3-flash';
-
 export interface DshModelConfig {
   readonly baseUrl: string;
   readonly apiKey: string;
-  readonly modelId: (typeof DSH_MODEL_IDS)[number];
+  readonly modelId: string;
 }
 
 export type DshModelConfigResult =
@@ -332,28 +323,15 @@ export type DshModelConfigResult =
 export function readDshModelConfig(env: NodeJS.ProcessEnv = process.env): DshModelConfigResult {
   const baseUrl = env.ZHUMA_MODEL_BASE_URL?.trim() ?? '';
   const apiKey = env.ZHUMA_MODEL_API_KEY?.trim() ?? '';
-  const requested = env.ZHUMA_MODEL_ID?.trim() ?? '';
+  const modelId = env.ZHUMA_MODEL_ID?.trim() ?? '';
   const missing: string[] = [];
   if (baseUrl.length === 0) missing.push('ZHUMA_MODEL_BASE_URL');
   if (apiKey.length === 0) missing.push('ZHUMA_MODEL_API_KEY');
+  if (modelId.length === 0) missing.push('ZHUMA_MODEL_ID');
   if (missing.length > 0) {
-    return {
-      ok: false,
-      reason: `缺少 ${missing.join('、')}。不会改用模拟执行器。模型用 ZHUMA_MODEL_ID 选择，未设置时使用 ${DSH_DEFAULT_MODEL_ID}。`,
-    };
-  }
-  const modelId = requested.length > 0 ? requested : DSH_DEFAULT_MODEL_ID;
-  if (!isDshModelId(modelId)) {
-    return {
-      ok: false,
-      reason: `模型不在可选列表。可选 ${DSH_MODEL_IDS.join('、')}。不会改用模拟执行器。`,
-    };
+    return { ok: false, reason: `缺少 ${missing.join('、')}。不会改用模拟执行器。` };
   }
   return { ok: true, config: { baseUrl: baseUrl.replace(/\/+$/, ''), apiKey, modelId } };
-}
-
-function isDshModelId(value: string): value is DshModelConfig['modelId'] {
-  return (DSH_MODEL_IDS as readonly string[]).includes(value);
 }
 
 export function selectAgentExecutor(

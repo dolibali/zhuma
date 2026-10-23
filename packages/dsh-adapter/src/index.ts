@@ -63,8 +63,6 @@ export type {
   SimulatedExecutorOptions,
 } from './agent-executor.js';
 export {
-  DSH_DEFAULT_MODEL_ID,
-  DSH_MODEL_IDS,
   ExecutorNotImplementedError,
   SimulatedAgentExecutor,
   UnimplementedNativeExecutor,

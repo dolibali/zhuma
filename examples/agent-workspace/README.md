@@ -25,7 +25,7 @@ node examples/agent-workspace/server.mjs
 - `PORT`：监听端口。省略时由系统分配。
 - `ZHUMA_HOLD_RUNS=1`：执行器接收后暂停，直到 `POST /api/release`。
 - `ZHUMA_SESSION_FILE`：会话文件。请放在临时目录，不要提交。
-- `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY`：真实 DSH 的模型路由。可选 `ZHUMA_MODEL_ID`。运行时文件用 `ZHUMA_DSH_BIN`，未设置时用 `pnpm upstream:build-dsh` 构建出的 CLI。不要写下地址或密钥。
+- `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY`、`ZHUMA_MODEL_ID`：真实 DSH 的模型路由。未设置模型时直接失败并点名该变量。运行时文件用 `ZHUMA_DSH_BIN`，未设置时用 `pnpm upstream:build-dsh` 构建出的 CLI。不要写下地址或密钥。
 
 进程重启后会先装回该文件里的事实。即使执行器声明可以恢复会话，重启后原来的子进程已经不在，所以不会把未结束的运行推断成完成。页面上的「继续交互」之后，才能核实为执行器已断开。
 

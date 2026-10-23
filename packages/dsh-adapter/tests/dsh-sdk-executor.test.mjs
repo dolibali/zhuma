@@ -38,6 +38,7 @@ function modelEnv(apiKey = 'test-key') {
   return {
     ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
     ZHUMA_MODEL_API_KEY: apiKey,
+    ZHUMA_MODEL_ID: 'test-model',
     ZHUMA_DATA_DIR: mkdtempSync(path.join(tmpdir(), 'zhuma-dsh-data-')),
     PATH: process.env.PATH,
     HOME: process.env.HOME,
@@ -525,6 +526,7 @@ test('契约：找不到运行时会明确失败，不改用模拟', async () =>
   const missing = new DshChatExecutor({
     ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
     ZHUMA_MODEL_API_KEY: 'test-key',
+    ZHUMA_MODEL_ID: 'test-model',
     ZHUMA_DSH_BIN: '/tmp/zhuma-no-such-dsh',
   });
   assert.equal(missing.capabilities.verified, false);
@@ -839,6 +841,7 @@ async function driveTrackedStdio(pidFile) {
       '  {',
       '    ZHUMA_MODEL_BASE_URL: process.env.ZHUMA_MODEL_BASE_URL,',
       '    ZHUMA_MODEL_API_KEY: process.env.ZHUMA_MODEL_API_KEY,',
+      '    ZHUMA_MODEL_ID: process.env.ZHUMA_MODEL_ID,',
       '    ZHUMA_DATA_DIR: process.env.ZHUMA_DATA_DIR,',
       '    PATH: process.env.PATH,',
       '    HOME: process.env.HOME,',
@@ -901,6 +904,7 @@ async function driveTrackedStdio(pidFile) {
     ...process.env,
     ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
     ZHUMA_MODEL_API_KEY: 'zhuma-synthetic-marker',
+    ZHUMA_MODEL_ID: 'test-model',
     ZHUMA_DATA_DIR: dataDir,
     ZHUMA_PID_FILE: pidFile,
     ZHUMA_STUB: stub,
@@ -1246,6 +1250,7 @@ async function driveWithBlockedRemove(env, sessionId, blocked) {
       '  {',
       '    ZHUMA_MODEL_BASE_URL: process.env.ZHUMA_MODEL_BASE_URL,',
       '    ZHUMA_MODEL_API_KEY: process.env.ZHUMA_MODEL_API_KEY,',
+      '    ZHUMA_MODEL_ID: process.env.ZHUMA_MODEL_ID,',
       '    ZHUMA_DATA_DIR: process.env.ZHUMA_DATA_DIR,',
       '    PATH: process.env.PATH,',
       '    HOME: process.env.HOME,',
@@ -1290,6 +1295,7 @@ async function driveWithBlockedRemove(env, sessionId, blocked) {
       ...process.env,
       ZHUMA_MODEL_BASE_URL: env.ZHUMA_MODEL_BASE_URL,
       ZHUMA_MODEL_API_KEY: env.ZHUMA_MODEL_API_KEY,
+      ZHUMA_MODEL_ID: env.ZHUMA_MODEL_ID,
       ZHUMA_DATA_DIR: env.ZHUMA_DATA_DIR,
       ZHUMA_FAULT_RM: blocked,
       ZHUMA_STUB: stub,
@@ -1355,6 +1361,7 @@ async function driveFreshHomeFault(env, faultText = '') {
       '  {',
       '    ZHUMA_MODEL_BASE_URL: process.env.ZHUMA_MODEL_BASE_URL,',
       '    ZHUMA_MODEL_API_KEY: process.env.ZHUMA_MODEL_API_KEY,',
+      '    ZHUMA_MODEL_ID: process.env.ZHUMA_MODEL_ID,',
       '    ZHUMA_DATA_DIR: process.env.ZHUMA_DATA_DIR,',
       '    PATH: process.env.PATH,',
       '    HOME: process.env.HOME,',
@@ -1404,6 +1411,7 @@ async function driveFreshHomeFault(env, faultText = '') {
       ...process.env,
       ZHUMA_MODEL_BASE_URL: env.ZHUMA_MODEL_BASE_URL,
       ZHUMA_MODEL_API_KEY: env.ZHUMA_MODEL_API_KEY,
+      ZHUMA_MODEL_ID: env.ZHUMA_MODEL_ID,
       ZHUMA_DATA_DIR: env.ZHUMA_DATA_DIR,
       ...(faultText.length > 0 ? { ZHUMA_FAULT_TEXT: faultText } : {}),
       ZHUMA_STUB: stub,
@@ -1594,6 +1602,7 @@ test('契约：数据目录不是目录时，定位失败变成启动失败，�
     {
       ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
       ZHUMA_MODEL_API_KEY: 'test-key',
+      ZHUMA_MODEL_ID: 'test-model',
       ZHUMA_DATA_DIR: dataDir,
       PATH: process.env.PATH,
       HOME: process.env.HOME,

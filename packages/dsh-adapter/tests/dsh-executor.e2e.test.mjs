@@ -298,18 +298,16 @@ async function stopWhileRunning(desk) {
 }
 
 async function assertFailureDisplay(secrets, env) {
-  const unknown = openDesk(
-    new DshChatExecutor({
-      ...env,
-      ZHUMA_MODEL_ID: 'not-a-model',
-    }),
-  );
-  const refused = unknown.send({ text: '不要调用', idempotencyKey: 'e2e-unknown-model' });
+  const withoutModel = { ...env };
+  delete withoutModel.ZHUMA_MODEL_ID;
+  const missingModel = openDesk(new DshChatExecutor(withoutModel));
+  const refused = missingModel.send({ text: '不要调用', idempotencyKey: 'e2e-missing-model' });
   assert.equal(refused.ok, false);
   assert.equal(refused.code, 'executor-unverified');
   assert.equal(refused.snapshot.runs.length, 0);
   assert.equal(refused.snapshot.config.simulated, false);
   assert.notEqual(refused.snapshot.node.status, 'completed');
+  assert.match(refused.reason, /ZHUMA_MODEL_ID/);
   assertClean(refused.snapshot, secrets);
 
   const wrong = openDesk(

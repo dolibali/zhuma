@@ -668,19 +668,30 @@ test('契约：缺少模型配置时 DSH 明确失败且不降级', async () => 
   }, /ZHUMA_MODEL_BASE_URL/);
   const unknown = await executor.cancel('dsh-missing');
   assert.equal(unknown.receipt, 'rejected');
-  const badModel = readDshModelConfig({
-    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
-    ZHUMA_MODEL_API_KEY: 'test-key',
-    ZHUMA_MODEL_ID: 'not-a-model',
-  });
-  assert.equal(badModel.ok, false);
   const configured = readDshModelConfig({
     ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1/',
     ZHUMA_MODEL_API_KEY: 'test-key',
+    ZHUMA_MODEL_ID: 'test-model',
   });
   assert.equal(configured.ok, true);
-  assert.equal(configured.config.modelId, 'zhanlu/glm-5.3-flash');
+  assert.equal(configured.config.modelId, 'test-model');
   assert.equal(configured.config.baseUrl.endsWith('/'), false);
+  const missingModel = readDshModelConfig({
+    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
+    ZHUMA_MODEL_API_KEY: 'test-key',
+  });
+  assert.equal(missingModel.ok, false);
+  assert.equal(missingModel.reason, '缺少 ZHUMA_MODEL_ID。不会改用模拟执行器。');
+  assert.equal(missingModel.reason.includes('https://example.invalid'), false);
+  assert.equal(missingModel.reason.includes('test-key'), false);
+  const named = new DshChatExecutor({
+    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
+    ZHUMA_MODEL_API_KEY: 'test-key',
+  });
+  assert.equal(named.capabilities.verified, false);
+  await assert.rejects(async () => {
+    for await (const event of named.run(runRequest('dsh-missing-model'))) void event;
+  }, /ZHUMA_MODEL_ID/);
   const { desk: session } = desk();
   session.updateConfig({ executorId: 'dsh' });
   const refused = session.send({ text: '不要调用', idempotencyKey: 'dsh-refused' });

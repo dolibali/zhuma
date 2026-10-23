@@ -23,7 +23,7 @@
 
 模拟执行器的能力声明：不支持实时注入，不支持会话恢复，支持取消回执和流式输出，`verified: false`，`mode: 'simulated'`。回复、工具活动和结果都带模拟标识。模拟活动的 `succeeded` 保持 false。
 
-`DshChatExecutor` 在显式选择后启动 `dsh --profile sdk`，经 stdio 上的 JSON-RPC 对话。它读取 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY` 和可选的 `ZHUMA_MODEL_ID`。缺地址或密钥时，`run()` 直接失败，原因里点名缺少的变量，不写出地址或密钥，也不改用模拟执行器。密钥只放进子进程环境变量 `ZHUMA_MODEL_API_KEY`。模型未设置时使用 `zhanlu/glm-5.3-flash`。可选模型还有 `zhanlu/glm-5.3`、`zhanlu/deepseek-v4.1-flash`、`zhanlu/kimi-k3`。未知模型失败。运行时取 `ZHUMA_DSH_BIN`，否则取上游构建出的 CLI。`verified` 表示这条路由已经配好，并且运行时文件存在。找不到运行时时，原因里点名 `pnpm upstream:build-dsh` 和 `ZHUMA_DSH_BIN`。二进制不可执行时立即失败，不等初始化超时。进程在接收前退出时，stdin 上的 EPIPE 只让这次运行失败，脱敏后的 stderr 留在失败原因里。子进程环境设置 `DSH_TELEMETRY_DISABLED=1` 和 `DSH_TELEMETRY_MODE=DISABLED`。
+`DshChatExecutor` 在显式选择后启动 `dsh --profile sdk`，经 stdio 上的 JSON-RPC 对话。它读取 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY` 和 `ZHUMA_MODEL_ID`。缺地址、密钥或模型时，`run()` 直接失败，原因里点名缺少的变量，不写出地址或密钥，也不改用模拟执行器。密钥只放进子进程环境变量 `ZHUMA_MODEL_API_KEY`。模型由 `ZHUMA_MODEL_ID` 提供，未设置时直接失败并点名该变量。运行时取 `ZHUMA_DSH_BIN`，否则取上游构建出的 CLI。`verified` 表示这条路由已经配好，并且运行时文件存在。找不到运行时时，原因里点名 `pnpm upstream:build-dsh` 和 `ZHUMA_DSH_BIN`。二进制不可执行时立即失败，不等初始化超时。进程在接收前退出时，stdin 上的 EPIPE 只让这次运行失败，脱敏后的 stderr 留在失败原因里。子进程环境设置 `DSH_TELEMETRY_DISABLED=1` 和 `DSH_TELEMETRY_MODE=DISABLED`。
 
 生成的 `cordis.patch.yml` 是加载器补丁条目的顶层 YAML 数组，使用 `- id:` 和 `- insert:`。它不是映射。`llm-pi-ai` 写入模型路由、`apiKeyEnv: ZHUMA_MODEL_API_KEY`，以及 `input` 的 `text` 和 `image`。密钥不写进文件。
 
@@ -170,4 +170,4 @@ node examples/agent-workspace/server.mjs
 
 浏览器打开标准输出里的 `url`。先在配置里选择「模拟执行器」，再发送。未选择时发送按钮禁用。停止会等待回执。「保存草稿」只保存草稿。
 
-`ZHUMA_HOLD_RUNS=1` 让运行在接收回执前后各停一次。第一次页面显示启动中，`POST /api/release` 之后显示执行中，再释放才结束。`ZHUMA_SESSION_FILE` 把会话写到调用方指定的文件，不要提交该文件。未设置时，会话放在 `~/.zhuma/workbench`。构建上游 CLI 用 `pnpm upstream:build-dsh`。上游依赖缺失时，该脚本用 pnpm 11.28.5 和 `CI=true` 安装后再构建。模型路由使用 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY`、可选的 `ZHUMA_MODEL_ID`，运行时文件使用 `ZHUMA_DSH_BIN`。
+`ZHUMA_HOLD_RUNS=1` 让运行在接收回执前后各停一次。第一次页面显示启动中，`POST /api/release` 之后显示执行中，再释放才结束。`ZHUMA_SESSION_FILE` 把会话写到调用方指定的文件，不要提交该文件。未设置时，会话放在 `~/.zhuma/workbench`。构建上游 CLI 用 `pnpm upstream:build-dsh`。上游依赖缺失时，该脚本用 pnpm 11.28.5 和 `CI=true` 安装后再构建。模型路由使用 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY` 和 `ZHUMA_MODEL_ID`。未设置模型时直接失败并点名该变量。运行时文件使用 `ZHUMA_DSH_BIN`。
