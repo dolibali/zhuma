@@ -894,6 +894,50 @@ test('契约：受理后的标准错误超过 8KB 时保留结尾原因，切口
   assert.equal(stderr.includes(suffix), false);
 });
 
+// 回归：改回 .length / .slice 后，落盘超过 8192 字节，标注的省略数对不上，并且切开 emoji 得到 U+FFFD。
+test('契约：标准错误按 UTF-8 字节截断，中文和 emoji 的切口不拆开字符', async () => {
+  const done = await collect('stderr-cap-utf8', {
+    env: modelEnv('zhuma-synthetic-marker-0123456789abcde'),
+    initTimeoutMs: 20_000,
+    promptTimeoutMs: 20_000,
+    runId: 'stderr-cap-utf8',
+  });
+  assert.equal(done.events.at(-1).type, 'completed');
+  const accepted = done.events.find((event) => event.type === 'accepted');
+  const home = dshSessionHome(accepted.sessionId, done.env);
+  const file = readFileSync(path.join(home, 'zhuma-collected-stderr.txt'));
+  const source = readFileSync(path.join(home, 'zhuma-stderr-source.txt'));
+  const stderr = file.toString('utf8');
+  const original = source.toString('utf8');
+  const matched = stderr.match(/（已截断 (\d+) 字节）/);
+  assert.notEqual(matched, null);
+  const mark = matched[0];
+  const omitted = Number(matched[1]);
+  const head = stderr.slice(0, matched.index);
+  const tail = stderr.slice(matched.index + mark.length);
+  const kept = head + tail;
+  assert.equal(file.length <= 8192, true);
+  assert.equal(file.includes(Buffer.from('efbfbd', 'hex')), false);
+  assert.equal(stderr.includes('\uFFFD'), false);
+  assert.equal(omitted, source.length - Buffer.byteLength(kept), '标注的字节数');
+  assert.equal(original.startsWith(head), true);
+  assert.equal(original.endsWith(tail), true);
+  assert.equal(original.includes('中'), true);
+  assert.equal(head.includes('中'), false);
+  assert.equal(tail.includes('中'), false);
+  const next = String.fromCodePoint(original.codePointAt(head.length));
+  assert.equal(Buffer.byteLength(next) > 1, true);
+  assert.equal(Buffer.byteLength(head) <= 2048, true);
+  assert.equal(Buffer.byteLength(head) + Buffer.byteLength(next) > 2048, true);
+  const tailAt = original.length - tail.length;
+  const before = [...original.slice(0, tailAt)].at(-1);
+  const room = 8192 - Buffer.byteLength(head) - Buffer.byteLength(mark);
+  assert.equal(Buffer.byteLength(before) > 1, true);
+  assert.equal(Buffer.byteLength(tail) <= room, true);
+  assert.equal(Buffer.byteLength(tail) + Buffer.byteLength(before) > room, true);
+  assert.equal(stderr.split('\n').at(-1), 'cause: disk-full-reason');
+});
+
 test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async () => {
   const secret = 'zhuma-synthetic-marker-0123456789abcde';
   const prefix = secret.slice(0, secret.length - 1);

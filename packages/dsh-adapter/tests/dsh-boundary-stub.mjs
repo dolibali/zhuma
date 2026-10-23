@@ -197,8 +197,8 @@ async function handlePrompt(message) {
       const cap = limit - headLimit;
       let omitted = Math.max(0, total - headLimit - cap);
       let tail = Math.min(cap, Math.max(0, total - headLimit));
-      while (headLimit + mark(omitted).length + tail > limit) {
-        const overflow = headLimit + mark(omitted).length + tail - limit;
+      while (headLimit + Buffer.byteLength(mark(omitted)) + tail > limit) {
+        const overflow = headLimit + Buffer.byteLength(mark(omitted)) + tail - limit;
         omitted += overflow;
         tail -= overflow;
       }
@@ -217,6 +217,15 @@ async function handlePrompt(message) {
       2,
       `${'a'.repeat(headPad)}${secret}${'b'.repeat(gap1)}${secret}${'b'.repeat(gap2)}\n${reason}`,
     );
+  }
+  if (mode === 'stderr-cap-utf8') {
+    const emoji = '😀';
+    const head = 'a'.repeat(2047);
+    const middle = '中'.repeat(4000);
+    const tail = `${'b'.repeat(6093)}\ncause: disk-full-reason`;
+    const original = `${head}${emoji}${middle}${emoji}${tail}`;
+    writeFileSync(path.join(home, 'zhuma-stderr-source.txt'), original, 'utf8');
+    writeSync(2, original);
   }
   finishTurn();
 }

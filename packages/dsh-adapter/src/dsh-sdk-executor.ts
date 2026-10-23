@@ -791,9 +791,43 @@ function textFromStream(stream: unknown): string {
 
 /** 子进程已经退出后，孙进程仍占着标准错误时最多再等多久。 */
 const stderrSealMs = 500;
-/** 受理后写入会话的标准错误上限。超出后保留开头和最新结尾，中间写明省略了多少。 */
+/** 受理后写入会话的标准错误上限，按 UTF-8 字节计。超出后保留开头和最新结尾，中间写明省略了多少字节。 */
 const stderrCollectLimit = 8192;
 const stderrHeadLimit = 2048;
+
+function utf8Bytes(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
+
+/** 不超过 maxBytes 的最长完整码点前缀。不切开代理对。 */
+function takeUtf8Prefix(text: string, maxBytes: number): { taken: string; rest: string } {
+  if (maxBytes <= 0 || text.length === 0) return { taken: '', rest: text };
+  if (utf8Bytes(text) <= maxBytes) return { taken: text, rest: '' };
+  let bytes = 0;
+  let end = 0;
+  for (const char of text) {
+    const size = utf8Bytes(char);
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    end += char.length;
+  }
+  return { taken: text.slice(0, end), rest: text.slice(end) };
+}
+
+/** 丢掉开头的完整码点，直到剩余字节数不超过 maxBytes。返回实际丢掉的字节数。 */
+function limitUtf8Suffix(text: string, maxBytes: number): { dropped: number; rest: string } {
+  const size = utf8Bytes(text);
+  if (size <= maxBytes) return { dropped: 0, rest: text };
+  const overflow = size - Math.max(0, maxBytes);
+  let bytes = 0;
+  let end = 0;
+  for (const char of text) {
+    bytes += utf8Bytes(char);
+    end += char.length;
+    if (bytes >= overflow) break;
+  }
+  return { dropped: bytes, rest: text.slice(end) };
+}
 
 class StdioRpc {
   readonly exited: Promise<number>;
@@ -884,7 +918,7 @@ class StdioRpc {
   private appendStderr(text: string): void {
     if (text.length === 0) return;
     if (!this.stderrTruncated) {
-      if (this.stderr.length + text.length <= stderrCollectLimit) {
+      if (utf8Bytes(this.stderr) + utf8Bytes(text) <= stderrCollectLimit) {
         this.stderr += text;
         return;
       }
@@ -903,17 +937,14 @@ class StdioRpc {
     this.publishCollectedStderr();
   }
 
-  /** 开头留满之后，其余只进固定长度的尾部窗口。 */
+  /** 开头按字节留满之后，其余只进固定字节数的尾部窗口。切口落在完整码点上。 */
   private keepBounded(text: string): void {
     if (text.length === 0) return;
-    if (this.stderrHead.length < stderrHeadLimit) {
-      const need = stderrHeadLimit - this.stderrHead.length;
-      if (text.length <= need) {
-        this.stderrHead += text;
-        return;
-      }
-      this.stderrHead += text.slice(0, need);
-      this.pushTail(text.slice(need));
+    const headBytes = utf8Bytes(this.stderrHead);
+    if (headBytes < stderrHeadLimit) {
+      const { taken, rest } = takeUtf8Prefix(text, stderrHeadLimit - headBytes);
+      this.stderrHead += taken;
+      if (rest.length > 0) this.pushTail(rest);
       return;
     }
     this.pushTail(text);
@@ -921,30 +952,33 @@ class StdioRpc {
 
   private pushTail(text: string): void {
     const cap = stderrCollectLimit - stderrHeadLimit;
-    if (text.length >= cap) {
-      this.stderrOmitted += this.stderrTail.length + text.length - cap;
-      this.stderrTail = text.slice(text.length - cap);
+    if (utf8Bytes(text) >= cap) {
+      this.stderrOmitted += utf8Bytes(this.stderrTail) + utf8Bytes(text);
+      const fitted = limitUtf8Suffix(text, cap);
+      this.stderrOmitted -= utf8Bytes(fitted.rest);
+      this.stderrTail = fitted.rest;
       return;
     }
-    const overflow = this.stderrTail.length + text.length - cap;
-    if (overflow <= 0) {
-      this.stderrTail += text;
+    const combined = this.stderrTail + text;
+    if (utf8Bytes(combined) <= cap) {
+      this.stderrTail = combined;
       return;
     }
-    this.stderrOmitted += overflow;
-    this.stderrTail = this.stderrTail.slice(overflow) + text;
+    const fitted = limitUtf8Suffix(combined, cap);
+    this.stderrOmitted += fitted.dropped;
+    this.stderrTail = fitted.rest;
   }
 
   private publishCollectedStderr(): void {
     let omitted = this.stderrOmitted;
     let tail = this.stderrTail;
     let mark = `（已截断 ${omitted} 字节）`;
-    while (this.stderrHead.length + mark.length + tail.length > stderrCollectLimit) {
-      const budget = stderrCollectLimit - this.stderrHead.length - mark.length;
-      const drop = tail.length - Math.max(0, budget);
-      if (drop <= 0) break;
-      omitted += drop;
-      tail = tail.slice(drop);
+    while (utf8Bytes(this.stderrHead) + utf8Bytes(mark) + utf8Bytes(tail) > stderrCollectLimit) {
+      const budget = stderrCollectLimit - utf8Bytes(this.stderrHead) - utf8Bytes(mark);
+      const fitted = limitUtf8Suffix(tail, Math.max(0, budget));
+      if (fitted.dropped <= 0) break;
+      omitted += fitted.dropped;
+      tail = fitted.rest;
       mark = `（已截断 ${omitted} 字节）`;
     }
     this.stderr = `${this.stderrHead}${mark}${tail}`;
