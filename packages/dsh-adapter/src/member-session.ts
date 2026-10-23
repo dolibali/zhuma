@@ -6,7 +6,9 @@
  * before `applyIdentity`. Only `legacy-single-user` maps an owner cookie, and
  * only when the import names exactly one account. Multi-member mode returns
  * 401 when the member cookie is missing, deleted, expired, revoked, or forged.
- * Snapshot, command, and plan stay closed for every other mode.
+ * Snapshot, command, plan, preview-import, and resource-files stay closed
+ * for every other mode. `import-package` is a command on that same command
+ * route, so it stays closed with them.
  *
  * The cookie Path is `/` so `/zhuma-exec` receives it. HttpOnly and
  * SameSite=Strict stay. Secure waits for a TLS listener.
@@ -75,6 +77,25 @@ export type LegacyOwnerRouteDecision =
     };
 
 /**
+ * Exact `/api/zhuma/*` routes that still belong to the DSH owner carrier.
+ * `preview-import` and `resource-files` are the asset-import reads.
+ * `import-package` is not its own route; it is a `command` payload and is
+ * listed separately so a host cannot leave that write on the owner path.
+ */
+export const LEGACY_OWNER_ROUTES = [
+  'snapshot',
+  'command',
+  'plan',
+  'preview-import',
+  'resource-files',
+] as const;
+
+export const LEGACY_OWNER_PACKAGE_COMMANDS = ['import-package'] as const;
+
+export type LegacyOwnerRoute = (typeof LEGACY_OWNER_ROUTES)[number];
+export type LegacyOwnerPackageCommand = (typeof LEGACY_OWNER_PACKAGE_COMMANDS)[number];
+
+/**
  * Cordis gives each plugin a child context. The host root is the object both
  * the identity plugin and a later execution plugin can see.
  */
@@ -108,9 +129,12 @@ export function deploymentMode(ctx: object): DeploymentMode | undefined {
 }
 
 /**
- * Old owner snapshot, command, and plan routes.
+ * Old owner routes named by `LEGACY_OWNER_ROUTES`, including the
+ * `import-package` command carried on `command`.
  * `legacy-single-user` keeps them. Any other state denies them, including
  * multi-member while identity is absent, failing, or between dispose and remount.
+ * The decision does not read cookies. Callers must run it before JSON parsing,
+ * ZIP extraction, file reads, and package persistence.
  */
 export function authorizeLegacyOwnerRoutes(ctx: object): LegacyOwnerRouteDecision {
   const mode = deploymentMode(ctx);

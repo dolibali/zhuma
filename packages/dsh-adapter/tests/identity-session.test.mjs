@@ -36,6 +36,8 @@ import {
   deploymentMode,
   identityAccessMode,
   installMemberResolver,
+  LEGACY_OWNER_PACKAGE_COMMANDS,
+  LEGACY_OWNER_ROUTES,
   resolveMember,
 } from '../dist/member-session.js';
 
@@ -1559,6 +1561,14 @@ test('a single-user owner mapping exists only when the import names that one acc
 function closedLegacy(status, code) {
   return { ok: false, status, code };
 }
+
+test('legacy owner routes include the asset import reads and the import-package write', () => {
+  assert.deepEqual(
+    [...LEGACY_OWNER_ROUTES],
+    ['snapshot', 'command', 'plan', 'preview-import', 'resource-files'],
+  );
+  assert.deepEqual([...LEGACY_OWNER_PACKAGE_COMMANDS], ['import-package']);
+});
 
 test('an unset deployment mode refuses identity startup and legacy owner routes', async () => {
   const ctx = new Context();

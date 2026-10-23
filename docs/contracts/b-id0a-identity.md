@@ -149,11 +149,17 @@ function identityAccessMode(ctx: object): IdentityAccessMode;
 
 `applyIdentity` 在打开 domain 之前读取这个模式。没有选定就抛同一句未配置错误，不会打开身份库，也不会改去单人模式。`legacy-single-user` 并且导入恰好一个账号、`ownerAccountId` 指向该账号时，owner cookie 才映射成这个成员。`multi-member` 下即使导入满足这个形状，owner cookie 仍是 401。
 
-`authorizeLegacyOwnerRoutes(ctx)` 是旧的 `/api/zhuma/snapshot`、`command`、`plan` 的门。它只看部署模式：
+`LEGACY_OWNER_ROUTES` 是仍走 DSH owner carrier 的 exact 路由：`snapshot`、`command`、`plan`、`preview-import`、`resource-files`。`LEGACY_OWNER_PACKAGE_COMMANDS` 是 `import-package`。它没有单独的路由，写在 `command` 的载荷里，和这五条路由一起关闭。
 
-- `legacy-single-user` 返回 `{ ok: true }`。这三条路由仍按原来的 owner 入口处理。
-- `multi-member` 返回 `{ ok: false, status: 404, code: 'not-found' }`。身份还没挂上、`applyIdentity` 抛错、正在 dispose、dispose 完成、以及重新挂载的整个过程，都是这个结果。成员 cookie 有效也一样，这三条路由不返回工作台快照。
+`authorizeLegacyOwnerRoutes(ctx)` 是这些入口的门。它只看部署模式，不读 cookie：
+
+- `legacy-single-user` 返回 `{ ok: true }`。这五条路由仍按原来的 owner 入口处理，`import-package` 也一样。
+- `multi-member` 返回 `{ ok: false, status: 404, code: 'not-found' }`。身份还没挂上、`applyIdentity` 抛错、正在 dispose、dispose 完成、以及重新挂载的整个过程，都是这个结果。没有 cookie、cookie 无效、或成员 cookie 有效，都一样，不退回 owner。这五条路由不返回工作台快照，也不解析导入包。
 - 模式还没选定时返回 `{ ok: false, status: 401, code: 'deployment-mode-unset' }`。启动拒绝继续，路由也不放行。
+
+门必须写在 `request.json()` 和 `handle()` 之前。这样超限或失败时不会解压 ZIP，不会读出文件字节，也不会把包写入 `zhuma_asset_packages`。
+
+`zhuma_asset_packages`（version 1，per-record，`versions` 表）只保存不可变字节，自己不做授权。字段、限额和 Host 形状由 A 的 IF04 维护，见 `docs/asset-import.md` 提交 `e3916fa`（「本地专家与资产包导入：首批接口」）的「Host 与 S1 接缝」。本文不复制那份定义。旧版本在运行时的物化要经过 B 的服务，用 `deploymentMode(ctx)` 和 `resolveMember` / `memberResolver` 做授权，不能直接扫这张表。普通成员不能用这五条路由读全局目录，也不能按任意 versionId 取包；那会另走空间授权入口。`resource-files` 在单人旧入口里也只返回当前定义 origin 允许的文件，不是目录列举。
 
 `identityAccessMode(ctx)` 的声明返回类型仍包含 `unmounted`，以便和既有 S1 签名互认。运行时它只读 `deploymentMode`：`legacy-single-user` 得到 `single-user`，`multi-member` 得到 `multi-member`，未选定则抛未配置错误。授权决定用 `authorizeLegacyOwnerRoutes`。
 
@@ -168,21 +174,53 @@ function identityAccessMode(ctx: object): IdentityAccessMode;
 
 执行侧使用的导出是 `DeploymentMode`、`configureDeploymentMode`、`deploymentMode`、`resolveMember`、`memberResolver`、`MemberResolver`、`MemberRequest`、`MemberResolution`。`applyIdentity` 的签名仍是 `(ctx: Context, imported?: IdentityImport) => Promise<void>`。
 
-本 PR 不改 `workbench-plugin.ts`、宿主构建、包的公开 exports 和 Playwright 注册。A 在三条旧路由的 fetch 开头加上：
+执行插件不再接受 `singleUser`，也不再提供 `bind-owner`。模式和成员只从上面的 `deploymentMode`、`resolveMember` 和 `memberResolver` 读取。对应的模块签名：
 
 ```ts
-import { authorizeLegacyOwnerRoutes } from './member-session.js';
-
-const gate = authorizeLegacyOwnerRoutes(ctx);
-if (!gate.ok) {
-  return Response.json(
-    { ok: false, error: { code: gate.code } },
-    { status: gate.status, headers: { 'cache-control': 'no-store' } },
-  );
+interface ExecutionApplyOptions {
+  readWorkbench(): Workbench;
+  memberResolver?: MemberResolver;
+}
+type ApplyExecution = (ctx: Context, options: ExecutionApplyOptions) => Promise<void>;
+type ExecutionEndpoints = readonly ['start-plan', 'inbox', 'submit', 'ballot', 'settle', 'report'];
+interface ExecutionApi {
+  inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
+  submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+}
+type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
+interface ExecutionWorkspaceProps {
+  api: ExecutionApi;
 }
 ```
 
-可运行的那份在 `b/id0a-legacy-gate`。它 import `./member-session.js`，接在本分支之后。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
+请求体仍是 `StartPlanRequest`、`InboxRequest`、`SubmitRequest`、`BallotRequest`、`SettleRequest`、`ReportRequest`。没有 `BindOwnerRequest`。通道结果仍是 `{ ok: true, value } | { ok: false, error: { code, message, details } }`。`readWorkbench` 由 A 包住 `WorkbenchService.snapshot()`。界面挂 `ExecutionWorkspace`，它使用 `createExecutionApi(rpc)`。这些类型的其余字段在 `b/s1-signatures` 的 `packages/dsh-adapter/src/s1-integration.ts`；本分支不实现执行插件。
+
+本 PR 不改 `workbench-plugin.ts`、宿主构建、包的公开 exports 和 Playwright 注册。A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
+
+```ts
+import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
+
+for (const endpoint of LEGACY_OWNER_ROUTES) {
+  ctx.connection.fetch.register({
+    path: `/api/zhuma/${endpoint}`,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      const gate = authorizeLegacyOwnerRoutes(ctx);
+      if (!gate.ok) {
+        return Response.json(
+          { ok: false, error: { code: gate.code } },
+          { status: gate.status, headers: { 'cache-control': 'no-store' } },
+        );
+      }
+      // JSON、ZIP、文件字节和 packages.put 都在这之后。
+    },
+  });
+}
+```
+
+可运行的那份在 `b/id0a-legacy-gate`。它 import `./member-session.js`，接在本分支之后，并盖住 `e3916fa` 的这五条路由和 `import-package`。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
 
 ## 6. A 需要提供的挂载
 
@@ -190,7 +228,7 @@ if (!gate.ok) {
 
 A 在官方 Host 上已经具备 `connection`、`storageDomain`、`credentials`、`webServer` 时，需要：
 
-1. 先 `configureDeploymentMode(ctx, mode)`，再在现有 `apply` 里调用一次 `applyIdentity`。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。旧的 snapshot、command、plan 用上一节的 `authorizeLegacyOwnerRoutes`。
+1. 按上一节的顺序装配：`configureDeploymentMode(ctx, mode)`，再 `applyIdentity`，再 `memberResolver(ctx)`，再 `applyWorkbench`，再 `applyExecution`（不传 `singleUser`，不注册 `bind-owner`），最后挂 UI。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。`LEGACY_OWNER_ROUTES` 和 `import-package` 用上一节的 `authorizeLegacyOwnerRoutes`，并且放在解析正文之前。
 2. 构建入口要能带到 `packages/dsh-adapter/src/identity-session.ts`。现在的 esbuild 入口只有 `workbench-plugin.ts`。
 3. 登录页、空间切换和成员入口仍由 A-SPACE 做。cookie 由 `Set-Cookie` 写入，页面不提交 actor。
 4. 若要把 `registerPolicy` 写成对真实 `RemoteAccessService` 的类型检查，需要在宿主编译里合并 `PrincipalMap` 的 `zhuma-member`。运行时 `createPeer` 不依赖这次合并；本包用了断言，因为 `@deepseek-ai/dsh-typert-protocol` 不是直接依赖。
