@@ -512,25 +512,36 @@ export class ExecutionService {
   }
 
   /**
-   * Ask the injected directory which space owns this task's project.
-   * No directory, an unknown project, or a mismatch is not-found. A failed lookup is unavailable.
+   * Ask the directory before distinguishing a missing task from a hidden one.
+   * A thrown lookup or `unavailable` is the same answer either way.
+   * No directory, an unknown project, or a mismatch is not-found.
    */
   private async gateSpace(
     taskId: string,
     spaceIds: readonly string[],
-  ): Promise<'missing' | ExecutionResult<void>> {
+  ): Promise<'missing' | ExecutionResult<string>> {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
-    if (!task) return 'missing';
     const directory = this.projectSpaceDirectory();
-    if (!directory) return fail('not-found');
+    if (!directory) {
+      if (!task) return 'missing';
+      return fail('not-found');
+    }
     let lookup: ProjectSpaceLookup;
     try {
-      lookup = await directory.spaceForProject(task.projectId);
+      lookup = await directory.spaceForProject(task ? task.projectId : '');
     } catch {
       return fail('unavailable');
     }
+    if (
+      lookup == null ||
+      typeof lookup !== 'object' ||
+      (!lookup.ok && lookup.reason !== 'unknown')
+    ) {
+      return fail('unavailable');
+    }
+    if (!task) return 'missing';
     const decision = decideProjectSpace(lookup, spaceIds);
-    if (decision === 'ok') return { ok: true, value: undefined };
+    if (decision === 'ok' && lookup.ok) return { ok: true, value: lookup.spaceId };
     if (decision === 'unavailable') return fail('unavailable');
     return fail('not-found');
   }
@@ -629,13 +640,13 @@ export class ExecutionService {
     if (!actor.ok) return actor;
     const parsed = parseBody(schema, body);
     if (!parsed.ok) return parsed;
-    const current = this.storage.readNode(nodeRecordKey(parsed.value));
-    if (!current || !intactNode(current)) return fail('not-found');
-    const space = await this.gateSpace(current.taskId, actor.value.spaceIds);
-    if (space === 'missing' || !space.ok) {
-      if (space !== 'missing' && space.error.code === 'unavailable') return space;
+    const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+    if (space !== 'missing' && !space.ok) {
+      if (space.error.code === 'unavailable') return space;
       return fail('not-found');
     }
+    const current = this.storage.readNode(nodeRecordKey(parsed.value));
+    if (space === 'missing' || !current || !intactNode(current)) return fail('not-found');
     const membership = planMembership(
       this.workbench.readWorkbench(),
       current.taskId,

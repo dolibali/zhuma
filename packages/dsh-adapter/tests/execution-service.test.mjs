@@ -1184,3 +1184,118 @@ test('a missing task and a task in another space return the same body', async ()
   assert.equal(wrongRevision.error.message, '找不到指定的已确认计划版本。');
   assert.deepEqual(store.snapshot(), before);
 });
+
+function sameBytes(left, right, label) {
+  const actual = Buffer.from(JSON.stringify(left));
+  const expected = Buffer.from(JSON.stringify(right));
+  assert.equal(
+    actual.equals(expected),
+    true,
+    `${label}\n${actual.toString()}\n${expected.toString()}`,
+  );
+}
+
+async function commandProbe(service, taskId, applied, idempotencyKey, caller) {
+  const located = {
+    taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    expectedVersion: 1,
+  };
+  return {
+    'start-plan': await service.startPlan(caller, {
+      taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: `${idempotencyKey}-start`,
+    }),
+    submit: await service.submit(caller, {
+      ...located,
+      idempotencyKey: `${idempotencyKey}-submit`,
+      text: '目录故障时不应写入',
+    }),
+    ballot: await service.ballot(caller, {
+      ...located,
+      idempotencyKey: `${idempotencyKey}-ballot`,
+      roundId: 'round-probe',
+      artifactVersionId: 'artifact-probe',
+      action: 'approve',
+    }),
+    settle: await service.settle(caller, {
+      ...located,
+      idempotencyKey: `${idempotencyKey}-settle`,
+      roundId: 'round-probe',
+      artifactVersionId: 'artifact-probe',
+    }),
+    report: await service.report(caller, {
+      taskId,
+      planId: applied.id,
+      revision: applied.revision,
+    }),
+  };
+}
+
+test('a directory fault returns the same unavailable bytes whether or not the task exists', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const caller = session('chen');
+  const directories = [
+    {
+      async spaceForProject() {
+        return { ok: false, reason: 'unavailable' };
+      },
+    },
+    {
+      async spaceForProject() {
+        throw new Error('space-directory-down');
+      },
+    },
+  ];
+  for (const directory of directories) {
+    const { service } = create(state, directory);
+    const present = await commandProbe(service, applied.taskId, applied, 'present', caller);
+    const absent = await commandProbe(service, 'absent-task', applied, 'absent', caller);
+    for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+      sameBytes(present[endpoint], absent[endpoint], endpoint);
+      assert.equal(present[endpoint].error.code, 'unavailable');
+    }
+  }
+});
+
+test('submit, ballot, and settle leave the storage snapshot unchanged when the directory throws', async () => {
+  const { state, applied } = confirm(
+    [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
+    [lin],
+  );
+  let down = false;
+  const { service, store } = create(state, {
+    async spaceForProject() {
+      if (down) throw new Error('space-directory-down');
+      return { ok: true, spaceId: 'project' };
+    },
+  });
+  await startChen(service, applied);
+  const before = store.snapshot();
+  down = true;
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'throw-submit'),
+    text: '目录抛错后的交付',
+  });
+  const voted = await service.ballot(session('lin'), {
+    ...locate(applied, 'design', 1, 'throw-ballot'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+    action: 'approve',
+  });
+  const settled = await service.settle(session('chen'), {
+    ...locate(applied, 'design', 1, 'throw-settle'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+  });
+  assert.equal(submitted.error.code, 'unavailable');
+  assert.equal(voted.error.code, 'unavailable');
+  assert.equal(settled.error.code, 'unavailable');
+  assert.equal(JSON.stringify(submitted).includes('目录抛错后的交付'), false);
+  assert.equal(JSON.stringify(submitted).includes('space-directory-down'), false);
+  assert.deepEqual(store.snapshot(), before);
+});
