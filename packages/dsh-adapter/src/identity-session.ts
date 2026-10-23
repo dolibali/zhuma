@@ -18,27 +18,27 @@
  * principal before policy conditions run, so a policy alone cannot isolate
  * spaces from the host owner.
  */
-import {
-  createHmac,
-  randomBytes,
-  randomUUID,
-  scrypt,
-  scryptSync,
-  timingSafeEqual,
-} from 'node:crypto';
+import { randomBytes, randomUUID, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PeerScope, Principal } from '@deepseek-ai/dsh-client-connection';
 import { defineDomain, type Domain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
+import { clearLoginFailures, loginLimited, recordLoginFailure } from './login-limiter.js';
+import {
+  installMemberResolver,
+  memberCookieHeader,
+  memberCookiePresent,
+  memberCredential,
+  memberSessionId,
+  resolveMember,
+  uninstallMemberResolver,
+} from './member-session.js';
 
 const PREFIX = '/zhuma-id';
 const MAX_BODY_BYTES = 64 * 1024;
-const COOKIE_NAME = 'zhuma-member';
 const SECRET_KEY = 'zhuma-identity/member-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const LOGIN_FAILURE_LIMIT = 8;
-const LOGIN_FAILURE_WINDOW_MS = 60_000;
 const ACTOR_FIELDS = ['actor', 'actorId', 'memberId'] as const;
 const READ_ACTION = 'zhuma-id/read-space';
 const WRITE_ACTION = 'zhuma-id/write-space';
@@ -229,41 +229,6 @@ async function passwordMatches(stored: string | undefined, password: string): Pr
   const actual = await deriveKey(password, parsed.salt);
   const matches = actual.length === parsed.hash.length && timingSafeEqual(actual, parsed.hash);
   return matches && stored !== undefined && parseVerifier(stored) !== undefined;
-}
-
-const loginFailures = new Map<string, { count: number; resetAt: number }>();
-
-function clientAddress(req: IncomingMessage): string {
-  const address = req.socket?.remoteAddress;
-  return typeof address === 'string' && address.length > 0 ? address : 'unknown';
-}
-
-function loginFailureKey(req: IncomingMessage, accountId: string): string {
-  return `${clientAddress(req)}\0${accountId}`;
-}
-
-function loginLimited(req: IncomingMessage, accountId: string): boolean {
-  const entry = loginFailures.get(loginFailureKey(req, accountId));
-  return entry !== undefined && entry.resetAt > Date.now() && entry.count >= LOGIN_FAILURE_LIMIT;
-}
-
-function recordLoginFailure(req: IncomingMessage, accountId: string): void {
-  const key = loginFailureKey(req, accountId);
-  const now = Date.now();
-  const entry = loginFailures.get(key);
-  if (entry === undefined || entry.resetAt <= now) {
-    loginFailures.set(key, { count: 1, resetAt: now + LOGIN_FAILURE_WINDOW_MS });
-    return;
-  }
-  entry.count += 1;
-}
-
-function clearLoginFailures(req: IncomingMessage, accountId: string): void {
-  loginFailures.delete(loginFailureKey(req, accountId));
-}
-
-function sign(secret: Buffer, body: string): string {
-  return createHmac('sha256', secret).update(body).digest('base64url');
 }
 
 function isSecretPayload(value: unknown): value is SecretPayload {
@@ -457,48 +422,6 @@ function queryHasActor(url: URL): boolean {
   return ACTOR_FIELDS.some((field) => url.searchParams.has(field));
 }
 
-function hasMemberCookie(cookieHeader: string | undefined): boolean {
-  if (cookieHeader === undefined) return false;
-  return cookieHeader.split(';').some((part) => part.trim().startsWith(`${COOKIE_NAME}=`));
-}
-
-function readMemberCookie(
-  cookieHeader: string | undefined,
-):
-  | { readonly sessionId: string; readonly expiresAt: number; readonly signature: string }
-  | undefined {
-  if (cookieHeader === undefined) return undefined;
-  for (const part of cookieHeader.split(';')) {
-    const trimmed = part.trim();
-    if (!trimmed.startsWith(`${COOKIE_NAME}=`)) continue;
-    const [sessionId, expires, signature] = trimmed.slice(COOKIE_NAME.length + 1).split('.');
-    if (sessionId === undefined || expires === undefined || signature === undefined)
-      return undefined;
-    if (!/^[0-9a-f-]{36}$/i.test(sessionId)) return undefined;
-    if (!/^[0-9]+$/.test(expires)) return undefined;
-    const expiresAt = Number(expires);
-    if (!Number.isSafeInteger(expiresAt)) return undefined;
-    return { sessionId, expiresAt, signature };
-  }
-  return undefined;
-}
-
-function signatureMatches(
-  secret: Buffer,
-  sessionId: string,
-  expiresAt: number,
-  signature: string,
-): boolean {
-  const expected = sign(secret, `${sessionId}.${expiresAt}`);
-  const actualBytes = Buffer.from(signature);
-  const expectedBytes = Buffer.from(expected);
-  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
-}
-
-function cookieHeader(value: string, maxAge: number): string {
-  return `${COOKIE_NAME}=${value}; Max-Age=${maxAge}; Path=${PREFIX}; HttpOnly; SameSite=Strict`;
-}
-
 function send(res: ServerResponse, status: number, body: unknown, setCookie?: string): void {
   const headers: Record<string, string> = {
     'cache-control': 'no-store',
@@ -592,35 +515,21 @@ function visibleNotes(domain: IdentityDomain, spaceId: string, accountId: string
   return notes;
 }
 
-async function resolveActor(
-  ctx: Context,
-  domain: IdentityDomain,
-  secret: Buffer,
-  req: IncomingMessage,
-): Promise<Actor | undefined> {
-  const cookieHeaderValue = header(req.headers, 'cookie');
-  if (hasMemberCookie(cookieHeaderValue)) {
-    const cookie = readMemberCookie(cookieHeaderValue);
-    if (cookie === undefined || cookie.expiresAt <= Date.now()) return undefined;
-    if (!signatureMatches(secret, cookie.sessionId, cookie.expiresAt, cookie.signature))
-      return undefined;
-    const session: SessionRecord | undefined = domain.table('sessions').get(cookie.sessionId);
-    if (session === undefined || session.expiresAt !== cookie.expiresAt) return undefined;
-    const memberPeer = ctx.connection.createPeer({ principal: memberPrincipal(session.accountId) });
-    const principal = memberPeer.principal as { kind: string; memberId?: string };
-    return { accountId: session.accountId, principal, peerId: memberPeer.id, memberPeer };
+function spaceIdsFor(domain: IdentityDomain, accountId: string): readonly string[] {
+  const ids = new Set<string>();
+  for (const [, note] of domain.table('notes').entries()) {
+    if (allowsAccount(note, accountId)) ids.add(note.spaceId);
   }
-  const admission = ctx.connection.admit({ headers: req.headers });
-  if (!('peer' in admission) || admission.peer.principal.kind !== 'owner') return undefined;
+  return [...ids].sort();
+}
+
+/** Imported owner account when that account was stored. Any account count. */
+function storedOwnerAccount(domain: IdentityDomain): string | undefined {
   const ownerAccountId = domain.global.get().ownerAccountId;
   if (ownerAccountId.length === 0 || domain.table('accounts').get(ownerAccountId) === undefined) {
     return undefined;
   }
-  return {
-    accountId: ownerAccountId,
-    principal: admission.peer.principal,
-    peerId: admission.peer.id,
-  };
+  return ownerAccountId;
 }
 
 /** Mount an explicit account import, member cookies, and space checks. */
@@ -631,6 +540,17 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
     const secret = await signingSecret(credentials);
     await seedIfEmpty(domain, readImport(imported));
     ctx.effect(() => {
+      installMemberResolver(ctx, {
+        secret,
+        requestRejection: (headers) => ctx.connection.requestRejection({ headers }),
+        findSession: (sessionId) => domain.table('sessions').get(sessionId),
+        spaceIdsFor: (accountId) => spaceIdsFor(domain, accountId),
+        singleUserAccountId: () => storedOwnerAccount(domain),
+        admitOwner: (headers) => {
+          const admission = ctx.connection.admit({ headers });
+          return 'peer' in admission && admission.peer.principal.kind === 'owner';
+        },
+      });
       const disposePolicy = remoteAccess.registerPolicy('zhuma-member', memberPolicy(domain));
       const disposeRoute = webServer.register({
         kind: 'prefix',
@@ -638,6 +558,7 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
         handler: (req, res) => handle(ctx, domain, secret, remoteAccess, req, res),
       });
       return async () => {
+        uninstallMemberResolver(ctx);
         disposeRoute();
         disposePolicy();
         await domain.close();
@@ -720,34 +641,54 @@ async function handle(
       const expiresAt = Date.now() + SESSION_TTL_MS;
       const session: SessionRecord = { id: sessionId, accountId: account.id, expiresAt };
       await domain.table('sessions').put(sessionId, session);
-      const value = `${sessionId}.${expiresAt}.${sign(secret, `${sessionId}.${expiresAt}`)}`;
       send(
         res,
         200,
         { ok: true, accountId: account.id },
-        cookieHeader(value, Math.floor(SESSION_TTL_MS / 1000)),
+        memberCookieHeader(
+          memberCredential(secret, sessionId, expiresAt),
+          Math.floor(SESSION_TTL_MS / 1000),
+        ),
       );
       return;
     }
 
-    const actor = await resolveActor(ctx, domain, secret, req);
-    memberPeer = actor?.memberPeer;
-    if (actor === undefined) {
-      fail(res, 401, 'unauthenticated');
+    const resolution = await resolveMember(ctx, { headers: req.headers });
+    if (!resolution.ok) {
+      fail(res, resolution.status, resolution.code);
       return;
+    }
+    const cookieValue = header(req.headers, 'cookie');
+    let actor: Actor;
+    if (memberCookiePresent(cookieValue)) {
+      const peer = ctx.connection.createPeer({ principal: memberPrincipal(resolution.memberId) });
+      memberPeer = peer;
+      const principal = peer.principal as { kind: string; memberId?: string };
+      actor = { accountId: resolution.memberId, principal, peerId: peer.id, memberPeer: peer };
+    } else {
+      const admission = ctx.connection.admit({ headers: req.headers });
+      if (!('peer' in admission) || admission.peer.principal.kind !== 'owner') {
+        fail(res, 401, 'unauthenticated');
+        return;
+      }
+      actor = {
+        accountId: resolution.memberId,
+        principal: admission.peer.principal,
+        peerId: admission.peer.id,
+      };
     }
     if (route.name === 'logout') {
       if (method !== 'POST') {
         fail(res, 405, 'method-not-allowed');
         return;
       }
-      const cookie = readMemberCookie(header(req.headers, 'cookie'));
-      if (cookie === undefined) {
+      const sessionId = memberSessionId(cookieValue);
+      if (sessionId === undefined) {
         fail(res, 401, 'member-session-required');
         return;
       }
-      await domain.table('sessions').delete(cookie.sessionId);
-      send(res, 200, { ok: true, accountId: actor.accountId }, cookieHeader('', 0));
+      await domain.table('sessions').delete(sessionId);
+      send(res, 200, { ok: true, accountId: actor.accountId }, memberCookieHeader('', 0));
       return;
     }
     if (route.name === 'session') {
