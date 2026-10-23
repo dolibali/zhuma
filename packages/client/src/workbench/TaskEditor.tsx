@@ -56,6 +56,7 @@ export function TaskEditor({
   close,
   appearance,
   initialPlanning,
+  backLabel = '任务清单',
 }: {
   original: WorkTask;
   state: Workbench;
@@ -65,6 +66,7 @@ export function TaskEditor({
   close(): void;
   appearance: AppearanceStore;
   initialPlanning?: InitialPlanning;
+  backLabel?: string;
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
@@ -502,7 +504,7 @@ export function TaskEditor({
             if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
           }}
         >
-          ← 任务清单
+          ← {backLabel}
         </button>
         <span className="zm-path-divider">/</span>
         <span className="zm-editor-project">
