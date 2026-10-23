@@ -82,13 +82,13 @@ test('revision read keeps return notes and does not ask for file bytes', async (
         return {
           ok: false,
           error: {
-            code: 'not-revision-reader',
-            message: '只有负责人和当前评审人可以查看退回意见。',
+            code: 'not-found',
+            message: '找不到这个节点。',
           },
         };
       },
     }).revision({ taskId: 'task', planId: 'plan', revision: 1, nodeId: 'design' }),
-    /当前评审人/,
+    /找不到这个节点/,
   );
 });
 

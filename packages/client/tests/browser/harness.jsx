@@ -65,6 +65,8 @@ const content = new URL(location.href).searchParams.has('mount-probe') ? (
   <div className="zhuma">
     <ExecutionWorkspace api={executionApi} />
   </div>
+) : new URL(location.href).searchParams.has('expert-library') ? (
+  <WorkbenchPage api={api} initialSection="assets" expertLibrary appearance={appearance} />
 ) : (
   <WorkbenchPage api={api} initialSection="tasks" appearance={appearance} />
 );

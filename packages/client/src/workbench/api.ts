@@ -1,6 +1,11 @@
 import {
   WorkbenchSchema,
   PlanProposalSchema,
+  ImportPackagePreviewSchema,
+  ResourceFilesReplySchema,
+  type ImportPackagePreview,
+  type PackageFile,
+  type PackageUpload,
   WorkbenchError,
   type Workbench,
   type WorkbenchCommand,
@@ -11,6 +16,12 @@ import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/cli
 export interface WorkbenchApi {
   snapshot(signal?: AbortSignal): Promise<{ state: Workbench; model: string }>;
   save(revision: number, command: WorkbenchCommand, requestId: string): Promise<Workbench>;
+  previewImport(source: PackageUpload, signal: AbortSignal): Promise<ImportPackagePreview>;
+  resourceFiles(
+    kind: 'asset' | 'expert',
+    id: string,
+    signal: AbortSignal,
+  ): Promise<{ versionId: string; files: PackageFile[] }>;
   plan(
     taskId: string,
     revision: number,
@@ -40,6 +51,12 @@ export function createWorkbenchApi(rpc: ClientConnectionRpc): WorkbenchApi {
     },
     async save(expectedRevision, command, requestId) {
       return WorkbenchSchema.parse(await call('command', { expectedRevision, command, requestId }));
+    },
+    async previewImport(source, signal) {
+      return ImportPackagePreviewSchema.parse(await call('preview-import', source, signal));
+    },
+    async resourceFiles(kind, id, signal) {
+      return ResourceFilesReplySchema.parse(await call('resource-files', { kind, id }, signal));
     },
     async plan(taskId, expectedRevision, instruction, signal, baseProposalId) {
       return PlanProposalSchema.parse(
