@@ -35,9 +35,9 @@ mount({ api: createExecutionApi(rpc) });
 
 ## 通道 DTO
 
-路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`inbox-counts`。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
+路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`inbox-counts`、`events`。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
 
-`code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`inboxCounts`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
+`code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`inboxCounts`、`events`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
 
 导出的 M1 组件是 `ExecutionWorkspace`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace`。它们的 props 在清单里，并和组件双向对齐。没有别的 M1 组件导出。
 
@@ -45,11 +45,11 @@ mount({ api: createExecutionApi(rpc) });
 
 - 账户导入的形状是 `{ accounts: [{ id, passwordHash }], ownerAccountId?, notes? }`。`passwordHash` 是 scrypt 校验值。
 - 先 `configureDeploymentMode`，再 `applyIdentity`，然后 `memberResolver(ctx)`，再把 `{ memberResolver, readWorkbench, projectSpaces }` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。省略 `projectSpaces` 时，执行入口拒绝所有项目。
-- 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。快捷入口调用 `inboxCounts()`，正文 `{}`，成功值是 `{ deliver, review, confirm }`。
+- 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。快捷入口调用 `inboxCounts()`，正文 `{}`，成功值是 `{ deliver, review, confirm }`。增量事件调用 `events({ taskId, planId, revision, nodeId, after, seenEventIds? })`，成功值是 `{ events }`。
 - 导航挂 `ExecutionWorkspace`。它自己挂 `InboxPanel`，并按待办动作打开 `DeliveryPanel` 或 `ReviewWorkspace`。
 - 页面里已经有 `.zhuma > main.zm-page`。
 
-通道注册在 `connection.fetch.register`，路径是 `/api/zhuma-exec/<endpoint>`。端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`inbox-counts`。成功和失败都是 `{ ok, value | error }`。`error` 为 `{ code, message, details }`，`code` 在线上是字符串。`ExecutionMessageCode` 是已经写好文案的目录。`conflicting-ballot` 这类纯函数代码会原样穿过，并使用兜底文案。
+通道注册在 `connection.fetch.register`，路径是 `/api/zhuma-exec/<endpoint>`。端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`inbox-counts`、`events`。成功和失败都是 `{ ok, value | error }`。`error` 为 `{ code, message, details }`，`code` 在线上是字符串。`ExecutionMessageCode` 是已经写好文案的目录。`conflicting-ballot` 这类纯函数代码会原样穿过，并使用兜底文案。
 
 官方 `rpc.handle` 不携带请求头。精确 Fetch 路由保留 Fetch `Request` 的 `cookie` 和 `host`。Connection 仍只把 owner Peer 送进处理函数；成员只从 `resolveMember` 来。
 

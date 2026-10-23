@@ -101,6 +101,7 @@ export type ExecutionEndpoints = readonly [
   'revision',
   'draft',
   'inbox-counts',
+  'events',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -239,6 +240,27 @@ export interface InboxCounts {
   readonly review: number;
   readonly confirm: number;
 }
+export interface EventsRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+  after: number;
+  seenEventIds?: readonly string[];
+}
+export interface ExecutionEvent {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly actorId: string;
+  readonly type: string;
+  readonly nodeId: string;
+  readonly status: string;
+  readonly version: number;
+}
+export interface EventsValue {
+  readonly events: readonly ExecutionEvent[];
+}
 export interface ChannelInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
@@ -266,6 +288,7 @@ export interface ExecutionServiceMethods {
   ): Promise<ExecutionChannelResult<StartPlanValue>>;
   inbox(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ChannelInboxValue>>;
   inboxCounts(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<InboxCounts>>;
+  events(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<EventsValue>>;
   submit(
     caller: ExecutionCaller,
     body: unknown,
@@ -290,6 +313,7 @@ export interface ExecutionRoutes {
   readonly 'start-plan': { readonly body: StartPlanRequest; readonly value: StartPlanValue };
   readonly inbox: { readonly body: InboxRequest; readonly value: ChannelInboxValue };
   readonly 'inbox-counts': { readonly body: InboxRequest; readonly value: InboxCounts };
+  readonly events: { readonly body: EventsRequest; readonly value: EventsValue };
   readonly submit: { readonly body: SubmitRequest; readonly value: ExecutionCommandValue };
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
@@ -386,6 +410,7 @@ export interface ReviewDraft {
 export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   inboxCounts(signal?: AbortSignal): Promise<InboxCounts>;
+  events(query: EventsRequest, signal?: AbortSignal): Promise<EventsValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   revision(

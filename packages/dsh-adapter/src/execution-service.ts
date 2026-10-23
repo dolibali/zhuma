@@ -4,8 +4,10 @@ import {
   completionSource,
   createExecutionHandoff,
   downstreamRecords,
+  eventsAfter,
   executionInbox,
   nodeRecordKey,
+  recordCommandEvent,
   settleReview,
   startAppliedPlan,
   submitDelivery,
@@ -14,6 +16,7 @@ import {
   unlockKey,
   castBallot,
   WorkbenchError,
+  type DomainEvent,
   type ExecutionNodeRecord,
   type InboxItem,
   type NodeExecutionReport,
@@ -116,6 +119,14 @@ const draftWriteSchema = z.strictObject({
   links: z.array(z.string().min(1)).max(20).optional(),
 });
 const inboxSchema = z.strictObject({});
+const eventsSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+  after: z.number().refine((value) => Number.isSafeInteger(value) && value >= 0),
+  seenEventIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+});
 
 export type StartPlanRequest = z.infer<typeof startSchema>;
 export type InboxRequest = z.infer<typeof inboxSchema>;
@@ -355,6 +366,65 @@ function countInbox(items: readonly InboxItem[]): InboxCounts {
   };
 }
 
+type NodeEvent = DomainEvent<{ readonly status: string; readonly version: number }>;
+
+export interface ExecutionEvent {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly actorId: string;
+  readonly type: string;
+  readonly nodeId: string;
+  readonly status: string;
+  readonly version: number;
+}
+
+/** Append one accepted fact onto the node record. The id is the next sequence. */
+function withExecutionEvent(
+  record: ExecutionNodeRecord,
+  type: string,
+  actorId: string,
+): ExecutionNodeRecord | undefined {
+  const log: readonly NodeEvent[] = Array.isArray(record.events) ? record.events : [];
+  const sequence = log.reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
+  const appended = recordCommandEvent({
+    decisionStatus: 'applied',
+    log,
+    event: {
+      eventId: `evt:${record.nodeId}:${sequence}`,
+      sequence,
+      occurredAt: new Date().toISOString(),
+      actorId,
+      object: { type: 'node', id: record.nodeId },
+      type,
+      payload: { status: record.command.status, version: record.command.version },
+    },
+  });
+  if (!appended.ok || !appended.emitted) return undefined;
+  return { ...record, events: appended.log };
+}
+
+function publishExecutionEvent(event: NodeEvent): ExecutionEvent | undefined {
+  const payload = event.payload;
+  if (
+    event.object.type !== 'node' ||
+    typeof payload?.status !== 'string' ||
+    typeof payload.version !== 'number'
+  ) {
+    return undefined;
+  }
+  return {
+    eventId: event.eventId,
+    sequence: event.sequence,
+    occurredAt: event.occurredAt,
+    actorId: event.actorId,
+    type: event.type,
+    nodeId: event.object.id,
+    status: payload.status,
+    version: payload.version,
+  };
+}
+
 function planMembership(
   workbench: Workbench,
   taskId: string,
@@ -494,6 +564,47 @@ export class ExecutionService {
     });
   }
 
+  /** Events after a cursor. Seen ids are dropped so a replay does not apply twice. */
+  events(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ readonly events: readonly ExecutionEvent[] }>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(eventsSchema, body);
+      if (!parsed.ok) return parsed;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
+      const repaired = await this.repairPendingUnlocks(actor.value.spaceIds);
+      if (repaired) return repaired;
+      const current = this.storage.readNode(nodeRecordKey(parsed.value));
+      if (!current || !intactNode(current)) return fail('not-found');
+      if (
+        planMembership(this.workbench.readWorkbench(), current.taskId, actor.value.actorId) !==
+        'allowed'
+      ) {
+        return fail('not-found');
+      }
+      if (!recordedPlan(this.storage, current)) return fail('not-found');
+      const log: readonly NodeEvent[] = Array.isArray(current.events) ? current.events : [];
+      const page = eventsAfter(log, {
+        sequence: parsed.value.after,
+        seenEventIds: parsed.value.seenEventIds ?? [],
+      });
+      return {
+        ok: true,
+        value: {
+          events: page.flatMap((event) => {
+            const published = publishExecutionEvent(event);
+            return published ? [published] : [];
+          }),
+        },
+      };
+    });
+  }
+
   submit(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
       this.command(
@@ -516,6 +627,7 @@ export class ExecutionService {
           });
           return { result, settle: false };
         },
+        'delivery-submitted',
         true,
       ),
     );
@@ -523,55 +635,67 @@ export class ExecutionService {
 
   ballot(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
-      this.command(caller, body, ballotSchema, (actorId, request, record) => {
-        const result = castBallot({
-          record,
-          actorId,
-          idempotencyKey: request.idempotencyKey,
-          expectedVersion: request.expectedVersion,
-          ballot: {
-            reviewerId: actorId,
-            roundId: request.roundId,
-            artifactVersionId: request.artifactVersionId,
-            action: request.action,
-            ...(request.comment === undefined ? {} : { comment: request.comment }),
-            ...(request.unresolvedCommentIds === undefined
-              ? {}
-              : { unresolvedCommentIds: request.unresolvedCommentIds }),
-          },
-          comments: record.comments,
-        });
-        return { result, settle: true };
-      }),
+      this.command(
+        caller,
+        body,
+        ballotSchema,
+        (actorId, request, record) => {
+          const result = castBallot({
+            record,
+            actorId,
+            idempotencyKey: request.idempotencyKey,
+            expectedVersion: request.expectedVersion,
+            ballot: {
+              reviewerId: actorId,
+              roundId: request.roundId,
+              artifactVersionId: request.artifactVersionId,
+              action: request.action,
+              ...(request.comment === undefined ? {} : { comment: request.comment }),
+              ...(request.unresolvedCommentIds === undefined
+                ? {}
+                : { unresolvedCommentIds: request.unresolvedCommentIds }),
+            },
+            comments: record.comments,
+          });
+          return { result, settle: true };
+        },
+        'ballot-recorded',
+      ),
     );
   }
 
   settle(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
-      this.command(caller, body, settleSchema, (actorId, request, record) => {
-        if (!maySettle(record, actorId)) {
+      this.command(
+        caller,
+        body,
+        settleSchema,
+        (actorId, request, record) => {
+          if (!maySettle(record, actorId)) {
+            return {
+              result: {
+                ok: false as const,
+                disposition: 'rejected' as const,
+                code: 'not-assigned-reviewer',
+                record,
+              },
+              settle: false,
+            };
+          }
           return {
-            result: {
-              ok: false as const,
-              disposition: 'rejected' as const,
-              code: 'not-assigned-reviewer',
+            result: settleReview({
               record,
-            },
+              actorId,
+              idempotencyKey: request.idempotencyKey,
+              expectedVersion: request.expectedVersion,
+              roundId: request.roundId,
+              artifactVersionId: request.artifactVersionId,
+            }),
             settle: false,
           };
-        }
-        return {
-          result: settleReview({
-            record,
-            actorId,
-            idempotencyKey: request.idempotencyKey,
-            expectedVersion: request.expectedVersion,
-            roundId: request.roundId,
-            artifactVersionId: request.artifactVersionId,
-          }),
-          settle: false,
-        };
-      }),
+        },
+        'review-settled',
+      ),
     );
   }
 
@@ -955,7 +1079,9 @@ export class ExecutionService {
     for (const record of started.records) {
       const key = nodeRecordKey(record);
       if (this.storage.readNode(key) === record) continue;
-      const stored = await this.persist(() => this.storage.writeNode(key, record));
+      const stamped = withExecutionEvent(record, 'node-started', actor.value.actorId);
+      if (!stamped) return fail('unavailable');
+      const stored = await this.persist(() => this.storage.writeNode(key, stamped));
       if (!stored.ok) return stored;
     }
     for (const record of started.records) {
@@ -997,6 +1123,7 @@ export class ExecutionService {
       request: T,
       record: ExecutionNodeRecord,
     ) => { result: ReturnType<typeof submitDelivery>; settle: boolean },
+    eventType: string,
     guardUpstream = false,
   ) {
     const actor = this.actor(caller, body);
@@ -1055,6 +1182,11 @@ export class ExecutionService {
         if (blocked) return blocked;
         record = withoutDeliveryDraft(record);
       }
+      if (executed.result.disposition === 'applied') {
+        const stamped = withExecutionEvent(record, eventType, actor.value.actorId);
+        if (!stamped) return fail('unavailable');
+        record = stamped;
+      }
       const stored = await this.persist(() =>
         this.storage.writeNode(nodeRecordKey(record), record),
       );
@@ -1096,8 +1228,10 @@ export class ExecutionService {
         expectedVersion: latest.command.version,
       });
       if (!moved.ok || moved.disposition !== 'applied') continue;
+      const stamped = withExecutionEvent(moved.record, 'downstream-unlocked', completed.ownerId);
+      if (!stamped) return fail('unavailable');
       const stored = await this.persist(() =>
-        this.storage.writeNode(nodeRecordKey(moved.record), moved.record),
+        this.storage.writeNode(nodeRecordKey(stamped), stamped),
       );
       if (!stored.ok) return stored;
       unlocked += 1;

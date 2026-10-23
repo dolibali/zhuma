@@ -19,6 +19,7 @@ const ENDPOINTS = [
   'revision',
   'draft',
   'inbox-counts',
+  'events',
 ] as const;
 
 type Endpoint = (typeof ENDPOINTS)[number];
@@ -136,6 +137,8 @@ function run(
       return service.draft(caller, payload);
     case 'inbox-counts':
       return service.inboxCounts(caller, payload);
+    case 'events':
+      return service.events(caller, payload);
   }
 }
 
