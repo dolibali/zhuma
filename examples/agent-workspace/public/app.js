@@ -390,7 +390,8 @@ function choice(kind, item) {
 
 composer.addEventListener('submit', (event) => {
   event.preventDefault();
-  const text = message.value.trim();
+  const raw = message.value;
+  const text = raw.trim();
   if (text.length === 0) {
     state.localError = {
       objectLabel: '消息',
@@ -408,7 +409,7 @@ composer.addEventListener('submit', (event) => {
     intent: sendIntent,
     attachmentIds,
   }).then((result) => {
-    if (result.ok && message.value.trim() === text) message.value = '';
+    if (result.ok && message.value === raw) message.value = '';
   });
 });
 

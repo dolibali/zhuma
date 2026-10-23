@@ -386,6 +386,13 @@ test('浏览器：慢请求成功时只清掉未再改的草稿，失败保留�
     await finish();
     assert.equal(await message.inputValue(), 'next-unsent-draft');
 
+    await message.fill('hello');
+    await page.getByTestId('primary').click();
+    await held();
+    await message.fill('hello ');
+    await finish();
+    assert.equal(await message.inputValue(), 'hello ');
+
     await message.fill('unchanged-draft');
     await page.getByTestId('primary').click();
     await held();
