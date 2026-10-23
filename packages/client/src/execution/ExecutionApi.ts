@@ -52,7 +52,18 @@ export interface ExecutionNodeWire {
   readonly reviewOutcome?: string;
   readonly blockReason?: string;
   readonly acceptedArtifactVersionId?: string;
+  readonly inputs?: readonly UpstreamInputWire[];
 }
+
+export type UpstreamInputWire =
+  | {
+      readonly access: 'visible';
+      readonly sourceNodeId: string;
+      readonly sourceGoal?: string;
+      readonly version: number;
+      readonly name: string;
+    }
+  | { readonly access: 'redacted'; readonly sourceNodeId: string };
 
 export interface ExecutionInboxValue {
   readonly actorId: string;
@@ -225,6 +236,25 @@ export function readExecutionNode(value: unknown): ExecutionNodeWire {
     ...(typeof record.acceptedArtifactVersionId === 'string'
       ? { acceptedArtifactVersionId: record.acceptedArtifactVersionId }
       : {}),
+    ...(Array.isArray(record.inputs) ? { inputs: record.inputs.map(readUpstreamInput) } : {}),
+  };
+}
+
+function readUpstreamInput(value: unknown): UpstreamInputWire {
+  if (value === null || typeof value !== 'object') invalid('返回的上游产物不正确。');
+  const record = value as Record<string, unknown>;
+  const sourceNodeId = text(record.sourceNodeId, '来源节点');
+  if (record.access === 'redacted') return { access: 'redacted', sourceNodeId };
+  if (record.access !== 'visible' || typeof record.version !== 'number') {
+    invalid('返回的上游产物不正确。');
+  }
+  const sourceGoal = typeof record.sourceGoal === 'string' ? record.sourceGoal.trim() : '';
+  return {
+    access: 'visible',
+    sourceNodeId,
+    ...(sourceGoal === '' ? {} : { sourceGoal }),
+    version: record.version,
+    name: text(record.name, '产物'),
   };
 }
 
