@@ -73,6 +73,7 @@ export function buildPlanningContext(
   const project = state.projects.find((p) => p.id === task.projectId);
   const currentWorkflows = baseProposal?.result.workflows ?? task.workflows;
   const boundIds = new Set([
+    ...(project?.assetIds ?? []),
     ...currentWorkflows.flatMap((w) => w.nodes.flatMap((n) => [...n.skillIds, ...n.mcpIds])),
     ...participants.flatMap((p) => [
       ...(p.resourceBindings?.skillIds ?? []),
@@ -137,6 +138,7 @@ export function buildPlanningContext(
       omittedAssetCount: available.length - selected.length,
       unavailableBindingIds: [...boundIds].filter((id) => !available.some((a) => a.id === id)),
       directoryAvailabilityIsRuntimeReadiness: false,
+      projectReferenceContentsFetched: false,
       executionAuthorization: 'unknown' as const,
       budget: PLANNING_BUDGET,
     },

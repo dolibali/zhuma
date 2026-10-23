@@ -21,6 +21,12 @@ import { TemplateDefinitionEditor } from './TemplateDefinitionEditor.js';
 import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
+import {
+  ProjectHub,
+  ProjectFields,
+  defaultProjectParticipants,
+  type ProjectTab,
+} from './ProjectHub.js';
 
 type Section = 'projects' | 'tasks' | 'assets' | 'members';
 type Dialog =
@@ -100,6 +106,10 @@ export function WorkbenchPage({
   );
   useEffect(() => () => initialPlanning?.controller.abort(), [initialPlanning]);
   const [projectFilter, setProjectFilter] = useState('');
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [projectTab, setProjectTab] = useState<ProjectTab>('overview');
+  const activeProject =
+    section === 'projects' ? state.projects.find((p) => p.id === activeProjectId) : undefined;
   const [search, setSearch] = useState('');
   const [assetKind, setAssetKind] = useState(expertLibrary ? 'expert' : 'all');
   const [memberKind, setMemberKind] = useState('all');
@@ -122,8 +132,12 @@ export function WorkbenchPage({
     pending.current = null;
   }
   function createCatalogItem() {
-    if (section === 'projects')
-      openDialog({ kind: 'project', value: { id: uid(), name: '', description: '' } });
+    if (activeProject) newTask(activeProject.id);
+    else if (section === 'projects')
+      openDialog({
+        kind: 'project',
+        value: { id: uid(), name: '', description: '', defaultParticipantIds: [] },
+      });
     else if (section === 'members')
       openDialog({
         kind: 'member',
@@ -164,8 +178,9 @@ export function WorkbenchPage({
       });
     else newTask();
   }
-  const createLabel =
-    section === 'projects'
+  const createLabel = activeProject
+    ? '创建任务'
+    : section === 'projects'
       ? '新建项目'
       : section === 'members'
         ? '添加成员或专家'
@@ -232,6 +247,11 @@ export function WorkbenchPage({
     try {
       const committed = await api.save(pending.current.revision, command, pending.current.id);
       setState(committed);
+      if (command.type === 'save-project') {
+        setActiveProjectId(command.project.id);
+        setSection('projects');
+        setSearch('');
+      }
       if (
         expertLibrary &&
         command.type === 'save-participant' &&
@@ -303,11 +323,17 @@ export function WorkbenchPage({
       setInitialPlanning({ controller, result });
     } else setInitialPlanning(null);
     setActiveTaskId(task.id);
-    setSection('tasks');
+    if (activeProjectId) {
+      setActiveProjectId(task.projectId);
+      setSection('projects');
+    } else setSection('tasks');
   }
   function newTask(projectId = projectFilter || state.projects[0]?.id) {
     if (!projectId) {
-      openDialog({ kind: 'project', value: { id: uid(), name: '', description: '' } });
+      openDialog({
+        kind: 'project',
+        value: { id: uid(), name: '', description: '', defaultParticipantIds: [] },
+      });
       return;
     }
     openDialog({
@@ -320,11 +346,36 @@ export function WorkbenchPage({
         title: '',
         goal: '',
         status: 'draft',
-        participantIds: state.participants.filter((p) => p.available).map((p) => p.id),
+        participantIds: defaultProjectParticipants(
+          state.projects.find((p) => p.id === projectId),
+          state,
+        ),
         ownerId: null,
         updatedAt: new Date().toISOString(),
         workflows: [{ id: uid(), name: '主工作流', parentNodeId: null, nodes: [] }],
       },
+    });
+  }
+  function changeTaskParticipants(participantIds: string[]) {
+    if (dialog?.kind !== 'task') return;
+    setDialog({
+      ...dialog,
+      value: {
+        ...dialog.value,
+        participantIds,
+        ownerId: participantIds.includes(dialog.value.ownerId ?? '') ? dialog.value.ownerId : null,
+      },
+      template: dialog.template
+        ? {
+            ...dialog.template,
+            roles: Object.fromEntries(
+              Object.entries(dialog.template.roles).map(([key, value]) => [
+                key,
+                value && participantIds.includes(value) ? value : null,
+              ]),
+            ),
+          }
+        : null,
     });
   }
   const activeTask = state.tasks.find((t) => t.id === activeTaskId);
@@ -430,18 +481,28 @@ export function WorkbenchPage({
             setActiveTaskId(null);
           }}
           appearance={appearance}
+          backLabel={activeProject ? '项目' : '任务清单'}
           {...(initialPlanning ? { initialPlanning } : {})}
         />
       </div>
     );
   return (
     <div className="zhuma">
-      <div className="zm-page">
+      <div className={`zm-page${activeProject ? ' zm-project-page' : ''}`}>
         <header className="zm-page-heading">
           <div className="zm-page-title">
-            <h1>{expertLibrary ? '专家' : labels[section]}</h1>
+            {activeProject && (
+              <Button variant="quiet" onClick={() => setActiveProjectId(null)}>
+                ← 全部项目
+              </Button>
+            )}
+            <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>
             <span>
-              {expertLibrary ? state.participants.filter((p) => p.kind === 'expert').length : total}
+              {expertLibrary
+                ? state.participants.filter((p) => p.kind === 'expert').length
+                : activeProject
+                  ? undefined
+                  : total}
             </span>
           </div>
           <div className="zm-actions">
@@ -449,6 +510,11 @@ export function WorkbenchPage({
             <Button variant="quiet" onClick={() => void refresh()}>
               刷新
             </Button>
+            {activeProject && (
+              <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
+                编辑项目
+              </Button>
+            )}
             {section === 'assets' && (
               <Button onClick={() => setImportOpen(true)}>
                 {expertLibrary ? '导入专家' : '导入定义'}
@@ -469,6 +535,7 @@ export function WorkbenchPage({
                   onClick={() => {
                     setSection(s);
                     setSearch('');
+                    setActiveProjectId(null);
                   }}
                 >
                   {labels[s]}
@@ -503,7 +570,7 @@ export function WorkbenchPage({
                 />
               </div>
             )}
-            {section !== 'tasks' && (
+            {section !== 'tasks' && !activeProject && (
               <div className="zm-filter">
                 <input
                   type="search"
@@ -591,7 +658,19 @@ export function WorkbenchPage({
             }
           />
         )}
-        {section === 'projects' && !!projects.length && (
+        {activeProject && (
+          <ProjectHub
+            key={activeProject.id}
+            project={activeProject}
+            state={state}
+            tab={projectTab}
+            changeTab={setProjectTab}
+            openTask={setActiveTaskId}
+            createTask={() => newTask(activeProject.id)}
+            edit={() => openDialog({ kind: 'project', value: activeProject })}
+          />
+        )}
+        {section === 'projects' && !activeProject && !!projects.length && (
           <div className="zm-directory zm-project-directory">
             {projects.map((p) => (
               <article className="zm-directory-row" key={p.id} aria-label={p.name}>
@@ -603,9 +682,9 @@ export function WorkbenchPage({
                     variant="quiet"
                     className="zm-directory-title"
                     onClick={() => {
-                      setProjectFilter(p.id);
+                      setActiveProjectId(p.id);
+                      setProjectTab('overview');
                       setSearch('');
-                      setSection('tasks');
                     }}
                   >
                     {p.name}
@@ -619,7 +698,15 @@ export function WorkbenchPage({
                   <Button variant="quiet" onClick={() => openDialog({ kind: 'project', value: p })}>
                     编辑
                   </Button>
-                  <Button onClick={() => newTask(p.id)}>创建任务</Button>
+                  <Button
+                    onClick={() => {
+                      setActiveProjectId(p.id);
+                      setProjectTab('work');
+                      newTask(p.id);
+                    }}
+                  >
+                    创建任务
+                  </Button>
                 </div>
               </article>
             ))}
@@ -795,7 +882,7 @@ export function WorkbenchPage({
             ))}
           </div>
         )}
-        {!expertLibrary && section !== 'tasks' && !visibleCount && (
+        {!expertLibrary && !activeProject && section !== 'tasks' && !visibleCount && (
           <div className="zm-empty zm-directory-empty">
             <h3>{directoryTotal ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
             <p>
@@ -863,32 +950,11 @@ export function WorkbenchPage({
             <div className="zm-form-body">
               <fieldset className="zm-form-fields" disabled={saving}>
                 {dialog.kind === 'project' && (
-                  <>
-                    <Field label="项目名称">
-                      <input
-                        required
-                        autoFocus
-                        maxLength={160}
-                        value={dialog.value.name}
-                        onChange={(e) =>
-                          setDialog({ ...dialog, value: { ...dialog.value, name: e.target.value } })
-                        }
-                      />
-                    </Field>
-                    <Field label="背景与目标">
-                      <textarea
-                        rows={4}
-                        maxLength={8000}
-                        value={dialog.value.description}
-                        onChange={(e) =>
-                          setDialog({
-                            ...dialog,
-                            value: { ...dialog.value, description: e.target.value },
-                          })
-                        }
-                      />
-                    </Field>
-                  </>
+                  <ProjectFields
+                    project={dialog.value}
+                    state={state}
+                    change={(value) => setDialog({ ...dialog, value })}
+                  />
                 )}
                 {dialog.kind === 'member' && (
                   <>
@@ -1173,34 +1239,28 @@ export function WorkbenchPage({
                       </Field>
                       <div className="zm-creation-participants">
                         <span>参与者 · {dialog.value.participantIds.length} 位</span>
+                        {state.projects.find((p) => p.id === dialog.value.projectId)
+                          ?.defaultParticipantIds !== undefined && (
+                          <Button
+                            variant="quiet"
+                            onClick={() =>
+                              changeTaskParticipants(
+                                defaultProjectParticipants(
+                                  state.projects.find((p) => p.id === dialog.value.projectId),
+                                  state,
+                                ),
+                              )
+                            }
+                          >
+                            使用项目默认参与者
+                          </Button>
+                        )}
                         <ParticipantSelect
                           label="参与者"
                           multiple
                           members={state.participants}
                           selected={dialog.value.participantIds}
-                          change={(participantIds) =>
-                            setDialog({
-                              ...dialog,
-                              value: {
-                                ...dialog.value,
-                                participantIds,
-                                ownerId: participantIds.includes(dialog.value.ownerId ?? '')
-                                  ? dialog.value.ownerId
-                                  : null,
-                              },
-                              template: dialog.template
-                                ? {
-                                    ...dialog.template,
-                                    roles: Object.fromEntries(
-                                      Object.entries(dialog.template.roles).map(([key, value]) => [
-                                        key,
-                                        value && participantIds.includes(value) ? value : null,
-                                      ]),
-                                    ),
-                                  }
-                                : null,
-                            })
-                          }
+                          change={changeTaskParticipants}
                         />
                       </div>
                     </div>

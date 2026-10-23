@@ -1,4 +1,166 @@
 /* Theme state belongs to the official DSH ui-theme service. These are presentation tokens only. */
+.zhuma .zm-project-page .zm-page-title {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+.zhuma .zm-project-page .zm-page-title h1 {
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-project-page .zm-page-title > button {
+  justify-self: start;
+}
+.zhuma .zm-project-tabs {
+  margin: 24px 0;
+  overflow-x: auto;
+}
+.zhuma .zm-project-description {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0 0 24px;
+  max-width: 80ch;
+  line-height: 1.7;
+}
+.zhuma .zm-project-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+.zhuma .zm-project-overview > aside,
+.zhuma .zm-project-materials {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.zhuma .zm-project-panel {
+  border: 1px solid var(--zm-line);
+  border-radius: 10px;
+  padding: 20px;
+  min-width: 0;
+}
+.zhuma .zm-project-panel > header,
+.zhuma .zm-project-links-editor > header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.zhuma .zm-project-panel h2,
+.zhuma .zm-project-links-editor h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.zhuma .zm-project-panel h2 small {
+  color: var(--zm-muted);
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+}
+.zhuma .zm-project-panel header input {
+  max-width: 260px;
+  min-width: 0;
+}
+.zhuma .zm-project-muted {
+  color: var(--zm-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 8px 0;
+}
+.zhuma .zm-project-empty {
+  padding: 24px 0;
+}
+.zhuma .zm-project-work-list > button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 16px;
+  border: none;
+  border-radius: 6px;
+  box-shadow: none;
+  padding: 16px 12px;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+}
+.zhuma .zm-project-work-list > button:hover {
+  background: var(--zm-hover);
+}
+.zhuma .zm-project-work-list > button > span:first-child {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-project-work-list small,
+.zhuma .zm-project-people small,
+.zhuma .zm-project-assets small,
+.zhuma .zm-project-links small {
+  display: block;
+  color: var(--zm-muted);
+  font-size: 12px;
+  font-weight: 400;
+  margin-top: 4px;
+}
+.zhuma .zm-project-work-list .zm-badge {
+  flex-shrink: 0;
+}
+.zhuma .zm-project-people,
+.zhuma .zm-project-assets,
+.zhuma .zm-project-links {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.zhuma .zm-project-people > li,
+.zhuma .zm-project-assets > li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-project-people > li > span:nth-child(2),
+.zhuma .zm-project-assets > li > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.zhuma .zm-project-links > li {
+  padding: 8px 0;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-project-links a {
+  color: var(--zm-action);
+  text-underline-offset: 3px;
+}
+.zhuma .zm-project-link-fields {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+}
+.zhuma .zm-project-link-fields > button {
+  justify-self: end;
+}
+@media (max-width: 900px) {
+  .zhuma .zm-project-overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 520px) {
+  .zhuma .zm-project-panel {
+    padding: 16px;
+  }
+  .zhuma .zm-project-work-list > button {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
 .zhuma .zm-expert-filter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
