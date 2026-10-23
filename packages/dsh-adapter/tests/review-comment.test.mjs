@@ -227,6 +227,51 @@ test('a whitespace-only comment is refused without writing the record', async ()
   assert.equal(writes, 1);
 });
 
+test('a comment of only zero-width characters is refused and does not return the node', async () => {
+  const { applied, store, service, roundId, artifactVersionId } = await reviewing();
+  const version = store.node('design').command.version;
+  const before = JSON.stringify(store.node('design'));
+  let writes = 0;
+  const writeNode = store.storage.writeNode;
+  store.storage.writeNode = async (key, value) => {
+    writes += 1;
+    await writeNode(key, value);
+  };
+  const blanks = [
+    '\u200b',
+    ' \u200b ',
+    '\u200c',
+    '\u200d',
+    '\u2060',
+    '\u180e',
+    '\u00ad',
+    '\u200b\u200c\u200d\u2060\u180e\u00ad',
+    ' \u200b\u3000\u00ad ',
+  ];
+  for (const [index, comment] of blanks.entries()) {
+    for (const action of ['comment', 'request-changes']) {
+      writes = 0;
+      const refused = await service.ballot(
+        session('lin'),
+        vote(applied, roundId, artifactVersionId, {
+          expectedVersion: version,
+          idempotencyKey: `vote-zw-${action}-${index}`,
+          action,
+          comment,
+        }),
+      );
+      assert.equal(refused.ok, false, comment);
+      assert.equal(
+        refused.error.code,
+        action === 'comment' ? 'empty-comment' : 'empty-request-changes',
+      );
+      assert.equal(writes, 0);
+      assert.equal(store.node('design').command.status, 'in-review');
+      assert.equal(JSON.stringify(store.node('design')), before);
+    }
+  }
+});
+
 test('a return with no opinion and no open comment is refused before any write', async () => {
   const { applied, store, service, roundId, artifactVersionId } = await reviewing();
   const version = store.node('design').command.version;
