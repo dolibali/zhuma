@@ -28,6 +28,12 @@ export default defineConfig({
   projects: [
     { name: 'chromium-light', use: { browserName: 'chromium', colorScheme: 'light' } },
     { name: 'chromium-dark', use: { browserName: 'chromium', colorScheme: 'dark' } },
+    {
+      name: 'identity',
+      testDir: fileURLToPath(new URL('../../../dsh-adapter/tests/browser/', import.meta.url)),
+      testMatch: '*.spec.mjs',
+      use: { baseURL: 'http://127.0.0.1:3080' },
+    },
   ],
   webServer: {
     command: 'node packages/client/tests/browser/server.mjs',

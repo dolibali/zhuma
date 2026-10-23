@@ -9,6 +9,7 @@
  * Simulated for most cases, because these packages are not dependencies of
  * @zhuma/dsh-adapter: `webServer.register` is an in-memory matcher with the
  * same exact-then-longest-prefix rule; one case listens with `node:http`.
+ * Chromium coverage lives in `tests/browser/identity-session.spec.mjs`.
  * `credentials.modifyRecord` is a keyed memory map; the KV medium is a memory
  * map behind DomainFacility; `decide`
  * implements the owner-allow and policy-condition rules from
@@ -1362,8 +1363,8 @@ test('a session row with a different expiresAt is rejected', async () => {
 });
 
 test('a real http client stays logged out when only the DSH cookie remains', async () => {
-  // test:ui serves the workbench fixture and does not mount /zhuma-id, so this
-  // uses node:http instead of Playwright.
+  // The Chromium spec mounts /zhuma-id and checks that the browser drops the
+  // member cookie. This case stays on node:http for the socket path.
   const host = await mount();
   const server = http.createServer((req, res) => {
     host.web.dispatch(req, res).catch(() => {
