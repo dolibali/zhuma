@@ -11,6 +11,7 @@ export { validatePlan } from './plan.js';
 export * from './workbench.js';
 export * from './asset-package.js';
 export * from './planning.js';
+export * from './planning-changes.js';
 export { createNodeHandoffs } from './applied-handoff.js';
 
 export type {
