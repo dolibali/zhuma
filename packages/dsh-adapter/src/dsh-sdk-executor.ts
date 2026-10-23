@@ -1138,8 +1138,8 @@ function startupFailureMessage(error: unknown): string {
 /**
  * 引号里的路径整段去掉。
  * 不带引号的绝对路径可以从行首、空白、冒号、括号或 file:// 后面开始。
- * 段里可以有空格、括号和非 ASCII；只有后面还有分隔符时，这些字符才算在路径里。
- * 路径结束后的说明文字留下。
+ * 段里可以有空格、括号和非 ASCII。空格只有在后面紧接着的分隔符不是另起一条路径时才算在路径里。
+ * 最后一段可以带一个空格和文件名。路径结束后的说明，以及 http 网址，都留下。
  */
 function stripLocalPaths(text: string): string {
   const quoted = /(?:[/\\]|[A-Za-z]:[/\\])[^'"]*/;
@@ -1170,7 +1170,13 @@ function findLocalPathStart(text: string, from: number): number {
     const previous = index === 0 ? '' : text[index - 1];
     if (previous !== undefined && /[\w.]/.test(previous)) continue;
     const char = text[index];
-    if ((char === '/' || char === '\\') && localPathEnd(text, index) > index) return index;
+    if (
+      (char === '/' || char === '\\') &&
+      schemeSlashRun(text, index) !== 2 &&
+      localPathEnd(text, index) > index
+    ) {
+      return index;
+    }
     if (
       char !== undefined &&
       /[A-Za-z]/.test(char) &&
@@ -1207,22 +1213,15 @@ function localPathEnd(text: string, start: number): number {
       lastGood = cursor;
       continue;
     }
-    if (char === ':' || (char !== undefined && /\s/.test(char))) {
-      let ahead = cursor;
-      while (
-        ahead < text.length &&
-        text[ahead] !== '/' &&
-        text[ahead] !== '\\' &&
-        text[ahead] !== '\n' &&
-        text[ahead] !== "'" &&
-        text[ahead] !== '"'
-      ) {
-        ahead += 1;
-      }
-      if (text[ahead] === '/' || text[ahead] === '\\') {
-        cursor = ahead;
+    if (char === ':') break;
+    if (char !== undefined && /\s/.test(char)) {
+      const glued = gluedSeparator(text, cursor);
+      if (glued >= 0) {
+        cursor = glued;
         continue;
       }
+      const tail = trailingFilenameEnd(text, cursor);
+      if (tail > cursor) lastGood = tail;
       break;
     }
     cursor += 1;
@@ -1230,6 +1229,60 @@ function localPathEnd(text: string, start: number): number {
   }
   if (lastGood <= index) return start;
   return trimWrappingParen(text, start, lastGood);
+}
+
+/** `//` 是网址分隔，不当成路径；`file:///` 的第三道斜杠才开始本地路径。 */
+function schemeSlashRun(text: string, index: number): number {
+  if (text[index] !== '/' && text[index] !== '\\') return 0;
+  if (index > 0 && text[index - 1] !== '/' && text[index - 1] !== '\\') return 1;
+  let run = 1;
+  let back = index;
+  while (back > 0 && (text[back - 1] === '/' || text[back - 1] === '\\')) {
+    run += 1;
+    back -= 1;
+  }
+  return run;
+}
+
+/** 空格后面的分隔符贴着文件名时，这一段还在同一条路径里。前面是空格的分隔符是下一条路径。 */
+function gluedSeparator(text: string, from: number): number {
+  for (let index = from; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '\n' || char === "'" || char === '"') return -1;
+    if (char !== '/' && char !== '\\') continue;
+    const previous = text[index - 1];
+    if (previous !== undefined && !/\s/.test(previous)) return index;
+    return -1;
+  }
+  return -1;
+}
+
+/** 最后一段可以是「名字 名字」。说明词和错误码留在路径外面。 */
+function trailingFilenameEnd(text: string, from: number): number {
+  let index = from;
+  while (index < text.length && text[index] !== '\n' && /\s/.test(text[index] ?? '')) index += 1;
+  const start = index;
+  while (
+    index < text.length &&
+    text[index] !== '\n' &&
+    text[index] !== '/' &&
+    text[index] !== '\\' &&
+    text[index] !== ':' &&
+    text[index] !== "'" &&
+    text[index] !== '"' &&
+    !/\s/.test(text[index] ?? '')
+  ) {
+    index += 1;
+  }
+  if (index === start) return -1;
+  let rest = index;
+  while (rest < text.length && text[rest] !== '\n' && /\s/.test(text[rest] ?? '')) rest += 1;
+  if (rest !== text.length && text[rest] !== '\n' && text[rest] !== "'" && text[rest] !== '"') {
+    return -1;
+  }
+  const token = text.slice(start, index);
+  if (/^[a-z]+$/.test(token) || /^[A-Z][A-Z0-9_]*$/.test(token)) return -1;
+  return index;
 }
 
 function trimWrappingParen(text: string, start: number, end: number): number {

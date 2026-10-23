@@ -1637,6 +1637,49 @@ test('契约：启动失败里带空格、括号和汉字的路径会剥掉，�
   }
 });
 
+test('契约：启动失败里最后一段带空格的路径会整段剥掉', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env, 'open /home/qa/My Docs');
+    assert.equal(failed.events[0].message, '执行器启动失败。\nopen');
+    assert.equal(failed.events[0].message.includes('Docs'), false);
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里同一行后面的斜杠不会把说明一起吞掉', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(
+      env,
+      'open /home/qa/file.txt then see /docs and leave',
+    );
+    assert.equal(failed.events[0].message, '执行器启动失败。\nopen then see and leave');
+    assert.equal(failed.events[0].message.includes('/home/qa'), false);
+    assert.equal(failed.events[0].message.includes('file.txt'), false);
+    assert.equal(failed.events[0].message.includes('/docs'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里的网址会整段留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env, 'fetch https://example.invalid/v1/models failed');
+    assert.equal(
+      failed.events[0].message,
+      '执行器启动失败。\nfetch https://example.invalid/v1/models failed',
+    );
+    assert.equal(failed.events[0].message.includes('https:/'), true);
+    assert.equal(failed.events[0].message.endsWith('https:/'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
 test('契约：启动失败里路径后面的普通说明会留下', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
