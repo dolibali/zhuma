@@ -735,6 +735,169 @@ test('契约：密钥跨数据块时不会进入失败消息或收集的标准�
   );
 });
 
+const grandchildHoldMs = 8000;
+const stderrSealBoundMs = 2000;
+
+function grandchildPidFile() {
+  return path.join(mkdtempSync(path.join(tmpdir(), 'zhuma-gc-')), 'pid');
+}
+
+async function reapGrandchild(pidFile) {
+  let pid = 0;
+  try {
+    pid = Number(readFileSync(pidFile, 'utf8'));
+  } catch {
+    return;
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // 已经退出。
+  }
+  const deadline = Date.now() + 2000;
+  while (alive(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(alive(pid), false, `孙进程 ${pid} 还在`);
+}
+
+function runInput(runId) {
+  return {
+    runId,
+    attempt: 1,
+    generation: 1,
+    taskId: 'task',
+    nodeId: 'node',
+    workflowVersionId: 'plan',
+    planRevision: 1,
+    contextReferences: [],
+    expertVersionId: 'expert-v1',
+    resourceGrants: [],
+    instruction: '整理字段',
+    attachmentIds: [],
+    goal: '确认字段',
+    simulatedRequested: false,
+    signal: new AbortController().signal,
+  };
+}
+
+test('契约：孙进程占着标准错误时失败事件仍在时限内', async () => {
+  const pidFile = grandchildPidFile();
+  const secret = 'zhuma-synthetic-marker';
+  const started = Date.now();
+  try {
+    const boot = await collect(`stderr-gc-fail:${pidFile}`, {
+      env: modelEnv(secret),
+      initTimeoutMs: 20_000,
+      runId: 'stderr-gc-fail',
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(boot.events.at(-1).type, 'failed');
+    assert.match(boot.events.at(-1).message, /boot crashed/);
+    assert.equal(boot.events.at(-1).message.includes(secret), false);
+    assert.equal(
+      elapsed < stderrSealBoundMs,
+      true,
+      `失败事件等了 ${elapsed}ms，孙进程还要活 ${grandchildHoldMs}ms`,
+    );
+  } finally {
+    await reapGrandchild(pidFile);
+  }
+});
+
+test('契约：孙进程占着标准错误时运行结束仍在时限内', async () => {
+  const pidFile = grandchildPidFile();
+  const secret = 'zhuma-synthetic-marker';
+  const started = Date.now();
+  try {
+    const done = await collect(`stderr-gc-ok:${pidFile}`, {
+      env: modelEnv(secret),
+      initTimeoutMs: 20_000,
+      promptTimeoutMs: 20_000,
+      runId: 'stderr-gc-ok',
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(done.events.at(-1).type, 'completed');
+    assert.equal(JSON.stringify(done.events).includes(secret), false);
+    assert.equal(
+      elapsed < stderrSealBoundMs,
+      true,
+      `运行结束等了 ${elapsed}ms，孙进程还要活 ${grandchildHoldMs}ms`,
+    );
+  } finally {
+    await reapGrandchild(pidFile);
+  }
+});
+
+test('契约：孙进程占着标准错误时停止回执仍在时限内', async () => {
+  const pidFile = grandchildPidFile();
+  const secret = 'zhuma-synthetic-marker';
+  const { engine } = executor(`stderr-gc-hold:${pidFile}`, {
+    env: modelEnv(secret),
+    initTimeoutMs: 20_000,
+    promptTimeoutMs: 20_000,
+  });
+  const runId = 'stderr-gc-hold';
+  const started = Date.now();
+  let receiptMs = grandchildHoldMs;
+  const receipts = [];
+  try {
+    for await (const event of engine.run(runInput(runId))) {
+      if (event.type === 'accepted') {
+        const marked = Date.now();
+        receipts.push(
+          engine.cancel(runId).then((receipt) => {
+            receiptMs = Date.now() - marked;
+            return receipt;
+          }),
+        );
+      }
+    }
+    const receipt = await receipts[0];
+    const elapsed = Date.now() - started;
+    assert.equal(receipt.receipt, 'cancelled');
+    assert.equal(
+      receiptMs < stderrSealBoundMs,
+      true,
+      `停止回执等了 ${receiptMs}ms，孙进程还要活 ${grandchildHoldMs}ms`,
+    );
+    assert.equal(elapsed < stderrSealBoundMs, true, `运行结束等了 ${elapsed}ms`);
+  } finally {
+    await reapGrandchild(pidFile);
+  }
+});
+
+test('契约：封口超时时跨在缓冲边界上的密钥不会漏出', async () => {
+  const pidFile = grandchildPidFile();
+  const secret = 'zhuma-synthetic-marker';
+  const at = 10;
+  const prefix = secret.slice(0, at);
+  const started = Date.now();
+  try {
+    const boot = await collect(`stderr-gc-split:${at}:${pidFile}`, {
+      env: modelEnv(secret),
+      initTimeoutMs: 20_000,
+      runId: 'stderr-gc-split',
+    });
+    const elapsed = Date.now() - started;
+    const message = boot.events.at(-1).message;
+    assert.equal(boot.events.at(-1).type, 'failed');
+    assert.match(message, /preface-/);
+    assert.equal(message.includes(secret), false);
+    assert.equal(message.includes(prefix), false);
+    assert.equal(JSON.stringify(boot.events).includes(secret), false);
+    assert.equal(JSON.stringify(boot.events).includes(prefix), false);
+    assert.equal(
+      elapsed < stderrSealBoundMs,
+      true,
+      `失败事件等了 ${elapsed}ms，孙进程还要活 ${grandchildHoldMs}ms`,
+    );
+  } finally {
+    await reapGrandchild(pidFile);
+  }
+});
+
 test('契约：同一会话撤掉的技能不会在下一轮被扫描', async () => {
   const { engine, pids, env } = executor('ok', {
     initTimeoutMs: 10_000,

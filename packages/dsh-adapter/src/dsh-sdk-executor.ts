@@ -789,6 +789,9 @@ function textFromStream(stream: unknown): string {
   return pieces.length > 0 ? pieces : block;
 }
 
+/** 子进程已经退出后，孙进程仍占着标准错误时最多再等多久。 */
+const stderrSealMs = 500;
+
 class StdioRpc {
   readonly exited: Promise<number>;
   closed = false;
@@ -805,6 +808,7 @@ class StdioRpc {
   private readonly finish: (code: number) => void;
   private readonly redactor: StderrRedactor;
   private stderrFlushed = false;
+  private stderrTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly stderrDone: Promise<void>;
   private readonly markStderr: () => void;
 
@@ -830,6 +834,7 @@ class StdioRpc {
     });
     child.stdout.on('data', (chunk: string) => this.push(chunk));
     child.stderr.on('data', (chunk: string) => {
+      if (this.stderrFlushed) return;
       this.stderr += this.redactor.push(chunk);
     });
     child.stderr.on('close', () => this.flushStderr());
@@ -840,21 +845,45 @@ class StdioRpc {
       for (const waiter of this.pending.values()) waiter.reject(new Error('closed'));
       this.pending.clear();
       this.noteWait?.();
+      this.armStderrDeadline();
     };
     child.on('exit', (code) => close(code ?? 1));
     child.on('error', () => close(1));
   }
 
-  /** 标准错误管道关闭并冲洗残留后才可以拿出去或写入磁盘。 */
+  /** 标准错误管道关闭并冲洗残留后才可以拿出去或写入磁盘。子进程退出后最多再等 stderrSealMs。 */
   sealStderr(): Promise<void> {
     return this.stderrDone;
   }
 
+  private armStderrDeadline(): void {
+    if (this.stderrFlushed || this.stderrTimer !== null) return;
+    this.stderrTimer = setTimeout(() => this.abandonStderr(), stderrSealMs);
+    this.stderrTimer.unref();
+  }
+
   private flushStderr(): void {
+    if (this.stderrTimer !== null) {
+      clearTimeout(this.stderrTimer);
+      this.stderrTimer = null;
+    }
     if (this.stderrFlushed) return;
     this.stderrFlushed = true;
     this.stderr += this.redactor.flush();
     this.markStderr();
+  }
+
+  /** 到点仍没关上：丢掉未凑齐的密钥前缀，不再读后续字节。 */
+  private abandonStderr(): void {
+    this.stderrTimer = null;
+    if (this.stderrFlushed) return;
+    this.redactor.discardPending();
+    this.flushStderr();
+    const stderr = this.child.stderr;
+    stderr.on('error', () => {});
+    stderr.destroy();
+    const unref = (stderr as { unref?: () => void }).unref;
+    unref?.call(stderr);
   }
 
   request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
@@ -1180,6 +1209,11 @@ class StderrRedactor {
 
   flush(): string {
     return this.consume(this.pending, true);
+  }
+
+  /** 超时放弃时丢掉未凑齐的前缀，避免和稍后到达的后半段拼回密钥。 */
+  discardPending(): void {
+    this.pending = '';
   }
 
   private consume(raw: string, flush: boolean): string {

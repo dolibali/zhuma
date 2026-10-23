@@ -1,9 +1,48 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 
 const home = process.env.DSH_HOME ?? process.cwd();
-const mode = process.env.ZHUMA_DSH_STUB_MODE ?? 'ok';
+let mode = process.env.ZHUMA_DSH_STUB_MODE ?? 'ok';
+
+function holdGrandchild(pidFile, script = 'setTimeout(() => {}, 8000)') {
+  const child = spawn(process.execPath, ['-e', script], {
+    stdio: ['ignore', 'ignore', 'inherit'],
+    detached: true,
+  });
+  writeFileSync(pidFile, String(child.pid ?? ''));
+  child.unref();
+}
+
+if (mode.startsWith('stderr-gc-fail:')) {
+  holdGrandchild(mode.slice('stderr-gc-fail:'.length));
+  writeSync(2, 'boot crashed\n');
+  setTimeout(() => process.exit(1), 30);
+  await new Promise(() => {});
+}
+if (mode.startsWith('stderr-gc-split:')) {
+  const rest = mode.slice('stderr-gc-split:'.length);
+  const colon = rest.indexOf(':');
+  const at = Number(rest.slice(0, colon));
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  const script = [
+    "const fs=require('fs');const secret=process.env.ZHUMA_MODEL_API_KEY||'';",
+    `setTimeout(()=>{try{fs.writeSync(2,secret.slice(${at})+'-tail')}catch{}`,
+    'setTimeout(()=>{},8000)},800)',
+  ].join('');
+  holdGrandchild(rest.slice(colon + 1), script);
+  writeSync(2, `preface-${secret.slice(0, at)}`);
+  setTimeout(() => process.exit(1), 30);
+  await new Promise(() => {});
+}
+if (mode.startsWith('stderr-gc-ok:')) {
+  holdGrandchild(mode.slice('stderr-gc-ok:'.length));
+  mode = 'ok';
+} else if (mode.startsWith('stderr-gc-hold:')) {
+  holdGrandchild(mode.slice('stderr-gc-hold:'.length));
+  mode = 'gc-hold';
+}
 if (mode === 'stderr-boot') {
   writeSync(2, `${process.env.ZHUMA_MODEL_API_KEY ?? ''}\n`);
   process.exit(1);
@@ -138,7 +177,7 @@ async function handlePrompt(message) {
     exitSoon();
     return;
   }
-  if (mode === 'hold-after-messageId') {
+  if (mode === 'hold-after-messageId' || mode === 'gc-hold') {
     waitRelease(() => finishTurn());
     return;
   }
