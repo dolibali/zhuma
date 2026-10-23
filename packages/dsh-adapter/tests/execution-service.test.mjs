@@ -2039,12 +2039,16 @@ test('a failed unlock is repaired by the next read, and not while the directory 
 
   down = false;
   store.arm(1);
-  const retryFailed = await service.inbox(session('chen'), {});
-  assert.equal(retryFailed.ok, false);
-  assert.equal(retryFailed.error.code, 'unavailable');
-  assert.equal(retryFailed.error.message, '执行记录暂时写不进去，请用同一个请求再试一次。');
+  const duringFailure = JSON.stringify(store.node('publish'));
+  const repairFailed = await service.inbox(session('chen'), {});
+  assert.equal(repairFailed.ok, true, repairFailed.ok ? '' : repairFailed.error.message);
   assert.equal(store.node('publish').command.status, 'blocked');
   assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+  assert.equal(JSON.stringify(store.node('publish')), duringFailure);
+  store.arm(1);
+  const otherSpace = await service.inbox(session('chen', ['team-south']), {});
+  assert.equal(otherSpace.ok, true, otherSpace.ok ? '' : otherSpace.error.message);
+  assert.equal(JSON.stringify(store.node('publish')), duringFailure);
 
   store.arm(0);
   const inbox = await service.inbox(session('chen'), {});
@@ -2107,4 +2111,48 @@ test('a failed unlock is repaired by the next write, once', async () => {
   );
   assert.equal(store.node('publish').command.version, version);
   assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+});
+
+test('a refused or missing request does not repair, and another space is not written', async () => {
+  const { state, applied } = confirm([
+    workflowNode({ id: 'design', title: '设计' }),
+    workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] }),
+  ]);
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  store.arm(2);
+  const failed = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deliver-design'),
+    text: '设计说明-4e1',
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(store.node('publish').command.status, 'blocked');
+  const before = JSON.stringify(store.node('publish'));
+  store.arm(0);
+
+  const missing = await service.revision(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'missing-node',
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error.code, 'not-found');
+  assert.equal(JSON.stringify(store.node('publish')), before);
+  assert.equal(store.snapshot().writes, 0);
+
+  const south = await service.inbox(session('chen', ['team-south']), {});
+  assert.equal(south.ok, true, south.ok ? '' : south.error.message);
+  assert.equal(JSON.stringify(store.node('publish')), before);
+  assert.equal(store.snapshot().writes, 0);
+
+  const outsider = await service.ballot(session('outside'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'vote-outsider'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+    action: 'approve',
+  });
+  assert.equal(outsider.ok, false);
+  assert.equal(JSON.stringify(store.node('publish')), before);
+  assert.equal(store.snapshot().writes, 0);
 });
