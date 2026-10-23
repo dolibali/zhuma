@@ -160,4 +160,11 @@ export type {
   NodeCommandResult,
   PlanStartResult,
 } from './human-node.js';
-export { nodeRecordKey, startAppliedPlan } from './human-node.js';
+export {
+  nodeRecordKey,
+  unlockKey,
+  completionSource,
+  downstreamRecords,
+  startAppliedPlan,
+  unlockDownstream,
+} from './human-node.js';

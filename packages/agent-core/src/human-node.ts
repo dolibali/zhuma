@@ -1,7 +1,7 @@
 import { createNodeHandoffs } from './applied-handoff.js';
 import { canonicalPayload, type CommandDecision } from './concurrency.js';
 import type { ArtifactVersion } from './delivery.js';
-import { readNodeHandoff, type NodeHandoff } from './handoff.js';
+import { readNodeHandoff, type ContextInputRef, type NodeHandoff } from './handoff.js';
 import {
   applyNodeTransitionCommand,
   initialNodeCommandState,
@@ -70,6 +70,27 @@ export function nodeRecordKey(record: {
   readonly nodeId: string;
 }): string {
   return `${record.taskId}:${record.planId}:${record.revision}:${record.nodeId}`;
+}
+
+/** Stable across retries. `sourceId` is the settled round, or `artifact:<id>`. */
+export function unlockKey(sourceId: string, downstreamNodeId: string): string {
+  return `unlock:${sourceId}:${downstreamNodeId}`;
+}
+
+export function completionSource(record: ExecutionNodeRecord): string | undefined {
+  if (record.command.status !== 'completed') return undefined;
+  if (record.currentRoundId !== undefined) return record.currentRoundId;
+  if (record.acceptedArtifactVersionId !== undefined) {
+    return `artifact:${record.acceptedArtifactVersionId}`;
+  }
+  return undefined;
+}
+
+export function downstreamRecords(
+  records: readonly ExecutionNodeRecord[],
+  nodeId: string,
+): readonly ExecutionNodeRecord[] {
+  return records.filter((record) => record.handoff.dependencyNodeIds.includes(nodeId));
 }
 
 function planFail(records: readonly ExecutionNodeRecord[], code: string): PlanStartResult {
@@ -215,4 +236,74 @@ export function startAppliedPlan(input: {
     started.push({ ...base, command: outcome.state });
   }
   return { ok: true, disposition: appliedAny ? 'applied' : 'replayed', records: started };
+}
+
+function dependencyRefs(
+  record: ExecutionNodeRecord,
+  dependencies: readonly ExecutionNodeRecord[],
+): { readonly satisfied: boolean; readonly refs: readonly ContextInputRef[] } {
+  const byId = new Map(dependencies.map((item) => [item.nodeId, item]));
+  const refs: ContextInputRef[] = [];
+  for (const dependencyId of record.handoff.dependencyNodeIds) {
+    const dependency = byId.get(dependencyId);
+    if (
+      dependency?.command.status !== 'completed' ||
+      dependency.acceptedArtifactVersionId === undefined
+    ) {
+      return { satisfied: false, refs: [] };
+    }
+    refs.push({
+      sourceNodeId: dependencyId,
+      artifactVersionId: dependency.acceptedArtifactVersionId,
+    });
+  }
+  return { satisfied: true, refs };
+}
+
+/**
+ * Move one downstream node when every dependency is accepted.
+ * The caller supplies `unlock:{source}:{downstream}` so a retry replays.
+ * Accepted upstream refs are written even when the status transition itself
+ * has nothing left to change.
+ */
+export function unlockDownstream(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly dependencies: readonly ExecutionNodeRecord[];
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+}): NodeCommandResult {
+  const dependencies = dependencyRefs(input.record, input.dependencies);
+  let handoff = input.record.handoff;
+  if (dependencies.satisfied) {
+    const read = readNodeHandoff({ ...input.record.handoff, inputRefs: dependencies.refs });
+    if (!read.ok) return reject(input.record, read.code);
+    handoff = read.handoff;
+  }
+  const outcome = applyNodeTransitionCommand(input.record.command, {
+    idempotencyKey: input.idempotencyKey,
+    actorId: input.actorId,
+    objectId: input.record.nodeId,
+    expectedVersion: input.expectedVersion,
+    payload: { type: 'dependencies-changed', dependenciesSatisfied: dependencies.satisfied },
+  });
+  const failure = failDecision(input.record, outcome.decision);
+  if (failure) return failure;
+  const refsFilled =
+    dependencies.satisfied &&
+    canonicalPayload(input.record.handoff.inputRefs) !== canonicalPayload(handoff.inputRefs);
+  if (outcome.decision.status === 'applied') {
+    return {
+      ok: true,
+      disposition: 'applied',
+      record: { ...input.record, command: outcome.state, handoff },
+    };
+  }
+  if (refsFilled) {
+    return { ok: true, disposition: 'applied', record: { ...input.record, handoff } };
+  }
+  if (outcome.decision.status === 'replayed') {
+    return { ok: true, disposition: 'replayed', record: input.record };
+  }
+  return { ok: true, disposition: 'ignored', record: input.record };
 }

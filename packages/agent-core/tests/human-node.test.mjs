@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyWorkbenchCommand, startAppliedPlan } from '@zhuma/agent-core';
+import {
+  applyWorkbenchCommand,
+  completionSource,
+  startAppliedPlan,
+  unlockDownstream,
+  unlockKey,
+} from '@zhuma/agent-core';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
 function node(partial) {
@@ -136,4 +142,62 @@ test('a wrong revision does not fall back to a newer applied plan', () => {
   assert.equal(exact.ok, true);
   assert.equal(exact.records[0].revision, 1);
   assert.equal(exact.records[0].planId, v1.id);
+});
+
+test('a dependent node started after upstream completed stays blocked until unlock writes inputRefs', () => {
+  const { applied } = confirm([
+    node({ id: 'design', title: '设计' }),
+    node({ id: 'publish', title: '发布', assigneeId: 'outside', dependsOn: ['design'] }),
+  ]);
+  const started = start(applied);
+  const design = at(started.records, 'design');
+  const completed = {
+    ...design,
+    command: { ...design.command, status: 'completed' },
+    acceptedArtifactVersionId: 'artifact:early',
+  };
+  const retried = start(applied, [completed]);
+  assert.equal(retried.ok, true);
+  const publish = at(retried.records, 'publish');
+  assert.equal(publish.command.status, 'blocked');
+  assert.deepEqual(publish.handoff.inputRefs, []);
+  const source = completionSource(at(retried.records, 'design'));
+  assert.equal(source, 'artifact:artifact:early');
+  const unlocked = unlockDownstream({
+    record: publish,
+    dependencies: retried.records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(source, 'publish'),
+    expectedVersion: publish.command.version,
+  });
+  assert.equal(unlocked.disposition, 'applied');
+  assert.equal(unlocked.record.command.status, 'ready');
+  assert.deepEqual(unlocked.record.handoff.inputRefs, [
+    { sourceNodeId: 'design', artifactVersionId: 'artifact:early' },
+  ]);
+
+  const alreadyReady = {
+    ...publish,
+    command: { ...publish.command, status: 'ready' },
+  };
+  const repaired = unlockDownstream({
+    record: alreadyReady,
+    dependencies: retried.records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(source, 'publish-ready'),
+    expectedVersion: alreadyReady.command.version,
+  });
+  assert.equal(repaired.disposition, 'applied');
+  assert.equal(repaired.record.command.status, 'ready');
+  assert.equal(repaired.record.command.version, alreadyReady.command.version);
+  assert.equal(repaired.record.handoff.inputRefs.length, 1);
+  const again = unlockDownstream({
+    record: repaired.record,
+    dependencies: retried.records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(source, 'publish-ready'),
+    expectedVersion: repaired.record.command.version,
+  });
+  assert.equal(again.disposition, 'ignored');
+  assert.equal(again.record.handoff.inputRefs.length, 1);
 });
