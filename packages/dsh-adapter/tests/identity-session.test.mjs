@@ -1320,6 +1320,27 @@ test('a successful login clears earlier failures from that address', async () =>
   await host.dispose();
 });
 
+test('a session row with a different expiresAt is rejected', async () => {
+  const first = await mount();
+  const chen = await login(first.web, 'chen');
+  const sessions = first.media.get('zhuma_identity').tables.get('sessions');
+  assert.equal(sessions.size, 1);
+  const value = chen.slice('zhuma-member='.length);
+  const expiresAt = Number(value.split('.')[1]);
+  const row = [...sessions.values()][0];
+  row.expiresAt = expiresAt + 60_000;
+  await first.dispose();
+  const second = await mount({ credentials: first.credentials, media: first.media });
+  const session = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+  });
+  assert.equal(session.status, 401);
+  assert.equal(session.json.error.code, 'unauthenticated');
+  await second.dispose();
+});
+
 test('a real http client stays logged out when only the DSH cookie remains', async () => {
   // test:ui serves the workbench fixture and does not mount /zhuma-id, so this
   // uses node:http instead of Playwright.
