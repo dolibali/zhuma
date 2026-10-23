@@ -510,3 +510,106 @@ test('draft caps accept the exact limit and refuse one more character before any
   assert.equal(bodyPlus.error.message, '草稿合计不能超过 262144 个字符。');
   assert.equal(JSON.stringify(overBody.store.node('design')), overBodyBefore);
 });
+
+test('a draft idempotency key stops at 200 characters and is not echoed or written', async () => {
+  const marker = 'draft-key-secret-9f3e';
+  const exact = await opened();
+  const saved = await exact.service.draft(
+    session('chen'),
+    locate(exact.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'k'.repeat(200),
+      text: '恰好两百',
+    }),
+  );
+  assert.equal(saved.ok, true, saved.ok ? '' : saved.error.message);
+  assert.equal(JSON.stringify(saved).includes('k'.repeat(200)), false);
+
+  const over = await opened();
+  let writes = 0;
+  const writeNode = over.store.storage.writeNode;
+  over.store.storage.writeNode = async (key, value) => {
+    writes += 1;
+    return writeNode(key, value);
+  };
+  const refused = await over.service.draft(
+    session('chen'),
+    locate(over.applied, {
+      expectedVersion: 0,
+      idempotencyKey: marker + 'x'.repeat(201 - marker.length),
+      text: '多一个',
+    }),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error.code, 'validation');
+  assert.equal(refused.error.message, '幂等键不能超过 200 个字符。');
+  assert.equal(JSON.stringify(refused).includes(marker), false);
+  assert.equal(writes, 0);
+  assert.equal(over.store.node('design').deliveryDraft, undefined);
+
+  const huge = await opened();
+  let hugeWrites = 0;
+  const hugeWrite = huge.store.storage.writeNode;
+  huge.store.storage.writeNode = async (key, value) => {
+    hugeWrites += 1;
+    return hugeWrite(key, value);
+  };
+  const blocked = await huge.service.draft(
+    session('chen'),
+    locate(huge.applied, {
+      expectedVersion: 0,
+      idempotencyKey: marker + 'h'.repeat((16 << 20) - marker.length),
+      text: '太大',
+    }),
+  );
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.message, '幂等键不能超过 200 个字符。');
+  assert.equal(JSON.stringify(blocked).includes(marker), false);
+  assert.equal(hugeWrites, 0);
+  assert.equal(huge.store.node('design').deliveryDraft, undefined);
+
+  const missing = await opened();
+  const legalMissing = await missing.service.draft(session('chen'), {
+    ...locate(missing.applied, { expectedVersion: 0, idempotencyKey: 'legal-key', text: 'x' }),
+    taskId: 'absent-task',
+  });
+  const overMissing = await missing.service.draft(session('chen'), {
+    ...locate(missing.applied, {
+      expectedVersion: 0,
+      idempotencyKey: marker + 'y'.repeat(201),
+      text: 'x',
+    }),
+    taskId: 'absent-task',
+  });
+  assert.equal(Buffer.compare(bytes(legalMissing), bytes(overMissing)), 0);
+  assert.equal(legalMissing.error.code, 'not-found');
+  assert.equal(JSON.stringify(overMissing).includes(marker), false);
+
+  const downState = await opened();
+  const down = new ExecutionService(
+    downState.store.storage,
+    { readWorkbench: () => downState.state },
+    {
+      async spaceForProject() {
+        throw new Error('space-down-4e1');
+      },
+    },
+  );
+  const legalDown = await down.draft(
+    session('chen'),
+    locate(downState.applied, { expectedVersion: 0, idempotencyKey: 'legal-key', text: 'x' }),
+  );
+  const overDown = await down.draft(
+    session('chen'),
+    locate(downState.applied, {
+      expectedVersion: 0,
+      idempotencyKey: marker + 'z'.repeat(201),
+      text: 'x',
+    }),
+  );
+  assert.equal(Buffer.compare(bytes(legalDown), bytes(overDown)), 0);
+  assert.equal(legalDown.error.code, 'unavailable');
+  assert.equal(legalDown.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(overDown).includes(marker), false);
+  assert.equal(JSON.stringify(overDown).includes('space-down-4e1'), false);
+});
