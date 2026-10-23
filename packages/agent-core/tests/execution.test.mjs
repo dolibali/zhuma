@@ -388,10 +388,10 @@ test('契约：模拟配置不能声称真实模型已经生效', () => {
     executorAvailable: true,
     executorVerified: false,
     simulated: true,
-    modelLabel: 'gpt-demo',
+    modelLabel: 'sample-model',
     modelInheritance: 'node-override',
     modelCompatible: true,
-    modelId: 'gpt-demo',
+    modelId: 'sample-model',
     skills: [],
     mcp: [
       {
