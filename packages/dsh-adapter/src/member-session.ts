@@ -10,7 +10,7 @@
  * for every other mode. `import-package` is a command on that same command
  * route, so it stays closed with them.
  *
- * The cookie Path is `/` so `/zhuma-exec` receives it. HttpOnly and
+ * The cookie Path is `/` so `/api/zhuma-exec/*` receives it. HttpOnly and
  * SameSite=Strict stay. Secure waits for a TLS listener.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';

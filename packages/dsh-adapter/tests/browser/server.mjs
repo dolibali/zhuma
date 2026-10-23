@@ -236,7 +236,7 @@ export async function startIdentitySite() {
     }
     if (
       pathname === '/api/zhuma/snapshot' ||
-      pathname === '/zhuma-exec' ||
+      pathname.startsWith('/api/zhuma-exec/') ||
       pathname === '/echo-cookie-names'
     ) {
       const names = (req.headers.cookie ?? '')
