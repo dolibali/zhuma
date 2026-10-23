@@ -1,6 +1,6 @@
 # B-M1 人工节点执行契约（S1）
 
-切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，只组合现有 WP00 导出，不改 `node-status.ts`、`review.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts`。
+切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，组合现有 WP00 导出。`node-status.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts` 没有改。`packages/agent-core/src/review.ts` 相对当时的 develop 是 +16/−2：`BallotRejectionCode` 增加 `empty-comment`；私有 `commentText` 去掉零宽字符和 U+00AD 后再 trim，用来判断评论和退回意见是不是空的。这处待 A 确认。
 
 带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。待办、交付和评审界面在 `packages/client/src/execution/`。`createExecutionApi` 调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
 
@@ -26,7 +26,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 | `start-plan` | `taskId`、`planId`、`revision`、`idempotencyKey`                                                                                  | 只接受这一份已确认修订。修订对不上返回 `plan-not-found`，不改用更新的计划。无依赖节点进入 `ready`，有依赖节点一律进入 `blocked`（上游当时是否已经完成都不改这个入口），两者都写下 `entryStatus: ready`。`plan-started` 不写 `inputRefs`                                                                                                                                                                                |
 | `inbox`      | `{}`                                                                                                                              | 用 `resolveMember` 得到的 actor 调用 `executionInbox`。先按空间和 `planMembership` 过滤记录，再生成待办。被移出参与者后，待办行和节点视图（目标、交付正文、轮次、评论）都不返回。没有成员会话返回 `unauthenticated`                                                                                                                                                                                                    |
 | `submit`     | `taskId`、`planId`、`revision`、`nodeId`、`expectedVersion`、`idempotencyKey`、`text`、`files`、`links`                           | 只有该节点的 human 执行者可以提交。文件只收 `ArtifactFileRef` 元数据                                                                                                                                                                                                                                                                                                                                                   |
-| `ballot`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`、`action`、可选 `comment` 和 `unresolvedCommentIds` | actor 必须与票面评审人一致，且在该轮 `reviewerIds` 里。`comment` 只留下评论，不改变轮次状态，也不改变已经投下的票。评论去掉空白后为空时返回 `empty-comment`，不写。退回必须有意见，或引用至少一条这条产物上未解决的评论；两样都没有是 `empty-request-changes`，引用对不上是 `comment-not-unresolved`。这三种拒绝都不写                                                                                                 |
+| `ballot`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`、`action`、可选 `comment` 和 `unresolvedCommentIds` | actor 必须与票面评审人一致，且在该轮 `reviewerIds` 里。`comment` 只留下评论，不改变轮次状态，也不改变已经投下的票。评论去掉空白、零宽字符和 U+00AD 后为空时返回 `empty-comment`，不写。退回必须有意见，或引用至少一条这条产物上未解决的评论；两样都没有是 `empty-request-changes`，引用对不上是 `comment-not-unresolved`。这三种拒绝都不写                                                                             |
 | `settle`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`                                                     | 只有该节点的 human 执行者或评审人可以结算。按当前轮的票面结算。未齐票为 `ignored`。幂等键使用 `settle:{roundId}`                                                                                                                                                                                                                                                                                                       |
 | `report`     | `taskId`、`planId`、`revision`                                                                                                    | 只有任务负责人或参与者可以读。每个节点一份 `NodeExecutionReport`，含 `acceptedArtifactVersionId` 和 `reviewOutcome`                                                                                                                                                                                                                                                                                                    |
 | `revision`   | `taskId`、`planId`、`revision`、`nodeId`                                                                                          | 不修改这份退回记录。权限通过之后可以补上本任务还没写完的解锁；拒绝、找不到和目录不可用都不写。human 执行者，或同时仍在最近一次退回轮次和当前评审名单里的评审人，可以看到被评审版本、上一版，以及每一次退回的意见。意见写评审人姓名，不写标识。文件只返回标识、类型和字节数。空间不符是 `not-found`，被移出任务是 `not-participant`。被移出评审名单的人，以及本来就不是评审人的参与者，与节点不存在是同一份 `not-found` |
@@ -39,7 +39,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 
 ## 身份
 
-单人还是多人由 `configureDeploymentMode` 选定。成员来自身份模块的 `resolveMember`。身份模块 #18 的 head 是 `b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）。`c31f062` 是更早的身份提交，不是这个 head。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。执行插件没有 `singleUser`，也没有 `bind-owner`。同一来源地址 60 秒内登录满 8 次后返回 429。
+单人还是多人由 `configureDeploymentMode` 选定。成员来自身份模块的 `resolveMember`。身份模块 #18 的 head 是 `b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）。`eb25d30` 不是本 head 的祖先。本 head 的身份代码经 `b/m1-align-identity` `20314eb` 带入，与 `eb25d30` 的身份实现内容等价；另多 `packages/dsh-adapter/tsconfig.identity.json` 与 `packages/dsh-adapter/tests/identity-session.test.mjs` 的小增量。`c31f062` 是更早的身份提交，不是这个 head。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。执行插件没有 `singleUser`，也没有 `bind-owner`。同一来源地址 60 秒内登录满 8 次后返回 429。
 
 1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。项目属于哪个空间，只问调用方注入的 `ProjectSpaceDirectory`。执行服务把 `spaceForProject(projectId)` 返回的空间 id 和这次成员的 `spaceIds` 做精确比较。没有注入这份目录时，不把 `projectId` 当作空间 id，启动、提交、投票、结算、报告和待办全部拒绝，也不写入。
@@ -124,7 +124,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
 - `revision` 读取退回时的被评审版本、上一版和每一次退回的意见。意见显示评审人姓名，不显示标识。第二次退回保留第一次的意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。被移出当前名单的评审人与节点不存在是同一份 `not-found`。目录不可用或结果不合法时先查目录，不论任务或节点是否存在都返回同一份 `unavailable`：「执行记录暂时不可用，请稍后用同一个请求再试一次。」拒绝前不写。目录正常时，任务不存在、节点不存在和在别的空间返回同一份 `not-found`
 - 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名写成「第 2 版」，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
-- 评审人可以只评论。评论不改变轮次状态，也不改变已经投下的票。评论去掉空白和零宽字符后为空时返回 `empty-comment`，不写。退回的意见同样去掉这些字符后为空、也没有引用未解决评论时返回 `empty-request-changes`，引用对不上返回 `comment-not-unresolved`，三种都不写
+- 评审人可以只评论。评论不改变轮次状态，也不改变已经投下的票。评论去掉空白、零宽字符和 U+00AD 后为空时返回 `empty-comment`，不写。退回的意见同样去掉这些字符后为空、也没有引用未解决评论时返回 `empty-request-changes`，引用对不上返回 `comment-not-unresolved`，三种都不写
 - 提交、投票和结算共用的命令也先查目录，再读节点。八种目录故障下，节点在不在、记录损坏与否，都是同一份 `unavailable`，拒绝前不写
 - 人工执行者把交付草稿写在节点记录上。关闭后再打开，包括退回后，仍能读到自己的草稿。只有这位执行者能读写。空间不对和任务不存在，在写之前返回同一份 `not-found`。目录不可用或结果不合法时，任务和节点在不在都返回同一份稍后重试的 `unavailable`，拒绝前不写。不是参与者要等空间通过之后才拒绝。节点不是 `ready` 或 `needs-revision` 时不写。草稿版本不符时不覆盖，并在 `details` 里返回当前版本。同一个幂等键被拿去写另一份内容时也不覆盖。幂等键不超过 200 个字符。超限在空间检查通过之后、写之前拒绝，响应不包含这段键。目录不可用或任务不存在时，超长键和合法键返回同一份响应。单条链接不超过 2048 个字符，全部链接合计不超过 8192 个字符。文件的 id、mediaType、checksum、accessPolicyId 每一项不超过 2048 个字符。正文、链接和这些字段合计不超过 262144 个字符。超出都在写之前拒绝。提交成功后清掉草稿
 - 解锁那一次写入失败后，不必等插件再次打开。只有这次请求已经通过权限检查，才补调用者自己空间里、这次请求涉及的任务：写入 `inputRefs`，并把仍是 `blocked` 的下游推进到 `ready`。同一把解锁键不会重复应用。拒绝、找不到和目录不可用都不补写。补写失败不改变这次请求的结果，也不写别的空间，留到下一次再补。插件打开时的对账仍然保留；其中一次写失败不会挡住其他任务
@@ -177,9 +177,9 @@ await rpc.call('/api', 'zhuma-exec/inbox', {});
 await rpc.call('/api', 'zhuma-exec/submit', payload);
 ```
 
-多人模式下，`b/id0a-legacy-gate`（`aa9060d`）关闭 `/api/zhuma/*`。A 提供成员进入工作台的入口。执行通道留在 `/api/zhuma-exec/*`，因为它已经按 `resolveMember` 认成员。
+本 head 未接入遗留门禁，工作台插件注册 `/api/zhuma/*` 时不调用 `authorizeLegacyOwnerRoutes`。关闭这些路由的实现在 `b/id0a-legacy-gate` `69c7366`，该提交不是本 head 的祖先，待 A 装配。当前 Host 构建入口只有工作台插件 `packages/dsh-adapter/src/workbench-plugin.ts`，还没有挂上多人模式。A 提供成员进入工作台的入口。执行通道留在 `/api/zhuma-exec/*`，因为它已经按 `resolveMember` 认成员。
 
-客户端「需要我处理」由 A 注册。B 的面板从 `@zhuma/client` 已有入口导出，不新增 package export。A 在自己的 `plugin.tsx` 里挂 `ExecutionWorkspace`。它自己读取待办并打开交付或评审，不要改挂只接受 `items` 的 `InboxPanel`。页面里已经有 `.zhuma > main.zm-page`，这个组件不再包一层 `main`：
+客户端「需要我处理」由 A 注册。B 的面板从 `@zhuma/client` 的包入口导出；累计 Draft 新增的导出名见身份契约，待 A 确认。A 在自己的 `plugin.tsx` 里挂 `ExecutionWorkspace`。它自己读取待办并打开交付或评审，不要改挂只接受 `items` 的 `InboxPanel`。页面里已经有 `.zhuma > main.zm-page`，这个组件不再包一层 `main`：
 
 ```tsx
 ctx.slots.inject('main', () =>
@@ -206,12 +206,12 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 ## 当前累计组合
 
-本文件随累计联调 head `b/m1-exec-events` `019b280`。退回意见查询 `b/m1-revision-view` 的顶支已经合进这条叠加。当前组合是：
+本文件随累计 Draft `b/m1-draft`。具体提交以 PR #47 head 为准。退回意见查询 `b/m1-revision-view` 的顶支已经合进这条叠加。叠加 tip 仍是 `b/m1-exec-events` `019b280`，其上又合入了当时的 develop。当前组合是：
 
 - 空间目录：`b/m1-space-mapping` `49d7984`
 - 身份对齐：`b/m1-align-identity` `20314eb`
 - 叠加从下到上：delivery-draft `39367a6`，review-comment `f494d12`，unlock-reconcile `49be963`，inbox-groups `951fc76`，exec-events `019b280`
-- 身份模块 #18：`b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）
+- 身份模块 #18：`b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）。它不是本 head 的祖先；身份代码经 `20314eb` 带入，内容等价，另多上面说的两处小增量
 - 子模块钉在 `687f282`
 
 `f494d12` 改了 `packages/agent-core/src/review.ts` 的空评论判断（私有 `commentText`），需要 A 确认。接缝不变：B 提供可信身份、空间授权事实和执行服务消费接口；A 单写 Host 的注入、导航、导出和公共配置。
