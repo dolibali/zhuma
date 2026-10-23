@@ -206,15 +206,19 @@ export function WorkflowCanvas({
   }, [flow, fitInitially, dimensions, workflow.nodes]);
   const controls = (
     <>
-      <button aria-label="缩小画布" onClick={() => void flow?.zoomOut()}>
+      <button type="button" aria-label="缩小画布" onClick={() => void flow?.zoomOut()}>
         −
       </button>
       <span>{Math.round(zoom * 100)}%</span>
-      <button aria-label="放大画布" onClick={() => void flow?.zoomIn()}>
+      <button type="button" aria-label="放大画布" onClick={() => void flow?.zoomIn()}>
         ＋
       </button>
-      <button onClick={() => locate()}>定位当前</button>
-      <button onClick={() => void flow?.fitView({ padding: 0.2, maxZoom: 1 })}>适应全图</button>
+      <button type="button" onClick={() => locate()}>
+        定位当前
+      </button>
+      <button type="button" onClick={() => void flow?.fitView({ padding: 0.2, maxZoom: 1 })}>
+        适应全图
+      </button>
     </>
   );
   return (

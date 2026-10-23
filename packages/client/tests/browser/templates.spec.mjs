@@ -243,6 +243,12 @@ test('从未保存任务草稿保存模板：失败可重试同一请求，不�
   await button(page, '保存为工作流').click();
   const modal = page.getByRole('dialog', { name: '保存为工作流', exact: true });
   await modal.getByLabel('工作流名称', { exact: true }).fill('公共采购工作流');
+  for (const name of ['缩小画布', '放大画布', '定位当前', '适应全图']) {
+    await button(modal, name).click();
+    await expect(modal).toBeVisible();
+    await expect(modal.getByLabel('工作流名称', { exact: true })).toHaveValue('公共采购工作流');
+    expect(commands(replay), `画布操作「${name}」不应提交模板表单`).toHaveLength(0);
+  }
   await button(modal, '保存工作流').click();
   await expect(modal.getByRole('alert')).toContainText('存储暂不可用');
   await button(modal, '保存工作流').click();
