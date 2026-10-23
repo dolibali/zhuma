@@ -1966,7 +1966,7 @@ export class ExecutionDesk {
         'invalid-handoff',
         '节点',
         '节点记录异常，需要人工处理',
-        '交接记录无法读取。不要按这份记录发送、重试或停止。',
+        '交接引用无法读取。请重新建立交接，不要补写来源节点或产物版本。',
       );
     }
     return this.fail(
@@ -2127,7 +2127,7 @@ function invalidHandoffError(): CommandErrorFact {
     code: 'invalid-handoff',
     objectLabel: '节点',
     reason: '节点记录异常，需要人工处理',
-    nextStep: '交接记录无法读取。不要按这份记录发送、重试或停止。',
+    nextStep: '交接引用无法读取。请重新建立交接，不要补写来源节点或产物版本。',
   };
 }
 

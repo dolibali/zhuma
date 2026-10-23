@@ -1312,6 +1312,77 @@ test('契约：快照交出的交接引用是副本', () => {
   assert.equal(session.persistence().seed.handoff.inputRefs[0].sourceNodeId, 'n0');
 });
 
+const REBUILD_HANDOFF = '交接引用无法读取。请重新建立交接，不要补写来源节点或产物版本。';
+
+test('契约：缺来源或产物版本的交接引用在新建时拒绝，恢复时不补写', () => {
+  const partials = [
+    [{ sourceNodeId: 'n0' }],
+    [{ artifactVersionId: 'av1' }],
+    [{ contextPackId: 'pack-optional' }],
+    [{ sourceNodeId: '  ', artifactVersionId: 'av1' }],
+    [{ sourceNodeId: 'n0', artifactVersionId: ' ', contextPackId: 'pack-optional' }],
+  ];
+  for (const inputRefs of partials) {
+    const planted = seed();
+    planted.handoff = { ...planted.handoff, inputRefs };
+    assert.throws(
+      () =>
+        ExecutionDesk.create(planted, {
+          executors: [new SimulatedAgentExecutor()],
+          newId: ids(),
+        }),
+      /invalid-handoff/,
+    );
+  }
+
+  const good = ExecutionDesk.create(seed(), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  const saved = JSON.parse(JSON.stringify(good.persistence()));
+  saved.seed.handoff.inputRefs = [{ sourceNodeId: 'n0', contextPackId: 'pack-old' }];
+  const broken = ExecutionDesk.restore(saved, {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  assert.equal(broken.persistence().handoffInvalid, true);
+  assert.equal(broken.snapshot().lastError.code, 'invalid-handoff');
+  assert.equal(broken.snapshot().lastError.nextStep, REBUILD_HANDOFF);
+  assert.equal(
+    broken.snapshot().handoff.inputRefs.some((ref) => ref.artifactVersionId !== undefined),
+    false,
+  );
+  assert.equal(
+    broken.snapshot().handoff.inputRefs.some((ref) => ref.sourceNodeId === 'n0'),
+    false,
+  );
+  const view = createAgentWorkspaceView(broken.snapshot());
+  assert.equal(view.nodeStatusKey, 'record-broken');
+  assert.equal(view.nextAction, REBUILD_HANDOFF);
+  broken.resumeInteraction();
+  const sent = broken.send({ text: '不要按残缺引用发送', idempotencyKey: 'partial-ref' });
+  assert.equal(sent.ok, false);
+  assert.equal(sent.code, 'invalid-handoff');
+  assert.equal(sent.nextStep, REBUILD_HANDOFF);
+  const stored = broken.persistence();
+  assert.equal(stored.handoffInvalid, true);
+  assert.equal(
+    stored.seed.handoff.inputRefs.some((ref) => ref.artifactVersionId !== undefined),
+    false,
+  );
+  const reloaded = ExecutionDesk.restore(JSON.parse(JSON.stringify(stored)), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+  });
+  assert.equal(reloaded.persistence().handoffInvalid, true);
+  assert.equal(reloaded.snapshot().lastError.nextStep, REBUILD_HANDOFF);
+  assert.equal(createAgentWorkspaceView(reloaded.snapshot()).nodeStatusKey, 'record-broken');
+  assert.equal(
+    reloaded.snapshot().handoff.inputRefs.some((ref) => ref.artifactVersionId !== undefined),
+    false,
+  );
+});
+
 test('契约：恢复非法交接时该节点记录异常，其他节点仍能装入', () => {
   const good = ExecutionDesk.create(seed(), {
     executors: [new SimulatedAgentExecutor()],
