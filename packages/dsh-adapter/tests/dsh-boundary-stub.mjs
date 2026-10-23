@@ -58,6 +58,16 @@ if (mode === 'stderr-boot') {
   writeSync(2, `${process.env.ZHUMA_MODEL_API_KEY ?? ''}\n`);
   process.exit(1);
 }
+if (mode === 'stderr-boot-bound') {
+  const emoji = '😀';
+  const head = 'a'.repeat(511);
+  const middle = '中'.repeat(800);
+  const tail = `${'b'.repeat(1438)}\ncause: disk-full-reason`;
+  const original = `${head}${emoji}${middle}${emoji}${tail}`;
+  writeFileSync(path.join(home, 'zhuma-stderr-source.txt'), original, 'utf8');
+  writeSync(2, original);
+  process.exit(1);
+}
 if (mode === 'stderr-boot-prefix') {
   const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
   writeSync(2, `preface-${secret.slice(0, Math.max(0, secret.length - 1))}`);

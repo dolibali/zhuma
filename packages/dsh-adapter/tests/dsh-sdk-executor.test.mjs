@@ -968,6 +968,39 @@ test('契约：标准错误按 UTF-8 字节截断，中文和 emoji 的切口不
   assert.equal(stderr.split('\n').at(-1), 'cause: disk-full-reason');
 });
 
+// 回归：改回 slice(0, 2000) 后，最后一行 cause 不在失败消息里。
+test('契约：启动前失败的标准错误按 UTF-8 字节保留头尾，最后一行还在', async () => {
+  const emoji = '😀';
+  const original = `${'a'.repeat(511)}${emoji}${'中'.repeat(800)}${emoji}${'b'.repeat(1438)}\ncause: disk-full-reason`;
+  const boot = await collect('stderr-boot-bound', {
+    env: modelEnv('zhuma-synthetic-marker'),
+    initTimeoutMs: 20_000,
+    runId: 'stderr-boot-bound',
+  });
+  const message = boot.events.at(-1).message;
+  assert.equal(boot.events.at(-1).type, 'failed');
+  assert.equal(message.includes('cause: disk-full-reason'), true);
+  const extra = message.slice('执行器启动失败。\n'.length);
+  const matched = extra.match(/（已截断 (\d+) 字节）/);
+  assert.notEqual(matched, null);
+  const head = extra.slice(0, matched.index);
+  const tail = extra.slice(matched.index + matched[0].length);
+  assert.equal(Buffer.byteLength(extra) <= 2000, true);
+  assert.equal(extra.includes('\uFFFD'), false);
+  assert.equal(Number(matched[1]), Buffer.byteLength(original) - Buffer.byteLength(head + tail));
+  assert.equal(original.startsWith(head), true);
+  assert.equal(original.endsWith(tail), true);
+  assert.equal(tail.endsWith('cause: disk-full-reason'), true);
+  const next = String.fromCodePoint(original.codePointAt(head.length));
+  assert.equal(Buffer.byteLength(next) > 1, true);
+  assert.equal(Buffer.byteLength(head) + Buffer.byteLength(next) > 512, true);
+  const tailAt = original.length - tail.length;
+  const before = [...original.slice(0, tailAt)].at(-1);
+  const room = 2000 - Buffer.byteLength(head) - Buffer.byteLength(matched[0]);
+  assert.equal(Buffer.byteLength(before) > 1, true);
+  assert.equal(Buffer.byteLength(tail) + Buffer.byteLength(before) > room, true);
+});
+
 test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async () => {
   const secret = 'zhuma-synthetic-marker-0123456789abcde';
   const prefix = secret.slice(0, secret.length - 1);

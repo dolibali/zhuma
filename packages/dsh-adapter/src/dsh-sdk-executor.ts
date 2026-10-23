@@ -1111,11 +1111,34 @@ function startupFailureMessage(error: unknown): string {
   return `执行器启动失败。\n${detail}`;
 }
 
+/** 启动前失败附带的标准错误上限，按 UTF-8 字节计。超出后保留开头和最新结尾。 */
+const failureStderrLimit = 2000;
+const failureStderrHead = 512;
+
 function withStderr(message: string, stderr: string): string {
   const extra = stderr.trim();
   if (extra.length === 0) return message;
-  const clipped = extra.length > 2000 ? extra.slice(0, 2000) : extra;
-  return `${message}\n${clipped}`;
+  return `${message}\n${boundFailureStderr(extra)}`;
+}
+
+function boundFailureStderr(extra: string): string {
+  if (utf8Bytes(extra) <= failureStderrLimit) return extra;
+  const { taken, rest } = takeUtf8Prefix(extra, failureStderrHead);
+  let tail = limitUtf8Suffix(rest, failureStderrLimit - utf8Bytes(taken)).rest;
+  let mark = failureOmissionMark(extra, taken, tail);
+  while (utf8Bytes(taken) + utf8Bytes(mark) + utf8Bytes(tail) > failureStderrLimit) {
+    const budget = failureStderrLimit - utf8Bytes(taken) - utf8Bytes(mark);
+    const next = limitUtf8Suffix(tail, Math.max(0, budget));
+    if (next.dropped <= 0 || next.rest === tail) break;
+    tail = next.rest;
+    mark = failureOmissionMark(extra, taken, tail);
+  }
+  return `${taken}${mark}${tail}`;
+}
+
+function failureOmissionMark(extra: string, head: string, tail: string): string {
+  const omitted = utf8Bytes(extra) - utf8Bytes(head) - utf8Bytes(tail);
+  return `（已截断 ${omitted} 字节）`;
 }
 
 function canExecute(file: string): boolean {
