@@ -1,9 +1,10 @@
 /**
  * Failed-login counter for one process.
  *
- * The check runs before the password hash. A failure is recorded only after
- * the hash does not match. The same key expires when that key is written
- * again. There is no map-wide sweep.
+ * The count is reserved before the password hash so concurrent attempts cannot
+ * all pass the check. Expired keys are removed on the next reserve, clear, or
+ * count read. A shared source address is a deployment limit; see the identity
+ * contract. This module does not change that key.
  */
 import type { IncomingMessage } from 'node:http';
 
@@ -26,22 +27,41 @@ function failureKey(address: string, accountId: string): string {
   return `${address}\0${accountId}`;
 }
 
-export function loginLimited(req: IncomingMessage, accountId: string): boolean {
-  const entry = loginFailures.get(failureKey(loginClientAddress(req), accountId));
-  return entry !== undefined && entry.resetAt > Date.now() && entry.count >= LOGIN_FAILURE_LIMIT;
-}
-
-export function recordLoginFailure(req: IncomingMessage, accountId: string): void {
-  const key = failureKey(loginClientAddress(req), accountId);
-  const now = Date.now();
-  const entry = loginFailures.get(key);
-  if (entry === undefined || entry.resetAt <= now) {
-    loginFailures.set(key, { count: 1, resetAt: now + LOGIN_FAILURE_WINDOW_MS });
-    return;
+export function sweepExpiredLoginFailures(now = Date.now()): void {
+  for (const [key, slot] of loginFailures) {
+    if (slot.resetAt <= now) loginFailures.delete(key);
   }
-  entry.count += 1;
 }
 
-export function clearLoginFailures(req: IncomingMessage, accountId: string): void {
-  loginFailures.delete(failureKey(loginClientAddress(req), accountId));
+/**
+ * Count this attempt before hashing. `limited` means the caller must reject
+ * without hashing. A later success must call `clearLoginAttempts`.
+ */
+export function reserveLoginAttempt(
+  address: string,
+  accountId: string,
+  now = Date.now(),
+): 'allowed' | 'limited' {
+  sweepExpiredLoginFailures(now);
+  const key = failureKey(address, accountId);
+  const slot = loginFailures.get(key);
+  if (slot === undefined || slot.resetAt <= now) {
+    loginFailures.set(key, { count: 1, resetAt: now + LOGIN_FAILURE_WINDOW_MS });
+    return 'allowed';
+  }
+  if (slot.count >= LOGIN_FAILURE_LIMIT) return 'limited';
+  slot.count += 1;
+  return 'allowed';
+}
+
+export function clearLoginAttempts(address: string, accountId: string): void {
+  loginFailures.delete(failureKey(address, accountId));
+}
+
+/** Failures still inside the window for this address and account. */
+export function loginAttemptCount(address: string, accountId: string, now = Date.now()): number {
+  sweepExpiredLoginFailures(now);
+  const slot = loginFailures.get(failureKey(address, accountId));
+  if (slot === undefined || slot.resetAt <= now) return 0;
+  return slot.count;
 }

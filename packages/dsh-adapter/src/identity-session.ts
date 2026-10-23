@@ -23,7 +23,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { PeerScope, Principal } from '@deepseek-ai/dsh-client-connection';
 import { defineDomain, type Domain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import { clearLoginFailures, loginLimited, recordLoginFailure } from './login-limiter.js';
+import { clearLoginAttempts, loginClientAddress, reserveLoginAttempt } from './login-limiter.js';
 import {
   installMemberResolver,
   memberCookieHeader,
@@ -623,7 +623,8 @@ async function handle(
         return;
       }
       const account = domain.table('accounts').get(parsed.data.accountId);
-      if (loginLimited(req, parsed.data.accountId)) {
+      const address = loginClientAddress(req);
+      if (reserveLoginAttempt(address, parsed.data.accountId) === 'limited') {
         fail(res, 429, 'login-rate-limited');
         return;
       }
@@ -631,11 +632,10 @@ async function handle(
         account === undefined ||
         !(await passwordMatches(account.passwordHash, parsed.data.password))
       ) {
-        recordLoginFailure(req, parsed.data.accountId);
         fail(res, 401, 'invalid-login');
         return;
       }
-      clearLoginFailures(req, parsed.data.accountId);
+      clearLoginAttempts(address, parsed.data.accountId);
       await purgeExpiredSessions(domain);
       const sessionId = randomUUID();
       const expiresAt = Date.now() + SESSION_TTL_MS;

@@ -315,6 +315,7 @@ async function login(web, accountId) {
   const response = await call(web, {
     method: 'POST',
     path: '/zhuma-id/login',
+    remoteAddress: randomBytes(8).toString('hex'),
     body: { accountId, password },
   });
   assert.equal(response.status, 200);
