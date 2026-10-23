@@ -980,6 +980,7 @@ test('a failed project-space lookup is refused and does not write', async () => 
     idempotencyKey: 'start-unavailable',
   });
   assert.equal(blocked.error.code, 'unavailable');
+  assert.equal(blocked.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
   assert.equal(denied.store.planCount(), 0);
   assert.equal(denied.store.node('design'), undefined);
 
@@ -1003,6 +1004,7 @@ test('a failed project-space lookup is refused and does not write', async () => 
     text: '目录故障后的交付',
   });
   assert.equal(submitted.error.code, 'unavailable');
+  assert.equal(submitted.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
   assert.equal(JSON.stringify(submitted).includes('space-directory-down'), false);
   assert.equal(JSON.stringify(submitted).includes('目录故障后的交付'), false);
   assert.equal(store.node('design').receipts.length, 0);

@@ -189,11 +189,32 @@ test('a directory failure stays unavailable whether or not the node exists', asy
   assert.equal(Buffer.compare(bytes(present), bytes(absent)), 0);
   assert.deepEqual(present.error, {
     code: 'unavailable',
-    message: '执行记录暂时写不进去，请用同一个请求再试一次。',
+    message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
     details: {},
   });
   assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);
   assert.equal(store.node('design').deliveryDraft, undefined);
+});
+
+test('a disk write failure still says the record cannot be written', async () => {
+  const { applied, store, service } = await opened();
+  const before = JSON.stringify(store.node('design'));
+  store.storage.writeNode = async () => {
+    throw new Error('disk-full-4e1');
+  };
+  const failed = await service.draft(
+    session('chen'),
+    locate(applied, { expectedVersion: 0, idempotencyKey: 'draft-disk', text: '写不进去-4e1' }),
+  );
+  assert.equal(failed.ok, false);
+  assert.deepEqual(failed.error, {
+    code: 'unavailable',
+    message: '执行记录暂时写不进去，请用同一个请求再试一次。',
+    details: {},
+  });
+  assert.equal(JSON.stringify(failed).includes('disk-full-4e1'), false);
+  assert.equal(JSON.stringify(failed).includes('写不进去-4e1'), false);
+  assert.equal(JSON.stringify(store.node('design')), before);
 });
 
 test('a stale draft version conflicts, and the same key cannot change the text', async () => {
