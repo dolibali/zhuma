@@ -14,10 +14,6 @@ const lin = {
   available: true,
 };
 
-function session(memberId, spaceIds = ['project']) {
-  return { member: { ok: true, memberId, spaceIds } };
-}
-
 function workflowNode(partial) {
   return {
     description: '',
@@ -76,6 +72,34 @@ function memory() {
   };
 }
 
+function diskStore() {
+  const nodes = new Map();
+  const plans = new Map();
+  const cache = { nodes: new Map() };
+  const make = () => ({
+    readNode: (key) => cache.nodes.get(key),
+    writeNode: async (key, value) => {
+      nodes.set(key, JSON.stringify(value));
+      cache.nodes.set(key, value);
+    },
+    listNodes: () => [...cache.nodes.values()],
+    readPlan: (key) => (plans.has(key) ? JSON.parse(plans.get(key)) : undefined),
+    writePlan: async (key, value) => {
+      plans.set(key, JSON.stringify(value));
+    },
+    listPlans: () =>
+      [...plans.entries()].map(([key, receipt]) => ({ key, receipt: JSON.parse(receipt) })),
+  });
+  return {
+    storage: make(),
+    reload() {
+      cache.nodes = new Map([...nodes.entries()].map(([key, value]) => [key, JSON.parse(value)]));
+      return make();
+    },
+    node: (id) => [...cache.nodes.values()].find((record) => record.nodeId === id),
+  };
+}
+
 function locate(applied, nodeId, expectedVersion, idempotencyKey) {
   return {
     taskId: applied.taskId,
@@ -117,6 +141,10 @@ const reviewed = () =>
     ],
     [lin],
   );
+
+function session(memberId, spaceIds = ['project']) {
+  return { member: { ok: true, memberId, spaceIds } };
+}
 
 async function startChen(service, applied) {
   const started = await service.startPlan(session('chen'), {
@@ -235,4 +263,48 @@ test('two reviewers send back, then resubmit, then all approve', async () => {
   assert.notEqual(design.acceptedArtifactVersionId, artifactId);
   assert.equal(publish.command.status, 'ready');
   assert.equal(publish.handoff.inputRefs[0].artifactVersionId, design.acceptedArtifactVersionId);
+});
+
+test('report and inbox match after the service restarts from disk', async () => {
+  const { state, applied } = reviewed();
+  const disk = diskStore();
+  const service = new ExecutionService(disk.storage, { readWorkbench: () => state });
+  await startChen(service, applied);
+  await service.submit(session('chen'), { ...locate(applied, 'design', 1, 'v1'), text: '第一版' });
+  const version = () => disk.node('design').command.version;
+  const round = () => disk.node('design').currentRoundId;
+  const artifact = () => disk.node('design').artifactVersions.at(-1).id;
+  await service.ballot(session('lin'), {
+    ...locate(applied, 'design', version(), 'lin-1'),
+    roundId: round(),
+    artifactVersionId: artifact(),
+    action: 'approve',
+  });
+  await service.ballot(session('outside'), {
+    ...locate(applied, 'design', version(), 'out-1'),
+    roundId: round(),
+    artifactVersionId: artifact(),
+    action: 'approve',
+  });
+  assert.equal(disk.node('design').command.status, 'completed');
+  assert.equal(disk.node('publish').command.status, 'ready');
+  const beforeReport = await service.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  const beforeInbox = await service.inbox(session('outside'), {});
+  const restarted = new ExecutionService(disk.reload(), { readWorkbench: () => state });
+  const afterReport = await restarted.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  const afterInbox = await restarted.inbox(session('outside'), {});
+  assert.equal(JSON.stringify(beforeReport), JSON.stringify(afterReport));
+  assert.equal(JSON.stringify(beforeInbox), JSON.stringify(afterInbox));
+  const reconciled = await restarted.reconcile();
+  assert.equal(reconciled.value.unlocked, 0);
+  assert.equal(disk.node('publish').command.version, 2);
+  assert.equal(disk.node('publish').handoff.inputRefs.length, 1);
 });

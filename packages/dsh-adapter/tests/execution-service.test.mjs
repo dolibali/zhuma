@@ -125,39 +125,25 @@ test('a caller without a resolved member is refused, and a request cannot choose
     workflowNode({ id: 'design', title: '设计', assigneeId: 'outside' }),
   ]);
   const { service } = create(state);
-  const missing = await service.startPlan(
-    {},
-    {
-      taskId: applied.taskId,
-      planId: applied.id,
-      revision: applied.revision,
-      idempotencyKey: 'start-missing-member',
-    },
-  );
-  assert.equal(missing.error.code, 'unauthenticated');
+  const inbox = await service.inbox({}, {});
+  assert.equal(inbox.ok, false);
+  assert.equal(inbox.error.code, 'unauthenticated');
+  assert.equal((await service.inbox({ kind: 'owner' }, {})).error.code, 'unauthenticated');
+
+  const started = await service.startPlan(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-1',
+    actorId: 'outside',
+  });
+  assert.equal(started.error.code, 'actor-from-body');
   assert.equal(
-    (
-      await service.startPlan(session('chen'), {
-        taskId: applied.taskId,
-        planId: applied.id,
-        revision: applied.revision,
-        idempotencyKey: 'start-actor',
-        actorId: 'outside',
-      })
-    ).error.code,
+    (await service.inbox(session('chen'), { nested: { memberId: 'lin' } })).error.code,
     'actor-from-body',
   );
-  assert.equal(
-    (
-      await service.startPlan(session('ghost'), {
-        taskId: applied.taskId,
-        planId: applied.id,
-        revision: applied.revision,
-        idempotencyKey: 'start-ghost',
-      })
-    ).error.code,
-    'not-in-directory',
-  );
+  assert.equal((await service.inbox(session('outside'), {})).value.actorId, 'outside');
+  assert.equal((await service.inbox(session('ghost'), {})).error.code, 'not-in-directory');
 });
 
 test('start accepts only the requested revision and replays a partial write', async () => {
@@ -270,7 +256,7 @@ test('a non-member and a non-participant are refused without the delivery text',
     text: secret,
   });
   assert.equal(replay.ok, false);
-  assert.equal(replay.error.code, 'not-assignee');
+  assert.equal(replay.error.code, 'not-participant');
   assert.equal(JSON.stringify(replay).includes(secret), false);
   assert.equal(replay.value, undefined);
   const ghost = await service.submit(session('ghost'), {
@@ -296,6 +282,24 @@ test('a non-member and a non-participant are refused without the delivery text',
     idempotencyKey: 'ghost-start',
   });
   assert.equal(ghostStart.error.code, 'not-in-directory');
+  const malloryReport = await service.report(session('mallory'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(malloryReport.error.code, 'not-participant');
+  assert.equal(JSON.stringify(malloryReport).includes(secret), false);
+  const ghostReport = await service.report(session('ghost'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(ghostReport.error.code, 'not-in-directory');
+  const ghostInbox = await service.inbox(session('ghost'), {});
+  assert.equal(ghostInbox.ok, false);
+  const malloryInbox = await service.inbox(session('mallory'), {});
+  assert.equal(malloryInbox.ok, true);
+  assert.equal(malloryInbox.value.nodes.length, 0);
   const ghostSettle = await service.settle(session('ghost'), {
     ...locate(applied, 'design', store.node('design').command.version, 'ghost-settle'),
     roundId: submitted.value.node.currentRoundId,
@@ -303,6 +307,12 @@ test('a non-member and a non-participant are refused without the delivery text',
   });
   assert.equal(ghostSettle.ok, false);
   assert.equal(JSON.stringify(ghostSettle).includes(secret), false);
+  const participantReport = await service.report(session('lin'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(participantReport.ok, true);
 });
 
 test('authorization, stale delivery, and a failed write leave the node unchanged', async () => {
@@ -321,8 +331,10 @@ test('authorization, stale delivery, and a failed write leave the node unchanged
   await startChen(service, applied);
   const body = locate(applied, 'design', 1, 'deliver-1');
   const outsider = await service.submit(session('outside'), { ...body, text: '代交' });
-  assert.equal(outsider.error.code, 'not-assignee');
-  assert.equal(outsider.error.details.canSubmitNode, false);
+  assert.equal(outsider.error.code, 'not-participant');
+  const otherParticipant = await service.submit(session('lin'), { ...body, text: '代交' });
+  assert.equal(otherParticipant.error.code, 'not-assignee');
+  assert.equal(otherParticipant.error.details.canSubmitNode, false);
   assert.equal(store.node('design').artifactVersions.length, 0);
 
   const empty = await service.submit(session('chen'), { ...body, text: '   ' });
@@ -370,7 +382,7 @@ test('authorization, stale delivery, and a failed write leave the node unchanged
 
   const roundId = submitted.value.node.currentRoundId;
   const artifactVersionId = submitted.value.node.artifacts.at(-1).id;
-  const wrongReviewer = await service.ballot(session('outside'), {
+  const wrongReviewer = await service.ballot(session('chen'), {
     ...locate(applied, 'design', store.node('design').command.version, 'vote-outside'),
     roundId,
     artifactVersionId,
@@ -499,6 +511,19 @@ test('a send-back does not unlock, and the old round cannot accept another vote'
     action: 'approve',
   });
   assert.equal(stale.error.code, 'stale-round');
+  const reports = await service.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(
+    reports.value.reports.find((item) => item.nodeId === 'design').reviewOutcome,
+    'pending',
+  );
+  assert.equal(
+    reports.value.reports.find((item) => item.nodeId === 'publish').blockReason,
+    '等待前置节点完成',
+  );
 });
 
 test('an over-deep body and an oversized delivery are validation errors', async () => {
@@ -512,11 +537,7 @@ test('an over-deep body and an oversized delivery are validation errors', async 
     cursor.push(next);
     cursor = next;
   }
-  const nested = await service.submit(session('chen'), {
-    ...locate(applied, 'design', 1, 'deep'),
-    text: 'x',
-    nested: deep,
-  });
+  const nested = await service.inbox(session('chen'), { nested: deep });
   assert.equal(nested.error.code, 'validation');
   const huge = await service.submit(session('chen'), {
     ...locate(applied, 'design', 1, 'huge'),
@@ -547,6 +568,15 @@ test('a half-written start rejects node writes until retry, then delivery fills 
   assert.equal(failed.error.code, 'unavailable');
   assert.equal(store.planCount(), 0);
   assert.equal(store.node('publish'), undefined);
+  const inbox = await service.inbox(session('chen'), {});
+  assert.equal(inbox.value.items.length, 0);
+  const hidden = await service.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(hidden.error.code, 'plan-incomplete');
+  assert.equal(JSON.stringify(hidden).includes('在计划半启动时交付'), false);
 
   store.arm(0);
   const submitted = await service.submit(session('chen'), {
@@ -592,6 +622,11 @@ test('a half-written start rejects node writes until retry, then delivery fills 
   );
   const reconciled = await service.reconcile();
   assert.equal(reconciled.value.unlocked, 0);
+  const visible = await service.inbox(session('outside'), {});
+  assert.equal(
+    visible.value.items.some((item) => item.nodeId === 'publish' && item.action === 'submit'),
+    true,
+  );
 
   store.node('publish').handoff = { ...store.node('publish').handoff, inputRefs: [] };
   const repaired = await service.reconcile();
@@ -617,15 +652,7 @@ test('multi-member calls come from the resolver, and another space is not-found'
   );
   const { service, store } = create(state);
 
-  const absent = await service.startPlan(
-    {},
-    {
-      taskId: applied.taskId,
-      planId: applied.id,
-      revision: applied.revision,
-      idempotencyKey: 'start-absent',
-    },
-  );
+  const absent = await service.inbox({}, {});
   assert.equal(absent.error.code, 'unauthenticated');
   const untrusted = await service.startPlan(
     { member: { ok: false, status: 403, code: 'untrusted-request' } },
@@ -650,6 +677,7 @@ test('multi-member calls come from the resolver, and another space is not-found'
   );
   assert.equal(ownerBrowser.error.code, 'unauthenticated');
   assert.equal(JSON.stringify(ownerBrowser).includes('chen'), false);
+
   const hidden = await service.startPlan(session('chen', ['north']), {
     taskId: applied.taskId,
     planId: applied.id,
@@ -674,10 +702,161 @@ test('multi-member calls come from the resolver, and another space is not-found'
   });
   assert.equal(delivered.value.disposition, 'applied');
 
+  const crossed = await service.report(session('lin', ['north']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(crossed.error.code, 'not-found');
+  assert.equal(JSON.stringify(crossed).includes('只给陈宁的说明'), false);
   const crossedSubmit = await service.submit(session('lin', ['north']), {
     ...locate(applied, 'design', delivered.value.node.version, 'lin-cross'),
     text: '跨空间提交',
   });
   assert.equal(crossedSubmit.error.code, 'not-found');
   assert.equal(JSON.stringify(crossedSubmit).includes('只给陈宁的说明'), false);
+
+  const chenInbox = await service.inbox(session('chen'), {});
+  const linInbox = await service.inbox(session('lin'), {});
+  assert.equal(chenInbox.value.actorId, 'chen');
+  assert.equal(linInbox.value.actorId, 'lin');
+  assert.equal(
+    chenInbox.value.items.some((item) => item.actorId === 'lin'),
+    false,
+  );
+  assert.equal(
+    linInbox.value.items.some((item) => item.action === 'review' && item.actorId === 'lin'),
+    true,
+  );
+  assert.equal(
+    chenInbox.value.items.some((item) => item.action === 'review'),
+    false,
+  );
+});
+
+test('a corrupt stored record is skipped by inbox and report', async () => {
+  const { state, applied } = confirm([
+    workflowNode({ id: 'design', title: '设计' }),
+    workflowNode({ id: 'publish', title: '发布', assigneeId: 'outside', dependsOn: ['design'] }),
+  ]);
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  store.node('publish').handoff = {};
+  const inbox = await service.inbox(session('chen'), {});
+  assert.equal(inbox.ok, true);
+  assert.equal(
+    inbox.value.items.some((item) => item.nodeId === 'publish'),
+    false,
+  );
+  const report = await service.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(report.ok, true);
+  assert.equal(
+    report.value.reports.some((item) => item.nodeId === 'design'),
+    true,
+  );
+  assert.equal(
+    report.value.reports.some((item) => item.nodeId === 'publish'),
+    false,
+  );
+});
+
+test('a reviewer removed from the task can no longer ballot or report', async () => {
+  const { state, applied } = confirm(
+    [
+      workflowNode({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['lin'],
+      }),
+    ],
+    [lin],
+  );
+  const { service } = create(state);
+  await startChen(service, applied);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deliver-kept'),
+    text: '初稿',
+  });
+  assert.equal(submitted.ok, true);
+  state.tasks[0].participantIds = state.tasks[0].participantIds.filter((id) => id !== 'lin');
+  const ballot = await service.ballot(session('lin'), {
+    ...locate(applied, 'design', submitted.value.node.version, 'vote-removed'),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+    action: 'approve',
+  });
+  assert.equal(ballot.ok, false);
+  assert.equal(ballot.error.code, 'not-participant');
+  assert.equal(JSON.stringify(ballot).includes('初稿'), false);
+  const report = await service.report(session('lin'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(report.error.code, 'not-participant');
+  assert.equal(JSON.stringify(report).includes('初稿'), false);
+  const inbox = await service.inbox(session('lin'), {});
+  assert.equal(inbox.ok, true);
+  assert.equal(inbox.value.items.length, 0);
+  assert.equal(inbox.value.nodes.length, 0);
+  assert.equal(JSON.stringify(inbox).includes('初稿'), false);
+  const settled = await service.settle(session('lin'), {
+    ...locate(applied, 'design', submitted.value.node.version, 'settle-removed'),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+  });
+  assert.equal(settled.error.code, 'not-participant');
+  assert.equal(JSON.stringify(settled).includes('初稿'), false);
+  const replayedStart = await service.startPlan(session('lin'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-1',
+  });
+  assert.equal(replayedStart.error.code, 'not-participant');
+  assert.equal(JSON.stringify(replayedStart).includes('初稿'), false);
+  const still = await service.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(still.ok, true);
+});
+
+test('a participant who is neither assignee nor reviewer cannot settle', async () => {
+  const { state, applied } = confirm(
+    [
+      workflowNode({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['lin'],
+      }),
+    ],
+    [lin],
+  );
+  state.tasks[0].participantIds = [...state.tasks[0].participantIds, 'outside'];
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deliver-role'),
+    text: '只有执行者和评审人能结算',
+  });
+  assert.equal(submitted.ok, true);
+  const version = store.node('design').command.version;
+  const settled = await service.settle(session('outside'), {
+    ...locate(applied, 'design', version, 'settle-outsider'),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+  });
+  assert.equal(settled.ok, false);
+  assert.equal(settled.error.code, 'not-assigned-reviewer');
+  assert.equal(JSON.stringify(settled).includes('只有执行者和评审人能结算'), false);
+  assert.equal(store.node('design').command.version, version);
+  assert.equal(store.node('design').command.status, 'in-review');
 });

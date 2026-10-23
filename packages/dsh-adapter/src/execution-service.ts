@@ -4,6 +4,7 @@ import {
   completionSource,
   createExecutionHandoff,
   downstreamRecords,
+  executionInbox,
   nodeRecordKey,
   settleReview,
   startAppliedPlan,
@@ -14,6 +15,7 @@ import {
   castBallot,
   WorkbenchError,
   type ExecutionNodeRecord,
+  type InboxItem,
   type NodeExecutionReport,
   type Workbench,
 } from '@zhuma/agent-core';
@@ -68,6 +70,12 @@ const settleSchema = z.strictObject({
   roundId: id,
   artifactVersionId: id,
 });
+const reportSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int(),
+});
+
 export interface PlanReceipt {
   readonly idempotencyKey: string;
   readonly fingerprint: string;
@@ -92,6 +100,29 @@ export interface ExecutionFailure {
 export type ExecutionResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: ExecutionFailure };
+
+export interface ExecutionNodeView {
+  readonly nodeId: string;
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly version: number;
+  readonly status: NodeExecutionReport['status'];
+  readonly goal: string;
+  readonly expectedOutput: string;
+  readonly assigneeId: string;
+  readonly assigneeKind: 'human' | 'expert';
+  readonly reviewerIds: readonly string[];
+  readonly ownerId: string | null;
+  readonly rounds: ExecutionNodeRecord['rounds'];
+  readonly artifacts: ExecutionNodeRecord['artifactVersions'];
+  readonly comments: ExecutionNodeRecord['comments'];
+  readonly entryStatus?: 'ready' | 'needs-revision';
+  readonly currentRoundId?: string;
+  readonly acceptedArtifactVersionId?: string;
+  readonly reviewOutcome?: NodeExecutionReport['reviewOutcome'];
+  readonly blockReason?: string;
+}
 
 const MESSAGES: Record<string, string> = {
   'actor-from-body': '不能在请求里指定操作者。',
@@ -137,13 +168,33 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
   return fail(unknown ? 'unknown-field' : 'validation');
 }
 
-function commandNode(record: ExecutionNodeRecord) {
+export function toNodeView(record: ExecutionNodeRecord): ExecutionNodeView {
+  const report = toNodeExecutionReport(record);
   return {
     nodeId: record.nodeId,
-    status: record.command.status,
+    taskId: record.taskId,
+    planId: record.planId,
+    revision: record.revision,
     version: record.command.version,
+    status: report.status,
+    goal: record.handoff.goal,
+    expectedOutput: record.handoff.expectedOutput,
+    assigneeId: record.handoff.assignee.id,
+    assigneeKind: record.handoff.assignee.kind,
+    reviewerIds: record.handoff.reviewerIds,
+    ownerId: record.ownerId,
+    rounds: record.rounds,
     artifacts: record.artifactVersions,
+    comments: record.comments,
+    ...(record.command.entryStatus !== undefined
+      ? { entryStatus: record.command.entryStatus }
+      : {}),
     ...(record.currentRoundId !== undefined ? { currentRoundId: record.currentRoundId } : {}),
+    ...(report.acceptedArtifactVersionId !== undefined
+      ? { acceptedArtifactVersionId: report.acceptedArtifactVersionId }
+      : {}),
+    ...(report.reviewOutcome !== undefined ? { reviewOutcome: report.reviewOutcome } : {}),
+    ...(report.blockReason !== undefined ? { blockReason: report.blockReason } : {}),
   };
 }
 
@@ -178,19 +229,43 @@ function recordedPlan(storage: ExecutionStorage, record: ExecutionNodeRecord): b
   return storage.readPlan(planKey(record.taskId, record.planId, record.revision)) !== undefined;
 }
 
-/** Writes skip a record that is not an object with a command and a handoff. */
+/** A stored value that cannot be read as a node is skipped, not fatal. */
 function intactNode(record: ExecutionNodeRecord): boolean {
-  return (
-    record != null &&
-    typeof record === 'object' &&
-    record.handoff != null &&
-    typeof record.handoff === 'object' &&
-    record.command != null &&
-    typeof record.command.status === 'string' &&
-    typeof record.command.version === 'number' &&
-    Array.isArray(record.rounds) &&
-    Array.isArray(record.receipts)
-  );
+  try {
+    if (record == null || typeof record !== 'object') return false;
+    if (
+      typeof record.nodeId !== 'string' ||
+      typeof record.taskId !== 'string' ||
+      typeof record.planId !== 'string' ||
+      typeof record.revision !== 'number'
+    ) {
+      return false;
+    }
+    const handoff = record.handoff as {
+      dependencyNodeIds?: unknown;
+      reviewerIds?: unknown;
+      assignee?: { kind?: unknown; id?: unknown };
+    } | null;
+    if (handoff == null || typeof handoff !== 'object' || Array.isArray(handoff)) return false;
+    if (!Array.isArray(handoff.dependencyNodeIds) || !Array.isArray(handoff.reviewerIds)) {
+      return false;
+    }
+    if (
+      handoff.assignee == null ||
+      typeof handoff.assignee !== 'object' ||
+      typeof handoff.assignee.kind !== 'string' ||
+      typeof handoff.assignee.id !== 'string'
+    ) {
+      return false;
+    }
+    if (record.command == null || typeof record.command !== 'object') return false;
+    if (typeof record.command.status !== 'string' || typeof record.command.version !== 'number') {
+      return false;
+    }
+    return Array.isArray(record.rounds) && Array.isArray(record.receipts);
+  } catch {
+    return false;
+  }
 }
 
 function samePlan(record: ExecutionNodeRecord, taskId: string, planId: string, revision: number) {
@@ -212,6 +287,7 @@ function rejectionDetails(
 /** Serializes durable execution commands. One user command writes one node record. */
 export class ExecutionService {
   private writes: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly storage: ExecutionStorage,
     private readonly workbench: { readWorkbench(): Workbench },
@@ -222,6 +298,35 @@ export class ExecutionService {
     body: unknown,
   ): Promise<ExecutionResult<{ disposition: string; reports: NodeExecutionReport[] }>> {
     return this.enqueue(() => this.startPlanNow(caller, body));
+  }
+
+  inbox(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<
+    ExecutionResult<{ actorId: string; items: readonly InboxItem[]; nodes: ExecutionNodeView[] }>
+  > {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(z.strictObject({}).optional(), body ?? {});
+      if (!parsed.ok) return parsed;
+      const records = this.storage.listNodes().filter((record) => {
+        if (!intactNode(record) || !recordedPlan(this.storage, record)) return false;
+        if (this.spaceOf(record.taskId, actor.value.spaceIds) !== 'ok') return false;
+        return (
+          planMembership(this.workbench.readWorkbench(), record.taskId, actor.value.actorId) ===
+          'allowed'
+        );
+      });
+      const items = executionInbox({ actorId: actor.value.actorId, records });
+      const nodes = records
+        .filter((record) =>
+          items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
+        )
+        .map(toNodeView);
+      return { ok: true, value: { actorId: actor.value.actorId, items, nodes } };
+    });
   }
 
   submit(caller: ExecutionCaller, body: unknown) {
@@ -296,6 +401,36 @@ export class ExecutionService {
         };
       }),
     );
+  }
+
+  report(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ reports: NodeExecutionReport[] }>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(reportSchema, body);
+      if (!parsed.ok) return parsed;
+      const space = this.spaceOf(parsed.value.taskId, actor.value.spaceIds);
+      if (space === 'hidden') return fail('not-found');
+      const membership = planMembership(
+        this.workbench.readWorkbench(),
+        parsed.value.taskId,
+        actor.value.actorId,
+      );
+      if (membership === 'missing') return fail('plan-not-found');
+      if (membership === 'not-participant') return fail('not-participant');
+      const { taskId, planId, revision } = parsed.value;
+      const reports = this.storage
+        .listNodes()
+        .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision));
+      if (this.storage.readPlan(planKey(taskId, planId, revision)) === undefined) {
+        if (reports.length > 0) return fail('plan-incomplete');
+        return { ok: true, value: { reports: [] } };
+      }
+      return { ok: true, value: { reports: reports.map(toNodeExecutionReport) } };
+    });
   }
 
   /** Fill unlocks that were settled before their downstream write landed. */
@@ -440,6 +575,13 @@ export class ExecutionService {
     const current = this.storage.readNode(nodeRecordKey(parsed.value));
     if (!current || !intactNode(current)) return fail('not-found');
     if (this.spaceOf(current.taskId, actor.value.spaceIds) !== 'ok') return fail('not-found');
+    const membership = planMembership(
+      this.workbench.readWorkbench(),
+      current.taskId,
+      actor.value.actorId,
+    );
+    if (membership === 'missing') return fail('not-found');
+    if (membership === 'not-participant') return fail('not-participant');
     if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
     const executed = run(actor.value.actorId, parsed.value, current);
     if (!executed.result.ok) {
@@ -479,7 +621,7 @@ export class ExecutionService {
       value: {
         disposition: executed.result.disposition,
         report: toNodeExecutionReport(record),
-        node: commandNode(record),
+        node: toNodeView(record),
       },
     };
   }

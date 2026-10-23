@@ -62,9 +62,9 @@
 
 ## 身份
 
-默认是多人模式。`resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。没有解析结果，或结果不是成功时，返回 `unauthenticated`。`{ ok: false, status: 403, code: 'untrusted-request' }` 保持 `untrusted-request`。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。owner principal 不会在这里映射成已绑定的成员。
+单人还是多人、当前成员是谁，只由身份模块的 `resolveMember` 决定。执行侧没有自己的单人开关，也没有 `bind-owner`。`resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。没有解析结果，或结果不是成功时，返回 `unauthenticated`。`{ ok: false, status: 403, code: 'untrusted-request' }` 保持 `untrusted-request`。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。owner principal 不会在这里映射成成员。
 
-`MemberResolver` 与 B-ID0a 相同，本仓不从那一支导入。`MemberRequest` 是 `{ headers: IncomingHttpHeaders }`。`resolve(request)` 返回 `Promise<MemberResolution>`。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }` 或 `{ ok: false, status: 403, code: 'untrusted-request' }`。A 稍后把 `memberResolver(ctx)` 注入执行入口。本模块不读取 cookie。B-ID0a 已把成员 cookie 的 `Path` 改成 `/`。
+`MemberResolver` 与 B-ID0a 相同。`MemberRequest` 是 `{ headers: IncomingHttpHeaders }`。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }` 或 `{ ok: false, status: 403, code: 'untrusted-request' }`。本模块不读取 cookie。通道层会直接调用 `resolveMember`。
 
 正文里任意嵌套的 `actorId`、`memberId`、`reviewerId`，`containsActorField` 为真。嵌套超过 32 层时 `scanActorField` 返回 `too-deep`，不再抛出。
 
@@ -78,7 +78,7 @@
 
 未实现（后续切片）：
 
-- 待办、报告和 `/zhuma-exec`
+- `/zhuma-exec`
 - 执行界面
 - 产物字节、预览和访问控制。这一层只校验文件元数据
 - 专家评审和 `interpretAgentReview`
@@ -86,8 +86,8 @@
 
 ## 写入
 
-`ExecutionService` 串行执行 `start-plan`、`submit`、`ballot`、`settle` 和启动对账。actor 只来自已经解析好的 `MemberResolution`。
+`ExecutionService` 串行执行 `start-plan`、`submit`、`ballot`、`settle` 和启动对账。actor 只来自 `resolveMember` 给出的 `MemberResolution`。每条写入先核对空间、任务成员，再由节点角色（执行者或评审人）决定能不能提交或投票。从参与者里移除的评审人再投票得到 `not-participant`。
 
 `start-plan` 先写节点，再写计划回执。回执还没有写上时，`submit`、`ballot`、`settle` 返回 `plan-incomplete`，响应不带节点正文。继续的方式只有同一个幂等键重试 `start-plan`，或服务上的对账。半写窗口里的提交不会把上游完成，所以重试启动时下游还拿不到 `inputRefs`。回执写上之后，正常提交才会完成节点并解锁。
 
-待办和报告在下一支。`/zhuma-exec` 在读取之后单独接入。
+`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。`/zhuma-exec` 在下一支接入。
