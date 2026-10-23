@@ -1,0 +1,47 @@
+{
+  "surface": "isolated official DSH Desktop / local owner / no model execution",
+  "sourceHead": "863deb315656e3489677b805b8d89d5b0d8a7322",
+  "baselineHead": "e081b86d894d3fda050f45122ff58d33b1775de3",
+  "upstream": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "viewport": {
+    "width": 1280,
+    "height": 800,
+    "zoom": 1
+  },
+  "theme": "explicit dark; no OS theme switch claim",
+  "checks": {
+    "realSidebarEntry": true,
+    "normalUiReadAndEdit": true,
+    "sameExpertIdAcrossCatalogs": true,
+    "singleReceipt": true,
+    "tasksUnchanged": true,
+    "planningAuditRecords": 0,
+    "coldReopenPreservedDefinition": true
+  },
+  "limitations": [
+    "No member authentication or personal/team scope proof",
+    "No favorites, direct Agent use, publishing or built-in expert migration proof",
+    "No installed package, native drag or OS theme switch proof"
+  ],
+  "before": {
+    "clientSha256": "be0b314b7079f3e7d2f6497557badd0ffa71b68084248ea0ff61e82a129ee34c",
+    "hostSha256": "48aaa369a95dd7fea65ceab8b5030bbee059f67281bd3c8785618a0ea95a0d8d",
+    "exactLoadedClientMatch": true
+  },
+  "after": {
+    "clientSha256": "abd2c99c73f2837b7c247242a42ff7cbe45f74b677d5697525983d8de81e0005",
+    "hostSha256": "48aaa369a95dd7fea65ceab8b5030bbee059f67281bd3c8785618a0ea95a0d8d",
+    "exactLoadedClientMatch": true
+  },
+  "reopened": {
+    "clientSha256": "abd2c99c73f2837b7c247242a42ff7cbe45f74b677d5697525983d8de81e0005",
+    "hostSha256": "48aaa369a95dd7fea65ceab8b5030bbee059f67281bd3c8785618a0ea95a0d8d",
+    "exactLoadedClientMatch": true
+  },
+  "layout": {
+    "width": 1280,
+    "height": 800,
+    "titleFont": "22px",
+    "hasHorizontalOverflow": false
+  }
+}

@@ -26,7 +26,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 | `start-plan` | `taskId`、`planId`、`revision`、`idempotencyKey`                                                                                  | 只接受这一份已确认修订。修订对不上返回 `plan-not-found`，不改用更新的计划。无依赖节点进入 `ready`，有依赖节点一律进入 `blocked`（上游当时是否已经完成都不改这个入口），两者都写下 `entryStatus: ready`。`plan-started` 不写 `inputRefs`                                                                                        |
 | `inbox`      | `{}`                                                                                                                              | 用 `resolveMember` 得到的 actor 调用 `executionInbox`。先按空间和 `planMembership` 过滤记录，再生成待办。被移出参与者后，待办行和节点视图（目标、交付正文、轮次、评论）都不返回。没有成员会话返回 `unauthenticated`                                                                                                            |
 | `submit`     | `taskId`、`planId`、`revision`、`nodeId`、`expectedVersion`、`idempotencyKey`、`text`、`files`、`links`                           | 只有该节点的 human 执行者可以提交。文件只收 `ArtifactFileRef` 元数据                                                                                                                                                                                                                                                           |
-| `ballot`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`、`action`、可选 `comment` 和 `unresolvedCommentIds` | actor 必须与票面评审人一致，且在该轮 `reviewerIds` 里。`comment` 只留下评论，不改变轮次状态，也不改变已经投下的票。退回必须有意见，或引用至少一条这条产物上未解决的评论；两样都没有是 `empty-request-changes`，引用对不上是 `comment-not-unresolved`。这两种拒绝都不写                                                         |
+| `ballot`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`、`action`、可选 `comment` 和 `unresolvedCommentIds` | actor 必须与票面评审人一致，且在该轮 `reviewerIds` 里。`comment` 只留下评论，不改变轮次状态，也不改变已经投下的票。评论去掉空白后为空时返回 `empty-comment`，不写。退回必须有意见，或引用至少一条这条产物上未解决的评论；两样都没有是 `empty-request-changes`，引用对不上是 `comment-not-unresolved`。这三种拒绝都不写         |
 | `settle`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`                                                     | 只有该节点的 human 执行者或评审人可以结算。按当前轮的票面结算。未齐票为 `ignored`。幂等键使用 `settle:{roundId}`                                                                                                                                                                                                               |
 | `report`     | `taskId`、`planId`、`revision`                                                                                                    | 只有任务负责人或参与者可以读。每个节点一份 `NodeExecutionReport`，含 `acceptedArtifactVersionId` 和 `reviewOutcome`                                                                                                                                                                                                            |
 | `revision`   | `taskId`、`planId`、`revision`、`nodeId`                                                                                          | 只读。human 执行者，或同时仍在最近一次退回轮次和当前评审名单里的评审人，可以看到被评审版本、上一版，以及每一次退回的意见。意见写评审人姓名，不写标识。文件只返回标识、类型和字节数。空间不符是 `not-found`，被移出任务是 `not-participant`。被移出评审名单的人，以及本来就不是评审人的参与者，与节点不存在是同一份 `not-found` |
@@ -44,7 +44,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。项目属于哪个空间，只问调用方注入的 `ProjectSpaceDirectory`。执行服务把 `spaceForProject(projectId)` 返回的空间 id 和这次成员的 `spaceIds` 做精确比较。没有注入这份目录时，不把 `projectId` 当作空间 id，启动、提交、投票、结算、报告和待办全部拒绝，也不写入。
 3. `legacy-single-user` 并且导入恰好一个账户、`ownerAccountId` 写明是这个账户时，owner cookie 才解析成那个账户。`multi-member` 即使导入是这个形状，也不把 DSH owner cookie 当成成员。
-4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。目录没有这个项目或空间对不上时，前五个命令返回 `not-found`，待办不列出这些任务。目录抛错、返回 `unavailable`，或给出不合法的结果时，这些命令、待办、`revision` 和 `draft` 都先返回同一份 `unavailable`：「执行记录暂时不可用，请稍后用同一个请求再试一次。」任务在不在，字节相同，并且拒绝前不写。提交、投票和结算先查目录，再读节点；节点不存在或记录损坏时也是同一份 `unavailable`。真正写盘失败仍是「执行记录暂时写不进去，请用同一个请求再试一次。」空间通过之后才检查任务成员，然后才检查节点角色。
+4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。目录正常应答时，任务不存在、目录没有这个项目，或空间对不上，前五个命令返回同一份 `not-found`（`code`、`message`、`details` 都相同），待办不列出这些任务，也不能靠响应区分任务不存在和任务在别的空间。目录抛错、返回 `unavailable`，或返回 `ok` 但空间 id 缺失、为空、不是字符串时，不论任务是否存在，这五个命令都返回同一份 `unavailable`，文案是「执行记录暂时不可用，请稍后用同一个请求再试一次。」，待办也返回这份 `unavailable`，并且不写入。`revision` 和 `draft` 同样先返回这份 `unavailable`，任务在不在字节相同，拒绝前不写。任务不在工作台里时，不把空字符串传给 `spaceForProject`。请求里的 `taskId` 必须符合工作台 `WorkTaskSchema` 的 id，和 `save-task`、已有存储是同一条规则：1 到 100 个字符，匹配 `/^[\w-]+$/u`。不符合的五个入口都返回和任务不存在一样的 `not-found`，不调用目录，也不写入。符合时才用这个 `taskId` 判断目录能不能应答；目录正常应答时仍返回 `not-found`，不采用返回的空间。目录整体故障时，符合这条规则的 id 无论任务是否还在工作台，都返回同一份 `unavailable`。待办遇到已经不在工作台、且 id 符合这条规则的任务时也这样询问。A 的 `spaceForProject` 必须接受任意这种合法 id，对不认识的返回 `unknown`，不能抛错，也不能返回 `unavailable`。写盘失败仍是「执行记录暂时写不进去，请用同一个请求再试一次。」计划交接抛出预期之外的错误时用「执行记录暂时不可用，请稍后用同一个请求再试一次。」，因为这不是写盘失败。目录核对在 `submit`、`ballot`、`settle` 的任何写入之前完成。空间通过之后才检查任务成员，然后才检查节点角色。已经通过空间核对的任务，修订对不上时 `start-plan` 仍返回 `plan-not-found`。
 
 官方 `rpc.handle` 的 Peer 没有请求头，所以执行通道不用它。`connection.fetch.register` 的 Fetch `Request` 保留 `cookie` 和 `host`。Connection 的精确路由仍然只把 owner Peer 送进处理函数；成员身份只从 `resolveMember` 来。
 
@@ -53,7 +53,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 | 操作         | 谁可以                                                                                                                                                                           |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `start-plan` | 任务 `ownerId`，或 `participantIds` 里的目录成员。其他人返回 `not-participant`                                                                                                   |
-| `report`     | 与 `start-plan` 相同。任务不存在返回 `plan-not-found`                                                                                                                            |
+| `report`     | 与 `start-plan` 相同。任务不存在与其他空间返回同一份 `not-found`                                                                                                                 |
 | `inbox`      | 已解析的目录 human，并且仍是该任务的负责人或参与者。待办只列出该 actor 自己的项，节点视图只附带这些项。移出参与者后该项消失，响应不带交付正文。非目录成员返回 `not-in-directory` |
 | `submit`     | 先是任务成员，然后是该节点的 human 执行者。不是参与者返回 `not-participant`。不是执行者返回 `not-assignee`。计划回执缺失时返回 `plan-incomplete`                                 |
 | `ballot`     | 先是任务成员，然后必须在该节点 `reviewerIds` 里，且票面评审人就是这个 actor。从参与者里移除后再投票返回 `not-participant`。计划回执缺失时返回 `plan-incomplete`                  |
@@ -85,7 +85,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `comments`：被引用的未解决评论
 - `receipts`：业务幂等回执，指纹覆盖 actor、交付正文或票面，不覆盖 `expectedVersion`
 
-计划表 `plans`。键：`{taskId}:{planId}:{revision}`。值：`{ idempotencyKey, fingerprint, nodeIds }`。指纹只覆盖 `taskId`、`planId`、`revision`。节点已经启动后，再用来启动同一修订会重放；同一幂等键配上另一个修订返回 `idempotency-mismatch`。
+计划表 `plans`。键：`{taskId}:{planId}:{revision}`。值：`{ idempotencyKey, fingerprint, nodeIds }`。指纹只覆盖 `taskId`、`planId`、`revision`。同一个键、同一个修订先重放，别的项目的目录故障不会改变这次重试。别的键先查重：本空间另一个计划用过的键返回 `idempotency-mismatch`，查重时目录不可用返回 `unavailable`；没有冲突的键也重放。幂等键只在本空间内判重：同一个键配上本空间的另一个修订，以及另一个计划的键配上已经启动的修订，都返回 `idempotency-mismatch`。别的空间里的同一个键，在那个空间的目录正常应答时，不影响本空间，响应里也看不出那个键。计时上看得出。例如目录慢 2ms 时，中位数大约是 5057µs 对 2866µs。查本空间里另一个项目时，目录抛错、返回 `unavailable` 或 `unknown`、结果是 null 或字符串、reason 无法识别，或空间 id 无法使用，启动都返回 `unavailable`。目录恢复前，这个键不能再拿去启动。只有目录明确给出另一个空间 id 时才忽略。
 
 下游解锁的幂等键是 `unlock:{sourceId}:{downstreamNodeId}`。`sourceId` 在有评审轮次时是 `currentRoundId`，没有轮次时是 `artifact:{acceptedArtifactVersionId}`。依赖没有全部接受时，解锁结果是 `ignored`，不写回执。全部接受后把 `{ sourceNodeId, artifactVersionId }` 经 `readNodeHandoff` 写入该下游的 `inputRefs`，并把还处在 `blocked` 的下游推进到 `ready` 一次。下游若已经是 `ready` 但 `inputRefs` 仍空，同一次解锁补上这些引用，不再改状态。同一键再请求则重放。
 
@@ -124,9 +124,9 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
 - `revision` 读取退回时的被评审版本、上一版和每一次退回的意见。意见显示评审人姓名，不显示标识。第二次退回保留第一次的意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。被移出当前名单的评审人与节点不存在是同一份 `not-found`。目录不可用或结果不合法时先查目录，不论任务或节点是否存在都返回同一份 `unavailable`：「执行记录暂时不可用，请稍后用同一个请求再试一次。」拒绝前不写。目录正常时，任务不存在、节点不存在和在别的空间返回同一份 `not-found`
 - 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名写成「第 2 版」，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
-- 评审人可以只评论。评论不改变轮次状态，也不改变已经投下的票。退回没有意见、也没有引用未解决评论时返回 `empty-request-changes`，引用对不上返回 `comment-not-unresolved`，两种都不写
+- 评审人可以只评论。评论不改变轮次状态，也不改变已经投下的票。评论去掉空白后为空时返回 `empty-comment`，不写。退回没有意见、也没有引用未解决评论时返回 `empty-request-changes`，引用对不上返回 `comment-not-unresolved`，三种都不写
 - 提交、投票和结算共用的命令也先查目录，再读节点。八种目录故障下，节点在不在、记录损坏与否，都是同一份 `unavailable`，拒绝前不写
-- 人工执行者把交付草稿写在节点记录上。关闭后再打开，包括退回后，仍能读到自己的草稿。只有这位执行者能读写。空间不对和任务不存在，在写之前返回同一份 `not-found`。目录不可用或结果不合法时，任务和节点在不在都返回同一份稍后重试的 `unavailable`，拒绝前不写。不是参与者要等空间通过之后才拒绝。节点不是 `ready` 或 `needs-revision` 时不写。草稿版本不符时不覆盖，并在 `details` 里返回当前版本。同一个幂等键被拿去写另一份内容时也不覆盖。单条链接不超过 2048 个字符，全部链接合计不超过 8192 个字符，超出在写之前拒绝。提交成功后清掉草稿
+- 人工执行者把交付草稿写在节点记录上。关闭后再打开，包括退回后，仍能读到自己的草稿。只有这位执行者能读写。空间不对和任务不存在，在写之前返回同一份 `not-found`。目录不可用或结果不合法时，任务和节点在不在都返回同一份稍后重试的 `unavailable`，拒绝前不写。不是参与者要等空间通过之后才拒绝。节点不是 `ready` 或 `needs-revision` 时不写。草稿版本不符时不覆盖，并在 `details` 里返回当前版本。同一个幂等键被拿去写另一份内容时也不覆盖。单条链接不超过 2048 个字符，全部链接合计不超过 8192 个字符。文件的 id、mediaType、checksum、accessPolicyId 每一项不超过 2048 个字符。正文、链接和这些字段合计不超过 262144 个字符。超出都在写之前拒绝。提交成功后清掉草稿
 - 解锁那一次写入失败后，不必等插件再次打开。下一次已经通过目录检查的读取或写入会把下游补上：写入 `inputRefs`，并把仍是 `blocked` 的下游推进到 `ready`。同一把解锁键不会重复应用。目录不可用时这次不补写。插件打开时的对账仍然保留
 
 未实现（后续切片）：
@@ -164,7 +164,7 @@ interface ProjectSpaceDirectory {
 }
 ```
 
-`boundedProjectSpaces` 只是把一份已经给出的目录装进有界内存：最多 100 条，一个项目只属于一个空间。它不是正式数据源。
+`boundedProjectSpaces` 只是把一份已经给出的目录装进有界内存：最多 100 条，一个项目只属于一个空间。它不是正式数据源，也不从包入口 `packages/dsh-adapter/src/index.ts` 导出。A 接入时实现 `ProjectSpaceDirectory` 的 `spaceForProject`，把这个对象作为 `projectSpaces` 注入 `applyExecution`。这个函数必须接受任意合法 id（工作台 `WorkTaskSchema` 的 id：1 到 100 个字符，匹配 `/^[\w-]+$/u`），对不认识的返回 `{ ok: false, reason: 'unknown' }`，不能抛错，也不能返回 `unavailable`。`ProjectSpaceDirectory` 和 `ProjectSpaceLookup` 已由 `s1-integration.ts` 再导出，包入口的 `export type * from './s1-integration.js'` 因此带上这两个类型。
 
 `inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。
 
@@ -204,9 +204,16 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 ## 已知限制
 
-在 A 的 Host／空间模块把 `projectSpaces` 接入执行入口之前，多人模式下该入口对所有项目全部拒绝。
+在 A 的 Host／空间模块把 `projectSpaces` 接入执行入口之前，`legacy-single-user` 和 `multi-member` 一样：没有注入目录时，该入口对所有项目全部拒绝。
+
+别的空间里的同一个幂等键，响应里看不出来，计时上看得出。例如目录慢 2ms 时，中位数大约是 5057µs 对 2866µs。
+
+计划回执不保存启动当时的空间 id。查重仍然询问目录。这一轮不把空间写进回执。
 
 这些行为在本切片里保持原样：
+
+- 提交接口的链接没有长度上限。这是 WP03 留下的问题，草稿上限不改变提交。
+- 现在没有接口能产生「未解决评论」。需求 9.1「引用已有未解决评论」通过接口满足不了。
 
 - 同一轮已经投下的票不能撤回。先通过再改成退回会得到 `conflicting-ballot`，原先的通过仍然有效。
 - 交付的幂等键不随文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId`、`uploadComplete` 变化。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执，所以换这些字段再提交通常仍会执行；若上一次其实已经成功、只是响应丢失，再改这些字段会得到 `idempotency-mismatch`。

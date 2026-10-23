@@ -1,0 +1,8 @@
+License not yet selected
+
+No open-source license is granted for first-party code by this initial scaffold.
+All first-party packages are private and marked UNLICENSED until the project
+owner selects and approves a distribution license.
+
+Third-party software remains subject to its own copyright notices and licenses.
+See THIRD_PARTY_NOTICES.md and the pinned upstream repository.

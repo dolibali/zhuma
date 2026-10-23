@@ -2,11 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { apply } from '../dist/workbench-plugin.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
+import {
+  packageFixture,
+  importCommand as packageCommand,
+} from '../../../tests/fixtures/asset-package.mjs';
+import { previewResourcePackage, parseWorkflowTemplate } from '@zhuma/agent-core';
 
 async function mount() {
   const routes = new Map();
   const audits = new Map();
   const effects = [];
+  const opened = [];
+  const packages = new Map();
   let state = fixture().state;
   const ctx = {
     effect(callback) {
@@ -22,6 +29,22 @@ async function mount() {
     },
     storageDomain: {
       async open(spec) {
+        opened.push(spec.name);
+        if (spec.name === 'zhuma_asset_packages') {
+          assert.equal(spec.layout, 'per-record');
+          return {
+            close() {},
+            table: (name) => {
+              assert.equal(name, 'versions');
+              return {
+                get: (id) => packages.get(id),
+                put: async (id, value) => {
+                  packages.set(id, value);
+                },
+              };
+            },
+          };
+        }
         assert.equal(spec.name, 'zhuma_workbench');
         return {
           close() {},
@@ -61,12 +84,18 @@ async function mount() {
       }),
     );
   }
-  return { routes, request, effects };
+  return { routes, request, effects, opened };
 }
 
 test('Host route contract: exact authenticated carrier contribution, protocol identity and error redaction', async () => {
-  const { routes, request, effects } = await mount();
-  assert.equal(routes.size, 3);
+  const { routes, request, effects, opened } = await mount();
+  assert.deepEqual(opened, ['zhuma_workbench', 'zhuma_asset_packages']);
+  assert.deepEqual(
+    [...routes.keys()],
+    ['snapshot', 'command', 'plan', 'preview-import', 'resource-files'].map(
+      (e) => `/api/zhuma/${e}`,
+    ),
+  );
   assert.equal((await request('snapshot', {}, 'zhuma/command')).status, 400);
   const response = await (await request('snapshot', {})).json();
   assert.equal(response.type, 'server-response');
@@ -86,4 +115,33 @@ test('Host route contract: exact authenticated carrier contribution, protocol id
   for (const dispose of effects) await dispose();
   const stopped = await (await request('snapshot', {})).json();
   assert.equal(stopped.result.error.code, 'cancelled');
+});
+
+test('Host import route contract: preview is read-only; source queries return just the selected definition files', async () => {
+  const { request, effects } = await mount();
+  const source = packageFixture();
+  const preview = await (await request('preview-import', { kind: 'files', files: source })).json();
+  assert.equal(preview.result.ok, true);
+  assert.equal(preview.result.value.items.length, 2);
+  const before = await (await request('snapshot', {})).json();
+  assert.equal(before.result.value.state.revision, 0);
+  const command = packageCommand(previewResourcePackage(source, parseWorkflowTemplate), source);
+  const imported = await (
+    await request('command', { requestId: crypto.randomUUID(), expectedRevision: 0, command })
+  ).json();
+  assert.equal(imported.result.ok, true);
+  const expert = await (
+    await request('resource-files', { kind: 'expert', id: 'imported-1' })
+  ).json();
+  assert.equal(expert.result.value.files.length, 3);
+  assert(
+    !expert.result.value.files.some(
+      (f) => f.path.includes('skills/') || f.path.endsWith('USER.md'),
+    ),
+  );
+  const missing = await (
+    await request('resource-files', { kind: 'expert', id: 'not-an-expert' })
+  ).json();
+  assert.equal(missing.result.error.code, 'not-found');
+  for (const dispose of effects) await dispose();
 });

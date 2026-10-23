@@ -36,11 +36,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'node packages/client/tests/browser/server.mjs',
+    command: 'pnpm exec tsc -b --pretty false && node packages/client/tests/browser/server.mjs',
     cwd: root,
     url: `http://127.0.0.1:${port}/health`,
     env: { ZHUMA_UI_TEST_PORT: String(port) },
     reuseExistingServer: false,
-    timeout: 30_000,
+    timeout: 120_000,
   },
 });
