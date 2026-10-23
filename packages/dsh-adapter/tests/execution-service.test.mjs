@@ -1335,6 +1335,48 @@ test('a task id that was not generated is not-found and is not sent to the direc
   assert.deepEqual(store.snapshot(), before);
 });
 
+test('a directory fault returns the same bytes for a non-uuid task id whether or not the task exists', async () => {
+  const plainId = 'task';
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  assert.equal(applied.taskId, plainId);
+  const absent = structuredClone(state);
+  absent.tasks = [];
+  const caller = session('chen');
+  const faults = [
+    {
+      async spaceForProject() {
+        return { ok: false, reason: 'unavailable' };
+      },
+    },
+    {
+      async spaceForProject() {
+        throw new Error('space-directory-down');
+      },
+    },
+  ];
+  for (const directory of faults) {
+    const presentService = create(state, directory);
+    const absentService = create(absent, directory);
+    const beforePresent = presentService.store.snapshot();
+    const beforeAbsent = absentService.store.snapshot();
+    const present = await commandProbe(presentService.service, plainId, applied, 'plain', caller);
+    const missing = await commandProbe(absentService.service, plainId, applied, 'plain', caller);
+    for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+      const left = Buffer.from(JSON.stringify(present[endpoint]));
+      const right = Buffer.from(JSON.stringify(missing[endpoint]));
+      assert.equal(Buffer.compare(left, right), 0, `${endpoint}\n${left}\n${right}`);
+      assert.equal(present[endpoint].error.code, 'unavailable');
+      assert.equal(
+        present[endpoint].error.message,
+        '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+      );
+      assert.equal(left.includes(Buffer.from('space-directory-down')), false);
+    }
+    assert.deepEqual(presentService.store.snapshot(), beforePresent);
+    assert.deepEqual(absentService.store.snapshot(), beforeAbsent);
+  }
+});
+
 test('an unusable ok from the directory is the same unavailable bytes whether or not the task exists', async () => {
   const { state, applied } = confirm(
     [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
