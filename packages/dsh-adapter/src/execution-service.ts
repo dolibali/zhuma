@@ -515,7 +515,7 @@ export class ExecutionService {
       actorId: string;
       items: readonly InboxItem[];
       nodes: ExecutionNodeView[];
-      places: readonly InboxPlace[];
+      places?: readonly InboxPlace[];
     }>
   > {
     return this.enqueue(async () => {

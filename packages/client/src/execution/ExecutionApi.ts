@@ -92,7 +92,7 @@ export interface ExecutionInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
-  readonly places: readonly InboxPlace[];
+  readonly places?: readonly InboxPlace[];
 }
 
 export interface DeliveryDraft {
