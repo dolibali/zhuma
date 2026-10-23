@@ -25,7 +25,7 @@ import {
   dshSessionHome,
   sweepDshSessionOrphans,
 } from '@zhuma/dsh-adapter';
-import { StderrRedactor } from '../dist/dsh-sdk-executor.js';
+import { StderrRedactor, missingDshRuntimeReason } from '../dist/dsh-sdk-executor.js';
 import { createAgentWorkspaceView } from '../../client/dist/index.js';
 
 const scratchDirs = [];
@@ -568,12 +568,24 @@ test('契约：找不到运行时会明确失败，不改用模拟', async () =>
       void event;
     }
   }, /pnpm upstream:build-dsh/);
+  const runtimeReason = missingDshRuntimeReason();
+  assert.match(runtimeReason, /ZHUMA_DSH_BIN/);
+  assert.match(runtimeReason, /ZHUMA_MODEL_BASE_URL/);
+  assert.match(runtimeReason, /ZHUMA_MODEL_API_KEY/);
+  assert.match(runtimeReason, /ZHUMA_MODEL_ID/);
+  assert.match(runtimeReason, /不会改用模拟执行器/);
+  const serverSource = readFileSync(
+    fileURLToPath(new URL('../../../examples/agent-workspace/server.mjs', import.meta.url)),
+    'utf8',
+  );
+  assert.match(serverSource, /还需要 ZHUMA_MODEL_BASE_URL、ZHUMA_MODEL_API_KEY 和 ZHUMA_MODEL_ID/);
   const desk = ExecutionDesk.create(seed(), { executors: [missing], newId: ids('missing-bin') });
   desk.updateConfig({ executorId: 'dsh' });
   const refused = desk.send({ text: '不要调用', idempotencyKey: 'missing-bin-send' });
   assert.equal(refused.ok, false);
   assert.equal(refused.snapshot.runs.length, 0);
-  assert.match(refused.reason, /pnpm upstream:build-dsh/);
+  assert.equal(refused.reason, runtimeReason);
+  assert.match(refused.reason, /ZHUMA_MODEL_ID/);
   assert.equal(refused.reason.includes('模拟'), true);
   assert.equal(missing.capabilities.sessionResume, true);
   assert.equal(missing.capabilities.streaming, false);
