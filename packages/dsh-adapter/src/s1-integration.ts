@@ -174,7 +174,6 @@ export type ExecutionMessageCode =
   | 'plan-incomplete'
   | 'unavailable'
   | 'not-found'
-  | 'not-revision-reader'
   | 'not-returned'
   | 'validation'
   | 'unknown-field'

@@ -167,7 +167,6 @@ const MESSAGES = {
   'plan-incomplete': '计划还没有完整启动，暂时不能查看或写入。',
   unavailable: '执行记录暂时写不进去，请用同一个请求再试一次。',
   'not-found': '找不到这个节点。',
-  'not-revision-reader': '只有负责人和当前评审人可以查看退回意见。',
   'not-returned': '这项工作还没有被退回。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',
