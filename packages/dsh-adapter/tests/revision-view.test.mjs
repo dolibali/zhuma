@@ -289,7 +289,7 @@ test('revision returns the same unavailable bytes when the directory is down', a
   assert.equal(Buffer.compare(responseBytes(absent), responseBytes(present)), 0);
   assert.deepEqual(absent.error, {
     code: 'unavailable',
-    message: '执行记录暂时写不进去，请用同一个请求再试一次。',
+    message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
     details: {},
   });
   assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);

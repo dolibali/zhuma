@@ -482,7 +482,16 @@ export class ExecutionService {
       const parsed = parseBody(revisionSchema, body);
       if (!parsed.ok) return parsed;
       const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
-      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') {
+        return {
+          ok: false,
+          error: {
+            code: 'unavailable',
+            message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+            details: {},
+          },
+        };
+      }
       if (space === 'missing' || !space.ok) return fail('not-found');
       const current = this.storage.readNode(nodeRecordKey(parsed.value));
       if (!current || !intactNode(current)) return fail('not-found');
