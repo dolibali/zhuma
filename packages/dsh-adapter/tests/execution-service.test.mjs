@@ -1524,6 +1524,103 @@ test('a thrown lookup for another project in the same space refuses the idempote
   assert.deepEqual(store.snapshot(), before);
 });
 
+test('a directory fault while placing another project refuses the idempotency key', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '可以和北队同空间，也可以在南队' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '港务任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  const faults = [
+    { ok: false, reason: 'unavailable' },
+    { ok: true, spaceId: '' },
+    { ok: true },
+    { ok: 'yes', spaceId: 5 },
+  ];
+  for (const fault of faults) {
+    let portalAnswer = { ok: true, spaceId: 'team-north' };
+    const { service, store } = create(ready, {
+      async spaceForProject(projectId) {
+        if (projectId === 'portal') return portalAnswer;
+        if (projectId === 'harbor') return { ok: true, spaceId: 'team-north' };
+        return { ok: false, reason: 'unknown' };
+      },
+    });
+    const started = await service.startPlan(session('chen', ['team-north']), {
+      taskId: northPlan.taskId,
+      planId: northPlan.id,
+      revision: northPlan.revision,
+      idempotencyKey: 'shared-key',
+    });
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+    portalAnswer = fault;
+    const before = store.snapshot();
+    const rejected = await service.startPlan(session('chen', ['team-north']), {
+      taskId: harborPlan.taskId,
+      planId: harborPlan.id,
+      revision: harborPlan.revision,
+      idempotencyKey: 'shared-key',
+    });
+    assert.equal(rejected.ok, false, JSON.stringify(fault));
+    assert.equal(rejected.error.code, 'unavailable');
+    assert.equal(rejected.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+    assert.equal(JSON.stringify(rejected).includes('北队专有'), false);
+    assert.deepEqual(store.snapshot(), before);
+  }
+
+  const spaces = boundedProjectSpaces([
+    { projectId: 'portal', spaceId: 'team-north' },
+    { projectId: 'harbor', spaceId: 'team-south' },
+  ]);
+  const probed = create(ready, spaces);
+  const control = create(ready, spaces);
+  const northStart = await probed.service.startPlan(session('chen', ['team-north']), {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(northStart.ok, true, northStart.ok ? '' : northStart.error.code);
+  const southBody = {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const south = await probed.service.startPlan(session('chen', ['team-south']), southBody);
+  const alone = await control.service.startPlan(session('chen', ['team-south']), southBody);
+  assert.equal(south.ok, true, south.ok ? '' : south.error.code);
+  assert.equal(south.value.disposition, 'applied');
+  sameBytes(south, alone, 'start-plan');
+  assert.equal(JSON.stringify(south).includes('北队专有'), false);
+  assert.equal(JSON.stringify(south).includes('north-task'), false);
+});
+
 test('an unexpected handoff failure says the record is unavailable, not that the write failed', async () => {
   const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
   Object.defineProperty(applied, 'probe', { enumerable: true, value() {} });

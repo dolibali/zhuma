@@ -577,9 +577,9 @@ export class ExecutionService {
 
   /**
    * Another plan in this space already used the key.
-   * Plans that cannot be placed in this space are ignored, so a foreign key
+   * Only an explicit other space or `unknown` is ignored, so a foreign key
    * neither blocks the start nor changes the response.
-   * A thrown lookup is not "another space": the start is refused.
+   * A throw, `unavailable`, or an unusable space id refuses the start.
    */
   private async sameSpaceIdempotencyConflict(
     idempotencyKey: string,
@@ -600,7 +600,9 @@ export class ExecutionService {
         if (directory) {
           try {
             const lookup = await directory.spaceForProject(task.projectId);
-            owner = lookup.ok ? lookup.spaceId : undefined;
+            const decision = decideProjectSpace(lookup, [spaceId]);
+            if (decision === 'unavailable') return directoryUnavailable();
+            owner = decision === 'ok' ? spaceId : undefined;
           } catch {
             return directoryUnavailable();
           }
