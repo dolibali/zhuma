@@ -898,6 +898,110 @@ test('契约：封口超时时跨在缓冲边界上的密钥不会漏出', async
   }
 });
 
+async function driveWithBlockedRemove(env, sessionId, blocked) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-rm-fault-'));
+  const preload = path.join(dir, 'preload.mjs');
+  const script = path.join(dir, 'drive.mjs');
+  writeFileSync(
+    preload,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      "const blocked = process.env.ZHUMA_FAULT_RM ?? '';",
+      'const original = fs.rmSync;',
+      'fs.rmSync = (target, options) => {',
+      '  const text = String(target);',
+      "  if (blocked.length > 0 && (text === blocked || text.startsWith(blocked + '/'))) {",
+      "    const error = new Error(`EACCES: permission denied, rm '${text}'`);",
+      "    error.code = 'EACCES';",
+      '    throw error;',
+      '  }',
+      '  return original(target, options);',
+      '};',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(
+    script,
+    [
+      'const { DshChatExecutor } = await import(process.env.ZHUMA_ADAPTER);',
+      'const pids = [];',
+      'const engine = new DshChatExecutor(',
+      '  {',
+      '    ZHUMA_MODEL_BASE_URL: process.env.ZHUMA_MODEL_BASE_URL,',
+      '    ZHUMA_MODEL_API_KEY: process.env.ZHUMA_MODEL_API_KEY,',
+      '    ZHUMA_DATA_DIR: process.env.ZHUMA_DATA_DIR,',
+      '    PATH: process.env.PATH,',
+      '    HOME: process.env.HOME,',
+      '    TMPDIR: process.env.TMPDIR,',
+      '  },',
+      '  {',
+      '    bin: process.env.ZHUMA_STUB,',
+      "    mode: 'ok',",
+      '    initTimeoutMs: 10000,',
+      '    promptTimeoutMs: 10000,',
+      '    onSpawn: (pid) => pids.push(pid),',
+      '  },',
+      ');',
+      'const events = [];',
+      'for await (const event of engine.run({',
+      "  runId: 'skill-round-cleanup',",
+      '  attempt: 1,',
+      '  generation: 1,',
+      "  taskId: 'task',",
+      "  nodeId: 'node',",
+      "  workflowVersionId: 'plan',",
+      '  planRevision: 1,',
+      '  contextReferences: [],',
+      "  expertVersionId: 'expert-v1',",
+      '  resourceGrants: [],',
+      "  instruction: '整理字段',",
+      '  attachmentIds: [],',
+      "  skills: [{ id: 'skill-b', version: 'v3', label: 'skill-b', description: 'skill-b', body: 'skill-b' }],",
+      "  goal: '确认字段',",
+      '  simulatedRequested: false,',
+      '  signal: new AbortController().signal,',
+      '  resumeSessionId: process.env.ZHUMA_SESSION_ID,',
+      '})) {',
+      '  events.push({ type: event.type, fault: event.fault, message: event.message });',
+      '}',
+      'process.stdout.write(JSON.stringify({ spawned: pids.length, events }));',
+      '',
+    ].join('\n'),
+  );
+  const child = spawn(process.execPath, ['--import', preload, script], {
+    env: {
+      ...process.env,
+      ZHUMA_MODEL_BASE_URL: env.ZHUMA_MODEL_BASE_URL,
+      ZHUMA_MODEL_API_KEY: env.ZHUMA_MODEL_API_KEY,
+      ZHUMA_DATA_DIR: env.ZHUMA_DATA_DIR,
+      ZHUMA_FAULT_RM: blocked,
+      ZHUMA_STUB: stub,
+      ZHUMA_SESSION_ID: sessionId,
+      ZHUMA_ADAPTER: pathToFileURL(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
+      ).href,
+    },
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  const [code] = await once(child, 'exit');
+  clearTimeout(timer);
+  rmSync(dir, { recursive: true, force: true });
+  if (code !== 0) throw new Error(`清理故障注入进程退出 ${code}\n${stderr}\n${stdout}`);
+  return JSON.parse(stdout);
+}
+
 test('契约：同一会话撤掉的技能不会在下一轮被扫描', async () => {
   const { engine, pids, env } = executor('ok', {
     initTimeoutMs: 10_000,
@@ -943,6 +1047,7 @@ test('契约：同一会话撤掉的技能不会在下一轮被扫描', async ()
   const sessionId = accepted.sessionId;
   const home = dshSessionHome(sessionId, env);
   writeFileSync(path.join(home, 'keep-me.txt'), 'keep\n', { encoding: 'utf8', mode: 0o600 });
+  let thrown;
   try {
     const replaced = await drive('skill-round-b', [skill('skill-b', 'v2')], sessionId);
     assert.equal(replaced.at(-1).type, 'completed');
@@ -985,23 +1090,31 @@ test('契约：同一会话撤掉的技能不会在下一轮被扫描', async ()
     assert.deepEqual(skillDirs(home), ['skill-a']);
 
     const blocked = path.join(home, 'granted-skills', 'skill-a');
-    execFileSync('sudo', ['-n', 'chown', '-R', 'root:root', blocked]);
-    execFileSync('sudo', ['-n', 'chmod', '555', blocked]);
-    execFileSync('sudo', ['-n', 'chmod', '444', path.join(blocked, 'SKILL.md')]);
     const before = pids.length;
-    const failed = await drive('skill-round-cleanup', [skill('skill-b', 'v3')], sessionId);
+    const failed = await driveWithBlockedRemove(env, sessionId, blocked);
     assert.equal(pids.length, before);
-    assert.equal(failed.length, 1);
-    assert.equal(failed[0].type, 'failed');
-    assert.equal(failed[0].fault, 'executor-disconnected');
-    assert.equal(failed[0].message, '执行器启动失败。');
+    assert.equal(failed.spawned, 0);
+    assert.equal(failed.events.length, 1);
+    assert.equal(failed.events[0].type, 'failed');
+    assert.equal(failed.events[0].fault, 'executor-disconnected');
+    assert.equal(failed.events[0].message, '执行器启动失败。');
     assert.equal(existsSync(home), true);
     assert.equal(readFileSync(path.join(home, 'keep-me.txt'), 'utf8'), 'keep\n');
     assert.equal(existsSync(path.join(blocked, 'SKILL.md')), true);
     assert.equal(existsSync(path.join(home, 'granted-skills', 'skill-b')), false);
     assert.equal(existsSync(path.join(home, 'decoy-skills', 'skill-evil', 'SKILL.md')), true);
+  } catch (error) {
+    thrown = error;
+    throw error;
   } finally {
-    execFileSync('sudo', ['-n', 'rm', '-rf', home]);
+    let cleanupError;
+    try {
+      rmSync(home, { recursive: true, force: true });
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (thrown === undefined && cleanupError !== undefined) throw cleanupError;
+    if (cleanupError !== undefined) console.error(cleanupError);
   }
 });
 
