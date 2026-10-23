@@ -2,7 +2,7 @@
 
 切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，只组合现有 WP00 导出，不改 `node-status.ts`、`review.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts`。
 
-带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。`createExecutionApi` 调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套超过 32 层的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。面板还在后续切片。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
+带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。待办、交付和评审界面在 `packages/client/src/execution/`。`createExecutionApi` 调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
 
 ## 验证层级
 
@@ -124,10 +124,9 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 
 未实现（后续切片）：
 
-- 执行界面
 - 产物字节、预览和访问控制。这一层只校验文件元数据
 - 专家评审和 `interpretAgentReview`
-- 已安装桌面里的验收。本层的 Host 测试使用真实 Connection，但不是安装包
+- 已安装桌面里的验收。面板已经在 client 里，还没有装进成员 A 的导航。Host 测试使用真实 Connection，但不是安装包
 
 ## 需要成员 A 接入
 
@@ -152,10 +151,36 @@ await rpc.call('/api', 'zhuma-exec/submit', payload);
 
 多人模式下，`b/id0a-legacy-gate`（`aa9060d`）关闭 `/api/zhuma/*`。A 提供成员进入工作台的入口。执行通道留在 `/api/zhuma-exec/*`，因为它已经按 `resolveMember` 认成员。
 
+客户端「需要我处理」由 A 注册。B 的面板从 `@zhuma/client` 已有入口导出，不新增 package export。A 在自己的 `plugin.tsx` 里挂 `ExecutionWorkspace`。它自己读取待办并打开交付或评审，不要改挂只接受 `items` 的 `InboxPanel`。页面里已经有 `.zhuma > main.zm-page`，这个组件不再包一层 `main`：
+
+```tsx
+ctx.slots.inject('main', () =>
+  ctx.slots.register(
+    {
+      name: 'main',
+      key: 'zhuma-inbox' as MainPanelId,
+      inject: () => ({ api }),
+    },
+    ({ api: executionApi }) => <ExecutionWorkspace api={executionApi} />,
+  ),
+);
+```
+
+A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已经加载的工作台样式。B 不改这个注册。
+
+## 界面
+
+`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。
+
+面板使用工作台已经导出的 `Button` 和 `Field`，以及 `.zhuma`、`.zm-page`、`.zm-directory`、`.zm-status`、`.zm-error`、`.zm-review` 这些现有类。不另写颜色。包内引用这些控件用相对路径，因为仓库边界不允许 `@zhuma/client` 导入自己。
+
+`docs/contracts/evidence/b-m1-execution-light.png` 和 `b-m1-execution-dark.png` 是同一份样例数据在浅色和 `body[data-ds-dark-theme]` 下的整页截图。样例 RPC 固定返回失败，页面不会写存储，也不是官方桌面里的真人会话。截图同时画出交付和评审，真实的 `ExecutionWorkspace` 一次只打开其中一项。
+
 ## 已知限制
 
 这些行为在本切片里保持原样：
 
+- 退回之后再提交，执行者的页面不显示评审意见，也不显示上一版产物。下游的交付页不显示已经接受的上游产物。
 - 同一轮已经投下的票不能撤回。先通过再改成退回会得到 `conflicting-ballot`，原先的通过仍然有效。
 - 交付的幂等键不随文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId`、`uploadComplete` 变化。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执，所以换这些字段再提交通常仍会执行；若上一次其实已经成功、只是响应丢失，再改这些字段会得到 `idempotency-mismatch`。
 - 解锁那一次写入失败之后，如果客户端没有用同一个键重试，下游要等到插件再次打开时的对账才会补上。运行期间没有周期性对账。

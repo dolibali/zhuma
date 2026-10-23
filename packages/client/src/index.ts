@@ -10,6 +10,7 @@ export type {
 } from './execution/ExecutionApi.js';
 export { createExecutionApi, readExecutionNode } from './execution/ExecutionApi.js';
 export { DeliveryPanel } from './execution/DeliveryPanel.js';
+export { ExecutionWorkspace } from './execution/ExecutionWorkspace.js';
 export { InboxPanel } from './execution/InboxPanel.js';
 export { ReviewWorkspace } from './execution/ReviewWorkspace.js';
 export {

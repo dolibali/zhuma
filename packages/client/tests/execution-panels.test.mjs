@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DeliveryPanel } from '../dist/execution/DeliveryPanel.js';
+import { ExecutionWorkspace } from '../dist/execution/ExecutionWorkspace.js';
 import { InboxPanel } from '../dist/execution/InboxPanel.js';
 import { ReviewWorkspace } from '../dist/execution/ReviewWorkspace.js';
 
@@ -40,7 +41,7 @@ const item = {
   action: 'submit',
 };
 
-test('inbox, delivery, and review render without an actor control', () => {
+test('panels render delivery and review without an actor control', () => {
   const inbox = renderToStaticMarkup(
     createElement(InboxPanel, {
       items: [item],
@@ -72,4 +73,13 @@ test('inbox, delivery, and review render without an actor control', () => {
   assert.match(review, /通过/);
   assert.match(review, /退回修改/);
   assert.equal(review.includes('type="hidden"'), false);
+
+  const workspace = renderToStaticMarkup(
+    createElement(ExecutionWorkspace, {
+      api: { async submit() {}, async ballot() {}, async inbox() {} },
+    }),
+  );
+  assert.equal(workspace.includes('<main'), false);
+  assert.equal(workspace.includes('class="zhuma"'), false);
+  assert.match(workspace, /需要我处理/);
 });
