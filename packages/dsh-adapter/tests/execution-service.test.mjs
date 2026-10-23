@@ -1268,6 +1268,48 @@ test('a directory fault returns the same unavailable bytes whether or not the ta
   }
 });
 
+test('an unusable ok from the directory is the same unavailable bytes whether or not the task exists', async () => {
+  const { state, applied } = confirm(
+    [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
+    [lin],
+  );
+  let lookup = { ok: true, spaceId: 'project' };
+  const { service, store } = create(state, {
+    async spaceForProject() {
+      return lookup;
+    },
+  });
+  await startChen(service, applied);
+  const before = store.snapshot();
+  const callers = [session('chen', ['project']), session('lin', ['team-south'])];
+  const shapes = [{ ok: true, spaceId: '' }, { ok: true }, { ok: 'yes', spaceId: 5 }];
+  let compared = 0;
+  for (const shape of shapes) {
+    lookup = shape;
+    for (const caller of callers) {
+      const present = await commandProbe(service, applied.taskId, applied, 'shaped', caller);
+      const absent = await commandProbe(service, 'absent-task', applied, 'shaped-absent', caller);
+      for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+        const left = Buffer.from(JSON.stringify(present[endpoint]));
+        const right = Buffer.from(JSON.stringify(absent[endpoint]));
+        assert.equal(
+          Buffer.compare(left, right),
+          0,
+          `${endpoint}\n${left.toString()}\n${right.toString()}`,
+        );
+        assert.equal(present[endpoint].error.code, 'unavailable');
+        assert.equal(
+          present[endpoint].error.message,
+          '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+        );
+        compared += 1;
+      }
+    }
+  }
+  assert.equal(compared, 5 * 2 * 3);
+  assert.deepEqual(store.snapshot(), before);
+});
+
 test('submit, ballot, and settle leave the storage snapshot unchanged when the directory throws', async () => {
   const { state, applied } = confirm(
     [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],

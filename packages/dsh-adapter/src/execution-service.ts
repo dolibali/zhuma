@@ -538,7 +538,8 @@ export class ExecutionService {
 
   /**
    * Ask the directory before distinguishing a missing task from a hidden one.
-   * A thrown lookup or `unavailable` is the same answer either way.
+   * A thrown lookup, `unavailable`, or an ok answer whose space id cannot be
+   * used is the same answer either way.
    * No directory, an unknown project, or a mismatch is not-found.
    */
   private async gateSpace(
@@ -564,10 +565,10 @@ export class ExecutionService {
     ) {
       return directoryUnavailable();
     }
-    if (!task) return 'missing';
     const decision = decideProjectSpace(lookup, spaceIds);
     if (decision === 'ok' && lookup.ok) return { ok: true, value: lookup.spaceId };
     if (decision === 'unavailable') return directoryUnavailable();
+    if (!task) return 'missing';
     return fail('not-found');
   }
 
