@@ -191,7 +191,7 @@ test('契约：执行事件保存失败不产生未处理拒绝，恢复后可�
       save: (value) => {
         state.n += 1;
         if (state.n >= state.failFrom) {
-          const error = new Error('EACCES: permission denied');
+          const error = new Error('EACCES: permission denied, open /tmp/zhuma-secret/session.json');
           error.code = 'EACCES';
           throw error;
         }
@@ -211,7 +211,9 @@ test('契约：执行事件保存失败不产生未处理拒绝，恢复后可�
     assert.deepEqual(unhandled, []);
     const memory = session.snapshot();
     assert.equal(memory.persistenceFault?.code, 'persist-failed');
-    assert.match(memory.persistenceFault.reason, /EACCES/);
+    assert.equal(memory.persistenceFault.reason, '日志没有写进去（EACCES）。');
+    assert.equal(memory.persistenceFault.reason.includes('/tmp/'), false);
+    assert.equal(memory.persistenceFault.reason.includes('permission denied'), false);
     assert.notEqual(memory.runs.at(-1).status, state.value.runs.at(-1).status);
     const view = createAgentWorkspaceView(memory);
     assert.equal(view.persistenceFault.objectLabel, '日志');

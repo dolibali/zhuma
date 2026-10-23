@@ -192,8 +192,12 @@ function renderThread() {
       `<article class="error" data-testid="persistence-fault"><strong>${escapeHtml(view.persistenceFault.objectLabel)}</strong><p>${escapeHtml(view.persistenceFault.reason)}</p><p>下一步：${escapeHtml(view.persistenceFault.nextStep)}</p><button class="btn" type="button" id="rewrite-persistence" data-testid="rewrite-persistence">重写日志</button></article>`,
     );
   }
-  if (state.localError) parts.push(errorBlock(state.localError));
-  if (view.error) parts.push(errorBlock(view.error));
+  if (state.localError && !repeatsPersistenceFault(state.localError, view.persistenceFault)) {
+    parts.push(errorBlock(state.localError));
+  }
+  if (view.error && !repeatsPersistenceFault(view.error, view.persistenceFault)) {
+    parts.push(errorBlock(view.error));
+  }
   for (const block of view.blocks) {
     parts.push(`<p class="error" data-testid="context-block">${escapeHtml(block.text)}</p>`);
   }
@@ -254,6 +258,12 @@ function renderThread() {
   thread.innerHTML = html;
   thread.dataset.sig = html;
   if (nearBottom) thread.scrollTop = thread.scrollHeight;
+}
+
+function repeatsPersistenceFault(error, fault) {
+  if (!error || !fault) return false;
+  if (error.code === 'persist-failed') return true;
+  return error.reason === fault.reason && error.nextStep === fault.nextStep;
 }
 
 function errorBlock(error) {

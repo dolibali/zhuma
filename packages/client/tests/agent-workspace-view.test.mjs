@@ -340,13 +340,30 @@ test('契约：持久化故障出现在投影里', () => {
   snapshot.persistenceFault = {
     code: 'persist-failed',
     objectLabel: '日志',
-    reason: '日志没有写进去（EACCES）。EACCES: permission denied',
+    reason: '日志没有写进去（EACCES）。EACCES: permission denied /tmp/zhuma-secret/session.json',
     nextStep: '存储恢复后重写这份日志。重写成功前，不要把界面上的运行当成已经受理或已经落盘。',
   };
+  snapshot.lastError = {
+    code: 'persist-failed',
+    objectLabel: '日志',
+    reason: snapshot.persistenceFault.reason,
+    nextStep: snapshot.persistenceFault.nextStep,
+  };
   const view = createAgentWorkspaceView(snapshot);
+  assert.equal(view.error, null);
   assert.equal(view.persistenceFault.objectLabel, '日志');
-  assert.match(view.persistenceFault.reason, /EACCES/);
+  assert.equal(view.persistenceFault.reason, '日志没有写进去（EACCES）。EACCES: permission denied');
+  assert.equal(view.persistenceFault.reason.includes('/tmp/'), false);
   assert.match(view.persistenceFault.nextStep, /重写/);
+  snapshot.lastError = {
+    code: 'entry-inconsistent',
+    objectLabel: '节点',
+    reason: '节点记录异常，需要人工处理',
+    nextStep: '不要按这份记录重试或结束运行。',
+  };
+  const distinct = createAgentWorkspaceView(snapshot);
+  assert.equal(distinct.error.reason, '节点记录异常，需要人工处理');
+  assert.equal(distinct.persistenceFault.objectLabel, '日志');
 });
 
 test('契约：没有字节的附件标成需重新上传', () => {

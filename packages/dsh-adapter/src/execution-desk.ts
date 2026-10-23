@@ -2693,12 +2693,10 @@ function persistenceFaultFrom(error: unknown): CommandErrorFact {
     error.code.length > 0
       ? error.code
       : 'persist-failed';
-  const detail =
-    error instanceof Error && error.message.length > 0 ? error.message : '日志没有写进去';
   return {
     code: 'persist-failed',
     objectLabel: '日志',
-    reason: `日志没有写进去（${code}）。${detail}`,
+    reason: `日志没有写进去（${code}）。`,
     nextStep: '存储恢复后重写这份日志。重写成功前，不要把界面上的运行当成已经受理或已经落盘。',
   };
 }

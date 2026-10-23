@@ -417,14 +417,12 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       reason: fault.reason,
       nextStep: fault.nextStep,
     })),
-    error: snapshot.lastError
-      ? { ...snapshot.lastError, objectLabel: humanizeLabel(snapshot.lastError.objectLabel) }
-      : null,
+    error: commandError(snapshot),
     persistenceFault: snapshot.persistenceFault
       ? {
           objectLabel: snapshot.persistenceFault.objectLabel,
-          reason: snapshot.persistenceFault.reason,
-          nextStep: snapshot.persistenceFault.nextStep,
+          reason: dropAbsolutePaths(snapshot.persistenceFault.reason),
+          nextStep: dropAbsolutePaths(snapshot.persistenceFault.nextStep),
         }
       : null,
     contextItems: snapshot.contextItems.map((item) => ({
@@ -562,6 +560,28 @@ function mcpTransportReady(item: {
   if (item.transport === 'stdio') return (item.command ?? '').length > 0;
   if (item.transport === 'streamable-http') return (item.url ?? '').length > 0;
   return false;
+}
+
+function commandError(snapshot: ExecutionDeskSnapshot): AgentWorkspaceView['error'] {
+  const fault = snapshot.persistenceFault;
+  const error = snapshot.lastError;
+  if (!error) return null;
+  if (
+    fault &&
+    (error.code === 'persist-failed' ||
+      (error.reason === fault.reason && error.nextStep === fault.nextStep))
+  ) {
+    return null;
+  }
+  return { ...error, objectLabel: humanizeLabel(error.objectLabel) };
+}
+
+function dropAbsolutePaths(text: string): string {
+  return text
+    .replace(/[A-Za-z]:\\[^\s'"]+/g, '')
+    .replace(/\/(?:[\w.+@~-]+\/)+[\w.+@~-]*/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 }
 
 function humanizeLabel(value: string | undefined): string {
