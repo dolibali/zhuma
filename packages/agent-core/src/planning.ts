@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { buildPlanningContext, type PlanningContext } from './planning-context.js';
 import {
+  PlanningAdjustmentSchema,
+  requirePlanningTarget,
+  type PlanningAdjustment,
+} from './planning-changes.js';
+import {
   WorkflowSchema,
   validateWorkTask,
   WorkbenchError,
@@ -22,6 +27,7 @@ export const PlanRequestSchema = z.strictObject({
   expectedRevision: z.number().int().nonnegative(),
   instruction: z.string().max(8000),
   baseProposalId: z.string().uuid().optional(),
+  adjustment: PlanningAdjustmentSchema.optional(),
 });
 export type PlanRequest = z.infer<typeof PlanRequestSchema>;
 export const PlanProposalSchema = z.strictObject({
@@ -47,6 +53,7 @@ questions 只用于阻碍“编排”本身的关键问题，例如任务目标�
 若已有合适的人负责需求或接口确认，CSV 列名、编码、掩码格式、错误文案、测试账号等实现细节应写入相应节点要确认的工作与交付说明，由后续节点消费确认结果；不要因此阻止整个工作流应用，也不要擅自当成已定规则。
 完全无法确定范围或合理分工时 workflows=[] 并提问。合理推断写入 assumptions，明确尚待相应节点确认。存在 questions 时草案不能被应用。
 currentWorkflows 是本次调整的工作流基线；previousProposal 存在时，它来自用户正在审阅但尚未应用的草案。上一轮的问题与推断仍是待确认信息，结合用户本轮要求处理。
+输入含 adjustment 时，只能修改其 nodeId 节点的 fields 字段；该节点的其他字段也必须完全保留。其他节点的所有字段、工作流层级、节点顺序、依赖和位置必须完全保留，不得增删或移动节点；即使补充要求提及更大范围也不能越过本次明确选择。
 已有工作流时只修改补充要求涉及的部分，保留其余工作流和节点的 ID、依赖、配置及分工，不要重新从空白生成。position 使用适合画布的坐标：按依赖从左到右、并行分支从上到下。`;
 
 export function planningPrompt(
@@ -54,13 +61,17 @@ export function planningPrompt(
   task: WorkTask,
   instruction: string,
   baseProposal?: PlanProposal,
+  adjustment?: PlanningAdjustment,
 ): { system: string; input: string; context: PlanningContext } {
+  if (adjustment)
+    requirePlanningTarget(baseProposal?.result.workflows ?? task.workflows, adjustment.nodeId);
   const context = buildPlanningContext(state, task, instruction, baseProposal);
   return {
     system: PLANNING_SYSTEM,
     context,
     input: JSON.stringify({
       context,
+      ...(adjustment ? { adjustment: { ...adjustment, preserveStructure: true } } : {}),
       outputSchema: z.toJSONSchema(PlanningResultSchema),
     }),
   };

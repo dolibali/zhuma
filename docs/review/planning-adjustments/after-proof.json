@@ -1,0 +1,33 @@
+{
+  "surface": "Chromium UI response replay; domain/service ports are contract fixtures, no real model or Native claim",
+  "sourceHead": "900d05d9c848bf17c1f8ce45efeda28fef40a2eb",
+  "sourceClean": true,
+  "taskSha256": "59e06f2813f1eb496199139a97155bfd0e8bc41b8de23f1310b394f40291c882",
+  "proposedWorkflowsSha256": "6f1568158d7e6cfb8cbd4cdb9a1c8d19b3eba4d49acf627bf716fe0759f2d058",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "writesAtScreenshot": 0,
+  "check": {
+    "passed": 200,
+    "failed": 0
+  },
+  "browser": {
+    "passed": 98,
+    "failed": 0,
+    "newCases": 10
+  },
+  "screenshots": ["after-chromium-light.png", "after-chromium-dark.png"],
+  "artifact": {
+    "index.js": "fefc7a7945f30b66da5c2c07b644aabdc367dd85195ffa85a66abfb8c29c9a54",
+    "client.js": "440a915b2473294d26ec0449b58479e514779c34e98af43c896df4c5bb82bdb8",
+    "package.json": "dbd0da702a2ab1c5afeb42782542de3f58aebd996619eec12ee1abe176de24fa",
+    "THIRD_PARTY_LICENSES.txt": "026152bdeb9021c587693bcb41cff364f476de7622f87b99eacb7727b90cb14b"
+  },
+  "limits": [
+    "No paid model calls or quality evaluation",
+    "No native/installed/cross-platform validation",
+    "No multi-member runtime or execution integration"
+  ]
+}

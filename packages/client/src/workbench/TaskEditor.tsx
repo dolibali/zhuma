@@ -5,6 +5,8 @@ import {
   captureWorkflowTemplate,
   resolveTemplateBindings,
   templateBindingGaps,
+  comparePlanningWorkflows,
+  LOCAL_PLANNING_FIELDS,
   type Workbench,
   type WorkTask,
   type Workflow,
@@ -22,6 +24,8 @@ import { Button } from './Button.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 import { TemplateSaveDialog } from './TemplateSaveDialog.js';
 import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
+import { SingleSelect } from './SingleSelect.js';
+import { PlanningChanges } from './PlanningChanges.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -127,6 +131,12 @@ export function TaskEditor({
   const [planFailed, setPlanFailed] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [proposal, setProposal] = useState<PlanProposal | null>(null);
+  const [adjustmentScope, setAdjustmentScope] = useState<'all' | 'node' | 'assignment'>('all');
+  const [previewOriginal, setPreviewOriginal] = useState(false);
+  const [comparison, setComparison] = useState(() => ({
+    workflows: structuredClone(original.workflows),
+    label: '已保存草稿',
+  }));
   const controller = useRef<AbortController | null>(initialPlanning?.controller ?? null);
   const pendingSave = useRef<{
     content: string;
@@ -140,7 +150,19 @@ export function TaskEditor({
       proposal?.result.workflows.length ? { ...task, workflows: proposal.result.workflows } : null,
     [proposal, task],
   );
-  const displayTask = previewTask ?? task;
+  const displayTask =
+    previewOriginal && proposal
+      ? { ...task, workflows: comparison.workflows }
+      : (previewTask ?? task);
+  const proposalChanges = useMemo(
+    () => (proposal ? comparePlanningWorkflows(task.workflows, proposal.result.workflows) : null),
+    [task.workflows, proposal],
+  );
+  const roundChanges = useMemo(
+    () =>
+      proposal ? comparePlanningWorkflows(comparison.workflows, proposal.result.workflows) : null,
+    [comparison.workflows, proposal],
+  );
   const workTree = useMemo(() => indexWorkTree(displayTask), [displayTask]);
   const locked = busy || planning || task.status === 'ready' || !!previewTask;
   const workflow = workTree.workflows.get(workflowId) ?? workTree.root;
@@ -243,6 +265,7 @@ export function TaskEditor({
   function edit(next: WorkTask) {
     setTask(next);
     setProposal(null);
+    setPreviewOriginal(false);
     setMessage('');
   }
   function navigate(id: string, nodeId?: string | null, local = false, locate = true) {
@@ -371,6 +394,8 @@ export function TaskEditor({
       saved(latest.state);
       pendingSave.current = null;
       setProposal(null);
+      setPreviewOriginal(false);
+      setComparison({ workflows: structuredClone(current.workflows), label: '已保存草稿' });
       setPlanFailed(false);
       setConflict(false);
       setError('');
@@ -382,6 +407,15 @@ export function TaskEditor({
     }
   }
   async function generate() {
+    if (previewOriginal && proposal) {
+      setError('请先切回规划结果，再继续调整。');
+      return;
+    }
+    const targetNodeId = adjustmentScope !== 'all' ? selectedId : undefined;
+    if (adjustmentScope !== 'all' && (!targetNodeId || previewOriginal)) {
+      setError('请在规划结果中选择要调整的节点。');
+      return;
+    }
     if (hasGaps) {
       setMappingRoles({});
       setMappingResources({});
@@ -397,6 +431,8 @@ export function TaskEditor({
     setMessage('');
     const abort = new AbortController();
     controller.current = abort;
+    const comparedWorkflows = structuredClone(proposal?.result.workflows ?? task.workflows);
+    const comparisonLabel = proposal ? '上一份草案' : '已保存草稿';
     // Keep the reviewed proposal available if this replacement fails or is cancelled.
     try {
       const next = await api.plan(
@@ -405,9 +441,20 @@ export function TaskEditor({
         instruction,
         abort.signal,
         proposal?.id,
+        targetNodeId
+          ? {
+              nodeId: targetNodeId,
+              fields:
+                adjustmentScope === 'assignment'
+                  ? ['assigneeId', 'rationale']
+                  : [...LOCAL_PLANNING_FIELDS],
+            }
+          : undefined,
       );
       abort.signal.throwIfAborted();
       setProposal(next);
+      setComparison({ workflows: comparedWorkflows, label: comparisonLabel });
+      setPreviewOriginal(false);
     } catch (error) {
       if (abort.signal.aborted) setMessage('已取消规划');
       else {
@@ -421,7 +468,7 @@ export function TaskEditor({
     }
   }
   async function applyProposal() {
-    if (!proposal || proposal.result.questions.length) return;
+    if (!proposal || proposal.result.questions.length || !proposalChanges?.changed) return;
     if (dirty) {
       setError('工作流已有未保存修改，请先保存后重新规划。');
       return;
@@ -432,6 +479,7 @@ export function TaskEditor({
       setWorkflowId(next.workflows.find((w) => !w.parentNodeId)!.id);
       setSelectedId(next.workflows[0]?.nodes[0]?.id ?? null);
       setProposal(null);
+      setPreviewOriginal(false);
       setPanel('config');
       setInspectorOpen(true);
       setMessage('草案已应用，可继续编辑。');
@@ -1033,11 +1081,34 @@ export function TaskEditor({
                       <Button
                         variant="quiet"
                         disabled={busy || planning}
-                        onClick={() => setProposal(null)}
+                        onClick={() => {
+                          setProposal(null);
+                          setPreviewOriginal(false);
+                        }}
                       >
                         放弃草案
                       </Button>
                     </div>
+                    {previewTask && (
+                      <div
+                        className="zm-segment zm-plan-preview-version"
+                        role="group"
+                        aria-label="预览版本"
+                      >
+                        <button
+                          aria-pressed={previewOriginal}
+                          onClick={() => setPreviewOriginal(true)}
+                        >
+                          调整前
+                        </button>
+                        <button
+                          aria-pressed={!previewOriginal}
+                          onClick={() => setPreviewOriginal(false)}
+                        >
+                          规划结果
+                        </button>
+                      </div>
+                    )}
                     <details className="zm-plan-summary">
                       <summary>
                         {proposal.result.summary.slice(0, 150)}
@@ -1073,10 +1144,58 @@ export function TaskEditor({
                         <small>交付：{(node ?? workflow.nodes[0])?.output}</small>
                       </div>
                     )}
+                    {previewTask && roundChanges && (
+                      <PlanningChanges
+                        changes={roundChanges}
+                        before={comparison.workflows}
+                        after={proposal.result.workflows}
+                        baselineLabel={comparison.label}
+                        state={state}
+                        locate={(id, nodeId, original) => {
+                          setPreviewOriginal(original);
+                          setWorkflowId(id);
+                          setSelectedId(nodeId);
+                          setLocateRequest((request) => request + 1);
+                          setTree(false);
+                          setView('workflow');
+                        }}
+                      />
+                    )}
                   </div>
                 )}
               </div>
               <div className="zm-planner-composer">
+                {displayTask.workflows.some((w) => w.nodes.length) && (
+                  <div className="zm-planning-scope">
+                    <span>调整范围</span>
+                    <SingleSelect
+                      label="调整范围"
+                      value={adjustmentScope}
+                      options={[
+                        { value: 'all', label: '整个任务' },
+                        {
+                          value: 'assignment',
+                          label: '仅当前节点执行者',
+                          disabled: !selectedId || previewOriginal,
+                        },
+                        {
+                          value: 'node',
+                          label: '仅当前节点配置',
+                          disabled: !selectedId || previewOriginal,
+                        },
+                      ]}
+                      disabled={busy || planning}
+                      onValueChange={(value) =>
+                        setAdjustmentScope(
+                          value === 'node' || value === 'assignment' ? value : 'all',
+                        )
+                      }
+                    />
+                    {adjustmentScope !== 'all' && (
+                      <small title={node?.title}>目标：{node?.title ?? '请先选择节点'}</small>
+                    )}
+                  </div>
+                )}
                 <Field
                   label={proposal?.result.questions.length ? '回答问题或补充要求' : '补充要求'}
                 >
@@ -1101,18 +1220,34 @@ export function TaskEditor({
                     busy={planning}
                     busyLabel="正在规划…"
                     title={
-                      conflict
-                        ? '请先读取最新版本，再重新生成草案'
-                        : !members.length
-                          ? '请先添加任务参与者'
-                          : undefined
+                      previewOriginal && proposal
+                        ? '请先切回规划结果，再继续调整'
+                        : conflict
+                          ? '请先读取最新版本，再重新生成草案'
+                          : !members.length
+                            ? '请先添加任务参与者'
+                            : undefined
                     }
                     disabled={
-                      busy || planning || conflict || task.status === 'ready' || !members.length
+                      busy ||
+                      planning ||
+                      conflict ||
+                      task.status === 'ready' ||
+                      !members.length ||
+                      (previewOriginal && !!proposal) ||
+                      (adjustmentScope !== 'all' && (!selectedId || previewOriginal))
                     }
                     onClick={() => void generate()}
                   >
-                    {proposal ? '重新规划' : planFailed ? '重试规划' : '生成工作流草案'}
+                    {adjustmentScope === 'assignment'
+                      ? '调整执行者'
+                      : adjustmentScope === 'node'
+                        ? '调整节点配置'
+                        : proposal
+                          ? '重新规划'
+                          : planFailed
+                            ? '重试规划'
+                            : '生成工作流草案'}
                   </Button>
                   {planning && (
                     <Button variant="quiet" onClick={() => controller.current?.abort()}>
@@ -1140,18 +1275,24 @@ export function TaskEditor({
                       busy={busy}
                       busyLabel="应用中…"
                       title={
-                        conflict
-                          ? '请先读取最新版本，再重新生成草案'
-                          : proposal.result.questions.length
-                            ? '请先回答关键问题并重新规划'
-                            : undefined
+                        previewOriginal
+                          ? '请先查看规划结果，再应用草案'
+                          : !proposalChanges?.changed
+                            ? '草案与已保存工作流相同'
+                            : conflict
+                              ? '请先读取最新版本，再重新生成草案'
+                              : proposal.result.questions.length
+                                ? '请先回答关键问题并重新规划'
+                                : undefined
                       }
                       disabled={
                         busy ||
                         planning ||
                         conflict ||
+                        previewOriginal ||
                         !!proposal.result.questions.length ||
-                        !proposal.result.workflows.length
+                        !proposal.result.workflows.length ||
+                        !proposalChanges?.changed
                       }
                       onClick={() => void applyProposal()}
                     >
