@@ -1138,8 +1138,9 @@ function startupFailureMessage(error: unknown): string {
 /**
  * 引号里的路径整段去掉。
  * 不带引号的绝对路径可以从行首、空白、冒号、括号或 file:// 后面开始。
+ * `http://` 这类网址整段留下。`file://` 后面的本地路径，以及 `\\server\share`，都剥掉。
  * 段里可以有空格、括号和非 ASCII。空格只有在后面紧接着的分隔符不是另起一条路径时才算在路径里。
- * 最后一段可以带一个空格和文件名。路径结束后的说明，以及 http 网址，都留下。
+ * 最后一段可以带一个空格和文件名。路径结束后的说明留下。
  */
 function stripLocalPaths(text: string): string {
   const quoted = /(?:[/\\]|[A-Za-z]:[/\\])[^'"]*/;
@@ -1231,7 +1232,11 @@ function localPathEnd(text: string, start: number): number {
   return trimWrappingParen(text, start, lastGood);
 }
 
-/** `//` 是网址分隔，不当成路径；`file:///` 的第三道斜杠才开始本地路径。 */
+/**
+ * 连续斜杠有多长。
+ * 只有 `scheme://` 的第二道斜杠返回 2，不当成路径。`file://` 不算。
+ * 没有 scheme 的 `\\` 返回 1，让 UNC 从第二道反斜杠剥起。
+ */
 function schemeSlashRun(text: string, index: number): number {
   if (text[index] !== '/' && text[index] !== '\\') return 0;
   if (index > 0 && text[index - 1] !== '/' && text[index - 1] !== '\\') return 1;
@@ -1241,14 +1246,20 @@ function schemeSlashRun(text: string, index: number): number {
     run += 1;
     back -= 1;
   }
-  return run;
+  if (run !== 2) return run;
+  if (back === 0 || text[back - 1] !== ':') return 1;
+  let start = back - 1;
+  while (start > 0 && /[A-Za-z]/.test(text[start - 1] ?? '')) start -= 1;
+  const scheme = text.slice(start, back - 1).toLowerCase();
+  if (scheme.length === 0 || scheme === 'file') return 1;
+  return 2;
 }
 
 /** 空格后面的分隔符贴着文件名时，这一段还在同一条路径里。前面是空格的分隔符是下一条路径。 */
 function gluedSeparator(text: string, from: number): number {
   for (let index = from; index < text.length; index += 1) {
     const char = text[index];
-    if (char === '\n' || char === "'" || char === '"') return -1;
+    if (char === '\n' || char === "'" || char === '"' || char === ':') return -1;
     if (char !== '/' && char !== '\\') continue;
     const previous = text[index - 1];
     if (previous !== undefined && !/\s/.test(previous)) return index;
@@ -1275,13 +1286,13 @@ function trailingFilenameEnd(text: string, from: number): number {
     index += 1;
   }
   if (index === start) return -1;
-  let rest = index;
-  while (rest < text.length && text[rest] !== '\n' && /\s/.test(text[rest] ?? '')) rest += 1;
-  if (rest !== text.length && text[rest] !== '\n' && text[rest] !== "'" && text[rest] !== '"') {
-    return -1;
-  }
   const token = text.slice(start, index);
   if (/^[a-z]+$/.test(token) || /^[A-Z][A-Z0-9_]*$/.test(token)) return -1;
+  let rest = index;
+  while (rest < text.length && text[rest] !== '\n' && /\s/.test(text[rest] ?? '')) rest += 1;
+  const closed =
+    rest === text.length || text[rest] === '\n' || text[rest] === "'" || text[rest] === '"';
+  if (!closed && !token.includes('.')) return -1;
   return index;
 }
 

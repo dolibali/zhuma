@@ -1809,6 +1809,66 @@ test('契约：启动失败里同一行后面的斜杠不会把说明一起吞�
   }
 });
 
+test('契约：启动失败里 UNC 路径会剥掉，盘符外的说明留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const missing = await driveFreshHomeFault(env, '\\\\server\\share\\qa\\x.txt missing');
+    assert.equal(missing.events[0].message, '执行器启动失败。\n\\ missing');
+    assert.equal(missing.events[0].message.includes('server'), false);
+    assert.equal(missing.events[0].message.includes('x.txt'), false);
+    const opened = await driveFreshHomeFault(env, 'open \\\\server\\share\\My Docs\\x.txt failed');
+    assert.equal(opened.events[0].message, '执行器启动失败。\nopen \\ failed');
+    assert.equal(opened.events[0].message.includes('share'), false);
+    assert.equal(opened.events[0].message.includes('My Docs'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里 file://localhost 后面的本地路径会剥掉', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env, 'file://localhost/home/qa/x failed');
+    assert.equal(failed.events[0].message, '执行器启动失败。\nfile:/ failed');
+    assert.equal(failed.events[0].message.includes('/home'), false);
+    assert.equal(failed.events[0].message.includes('localhost'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里带空格的文件名后面还有说明时，文件名也剥掉', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(env, 'open /home/qa/My Docs/secret file.txt failed');
+    assert.equal(failed.events[0].message, '执行器启动失败。\nopen failed');
+    assert.equal(failed.events[0].message.includes('file.txt'), false);
+    assert.equal(failed.events[0].message.includes('My Docs'), false);
+    assert.equal(failed.events[0].message.includes('/home'), false);
+    assert.equal(failed.events[0].message.includes('secret'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败里路径后面的网址说明会整段留下', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const failed = await driveFreshHomeFault(
+      env,
+      'open /home/qa/x.json failed: see https://docs.example.invalid/errors',
+    );
+    assert.equal(
+      failed.events[0].message,
+      '执行器启动失败。\nopen failed: see https://docs.example.invalid/errors',
+    );
+    assert.equal(failed.events[0].message.includes('/home'), false);
+    assert.equal(failed.events[0].message.includes('x.json'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
 test('契约：启动失败里的网址会整段留下', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
