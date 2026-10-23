@@ -371,6 +371,11 @@ export class ExecutionService {
       const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
+      // A down directory is the same answer whether or not any node is stored.
+      for (const task of this.workbench.readWorkbench().tasks) {
+        const space = await this.gateSpace(task.id, actor.value.spaceIds);
+        if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      }
       const records: ExecutionNodeRecord[] = [];
       for (const record of this.storage.listNodes()) {
         if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
@@ -514,13 +519,11 @@ export class ExecutionService {
       if (!actor.ok) return actor;
       const parsed = parseBody(revisionSchema, body);
       if (!parsed.ok) return parsed;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
       const current = this.storage.readNode(nodeRecordKey(parsed.value));
       if (!current || !intactNode(current)) return fail('not-found');
-      const space = await this.gateSpace(current.taskId, actor.value.spaceIds);
-      if (space === 'missing' || !space.ok) {
-        if (space !== 'missing' && space.error.code === 'unavailable') return space;
-        return fail('not-found');
-      }
       const membership = planMembership(
         this.workbench.readWorkbench(),
         current.taskId,
