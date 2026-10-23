@@ -4,7 +4,8 @@
  *
  * Re-run just this project:
  *   pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity
- * That config's globalSetup runs `tsc -b` from the repo root first.
+ * Playwright starts webServer before globalSetup. That command runs `tsc -b`
+ * and then the server, so a tree without dist still boots.
  * The fixture listens on port 0. `pnpm test:ui` includes the same project.
  */
 import { expect, test } from '@playwright/test';
