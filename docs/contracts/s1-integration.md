@@ -1,6 +1,6 @@
 # S1 模块签名
 
-A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本分支上与真实导出双向对齐。身份实现是已合并的 `b/id0a-identity`（`c31f062`）。`packages/dsh-adapter/tsconfig.identity.json` 在本分支上就能编译。
+A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本累计 head 上与真实导出双向对齐。身份实现以 `b/id0a-identity` `eb25d30` 为准（已同步 develop `f90f2d8`）。`c31f062` 是更早的身份提交。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。`packages/dsh-adapter/tsconfig.identity.json` 在本 head 上就能编译。
 
 ## 加载顺序
 
@@ -29,7 +29,7 @@ mount({ api: createExecutionApi(rpc) });
 
 `readWorkbench` 的类型是 `() => Workbench`。A 在宿主闭包里保住 `WorkbenchService`，传入 `() => service.snapshot()`。`snapshot()` 返回已存储工作台的结构化克隆。`workbench-plugin.ts` 仍把服务留在自己的 `apply` 里，这份清单只声明这个函数类型。
 
-插件参数 `ExecutionApplyOptions` 是 `readWorkbench`，以及可选的 `projectSpaces`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。`projectSpaces` 的正式内容由 A 的 Host／空间模块注入。省略它时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。它必须接受任意合法 id（工作台 `WorkTaskSchema` 的 id：1 到 100 个字符，匹配 `/^[\w-]+$/u`）。不认识这个 id 时返回 `unknown`，不能抛错，也不能返回 `unavailable`。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
+插件参数 `ExecutionApplyOptions` 是 `readWorkbench`，以及可选的 `projectSpaces`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。`projectSpaces` 由 A 在 Host 装配时注入。这是 Host 的注入、导航、导出和公共配置，不是把 B-ID0 的身份或空间授权事实交给 A 重建。B 提供可信身份、空间授权事实，以及执行服务消费该目录的接口。省略它时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。它必须接受任意合法 id（工作台 `WorkTaskSchema` 的 id：1 到 100 个字符，匹配 `/^[\w-]+$/u`）。不认识这个 id 时返回 `unknown`，不能抛错，也不能返回 `unavailable`。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
 
 执行插件的 `inject` 是 `['connection', 'storageDomain']`。宿主把身份的 `connection`、`storageDomain`、`credentials`、`webServer`、`remoteAccess` 和工作台的 `llm`、`agentDefaultModel` 放在同一个插件上时，执行只用前两项。
 

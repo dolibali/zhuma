@@ -39,7 +39,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 
 ## 身份
 
-单人还是多人由 `configureDeploymentMode` 选定，当前成员只来自已合并的 `b/id0a-identity`（`c31f062`）的 `resolveMember`。执行插件没有 `singleUser`，也没有 `bind-owner`。同一来源地址 60 秒内登录满 8 次后返回 429。
+单人还是多人由 `configureDeploymentMode` 选定。成员来自身份模块的 `resolveMember`。身份模块 #18 的 head 是 `b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）。`c31f062` 是更早的身份提交，不是这个 head。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。执行插件没有 `singleUser`，也没有 `bind-owner`。同一来源地址 60 秒内登录满 8 次后返回 429。
 
 1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。项目属于哪个空间，只问调用方注入的 `ProjectSpaceDirectory`。执行服务把 `spaceForProject(projectId)` 返回的空间 id 和这次成员的 `spaceIds` 做精确比较。没有注入这份目录时，不把 `projectId` 当作空间 id，启动、提交、投票、结算、报告和待办全部拒绝，也不写入。
@@ -153,7 +153,7 @@ await applyExecution(ctx, {
 });
 ```
 
-`applyExecution` 接受 `readWorkbench`，并可选接受 `projectSpaces`。不要传 `memberResolver` 或 `singleUser`。单人还是多人是上一步选定的 `deploymentMode`，不从解析器是否存在来推断。项目到空间的正式数据源由 A 的 Host／空间模块提供。B 不打开空间库，也不保存这份归属，只消费调用方注入的目录。没有记录、空间不匹配，以及根本没有注入目录，都拒绝。
+`applyExecution` 接受 `readWorkbench`，并可选接受 `projectSpaces`。不要传 `memberResolver` 或 `singleUser`。单人还是多人是上一步选定的 `deploymentMode`，不从解析器是否存在来推断。把 `projectSpaces` 装进 Host 是装配职责：A 单写 Host 的注入、导航、导出和公共配置。B 提供可信身份和空间授权事实，以及执行服务消费这份目录的接口。A 不重建 B-ID0 的身份或空间授权。B 不打开空间库，也不保存这份归属，只消费调用方注入的目录。没有记录、空间不匹配，以及根本没有注入目录，都拒绝。
 
 ```ts
 interface ProjectSpaceDirectory {
@@ -166,7 +166,7 @@ interface ProjectSpaceDirectory {
 }
 ```
 
-`boundedProjectSpaces` 只是把一份已经给出的目录装进有界内存：最多 100 条，一个项目只属于一个空间。它不是正式数据源，也不从包入口 `packages/dsh-adapter/src/index.ts` 导出。A 接入时实现 `ProjectSpaceDirectory` 的 `spaceForProject`，把这个对象作为 `projectSpaces` 注入 `applyExecution`。这个函数必须接受任意合法 id（工作台 `WorkTaskSchema` 的 id：1 到 100 个字符，匹配 `/^[\w-]+$/u`），对不认识的返回 `{ ok: false, reason: 'unknown' }`，不能抛错，也不能返回 `unavailable`。`ProjectSpaceDirectory` 和 `ProjectSpaceLookup` 已由 `s1-integration.ts` 再导出，包入口的 `export type * from './s1-integration.js'` 因此带上这两个类型。
+`boundedProjectSpaces` 只是把一份已经给出的目录装进有界内存：最多 100 条，一个项目只属于一个空间。它不是正式数据源，也不从包入口 `packages/dsh-adapter/src/index.ts` 导出。A 在 Host 里实现 `ProjectSpaceDirectory` 的 `spaceForProject`，把这个对象作为 `projectSpaces` 注入 `applyExecution`。这个对象只把 B 已经给出的空间授权事实接到执行服务。这个函数必须接受任意合法 id（工作台 `WorkTaskSchema` 的 id：1 到 100 个字符，匹配 `/^[\w-]+$/u`），对不认识的返回 `{ ok: false, reason: 'unknown' }`，不能抛错，也不能返回 `unavailable`。`ProjectSpaceDirectory` 和 `ProjectSpaceLookup` 已由 `s1-integration.ts` 再导出，包入口的 `export type * from './s1-integration.js'` 因此带上这两个类型。
 
 `inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。
 
@@ -204,9 +204,21 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 `docs/contracts/evidence/b-m1-execution-light.png` 和 `b-m1-execution-dark.png` 是同一份样例数据在浅色和 `body[data-ds-dark-theme]` 下的整页截图。样例 RPC 固定返回失败，页面不会写存储，也不是官方桌面里的真人会话。截图同时画出交付和评审，真实的 `ExecutionWorkspace` 一次只打开其中一项。
 
+## 当前累计组合
+
+本文件随累计联调 head `b/m1-exec-events` `019b280`。退回意见查询 `b/m1-revision-view` 的顶支已经合进这条叠加。当前组合是：
+
+- 空间目录：`b/m1-space-mapping` `49d7984`
+- 身份对齐：`b/m1-align-identity` `20314eb`
+- 叠加从下到上：delivery-draft `39367a6`，review-comment `f494d12`，unlock-reconcile `49be963`，inbox-groups `951fc76`，exec-events `019b280`
+- 身份模块 #18：`b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）
+- 子模块钉在 `687f282`
+
+`f494d12` 改了 `packages/agent-core/src/review.ts` 的空评论判断（私有 `commentText`），需要 A 确认。接缝不变：B 提供可信身份、空间授权事实和执行服务消费接口；A 单写 Host 的注入、导航、导出和公共配置。
+
 ## 已知限制
 
-在 A 的 Host／空间模块把 `projectSpaces` 接入执行入口之前，`legacy-single-user` 和 `multi-member` 一样：没有注入目录时，该入口对所有项目全部拒绝。
+在 Host 装配把 `projectSpaces` 注入执行入口之前，`legacy-single-user` 和 `multi-member` 一样：没有注入目录时，该入口对所有项目全部拒绝。这是还没装上目录，不是把空间授权事实交给 A 重建。
 
 别的空间里的同一个幂等键，响应里看不出来，计时上看得出。例如目录慢 2ms 时，中位数大约是 5057µs 对 2866µs。
 
