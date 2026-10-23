@@ -42,6 +42,14 @@ function memory() {
     storage,
     node: (id) => [...nodes.values()].find((record) => record.nodeId === id),
     planCount: () => plans.size,
+    // `writes` counts puts, so storing an unchanged record still changes the snapshot.
+    snapshot() {
+      return structuredClone({
+        nodes: [...nodes.entries()],
+        plans: [...plans.entries()],
+        writes,
+      });
+    },
     arm(writeNumber) {
       writes = 0;
       failOn = writeNumber;
@@ -1051,4 +1059,40 @@ test('a missing project-space directory refuses start, submit, inbox, and report
   assert.equal(JSON.stringify(report).includes('设计登录流程'), false);
   assert.equal(store.planCount(), 0);
   assert.equal(store.node('design'), undefined);
+});
+
+test('rejected submit, ballot, and settle leave the storage snapshot unchanged', async () => {
+  const { state, applied } = confirm(
+    [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
+    [lin],
+  );
+  state.tasks[0].participantIds = [...state.tasks[0].participantIds, 'outside'];
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const before = store.snapshot();
+
+  const submitted = await service.submit(session('lin'), {
+    ...locate(applied, 'design', 1, 'reject-submit'),
+    text: '评审人不能提交',
+  });
+  assert.equal(submitted.ok, false);
+  assert.equal(submitted.error.code, 'not-assignee');
+
+  const voted = await service.ballot(session('chen'), {
+    ...locate(applied, 'design', 1, 'reject-ballot'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+    action: 'approve',
+  });
+  assert.equal(voted.ok, false);
+  assert.equal(voted.error.code, 'not-assigned-reviewer');
+
+  const settled = await service.settle(session('outside'), {
+    ...locate(applied, 'design', 1, 'reject-settle'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+  });
+  assert.equal(settled.ok, false);
+  assert.equal(settled.error.code, 'not-assigned-reviewer');
+  assert.deepEqual(store.snapshot(), before);
 });

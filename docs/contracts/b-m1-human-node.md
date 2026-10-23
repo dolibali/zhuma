@@ -155,7 +155,7 @@ interface ProjectSpaceDirectory {
 }
 ```
 
-`boundedProjectSpaces` 只是把一份已经给出的目录装进有界内存：最多 100 条，一个项目只属于一个空间。它不是正式数据源。
+`boundedProjectSpaces` 只是把一份已经给出的目录装进有界内存：最多 100 条，一个项目只属于一个空间。它不是正式数据源，也不从包入口 `packages/dsh-adapter/src/index.ts` 导出。A 接入时实现 `ProjectSpaceDirectory` 的 `spaceForProject`，把这个对象作为 `projectSpaces` 注入 `applyExecution`。`ProjectSpaceDirectory` 和 `ProjectSpaceLookup` 已由 `s1-integration.ts` 再导出，包入口的 `export type * from './s1-integration.js'` 因此带上这两个类型。
 
 `inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。
 
@@ -195,7 +195,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 ## 已知限制
 
-在 A 的 Host／空间模块把 `projectSpaces` 接入执行入口之前，多人模式下该入口对所有项目全部拒绝。
+在 A 的 Host／空间模块把 `projectSpaces` 接入执行入口之前，`legacy-single-user` 和 `multi-member` 一样：没有注入目录时，该入口对所有项目全部拒绝。
 
 这些行为在本切片里保持原样：
 
