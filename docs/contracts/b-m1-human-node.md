@@ -78,8 +78,16 @@
 
 未实现（后续切片）：
 
-- 带存储的执行服务、计划回执和 `/zhuma-exec`
+- 待办、报告和 `/zhuma-exec`
 - 执行界面
 - 产物字节、预览和访问控制。这一层只校验文件元数据
 - 专家评审和 `interpretAgentReview`
 - 官方 Host 上的真实多人会话
+
+## 写入
+
+`ExecutionService` 串行执行 `start-plan`、`submit`、`ballot`、`settle` 和启动对账。actor 只来自已经解析好的 `MemberResolution`。
+
+`start-plan` 先写节点，再写计划回执。回执还没有写上时，`submit`、`ballot`、`settle` 返回 `plan-incomplete`，响应不带节点正文。继续的方式只有同一个幂等键重试 `start-plan`，或服务上的对账。半写窗口里的提交不会把上游完成，所以重试启动时下游还拿不到 `inputRefs`。回执写上之后，正常提交才会完成节点并解锁。
+
+待办和报告在下一支。`/zhuma-exec` 在读取之后单独接入。

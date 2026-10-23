@@ -234,3 +234,450 @@ test('start accepts only the requested revision and replays a partial write', as
     'idempotency-mismatch',
   );
 });
+
+test('a non-member and a non-participant are refused without the delivery text', async () => {
+  const mallory = {
+    id: 'mallory',
+    name: '马洛',
+    kind: 'human',
+    role: '',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const { state, applied } = confirm(
+    [
+      workflowNode({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['lin'],
+      }),
+    ],
+    [lin, mallory],
+  );
+  state.tasks[0].participantIds = state.tasks[0].participantIds.filter((id) => id !== 'mallory');
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const secret = '只有执行者能看见的说明';
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'secret-1'),
+    text: secret,
+  });
+  assert.equal(submitted.ok, true);
+  const replay = await service.submit(session('outside'), {
+    ...locate(applied, 'design', 1, 'secret-1'),
+    text: secret,
+  });
+  assert.equal(replay.ok, false);
+  assert.equal(replay.error.code, 'not-assignee');
+  assert.equal(JSON.stringify(replay).includes(secret), false);
+  assert.equal(replay.value, undefined);
+  const ghost = await service.submit(session('ghost'), {
+    ...locate(applied, 'design', 1, 'secret-1'),
+    text: secret,
+  });
+  assert.equal(ghost.error.code, 'not-in-directory');
+  assert.equal(JSON.stringify(ghost).includes(secret), false);
+
+  const stolenVote = await service.ballot(session('outside'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'vote-lin'),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+    action: 'approve',
+  });
+  assert.equal(stolenVote.ok, false);
+  assert.equal(JSON.stringify(stolenVote).includes(secret), false);
+
+  const ghostStart = await service.startPlan(session('ghost'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'ghost-start',
+  });
+  assert.equal(ghostStart.error.code, 'not-in-directory');
+  const ghostSettle = await service.settle(session('ghost'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'ghost-settle'),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+  });
+  assert.equal(ghostSettle.ok, false);
+  assert.equal(JSON.stringify(ghostSettle).includes(secret), false);
+});
+
+test('authorization, stale delivery, and a failed write leave the node unchanged', async () => {
+  const { state, applied } = confirm(
+    [
+      workflowNode({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['lin'],
+      }),
+    ],
+    [lin],
+  );
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const body = locate(applied, 'design', 1, 'deliver-1');
+  const outsider = await service.submit(session('outside'), { ...body, text: '代交' });
+  assert.equal(outsider.error.code, 'not-assignee');
+  assert.equal(outsider.error.details.canSubmitNode, false);
+  assert.equal(store.node('design').artifactVersions.length, 0);
+
+  const empty = await service.submit(session('chen'), { ...body, text: '   ' });
+  assert.equal(empty.error.code, 'empty-delivery');
+  const incomplete = await service.submit(session('chen'), {
+    ...body,
+    files: [
+      {
+        id: 'notes',
+        mediaType: 'text/plain',
+        byteSize: 4,
+        checksum: 'abc',
+        accessPolicyId: 'task-read',
+        uploadComplete: false,
+      },
+    ],
+  });
+  assert.equal(incomplete.error.code, 'upload-incomplete');
+  assert.equal(store.node('design').receipts.length, 0);
+  assert.equal(store.node('design').command.version, 1);
+
+  store.arm(1);
+  const failed = await service.submit(session('chen'), { ...body, text: '接口说明' });
+  assert.equal(failed.error.code, 'unavailable');
+  assert.equal(store.node('design').command.version, 1);
+  assert.equal(store.node('design').receipts.length, 0);
+
+  store.arm(0);
+  const submitted = await service.submit(session('chen'), { ...body, text: '接口说明' });
+  assert.equal(submitted.value.disposition, 'applied');
+  assert.equal(submitted.value.node.status, 'in-review');
+  const replay = await service.submit(session('chen'), {
+    ...body,
+    expectedVersion: 0,
+    text: '接口说明',
+  });
+  assert.equal(replay.value.disposition, 'replayed');
+  assert.equal(store.node('design').artifactVersions.length, 1);
+  const mismatch = await service.submit(session('chen'), { ...body, text: '另一份说明' });
+  assert.equal(mismatch.error.code, 'idempotency-mismatch');
+  assert.equal(
+    (await service.submit(session('chen'), { ...body, text: '接口说明', extra: true })).error.code,
+    'unknown-field',
+  );
+
+  const roundId = submitted.value.node.currentRoundId;
+  const artifactVersionId = submitted.value.node.artifacts.at(-1).id;
+  const wrongReviewer = await service.ballot(session('outside'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'vote-outside'),
+    roundId,
+    artifactVersionId,
+    action: 'approve',
+  });
+  assert.equal(wrongReviewer.error.code, 'not-assigned-reviewer');
+  assert.equal(
+    (
+      await service.ballot(session('lin'), {
+        ...locate(applied, 'design', store.node('design').command.version, 'vote-lin'),
+        roundId,
+        artifactVersionId,
+        action: 'approve',
+        reviewerId: 'outside',
+      })
+    ).error.code,
+    'actor-from-body',
+  );
+});
+
+test('concurrent submits conflict once, and two deciding ballots unlock one downstream', async () => {
+  const { state, applied } = confirm(
+    [
+      workflowNode({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['lin', 'outside'],
+      }),
+      workflowNode({
+        id: 'publish',
+        title: '发布',
+        assigneeId: 'outside',
+        dependsOn: ['design'],
+      }),
+    ],
+    [lin],
+  );
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const firstBody = { ...locate(applied, 'design', 1, 'deliver-a'), text: '第一份' };
+  const secondBody = { ...locate(applied, 'design', 1, 'deliver-b'), text: '第二份' };
+  const [first, second] = await Promise.all([
+    service.submit(session('chen'), firstBody),
+    service.submit(session('chen'), secondBody),
+  ]);
+  const results = [first, second];
+  assert.equal(results.filter((item) => item.ok && item.value.disposition === 'applied').length, 1);
+  assert.equal(results.filter((item) => !item.ok && item.error.code === 'conflict').length, 1);
+  assert.equal(results.find((item) => !item.ok).error.details.currentVersion, 2);
+  assert.equal(store.node('design').artifactVersions.length, 1);
+
+  const design = store.node('design');
+  const roundId = design.currentRoundId;
+  const artifactVersionId = design.artifactVersions.at(-1).id;
+  const version = design.command.version;
+  const vote = (actorId) =>
+    service.ballot(session(actorId), {
+      ...locate(applied, 'design', version, `vote-${actorId}`),
+      roundId,
+      artifactVersionId,
+      action: 'approve',
+    });
+  const [linVote, outsideVote] = await Promise.all([vote('lin'), vote('outside')]);
+  assert.equal(linVote.ok && outsideVote.ok, true);
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('design').rounds[0].ballots.length, 2);
+  assert.equal(store.node('publish').command.status, 'ready');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  const again = await service.reconcile();
+  assert.equal(again.value.unlocked, 0);
+  assert.equal(store.node('publish').command.version, 2);
+
+  const key = nodeRecordKey(store.node('publish'));
+  assert.equal(
+    store.storage.readNode(key).receipts.some((item) => item.idempotencyKey.startsWith('unlock:')),
+    false,
+  );
+  assert.ok(
+    store
+      .node('publish')
+      .command.stored.some((item) => String(item.idempotencyKey).startsWith('unlock:')),
+  );
+});
+
+test('a send-back does not unlock, and the old round cannot accept another vote', async () => {
+  const { state, applied } = confirm(
+    [
+      workflowNode({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['lin'],
+      }),
+      workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] }),
+    ],
+    [lin],
+  );
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deliver-1'),
+    text: '初稿',
+  });
+  const roundId = submitted.value.node.currentRoundId;
+  const artifactVersionId = submitted.value.node.artifacts.at(-1).id;
+  const sentBack = await service.ballot(session('lin'), {
+    ...locate(applied, 'design', submitted.value.node.version, 'vote-back'),
+    roundId,
+    artifactVersionId,
+    action: 'request-changes',
+    comment: '请补充错误码',
+  });
+  assert.equal(sentBack.value.node.status, 'needs-revision');
+  assert.equal(store.node('publish').command.status, 'blocked');
+  const revised = await service.submit(session('chen'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'deliver-2'),
+    text: '补充了错误码',
+  });
+  assert.equal(revised.value.node.status, 'in-review');
+  assert.notEqual(revised.value.node.currentRoundId, roundId);
+  const stale = await service.ballot(session('lin'), {
+    ...locate(applied, 'design', revised.value.node.version, 'vote-stale'),
+    roundId,
+    artifactVersionId,
+    action: 'approve',
+  });
+  assert.equal(stale.error.code, 'stale-round');
+});
+
+test('an over-deep body and an oversized delivery are validation errors', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service } = create(state);
+  await startChen(service, applied);
+  const deep = [];
+  let cursor = deep;
+  for (let index = 0; index < 20000; index += 1) {
+    const next = [];
+    cursor.push(next);
+    cursor = next;
+  }
+  const nested = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deep'),
+    text: 'x',
+    nested: deep,
+  });
+  assert.equal(nested.error.code, 'validation');
+  const huge = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'huge'),
+    text: 'x'.repeat(5_000_000),
+  });
+  assert.equal(huge.error.code, 'validation');
+  const bounded = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'short'),
+    text: '短说明',
+  });
+  assert.equal(bounded.value.disposition, 'applied');
+});
+
+test('a half-written start rejects node writes until retry, then delivery fills input refs', async () => {
+  const { state, applied } = confirm([
+    workflowNode({ id: 'design', title: '设计' }),
+    workflowNode({ id: 'publish', title: '发布', assigneeId: 'outside', dependsOn: ['design'] }),
+  ]);
+  const { service, store } = create(state);
+  const startBody = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-half',
+  };
+  store.arm(2);
+  const failed = await service.startPlan(session('chen'), startBody);
+  assert.equal(failed.error.code, 'unavailable');
+  assert.equal(store.planCount(), 0);
+  assert.equal(store.node('publish'), undefined);
+
+  store.arm(0);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'early'),
+    text: '在计划半启动时交付',
+  });
+  assert.equal(submitted.ok, false);
+  assert.equal(submitted.error.code, 'plan-incomplete');
+  assert.equal(JSON.stringify(submitted).includes('在计划半启动时交付'), false);
+  const voted = await service.ballot(session('chen'), {
+    ...locate(applied, 'design', 1, 'early-vote'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+    action: 'approve',
+  });
+  assert.equal(voted.error.code, 'plan-incomplete');
+  const settled = await service.settle(session('chen'), {
+    ...locate(applied, 'design', 1, 'early-settle'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+  });
+  assert.equal(settled.error.code, 'plan-incomplete');
+  assert.equal(store.node('design').command.status, 'ready');
+  assert.equal(store.node('design').command.version, 1);
+
+  const retry = await service.startPlan(session('chen'), startBody);
+  assert.equal(retry.value.disposition, 'applied');
+  assert.equal(store.planCount(), 1);
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  const delivered = await service.submit(session('chen'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'after-receipt'),
+    text: '计划完整后交付',
+  });
+  assert.equal(delivered.value.disposition, 'applied');
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('publish').command.status, 'ready');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  assert.equal(
+    store.node('publish').handoff.inputRefs[0].artifactVersionId,
+    store.node('design').acceptedArtifactVersionId,
+  );
+  const reconciled = await service.reconcile();
+  assert.equal(reconciled.value.unlocked, 0);
+
+  store.node('publish').handoff = { ...store.node('publish').handoff, inputRefs: [] };
+  const repaired = await service.reconcile();
+  assert.equal(repaired.value.unlocked, 1);
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  const quiet = await service.reconcile();
+  assert.equal(quiet.value.unlocked, 0);
+});
+
+test('multi-member calls come from the resolver, and another space is not-found', async () => {
+  const reviewer = {
+    id: 'lin',
+    name: '林夏',
+    kind: 'human',
+    role: '复核',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const { state, applied } = confirm(
+    [workflowNode({ id: 'design', title: '设计', reviewerIds: ['lin'], reviewRequired: true })],
+    [reviewer],
+  );
+  const { service, store } = create(state);
+
+  const absent = await service.startPlan(
+    {},
+    {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: 'start-absent',
+    },
+  );
+  assert.equal(absent.error.code, 'unauthenticated');
+  const untrusted = await service.startPlan(
+    { member: { ok: false, status: 403, code: 'untrusted-request' } },
+    {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: 'start-untrusted',
+    },
+  );
+  assert.equal(untrusted.error.code, 'untrusted-request');
+  assert.deepEqual(untrusted.error.details, {});
+  assert.equal(JSON.stringify(untrusted).includes('设计登录流程'), false);
+  const ownerBrowser = await service.startPlan(
+    { kind: 'owner', memberId: 'chen' },
+    {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: 'start-owner',
+    },
+  );
+  assert.equal(ownerBrowser.error.code, 'unauthenticated');
+  assert.equal(JSON.stringify(ownerBrowser).includes('chen'), false);
+  const hidden = await service.startPlan(session('chen', ['north']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(hidden.error.code, 'not-found');
+  assert.equal(JSON.stringify(hidden).includes('设计登录流程'), false);
+  assert.equal(JSON.stringify(hidden).includes(applied.id), false);
+  assert.equal(store.node('design'), undefined);
+
+  const started = await service.startPlan(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-chen',
+  });
+  assert.equal(started.ok, true);
+  const delivered = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'chen-only'),
+    text: '只给陈宁的说明',
+  });
+  assert.equal(delivered.value.disposition, 'applied');
+
+  const crossedSubmit = await service.submit(session('lin', ['north']), {
+    ...locate(applied, 'design', delivered.value.node.version, 'lin-cross'),
+    text: '跨空间提交',
+  });
+  assert.equal(crossedSubmit.error.code, 'not-found');
+  assert.equal(JSON.stringify(crossedSubmit).includes('只给陈宁的说明'), false);
+});

@@ -137,6 +137,16 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
   return fail(unknown ? 'unknown-field' : 'validation');
 }
 
+function commandNode(record: ExecutionNodeRecord) {
+  return {
+    nodeId: record.nodeId,
+    status: record.command.status,
+    version: record.command.version,
+    artifacts: record.artifactVersions,
+    ...(record.currentRoundId !== undefined ? { currentRoundId: record.currentRoundId } : {}),
+  };
+}
+
 function planKey(taskId: string, planId: string, revision: number): string {
   return `${taskId}:${planId}:${revision}`;
 }
@@ -212,6 +222,80 @@ export class ExecutionService {
     body: unknown,
   ): Promise<ExecutionResult<{ disposition: string; reports: NodeExecutionReport[] }>> {
     return this.enqueue(() => this.startPlanNow(caller, body));
+  }
+
+  submit(caller: ExecutionCaller, body: unknown) {
+    return this.enqueue(() =>
+      this.command(caller, body, submitSchema, (actorId, request, record) => {
+        const result = submitDelivery({
+          record,
+          actorId,
+          idempotencyKey: request.idempotencyKey,
+          expectedVersion: request.expectedVersion,
+          draft: {
+            files: request.files ?? [],
+            links: request.links ?? [],
+            ...(request.text === undefined ? {} : { text: request.text }),
+          },
+          artifactId: `artifact:${request.idempotencyKey}`,
+          roundId: `round:${request.idempotencyKey}`,
+        });
+        return { result, settle: false };
+      }),
+    );
+  }
+
+  ballot(caller: ExecutionCaller, body: unknown) {
+    return this.enqueue(() =>
+      this.command(caller, body, ballotSchema, (actorId, request, record) => {
+        const result = castBallot({
+          record,
+          actorId,
+          idempotencyKey: request.idempotencyKey,
+          expectedVersion: request.expectedVersion,
+          ballot: {
+            reviewerId: actorId,
+            roundId: request.roundId,
+            artifactVersionId: request.artifactVersionId,
+            action: request.action,
+            ...(request.comment === undefined ? {} : { comment: request.comment }),
+            ...(request.unresolvedCommentIds === undefined
+              ? {}
+              : { unresolvedCommentIds: request.unresolvedCommentIds }),
+          },
+        });
+        return { result, settle: true };
+      }),
+    );
+  }
+
+  settle(caller: ExecutionCaller, body: unknown) {
+    return this.enqueue(() =>
+      this.command(caller, body, settleSchema, (actorId, request, record) => {
+        if (!maySettle(record, actorId)) {
+          return {
+            result: {
+              ok: false as const,
+              disposition: 'rejected' as const,
+              code: 'not-assigned-reviewer',
+              record,
+            },
+            settle: false,
+          };
+        }
+        return {
+          result: settleReview({
+            record,
+            actorId,
+            idempotencyKey: request.idempotencyKey,
+            expectedVersion: request.expectedVersion,
+            roundId: request.roundId,
+            artifactVersionId: request.artifactVersionId,
+          }),
+          settle: false,
+        };
+      }),
+    );
   }
 
   /** Fill unlocks that were settled before their downstream write landed. */
@@ -327,6 +411,75 @@ export class ExecutionService {
       value: {
         disposition: started.disposition,
         reports: started.records.map(toNodeExecutionReport),
+      },
+    };
+  }
+
+  private async command<
+    T extends {
+      taskId: string;
+      planId: string;
+      revision: number;
+      nodeId: string;
+      expectedVersion: number;
+    },
+  >(
+    caller: ExecutionCaller,
+    body: unknown,
+    schema: z.ZodType<T>,
+    run: (
+      actorId: string,
+      request: T,
+      record: ExecutionNodeRecord,
+    ) => { result: ReturnType<typeof submitDelivery>; settle: boolean },
+  ) {
+    const actor = this.actor(caller, body);
+    if (!actor.ok) return actor;
+    const parsed = parseBody(schema, body);
+    if (!parsed.ok) return parsed;
+    const current = this.storage.readNode(nodeRecordKey(parsed.value));
+    if (!current || !intactNode(current)) return fail('not-found');
+    if (this.spaceOf(current.taskId, actor.value.spaceIds) !== 'ok') return fail('not-found');
+    if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
+    const executed = run(actor.value.actorId, parsed.value, current);
+    if (!executed.result.ok) {
+      return fail(
+        executed.result.code,
+        rejectionDetails(executed.result.code, current, parsed.value),
+      );
+    }
+    let record = executed.result.record;
+    if (executed.settle && record.currentRoundId) {
+      const round = record.rounds.find((item) => item.id === record.currentRoundId);
+      if (round && (round.status === 'approved' || round.status === 'changes-requested')) {
+        const settled = settleReview({
+          record,
+          actorId: actor.value.actorId,
+          idempotencyKey: `settle:${round.id}`,
+          expectedVersion: record.command.version,
+          roundId: round.id,
+          artifactVersionId: round.artifactVersionId,
+        });
+        if (!settled.ok) return fail(settled.code);
+        record = settled.record;
+      }
+    }
+    if (record !== current) {
+      const stored = await this.persist(() =>
+        this.storage.writeNode(nodeRecordKey(record), record),
+      );
+      if (!stored.ok) return stored;
+    }
+    if (record.command.status === 'completed') {
+      const unlocked = await this.unlockFrom(record);
+      if (!unlocked.ok) return unlocked;
+    }
+    return {
+      ok: true as const,
+      value: {
+        disposition: executed.result.disposition,
+        report: toNodeExecutionReport(record),
+        node: commandNode(record),
       },
     };
   }
