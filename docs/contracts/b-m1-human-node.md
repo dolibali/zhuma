@@ -2,7 +2,7 @@
 
 切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，只组合现有 WP00 导出，不改 `node-status.ts`、`review.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts`。
 
-带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。待办、交付和评审界面在后续切片。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
+带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。`createExecutionApi` 调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套超过 32 层的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。面板还在后续切片。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
 
 ## 验证层级
 

@@ -1,6 +1,14 @@
 import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export type { InboxItemView, NodeExecutionView } from './execution-view.js';
+export type {
+  DeliveryDraft,
+  ExecutionApi,
+  ExecutionInboxValue,
+  ExecutionNodeWire,
+  ReviewDraft,
+} from './execution/ExecutionApi.js';
+export { createExecutionApi, readExecutionNode } from './execution/ExecutionApi.js';
 export {
   INBOX_ACTION_LABELS,
   INBOX_KIND_LABELS,
