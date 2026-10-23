@@ -1,5 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -15,18 +17,23 @@ import path from 'node:path';
 export interface DeskJournal<T> {
   load(): T | null;
   save(value: T): void;
-  /** 文件日志没拿到独占锁时为 false。内存日志省略，调用方视为可写。 */
+  /**
+   * 文件日志没拿到独占锁，或保存前发现令牌已经不是自己的，则为 false。
+   * 内存日志省略，调用方视为可写。
+   */
   readonly writable?: boolean;
 }
 
 interface LockRecord {
+  token: string;
   pid: number;
   hostname: string;
   startedAt: string;
 }
 
-const heldLocks = new Set<string>();
+const heldLocks = new Map<string, string>();
 let exitHooked = false;
+const barrierPause = new Int32Array(new SharedArrayBuffer(4));
 
 function lockFilePath(filePath: string): string {
   const resolved = path.resolve(filePath);
@@ -34,14 +41,33 @@ function lockFilePath(filePath: string): string {
 }
 
 function releaseHeldLocks(): void {
-  for (const lockPath of heldLocks) {
+  const held = [...heldLocks.entries()];
+  heldLocks.clear();
+  for (const [lockPath, token] of held) releaseOne(lockPath, token);
+}
+
+/** 先改名再核对令牌。对不上就放回去，避免退出时删掉新持有者的锁。 */
+function releaseOne(lockPath: string, token: string): void {
+  const temporary = `${lockPath}.${token}.releasing`;
+  try {
+    renameSync(lockPath, temporary);
+  } catch {
+    return;
+  }
+  const current = readLock(temporary);
+  if (current !== null && current.token === token) {
     try {
-      unlinkSync(lockPath);
+      unlinkSync(temporary);
     } catch {
       // 锁已经不在。
     }
+    return;
   }
-  heldLocks.clear();
+  try {
+    renameSync(temporary, lockPath);
+  } catch {
+    // 原路径上已经有另一把锁。临时文件不是自己的令牌，不删除那把新锁。
+  }
 }
 
 function ensureExitHook(): void {
@@ -66,12 +92,38 @@ function readLock(lockPath: string): LockRecord | null {
     if (!Number.isInteger(pid) || pid === undefined || pid <= 0) return null;
     if (typeof parsed.hostname !== 'string' || parsed.hostname.length === 0) return null;
     return {
+      token: typeof parsed.token === 'string' ? parsed.token : '',
       pid,
       hostname: parsed.hostname,
       startedAt: typeof parsed.startedAt === 'string' ? parsed.startedAt : '',
     };
   } catch {
     return null;
+  }
+}
+
+function sameHolder(left: LockRecord, right: LockRecord): boolean {
+  if (left.token.length > 0 || right.token.length > 0) return left.token === right.token;
+  return (
+    left.pid === right.pid && left.hostname === right.hostname && left.startedAt === right.startedAt
+  );
+}
+
+/**
+ * 测试用屏障。未设置环境变量时什么都不做。
+ * 到达点写一个文件，然后等到另一个文件出现，用来钉死回收顺序，而不是靠睡眠碰运气。
+ */
+function reachReclaimBarrier(): void {
+  const arrived = process.env.ZHUMA_LOCK_ARRIVED;
+  if (arrived) writeFileSync(arrived, String(process.pid));
+  const waitFile = process.env.ZHUMA_LOCK_WAIT_FILE;
+  if (!waitFile) return;
+  const started = Date.now();
+  while (!existsSync(waitFile)) {
+    if (Date.now() - started > 8000) {
+      throw Object.assign(new Error('写锁屏障超时'), { code: 'EBARRIER' });
+    }
+    Atomics.wait(barrierPause, 0, 0, 5);
   }
 }
 
@@ -87,8 +139,43 @@ function holderDead(record: LockRecord): boolean {
   }
 }
 
-function acquireLock(lockPath: string): boolean {
+function restoreRenamed(temporary: string, lockPath: string): void {
+  try {
+    renameSync(temporary, lockPath);
+  } catch {
+    // 原路径已经有新锁。不删除它。
+  }
+}
+
+/**
+ * 过期锁先改名到唯一临时文件。rename 是原子的，只有一个进程能拿走这份文件。
+ * 再读回，确认仍是刚才那个已死持有者，才丢掉。对不上就放回去。
+ */
+function reclaimStale(lockPath: string, holder: LockRecord): boolean {
+  reachReclaimBarrier();
+  const temporary = `${lockPath}.${randomBytes(8).toString('hex')}.reclaim`;
+  try {
+    renameSync(lockPath, temporary);
+  } catch {
+    return false;
+  }
+  const moved = readLock(temporary);
+  if (moved === null || !sameHolder(moved, holder) || !holderDead(moved)) {
+    restoreRenamed(temporary, lockPath);
+    return false;
+  }
+  try {
+    unlinkSync(temporary);
+  } catch {
+    restoreRenamed(temporary, lockPath);
+    return false;
+  }
+  return true;
+}
+
+function acquireLock(lockPath: string): string | null {
   mkdirSync(path.dirname(lockPath), { recursive: true });
+  ensureExitHook();
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let fd: number;
     try {
@@ -98,19 +185,17 @@ function acquireLock(lockPath: string): boolean {
       if (code !== 'EEXIST') throw error;
       const holder = readLock(lockPath);
       if (holder !== null && holderDead(holder)) {
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          return false;
-        }
+        if (!reclaimStale(lockPath, holder)) return null;
         continue;
       }
-      return false;
+      return null;
     }
+    const token = randomBytes(16).toString('hex');
     try {
       writeSync(
         fd,
         JSON.stringify({
+          token,
           pid: process.pid,
           hostname: hostname(),
           startedAt: new Date().toISOString(),
@@ -119,11 +204,15 @@ function acquireLock(lockPath: string): boolean {
     } finally {
       closeSync(fd);
     }
-    heldLocks.add(lockPath);
-    ensureExitHook();
-    return true;
+    heldLocks.set(lockPath, token);
+    return token;
   }
-  return false;
+  return null;
+}
+
+function holdsLock(lockPath: string, token: string): boolean {
+  const current = readLock(lockPath);
+  return current !== null && current.token === token;
 }
 
 /**
@@ -151,9 +240,13 @@ export function foreignWriteLockHeld(dataDir: string): boolean {
 
 /** 运行时日志。调用方负责把路径放在临时目录，不要提交这份文件。 */
 export function createFileJournal<T>(filePath: string): DeskJournal<T> {
-  const writable = acquireLock(lockFilePath(filePath));
+  const lockPath = lockFilePath(filePath);
+  const token = acquireLock(lockPath);
+  const state = { writable: token !== null };
   return {
-    writable,
+    get writable() {
+      return state.writable;
+    },
     load() {
       try {
         return JSON.parse(readFileSync(filePath, 'utf8')) as T;
@@ -165,7 +258,8 @@ export function createFileJournal<T>(filePath: string): DeskJournal<T> {
       }
     },
     save(value: T) {
-      if (!writable) {
+      if (token === null || !state.writable || !holdsLock(lockPath, token)) {
+        state.writable = false;
         throw Object.assign(new Error('另一个进程正持有这份会话的写权'), { code: 'ELOCKED' });
       }
       mkdirSync(path.dirname(filePath), { recursive: true });
