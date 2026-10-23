@@ -13,6 +13,15 @@ const compile = spawnSync(
 if (compile.error || compile.status !== 0) throw new Error('Workbench type build failed.');
 const out = resolve(root, '.build/workbench');
 await mkdir(out, { recursive: true });
+// The official Web bundle exposes Connection to this plugin, not every SDK
+// peer of its base bundle. Bundle only the pure definition/key helpers; live
+// services and Cordis must continue to come from the official Host instance.
+const bundledSdkHelpers = new Set([
+  '@deepseek-ai/dsh-credentials',
+  '@deepseek-ai/dsh-brand',
+  '@deepseek-ai/dsh-storage-domain',
+  '@deepseek-ai/dsh-storage',
+]);
 const hostBuild = await build({
   absWorkingDir: root,
   entryPoints: ['packages/dsh-adapter/src/host-plugin.ts'],
@@ -28,8 +37,31 @@ const hostBuild = await build({
   banner: {
     js: 'import { createRequire as __zhumaCreateRequire } from "node:module"; const require = __zhumaCreateRequire(import.meta.url);',
   },
-  external: ['@deepseek-ai/*'],
+  plugins: [
+    {
+      name: 'official-host-services',
+      setup(builder) {
+        builder.onResolve({ filter: /^@deepseek-ai\// }, (args) =>
+          bundledSdkHelpers.has(args.path) ? undefined : { path: args.path, external: true },
+        );
+      },
+    },
+  ],
 });
+const hostSdkImports = Object.values(hostBuild.metafile.outputs)
+  .flatMap((output) => output.imports)
+  .filter((entry) => entry.path.startsWith('@deepseek-ai/'))
+  .map((entry) => entry.path);
+const verifiedHostExternals = new Set([
+  '@deepseek-ai/dsh-client-connection',
+  '@deepseek-ai/cordis',
+  '@deepseek-ai/schemastery',
+]);
+if (
+  !hostSdkImports.includes('@deepseek-ai/dsh-client-connection') ||
+  hostSdkImports.some((name) => !verifiedHostExternals.has(name))
+)
+  throw new Error('Workbench Host gained an unverified external SDK dependency.');
 const clientBuild = await build({
   absWorkingDir: root,
   entryPoints: ['packages/client/src/workbench/plugin.tsx'],
