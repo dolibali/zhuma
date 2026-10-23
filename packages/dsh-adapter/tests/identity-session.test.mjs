@@ -621,6 +621,40 @@ test('a login from another address is not starved by unknown-account attempts', 
   await host.dispose();
 });
 
+test('one host login limit does not lock another host', async () => {
+  const first = await mount();
+  const second = await mount();
+  const address = '203.0.113.17';
+  const wrong = randomBytes(18).toString('base64url');
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const refused = await call(first.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: address,
+      body: { accountId: 'chen', password: wrong },
+    });
+    assert.equal(refused.status, 401);
+  }
+  const limited = await call(first.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.json.error.code, 'login-rate-limited');
+  const otherHost = await call(second.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  assert.equal(otherHost.status, 200);
+  assert.equal(otherHost.json.accountId, 'chen');
+  await first.dispose();
+  await second.dispose();
+});
+
 test('concurrent failed logins cannot all skip the limiter', async () => {
   const host = await mount();
   const wrong = randomBytes(18).toString('base64url');
