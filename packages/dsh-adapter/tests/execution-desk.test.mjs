@@ -1435,6 +1435,69 @@ test('契约：上游文件读失败时阻塞，不把摘要当成正文', async
   assert.equal(quiet(ok.session.snapshot()).runs, before.runs + 1);
 });
 
+test('契约：多轮结束后不再累积钉住的文件正文', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'zhuma-pin-round-'));
+  const firstBody = 'round-one-body-alpha\n';
+  const secondBody = 'round-two-body-beta\n';
+  writeFileSync(path.join(root, 'need.csv'), firstBody);
+  const planted = seed();
+  planted.fileRoot = root;
+  planted.handoff = {
+    ...planted.handoff,
+    inputRefs: [{ sourceNodeId: 'node-a', artifactVersionId: 'art-1' }],
+  };
+  planted.contextItems = [
+    ...planted.contextItems.filter((item) => item.sourceNodeId === undefined),
+    {
+      id: 'need',
+      kind: 'upstream-artifact',
+      sourceId: 'node-a',
+      sourceNodeId: 'node-a',
+      artifactVersionId: 'art-1',
+      version: '1',
+      permission: 'granted',
+      summary: '不应留下来的摘要',
+      required: true,
+      includedByDefault: true,
+      relativePath: 'need.csv',
+    },
+  ];
+  const requests = [];
+  const simulated = new SimulatedAgentExecutor({ chunkDelayMs: 0 });
+  const run = simulated.run.bind(simulated);
+  simulated.run = (request) => {
+    requests.push(request);
+    return run(request);
+  };
+  const session = ExecutionDesk.create(planted, {
+    executors: [simulated, new UnimplementedNativeExecutor('dsh')],
+    newId: ids(),
+  });
+  session.updateConfig({
+    executorId: 'simulated',
+    skillIds: ['test-design'],
+    mcpIds: ['api-docs'],
+  });
+  const retained = () => JSON.stringify([...session.pinnedPrompt.values()]);
+  const first = session.send({ text: '第一轮', idempotencyKey: 'pin-round-1' });
+  assert.equal(first.ok, true);
+  await session.flush();
+  assert.equal(session.snapshot().runs.at(-1).status, 'completed');
+  assert.equal(session.pinnedPrompt.size, 0);
+  assert.equal(retained().includes(firstBody), false);
+  writeFileSync(path.join(root, 'need.csv'), secondBody);
+  const second = session.send({ text: '第二轮', idempotencyKey: 'pin-round-2' });
+  assert.equal(second.ok, true);
+  await session.flush();
+  assert.equal(session.snapshot().runs.at(-1).status, 'completed');
+  assert.equal(session.snapshot().runs.length, 2);
+  assert.equal(session.pinnedPrompt.size, 0);
+  assert.equal(retained().includes(firstBody), false);
+  assert.equal(retained().includes(secondBody), false);
+  assert.equal(requests[0].promptContext.find((item) => item.id === 'need').body, firstBody);
+  assert.equal(requests[1].promptContext.find((item) => item.id === 'need').body, secondBody);
+});
+
 test('契约：节点记录异常不会被后续成功操作清掉', async () => {
   const { desk: session } = desk();
   const started = session.send({ text: '结束时丢入口', idempotencyKey: 'rb-follow' });

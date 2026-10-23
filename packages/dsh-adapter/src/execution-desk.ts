@@ -247,7 +247,7 @@ export class ExecutionDesk {
   private lastPersistError: unknown = null;
   /** 完成或核实已经记在内存里、但要等日志写上才真正删除的会话。 */
   private pendingSessionDeletes: string[] = [];
-  /** 启动前读好的本轮正文。读失败的文件不会改用摘要。 */
+  /** 启动前读好的本轮正文。读失败的文件不会改用摘要。进入终态后清掉，避免多轮累积。 */
   private readonly pinnedPrompt = new Map<string, { id: string; body: string }[]>();
   /** 执行器收尾后的下一轮没写上日志。存储恢复后继续消费。 */
   private deferredQueueRunId: string | null = null;
@@ -2154,6 +2154,7 @@ export class ExecutionDesk {
 
   private putRun(next: ExecutionAttempt): void {
     this.runs = this.runs.map((run) => (run.id === next.id ? next : run));
+    if (isTerminalRunStatus(next.status)) this.pinnedPrompt.delete(next.id);
   }
 
   private releaseClaim(runId: string): void {
