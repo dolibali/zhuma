@@ -68,7 +68,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 1. 产品读写走前缀路由，不走 exact `/api/zhuma/*`。
 2. 只拒绝 JSON 对象或查询串上的顶层 `actor`、`actorId`、`memberId`，不把它当成登录或覆盖。请求头（例如 `x-actor-id`）、嵌套字段（例如 `{ data: { actorId } }`）和大小写变体（`ActorId`、`actor_id`）不走这条拒绝，也不会因此升权。
-3. 已经带了 `zhuma-member` cookie 时，无效会话返回 401，不退回 owner。否则登出后浏览器里剩下的 DSH cookie 又会变成绑定成员。
+3. 产品多人模式只认有效成员会话。成员 cookie 缺失、被删除、过期、撤销或伪造都返回 401，不退回 DSH owner。否则登出后浏览器里剩下的 DSH cookie 又会变成绑定成员。
 4. 空间是否可读写看账号是否为资源的 owner 或团队成员。`decide` 对 owner principal 的允许不算空间授权。本次测试里，owner principal 对 `south-note` 的 `decide` 是 allow，HTTP 写入仍被拒绝。笔记不存在和没有成员资格都返回 404 `not-found`，响应体相同，不能靠状态码判断笔记在不在。
 
 ## 5. 本次探针
@@ -77,7 +77,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 生产路径没有默认账号。`applyIdentity(ctx)` 不传导入时不写账号、不写笔记、也不保存任何口令。`seedIfEmpty` 不使用内置口令。调用方只能显式传入已经算好的 `{ id, passwordHash }`。已有账号的 domain 不会被这次导入覆盖。
 
-测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。`lin` 作为 host owner cookie 的映射，只在这次导入写了 `ownerAccountId` 时成立。没有导入，或导入没有 `ownerAccountId` 时，domain 的 global 是空字符串，DSH cookie 不会变成任何账号，`/session` 返回 401。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。拼错的键、空的账号列表、重复的 id，以及笔记引用了未导入的账号，都会拒绝并报错。请求体超过 64KiB 时先返回 413，带 `Connection: close`，响应结束后再停止读取并关闭连接。真实的 `node:http` 客户端能收到这个 413。登录核对走异步 `scrypt`。同一个来源地址和账号在 60 秒内失败 8 次后，再登录返回 429，不再计算摘要。`hashPassword` 仍是同步的，只给准备导入的调用方使用，请求处理不会调用它。登录成功时删掉 `expiresAt` 已经过去的会话行。没有定时器。只读请求和过期 cookie 的 401 不会删行；没有人登录时，过期行会留到下一次成功登录。
+测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。没有写死的 `lin` 默认账号。多人导入（两个及以上账号）如果再写 `ownerAccountId`，导入直接拒绝。没有导入，或导入没有把 `ownerAccountId` 设成唯一账号时，DSH cookie 不是产品账号，`/session` 返回 401。只有导入恰好一个账号，并且 `ownerAccountId` 就是这个账号时，隔离的本机单人模式才接受这张 DSH cookie。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。拼错的键、空的账号列表、重复的 id，以及笔记引用了未导入的账号，都会拒绝并报错。请求体超过 64KiB 时先返回 413，带 `Connection: close`，响应结束后再停止读取并关闭连接。真实的 `node:http` 客户端能收到这个 413。登录核对走异步 `scrypt`，失败次数在计算摘要之前先占一个名额，所以同一地址和账号的并发错误登录也不能全部得到 401。同一个来源地址和账号在 60 秒内失败 8 次后，再登录返回 429，不再计算摘要。过期的失败计数会在下一次占名额、清除或读取时删掉。本地部署通常共用一个来源地址，因此任何人连续 8 次错误登录都会把该账号锁 60 秒，锁定期内正确口令也是 429。`hashPassword` 仍是同步的，只给准备导入的调用方使用，请求处理不会调用它。登录成功时删掉 `expiresAt` 已经过去的会话行。没有定时器。只读请求和过期 cookie 的 401 不会删行；没有人登录时，过期行会留到下一次成功登录。成员 cookie 的 `Path` 是 `/`，这样 `/zhuma-exec` 也能带上它；`HttpOnly` 和 `SameSite=Strict` 保留。`Secure` 仍是待办：在 0.2.1-rc.2 上 DSH 只在监听协议为 https 时才加 `Secure`，这里同样留到 TLS 监听接上之后。
 
 探针里真实跑到的 DSH 层：
 
@@ -93,12 +93,37 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 测试结果：
 
-- owner cookie 的当前账号是 `lin`，principal 是 `{kind:'owner'}`，peer id 等于 `browserPeer.id`。两次读取是同一个 peer。
+- 三人导入下，只带 DSH owner cookie 时 `/session` 和北队笔记都是 401。principal 不会变成 `lin`。
 - `zhao`、`chen` 登录后 principal 是 `{kind:'zhuma-member', memberId}`，peer id 不是 `browserPeer`。账号来自会话记录，不来自请求体。
 - `zhao` 能读能写 `north-note`，也能查询 `team-north`。`chen` 写北队笔记得到 404 `not-found`，和笔记不存在是同一个响应，原文保持为 `zhao` 写入的内容。`chen` 能写南队笔记。owner cookie 写南队笔记也被拒绝，同样是 404 `not-found`。策略层的 `decide` 仍可以返回 `not-a-member`，HTTP 不把它露出去。
 - 登录体或查询串里的 `actorId` 返回 `actor-from-body`，不发 cookie。`chen` 的 cookie 加上 `actorId: lin` 同样被拒，笔记不变。同时带 owner cookie 和 `chen` cookie 时，账号仍是 `chen`。
-- `chen` 登出后，旧 cookie 单独使用是 401；和 owner cookie 放在一起也是 401，不会退回 `lin`。只有 owner cookie 时登出返回 `member-session-required`，DSH 会话还在，账号仍是 `lin`。
-- 关掉 Connection 和 identity，用同一份凭据表和同一份 KV 介质再打开：北队笔记仍是登出前的文本；`zhao` 的 cookie 仍能读；`chen` 的旧 cookie 仍是 401；新的 owner cookie 认证仍映射到 `lin`，但是新的 `browserPeer`。`chen` 重新登录后仍不能读北队笔记，南队笔记仍在。
+- `chen` 登出后，旧 cookie 单独使用是 401；和 owner cookie 放在一起也是 401。登出响应是 `Max-Age=0; Path=/`。浏览器丢掉成员 cookie 后只剩 DSH cookie，`/session` 仍是 401，北队笔记也是 401。
+- 关掉 Connection 和 identity，用同一份凭据表和同一份 KV 介质再打开：北队笔记仍是登出前的文本；`zhao` 的 cookie 仍能读；`chen` 的旧 cookie 仍是 401；新的 owner cookie 仍是 401。`chen` 重新登录后仍不能读北队笔记，南队笔记仍在。
+
+## 5.1 给执行入口的成员解析
+
+`/zhuma-id` 和以后的 `/zhuma-exec` 用同一份解析。执行插件注入 `MemberResolver`，不要再从 `admit` 的 owner principal 推导成员。
+
+导出在 `packages/dsh-adapter/src/member-session.ts`：
+
+```ts
+interface MemberRequest {
+  readonly headers: IncomingHttpHeaders;
+}
+type MemberResolution =
+  | { readonly ok: true; readonly memberId: string; readonly spaceIds: readonly string[] }
+  | { readonly ok: false; readonly status: 401; readonly code: 'unauthenticated' }
+  | { readonly ok: false; readonly status: 403; readonly code: 'untrusted-request' };
+interface MemberResolver {
+  resolve(request: MemberRequest): Promise<MemberResolution>;
+}
+function resolveMember(ctx: object, request: MemberRequest): Promise<MemberResolution>;
+function memberResolver(ctx: object): MemberResolver;
+```
+
+`applyIdentity` 挂上之后，`memberResolver(ctx)` 就是可注入的对象，`resolveMember(ctx, { headers })` 是同一条规则的函数。`ctx` 可以是宿主根上下文，也可以是 Cordis 插件拿到的子上下文，解析登记在宿主根上。`headers` 用 Node 的请求头，至少要有这次请求的 `cookie`，以及 Host/Origin 检查要用的 `host`、`origin`、`sec-fetch-site`。成功时 `memberId` 是账号 id，`spaceIds` 是该账号作为 owner 或团队成员能够触及的空间 id，按字母序。403 表示 Host/Origin 不被 Connection 信任。401 表示没有有效成员会话。未挂载 identity 时也是 401。
+
+多人模式下，没有成员 cookie、cookie 被删、`Max-Age=0` 登出、超过 12 小时、签名不对或会话已撤销，都是 401。同时带成员 cookie 和 DSH cookie 时按成员处理。DSH owner 不会自动等于某个成员。`identityAccessMode(ctx)` 返回 `unmounted`、`single-user` 或 `multi-member`，供旧 exact 路由决定是否仍只留给隔离的本机宿主。
 
 ## 6. A 需要提供的挂载
 
@@ -119,7 +144,7 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 
 剩下的工作是这些块，而不是再换一套身份模型：
 
-- 把 `applyIdentity` 接到宿主构建，并用真实 webServer、credentials 和 RemoteAccessService 跑一遍前缀路由。成员 cookie 的 `Path` 是 `/zhuma-id`。`Secure` 仍是待办：在 0.2.1-rc.2 上 DSH 只在监听协议为 https 时才加 `Secure`，这里同样留到 TLS 监听接上之后。
+- 把 `applyIdentity` 接到宿主构建，并用真实 webServer、credentials 和 RemoteAccessService 跑一遍前缀路由。成员 cookie 的 `Path` 已经是 `/`，执行入口可以收到它。`Secure` 仍是待办，留到 TLS 监听接上之后。
 - 空间记录独立出来：每人一个个人空间，两个团队，其中一人同时属于两个团队。种子只在空库写入。
 - 资源授权继续用“owner 或团队成员”，从一条笔记扩到任务和文件元数据。文件字节仍没有带访问控制的 DSH 存储，那是另一项。
 - B-M1 的提交、退回、重提和下游待办改用这里的 `accountId`，不再接受请求体 actor。
@@ -130,6 +155,6 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 
 1. M+ 这种由 B 签发的成员 cookie，是否接受为 FR16 的登录，还是必须等 U，在 `admit` 里区分用户？
 2. `decide` 对 owner 一律允许。空间隔离放在路由里、不单放在 `registerPolicy`，是否符合预期？
-3. 带了无效成员 cookie 时不退回 owner。后果（N1）：导入把 `ownerAccountId` 设成 `lin` 时，浏览器只留 DSH cookie、删掉成员 cookie，会被当成 `lin`，因此 chen 能读到北队笔记。没有这份导入时，DSH cookie 不是产品账号。演示时是否要求两个浏览器都走成员登录，从而都不再落回 owner？
+3. 无成员 cookie 即未登录。这已按 main `656bb61`（PR #15）实现，不再请 dolibali 决定：缺失、删除、过期、撤销或伪造的成员 cookie 都返回 401，不退回 DSH owner。多人导入不能再靠 `ownerAccountId` 把 owner 映射成 `lin`。只有恰好一个账号且 `ownerAccountId` 指向该账号时，隔离的本机单人模式才做这层映射。
 4. 生产路径已经不放默认账号。导入是调用方传入的 `{ id, passwordHash }`，且不覆盖已有账号。宿主是否就用这个导入作为种子入口？
 5. `applyIdentity` 的挂载和构建入口是否由 A 加进 `workbench-plugin.ts`？B 这次没有改那个文件，也没有改 `scripts/workbench/build.mjs`。

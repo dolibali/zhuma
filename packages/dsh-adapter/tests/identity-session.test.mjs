@@ -6,10 +6,11 @@
  * `applyIdentity` registers the prefix route, the credential secret, and the
  * zhuma-member policy, then serves login, session, space, and note calls.
  *
- * Simulated, because these packages are not dependencies of @zhuma/dsh-adapter:
- * no listening socket; `webServer.register` is an in-memory matcher with the
- * same exact-then-longest-prefix rule; `credentials.modifyRecord` is a keyed
- * memory map; the KV medium is a memory map behind DomainFacility; `decide`
+ * Simulated for most cases, because these packages are not dependencies of
+ * @zhuma/dsh-adapter: `webServer.register` is an in-memory matcher with the
+ * same exact-then-longest-prefix rule; one case listens with `node:http`.
+ * `credentials.modifyRecord` is a keyed memory map; the KV medium is a memory
+ * map behind DomainFacility; `decide`
  * implements the owner-allow and policy-condition rules from
  * dsh-api-remote-access, and then calls the policy this module registered.
  * The published RemoteAccessService class is not loaded.
