@@ -82,7 +82,7 @@ function memoryCredentials(records = new Map()) {
   };
 }
 
-function memoryKv(media = new Map()) {
+function memoryKv(media = new Map(), faults = {}) {
   return {
     media,
     async open(descriptor) {
@@ -103,6 +103,10 @@ function memoryKv(media = new Map()) {
         },
         async putRecord(table, key, value) {
           if (closed) throw new Error('closed');
+          if (typeof faults.put === 'function') {
+            const error = faults.put(table, key);
+            if (error !== undefined) throw error;
+          }
           const records = medium.tables.get(table) ?? new Map();
           medium.tables.set(table, records);
           records.set(key, structuredClone(value));
@@ -113,6 +117,10 @@ function memoryKv(media = new Map()) {
         },
         async setGlobal(value) {
           if (closed) throw new Error('closed');
+          if (typeof faults.global === 'function') {
+            const error = faults.global(value);
+            if (error !== undefined) throw error;
+          }
           medium.global = structuredClone(value);
         },
         async close() {
@@ -235,7 +243,7 @@ function cookiePair(setCookie) {
 
 async function mount(shared = {}) {
   const credentials = shared.credentials ?? memoryCredentials();
-  const kv = memoryKv(shared.media);
+  const kv = memoryKv(shared.media, shared.faults);
   const web = createWebServer();
   const access = createAccess();
   const ctx = new Context();
@@ -1498,6 +1506,148 @@ test('a pre-seeded domain with several accounts does not map the owner cookie', 
   assert.equal(session.status, 401);
   assert.equal(session.json.error.code, 'unauthenticated');
   await host.dispose();
+});
+
+function failNthPut(tableName, nth) {
+  let seen = 0;
+  return {
+    put(table) {
+      if (table !== tableName) return undefined;
+      seen += 1;
+      if (seen === nth) return new Error('injected identity write failure');
+      return undefined;
+    },
+  };
+}
+
+function identityRows(media) {
+  const medium = media.get('zhuma_identity');
+  const accounts = medium?.tables.get('accounts') ?? new Map();
+  const notes = medium?.tables.get('notes') ?? new Map();
+  const sorted = (table) =>
+    Object.fromEntries([...table.entries()].sort(([left], [right]) => left.localeCompare(right)));
+  return {
+    accounts: sorted(accounts),
+    notes: sorted(notes),
+    global: medium?.global ?? null,
+  };
+}
+
+async function expectFixtureMembers(host) {
+  const lin = await login(host.web, 'lin');
+  const zhao = await login(host.web, 'zhao');
+  const chen = await login(host.web, 'chen');
+  const north = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: lin,
+  });
+  assert.equal(north.status, 200);
+  assert.equal(north.json.note.text, 'north-initial');
+  const zhaoNorth = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(zhaoNorth.status, 200);
+  const south = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/south-note',
+    cookie: chen,
+  });
+  assert.equal(south.status, 200);
+  assert.equal(south.json.note.text, 'south-initial');
+  const chenNorth = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+  });
+  assert.equal(chenNorth.status, 404);
+}
+
+async function resumeSameImport(faults, assertPartial) {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  await assert.rejects(
+    () => mount({ media, credentials, imported, faults }),
+    /injected identity write failure/,
+  );
+  assertPartial(media);
+  const recovered = await mount({ media, credentials, imported });
+  const saved = identityRows(recovered.media);
+  assert.equal(saved.global.importComplete, true);
+  assert.deepEqual(Object.keys(saved.accounts), ['chen', 'lin', 'zhao']);
+  assert.deepEqual(Object.keys(saved.notes), ['north-note', 'south-note']);
+  await expectFixtureMembers(recovered);
+  await recovered.dispose();
+  const retried = await mount({ media, credentials, imported });
+  assert.deepEqual(identityRows(retried.media), saved);
+  await expectFixtureMembers(retried);
+  await retried.dispose();
+}
+
+test('an accounts put failure resumes the same import', async () => {
+  await resumeSameImport(failNthPut('accounts', 2), (media) => {
+    assert.deepEqual([...media.get('zhuma_identity').tables.get('accounts').keys()], ['lin']);
+  });
+});
+
+test('a notes put failure resumes the same import', async () => {
+  await resumeSameImport(failNthPut('notes', 1), (media) => {
+    const medium = media.get('zhuma_identity');
+    assert.deepEqual([...medium.tables.get('accounts').keys()].sort(), ['chen', 'lin', 'zhao']);
+    assert.equal(medium.tables.get('notes')?.size ?? 0, 0);
+  });
+});
+
+test('a completion marker failure resumes the same import', async () => {
+  await resumeSameImport(
+    {
+      global() {
+        return new Error('injected identity write failure');
+      },
+    },
+    (media) => {
+      const medium = media.get('zhuma_identity');
+      assert.equal(medium.global, null);
+      assert.deepEqual([...medium.tables.get('notes').keys()].sort(), ['north-note', 'south-note']);
+    },
+  );
+});
+
+test('a completed import is left untouched by a different import', async () => {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  const first = await mount({ media, credentials, imported });
+  const saved = identityRows(first.media);
+  await first.dispose();
+  const otherPassword = randomPassword();
+  const other = {
+    accounts: [{ id: 'other', passwordHash: hashPassword(otherPassword) }],
+    notes: [
+      {
+        id: 'north-note',
+        spaceId: 'team-north',
+        ownerId: 'other',
+        teamMemberIds: ['other'],
+        text: 'replaced',
+      },
+    ],
+  };
+  const second = await mount({ media, credentials, imported: other });
+  assert.deepEqual(identityRows(second.media), saved);
+  await expectFixtureMembers(second);
+  const refused = await call(second.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.88',
+    body: { accountId: 'other', password: otherPassword },
+  });
+  assert.equal(refused.status, 401);
+  assert.equal(refused.json.error.code, 'invalid-login');
+  await second.dispose();
 });
 
 test('a successful login clears earlier failures from that address', async () => {

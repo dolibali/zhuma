@@ -70,6 +70,7 @@ const NoteSchema = z.object({
 });
 const GlobalSchema = z.object({
   ownerAccountId: z.string(),
+  importComplete: z.boolean().default(false),
 });
 const LoginSchema = z.strictObject({
   accountId: z.string().min(1).max(64),
@@ -100,7 +101,7 @@ export interface IdentityImport {
 export const identityDomainSpec = defineDomain({
   name: 'zhuma_identity',
   version: 1,
-  global: { schema: GlobalSchema, initial: { ownerAccountId: '' } },
+  global: { schema: GlobalSchema, initial: { ownerAccountId: '', importComplete: false } },
   tables: {
     accounts: { valueSchema: AccountSchema },
     sessions: { valueSchema: SessionSchema },
@@ -381,7 +382,9 @@ async function seedIfEmpty(
   domain: IdentityDomain,
   imported: IdentityImport | undefined,
 ): Promise<void> {
-  if (domain.table('accounts').size > 0) return;
+  // The marker is the last write. A domain that already finished is never
+  // overwritten. A domain that stopped midway is continued from this import.
+  if (domain.global.get().importComplete) return;
   if (imported === undefined) return;
   for (const account of imported.accounts) {
     const value: AccountRecord = { id: account.id, passwordHash: account.passwordHash };
@@ -397,9 +400,10 @@ async function seedIfEmpty(
     };
     await domain.table('notes').put(note.id, value);
   }
-  if (imported.ownerAccountId !== undefined) {
-    await domain.global.set({ ownerAccountId: imported.ownerAccountId });
-  }
+  await domain.global.set({
+    ownerAccountId: imported.ownerAccountId ?? '',
+    importComplete: true,
+  });
 }
 
 function memberPrincipal(memberId: string): Principal {
