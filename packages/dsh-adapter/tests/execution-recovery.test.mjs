@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { ExecutionService } from '../dist/execution-service.js';
+import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
 const lin = {
@@ -142,8 +143,14 @@ const reviewed = () =>
     [lin],
   );
 
+const projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+
 function session(memberId, spaceIds = ['project']) {
   return { member: { ok: true, memberId, spaceIds } };
+}
+
+function serviceFor(storage, state) {
+  return new ExecutionService(storage, { readWorkbench: () => state }, projectSpaces);
 }
 
 async function startChen(service, applied) {
@@ -159,7 +166,7 @@ async function startChen(service, applied) {
 test('one complete file and one incomplete file block the submit', async () => {
   const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
   const store = memory();
-  const service = new ExecutionService(store, { readWorkbench: () => state });
+  const service = serviceFor(store, state);
   await startChen(service, applied);
   const mixed = await service.submit(session('chen'), {
     ...locate(applied, 'design', 1, 'mixed'),
@@ -181,7 +188,7 @@ test('one complete file and one incomplete file block the submit', async () => {
 test('the same key and an approve against a send-back stay consistent', async () => {
   const { state, applied } = reviewed();
   const store = memory();
-  const service = new ExecutionService(store, { readWorkbench: () => state });
+  const service = serviceFor(store, state);
   await startChen(service, applied);
   const body = { ...locate(applied, 'design', 1, 'dup'), text: '同一份' };
   const same = await Promise.all([
@@ -217,7 +224,7 @@ test('the same key and an approve against a send-back stay consistent', async ()
 test('two reviewers send back, then resubmit, then all approve', async () => {
   const { state, applied } = reviewed();
   const store = memory();
-  const service = new ExecutionService(store, { readWorkbench: () => state });
+  const service = serviceFor(store, state);
   await startChen(service, applied);
   const first = await service.submit(session('chen'), {
     ...locate(applied, 'design', 1, 'v1'),
@@ -268,7 +275,7 @@ test('two reviewers send back, then resubmit, then all approve', async () => {
 test('report and inbox match after the service restarts from disk', async () => {
   const { state, applied } = reviewed();
   const disk = diskStore();
-  const service = new ExecutionService(disk.storage, { readWorkbench: () => state });
+  const service = serviceFor(disk.storage, state);
   await startChen(service, applied);
   await service.submit(session('chen'), { ...locate(applied, 'design', 1, 'v1'), text: '第一版' });
   const version = () => disk.node('design').command.version;
@@ -294,7 +301,7 @@ test('report and inbox match after the service restarts from disk', async () => 
     revision: applied.revision,
   });
   const beforeInbox = await service.inbox(session('outside'), {});
-  const restarted = new ExecutionService(disk.reload(), { readWorkbench: () => state });
+  const restarted = serviceFor(disk.reload(), state);
   const afterReport = await restarted.report(session('chen'), {
     taskId: applied.taskId,
     planId: applied.id,

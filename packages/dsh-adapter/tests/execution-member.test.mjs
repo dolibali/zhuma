@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { ExecutionService } from '../dist/execution-service.js';
+import { boundedProjectSpaces } from '../dist/project-space.js';
 import { hashPassword } from '../dist/identity-session.js';
 import { bootIdentity, disposeHost } from './member-host.mjs';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
@@ -194,9 +195,15 @@ async function actor(accountId) {
   return { member };
 }
 
+const projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+
 function open(state) {
   const store = memory();
-  const service = new ExecutionService(store.storage, { readWorkbench: () => state });
+  const service = new ExecutionService(
+    store.storage,
+    { readWorkbench: () => state },
+    projectSpaces,
+  );
   return { service, store };
 }
 
@@ -318,9 +325,11 @@ test('duplicate and concurrent submits keep one delivery', async () => {
     [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
     [lin],
   );
-  const raceService = new ExecutionService(memory().storage, {
-    readWorkbench: () => racedPlan.state,
-  });
+  const raceService = new ExecutionService(
+    memory().storage,
+    { readWorkbench: () => racedPlan.state },
+    projectSpaces,
+  );
   await raceService.startPlan(chen, {
     taskId: racedPlan.applied.taskId,
     planId: racedPlan.applied.id,
@@ -662,7 +671,11 @@ test('report and inbox survive a service restart', async () => {
   for (const item of store.storage.listPlans()) {
     await restored.storage.writePlan(item.key, item.receipt);
   }
-  const restarted = new ExecutionService(restored.storage, { readWorkbench: () => state });
+  const restarted = new ExecutionService(
+    restored.storage,
+    { readWorkbench: () => state },
+    projectSpaces,
+  );
   const afterReport = await restarted.report(await actor('chen'), {
     taskId: applied.taskId,
     planId: applied.id,

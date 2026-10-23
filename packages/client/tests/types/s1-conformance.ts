@@ -18,6 +18,7 @@ import type {
   ExecutionWorkspaceProps,
   IdentityImport,
   InboxPanelProps,
+  ProjectSpaceDirectory,
   ReviewWorkspaceProps,
   S1Startup,
 } from '../../../dsh-adapter/dist/s1-integration.js';
@@ -52,6 +53,7 @@ export function mountS1(
   mode: DeploymentMode,
   startup: S1Startup,
   readWorkbench: () => Workbench,
+  projectSpaces: ProjectSpaceDirectory,
   rpc: ClientConnectionRpc,
 ): Promise<ExecutionWorkspaceProps> {
   startup.configureDeploymentMode(ctx, mode);
@@ -61,7 +63,7 @@ export function mountS1(
   return startup.applyIdentity(ctx, imported).then(async () => {
     const resolver = startup.memberResolver(ctx);
     await startup.applyWorkbench(ctx);
-    const executionOptions = { memberResolver: resolver, readWorkbench };
+    const executionOptions = { memberResolver: resolver, readWorkbench, projectSpaces };
     await startup.applyExecution(ctx, executionOptions);
     await applyExecution(ctx, executionOptions);
     const props: ExecutionWorkspaceProps = { api: createExecutionApi(rpc) };

@@ -10,7 +10,7 @@ A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b
 2. `await applyIdentity(ctx, imported?)`
 3. `memberResolver(ctx)`
 4. `await applyWorkbench(ctx)`
-5. `await applyExecution(ctx, { memberResolver, readWorkbench })`
+5. `await applyExecution(ctx, { memberResolver, readWorkbench, projectSpaces })`
 6. `mount({ api: createExecutionApi(rpc) })`，把 `ExecutionWorkspace` 挂进页面
 
 ```ts
@@ -18,14 +18,18 @@ configureDeploymentMode(ctx, mode);
 await applyIdentity(ctx, imported);
 const resolver = memberResolver(ctx);
 await applyWorkbench(ctx);
-const executionOptions = { memberResolver: resolver, readWorkbench: () => service.snapshot() };
+const executionOptions = {
+  memberResolver: resolver,
+  readWorkbench: () => service.snapshot(),
+  projectSpaces,
+};
 await applyExecution(ctx, executionOptions);
 mount({ api: createExecutionApi(rpc) });
 ```
 
 `readWorkbench` 的类型是 `() => Workbench`。A 在宿主闭包里保住 `WorkbenchService`，传入 `() => service.snapshot()`。`snapshot()` 返回已存储工作台的结构化克隆。`workbench-plugin.ts` 仍把服务留在自己的 `apply` 里，这份清单只声明这个函数类型。
 
-插件参数 `ExecutionApplyOptions` 是 `readWorkbench`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
+插件参数 `ExecutionApplyOptions` 是 `readWorkbench`，以及可选的 `projectSpaces`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。`projectSpaces` 的正式内容由 A 的 Host／空间模块注入。省略它时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
 
 执行插件的 `inject` 是 `['connection', 'storageDomain']`。宿主把身份的 `connection`、`storageDomain`、`credentials`、`webServer`、`remoteAccess` 和工作台的 `llm`、`agentDefaultModel` 放在同一个插件上时，执行只用前两项。
 
@@ -40,7 +44,7 @@ mount({ api: createExecutionApi(rpc) });
 ## A 要接上的部分
 
 - 账户导入的形状是 `{ accounts: [{ id, passwordHash }], ownerAccountId?, notes? }`。`passwordHash` 是 scrypt 校验值。
-- 先 `configureDeploymentMode`，再 `applyIdentity`，然后 `memberResolver(ctx)`，再把 `{ memberResolver, readWorkbench }` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。
+- 先 `configureDeploymentMode`，再 `applyIdentity`，然后 `memberResolver(ctx)`，再把 `{ memberResolver, readWorkbench, projectSpaces }` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。省略 `projectSpaces` 时，执行入口拒绝所有项目。
 - 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。
 - 导航挂 `ExecutionWorkspace`。它自己挂 `InboxPanel`，并按待办动作打开 `DeliveryPanel` 或 `ReviewWorkspace`。
 - 页面里已经有 `.zhuma > main.zm-page`。
