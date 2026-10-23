@@ -2,11 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   validateWorkTask,
   WorkbenchError,
+  captureWorkflowTemplate,
+  resolveTemplateBindings,
+  templateBindingGaps,
   type Workbench,
   type WorkTask,
   type Workflow,
   type WorkNode,
   type PlanProposal,
+  type WorkflowTemplate,
 } from '@zhuma/agent-core';
 import type { WorkbenchApi } from './api.js';
 import { Field, MemberPicker, Modal, ParticipantSelect } from './controls.js';
@@ -16,6 +20,8 @@ import { TreeNavigator } from './TreeNavigator.js';
 import { indexWorkTree, resolveWorkLocation, workflowPath } from './navigation.js';
 import { Button } from './Button.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
+import { TemplateSaveDialog } from './TemplateSaveDialog.js';
+import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -107,6 +113,11 @@ export function TaskEditor({
   const [memberDraft, setMemberDraft] = useState(task.participantIds);
   const [error, setError] = useState('');
   const [memberError, setMemberError] = useState('');
+  const [templateSave, setTemplateSave] = useState<WorkflowTemplate | null>(null);
+  const [mappingOpen, setMappingOpen] = useState(false);
+  const [mappingRoles, setMappingRoles] = useState<TemplateBindingValues>({});
+  const [mappingResources, setMappingResources] = useState<TemplateBindingValues>({});
+  const [mappingError, setMappingError] = useState('');
   const [conflict, setConflict] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -162,7 +173,34 @@ export function TaskEditor({
       path.every((id) => current.has(id)) ? current : new Set([...current, ...path]),
     );
   }, [workTree, workflowId, selectedId]);
-  const members = state.participants.filter((m) => task.participantIds.includes(m.id));
+  const gaps = templateBindingGaps(task);
+  const hasGaps = !!(gaps.participants.length + gaps.assets.length);
+  const actualMembers = state.participants.filter((m) => task.participantIds.includes(m.id));
+  const members = [
+    ...actualMembers,
+    ...gaps.participants.map((p) => ({
+      ...p,
+      name: `待绑定 · ${p.name}`,
+      role: '模板角色',
+      placeholder: true,
+      capabilities: [],
+      instructions: '',
+      available: false,
+    })),
+  ];
+  const inspectorState: Workbench = {
+    ...state,
+    assets: [
+      ...state.assets,
+      ...gaps.assets.map((a) => ({
+        ...a,
+        name: `待绑定 · ${a.name}`,
+        description: '',
+        content: '',
+        available: false,
+      })),
+    ],
+  };
   useEffect(
     () => () => {
       // The creation request survives StrictMode's child effect replay. Its parent closes it.
@@ -342,6 +380,13 @@ export function TaskEditor({
     }
   }
   async function generate() {
+    if (hasGaps) {
+      setMappingRoles({});
+      setMappingResources({});
+      setMappingError('');
+      setMappingOpen(true);
+      return;
+    }
     const result = dirty ? await persist() : state;
     if (!result) return;
     setPlanning(true);
@@ -464,6 +509,20 @@ export function TaskEditor({
           {state.projects.find((p) => p.id === task.projectId)?.name}
         </span>
         <span className="zm-spacer" />
+        <Button
+          variant="quiet"
+          disabled={busy || planning || !!previewTask || !!pendingSave.current || hasGaps}
+          title={hasGaps ? '先补齐映射，再保存为新工作流' : undefined}
+          onClick={() => {
+            try {
+              setTemplateSave(captureWorkflowTemplate(task, state));
+            } catch (e) {
+              setError(e instanceof Error ? e.message : '请先补齐节点交付内容。');
+            }
+          }}
+        >
+          保存为工作流
+        </Button>
         <Appearance store={appearance} />
         {conflict && (
           <Button disabled={busy || planning} onClick={() => void readLatest()}>
@@ -532,7 +591,7 @@ export function TaskEditor({
           ) : (
             <ParticipantSelect
               label="负责人"
-              members={members.filter((p) => p.kind === 'human')}
+              members={actualMembers.filter((p) => p.kind === 'human')}
               selected={task.ownerId ? [task.ownerId] : []}
               change={(ids) => edit({ ...task, ownerId: ids[0] ?? null })}
             />
@@ -546,7 +605,7 @@ export function TaskEditor({
               setMembersOpen(true);
             }}
           >
-            参与者 {members.length}
+            参与者 {actualMembers.length}
           </Button>
         </div>
         <details className="zm-goal">
@@ -571,6 +630,24 @@ export function TaskEditor({
           )}
         </details>
       </div>
+      {hasGaps && (
+        <div className="zm-template-gap-banner" role="status">
+          <span>
+            待绑定：{gaps.participants.length} 个角色 · {gaps.assets.length} 个资源
+          </span>
+          <Button
+            disabled={locked}
+            onClick={() => {
+              setMappingRoles({});
+              setMappingResources({});
+              setMappingError('');
+              setMappingOpen(true);
+            }}
+          >
+            补齐映射
+          </Button>
+        </div>
+      )}
       {error && (
         <div role="alert" className="zm-error">
           {error}
@@ -882,7 +959,7 @@ export function TaskEditor({
                 node={node}
                 workflow={workflow}
                 members={members}
-                state={state}
+                state={inspectorState}
                 readOnly={task.status === 'ready' || !!previewTask}
                 disabled={locked}
                 hasChild={displayTask.workflows.some((w) => w.parentNodeId === node.id)}
@@ -1113,7 +1190,12 @@ export function TaskEditor({
                   setMemberError('请先更换任务负责人，再将该成员移出参与者。');
                   return;
                 }
-                if (referenced.some((id) => !memberDraft.includes(id))) {
+                if (
+                  referenced.some(
+                    (id) =>
+                      !memberDraft.includes(id) && !gaps.participants.some((p) => p.id === id),
+                  )
+                ) {
                   setMemberError('被移除的参与者仍承担节点或评审，请先重新分配。');
                   return;
                 }
@@ -1123,6 +1205,80 @@ export function TaskEditor({
             >
               更新参与者
             </button>
+          </footer>
+        </Modal>
+      )}
+      {templateSave && (
+        <TemplateSaveDialog
+          definition={templateSave}
+          initialName={task.title}
+          api={api}
+          revision={revision}
+          close={() => setTemplateSave(null)}
+          saved={(next) => {
+            setRevision(next.revision);
+            saved(next);
+            setTemplateSave(null);
+            setMessage('已保存到工作流');
+          }}
+        />
+      )}
+      {mappingOpen && (
+        <Modal title="补齐模板映射" close={() => setMappingOpen(false)}>
+          <div className="zm-form-body">
+            <Button
+              onClick={() => {
+                setMemberDraft(task.participantIds);
+                setMemberError('');
+                setMembersOpen(true);
+              }}
+            >
+              管理任务参与者
+            </Button>
+            <TemplateBindings
+              roles={gaps.participants}
+              resources={gaps.assets}
+              members={actualMembers}
+              assets={state.assets}
+              roleValues={mappingRoles}
+              resourceValues={mappingResources}
+              changeRoles={setMappingRoles}
+              changeResources={setMappingResources}
+            />
+            {mappingError && (
+              <div role="alert" className="zm-error">
+                {mappingError}
+              </div>
+            )}
+          </div>
+          <footer>
+            <Button onClick={() => setMappingOpen(false)}>取消</Button>
+            <Button
+              variant="primary"
+              disabled={
+                ![...Object.values(mappingRoles), ...Object.values(mappingResources)].some(Boolean)
+              }
+              onClick={() => {
+                try {
+                  const roles = Object.fromEntries(
+                    Object.entries(mappingRoles).filter(
+                      (entry): entry is [string, string] => !!entry[1],
+                    ),
+                  );
+                  const resources = Object.fromEntries(
+                    Object.entries(mappingResources).filter(
+                      (entry): entry is [string, string] => !!entry[1],
+                    ),
+                  );
+                  edit(resolveTemplateBindings(task, state, roles, resources));
+                  setMappingOpen(false);
+                } catch (e) {
+                  setMappingError(e instanceof Error ? e.message : '请重新检查映射。');
+                }
+              }}
+            >
+              应用映射
+            </Button>
           </footer>
         </Modal>
       )}

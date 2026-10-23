@@ -9,6 +9,8 @@ import {
 } from 'react';
 import type { Participant } from '@zhuma/agent-core';
 
+export type ParticipantChoice = Participant & { placeholder?: boolean };
+
 export function Modal({
   title,
   children,
@@ -50,12 +52,14 @@ export function MemberPicker({
   change,
   disabledIds = [],
   selectionMode = 'multiple',
+  roleMode = false,
 }: {
-  members: Participant[];
+  members: ParticipantChoice[];
   selected: string[];
   change(ids: string[]): void;
   disabledIds?: string[];
   selectionMode?: 'multiple' | 'single';
+  roleMode?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const groupId = useId();
@@ -67,8 +71,8 @@ export function MemberPicker({
   return (
     <div className="zm-picker">
       <input
-        aria-label="搜索参与者"
-        placeholder="搜索姓名、角色或能力"
+        aria-label={roleMode ? '搜索角色' : '搜索参与者'}
+        placeholder={roleMode ? '搜索角色或能力' : '搜索姓名、角色或能力'}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
       />
@@ -76,7 +80,15 @@ export function MemberPicker({
         .filter((kind) => matching.some((member) => member.kind === kind))
         .map((kind) => (
           <section key={kind}>
-            <h4>{kind === 'human' ? '团队成员' : 'Agent 专家'}</h4>
+            <h4>
+              {roleMode
+                ? kind === 'human'
+                  ? '通用角色'
+                  : '专家角色'
+                : kind === 'human'
+                  ? '团队成员'
+                  : 'Agent 专家'}
+            </h4>
             {matching
               .filter((m) => m.kind === kind)
               .map((m) => (
@@ -105,15 +117,21 @@ export function MemberPicker({
                     <strong>{m.name}</strong>
                     <small title={m.role || m.capabilities.join(' · ')}>
                       {m.role || m.capabilities.join(' · ') || '尚未填写职责'}
-                      {!m.available && ' · 不可用'}
+                      {!m.available && (m.placeholder ? ' · 待绑定' : ' · 不可用')}
                     </small>
                   </span>
                 </label>
               ))}
           </section>
         ))}
-      {!members.length && <p className="zm-empty">先在“成员与专家”中添加参与者。</p>}
-      {!!members.length && !matching.length && <p className="zm-empty">没有匹配的参与者。</p>}
+      {!members.length && (
+        <p className="zm-empty">
+          {roleMode ? '先添加模板角色。' : '先在“成员与专家”中添加参与者。'}
+        </p>
+      )}
+      {!!members.length && !matching.length && (
+        <p className="zm-empty">{roleMode ? '没有匹配的角色。' : '没有匹配的参与者。'}</p>
+      )}
     </div>
   );
 }
@@ -184,13 +202,15 @@ export function ParticipantSelect({
   members,
   selected,
   multiple = false,
+  roleMode = false,
   hint,
   change,
 }: {
   label: string;
-  members: Participant[];
+  members: ParticipantChoice[];
   selected: string[];
   multiple?: boolean;
+  roleMode?: boolean;
   hint?: string;
   change(ids: string[]): void;
 }) {
@@ -222,11 +242,18 @@ export function ParticipantSelect({
             members={members}
             selected={draft}
             selectionMode={multiple ? 'multiple' : 'single'}
+            roleMode={roleMode}
             change={(ids) => setDraft(multiple ? ids : ids.slice(-1))}
           />
           <footer>
             <span className="zm-muted">
-              已选 {draft.length} 位{hint ? ` · ${hint}` : ''}
+              已选 {draft.length}{' '}
+              {roleMode
+                ? '个角色'
+                : members.some((m) => m.placeholder && draft.includes(m.id))
+                  ? '项'
+                  : '位'}
+              {hint ? ` · ${hint}` : ''}
             </span>
             <button type="button" onClick={() => setOpen(false)}>
               取消

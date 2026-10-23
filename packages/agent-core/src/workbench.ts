@@ -347,7 +347,14 @@ export function parseWorkflowTemplate(content: string): WorkflowTemplate {
 }
 
 /** Capture definitions and role slots; no task owner, sessions, artifacts or personal instructions. */
-export function captureWorkflowTemplate(task: WorkTask, state: Workbench): WorkflowTemplate {
+export function captureWorkflowTemplate(
+  task: WorkTask,
+  state: Workbench,
+  options: {
+    rolePreferences?: Record<string, 'human' | 'expert' | 'any'>;
+    resourceHints?: Record<string, string>;
+  } = {},
+): WorkflowTemplate {
   const roles: WorkflowTemplate['roles'] = [];
   const resources: WorkflowTemplate['resources'] = [];
   const roleIds = new Map<string, string>();
@@ -359,14 +366,18 @@ export function captureWorkflowTemplate(task: WorkTask, state: Workbench): Workf
     const person = state.participants.find((p) => p.id === sourceId);
     const pending = task.templateSource?.pendingParticipants.find((p) => p.id === sourceId);
     const roleId = `role-${roles.length + 1}`;
+    const baseName = (
+      person?.role.trim() ||
+      pending?.name ||
+      `${review ? '评审' : '执行'}角色 ${roles.length + 1}`
+    ).slice(0, 150);
+    let name = baseName;
+    for (let suffix = 2; roles.some((r) => r.name === name); suffix++)
+      name = `${baseName} · ${suffix}`;
     roles.push({
       id: roleId,
-      name: (
-        person?.role.trim() ||
-        pending?.name ||
-        `${review ? '评审' : '执行'}角色 ${roles.length + 1}`
-      ).slice(0, 160),
-      preferredKind: person?.kind ?? 'any',
+      name,
+      preferredKind: options.rolePreferences?.[key] ?? person?.kind ?? 'any',
       capabilities: [...(person?.capabilities ?? [])],
     });
     roleIds.set(key, roleId);
@@ -385,7 +396,9 @@ export function captureWorkflowTemplate(task: WorkTask, state: Workbench): Workf
       id: resourceId,
       kind,
       name: asset?.name ?? pending?.name ?? '待绑定资源',
-      ...(asset ? { suggestedAssetId: asset.id } : {}),
+      ...(asset || options.resourceHints?.[sourceId]
+        ? { suggestedAssetId: asset?.id ?? options.resourceHints![sourceId]! }
+        : {}),
     });
     resourceIds.set(key, resourceId);
     return resourceId;
@@ -554,6 +567,19 @@ export function resolveTemplateBindings(
   const errors = validateWorkTask(next, state);
   if (errors.length) throw new WorkbenchError('template-binding', errors.join('\n'));
   return next;
+}
+
+/** Draft UI projection only. Placeholders never become runtime participants or resources. */
+export function templateBindingGaps(task: WorkTask) {
+  const nodes = task.workflows.flatMap((w) => w.nodes);
+  const people = new Set(
+    nodes.flatMap((n) => [...(n.assigneeId ? [n.assigneeId] : []), ...n.reviewerIds]),
+  );
+  const assets = new Set(nodes.flatMap((n) => [...n.skillIds, ...n.mcpIds]));
+  return {
+    participants: task.templateSource?.pendingParticipants.filter((p) => people.has(p.id)) ?? [],
+    assets: task.templateSource?.pendingAssets.filter((a) => assets.has(a.id)) ?? [],
+  };
 }
 
 /** Pure command application. Caller serializes writes and commits revision + receipt atomically. */

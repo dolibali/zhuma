@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   emptyWorkbench,
+  parseWorkflowTemplate,
   type Workbench,
   type WorkTask,
   type Project,
@@ -14,13 +15,25 @@ import { TaskEditor, type InitialPlanning } from './TaskEditor.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 import { Button } from './Button.js';
 import { SingleSelect } from './SingleSelect.js';
+import { TemplateBrowser } from './TemplateBrowser.js';
+import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
+import { TemplateDefinitionEditor } from './TemplateDefinitionEditor.js';
 
 type Section = 'projects' | 'tasks' | 'assets' | 'members';
 type Dialog =
   | { kind: 'project'; value: Project }
   | { kind: 'member'; value: Participant }
   | { kind: 'asset'; value: TeamAsset }
-  | { kind: 'task'; value: WorkTask; planning: 'ai' | 'manual' };
+  | {
+      kind: 'task';
+      value: WorkTask;
+      planning: 'ai' | 'manual' | 'template';
+      template: {
+        assetId: string;
+        roles: TemplateBindingValues;
+        resources: TemplateBindingValues;
+      } | null;
+    };
 const uid = () => crypto.randomUUID();
 const labels: Record<Section, string> = {
   projects: '项目',
@@ -48,6 +61,28 @@ export function WorkbenchPage({
   const pending = useRef<{ content: string; id: string; revision: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [templateBrowserOpen, setTemplateBrowserOpen] = useState(false);
+  const [definitionEditorOpen, setDefinitionEditorOpen] = useState(false);
+  const templateId = dialog?.kind === 'task' ? dialog.template?.assetId : null;
+  const selectedTemplate = state.assets.find((a) => a.id === templateId && a.kind === 'template');
+  const selectedDefinition = useMemo(() => {
+    if (!selectedTemplate) return null;
+    try {
+      return parseWorkflowTemplate(selectedTemplate.content);
+    } catch {
+      return null;
+    }
+  }, [selectedTemplate]);
+  const assetContent =
+    dialog?.kind === 'asset' && dialog.value.kind === 'template' ? dialog.value.content : null;
+  const assetDefinition = useMemo(() => {
+    if (assetContent === null) return null;
+    try {
+      return parseWorkflowTemplate(assetContent);
+    } catch {
+      return null;
+    }
+  }, [assetContent]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [initialPlanning, setInitialPlanning] = useState<InitialPlanning | null>(null);
   const submitting = useRef(false);
@@ -169,7 +204,24 @@ export function WorkbenchPage({
       goal,
       title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, 60),
     };
-    const committed = await submit({ type: 'save-task', task });
+    if (draft.planning === 'template' && !draft.template) {
+      setDialogError('请选择要使用的工作流。');
+      return;
+    }
+    const { workflows: _workflows, status: _status, templateSource: _source, ...seed } = task;
+    const committed = await submit(
+      draft.planning === 'template' && draft.template
+        ? {
+            type: 'instantiate-template',
+            input: {
+              task: seed,
+              templateId: draft.template.assetId,
+              roleBindings: draft.template.roles,
+              resourceBindings: draft.template.resources,
+            },
+          }
+        : { type: 'save-task', task },
+    );
     // The Host may have saved after this panel was removed. Keep that draft, but do not
     // start a paid planning request or navigate from a stale create-form submission.
     if (!committed || generation !== pageGeneration.current) return;
@@ -197,6 +249,7 @@ export function WorkbenchPage({
     openDialog({
       kind: 'task',
       planning: 'ai',
+      template: null,
       value: {
         id: uid(),
         projectId,
@@ -673,7 +726,13 @@ export function WorkbenchPage({
                     ],
                   },
                 });
-              if (d.kind === 'asset') void submit({ type: 'save-asset', asset: d.value });
+              if (d.kind === 'asset') {
+                if (d.value.kind === 'template' && !d.value.content.trim()) {
+                  setDialogError('请先编排工作流，再保存模板。');
+                  return;
+                }
+                void submit({ type: 'save-asset', asset: d.value });
+              }
               if (d.kind === 'task') void createTask(d);
             }}
           >
@@ -845,24 +904,55 @@ export function WorkbenchPage({
                         }
                       />
                     </Field>
-                    <Field label="定义内容">
-                      <textarea
-                        rows={8}
-                        maxLength={8000}
-                        value={dialog.value.content}
-                        onChange={(e) =>
-                          setDialog({
-                            ...dialog,
-                            value: { ...dialog.value, content: e.target.value },
-                          })
-                        }
-                        placeholder={
-                          dialog.value.kind === 'mcp'
-                            ? '描述可提供的工具与访问范围；凭据在连接设置中配置'
-                            : '填写执行方法、工作步骤或模板内容'
-                        }
-                      />
-                    </Field>
+                    {dialog.value.kind === 'template' ? (
+                      <section className="zm-template-asset-definition">
+                        <div>
+                          <strong>
+                            {assetDefinition
+                              ? `${assetDefinition.workflows.flatMap((w) => w.nodes).length} 个节点 · ${assetDefinition.roles.length} 个角色`
+                              : dialog.value.content
+                                ? '文字模板，尚未包含工作流结构'
+                                : '编排可复用的工作流'}
+                          </strong>
+                          <Button onClick={() => setDefinitionEditorOpen(true)}>
+                            {assetDefinition
+                              ? '编辑工作流'
+                              : dialog.value.content
+                                ? '转换为工作流'
+                                : '编排工作流'}
+                          </Button>
+                        </div>
+                        {assetDefinition ? (
+                          <small>节点、依赖、角色和评审将在复用时完整保留。</small>
+                        ) : (
+                          dialog.value.content && (
+                            <details>
+                              <summary>查看原文字</summary>
+                              <pre>{dialog.value.content}</pre>
+                            </details>
+                          )
+                        )}
+                      </section>
+                    ) : (
+                      <Field label="定义内容">
+                        <textarea
+                          rows={8}
+                          maxLength={8000}
+                          value={dialog.value.content}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: { ...dialog.value, content: e.target.value },
+                            })
+                          }
+                          placeholder={
+                            dialog.value.kind === 'mcp'
+                              ? '描述可提供的工具与访问范围；凭据在连接设置中配置'
+                              : '填写执行方法、工作步骤或模板内容'
+                          }
+                        />
+                      </Field>
+                    )}
                     <label className="zm-check-row">
                       <input
                         type="checkbox"
@@ -874,7 +964,7 @@ export function WorkbenchPage({
                           })
                         }
                       />
-                      可用于规划
+                      {dialog.value.kind === 'template' ? '允许复用此工作流' : '可用于规划'}
                     </label>
                   </>
                 )}
@@ -913,7 +1003,27 @@ export function WorkbenchPage({
                           members={state.participants}
                           selected={dialog.value.participantIds}
                           change={(participantIds) =>
-                            setDialog({ ...dialog, value: { ...dialog.value, participantIds } })
+                            setDialog({
+                              ...dialog,
+                              value: {
+                                ...dialog.value,
+                                participantIds,
+                                ownerId: participantIds.includes(dialog.value.ownerId ?? '')
+                                  ? dialog.value.ownerId
+                                  : null,
+                              },
+                              template: dialog.template
+                                ? {
+                                    ...dialog.template,
+                                    roles: Object.fromEntries(
+                                      Object.entries(dialog.template.roles).map(([key, value]) => [
+                                        key,
+                                        value && participantIds.includes(value) ? value : null,
+                                      ]),
+                                    ),
+                                  }
+                                : null,
+                            })
                           }
                         />
                       </div>
@@ -930,7 +1040,21 @@ export function WorkbenchPage({
                         />
                         <span>
                           <strong>AI 规划</strong>
-                          <small>根据目标与团队能力生成计划</small>
+                        </span>
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="planning-mode"
+                          value="template"
+                          checked={dialog.planning === 'template'}
+                          onChange={() => {
+                            setDialog({ ...dialog, planning: 'template' });
+                            if (!dialog.template) setTemplateBrowserOpen(true);
+                          }}
+                        />
+                        <span>
+                          <strong>使用工作流</strong>
                         </span>
                       </label>
                       <label>
@@ -942,11 +1066,46 @@ export function WorkbenchPage({
                           onChange={() => setDialog({ ...dialog, planning: 'manual' })}
                         />
                         <span>
-                          <strong>自定义</strong>
-                          <small>自行添加节点与分工</small>
+                          <strong>从空白开始</strong>
                         </span>
                       </label>
                     </fieldset>
+                    {dialog.planning === 'template' && (
+                      <section className="zm-template-creation">
+                        <div className="zm-template-chosen">
+                          <div>
+                            <strong>{selectedTemplate?.name ?? '选择可复用的工作流'}</strong>
+                            {selectedDefinition && (
+                              <small>
+                                {selectedDefinition.workflows.flatMap((w) => w.nodes).length} 个节点
+                                · {selectedDefinition.roles.length} 个角色
+                              </small>
+                            )}
+                          </div>
+                          <Button onClick={() => setTemplateBrowserOpen(true)}>
+                            {dialog.template ? '更换' : '选择工作流'}
+                          </Button>
+                        </div>
+                        {dialog.template && selectedDefinition && (
+                          <TemplateBindings
+                            roles={selectedDefinition.roles}
+                            resources={selectedDefinition.resources}
+                            members={state.participants.filter((p) =>
+                              dialog.value.participantIds.includes(p.id),
+                            )}
+                            assets={state.assets}
+                            roleValues={dialog.template.roles}
+                            resourceValues={dialog.template.resources}
+                            changeRoles={(roles) =>
+                              setDialog({ ...dialog, template: { ...dialog.template!, roles } })
+                            }
+                            changeResources={(resources) =>
+                              setDialog({ ...dialog, template: { ...dialog.template!, resources } })
+                            }
+                          />
+                        )}
+                      </section>
+                    )}
                     <Field label="任务名称">
                       <input
                         maxLength={160}
@@ -987,16 +1146,75 @@ export function WorkbenchPage({
               <Button disabled={saving} onClick={() => setDialog(null)}>
                 取消
               </Button>
-              <Button type="submit" variant="primary" busy={saving} busyLabel="正在保存…">
+              <Button
+                type={
+                  dialog.kind === 'task' && dialog.planning === 'template' && !dialog.template
+                    ? 'button'
+                    : 'submit'
+                }
+                onClick={() => {
+                  if (dialog.kind === 'task' && dialog.planning === 'template' && !dialog.template)
+                    setTemplateBrowserOpen(true);
+                }}
+                variant="primary"
+                busy={saving}
+                busyLabel="正在保存…"
+              >
                 {dialog.kind === 'task'
                   ? dialog.planning === 'ai'
                     ? '生成计划'
-                    : '创建工作流'
+                    : dialog.planning === 'template' && !dialog.template
+                      ? '选择工作流'
+                      : dialog.planning === 'template' &&
+                          (Object.values(dialog.template!.roles).some((v) => !v) ||
+                            Object.values(dialog.template?.resources ?? {}).some((v) => !v))
+                        ? '保存草稿'
+                        : '创建工作流'
                   : '保存'}
               </Button>
             </footer>
           </form>
         </Modal>
+      )}
+      {templateBrowserOpen && dialog?.kind === 'task' && (
+        <TemplateBrowser
+          assets={state.assets}
+          selectedId={dialog.template?.assetId ?? null}
+          close={() => setTemplateBrowserOpen(false)}
+          choose={(asset) => {
+            const definition = parseWorkflowTemplate(asset.content);
+            setDialog({
+              ...dialog,
+              planning: 'template',
+              template: {
+                assetId: asset.id,
+                roles: Object.fromEntries(definition.roles.map((r) => [r.id, null])),
+                resources: Object.fromEntries(
+                  definition.resources.map((r) => [
+                    r.id,
+                    state.assets.some(
+                      (a) => a.id === r.suggestedAssetId && a.kind === r.kind && a.available,
+                    )
+                      ? r.suggestedAssetId!
+                      : null,
+                  ]),
+                ),
+              },
+            });
+            setTemplateBrowserOpen(false);
+          }}
+        />
+      )}
+      {definitionEditorOpen && dialog?.kind === 'asset' && (
+        <TemplateDefinitionEditor
+          content={dialog.value.content}
+          state={state}
+          close={() => setDefinitionEditorOpen(false)}
+          apply={(content) => {
+            setDialog({ ...dialog, value: { ...dialog.value, content } });
+            setDefinitionEditorOpen(false);
+          }}
+        />
       )}
     </div>
   );

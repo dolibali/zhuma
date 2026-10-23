@@ -165,7 +165,7 @@ test('没有可用参与者时先提示；自定义路径可以创建且不调�
   await expect(page.getByRole('dialog').getByRole('alert')).toContainText('至少选择一位');
   expect(requests(replay, 'command')).toHaveLength(0);
   expect(requests(replay, 'plan')).toHaveLength(0);
-  await page.getByRole('radio', { name: /^自定义/ }).check();
+  await page.getByRole('radio', { name: '从空白开始' }).check();
   await button(page, '创建工作流').click();
   await expect(page.getByLabel('任务标题', { exact: true })).toHaveValue('人工整理交付说明');
   await button(page, '＋ 节点').click();

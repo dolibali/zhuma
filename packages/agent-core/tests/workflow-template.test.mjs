@@ -10,6 +10,7 @@ import {
   instantiateWorkflowTemplate,
   parseWorkflowTemplate,
   resolveTemplateBindings,
+  templateBindingGaps,
   validateWorkTask,
 } from '../dist/index.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
@@ -83,6 +84,40 @@ test('template capture: preserves parallel/nested work and all reviewers, strips
   assert(!('ownerId' in definition));
   assert(!('taskId' in definition));
   assert.notEqual(root.id, task.workflows[0].id);
+});
+
+test('template definition editing preserves role preferences and missing catalog hints, with distinct role captions', () => {
+  const { state, task, input, definition } = setup();
+  for (const p of state.participants) p.role = '同名角色';
+  const captured = captureWorkflowTemplate(task, state, {
+    rolePreferences: { chen: 'any', qa: 'expert' },
+  });
+  assert.equal(new Set(captured.roles.map((r) => r.name)).size, captured.roles.length);
+  assert.equal(captured.roles[0].preferredKind, 'any');
+  assert.equal(captured.roles[1].preferredKind, 'expert');
+  const pending = instantiateWorkflowTemplate(state, {
+    ...input,
+    roleBindings: {},
+    resourceBindings: {},
+  });
+  const gap = pending.templateSource.pendingAssets[0];
+  const result = captureWorkflowTemplate(pending, state, {
+    resourceHints: { [gap.id]: 'external-skill-catalog-id' },
+  });
+  assert.equal(result.resources[0].suggestedAssetId, 'external-skill-catalog-id');
+  assert.equal(result.resources[0].name, definition.resources[0].name);
+  assert.equal(
+    templateBindingGaps(pending).participants.length,
+    pending.templateSource.pendingParticipants.length,
+  );
+  const before = structuredClone(pending);
+  pending.workflows
+    .flatMap((w) => w.nodes)
+    .forEach((n) => {
+      n.skillIds = [];
+    });
+  assert.deepEqual(templateBindingGaps(pending).assets, []);
+  assert.deepEqual(pending.templateSource, before.templateSource);
 });
 
 test('template instance: new identities and immutable source, no source mutation or shared graph objects', () => {

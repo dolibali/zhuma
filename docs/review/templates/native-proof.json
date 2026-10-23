@@ -1,0 +1,27 @@
+{
+  "surface": "isolated official DSH Desktop / non-model Host persistence",
+  "upstream": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "clientSha256": "4fc5d2a6c458f8882474e56e4ac6ab155e2b8374ceb5edeced6cd996366d81c4",
+  "exactLoadedClientMatch": true,
+  "viewport": {
+    "width": 1280,
+    "height": 800,
+    "zoom": 1
+  },
+  "theme": "explicit DSH dark; no real OS theme switch claim",
+  "checks": {
+    "templateSavedViaNormalUI": true,
+    "instanceCreatedViaNormalUI": true,
+    "manualEditSurvivedColdReopen": true,
+    "sourceDefinitionFrozen": true,
+    "taskCount": 1,
+    "assetCount": 1,
+    "sourceAssetsUnchangedOnReopen": true,
+    "planningAuditRecords": 0
+  },
+  "limitations": [
+    "No model invocation or execution",
+    "No multi-user authorization or review proof",
+    "No installed-package or OS-theme-switch proof"
+  ]
+}
