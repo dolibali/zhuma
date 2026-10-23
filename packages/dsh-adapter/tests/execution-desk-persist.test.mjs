@@ -499,13 +499,79 @@ test('契约：下一轮落盘失败时排队消息仍可在存储恢复后继�
   state.failOnApply = false;
   const continued = session.updateConfig({ skillIds: ['test-design'] });
   assert.equal(continued.ok, true);
-  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  await session.flush();
+  assert.equal(session.snapshot().persistenceFault, null);
   await session.waitForRun(session.snapshot().runs.at(-1).id, 'running');
   assert.equal(requests.length, 2);
   assert.equal(requests[1].instruction, '下一轮继续');
   const rewritten = session.rewritePersistence();
   assert.equal(rewritten.ok, true);
   assert.equal(session.snapshot().persistenceFault, null);
+});
+
+test('契约：恢复写入失败时草稿和配置仍提交，下次成功写入清掉故障', async () => {
+  const state = { value: null, failOnApply: false };
+  const journal = {
+    load: () => state.value,
+    save(value) {
+      const applying = value.runs.some((run) => String(run.idempotencyKey).startsWith('apply:'));
+      if (state.failOnApply && applying) {
+        const error = new Error('ENOSPC: no space left');
+        error.code = 'ENOSPC';
+        throw error;
+      }
+      state.value = JSON.parse(JSON.stringify(value));
+    },
+  };
+  const simulated = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const session = openDesk(journal, simulated);
+  const first = session.send({ text: '先跑一轮', idempotencyKey: 'recover-1' });
+  await session.waitForRun(first.runId, 'running');
+  session.send({ text: '排队的下一轮', idempotencyKey: 'recover-2' });
+  state.failOnApply = true;
+  session.releaseActive();
+  await session.flush();
+  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  assert.equal(session.snapshot().runs.length, 1);
+
+  const drafted = session.saveDraft('用户草稿-B');
+  assert.equal(drafted.ok, true);
+  await session.flush();
+  assert.equal(
+    session.snapshot().drafts.some((item) => item.text === '用户草稿-B'),
+    true,
+  );
+  assert.equal(
+    state.value.drafts.some((item) => item.text === '用户草稿-B'),
+    true,
+  );
+  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  assert.equal(session.snapshot().runs.length, 1);
+
+  const configured = session.updateConfig({ skillIds: [] });
+  assert.equal(configured.ok, true);
+  await session.flush();
+  assert.deepEqual(
+    session.snapshot().config.skills.map((item) => item.id),
+    [],
+  );
+  assert.deepEqual(state.value.selections.skillIds, []);
+  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  assert.equal(
+    session.snapshot().drafts.some((item) => item.text === '用户草稿-B'),
+    true,
+  );
+
+  state.failOnApply = false;
+  const cleared = session.updateConfig({ skillIds: ['test-design'] });
+  assert.equal(cleared.ok, true);
+  await session.flush();
+  assert.equal(session.snapshot().persistenceFault, null);
+  assert.deepEqual(
+    session.snapshot().config.skills.map((item) => item.id),
+    ['test-design'],
+  );
+  assert.deepEqual(state.value.selections.skillIds, ['test-design']);
 });
 
 test('契约：正常落盘后从真实文件重新打开', async () => {

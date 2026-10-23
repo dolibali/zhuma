@@ -350,7 +350,7 @@ export class ExecutionDesk {
     return { ok: true, replayed: false, snapshot: this.snapshot() };
   }
 
-  /** 存储恢复后，把当前内存事实重写进同一份日志。只有这次成功才清除持久化故障。 */
+  /** 存储恢复后，把当前内存事实重写进同一份日志。成功保存会清掉持久化故障。 */
   rewritePersistence(): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     if (!this.persist(true)) return this.persistRejected();
@@ -2375,15 +2375,16 @@ export class ExecutionDesk {
 
   /**
    * 用户命令保存失败只让调用方回滚，不记持久化故障。
-   * 执行器事件用 persistEvent：失败留下故障，等重写。已有故障不会被无关的成功保存清掉。
+   * 执行器事件用 persistEvent：失败留下故障。成功保存清掉故障。
+   * 延后队列在这次调用返回之后再恢复。恢复写失败只记故障，不回滚刚提交的命令。
    */
-  private persist(reconcile = false, recordFault = false): boolean {
+  private persist(_reconcile = false, recordFault = false): boolean {
     if (!this.deps.journal) {
       this.persistenceFault = null;
       this.lastSaveFailed = false;
       this.lastPersistError = null;
       this.flushSessionDeletes();
-      this.resumeDeferredQueue();
+      this.scheduleDeferredQueue();
       return true;
     }
     try {
@@ -2391,8 +2392,8 @@ export class ExecutionDesk {
       this.lastSaveFailed = false;
       this.lastPersistError = null;
       this.flushSessionDeletes();
-      if (reconcile) this.persistenceFault = null;
-      this.resumeDeferredQueue();
+      this.persistenceFault = null;
+      this.scheduleDeferredQueue();
       return true;
     } catch (error) {
       this.lastSaveFailed = true;
@@ -2409,11 +2410,22 @@ export class ExecutionDesk {
     return this.persist(false, true);
   }
 
-  private resumeDeferredQueue(): void {
+  /** 排到当前调用返回之后。失败不能把 lastSaveFailed 留给下一条同步命令。 */
+  private scheduleDeferredQueue(): void {
     if (this.deferredQueueRunId === null || this.consumingQueue) return;
     const runId = this.deferredQueueRunId;
     this.deferredQueueRunId = null;
-    this.consumeQueue(runId);
+    const job = Promise.resolve().then(() => {
+      try {
+        this.consumeQueue(runId);
+      } finally {
+        this.lastSaveFailed = false;
+      }
+    });
+    this.inflight.push(job);
+    void job.finally(() => {
+      this.inflight = this.inflight.filter((item) => item !== job);
+    });
   }
 
   /**
