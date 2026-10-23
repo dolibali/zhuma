@@ -78,11 +78,9 @@
 
 未实现（后续切片）：
 
-- `/zhuma-exec`
 - 执行界面
 - 产物字节、预览和访问控制。这一层只校验文件元数据
 - 专家评审和 `interpretAgentReview`
-- 官方 Host 上的真实多人会话
 
 ## 写入
 
@@ -90,4 +88,12 @@
 
 `start-plan` 先写节点，再写计划回执。回执还没有写上时，`submit`、`ballot`、`settle` 返回 `plan-incomplete`，响应不带节点正文。继续的方式只有同一个幂等键重试 `start-plan`，或服务上的对账。半写窗口里的提交不会把上游完成，所以重试启动时下游还拿不到 `inputRefs`。回执写上之后，正常提交才会完成节点并解锁。
 
-`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。`/zhuma-exec` 在下一支接入。
+`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。
+
+## 通道
+
+执行通道注册在 `connection.fetch.register`，路径是 `/api/zhuma-exec/<endpoint>`。官方 `rpc.handle` 不带请求头，所以不走那条。端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`。没有 `bind-owner`。
+
+`apply` 直接调用身份模块的 `resolveMember`。这一层合并了 `b/id0a-identity` 的 `f0eac0f`，身份文件属于那条分支。单人还是多人由 `identityAccessMode` 决定。单人模式只认导入里写明的那一个 `ownerAccountId`。多人模式不把 DSH owner cookie 当成成员。同一来源地址 60 秒内登录满 8 次后返回 429。
+
+`packages/dsh-adapter/tests/execution-member.test.mjs` 用登录得到的成员 cookie 调用真实的 `resolveMember`。`execution-host.test.mjs` 用真实 Connection 跑通启动、报告和评审。

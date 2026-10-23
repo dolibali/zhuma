@@ -69,3 +69,9 @@ export {
   type ExecutionStorage,
   type PlanReceipt,
 } from './execution-service.js';
+export {
+  apply as applyExecution,
+  executionEndpoints,
+  inject as executionInject,
+  type ExecutionPluginConfig,
+} from './execution-plugin.js';
