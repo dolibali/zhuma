@@ -518,3 +518,102 @@ test('approved review clears the revision obligation and a normal submit complet
   assertRejected(skippedReady);
   assert.equal(skippedReady.state.status, 'ready');
 });
+
+function bare(status) {
+  return { status, version: 3, upstreamAffected: false, stored: [] };
+}
+
+test('a missing record still reaches failed or cancelled', () => {
+  for (const status of ['running', 'waiting-for-input']) {
+    const failed = command(bare(status), { type: 'execution-failed' }, `${status}-fail`);
+    assert.equal(failed.decision.status, 'applied', status);
+    assert.equal(failed.state.status, 'failed');
+    assert.equal(failed.state.entryStatus, undefined);
+    assert.equal(failed.state.version, 4);
+    assert.deepEqual(failed.decision.result.effects, ['record-failure', 'block-downstream']);
+
+    const cancelled = command(bare(status), { type: 'cancel-confirmed' }, `${status}-cancel`);
+    assert.equal(cancelled.decision.status, 'applied', status);
+    assert.equal(cancelled.state.status, 'cancelled');
+    assert.equal(cancelled.state.entryStatus, undefined);
+    assert.equal(cancelled.state.version, 4);
+    assert.deepEqual(cancelled.decision.result.effects, [
+      'record-cancellation',
+      'block-downstream',
+    ]);
+  }
+});
+
+test('retry and restart stay rejected after a record-less close', () => {
+  const failed = command(bare('running'), { type: 'execution-failed' }, 'after-fail');
+  assert.equal(failed.state.status, 'failed');
+  assert.equal(failed.state.entryStatus, undefined);
+  for (const returnTo of ['ready', 'needs-revision']) {
+    const retried = command(failed.state, { type: 'retry', returnTo }, `after-retry-${returnTo}`);
+    assertRejected(retried);
+    assert.equal(retried.state.status, 'failed');
+    assert.equal(retried.state.entryStatus, undefined);
+    assert.equal(retried.state.version, failed.state.version);
+  }
+
+  const cancelled = command(
+    bare('waiting-for-input'),
+    { type: 'cancel-confirmed' },
+    'after-cancel',
+  );
+  assert.equal(cancelled.state.status, 'cancelled');
+  assert.equal(cancelled.state.entryStatus, undefined);
+  for (const returnTo of ['ready', 'needs-revision']) {
+    const restarted = command(
+      cancelled.state,
+      { type: 'restart', returnTo },
+      `after-restart-${returnTo}`,
+    );
+    assertRejected(restarted);
+    assert.equal(restarted.state.status, 'cancelled');
+    assert.equal(restarted.state.entryStatus, undefined);
+    assert.equal(restarted.state.version, cancelled.state.version);
+  }
+  const submitted = command(
+    cancelled.state,
+    { type: 'submit-artifact', reviewRequired: false },
+    'after-submit',
+  );
+  assertRejected(submitted);
+  assert.equal(submitted.state.status, 'cancelled');
+});
+
+test('other commands still reject a running node that lost its record', () => {
+  const state = bare('running');
+  for (const payload of [
+    { type: 'submit-artifact', reviewRequired: false },
+    { type: 'submit-artifact', reviewRequired: true, entryStatus: 'ready' },
+    { type: 'input-required' },
+    { type: 'execution-acknowledged' },
+  ]) {
+    const result = command(
+      state,
+      payload,
+      `still-${payload.type}-${payload.reviewRequired ?? 'x'}`,
+    );
+    assertRejected(result);
+    assert.equal(result.state.status, 'running');
+    assert.equal(result.state.version, 3);
+    assert.equal(result.state.entryStatus, undefined);
+  }
+});
+
+test('a recorded failure still keeps its entry and can retry', () => {
+  const failed = command(
+    { ...bare('running'), entryStatus: 'ready' },
+    { type: 'execution-failed' },
+    'recorded-fail',
+  );
+  assert.equal(failed.decision.status, 'applied');
+  assert.equal(failed.state.status, 'failed');
+  assert.equal(failed.state.entryStatus, 'ready');
+  const retried = command(failed.state, { type: 'retry', returnTo: 'ready' }, 'recorded-retry');
+  assert.equal(retried.decision.status, 'applied');
+  assert.equal(retried.state.status, 'ready');
+  assert.equal(retried.state.entryStatus, 'ready');
+});
