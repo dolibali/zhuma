@@ -1,5 +1,6 @@
 import type {
   ActorRef,
+  ContextInputRef,
   NodeHandoff,
   PayloadExcludesCredentials,
   VersionedRef,
@@ -58,6 +59,9 @@ const expertWithoutRef: NodeHandoff = {
   inputNote: '',
   expectedOutput: '',
 };
+
+// @ts-expect-error an input ref must name both the source node and the artifact version
+const inputRefMissingArtifact: ContextInputRef = { sourceNodeId: 'node-0' };
 
 // @ts-expect-error agent is not an external actor
 const agentActor: ActorRef = { id: 'run-1', kind: 'agent' };
