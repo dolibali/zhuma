@@ -1413,8 +1413,15 @@ async function assertOverlapHidden(mode, secret) {
     const saved = readFileSync(sessionFile, 'utf8');
     assertNoKeyFragment(body, secret, `${mode} http`);
     assertNoKeyFragment(saved, secret, `${mode} session`);
+    assertNoKeyPrefix(body, secret, `${mode} http`);
+    assertNoKeyPrefix(saved, secret, `${mode} session`);
+    if (secret.length >= 12) {
+      assert.equal(body.includes(secret.slice(0, 12)), false, `${mode} http 留下 12 位前缀`);
+      assert.equal(saved.includes(secret.slice(0, 12)), false, `${mode} session 留下 12 位前缀`);
+    }
     assert.equal(body.includes('[redacted]'), true, mode);
     assert.equal(saved.includes('[redacted]'), true, mode);
+    return { body, saved };
   } finally {
     server.close();
   }
@@ -1507,6 +1514,10 @@ test('契约：重叠起点上不完整的长前缀在整块、逐字符和第 5
     'a[redacted]',
   );
   assert.equal(assertMatchesReference(secret, `${secret.slice(0, 22)}c\n`), '[redacted]c\n');
+  assert.equal(
+    assertMatchesReference(secret, `${secret.slice(0, 1)}${secret.slice(0, 12)}zz\n`),
+    'a[redacted]zz\n',
+  );
   assertMatchesReference(secret, `x ${secret.slice(0, 1)}${secret.slice(0, 12)}zz more\n`);
   assertMatchesReference(secret, `x ${secret.slice(0, 1)}${secret.slice(0, 12)}`);
   const repeated = 'qrsqrsqrt-synthetic-marker-0123456789';
@@ -1591,6 +1602,24 @@ for (const [kind, how] of [
     await assertOverlapHidden(mode, 'aab-synthetic-marker-0123456789');
   });
 }
+
+test('契约：失配后只部分匹配的 12 位重叠前缀同一块写出时不会进入 HTTP 响应或会话文件', async () => {
+  const secret = 'aab-synthetic-marker-0123456789';
+  const seen = await assertOverlapHidden('stderr-overlap:review:p12', secret);
+  assert.equal(seen.body.includes('a[redacted]zz'), true);
+  assert.equal(seen.saved.includes('a[redacted]zz'), true);
+  assert.equal(seen.body.includes('aaab-syntheti'), false);
+  assert.equal(seen.saved.includes('aaab-syntheti'), false);
+});
+
+test('契约：失配后只部分匹配的 12 位重叠前缀在第 5 个字符切开时不会进入 HTTP 响应或会话文件', async () => {
+  const secret = 'aab-synthetic-marker-0123456789';
+  const seen = await assertOverlapHidden('stderr-overlap:review:p12:split5', secret);
+  assert.equal(seen.body.includes('a[redacted]zz'), true);
+  assert.equal(seen.saved.includes('a[redacted]zz'), true);
+  assert.equal(seen.body.includes('aaab-syntheti'), false);
+  assert.equal(seen.saved.includes('aaab-syntheti'), false);
+});
 
 test('契约：封口超时时跨在缓冲边界上的密钥不会漏出', async () => {
   const pidFile = grandchildPidFile();

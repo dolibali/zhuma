@@ -140,6 +140,7 @@ if (mode.startsWith('stderr-overlap:review:')) {
   if (kind === '0c') text = `${secret.slice(0, 1)}${secret.slice(0, 22)}c\n`;
   else if (kind === 'almost')
     text = `${secret.slice(0, 1)}${secret.slice(0, Math.max(0, secret.length - 1))}\n`;
+  else if (kind === 'p12') text = `${secret.slice(0, 1)}${secret.slice(0, 12)}zz\n`;
   else text = `${secret.slice(0, 1)}${secret.slice(0, 7)}`;
   if (how === 'bytes') await writeStderrChunks([...text]);
   else if (how === 'split5') await writeStderrChunks([text.slice(0, 5), text.slice(5)]);
