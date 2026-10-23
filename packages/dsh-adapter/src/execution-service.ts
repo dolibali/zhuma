@@ -644,11 +644,14 @@ export class ExecutionService {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
     if (!task) return fail('not-found');
     const prior = this.storage.readPlan(key);
-    if (prior?.fingerprint === fingerprint) {
-      return {
-        ok: true as const,
-        value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
-      };
+    const replayed = {
+      ok: true as const,
+      value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
+    };
+    // The same key replays before the conflict scan, so another project's
+    // directory fault cannot change that retry. Any other key is checked first.
+    if (prior?.fingerprint === fingerprint && prior.idempotencyKey === idempotencyKey) {
+      return replayed;
     }
     const conflict = await this.sameSpaceIdempotencyConflict(
       idempotencyKey,
@@ -658,6 +661,7 @@ export class ExecutionService {
     );
     if (!conflict.ok) return conflict;
     if (conflict.value) return fail('idempotency-mismatch');
+    if (prior?.fingerprint === fingerprint) return replayed;
     let applied;
     try {
       applied = createExecutionHandoff(

@@ -1840,6 +1840,63 @@ test('the original start replays before another project lookup can change it', a
   assert.deepEqual(store.snapshot(), before);
 });
 
+test('another plan key in this space does not replay an already started revision', async () => {
+  const { state, task } = fixture();
+  const first = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      title: '已启动的修订',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(first, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      title: '另一个计划',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const startedPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const otherPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(startedPlan);
+  assert.ok(otherPlan);
+  const { service, store } = create(ready);
+  const caller = session('chen');
+  const original = {
+    taskId: startedPlan.taskId,
+    planId: startedPlan.id,
+    revision: startedPlan.revision,
+    idempotencyKey: 'original-key',
+  };
+  const started = await service.startPlan(caller, original);
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const other = await service.startPlan(caller, {
+    taskId: otherPlan.taskId,
+    planId: otherPlan.id,
+    revision: otherPlan.revision,
+    idempotencyKey: 'other-plan-key',
+  });
+  assert.equal(other.ok, true, other.ok ? '' : other.error.code);
+  const before = store.snapshot();
+  const crossed = await service.startPlan(caller, {
+    ...original,
+    idempotencyKey: 'other-plan-key',
+  });
+  assert.equal(crossed.ok, false, crossed.ok ? crossed.value.disposition : crossed.error.code);
+  assert.equal(crossed.error.code, 'idempotency-mismatch');
+  assert.deepEqual(store.snapshot(), before);
+  const replay = await service.startPlan(caller, original);
+  assert.equal(replay.ok, true, replay.ok ? '' : replay.error.code);
+  assert.equal(replay.value.disposition, 'replayed');
+  assert.deepEqual(store.snapshot(), before);
+});
+
 test('an unexpected handoff failure says the record is unavailable, not that the write failed', async () => {
   const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
   Object.defineProperty(applied, 'probe', { enumerable: true, value() {} });
