@@ -25,6 +25,7 @@ import {
   dshSessionHome,
   sweepDshSessionOrphans,
 } from '@zhuma/dsh-adapter';
+import { StderrRedactor } from '../dist/dsh-sdk-executor.js';
 import { createAgentWorkspaceView } from '../../client/dist/index.js';
 
 const scratchDirs = [];
@@ -1240,9 +1241,24 @@ test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async
   assert.equal(JSON.stringify(boot.events).includes(prefix), false);
 });
 
+function longestKeyFragment(text, secret) {
+  let best = 0;
+  for (let start = 0; start < secret.length; start += 1) {
+    for (let end = start + best + 1; end <= secret.length; end += 1) {
+      if (text.includes(secret.slice(start, end))) best = end - start;
+      else break;
+    }
+  }
+  return best;
+}
+
+function assertNoKeyFragment(text, secret, label) {
+  const longest = longestKeyFragment(text, secret);
+  assert.equal(longest < 4, true, `${label} 留下 ${longest} 位片段`);
+}
+
 async function assertPrefixHidden(kind, length) {
   const secret = 'K1-synthetic-0123456789abcdefX-TAIL';
-  const prefix = secret.slice(0, length);
   const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-prefix-http-'));
   const sessionFile = path.join(directory, 'session.json');
   const { desk } = open(`stderr-prefix-${kind}:${length}`, {
@@ -1268,10 +1284,8 @@ async function assertPrefixHidden(kind, length) {
     const loaded = await fetch(`http://127.0.0.1:${port}/api/workspace`);
     const body = await loaded.text();
     const saved = readFileSync(sessionFile, 'utf8');
-    assert.equal(body.includes(prefix), false, `${kind}-${length} http`);
-    assert.equal(saved.includes(prefix), false, `${kind}-${length} session`);
-    assert.equal(body.includes(secret), false, `${kind}-${length} http`);
-    assert.equal(saved.includes(secret), false, `${kind}-${length} session`);
+    assertNoKeyFragment(body, secret, `${kind}-${length} http`);
+    assertNoKeyFragment(saved, secret, `${kind}-${length} session`);
     assert.equal(body.includes('[redacted]'), true, `${kind}-${length} http`);
     assert.equal(saved.includes('[redacted]'), true, `${kind}-${length} session`);
   } finally {
@@ -1279,12 +1293,142 @@ async function assertPrefixHidden(kind, length) {
   }
 }
 
-test('契约：收尾剩下的 4、12、30 位密钥前缀不会进入 HTTP 响应或会话文件', async () => {
-  for (const length of [4, 12, 30]) await assertPrefixHidden('end', length);
+for (const length of [4, 12, 30]) {
+  test(`契约：收尾剩下的 ${length} 位密钥前缀不会进入 HTTP 响应或会话文件`, async () => {
+    await assertPrefixHidden('end', length);
+  });
+  test(`契约：流中间的 ${length} 位密钥前缀不会进入 HTTP 响应或会话文件`, async () => {
+    await assertPrefixHidden('mid', length);
+  });
+}
+
+function redactChunks(secret, chunks) {
+  const redactor = new StderrRedactor(secret);
+  let out = '';
+  for (const chunk of chunks) out += redactor.push(chunk);
+  out += redactor.flush();
+  return out;
+}
+
+function assertRedactedChunks(secret, chunks) {
+  const out = redactChunks(secret, chunks);
+  assertNoKeyFragment(out, secret, 'stderr');
+  assert.equal(out.includes('[redacted]'), true);
+  return out;
+}
+
+for (const length of [4, 12, 30]) {
+  test(`契约：流中间 ${length} 位前缀里达到 4 位的片段都不会留下`, () => {
+    const secret = 'K1-synthetic-0123456789abcdefX-TAIL';
+    const out = redactChunks(secret, [`mid-${secret.slice(0, length)}zz\n`]);
+    assert.equal(out, 'mid-[redacted]zz\n');
+    assertNoKeyFragment(out, secret, `mid-${length}`);
+  });
+}
+
+test('契约：同一块里从失败前缀中间开始的完整密钥会换成 [redacted]', () => {
+  const secret = 'aab-synthetic-marker-0123456789';
+  assert.equal(assertRedactedChunks(secret, [`a${secret}\n`]), 'a[redacted]\n');
+  assert.equal(
+    assertRedactedChunks(secret, [`aa${secret} and a${secret}\n`]),
+    'aa[redacted] and a[redacted]\n',
+  );
+  assert.equal(redactChunks(secret, `preface-${secret}-tail`.split('')), 'preface-[redacted]-tail');
 });
 
-test('契约：流中间的 4、12、30 位密钥前缀不会进入 HTTP 响应或会话文件', async () => {
-  for (const length of [4, 12, 30]) await assertPrefixHidden('mid', length);
+test('契约：跨块时从失败前缀中间开始的完整密钥会换成 [redacted]', () => {
+  const secret = 'aab-synthetic-marker-0123456789';
+  const text = `a${secret}\n`;
+  for (let at = 1; at < text.length; at += 1) {
+    assert.equal(
+      assertRedactedChunks(secret, [text.slice(0, at), text.slice(at)]),
+      'a[redacted]\n',
+      `拆在第 ${at} 个字符`,
+    );
+  }
+  assert.equal(assertRedactedChunks(secret, ['a', ...secret, '\n']), 'a[redacted]\n');
+});
+
+test('契约：达到 4 位的重叠前缀不会把密钥后半段放出来', () => {
+  const repeated = 'qrsqrsqrt-synthetic-marker-0123456789';
+  for (const lead of [1, 2, 3, 4, 5, 6]) {
+    const out = assertRedactedChunks(repeated, [`x ${repeated.slice(0, lead)}${repeated} y\n`]);
+    assert.equal(out.includes(repeated.slice(-20)), false, `lead ${lead}`);
+  }
+  assert.equal(
+    assertRedactedChunks(repeated, [
+      `x ${repeated.slice(0, 6)}`,
+      repeated.slice(0, 4),
+      `${repeated.slice(4)} y\n`,
+    ]),
+    'x [redacted][redacted] y\n',
+  );
+  const head = 'abcabc';
+  const tail = 'z0123456789abcdef0123456789abcdefX';
+  assert.equal(tail.length, 34);
+  assert.equal(tail.startsWith('a'), false);
+  const folded = `${head}${tail}`;
+  const foldedOut = assertRedactedChunks(folded, [`${folded.slice(0, 3)}${folded} end\n`]);
+  assert.equal(foldedOut.includes(tail), false);
+  assert.equal(foldedOut, 'abc[redacted] end\n');
+});
+
+async function assertOverlapHidden(mode, secret) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-overlap-http-'));
+  const sessionFile = path.join(directory, 'session.json');
+  const { desk } = open(mode, {
+    env: modelEnv(secret),
+    journal: createFileJournal(sessionFile),
+    initTimeoutMs: 20_000,
+  });
+  const server = createWorkbenchServer({
+    desk,
+    present: (snapshot) => snapshot,
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  try {
+    const posted = await fetch(`http://127.0.0.1:${port}/api/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '不要带出重叠密钥', idempotencyKey: mode }),
+    });
+    assert.equal(posted.ok, true);
+    await desk.flush();
+    const body = await (await fetch(`http://127.0.0.1:${port}/api/workspace`)).text();
+    const saved = readFileSync(sessionFile, 'utf8');
+    assertNoKeyFragment(body, secret, `${mode} http`);
+    assertNoKeyFragment(saved, secret, `${mode} session`);
+    assert.equal(body.includes('[redacted]'), true, mode);
+    assert.equal(saved.includes('[redacted]'), true, mode);
+  } finally {
+    server.close();
+  }
+}
+
+test('契约：同一块重叠密钥不会进入 HTTP 响应或会话文件', async () => {
+  await assertOverlapHidden('stderr-overlap:same', 'aab-synthetic-marker-0123456789');
+});
+
+test('契约：拆在第 5 个字符的重叠密钥不会进入 HTTP 响应或会话文件', async () => {
+  await assertOverlapHidden('stderr-overlap:split:5', 'aab-synthetic-marker-0123456789');
+});
+
+test('契约：逐字节写出的重叠密钥不会进入 HTTP 响应或会话文件', async () => {
+  await assertOverlapHidden('stderr-overlap:bytes', 'aab-synthetic-marker-0123456789');
+});
+
+test('契约：qrs 这种达到 4 位的重叠不会进入 HTTP 响应或会话文件', async () => {
+  const secret = 'qrsqrsqrt-synthetic-marker-0123456789';
+  await assertOverlapHidden('stderr-overlap:lead:3', secret);
+  await assertOverlapHidden('stderr-overlap:lead:6', secret);
+  await assertOverlapHidden('stderr-overlap:lead-split:6', secret);
+});
+
+test('契约：abc 重复前缀的重叠不会进入 HTTP 响应或会话文件', async () => {
+  const secret = 'abcabcz0123456789abcdef0123456789abcdefX';
+  await assertOverlapHidden('stderr-overlap:lead:3', secret);
 });
 
 test('契约：封口超时时跨在缓冲边界上的密钥不会漏出', async () => {

@@ -130,6 +130,28 @@ if (mode.startsWith('stderr-boot-split:')) {
   await writeStderrChunks([`preface-${secret.slice(0, at)}`, `${secret.slice(at)}-tail`]);
   process.exit(1);
 }
+if (mode.startsWith('stderr-overlap:')) {
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  const spec = mode.slice('stderr-overlap:'.length);
+  if (spec.startsWith('lead-split:')) {
+    const lead = Number(spec.slice('lead-split:'.length));
+    const text = `x ${secret.slice(0, lead)}${secret} y\n`;
+    const cut = 2 + lead;
+    await writeStderrChunks([text.slice(0, cut), text.slice(cut, cut + 4), text.slice(cut + 4)]);
+  } else if (spec.startsWith('lead:')) {
+    const lead = Number(spec.slice('lead:'.length));
+    writeSync(2, `x ${secret.slice(0, lead)}${secret} y\n`);
+  } else if (spec.startsWith('split:')) {
+    const text = `a${secret}\n`;
+    const at = Number(spec.slice('split:'.length));
+    await writeStderrChunks([text.slice(0, at), text.slice(at)]);
+  } else if (spec === 'bytes') {
+    await writeStderrChunks(['a', ...secret, '\n']);
+  } else {
+    writeSync(2, `a${secret}\n`);
+  }
+  process.exit(1);
+}
 if (mode === 'stderr-boot-bytes') {
   const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
   await writeStderrChunks([...('preface-' + secret + '-tail')]);

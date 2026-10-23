@@ -1539,16 +1539,35 @@ function redact(text: string, secret: string): string {
   return text.split(secret).join('[redacted]');
 }
 
+/** 失配表：secret[0..i] 的最长真前缀，同时也是它的后缀。 */
+function secretBorder(secret: string): number[] {
+  const border = new Array<number>(secret.length).fill(0);
+  let length = 0;
+  for (let index = 1; index < secret.length; index += 1) {
+    while (length > 0 && secret[index] !== secret[length]) length = border[length - 1] ?? 0;
+    if (secret[index] === secret[length]) {
+      length += 1;
+      border[index] = length;
+    }
+  }
+  return border;
+}
+
 /**
  * 完整密钥换成 [redacted]。
  * 还没写完的前缀先留着，下一块能接上就继续匹配。
  * 流中间一旦确认不是完整密钥，以及收尾时还剩下的前缀，长度达到 4 就替换。
  * 不足 4 的前缀原样留下。
+ * 失配表会标出从失败前缀中间开始的完整密钥；遮盖或放出一段之前先让出这些起点。
+ * 因此输出里不留下密钥中任何达到 4 位的片段。
  */
-class StderrRedactor {
+export class StderrRedactor {
   private pending = '';
+  private readonly border: readonly number[];
 
-  constructor(private readonly secret: string) {}
+  constructor(private readonly secret: string) {
+    this.border = secretBorder(secret);
+  }
 
   push(chunk: string): string {
     const raw = this.pending + chunk;
@@ -1562,42 +1581,74 @@ class StderrRedactor {
     return this.scan(raw, true);
   }
 
+  private locate(raw: string): { starts: number[]; state: number } {
+    const starts: number[] = [];
+    const secret = this.secret;
+    const border = this.border;
+    let state = 0;
+    for (let index = 0; index < raw.length; index += 1) {
+      while (state > 0 && raw[index] !== secret[state]) state = border[state - 1] ?? 0;
+      if (raw[index] === secret[state]) state += 1;
+      if (state === secret.length) {
+        starts.push(index - secret.length + 1);
+        state = border[state - 1] ?? 0;
+      }
+    }
+    return { starts, state };
+  }
+
   private scan(raw: string, ending: boolean): string {
     if (this.secret.length === 0 || raw.length === 0) return raw;
+    const secret = this.secret;
+    const { starts, state } = this.locate(raw);
+    const hold = ending ? 0 : state;
+    const limit = raw.length - hold;
     let out = '';
     let index = 0;
-    while (index < raw.length) {
-      if (raw.startsWith(this.secret, index)) {
+    const inside = (at: number) => starts.some((start) => at > start && at < start + secret.length);
+    while (index < limit) {
+      if (starts.includes(index)) {
         out += '[redacted]';
-        index += this.secret.length;
+        index = Math.min(index + secret.length, limit);
         continue;
       }
-      let matched = 0;
-      const limit = Math.min(this.secret.length - 1, raw.length - index);
-      while (matched < limit && raw[index + matched] === this.secret[matched]) matched += 1;
-      if (matched === 0) {
-        out += raw[index];
+      if (inside(index)) {
         index += 1;
         continue;
       }
-      const atEnd = index + matched === raw.length;
-      if (atEnd && !ending) {
+      let matched = 0;
+      const max = Math.min(secret.length, raw.length - index);
+      while (matched < max && raw[index + matched] === secret[matched]) matched += 1;
+      const inner = starts.find((start) => start > index && start < index + matched);
+      if (inner !== undefined) {
+        if (inner >= limit) {
+          this.pending = raw.slice(index);
+          return out;
+        }
+        if (inner - index >= 4) out += '[redacted]';
+        else out += raw.slice(index, inner);
+        index = inner;
+        continue;
+      }
+      if (matched === secret.length) {
+        out += '[redacted]';
+        index = Math.min(index + matched, limit);
+        continue;
+      }
+      if (index + matched > limit) {
         this.pending = raw.slice(index);
         return out;
       }
-      if (ending && matched >= 4) {
+      if (matched >= 4) {
         out += '[redacted]';
         index += matched;
         continue;
       }
-      if (!atEnd && matched >= 4) {
-        out += '[redacted]';
-        index += matched;
-        continue;
-      }
-      out += raw.slice(index, index + matched);
-      index += matched;
+      const step = matched === 0 ? 1 : matched;
+      out += raw.slice(index, index + step);
+      index += step;
     }
+    this.pending = raw.slice(limit);
     return out;
   }
 }
