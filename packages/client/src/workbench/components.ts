@@ -9,3 +9,4 @@ export {
 } from './controls.js';
 export { Appearance, type AppearancePreference, type AppearanceStore } from './Appearance.js';
 export { Button } from './Button.js';
+export { SingleSelect, type SingleSelectProps, type SelectOption } from './SingleSelect.js';

@@ -1,0 +1,96 @@
+{
+  "upstream": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "workbench": {
+    "region": "zm-shell-chrome",
+    "from": [1400, 48],
+    "to": [1280, 128],
+    "result": {
+      "bounds": {
+        "x": 200,
+        "y": 60,
+        "width": 1280,
+        "height": 800
+      },
+      "moves": [
+        {
+          "x": 200,
+          "y": 60,
+          "width": 1280,
+          "height": 800
+        }
+      ]
+    },
+    "domInputs": []
+  },
+  "viewport": {
+    "width": 1280,
+    "height": 800,
+    "zoom": 1,
+    "dpr": 2
+  },
+  "input": "Native CUA drag, screenshot-pixel coordinates",
+  "calibration": {
+    "input": [2058, 186],
+    "observedClient": [1029, 93],
+    "observedScreen": [1229, 153],
+    "isTrusted": true,
+    "target": "Appearance icon"
+  },
+  "start": {
+    "x": 200,
+    "y": 60,
+    "width": 1280,
+    "height": 800
+  },
+  "official": {
+    "region": "official topStrip",
+    "from": [320, 48],
+    "to": [200, 128],
+    "result": {
+      "bounds": {
+        "x": 200,
+        "y": 60,
+        "width": 1280,
+        "height": 800
+      },
+      "moves": [
+        {
+          "x": 200,
+          "y": 60,
+          "width": 1280,
+          "height": 800
+        }
+      ]
+    },
+    "domInputs": []
+  },
+  "errors": [
+    "Some CUA observations returned ScreenCaptureKit error -3811",
+    "One earlier drag returned windowNotFoundAtPosition"
+  ],
+  "verdict": "Unverified: both official and workbench regions remained stationary; CSS drag and isMovable are not movement proof.",
+  "focusedRepeat": {
+    "nativeFocus": true,
+    "workbench": {
+      "from": [1400, 48],
+      "to": [1280, 128],
+      "bounds": {
+        "x": 200,
+        "y": 60,
+        "width": 1280,
+        "height": 800
+      }
+    },
+    "official": {
+      "from": [320, 48],
+      "to": [200, 128],
+      "bounds": {
+        "x": 200,
+        "y": 60,
+        "width": 1280,
+        "height": 800
+      }
+    },
+    "result": "Neither region moved even with verified native focus"
+  }
+}

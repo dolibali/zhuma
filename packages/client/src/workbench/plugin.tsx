@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
+import type { ComponentProps } from 'react';
 import type {} from '@deepseek-ai/dsh-client-connection/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
@@ -35,7 +36,12 @@ export function apply(ctx: Context): void {
         key: panelId,
         inject: () => ({ api, appearance, initialSection: 'tasks' as const }),
       },
-      WorkbenchPage,
+      (props: ComponentProps<typeof WorkbenchPage>) => (
+        <div className="zm-shell-panel">
+          <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
+          <WorkbenchPage {...props} />
+        </div>
+      ),
     );
     // Initial product landing only; selecting DSH conversations remains available.
     if (ctx.layout.panelInfo.getSnapshot().activePanelId === null) ctx.layout.selectPanel(panelId);

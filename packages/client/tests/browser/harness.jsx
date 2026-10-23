@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { StrictMode, useState } from 'react';
+import { SelectProbe } from './select-probe.jsx';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
 import styles from '../../src/workbench/workbench.css';
@@ -56,6 +57,8 @@ function MountProbe() {
 }
 const content = new URL(location.href).searchParams.has('mount-probe') ? (
   <MountProbe />
+) : new URL(location.href).searchParams.has('select-probe') ? (
+  <SelectProbe />
 ) : (
   <WorkbenchPage api={api} initialSection="tasks" appearance={appearance} />
 );

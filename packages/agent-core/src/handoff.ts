@@ -55,8 +55,8 @@ export interface WorkflowVersionDependency {
 }
 
 export interface ContextInputRef {
-  readonly sourceNodeId?: string;
-  readonly artifactVersionId?: string;
+  readonly sourceNodeId: string;
+  readonly artifactVersionId: string;
   readonly contextPackId?: string;
 }
 
@@ -198,19 +198,29 @@ function copyInputRefs(refs: unknown): readonly ContextInputRef[] | undefined {
       artifactVersionId?: unknown;
       contextPackId?: unknown;
     };
-    const next: {
-      sourceNodeId?: string;
-      artifactVersionId?: string;
-      contextPackId?: string;
-    } = {};
-    const fields = ['sourceNodeId', 'artifactVersionId', 'contextPackId'] as const;
-    for (const field of fields) {
-      const value = candidate[field];
-      if (value === undefined) continue;
-      if (typeof value !== 'string') return undefined;
-      next[field] = value;
+    if (typeof candidate.sourceNodeId !== 'string' || candidate.sourceNodeId.trim() === '') {
+      return undefined;
     }
-    if (Object.keys(next).length === 0) return undefined;
+    if (
+      typeof candidate.artifactVersionId !== 'string' ||
+      candidate.artifactVersionId.trim() === ''
+    ) {
+      return undefined;
+    }
+    const next: {
+      sourceNodeId: string;
+      artifactVersionId: string;
+      contextPackId?: string;
+    } = {
+      sourceNodeId: candidate.sourceNodeId,
+      artifactVersionId: candidate.artifactVersionId,
+    };
+    if (candidate.contextPackId !== undefined) {
+      if (typeof candidate.contextPackId !== 'string' || candidate.contextPackId.trim() === '') {
+        return undefined;
+      }
+      next.contextPackId = candidate.contextPackId;
+    }
     copied.push(next);
   }
   return copied;
