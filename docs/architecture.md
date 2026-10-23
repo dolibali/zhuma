@@ -51,6 +51,6 @@
 
 ## 任务、持续会话与产物评审
 
-补充范围见 [联动方案](https://github.com/dolibali/zhuma/blob/834340a46d969ca87df17e363baf89ceea5e027d/docs/architecture/task-session-delivery/design.md)、[A/B 分期](https://github.com/dolibali/zhuma/blob/834340a46d969ca87df17e363baf89ceea5e027d/docs/architecture/task-session-delivery/development-plan.md)及[验收清单](https://github.com/dolibali/zhuma/blob/834340a46d969ca87df17e363baf89ceea5e027d/docs/architecture/task-session-delivery/test-plan.md)，当前为待审 [PR #13](https://github.com/dolibali/zhuma/pull/13) 的固定快照。任务和 workspace 两处打开同一个持续会话，产物固定版本经评审接受后才交下游；方案合入不代表该链路已实现。
+补充范围见 [联动方案](architecture/task-session-delivery/design.md)、[A/B 分期](architecture/task-session-delivery/development-plan.md)及[验收清单](architecture/task-session-delivery/test-plan.md)，[PR #13](https://github.com/dolibali/zhuma/pull/13) 已合入 main `b8c5d18`。任务和 workspace 两处打开同一个持续会话，产物固定版本经评审接受后才交下游；方案合入不代表该链路已实现。
 
 B 维护可信身份、会话绑定、上下文物化、执行及产物评审的前后端和 DTO 映射；A 消费已集成版本，维护组织定义、共享 UI／导航／注册／导出及项目和专家入口。[B PR #10](https://github.com/dolibali/zhuma/pull/10) 已提供待审执行实现，独立演示与正式 Host 集成、流式和评审接续的边界分别验证，不按演示回执宣称正式链路完成。

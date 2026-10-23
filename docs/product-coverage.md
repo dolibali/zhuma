@@ -48,7 +48,7 @@ A-PLANQ 复用现有 planning/context、结构校验、修复和提案服务，�
 
 ## 持续会话与成果空间的补充退出条件
 
-[PR #13 方案与 LC-T01–10](https://github.com/dolibali/zhuma/blob/834340a46d969ca87df17e363baf89ceea5e027d/docs/architecture/task-session-delivery/test-plan.md) 补充原 FR 退出条件，以下均未验收，不替换原表中的待办／模板／多层工作流等范围：
+[PR #13 方案与 LC-T01–10](architecture/task-session-delivery/test-plan.md) 补充原 FR 退出条件，以下均未验收，不替换原表中的待办／模板／多层工作流等范围：
 
 | 原 FR      | 追加的用户结果／主责                                                                                                            |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------- |

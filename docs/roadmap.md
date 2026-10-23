@@ -2,7 +2,7 @@
 
 以 [产品能力覆盖账本](product-coverage.md) 追踪 FR01–17 的实际状态、主责和退出条件。原型主要能力是范围基线，UI/UE 可重做；不能以目录 CRUD、领域契约或布局完善代替用户任务闭环。
 
-任务 → 同一 workspace 持续会话 → 固定产物 → 多人评审的补充范围与分期见[联动方案](https://github.com/dolibali/zhuma/blob/834340a46d969ca87df17e363baf89ceea5e027d/docs/architecture/task-session-delivery/development-plan.md)（[PR #13](https://github.com/dolibali/zhuma/pull/13) 待审快照）。保留六工具逐一验证、本地专家及项目四入口的范围，按原批次接入，先完成首个正式身份／人工交付／评审切片，再接原生会话和一个外部工具；不等待六工具全部完成才联调。
+任务 → 同一 workspace 持续会话 → 固定产物 → 多人评审的补充范围与分期见[联动方案](architecture/task-session-delivery/development-plan.md)（[PR #13](https://github.com/dolibali/zhuma/pull/13) 已合入 `b8c5d18`）。保留六工具逐一验证、本地专家及项目四入口的范围，按原批次接入，先完成首个正式身份／人工交付／评审切片，再接原生会话和一个外部工具；不等待六工具全部完成才联调。
 
 ## 已有基础与边界
 
