@@ -4,6 +4,10 @@
 
 GitHub Actions 的 `scaffold` 在所有 PR、`main` / `develop` push 执行源码与契约检查、工作台 Host/Client bundle 构建、浏览器契约冒烟和上游检查。保留这个 job 名，主分支 required check 依赖它；失败不会被忽略。这里仍预留真实集成与目标工程验证，没有接入的测试不计为通过。
 
+## 组合 Host 发行文件
+
+`pnpm test:host` 先构建再用真实已发布 DSH 服务运行六组隔离进程测试；已构建时可用 `pnpm test:host:run`，CI 在同一 bundle 构建步骤后执行该命令。测试从 `.build/workbench` 复制四个原始发行文件到临时 SDK 包作用域，不重新打包源码，使用合成凭据和私有文件目录，模型调用明确禁用。可选 `S1A_PROOF_FILE` 只在成功后输出来源提交、源码洁净标记及四文件摘要；[S1a 详细结果与边界](../docs/review/s1a-host/README.md)。这与内存契约、浏览器重放和原生桌面是不同证据层次。
+
 ## 浏览器契约冒烟
 
 在仓库根目录执行（不需要现有 Host、登录、密钥或模型）：
@@ -14,7 +18,9 @@ pnpm exec playwright install --with-deps chromium
 pnpm test:ui
 ```
 
-`test:ui` 先构建工作台，再运行 Chromium 浅色和深色场景（16 个场景 × 2 个主题）。统一使用 Playwright 的 `chromium` channel，即完整 Chromium 的新 headless 模式；本地与 CI 使用相同配置，不依赖已安装的 Chrome。已完成构建时可用 `pnpm test:ui:run`；只跑一组用 `pnpm test:ui:run --project=chromium-light`。测试文件在 `packages/client/tests/browser/`，不属于 `pnpm test` 的 Node 用例发现范围。
+`test:ui` 先构建工作台，再运行 Chromium 浅色和深色场景。统一使用 Playwright 的 `chromium` channel，即完整 Chromium 的新 headless 模式；本地与 CI 使用相同配置，不依赖已安装的 Chrome。已完成构建时可用 `pnpm test:ui:run`；只跑一组用 `pnpm test:ui:run --project=chromium-light`。UI 测试文件在 `packages/client/tests/browser/`，不属于 `pnpm test` 的 Node 用例发现范围。
+
+身份浏览器项目另外运行 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，使用真实 Connection 与内存依赖，验证两个浏览器上下文和退出登录，不属于下述工作台 RPC 重放，也不能认证真实凭据文件或完整多人交付。
 
 临时静态服务由 Playwright 启停，只监听 `127.0.0.1:8796`；端口占用直接失败，不复用未知进程。需要换端口时设置 `ZHUMA_UI_TEST_PORT`。它只提供测试页面和打包脚本，未配置的 API 返回 404。所有 RPC 在每个用例内拦截；非本地网络请求、意外 API 或页面异常都会使测试失败。
 

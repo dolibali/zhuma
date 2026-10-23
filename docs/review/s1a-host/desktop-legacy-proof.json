@@ -1,0 +1,41 @@
+{
+  "surface": "isolated official DSH Desktop / explicit legacy-single-user / no planner action",
+  "sourceHead": "6a0fd6f428f01388ba3af37cf5ec4f5c6ce331a7",
+  "upstream": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "checks": {
+    "explicitModeInOwnedComposition": true,
+    "normalSidebarSnapshotAndSave": true,
+    "receiptCount": 1,
+    "tasksUnchanged": true,
+    "planningAuditRecords": 0,
+    "coldReopenPreservedProject": true,
+    "clientByteIdenticalToReviewedProjectBuild": true,
+    "identityStorageFileCreated": false
+  },
+  "limitations": [
+    "No multi-member desktop UI or S1b task-space binding proof",
+    "No model quality, installed package, OS theme switch, native drag or cross-platform proof"
+  ],
+  "desktop": {
+    "clientSha256": "ee6b4f3f5a4299c531536741cb45b7aed87ad2083c1bbef27176b31d637057f0",
+    "hostSha256": "0e082ae0f6faaa44375aebe0b14f3d2e6180cd1b2f2491f9640634d4d5623d37",
+    "exactLoadedClientMatch": true
+  },
+  "reopened": {
+    "clientSha256": "ee6b4f3f5a4299c531536741cb45b7aed87ad2083c1bbef27176b31d637057f0",
+    "hostSha256": "0e082ae0f6faaa44375aebe0b14f3d2e6180cd1b2f2491f9640634d4d5623d37",
+    "exactLoadedClientMatch": true
+  },
+  "distributionOverlaySha256": "5c50e0f7a4e149e45185ff0e2d07c850d6e5e3c33994fbb9640b716ca8ec3e8f",
+  "activeEntry": {
+    "id": "zhuma-review-source",
+    "module": "owned copy of .build/workbench/index.js",
+    "deploymentMode": "legacy-single-user"
+  },
+  "layout": {
+    "width": 1280,
+    "height": 800,
+    "titleFont": "22px",
+    "hasHorizontalOverflow": false
+  }
+}
