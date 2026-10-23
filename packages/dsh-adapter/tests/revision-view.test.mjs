@@ -91,7 +91,7 @@ function record() {
 }
 
 test('readRevisionView shows the reviewed version, return notes, and the previous version to the assignee', () => {
-  const view = readRevisionView(record(), 'chen');
+  const view = readRevisionView(record(), 'chen', { lin: '林夏' });
   assert.equal(view.ok, true);
   assert.equal(view.view.reviewed.text, '错误码还没写');
   assert.equal(view.view.reviewed.version, 2);
@@ -101,12 +101,69 @@ test('readRevisionView shows the reviewed version, return notes, and the previou
   assert.equal(view.view.reviewed.links[0], 'https://example.test/spec');
   assert.equal(view.view.previous.text, '第一版说明');
   assert.equal(view.view.notes.length, 1);
-  assert.equal(view.view.notes[0].id, 'return-round-1-lin');
+  assert.equal(view.view.notes[0].id, 'return-round-1-0');
+  assert.equal(view.view.notes[0].reviewerName, '林夏');
   assert.equal(view.view.notes[0].body, '请补充错误码');
   assert.deepEqual(view.view.notes[0].citedCommentIds, ['c-1']);
   assert.equal(view.view.notes[0].artifactVersionId, 'artifact-2');
   assert.equal(JSON.stringify(view.view).includes('checksum-do-not-leak'), false);
   assert.equal(JSON.stringify(view.view.notes).includes('approve-note-4e1'), false);
+  assert.equal(JSON.stringify(view.view.notes).includes('lin'), false);
+});
+
+test('a second return keeps the first round notes under reviewer names', () => {
+  const node = record();
+  node.currentRoundId = 'round-2';
+  node.handoff.reviewerIds = ['lin'];
+  node.rounds = [
+    {
+      id: 'round-1',
+      status: 'changes-requested',
+      artifactVersionId: 'artifact-1',
+      reviewerIds: ['qiu'],
+      ballots: [
+        {
+          reviewerId: 'qiu',
+          roundId: 'round-1',
+          artifactVersionId: 'artifact-1',
+          action: 'request-changes',
+          comment: '第一轮意见-4e1',
+        },
+      ],
+    },
+    {
+      id: 'round-2',
+      status: 'changes-requested',
+      artifactVersionId: 'artifact-2',
+      reviewerIds: ['lin'],
+      ballots: [
+        {
+          reviewerId: 'lin',
+          roundId: 'round-2',
+          artifactVersionId: 'artifact-2',
+          action: 'request-changes',
+          comment: '第二轮意见-4e1',
+        },
+      ],
+    },
+  ];
+  const names = { lin: '林夏', qiu: '邱明' };
+  const view = readRevisionView(node, 'chen', names);
+  assert.equal(view.ok, true);
+  assert.deepEqual(
+    view.view.notes.map((note) => note.body),
+    ['第一轮意见-4e1', '第二轮意见-4e1'],
+  );
+  assert.deepEqual(
+    view.view.notes.map((note) => note.reviewerName),
+    ['邱明', '林夏'],
+  );
+  assert.equal(view.view.reviewed.text, '错误码还没写');
+  assert.equal(JSON.stringify(view.view.notes).includes('qiu'), false);
+  assert.equal(JSON.stringify(view.view.notes).includes('lin'), false);
+  node.handoff.reviewerIds = ['lin', 'qiu'];
+  assert.equal(readRevisionView(node, 'qiu', names).code, 'not-revision-reader');
+  assert.equal(readRevisionView(node, 'lin', names).view.notes[0].body, '第一轮意见-4e1');
 });
 
 test('readRevisionView allows a current reviewer and refuses a removed reviewer', () => {
@@ -235,7 +292,8 @@ test('revision refuses people outside the space and removed participants', async
   assert.equal(JSON.stringify(assignee.value).includes('receipts'), false);
   const reviewer = await service.revision(session('lin'), query);
   assert.equal(reviewer.ok, true);
-  assert.equal(reviewer.value.view.notes[0].reviewerId, 'lin');
+  assert.equal(reviewer.value.view.notes[0].reviewerName, '林夏');
+  assert.equal(JSON.stringify(reviewer.value.view.notes).includes('lin'), false);
 
   assert.equal(
     (await service.revision(session('chen', ['elsewhere']), query)).error.code,

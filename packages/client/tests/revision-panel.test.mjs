@@ -24,8 +24,8 @@ const view = {
   },
   notes: [
     {
-      id: 'return-round-1-lin',
-      reviewerId: 'lin',
+      id: 'return-round-1-0',
+      reviewerName: '林夏',
       body: '请补充错误码',
       artifactVersionId: 'artifact-2',
       citedCommentIds: ['c-1'],
@@ -116,6 +116,8 @@ test('the revision panel lists each return note and the previous version', () =>
   assert.match(html, /https:\/\/example\.test\/spec/);
   assert.match(html, /第一版说明/);
   assert.match(html, /查看上一版/);
+  assert.match(html, /<h3>林夏<\/h3>/);
+  assert.equal(html.includes('>lin<'), false);
   assert.match(html, /总体意见/);
   assert.match(html, /请补充错误码/);
   assert.match(html, /定位评论 c-1/);

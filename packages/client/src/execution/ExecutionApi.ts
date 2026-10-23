@@ -160,7 +160,7 @@ export interface RevisionViewWire {
   readonly previous?: RevisionContentWire;
   readonly notes: readonly {
     readonly id: string;
-    readonly reviewerId: string;
+    readonly reviewerName: string;
     readonly body: string;
     readonly artifactVersionId: string;
     readonly citedCommentIds: readonly string[];
@@ -394,7 +394,7 @@ function readRevisionNote(value: unknown): RevisionNoteWire {
   }
   return {
     id: text(record.id, '退回意见'),
-    reviewerId: text(record.reviewerId, '评审人'),
+    reviewerName: text(record.reviewerName, '评审人'),
     body: record.body,
     artifactVersionId: text(record.artifactVersionId, '产物版本'),
     citedCommentIds: record.citedCommentIds.map((item) => text(item, '评论')),

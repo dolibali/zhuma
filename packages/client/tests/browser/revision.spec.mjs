@@ -51,7 +51,7 @@ test.beforeEach(async ({ page, replay }) => {
         notes: [
           {
             id: 'return-1',
-            reviewerId: 'lin',
+            reviewerName: '林夏',
             body: '请补充错误码',
             artifactVersionId: 'artifact-2',
             citedCommentIds: [],
@@ -75,6 +75,8 @@ test('待办多项时提交新版本会滚到被评审版本并聚焦', async ({
 
 test('执行区挂着退回面板', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '对照意见修改' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '林夏', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'lin', exact: true })).toHaveCount(0);
   await expect(page.getByText(reviewedText)).toBeVisible();
 });
 
