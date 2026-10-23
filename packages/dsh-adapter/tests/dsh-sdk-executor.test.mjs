@@ -1151,7 +1151,8 @@ test('契约：同一会话撤掉的技能不会在下一轮被扫描', async ()
   } finally {
     let cleanupError;
     try {
-      rmSync(home, { recursive: true, force: true });
+      rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+      if (existsSync(env.ZHUMA_DATA_DIR)) throw new Error('会话目录还在');
     } catch (error) {
       cleanupError = error;
     }
