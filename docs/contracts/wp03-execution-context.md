@@ -51,7 +51,7 @@ sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时�
 
 `UnimplementedNativeExecutor` 仍覆盖 `codearts-cli`。`run()` 抛出未实现错误，`cancel()` 返回 `unsupported`。未验证或未配置的原生执行器在创建运行前被拒绝，不写入运行记录。
 
-真实 DSH 和模拟执行器使用同一个 `AgentRunRequest`：任务、节点、计划版本、上下文引用、专家版本、资源授权、取消信号。结果包含运行身份、产物草稿、来源引用和验证说明。每次运行只加载交接引用与当前选择的交集；版本用交接引用上的版本。上下文包按 `ContextInputRef` 已填写的来源和版本取，空引用不放入提示。交接的 `inputNote` 和 `expectedOutput` 非空时写进提示，分别标成输入说明和交付说明。`session/prompt` 返回 `messageId` 之后才发出 `accepted`。在此之前崩溃、握手失败、超时或停止，都不会把节点标成执行中，队列记为未应用。
+真实 DSH 和模拟执行器使用同一个 `AgentRunRequest`：任务、节点、计划版本、上下文引用、专家版本、资源授权、取消信号。结果包含运行身份、产物草稿、来源引用和验证说明。每次运行只加载交接引用与当前选择的交集；版本用交接引用上的版本。上下文包按 `ContextInputRef` 已填写的来源和版本取，空引用不放入提示。每条 `inputRefs` 都必须带非空白的 `sourceNodeId` 和 `artifactVersionId`。`contextPackId` 可以省略；出现时必须是非空白字符串。新建时缺任一项直接拒绝，不补写。交接的 `inputNote` 和 `expectedOutput` 非空时写进提示，分别标成输入说明和交付说明。`session/prompt` 返回 `messageId` 之后才发出 `accepted`。在此之前崩溃、握手失败、超时或停止，都不会把节点标成执行中，队列记为未应用。
 
 ## 3. 运行生命周期
 
@@ -78,9 +78,9 @@ sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时�
 
 上游协议没有取消一轮的请求，通知里也没有。`upstream/deepseek-harness/packages/sdk/protocol/README.md` 写明客户端放弃一轮只能关掉运行时进程。`upstream/deepseek-harness/packages/sdk/server/README.md` 写明协议 `shutdown` 会结束整个进程，不是取消一轮。`session/resume` 从持久化会话恢复，历史留在日志里，不会作为新通知重放。因此 DSH 的停止是结束子进程。回执只认进程退出，或 `turn/end` 且 `data.reason.kind` 为 `aborted`。停止后保留这次 `DSH_HOME`，下一轮用 `session/resume` 接回。接收回执之前失败会删掉这次新建的目录，并把脱敏后的 stderr 留在失败原因里。页面在 `requested` 时显示「启动中」，`accepted` 之后才显示「执行中」。初始化超时走未应用。启动期间入口丢失、`execution-acknowledged` 被拒绝时，停掉执行器，这次运行失败，界面显示节点记录异常。
 
-失败后的恢复命令是 `retry`，取消后是 `restart`。二者的 `returnTo` 必填，并且必须等于 `NodeCommandState.entryStatus`。记录是 `needs-revision` 时，`returnTo: 'ready'` 会被拒绝。新建时，`ready` 或 `needs-revision` 的节点命令带上同名的 `entryStatus`。读回或恢复时，入口必须和节点状态一致：`needs-revision` 不能配 `ready`，进行中、失败和已取消必须有入口，已完成、草稿和阻塞不能留下入口。`ready` 可以保留 `needs-revision`。对不上时记 `entry-inconsistent`，不改写记录，也不拿它重试或结束运行。正常结束的 `execution-finished.returnTo` 也等于这份入口，不用运行上抄下的 `entryNodeStatus`。然后由调用方显式再发送，才会有新的运行标识。需修改义务一直留到 `applyReviewSettlementCommand` 通过；子流程返回、失败重试和取消后重新开始都不能靠 `reviewRequired: false` 完成。改派和人工接回只记录 `RecoveryRequest`：`changesAssignee` 和 `forgesRun` 都是 false。谁真正改派由成员 A 决定。演示交接的责任人种类是 `human`，可以不带 `expertRef`。内部 agent 运行由 `toHandoffActor` 映射成 `human` 或 `expert`。
+失败后的恢复命令是 `retry`，取消后是 `restart`。二者的 `returnTo` 必填，并且必须等于 `NodeCommandState.entryStatus`。记录是 `needs-revision` 时，`returnTo: 'ready'` 会被拒绝。新建时，`ready` 或 `needs-revision` 的节点命令带上同名的 `entryStatus`。读回或恢复时，入口必须和节点状态一致：`needs-revision` 不能配 `ready`，进行中、失败和已取消必须有入口，已完成、草稿和阻塞不能留下入口。`ready` 可以保留 `needs-revision`。对不上时记 `entry-inconsistent`，不改写记录。没有可验证入口时，`execution-failed` 仍进入 `failed`，已确认的 `cancel-confirmed` 仍进入 `cancelled`，并且不补写 `entryStatus`，也不把入口写成 `ready`。运行可以是失败或已取消，界面和下一次恢复都显示「节点记录异常」。下一步是核对 `entryStatus`，不是重试或重新开始。`retry` 和 `restart` 保持关闭。这种节点不能免评审完成，也不会 `accept-handoff` 推进下游。停止、执行失败和核实断开都走这条规则。正常结束的 `execution-finished.returnTo` 也等于这份入口，不用运行上抄下的 `entryNodeStatus`。然后由调用方显式再发送，才会有新的运行标识。需修改义务一直留到 `applyReviewSettlementCommand` 通过；子流程返回、失败重试和取消后重新开始都不能靠 `reviewRequired: false` 完成。改派和人工接回只记录 `RecoveryRequest`：`changesAssignee` 和 `forgesRun` 都是 false。谁真正改派由成员 A 决定。演示交接的责任人种类是 `human`，可以不带 `expertRef`。内部 agent 运行由 `toHandoffActor` 映射成 `human` 或 `expert`。
 
-服务重启时 `ExecutionDesk.restore` 先装回事实，`interactionReady` 为 false，并留下 `resumeGap`。DSH 虽然实现了 `session/resume`，重启后子进程已经不在，所以这次中断仍然要核实为断开，不会自动续跑。继续交互之后，这条中断运行不再当作当前可补充的运行：发送和停止都要求先核实为执行器已断开，并且不会把 `stopPhase` 写成 `requested`。核实结果是失败，不是完成。恢复时读到非法交接不会让服务起不来：该节点标成记录异常，其他节点照常装入。新建时畸形交接仍然拒绝。快照里的交接引用是副本。
+服务重启时 `ExecutionDesk.restore` 先装回事实，`interactionReady` 为 false，并留下 `resumeGap`。DSH 虽然实现了 `session/resume`，重启后子进程已经不在，所以这次中断仍然要核实为断开，不会自动续跑。继续交互之后，这条中断运行不再当作当前可补充的运行：发送和停止都要求先核实为执行器已断开，并且不会把 `stopPhase` 写成 `requested`。核实结果是失败，不是完成。入口已经丢失时，节点可以随之进入 `failed`，记录异常标记仍在，不补写 `ready`。恢复时读到非法交接不会让服务起不来：该节点标成记录异常，其他节点照常装入。新建时畸形交接仍然拒绝。缺少 `sourceNodeId` 或 `artifactVersionId`、字段为空白，或只带 `contextPackId` 的 `inputRefs`，新建时返回 `invalid-handoff`。从日志恢复时不抛错，标 `handoffInvalid`，下一步写明请重新建立交接，不要补写来源节点或产物版本。目前没有生产数据，所以不做迁移，也不在恢复时填上缺失字段。快照里的交接引用是副本。
 
 模型错误、工具失败、网络中断、执行器断开和专家停用分开呈现。故障 `forgesRun` 为 false，并带对象、原因和下一步。
 
@@ -136,7 +136,7 @@ sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时�
 | 待处理     | `edit-or-send`          |
 | 已完成     | `none`                  |
 
-`in-review` 的评审待办要求节点带有非空 `currentRoundId`。轮次上的 `current` 不能代替它。
+`in-review` 的评审待办要求节点带有非空 `currentRoundId`。轮次上的 `current` 不能代替它。记录异常时（`entry-inconsistent` 或 `invalid-handoff`，且没有进行中的运行）界面下一步改成核对记录或重新建立交接，不用上表的 `retry` / `restart`。重试和重新开始保持不可用。
 
 ## 10. 待 A 对齐
 
