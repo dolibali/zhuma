@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createAgentWorkspaceView, phaseReached } from '@zhuma/client';
 
 test('契约：下一轮待生效还没到已应用，补充路径不把待生效算进去', () => {
@@ -340,7 +342,7 @@ test('契约：持久化故障出现在投影里', () => {
   snapshot.persistenceFault = {
     code: 'persist-failed',
     objectLabel: '日志',
-    reason: '日志没有写进去（EACCES）。EACCES: permission denied /tmp/zhuma-secret/session.json',
+    reason: `日志没有写进去（EACCES）。EACCES: permission denied ${path.join(tmpdir(), 'zhuma-secret', 'session.json')}`,
     nextStep: '存储恢复后重写这份日志。重写成功前，不要把界面上的运行当成已经受理或已经落盘。',
   };
   snapshot.lastError = {
@@ -353,7 +355,11 @@ test('契约：持久化故障出现在投影里', () => {
   assert.equal(view.error, null);
   assert.equal(view.persistenceFault.objectLabel, '日志');
   assert.equal(view.persistenceFault.reason, '日志没有写进去（EACCES）。EACCES: permission denied');
-  assert.equal(view.persistenceFault.reason.includes('/tmp/'), false);
+  assert.equal(view.persistenceFault.reason.includes(tmpdir()), false);
+  assert.equal(
+    view.persistenceFault.reason.includes(path.join(tmpdir(), 'zhuma-secret', 'session.json')),
+    false,
+  );
   assert.match(view.persistenceFault.nextStep, /重写/);
   snapshot.lastError = {
     code: 'entry-inconsistent',

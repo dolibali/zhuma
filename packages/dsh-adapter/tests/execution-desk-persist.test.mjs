@@ -1,13 +1,33 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync as makeScratch,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ExecutionDesk, SimulatedAgentExecutor, createFileJournal } from '@zhuma/dsh-adapter';
 import { createAgentWorkspaceView } from '../../client/dist/index.js';
+
+const scratchDirs = [];
+function mkdtempSync(prefix) {
+  const dir = makeScratch(prefix);
+  scratchDirs.push(dir);
+  return dir;
+}
+function discardScratch(dir) {
+  spawnSync('chmod', ['-R', 'u+rwx', dir], { stdio: 'ignore' });
+  rmSync(dir, { recursive: true, force: true });
+}
+test.after(() => {
+  for (const dir of scratchDirs) discardScratch(dir);
+});
 
 function ids() {
   let n = 0;
@@ -191,7 +211,8 @@ test('契约：执行事件保存失败不产生未处理拒绝，恢复后可�
       save: (value) => {
         state.n += 1;
         if (state.n >= state.failFrom) {
-          const error = new Error('EACCES: permission denied, open /tmp/zhuma-secret/session.json');
+          const leaked = path.join(tmpdir(), 'zhuma-secret', 'session.json');
+          const error = new Error(`EACCES: permission denied, open ${leaked}`);
           error.code = 'EACCES';
           throw error;
         }
@@ -212,7 +233,11 @@ test('契约：执行事件保存失败不产生未处理拒绝，恢复后可�
     const memory = session.snapshot();
     assert.equal(memory.persistenceFault?.code, 'persist-failed');
     assert.equal(memory.persistenceFault.reason, '日志没有写进去（EACCES）。');
-    assert.equal(memory.persistenceFault.reason.includes('/tmp/'), false);
+    assert.equal(memory.persistenceFault.reason.includes(tmpdir()), false);
+    assert.equal(
+      memory.persistenceFault.reason.includes(path.join(tmpdir(), 'zhuma-secret', 'session.json')),
+      false,
+    );
     assert.equal(memory.persistenceFault.reason.includes('permission denied'), false);
     assert.notEqual(memory.runs.at(-1).status, state.value.runs.at(-1).status);
     const view = createAgentWorkspaceView(memory);
