@@ -440,3 +440,72 @@ test('revision returns the same not-found bytes when the task is missing or in a
   assert.equal(JSON.stringify(hidden).includes('错误码还没写'), false);
   assert.equal(JSON.stringify(hidden).includes('absent-task'), false);
 });
+
+test('submit asks the directory before reading the node, for every illegal answer', async () => {
+  const { state, applied } = confirm();
+  const store = memory();
+  const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+  const opened = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
+  const started = await opened.startPlan(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-1',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const intact = store.node('design');
+  const key = nodeRecordKey(intact);
+  const shapes = [
+    { throw: true },
+    { ok: false, reason: 'unavailable' },
+    null,
+    'nope',
+    { ok: false, reason: 'later' },
+    { ok: true, spaceId: '' },
+    { ok: true },
+    { ok: 'yes', spaceId: 5 },
+  ];
+  const body = (nodeId) => ({
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId,
+    expectedVersion: 1,
+    idempotencyKey: 'submit-down',
+    text: '写不了-4e1',
+  });
+  for (const shape of shapes) {
+    const directory = {
+      async spaceForProject() {
+        if (shape.throw) throw new Error('space-down-4e1');
+        return shape;
+      },
+    };
+    const service = new ExecutionService(store.storage, { readWorkbench: () => state }, directory);
+    const before = JSON.stringify(store.storage.listNodes());
+    const present = await service.submit(session('chen'), body('design'));
+    assert.equal(JSON.stringify(store.storage.listNodes()), before);
+    const absent = await service.submit(session('chen'), body('absent-node'));
+    assert.equal(JSON.stringify(store.storage.listNodes()), before);
+    const broken = structuredClone(intact);
+    delete broken.handoff.reviewerIds;
+    await store.storage.writeNode(key, broken);
+    const damagedBefore = JSON.stringify(store.storage.listNodes());
+    const damaged = await service.submit(session('chen'), body('design'));
+    assert.equal(JSON.stringify(store.storage.listNodes()), damagedBefore);
+    await store.storage.writeNode(key, intact);
+    assert.equal(Buffer.compare(responseBytes(present), responseBytes(absent)), 0);
+    assert.equal(Buffer.compare(responseBytes(present), responseBytes(damaged)), 0);
+    assert.deepEqual(present, {
+      ok: false,
+      error: {
+        code: 'unavailable',
+        message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+        details: {},
+      },
+    });
+    assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);
+    assert.equal(JSON.stringify(present).includes('写不了-4e1'), false);
+    assert.equal(JSON.stringify(present).includes('absent-node'), false);
+  }
+});

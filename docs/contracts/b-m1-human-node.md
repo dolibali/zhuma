@@ -44,7 +44,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。项目属于哪个空间，只问调用方注入的 `ProjectSpaceDirectory`。执行服务把 `spaceForProject(projectId)` 返回的空间 id 和这次成员的 `spaceIds` 做精确比较。没有注入这份目录时，不把 `projectId` 当作空间 id，启动、提交、投票、结算、报告和待办全部拒绝，也不写入。
 3. `legacy-single-user` 并且导入恰好一个账户、`ownerAccountId` 写明是这个账户时，owner cookie 才解析成那个账户。`multi-member` 即使导入是这个形状，也不把 DSH owner cookie 当成成员。
-4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。目录没有这个项目或空间对不上时，前五个命令返回 `not-found`，待办不列出这些任务。目录抛错、返回 `unavailable`，或给出不合法的结果时，这些命令和待办都返回 `unavailable`，任务在不在字节相同，也不写入。空间通过之后才检查任务成员，然后才检查节点角色。
+4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。目录没有这个项目或空间对不上时，前五个命令返回 `not-found`，待办不列出这些任务。目录抛错、返回 `unavailable`，或给出不合法的结果时，这些命令和待办都返回 `unavailable`，任务在不在字节相同，也不写入。提交、投票和结算先查目录，再读节点；节点不存在或记录损坏时也是同一份 `unavailable`。空间通过之后才检查任务成员，然后才检查节点角色。
 
 官方 `rpc.handle` 的 Peer 没有请求头，所以执行通道不用它。`connection.fetch.register` 的 Fetch `Request` 保留 `cookie` 和 `host`。Connection 的精确路由仍然只把 owner Peer 送进处理函数；成员身份只从 `resolveMember` 来。
 
@@ -123,6 +123,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `ExecutionService` 串行写。一次用户命令写一条节点；`start-plan` 再另写计划回执。每条写入先核对空间和任务成员，再核对节点角色。从参与者里移除的评审人再投票得到 `not-participant`
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
 - `revision` 读取退回时的被评审版本、上一版和每一次退回的意见。意见显示评审人姓名，不显示标识。第二次退回保留第一次的意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。目录不可用或结果不合法时先查目录，不论任务或节点是否存在都返回同一份 `unavailable`：「执行记录暂时不可用，请稍后用同一个请求再试一次。」拒绝前不写。目录正常时，任务不存在、节点不存在和在别的空间返回同一份 `not-found`
+- 提交、投票和结算共用的命令也先查目录，再读节点。八种目录故障下，节点在不在、记录损坏与否，都是同一份 `unavailable`，拒绝前不写
 
 未实现（后续切片）：
 
