@@ -2,6 +2,12 @@
 
 状态：开发中，功能测试与视觉/业务验收分开。A 维护本文件、公共主题和交互组件；B 的待办、产物与评审页面复用同一套组件，不并行改写公共 CSS。
 
+## 持续会话与项目入口的补充范围
+
+[联动方案](https://github.com/dolibali/zhuma/blob/834340a46d969ca87df17e363baf89ceea5e027d/docs/architecture/task-session-delivery/design.md)与[LC-T09 验收](https://github.com/dolibali/zhuma/blob/834340a46d969ca87df17e363baf89ceea5e027d/docs/architecture/task-session-delivery/test-plan.md)为 PR #13 待审快照。任务和 workspace 两处使用相同会话、命令与状态；B 交付执行／产物／评审业务页，A 维护注册、导航和公共控件。A 的项目四入口与本地专家入口归入原项目／资产批次，不能以新导航占位替代真实操作。
+
+已阅读用户指定的 [diagram-design README](https://github.com/cathrynlavery/diagram-design/blob/7a12007b/README.md)与 [SKILL.md](https://github.com/cathrynlavery/diagram-design/blob/7a12007b/skills/diagram-design/SKILL.md) 的固定快照。结合 frontend-design 采用清楚的信息层级、删除冗余、克制焦点和可读连线；保持现有中性浅深 token。工作图保留真实依赖和节点，不照搬展示图的品牌色、字体、节点数量或其他视觉限制。此阅读与原则登记不认证尚未改动的页面已完成视觉验收。
+
 ## 使用目标与结构
 
 面向需要把团队目标落实为人与专家分工的负责人、执行者和评审人。任务详情只回答三件事：正在处理哪项工作、它位于哪里、下一步能做什么。识别点是“目标路径 + 当前工作节点”，不是装饰性指标卡。
