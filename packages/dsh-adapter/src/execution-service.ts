@@ -75,6 +75,14 @@ const reportSchema = z.strictObject({
   planId: id,
   revision: z.number().int(),
 });
+const inboxSchema = z.strictObject({});
+
+export type StartPlanRequest = z.infer<typeof startSchema>;
+export type InboxRequest = z.infer<typeof inboxSchema>;
+export type SubmitRequest = z.infer<typeof submitSchema>;
+export type BallotRequest = z.infer<typeof ballotSchema>;
+export type SettleRequest = z.infer<typeof settleSchema>;
+export type ReportRequest = z.infer<typeof reportSchema>;
 
 export interface PlanReceipt {
   readonly idempotencyKey: string;
@@ -124,7 +132,7 @@ export interface ExecutionNodeView {
   readonly blockReason?: string;
 }
 
-const MESSAGES: Record<string, string> = {
+const MESSAGES = {
   'actor-from-body': '不能在请求里指定操作者。',
   unauthenticated: '请先登录。',
   'untrusted-request': '这次请求不可信。',
@@ -149,15 +157,19 @@ const MESSAGES: Record<string, string> = {
   'unknown-field': '请求里有无法识别的字段。',
   'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
   cancelled: '操作已取消。',
-};
+} as const;
+
+export type ExecutionMessageCode = keyof typeof MESSAGES;
 
 function fail(
   code: string,
   details: Record<string, unknown> = {},
 ): { ok: false; error: ExecutionFailure } {
+  const message =
+    code in MESSAGES ? MESSAGES[code as ExecutionMessageCode] : '执行请求没有被接受。';
   return {
     ok: false,
-    error: { code, message: MESSAGES[code] ?? '执行请求没有被接受。', details },
+    error: { code, message, details },
   };
 }
 
@@ -309,7 +321,7 @@ export class ExecutionService {
     return this.enqueue(async () => {
       const actor = this.actor(caller, body);
       if (!actor.ok) return actor;
-      const parsed = parseBody(z.strictObject({}).optional(), body ?? {});
+      const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       const records = this.storage.listNodes().filter((record) => {
         if (!intactNode(record) || !recordedPlan(this.storage, record)) return false;

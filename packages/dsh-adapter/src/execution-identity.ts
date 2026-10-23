@@ -1,32 +1,15 @@
-import type { IncomingHttpHeaders } from 'node:http';
+import type { MemberResolution } from './member-session.js';
 
 /** Fields that would let a request choose its actor. `directoryMemberId` is not one of them. */
 const ACTOR_FIELDS = new Set(['actorId', 'memberId', 'reviewerId']);
 
-/**
- * Same shape as B-ID0a's `MemberRequest`. This branch does not import that
- * module. A passes the headers from the call that hit `/zhuma-exec`.
- */
-export interface MemberRequest {
-  readonly headers: IncomingHttpHeaders;
-}
-
-/**
- * Same shape as B-ID0a's `MemberResolution`. Success is only `ok: true`.
- * `untrusted-request` is a 403 with no member.
- */
-export type MemberResolution =
-  | { readonly ok: true; readonly memberId: string; readonly spaceIds: readonly string[] }
-  | { readonly ok: false; readonly status: 401; readonly code: 'unauthenticated' }
-  | { readonly ok: false; readonly status: 403; readonly code: 'untrusted-request' };
-
-/**
- * Same shape as B-ID0a's `MemberResolver`. A wires `memberResolver(ctx)`
- * into the execution plugin. `resolveMember` stays on that branch.
- */
-export interface MemberResolver {
-  resolve(request: MemberRequest): Promise<MemberResolution>;
-}
+export type {
+  MemberRejection,
+  MemberRequest,
+  MemberResolution,
+  MemberResolver,
+  ResolvedMember,
+} from './member-session.js';
 
 export type ActorResolution =
   | { readonly ok: true; readonly actorId: string; readonly spaceIds: readonly string[] }

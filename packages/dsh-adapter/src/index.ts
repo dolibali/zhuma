@@ -69,6 +69,7 @@ export {
   type ExecutionStorage,
   type PlanReceipt,
 } from './execution-service.js';
+export type * from './s1-integration.js';
 export {
   apply as applyExecution,
   executionEndpoints,
