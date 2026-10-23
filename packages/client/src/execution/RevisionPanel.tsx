@@ -93,7 +93,7 @@ export function RevisionPanel({
       {!view.notes.length && <p className="zm-empty">这次退回没有留下意见。</p>}
       {view.notes.map((note) => (
         <article className="zm-review" key={note.id} id={note.id}>
-          <h3>{note.reviewerId}</h3>
+          <h3>{note.reviewerName}</h3>
           <p>
             <span className="zm-kind">总体意见</span>
           </p>

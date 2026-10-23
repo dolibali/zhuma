@@ -23,7 +23,7 @@ export interface RevisionContent {
 /** One request-changes ballot. `body` is that reviewer's overall comment. */
 export interface RevisionNote {
   readonly id: string;
-  readonly reviewerId: string;
+  readonly reviewerName: string;
   readonly body: string;
   readonly artifactVersionId: string;
   readonly citedCommentIds: readonly string[];
@@ -84,11 +84,44 @@ function citedIds(
   return found;
 }
 
+function displayName(reviewerId: string, reviewerNames: Readonly<Record<string, string>>): string {
+  const name = reviewerNames[reviewerId]?.trim() ?? '';
+  return name === '' ? '未留下姓名' : name;
+}
+
+function returnNotes(
+  record: ExecutionNodeRecord,
+  reviewerNames: Readonly<Record<string, string>>,
+): RevisionNote[] {
+  const notes: RevisionNote[] = [];
+  for (const round of record.rounds) {
+    if (round?.status !== 'changes-requested') continue;
+    let index = 0;
+    for (const ballot of round.ballots) {
+      if (ballot.action !== 'request-changes') continue;
+      notes.push({
+        id: `return-${round.id}-${index}`,
+        reviewerName: displayName(ballot.reviewerId, reviewerNames),
+        body: ballot.comment?.trim() ?? '',
+        artifactVersionId: round.artifactVersionId,
+        citedCommentIds: citedIds(ballot, round.artifactVersionId, record),
+      });
+      index += 1;
+    }
+  }
+  return notes;
+}
+
 /**
  * Read the return the assignee is answering.
- * A current reviewer is still on both the returned round and the live roster.
+ * A current reviewer is still on both the latest returned round and the live roster.
+ * Notes include every earlier return, under the reviewer's name.
  */
-export function readRevisionView(record: ExecutionNodeRecord, actorId: string): RevisionRead {
+export function readRevisionView(
+  record: ExecutionNodeRecord,
+  actorId: string,
+  reviewerNames: Readonly<Record<string, string>> = {},
+): RevisionRead {
   if (!Array.isArray(record.rounds) || !Array.isArray(record.artifactVersions)) {
     return { ok: false, code: 'not-returned' };
   }
@@ -111,21 +144,12 @@ export function readRevisionView(record: ExecutionNodeRecord, actorId: string): 
     reviewed === undefined
       ? undefined
       : record.artifactVersions.find((item) => item.version === reviewed.version - 1);
-  const notes = round.ballots
-    .filter((ballot) => ballot.action === 'request-changes')
-    .map((ballot) => ({
-      id: `return-${round.id}-${ballot.reviewerId}`,
-      reviewerId: ballot.reviewerId,
-      body: ballot.comment?.trim() ?? '',
-      artifactVersionId: round.artifactVersionId,
-      citedCommentIds: citedIds(ballot, round.artifactVersionId, record),
-    }));
   return {
     ok: true,
     view: {
       ...(reviewed === undefined ? {} : { reviewed }),
       ...(previousArtifact === undefined ? {} : { previous: content(previousArtifact) }),
-      notes,
+      notes: returnNotes(record, reviewerNames),
     },
   };
 }
