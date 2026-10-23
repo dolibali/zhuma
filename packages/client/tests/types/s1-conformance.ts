@@ -55,6 +55,9 @@ export function mountS1(
   rpc: ClientConnectionRpc,
 ): Promise<ExecutionWorkspaceProps> {
   startup.configureDeploymentMode(ctx, mode);
+  if (startup.deploymentMode(ctx) !== mode) {
+    return Promise.reject(new Error('identity startup refused: deployment mode is not configured'));
+  }
   return startup.applyIdentity(ctx, imported).then(async () => {
     const resolver = startup.memberResolver(ctx);
     await startup.applyWorkbench(ctx);

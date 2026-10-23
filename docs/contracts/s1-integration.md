@@ -1,10 +1,10 @@
 # S1 模块签名
 
-A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本分支上与真实导出双向对齐。身份签名按 `b/id0a-identity`（`f0eac0f`）书写。通道层已经合并这一提交，身份文件属于那条分支。`packages/dsh-adapter/tsconfig.identity.json` 在本分支上就能编译。
+A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本分支上与真实导出双向对齐。身份实现是已合并的 `b/id0a-identity`（`c31f062`）。`packages/dsh-adapter/tsconfig.identity.json` 在本分支上就能编译。
 
 ## 加载顺序
 
-`configureDeploymentMode` 和 `deploymentMode` 的签名按 `b/id0a-identity` 的 `bb3f847` 写在清单里。本文件不导入、不合并那次提交。`applyIdentity` 在打开身份库之前读取这个模式，模式还没选定时会拒绝启动，所以先选定模式。
+`configureDeploymentMode(ctx, mode)` 的 `mode` 只能是 `'legacy-single-user'` 或 `'multi-member'`。`applyIdentity` 在打开身份库之前读取 `deploymentMode(ctx)`。模式还没选定时抛 `identity startup refused: deployment mode is not configured`，不会改去另一种模式，所以先选定模式。
 
 1. `configureDeploymentMode(ctx, mode)`，`mode` 是 `'legacy-single-user' | 'multi-member'`
 2. `await applyIdentity(ctx, imported?)`
@@ -25,7 +25,7 @@ mount({ api: createExecutionApi(rpc) });
 
 `readWorkbench` 的类型是 `() => Workbench`。A 在宿主闭包里保住 `WorkbenchService`，传入 `() => service.snapshot()`。`snapshot()` 返回已存储工作台的结构化克隆。`workbench-plugin.ts` 仍把服务留在自己的 `apply` 里，这份清单只声明这个函数类型。
 
-插件参数 `ExecutionApplyOptions` 是 `readWorkbench`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。单人还是多人在当前合并的 `f0eac0f` 上由 `identityAccessMode` 决定。`'unmounted'` 表示解析器还没装上，这时不调用 `applyExecution`。`bb3f847` 改为先看 `deploymentMode`。
+插件参数 `ExecutionApplyOptions` 是 `readWorkbench`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
 
 执行插件的 `inject` 是 `['connection', 'storageDomain']`。宿主把身份的 `connection`、`storageDomain`、`credentials`、`webServer`、`remoteAccess` 和工作台的 `llm`、`agentDefaultModel` 放在同一个插件上时，执行只用前两项。
 

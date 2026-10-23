@@ -38,11 +38,11 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 
 ## 身份
 
-单人还是多人、当前成员是谁，只来自 `b/id0a-identity`（`f0eac0f`）的 `resolveMember`。执行插件没有 `singleUser`，也没有 `bind-owner`。通道层合并了那条分支，身份文件属于那条分支，不在这里重写。同一来源地址 60 秒内登录满 8 次后返回 429。
+单人还是多人由 `configureDeploymentMode` 选定，当前成员只来自已合并的 `b/id0a-identity`（`c31f062`）的 `resolveMember`。执行插件没有 `singleUser`，也没有 `bind-owner`。同一来源地址 60 秒内登录满 8 次后返回 429。
 
-1. `applyIdentity` 先装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。
+1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。`spaceIds` 用任务的 `projectId` 当作空间 id。
-3. 单人模式只在导入恰好一个账户、并且 `ownerAccountId` 写明是这个账户时成立。这时 owner cookie 解析成那个账户。多人模式不把 DSH owner cookie 当成成员。
+3. `legacy-single-user` 并且导入恰好一个账户、`ownerAccountId` 写明是这个账户时，owner cookie 才解析成那个账户。`multi-member` 即使导入是这个形状，也不把 DSH owner cookie 当成成员。
 4. 空间对不上时，`start-plan`、`report`、`submit`、`ballot`、`settle` 返回 `not-found`。待办不列出这些任务。空间通过之后才检查任务成员，然后才检查节点角色。
 
 官方 `rpc.handle` 的 Peer 没有请求头，所以执行通道不用它。`connection.fetch.register` 的 Fetch `Request` 保留 `cookie` 和 `host`。Connection 的精确路由仍然只把 owner Peer 送进处理函数；成员身份只从 `resolveMember` 来。
@@ -130,15 +130,16 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 
 ## 需要成员 A 接入
 
-B 不改 `workbench-plugin.ts` 的业务，也不把工作台域再 `open` 一次。A 自己保住已打开的工作台，把 `readWorkbench` 传进来。加载顺序是 `applyIdentity`，然后工作台，然后执行：
+B 不改 `workbench-plugin.ts` 的业务，也不把工作台域再 `open` 一次。A 自己保住已打开的工作台，把 `readWorkbench` 传进来。加载顺序是先选定部署模式，再 `applyIdentity`，然后工作台，然后执行：
 
 ```ts
+configureDeploymentMode(ctx, mode);
 await applyIdentity(ctx, imported);
 await applyWorkbench(ctx);
 await applyExecution(ctx, { readWorkbench: () => service.snapshot() });
 ```
 
-`applyExecution` 只接受 `readWorkbench`。不要传 `memberResolver` 或 `singleUser`。单人还是多人由身份模块决定。
+`applyExecution` 只接受 `readWorkbench`。不要传 `memberResolver` 或 `singleUser`。单人还是多人是上一步选定的 `deploymentMode`，不从解析器是否存在来推断。
 
 `inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再调用 `executionInbox`。移出参与者后，待办行和节点视图都不返回。`report` 在返回投影之前做同样的成员核对。
 
