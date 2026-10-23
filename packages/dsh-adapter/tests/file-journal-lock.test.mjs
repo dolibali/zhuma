@@ -45,13 +45,15 @@ function wait(file, label) {
   });
 }
 
-function spawnJournal(source, env) {
+function spawnJournal(source, env, preload) {
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
     if (key.startsWith('ZHUMA_LOCK_')) delete childEnv[key];
   }
   Object.assign(childEnv, env);
-  const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
+  const args = preload === undefined ? [] : ['--import', preload];
+  args.push('--input-type=module', '-e', source);
+  const child = spawn(process.execPath, args, {
     env: childEnv,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -774,6 +776,26 @@ test('契约：回收新锁遇到权限错误时把路径抛出来', async () =>
   const report = path.join(parent, 'report');
   const arrived = path.join(parent, 'relock-arrived');
   const waitFile = path.join(parent, 'relock-wait');
+  const injectFlag = path.join(parent, 'inject-eacces');
+  const preload = path.join(parent, 'preload.mjs');
+  writeFileSync(
+    preload,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      'const original = fs.linkSync;',
+      'fs.linkSync = (existing, target) => {',
+      '  if (process.getuid() === 0 && fs.existsSync(process.env.ZHUMA_INJECT_EACCES)) {',
+      "    const error = new Error(`EACCES: permission denied, link '${existing}' -> '${target}'`);",
+      "    error.code = 'EACCES';",
+      '    throw error;',
+      '  }',
+      '  return original(existing, target);',
+      '};',
+      '',
+    ].join('\n'),
+  );
   staleLock(file, await deadPid(), 'dead-token');
   const source = `
     import { existsSync, writeFileSync } from 'node:fs';
@@ -788,13 +810,19 @@ test('契约：回收新锁遇到权限错误时把路径抛出来', async () =>
     }
     writeFileSync(${JSON.stringify(report)}, text);
   `;
-  const child = spawnJournal(source, {
-    ZHUMA_LOCK_RELOCK_ARRIVED: arrived,
-    ZHUMA_LOCK_RELOCK_WAIT: waitFile,
-  });
+  const child = spawnJournal(
+    source,
+    {
+      ZHUMA_LOCK_RELOCK_ARRIVED: arrived,
+      ZHUMA_LOCK_RELOCK_WAIT: waitFile,
+      ZHUMA_INJECT_EACCES: injectFlag,
+    },
+    preload,
+  );
   try {
     await wait(arrived, '子进程没有停在新锁发布前');
     chmodSync(directory, 0o555);
+    if (process.getuid() === 0) writeFileSync(injectFlag, '1');
     writeFileSync(waitFile, 'go');
     await wait(report, '子进程没有写下新锁错误');
     const text = readFileSync(report, 'utf8');
