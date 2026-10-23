@@ -1092,6 +1092,26 @@ test('missing and forbidden notes return the same not-found response', async () 
   await host.dispose();
 });
 
+test('a member cookie with an extra segment is rejected', async () => {
+  const host = await mount();
+  const chen = await login(host.web, 'chen');
+  const extra = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: `${chen}.extra`,
+  });
+  assert.equal(extra.status, 401);
+  assert.equal(extra.json.error.code, 'unauthenticated');
+  const intact = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+  });
+  assert.equal(intact.status, 200);
+  assert.equal(intact.json.accountId, 'chen');
+  await host.dispose();
+});
+
 test('a member cookie with a replaced signature is rejected', async () => {
   const host = await mount();
   const chen = await login(host.web, 'chen');

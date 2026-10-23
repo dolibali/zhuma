@@ -134,7 +134,9 @@ function readMemberCookie(
   for (const part of cookieHeader.split(';')) {
     const trimmed = part.trim();
     if (!trimmed.startsWith(`${MEMBER_COOKIE_NAME}=`)) continue;
-    const [sessionId, expires, signature] = trimmed.slice(MEMBER_COOKIE_NAME.length + 1).split('.');
+    const pieces = trimmed.slice(MEMBER_COOKIE_NAME.length + 1).split('.');
+    if (pieces.length !== 3) return undefined;
+    const [sessionId, expires, signature] = pieces;
     if (sessionId === undefined || expires === undefined || signature === undefined)
       return undefined;
     if (!/^[0-9a-f-]{36}$/i.test(sessionId)) return undefined;
