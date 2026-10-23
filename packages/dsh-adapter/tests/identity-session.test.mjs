@@ -1263,6 +1263,33 @@ test('a single-user owner mapping exists only when the import names that one acc
   await unnamed.dispose();
 });
 
+test('a pre-seeded domain with several accounts does not map the owner cookie', async () => {
+  const hash = hashPassword(randomBytes(18).toString('base64url'));
+  const accounts = new Map(['lin', 'zhao', 'chen'].map((id) => [id, { id, passwordHash: hash }]));
+  const media = new Map([
+    [
+      'zhuma_identity',
+      {
+        tables: new Map([
+          ['accounts', accounts],
+          ['sessions', new Map()],
+          ['notes', new Map()],
+        ]),
+        global: { ownerAccountId: 'lin' },
+      },
+    ],
+  ]);
+  const host = await mount({ imported: null, media });
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: ownerCookie(host.connection),
+  });
+  assert.equal(session.status, 401);
+  assert.equal(session.json.error.code, 'unauthenticated');
+  await host.dispose();
+});
+
 test('a real http client stays logged out when only the DSH cookie remains', async () => {
   // test:ui serves the workbench fixture and does not mount /zhuma-id, so this
   // uses node:http instead of Playwright.
