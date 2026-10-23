@@ -782,30 +782,170 @@ function runInput(runId) {
   };
 }
 
-function openFdCount() {
-  return readdirSync('/proc/self/fd').length;
+// 回归：封口时不销毁本轮 spawn 的 stdin/stdout/stderr，close 要等孙进程退出。
+// 不读 /proc。子进程里把 /proc 挡成 ENOENT，Linux 和 macOS 走同一条断言。
+async function driveTrackedStdio(pidFile) {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'zhuma-stdio-pipe-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-stdio-drive-'));
+  const script = path.join(dir, 'drive.mjs');
+  writeFileSync(
+    script,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      "const cp = require('node:child_process');",
+      'const denyProc = (target) => {',
+      '  const text = String(target ?? "");',
+      "  if (text === '/proc' || text.startsWith('/proc/')) {",
+      "    const error = new Error(`ENOENT: no such file or directory, open '${text}'`);",
+      "    error.code = 'ENOENT';",
+      '    throw error;',
+      '  }',
+      '};',
+      'for (const name of ["accessSync", "lstatSync", "openSync", "readdirSync", "readFileSync", "statSync"]) {',
+      '  const original = fs[name];',
+      '  fs[name] = (target, ...args) => {',
+      '    denyProc(target);',
+      '    return original.call(fs, target, ...args);',
+      '  };',
+      '}',
+      'let procBlocked = false;',
+      'try {',
+      "  fs.readdirSync('/proc/self/fd');",
+      '} catch (error) {',
+      "  procBlocked = error?.code === 'ENOENT';",
+      '}',
+      'const tracked = [];',
+      'const originalSpawn = cp.spawn;',
+      'cp.spawn = (...args) => {',
+      '  const child = originalSpawn(...args);',
+      '  const pipes = { stdin: false, stdout: false, stderr: false };',
+      "  for (const name of ['stdin', 'stdout', 'stderr']) {",
+      "    child[name]?.on('close', () => {",
+      '      pipes[name] = true;',
+      '    });',
+      '  }',
+      '  tracked.push(pipes);',
+      '  return child;',
+      '};',
+      'const { DshChatExecutor } = await import(process.env.ZHUMA_ADAPTER);',
+      'const started = Date.now();',
+      'const engine = new DshChatExecutor(',
+      '  {',
+      '    ZHUMA_MODEL_BASE_URL: process.env.ZHUMA_MODEL_BASE_URL,',
+      '    ZHUMA_MODEL_API_KEY: process.env.ZHUMA_MODEL_API_KEY,',
+      '    ZHUMA_DATA_DIR: process.env.ZHUMA_DATA_DIR,',
+      '    PATH: process.env.PATH,',
+      '    HOME: process.env.HOME,',
+      '    TMPDIR: process.env.TMPDIR,',
+      '  },',
+      '  {',
+      '    bin: process.env.ZHUMA_STUB,',
+      '    mode: `stdio-gc:${process.env.ZHUMA_PID_FILE}`,',
+      '    initTimeoutMs: 20000,',
+      '  },',
+      ');',
+      'const events = [];',
+      'for await (const event of engine.run({',
+      "  runId: 'stdio-gc',",
+      '  attempt: 1,',
+      '  generation: 1,',
+      "  taskId: 'task',",
+      "  nodeId: 'node',",
+      "  workflowVersionId: 'plan',",
+      '  planRevision: 1,',
+      '  contextReferences: [],',
+      "  expertVersionId: 'expert-v1',",
+      '  resourceGrants: [],',
+      "  instruction: '整理字段',",
+      '  attachmentIds: [],',
+      "  goal: '确认字段',",
+      '  simulatedRequested: false,',
+      '  signal: new AbortController().signal,',
+      '})) {',
+      '  events.push({ type: event.type, message: event.message ?? "" });',
+      '}',
+      'const roundElapsed = Date.now() - started;',
+      'const deadline = started + 2000;',
+      'while (',
+      '  Date.now() < deadline &&',
+      '  tracked.some((item) => !item.stdin || !item.stdout || !item.stderr)',
+      ') {',
+      '  await new Promise((resolve) => setTimeout(resolve, 20));',
+      '}',
+      'const last = events.at(-1) ?? {};',
+      'const pipes = tracked[0] ?? { stdin: false, stdout: false, stderr: false };',
+      'const openLeft = tracked.filter((item) => !item.stdin || !item.stdout || !item.stderr).length;',
+      'const payload = JSON.stringify({',
+      '  type: last.type ?? "",',
+      '  message: last.message ?? "",',
+      '  roundElapsed,',
+      '  spawned: tracked.length,',
+      '  stdinClosed: pipes.stdin,',
+      '  stdoutClosed: pipes.stdout,',
+      '  stderrClosed: pipes.stderr,',
+      '  openLeft,',
+      '  procBlocked,',
+      '});',
+      'await new Promise((resolve) => process.stdout.write(payload, () => resolve()));',
+      'process.exit(0);',
+      '',
+    ].join('\n'),
+  );
+  const env = {
+    ...process.env,
+    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
+    ZHUMA_MODEL_API_KEY: 'zhuma-synthetic-marker',
+    ZHUMA_DATA_DIR: dataDir,
+    ZHUMA_PID_FILE: pidFile,
+    ZHUMA_STUB: stub,
+    ZHUMA_ADAPTER: pathToFileURL(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
+    ).href,
+  };
+  const child = spawn(process.execPath, [script], { env });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  try {
+    const [code] = await once(child, 'exit');
+    if (code !== 0) throw new Error(`管道跟踪进程退出 ${code}\n${stderr}\n${stdout}`);
+    return JSON.parse(stdout);
+  } finally {
+    clearTimeout(timer);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 }
 
-// 回归：封口时不销毁 stdout/stderr，结束后 fd 数大于开始前。
-test('契约：孙进程占着标准输出和标准错误时，一轮结束后文件描述符不增加', async () => {
+test('契约：孙进程占着三条管道时，一轮结束后这三条管道都已关闭', async () => {
   const pidFile = grandchildPidFile();
-  const before = openFdCount();
-  const started = Date.now();
   try {
-    const boot = await collect(`stdio-gc:${pidFile}`, {
-      env: modelEnv('zhuma-synthetic-marker'),
-      initTimeoutMs: 20_000,
-      runId: 'stdio-gc',
-    });
-    const elapsed = Date.now() - started;
-    assert.equal(boot.events.at(-1).type, 'failed');
-    assert.match(boot.events.at(-1).message, /stderr-held/);
+    const reported = await driveTrackedStdio(pidFile);
+    assert.equal(reported.type, 'failed');
+    assert.match(reported.message, /stderr-held/);
     assert.equal(
-      elapsed < stderrSealBoundMs,
+      reported.roundElapsed < stderrSealBoundMs,
       true,
-      `失败事件等了 ${elapsed}ms，孙进程还要活 ${grandchildHoldMs}ms`,
+      `失败事件等了 ${reported.roundElapsed}ms，孙进程还要活 ${grandchildHoldMs}ms`,
     );
-    assert.equal(openFdCount(), before);
+    const grandchild = Number(readFileSync(pidFile, 'utf8'));
+    assert.equal(alive(grandchild), true);
+    assert.equal(reported.spawned, 1);
+    assert.equal(reported.stdoutClosed, true);
+    assert.equal(reported.stderrClosed, true);
+    assert.equal(reported.stdinClosed, true);
+    assert.equal(reported.openLeft, 0);
+    assert.equal(reported.procBlocked, true);
   } finally {
     await reapGrandchild(pidFile);
     rmSync(path.dirname(pidFile), { recursive: true, force: true });
