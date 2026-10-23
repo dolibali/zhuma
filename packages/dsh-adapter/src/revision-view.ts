@@ -93,13 +93,16 @@ export function readRevisionView(record: ExecutionNodeRecord, actorId: string): 
     return { ok: false, code: 'not-returned' };
   }
   if (!Array.isArray(record.comments)) return { ok: false, code: 'not-returned' };
-  const round = returnedRound(record);
-  if (!round) return { ok: false, code: 'not-returned' };
   const assignee = record.handoff.assignee;
   const isAssignee = assignee.kind === 'human' && assignee.id === actorId;
-  const currentReviewer =
-    record.handoff.reviewerIds.includes(actorId) && round.reviewerIds.includes(actorId);
-  if (!isAssignee && !currentReviewer) return { ok: false, code: 'not-revision-reader' };
+  if (!isAssignee && !record.handoff.reviewerIds.includes(actorId)) {
+    return { ok: false, code: 'not-revision-reader' };
+  }
+  const round = returnedRound(record);
+  if (!round) return { ok: false, code: 'not-returned' };
+  if (!isAssignee && !round.reviewerIds.includes(actorId)) {
+    return { ok: false, code: 'not-revision-reader' };
+  }
   const reviewedArtifact = record.artifactVersions.find(
     (item) => item.id === round.artifactVersionId,
   );

@@ -31,6 +31,15 @@ export function RevisionPanel({
   error?: string;
 }) {
   const [previous, setPrevious] = useState(false);
+  function locate(event: { preventDefault(): void }) {
+    event.preventDefault();
+    setPrevious(false);
+    requestAnimationFrame(() => {
+      const target = document.getElementById('revision-reviewed');
+      target?.scrollIntoView({ block: 'start' });
+      target?.focus();
+    });
+  }
   if (error) {
     return (
       <div role="alert" className="zm-error">
@@ -61,7 +70,12 @@ export function RevisionPanel({
           <p className="zm-empty">没有更早的版本。</p>
         )}
       </div>
-      <article className="zm-review" id="revision-reviewed" hidden={showingEarlier || undefined}>
+      <article
+        className="zm-review"
+        id="revision-reviewed"
+        tabIndex={-1}
+        hidden={showingEarlier || undefined}
+      >
         <h3>被评审的版本{reviewed ? ` · 第 ${reviewed.version} 版` : ''}</h3>
         {reviewed ? <Content content={reviewed} /> : <p>找不到被评审的那一版。</p>}
       </article>
@@ -86,11 +100,15 @@ export function RevisionPanel({
           <p>{note.body || '没有填写总体意见。'}</p>
           {note.citedCommentIds.map((id) => (
             <p key={id}>
-              <a href="#revision-reviewed">定位评论 {id}</a>
+              <a href="#revision-reviewed" onClick={locate}>
+                定位评论 {id}
+              </a>
             </p>
           ))}
           <p>
-            <a href="#revision-reviewed">定位到对应内容</a>
+            <a href="#revision-reviewed" onClick={locate}>
+              定位到对应内容
+            </a>
           </p>
         </article>
       ))}

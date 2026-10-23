@@ -122,11 +122,12 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。`untrusted-request` 保持原代码。`containsActorField` 拒绝正文里的 actor 字段
 - `ExecutionService` 串行写。一次用户命令写一条节点；`start-plan` 再另写计划回执。每条写入先核对空间和任务成员，再核对节点角色。从参与者里移除的评审人再投票得到 `not-participant`
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
-- `revision` 读取退回时的被评审版本、上一版和退回意见。不读取文件字节
+- `revision` 读取退回时的被评审版本、上一版和退回意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。目录不可用时先查目录，不论节点是否存在都返回同一份 `unavailable`。目录正常时，节点不存在和在别的空间返回同一份 `not-found`
 
 未实现（后续切片）：
 
 - 产物字节、预览和访问控制。这一层只校验文件元数据
+- 退回意见仍显示评审人标识而不是姓名。第二次退回不保留第一次的意见。`RevisionView` 不从包入口导出
 - 专家评审和 `interpretAgentReview`
 - 已安装桌面里的验收。面板已经在 client 里，还没有装进成员 A 的导航。Host 测试使用真实 Connection，但不是安装包
 
