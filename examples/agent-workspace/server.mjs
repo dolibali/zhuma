@@ -36,7 +36,7 @@ const dshBinary = resolveDshBinary(process.env);
 const dshReady = dshConfig.ok && dshBinary !== null;
 const dshReason = dshConfig.ok
   ? dshBinary === null
-    ? '没有找到 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。还需要 ZHUMA_MODEL_BASE_URL 和 ZHUMA_MODEL_API_KEY。'
+    ? '没有找到 DSH 运行时。请运行 pnpm upstream:build-dsh，或设置 ZHUMA_DSH_BIN。还需要 ZHUMA_MODEL_BASE_URL、ZHUMA_MODEL_API_KEY 和 ZHUMA_MODEL_ID。'
     : undefined
   : dshConfig.reason;
 
