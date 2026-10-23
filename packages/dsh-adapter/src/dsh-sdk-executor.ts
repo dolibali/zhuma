@@ -1292,17 +1292,16 @@ function trailingFilenameEnd(text: string, from: number): number {
   while (rest < text.length && text[rest] !== '\n' && /\s/.test(text[rest] ?? '')) rest += 1;
   const closed =
     rest === text.length || text[rest] === '\n' || text[rest] === "'" || text[rest] === '"';
-  // 后面还有说明时，只有「字母开头的名字.扩展名」才算文件名。
-  // 扩展名可以带数字或下划线（mp4、7z、v2、json_bak）。纯数字后缀的 v1.2、e.g.、3.5s 留在说明里。
+  // 后面还有说明时，带扩展名的最后一段也算文件名。
+  // 名字可以是数字、连字符、下划线或非 ASCII：2026.pdf、final-report.pdf、报告.pdf、_draft.pdf。
+  // 扩展名至少有一个字母，可以带数字或下划线（mp4、7z、v2、json_bak）。
+  // v1.2 的后缀没有字母，e.g. 的点在末尾，3.5s 是小数加单位，都留在说明里。
   const dot = token.lastIndexOf('.');
-  const stem = token.slice(0, Math.max(dot, 0));
   const extension = dot >= 0 ? token.slice(dot + 1) : '';
-  const namedFile =
-    dot > 0 &&
-    dot < token.length - 1 &&
-    /^[A-Za-z][A-Za-z0-9_.]*$/.test(stem) &&
-    /^[A-Za-z0-9_]*[A-Za-z][A-Za-z0-9_]*$/.test(extension);
-  if (!closed && !namedFile) return -1;
+  const fileExtension =
+    dot > 0 && dot < token.length - 1 && /^[A-Za-z0-9_]*[A-Za-z][A-Za-z0-9_]*$/.test(extension);
+  const decimalUnit = /^\d+\.\d+[A-Za-z]*$/.test(token);
+  if (!closed && !(fileExtension && !decimalUnit)) return -1;
   return index;
 }
 
