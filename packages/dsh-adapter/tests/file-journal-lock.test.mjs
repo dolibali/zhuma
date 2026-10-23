@@ -629,3 +629,143 @@ test('契约：写锁路径在内容发布前不存在，发布后一次就是�
     if (!existsSync(release)) writeFileSync(release, 'go');
   }
 });
+
+function liveRecord(token) {
+  return JSON.stringify({
+    token,
+    pid: process.pid,
+    hostname: hostname(),
+    startedAt: '2026-10-23T00:00:00.000Z',
+  });
+}
+
+function reclaimSource(file, ready, release) {
+  return `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
+    const journal = createFileJournal(${JSON.stringify(file)});
+    writeFileSync(${JSON.stringify(ready)}, journal.writable === true ? '1' : '0');
+    pause(${JSON.stringify(release)});
+  `;
+}
+
+async function openStaleReclaim(names) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-reclaim-'));
+  const file = path.join(directory, 'session.json');
+  const ready = path.join(directory, 'ready');
+  const release = path.join(directory, 'release');
+  const env = {};
+  const gates = {};
+  for (const name of names) {
+    const arrived = path.join(directory, `${name.toLowerCase()}-arrived`);
+    const wait = path.join(directory, `${name.toLowerCase()}-wait`);
+    env[`ZHUMA_LOCK_${name}_ARRIVED`] = arrived;
+    env[`ZHUMA_LOCK_${name}_WAIT`] = wait;
+    gates[name] = { arrived, wait };
+  }
+  staleLock(file, await deadPid(), 'dead-token');
+  const child = spawnJournal(reclaimSource(file, ready, release), env);
+  return {
+    directory,
+    file,
+    lockPath: `${file}.write.lock`,
+    mutexPath: `${file}.write.lock.reclaim`,
+    ready,
+    release,
+    child,
+    gates,
+  };
+}
+
+function releaseGates(session) {
+  for (const gate of Object.values(session.gates)) {
+    if (!existsSync(gate.wait)) writeFileSync(gate.wait, 'go');
+  }
+  if (!existsSync(session.release)) writeFileSync(session.release, 'go');
+}
+
+// 回归：回收互斥或新锁改成覆盖写入，或在硬链接前先创建目标路径，下面四则失败。
+test('契约：回收互斥在内容发布前不存在，发布后一次就是完整记录', async () => {
+  const session = await openStaleReclaim(['RECLAIM', 'RELOCK']);
+  try {
+    await wait(session.gates.RECLAIM.arrived, '子进程没有停在回收互斥发布前');
+    assert.equal(existsSync(session.mutexPath), false, '回收互斥在内容发布前就已经出现');
+    const temps = readdirSync(session.directory).filter(
+      (name) => name.endsWith('.tmp') && name.includes('.reclaim.'),
+    );
+    assert.equal(temps.length, 1);
+    const staged = completeLock(readFileSync(path.join(session.directory, temps[0]), 'utf8'));
+    writeFileSync(session.gates.RECLAIM.wait, 'go');
+    await wait(session.gates.RELOCK.arrived, '子进程没有停在新锁发布前');
+    assert.deepEqual(completeLock(readFileSync(session.mutexPath, 'utf8')), staged);
+    writeFileSync(session.gates.RELOCK.wait, 'go');
+    await wait(session.ready, '子进程没有完成回收');
+    assert.equal(readFileSync(session.ready, 'utf8'), '1');
+    const published = completeLock(readFileSync(session.lockPath, 'utf8'));
+    assert.equal(published.pid, staged.pid);
+    writeFileSync(session.release, 'go');
+    const outcome = await session.child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    releaseGates(session);
+  }
+});
+
+test('契约：回收互斥不会覆盖已经发布的文件', async () => {
+  const session = await openStaleReclaim(['RECLAIM']);
+  try {
+    await wait(session.gates.RECLAIM.arrived, '子进程没有停在回收互斥发布前');
+    writeFileSync(session.mutexPath, liveRecord('planted-mutex'));
+    writeFileSync(session.gates.RECLAIM.wait, 'go');
+    await wait(session.ready, '子进程没有结束回收');
+    assert.equal(readFileSync(session.ready, 'utf8'), '0');
+    assert.equal(JSON.parse(readFileSync(session.mutexPath, 'utf8')).token, 'planted-mutex');
+    assert.equal(existsSync(session.file), false);
+    writeFileSync(session.release, 'go');
+    const outcome = await session.child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    releaseGates(session);
+  }
+});
+
+test('契约：回收出的新锁在内容发布前不存在，发布后一次就是完整记录', async () => {
+  const session = await openStaleReclaim(['RELOCK']);
+  try {
+    await wait(session.gates.RELOCK.arrived, '子进程没有停在新锁发布前');
+    assert.equal(existsSync(session.lockPath), false, '新锁在内容发布前就已经出现');
+    const temps = readdirSync(session.directory).filter(
+      (name) => name.endsWith('.tmp') && name.includes('.write.lock.'),
+    );
+    assert.equal(temps.length, 1);
+    const staged = completeLock(readFileSync(path.join(session.directory, temps[0]), 'utf8'));
+    writeFileSync(session.gates.RELOCK.wait, 'go');
+    await wait(session.ready, '子进程没有完成回收');
+    assert.equal(readFileSync(session.ready, 'utf8'), '1');
+    assert.deepEqual(completeLock(readFileSync(session.lockPath, 'utf8')), staged);
+    writeFileSync(session.release, 'go');
+    const outcome = await session.child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    releaseGates(session);
+  }
+});
+
+test('契约：回收出的新锁不会覆盖已经发布的文件', async () => {
+  const session = await openStaleReclaim(['RELOCK']);
+  try {
+    await wait(session.gates.RELOCK.arrived, '子进程没有停在新锁发布前');
+    writeFileSync(session.lockPath, liveRecord('planted-lock'));
+    writeFileSync(session.gates.RELOCK.wait, 'go');
+    await wait(session.ready, '子进程没有结束回收');
+    assert.equal(readFileSync(session.ready, 'utf8'), '0');
+    assert.equal(JSON.parse(readFileSync(session.lockPath, 'utf8')).token, 'planted-lock');
+    assert.equal(existsSync(session.file), false);
+    writeFileSync(session.release, 'go');
+    const outcome = await session.child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    releaseGates(session);
+  }
+});

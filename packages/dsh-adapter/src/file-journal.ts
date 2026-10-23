@@ -173,7 +173,11 @@ function mutexBlock(lockPath: string): AcquireResult | null {
  * 目标要么还不存在，要么一次出现完整内容。已存在则 EEXIST，不覆盖。
  * 读者不会看到空文件或半截 JSON。
  */
-function publishRecord(targetPath: string, token: string): void {
+function publishRecord(
+  targetPath: string,
+  token: string,
+  barrier?: { readonly arrived: string; readonly wait: string },
+): void {
   const temporary = `${targetPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   const payload = JSON.stringify({
     token,
@@ -197,6 +201,7 @@ function publishRecord(targetPath: string, token: string): void {
   }
   try {
     reachBarrier('ZHUMA_LOCK_PUBLISH_ARRIVED', 'ZHUMA_LOCK_PUBLISH_WAIT');
+    if (barrier) reachBarrier(barrier.arrived, barrier.wait);
     linkSync(temporary, targetPath);
   } finally {
     try {
@@ -229,7 +234,10 @@ function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
   const mutexPath = reclaimMutexPath(lockPath);
   const mutexToken = randomBytes(16).toString('hex');
   try {
-    publishRecord(mutexPath, mutexToken);
+    publishRecord(mutexPath, mutexToken, {
+      arrived: 'ZHUMA_LOCK_RECLAIM_ARRIVED',
+      wait: 'ZHUMA_LOCK_RECLAIM_WAIT',
+    });
   } catch (error) {
     if (errorCode(error) !== 'EEXIST') throw error;
     return mutexBlock(lockPath) ?? { token: null };
@@ -247,7 +255,10 @@ function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
     }
     const lockToken = randomBytes(16).toString('hex');
     try {
-      publishRecord(lockPath, lockToken);
+      publishRecord(lockPath, lockToken, {
+        arrived: 'ZHUMA_LOCK_RELOCK_ARRIVED',
+        wait: 'ZHUMA_LOCK_RELOCK_WAIT',
+      });
     } catch {
       return { token: null };
     }
