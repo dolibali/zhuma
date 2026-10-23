@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync as makeScratch, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,6 +11,20 @@ import {
   readDshModelConfig,
   resolveDshBinary,
 } from '@zhuma/dsh-adapter';
+
+const scratchDirs = [];
+function mkdtempSync(prefix) {
+  const dir = makeScratch(prefix);
+  scratchDirs.push(dir);
+  return dir;
+}
+function discardScratch(dir) {
+  spawnSync('chmod', ['-R', 'u+rwx', dir], { stdio: 'ignore' });
+  rmSync(dir, { recursive: true, force: true });
+}
+test.after(() => {
+  for (const dir of scratchDirs) discardScratch(dir);
+});
 
 function isolatedEnv(extra = {}) {
   return {
