@@ -36,13 +36,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // Playwright starts this before globalSetup. Build first so a clean tree
-    // can resolve @zhuma/agent-core from dist.
-    command: 'pnpm exec tsc -b --pretty false && node packages/client/tests/browser/server.mjs',
+    command: 'node packages/client/tests/browser/server.mjs',
     cwd: root,
     url: `http://127.0.0.1:${port}/health`,
     env: { ZHUMA_UI_TEST_PORT: String(port) },
     reuseExistingServer: false,
-    timeout: 120_000,
+    timeout: 30_000,
   },
 });
