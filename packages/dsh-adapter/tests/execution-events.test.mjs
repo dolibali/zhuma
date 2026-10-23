@@ -291,6 +291,89 @@ test('a bad cursor never touches storage, and hidden nodes match a missing node'
   assert.equal(JSON.stringify(presentEvents).includes('evt:'), false);
 });
 
+test('one command is stored once, the unlock names the owner, and seen ids stop at 200', async () => {
+  const lin = {
+    id: 'lin',
+    name: '林夏',
+    kind: 'human',
+    role: '复核',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const design = workflowNode({
+    id: 'design',
+    title: '设计登录',
+    reviewerIds: ['lin'],
+    reviewRequired: true,
+  });
+  const publish = workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] });
+  const { state, applied } = confirm([design, publish], [lin]);
+  const inner = memory();
+  let writes = 0;
+  const storage = {
+    ...inner.storage,
+    writeNode: async (key, value) => {
+      writes += 1;
+      return inner.storage.writeNode(key, value);
+    },
+  };
+  const service = new ExecutionService(storage, { readWorkbench: () => state }, projectSpaces);
+  const started = await service.startPlan(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-1',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  writes = 0;
+  const submitted = await service.submit(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    expectedVersion: inner.node('design').command.version,
+    idempotencyKey: 'deliver-design',
+    text: '接口说明',
+    files: [file()],
+    links: [SECRET_PATH],
+  });
+  assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
+  assert.equal(writes, 1);
+  for (const event of inner.node('design').events) {
+    assert.deepEqual(Object.keys(event.payload).sort(), ['status', 'version']);
+  }
+  const voted = await service.ballot(session('lin'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    expectedVersion: inner.node('design').command.version,
+    idempotencyKey: 'approve-design',
+    roundId: inner.node('design').currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+    action: 'approve',
+  });
+  assert.equal(voted.ok, true, voted.ok ? '' : voted.error.code);
+  const unlocked = inner
+    .node('publish')
+    .events.find((event) => event.type === 'downstream-unlocked');
+  assert.equal(unlocked.actorId, 'chen');
+  const body = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    after: 0,
+  };
+  const ids = (count) => Array.from({ length: count }, (_, index) => `seen-${index}`);
+  const exact = await service.events(session('chen'), { ...body, seenEventIds: ids(200) });
+  assert.equal(exact.ok, true, exact.ok ? '' : exact.error.code);
+  const over = await service.events(session('chen'), { ...body, seenEventIds: ids(201) });
+  assert.equal(over.ok, false);
+  assert.equal(over.error.code, 'validation');
+});
+
 function create(state, spaces = projectSpaces) {
   const store = memory();
   const service = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
