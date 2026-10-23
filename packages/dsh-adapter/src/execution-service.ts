@@ -201,6 +201,7 @@ const MESSAGES = {
   'not-returned': '这项工作还没有被退回。',
   'not-deliverable': '这项工作现在不能保存交付草稿。',
   'empty-request-changes': '退回要写意见，或引用一条还没解决的评论。',
+  'empty-comment': '只评论时要写下评论，不能只留空白。',
   'comment-not-unresolved': '引用的评论不是这条产物上还没解决的评论。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',

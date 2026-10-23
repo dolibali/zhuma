@@ -26,7 +26,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 | `start-plan` | `taskId`、`planId`、`revision`、`idempotencyKey`                                                                                  | 只接受这一份已确认修订。修订对不上返回 `plan-not-found`，不改用更新的计划。无依赖节点进入 `ready`，有依赖节点一律进入 `blocked`（上游当时是否已经完成都不改这个入口），两者都写下 `entryStatus: ready`。`plan-started` 不写 `inputRefs`                                                                                        |
 | `inbox`      | `{}`                                                                                                                              | 用 `resolveMember` 得到的 actor 调用 `executionInbox`。先按空间和 `planMembership` 过滤记录，再生成待办。被移出参与者后，待办行和节点视图（目标、交付正文、轮次、评论）都不返回。没有成员会话返回 `unauthenticated`                                                                                                            |
 | `submit`     | `taskId`、`planId`、`revision`、`nodeId`、`expectedVersion`、`idempotencyKey`、`text`、`files`、`links`                           | 只有该节点的 human 执行者可以提交。文件只收 `ArtifactFileRef` 元数据                                                                                                                                                                                                                                                           |
-| `ballot`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`、`action`、可选 `comment` 和 `unresolvedCommentIds` | actor 必须与票面评审人一致，且在该轮 `reviewerIds` 里。`comment` 只留下评论，不改变轮次状态，也不改变已经投下的票。退回必须有意见，或引用至少一条这条产物上未解决的评论；两样都没有是 `empty-request-changes`，引用对不上是 `comment-not-unresolved`。这两种拒绝都不写                                                         |
+| `ballot`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`、`action`、可选 `comment` 和 `unresolvedCommentIds` | actor 必须与票面评审人一致，且在该轮 `reviewerIds` 里。`comment` 只留下评论，不改变轮次状态，也不改变已经投下的票。评论去掉空白后为空时返回 `empty-comment`，不写。退回必须有意见，或引用至少一条这条产物上未解决的评论；两样都没有是 `empty-request-changes`，引用对不上是 `comment-not-unresolved`。这三种拒绝都不写         |
 | `settle`     | 节点定位、`expectedVersion`、`idempotencyKey`、`roundId`、`artifactVersionId`                                                     | 只有该节点的 human 执行者或评审人可以结算。按当前轮的票面结算。未齐票为 `ignored`。幂等键使用 `settle:{roundId}`                                                                                                                                                                                                               |
 | `report`     | `taskId`、`planId`、`revision`                                                                                                    | 只有任务负责人或参与者可以读。每个节点一份 `NodeExecutionReport`，含 `acceptedArtifactVersionId` 和 `reviewOutcome`                                                                                                                                                                                                            |
 | `revision`   | `taskId`、`planId`、`revision`、`nodeId`                                                                                          | 只读。human 执行者，或同时仍在最近一次退回轮次和当前评审名单里的评审人，可以看到被评审版本、上一版，以及每一次退回的意见。意见写评审人姓名，不写标识。文件只返回标识、类型和字节数。空间不符是 `not-found`，被移出任务是 `not-participant`。被移出评审名单的人，以及本来就不是评审人的参与者，与节点不存在是同一份 `not-found` |
@@ -124,7 +124,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
 - `revision` 读取退回时的被评审版本、上一版和每一次退回的意见。意见显示评审人姓名，不显示标识。第二次退回保留第一次的意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。被移出当前名单的评审人与节点不存在是同一份 `not-found`。目录不可用或结果不合法时先查目录，不论任务或节点是否存在都返回同一份 `unavailable`：「执行记录暂时不可用，请稍后用同一个请求再试一次。」拒绝前不写。目录正常时，任务不存在、节点不存在和在别的空间返回同一份 `not-found`
 - 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名写成「第 2 版」，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
-- 评审人可以只评论。评论不改变轮次状态，也不改变已经投下的票。退回没有意见、也没有引用未解决评论时返回 `empty-request-changes`，引用对不上返回 `comment-not-unresolved`，两种都不写
+- 评审人可以只评论。评论不改变轮次状态，也不改变已经投下的票。评论去掉空白后为空时返回 `empty-comment`，不写。退回没有意见、也没有引用未解决评论时返回 `empty-request-changes`，引用对不上返回 `comment-not-unresolved`，三种都不写
 - 提交、投票和结算共用的命令也先查目录，再读节点。八种目录故障下，节点在不在、记录损坏与否，都是同一份 `unavailable`，拒绝前不写
 - 人工执行者把交付草稿写在节点记录上。关闭后再打开，包括退回后，仍能读到自己的草稿。只有这位执行者能读写。空间不对和任务不存在，在写之前返回同一份 `not-found`。目录不可用或结果不合法时，任务和节点在不在都返回同一份稍后重试的 `unavailable`，拒绝前不写。不是参与者要等空间通过之后才拒绝。节点不是 `ready` 或 `needs-revision` 时不写。草稿版本不符时不覆盖，并在 `details` 里返回当前版本。同一个幂等键被拿去写另一份内容时也不覆盖。单条链接不超过 2048 个字符，全部链接合计不超过 8192 个字符。文件的 id、mediaType、checksum、accessPolicyId 每一项不超过 2048 个字符。正文、链接和这些字段合计不超过 262144 个字符。超出都在写之前拒绝。提交成功后清掉草稿
 
@@ -212,6 +212,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 这些行为在本切片里保持原样：
 
 - 提交接口的链接没有长度上限。这是 WP03 留下的问题，草稿上限不改变提交。
+- 现在没有接口能产生「未解决评论」。需求 9.1「引用已有未解决评论」通过接口满足不了。
 
 - 同一轮已经投下的票不能撤回。先通过再改成退回会得到 `conflicting-ballot`，原先的通过仍然有效。
 - 交付的幂等键不随文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId`、`uploadComplete` 变化。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执，所以换这些字段再提交通常仍会执行；若上一次其实已经成功、只是响应丢失，再改这些字段会得到 `idempotency-mismatch`。

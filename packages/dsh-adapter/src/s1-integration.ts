@@ -178,6 +178,7 @@ export type ExecutionMessageCode =
   | 'not-returned'
   | 'not-deliverable'
   | 'empty-request-changes'
+  | 'empty-comment'
   | 'comment-not-unresolved'
   | 'validation'
   | 'unknown-field'
