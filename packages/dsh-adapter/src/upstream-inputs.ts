@@ -70,7 +70,7 @@ function acceptedName(
   const artifact = record.artifactVersions?.find((item) => item.id === artifactVersionId);
   if (!artifact || !Number.isSafeInteger(artifact.version)) return undefined;
   if (artifact.id.trim() === '') return undefined;
-  return { version: artifact.version, name: `第${artifact.version}版` };
+  return { version: artifact.version, name: `第 ${artifact.version} 版` };
 }
 
 function row<T extends { readonly access: UpstreamInputView['access'] }>(

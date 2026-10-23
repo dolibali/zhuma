@@ -62,7 +62,12 @@ test('upstream inputs match task, plan, revision, and node, and hide the idempot
         handoff: { goal: '本计划目标' },
         acceptedArtifactVersionId: cited,
         artifactVersions: [
-          { id: cited, version: 2, text: '错误码说明', files: [{ id: 'spec.pdf' }] },
+          {
+            id: cited,
+            version: 2,
+            text: '错误码说明',
+            files: [{ id: 'spec.pdf', checksum: 'checksum-do-not-leak' }],
+          },
         ],
       },
       {
@@ -83,6 +88,24 @@ test('upstream inputs match task, plan, revision, and node, and hide the idempot
       },
     ],
   );
+  const encoded = JSON.stringify(views);
+  for (const secret of [
+    'idem-key-4e1',
+    'new-key-4e1',
+    '别的任务目标',
+    '另一版本目标',
+    '另一计划目标',
+    'task-peer-4e1',
+    'plan-other-4e1',
+    'node-absent-4e1',
+    'ver-absent-4e1',
+    'spec.pdf',
+    'checksum-do-not-leak',
+    '错误码说明',
+    '新正文',
+  ]) {
+    assert.equal(encoded.includes(secret), false, secret);
+  }
   assert.deepEqual(views, [
     {
       access: 'visible',
@@ -90,7 +113,7 @@ test('upstream inputs match task, plan, revision, and node, and hide the idempot
       sourceNodeId: 'node-1',
       sourceGoal: '本计划目标',
       version: 2,
-      name: '第2版',
+      name: '第 2 版',
     },
     {
       access: 'pending',
@@ -108,21 +131,28 @@ test('upstream inputs match task, plan, revision, and node, and hide the idempot
     },
     hidden(1),
   ]);
+});
+
+test('hidden upstream sources are one count, not one row each', () => {
+  const views = upstreamInputsFor(
+    {
+      nodeId: 'publish',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      handoff: {
+        inputRefs: [
+          { sourceNodeId: 'secret-a-4e1', artifactVersionId: 'ver-a-4e1' },
+          { sourceNodeId: 'secret-b-4e1', artifactVersionId: 'ver-b-4e1' },
+        ],
+      },
+    },
+    [],
+  );
+  assert.equal(views.length, 1);
+  assert.deepEqual(views, [hidden(2)]);
   const encoded = JSON.stringify(views);
-  for (const secret of [
-    'idem-key-4e1',
-    'new-key-4e1',
-    '别的任务目标',
-    '另一版本目标',
-    '另一计划目标',
-    'task-peer-4e1',
-    'plan-other-4e1',
-    'node-absent-4e1',
-    'ver-absent-4e1',
-    'spec.pdf',
-    '错误码说明',
-    '新正文',
-  ]) {
+  for (const secret of ['secret-a-4e1', 'secret-b-4e1', 'ver-a-4e1', 'ver-b-4e1']) {
     assert.equal(encoded.includes(secret), false, secret);
   }
 });

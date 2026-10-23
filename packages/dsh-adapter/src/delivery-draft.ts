@@ -41,7 +41,8 @@ export function applyDeliveryDraft(input: {
       readonly disposition: 'applied' | 'replayed';
       readonly draft: StoredDeliveryDraft;
     }
-  | { readonly ok: false; readonly code: 'conflict' | 'idempotency-mismatch' } {
+  | { readonly ok: false; readonly code: 'conflict'; readonly currentVersion: number }
+  | { readonly ok: false; readonly code: 'idempotency-mismatch' } {
   if (input.current !== undefined && input.current.idempotencyKey === input.idempotencyKey) {
     if (input.current.fingerprint !== input.fingerprint) {
       return { ok: false, code: 'idempotency-mismatch' };
@@ -49,7 +50,9 @@ export function applyDeliveryDraft(input: {
     return { ok: true, disposition: 'replayed', draft: input.current };
   }
   const currentVersion = input.current?.version ?? 0;
-  if (input.expectedVersion !== currentVersion) return { ok: false, code: 'conflict' };
+  if (input.expectedVersion !== currentVersion) {
+    return { ok: false, code: 'conflict', currentVersion };
+  }
   return {
     ok: true,
     disposition: 'applied',

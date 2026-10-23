@@ -105,6 +105,8 @@ const draftLocate = {
   nodeId: id,
 };
 const draftReadSchema = z.strictObject(draftLocate);
+const DRAFT_LINK_MAX = 2048;
+const DRAFT_LINK_TOTAL_MAX = 8192;
 const draftWriteSchema = z.strictObject({
   ...draftLocate,
   expectedVersion: z.number().int().nonnegative(),
@@ -228,6 +230,26 @@ function directoryUnavailable(): { ok: false; error: ExecutionFailure } {
       details: {},
     },
   };
+}
+
+function draftLinkLimit(
+  links: readonly string[],
+): { readonly ok: false; readonly error: ExecutionFailure } | undefined {
+  if (links.some((link) => link.length > DRAFT_LINK_MAX)) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '单条链接不能超过 2048 个字符。', details: {} },
+    };
+  }
+  let total = 0;
+  for (const link of links) total += link.length;
+  if (total > DRAFT_LINK_TOTAL_MAX) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '草稿里的链接合计不能超过 8192 个字符。', details: {} },
+    };
+  }
+  return undefined;
 }
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
@@ -547,6 +569,8 @@ export class ExecutionService {
       }
       const parsed = parseBody(draftWriteSchema, body);
       if (!parsed.ok) return parsed;
+      const limited = draftLinkLimit(parsed.value.links ?? []);
+      if (limited) return limited;
       const opened = await this.prepareDraft(
         actor.value.spaceIds,
         actor.value.actorId,
@@ -573,7 +597,15 @@ export class ExecutionService {
         links,
         files,
       });
-      if (!applied.ok) return fail(applied.code);
+      if (!applied.ok) {
+        if (applied.code === 'conflict') {
+          return fail('conflict', {
+            currentVersion: applied.currentVersion,
+            expectedVersion: parsed.value.expectedVersion,
+          });
+        }
+        return fail(applied.code);
+      }
       if (applied.disposition === 'applied') {
         const stored = await this.persist(() =>
           this.storage.writeNode(nodeRecordKey(current), {
@@ -826,12 +858,12 @@ export class ExecutionService {
     const parsed = parseBody(schema, body);
     if (!parsed.ok) return parsed;
     const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
-    if (space === 'missing' || !space.ok) {
-      if (space !== 'missing' && space.error.code === 'unavailable') return space;
+    if (space !== 'missing' && !space.ok) {
+      if (space.error.code === 'unavailable') return space;
       return fail('not-found');
     }
     const current = this.storage.readNode(nodeRecordKey(parsed.value));
-    if (!current || !intactNode(current)) return fail('not-found');
+    if (space === 'missing' || !current || !intactNode(current)) return fail('not-found');
     const membership = planMembership(
       this.workbench.readWorkbench(),
       current.taskId,

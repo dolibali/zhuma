@@ -37,7 +37,7 @@ export interface RevisionView {
 
 export type RevisionRead =
   | { readonly ok: true; readonly view: RevisionView }
-  | { readonly ok: false; readonly code: 'not-revision-reader' | 'not-returned' };
+  | { readonly ok: false; readonly code: 'not-found' | 'not-returned' };
 
 function content(artifact: ArtifactVersion): RevisionContent {
   const text = artifact.text?.trim() ?? '';
@@ -129,12 +129,12 @@ export function readRevisionView(
   const assignee = record.handoff.assignee;
   const isAssignee = assignee.kind === 'human' && assignee.id === actorId;
   if (!isAssignee && !record.handoff.reviewerIds.includes(actorId)) {
-    return { ok: false, code: 'not-revision-reader' };
+    return { ok: false, code: 'not-found' };
   }
   const round = returnedRound(record);
   if (!round) return { ok: false, code: 'not-returned' };
   if (!isAssignee && !round.reviewerIds.includes(actorId)) {
-    return { ok: false, code: 'not-revision-reader' };
+    return { ok: false, code: 'not-found' };
   }
   const reviewedArtifact = record.artifactVersions.find(
     (item) => item.id === round.artifactVersionId,
