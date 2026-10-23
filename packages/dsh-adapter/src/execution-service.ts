@@ -500,7 +500,12 @@ export class ExecutionService {
       if (membership === 'missing') return fail('not-found');
       if (membership === 'not-participant') return fail('not-participant');
       if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
-      const read = readRevisionView(current, actor.value.actorId);
+      const reviewerNames: Record<string, string> = {};
+      for (const participant of this.workbench.readWorkbench().participants) {
+        const name = participant.name.trim();
+        if (name !== '') reviewerNames[participant.id] = name;
+      }
+      const read = readRevisionView(current, actor.value.actorId, reviewerNames);
       if (!read.ok) return fail(read.code);
       return { ok: true, value: { view: read.view } };
     });
