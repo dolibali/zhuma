@@ -173,7 +173,7 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     assert.equal(await fitsViewport(page), true);
     await page.getByTestId('edit-draft').click();
     await page.locator('#draft-text').fill('企业名称、统一社会信用代码。');
-    await page.getByRole('button', { name: '保存草稿' }).click();
+    await page.locator('#draft-save').click();
     const draft = page.getByTestId('draft').filter({ hasText: '尚未交付' });
     await draft.waitFor();
     await draft.scrollIntoViewIfNeeded();
@@ -285,8 +285,25 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
     assert.equal(await status.getAttribute('data-status'), 'record-broken');
     assert.equal(await page.getByTestId('primary').isDisabled(), true);
     const broken = await workspace(page);
-    assert.equal(broken.node.status, 'running');
+    assert.equal(broken.node.status, 'cancelled');
     assert.equal(broken.runs.at(-1).status, 'cancelled');
+    const draftButton = page.getByTestId('edit-draft');
+    assert.equal(await draftButton.innerText(), '保存草稿');
+    assert.equal((await draftButton.innerText()).includes('提交'), false);
+    assert.equal(await draftButton.isDisabled(), false);
+    await draftButton.click();
+    await page.locator('#draft-text').fill('记录异常时只留下草稿');
+    await page.locator('#draft-save').click();
+    await page.getByTestId('draft').filter({ hasText: '记录异常时只留下草稿' }).waitFor();
+    assert.equal(
+      await page.getByTestId('node-status').getAttribute('data-status'),
+      'record-broken',
+    );
+    const draftedWhileBroken = await workspace(page);
+    assert.equal(draftedWhileBroken.node.status, 'cancelled');
+    assert.equal(draftedWhileBroken.delivered, false);
+    assert.equal(draftedWhileBroken.downstreamLaunches, 0);
+    assert.match(draftedWhileBroken.drafts.at(-1).text, /记录异常时只留下草稿/);
     await page.locator('[data-testid="context"]:not([disabled])').first().click();
     await page.getByTestId('node-status').filter({ hasText: '节点记录异常' }).waitFor();
     assert.equal((await status.innerText()).includes('执行中'), false);

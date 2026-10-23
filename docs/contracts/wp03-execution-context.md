@@ -92,7 +92,7 @@ sdk 配置里没有现成的 MCP 客户端行。授权只有在带上传输时�
 
 表 8 的配置在数据和页面上都能看到：专家、执行器、模型说明及继承来源、Skills / MCP 的搜索多选和移除、附件、上下文引用摘要、不可用原因。选择 MCP 不会把 `toolsAuthorized` 设为 true，因此也不会自动授权全部工具。
 
-「编辑并提交」调用 `prepareArtifactDraft`。草稿 `autoDeliver` 和 `skipReview` 都是 false，评审模式是 `new-round-required`。这里不调用 `createArtifactVersion`，节点也不进入 `in-review` 或 `completed`。空交付和非法链接仍由 `validateDeliveryContent` 在正式提交时拒绝，草稿层不复制那套检查。
+「保存草稿」调用 `prepareArtifactDraft`。记录异常时这个按钮仍然可用，只保存草稿，不清除异常标记。草稿 `autoDeliver` 和 `skipReview` 都是 false，评审模式是 `new-round-required`。这里不调用 `createArtifactVersion`，节点也不进入 `in-review` 或 `completed`。空交付和非法链接仍由 `validateDeliveryContent` 在正式提交时拒绝，草稿层不复制那套检查。
 
 ## 6. 补充、队列和使用中的停止
 
@@ -164,6 +164,6 @@ pnpm exec tsc -b
 node examples/agent-workspace/server.mjs
 ```
 
-浏览器打开标准输出里的 `url`。先在配置里选择「模拟执行器」，再发送。未选择时发送按钮禁用。停止会等待回执。编辑并提交只保存草稿。
+浏览器打开标准输出里的 `url`。先在配置里选择「模拟执行器」，再发送。未选择时发送按钮禁用。停止会等待回执。「保存草稿」只保存草稿。
 
 `ZHUMA_HOLD_RUNS=1` 让运行在接收回执前后各停一次。第一次页面显示启动中，`POST /api/release` 之后显示执行中，再释放才结束。`ZHUMA_SESSION_FILE` 把会话写到调用方指定的文件，不要提交该文件。未设置时，会话放在 `~/.zhuma/workbench`。构建上游 CLI 用 `pnpm upstream:build-dsh`。上游依赖缺失时，该脚本用 pnpm 11.28.5 和 `CI=true` 安装后再构建。模型路由使用 `ZHUMA_MODEL_BASE_URL`、`ZHUMA_MODEL_API_KEY`、可选的 `ZHUMA_MODEL_ID`，运行时文件使用 `ZHUMA_DSH_BIN`。

@@ -347,7 +347,7 @@ function asideMarkup(view) {
     `<button class="btn" type="button" id="reassign" data-testid="reassign"${busy ? ' disabled' : ''}>记录改派</button>`,
     `<button class="btn" type="button" id="takeover" data-testid="takeover"${busy ? ' disabled' : ''}>记录人工接回</button>`,
     '<p class="note">改派和人工接回只留下请求。责任人不变，也不会伪造一次运行。</p>',
-    `<button class="btn primary" type="button" id="edit-draft" data-testid="edit-draft">编辑并提交</button>`,
+    `<button class="btn primary" type="button" id="edit-draft" data-testid="edit-draft">保存草稿</button>`,
   ].join('');
 }
 
