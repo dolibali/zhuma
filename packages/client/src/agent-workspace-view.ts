@@ -267,7 +267,9 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
     snapshot.lastError?.code === 'invalid-handoff' ||
     ((snapshot.node.status === 'running' ||
       snapshot.node.status === 'waiting-for-input' ||
-      snapshot.node.status === 'ready') &&
+      snapshot.node.status === 'ready' ||
+      snapshot.node.status === 'failed' ||
+      snapshot.node.status === 'cancelled') &&
       snapshot.lastError?.code === 'entry-inconsistent' &&
       active === undefined);
   const entryMissing = snapshot.lastError?.code === 'entry-inconsistent';
@@ -316,7 +318,9 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       ? '已恢复事实：有一次运行仍未结束。没有把它推断成完成。请核实为执行器已断开。'
       : null,
     historyNote: snapshot.historyNote ?? null,
-    nextAction: hint.label,
+    nextAction: recordBroken
+      ? (snapshot.lastError?.nextStep ?? '核对节点记录。不要重试或重新开始。')
+      : hint.label,
     run: active
       ? {
           id: active.id,

@@ -75,6 +75,33 @@ test('契约：运行中丢了入口记录时，状态不再写成执行中', ()
   );
   assert.equal(refused.nodeStatusText, '状态：需修改');
   assert.equal(refused.nodeStatusKey, 'needs-revision');
+
+  for (const status of ['failed', 'cancelled']) {
+    const closed = createAgentWorkspaceView(
+      workspaceSnapshot({
+        node: { status, version: 3, upstreamAffected: false },
+        runs: [{ ...base.runs[0], status }],
+        downstreamLaunches: 0,
+        lastError: {
+          code: 'entry-inconsistent',
+          objectLabel: '节点',
+          reason: '节点记录异常，需要人工处理',
+          nextStep: '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
+        },
+      }),
+    );
+    assert.equal(closed.nodeStatus, status);
+    assert.equal(closed.nodeStatusKey, 'record-broken', status);
+    assert.match(closed.nodeStatusText, /节点记录异常/, status);
+    assert.equal(
+      closed.nextAction,
+      '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。',
+      status,
+    );
+    assert.equal(closed.retry.visible, true, status);
+    assert.equal(closed.retry.enabled, false, status);
+    assert.equal(closed.primary.enabled, false, status);
+  }
 });
 
 function workspaceSnapshot(overrides = {}) {

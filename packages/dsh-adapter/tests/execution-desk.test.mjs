@@ -646,8 +646,12 @@ test('契约：重新开始只带回节点记下的需修改入口', async () =>
   missing.resumeInteraction();
   const refused = missing.retry('retry-missing-entry');
   assert.equal(refused.ok, false);
-  assert.equal(refused.code, 'recovery-not-available');
+  assert.equal(refused.code, 'entry-inconsistent');
   assert.equal(missing.snapshot().node.status, 'cancelled');
+  assert.equal(missing.persistence().nodeState.entryStatus, undefined);
+  assert.equal(missing.snapshot().downstreamLaunches, 0);
+  assert.equal(createAgentWorkspaceView(missing.snapshot()).nodeStatusKey, 'record-broken');
+  assert.equal(createAgentWorkspaceView(missing.snapshot()).retry.enabled, false);
   assert.equal(missing.snapshot().runs.length, blocked.runs.length);
 });
 
@@ -1015,34 +1019,81 @@ function runRequest(runId) {
   };
 }
 
-async function assertRecordBroken(session, label) {
-  const view = createAgentWorkspaceView(session.snapshot());
+const RECORD_NEXT = '不要按这份记录重试或结束运行。先核对节点命令里的 entryStatus。';
+
+function assertLostRecordClosed(session, journal, label, nodeStatus) {
+  const snap = session.snapshot();
+  assert.equal(snap.node.status, nodeStatus, label);
+  assert.equal(snap.node.status === 'ready', false, label);
+  assert.equal(snap.node.status === 'completed', false, label);
+  assert.equal(session.persistence().nodeState.entryStatus, undefined, label);
+  assert.equal(snap.downstreamLaunches, 0, label);
+  assert.equal(snap.lastError.code, 'entry-inconsistent', label);
+  const view = createAgentWorkspaceView(snap);
   assert.equal(view.nodeStatusKey, 'record-broken', label);
-  assert.match(view.nodeStatusText, /节点记录异常/);
+  assert.match(view.nodeStatusText, /节点记录异常/, label);
   assert.equal(view.nodeStatusText.includes('执行中'), false, label);
+  assert.equal(view.nextAction, RECORD_NEXT, label);
   assert.equal(view.primary.enabled, false, label);
   assert.equal(view.stop.enabled, false, label);
   assert.equal(view.retry.enabled, false, label);
+  assert.equal(view.retry.visible, true, label);
+
+  const saved = journal.load();
+  assert.equal(saved.nodeState.status, nodeStatus, label);
+  assert.equal(saved.nodeState.entryStatus, undefined, label);
+  assert.equal(saved.lastError.code, 'entry-inconsistent', label);
+  assert.equal(saved.downstreamLaunches, 0, label);
+  const frozen = JSON.parse(JSON.stringify(saved));
+
   const sent = session.send({ text: '不要再发', idempotencyKey: `${label}-send` });
   assert.equal(sent.ok, false, label);
   assert.equal(sent.code, 'entry-inconsistent', label);
   const retried = session.retry(`${label}-retry`);
   assert.equal(retried.ok, false, label);
-  const stopped = await session.stop();
-  assert.equal(stopped.ok, false, label);
-  assert.equal(session.snapshot().node.status, 'running', label);
-  assert.equal(createAgentWorkspaceView(session.snapshot()).nodeStatusKey, 'record-broken', label);
+  assert.equal(session.snapshot().node.status, nodeStatus, label);
+  assert.equal(session.persistence().nodeState.entryStatus, undefined, label);
+  assert.equal(session.snapshot().downstreamLaunches, 0, label);
+  const completed = session.confirmCompleted();
+  assert.equal(completed.ok, false, label);
+  assert.equal(session.snapshot().node.status, nodeStatus, label);
+  assert.equal(session.snapshot().node.status === 'completed', false, label);
+  assert.equal(session.snapshot().downstreamLaunches, 0, label);
+  assert.equal(session.persistence().nodeState.entryStatus, undefined, label);
+
+  const again = ExecutionDesk.restore(frozen, {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+    journal,
+  });
+  again.resumeInteraction();
+  const restored = again.snapshot();
+  assert.equal(restored.node.status, nodeStatus, label);
+  assert.equal(again.persistence().nodeState.entryStatus, undefined, label);
+  assert.equal(restored.lastError.code, 'entry-inconsistent', label);
+  assert.equal(restored.downstreamLaunches, 0, label);
+  const againView = createAgentWorkspaceView(restored);
+  assert.equal(againView.nodeStatusKey, 'record-broken', label);
+  assert.equal(againView.nextAction, RECORD_NEXT, label);
+  assert.equal(againView.retry.enabled, false, label);
+  assert.equal(againView.primary.enabled, false, label);
+  const retriedAgain = again.retry(`${label}-retry-restored`);
+  assert.equal(retriedAgain.ok, false, label);
+  assert.equal(again.snapshot().node.status, nodeStatus, label);
+  assert.equal(again.persistence().nodeState.entryStatus, undefined, label);
+  assert.equal(again.snapshot().downstreamLaunches, 0, label);
 }
 
 test('契约：丢失入口后停止仍是节点记录异常', async () => {
-  const { desk: session } = desk();
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-record-stop-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
+  const { desk: session } = desk({ journal });
   const started = session.send({ text: '停之前丢入口', idempotencyKey: 'rb-stop' });
   await session.waitForRun(started.runId, 'running');
   session.dropRecordedEntry();
   const stopped = await session.stop();
   assert.equal(stopped.snapshot.runs.at(-1).status, 'cancelled');
-  assert.equal(stopped.snapshot.node.status, 'running');
-  await assertRecordBroken(session, 'stop');
+  assertLostRecordClosed(session, journal, 'stop', 'cancelled');
 });
 
 test('契约：丢失入口后执行失败仍是节点记录异常', async () => {
@@ -1076,9 +1127,12 @@ test('契约：丢失入口后执行失败仍是节点记录异常', async () =>
       };
     },
   };
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-wp03-record-fail-'));
+  const journal = createFileJournal(path.join(directory, 'session.json'));
   const session = ExecutionDesk.create(seed(), {
     executors: [executor],
     newId: ids(),
+    journal,
   });
   session.updateConfig({ executorId: 'simulated' });
   const started = session.send({ text: '失败前丢入口', idempotencyKey: 'rb-fail' });
@@ -1087,9 +1141,8 @@ test('契约：丢失入口后执行失败仍是节点记录异常', async () =>
   executor.release(started.runId);
   await session.flush();
   assert.equal(session.snapshot().runs.at(-1).status, 'failed');
-  assert.equal(session.snapshot().node.status, 'running');
   assert.equal(session.snapshot().faults.length > 0, true);
-  await assertRecordBroken(session, 'fail');
+  assertLostRecordClosed(session, journal, 'fail', 'failed');
 });
 
 test('契约：丢失入口后核实断开仍是节点记录异常', async () => {
@@ -1109,16 +1162,8 @@ test('契约：丢失入口后核实断开仍是节点记录异常', async () =>
   restored.resumeInteraction();
   const verified = restored.verifyAbandoned();
   assert.equal(verified.snapshot.runs[0].status, 'failed');
-  assert.equal(verified.snapshot.node.status, 'running');
   assert.equal(verified.snapshot.lastError.code, 'entry-inconsistent');
-  await assertRecordBroken(restored, 'abandon');
-  const again = ExecutionDesk.restore(journal.load(), {
-    executors: [new SimulatedAgentExecutor()],
-    newId: ids(),
-    journal,
-  });
-  again.resumeInteraction();
-  assert.equal(createAgentWorkspaceView(again.snapshot()).nodeStatusKey, 'record-broken');
+  assertLostRecordClosed(restored, journal, 'abandon', 'failed');
 });
 
 test('契约：节点记录异常不会被后续成功操作清掉', async () => {
@@ -1169,11 +1214,16 @@ test('契约：没有入口记录时重试不可用', () => {
     newId: ids(),
   });
   const view = createAgentWorkspaceView(session.snapshot());
+  assert.equal(view.nodeStatusKey, 'record-broken');
+  assert.equal(view.nextAction, RECORD_NEXT);
   assert.equal(view.retry.visible, true);
   assert.equal(view.retry.enabled, false);
   const retried = session.retry('missing-entry');
   assert.equal(retried.ok, false);
-  assert.equal(retried.code, 'recovery-not-available');
+  assert.equal(retried.code, 'entry-inconsistent');
+  assert.equal(session.snapshot().node.status, 'failed');
+  assert.equal(session.persistence().nodeState.entryStatus, undefined);
+  assert.equal(session.snapshot().downstreamLaunches, 0);
   assert.equal(createAgentWorkspaceView(session.snapshot()).retry.enabled, false);
 });
 

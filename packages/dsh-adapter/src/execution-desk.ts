@@ -704,6 +704,7 @@ export class ExecutionDesk {
    */
   confirmCompleted(): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
+    if (this.brokenRecord()) return this.recordBlocked();
     if (this.resumeGap) return this.gapBlocked();
     if (this.activeRun()) {
       return this.fail('run-active', '节点', '还有运行没有结束', '先结束运行再确认完成');
@@ -1845,6 +1846,7 @@ export class ExecutionDesk {
     if (outcome.decision.status === 'applied') {
       if (outcome.decision.result.effects.includes('accept-handoff')) this.downstreamLaunches += 1;
       if (this.nodeState.status === 'completed') this.discardNodeSessions();
+      if (!entryIsConsistent(this.nodeState)) this.preserveRecordError();
       return { ok: true, code: 'applied' };
     }
     if (outcome.decision.status === 'replayed') return { ok: true, code: 'replayed' };
@@ -1938,12 +1940,23 @@ export class ExecutionDesk {
     this.deps.journal?.save(this.persistence());
   }
 
-  /** 应带入口的执行态丢了记录，且没有进行中的运行。人工处理前一直成立。 */
+  /**
+   * 应带入口的状态丢了记录，且没有进行中的运行。
+   * 停止或失败可以进入 cancelled / failed，标记仍然成立，直到人工核对记录。
+   */
   private brokenRecord(): boolean {
     if (this.handoffInvalid) return true;
     if (entryIsConsistent(this.nodeState)) return false;
     const status = this.nodeState.status;
-    if (status !== 'running' && status !== 'waiting-for-input' && status !== 'ready') return false;
+    if (
+      status !== 'running' &&
+      status !== 'waiting-for-input' &&
+      status !== 'ready' &&
+      status !== 'failed' &&
+      status !== 'cancelled'
+    ) {
+      return false;
+    }
     return this.activeRun() === undefined;
   }
 
