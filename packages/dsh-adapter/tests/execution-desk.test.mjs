@@ -698,6 +698,13 @@ test('契约：缺少模型配置时 DSH 明确失败且不降级', async () => 
   assert.equal(missingModel.reason, '缺少 ZHUMA_MODEL_ID。不会改用模拟执行器。');
   assert.equal(missingModel.reason.includes('https://example.invalid'), false);
   assert.equal(missingModel.reason.includes('test-key'), false);
+  const blankModel = readDshModelConfig({
+    ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
+    ZHUMA_MODEL_API_KEY: 'test-key',
+    ZHUMA_MODEL_ID: ' \t ',
+  });
+  assert.equal(blankModel.ok, false);
+  assert.equal(blankModel.reason, '缺少 ZHUMA_MODEL_ID。不会改用模拟执行器。');
   const named = new DshChatExecutor({
     ZHUMA_MODEL_BASE_URL: 'https://example.invalid/v1',
     ZHUMA_MODEL_API_KEY: 'test-key',
