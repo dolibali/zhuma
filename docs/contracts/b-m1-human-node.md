@@ -123,6 +123,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `ExecutionService` 串行写。一次用户命令写一条节点；`start-plan` 再另写计划回执。每条写入先核对空间和任务成员，再核对节点角色。从参与者里移除的评审人再投票得到 `not-participant`
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
 - `revision` 读取退回时的被评审版本、上一版和退回意见。不读取文件字节
+- 交付页读取节点目标，以及已接受上游产物的来源节点、版本和产物名。无权的来源只显示占位，不返回正文或文件名
 
 未实现（后续切片）：
 
@@ -189,7 +190,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 ## 界面
 
-`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。退回待办会先打开修订视图，再打开原来的交付表单。修订视图不从包入口另导出。
+`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。退回待办会先打开修订视图，再打开原来的交付表单。修订视图不从包入口另导出。交付表单显示节点目标；已接受的上游产物列出来源节点、版本和产物名，没有权限时只显示占位。
 
 面板使用工作台已经导出的 `Button` 和 `Field`，以及 `.zhuma`、`.zm-page`、`.zm-directory`、`.zm-status`、`.zm-error`、`.zm-review` 这些现有类。不另写颜色。包内引用这些控件用相对路径，因为仓库边界不允许 `@zhuma/client` 导入自己。
 
@@ -201,7 +202,6 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 这些行为在本切片里保持原样：
 
-- 下游的交付页不显示已经接受的上游产物。
 - 同一轮已经投下的票不能撤回。先通过再改成退回会得到 `conflicting-ballot`，原先的通过仍然有效。
 - 交付的幂等键不随文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId`、`uploadComplete` 变化。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执，所以换这些字段再提交通常仍会执行；若上一次其实已经成功、只是响应丢失，再改这些字段会得到 `idempotency-mismatch`。
 - 解锁那一次写入失败之后，如果客户端没有用同一个键重试，下游要等到插件再次打开时的对账才会补上。运行期间没有周期性对账。
