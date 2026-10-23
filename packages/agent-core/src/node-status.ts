@@ -285,6 +285,7 @@ const ENTRY_REQUIRED: readonly NodeStatus[] = [
  * Statuses that have left draft must already carry an entry.
  * `needs-revision` is itself the record. `draft` and `completed` are not.
  * A missing record is not repaired by the next command.
+ * `execution-failed` and `cancel-confirmed` may still close the node.
  */
 function entryIsConsistent(state: NodeCommandState): boolean {
   if (
@@ -390,6 +391,11 @@ function prepareTransition(
   return { ok: true, transition };
 }
 
+/** Close a node that lost its entry. Do not invent a new one. */
+function closesWithoutRecord(transition: NodeTransition): boolean {
+  return transition.type === 'execution-failed' || transition.type === 'cancel-confirmed';
+}
+
 /**
  * Accept a node command once. A repeated idempotency key replays the first
  * accepted result and does not move the node again. Conflicts and illegal
@@ -423,7 +429,9 @@ export function applyNodeTransitionCommand(
     currentVersion: state.version,
     stored: state.stored,
     apply: (_nextVersion) => {
-      if (!entryIsConsistent(state)) return { disposition: 'reject', code: 'illegal-transition' };
+      if (!entryIsConsistent(state) && !closesWithoutRecord(envelope.payload)) {
+        return { disposition: 'reject', code: 'illegal-transition' };
+      }
       const prepared = prepareTransition(state, envelope.payload);
       if (!prepared.ok) return { disposition: 'reject', code: prepared.code };
       const result = transitionNode(state.status, prepared.transition);
