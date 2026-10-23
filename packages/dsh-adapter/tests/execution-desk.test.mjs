@@ -1446,6 +1446,135 @@ async function driveUnreadableRead(summary) {
   return JSON.parse(stdout);
 }
 
+async function driveReadThrow(summary, code) {
+  const root = mkdtempSync(path.join(tmpdir(), 'zhuma-ctx-read-'));
+  writeFileSync(path.join(root, 'need.csv'), 'secret-body\n');
+  const planted = seed();
+  planted.fileRoot = root;
+  planted.handoff = {
+    ...planted.handoff,
+    inputRefs: [{ sourceNodeId: 'node-a', artifactVersionId: 'art-1' }],
+  };
+  planted.contextItems = [
+    ...planted.contextItems.filter((item) => item.sourceNodeId === undefined),
+    {
+      id: 'need',
+      kind: 'upstream-artifact',
+      sourceId: 'node-a',
+      sourceNodeId: 'node-a',
+      artifactVersionId: 'art-1',
+      version: '1',
+      permission: 'granted',
+      summary,
+      required: true,
+      includedByDefault: true,
+      relativePath: 'need.csv',
+    },
+  ];
+  const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-read-fault-'));
+  const preload = path.join(dir, 'preload.mjs');
+  const script = path.join(dir, 'drive.mjs');
+  const plantedFile = path.join(dir, 'planted.json');
+  writeFileSync(plantedFile, JSON.stringify(planted));
+  const needle = JSON.stringify(`${path.sep}need.csv`);
+  writeFileSync(
+    preload,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      `const denied = (target) => String(target).endsWith(${needle});`,
+      'const originalRead = fs.readFileSync;',
+      'fs.readFileSync = (target, options) => {',
+      '  if (denied(target)) {',
+      '    const error = new Error(`${process.env.ZHUMA_READ_CODE}: read`);',
+      '    error.code = process.env.ZHUMA_READ_CODE;',
+      '    globalThis.__zhumaReadCode = error.code;',
+      '    throw error;',
+      '  }',
+      '  return originalRead(target, options);',
+      '};',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(
+    script,
+    [
+      'const { ExecutionDesk, SimulatedAgentExecutor, UnimplementedNativeExecutor } = await import(process.env.ZHUMA_ADAPTER);',
+      "const { readFileSync, existsSync } = await import('node:fs');",
+      "const path = await import('node:path');",
+      'const planted = JSON.parse(readFileSync(process.env.ZHUMA_PLANTED, "utf8"));',
+      'const requests = [];',
+      'const simulated = new SimulatedAgentExecutor({ chunkDelayMs: 0 });',
+      'const run = simulated.run.bind(simulated);',
+      'simulated.run = (request) => {',
+      '  requests.push(request);',
+      '  return run(request);',
+      '};',
+      'let n = 0;',
+      'const session = ExecutionDesk.create(planted, {',
+      "  executors: [simulated, new UnimplementedNativeExecutor('dsh')],",
+      '  newId: (prefix) => `${prefix}-${++n}`,',
+      '});',
+      'session.updateConfig({',
+      "  executorId: 'simulated',",
+      "  skillIds: ['test-design'],",
+      "  mcpIds: ['api-docs'],",
+      '});',
+      'let thrown = "";',
+      'let result = null;',
+      'try {',
+      "  result = session.send({ text: '开始', idempotencyKey: 'read-throw' });",
+      '  await session.flush();',
+      '} catch (error) {',
+      '  thrown = error && error.message ? error.message : String(error);',
+      '}',
+      'process.stdout.write(JSON.stringify({',
+      '  threw: thrown.length > 0,',
+      '  thrown,',
+      '  ok: result ? result.ok : null,',
+      '  code: result ? result.code ?? "" : "",',
+      '  reason: result ? result.reason ?? "" : "",',
+      '  requests: requests.length,',
+      '  readCode: globalThis.__zhumaReadCode ?? "",',
+      '  fileStillThere: existsSync(path.join(planted.fileRoot, "need.csv")),',
+      '}));',
+      '',
+    ].join('\n'),
+  );
+  const adapter = pathToFileURL(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
+  ).href;
+  const env = {
+    ...process.env,
+    ZHUMA_ADAPTER: adapter,
+    ZHUMA_PLANTED: plantedFile,
+    ZHUMA_READ_CODE: code,
+  };
+  delete env.ZHUMA_MODEL_API_KEY;
+  const child = spawn(process.execPath, ['--import', preload, script], { env });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  try {
+    const [status] = await once(child, 'exit');
+    if (status !== 0) throw new Error(`读取抛错注入进程退出 ${status}\n${stderr}\n${stdout}`);
+    return JSON.parse(stdout);
+  } finally {
+    clearTimeout(timer);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 test('契约：上游文件读失败时阻塞，不把摘要当成正文', async () => {
   const summary = '上游字段表（标签摘要）';
   const text = 'field,rule\nname,required\n';
@@ -1574,6 +1703,23 @@ test('契约：上游文件读失败时阻塞，不把摘要当成正文', async
   assert.equal(block.body.includes(summary), false);
   assert.deepEqual(ok.requests[0].contextReferences, ['upstream-artifact:node-a@1']);
   assert.equal(quiet(ok.session.snapshot()).runs, before.runs + 1);
+});
+
+test('契约：读取时遇到目录或文件刚被删，仍然阻塞且不用摘要', async () => {
+  const summary = '上游字段表（标签摘要）';
+  for (const code of ['EISDIR', 'ENOENT']) {
+    const reported = await driveReadThrow(summary, code);
+    assert.equal(reported.threw, false, reported.thrown);
+    assert.equal(reported.ok, false);
+    assert.equal(reported.code, 'context-blocked');
+    assert.match(reported.reason, /来源节点 node-a/);
+    assert.match(reported.reason, /art-1/);
+    assert.match(reported.reason, /不会改用摘要/);
+    assert.equal(reported.reason.includes(summary), false);
+    assert.equal(reported.requests, 0);
+    assert.equal(reported.readCode, code);
+    assert.equal(reported.fileStillThere, true);
+  }
 });
 
 test('契约：多轮结束后不再累积钉住的文件正文', async () => {
