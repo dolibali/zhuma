@@ -29,7 +29,7 @@ mount({ api: createExecutionApi(rpc) });
 
 `readWorkbench` 的类型是 `() => Workbench`。A 在宿主闭包里保住 `WorkbenchService`，传入 `() => service.snapshot()`。`snapshot()` 返回已存储工作台的结构化克隆。`workbench-plugin.ts` 仍把服务留在自己的 `apply` 里，这份清单只声明这个函数类型。
 
-插件参数 `ExecutionApplyOptions` 是 `readWorkbench`，以及可选的 `projectSpaces`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。`projectSpaces` 的正式内容由 A 的 Host／空间模块注入。省略它时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
+插件参数 `ExecutionApplyOptions` 是 `readWorkbench`，以及可选的 `projectSpaces`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。`projectSpaces` 的正式内容由 A 的 Host／空间模块注入。省略它时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。它必须接受任意合法 id（36 位 UUID，和客户端 `crypto.randomUUID()`、`z.uuid()` 相同）。不认识这个 id 时返回 `unknown`，不能抛错，也不能返回 `unavailable`。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
 
 执行插件的 `inject` 是 `['connection', 'storageDomain']`。宿主把身份的 `connection`、`storageDomain`、`credentials`、`webServer`、`remoteAccess` 和工作台的 `llm`、`agentDefaultModel` 放在同一个插件上时，执行只用前两项。
 

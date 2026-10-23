@@ -168,6 +168,18 @@ export type ExecutionMessageCode = keyof typeof MESSAGES;
 
 const DIRECTORY_UNAVAILABLE_MESSAGE = '执行记录暂时不可用，请稍后用同一个请求再试一次。';
 
+/**
+ * Task ids are minted by `crypto.randomUUID()` (`WorkbenchPage.newTask`)
+ * and `instantiate-template` requires `z.uuid()`. Both are this 36-character
+ * hex shape. Anything else is not a task id the workbench can have created.
+ */
+const GENERATED_TASK_ID =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
+
+function generatedTaskId(value: string): boolean {
+  return GENERATED_TASK_ID.test(value);
+}
+
 function directoryUnavailable(): { ok: false; error: ExecutionFailure } {
   return {
     ok: false,
@@ -541,7 +553,9 @@ export class ExecutionService {
    * A thrown lookup, `unavailable`, or an ok answer whose space id cannot be
    * used is the same answer either way.
    * No directory, an unknown project, or a mismatch is not-found.
-   * A missing task is asked with its task id. An empty string is never sent.
+   * A missing task is asked with its task id only when that id is a generated
+   * UUID. Any other requested id is not-found and is not sent. An empty string
+   * is never sent.
    */
   private async gateSpace(
     taskId: string,
@@ -555,6 +569,7 @@ export class ExecutionService {
     }
     let lookup: ProjectSpaceLookup;
     try {
+      if (!task && !generatedTaskId(taskId)) return 'missing';
       const projectId = task ? task.projectId : taskId;
       if (projectId === '') return task ? fail('not-found') : 'missing';
       lookup = await directory.spaceForProject(projectId);

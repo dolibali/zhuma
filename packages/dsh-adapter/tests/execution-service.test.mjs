@@ -5,6 +5,8 @@ import { ExecutionService } from '../dist/execution-service.js';
 import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
+const missingTaskId = '11111111-1111-4111-8111-111111111111';
+
 const lin = {
   id: 'lin',
   name: '林夏',
@@ -1160,7 +1162,7 @@ test('a missing task and a task in another space return the same body', async ()
   }
 
   const hidden = await probe(applied.taskId, 'hidden');
-  const missing = await probe('absent-task', 'missing');
+  const missing = await probe(missingTaskId, 'missing');
   for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
     assert.deepEqual(hidden[endpoint], missing[endpoint]);
     assert.deepEqual(hidden[endpoint], notFound);
@@ -1256,7 +1258,7 @@ test('a directory fault returns the same unavailable bytes whether or not the ta
   for (const directory of directories) {
     const { service } = create(state, directory);
     const present = await commandProbe(service, applied.taskId, applied, 'present', caller);
-    const absent = await commandProbe(service, 'absent-task', applied, 'absent', caller);
+    const absent = await commandProbe(service, missingTaskId, applied, 'absent', caller);
     for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
       sameBytes(present[endpoint], absent[endpoint], endpoint);
       assert.equal(present[endpoint].error.code, 'unavailable');
@@ -1282,7 +1284,7 @@ test('a missing task asks the directory with the task id and never an empty proj
   seen.length = 0;
   const before = store.snapshot();
   const absent = await service.report(session('chen'), {
-    taskId: 'absent-task',
+    taskId: missingTaskId,
     planId: applied.id,
     revision: applied.revision,
   });
@@ -1294,8 +1296,42 @@ test('a missing task asks the directory with the task id and never an empty proj
   assert.equal(absent.error.code, 'not-found');
   assert.equal(otherSpace.error.code, 'not-found');
   assert.deepEqual(absent, otherSpace);
-  assert.deepEqual(seen, ['absent-task', 'project']);
+  assert.deepEqual(seen, [missingTaskId, 'project']);
   assert.equal(seen.includes(''), false);
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('a task id that was not generated is not-found and is not sent to the directory', async () => {
+  const seen = [];
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service, store } = create(state, {
+    async spaceForProject(projectId) {
+      seen.push(projectId);
+      if (projectId === 'project') return { ok: true, spaceId: 'project' };
+      if (projectId === missingTaskId) return { ok: false, reason: 'unknown' };
+      throw new Error('untrusted-id');
+    },
+  });
+  await startChen(service, applied);
+  seen.length = 0;
+  const before = store.snapshot();
+  const caller = session('chen');
+  const legal = await commandProbe(service, missingTaskId, applied, 'legal-missing', caller);
+  const illegalIds = ['x'.repeat(200_000), "'; drop table --"];
+  const endpoints = ['start-plan', 'submit', 'ballot', 'settle', 'report'];
+  for (const taskId of illegalIds) {
+    const illegal = await commandProbe(service, taskId, applied, 'illegal', caller);
+    for (const endpoint of endpoints) {
+      const left = Buffer.from(JSON.stringify(illegal[endpoint]));
+      const right = Buffer.from(JSON.stringify(legal[endpoint]));
+      assert.equal(Buffer.compare(left, right), 0, `${endpoint}\n${left}\n${right}`);
+      assert.equal(illegal[endpoint].error.code, 'not-found');
+      assert.equal(illegal[endpoint].error.message, '找不到这个节点。');
+      assert.equal(left.includes(Buffer.from('untrusted-id')), false);
+      assert.equal(left.includes(Buffer.from('drop table')), false);
+    }
+  }
+  assert.deepEqual(seen, Array(endpoints.length).fill(missingTaskId));
   assert.deepEqual(store.snapshot(), before);
 });
 
@@ -1319,7 +1355,7 @@ test('an unusable ok from the directory is the same unavailable bytes whether or
     lookup = shape;
     for (const caller of callers) {
       const present = await commandProbe(service, applied.taskId, applied, 'shaped', caller);
-      const absent = await commandProbe(service, 'absent-task', applied, 'shaped-absent', caller);
+      const absent = await commandProbe(service, missingTaskId, applied, 'shaped-absent', caller);
       for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
         const left = Buffer.from(JSON.stringify(present[endpoint]));
         const right = Buffer.from(JSON.stringify(absent[endpoint]));
