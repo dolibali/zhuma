@@ -1,0 +1,828 @@
+/**
+ * Feasibility spike for member sessions on the published DSH seams.
+ *
+ * Real: client-connection `apply` (BrowserAuth, admit, browserPeer, createPeer)
+ * and storage-domain `DomainFacility` (schema check and the write chain).
+ * `applyIdentity` registers the prefix route, the credential secret, and the
+ * zhuma-member policy, then serves login, session, space, and note calls.
+ *
+ * Simulated, because these packages are not dependencies of @zhuma/dsh-adapter:
+ * no listening socket; `webServer.register` is an in-memory matcher with the
+ * same exact-then-longest-prefix rule; `credentials.modifyRecord` is a keyed
+ * memory map; the KV medium is a memory map behind DomainFacility; `decide`
+ * implements the owner-allow and policy-condition rules from
+ * dsh-api-remote-access, and then calls the policy this module registered.
+ * The published RemoteAccessService class is not loaded.
+ */
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import test from 'node:test';
+import { Context } from '@deepseek-ai/cordis';
+import {
+  apply as applyConnection,
+  inject as connectionInject,
+} from '@deepseek-ai/dsh-client-connection';
+import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
+import {
+  OWNER_ACCOUNT_ID,
+  applyIdentity,
+  hashPassword,
+  identityInject,
+} from '../dist/identity-session.js';
+
+const AUTHORITY = '127.0.0.1:3080';
+
+function randomPassword() {
+  return randomBytes(24).toString('base64url');
+}
+
+const passwords = {
+  lin: randomPassword(),
+  zhao: randomPassword(),
+  chen: randomPassword(),
+};
+
+const NOTES = [
+  {
+    id: 'north-note',
+    spaceId: 'team-north',
+    ownerId: 'lin',
+    teamMemberIds: ['lin', 'zhao'],
+    text: 'north-initial',
+  },
+  {
+    id: 'south-note',
+    spaceId: 'team-south',
+    ownerId: 'chen',
+    teamMemberIds: ['chen'],
+    text: 'south-initial',
+  },
+];
+
+function fixtureImport() {
+  return {
+    ownerAccountId: OWNER_ACCOUNT_ID,
+    accounts: Object.entries(passwords).map(([id, password]) => ({
+      id,
+      passwordHash: hashPassword(password),
+    })),
+    notes: NOTES,
+  };
+}
+
+function memoryCredentials(records = new Map()) {
+  return {
+    records,
+    async modifyRecord(key, mutate) {
+      const next = await mutate(records.get(key));
+      if (next !== undefined) records.set(key, next);
+      return records.get(key);
+    },
+  };
+}
+
+function memoryKv(media = new Map()) {
+  return {
+    media,
+    async open(descriptor) {
+      let medium = media.get(descriptor.name);
+      if (medium === undefined) {
+        medium = { tables: new Map(), global: null };
+        media.set(descriptor.name, medium);
+      }
+      let closed = false;
+      return {
+        async loadAll() {
+          if (closed) throw new Error('closed');
+          const tables = {};
+          for (const table of descriptor.tables) {
+            tables[table] = Object.fromEntries(medium.tables.get(table) ?? []);
+          }
+          return { tables, global: medium.global };
+        },
+        async putRecord(table, key, value) {
+          if (closed) throw new Error('closed');
+          const records = medium.tables.get(table) ?? new Map();
+          medium.tables.set(table, records);
+          records.set(key, structuredClone(value));
+        },
+        async deleteRecord(table, key) {
+          if (closed) throw new Error('closed');
+          medium.tables.get(table)?.delete(key);
+        },
+        async setGlobal(value) {
+          if (closed) throw new Error('closed');
+          medium.global = structuredClone(value);
+        },
+        async close() {
+          closed = true;
+        },
+      };
+    },
+  };
+}
+
+function createWebServer() {
+  const exact = new Map();
+  const prefixes = new Map();
+  return {
+    protocol: 'http:',
+    host: '127.0.0.1',
+    register(route) {
+      const table = route.kind === 'exact' ? exact : prefixes;
+      if (table.has(route.path)) throw new Error(`duplicate ${route.kind} route ${route.path}`);
+      table.set(route.path, route);
+      return () => table.delete(route.path);
+    },
+    async dispatch(req, res) {
+      const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+      let route = exact.get(pathname);
+      if (route === undefined) {
+        for (const [prefix, candidate] of prefixes) {
+          if (pathname !== prefix && !pathname.startsWith(`${prefix}/`)) continue;
+          if (route === undefined || prefix.length > route.path.length) route = candidate;
+        }
+      }
+      if (route === undefined) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      await route.handler(req, res);
+    },
+  };
+}
+
+function createAccess() {
+  const policies = new Map();
+  return {
+    registerPolicy(kind, policy) {
+      if (kind === 'owner') throw new Error('owner kind cannot have a policy');
+      if (policies.has(kind)) throw new Error(`duplicate policy ${kind}`);
+      policies.set(kind, policy);
+      return () => {
+        policies.delete(kind);
+      };
+    },
+    decide(request) {
+      if (request.principal.kind === 'owner') return { kind: 'allow' };
+      const policy = policies.get(request.principal.kind);
+      if (policy === undefined) return { kind: 'deny', reason: 'no-allow' };
+      let bindings;
+      try {
+        bindings = policy.bindings(request.principal);
+      } catch {
+        return { kind: 'deny', reason: 'policy-failed' };
+      }
+      for (const resource of request.resources) {
+        let allowed = false;
+        let refusal;
+        for (const binding of bindings) {
+          if (binding.resource.kind !== resource.kind || binding.resource.id !== resource.id)
+            continue;
+          if (!binding.role.actions.includes(request.action)) continue;
+          if (binding.condition === undefined) {
+            allowed = true;
+            break;
+          }
+          let decision;
+          try {
+            decision = binding.condition({
+              action: request.action,
+              resource,
+              ...(request.args === undefined ? {} : { args: request.args }),
+            });
+          } catch {
+            return { kind: 'deny', reason: 'policy-failed' };
+          }
+          if (decision.kind === 'allow') {
+            allowed = true;
+            break;
+          }
+          refusal ??= decision;
+        }
+        if (!allowed) return refusal ?? { kind: 'deny', reason: 'no-allow' };
+      }
+      return { kind: 'allow' };
+    },
+  };
+}
+
+function captureResponse() {
+  const state = {};
+  const response = Object.assign(new EventEmitter(), {
+    headersSent: false,
+    writeHead(status, headers) {
+      state.status = status;
+      if (headers !== undefined) state.headers = headers;
+      this.headersSent = true;
+      return this;
+    },
+    end(body) {
+      if (body !== undefined) state.body = body;
+      this.writableEnded = true;
+      return this;
+    },
+  });
+  return { state, response };
+}
+
+function cookiePair(setCookie) {
+  assert.equal(typeof setCookie, 'string');
+  return setCookie.split(';', 1)[0];
+}
+
+async function mount(shared = {}) {
+  const credentials = shared.credentials ?? memoryCredentials();
+  const kv = memoryKv(shared.media);
+  const web = createWebServer();
+  const access = createAccess();
+  const ctx = new Context();
+  ctx.provide('credentials', credentials);
+  ctx.provide('webServer', web);
+  ctx.provide('remoteAccess', access);
+  ctx.provide('storage', {
+    backend: {
+      get(name) {
+        if (name !== 'memory') throw new Error(`unknown backend ${name}`);
+        return { kv, close: async () => {} };
+      },
+    },
+  });
+  ctx.provide('storageDomain', new DomainFacility(ctx, { backend: 'memory', routes: {} }));
+  const connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
+  await connectionFiber;
+  const identityFiber = ctx.plugin(
+    { inject: [...identityInject], apply: applyIdentity },
+    shared.imported === undefined ? fixtureImport() : shared.imported,
+  );
+  await identityFiber;
+  return {
+    web,
+    access,
+    connection: ctx.connection,
+    credentials,
+    media: kv.media,
+    dispose: async () => {
+      await identityFiber.dispose();
+      await connectionFiber.dispose();
+    },
+  };
+}
+
+async function call(web, { method, path, cookie, body, headers: extra }) {
+  const headers = { host: AUTHORITY, ...(extra ?? {}) };
+  if (cookie !== undefined) headers.cookie = cookie;
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const req = Object.assign(
+    Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]),
+    { method, url: path, headers },
+  );
+  const captured = captureResponse();
+  await web.dispatch(req, captured.response);
+  return {
+    status: captured.state.status,
+    headers: captured.state.headers,
+    json: captured.state.body === undefined ? undefined : JSON.parse(captured.state.body),
+  };
+}
+
+function ownerCookie(connection) {
+  const target = new URL(connection.authenticatedUrl(`http://${AUTHORITY}/`));
+  const captured = captureResponse();
+  const served = connection.authorizeIndex(
+    {
+      method: 'GET',
+      url: `${target.pathname}${target.search}`,
+      headers: { host: AUTHORITY },
+    },
+    captured.response,
+  );
+  assert.equal(served, false);
+  return cookiePair(captured.state.headers?.['set-cookie']);
+}
+
+async function login(web, accountId) {
+  const password = passwords[accountId];
+  assert.equal(typeof password, 'string');
+  const response = await call(web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    body: { accountId, password },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.json.accountId, accountId);
+  return cookiePair(response.headers?.['set-cookie']);
+}
+
+test('shipping source has no built-in account or password', () => {
+  for (const rel of ['../src/identity-session.ts', '../dist/identity-session.js']) {
+    const text = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.equal(text.includes('PRESET_ACCOUNTS'), false);
+    assert.equal(text.includes('preset' + '-'), false);
+  }
+});
+
+test('applyIdentity without an import writes no account', async () => {
+  const host = await mount({ imported: null });
+  const accounts = host.media.get('zhuma_identity')?.tables.get('accounts');
+  const notes = host.media.get('zhuma_identity')?.tables.get('notes');
+  assert.equal(accounts?.size ?? 0, 0);
+  assert.equal(notes?.size ?? 0, 0);
+  const refused = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    body: { accountId: 'lin', password: passwords.lin },
+  });
+  assert.equal(refused.status, 401);
+  assert.equal(refused.json.error.code, 'invalid-login');
+  await host.dispose();
+});
+
+test('owner and member sessions stay distinct, and space checks reject the other account', async () => {
+  const host = await mount();
+  const owner = ownerCookie(host.connection);
+  const zhao = await login(host.web, 'zhao');
+  const chen = await login(host.web, 'chen');
+
+  const ownerSession = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  const ownerAgain = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  assert.equal(ownerSession.status, 200);
+  assert.equal(ownerSession.json.accountId, OWNER_ACCOUNT_ID);
+  assert.deepEqual(ownerSession.json.principal, { kind: 'owner' });
+  assert.equal(ownerSession.json.peerId, host.connection.browserPeer.id);
+  assert.equal(ownerAgain.json.peerId, ownerSession.json.peerId);
+
+  const zhaoSession = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.equal(zhaoSession.status, 200);
+  assert.deepEqual(zhaoSession.json.principal, { kind: 'zhuma-member', memberId: 'zhao' });
+  assert.equal(zhaoSession.json.accountId, 'zhao');
+  assert.notEqual(zhaoSession.json.peerId, host.connection.browserPeer.id);
+
+  const chenSession = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+  });
+  assert.deepEqual(chenSession.json.principal, { kind: 'zhuma-member', memberId: 'chen' });
+  assert.notEqual(chenSession.json.accountId, ownerSession.json.accountId);
+
+  const spoof = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    body: { accountId: 'chen', password: passwords.chen, actorId: 'lin' },
+  });
+  assert.equal(spoof.status, 400);
+  assert.equal(spoof.json.error.code, 'actor-from-body');
+  assert.equal(spoof.headers?.['set-cookie'], undefined);
+
+  const querySpoof = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session?actorId=lin',
+  });
+  assert.equal(querySpoof.status, 400);
+  assert.equal(querySpoof.json.error.code, 'actor-from-body');
+
+  const override = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+    body: { text: 'stolen', actorId: 'lin' },
+  });
+  assert.equal(override.status, 400);
+  assert.equal(override.json.error.code, 'actor-from-body');
+
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'owner' },
+      action: 'zhuma-id/write-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'south-note' },
+    }),
+    { kind: 'allow' },
+  );
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'chen' },
+      action: 'zhuma-id/read-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+
+  const ownerWrite = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: owner,
+    body: { text: 'north-from-lin' },
+  });
+  assert.equal(ownerWrite.status, 200);
+  assert.equal(ownerWrite.json.accountId, 'lin');
+  assert.equal(ownerWrite.json.note.text, 'north-from-lin');
+
+  const teamWrite = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+    body: { text: 'north-from-zhao' },
+  });
+  assert.equal(teamWrite.status, 200);
+  assert.equal(teamWrite.json.accountId, 'zhao');
+
+  const teamSpace = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: zhao,
+  });
+  assert.equal(teamSpace.status, 200);
+  assert.equal(teamSpace.json.notes.length, 1);
+  assert.equal(teamSpace.json.notes[0].text, 'north-from-zhao');
+
+  const rejected = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+    body: { text: 'chen-should-not-land' },
+  });
+  assert.equal(rejected.status, 404);
+  assert.equal(rejected.json.error.code, 'not-found');
+  const north = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: owner,
+  });
+  assert.equal(north.json.note.text, 'north-from-zhao');
+
+  const ownerRejected = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/south-note',
+    cookie: owner,
+    body: { text: 'lin-should-not-land' },
+  });
+  assert.equal(ownerRejected.status, 404);
+  assert.equal(ownerRejected.json.error.code, 'not-found');
+
+  const south = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/south-note',
+    cookie: chen,
+    body: { text: 'south-from-chen' },
+  });
+  assert.equal(south.status, 200);
+  assert.equal(south.json.accountId, 'chen');
+
+  const mixed = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: `${owner}; ${chen}`,
+  });
+  assert.equal(mixed.json.accountId, 'chen');
+  assert.equal(mixed.json.principal.kind, 'zhuma-member');
+  await host.dispose();
+});
+
+test('logout invalidates a member session and reopen keeps the space resource', async () => {
+  const first = await mount();
+  const owner = ownerCookie(first.connection);
+  const zhao = await login(first.web, 'zhao');
+  const chen = await login(first.web, 'chen');
+  const wrote = await call(first.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+    body: { text: 'kept-across-reopen' },
+  });
+  assert.equal(wrote.status, 200);
+
+  const loggedOut = await call(first.web, {
+    method: 'POST',
+    path: '/zhuma-id/logout',
+    cookie: chen,
+    body: {},
+  });
+  assert.equal(loggedOut.status, 200);
+  assert.equal(loggedOut.json.accountId, 'chen');
+  const afterLogout = await call(first.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+  });
+  assert.equal(afterLogout.status, 401);
+  assert.equal(afterLogout.json.error.code, 'unauthenticated');
+  const logoutDoesNotFallBack = await call(first.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: `${owner}; ${chen}`,
+  });
+  assert.equal(logoutDoesNotFallBack.status, 401);
+
+  const ownerStill = await call(first.web, {
+    method: 'POST',
+    path: '/zhuma-id/logout',
+    cookie: owner,
+    body: {},
+  });
+  assert.equal(ownerStill.status, 401);
+  assert.equal(ownerStill.json.error.code, 'member-session-required');
+  const ownerRemains = await call(first.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  assert.equal(ownerRemains.json.accountId, 'lin');
+
+  await first.dispose();
+  const second = await mount({ credentials: first.credentials, media: first.media });
+  const reopened = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(reopened.status, 200);
+  assert.equal(reopened.json.accountId, 'zhao');
+  assert.equal(reopened.json.note.text, 'kept-across-reopen');
+  const chenStaysOut = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+  });
+  assert.equal(chenStaysOut.status, 401);
+  const ownerAfterReopen = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  assert.equal(ownerAfterReopen.status, 200);
+  assert.equal(ownerAfterReopen.json.accountId, 'lin');
+  assert.equal(ownerAfterReopen.json.principal.kind, 'owner');
+  assert.equal(ownerAfterReopen.json.peerId, second.connection.browserPeer.id);
+  assert.notEqual(ownerAfterReopen.json.peerId, first.connection.browserPeer.id);
+
+  const chenAgain = await login(second.web, 'chen');
+  const stillRejected = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chenAgain,
+  });
+  assert.equal(stillRejected.status, 404);
+  assert.equal(stillRejected.json.error.code, 'not-found');
+  const south = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/south-note',
+    cookie: chenAgain,
+  });
+  assert.equal(south.status, 200);
+  assert.equal(south.json.note.text, 'south-initial');
+  await second.dispose();
+});
+
+test('the member cookie is limited to Path=/zhuma-id', async () => {
+  const host = await mount();
+  const response = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    body: { accountId: 'zhao', password: passwords.zhao },
+  });
+  assert.equal(response.status, 200);
+  const setCookie = response.headers?.['set-cookie'];
+  assert.match(setCookie, /(?:^|;\s*)Path=\/zhuma-id(?:;|$)/);
+  assert.doesNotMatch(setCookie, /(?:^|;\s*)Path=\/(?:;|$)/);
+  assert.doesNotMatch(setCookie, /;\s*Secure(?:;|$)/);
+  const loggedOut = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/logout',
+    cookie: cookiePair(setCookie),
+    body: {},
+  });
+  assert.match(loggedOut.headers?.['set-cookie'], /(?:^|;\s*)Path=\/zhuma-id(?:;|$)/);
+  await host.dispose();
+});
+
+test('member routes reject an untrusted Host or Origin', async () => {
+  const host = await mount();
+  const chen = await login(host.web, 'chen');
+  const evilHost = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+    headers: { host: 'evil.example' },
+  });
+  assert.equal(evilHost.status, 403);
+  assert.equal(evilHost.json.error.code, 'untrusted-request');
+  const evilLogin = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    headers: { host: 'evil.example' },
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  assert.equal(evilLogin.status, 403);
+  const evilOrigin = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+    headers: { origin: 'http://evil.example' },
+  });
+  assert.equal(evilOrigin.status, 403);
+  const crossSite = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+    headers: { 'sec-fetch-site': 'cross-site' },
+  });
+  assert.equal(crossSite.status, 403);
+  const sameOrigin = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+    headers: { origin: `http://${AUTHORITY}` },
+  });
+  assert.equal(sameOrigin.status, 200);
+  assert.equal(sameOrigin.json.accountId, 'chen');
+  const owner = ownerCookie(host.connection);
+  const ownerEvil = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+    headers: { host: 'evil.example' },
+  });
+  assert.equal(ownerEvil.status, 403);
+  await host.dispose();
+});
+
+test('a request body over 64KiB is refused', async () => {
+  const host = await mount();
+  const payload = JSON.stringify({
+    accountId: 'chen',
+    password: randomBytes(70_000).toString('base64url').slice(0, 70_000),
+  });
+  assert.equal(payload.length > 65_536, true);
+  async function post(headers) {
+    const req = Object.assign(Readable.from([Buffer.from(payload)]), {
+      method: 'POST',
+      url: '/zhuma-id/login',
+      headers: { host: AUTHORITY, 'content-type': 'application/json', ...headers },
+    });
+    const captured = captureResponse();
+    await host.web.dispatch(req, captured.response);
+    return {
+      status: captured.state.status,
+      json: JSON.parse(captured.state.body),
+    };
+  }
+  const declared = await post({ 'content-length': String(payload.length) });
+  assert.equal(declared.status, 413);
+  assert.equal(declared.json.error.code, 'body-too-large');
+  const streamed = await post({});
+  assert.equal(streamed.status, 413);
+  assert.equal(streamed.json.error.code, 'body-too-large');
+  await host.dispose();
+});
+
+test('login deletes sessions that have already expired', async () => {
+  const first = await mount();
+  const zhao = await login(first.web, 'zhao');
+  const chenBefore = await login(first.web, 'chen');
+  const sessions = first.media.get('zhuma_identity').tables.get('sessions');
+  let expiredId;
+  let keptId;
+  for (const [id, row] of sessions.entries()) {
+    if (row.accountId === 'zhao') {
+      row.expiresAt = Date.now() - 1000;
+      expiredId = id;
+    }
+    if (row.accountId === 'chen') keptId = id;
+  }
+  assert.equal(typeof expiredId, 'string');
+  assert.equal(typeof keptId, 'string');
+  await first.dispose();
+  const second = await mount({ credentials: first.credentials, media: first.media });
+  const reloaded = second.media.get('zhuma_identity').tables.get('sessions');
+  assert.equal(reloaded.has(expiredId), true);
+  assert.equal(reloaded.has(keptId), true);
+  const chen = await login(second.web, 'chen');
+  assert.equal(reloaded.has(expiredId), false);
+  assert.equal(reloaded.has(keptId), true);
+  const stale = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.equal(stale.status, 401);
+  const kept = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chenBefore,
+  });
+  assert.equal(kept.status, 200);
+  assert.equal(kept.json.accountId, 'chen');
+  const fresh = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+  });
+  assert.equal(fresh.status, 200);
+  await second.dispose();
+});
+
+test('missing and forbidden notes return the same not-found response', async () => {
+  const host = await mount();
+  const chen = await login(host.web, 'chen');
+  const missing = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/nope',
+    cookie: chen,
+  });
+  const forbidden = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+  });
+  const missingSpace = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/nope',
+    cookie: chen,
+  });
+  const forbiddenSpace = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: chen,
+  });
+  assert.equal(missing.status, 404);
+  assert.deepEqual(missing.json, { ok: false, error: { code: 'not-found' } });
+  assert.deepEqual(forbidden.json, missing.json);
+  assert.deepEqual(missingSpace.json, missing.json);
+  assert.deepEqual(forbiddenSpace.json, missing.json);
+  assert.equal(forbidden.status, missing.status);
+  assert.equal(missingSpace.status, missing.status);
+  assert.equal(forbiddenSpace.status, missing.status);
+  await host.dispose();
+});
+
+test('a member cookie with a replaced signature is rejected', async () => {
+  const host = await mount();
+  const chen = await login(host.web, 'chen');
+  const value = chen.slice('zhuma-member='.length);
+  const [sessionId, expiresAt, signature] = value.split('.');
+  assert.equal(signature.length > 10, true);
+  const flipped = signature.slice(0, -1) + (signature.endsWith('A') ? 'B' : 'A');
+  const forged = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: `zhuma-member=${sessionId}.${expiresAt}.${flipped}`,
+  });
+  assert.equal(forged.status, 401);
+  assert.equal(forged.json.error.code, 'unauthenticated');
+  const intact = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: chen,
+  });
+  assert.equal(intact.status, 200);
+  assert.equal(intact.json.accountId, 'chen');
+  await host.dispose();
+});
+
+test('a member cookie past its expiry is rejected while the session row remains', async () => {
+  const host = await mount();
+  const zhao = await login(host.web, 'zhao');
+  const sessions = host.media.get('zhuma_identity').tables.get('sessions');
+  assert.equal(sessions.size, 1);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 12 * 60 * 60 * 1000 + 1000;
+  try {
+    const expired = await call(host.web, {
+      method: 'GET',
+      path: '/zhuma-id/session',
+      cookie: zhao,
+    });
+    assert.equal(expired.status, 401);
+    assert.equal(expired.json.error.code, 'unauthenticated');
+    assert.equal(sessions.size, 1);
+  } finally {
+    Date.now = realNow;
+  }
+  const still = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.equal(still.status, 200);
+  assert.equal(still.json.accountId, 'zhao');
+  await host.dispose();
+});
