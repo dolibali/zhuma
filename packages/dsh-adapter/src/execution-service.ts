@@ -194,6 +194,18 @@ function fail(
   };
 }
 
+/** Directory lookup failed. A real disk write still uses `fail('unavailable')`. */
+function directoryUnavailable(): { ok: false; error: ExecutionFailure } {
+  return {
+    ok: false,
+    error: {
+      code: 'unavailable',
+      message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+      details: {},
+    },
+  };
+}
+
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
   const parsed = schema.safeParse(body);
   if (parsed.success) return { ok: true, value: parsed.data };
@@ -479,16 +491,7 @@ export class ExecutionService {
       const parsed = parseBody(revisionSchema, body);
       if (!parsed.ok) return parsed;
       const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
-      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') {
-        return {
-          ok: false,
-          error: {
-            code: 'unavailable',
-            message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
-            details: {},
-          },
-        };
-      }
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
       if (space === 'missing' || !space.ok) return fail('not-found');
       const current = this.storage.readNode(nodeRecordKey(parsed.value));
       if (!current || !intactNode(current)) return fail('not-found');
@@ -578,10 +581,10 @@ export class ExecutionService {
     try {
       lookup = await directory.spaceForProject(task ? task.projectId : '');
     } catch {
-      return fail('unavailable');
+      return directoryUnavailable();
     }
     const decision = decideProjectSpace(lookup, spaceIds);
-    if (decision === 'unavailable') return fail('unavailable');
+    if (decision === 'unavailable') return directoryUnavailable();
     if (!task) return 'missing';
     if (decision === 'ok') return { ok: true, value: undefined };
     return fail('not-found');
@@ -715,13 +718,13 @@ export class ExecutionService {
     if (!actor.ok) return actor;
     const parsed = parseBody(schema, body);
     if (!parsed.ok) return parsed;
-    const current = this.storage.readNode(nodeRecordKey(parsed.value));
-    if (!current || !intactNode(current)) return fail('not-found');
-    const space = await this.gateSpace(current.taskId, actor.value.spaceIds);
-    if (space === 'missing' || !space.ok) {
-      if (space !== 'missing' && space.error.code === 'unavailable') return space;
+    const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+    if (space !== 'missing' && !space.ok) {
+      if (space.error.code === 'unavailable') return space;
       return fail('not-found');
     }
+    const current = this.storage.readNode(nodeRecordKey(parsed.value));
+    if (space === 'missing' || !current || !intactNode(current)) return fail('not-found');
     const membership = planMembership(
       this.workbench.readWorkbench(),
       current.taskId,
