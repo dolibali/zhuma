@@ -270,6 +270,9 @@ test('a stale draft version conflicts, and the same key cannot change the text',
   );
   assert.equal(stale.ok, false);
   assert.equal(stale.error.code, 'conflict');
+  assert.equal(stale.error.message, '内容已变化，请刷新后再试。');
+  assert.deepEqual(stale.error.details, { currentVersion: 1, expectedVersion: 0 });
+  assert.equal(JSON.stringify(store.node('design')), before);
   const mismatch = await service.draft(
     session('chen'),
     locate(applied, { expectedVersion: 1, idempotencyKey: 'draft-1', text: '另一份' }),
@@ -320,4 +323,43 @@ test('an expert assignee cannot save a human delivery draft', async () => {
   assert.equal(refused.ok, false);
   assert.equal(refused.error.code, 'not-assignee');
   assert.equal(JSON.stringify(store.node('design')), before);
+});
+
+test('a draft link over the per-item or total limit is refused before any write', async () => {
+  const { applied, store, service } = await opened();
+  const before = JSON.stringify(store.node('design'));
+  const one = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-long',
+      links: [`https://example.test/${'a'.repeat(2049)}`],
+    }),
+  );
+  assert.equal(one.ok, false);
+  assert.equal(one.error.code, 'validation');
+  assert.equal(one.error.message, '单条链接不能超过 2048 个字符。');
+  assert.equal(JSON.stringify(store.node('design')), before);
+  const many = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-total',
+      links: Array.from({ length: 5 }, () => 'b'.repeat(2000)),
+    }),
+  );
+  assert.equal(many.ok, false);
+  assert.equal(many.error.code, 'validation');
+  assert.equal(many.error.message, '草稿里的链接合计不能超过 8192 个字符。');
+  assert.equal(JSON.stringify(store.node('design')), before);
+  const kept = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-ok',
+      links: ['https://example.test/short'],
+    }),
+  );
+  assert.equal(kept.ok, true, kept.ok ? '' : kept.error.code);
+  assert.deepEqual(kept.value.links, ['https://example.test/short']);
 });
