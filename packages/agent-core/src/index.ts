@@ -166,5 +166,7 @@ export {
   completionSource,
   downstreamRecords,
   startAppliedPlan,
+  submitDelivery,
+  castBallot,
   unlockDownstream,
 } from './human-node.js';

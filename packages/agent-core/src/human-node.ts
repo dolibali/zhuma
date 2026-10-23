@@ -1,13 +1,39 @@
 import { createNodeHandoffs } from './applied-handoff.js';
 import { canonicalPayload, type CommandDecision } from './concurrency.js';
-import type { ArtifactVersion } from './delivery.js';
-import { readNodeHandoff, type ContextInputRef, type NodeHandoff } from './handoff.js';
+import {
+  canSubmitNode,
+  createArtifactVersion,
+  deriveInbox,
+  taskAccess,
+  type ArtifactDraft,
+  type ArtifactVersion,
+  type InboxItem,
+  type InboxNodeFact,
+  type InboxRoundFact,
+  type TaskGrant,
+} from './delivery.js';
+import {
+  assigneeUsesAgentRuntime,
+  readNodeHandoff,
+  type ContextInputRef,
+  type NodeExecutionReport,
+  type NodeHandoff,
+} from './handoff.js';
 import {
   applyNodeTransitionCommand,
   initialNodeCommandState,
   type NodeCommandState,
 } from './node-status.js';
-import type { CitedComment, ReviewRound } from './review.js';
+import {
+  aggregateReview,
+  applyReviewSettlementCommand,
+  openReviewRound,
+  replaceReviewRound,
+  submitBallot,
+  type CitedComment,
+  type ReviewBallot,
+  type ReviewRound,
+} from './review.js';
 import { WorkbenchError, type AppliedPlan, type AppliedPlanRef } from './workbench.js';
 
 /**
@@ -236,6 +262,191 @@ export function startAppliedPlan(input: {
     started.push({ ...base, command: outcome.state });
   }
   return { ok: true, disposition: appliedAny ? 'applied' : 'replayed', records: started };
+}
+
+function assigneeGrants(record: ExecutionNodeRecord): readonly TaskGrant[] {
+  if (record.handoff.assignee.kind !== 'human') return [];
+  return [{ actorId: record.handoff.assignee.id, taskId: record.taskId, access: 'write' }];
+}
+
+/**
+ * Submit text or file metadata. Incomplete uploads and empty deliveries do not
+ * take a version or write a receipt. Only the human assignee may submit.
+ * Authorization runs before any replay, and the receipt fingerprint includes
+ * the actor, so another caller resending the same key is refused.
+ */
+export function submitDelivery(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly draft: ArtifactDraft;
+  readonly artifactId: string;
+  readonly roundId: string;
+}): NodeCommandResult {
+  const allowed = canSubmitNode({
+    actorId: input.actorId,
+    assigneeId: input.record.handoff.assignee.id,
+    taskAccess: taskAccess(input.actorId, input.record.taskId, assigneeGrants(input.record)),
+  });
+  if (!allowed) return reject(input.record, 'not-assignee');
+  const fingerprint = canonicalPayload({
+    kind: 'submit',
+    actorId: input.actorId,
+    nodeId: input.record.nodeId,
+    text: input.draft.text ?? null,
+    files: input.draft.files,
+    links: input.draft.links,
+  });
+  const replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
+  if (replay) return replay;
+  const content = createArtifactVersion({
+    id: input.artifactId,
+    nodeId: input.record.nodeId,
+    submittedBy: input.actorId,
+    draft: input.draft,
+    previous: input.record.artifactVersions,
+  });
+  if (!content.ok) return reject(input.record, content.code);
+  if (
+    input.record.handoff.reviewRequired &&
+    input.record.rounds.some((round) => round.id === input.roundId)
+  ) {
+    return reject(input.record, 'invalid-round');
+  }
+  if (input.record.handoff.reviewRequired) {
+    const preview = openReviewRound({
+      id: input.roundId,
+      artifactVersionId: content.version.id,
+      reviewerIds: input.record.handoff.reviewerIds,
+    });
+    if (!preview.ok) return reject(input.record, preview.code);
+  }
+  if (input.expectedVersion !== input.record.command.version) {
+    return { ok: false, disposition: 'conflict', code: 'conflict', record: input.record };
+  }
+  const outcome = applyNodeTransitionCommand(input.record.command, {
+    idempotencyKey: input.idempotencyKey,
+    actorId: input.actorId,
+    objectId: input.record.nodeId,
+    expectedVersion: input.expectedVersion,
+    payload: { type: 'submit-artifact', reviewRequired: input.record.handoff.reviewRequired },
+  });
+  const failure = failDecision(input.record, outcome.decision);
+  if (failure) return failure;
+  if (outcome.decision.status !== 'applied') {
+    return { ok: true, disposition: 'ignored', record: input.record };
+  }
+  let next: ExecutionNodeRecord = {
+    ...input.record,
+    command: outcome.state,
+    artifactVersions: [...input.record.artifactVersions, content.version],
+    ...(outcome.state.status === 'completed'
+      ? { acceptedArtifactVersionId: content.version.id }
+      : {}),
+  };
+  if (input.record.handoff.reviewRequired) {
+    const current = input.record.currentRoundId
+      ? input.record.rounds.find((round) => round.id === input.record.currentRoundId)
+      : undefined;
+    const replaced = replaceReviewRound(current?.status === 'open' ? current : undefined, {
+      id: input.roundId,
+      artifactVersionId: content.version.id,
+      reviewerIds: input.record.handoff.reviewerIds,
+    });
+    if (!replaced.ok) return reject(input.record, replaced.code);
+    const rounds = input.record.rounds.map((round) =>
+      replaced.superseded !== undefined && round.id === replaced.superseded.id
+        ? replaced.superseded
+        : round,
+    );
+    next = { ...next, rounds: [...rounds, replaced.round], currentRoundId: replaced.round.id };
+  }
+  return {
+    ok: true,
+    disposition: 'applied',
+    record: withReceipt(next, {
+      idempotencyKey: input.idempotencyKey,
+      fingerprint,
+      version: next.command.version,
+      disposition: 'applied',
+    }),
+  };
+}
+
+function mergeComments(
+  existing: readonly CitedComment[],
+  incoming: readonly CitedComment[],
+): readonly CitedComment[] {
+  const seen = new Set(existing.map((comment) => comment.id));
+  return [...existing, ...incoming.filter((comment) => !seen.has(comment.id))];
+}
+
+/**
+ * Record one trusted actor's ballot. The actor is not read from the ballot alone.
+ * Reviewer membership is checked before replay, and the fingerprint includes the actor.
+ */
+export function castBallot(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly ballot: ReviewBallot;
+  readonly comments?: readonly CitedComment[];
+}): NodeCommandResult {
+  if (!input.record.handoff.reviewerIds.includes(input.actorId)) {
+    return reject(input.record, 'not-assigned-reviewer');
+  }
+  if (input.ballot.reviewerId !== input.actorId) {
+    return reject(input.record, 'actor-mismatch');
+  }
+  const comments = input.comments ?? [];
+  const fingerprint = canonicalPayload({
+    kind: 'ballot',
+    actorId: input.actorId,
+    reviewerId: input.ballot.reviewerId,
+    roundId: input.ballot.roundId,
+    artifactVersionId: input.ballot.artifactVersionId,
+    action: input.ballot.action,
+    comment: input.ballot.comment ?? null,
+    unresolvedCommentIds: input.ballot.unresolvedCommentIds ?? [],
+    availability: input.ballot.availability ?? null,
+    comments,
+  });
+  const replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
+  if (replay) return replay;
+  if (input.expectedVersion !== input.record.command.version) {
+    return { ok: false, disposition: 'conflict', code: 'conflict', record: input.record };
+  }
+  const round = input.record.rounds.find((item) => item.id === input.ballot.roundId);
+  if (!round) return reject(input.record, 'stale-round');
+  if (round.status === 'voided') return reject(input.record, 'voided-round');
+  if (round.id !== input.record.currentRoundId) return reject(input.record, 'stale-round');
+  const decision = submitBallot(round, input.ballot, input.actorId, comments);
+  if (!decision.ok) return reject(input.record, decision.code);
+  const receipt: ExecutionReceipt = {
+    idempotencyKey: input.idempotencyKey,
+    fingerprint,
+    version: input.record.command.version,
+    disposition: decision.recorded ? 'applied' : 'ignored',
+  };
+  if (!decision.recorded) {
+    return { ok: true, disposition: 'ignored', record: withReceipt(input.record, receipt) };
+  }
+  return {
+    ok: true,
+    disposition: 'applied',
+    record: withReceipt(
+      {
+        ...input.record,
+        rounds: input.record.rounds.map((item) =>
+          item.id === decision.round.id ? decision.round : item,
+        ),
+        comments: mergeComments(input.record.comments, comments),
+      },
+      receipt,
+    ),
+  };
 }
 
 function dependencyRefs(
