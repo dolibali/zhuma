@@ -323,6 +323,87 @@ test('浏览器：模拟执行器覆盖打开处理、两轮修改、刷新、�
   }
 });
 
+test('浏览器：慢请求成功时只清掉未再改的草稿，失败保留已输入文字', async () => {
+  const sessionDir = mkdtempSync(path.join(tmpdir(), 'zhuma-browser-draft-'));
+  const child = spawn(process.execPath, ['examples/agent-workspace/server.mjs'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      ZHUMA_SESSION_FILE: path.join(sessionDir, 'session.json'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`服务没有打印地址\n${stderr}`)), 15000);
+    child.stdout.on('data', (chunk) => {
+      const line = chunk
+        .toString()
+        .split('\n')
+        .find((item) => item.includes('"url"'));
+      if (!line) return;
+      clearTimeout(timer);
+      resolve(JSON.parse(line).url);
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`服务退出 ${code}\n${stderr}`));
+    });
+  });
+  const pending = [];
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.route('**/api/messages', async (route) => {
+      await new Promise((resolve) => pending.push(resolve));
+      await route.continue();
+    });
+    await page.goto(url);
+    await page.getByTestId('executor').selectOption('simulated');
+    await page.getByTestId('banner').filter({ hasText: '当前是模拟执行器' }).waitFor();
+    await page.locator('[data-testid="skill"][value="test-design"]').check();
+    await page.locator('[data-testid="mcp"][value="api-docs"]').check();
+    const held = async () => {
+      const started = Date.now();
+      while (pending.length === 0) {
+        if (Date.now() - started > 5000) throw new Error('发送没有停在响应前');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    const finish = () => {
+      const response = page.waitForResponse('**/api/messages');
+      pending.shift()();
+      return response;
+    };
+    const message = page.locator('#message');
+    await message.fill('first-synthetic-message');
+    await page.getByTestId('primary').click();
+    await held();
+    await message.fill('next-unsent-draft');
+    await finish();
+    assert.equal(await message.inputValue(), 'next-unsent-draft');
+
+    await message.fill('unchanged-draft');
+    await page.getByTestId('primary').click();
+    await held();
+    await finish();
+    assert.equal(await message.inputValue(), '');
+
+    await page.unroute('**/api/messages');
+    await page.route('**/api/messages', (route) => route.abort());
+    await message.fill('keep-on-failure');
+    await page.getByTestId('primary').click();
+    await page.getByTestId('error').filter({ hasText: '页面与服务断开' }).waitFor();
+    assert.equal(await message.inputValue(), 'keep-on-failure');
+  } finally {
+    await browser.close();
+    child.kill();
+  }
+});
+
 function userTurn(page, text) {
   return page.locator('[data-testid="turn"][data-role="user"]').filter({ hasText: text });
 }

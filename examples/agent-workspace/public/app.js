@@ -408,7 +408,7 @@ composer.addEventListener('submit', (event) => {
     intent: sendIntent,
     attachmentIds,
   }).then((result) => {
-    if (result.ok) message.value = '';
+    if (result.ok && message.value.trim() === text) message.value = '';
   });
 });
 
