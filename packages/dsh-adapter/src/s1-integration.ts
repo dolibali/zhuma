@@ -45,11 +45,37 @@ export type ResolveMember = (ctx: object, request: MemberRequest) => Promise<Mem
 export type CreateMemberResolver = (ctx: object) => MemberResolver;
 export type IdentityAccessModeFn = (ctx: object) => IdentityAccessMode;
 export type ApplyIdentity = (ctx: Context, imported?: IdentityImport) => Promise<void>;
+/**
+ * Declared from b/id0a-identity `bb3f847`. This module does not import that commit.
+ * `applyIdentity` reads the mode before it opens the identity domain.
+ */
+export type DeploymentMode = 'legacy-single-user' | 'multi-member';
+export type ConfigureDeploymentMode = (ctx: object, mode: DeploymentMode) => void;
+export type ReadDeploymentMode = (ctx: object) => DeploymentMode | undefined;
+/** Cordis `inject` for the execution plugin. */
+export type ExecutionInject = readonly ['connection', 'storageDomain'];
 /** A wraps `WorkbenchService.snapshot()` and passes that closure here. */
 export interface ExecutionApplyOptions {
   readWorkbench(): Workbench;
 }
 export type ApplyExecution = (ctx: Context, options: ExecutionApplyOptions) => Promise<void>;
+/** Host object passed to `applyExecution`. The plugin reads `readWorkbench` and calls `resolveMember`. */
+export interface S1ExecutionOptions {
+  readonly memberResolver: MemberResolver;
+  readWorkbench(): Workbench;
+}
+export interface ApplyWorkbench {
+  (ctx: Context): Promise<void>;
+}
+/** Functions A calls, in this order: mode, identity, resolver, workbench, execution, UI. */
+export interface S1Startup {
+  configureDeploymentMode: ConfigureDeploymentMode;
+  applyIdentity: ApplyIdentity;
+  memberResolver: CreateMemberResolver;
+  applyWorkbench: ApplyWorkbench;
+  applyExecution(ctx: Context, options: S1ExecutionOptions): Promise<void>;
+  mount(props: ExecutionWorkspaceProps): unknown;
+}
 export type ExecutionEndpoints = readonly [
   'start-plan',
   'inbox',
@@ -127,6 +153,26 @@ export type ExecutionMessageCode =
   | 'unknown-field'
   | 'invalid-handoff'
   | 'cancelled';
+/** Codes the service forwards when they are not in the message catalog. The wire `code` stays `string`. */
+export type ExecutionPassthroughCode =
+  | 'invalid-file'
+  | 'invalid-link'
+  | 'invalid-artifact'
+  | 'invalid-history'
+  | 'invalid-round'
+  | 'invalid-ballot'
+  | 'conflicting-ballot'
+  | 'comment-not-unresolved'
+  | 'empty-request-changes'
+  | 'round-closed'
+  | 'non-passing-availability'
+  | 'illegal-transition'
+  | 'child-task-required'
+  | 'agent-not-identity'
+  | 'expert-ref-required';
+export type ExecutionErrorCode = ExecutionMessageCode | ExecutionPassthroughCode;
+/** Fetch status. Business results stay inside HTTP 200. */
+export type ExecutionTransportStatus = 200 | 400 | 415;
 export interface ExecutionChannelNode {
   readonly nodeId: string;
   readonly taskId: string;
@@ -165,6 +211,41 @@ export interface ExecutionCommandValue {
 }
 export interface ReportValue {
   readonly reports: NodeExecutionReport[];
+}
+export interface ReconcileValue {
+  readonly unlocked: number;
+}
+export interface ExecutionCaller {
+  readonly member?: MemberResolution;
+}
+export interface ExecutionServiceMethods {
+  startPlan(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<StartPlanValue>>;
+  inbox(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ChannelInboxValue>>;
+  submit(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
+  ballot(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
+  settle(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
+  report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
+  reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
+}
+export interface ExecutionRoutes {
+  readonly 'start-plan': { readonly body: StartPlanRequest; readonly value: StartPlanValue };
+  readonly inbox: { readonly body: InboxRequest; readonly value: ChannelInboxValue };
+  readonly submit: { readonly body: SubmitRequest; readonly value: ExecutionCommandValue };
+  readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
+  readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
+  readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
 }
 export interface ExecutionArtifactWire {
   readonly id: string;

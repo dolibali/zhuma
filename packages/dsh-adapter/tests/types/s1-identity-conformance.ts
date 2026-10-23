@@ -2,8 +2,11 @@ import { applyIdentity } from '../../dist/identity-session.js';
 import { identityAccessMode, memberResolver, resolveMember } from '../../dist/member-session.js';
 import type {
   ApplyIdentity,
+  ConfigureDeploymentMode,
   CreateMemberResolver,
+  DeploymentMode,
   IdentityAccessModeFn,
+  ReadDeploymentMode,
   ResolveMember,
 } from '../../dist/s1-integration.js';
 
@@ -21,3 +24,10 @@ export type ResolveMemberBoth = Assert<Both<typeof resolveMember, ResolveMember>
 export type MemberResolverBoth = Assert<Both<typeof memberResolver, CreateMemberResolver>>;
 export type AccessModeBoth = Assert<Both<typeof identityAccessMode, IdentityAccessModeFn>>;
 export type ApplyIdentityBoth = Assert<Both<typeof applyIdentity, ApplyIdentity>>;
+
+type DeclaredConfigureDeploymentMode = (ctx: object, mode: DeploymentMode) => void;
+type DeclaredReadDeploymentMode = (ctx: object) => DeploymentMode | undefined;
+export type ConfigureDeploymentModeBoth = Assert<
+  Both<ConfigureDeploymentMode, DeclaredConfigureDeploymentMode>
+>;
+export type ReadDeploymentModeBoth = Assert<Both<ReadDeploymentMode, DeclaredReadDeploymentMode>>;

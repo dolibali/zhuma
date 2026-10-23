@@ -4,32 +4,43 @@ A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b
 
 ## 加载顺序
 
-Cordis 的 `ctx.effect` 会立刻执行。`applyIdentity` 返回前，成员解析器已经装进宿主根上下文。执行插件在每次请求里自己调用 `resolveMember(ctx, { headers })`。
+`configureDeploymentMode` 和 `deploymentMode` 的签名按 `b/id0a-identity` 的 `bb3f847` 写在清单里。本文件不导入、不合并那次提交。`applyIdentity` 在打开身份库之前读取这个模式，模式还没选定时会拒绝启动，所以先选定模式。
 
-1. `await applyIdentity(ctx, imported?)`
-2. `await applyWorkbench(ctx)`
-3. `await applyExecution(ctx, { readWorkbench })`
-4. 用 `createExecutionApi(rpc)` 挂上 `ExecutionWorkspace`
+1. `configureDeploymentMode(ctx, mode)`，`mode` 是 `'legacy-single-user' | 'multi-member'`
+2. `await applyIdentity(ctx, imported?)`
+3. `memberResolver(ctx)`
+4. `await applyWorkbench(ctx)`
+5. `await applyExecution(ctx, { memberResolver, readWorkbench })`
+6. `mount({ api: createExecutionApi(rpc) })`，把 `ExecutionWorkspace` 挂进页面
+
+```ts
+configureDeploymentMode(ctx, mode);
+await applyIdentity(ctx, imported);
+const resolver = memberResolver(ctx);
+await applyWorkbench(ctx);
+const executionOptions = { memberResolver: resolver, readWorkbench: () => service.snapshot() };
+await applyExecution(ctx, executionOptions);
+mount({ api: createExecutionApi(rpc) });
+```
 
 `readWorkbench` 的类型是 `() => Workbench`。A 在宿主闭包里保住 `WorkbenchService`，传入 `() => service.snapshot()`。`snapshot()` 返回已存储工作台的结构化克隆。`workbench-plugin.ts` 仍把服务留在自己的 `apply` 里，这份清单只声明这个函数类型。
 
-`applyExecution` 只接受 `readWorkbench`。单人还是多人、当前成员是谁，只由 `identityAccessMode` 和 `resolveMember` 决定。单人模式是导入里写明的那一个 `ownerAccountId`。`'unmounted'` 表示解析器还没装上，这时不调用 `applyExecution`。
+插件参数 `ExecutionApplyOptions` 是 `readWorkbench`。上面的 `executionOptions` 还带上 `memberResolver`，这个对象可以传给现在的 `apply`。每次请求仍调用 `resolveMember`，它和 `memberResolver(ctx).resolve` 是同一条规则。单人还是多人在当前合并的 `f0eac0f` 上由 `identityAccessMode` 决定。`'unmounted'` 表示解析器还没装上，这时不调用 `applyExecution`。`bb3f847` 改为先看 `deploymentMode`。
 
-把三段 `inject` 合成宿主插件的依赖：身份需要 `connection`、`storageDomain`、`credentials`、`webServer`、`remoteAccess`；工作台再加 `llm`、`agentDefaultModel`；执行使用其中的 `connection` 和 `storageDomain`。
+执行插件的 `inject` 是 `['connection', 'storageDomain']`。宿主把身份的 `connection`、`storageDomain`、`credentials`、`webServer`、`remoteAccess` 和工作台的 `llm`、`agentDefaultModel` 放在同一个插件上时，执行只用前两项。
 
-```ts
-await applyIdentity(ctx, imported);
-const mode = identityAccessMode(ctx);
-await applyWorkbench(ctx);
-if (mode !== 'unmounted') {
-  await applyExecution(ctx, { readWorkbench: () => service.snapshot() });
-}
-```
+## 通道 DTO
+
+路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
+
+`code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`submit`、`ballot`、`settle`、`report`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
+
+导出的 M1 组件是 `ExecutionWorkspace`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace`。它们的 props 在清单里，并和组件双向对齐。没有别的 M1 组件导出。
 
 ## A 要接上的部分
 
 - 账户导入的形状是 `{ accounts: [{ id, passwordHash }], ownerAccountId?, notes? }`。`passwordHash` 是 scrypt 校验值。
-- 把 `readWorkbench` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。
+- 先 `configureDeploymentMode`，再 `applyIdentity`，然后 `memberResolver(ctx)`，再把 `{ memberResolver, readWorkbench }` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。
 - 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。
 - 导航挂 `ExecutionWorkspace`。它自己挂 `InboxPanel`，并按待办动作打开 `DeliveryPanel` 或 `ReviewWorkspace`。
 - 页面里已经有 `.zhuma > main.zm-page`。

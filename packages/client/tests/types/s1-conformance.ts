@@ -1,3 +1,6 @@
+import type { Context } from '@deepseek-ai/cordis';
+import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
+import type { Workbench } from '@zhuma/agent-core';
 import {
   DeliveryPanel,
   ExecutionWorkspace,
@@ -6,13 +9,17 @@ import {
   createExecutionApi,
   type ExecutionApi as ClientExecutionApi,
 } from '../../dist/index.js';
+import { apply as applyExecution } from '../../../dsh-adapter/dist/execution-plugin.js';
 import type {
   CreateExecutionApi,
   DeliveryPanelProps,
+  DeploymentMode,
   ExecutionApi,
   ExecutionWorkspaceProps,
+  IdentityImport,
   InboxPanelProps,
   ReviewWorkspaceProps,
+  S1Startup,
 } from '../../../dsh-adapter/dist/s1-integration.js';
 
 type Assignable<A, B> = [A] extends [B] ? true : false;
@@ -37,3 +44,25 @@ export type WorkspacePropsBoth = Assert<
 export type InboxPropsBoth = Assert<Both<PropsOf<typeof InboxPanel>, InboxPanelProps>>;
 export type DeliveryPropsBoth = Assert<Both<PropsOf<typeof DeliveryPanel>, DeliveryPanelProps>>;
 export type ReviewPropsBoth = Assert<Both<PropsOf<typeof ReviewWorkspace>, ReviewWorkspaceProps>>;
+export const realApplyFitsStartup = applyExecution satisfies S1Startup['applyExecution'];
+
+export function mountS1(
+  ctx: Context,
+  imported: IdentityImport | undefined,
+  mode: DeploymentMode,
+  startup: S1Startup,
+  readWorkbench: () => Workbench,
+  rpc: ClientConnectionRpc,
+): Promise<ExecutionWorkspaceProps> {
+  startup.configureDeploymentMode(ctx, mode);
+  return startup.applyIdentity(ctx, imported).then(async () => {
+    const resolver = startup.memberResolver(ctx);
+    await startup.applyWorkbench(ctx);
+    const executionOptions = { memberResolver: resolver, readWorkbench };
+    await startup.applyExecution(ctx, executionOptions);
+    await applyExecution(ctx, executionOptions);
+    const props: ExecutionWorkspaceProps = { api: createExecutionApi(rpc) };
+    startup.mount(props);
+    return props;
+  });
+}

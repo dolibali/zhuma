@@ -65,7 +65,7 @@ const domainSpec = {
   },
 };
 
-export const inject = ['connection', 'storageDomain'];
+export const inject = ['connection', 'storageDomain'] as const;
 
 /** Reads the workbench A already opened. The member comes from `resolveMember`. */
 export interface ExecutionPluginConfig {

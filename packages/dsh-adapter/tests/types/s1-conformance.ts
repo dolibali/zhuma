@@ -1,6 +1,9 @@
+import type { Context } from '@deepseek-ai/cordis';
+import type { Workbench } from '@zhuma/agent-core';
 import {
   apply,
   executionEndpoints,
+  inject as executionInject,
   type ExecutionPluginConfig,
 } from '../../dist/execution-plugin.js';
 import type {
@@ -8,7 +11,10 @@ import type {
   MemberResolution as InjectedMemberResolution,
   MemberResolver as InjectedMemberResolver,
 } from '../../dist/execution-identity.js';
-import type { ExecutionService } from '../../dist/execution-service.js';
+import type {
+  ExecutionCaller as ServiceCaller,
+  ExecutionService,
+} from '../../dist/execution-service.js';
 import type {
   BallotRequest as ServiceBallotRequest,
   ExecutionFailure,
@@ -25,12 +31,16 @@ import type {
   BallotRequest,
   ChannelInboxValue,
   ExecutionApplyOptions,
+  ExecutionCaller,
   ExecutionChannelFailure,
   ExecutionChannelNode,
   ExecutionChannelResult,
   ExecutionCommandValue,
   ExecutionEndpoints,
+  ExecutionErrorCode,
+  ExecutionInject,
   ExecutionMessageCode,
+  ExecutionServiceMethods,
   InboxRequest,
   MemberRequest,
   MemberResolution,
@@ -38,6 +48,8 @@ import type {
   ReportRequest,
   ReportValue,
   SettleRequest,
+  ReconcileValue,
+  S1ExecutionOptions,
   StartPlanRequest,
   StartPlanValue,
   SubmitRequest,
@@ -57,10 +69,68 @@ type OkValue<T> =
 
 export const applyMatches = apply satisfies ApplyExecution;
 export const endpointsMatch = executionEndpoints satisfies ExecutionEndpoints;
+export const injectMatches = executionInject satisfies ExecutionInject;
+
+declare const hostOptions: S1ExecutionOptions;
+export const hostOptionsFitPlugin = hostOptions satisfies ExecutionPluginConfig;
+export const applyAcceptsHostOptions = apply satisfies (
+  ctx: Context,
+  options: S1ExecutionOptions,
+) => Promise<void>;
+
+export function passExecutionOptions(
+  ctx: Context,
+  resolver: S1ExecutionOptions['memberResolver'],
+  readWorkbench: () => Workbench,
+): Promise<void> {
+  const executionOptions = { memberResolver: resolver, readWorkbench };
+  return apply(ctx, executionOptions);
+}
 
 export type ApplyBoth = Assert<Both<typeof apply, ApplyExecution>>;
 export type OptionsBoth = Assert<Both<ExecutionPluginConfig, ExecutionApplyOptions>>;
+export type InjectBoth = Assert<Both<typeof executionInject, ExecutionInject>>;
 export type EndpointsBoth = Assert<Both<typeof executionEndpoints, ExecutionEndpoints>>;
+export type CallerBoth = Assert<Both<ServiceCaller, ExecutionCaller>>;
+export type MessageExtendsError = Assert<
+  Both<ExecutionMessageCode, ExecutionErrorCode & ExecutionMessageCode>
+>;
+type ServiceMethodName =
+  'startPlan' | 'inbox' | 'submit' | 'ballot' | 'settle' | 'report' | 'reconcile';
+export type ServiceMethodsPresent = Assert<
+  ServiceMethodName extends keyof ExecutionService ? true : false
+>;
+export type StartMethodBoth = Assert<
+  Both<ExecutionService['startPlan'], ExecutionServiceMethods['startPlan']>
+>;
+export type InboxMethodBoth = Assert<
+  Both<ExecutionService['inbox'], ExecutionServiceMethods['inbox']>
+>;
+export type SubmitMethodBoth = Assert<
+  Both<ExecutionService['submit'], ExecutionServiceMethods['submit']>
+>;
+export type BallotMethodBoth = Assert<
+  Both<ExecutionService['ballot'], ExecutionServiceMethods['ballot']>
+>;
+export type SettleMethodBoth = Assert<
+  Both<ExecutionService['settle'], ExecutionServiceMethods['settle']>
+>;
+export type ReportMethodBoth = Assert<
+  Both<ExecutionService['report'], ExecutionServiceMethods['report']>
+>;
+export type ReconcileMethodBoth = Assert<
+  Both<ExecutionService['reconcile'], ExecutionServiceMethods['reconcile']>
+>;
+export type ReconcileValueBoth = Assert<
+  Both<
+    Awaited<ReturnType<ExecutionService['reconcile']>> extends infer R
+      ? R extends { readonly ok: true; readonly value: infer V }
+        ? V
+        : never
+      : never,
+    ReconcileValue
+  >
+>;
 export type MemberRequestBoth = Assert<Both<InjectedMemberRequest, MemberRequest>>;
 export type MemberResolutionBoth = Assert<Both<InjectedMemberResolution, MemberResolution>>;
 export type MemberResolverBoth = Assert<Both<InjectedMemberResolver, MemberResolver>>;
