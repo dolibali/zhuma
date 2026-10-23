@@ -62,6 +62,13 @@ if (
   hostSdkImports.some((name) => !verifiedHostExternals.has(name))
 )
   throw new Error('Workbench Host gained an unverified external SDK dependency.');
+const hostCode = await readFile(resolve(out, 'index.js'), 'utf8');
+if (
+  /\b(?:class\s+(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)|(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)(?:\d+)?\s*=\s*class)\b/u.test(
+    hostCode,
+  )
+)
+  throw new Error('Workbench bundled a live SDK storage or credentials service implementation.');
 const clientBuild = await build({
   absWorkingDir: root,
   entryPoints: ['packages/client/src/workbench/plugin.tsx'],
