@@ -11,6 +11,7 @@ export type {
 export { createExecutionApi, readExecutionNode } from './execution/ExecutionApi.js';
 export { DeliveryPanel } from './execution/DeliveryPanel.js';
 export { InboxPanel } from './execution/InboxPanel.js';
+export { ReviewWorkspace } from './execution/ReviewWorkspace.js';
 export {
   INBOX_ACTION_LABELS,
   INBOX_KIND_LABELS,

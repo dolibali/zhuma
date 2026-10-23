@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DeliveryPanel } from '../dist/execution/DeliveryPanel.js';
 import { InboxPanel } from '../dist/execution/InboxPanel.js';
+import { ReviewWorkspace } from '../dist/execution/ReviewWorkspace.js';
 
 const node = {
   nodeId: 'design',
@@ -39,7 +40,7 @@ const item = {
   action: 'submit',
 };
 
-test('inbox and delivery render without an actor control', () => {
+test('inbox, delivery, and review render without an actor control', () => {
   const inbox = renderToStaticMarkup(
     createElement(InboxPanel, {
       items: [item],
@@ -64,4 +65,11 @@ test('inbox and delivery render without an actor control', () => {
   assert.match(delivery, /交付说明/);
   assert.match(delivery, /文件已经上传完成/);
   assert.equal(delivery.includes('reviewerId'), false);
+  const review = renderToStaticMarkup(
+    createElement(ReviewWorkspace, { api, node, onSubmitted() {} }),
+  );
+  assert.match(review, /第一版接口说明/);
+  assert.match(review, /通过/);
+  assert.match(review, /退回修改/);
+  assert.equal(review.includes('type="hidden"'), false);
 });
