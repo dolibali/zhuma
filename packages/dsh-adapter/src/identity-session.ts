@@ -6,11 +6,10 @@
  * It registers a prefix route on `ctx.webServer`, stores its signing secret in
  * `ctx.credentials`, and opens a `zhuma_identity` storage domain. A valid
  * member cookie becomes a `zhuma-member` Peer from `ctx.connection.createPeer`.
- * A request with no member cookie can still be the host owner, but only when
- * the import set `ownerAccountId` to an account that was stored. With no
- * import, or an import that omits that field, the DSH cookie is not a product
- * account. A browser field named
- * actor, actorId, or memberId is refused and is never the account.
+ * Product multi-member mode does not map a DSH owner cookie to an account.
+ * `ownerAccountId` authenticates only an isolated host that imported exactly
+ * one account and named it. A browser field named actor, actorId, or memberId
+ * is refused and is never the account.
  * `applyIdentity` writes accounts only from an explicit `{id, passwordHash}`
  * import. With no import it writes no seed and stores no password.
  *
@@ -42,8 +41,6 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const ACTOR_FIELDS = ['actor', 'actorId', 'memberId'] as const;
 const READ_ACTION = 'zhuma-id/read-space';
 const WRITE_ACTION = 'zhuma-id/write-space';
-
-export const OWNER_ACCOUNT_ID = 'lin';
 
 const SCRYPT_N = 16384;
 const SCRYPT_R = 8;
@@ -288,6 +285,9 @@ function readImport(value: unknown): IdentityImport | undefined {
     }
     accountIds.add(account.id);
   }
+  if (parsed.data.ownerAccountId !== undefined && parsed.data.accounts.length !== 1) {
+    throw new Error('identity import was rejected: ownerAccountId requires exactly one account');
+  }
   if (parsed.data.ownerAccountId !== undefined && !accountIds.has(parsed.data.ownerAccountId)) {
     throw new Error('identity import was rejected: ownerAccountId is not an imported account');
   }
@@ -523,12 +523,12 @@ function spaceIdsFor(domain: IdentityDomain, accountId: string): readonly string
   return [...ids].sort();
 }
 
-/** Imported owner account when that account was stored. Any account count. */
-function storedOwnerAccount(domain: IdentityDomain): string | undefined {
+/** Explicit only: one imported account, and `ownerAccountId` names that account. */
+function explicitSingleUser(domain: IdentityDomain): string | undefined {
+  if (domain.table('accounts').size !== 1) return undefined;
   const ownerAccountId = domain.global.get().ownerAccountId;
-  if (ownerAccountId.length === 0 || domain.table('accounts').get(ownerAccountId) === undefined) {
-    return undefined;
-  }
+  if (ownerAccountId.length === 0) return undefined;
+  if (domain.table('accounts').get(ownerAccountId) === undefined) return undefined;
   return ownerAccountId;
 }
 
@@ -545,7 +545,7 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
         requestRejection: (headers) => ctx.connection.requestRejection({ headers }),
         findSession: (sessionId) => domain.table('sessions').get(sessionId),
         spaceIdsFor: (accountId) => spaceIdsFor(domain, accountId),
-        singleUserAccountId: () => storedOwnerAccount(domain),
+        singleUserAccountId: () => explicitSingleUser(domain),
         admitOwner: (headers) => {
           const admission = ctx.connection.admit({ headers });
           return 'peer' in admission && admission.peer.principal.kind === 'owner';

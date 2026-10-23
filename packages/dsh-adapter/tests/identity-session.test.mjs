@@ -27,12 +27,8 @@ import {
   inject as connectionInject,
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
-import {
-  OWNER_ACCOUNT_ID,
-  applyIdentity,
-  hashPassword,
-  identityInject,
-} from '../dist/identity-session.js';
+import { applyIdentity, hashPassword, identityInject } from '../dist/identity-session.js';
+import { resolveMember } from '../dist/member-session.js';
 
 const AUTHORITY = '127.0.0.1:3080';
 
@@ -65,7 +61,6 @@ const NOTES = [
 
 function fixtureImport() {
   return {
-    ownerAccountId: OWNER_ACCOUNT_ID,
     accounts: Object.entries(passwords).map(([id, password]) => ({
       id,
       passwordHash: hashPassword(password),
@@ -268,6 +263,7 @@ async function mount(shared = {}) {
     throw error;
   }
   return {
+    ctx,
     web,
     access,
     connection: ctx.connection,
@@ -327,10 +323,19 @@ async function login(web, accountId) {
 }
 
 test('shipping source has no built-in account or password', () => {
-  for (const rel of ['../src/identity-session.ts', '../dist/identity-session.js']) {
+  const files = [
+    '../src/identity-session.ts',
+    '../src/member-session.ts',
+    '../src/login-limiter.ts',
+    '../dist/identity-session.js',
+    '../dist/member-session.js',
+    '../dist/login-limiter.js',
+  ];
+  for (const rel of files) {
     const text = readFileSync(new URL(rel, import.meta.url), 'utf8');
     assert.equal(text.includes('PRESET_ACCOUNTS'), false);
     assert.equal(text.includes('preset' + '-'), false);
+    assert.equal(text.includes('OWNER_ACCOUNT_ID'), false);
   }
 });
 
@@ -400,6 +405,19 @@ test('a malformed identity import is rejected', async () => {
         },
       }),
     /ownerAccountId is not an imported account/,
+  );
+  await assert.rejects(
+    () =>
+      mount({
+        imported: {
+          accounts: [
+            { id: 'a', passwordHash: hash },
+            { id: 'b', passwordHash: hash },
+          ],
+          ownerAccountId: 'a',
+        },
+      }),
+    /ownerAccountId requires exactly one account/,
   );
   await assert.rejects(
     () =>
@@ -570,11 +588,13 @@ test('owner and member sessions stay distinct, and space checks reject the other
     path: '/zhuma-id/session',
     cookie: owner,
   });
-  assert.equal(ownerSession.status, 200);
-  assert.equal(ownerSession.json.accountId, OWNER_ACCOUNT_ID);
-  assert.deepEqual(ownerSession.json.principal, { kind: 'owner' });
-  assert.equal(ownerSession.json.peerId, host.connection.browserPeer.id);
-  assert.equal(ownerAgain.json.peerId, ownerSession.json.peerId);
+  assert.equal(ownerSession.status, 401);
+  assert.equal(ownerSession.json.error.code, 'unauthenticated');
+  assert.equal(ownerAgain.status, 401);
+  const ownerRead = await resolveMember(host.ctx, {
+    headers: { host: AUTHORITY, cookie: owner },
+  });
+  assert.equal(ownerRead.ok, false);
 
   const zhaoSession = await call(host.web, {
     method: 'GET',
@@ -592,7 +612,7 @@ test('owner and member sessions stay distinct, and space checks reject the other
     cookie: chen,
   });
   assert.deepEqual(chenSession.json.principal, { kind: 'zhuma-member', memberId: 'chen' });
-  assert.notEqual(chenSession.json.accountId, ownerSession.json.accountId);
+  assert.notEqual(chenSession.json.accountId, zhaoSession.json.accountId);
 
   const spoof = await call(host.web, {
     method: 'POST',
@@ -644,9 +664,8 @@ test('owner and member sessions stay distinct, and space checks reject the other
     cookie: owner,
     body: { text: 'north-from-lin' },
   });
-  assert.equal(ownerWrite.status, 200);
-  assert.equal(ownerWrite.json.accountId, 'lin');
-  assert.equal(ownerWrite.json.note.text, 'north-from-lin');
+  assert.equal(ownerWrite.status, 401);
+  assert.equal(ownerWrite.json.error.code, 'unauthenticated');
 
   const teamWrite = await call(host.web, {
     method: 'PUT',
@@ -677,18 +696,16 @@ test('owner and member sessions stay distinct, and space checks reject the other
   const north = await call(host.web, {
     method: 'GET',
     path: '/zhuma-id/notes/north-note',
-    cookie: owner,
+    cookie: zhao,
   });
   assert.equal(north.json.note.text, 'north-from-zhao');
-
-  const ownerRejected = await call(host.web, {
-    method: 'PUT',
-    path: '/zhuma-id/notes/south-note',
+  const ownerNorth = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
     cookie: owner,
-    body: { text: 'lin-should-not-land' },
   });
-  assert.equal(ownerRejected.status, 404);
-  assert.equal(ownerRejected.json.error.code, 'not-found');
+  assert.equal(ownerNorth.status, 401);
+  assert.equal(ownerNorth.json.note, undefined);
 
   const south = await call(host.web, {
     method: 'PUT',
@@ -751,13 +768,14 @@ test('logout invalidates a member session and reopen keeps the space resource', 
     body: {},
   });
   assert.equal(ownerStill.status, 401);
-  assert.equal(ownerStill.json.error.code, 'member-session-required');
+  assert.equal(ownerStill.json.error.code, 'unauthenticated');
   const ownerRemains = await call(first.web, {
     method: 'GET',
     path: '/zhuma-id/session',
     cookie: owner,
   });
-  assert.equal(ownerRemains.json.accountId, 'lin');
+  assert.equal(ownerRemains.status, 401);
+  assert.equal(ownerRemains.json.accountId, undefined);
 
   await first.dispose();
   const second = await mount({ credentials: first.credentials, media: first.media });
@@ -780,11 +798,8 @@ test('logout invalidates a member session and reopen keeps the space resource', 
     path: '/zhuma-id/session',
     cookie: owner,
   });
-  assert.equal(ownerAfterReopen.status, 200);
-  assert.equal(ownerAfterReopen.json.accountId, 'lin');
-  assert.equal(ownerAfterReopen.json.principal.kind, 'owner');
-  assert.equal(ownerAfterReopen.json.peerId, second.connection.browserPeer.id);
-  assert.notEqual(ownerAfterReopen.json.peerId, first.connection.browserPeer.id);
+  assert.equal(ownerAfterReopen.status, 401);
+  assert.equal(ownerAfterReopen.json.error.code, 'unauthenticated');
 
   const chenAgain = await login(second.web, 'chen');
   const stillRejected = await call(second.web, {
@@ -1037,4 +1052,75 @@ test('a member cookie past its expiry is rejected while the session row remains'
   assert.equal(still.status, 200);
   assert.equal(still.json.accountId, 'zhao');
   await host.dispose();
+});
+
+test('resolveMember reports the member and their spaces', async () => {
+  const host = await mount();
+  const owner = ownerCookie(host.connection);
+  const chen = await login(host.web, 'chen');
+  const both = await resolveMember(host.ctx, {
+    headers: { host: AUTHORITY, cookie: `${owner}; ${chen}` },
+  });
+  assert.equal(both.ok, true);
+  if (both.ok) {
+    assert.equal(both.memberId, 'chen');
+    assert.deepEqual([...both.spaceIds], ['team-south']);
+  }
+  const zhao = await login(host.web, 'zhao');
+  const north = await resolveMember(host.ctx, { headers: { host: AUTHORITY, cookie: zhao } });
+  assert.equal(north.ok, true);
+  if (north.ok) assert.deepEqual([...north.spaceIds], ['team-north']);
+  const ownerOnly = await resolveMember(host.ctx, {
+    headers: { host: AUTHORITY, cookie: owner },
+  });
+  assert.deepEqual(ownerOnly, { ok: false, status: 401, code: 'unauthenticated' });
+  await host.dispose();
+});
+
+test('a single-user owner mapping exists only when the import names that one account', async () => {
+  const password = randomBytes(18).toString('base64url');
+  const named = await mount({
+    imported: {
+      ownerAccountId: 'lin',
+      accounts: [{ id: 'lin', passwordHash: hashPassword(password) }],
+      notes: [
+        {
+          id: 'solo-note',
+          spaceId: 'solo-space',
+          ownerId: 'lin',
+          teamMemberIds: ['lin'],
+          text: 'solo',
+        },
+      ],
+    },
+  });
+  const owner = ownerCookie(named.connection);
+  const session = await call(named.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  assert.equal(session.status, 200);
+  assert.equal(session.json.accountId, 'lin');
+  const resolved = await resolveMember(named.ctx, {
+    headers: { host: AUTHORITY, cookie: owner },
+  });
+  assert.equal(resolved.ok, true);
+  if (resolved.ok) {
+    assert.equal(resolved.memberId, 'lin');
+    assert.deepEqual([...resolved.spaceIds], ['solo-space']);
+  }
+  const unnamed = await mount({
+    imported: {
+      accounts: [{ id: 'lin', passwordHash: hashPassword(randomBytes(18).toString('base64url')) }],
+    },
+  });
+  const refused = await call(unnamed.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: ownerCookie(unnamed.connection),
+  });
+  assert.equal(refused.status, 401);
+  await named.dispose();
+  await unnamed.dispose();
 });

@@ -1,10 +1,10 @@
 /**
  * Shared member-session resolution for `/zhuma-id` and later product entries.
  *
- * A valid member cookie selects the product member. A present but invalid
- * cookie is 401 and does not fall through. With no member cookie, the host's
- * `singleUserAccountId` is used when the DSH owner is admitted. The host still
- * supplies the imported `ownerAccountId` when that account exists.
+ * A DSH owner cookie is not a product member. The only exception is an import
+ * that configures exactly one account as `ownerAccountId` (isolated local
+ * single-user mode). Multi-member mode returns 401 when the member cookie is
+ * missing, deleted, expired, revoked, or forged.
  *
  * The cookie Path is `/zhuma-id`. HttpOnly and SameSite=Strict stay. Secure
  * waits for a TLS listener.
@@ -32,8 +32,8 @@ export type MemberResolution = ({ readonly ok: true } & ResolvedMember) | Member
 
 /**
  * Injected into the execution plugin. `resolve` uses the same rules as
- * `/zhuma-id`: Host/Origin first, then a valid member cookie, then
- * `singleUserAccountId` when the DSH owner is admitted.
+ * `/zhuma-id`: Host/Origin first, then a valid member cookie, and never an
+ * automatic owner-to-member mapping.
  */
 export interface MemberResolver {
   resolve(request: MemberRequest): Promise<MemberResolution>;
@@ -46,7 +46,7 @@ export interface MemberResolverSource {
     sessionId: string,
   ): { readonly accountId: string; readonly expiresAt: number } | undefined;
   spaceIdsFor(accountId: string): readonly string[];
-  /** Account the host accepts for a DSH owner cookie, when one is configured. */
+  /** Set only when this host imported exactly one account and named it. */
   singleUserAccountId(): string | undefined;
   admitOwner(headers: IncomingHttpHeaders): boolean;
 }
