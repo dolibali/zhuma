@@ -30,7 +30,7 @@ import {
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../dist/identity-session.js';
-import { resolveMember } from '../dist/member-session.js';
+import { configureDeploymentMode, resolveMember } from '../dist/member-session.js';
 
 const AUTHORITY = '127.0.0.1:3080';
 
@@ -247,6 +247,9 @@ async function mount(shared = {}) {
   const web = createWebServer();
   const access = createAccess();
   const ctx = new Context();
+  if (shared.deploymentMode !== null) {
+    configureDeploymentMode(ctx, shared.deploymentMode ?? 'multi-member');
+  }
   ctx.provide('credentials', credentials);
   ctx.provide('webServer', web);
   ctx.provide('remoteAccess', access);
@@ -1436,6 +1439,7 @@ test('resolveMember reports the member and their spaces', async () => {
 test('a single-user owner mapping exists only when the import names that one account', async () => {
   const password = randomBytes(18).toString('base64url');
   const named = await mount({
+    deploymentMode: 'legacy-single-user',
     imported: {
       ownerAccountId: 'lin',
       accounts: [{ id: 'lin', passwordHash: hashPassword(password) }],

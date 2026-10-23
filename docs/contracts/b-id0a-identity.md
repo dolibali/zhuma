@@ -123,11 +123,66 @@ function memberResolver(ctx: object): MemberResolver;
 
 `applyIdentity` 挂上之后，`memberResolver(ctx)` 就是可注入的对象，`resolveMember(ctx, { headers })` 是同一条规则的函数。`ctx` 可以是宿主根上下文，也可以是 Cordis 插件拿到的子上下文，解析登记在宿主根上。`headers` 用 Node 的请求头，至少要有这次请求的 `cookie`，以及 Host/Origin 检查要用的 `host`、`origin`、`sec-fetch-site`。成功时 `memberId` 是账号 id，`spaceIds` 是该账号作为 owner 或团队成员能够触及的空间 id，按字母序。403 表示 Host/Origin 不被 Connection 信任。401 表示没有有效成员会话。未挂载 identity 时也是 401。
 
-多人模式下，没有成员 cookie、cookie 被删、`Max-Age=0` 登出、超过 12 小时、签名不对或会话已撤销，都是 401。同时带成员 cookie 和 DSH cookie 时按成员处理。DSH owner 不会自动等于某个成员。`identityAccessMode(ctx)` 返回 `unmounted`、`single-user` 或 `multi-member`，供旧 exact 路由决定是否仍只留给隔离的本机宿主。
+多人模式下，没有成员 cookie、cookie 被删、`Max-Age=0` 登出、超过 12 小时、签名不对或会话已撤销，都是 401。同时带成员 cookie 和 DSH cookie 时按成员处理。DSH owner 不会自动等于某个成员。
 
-这个模式看的是当前进程里有没有登记解析，不看一份配置开关。identity 还没启动、`applyIdentity` 中途失败而没有留下登记、或者插件 dispose 之后，都是 `unmounted`。这时旧的 exact 路由仍只认 DSH owner，门是开的。这就是“未挂载时行为不变”，也是失败即放开。
+部署模式由宿主在启动时显式选定，登记在宿主根上，和成员解析器分开存放。解析器在不在，不能推出当前是单人还是多人。
 
-`b/id0a-legacy-gate` 在 `multi-member` 时关掉 `/api/zhuma/snapshot`、`command` 和 `plan`。它 import `./member-session.js`，必须接在本分支之后。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
+```ts
+type DeploymentMode = 'legacy-single-user' | 'multi-member';
+function configureDeploymentMode(ctx: object, mode: DeploymentMode): void;
+function deploymentMode(ctx: object): DeploymentMode | undefined;
+
+type LegacyOwnerRouteDecision =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly status: 401 | 404;
+      readonly code: 'deployment-mode-unset' | 'not-found';
+    };
+function authorizeLegacyOwnerRoutes(ctx: object): LegacyOwnerRouteDecision;
+
+type IdentityAccessMode = 'unmounted' | 'single-user' | 'multi-member';
+function identityAccessMode(ctx: object): IdentityAccessMode;
+```
+
+`configureDeploymentMode(ctx, mode)` 只接受 `legacy-single-user` 或 `multi-member`。同一个宿主再设一次相同的模式可以；改成另一种模式会抛 `identity startup refused: deployment mode is already configured`。传入其他值会抛 `identity startup refused: deployment mode is not configured`，并且不写入。`deploymentMode(ctx)` 在还没选定的时候返回 `undefined`。
+
+`applyIdentity` 在打开 domain 之前读取这个模式。没有选定就抛同一句未配置错误，不会打开身份库，也不会改去单人模式。`legacy-single-user` 并且导入恰好一个账号、`ownerAccountId` 指向该账号时，owner cookie 才映射成这个成员。`multi-member` 下即使导入满足这个形状，owner cookie 仍是 401。
+
+`authorizeLegacyOwnerRoutes(ctx)` 是旧的 `/api/zhuma/snapshot`、`command`、`plan` 的门。它只看部署模式：
+
+- `legacy-single-user` 返回 `{ ok: true }`。这三条路由仍按原来的 owner 入口处理。
+- `multi-member` 返回 `{ ok: false, status: 404, code: 'not-found' }`。身份还没挂上、`applyIdentity` 抛错、正在 dispose、dispose 完成、以及重新挂载的整个过程，都是这个结果。成员 cookie 有效也一样，这三条路由不返回工作台快照。
+- 模式还没选定时返回 `{ ok: false, status: 401, code: 'deployment-mode-unset' }`。启动拒绝继续，路由也不放行。
+
+`identityAccessMode(ctx)` 的声明返回类型仍包含 `unmounted`，以便和既有 S1 签名互认。运行时它只读 `deploymentMode`：`legacy-single-user` 得到 `single-user`，`multi-member` 得到 `multi-member`，未选定则抛未配置错误。授权决定用 `authorizeLegacyOwnerRoutes`。
+
+宿主装配顺序：
+
+1. `configureDeploymentMode(ctx, mode)`，在宿主 setup 选定。
+2. `applyIdentity(ctx, imported?)`。
+3. `memberResolver(ctx)` 可以注入。它和 `resolveMember(ctx, request)` 是同一条规则。
+4. `applyWorkbench`。A 的工作台插件在这里挂上。
+5. `applyExecution`。执行插件从 `deploymentMode(ctx)` 和 `resolveMember` / `memberResolver` 读取模式和成员。
+6. UI mount。
+
+执行侧使用的导出是 `DeploymentMode`、`configureDeploymentMode`、`deploymentMode`、`resolveMember`、`memberResolver`、`MemberResolver`、`MemberRequest`、`MemberResolution`。`applyIdentity` 的签名仍是 `(ctx: Context, imported?: IdentityImport) => Promise<void>`。
+
+本 PR 不改 `workbench-plugin.ts`、宿主构建、包的公开 exports 和 Playwright 注册。A 在三条旧路由的 fetch 开头加上：
+
+```ts
+import { authorizeLegacyOwnerRoutes } from './member-session.js';
+
+const gate = authorizeLegacyOwnerRoutes(ctx);
+if (!gate.ok) {
+  return Response.json(
+    { ok: false, error: { code: gate.code } },
+    { status: gate.status, headers: { 'cache-control': 'no-store' } },
+  );
+}
+```
+
+可运行的那份在 `b/id0a-legacy-gate`。它 import `./member-session.js`，接在本分支之后。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
 
 ## 6. A 需要提供的挂载
 
@@ -135,7 +190,7 @@ function memberResolver(ctx: object): MemberResolver;
 
 A 在官方 Host 上已经具备 `connection`、`storageDomain`、`credentials`、`webServer` 时，需要：
 
-1. 在现有 `apply` 里调用一次 `applyIdentity`。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。
+1. 先 `configureDeploymentMode(ctx, mode)`，再在现有 `apply` 里调用一次 `applyIdentity`。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。旧的 snapshot、command、plan 用上一节的 `authorizeLegacyOwnerRoutes`。
 2. 构建入口要能带到 `packages/dsh-adapter/src/identity-session.ts`。现在的 esbuild 入口只有 `workbench-plugin.ts`。
 3. 登录页、空间切换和成员入口仍由 A-SPACE 做。cookie 由 `Set-Cookie` 写入，页面不提交 actor。
 4. 若要把 `registerPolicy` 写成对真实 `RemoteAccessService` 的类型检查，需要在宿主编译里合并 `PrincipalMap` 的 `zhuma-member`。运行时 `createPeer` 不依赖这次合并；本包用了断言，因为 `@deepseek-ai/dsh-typert-protocol` 不是直接依赖。
@@ -159,6 +214,6 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 
 1. M+ 这种由 B 签发的成员 cookie，是否接受为 FR16 的登录，还是必须等 U，在 `admit` 里区分用户？
 2. `decide` 对 owner 一律允许。空间隔离放在路由里、不单放在 `registerPolicy`，是否符合预期？
-3. 无成员 cookie 即未登录。这已按 main `656bb61`（PR #15）实现，不再请 dolibali 决定：缺失、删除、过期、撤销或伪造的成员 cookie 都返回 401，不退回 DSH owner。多人导入不能再靠 `ownerAccountId` 把 owner 映射成 `lin`。只有恰好一个账号且 `ownerAccountId` 指向该账号时，隔离的本机单人模式才做这层映射。
+3. 无成员 cookie 即未登录。这已按 main `656bb61`（PR #15）实现，不再请 dolibali 决定：缺失、删除、过期、撤销或伪造的成员 cookie 都返回 401，不退回 DSH owner。多人导入不能再靠 `ownerAccountId` 把 owner 映射成 `lin`。宿主显式选定 `legacy-single-user`，并且恰好一个账号、`ownerAccountId` 指向该账号时，隔离的本机单人模式才做这层映射。
 4. 生产路径已经不放默认账号。导入是调用方传入的 `{ id, passwordHash }`，且不覆盖已有账号。宿主是否就用这个导入作为种子入口？
 5. `applyIdentity` 的挂载和构建入口是否由 A 加进 `workbench-plugin.ts`？B 这次没有改那个文件，也没有改 `scripts/workbench/build.mjs`。

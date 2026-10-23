@@ -29,6 +29,7 @@ import {
   type LoginFailureTable,
 } from './login-limiter.js';
 import {
+  deploymentMode,
   installMemberResolver,
   memberCookieHeader,
   memberCookiePresent,
@@ -637,6 +638,10 @@ function explicitSingleUser(domain: IdentityDomain): string | undefined {
 
 /** Mount an explicit account import, member cookies, and space checks. */
 export async function applyIdentity(ctx: Context, imported?: IdentityImport): Promise<void> {
+  const mode = deploymentMode(ctx);
+  if (mode === undefined) {
+    throw new Error('identity startup refused: deployment mode is not configured');
+  }
   const domain = await ctx.storageDomain.open(identityDomainSpec);
   const attempts = createLoginFailureTable();
   try {
@@ -649,7 +654,8 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
         requestRejection: (headers) => ctx.connection.requestRejection({ headers }),
         findSession: (sessionId) => domain.table('sessions').get(sessionId),
         spaceIdsFor: (accountId) => spaceIdsFor(domain, accountId),
-        singleUserAccountId: () => explicitSingleUser(domain),
+        singleUserAccountId: () =>
+          mode === 'legacy-single-user' ? explicitSingleUser(domain) : undefined,
         admitOwner: (headers) => {
           const admission = ctx.connection.admit({ headers });
           return 'peer' in admission && admission.peer.principal.kind === 'owner';
