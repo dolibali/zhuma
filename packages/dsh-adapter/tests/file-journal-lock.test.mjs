@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
+  mkdtempSync as makeScratch,
   readdirSync,
   readFileSync,
   rmSync,
@@ -16,6 +16,20 @@ import {
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const scratchDirs = [];
+function mkdtempSync(prefix) {
+  const dir = makeScratch(prefix);
+  scratchDirs.push(dir);
+  return dir;
+}
+function discardScratch(dir) {
+  spawnSync('chmod', ['-R', 'u+rwx', dir], { stdio: 'ignore' });
+  rmSync(dir, { recursive: true, force: true });
+}
+test.after(() => {
+  for (const dir of scratchDirs) discardScratch(dir);
+});
 
 // 回归：屏障留在回收确认和释放的空隙。改回先把锁改名再核对、释放时把锁改走后无条件删除、
 // 不再理会死进程留下的互斥文件、保存把缺失的锁当成仍持有，然后重跑。已改回跑过，六则失败：
@@ -832,6 +846,72 @@ test('契约：回收新锁遇到权限错误时把路径抛出来', async () =>
     assert.equal(outcome.code, 0, outcome.stderr);
   } finally {
     chmodSync(directory, 0o755);
+    if (!existsSync(waitFile)) writeFileSync(waitFile, 'go');
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('契约：回收新锁遇到不带路径的错误时，抛出的消息仍补上锁路径', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-relock-sealed-'));
+  const directory = path.join(parent, 'data');
+  mkdirSync(directory);
+  const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
+  const report = path.join(parent, 'report');
+  const arrived = path.join(parent, 'relock-arrived');
+  const waitFile = path.join(parent, 'relock-wait');
+  const injectFlag = path.join(parent, 'inject-sealed');
+  const preload = path.join(parent, 'preload.mjs');
+  writeFileSync(
+    preload,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      'const original = fs.linkSync;',
+      'fs.linkSync = (existing, target) => {',
+      '  if (fs.existsSync(process.env.ZHUMA_INJECT_SEALED)) {',
+      "    const error = new Error('sealed');",
+      "    error.code = 'EIO';",
+      '    throw error;',
+      '  }',
+      '  return original(existing, target);',
+      '};',
+      '',
+    ].join('\n'),
+  );
+  staleLock(file, await deadPid(), 'dead-token');
+  const source = `
+    import { writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    let text = '';
+    try {
+      const journal = createFileJournal(${JSON.stringify(file)});
+      text = journal.writable === true ? 'writable' : 'readonly';
+    } catch (error) {
+      text = 'throw:' + (error && error.message ? error.message : String(error));
+    }
+    writeFileSync(${JSON.stringify(report)}, text);
+  `;
+  const child = spawnJournal(
+    source,
+    {
+      ZHUMA_LOCK_RELOCK_ARRIVED: arrived,
+      ZHUMA_LOCK_RELOCK_WAIT: waitFile,
+      ZHUMA_INJECT_SEALED: injectFlag,
+    },
+    preload,
+  );
+  try {
+    await wait(arrived, '子进程没有停在新锁发布前');
+    writeFileSync(injectFlag, '1');
+    writeFileSync(waitFile, 'go');
+    await wait(report, '子进程没有写下新锁错误');
+    const text = readFileSync(report, 'utf8');
+    assert.equal(text, `throw:sealed ${lockPath}`);
+    const outcome = await child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
     if (!existsSync(waitFile)) writeFileSync(waitFile, 'go');
     rmSync(parent, { recursive: true, force: true });
   }
