@@ -667,26 +667,30 @@ export class ExecutionService {
   }
 
   /**
-   * Ask the injected directory which space owns this task's project.
-   * No directory, an unknown project, or a mismatch is not-found. A failed lookup is unavailable.
+   * Ask the directory before deciding whether the task is missing.
+   * An illegal answer is unavailable either way. No directory, an unknown
+   * project, or a mismatch is not-found.
    */
   private async gateSpace(
     taskId: string,
     spaceIds: readonly string[],
   ): Promise<'missing' | ExecutionResult<void>> {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
-    if (!task) return 'missing';
     const directory = this.projectSpaceDirectory();
-    if (!directory) return fail('not-found');
+    if (!directory) {
+      if (!task) return 'missing';
+      return fail('not-found');
+    }
     let lookup: ProjectSpaceLookup;
     try {
-      lookup = await directory.spaceForProject(task.projectId);
+      lookup = await directory.spaceForProject(task ? task.projectId : '');
     } catch {
       return directoryUnavailable();
     }
     const decision = decideProjectSpace(lookup, spaceIds);
-    if (decision === 'ok') return { ok: true, value: undefined };
     if (decision === 'unavailable') return directoryUnavailable();
+    if (!task) return 'missing';
+    if (decision === 'ok') return { ok: true, value: undefined };
     return fail('not-found');
   }
 

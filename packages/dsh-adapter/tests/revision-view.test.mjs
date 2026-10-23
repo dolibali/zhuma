@@ -325,6 +325,43 @@ function responseBytes(value) {
   return Buffer.from(JSON.stringify(value));
 }
 
+test('an illegal directory answer is the same unavailable bytes whether or not the task exists', async () => {
+  const shapes = [{ ok: true, spaceId: '' }, { ok: true }, { ok: 'yes', spaceId: 5 }];
+  const query = { planId: 'plan', revision: 1, nodeId: 'design' };
+  for (const shape of shapes) {
+    const { state } = confirm();
+    const store = memory();
+    await store.storage.writeNode('task:plan:1:design', { nodeId: 'design', broken: true });
+    const before = JSON.stringify(store.storage.listNodes());
+    const directory = {
+      async spaceForProject() {
+        return shape;
+      },
+    };
+    const service = new ExecutionService(store.storage, { readWorkbench: () => state }, directory);
+    const missing = await service.revision(session('chen', ['elsewhere']), {
+      ...query,
+      taskId: 'absent-task',
+    });
+    const present = await service.revision(session('chen', ['elsewhere']), {
+      ...query,
+      taskId: 'task',
+    });
+    assert.equal(Buffer.compare(responseBytes(missing), responseBytes(present)), 0);
+    assert.deepEqual(missing, {
+      ok: false,
+      error: {
+        code: 'unavailable',
+        message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+        details: {},
+      },
+    });
+    assert.equal(JSON.stringify(missing).includes('absent-task'), false);
+    assert.equal(JSON.stringify(missing).includes('broken'), false);
+    assert.equal(JSON.stringify(store.storage.listNodes()), before);
+  }
+});
+
 test('revision returns the same unavailable bytes when the directory is down', async () => {
   const { state } = confirm();
   const query = { taskId: 'task', planId: 'plan', revision: 1, nodeId: 'design' };
