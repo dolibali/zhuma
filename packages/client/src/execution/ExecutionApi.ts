@@ -105,8 +105,9 @@ export interface ReviewDraft {
   readonly idempotencyKey: string;
   readonly roundId: string;
   readonly artifactVersionId: string;
-  readonly action: 'approve' | 'request-changes';
+  readonly action: 'approve' | 'request-changes' | 'comment';
   readonly comment?: string;
+  readonly unresolvedCommentIds?: readonly string[];
 }
 
 export interface SavedDeliveryDraft {
@@ -538,6 +539,9 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
         artifactVersionId: draft.artifactVersionId,
         action: draft.action,
         ...(draft.comment === undefined ? {} : { comment: draft.comment }),
+        ...(draft.unresolvedCommentIds === undefined
+          ? {}
+          : { unresolvedCommentIds: [...draft.unresolvedCommentIds] }),
       };
       return readCommand(await call('ballot', payload, signal));
     },

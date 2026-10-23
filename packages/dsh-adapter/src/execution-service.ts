@@ -196,6 +196,8 @@ const MESSAGES = {
   'not-revision-reader': '只有负责人和当前评审人可以查看退回意见。',
   'not-returned': '这项工作还没有被退回。',
   'not-deliverable': '这项工作现在不能保存交付草稿。',
+  'empty-request-changes': '退回要写意见，或引用一条还没解决的评论。',
+  'comment-not-unresolved': '引用的评论不是这条产物上还没解决的评论。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',
   'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
@@ -437,6 +439,7 @@ export class ExecutionService {
               ? {}
               : { unresolvedCommentIds: request.unresolvedCommentIds }),
           },
+          comments: record.comments,
         });
         return { result, settle: true };
       }),
@@ -822,13 +825,13 @@ export class ExecutionService {
     if (!actor.ok) return actor;
     const parsed = parseBody(schema, body);
     if (!parsed.ok) return parsed;
-    const current = this.storage.readNode(nodeRecordKey(parsed.value));
-    if (!current || !intactNode(current)) return fail('not-found');
-    const space = await this.gateSpace(current.taskId, actor.value.spaceIds);
+    const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
     if (space === 'missing' || !space.ok) {
       if (space !== 'missing' && space.error.code === 'unavailable') return space;
       return fail('not-found');
     }
+    const current = this.storage.readNode(nodeRecordKey(parsed.value));
+    if (!current || !intactNode(current)) return fail('not-found');
     const membership = planMembership(
       this.workbench.readWorkbench(),
       current.taskId,

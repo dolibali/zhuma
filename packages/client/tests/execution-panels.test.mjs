@@ -70,6 +70,7 @@ test('panels render delivery and review without an actor control', () => {
     createElement(ReviewWorkspace, { api, node, onSubmitted() {} }),
   );
   assert.match(review, /第一版接口说明/);
+  assert.match(review, /仅评论/);
   assert.match(review, /通过/);
   assert.match(review, /退回修改/);
   assert.equal(review.includes('type="hidden"'), false);
