@@ -58,3 +58,28 @@ test('a catalog that is oversized, conflicting, or ill-formed is refused', () =>
     assert.deepEqual(answer, { ok: true, spaceId: 'team-north' });
   });
 });
+
+test('a space id is not accepted from a shared prefix or a different case', () => {
+  const lookup = { ok: true, spaceId: 'team-north' };
+  assert.equal(decideProjectSpace(lookup, ['team']), 'hidden');
+  assert.equal(decideProjectSpace(lookup, ['team-north-extra']), 'hidden');
+  assert.equal(decideProjectSpace(lookup, ['Team-North']), 'hidden');
+  assert.equal(decideProjectSpace(lookup, ['team-north']), 'ok');
+});
+
+test('a catalog of exactly 100 records is accepted and 101 is refused', async () => {
+  const accepted = Array.from({ length: PROJECT_SPACE_LIMIT }, (_, index) => ({
+    projectId: `p${index}`,
+    spaceId: 'team-north',
+  }));
+  const directory = boundedProjectSpaces(accepted);
+  assert.deepEqual(await directory.spaceForProject('p0'), { ok: true, spaceId: 'team-north' });
+  assert.deepEqual(await directory.spaceForProject(`p${PROJECT_SPACE_LIMIT - 1}`), {
+    ok: true,
+    spaceId: 'team-north',
+  });
+  assert.throws(
+    () => boundedProjectSpaces([...accepted, { projectId: 'overflow', spaceId: 'team-north' }]),
+    (error) => error instanceof WorkbenchError && error.code === 'validation',
+  );
+});

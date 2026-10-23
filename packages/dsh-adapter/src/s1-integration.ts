@@ -175,7 +175,6 @@ export type ExecutionMessageCode =
   | 'plan-incomplete'
   | 'unavailable'
   | 'not-found'
-  | 'not-revision-reader'
   | 'not-returned'
   | 'not-deliverable'
   | 'empty-request-changes'
