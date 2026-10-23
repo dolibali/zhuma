@@ -1151,7 +1151,7 @@ test('契约：交接引用先复制，畸形引用被拒绝', () => {
       }),
     /invalid-handoff/,
   );
-  const goodRefs = [{ sourceNodeId: 'n0' }];
+  const goodRefs = [{ sourceNodeId: 'n0', artifactVersionId: 'av1' }];
   const good = seed();
   good.handoff = { ...good.handoff, inputRefs: goodRefs };
   const session = ExecutionDesk.create(good, {

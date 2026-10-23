@@ -573,7 +573,14 @@ test('契约：录制的上游事件能读出正文和结束原因', () => {
 test('契约：取消勾选后，提示、运行引用和界面引用是同一组', async () => {
   const { engine, env } = executor('ok');
   const input = seed();
-  input.handoff.inputRefs = [...input.handoff.inputRefs, { contextPackId: 'pack-optional' }];
+  input.handoff.inputRefs = [
+    ...input.handoff.inputRefs,
+    {
+      sourceNodeId: 'node-optional',
+      artifactVersionId: 'art-optional',
+      contextPackId: 'pack-optional',
+    },
+  ];
   input.contextItems.push({
     id: 'optional',
     kind: 'node-input',
@@ -584,6 +591,8 @@ test('契约：取消勾选后，提示、运行引用和界面引用是同一�
     required: false,
     includedByDefault: true,
     body: 'OPTIONAL-BODY',
+    sourceNodeId: 'node-optional',
+    artifactVersionId: 'art-optional',
     contextPackId: 'pack-optional',
   });
   const desk = ExecutionDesk.create(input, { executors: [engine], newId: ids('uncheck') });
