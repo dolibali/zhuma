@@ -6,8 +6,10 @@
  * It registers a prefix route on `ctx.webServer`, stores its signing secret in
  * `ctx.credentials`, and opens a `zhuma_identity` storage domain. A valid
  * member cookie becomes a `zhuma-member` Peer from `ctx.connection.createPeer`.
- * A request with no member cookie can still be the host owner, mapped from
- * the admitted owner Peer to `ownerAccountId`. A browser field named
+ * A request with no member cookie can still be the host owner, but only when
+ * the import set `ownerAccountId` to an account that was stored. With no
+ * import, or an import that omits that field, the DSH cookie is not a product
+ * account. A browser field named
  * actor, actorId, or memberId is refused and is never the account.
  * `applyIdentity` writes accounts only from an explicit `{id, passwordHash}`
  * import. With no import it writes no seed and stores no password.
@@ -16,7 +18,14 @@
  * principal before policy conditions run, so a policy alone cannot isolate
  * spaces from the host owner.
  */
-import { createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import {
+  createHmac,
+  randomBytes,
+  randomUUID,
+  scrypt,
+  scryptSync,
+  timingSafeEqual,
+} from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PeerScope, Principal } from '@deepseek-ai/dsh-client-connection';
@@ -28,6 +37,8 @@ const MAX_BODY_BYTES = 64 * 1024;
 const COOKIE_NAME = 'zhuma-member';
 const SECRET_KEY = 'zhuma-identity/member-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 8;
+const LOGIN_FAILURE_WINDOW_MS = 60_000;
 const ACTOR_FIELDS = ['actor', 'actorId', 'memberId'] as const;
 const READ_ACTION = 'zhuma-id/read-space';
 const WRITE_ACTION = 'zhuma-id/write-space';
@@ -57,7 +68,7 @@ const NoteSchema = z.object({
   text: z.string(),
 });
 const GlobalSchema = z.object({
-  ownerAccountId: z.string().min(1),
+  ownerAccountId: z.string(),
 });
 const LoginSchema = z.strictObject({
   accountId: z.string().min(1).max(64),
@@ -66,10 +77,10 @@ const LoginSchema = z.strictObject({
 const WriteSchema = z.strictObject({
   text: z.string().max(4000),
 });
-const ImportSchema = z.object({
-  accounts: z.array(AccountSchema),
+const ImportSchema = z.strictObject({
+  accounts: z.array(AccountSchema.strict()),
   ownerAccountId: z.string().min(1).optional(),
-  notes: z.array(NoteSchema).optional(),
+  notes: z.array(NoteSchema.strict()).optional(),
 });
 
 /** Explicit account import. `passwordHash` is a verifier, never a password. */
@@ -88,7 +99,7 @@ export interface IdentityImport {
 export const identityDomainSpec = defineDomain({
   name: 'zhuma_identity',
   version: 1,
-  global: { schema: GlobalSchema, initial: { ownerAccountId: OWNER_ACCOUNT_ID } },
+  global: { schema: GlobalSchema, initial: { ownerAccountId: '' } },
   tables: {
     accounts: { valueSchema: AccountSchema },
     sessions: { valueSchema: SessionSchema },
@@ -192,23 +203,63 @@ function parseVerifier(stored: string | undefined): ScryptVerifier | undefined {
   return { salt: Buffer.from(match[1] ?? '', 'hex'), hash: Buffer.from(match[2] ?? '', 'hex') };
 }
 
-/** Salted scrypt verifier. Callers store the result, not a password. */
+/** Salted scrypt verifier for an import. Not used on the request path. */
 export function hashPassword(password: string): string {
   const salt = randomBytes(16);
   const hash = scryptSync(password, salt, SCRYPT_KEYLEN, scryptOptions());
   return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${hash.toString('hex')}`;
 }
 
+function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, SCRYPT_KEYLEN, scryptOptions(), (error, derived) => {
+      if (error !== null) reject(error);
+      else resolve(derived);
+    });
+  });
+}
+
 /** Random verifier so an unknown account still runs scrypt. */
 const DUMMY_VERIFIER = parseVerifier(hashPassword(randomBytes(32).toString('base64url')));
 if (DUMMY_VERIFIER === undefined) throw new Error('identity dummy verifier was not created');
 
-function passwordMatches(stored: string | undefined, password: string): boolean {
+async function passwordMatches(stored: string | undefined, password: string): Promise<boolean> {
   const parsed = parseVerifier(stored) ?? DUMMY_VERIFIER;
   if (parsed === undefined) return false;
-  const actual = scryptSync(password, parsed.salt, SCRYPT_KEYLEN, scryptOptions());
+  const actual = await deriveKey(password, parsed.salt);
   const matches = actual.length === parsed.hash.length && timingSafeEqual(actual, parsed.hash);
   return matches && stored !== undefined && parseVerifier(stored) !== undefined;
+}
+
+const loginFailures = new Map<string, { count: number; resetAt: number }>();
+
+function clientAddress(req: IncomingMessage): string {
+  const address = req.socket?.remoteAddress;
+  return typeof address === 'string' && address.length > 0 ? address : 'unknown';
+}
+
+function loginFailureKey(req: IncomingMessage, accountId: string): string {
+  return `${clientAddress(req)}\0${accountId}`;
+}
+
+function loginLimited(req: IncomingMessage, accountId: string): boolean {
+  const entry = loginFailures.get(loginFailureKey(req, accountId));
+  return entry !== undefined && entry.resetAt > Date.now() && entry.count >= LOGIN_FAILURE_LIMIT;
+}
+
+function recordLoginFailure(req: IncomingMessage, accountId: string): void {
+  const key = loginFailureKey(req, accountId);
+  const now = Date.now();
+  const entry = loginFailures.get(key);
+  if (entry === undefined || entry.resetAt <= now) {
+    loginFailures.set(key, { count: 1, resetAt: now + LOGIN_FAILURE_WINDOW_MS });
+    return;
+  }
+  entry.count += 1;
+}
+
+function clearLoginFailures(req: IncomingMessage, accountId: string): void {
+  loginFailures.delete(loginFailureKey(req, accountId));
 }
 
 function sign(secret: Buffer, body: string): string {
@@ -247,10 +298,53 @@ async function signingSecret(credentials: CredentialsLike): Promise<Buffer> {
 
 function readImport(value: unknown): IdentityImport | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'object' || !('accounts' in value)) return undefined;
-  const parsed = ImportSchema.safeParse(value);
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('identity import was rejected');
+  }
+  const record = value as Record<string, unknown>;
+  const unknown = Object.keys(record).filter(
+    (key) => key !== 'accounts' && key !== 'ownerAccountId' && key !== 'notes',
+  );
+  if (unknown.length > 0) {
+    throw new Error(`identity import was rejected: unknown key ${unknown.join(', ')}`);
+  }
+  if (!Object.hasOwn(record, 'accounts')) {
+    throw new Error('identity import was rejected: accounts is required');
+  }
+  if (Array.isArray(record.accounts) && record.accounts.length === 0) {
+    throw new Error('identity import was rejected: accounts is empty');
+  }
+  const parsed = ImportSchema.safeParse(record);
   if (!parsed.success) throw new Error('identity import was rejected');
-  if (parsed.data.accounts.length === 0) return undefined;
+  const accountIds = new Set<string>();
+  for (const account of parsed.data.accounts) {
+    if (accountIds.has(account.id)) {
+      throw new Error(`identity import was rejected: duplicate account ${account.id}`);
+    }
+    accountIds.add(account.id);
+  }
+  if (parsed.data.ownerAccountId !== undefined && !accountIds.has(parsed.data.ownerAccountId)) {
+    throw new Error('identity import was rejected: ownerAccountId is not an imported account');
+  }
+  const noteIds = new Set<string>();
+  for (const note of parsed.data.notes ?? []) {
+    if (noteIds.has(note.id)) {
+      throw new Error(`identity import was rejected: duplicate note ${note.id}`);
+    }
+    noteIds.add(note.id);
+    if (!accountIds.has(note.ownerId)) {
+      throw new Error(
+        `identity import was rejected: note ${note.id} owner is not an imported account`,
+      );
+    }
+    for (const memberId of note.teamMemberIds) {
+      if (!accountIds.has(memberId)) {
+        throw new Error(
+          `identity import was rejected: note ${note.id} member is not an imported account`,
+        );
+      }
+    }
+  }
   const imported: IdentityImport = { accounts: parsed.data.accounts };
   if (parsed.data.ownerAccountId !== undefined) {
     return {
@@ -419,6 +513,25 @@ function fail(res: ServerResponse, status: number, code: string, setCookie?: str
   send(res, status, { ok: false, error: { code } }, setCookie);
 }
 
+function failTooLarge(req: IncomingMessage, res: ServerResponse): void {
+  req.on('error', () => {});
+  const body = JSON.stringify({ ok: false, error: { code: 'body-too-large' } });
+  res.writeHead(413, {
+    'cache-control': 'no-store',
+    connection: 'close',
+    'content-length': String(Buffer.byteLength(body)),
+    'content-type': 'application/json; charset=utf-8',
+  });
+  res.end(body);
+  const stop = () => {
+    req.resume();
+    req.destroy();
+  };
+  if (res.writableFinished === true) stop();
+  else res.on('finish', stop);
+  req.resume();
+}
+
 function permitted(
   res: ServerResponse,
   remoteAccess: RemoteAccessLike,
@@ -444,8 +557,6 @@ class BodyTooLargeError extends Error {}
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const declared = header(req.headers, 'content-length');
   if (declared !== undefined && (!/^[0-9]+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
-    req.on('error', () => {});
-    req.destroy();
     throw new BodyTooLargeError();
   }
   const chunks: Buffer[] = [];
@@ -453,11 +564,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   for await (const chunk of req) {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += buf.length;
-    if (total > MAX_BODY_BYTES) {
-      req.on('error', () => {});
-      req.destroy();
-      throw new BodyTooLargeError();
-    }
+    if (total > MAX_BODY_BYTES) throw new BodyTooLargeError();
     chunks.push(buf);
   }
   if (chunks.length === 0) return undefined;
@@ -505,8 +612,12 @@ async function resolveActor(
   }
   const admission = ctx.connection.admit({ headers: req.headers });
   if (!('peer' in admission) || admission.peer.principal.kind !== 'owner') return undefined;
+  const ownerAccountId = domain.global.get().ownerAccountId;
+  if (ownerAccountId.length === 0 || domain.table('accounts').get(ownerAccountId) === undefined) {
+    return undefined;
+  }
   return {
-    accountId: domain.global.get().ownerAccountId,
+    accountId: ownerAccountId,
     principal: admission.peer.principal,
     peerId: admission.peer.id,
   };
@@ -591,10 +702,19 @@ async function handle(
         return;
       }
       const account = domain.table('accounts').get(parsed.data.accountId);
-      if (account === undefined || !passwordMatches(account.passwordHash, parsed.data.password)) {
+      if (loginLimited(req, parsed.data.accountId)) {
+        fail(res, 429, 'login-rate-limited');
+        return;
+      }
+      if (
+        account === undefined ||
+        !(await passwordMatches(account.passwordHash, parsed.data.password))
+      ) {
+        recordLoginFailure(req, parsed.data.accountId);
         fail(res, 401, 'invalid-login');
         return;
       }
+      clearLoginFailures(req, parsed.data.accountId);
       await purgeExpiredSessions(domain);
       const sessionId = randomUUID();
       const expiresAt = Date.now() + SESSION_TTL_MS;
@@ -688,7 +808,7 @@ async function handle(
   } catch (error) {
     if (res.headersSent === true) return;
     if (error instanceof BodyTooLargeError) {
-      fail(res, 413, 'body-too-large');
+      failTooLarge(req, res);
       return;
     }
     fail(

@@ -17,6 +17,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import test from 'node:test';
@@ -259,7 +260,13 @@ async function mount(shared = {}) {
     { inject: [...identityInject], apply: applyIdentity },
     shared.imported === undefined ? fixtureImport() : shared.imported,
   );
-  await identityFiber;
+  try {
+    await identityFiber;
+  } catch (error) {
+    await identityFiber.dispose().catch(() => {});
+    await connectionFiber.dispose();
+    throw error;
+  }
   return {
     web,
     access,
@@ -273,7 +280,7 @@ async function mount(shared = {}) {
   };
 }
 
-async function call(web, { method, path, cookie, body, headers: extra }) {
+async function call(web, { method, path, cookie, body, headers: extra, remoteAddress }) {
   const headers = { host: AUTHORITY, ...(extra ?? {}) };
   if (cookie !== undefined) headers.cookie = cookie;
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -281,6 +288,7 @@ async function call(web, { method, path, cookie, body, headers: extra }) {
     Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]),
     { method, url: path, headers },
   );
+  if (remoteAddress !== undefined) req.socket = { remoteAddress };
   const captured = captureResponse();
   await web.dispatch(req, captured.response);
   return {
@@ -339,7 +347,211 @@ test('applyIdentity without an import writes no account', async () => {
   });
   assert.equal(refused.status, 401);
   assert.equal(refused.json.error.code, 'invalid-login');
+  const owner = ownerCookie(host.connection);
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  assert.equal(session.status, 401);
+  assert.equal(session.json.accountId, undefined);
   await host.dispose();
+});
+
+test('an import without ownerAccountId does not map the DSH cookie', async () => {
+  const imported = fixtureImport();
+  delete imported.ownerAccountId;
+  const host = await mount({ imported });
+  const owner = ownerCookie(host.connection);
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  assert.equal(session.status, 401);
+  const chen = await login(host.web, 'chen');
+  assert.equal(typeof chen, 'string');
+  await host.dispose();
+});
+
+test('a malformed identity import is rejected', async () => {
+  const hash = hashPassword(randomBytes(18).toString('base64url'));
+  await assert.rejects(() => mount({ imported: {} }), /accounts is required/);
+  await assert.rejects(() => mount({ imported: { acounts: [] } }), /unknown key acounts/);
+  await assert.rejects(() => mount({ imported: { accounts: [] } }), /accounts is empty/);
+  await assert.rejects(
+    () =>
+      mount({
+        imported: {
+          accounts: [
+            { id: 'a', passwordHash: hash },
+            { id: 'a', passwordHash: hash },
+          ],
+        },
+      }),
+    /duplicate account a/,
+  );
+  await assert.rejects(
+    () =>
+      mount({
+        imported: {
+          accounts: [{ id: 'a', passwordHash: hash }],
+          ownerAccountId: 'missing',
+        },
+      }),
+    /ownerAccountId is not an imported account/,
+  );
+  await assert.rejects(
+    () =>
+      mount({
+        imported: {
+          accounts: [
+            { id: 'a', passwordHash: hash },
+            { id: 'b', passwordHash: hash },
+          ],
+          notes: [
+            {
+              id: 'n',
+              spaceId: 's',
+              ownerId: 'missing',
+              teamMemberIds: ['a'],
+              text: '',
+            },
+          ],
+        },
+      }),
+    /note n owner is not an imported account/,
+  );
+  await assert.rejects(
+    () =>
+      mount({
+        imported: {
+          accounts: [{ id: 'a', passwordHash: hash }],
+          notes: [
+            {
+              id: 'n',
+              spaceId: 's',
+              ownerId: 'a',
+              teamMemberIds: ['missing'],
+              text: '',
+            },
+          ],
+        },
+      }),
+    /note n member is not an imported account/,
+  );
+});
+
+test('repeated failed logins from one address are limited', async () => {
+  const host = await mount();
+  const wrong = randomBytes(18).toString('base64url');
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const refused = await call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: '203.0.113.10',
+      body: { accountId: 'chen', password: wrong },
+    });
+    assert.equal(refused.status, 401);
+    assert.equal(refused.json.error.code, 'invalid-login');
+  }
+  const limited = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.10',
+    body: { accountId: 'chen', password: wrong },
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.json.error.code, 'login-rate-limited');
+  const otherAddress = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.11',
+    body: { accountId: 'chen', password: wrong },
+  });
+  assert.equal(otherAddress.status, 401);
+  const otherAccount = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.10',
+    body: { accountId: 'zhao', password: passwords.zhao },
+  });
+  assert.equal(otherAccount.status, 200);
+  await host.dispose();
+});
+
+test('a real http client receives 413 before the socket closes', async () => {
+  const host = await mount();
+  const server = http.createServer((req, res) => {
+    host.web.dispatch(req, res).catch(() => {
+      if (res.headersSent !== true) {
+        res.writeHead(500);
+        res.end();
+      }
+    });
+  });
+  await new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.equal(typeof address, 'object');
+  const port = address.port;
+  const send = (body, chunked = false) =>
+    new Promise((resolve) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method: 'POST',
+          path: '/zhuma-id/login',
+          headers: { 'content-type': 'application/json', host: AUTHORITY },
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => {
+            resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') });
+          });
+        },
+      );
+      req.on('error', (error) => resolve({ status: 0, body: error.code ?? error.message }));
+      if (!chunked) {
+        req.end(body);
+        return;
+      }
+      const buffer = Buffer.from(body);
+      let offset = 0;
+      const tick = () => {
+        if (offset >= buffer.length) {
+          req.end();
+          return;
+        }
+        const ok = req.write(buffer.subarray(offset, offset + 4096));
+        offset += 4096;
+        if (ok) setImmediate(tick);
+        else req.once('drain', tick);
+      };
+      tick();
+    });
+  try {
+    const ok = await send(JSON.stringify({ accountId: 'chen', password: passwords.chen }));
+    assert.equal(ok.status, 200);
+    const bulky = JSON.stringify({
+      accountId: 'a',
+      password: randomBytes(70_000).toString('base64url').slice(0, 70_000),
+    });
+    const declared = await send(bulky);
+    assert.equal(declared.status, 413);
+    assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+    const chunked = await send(bulky, true);
+    assert.equal(chunked.status, 413);
+    assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+    const again = await send(JSON.stringify({ accountId: 'zhao', password: passwords.zhao }));
+    assert.equal(again.status, 200);
+  } finally {
+    server.close();
+    await host.dispose();
+  }
 });
 
 test('owner and member sessions stay distinct, and space checks reject the other account', async () => {

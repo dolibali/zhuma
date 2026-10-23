@@ -77,7 +77,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 生产路径没有默认账号。`applyIdentity(ctx)` 不传导入时不写账号、不写笔记、也不保存任何口令。`seedIfEmpty` 不使用内置口令。调用方只能显式传入已经算好的 `{ id, passwordHash }`。已有账号的 domain 不会被这次导入覆盖。
 
-测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。`lin` 作为 host owner cookie 的映射，来自导入里的 `ownerAccountId`，不是一张内置的可登录账号。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。请求体超过 64KiB 返回 413，读到上限就停止，不再把更大的正文放进内存。登录成功时删掉 `expiresAt` 已经过去的会话行。没有单独的定时器；未过期的会话会留下。
+测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。`lin` 作为 host owner cookie 的映射，只在这次导入写了 `ownerAccountId` 时成立。没有导入，或导入没有 `ownerAccountId` 时，domain 的 global 是空字符串，DSH cookie 不会变成任何账号，`/session` 返回 401。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。拼错的键、空的账号列表、重复的 id，以及笔记引用了未导入的账号，都会拒绝并报错。请求体超过 64KiB 时先返回 413，带 `Connection: close`，响应结束后再停止读取并关闭连接。真实的 `node:http` 客户端能收到这个 413。登录核对走异步 `scrypt`。同一个来源地址和账号在 60 秒内失败 8 次后，再登录返回 429，不再计算摘要。`hashPassword` 仍是同步的，只给准备导入的调用方使用，请求处理不会调用它。登录成功时删掉 `expiresAt` 已经过去的会话行。没有定时器。只读请求和过期 cookie 的 401 不会删行；没有人登录时，过期行会留到下一次成功登录。
 
 探针里真实跑到的 DSH 层：
 
@@ -130,6 +130,6 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 
 1. M+ 这种由 B 签发的成员 cookie，是否接受为 FR16 的登录，还是必须等 U，在 `admit` 里区分用户？
 2. `decide` 对 owner 一律允许。空间隔离放在路由里、不单放在 `registerPolicy`，是否符合预期？
-3. 带了无效成员 cookie 时不退回 owner。后果（N1）：在 0.2.1-rc.2 上，浏览器只留 DSH cookie、没有成员 cookie 时，会被当成 owner（`lin`）。因此 chen 只要删掉成员 cookie，就能读到北队笔记。演示时是否要求两个浏览器都走成员登录，从而都不再落回 owner？
+3. 带了无效成员 cookie 时不退回 owner。后果（N1）：导入把 `ownerAccountId` 设成 `lin` 时，浏览器只留 DSH cookie、删掉成员 cookie，会被当成 `lin`，因此 chen 能读到北队笔记。没有这份导入时，DSH cookie 不是产品账号。演示时是否要求两个浏览器都走成员登录，从而都不再落回 owner？
 4. 生产路径已经不放默认账号。导入是调用方传入的 `{ id, passwordHash }`，且不覆盖已有账号。宿主是否就用这个导入作为种子入口？
 5. `applyIdentity` 的挂载和构建入口是否由 A 加进 `workbench-plugin.ts`？B 这次没有改那个文件，也没有改 `scripts/workbench/build.mjs`。
