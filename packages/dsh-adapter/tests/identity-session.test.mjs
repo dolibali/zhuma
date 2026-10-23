@@ -30,7 +30,14 @@ import {
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../dist/identity-session.js';
-import { configureDeploymentMode, resolveMember } from '../dist/member-session.js';
+import {
+  authorizeLegacyOwnerRoutes,
+  configureDeploymentMode,
+  deploymentMode,
+  identityAccessMode,
+  installMemberResolver,
+  resolveMember,
+} from '../dist/member-session.js';
 
 const AUTHORITY = '127.0.0.1:3080';
 
@@ -95,6 +102,10 @@ function memoryKv(media = new Map(), faults = {}) {
       return {
         async loadAll() {
           if (closed) throw new Error('closed');
+          if (typeof faults.load === 'function') {
+            const error = await faults.load();
+            if (error !== undefined) throw error;
+          }
           const tables = {};
           for (const table of descriptor.tables) {
             tables[table] = Object.fromEntries(medium.tables.get(table) ?? []);
@@ -104,7 +115,7 @@ function memoryKv(media = new Map(), faults = {}) {
         async putRecord(table, key, value) {
           if (closed) throw new Error('closed');
           if (typeof faults.put === 'function') {
-            const error = faults.put(table, key);
+            const error = await faults.put(table, key);
             if (error !== undefined) throw error;
           }
           const records = medium.tables.get(table) ?? new Map();
@@ -118,13 +129,17 @@ function memoryKv(media = new Map(), faults = {}) {
         async setGlobal(value) {
           if (closed) throw new Error('closed');
           if (typeof faults.global === 'function') {
-            const error = faults.global(value);
+            const error = await faults.global(value);
             if (error !== undefined) throw error;
           }
           medium.global = structuredClone(value);
         },
         async close() {
           closed = true;
+          if (typeof faults.close === 'function') {
+            const error = await faults.close();
+            if (error !== undefined) throw error;
+          }
         },
       };
     },
@@ -246,7 +261,7 @@ async function mount(shared = {}) {
   const kv = memoryKv(shared.media, shared.faults);
   const web = createWebServer();
   const access = createAccess();
-  const ctx = new Context();
+  const ctx = shared.ctx ?? new Context();
   if (shared.deploymentMode !== null) {
     configureDeploymentMode(ctx, shared.deploymentMode ?? 'multi-member');
   }
@@ -283,6 +298,7 @@ async function mount(shared = {}) {
     connection: ctx.connection,
     credentials,
     media: kv.media,
+    identityFiber,
     dispose: async () => {
       await identityFiber.dispose();
       await connectionFiber.dispose();
@@ -1483,6 +1499,234 @@ test('a single-user owner mapping exists only when the import names that one acc
   assert.equal(refused.status, 401);
   await named.dispose();
   await unnamed.dispose();
+});
+
+function closedLegacy(status, code) {
+  return { ok: false, status, code };
+}
+
+test('an unset deployment mode refuses identity startup and legacy owner routes', async () => {
+  const ctx = new Context();
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+  assert.throws(
+    () => identityAccessMode(ctx),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.throws(
+    () => configureDeploymentMode(ctx, 'single-user'),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.equal(deploymentMode(ctx), undefined);
+  await assert.rejects(
+    () => mount({ ctx, deploymentMode: null }),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+});
+
+test('a registered resolver does not select the deployment mode', () => {
+  const ctx = new Context();
+  installMemberResolver(ctx, {
+    secret: randomBytes(32),
+    requestRejection: () => undefined,
+    findSession: () => undefined,
+    spaceIdsFor: () => [],
+    singleUserAccountId: () => 'lin',
+    admitOwner: () => true,
+  });
+  assert.throws(
+    () => identityAccessMode(ctx),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+  configureDeploymentMode(ctx, 'multi-member');
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+});
+
+test('multi-member denies legacy owner routes while identity is not mounted', () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'multi-member');
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+});
+
+test('a failed identity mount keeps legacy owner routes denied', async () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'multi-member');
+  await assert.rejects(
+    () => mount({ ctx, deploymentMode: null, imported: { accounts: [] } }),
+    /identity import was rejected: accounts is empty/,
+  );
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const member = await resolveMember(ctx, { headers: { host: AUTHORITY } });
+  assert.deepEqual(member, { ok: false, status: 401, code: 'unauthenticated' });
+});
+
+test('legacy owner routes stay denied while multi-member identity disposes and remounts', async () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  let closeCount = 0;
+  let releaseClose;
+  let closeEntered;
+  const closeReady = new Promise((resolve) => {
+    closeEntered = resolve;
+  });
+  let opens = 0;
+  let releaseLoad;
+  let loadEntered;
+  const loadReady = new Promise((resolve) => {
+    loadEntered = resolve;
+  });
+  const host = await mount({
+    ctx,
+    deploymentMode: null,
+    faults: {
+      close: () => {
+        closeCount += 1;
+        if (closeCount > 1) return undefined;
+        return new Promise((resolve) => {
+          closeEntered();
+          releaseClose = () => resolve(undefined);
+        });
+      },
+      load: () => {
+        opens += 1;
+        if (opens === 1) return undefined;
+        return new Promise((resolve) => {
+          loadEntered();
+          releaseLoad = () => resolve(undefined);
+        });
+      },
+    },
+  });
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const closing = host.identityFiber.dispose();
+  await closeReady;
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const duringDispose = await resolveMember(ctx, { headers: { host: AUTHORITY } });
+  assert.deepEqual(duringDispose, { ok: false, status: 401, code: 'unauthenticated' });
+  releaseClose();
+  await closing;
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const remounting = ctx.plugin(
+    { inject: [...identityInject], apply: applyIdentity },
+    fixtureImport(),
+  );
+  await loadReady;
+  assert.equal(identityAccessMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  const duringRemount = await resolveMember(ctx, { headers: { host: AUTHORITY } });
+  assert.deepEqual(duringRemount, { ok: false, status: 401, code: 'unauthenticated' });
+  releaseLoad();
+  await remounting;
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  await remounting.dispose();
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+  await host.dispose();
+  assert.equal(deploymentMode(ctx), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(404, 'not-found'));
+});
+
+test('multi-member does not map an owner cookie onto its one named account', async () => {
+  const password = randomBytes(18).toString('base64url');
+  const host = await mount({
+    deploymentMode: 'multi-member',
+    imported: {
+      ownerAccountId: 'lin',
+      accounts: [{ id: 'lin', passwordHash: hashPassword(password) }],
+      notes: [
+        {
+          id: 'solo-note',
+          spaceId: 'solo-space',
+          ownerId: 'lin',
+          teamMemberIds: ['lin'],
+          text: 'solo',
+        },
+      ],
+    },
+  });
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: ownerCookie(host.connection),
+  });
+  assert.equal(session.status, 401);
+  assert.equal(session.json.error.code, 'unauthenticated');
+  const loggedIn = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: randomBytes(8).toString('hex'),
+    body: { accountId: 'lin', password },
+  });
+  assert.equal(loggedIn.status, 200);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(host.ctx), closedLegacy(404, 'not-found'));
+  await host.dispose();
+});
+
+test('legacy-single-user keeps owner routes open across mount and dispose', async () => {
+  const ctx = new Context();
+  configureDeploymentMode(ctx, 'legacy-single-user');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), { ok: true });
+  assert.equal(identityAccessMode(ctx), 'single-user');
+  const password = randomBytes(18).toString('base64url');
+  const host = await mount({
+    ctx,
+    deploymentMode: null,
+    imported: {
+      ownerAccountId: 'lin',
+      accounts: [{ id: 'lin', passwordHash: hashPassword(password) }],
+      notes: [
+        {
+          id: 'solo-note',
+          spaceId: 'solo-space',
+          ownerId: 'lin',
+          teamMemberIds: ['lin'],
+          text: 'solo',
+        },
+      ],
+    },
+  });
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), { ok: true });
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: ownerCookie(host.connection),
+  });
+  assert.equal(session.status, 200);
+  assert.equal(session.json.accountId, 'lin');
+  await host.dispose();
+  assert.equal(deploymentMode(ctx), 'legacy-single-user');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), { ok: true });
+});
+
+test('deployment mode is stored on the host root', async () => {
+  const root = new Context();
+  configureDeploymentMode(root, 'multi-member');
+  let child;
+  const fiber = root.plugin({
+    apply(pluginCtx) {
+      child = pluginCtx;
+    },
+  });
+  await fiber;
+  assert.notEqual(child, root);
+  assert.equal(deploymentMode(child), 'multi-member');
+  assert.equal(identityAccessMode(child), 'multi-member');
+  assert.deepEqual(authorizeLegacyOwnerRoutes(child), closedLegacy(404, 'not-found'));
+  configureDeploymentMode(child, 'multi-member');
+  assert.throws(
+    () => configureDeploymentMode(child, 'legacy-single-user'),
+    /identity startup refused: deployment mode is already configured/,
+  );
+  assert.equal(deploymentMode(root), 'multi-member');
+  await fiber.dispose();
 });
 
 test('a pre-seeded domain with several accounts does not map the owner cookie', async () => {
