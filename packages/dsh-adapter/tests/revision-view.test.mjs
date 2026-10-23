@@ -162,7 +162,7 @@ test('a second return keeps the first round notes under reviewer names', () => {
   assert.equal(JSON.stringify(view.view.notes).includes('qiu'), false);
   assert.equal(JSON.stringify(view.view.notes).includes('lin'), false);
   node.handoff.reviewerIds = ['lin', 'qiu'];
-  assert.equal(readRevisionView(node, 'qiu', names).code, 'not-revision-reader');
+  assert.equal(readRevisionView(node, 'qiu', names).code, 'not-found');
   assert.equal(readRevisionView(node, 'lin', names).view.notes[0].body, '第一轮意见-4e1');
 });
 
@@ -170,16 +170,16 @@ test('readRevisionView allows a current reviewer and refuses a removed reviewer'
   assert.equal(readRevisionView(record(), 'lin').ok, true);
   const removed = record();
   removed.handoff.reviewerIds = [];
-  assert.equal(readRevisionView(removed, 'lin').code, 'not-revision-reader');
-  assert.equal(readRevisionView(record(), 'gone').code, 'not-revision-reader');
+  assert.equal(readRevisionView(removed, 'lin').code, 'not-found');
+  assert.equal(readRevisionView(record(), 'gone').code, 'not-found');
   const otherRound = record();
   otherRound.handoff.reviewerIds = ['lin', 'qa'];
-  assert.equal(readRevisionView(otherRound, 'qa').code, 'not-revision-reader');
+  assert.equal(readRevisionView(otherRound, 'qa').code, 'not-found');
   const quiet = record();
   quiet.rounds = [];
   quiet.currentRoundId = undefined;
   assert.equal(readRevisionView(quiet, 'chen').code, 'not-returned');
-  assert.equal(readRevisionView(quiet, 'outsider').code, 'not-revision-reader');
+  assert.equal(readRevisionView(quiet, 'outsider').code, 'not-found');
 });
 
 function memory() {
@@ -299,10 +299,16 @@ test('revision refuses people outside the space and removed participants', async
     (await service.revision(session('chen', ['elsewhere']), query)).error.code,
     'not-found',
   );
-  assert.equal(
-    (await service.revision(session('outside'), query)).error.code,
-    'not-revision-reader',
-  );
+  const outsider = await service.revision(session('outside'), query);
+  const missingNode = await service.revision(session('outside'), {
+    ...query,
+    nodeId: 'absent-node',
+  });
+  assert.equal(Buffer.compare(responseBytes(outsider), responseBytes(missingNode)), 0);
+  assert.deepEqual(outsider, {
+    ok: false,
+    error: { code: 'not-found', message: '找不到这个节点。', details: {} },
+  });
   const closed = new ExecutionService(store.storage, { readWorkbench: () => state }, undefined);
   assert.equal((await closed.revision(session('chen'), query)).error.code, 'not-found');
 
@@ -315,7 +321,16 @@ test('revision refuses people outside the space and removed participants', async
     ...design,
     handoff: { ...design.handoff, reviewerIds: [] },
   });
-  assert.equal((await service.revision(session('lin'), query)).error.code, 'not-revision-reader');
+  const removedReviewer = await service.revision(session('lin'), query);
+  const removedMissing = await service.revision(session('lin'), {
+    ...query,
+    nodeId: 'absent-node',
+  });
+  assert.equal(Buffer.compare(responseBytes(removedReviewer), responseBytes(removedMissing)), 0);
+  assert.deepEqual(removedReviewer, {
+    ok: false,
+    error: { code: 'not-found', message: '找不到这个节点。', details: {} },
+  });
   const still = await service.revision(session('chen'), query);
   assert.equal(still.ok, true);
   assert.equal(still.value.view.notes[0].body, '请补充错误码');
