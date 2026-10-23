@@ -20,6 +20,30 @@ import {
 const importCommand = (files = packageFixture()) =>
   packageCommand(previewResourcePackage(files, parseWorkflowTemplate), files);
 
+test('resource package: references to retained ancestor notices work without allowing arbitrary ancestor files', () => {
+  const files = [
+    sourceFile('README.md', 'Public package provenance.'),
+    sourceFile('LICENSE.txt', 'Public fixture license.'),
+    sourceFile('notes.txt', 'Not part of this Skill.'),
+    sourceFile(
+      'skills/reference-check/SKILL.md',
+      '---\nname: reference-check\ndescription: Reference fixture.\n---\nRead [source](../../README.md) and [license](../../LICENSE.txt).',
+    ),
+  ];
+  const preview = previewResourcePackage(files, parseWorkflowTemplate);
+  assert.deepEqual(preview.items[0].missing, []);
+  assert(preview.items[0].filePaths.includes('README.md'));
+  assert(preview.items[0].filePaths.includes('LICENSE.txt'));
+  assert(!preview.files.some((f) => f.path === 'notes.txt'));
+  files[3] = sourceFile(
+    files[3].path,
+    Buffer.from(files[3].data, 'base64').toString() + '\nRead [other](../../notes.txt).',
+  );
+  const blocked = previewResourcePackage(files, parseWorkflowTemplate);
+  assert.deepEqual(blocked.items[0].missing, ['../../notes.txt']);
+  assert(!blocked.files.some((f) => f.path === 'notes.txt'));
+});
+
 test('resource package: known credential paths never enter preview or origin, including nested and upper-case names', () => {
   const privateFiles = privateCredentialFiles();
   const normalFiles = [

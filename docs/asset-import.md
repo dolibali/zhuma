@@ -1,6 +1,6 @@
 # 本地专家与资产包导入：首批接口
 
-状态：A-ASSET-IMPORT [PR #19](https://github.com/dolibali/zhuma/pull/19) 待独立审查；首批代码 `e3916fa`，凭据路径修复 `39f4a2d`。领域、Host 服务契约与浏览器交互已实现；隔离的官方 DSH 桌面已验证首批构建的正常 UI ZIP 导入、来源文件保存和冷重开，修复后的定向验证另见[分层证据](review/asset-import/README.md)。这不代表完整产品、包发布系统或外部 Agent 运行兼容性已验收。兼容格式见[边界表](asset-import-compatibility.md)。
+状态：A-ASSET-IMPORT [PR #19](https://github.com/dolibali/zhuma/pull/19) 已合入 main `fddf6b8`；首批代码 `e3916fa`，凭据路径修复 `39f4a2d`。领域、Host 服务契约与浏览器交互已实现；隔离的官方 DSH 桌面已验证首批构建的正常 UI ZIP 导入、来源文件保存和冷重开，修复后的定向验证另见[分层证据](review/asset-import/README.md)。这不代表完整产品、包发布系统或外部 Agent 运行兼容性已验收。兼容格式见[边界表](asset-import-compatibility.md)。
 
 ## 同一目录与显式保存
 

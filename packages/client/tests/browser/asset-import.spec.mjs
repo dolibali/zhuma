@@ -1,5 +1,6 @@
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   applyWorkbenchCommand,
   previewResourcePackage,
@@ -10,6 +11,10 @@ import {
   packageZip,
   privateCredentialFiles,
 } from '../../../../tests/fixtures/asset-package.mjs';
+import {
+  expertStarterRoot,
+  expertStarterFiles,
+} from '../../../../tests/fixtures/expert-starters.mjs';
 import { test, expect, failure } from './replay.mjs';
 
 const button = (scope, name) => scope.getByRole('button', { name, exact: true });
@@ -78,6 +83,32 @@ async function zip(page, files = packageFixture()) {
   });
   await expect(page.getByRole('button', { name: /^Order analyst/ })).toBeVisible();
 }
+
+test('研发专家起步包可在普通目录入口预览并保存全部定义，不启动规划', async ({ page, replay }) => {
+  const files = await expertStarterFiles();
+  imports(replay, files);
+  await assets(page);
+  await button(page, '导入定义').click();
+  await page
+    .getByLabel('选择资产文件夹', { exact: true })
+    .setInputFiles(fileURLToPath(expertStarterRoot));
+  const modal = page.getByRole('dialog', { name: '导入资产', exact: true });
+  await expect(button(modal, '导入 8 项')).toBeEnabled();
+  await button(modal, '导入 8 项').click();
+  await expect(modal).toHaveCount(0);
+  const experts = replay.state.participants.filter((p) => p.origin?.sourceId?.startsWith('zhuma-'));
+  expect(experts).toHaveLength(4);
+  for (const expert of experts) {
+    expect(expert.available).toBe(true);
+    expect(expert.origin.sourceVersion).toBe('1.0.0');
+    expect(expert.resourceBindings.skillIds).toHaveLength(1);
+    expect(
+      replay.state.assets.find((a) => a.id === expert.resourceBindings.skillIds[0])?.available,
+    ).toBe(true);
+  }
+  expect(commands(replay)).toHaveLength(1);
+  expect(plans(replay)).toHaveLength(0);
+});
 
 test('资产目录含专家但复用同一身份，分类计数与编辑互通', async ({ page, replay }, testInfo) => {
   await assets(page);
