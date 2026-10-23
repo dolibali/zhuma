@@ -23,6 +23,11 @@ const hostBuild = await build({
   metafile: true,
   target: 'node24',
   sourcemap: false,
+  // Bundled ZIP dependencies are CommonJS and use Node built-ins. Keep their
+  // require calls valid in the official Host's ESM plugin, without runtime installs.
+  banner: {
+    js: 'import { createRequire as __zhumaCreateRequire } from "node:module"; const require = __zhumaCreateRequire(import.meta.url);',
+  },
   external: ['@deepseek-ai/*'],
 });
 const clientBuild = await build({

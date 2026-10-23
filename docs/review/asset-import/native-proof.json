@@ -1,0 +1,34 @@
+{
+  "surface": "isolated official DSH Desktop / local owner / non-model",
+  "sourceHead": "e3916fa",
+  "upstream": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "viewport": {
+    "width": 1280,
+    "height": 800,
+    "zoom": 1
+  },
+  "theme": "explicit dark; no OS theme claim",
+  "checks": {
+    "previewDidNotWrite": true,
+    "normalUiZipImport": true,
+    "atomicTwoDefinitions": true,
+    "sameExpertCatalogId": true,
+    "sourceVersionId": "5fd98172-22a8-422b-b2f8-2ef24b47efa3",
+    "binaryFiles": 6,
+    "binaryBytes": 1080000,
+    "catalogBytes": 2825,
+    "planningAuditRecords": 0,
+    "coldReopenPreservedIdsAndVersion": true,
+    "allowedFilesOnly": true,
+    "binaryByteHashesSurvived": true,
+    "scriptWasDataOnly": true
+  },
+  "limitations": [
+    "No product-member authentication or space isolation proof",
+    "No model/tool execution or publishing proof",
+    "No installed package, OS theme switch or drag proof"
+  ],
+  "clientSha256": "66601fa88a7e697e9ff0b883373a97f929a3407936648efee278b97ab7208ba3",
+  "hostSha256": "171c65974dbe80545d8c42540df1ca7a5395d2c74315a3932530cb72cbe4d3df",
+  "exactLoadedClientMatch": true
+}

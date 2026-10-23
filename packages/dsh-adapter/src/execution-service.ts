@@ -14,6 +14,7 @@ import {
   unlockKey,
   castBallot,
   WorkbenchError,
+  WorkTaskSchema,
   type ExecutionNodeRecord,
   type InboxItem,
   type NodeExecutionReport,
@@ -195,7 +196,6 @@ const MESSAGES = {
   'plan-incomplete': '计划还没有完整启动，暂时不能查看或写入。',
   unavailable: '执行记录暂时写不进去，请用同一个请求再试一次。',
   'not-found': '找不到这个节点。',
-  'not-revision-reader': '只有负责人和当前评审人可以查看退回意见。',
   'not-returned': '这项工作还没有被退回。',
   'not-deliverable': '这项工作现在不能保存交付草稿。',
   validation: '提交的数据格式不正确。',
@@ -206,6 +206,20 @@ const MESSAGES = {
 
 export type ExecutionMessageCode = keyof typeof MESSAGES;
 
+const DIRECTORY_UNAVAILABLE_MESSAGE = '执行记录暂时不可用，请稍后用同一个请求再试一次。';
+
+/** Same id rule as `save-task` and stored tasks. Not a second copy of the pattern. */
+function acceptedTaskId(value: string): boolean {
+  return WorkTaskSchema.shape.id.safeParse(value).success;
+}
+
+function directoryUnavailable(): { ok: false; error: ExecutionFailure } {
+  return {
+    ok: false,
+    error: { code: 'unavailable', message: DIRECTORY_UNAVAILABLE_MESSAGE, details: {} },
+  };
+}
+
 function fail(
   code: string,
   details: Record<string, unknown> = {},
@@ -215,18 +229,6 @@ function fail(
   return {
     ok: false,
     error: { code, message, details },
-  };
-}
-
-/** Directory lookup failed. A real disk write still uses `fail('unavailable')`. */
-function directoryUnavailable(): { ok: false; error: ExecutionFailure } {
-  return {
-    ok: false,
-    error: {
-      code: 'unavailable',
-      message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
-      details: {},
-    },
   };
 }
 
@@ -289,6 +291,22 @@ export function toNodeView(record: ExecutionNodeRecord): ExecutionNodeView {
 
 function planKey(taskId: string, planId: string, revision: number): string {
   return `${taskId}:${planId}:${revision}`;
+}
+
+function taskForPlanKey<T extends { readonly id: string }>(
+  key: string,
+  tasks: readonly T[],
+): T | undefined {
+  let found: T | undefined;
+  for (const task of tasks) {
+    if (!key.startsWith(`${task.id}:`)) continue;
+    const rest = key.slice(task.id.length + 1);
+    const splitAt = rest.lastIndexOf(':');
+    if (splitAt <= 0) continue;
+    if (!/^\d+$/.test(rest.slice(splitAt + 1))) continue;
+    if (!found || task.id.length > found.id.length) found = task;
+  }
+  return found;
 }
 
 function directoryIds(workbench: Workbench): readonly string[] {
@@ -504,13 +522,15 @@ export class ExecutionService {
       const parsed = parseBody(reportSchema, body);
       if (!parsed.ok) return parsed;
       const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
-      if (space !== 'missing' && !space.ok) return space;
+      if (space === 'missing' || !space.ok) {
+        return space === 'missing' ? fail('not-found') : space;
+      }
       const membership = planMembership(
         this.workbench.readWorkbench(),
         parsed.value.taskId,
         actor.value.actorId,
       );
-      if (membership === 'missing') return fail('plan-not-found');
+      if (membership === 'missing') return fail('not-found');
       if (membership === 'not-participant') return fail('not-participant');
       const { taskId, planId, revision } = parsed.value;
       const reports = this.storage
@@ -699,14 +719,18 @@ export class ExecutionService {
   }
 
   /**
-   * Ask the directory before deciding whether the task is missing.
-   * An illegal answer is unavailable either way. No directory, an unknown
-   * project, or a mismatch is not-found.
+   * Ask the directory before distinguishing a missing task from a hidden one.
+   * A thrown lookup, `unavailable`, or an ok answer whose space id cannot be
+   * used is the same answer either way.
+   * No directory, an unknown project, or a mismatch is not-found.
+   * A missing task is asked with its task id only when that id matches
+   * `WorkTaskSchema`. Any other requested id is not-found and is not sent.
+   * An empty string is never sent.
    */
   private async gateSpace(
     taskId: string,
     spaceIds: readonly string[],
-  ): Promise<'missing' | ExecutionResult<void>> {
+  ): Promise<'missing' | ExecutionResult<string>> {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
     const directory = this.projectSpaceDirectory();
     if (!directory) {
@@ -715,19 +739,34 @@ export class ExecutionService {
     }
     let lookup: ProjectSpaceLookup;
     try {
-      lookup = await directory.spaceForProject(task ? task.projectId : '');
+      if (!task && !acceptedTaskId(taskId)) return 'missing';
+      const projectId = task ? task.projectId : taskId;
+      if (projectId === '') return task ? fail('not-found') : 'missing';
+      lookup = await directory.spaceForProject(projectId);
     } catch {
       return directoryUnavailable();
     }
+    if (
+      lookup == null ||
+      typeof lookup !== 'object' ||
+      (!lookup.ok && lookup.reason !== 'unknown')
+    ) {
+      return directoryUnavailable();
+    }
     const decision = decideProjectSpace(lookup, spaceIds);
+    if (decision === 'ok' && lookup.ok) return { ok: true, value: lookup.spaceId };
     if (decision === 'unavailable') return directoryUnavailable();
     if (!task) return 'missing';
-    if (decision === 'ok') return { ok: true, value: undefined };
     return fail('not-found');
   }
 
   /** Intact nodes this actor can read. A failed lookup stops the scan. */
   private async readableRecords(spaceIds: readonly string[], actorId: string) {
+    // A down directory is the same answer whether or not any node is stored.
+    for (const task of this.workbench.readWorkbench().tasks) {
+      const space = await this.gateSpace(task.id, spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+    }
     const records: ExecutionNodeRecord[] = [];
     for (const record of this.storage.listNodes()) {
       if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
@@ -761,6 +800,49 @@ export class ExecutionService {
     };
   }
 
+  /**
+   * Another plan in this space already used the key.
+   * Only an explicit other space id is ignored, so a foreign key neither
+   * blocks the start nor changes the response when that lookup succeeds.
+   * `unknown` is a directory fault here: the task still exists on the workbench.
+   * A throw, `unavailable`, `unknown`, or an unusable answer refuses the start.
+   */
+  private async sameSpaceIdempotencyConflict(
+    idempotencyKey: string,
+    key: string,
+    spaceId: string,
+    projectId: string,
+  ): Promise<ExecutionResult<boolean>> {
+    const directory = this.projectSpaceDirectory();
+    const tasks = this.workbench.readWorkbench().tasks;
+    const spaceByProject = new Map<string, string | undefined>([[projectId, spaceId]]);
+    for (const item of this.storage.listPlans()) {
+      if (item.receipt.idempotencyKey !== idempotencyKey || item.key === key) continue;
+      const task = taskForPlanKey(item.key, tasks);
+      if (!task) continue;
+      let owner = spaceByProject.get(task.projectId);
+      if (!spaceByProject.has(task.projectId)) {
+        owner = undefined;
+        if (directory) {
+          try {
+            const lookup = await directory.spaceForProject(task.projectId);
+            if (lookup != null && typeof lookup === 'object' && lookup.ok === false) {
+              return directoryUnavailable();
+            }
+            const decision = decideProjectSpace(lookup, [spaceId]);
+            if (decision === 'unavailable') return directoryUnavailable();
+            owner = decision === 'ok' ? spaceId : undefined;
+          } catch {
+            return directoryUnavailable();
+          }
+        }
+        spaceByProject.set(task.projectId, owner);
+      }
+      if (owner === spaceId) return { ok: true, value: true };
+    }
+    return { ok: true, value: false };
+  }
+
   private async startPlanNow(caller: ExecutionCaller, body: unknown) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -768,22 +850,34 @@ export class ExecutionService {
     if (!parsed.ok) return parsed;
     const { taskId, planId, revision, idempotencyKey } = parsed.value;
     const space = await this.gateSpace(taskId, actor.value.spaceIds);
-    if (space !== 'missing' && !space.ok) return space;
+    if (space === 'missing' || !space.ok) {
+      return space === 'missing' ? fail('not-found') : space;
+    }
     const membership = planMembership(this.workbench.readWorkbench(), taskId, actor.value.actorId);
     if (membership === 'not-participant') return fail('not-participant');
     const fingerprint = canonicalPayload({ taskId, planId, revision });
     const key = planKey(taskId, planId, revision);
-    const reused = this.storage
-      .listPlans()
-      .find((item) => item.receipt.idempotencyKey === idempotencyKey && item.key !== key);
-    if (reused) return fail('idempotency-mismatch');
+    const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
+    if (!task) return fail('not-found');
     const prior = this.storage.readPlan(key);
-    if (prior?.fingerprint === fingerprint) {
-      return {
-        ok: true as const,
-        value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
-      };
+    const replayed = {
+      ok: true as const,
+      value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
+    };
+    // The same key replays before the conflict scan, so another project's
+    // directory fault cannot change that retry. Any other key is checked first.
+    if (prior?.fingerprint === fingerprint && prior.idempotencyKey === idempotencyKey) {
+      return replayed;
     }
+    const conflict = await this.sameSpaceIdempotencyConflict(
+      idempotencyKey,
+      key,
+      space.value,
+      task.projectId,
+    );
+    if (!conflict.ok) return conflict;
+    if (conflict.value) return fail('idempotency-mismatch');
+    if (prior?.fingerprint === fingerprint) return replayed;
     let applied;
     try {
       applied = createExecutionHandoff(
@@ -792,7 +886,7 @@ export class ExecutionService {
       );
     } catch (error) {
       if (error instanceof WorkbenchError) return fail(error.code);
-      return fail('unavailable');
+      return directoryUnavailable();
     }
     const started = startAppliedPlan({
       requested: { taskId, planId, revision },
