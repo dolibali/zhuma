@@ -406,6 +406,43 @@ test('revision returns the same unavailable bytes when the directory is down', a
   assert.equal(JSON.stringify(present).includes('design'), false);
 });
 
+test('revision returns the same unavailable bytes for the applied plan when the directory is down', async () => {
+  const { state, applied } = confirm();
+  const query = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+  };
+  const down = {
+    async spaceForProject() {
+      throw new Error('space-down-4e1');
+    },
+  };
+  const ask = (store) =>
+    new ExecutionService(store.storage, { readWorkbench: () => state }, down).revision(
+      session('chen'),
+      query,
+    );
+  const absent = await ask(memory());
+  const store = memory();
+  const node = record();
+  node.taskId = applied.taskId;
+  node.planId = applied.id;
+  node.revision = applied.revision;
+  node.handoff.dependencyNodeIds = [];
+  await store.storage.writeNode(nodeRecordKey(node), node);
+  const present = await ask(store);
+  assert.equal(Buffer.compare(responseBytes(absent), responseBytes(present)), 0);
+  assert.deepEqual(absent.error, {
+    code: 'unavailable',
+    message: '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+    details: {},
+  });
+  assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(present).includes('design'), false);
+});
+
 test('revision returns the same not-found bytes for a missing node and another space', async () => {
   const { state } = confirm();
   const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);

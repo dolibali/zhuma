@@ -5,6 +5,8 @@ import { ExecutionService } from '../dist/execution-service.js';
 import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
+const missingTaskId = '11111111-1111-4111-8111-111111111111';
+
 const lin = {
   id: 'lin',
   name: '林夏',
@@ -42,6 +44,14 @@ function memory() {
     storage,
     node: (id) => [...nodes.values()].find((record) => record.nodeId === id),
     planCount: () => plans.size,
+    // `writes` counts puts, so storing an unchanged record still changes the snapshot.
+    snapshot() {
+      return structuredClone({
+        nodes: [...nodes.entries()],
+        plans: [...plans.entries()],
+        writes,
+      });
+    },
     arm(writeNumber) {
       writes = 0;
       failOn = writeNumber;
@@ -183,6 +193,7 @@ test('start accepts only the requested revision and replays a partial write', as
     idempotencyKey: 'start-1',
   });
   assert.equal(failed.error.code, 'unavailable');
+  assert.equal(failed.error.message, '执行记录暂时写不进去，请用同一个请求再试一次。');
   assert.equal(store.planCount(), 0);
   assert.equal(store.node('design').command.version, 1);
   assert.equal(store.node('publish'), undefined);
@@ -362,6 +373,7 @@ test('authorization, stale delivery, and a failed write leave the node unchanged
   store.arm(1);
   const failed = await service.submit(session('chen'), { ...body, text: '接口说明' });
   assert.equal(failed.error.code, 'unavailable');
+  assert.equal(failed.error.message, '执行记录暂时写不进去，请用同一个请求再试一次。');
   assert.equal(store.node('design').command.version, 1);
   assert.equal(store.node('design').receipts.length, 0);
 
@@ -1051,4 +1063,940 @@ test('a missing project-space directory refuses start, submit, inbox, and report
   assert.equal(JSON.stringify(report).includes('设计登录流程'), false);
   assert.equal(store.planCount(), 0);
   assert.equal(store.node('design'), undefined);
+});
+
+test('rejected submit, ballot, and settle leave the storage snapshot unchanged', async () => {
+  const { state, applied } = confirm(
+    [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
+    [lin],
+  );
+  state.tasks[0].participantIds = [...state.tasks[0].participantIds, 'outside'];
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const before = store.snapshot();
+
+  const submitted = await service.submit(session('lin'), {
+    ...locate(applied, 'design', 1, 'reject-submit'),
+    text: '评审人不能提交',
+  });
+  assert.equal(submitted.ok, false);
+  assert.equal(submitted.error.code, 'not-assignee');
+
+  const voted = await service.ballot(session('chen'), {
+    ...locate(applied, 'design', 1, 'reject-ballot'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+    action: 'approve',
+  });
+  assert.equal(voted.ok, false);
+  assert.equal(voted.error.code, 'not-assigned-reviewer');
+
+  const settled = await service.settle(session('outside'), {
+    ...locate(applied, 'design', 1, 'reject-settle'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+  });
+  assert.equal(settled.ok, false);
+  assert.equal(settled.error.code, 'not-assigned-reviewer');
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('a missing task and a task in another space return the same body', async () => {
+  const spaceId = 'team-north';
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId }]);
+  const { service, store } = create(state, spaces);
+  const started = await service.startPlan(session('chen', [spaceId]), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-visible',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const before = store.snapshot();
+  const hiddenCaller = session('chen', ['team-south']);
+  const notFound = {
+    ok: false,
+    error: { code: 'not-found', message: '找不到这个节点。', details: {} },
+  };
+
+  async function probe(taskId, idempotencyKey) {
+    const located = {
+      taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      nodeId: 'design',
+      expectedVersion: 1,
+    };
+    return {
+      'start-plan': await service.startPlan(hiddenCaller, {
+        taskId,
+        planId: applied.id,
+        revision: applied.revision,
+        idempotencyKey: `${idempotencyKey}-start`,
+      }),
+      submit: await service.submit(hiddenCaller, {
+        ...located,
+        idempotencyKey: `${idempotencyKey}-submit`,
+        text: '不应写入',
+      }),
+      ballot: await service.ballot(hiddenCaller, {
+        ...located,
+        idempotencyKey: `${idempotencyKey}-ballot`,
+        roundId: 'round-probe',
+        artifactVersionId: 'artifact-probe',
+        action: 'approve',
+      }),
+      settle: await service.settle(hiddenCaller, {
+        ...located,
+        idempotencyKey: `${idempotencyKey}-settle`,
+        roundId: 'round-probe',
+        artifactVersionId: 'artifact-probe',
+      }),
+      report: await service.report(hiddenCaller, {
+        taskId,
+        planId: applied.id,
+        revision: applied.revision,
+      }),
+    };
+  }
+
+  const hidden = await probe(applied.taskId, 'hidden');
+  const missing = await probe(missingTaskId, 'missing');
+  for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+    assert.deepEqual(hidden[endpoint], missing[endpoint]);
+    assert.deepEqual(hidden[endpoint], notFound);
+  }
+
+  const hiddenInbox = await service.inbox(hiddenCaller, {});
+  const removed = state.tasks.splice(0, state.tasks.length);
+  const missingInbox = await service.inbox(hiddenCaller, {});
+  state.tasks.push(...removed);
+  assert.deepEqual(hiddenInbox, missingInbox);
+  assert.equal(hiddenInbox.ok, true);
+  assert.deepEqual(hiddenInbox.value.items, []);
+  assert.deepEqual(hiddenInbox.value.nodes, []);
+
+  const wrongRevision = await service.startPlan(session('chen', [spaceId]), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision + 1,
+    idempotencyKey: 'start-wrong-revision',
+  });
+  assert.equal(wrongRevision.ok, false);
+  assert.equal(wrongRevision.error.code, 'plan-not-found');
+  assert.equal(wrongRevision.error.message, '找不到指定的已确认计划版本。');
+  assert.deepEqual(store.snapshot(), before);
+});
+
+function sameBytes(left, right, label) {
+  const actual = Buffer.from(JSON.stringify(left));
+  const expected = Buffer.from(JSON.stringify(right));
+  assert.equal(
+    actual.equals(expected),
+    true,
+    `${label}\n${actual.toString()}\n${expected.toString()}`,
+  );
+}
+
+async function commandProbe(service, taskId, applied, idempotencyKey, caller) {
+  const located = {
+    taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    expectedVersion: 1,
+  };
+  return {
+    'start-plan': await service.startPlan(caller, {
+      taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: `${idempotencyKey}-start`,
+    }),
+    submit: await service.submit(caller, {
+      ...located,
+      idempotencyKey: `${idempotencyKey}-submit`,
+      text: '目录故障时不应写入',
+    }),
+    ballot: await service.ballot(caller, {
+      ...located,
+      idempotencyKey: `${idempotencyKey}-ballot`,
+      roundId: 'round-probe',
+      artifactVersionId: 'artifact-probe',
+      action: 'approve',
+    }),
+    settle: await service.settle(caller, {
+      ...located,
+      idempotencyKey: `${idempotencyKey}-settle`,
+      roundId: 'round-probe',
+      artifactVersionId: 'artifact-probe',
+    }),
+    report: await service.report(caller, {
+      taskId,
+      planId: applied.id,
+      revision: applied.revision,
+    }),
+  };
+}
+
+test('inbox returns the same unavailable bytes whether or not a node is stored', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const down = {
+    async spaceForProject() {
+      throw new Error('space-down-4e1');
+    },
+  };
+  const empty = create(state, down);
+  const filled = create(state, down);
+  const node = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    ownerId: 'chen',
+    handoff: {
+      assignee: { id: 'chen', kind: 'human' },
+      reviewerIds: [],
+      dependencyNodeIds: [],
+      goal: '设计',
+      expectedOutput: '说明',
+    },
+    command: { status: 'needs-revision', version: 2 },
+    rounds: [],
+    artifactVersions: [],
+    comments: [],
+    receipts: [],
+  };
+  await filled.store.storage.writeNode(nodeRecordKey(node), node);
+  await filled.store.storage.writePlan(`${applied.taskId}:${applied.id}:${applied.revision}`, {
+    idempotencyKey: 'stored-plan',
+    fingerprint: 'stored',
+    nodeIds: ['design'],
+  });
+  const absent = await empty.service.inbox(session('chen'), {});
+  const present = await filled.service.inbox(session('chen'), {});
+  sameBytes(absent, present, 'inbox');
+  assert.equal(absent.error.code, 'unavailable');
+  assert.equal(absent.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(present).includes('design'), false);
+});
+
+test('a directory fault returns the same unavailable bytes whether or not the task exists', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const caller = session('chen');
+  const directories = [
+    {
+      async spaceForProject() {
+        return { ok: false, reason: 'unavailable' };
+      },
+    },
+    {
+      async spaceForProject() {
+        throw new Error('space-directory-down');
+      },
+    },
+  ];
+  for (const directory of directories) {
+    const { service } = create(state, directory);
+    const present = await commandProbe(service, applied.taskId, applied, 'present', caller);
+    const absent = await commandProbe(service, missingTaskId, applied, 'absent', caller);
+    for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+      sameBytes(present[endpoint], absent[endpoint], endpoint);
+      assert.equal(present[endpoint].error.code, 'unavailable');
+      assert.equal(
+        present[endpoint].error.message,
+        '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+      );
+    }
+  }
+});
+
+test('a missing task asks the directory with the task id and never an empty project id', async () => {
+  const seen = [];
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service, store } = create(state, {
+    async spaceForProject(projectId) {
+      seen.push(projectId);
+      if (projectId === 'project') return { ok: true, spaceId: 'project' };
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  await startChen(service, applied);
+  seen.length = 0;
+  const before = store.snapshot();
+  const absent = await service.report(session('chen'), {
+    taskId: missingTaskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  const otherSpace = await service.report(session('chen', ['team-south']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(absent.error.code, 'not-found');
+  assert.equal(otherSpace.error.code, 'not-found');
+  assert.deepEqual(absent, otherSpace);
+  assert.deepEqual(seen, [missingTaskId, 'project']);
+  assert.equal(seen.includes(''), false);
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('a task id that was not generated is not-found and is not sent to the directory', async () => {
+  const seen = [];
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service, store } = create(state, {
+    async spaceForProject(projectId) {
+      seen.push(projectId);
+      if (projectId === 'project') return { ok: true, spaceId: 'project' };
+      if (projectId === missingTaskId) return { ok: false, reason: 'unknown' };
+      throw new Error('untrusted-id');
+    },
+  });
+  await startChen(service, applied);
+  seen.length = 0;
+  const before = store.snapshot();
+  const caller = session('chen');
+  const legal = await commandProbe(service, missingTaskId, applied, 'legal-missing', caller);
+  const illegalIds = ['x'.repeat(200_000), "'; drop table --"];
+  const endpoints = ['start-plan', 'submit', 'ballot', 'settle', 'report'];
+  for (const taskId of illegalIds) {
+    const illegal = await commandProbe(service, taskId, applied, 'illegal', caller);
+    for (const endpoint of endpoints) {
+      const left = Buffer.from(JSON.stringify(illegal[endpoint]));
+      const right = Buffer.from(JSON.stringify(legal[endpoint]));
+      assert.equal(Buffer.compare(left, right), 0, `${endpoint}\n${left}\n${right}`);
+      assert.equal(illegal[endpoint].error.code, 'not-found');
+      assert.equal(illegal[endpoint].error.message, '找不到这个节点。');
+      assert.equal(left.includes(Buffer.from('untrusted-id')), false);
+      assert.equal(left.includes(Buffer.from('drop table')), false);
+    }
+  }
+  assert.deepEqual(seen, Array(endpoints.length).fill(missingTaskId));
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('a task id is accepted only inside the workbench length and character rule', async () => {
+  const hundred = 'a'.repeat(100);
+  const seen = [];
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service, store } = create(state, {
+    async spaceForProject(projectId) {
+      seen.push(projectId);
+      if (projectId === 'project') return { ok: true, spaceId: 'project' };
+      if (projectId === hundred) return { ok: false, reason: 'unknown' };
+      throw new Error('untrusted-id');
+    },
+  });
+  await startChen(service, applied);
+  seen.length = 0;
+  const before = store.snapshot();
+  const caller = session('chen');
+  const endpoints = ['start-plan', 'submit', 'ballot', 'settle', 'report'];
+  const accepted = await commandProbe(service, hundred, applied, 'hundred', caller);
+  for (const endpoint of endpoints) {
+    assert.equal(accepted[endpoint].error.code, 'not-found', endpoint);
+    assert.equal(accepted[endpoint].error.message, '找不到这个节点。');
+  }
+  assert.deepEqual(seen, Array(endpoints.length).fill(hundred));
+  assert.deepEqual(store.snapshot(), before);
+
+  const rejected = ['a'.repeat(101), 'é', '\u212A', '\u017F', '中文', '.', '/', '%'];
+  for (const taskId of rejected) {
+    const illegal = await commandProbe(service, taskId, applied, 'ruled-out', caller);
+    for (const endpoint of endpoints) {
+      assert.equal(
+        illegal[endpoint].error.code,
+        'not-found',
+        `${endpoint} ${JSON.stringify(taskId)}`,
+      );
+      assert.equal(illegal[endpoint].error.message, '找不到这个节点。');
+      assert.equal(JSON.stringify(illegal[endpoint]).includes('untrusted-id'), false);
+    }
+  }
+  assert.deepEqual(seen, Array(endpoints.length).fill(hundred));
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('a directory fault returns the same bytes for a non-uuid task id whether or not the task exists', async () => {
+  const plainId = 'task';
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  assert.equal(applied.taskId, plainId);
+  const absent = structuredClone(state);
+  absent.tasks = [];
+  const caller = session('chen');
+  const faults = [
+    {
+      async spaceForProject() {
+        return { ok: false, reason: 'unavailable' };
+      },
+    },
+    {
+      async spaceForProject() {
+        throw new Error('space-directory-down');
+      },
+    },
+  ];
+  for (const directory of faults) {
+    const presentService = create(state, directory);
+    const absentService = create(absent, directory);
+    const beforePresent = presentService.store.snapshot();
+    const beforeAbsent = absentService.store.snapshot();
+    const present = await commandProbe(presentService.service, plainId, applied, 'plain', caller);
+    const missing = await commandProbe(absentService.service, plainId, applied, 'plain', caller);
+    for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+      const left = Buffer.from(JSON.stringify(present[endpoint]));
+      const right = Buffer.from(JSON.stringify(missing[endpoint]));
+      assert.equal(Buffer.compare(left, right), 0, `${endpoint}\n${left}\n${right}`);
+      assert.equal(present[endpoint].error.code, 'unavailable');
+      assert.equal(
+        present[endpoint].error.message,
+        '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+      );
+      assert.equal(left.includes(Buffer.from('space-directory-down')), false);
+    }
+    assert.deepEqual(presentService.store.snapshot(), beforePresent);
+    assert.deepEqual(absentService.store.snapshot(), beforeAbsent);
+  }
+});
+
+test('an unusable ok from the directory is the same unavailable bytes whether or not the task exists', async () => {
+  const { state, applied } = confirm(
+    [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
+    [lin],
+  );
+  let lookup = { ok: true, spaceId: 'project' };
+  const { service, store } = create(state, {
+    async spaceForProject() {
+      return lookup;
+    },
+  });
+  await startChen(service, applied);
+  const before = store.snapshot();
+  const callers = [session('chen', ['project']), session('lin', ['team-south'])];
+  const shapes = [{ ok: true, spaceId: '' }, { ok: true }, { ok: 'yes', spaceId: 5 }];
+  let compared = 0;
+  for (const shape of shapes) {
+    lookup = shape;
+    for (const caller of callers) {
+      const present = await commandProbe(service, applied.taskId, applied, 'shaped', caller);
+      const absent = await commandProbe(service, missingTaskId, applied, 'shaped-absent', caller);
+      for (const endpoint of ['start-plan', 'submit', 'ballot', 'settle', 'report']) {
+        const left = Buffer.from(JSON.stringify(present[endpoint]));
+        const right = Buffer.from(JSON.stringify(absent[endpoint]));
+        assert.equal(
+          Buffer.compare(left, right),
+          0,
+          `${endpoint}\n${left.toString()}\n${right.toString()}`,
+        );
+        assert.equal(present[endpoint].error.code, 'unavailable');
+        assert.equal(
+          present[endpoint].error.message,
+          '执行记录暂时不可用，请稍后用同一个请求再试一次。',
+        );
+        compared += 1;
+      }
+    }
+  }
+  assert.equal(compared, 5 * 2 * 3);
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('submit, ballot, and settle leave the storage snapshot unchanged when the directory throws', async () => {
+  const { state, applied } = confirm(
+    [workflowNode({ id: 'design', title: '设计', reviewRequired: true, reviewerIds: ['lin'] })],
+    [lin],
+  );
+  let down = false;
+  const { service, store } = create(state, {
+    async spaceForProject() {
+      if (down) throw new Error('space-directory-down');
+      return { ok: true, spaceId: 'project' };
+    },
+  });
+  await startChen(service, applied);
+  const before = store.snapshot();
+  down = true;
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'throw-submit'),
+    text: '目录抛错后的交付',
+  });
+  const voted = await service.ballot(session('lin'), {
+    ...locate(applied, 'design', 1, 'throw-ballot'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+    action: 'approve',
+  });
+  const settled = await service.settle(session('chen'), {
+    ...locate(applied, 'design', 1, 'throw-settle'),
+    roundId: 'round-missing',
+    artifactVersionId: 'artifact-missing',
+  });
+  assert.equal(submitted.error.code, 'unavailable');
+  assert.equal(voted.error.code, 'unavailable');
+  assert.equal(settled.error.code, 'unavailable');
+  assert.equal(JSON.stringify(submitted).includes('目录抛错后的交付'), false);
+  assert.equal(JSON.stringify(submitted).includes('space-directory-down'), false);
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('start-plan checks an idempotency key only inside the caller space', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '南队项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'south-task',
+      projectId: 'harbor',
+      title: '南队任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const southPlan = ready.appliedPlans.find((plan) => plan.taskId === 'south-task');
+  assert.ok(northPlan);
+  assert.ok(southPlan);
+  const spaces = boundedProjectSpaces([
+    { projectId: 'portal', spaceId: 'team-north' },
+    { projectId: 'harbor', spaceId: 'team-south' },
+  ]);
+  const probed = create(ready, spaces);
+  const control = create(ready, spaces);
+  const northStart = await probed.service.startPlan(session('chen', ['team-north']), {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(northStart.ok, true, northStart.ok ? '' : northStart.error.code);
+  const southBody = {
+    taskId: southPlan.taskId,
+    planId: southPlan.id,
+    revision: southPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const south = await probed.service.startPlan(session('chen', ['team-south']), southBody);
+  const alone = await control.service.startPlan(session('chen', ['team-south']), southBody);
+  assert.equal(south.ok, true, south.ok ? '' : south.error.code);
+  assert.equal(south.value.disposition, 'applied');
+  sameBytes(south, alone, 'start-plan');
+  assert.equal(JSON.stringify(south).includes('北队专有'), false);
+  assert.equal(JSON.stringify(south).includes('north-task'), false);
+  const replay = await probed.service.startPlan(session('chen', ['team-south']), {
+    ...southBody,
+    idempotencyKey: 'shared-key-replay',
+  });
+  assert.equal(replay.value.disposition, 'replayed');
+  const clash = await probed.service.startPlan(session('chen', ['team-south']), {
+    ...southBody,
+    revision: southPlan.revision + 1,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(clash.error.code, 'idempotency-mismatch');
+});
+
+test('a thrown lookup for another project in the same space refuses the idempotency key', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '同空间的另一个项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '同空间的港务任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  let failPortal = false;
+  const { service, store } = create(ready, {
+    async spaceForProject(projectId) {
+      if (projectId === 'portal' && failPortal) throw new Error('portal lookup failed');
+      if (projectId === 'portal' || projectId === 'harbor') {
+        return { ok: true, spaceId: 'team-north' };
+      }
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  const started = await service.startPlan(session('chen', ['team-north']), {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  failPortal = true;
+  const before = store.snapshot();
+  const rejected = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'unavailable');
+  assert.equal(rejected.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(rejected).includes('portal lookup failed'), false);
+  assert.equal(JSON.stringify(rejected).includes('北队专有'), false);
+  assert.deepEqual(store.snapshot(), before);
+  failPortal = false;
+  const clash = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(clash.error.code, 'idempotency-mismatch');
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('a directory fault while placing another project refuses the idempotency key', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '可以和北队同空间，也可以在南队' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '港务任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  const faults = [
+    { ok: false, reason: 'unavailable' },
+    { ok: true, spaceId: '' },
+    { ok: true },
+    { ok: 'yes', spaceId: 5 },
+  ];
+  for (const fault of faults) {
+    let portalAnswer = { ok: true, spaceId: 'team-north' };
+    const { service, store } = create(ready, {
+      async spaceForProject(projectId) {
+        if (projectId === 'portal') return portalAnswer;
+        if (projectId === 'harbor') return { ok: true, spaceId: 'team-north' };
+        return { ok: false, reason: 'unknown' };
+      },
+    });
+    const started = await service.startPlan(session('chen', ['team-north']), {
+      taskId: northPlan.taskId,
+      planId: northPlan.id,
+      revision: northPlan.revision,
+      idempotencyKey: 'shared-key',
+    });
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+    portalAnswer = fault;
+    const before = store.snapshot();
+    const rejected = await service.startPlan(session('chen', ['team-north']), {
+      taskId: harborPlan.taskId,
+      planId: harborPlan.id,
+      revision: harborPlan.revision,
+      idempotencyKey: 'shared-key',
+    });
+    assert.equal(rejected.ok, false, JSON.stringify(fault));
+    assert.equal(rejected.error.code, 'unavailable');
+    assert.equal(rejected.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+    assert.equal(JSON.stringify(rejected).includes('北队专有'), false);
+    assert.deepEqual(store.snapshot(), before);
+  }
+
+  const spaces = boundedProjectSpaces([
+    { projectId: 'portal', spaceId: 'team-north' },
+    { projectId: 'harbor', spaceId: 'team-south' },
+  ]);
+  const probed = create(ready, spaces);
+  const control = create(ready, spaces);
+  const northStart = await probed.service.startPlan(session('chen', ['team-north']), {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(northStart.ok, true, northStart.ok ? '' : northStart.error.code);
+  const southBody = {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const south = await probed.service.startPlan(session('chen', ['team-south']), southBody);
+  const alone = await control.service.startPlan(session('chen', ['team-south']), southBody);
+  assert.equal(south.ok, true, south.ok ? '' : south.error.code);
+  assert.equal(south.value.disposition, 'applied');
+  sameBytes(south, alone, 'start-plan');
+  assert.equal(JSON.stringify(south).includes('北队专有'), false);
+  assert.equal(JSON.stringify(south).includes('north-task'), false);
+});
+
+test('an unknown lookup for another project in this space refuses the idempotency key', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '同空间的另一个项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '同空间的港务任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  let portalAnswer = { ok: true, spaceId: 'team-north' };
+  const { service, store } = create(ready, {
+    async spaceForProject(projectId) {
+      if (projectId === 'portal') return portalAnswer;
+      if (projectId === 'harbor') return { ok: true, spaceId: 'team-north' };
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  const northBody = {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const started = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  portalAnswer = { ok: false, reason: 'unknown' };
+  const before = store.snapshot();
+  const rejected = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(rejected.ok, false, 'unknown');
+  assert.equal(rejected.error.code, 'unavailable');
+  assert.equal(rejected.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(rejected).includes('北队专有'), false);
+  assert.deepEqual(store.snapshot(), before);
+  portalAnswer = { ok: true, spaceId: 'team-north' };
+  const again = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(again.ok, true, again.ok ? '' : again.error.code);
+  assert.equal(again.value.disposition, 'replayed');
+  const clash = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(clash.error.code, 'idempotency-mismatch');
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('the original start replays before another project lookup can change it', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '南队项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '南队任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  let harborDown = false;
+  const { service, store } = create(ready, {
+    async spaceForProject(projectId) {
+      if (projectId === 'harbor' && harborDown) throw new Error('harbor lookup failed');
+      if (projectId === 'portal') return { ok: true, spaceId: 'team-north' };
+      if (projectId === 'harbor') return { ok: true, spaceId: 'team-south' };
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  const northBody = {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const started = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const south = await service.startPlan(session('chen', ['team-south']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(south.ok, true, south.ok ? '' : south.error.code);
+  harborDown = true;
+  const before = store.snapshot();
+  const replay = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(replay.ok, true, replay.ok ? '' : replay.error.code);
+  assert.equal(replay.value.disposition, 'replayed');
+  assert.equal(JSON.stringify(replay).includes('南队任务'), false);
+  assert.equal(JSON.stringify(replay).includes('harbor lookup failed'), false);
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('another plan key in this space does not replay an already started revision', async () => {
+  const { state, task } = fixture();
+  const first = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      title: '已启动的修订',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(first, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      title: '另一个计划',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const startedPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const otherPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(startedPlan);
+  assert.ok(otherPlan);
+  const { service, store } = create(ready);
+  const caller = session('chen');
+  const original = {
+    taskId: startedPlan.taskId,
+    planId: startedPlan.id,
+    revision: startedPlan.revision,
+    idempotencyKey: 'original-key',
+  };
+  const started = await service.startPlan(caller, original);
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const other = await service.startPlan(caller, {
+    taskId: otherPlan.taskId,
+    planId: otherPlan.id,
+    revision: otherPlan.revision,
+    idempotencyKey: 'other-plan-key',
+  });
+  assert.equal(other.ok, true, other.ok ? '' : other.error.code);
+  const before = store.snapshot();
+  const crossed = await service.startPlan(caller, {
+    ...original,
+    idempotencyKey: 'other-plan-key',
+  });
+  assert.equal(crossed.ok, false, crossed.ok ? crossed.value.disposition : crossed.error.code);
+  assert.equal(crossed.error.code, 'idempotency-mismatch');
+  assert.deepEqual(store.snapshot(), before);
+  const replay = await service.startPlan(caller, original);
+  assert.equal(replay.ok, true, replay.ok ? '' : replay.error.code);
+  assert.equal(replay.value.disposition, 'replayed');
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('an unexpected handoff failure says the record is unavailable, not that the write failed', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  Object.defineProperty(applied, 'probe', { enumerable: true, value() {} });
+  const { service, store } = create(state);
+  const before = store.snapshot();
+  const failed = await service.startPlan(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-uncloneable',
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error.code, 'unavailable');
+  assert.equal(failed.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(failed).includes('could not be cloned'), false);
+  assert.equal(JSON.stringify(failed).includes('写不进去'), false);
+  assert.deepEqual(store.snapshot(), before);
 });
