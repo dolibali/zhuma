@@ -482,6 +482,13 @@ test('repeated failed logins from one address are limited', async () => {
   });
   assert.equal(limited.status, 429);
   assert.equal(limited.json.error.code, 'login-rate-limited');
+  const correctWhileLimited = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: '203.0.113.10',
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  assert.equal(correctWhileLimited.status, 429);
   const otherAddress = await call(host.web, {
     method: 'POST',
     path: '/zhuma-id/login',
@@ -496,6 +503,58 @@ test('repeated failed logins from one address are limited', async () => {
     body: { accountId: 'zhao', password: passwords.zhao },
   });
   assert.equal(otherAccount.status, 200);
+  await host.dispose();
+});
+
+test('concurrent failed logins cannot all skip the limiter', async () => {
+  const host = await mount();
+  const wrong = randomBytes(18).toString('base64url');
+  const responses = await Promise.all(
+    Array.from({ length: 40 }, () =>
+      call(host.web, {
+        method: 'POST',
+        path: '/zhuma-id/login',
+        remoteAddress: '203.0.113.40',
+        body: { accountId: 'chen', password: wrong },
+      }),
+    ),
+  );
+  const denied = responses.filter((response) => response.status === 401).length;
+  const limited = responses.filter((response) => response.status === 429).length;
+  assert.equal(denied + limited, 40);
+  assert.equal(denied <= 8, true);
+  assert.equal(limited >= 32, true);
+  await host.dispose();
+});
+
+test('password checking yields while the hash is in flight', async () => {
+  const host = await mount();
+  const wrong = randomBytes(18).toString('base64url');
+  let yields = 0;
+  let stop = false;
+  const pump = () => {
+    if (stop) return;
+    yields += 1;
+    setImmediate(pump);
+  };
+  const pending = Promise.all(
+    Array.from({ length: 4 }, () =>
+      call(host.web, {
+        method: 'POST',
+        path: '/zhuma-id/login',
+        remoteAddress: '203.0.113.77',
+        body: { accountId: 'chen', password: wrong },
+      }),
+    ),
+  );
+  setImmediate(pump);
+  const responses = await pending;
+  stop = true;
+  assert.equal(
+    responses.every((response) => response.status === 401),
+    true,
+  );
+  assert.equal(yields > 0, true);
   await host.dispose();
 });
 
@@ -1058,6 +1117,53 @@ test('a member cookie past its expiry is rejected while the session row remains'
   await host.dispose();
 });
 
+test('a DSH cookie alone is not a product account after delete, logout, or expiry', async () => {
+  const host = await mount();
+  const owner = ownerCookie(host.connection);
+  const chen = await login(host.web, 'chen');
+  const deleted = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: owner,
+  });
+  assert.equal(deleted.status, 401);
+  assert.equal(deleted.json.note, undefined);
+  const loggedOut = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/logout',
+    cookie: `${owner}; ${chen}`,
+    body: {},
+  });
+  assert.equal(loggedOut.status, 200);
+  assert.match(loggedOut.headers?.['set-cookie'], /Max-Age=0/);
+  const kept = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: owner,
+  });
+  assert.equal(kept.status, 401);
+  const zhao = await login(host.web, 'zhao');
+  const realNow = Date.now;
+  Date.now = () => realNow() + 12 * 60 * 60 * 1000 + 1000;
+  try {
+    const expired = await call(host.web, {
+      method: 'GET',
+      path: '/zhuma-id/notes/north-note',
+      cookie: `${owner}; ${zhao}`,
+    });
+    assert.equal(expired.status, 401);
+    const omitted = await call(host.web, {
+      method: 'GET',
+      path: '/zhuma-id/session',
+      cookie: owner,
+    });
+    assert.equal(omitted.status, 401);
+  } finally {
+    Date.now = realNow;
+  }
+  await host.dispose();
+});
+
 test('resolveMember reports the member and their spaces', async () => {
   const host = await mount();
   const owner = ownerCookie(host.connection);
@@ -1127,4 +1233,82 @@ test('a single-user owner mapping exists only when the import names that one acc
   assert.equal(refused.status, 401);
   await named.dispose();
   await unnamed.dispose();
+});
+
+test('a real http client stays logged out when only the DSH cookie remains', async () => {
+  // test:ui serves the workbench fixture and does not mount /zhuma-id, so this
+  // uses node:http instead of Playwright.
+  const host = await mount();
+  const server = http.createServer((req, res) => {
+    host.web.dispatch(req, res).catch(() => {
+      if (res.headersSent !== true) {
+        res.writeHead(500);
+        res.end();
+      }
+    });
+  });
+  await new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.equal(typeof address, 'object');
+  const port = address.port;
+  const request = (method, path, { cookie, body } = {}) =>
+    new Promise((resolve) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method,
+          path,
+          headers: {
+            host: AUTHORITY,
+            ...(cookie === undefined ? {} : { cookie }),
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => {
+            const raw = Buffer.concat(chunks).toString('utf8');
+            resolve({
+              status: res.statusCode,
+              setCookie: res.headers['set-cookie'],
+              json: raw === '' ? undefined : JSON.parse(raw),
+            });
+          });
+        },
+      );
+      req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+  try {
+    const owner = ownerCookie(host.connection);
+    const logged = await request('POST', '/zhuma-id/login', {
+      body: { accountId: 'chen', password: passwords.chen },
+    });
+    assert.equal(logged.status, 200);
+    const setCookie = Array.isArray(logged.setCookie) ? logged.setCookie[0] : logged.setCookie;
+    assert.match(setCookie, /(?:^|;\s*)Path=\/(?:;|$)/);
+    const member = setCookie.split(';', 1)[0];
+    const both = await request('GET', '/zhuma-id/session', { cookie: `${owner}; ${member}` });
+    assert.equal(both.json.accountId, 'chen');
+    assert.equal(both.json.principal.kind, 'zhuma-member');
+    const cross = await request('GET', '/zhuma-id/notes/north-note', { cookie: member });
+    assert.equal(cross.status, 404);
+    assert.equal(cross.json.error.code, 'not-found');
+    const out = await request('POST', '/zhuma-id/logout', {
+      cookie: `${owner}; ${member}`,
+      body: {},
+    });
+    assert.equal(out.status, 200);
+    const kept = await request('GET', '/zhuma-id/session', { cookie: owner });
+    assert.equal(kept.status, 401);
+    const north = await request('GET', '/zhuma-id/notes/north-note', { cookie: owner });
+    assert.equal(north.status, 401);
+    assert.equal(north.json.note, undefined);
+  } finally {
+    server.close();
+    await host.dispose();
+  }
 });
