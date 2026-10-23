@@ -64,7 +64,29 @@ export const AssetSchema = z
       (a.kind === 'template' && a.origin.format === 'workflow'),
     '定义类型与来源格式不一致。',
   );
-export const ProjectSchema = z.strictObject({ id, name: title, description });
+const projectLink = z
+  .string()
+  .max(2000)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }, '请填写不含账号密码的 http 或 https 链接。');
+export const ProjectSchema = z.strictObject({
+  id,
+  name: title,
+  description,
+  // Optional fields preserve old snapshots and command fingerprints without a migration.
+  defaultParticipantIds: ids.optional(),
+  assetIds: ids.optional(),
+  references: z
+    .array(z.strictObject({ id, name: title, url: projectLink }))
+    .max(30)
+    .optional(),
+});
 export const WorkNodeSchema = z.strictObject({
   id,
   title,
@@ -749,6 +771,24 @@ export function applyWorkbenchCommand(state: Workbench, command: WorkbenchComman
   ];
   switch (command.type) {
     case 'save-project':
+      for (const [references, catalog] of [
+        [command.project.defaultParticipantIds ?? [], state.participants],
+        [command.project.assetIds ?? [], state.assets],
+      ] as const) {
+        if (
+          new Set(references).size !== references.length ||
+          references.some((id) => !catalog.some((item) => item.id === id))
+        )
+          throw new WorkbenchError(
+            'project-reference',
+            '项目关联的参与者或资产不存在或重复，请重新选择。',
+          );
+      }
+      if (
+        new Set(command.project.references?.map((r) => r.id)).size !==
+        (command.project.references?.length ?? 0)
+      )
+        throw new WorkbenchError('project-reference', '项目资料标识不能重复。');
       next.projects = upsert(next.projects, command.project);
       break;
     case 'save-participant':
