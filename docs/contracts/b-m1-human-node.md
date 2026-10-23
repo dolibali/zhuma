@@ -60,17 +60,25 @@
 | `executionInbox`        | `deriveInbox`。负责人只在专家节点等待输入或失败时出现                               |
 | `toNodeExecutionReport` | 给报告用的只读投影                                                                  |
 
+## 身份
+
+默认是多人模式。`resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。没有解析结果，或结果不是成功时，返回 `unauthenticated`。`{ ok: false, status: 403, code: 'untrusted-request' }` 保持 `untrusted-request`。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。owner principal 不会在这里映射成已绑定的成员。
+
+`MemberResolver` 与 B-ID0a 相同，本仓不从那一支导入。`MemberRequest` 是 `{ headers: IncomingHttpHeaders }`。`resolve(request)` 返回 `Promise<MemberResolution>`。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }` 或 `{ ok: false, status: 403, code: 'untrusted-request' }`。A 稍后把 `memberResolver(ctx)` 注入执行入口。本模块不读取 cookie。B-ID0a 已把成员 cookie 的 `Path` 改成 `/`。
+
+正文里任意嵌套的 `actorId`、`memberId`、`reviewerId`，`containsActorField` 为真。嵌套超过 32 层时 `scanActorField` 返回 `too-deep`，不再抛出。
+
 ## 已实现和未实现
 
 已实现：
 
 - 上面列出的纯函数，以及 `packages/agent-core/tests/human-node.test.mjs`
 - 精确修订、入口状态、提交门禁、退回重提、全员通过后只解锁一次
+- `resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。`untrusted-request` 保持原代码。`containsActorField` 拒绝正文里的 actor 字段
 
 未实现（后续切片）：
 
 - 带存储的执行服务、计划回执和 `/zhuma-exec`
-- 身份绑定和目录成员映射
 - 执行界面
 - 产物字节、预览和访问控制。这一层只校验文件元数据
 - 专家评审和 `interpretAgentReview`

@@ -48,3 +48,15 @@ export function selectExecutor(
   if (!executor) throw new Error(`Executor is not configured: ${engine}`);
   return executor;
 }
+
+export {
+  ACTOR_FIELD_DEPTH_LIMIT,
+  containsActorField,
+  resolveActor,
+  scanActorField,
+  type ActorFieldScan,
+  type ActorResolution,
+  type MemberRequest,
+  type MemberResolution,
+  type MemberResolver,
+} from './execution-identity.js';
