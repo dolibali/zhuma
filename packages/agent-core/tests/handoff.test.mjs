@@ -130,6 +130,48 @@ test('context input refs keep their whitelist fields and drop extras', () => {
   ]);
 });
 
+test('an input ref missing sourceNodeId or artifactVersionId is rejected', () => {
+  for (const inputRefs of [
+    [{ artifactVersionId: 'art-1' }],
+    [{ sourceNodeId: 'node-0' }],
+    [{ contextPackId: 'context-1' }],
+    [{ artifactVersionId: 'art-1', contextPackId: 'context-1' }],
+    [{ sourceNodeId: 'node-0', contextPackId: 'context-1', token: 'secret' }],
+  ]) {
+    const invalid = readNodeHandoff(handoff({ id: 'human-1', kind: 'human' }, { inputRefs }));
+    assert.equal(invalid.ok, false, JSON.stringify(inputRefs));
+    assert.equal(invalid.code, 'invalid-handoff');
+  }
+});
+
+test('blank input ref fields are rejected', () => {
+  for (const inputRefs of [
+    [{ sourceNodeId: '', artifactVersionId: 'art-1' }],
+    [{ sourceNodeId: '   ', artifactVersionId: 'art-1' }],
+    [{ sourceNodeId: 'node-0', artifactVersionId: '' }],
+    [{ sourceNodeId: 'node-0', artifactVersionId: '\t' }],
+    [{ sourceNodeId: 'node-0', artifactVersionId: 'art-1', contextPackId: '' }],
+    [{ sourceNodeId: 'node-0', artifactVersionId: 'art-1', contextPackId: ' \n ' }],
+  ]) {
+    const invalid = readNodeHandoff(handoff({ id: 'human-1', kind: 'human' }, { inputRefs }));
+    assert.equal(invalid.ok, false, JSON.stringify(inputRefs));
+    assert.equal(invalid.code, 'invalid-handoff');
+  }
+});
+
+test('a non-string contextPackId is rejected', () => {
+  for (const contextPackId of [null, 7, {}]) {
+    const invalid = readNodeHandoff(
+      handoff(
+        { id: 'human-1', kind: 'human' },
+        { inputRefs: [{ sourceNodeId: 'node-0', artifactVersionId: 'art-1', contextPackId }] },
+      ),
+    );
+    assert.equal(invalid.ok, false, JSON.stringify(contextPackId));
+    assert.equal(invalid.code, 'invalid-handoff');
+  }
+});
+
 test('invalid context input refs are rejected without throwing', () => {
   for (const inputRefs of [
     null,
