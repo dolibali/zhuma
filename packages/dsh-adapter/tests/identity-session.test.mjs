@@ -618,36 +618,40 @@ test('a known account and unknown accounts reach the limit on the same attempt',
 test('a login from another address is not starved by unknown-account attempts', async () => {
   const host = await mount();
   const wrong = randomBytes(18).toString('base64url');
-  const flood = Promise.all(
-    Array.from({ length: 40 }, (_, index) =>
-      call(host.web, {
-        method: 'POST',
-        path: '/zhuma-id/login',
-        remoteAddress: '203.0.113.80',
-        body: { accountId: `missing-${index}`, password: wrong },
-      }),
-    ),
+  const flood = Array.from({ length: 40 }, (_, index) =>
+    call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: '203.0.113.80',
+      body: { accountId: `missing-${index}`, password: wrong },
+    }),
   );
-  const started = Date.now();
-  const normal = await call(host.web, {
-    method: 'POST',
-    path: '/zhuma-id/login',
-    remoteAddress: '203.0.113.81',
-    body: { accountId: 'chen', password: passwords.chen },
-  });
-  const elapsed = Date.now() - started;
-  assert.equal(normal.status, 200);
-  assert.equal(elapsed < 3_000, true);
-  const responses = await flood;
-  assert.equal(
-    responses.some((response) => response.status === 429),
-    true,
-  );
-  assert.equal(
-    responses.every((response) => response.status === 401 || response.status === 429),
-    true,
-  );
-  await host.dispose();
+  try {
+    const started = Date.now();
+    const normal = await call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: '203.0.113.81',
+      body: { accountId: 'chen', password: passwords.chen },
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(normal.status, 200);
+    assert.equal(elapsed < 3_000, true);
+    const responses = await Promise.all(flood);
+    assert.equal(
+      responses.some((response) => response.status === 429),
+      true,
+    );
+    assert.equal(
+      responses.every((response) => response.status === 401 || response.status === 429),
+      true,
+    );
+  } finally {
+    // A failed assertion must still wait. These logins hold the process-wide
+    // hash slots, and the next test counts those slots.
+    await Promise.allSettled(flood);
+    await host.dispose();
+  }
 });
 
 test('one host login limit does not lock another host', async () => {
@@ -947,8 +951,8 @@ function postUpload(port, payload, { chunked = false, paceMs = 0 } = {}) {
     );
     req.on('error', (error) => finish(0, error.code ?? error.message));
     timer = setTimeout(() => {
-      req.destroy();
       finish(0, 'upload-timeout');
+      req.destroy();
     }, 20_000);
     let offset = 0;
     const step = paceMs > 0 ? 1024 : 16 * 1024;
@@ -975,8 +979,9 @@ function postUpload(port, payload, { chunked = false, paceMs = 0 } = {}) {
 }
 
 function assertTooLarge(result) {
-  assert.equal(result.responseSeen, true);
-  assert.equal(result.status, 413);
+  const failure = result.body === 'upload-timeout' ? 'upload-timeout' : result.body;
+  assert.equal(result.responseSeen, true, failure);
+  assert.equal(result.status, 413, failure);
   assert.equal(JSON.parse(result.body).error.code, 'body-too-large');
   assert.equal(typeof result.contentLength, 'string');
   assert.equal(result.contentLength, String(Buffer.byteLength(result.body)));
