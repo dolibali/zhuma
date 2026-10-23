@@ -868,6 +868,27 @@ test('契约：孙进程占着标准错误时停止回执仍在时限内', async
   }
 });
 
+test('契约：受理后收集的标准错误超过上限会截断，截断处不留下密钥前缀', async () => {
+  const secret = 'zhuma-synthetic-marker-0123456789abcde';
+  const head = secret.slice(0, 10);
+  const done = await collect('stderr-cap', {
+    env: modelEnv(secret),
+    initTimeoutMs: 20_000,
+    promptTimeoutMs: 20_000,
+    runId: 'stderr-cap',
+  });
+  assert.equal(done.events.at(-1).type, 'completed');
+  const accepted = done.events.find((event) => event.type === 'accepted');
+  const stderr = readFileSync(
+    path.join(dshSessionHome(accepted.sessionId, done.env), 'zhuma-collected-stderr.txt'),
+    'utf8',
+  );
+  assert.match(stderr, /（已截断）/);
+  assert.equal(stderr.includes(secret), false);
+  assert.equal(stderr.includes(head), false);
+  assert.equal(stderr.length < 8192 + '（已截断）'.length, true);
+});
+
 test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async () => {
   const secret = 'zhuma-synthetic-marker-0123456789abcde';
   const prefix = secret.slice(0, secret.length - 1);

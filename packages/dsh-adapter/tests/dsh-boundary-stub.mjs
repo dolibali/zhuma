@@ -186,6 +186,12 @@ async function handlePrompt(message) {
     waitRelease(() => finishTurn());
     return;
   }
+  if (mode === 'stderr-cap') {
+    const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+    const limit = 8192;
+    const head = secret.slice(0, 10);
+    writeSync(2, `${'q'.repeat(limit - head.length)}${head}${'q'.repeat(200)}`);
+  }
   finishTurn();
 }
 

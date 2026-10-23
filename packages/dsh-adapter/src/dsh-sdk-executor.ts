@@ -791,6 +791,9 @@ function textFromStream(stream: unknown): string {
 
 /** 子进程已经退出后，孙进程仍占着标准错误时最多再等多久。 */
 const stderrSealMs = 500;
+/** 受理后写入会话的标准错误上限。超出后截断并标明。 */
+const stderrCollectLimit = 8192;
+const stderrTruncatedMark = '（已截断）';
 
 class StdioRpc {
   readonly exited: Promise<number>;
@@ -808,6 +811,7 @@ class StdioRpc {
   private readonly finish: (code: number) => void;
   private readonly redactor: StderrRedactor;
   private stderrFlushed = false;
+  private stderrTruncated = false;
   private stderrTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly stderrDone: Promise<void>;
   private readonly markStderr: () => void;
@@ -835,7 +839,7 @@ class StdioRpc {
     child.stdout.on('data', (chunk: string) => this.push(chunk));
     child.stderr.on('data', (chunk: string) => {
       if (this.stderrFlushed) return;
-      this.stderr += this.redactor.push(chunk);
+      this.appendStderr(this.redactor.push(chunk));
     });
     child.stderr.on('close', () => this.flushStderr());
     const close = (code: number) => {
@@ -869,8 +873,20 @@ class StdioRpc {
     }
     if (this.stderrFlushed) return;
     this.stderrFlushed = true;
-    this.stderr += this.redactor.flush();
+    this.appendStderr(this.redactor.flush());
     this.markStderr();
+  }
+
+  private appendStderr(text: string): void {
+    if (this.stderrTruncated || text.length === 0) return;
+    if (this.stderr.length + text.length <= stderrCollectLimit) {
+      this.stderr += text;
+      return;
+    }
+    const room = Math.max(0, stderrCollectLimit - this.stderr.length);
+    const kept = this.redactor.dropPrefixTail(this.stderr + text.slice(0, room));
+    this.stderr = `${kept}${stderrTruncatedMark}`;
+    this.stderrTruncated = true;
   }
 
   /** 到点仍没关上：按收尾规则处理未凑齐的前缀，不再读后续字节。 */
@@ -1212,6 +1228,13 @@ class StderrRedactor {
     if (this.secret.length === 0) return pending;
     if (pending.length > 0 && this.secret.startsWith(pending)) return '[redacted]';
     return pending.split(this.secret).join('[redacted]');
+  }
+
+  /** 截断落在密钥前缀上时丢掉这段，避免收集文件里留下可拼回的片段。 */
+  dropPrefixTail(text: string): string {
+    const hold = heldSecretPrefix(text, this.secret);
+    if (hold === 0) return text;
+    return text.slice(0, text.length - hold);
   }
 
   private consume(raw: string): string {
