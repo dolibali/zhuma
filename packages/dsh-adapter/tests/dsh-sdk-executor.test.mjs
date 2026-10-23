@@ -1001,6 +1001,26 @@ test('契约：启动前失败的标准错误按 UTF-8 字节保留头尾，最�
   assert.equal(Buffer.byteLength(tail) + Buffer.byteLength(before) > room, true);
 });
 
+// 回归：收尾时连 1 到 3 个字符的前缀也换成 [redacted]，本用例得到 preface-[redacted]。
+test('契约：收尾时长度不足 4 的密钥前缀原样留下，满 4 个才换成 [redacted]', async () => {
+  const secret = 'zhuma-synthetic-marker';
+  const short = await collect('stderr-boot-prefix-len:3', {
+    env: modelEnv(secret),
+    initTimeoutMs: 20_000,
+    runId: 'stderr-prefix-3',
+  });
+  assert.equal(short.events.at(-1).type, 'failed');
+  assert.equal(short.events.at(-1).message, `执行器启动失败。\npreface-${secret.slice(0, 3)}`);
+  const floor = await collect('stderr-boot-prefix-len:4', {
+    env: modelEnv(secret),
+    initTimeoutMs: 20_000,
+    runId: 'stderr-prefix-4',
+  });
+  assert.equal(floor.events.at(-1).type, 'failed');
+  assert.equal(floor.events.at(-1).message, '执行器启动失败。\npreface-[redacted]');
+  assert.equal(floor.events.at(-1).message.includes(secret.slice(0, 4)), false);
+});
+
 test('契约：标准错误在密钥前缀处截断时不会漏出前缀', async () => {
   const secret = 'zhuma-synthetic-marker-0123456789abcde';
   const prefix = secret.slice(0, secret.length - 1);

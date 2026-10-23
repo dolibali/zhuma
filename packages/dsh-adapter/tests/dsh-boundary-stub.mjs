@@ -73,6 +73,12 @@ if (mode === 'stderr-boot-prefix') {
   writeSync(2, `preface-${secret.slice(0, Math.max(0, secret.length - 1))}`);
   process.exit(1);
 }
+if (mode.startsWith('stderr-boot-prefix-len:')) {
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  const length = Number(mode.slice('stderr-boot-prefix-len:'.length));
+  writeSync(2, `preface-${secret.slice(0, length)}`);
+  process.exit(1);
+}
 if (mode.startsWith('stderr-boot-split:')) {
   const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
   const at = Number(mode.slice('stderr-boot-split:'.length));

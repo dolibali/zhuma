@@ -1352,7 +1352,7 @@ function redact(text: string, secret: string): string {
   return text.split(secret).join('[redacted]');
 }
 
-/** 未凑齐的密钥前缀先留着。凑齐后整段替换；收尾时前缀改成 [redacted]，不原样输出。 */
+/** 未凑齐的密钥前缀先留着。凑齐后整段替换。收尾时只把长度达到 4 的前缀换成 [redacted]。 */
 class StderrRedactor {
   private pending = '';
 
@@ -1366,7 +1366,7 @@ class StderrRedactor {
     const pending = this.pending;
     this.pending = '';
     if (this.secret.length === 0) return pending;
-    if (pending.length > 0 && this.secret.startsWith(pending)) return '[redacted]';
+    if (pending.length >= 4 && this.secret.startsWith(pending)) return '[redacted]';
     return pending.split(this.secret).join('[redacted]');
   }
 
