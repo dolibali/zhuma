@@ -86,7 +86,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 没有装进本包、因此用同形替身的部分：
 
-- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。两个服务都 `listen(0)`，端口由系统分配。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。Playwright 先启动 webServer，再跑 globalSetup。webServer 的命令会先在仓库根目录执行 `tsc -b`，再启动页面服务，所以 dist 被删掉之后这条命令仍能解析 `@zhuma/agent-core`。globalSetup 里还有一次 `tsc -b`。单独重跑之前不必再手动构建。
+- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。两个服务都 `listen(0)`，端口由系统分配。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。Playwright 先启动 webServer，再跑 globalSetup。这条命令只启动页面服务，不执行 `tsc -b`。globalSetup 在该进程启动之后才构建，所以没有 dist 的树要等别的构建先完成。`pnpm test:ui` 会先构建，再带上同一个项目。
 - `modifyRecord` 是按 key 分开的内存表，不是 `.credentials.yaml`。Connection 的 `client-connection/browser-session` 和本模块的 `zhuma-identity/member-session` 各占一条。
 - KV 介质是内存 Map。domain 的校验和写链是真的，json/sqlite 后端不是。
 - `decide` 按 `remote-access` 源码里的规则实现：owner 直接允许，其他 kind 走已注册策略的 `bindings` 和 `condition`。策略对象是 `applyIdentity` 注册的。没有加载 `RemoteAccessService` 类。
