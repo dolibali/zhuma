@@ -735,12 +735,24 @@ test('password checking yields while the hash is in flight', async () => {
 });
 
 function postHttp(port, body, chunked = false) {
+  return postUpload(port, Buffer.from(body), { chunked });
+}
+
+function postUpload(port, payload, { chunked = false, paceMs = 0 } = {}) {
+  const buffer = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (status, payload) => {
+    let responseSeen = false;
+    let writeDone = false;
+    let responseStatus;
+    let responseBody = '';
+    const finish = (status, text) => {
       if (settled) return;
       settled = true;
-      resolve({ status, body: payload });
+      resolve({ status, body: text, responseSeen });
+    };
+    const tryFinish = () => {
+      if (writeDone && responseStatus !== undefined) finish(responseStatus, responseBody);
     };
     const req = http.request(
       {
@@ -748,52 +760,51 @@ function postHttp(port, body, chunked = false) {
         port,
         method: 'POST',
         path: '/zhuma-id/login',
-        headers: { 'content-type': 'application/json', host: AUTHORITY },
+        headers: {
+          'content-type': 'application/json',
+          host: AUTHORITY,
+          ...(chunked ? {} : { 'content-length': String(buffer.length) }),
+        },
       },
       (res) => {
+        responseSeen = true;
         const chunks = [];
         res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
-          finish(res.statusCode, Buffer.concat(chunks).toString('utf8'));
+          responseStatus = res.statusCode ?? 0;
+          responseBody = Buffer.concat(chunks).toString('utf8');
+          tryFinish();
         });
+        res.on('error', (error) => finish(0, error.code ?? error.message));
       },
     );
     req.on('error', (error) => finish(0, error.code ?? error.message));
-    if (!chunked) {
-      req.end(body);
-      return;
-    }
-    const buffer = Buffer.from(body);
     let offset = 0;
+    const step = paceMs > 0 ? 1024 : 16 * 1024;
     const tick = () => {
-      if (settled || offset >= buffer.length) {
-        if (!settled) req.end();
+      if (settled) return;
+      if (offset >= buffer.length) {
+        writeDone = true;
+        req.end();
+        tryFinish();
         return;
       }
-      const ok = req.write(buffer.subarray(offset, offset + 4096));
-      offset += 4096;
-      if (ok) setImmediate(tick);
-      else req.once('drain', tick);
+      const ok = req.write(buffer.subarray(offset, offset + step));
+      offset += step;
+      const again = () => {
+        if (settled) return;
+        if (paceMs > 0) setTimeout(tick, paceMs);
+        else setImmediate(tick);
+      };
+      if (ok) again();
+      else req.once('drain', again);
     };
     tick();
   });
 }
 
 async function listenForHost(host) {
-  let closedBeforeResponse = 0;
   const server = http.createServer((req, res) => {
-    const destroy = req.destroy.bind(req);
-    let noted = false;
-    req.destroy = (...args) => {
-      const result = destroy(...args);
-      const socket = req.socket;
-      const socketGone = socket === null || socket.destroyed === true;
-      if (!noted && res.headersSent !== true && socketGone) {
-        noted = true;
-        closedBeforeResponse += 1;
-      }
-      return result;
-    };
     host.web.dispatch(req, res).catch(() => {
       if (res.headersSent !== true) {
         res.writeHead(500);
@@ -808,7 +819,6 @@ async function listenForHost(host) {
   assert.equal(typeof address, 'object');
   return {
     port: address.port,
-    closedBeforeResponse: () => closedBeforeResponse,
     close: () => server.close(),
   };
 }
@@ -843,11 +853,10 @@ test('a real http client receives 413 before the socket closes', async () => {
   }
 });
 
-// Mutation: reading the body with `for await (const chunk of req)` fails this
-// loop. The iterator's return() destroys the IncomingMessage when the size
-// check throws, so the socket is already gone before the 413 headers are
-// sent and `closedBeforeResponse` becomes 100. Declared Content-Length and
-// chunked bodies both have to stay at 413, with no retry and no skipped attempt.
+// Mutation: socket.end() inside the res.end callback fails this loop on the
+// client. The peer is still uploading, the reset arrives as EPIPE, and there
+// is no 'response' event, so status stays 0. Pass only when each attempt
+// observes that event with status 413. No retry and no skipped attempt.
 test('over-limit bodies get 413 on every attempt, then a normal login works', async () => {
   const host = await mount();
   const server = await listenForHost(host);
@@ -858,9 +867,11 @@ test('over-limit bodies get 413 on every attempt, then a normal login works', as
   try {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const declared = await postHttp(server.port, bulky);
+      assert.equal(declared.responseSeen, true);
       assert.equal(declared.status, 413);
       assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
       const chunked = await postHttp(server.port, bulky, true);
+      assert.equal(chunked.responseSeen, true);
       assert.equal(chunked.status, 413);
       assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
     }
@@ -868,9 +879,53 @@ test('over-limit bodies get 413 on every attempt, then a normal login works', as
       server.port,
       JSON.stringify({ accountId: 'chen', password: passwords.chen }),
     );
+    assert.equal(again.responseSeen, true);
     assert.equal(again.status, 200);
     assert.equal(JSON.parse(again.body).accountId, 'chen');
-    assert.equal(server.closedBeforeResponse(), 0);
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+test('a client that keeps uploading after the 413 still reads the full body', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  const payload = Buffer.alloc(128 * 1024, 0x61);
+  try {
+    const declared = await postUpload(server.port, payload, { paceMs: 5 });
+    assert.equal(declared.responseSeen, true);
+    assert.equal(declared.status, 413);
+    assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+    const chunked = await postUpload(server.port, payload, { chunked: true, paceMs: 5 });
+    assert.equal(chunked.responseSeen, true);
+    assert.equal(chunked.status, 413);
+    assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+test('a multi-megabyte upload still receives the full 413 while the client writes', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  const payload = Buffer.alloc(5 * 1024 * 1024, 0x62);
+  try {
+    const declared = await postUpload(server.port, payload);
+    assert.equal(declared.responseSeen, true);
+    assert.equal(declared.status, 413);
+    assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+    const chunked = await postUpload(server.port, payload, { chunked: true });
+    assert.equal(chunked.responseSeen, true);
+    assert.equal(chunked.status, 413);
+    assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+    const again = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'lin', password: passwords.lin }),
+    );
+    assert.equal(again.status, 200);
+    assert.equal(JSON.parse(again.body).accountId, 'lin');
   } finally {
     server.close();
     await host.dispose();

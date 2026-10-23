@@ -41,6 +41,12 @@ import {
 
 const PREFIX = '/zhuma-id';
 const MAX_BODY_BYTES = 64 * 1024;
+// After the 413, keep reading so the client can finish the upload and read
+// the response. Past this cap, or past BODY_DISCARD_MS, the socket is cut
+// only once the 413 has been flushed and BODY_READ_WINDOW_MS has elapsed.
+const BODY_DISCARD_LIMIT = 8 * 1024 * 1024;
+const BODY_DISCARD_MS = 5_000;
+const BODY_READ_WINDOW_MS = 500;
 const SECRET_KEY = 'zhuma-identity/member-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const ACTOR_FIELDS = ['actor', 'actorId', 'memberId'] as const;
@@ -497,23 +503,97 @@ function fail(res: ServerResponse, status: number, code: string, setCookie?: str
 }
 
 function failTooLarge(req: IncomingMessage, res: ServerResponse): void {
-  req.on('error', () => {});
   const body = JSON.stringify({ ok: false, error: { code: 'body-too-large' } });
-  res.writeHead(413, {
+  const headers = {
     'cache-control': 'no-store',
-    connection: 'close',
     'content-length': String(Buffer.byteLength(body)),
     'content-type': 'application/json; charset=utf-8',
+  };
+  // Do not set Connection: close, and do not res.end() while a live peer may
+  // still be uploading. Node finishes the socket when the response ends, and
+  // a chunked upload still in progress is then a parse error and ECONNRESET
+  // before the client reads the 413. Write the bytes now; end the response
+  // only after the request body ends. A socket-less fixture has no peer.
+  if (req.socket === undefined || req.socket === null || req.readableEnded === true) {
+    res.writeHead(413, headers);
+    res.end(body);
+    return;
+  }
+  res.writeHead(413, headers);
+  let responseFlushed = false;
+  const flushedWait: Array<() => void> = [];
+  const whenFlushed = (fn: () => void) => {
+    if (responseFlushed) fn();
+    else flushedWait.push(fn);
+  };
+  res.on('error', () => {});
+  res.write(body, () => {
+    responseFlushed = true;
+    const waiting = flushedWait.splice(0);
+    for (const fn of waiting) fn();
   });
-  // The 413 is flushed before the socket closes. Destroying here, or letting
-  // `for await` destroy the request, drops the response on the floor.
-  res.end(body, () => {
+  drainRejectedBody(req, res, whenFlushed);
+}
+
+function drainRejectedBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  whenFlushed: (fn: () => void) => void,
+): void {
+  let discarded = 0;
+  let settled = false;
+  let readWindow: ReturnType<typeof setTimeout> | undefined;
+  const detach = () => {
+    req.off('data', onData);
+    req.off('end', onEnd);
+    req.off('error', onError);
+  };
+  const done = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(discardTimer);
+    if (readWindow !== undefined) clearTimeout(readWindow);
+    detach();
+  };
+  const destroySocket = () => {
     const socket = req.socket;
-    if (socket === null || socket.destroyed) return;
+    if (socket === null || socket === undefined || socket.destroyed) return;
     socket.on('error', () => {});
-    req.resume();
-    socket.end();
-  });
+    socket.destroy();
+  };
+  // Cap and timer are the slowloris bound. The cut waits until the 413 is
+  // flushed, then BODY_READ_WINDOW_MS, so the client can read it first.
+  const cut = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(discardTimer);
+    detach();
+    req.pause();
+    whenFlushed(() => {
+      readWindow = setTimeout(destroySocket, BODY_READ_WINDOW_MS);
+    });
+  };
+  const onData = (chunk: Buffer | string) => {
+    discarded += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+    if (discarded > BODY_DISCARD_LIMIT) cut();
+  };
+  const onEnd = () => {
+    if (settled) return;
+    done();
+    if (!res.writableEnded) res.end();
+  };
+  const onError = () => {
+    done();
+  };
+  const discardTimer = setTimeout(cut, BODY_DISCARD_MS);
+  req.on('error', onError);
+  req.on('data', onData);
+  req.on('end', onEnd);
+  if (req.readableEnded === true) {
+    onEnd();
+    return;
+  }
+  req.resume();
 }
 
 function permitted(
@@ -557,9 +637,10 @@ function readJson(req: IncomingMessage): Promise<unknown> {
       settled = true;
       cleanup();
       if (error !== undefined) {
-        // Stop reading before the 413 is written. A later 'end' must not parse
-        // the partial body. `for await` is not used here: its return() destroys
-        // the request, and the socket closes before the response is flushed.
+        // Stop parsing before the 413 is written. failTooLarge resumes the
+        // request and discards the rest. `for await` is not used here: its
+        // return() destroys the request, and the socket closes before the
+        // response is flushed.
         req.pause();
         reject(error);
         return;
