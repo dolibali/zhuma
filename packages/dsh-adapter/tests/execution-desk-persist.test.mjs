@@ -263,21 +263,18 @@ test('契约：停止请求没有写入时不取消执行器', async () => {
   assert.equal(state.value.runs.at(-1).stopPhase, 'none');
 });
 
-test('契约：草稿保存失败不是成功回执，恢复后可以重写', () => {
+test('契约：草稿保存失败时退回，不留下故障', () => {
   const { state, journal } = failingJournal();
   const session = openDesk(journal, new SimulatedAgentExecutor());
+  const before = JSON.parse(JSON.stringify(session.persistence()));
   state.failNext = true;
   const saved = session.saveDraft('只留下草稿');
   assert.equal(saved.ok, false);
   assert.equal(saved.code, 'persist-failed');
-  assert.equal(saved.snapshot.persistenceFault?.code, 'persist-failed');
+  assert.equal(saved.snapshot.persistenceFault, null);
+  assert.deepEqual(session.persistence(), before);
+  assert.equal(session.snapshot().drafts.length, 0);
   assert.equal(state.value.drafts.length, 0);
-  const view = createAgentWorkspaceView(saved.snapshot);
-  assert.match(view.persistenceFault.reason, /ENOSPC/);
-  const rewritten = session.rewritePersistence();
-  assert.equal(rewritten.ok, true);
-  assert.equal(session.snapshot().persistenceFault, null);
-  assert.match(state.value.drafts.at(-1).text, /只留下草稿/);
 });
 
 function countStarts(simulated) {
@@ -307,7 +304,7 @@ test('契约：排队受理保存失败后不会被自动执行，同键重试�
   session.releaseActive();
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(requests.length, 1);
-  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  assert.equal(session.snapshot().persistenceFault, null);
   const retry = session.send({ text: '排队补充', idempotencyKey: 'k2' });
   assert.equal(retry.ok, true);
   assert.equal(retry.replayed, false);
@@ -318,7 +315,7 @@ test('契约：排队受理保存失败后不会被自动执行，同键重试�
   assert.equal(duplicate.replayed, true);
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(requests.length, 2);
-  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  assert.equal(session.snapshot().persistenceFault, null);
   state.failNext = false;
   const rewritten = session.rewritePersistence();
   assert.equal(rewritten.ok, true);
@@ -461,6 +458,52 @@ test('契约：移除或重新打开后缺失的附件字节不会启动执行�
   assert.match(rejected.reason, /需重新上传/);
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(restoredRequests.length, 0);
+});
+
+test('契约：下一轮落盘失败时排队消息仍可在存储恢复后继续', async () => {
+  const state = { value: null, failOnApply: false };
+  const journal = {
+    load: () => state.value,
+    save(value) {
+      const applying = value.runs.some((run) => String(run.idempotencyKey).startsWith('apply:'));
+      if (state.failOnApply && applying) {
+        const error = new Error('ENOSPC: no space left');
+        error.code = 'ENOSPC';
+        throw error;
+      }
+      state.value = JSON.parse(JSON.stringify(value));
+    },
+  };
+  const simulated = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const requests = countStarts(simulated);
+  const session = openDesk(journal, simulated);
+  const first = session.send({ text: '先跑一轮', idempotencyKey: 'k1' });
+  await session.waitForRun(first.runId, 'running');
+  const queued = session.send({ text: '下一轮继续', idempotencyKey: 'k2' });
+  assert.equal(queued.ok, true);
+  state.failOnApply = true;
+  session.releaseActive();
+  await session.flush();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(requests.length, 1);
+  assert.equal(
+    session
+      .snapshot()
+      .interventions.some((item) => item.idempotencyKey === 'k2' && item.phase === 'pending'),
+    true,
+  );
+  assert.equal(session.snapshot().runs.length, 1);
+  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  state.failOnApply = false;
+  const continued = session.updateConfig({ skillIds: ['test-design'] });
+  assert.equal(continued.ok, true);
+  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  await session.waitForRun(session.snapshot().runs.at(-1).id, 'running');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].instruction, '下一轮继续');
+  const rewritten = session.rewritePersistence();
+  assert.equal(rewritten.ok, true);
+  assert.equal(session.snapshot().persistenceFault, null);
 });
 
 test('契约：正常落盘后从真实文件重新打开', async () => {

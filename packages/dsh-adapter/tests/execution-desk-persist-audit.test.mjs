@@ -392,4 +392,226 @@ test('契约：接受当前轮次的结果保存失败时不报成功', () => {
   assert.equal(accepted.ok, false);
   assert.equal(accepted.code, 'persist-failed');
   assert.equal(failing.value.activeRoundId, 'round-1');
+  assert.deepEqual(desk.persistence(), saved);
+  assert.equal(desk.snapshot().persistenceFault, null);
+});
+
+test('契约：同步命令落盘失败后内存与调用前一致', async () => {
+  const rows = [
+    ['updateConfig', () => failingJournal(), (session) => session.updateConfig({ skillIds: [] })],
+    [
+      'setAvailability',
+      () => failingJournal(),
+      (session) => session.setAvailability({ expertId: 'api-impl', enabled: false }),
+    ],
+    [
+      'setContextIncluded',
+      () => failingJournal(),
+      (session) => session.setContextIncluded('note', false),
+    ],
+    [
+      'addAttachment',
+      () => failingJournal(),
+      (session) => session.addAttachment({ name: 'a.txt', mediaType: 'text/plain', text: 'hello' }),
+    ],
+    ['saveDraft', () => failingJournal(), (session) => session.saveDraft('退回的草稿')],
+    ['recover', () => failingJournal(), (session) => session.recover('human-takeover')],
+  ];
+  for (const [name, open, act] of rows) {
+    const { state, journal } = open();
+    const session = openDesk(journal);
+    const before = JSON.parse(JSON.stringify(session.persistence()));
+    state.failNext = true;
+    const result = act(session);
+    assert.equal(result.code, 'persist-failed', name);
+    assert.deepEqual(session.persistence(), before, name);
+    assert.equal(session.snapshot().persistenceFault, null, name);
+  }
+
+  const attached = failingJournal();
+  const withFile = openDesk(attached.journal);
+  const added = withFile.addAttachment({ name: 'a.txt', mediaType: 'text/plain', text: 'hello' });
+  const attachmentId = added.snapshot.attachments.at(-1).id;
+  const beforeRemove = JSON.parse(JSON.stringify(withFile.persistence()));
+  attached.state.failNext = true;
+  const removed = withFile.removeAttachment(attachmentId);
+  assert.equal(removed.code, 'persist-failed');
+  assert.deepEqual(withFile.persistence(), beforeRemove);
+  assert.equal(withFile.snapshot().attachments[0].contentAvailable, true);
+  assert.equal(withFile.snapshot().persistenceFault, null);
+
+  const plain = seed();
+  plain.handoff = { ...plain.handoff, reviewRequired: false, reviewerIds: [] };
+  const completing = failingJournal();
+  const completable = ExecutionDesk.create(plain, {
+    executors: [new SimulatedAgentExecutor({ chunkDelayMs: 0 })],
+    newId: ids(),
+    journal: completing.journal,
+  });
+  completable.updateConfig({ executorId: 'simulated', skillIds: ['test-design'], mcpIds: [] });
+  const beforeComplete = JSON.parse(JSON.stringify(completable.persistence()));
+  completing.state.failNext = true;
+  const completed = completable.confirmCompleted();
+  assert.equal(completed.code, 'persist-failed');
+  assert.deepEqual(completable.persistence(), beforeComplete);
+  assert.equal(completable.snapshot().persistenceFault, null);
+  const done = completable.confirmCompleted();
+  assert.equal(done.ok, true);
+  const beforeReopen = JSON.parse(JSON.stringify(completable.persistence()));
+  completing.state.failNext = true;
+  const reopened = completable.reopenForRework();
+  assert.equal(reopened.code, 'persist-failed');
+  assert.deepEqual(completable.persistence(), beforeReopen);
+  assert.equal(completable.snapshot().persistenceFault, null);
+
+  const waiting = failingJournal();
+  const runner = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const running = openDesk(waiting.journal, runner);
+  const started = running.send({ text: '整理开户字段', idempotencyKey: 'table-run' });
+  await running.waitForRun(started.runId, 'running');
+  const beforeWait = JSON.parse(JSON.stringify(running.persistence()));
+  waiting.state.failNext = true;
+  const marked = running.markWaitingForInput();
+  assert.equal(marked.code, 'persist-failed');
+  assert.deepEqual(running.persistence(), beforeWait);
+  assert.equal(running.snapshot().persistenceFault, null);
+
+  const beforeQueue = JSON.parse(JSON.stringify(running.persistence()));
+  waiting.state.failNext = true;
+  const queued = running.send({ text: '排队补充', idempotencyKey: 'table-queue' });
+  assert.equal(queued.code, 'persist-failed');
+  assert.deepEqual(running.persistence(), beforeQueue);
+  assert.equal(running.snapshot().persistenceFault, null);
+
+  const stopped = await running.stop();
+  assert.equal(stopped.ok, true);
+  const beforeRetry = JSON.parse(JSON.stringify(running.persistence()));
+  waiting.state.failNext = true;
+  const retried = running.retry('table-retry');
+  assert.equal(retried.code, 'persist-failed');
+  assert.deepEqual(running.persistence(), beforeRetry);
+  assert.equal(running.snapshot().persistenceFault, null);
+
+  const cited = seed();
+  cited.handoff = {
+    ...cited.handoff,
+    inputRefs: [
+      { sourceNodeId: 'node-src', artifactVersionId: 'av-note', contextPackId: 'pack-note' },
+    ],
+  };
+  cited.contextItems = [
+    {
+      id: 'note',
+      kind: 'project-knowledge',
+      sourceId: 'note-1',
+      version: '1',
+      permission: 'granted',
+      summary: '备注',
+      required: false,
+      includedByDefault: true,
+      sourceNodeId: 'node-src',
+      artifactVersionId: 'av-note',
+      contextPackId: 'pack-note',
+    },
+  ];
+  const sending = failingJournal();
+  const sender = ExecutionDesk.create(cited, {
+    executors: [new SimulatedAgentExecutor({ pauseBeforeAccept: true, chunkDelayMs: 0 })],
+    newId: ids(),
+    journal: sending.journal,
+  });
+  sender.updateConfig({ executorId: 'simulated', skillIds: ['test-design'], mcpIds: [] });
+  const beforeSend = JSON.parse(JSON.stringify(sender.persistence()));
+  const maxSequence = beforeSend.turns.reduce((max, turn) => Math.max(max, turn.sequence), 0);
+  sending.state.failNext = true;
+  const failedSend = sender.send({ text: '带上引用', idempotencyKey: 'table-send' });
+  assert.equal(failedSend.code, 'persist-failed');
+  assert.deepEqual(sender.persistence(), beforeSend);
+  assert.equal(sender.snapshot().persistenceFault, null);
+  const sent = sender.send({ text: '带上引用', idempotencyKey: 'table-send' });
+  assert.equal(sent.ok, true);
+  const userTurn = sender.snapshot().turns.find((turn) => turn.role === 'user');
+  assert.equal(userTurn.sequence, maxSequence + 1);
+  assert.equal(sender.snapshot().citations.length > 0, true);
+
+  const held = failingJournal();
+  const paused = openDesk(
+    held.journal,
+    new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 }),
+  );
+  const live = paused.send({ text: '保持运行', idempotencyKey: 'table-live' });
+  await paused.waitForRun(live.runId, 'running');
+  const crashed = JSON.parse(JSON.stringify(paused.persistence()));
+  const gapJournal = failingJournal();
+  gapJournal.state.value = crashed;
+  const restored = ExecutionDesk.restore(crashed, {
+    executors: [new SimulatedAgentExecutor({ chunkDelayMs: 0 })],
+    newId: ids(),
+    journal: gapJournal.journal,
+  });
+  assert.equal(restored.resumeInteraction().ok, true);
+  const beforeGap = JSON.parse(JSON.stringify(restored.persistence()));
+  gapJournal.state.failNext = true;
+  const verified = restored.verifyAbandoned();
+  assert.equal(verified.code, 'persist-failed');
+  assert.deepEqual(restored.persistence(), beforeGap);
+  assert.equal(restored.snapshot().persistenceFault, null);
+  assert.equal(restored.snapshot().resumeGap.reason, 'session-not-resumed');
+
+  const cold = failingJournal();
+  const original = openDesk(cold.journal);
+  const saved = JSON.parse(JSON.stringify(original.persistence()));
+  const blockedJournal = {
+    value: saved,
+    save() {
+      const error = new Error('ENOSPC: no space left');
+      error.code = 'ENOSPC';
+      throw error;
+    },
+  };
+  const resumed = ExecutionDesk.restore(saved, {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+    journal: blockedJournal,
+  });
+  const beforeResume = JSON.parse(JSON.stringify(resumed.persistence()));
+  const resumedResult = resumed.resumeInteraction();
+  assert.equal(resumedResult.code, 'persist-failed');
+  assert.deepEqual(resumed.persistence(), beforeResume);
+  assert.equal(resumed.snapshot().interactionReady, false);
+  assert.equal(resumed.snapshot().persistenceFault, null);
+
+  const round = failingJournal();
+  const roundDesk = openDesk(round.journal);
+  const roundSaved = JSON.parse(JSON.stringify(roundDesk.persistence()));
+  roundSaved.activeRoundId = 'round-1';
+  roundSaved.reviewRounds = [{ id: 'round-1', status: 'open' }];
+  const roundJournal = {
+    value: roundSaved,
+    failNext: false,
+    save(value) {
+      if (this.failNext) {
+        this.failNext = false;
+        const error = new Error('ENOSPC: no space left');
+        error.code = 'ENOSPC';
+        throw error;
+      }
+      this.value = JSON.parse(JSON.stringify(value));
+    },
+  };
+  const accepting = ExecutionDesk.restore(JSON.parse(JSON.stringify(roundSaved)), {
+    executors: [new SimulatedAgentExecutor()],
+    newId: ids(),
+    journal: roundJournal,
+  });
+  assert.equal(accepting.resumeInteraction().ok, true);
+  const rejectedRound = accepting.acceptReviewResult('round-0', 'approved');
+  assert.equal(rejectedRound.code, 'old-round-rejected');
+  const beforeAccept = JSON.parse(JSON.stringify(accepting.persistence()));
+  assert.notEqual(beforeAccept.lastError, null);
+  roundJournal.failNext = true;
+  const accepted = accepting.acceptReviewResult('round-1', 'approved');
+  assert.equal(accepted.code, 'persist-failed');
+  assert.deepEqual(accepting.persistence(), beforeAccept);
+  assert.equal(accepting.snapshot().persistenceFault, null);
 });

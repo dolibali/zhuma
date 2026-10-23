@@ -244,8 +244,12 @@ export class ExecutionDesk {
   private historyNote: string | null = null;
   private persistenceFault: CommandErrorFact | null = null;
   private lastSaveFailed = false;
+  private lastPersistError: unknown = null;
   /** 完成或核实已经记在内存里、但要等日志写上才真正删除的会话。 */
   private pendingSessionDeletes: string[] = [];
+  /** 执行器收尾后的下一轮没写上日志。存储恢复后继续消费。 */
+  private deferredQueueRunId: string | null = null;
+  private consumingQueue = false;
 
   private readonly seed: DeskSeed;
 
@@ -560,8 +564,10 @@ export class ExecutionDesk {
     if (!this.interactionReady) return this.blockedRestore();
     const checkpoint = this.captureOperational();
     this.attachments = this.attachments.filter((item) => item.id !== id);
+    const saved = this.succeed();
+    if (!saved.ok || this.lastSaveFailed) return this.undoIfUnsaved(checkpoint, saved);
     this.attachmentBytes.delete(id);
-    return this.undoIfUnsaved(checkpoint, this.succeed());
+    return { ...saved, snapshot: this.snapshot() };
   }
 
   send(input: SendInput): DeskResult {
@@ -612,7 +618,7 @@ export class ExecutionDesk {
     const latest = this.runs.find((run) => run.id === active.id) ?? requested.attempt;
     if (latest.status === 'cancelled' || receipt.receipt === 'cancelled') {
       this.dropPending(active.id);
-      if (!this.persist()) return this.persistRejected();
+      if (!this.persist(false, true)) return this.persistRejected();
       return this.succeed({ runId: active.id });
     }
     this.putRun(rejectStopReceipt(latest));
@@ -732,7 +738,7 @@ export class ExecutionDesk {
     return this.undoIfUnsaved(checkpoint, this.succeed({ runId: run.id }));
   }
 
-  /** 保存失败时草稿留在内存，返回 persist-failed，等重写日志。不把它记成已经落盘。 */
+  /** 保存失败则退回这次草稿，内存与调用前一致。 */
   saveDraft(text: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     const producer = [...this.runs].reverse().find((run) => run.status === 'completed');
@@ -753,9 +759,10 @@ export class ExecutionDesk {
         '使用新的评审轮次。此操作不会自动交付。',
       );
     }
+    const checkpoint = this.captureOperational();
     this.draftRoundId = roundId;
     this.drafts = [draft.draft];
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   /** 显式拒绝把旧轮次或作废轮次的结果当成推进。 */
@@ -876,7 +883,7 @@ export class ExecutionDesk {
   dropRecordedEntry(): void {
     const { entryStatus: _ignored, ...rest } = this.nodeState;
     this.nodeState = rest;
-    this.persist();
+    this.persist(false, true);
   }
 
   async flush(): Promise<void> {
@@ -1300,24 +1307,24 @@ export class ExecutionDesk {
         this.dropPending(runId);
         this.releaseClaim(runId);
         this.lastError = missingRecord();
-        this.persist();
+        this.persistEvent();
         return;
       }
       this.putRun(acked.attempt);
       this.noteQueueApplied(runId);
       this.ensureExecutorTurn(acked.attempt, '');
-      this.persist();
+      this.persistEvent();
       return;
     }
     if (event.type === 'delta') {
       const admission = this.admit(attempt, 'output-arrived');
       if (admission.disposition !== 'apply') {
         this.addLate(attempt, 'output-arrived', event.text, admission.reason ?? 'terminal-run');
-        this.persist();
+        this.persistEvent();
         return;
       }
       this.appendExecutorText(attempt, event.text, event.simulated);
-      this.persist();
+      this.persistEvent();
       return;
     }
     if (event.type === 'activity') {
@@ -1331,12 +1338,12 @@ export class ExecutionDesk {
           succeeded: event.activity.succeeded,
         }),
       );
-      this.persist();
+      this.persistEvent();
       return;
     }
     if (event.type === 'late-output') {
       this.addLate(attempt, 'output-arrived', event.text);
-      this.persist();
+      this.persistEvent();
       return;
     }
     if (event.type === 'completed') {
@@ -1361,7 +1368,7 @@ export class ExecutionDesk {
         '取消回执已迟到。',
         admission.reason ?? 'terminal-run',
       );
-      this.persist();
+      this.persistEvent();
       return;
     }
     const settled = settleExecutionRun(attempt, 'cancelled');
@@ -1372,7 +1379,7 @@ export class ExecutionDesk {
         settled.code === 'cancel-unconfirmed' ? '尚未请求停止，取消不能生效。' : '取消回执已迟到。',
         settled.code === 'cancel-unconfirmed' ? 'cancel-unconfirmed' : 'terminal-run',
       );
-      this.persist();
+      this.persistEvent();
       return;
     }
     this.putRun(settled.attempt);
@@ -1383,20 +1390,20 @@ export class ExecutionDesk {
     this.dropEmptyExecutorTurn(runId);
     this.dropPending(runId);
     this.releaseClaim(runId);
-    this.persist();
+    this.persistEvent();
   }
 
   private finishRun(attempt: ExecutionAttempt, draftText: string, simulated: boolean): void {
     const admission = this.admit(attempt, 'succeeded');
     if (admission.disposition !== 'apply' || !admission.mayUpdateRunRecord) {
       this.addLate(attempt, 'succeeded', draftText, admission.reason ?? 'terminal-run');
-      this.persist();
+      this.persistEvent();
       return;
     }
     const settled = settleExecutionRun(attempt, 'completed');
     if (!settled.ok) {
       this.addLate(attempt, 'succeeded', draftText, 'terminal-run');
-      this.persist();
+      this.persistEvent();
       return;
     }
     this.appendExecutorText(attempt, '', simulated, draftText);
@@ -1417,16 +1424,26 @@ export class ExecutionDesk {
       this.putRun(settled.attempt);
       this.releaseClaim(attempt.id);
       this.noteFreshHistory(settled.attempt);
-      this.persist();
+      this.persistEvent();
       this.consumeQueue(attempt.id);
       return;
     }
     this.putRun(settled.attempt);
     this.noteFreshHistory(settled.attempt);
-    this.persist();
+    this.persistEvent();
   }
 
   private consumeQueue(finishedRunId: string): void {
+    if (this.consumingQueue) return;
+    this.consumingQueue = true;
+    try {
+      this.consumeQueueBody(finishedRunId);
+    } finally {
+      this.consumingQueue = false;
+    }
+  }
+
+  private consumeQueueBody(finishedRunId: string): void {
     const pending = this.interventions.filter(
       (item) => item.runId === finishedRunId && item.phase === 'pending',
     );
@@ -1440,7 +1457,7 @@ export class ExecutionDesk {
     });
     if (missingBytes.length > 0) {
       this.dropPending(finishedRunId, '附件内容不在，需重新上传');
-      this.persist();
+      this.persistEvent();
       return;
     }
     const attachmentIds = frozen.map((item) => item.id);
@@ -1451,8 +1468,15 @@ export class ExecutionDesk {
       attachmentIds,
     });
     if (!opened.ok) {
+      if (opened.code === 'persist-failed') {
+        this.deferredQueueRunId = finishedRunId;
+        if (this.persistenceFault === null) {
+          this.persistenceFault = persistenceFaultFrom(this.lastPersistError);
+        }
+        return;
+      }
       this.dropPending(finishedRunId, opened.reason);
-      this.persist();
+      this.persistEvent();
       return;
     }
     if (!opened.runId || opened.replayed) return;
@@ -1490,7 +1514,7 @@ export class ExecutionDesk {
     }
     this.dropPending(runId);
     this.releaseClaim(runId);
-    this.persist();
+    this.persistEvent();
   }
 
   private noteQueueApplied(runId: string): void {
@@ -1507,13 +1531,13 @@ export class ExecutionDesk {
     const attempt = this.runs.find((run) => run.id === runId);
     if (!attempt || isTerminalRunStatus(attempt.status)) {
       if (attempt) this.addLate(attempt, 'failed', message, 'terminal-run');
-      this.persist();
+      this.persistEvent();
       return;
     }
     const settled = settleExecutionRun(attempt, 'failed');
     if (!settled.ok) {
       this.addLate(attempt, 'failed', message, 'terminal-run');
-      this.persist();
+      this.persistEvent();
       return;
     }
     this.putRun(settled.attempt);
@@ -1534,7 +1558,7 @@ export class ExecutionDesk {
     this.dropEmptyExecutorTurn(runId);
     this.dropPending(runId);
     this.releaseClaim(runId);
-    this.persist();
+    this.persistEvent();
   }
 
   private admit(attempt: ExecutionAttempt, signal: RunSignal) {
@@ -2018,7 +2042,7 @@ export class ExecutionDesk {
         succeeded: false,
       }),
     );
-    this.persist();
+    this.persistEvent();
   }
 
   private applyTransition(
@@ -2154,9 +2178,10 @@ export class ExecutionDesk {
   }
 
   private fail(code: string, objectLabel: string, reason: string, nextStep: string): DeskResult {
+    const previous = this.lastError;
     this.lastError = { code, objectLabel, reason, nextStep };
     this.preserveRecordError();
-    this.persist();
+    if (!this.persist()) this.lastError = previous;
     return { ok: false, code, objectLabel, reason, nextStep, snapshot: this.snapshot() };
   }
 
@@ -2324,8 +2349,7 @@ export class ExecutionDesk {
   }
 
   private persistRejected(): DeskResult {
-    const fault = this.persistenceFault ?? persistenceFaultFrom(new Error('persist-failed'));
-    this.persistenceFault = fault;
+    const fault = persistenceFaultFrom(this.lastPersistError ?? new Error('persist-failed'));
     return {
       ok: false,
       code: 'persist-failed',
@@ -2337,28 +2361,46 @@ export class ExecutionDesk {
   }
 
   /**
-   * 失败只记持久化故障，不向外抛。受理路径另行回滚；执行器事件保留内存事实。
-   * 已有故障不会被无关的成功保存清掉，只有重写当前内存时才清除。
+   * 用户命令保存失败只让调用方回滚，不记持久化故障。
+   * 执行器事件用 persistEvent：失败留下故障，等重写。已有故障不会被无关的成功保存清掉。
    */
-  private persist(reconcile = false): boolean {
+  private persist(reconcile = false, recordFault = false): boolean {
     if (!this.deps.journal) {
       this.persistenceFault = null;
       this.lastSaveFailed = false;
+      this.lastPersistError = null;
       this.flushSessionDeletes();
+      this.resumeDeferredQueue();
       return true;
     }
     try {
       this.deps.journal.save(this.persistence());
       this.lastSaveFailed = false;
+      this.lastPersistError = null;
       this.flushSessionDeletes();
       if (reconcile) this.persistenceFault = null;
+      this.resumeDeferredQueue();
       return true;
     } catch (error) {
       this.lastSaveFailed = true;
       this.pendingSessionDeletes = [];
-      this.persistenceFault = persistenceFaultFrom(error);
+      this.lastPersistError = error;
+      if (recordFault && this.persistenceFault === null) {
+        this.persistenceFault = persistenceFaultFrom(error);
+      }
       return false;
     }
+  }
+
+  private persistEvent(): boolean {
+    return this.persist(false, true);
+  }
+
+  private resumeDeferredQueue(): void {
+    if (this.deferredQueueRunId === null || this.consumingQueue) return;
+    const runId = this.deferredQueueRunId;
+    this.deferredQueueRunId = null;
+    this.consumeQueue(runId);
   }
 
   /**
