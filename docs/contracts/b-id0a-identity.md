@@ -86,7 +86,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 没有装进本包、因此用同形替身的部分：
 
-- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。两个服务都 `listen(0)`，端口由系统分配。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。Playwright 先启动 webServer，再跑 globalSetup。这条命令只启动页面服务，不执行 `tsc -b`。globalSetup 在该进程启动之后才构建，所以没有 dist 的树要等别的构建先完成。`pnpm test:ui` 会先构建，再带上同一个项目。
+- 多数用例没有监听套接字。`webServer.register` 的替身按 exact、再按最长前缀分发，处理函数是 `applyIdentity` 和 Connection 注册进去的那些。另有一个 `node:http` 用例。Chromium 用例在 `packages/dsh-adapter/tests/browser/identity-session.spec.mjs`，自己监听并挂上 `/zhuma-id`。两个服务都 `listen(0)`，端口由系统分配。`pnpm test:ui` 的 `identity` 项目会跑它。单独重跑：`pnpm exec playwright test --config packages/client/tests/browser/playwright.config.mjs --project=identity`。Playwright 先启动 webServer，再跑 globalSetup。从 `4e6a055` 起，webServer 的命令会先在仓库根目录执行 `pnpm exec tsc -b --pretty false`，成功后再启动页面服务，所以没有 dist 的树也能启动。启动预算是 120 秒。globalSetup 之后还会再用当前 Node 跑一次 `tsc -b`。`pnpm test:ui` 会带上同一个项目。
 - `modifyRecord` 是按 key 分开的内存表，不是 `.credentials.yaml`。Connection 的 `client-connection/browser-session` 和本模块的 `zhuma-identity/member-session` 各占一条。
 - KV 介质是内存 Map。domain 的校验和写链是真的，json/sqlite 后端不是。
 - `decide` 按 `remote-access` 源码里的规则实现：owner 直接允许，其他 kind 走已注册策略的 `bindings` 和 `condition`。策略对象是 `applyIdentity` 注册的。没有加载 `RemoteAccessService` 类。
@@ -196,7 +196,7 @@ interface ExecutionWorkspaceProps {
 
 请求体仍是 `StartPlanRequest`、`InboxRequest`、`SubmitRequest`、`BallotRequest`、`SettleRequest`、`ReportRequest`。没有 `BindOwnerRequest`。通道结果仍是 `{ ok: true, value } | { ok: false, error: { code, message, details } }`。`readWorkbench` 由 A 包住 `WorkbenchService.snapshot()`。界面挂 `ExecutionWorkspace`，它使用 `createExecutionApi(rpc)`。这些类型的其余字段在 `b/s1-signatures` 的 `packages/dsh-adapter/src/s1-integration.ts`；本分支不实现执行插件。
 
-本 PR 不改 `workbench-plugin.ts`、宿主构建、包的公开 exports 和 Playwright 注册。A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
+本 PR 不改 `workbench-plugin.ts`、宿主构建和包的公开 exports。相对 develop，本 PR 新增 `packages/client/tests/browser/global-setup.mjs`，并在 `playwright.config.mjs` 里加上 `globalSetup` 和 `identity` project。这两个文件是 A 的公共配置，内容取自 A 的 `52d0ac0` 和 `5d356fb`，B 没有做任何另外的修改。A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
 
 ```ts
 import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';

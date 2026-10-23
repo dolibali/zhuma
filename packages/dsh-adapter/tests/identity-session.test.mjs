@@ -2027,6 +2027,51 @@ test('a pre-seeded domain with several accounts does not map the owner cookie', 
   await host.dispose();
 });
 
+test('legacy-single-user refuses the owner cookie unless the stored import has exactly one account', async () => {
+  const hash = hashPassword(randomBytes(18).toString('base64url'));
+  const account = (id) => [id, { id, passwordHash: hash }];
+  const stored = (accounts, ownerAccountId) =>
+    new Map([
+      [
+        'zhuma_identity',
+        {
+          tables: new Map([
+            ['accounts', new Map(accounts)],
+            ['sessions', new Map()],
+            ['notes', new Map()],
+          ]),
+          global: { ownerAccountId },
+        },
+      ],
+    ]);
+
+  async function refuse(media) {
+    const host = await mount({
+      deploymentMode: 'legacy-single-user',
+      imported: null,
+      media,
+    });
+    const before = identityRows(media);
+    const session = await call(host.web, {
+      method: 'GET',
+      path: '/zhuma-id/session',
+      cookie: ownerCookie(host.connection),
+    });
+    assert.equal(session.status, 401);
+    assert.equal(session.json.error.code, 'unauthenticated');
+    const resolved = await resolveMember(host.ctx, {
+      headers: { host: AUTHORITY, cookie: ownerCookie(host.connection) },
+    });
+    assert.deepEqual(resolved, { ok: false, status: 401, code: 'unauthenticated' });
+    assert.deepEqual(identityRows(media), before);
+    await host.dispose();
+    assert.deepEqual(identityRows(media), before);
+  }
+
+  await refuse(stored([], ''));
+  await refuse(stored([account('lin'), account('zhao')], 'lin'));
+});
+
 function failNthPut(tableName, nth) {
   let seen = 0;
   return {
