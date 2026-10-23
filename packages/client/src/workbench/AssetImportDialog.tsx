@@ -118,13 +118,22 @@ export function AssetImportDialog({
       ]
     : [];
   async function choose(files: File[]) {
+    if (saving.current) return;
     read.current?.abort();
     const controller = new AbortController();
     read.current = controller;
+    const isCurrent = () => read.current === controller && !controller.signal.aborted;
+    setPreview(null);
+    setChoices([]);
+    setSelected('');
+    setVersionId('');
+    setTab('definition');
+    retry.current = null;
     setReading(true);
     setError('');
     try {
       const source = await upload(files, controller.signal);
+      if (!isCurrent()) return;
       if (
         source.kind === 'files' &&
         source.files.length === 1 &&
@@ -148,11 +157,8 @@ export function AssetImportDialog({
         }
       }
       const result = await api.previewImport(source, controller.signal);
-      if (controller.signal.aborted) return;
+      if (!isCurrent()) return;
       if (requireExpert && !result.items.some((i) => i.kind === 'expert')) {
-        setPreview(null);
-        setChoices([]);
-        retry.current = null;
         throw Error('所选包没有专家定义；单独的 Skill 或工作流请到团队资产导入。');
       }
       setPreview(result);
@@ -171,17 +177,15 @@ export function AssetImportDialog({
       setVersionId(crypto.randomUUID());
       setSelected(result.items[0]!.key);
       setTab('definition');
-      retry.current = null;
     } catch (e) {
-      if (!controller.signal.aborted)
-        setError(e instanceof Error ? e.message : '读取失败，请重试。');
+      if (isCurrent()) setError(e instanceof Error ? e.message : '读取失败，请重试。');
     } finally {
-      if (!controller.signal.aborted) setReading(false);
+      if (isCurrent()) setReading(false);
     }
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!preview || !choices.length || saving.current) return;
+    if (!preview || !choices.length || reading || saving.current) return;
     if (requireExpert && !hasExpertChoice) {
       setError('请至少勾选一位专家。');
       return;
