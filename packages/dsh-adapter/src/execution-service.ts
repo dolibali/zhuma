@@ -577,9 +577,10 @@ export class ExecutionService {
 
   /**
    * Another plan in this space already used the key.
-   * Only an explicit other space or `unknown` is ignored, so a foreign key
-   * neither blocks the start nor changes the response.
-   * A throw, `unavailable`, or an unusable space id refuses the start.
+   * Only an explicit other space id is ignored, so a foreign key neither
+   * blocks the start nor changes the response when that lookup succeeds.
+   * `unknown` is a directory fault here: the task still exists on the workbench.
+   * A throw, `unavailable`, `unknown`, or an unusable answer refuses the start.
    */
   private async sameSpaceIdempotencyConflict(
     idempotencyKey: string,
@@ -600,6 +601,9 @@ export class ExecutionService {
         if (directory) {
           try {
             const lookup = await directory.spaceForProject(task.projectId);
+            if (lookup != null && typeof lookup === 'object' && lookup.ok === false) {
+              return directoryUnavailable();
+            }
             const decision = decideProjectSpace(lookup, [spaceId]);
             if (decision === 'unavailable') return directoryUnavailable();
             owner = decision === 'ok' ? spaceId : undefined;
@@ -630,6 +634,13 @@ export class ExecutionService {
     const key = planKey(taskId, planId, revision);
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
     if (!task) return fail('not-found');
+    const prior = this.storage.readPlan(key);
+    if (prior?.fingerprint === fingerprint) {
+      return {
+        ok: true as const,
+        value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
+      };
+    }
     const conflict = await this.sameSpaceIdempotencyConflict(
       idempotencyKey,
       key,
@@ -638,13 +649,6 @@ export class ExecutionService {
     );
     if (!conflict.ok) return conflict;
     if (conflict.value) return fail('idempotency-mismatch');
-    const prior = this.storage.readPlan(key);
-    if (prior?.fingerprint === fingerprint) {
-      return {
-        ok: true as const,
-        value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
-      };
-    }
     let applied;
     try {
       applied = createExecutionHandoff(

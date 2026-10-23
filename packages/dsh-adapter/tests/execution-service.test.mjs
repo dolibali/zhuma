@@ -1621,6 +1621,147 @@ test('a directory fault while placing another project refuses the idempotency ke
   assert.equal(JSON.stringify(south).includes('north-task'), false);
 });
 
+test('an unknown lookup for another project in this space refuses the idempotency key', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '同空间的另一个项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '同空间的港务任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  let portalAnswer = { ok: true, spaceId: 'team-north' };
+  const { service, store } = create(ready, {
+    async spaceForProject(projectId) {
+      if (projectId === 'portal') return portalAnswer;
+      if (projectId === 'harbor') return { ok: true, spaceId: 'team-north' };
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  const northBody = {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const started = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  portalAnswer = { ok: false, reason: 'unknown' };
+  const before = store.snapshot();
+  const rejected = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(rejected.ok, false, 'unknown');
+  assert.equal(rejected.error.code, 'unavailable');
+  assert.equal(rejected.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(rejected).includes('北队专有'), false);
+  assert.deepEqual(store.snapshot(), before);
+  portalAnswer = { ok: true, spaceId: 'team-north' };
+  const again = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(again.ok, true, again.ok ? '' : again.error.code);
+  assert.equal(again.value.disposition, 'replayed');
+  const clash = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(clash.error.code, 'idempotency-mismatch');
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('the original start replays before another project lookup can change it', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '南队项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '南队任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  let harborDown = false;
+  const { service, store } = create(ready, {
+    async spaceForProject(projectId) {
+      if (projectId === 'harbor' && harborDown) throw new Error('harbor lookup failed');
+      if (projectId === 'portal') return { ok: true, spaceId: 'team-north' };
+      if (projectId === 'harbor') return { ok: true, spaceId: 'team-south' };
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  const northBody = {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  };
+  const started = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const south = await service.startPlan(session('chen', ['team-south']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(south.ok, true, south.ok ? '' : south.error.code);
+  harborDown = true;
+  const before = store.snapshot();
+  const replay = await service.startPlan(session('chen', ['team-north']), northBody);
+  assert.equal(replay.ok, true, replay.ok ? '' : replay.error.code);
+  assert.equal(replay.value.disposition, 'replayed');
+  assert.equal(JSON.stringify(replay).includes('南队任务'), false);
+  assert.equal(JSON.stringify(replay).includes('harbor lookup failed'), false);
+  assert.deepEqual(store.snapshot(), before);
+});
+
 test('an unexpected handoff failure says the record is unavailable, not that the write failed', async () => {
   const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
   Object.defineProperty(applied, 'probe', { enumerable: true, value() {} });
