@@ -3,7 +3,7 @@ import test from 'node:test';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { ExecutionService } from '../dist/execution-service.js';
 import { hashPassword } from '../dist/identity-session.js';
-import { bootIdentity } from './member-host.mjs';
+import { bootIdentity, disposeHost } from './member-host.mjs';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
 const password = 'member-password-session';
@@ -114,32 +114,77 @@ let host;
 const cookies = {};
 
 test.before(async () => {
-  host = await bootIdentity({
-    accounts: ['chen', 'lin', 'outside', 'zhao'].map((id) => ({ id, passwordHash })),
-    notes: [
-      {
-        id: 'south',
-        spaceId: 'project',
-        ownerId: 'chen',
-        teamMemberIds: ['chen', 'lin', 'outside'],
-        text: 'south',
-      },
-      {
-        id: 'north',
-        spaceId: 'north',
-        ownerId: 'zhao',
-        teamMemberIds: ['zhao'],
-        text: 'north',
-      },
-    ],
-  });
+  host = await bootIdentity(
+    {
+      accounts: ['chen', 'lin', 'outside', 'zhao'].map((id) => ({ id, passwordHash })),
+      notes: [
+        {
+          id: 'south',
+          spaceId: 'project',
+          ownerId: 'chen',
+          teamMemberIds: ['chen', 'lin', 'outside'],
+          text: 'south',
+        },
+        {
+          id: 'north',
+          spaceId: 'north',
+          ownerId: 'zhao',
+          teamMemberIds: ['zhao'],
+          text: 'north',
+        },
+      ],
+    },
+    'multi-member',
+  );
   for (const id of ['chen', 'lin', 'outside', 'zhao']) {
     cookies[id] = await host.login(id, password);
   }
 });
 
 test.after(async () => {
-  await host.dispose();
+  await disposeHost(host);
+});
+
+test('cleanup skips a host that never started', async () => {
+  let started;
+  await assert.rejects(
+    () => bootIdentity({ accounts: [{ id: 'chen', passwordHash }] }, 'single-user'),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  await disposeHost(started);
+});
+
+test('a rejected identity import does not dispose an identity fiber that never finished', async () => {
+  await assert.rejects(
+    () => bootIdentity({ accounts: [] }, 'multi-member'),
+    /identity import was rejected: accounts is empty/,
+  );
+});
+
+test('multi-member does not map an owner cookie even for one named account', async () => {
+  const alone = await bootIdentity(
+    {
+      accounts: [{ id: 'chen', passwordHash }],
+      ownerAccountId: 'chen',
+      notes: [
+        {
+          id: 'only',
+          spaceId: 'project',
+          ownerId: 'chen',
+          teamMemberIds: ['chen'],
+          text: 'local',
+        },
+      ],
+    },
+    'multi-member',
+  );
+  try {
+    const member = await alone.member(alone.ownerCookie());
+    assert.equal(member.ok, false);
+    assert.equal(member.code, 'unauthenticated');
+  } finally {
+    await disposeHost(alone);
+  }
 });
 
 async function actor(accountId) {
@@ -384,20 +429,24 @@ test('a failed write can be retried without losing the previous node', async () 
 });
 
 test('single-user mode is the account identity configured, and a removed reviewer cannot vote', async () => {
-  const single = await bootIdentity({
-    accounts: [{ id: 'chen', passwordHash }],
-    ownerAccountId: 'chen',
-    notes: [
-      {
-        id: 'only',
-        spaceId: 'project',
-        ownerId: 'chen',
-        teamMemberIds: ['chen'],
-        text: 'local',
-      },
-    ],
-  });
+  let single;
   try {
+    single = await bootIdentity(
+      {
+        accounts: [{ id: 'chen', passwordHash }],
+        ownerAccountId: 'chen',
+        notes: [
+          {
+            id: 'only',
+            spaceId: 'project',
+            ownerId: 'chen',
+            teamMemberIds: ['chen'],
+            text: 'local',
+          },
+        ],
+      },
+      'legacy-single-user',
+    );
     const member = await single.member(single.ownerCookie());
     assert.equal(member.ok, true);
     assert.equal(member.memberId, 'chen');
@@ -431,7 +480,7 @@ test('single-user mode is the account identity configured, and a removed reviewe
     });
     assert.equal(ballot.error.code, 'not-participant');
   } finally {
-    await single.dispose();
+    await disposeHost(single);
   }
 });
 

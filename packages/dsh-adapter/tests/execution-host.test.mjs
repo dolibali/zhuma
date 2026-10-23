@@ -3,7 +3,7 @@ import test from 'node:test';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { apply as applyExecution, inject as executionInject } from '../dist/execution-plugin.js';
 import { hashPassword } from '../dist/identity-session.js';
-import { AUTHORITY, bootIdentity } from './member-host.mjs';
+import { AUTHORITY, bootIdentity, disposeHost } from './member-host.mjs';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
 const password = 'member-password-host';
@@ -59,27 +59,34 @@ test('a real connection and member cookie run start, report, and review', async 
   });
   const applied = workbench.appliedPlans.at(-1);
   const passwordHash = hashPassword(password);
-  const host = await bootIdentity({
-    accounts: [
-      { id: 'chen', passwordHash },
-      { id: 'lin', passwordHash },
-    ],
-    notes: [
-      {
-        id: 'note',
-        spaceId: 'project',
-        ownerId: 'chen',
-        teamMemberIds: ['chen', 'lin'],
-        text: 'shared',
-      },
-    ],
-  });
-  const executionFiber = host.ctx.plugin(
-    { inject: [...executionInject], apply: applyExecution },
-    { readWorkbench: () => workbench },
-  );
-  await executionFiber;
+  let host;
+  let executionFiber;
+  let executionStarted = false;
   try {
+    host = await bootIdentity(
+      {
+        accounts: [
+          { id: 'chen', passwordHash },
+          { id: 'lin', passwordHash },
+        ],
+        notes: [
+          {
+            id: 'note',
+            spaceId: 'project',
+            ownerId: 'chen',
+            teamMemberIds: ['chen', 'lin'],
+            text: 'shared',
+          },
+        ],
+      },
+      'multi-member',
+    );
+    executionFiber = host.ctx.plugin(
+      { inject: [...executionInject], apply: applyExecution },
+      { readWorkbench: () => workbench },
+    );
+    await executionFiber;
+    executionStarted = true;
     const chen = await host.login('chen', password);
     const lin = await host.login('lin', password);
     const owner = host.ownerCookie();
@@ -166,7 +173,7 @@ test('a real connection and member cookie run start, report, and review', async 
     assert.equal(forged.body.result.ok, false);
     assert.equal(forged.body.result.error.code, 'unauthenticated');
   } finally {
-    await executionFiber.dispose();
-    await host.dispose();
+    if (executionStarted) await executionFiber.dispose();
+    await disposeHost(host);
   }
 });
