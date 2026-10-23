@@ -478,11 +478,10 @@ export class ExecutionService {
       if (!actor.ok) return actor;
       const parsed = parseBody(revisionSchema, body);
       if (!parsed.ok) return parsed;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
       const current = this.storage.readNode(nodeRecordKey(parsed.value));
-      if (!current || !intactNode(current)) return fail('not-found');
-      const space = await this.gateSpace(current.taskId, actor.value.spaceIds);
-      if (space === 'missing' || !space.ok) {
-        if (space !== 'missing' && space.error.code === 'unavailable') return space;
+      if (!current || !intactNode(current) || space === 'missing' || !space.ok) {
         return fail('not-found');
       }
       const membership = planMembership(

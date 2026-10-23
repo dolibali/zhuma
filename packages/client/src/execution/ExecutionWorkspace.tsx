@@ -87,6 +87,13 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
     return () => controller.abort();
   }, [api, nodes, selected]);
 
+  useEffect(() => {
+    if (!revision) return;
+    const target = document.getElementById('revision-reviewed');
+    target?.scrollIntoView({ block: 'start' });
+    target?.focus();
+  }, [revision]);
+
   const node = selected
     ? nodes.find((item) => item.nodeId === selected.nodeId && item.taskId === selected.taskId)
     : undefined;

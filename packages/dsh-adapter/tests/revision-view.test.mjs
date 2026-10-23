@@ -46,6 +46,13 @@ function record() {
             comment: '请补充错误码',
             unresolvedCommentIds: ['c-1', 'missing'],
           },
+          {
+            reviewerId: 'lin',
+            roundId: 'round-1',
+            artifactVersionId: 'artifact-2',
+            action: 'approve',
+            comment: 'approve-note-4e1',
+          },
         ],
       },
     ],
@@ -99,6 +106,7 @@ test('readRevisionView shows the reviewed version, return notes, and the previou
   assert.deepEqual(view.view.notes[0].citedCommentIds, ['c-1']);
   assert.equal(view.view.notes[0].artifactVersionId, 'artifact-2');
   assert.equal(JSON.stringify(view.view).includes('checksum-do-not-leak'), false);
+  assert.equal(JSON.stringify(view.view.notes).includes('approve-note-4e1'), false);
 });
 
 test('readRevisionView allows a current reviewer and refuses a removed reviewer', () => {
@@ -107,10 +115,14 @@ test('readRevisionView allows a current reviewer and refuses a removed reviewer'
   removed.handoff.reviewerIds = [];
   assert.equal(readRevisionView(removed, 'lin').code, 'not-revision-reader');
   assert.equal(readRevisionView(record(), 'gone').code, 'not-revision-reader');
+  const otherRound = record();
+  otherRound.handoff.reviewerIds = ['lin', 'qa'];
+  assert.equal(readRevisionView(otherRound, 'qa').code, 'not-revision-reader');
   const quiet = record();
   quiet.rounds = [];
   quiet.currentRoundId = undefined;
   assert.equal(readRevisionView(quiet, 'chen').code, 'not-returned');
+  assert.equal(readRevisionView(quiet, 'outsider').code, 'not-revision-reader');
 });
 
 function memory() {
@@ -249,4 +261,60 @@ test('revision refuses people outside the space and removed participants', async
   const still = await service.revision(session('chen'), query);
   assert.equal(still.ok, true);
   assert.equal(still.value.view.notes[0].body, '请补充错误码');
+});
+
+function responseBytes(value) {
+  return Buffer.from(JSON.stringify(value));
+}
+
+test('revision returns the same unavailable bytes when the directory is down', async () => {
+  const { state } = confirm();
+  const query = { taskId: 'task', planId: 'plan', revision: 1, nodeId: 'design' };
+  const down = {
+    async spaceForProject() {
+      throw new Error('space-down-4e1');
+    },
+  };
+  const ask = (store) =>
+    new ExecutionService(store.storage, { readWorkbench: () => state }, down).revision(
+      session('chen'),
+      query,
+    );
+  const absent = await ask(memory());
+  const store = memory();
+  const node = record();
+  node.handoff.dependencyNodeIds = [];
+  await store.storage.writeNode(nodeRecordKey(node), node);
+  const present = await ask(store);
+  assert.equal(Buffer.compare(responseBytes(absent), responseBytes(present)), 0);
+  assert.deepEqual(absent.error, {
+    code: 'unavailable',
+    message: '执行记录暂时写不进去，请用同一个请求再试一次。',
+    details: {},
+  });
+  assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(present).includes('design'), false);
+});
+
+test('revision returns the same not-found bytes for a missing node and another space', async () => {
+  const { state } = confirm();
+  const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+  const query = { taskId: 'task', planId: 'plan', revision: 1, nodeId: 'design' };
+  const ask = (store, spaceIds) =>
+    new ExecutionService(store.storage, { readWorkbench: () => state }, spaces).revision(
+      session('chen', spaceIds),
+      query,
+    );
+  const absent = await ask(memory(), ['project']);
+  const store = memory();
+  const node = record();
+  node.handoff.dependencyNodeIds = [];
+  await store.storage.writeNode(nodeRecordKey(node), node);
+  const hidden = await ask(store, ['elsewhere']);
+  assert.equal(Buffer.compare(responseBytes(absent), responseBytes(hidden)), 0);
+  assert.deepEqual(absent.error, {
+    code: 'not-found',
+    message: '找不到这个节点。',
+    details: {},
+  });
 });
