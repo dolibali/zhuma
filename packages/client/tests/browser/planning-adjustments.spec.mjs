@@ -26,6 +26,69 @@ test('仅调整执行者发送明确字段范围，保留本节点的评审、�
   expect(replay.state.tasks[0].workflows).toEqual(after);
 });
 
+test('局部草案冲突恢复：取消或读取失败保留调整前视图，成功后可继续局部调整', async ({
+  page,
+  replay,
+}) => {
+  const before = workflows();
+  replay.state.tasks[0].workflows = structuredClone(before);
+  const first = structuredClone(before);
+  first[0].nodes[0].output = '尚未应用的旧草案交付';
+  let calls = 0;
+  replay.handlers.plan = (payload) => {
+    calls++;
+    if (calls === 1) return proposal(payload, first);
+    if (calls === 2) return failure('conflict', '工作流已有新版本，请读取最新版本。');
+    const latest = structuredClone(replay.state.tasks[0].workflows);
+    latest[0].nodes[0].output = '继续局部调整后的交付';
+    return proposal(payload, latest);
+  };
+  await open(page);
+  await scope(page, '仅当前节点配置');
+  await button(page, '调整节点配置').click();
+  const changes = page.getByRole('region', { name: '变更预览', exact: true });
+  await expect(changes).toContainText('尚未应用的旧草案交付');
+  await button(page, '调整节点配置').click();
+  await expect(page.getByRole('alert')).toContainText('工作流已有新版本');
+  await button(page, '调整前').click();
+  await expect(button(page, '调整节点配置')).toBeDisabled();
+  const snapshots = () => replay.requests.filter((r) => r.endpoint === 'snapshot').length;
+  const initialReads = snapshots();
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await button(page, '读取最新版本').click();
+  await expect(button(page, '调整前')).toHaveAttribute('aria-pressed', 'true');
+  await expect(changes).toContainText('尚未应用的旧草案交付');
+  expect(snapshots()).toBe(initialReads);
+  replay.handlers.snapshot = () => failure('unavailable', '读取失败，请重试。');
+  page.once('dialog', (dialog) => dialog.accept());
+  await button(page, '读取最新版本').click();
+  await expect(page.getByRole('alert')).toContainText('读取失败');
+  await expect(button(page, '调整前')).toHaveAttribute('aria-pressed', 'true');
+  await expect(changes).toContainText('尚未应用的旧草案交付');
+  expect(snapshots()).toBe(initialReads + 1);
+  delete replay.handlers.snapshot;
+  replay.state.tasks[0].workflows[0].nodes[0].output = '同事更新后的交付';
+  replay.state.revision++;
+  page.once('dialog', (dialog) => dialog.accept());
+  await button(page, '读取最新版本').click();
+  await expect(button(page, '调整前')).toHaveCount(0);
+  await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', 'node-0');
+  await expect(button(page, '调整节点配置')).toBeEnabled();
+  await page.getByLabel('调整范围', { exact: true }).click();
+  await expect(page.getByRole('option', { name: '仅当前节点执行者', exact: true })).toBeEnabled();
+  await page.keyboard.press('Escape');
+  await button(page, '调整节点配置').click();
+  await expect(changes).toContainText('与已保存草稿比较');
+  await expect(changes).toContainText('同事更新后的交付');
+  await expect(changes).toContainText('继续局部调整后的交付');
+  await expect(changes).not.toContainText('尚未应用的旧草案交付');
+  expect(plans(replay)[2].expectedRevision).toBe(1);
+  expect(plans(replay)[2].baseProposalId).toBeUndefined();
+  expect(plans(replay)[2].adjustment.nodeId).toBe('node-0');
+  expect(commands(replay)).toHaveLength(0);
+  expect(snapshots()).toBe(initialReads + 2);
+});
+
 function workflows() {
   const flows = plannedWorkflows();
   flows[0].nodes = flows[0].nodes.slice(0, 3);

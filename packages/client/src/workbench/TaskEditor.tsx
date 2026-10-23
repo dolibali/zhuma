@@ -394,6 +394,8 @@ export function TaskEditor({
       saved(latest.state);
       pendingSave.current = null;
       setProposal(null);
+      setPreviewOriginal(false);
+      setComparison({ workflows: structuredClone(current.workflows), label: '已保存草稿' });
       setPlanFailed(false);
       setConflict(false);
       setError('');
