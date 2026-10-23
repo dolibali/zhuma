@@ -557,6 +557,17 @@ test('契约：锁文件不在时保存得到 ELOCKED 并变成只读', async ()
   }
 });
 
+function readPublished(lockPath, between) {
+  if (!existsSync(lockPath)) return null;
+  between?.();
+  try {
+    return readFileSync(lockPath, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 function completeLock(body) {
   assert.notEqual(body, '');
   const parsed = JSON.parse(body);
@@ -580,8 +591,8 @@ test('契约：写锁路径在内容发布前不存在，发布后一次就是�
   const release = path.join(directory, 'release');
   const observations = [];
   const reader = setInterval(() => {
-    if (!existsSync(lockPath)) return;
-    observations.push(readFileSync(lockPath, 'utf8'));
+    const body = readPublished(lockPath);
+    if (body !== null) observations.push(body);
   }, 1);
   const source = `
     import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -768,4 +779,73 @@ test('契约：回收出的新锁不会覆盖已经发布的文件', async () =>
   } finally {
     releaseGates(session);
   }
+});
+
+// 回归：把消失的互斥当成仍要删除的文件后，writable 为 false，refusal 里还有这条路径。
+test('契约：回收互斥在读到之前消失时继续抢锁，不要求删除已经不在的路径', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-mutex-enoent-'));
+  const file = path.join(directory, 'session.json');
+  const lockPath = `${file}.write.lock`;
+  const mutexPath = `${lockPath}.reclaim`;
+  const arrived = path.join(directory, 'mutex-read-arrived');
+  const waitFile = path.join(directory, 'mutex-read-wait');
+  const ready = path.join(directory, 'ready');
+  const release = path.join(directory, 'release');
+  writeFileSync(mutexPath, liveRecord('gone-soon'));
+  const source = `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
+    const journal = createFileJournal(${JSON.stringify(file)});
+    let saved = false;
+    let code = '';
+    try {
+      journal.save({ held: true });
+      saved = true;
+    } catch (error) {
+      code = error && error.code ? String(error.code) : 'throw';
+    }
+    writeFileSync(${JSON.stringify(ready)}, JSON.stringify({
+      writable: journal.writable === true,
+      refusal: journal.refusal ?? '',
+      saved,
+      code,
+    }));
+    pause(${JSON.stringify(release)});
+  `;
+  const child = spawnJournal(source, {
+    ZHUMA_LOCK_MUTEX_READ_ARRIVED: arrived,
+    ZHUMA_LOCK_MUTEX_READ_WAIT: waitFile,
+  });
+  try {
+    await wait(arrived, '子进程没有停在读取回收互斥之前');
+    unlinkSync(mutexPath);
+    writeFileSync(waitFile, 'go');
+    await wait(ready, '子进程没有完成抢锁');
+    const reported = JSON.parse(readFileSync(ready, 'utf8'));
+    assert.equal(reported.writable, true);
+    assert.equal(reported.saved, true);
+    assert.equal(reported.code, '');
+    assert.equal(reported.refusal.includes(mutexPath), false);
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).held, true);
+    assert.equal(existsSync(mutexPath), false);
+    const published = completeLock(readFileSync(lockPath, 'utf8'));
+    assert.equal(published.pid > 0, true);
+    writeFileSync(release, 'go');
+    const outcome = await child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    if (!existsSync(waitFile)) writeFileSync(waitFile, 'go');
+    if (!existsSync(release)) writeFileSync(release, 'go');
+  }
+});
+
+// 回归：观察读取去掉 ENOENT 吞掉后，本用例抛 ENOENT。
+test('契约：锁在观察到存在之后被删掉时，读取一侧忽略 ENOENT', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-observe-enoent-'));
+  const lockPath = path.join(directory, 'session.json.write.lock');
+  writeFileSync(lockPath, liveRecord('observe'));
+  const body = readPublished(lockPath, () => unlinkSync(lockPath));
+  assert.equal(body, null);
+  assert.equal(existsSync(lockPath), false);
 });

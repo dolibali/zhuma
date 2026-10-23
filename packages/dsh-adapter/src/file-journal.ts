@@ -98,18 +98,22 @@ function ensureExitHook(): void {
   });
 }
 
+function parseLockRecord(raw: string): LockRecord | null {
+  const parsed = JSON.parse(raw) as Partial<LockRecord>;
+  const pid = parsed.pid;
+  if (!Number.isInteger(pid) || pid === undefined || pid <= 0) return null;
+  if (typeof parsed.hostname !== 'string' || parsed.hostname.length === 0) return null;
+  return {
+    token: typeof parsed.token === 'string' ? parsed.token : '',
+    pid,
+    hostname: parsed.hostname,
+    startedAt: typeof parsed.startedAt === 'string' ? parsed.startedAt : '',
+  };
+}
+
 function readLock(lockPath: string): LockRecord | null {
   try {
-    const parsed = JSON.parse(readFileSync(lockPath, 'utf8')) as Partial<LockRecord>;
-    const pid = parsed.pid;
-    if (!Number.isInteger(pid) || pid === undefined || pid <= 0) return null;
-    if (typeof parsed.hostname !== 'string' || parsed.hostname.length === 0) return null;
-    return {
-      token: typeof parsed.token === 'string' ? parsed.token : '',
-      pid,
-      hostname: parsed.hostname,
-      startedAt: typeof parsed.startedAt === 'string' ? parsed.startedAt : '',
-    };
+    return parseLockRecord(readFileSync(lockPath, 'utf8'));
   } catch {
     return null;
   }
@@ -158,12 +162,20 @@ function errorCode(error: unknown): string {
 
 /**
  * 互斥文件整段挂上，已存在就失败，不会覆盖。
- * 读得出活进程则让开。死进程或读不出持有者时保持只读，并给出要删除的路径。
+ * 读得出活进程则让开。确认存在和读内容之间文件消失，就继续抢锁，不要求删除已经不在的路径。
+ * 死进程、读不出或内容损坏时保持只读，并给出要删除的路径。
  */
 function mutexBlock(lockPath: string): AcquireResult | null {
   const mutexPath = reclaimMutexPath(lockPath);
   if (!existsSync(mutexPath)) return null;
-  const holder = readLock(mutexPath);
+  reachBarrier('ZHUMA_LOCK_MUTEX_READ_ARRIVED', 'ZHUMA_LOCK_MUTEX_READ_WAIT');
+  let holder: LockRecord | null;
+  try {
+    holder = parseLockRecord(readFileSync(mutexPath, 'utf8'));
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return null;
+    return { token: null, refusal: abandonedMutexMessage(mutexPath) };
+  }
   if (holder !== null && !holderDead(holder)) return { token: null };
   return { token: null, refusal: abandonedMutexMessage(mutexPath) };
 }
