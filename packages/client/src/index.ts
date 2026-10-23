@@ -9,6 +9,8 @@ export type {
   ReviewDraft,
 } from './execution/ExecutionApi.js';
 export { createExecutionApi, readExecutionNode } from './execution/ExecutionApi.js';
+export { DeliveryPanel } from './execution/DeliveryPanel.js';
+export { InboxPanel } from './execution/InboxPanel.js';
 export {
   INBOX_ACTION_LABELS,
   INBOX_KIND_LABELS,
