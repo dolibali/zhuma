@@ -576,13 +576,14 @@ export class ExecutionService {
    * Another plan in this space already used the key.
    * Plans that cannot be placed in this space are ignored, so a foreign key
    * neither blocks the start nor changes the response.
+   * A thrown lookup is not "another space": the start is refused.
    */
   private async sameSpaceIdempotencyConflict(
     idempotencyKey: string,
     key: string,
     spaceId: string,
     projectId: string,
-  ): Promise<boolean> {
+  ): Promise<ExecutionResult<boolean>> {
     const directory = this.projectSpaceDirectory();
     const tasks = this.workbench.readWorkbench().tasks;
     const spaceByProject = new Map<string, string | undefined>([[projectId, spaceId]]);
@@ -598,14 +599,14 @@ export class ExecutionService {
             const lookup = await directory.spaceForProject(task.projectId);
             owner = lookup.ok ? lookup.spaceId : undefined;
           } catch {
-            owner = undefined;
+            return directoryUnavailable();
           }
         }
         spaceByProject.set(task.projectId, owner);
       }
-      if (owner === spaceId) return true;
+      if (owner === spaceId) return { ok: true, value: true };
     }
-    return false;
+    return { ok: true, value: false };
   }
 
   private async startPlanNow(caller: ExecutionCaller, body: unknown) {
@@ -624,9 +625,14 @@ export class ExecutionService {
     const key = planKey(taskId, planId, revision);
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
     if (!task) return fail('not-found');
-    if (await this.sameSpaceIdempotencyConflict(idempotencyKey, key, space.value, task.projectId)) {
-      return fail('idempotency-mismatch');
-    }
+    const conflict = await this.sameSpaceIdempotencyConflict(
+      idempotencyKey,
+      key,
+      space.value,
+      task.projectId,
+    );
+    if (!conflict.ok) return conflict;
+    if (conflict.value) return fail('idempotency-mismatch');
     const prior = this.storage.readPlan(key);
     if (prior?.fingerprint === fingerprint) {
       return {

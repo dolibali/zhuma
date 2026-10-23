@@ -1418,3 +1418,77 @@ test('start-plan checks an idempotency key only inside the caller space', async 
   });
   assert.equal(clash.error.code, 'idempotency-mismatch');
 });
+
+test('a thrown lookup for another project in the same space refuses the idempotency key', async () => {
+  const { state, task } = fixture();
+  state.projects = [
+    { id: 'portal', name: '门户', description: '北队项目' },
+    { id: 'harbor', name: '港务', description: '同空间的另一个项目' },
+  ];
+  const north = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'north-task',
+      projectId: 'portal',
+      title: '北队专有',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(north, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'harbor-task',
+      projectId: 'harbor',
+      title: '同空间的港务任务',
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'north-task');
+  const harborPlan = ready.appliedPlans.find((plan) => plan.taskId === 'harbor-task');
+  assert.ok(northPlan);
+  assert.ok(harborPlan);
+  let failPortal = false;
+  const { service, store } = create(ready, {
+    async spaceForProject(projectId) {
+      if (projectId === 'portal' && failPortal) throw new Error('portal lookup failed');
+      if (projectId === 'portal' || projectId === 'harbor') {
+        return { ok: true, spaceId: 'team-north' };
+      }
+      return { ok: false, reason: 'unknown' };
+    },
+  });
+  const started = await service.startPlan(session('chen', ['team-north']), {
+    taskId: northPlan.taskId,
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  failPortal = true;
+  const before = store.snapshot();
+  const rejected = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'unavailable');
+  assert.equal(rejected.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(rejected).includes('portal lookup failed'), false);
+  assert.equal(JSON.stringify(rejected).includes('北队专有'), false);
+  assert.deepEqual(store.snapshot(), before);
+  failPortal = false;
+  const clash = await service.startPlan(session('chen', ['team-north']), {
+    taskId: harborPlan.taskId,
+    planId: harborPlan.id,
+    revision: harborPlan.revision,
+    idempotencyKey: 'shared-key',
+  });
+  assert.equal(clash.error.code, 'idempotency-mismatch');
+  assert.deepEqual(store.snapshot(), before);
+});
