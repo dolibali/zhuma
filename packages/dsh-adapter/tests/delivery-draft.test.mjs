@@ -363,3 +363,150 @@ test('a draft link over the per-item or total limit is refused before any write'
   assert.equal(kept.ok, true, kept.ok ? '' : kept.error.code);
   assert.deepEqual(kept.value.links, ['https://example.test/short']);
 });
+
+function draftFile(fields) {
+  return {
+    id: fields.id,
+    mediaType: fields.mediaType,
+    byteSize: 1,
+    checksum: fields.checksum,
+    accessPolicyId: fields.accessPolicyId,
+    uploadComplete: true,
+  };
+}
+
+test('draft caps accept the exact limit and refuse one more character before any write', async () => {
+  const exactLink = await opened();
+  const link = await exactLink.service.draft(
+    session('chen'),
+    locate(exactLink.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-link-exact',
+      links: ['a'.repeat(2048)],
+    }),
+  );
+  assert.equal(link.ok, true, link.ok ? '' : link.error.message);
+  assert.equal(link.value.links[0].length, 2048);
+
+  const exactTotal = await opened();
+  const links = Array.from({ length: 4 }, () => 'b'.repeat(2048));
+  const total = await exactTotal.service.draft(
+    session('chen'),
+    locate(exactTotal.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-total-exact',
+      links,
+    }),
+  );
+  assert.equal(total.ok, true, total.ok ? '' : total.error.message);
+  assert.equal(
+    total.value.links.reduce((sum, item) => sum + item.length, 0),
+    8192,
+  );
+
+  const overTotal = await opened();
+  const overTotalBefore = JSON.stringify(overTotal.store.node('design'));
+  const totalPlus = await overTotal.service.draft(
+    session('chen'),
+    locate(overTotal.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-total-plus',
+      links: [...links, 'c'],
+    }),
+  );
+  assert.equal(totalPlus.ok, false);
+  assert.equal(totalPlus.error.code, 'validation');
+  assert.equal(totalPlus.error.message, '草稿里的链接合计不能超过 8192 个字符。');
+  assert.equal(JSON.stringify(overTotal.store.node('design')), overTotalBefore);
+
+  const exactField = await opened();
+  const field = await exactField.service.draft(
+    session('chen'),
+    locate(exactField.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-field-exact',
+      files: [
+        draftFile({
+          id: 'f'.repeat(2048),
+          mediaType: 'text/plain',
+          checksum: 'sum',
+          accessPolicyId: 'policy',
+        }),
+      ],
+    }),
+  );
+  assert.equal(field.ok, true, field.ok ? '' : field.error.message);
+  assert.equal(field.value.files[0].id.length, 2048);
+
+  const overField = await opened();
+  const overFieldBefore = JSON.stringify(overField.store.node('design'));
+  const fieldPlus = await overField.service.draft(
+    session('chen'),
+    locate(overField.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-field-plus',
+      files: [
+        draftFile({
+          id: 'f'.repeat(2049),
+          mediaType: 'text/plain',
+          checksum: 'sum',
+          accessPolicyId: 'policy',
+        }),
+      ],
+    }),
+  );
+  assert.equal(fieldPlus.ok, false);
+  assert.equal(fieldPlus.error.code, 'validation');
+  assert.equal(fieldPlus.error.message, '文件信息的每一项不能超过 2048 个字符。');
+  assert.equal(JSON.stringify(overField.store.node('design')), overFieldBefore);
+
+  const full = 'd'.repeat(2048);
+  const files = [
+    ...Array.from({ length: 19 }, () =>
+      draftFile({ id: full, mediaType: full, checksum: full, accessPolicyId: full }),
+    ),
+    draftFile({
+      id: full,
+      mediaType: full,
+      checksum: full,
+      accessPolicyId: 'e'.repeat(352),
+    }),
+  ];
+  const text = 't'.repeat(100_000);
+  const exactBody = await opened();
+  const body = await exactBody.service.draft(
+    session('chen'),
+    locate(exactBody.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-body-exact',
+      text,
+      files,
+    }),
+  );
+  assert.equal(body.ok, true, body.ok ? '' : body.error.message);
+  assert.equal(body.value.text.length, 100_000);
+
+  const overBody = await opened();
+  const overBodyBefore = JSON.stringify(overBody.store.node('design'));
+  const bodyPlus = await overBody.service.draft(
+    session('chen'),
+    locate(overBody.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-body-plus',
+      text,
+      files: [
+        ...files.slice(0, 19),
+        draftFile({
+          id: full,
+          mediaType: full,
+          checksum: full,
+          accessPolicyId: 'e'.repeat(353),
+        }),
+      ],
+    }),
+  );
+  assert.equal(bodyPlus.ok, false);
+  assert.equal(bodyPlus.error.code, 'validation');
+  assert.equal(bodyPlus.error.message, '草稿合计不能超过 262144 个字符。');
+  assert.equal(JSON.stringify(overBody.store.node('design')), overBodyBefore);
+});

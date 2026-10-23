@@ -108,6 +108,8 @@ const draftLocate = {
 const draftReadSchema = z.strictObject(draftLocate);
 const DRAFT_LINK_MAX = 2048;
 const DRAFT_LINK_TOTAL_MAX = 8192;
+const DRAFT_FILE_FIELD_MAX = 2048;
+const DRAFT_BODY_MAX = 262_144;
 const draftWriteSchema = z.strictObject({
   ...draftLocate,
   expectedVersion: z.number().int().nonnegative(),
@@ -247,6 +249,44 @@ function draftLinkLimit(
     return {
       ok: false,
       error: { code: 'validation', message: '草稿里的链接合计不能超过 8192 个字符。', details: {} },
+    };
+  }
+  return undefined;
+}
+
+function draftFileLimit(
+  text: string,
+  links: readonly string[],
+  files: readonly {
+    id: string;
+    mediaType: string;
+    checksum: string;
+    accessPolicyId: string;
+  }[],
+): { readonly ok: false; readonly error: ExecutionFailure } | undefined {
+  for (const file of files) {
+    const fields = [file.id, file.mediaType, file.checksum, file.accessPolicyId];
+    if (fields.some((field) => field.length > DRAFT_FILE_FIELD_MAX)) {
+      return {
+        ok: false,
+        error: {
+          code: 'validation',
+          message: '文件信息的每一项不能超过 2048 个字符。',
+          details: {},
+        },
+      };
+    }
+  }
+  let total = text.length;
+  for (const link of links) total += link.length;
+  for (const file of files) {
+    total +=
+      file.id.length + file.mediaType.length + file.checksum.length + file.accessPolicyId.length;
+  }
+  if (total > DRAFT_BODY_MAX) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '草稿合计不能超过 262144 个字符。', details: {} },
     };
   }
   return undefined;
@@ -588,6 +628,12 @@ export class ExecutionService {
       if (!parsed.ok) return parsed;
       const limited = draftLinkLimit(parsed.value.links ?? []);
       if (limited) return limited;
+      const sized = draftFileLimit(
+        parsed.value.text ?? '',
+        parsed.value.links ?? [],
+        parsed.value.files ?? [],
+      );
+      if (sized) return sized;
       const opened = await this.prepareDraft(
         actor.value.spaceIds,
         actor.value.actorId,
