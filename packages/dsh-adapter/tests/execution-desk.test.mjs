@@ -1056,6 +1056,7 @@ function assertLostRecordClosed(session, journal, label, nodeStatus) {
   assert.equal(session.snapshot().downstreamLaunches, 0, label);
   const completed = session.confirmCompleted();
   assert.equal(completed.ok, false, label);
+  assert.equal(completed.code, 'entry-inconsistent', label);
   assert.equal(session.snapshot().node.status, nodeStatus, label);
   assert.equal(session.snapshot().node.status === 'completed', false, label);
   assert.equal(session.snapshot().downstreamLaunches, 0, label);
@@ -1464,6 +1465,24 @@ test('契约：未连接的 MCP 每次运行都记下，界面只显示一次', 
       .length,
     1,
   );
+});
+
+test('契约：缺入口且不要求评审时，确认完成仍返回记录异常', async () => {
+  const planted = seed();
+  planted.handoff.reviewRequired = false;
+  const { desk: session } = desk({ seed: planted });
+  const started = session.send({ text: '不要求评审', idempotencyKey: 'no-review-lost' });
+  await session.waitForRun(started.runId, 'running');
+  session.dropRecordedEntry();
+  const stopped = await session.stop();
+  assert.equal(stopped.snapshot.runs.at(-1).status, 'cancelled');
+  assert.equal(stopped.snapshot.node.status, 'cancelled');
+  const refused = session.confirmCompleted();
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'entry-inconsistent');
+  assert.equal(session.snapshot().node.status, 'cancelled');
+  assert.equal(session.persistence().nodeState.entryStatus, undefined);
+  assert.equal(session.snapshot().downstreamLaunches, 0);
 });
 
 test('契约：交接要求评审时确认完成被拒绝', async () => {
