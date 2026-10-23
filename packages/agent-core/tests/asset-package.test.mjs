@@ -8,15 +8,46 @@ import {
   emptyWorkbench,
   WorkbenchSchema,
   buildPlanningContext,
+  privatePackagePath,
 } from '../dist/index.js';
 
 import {
   sourceFile,
   packageFixture,
+  privateCredentialFiles,
   importCommand as packageCommand,
 } from '../../../tests/fixtures/asset-package.mjs';
 const importCommand = (files = packageFixture()) =>
   packageCommand(previewResourcePackage(files, parseWorkflowTemplate), files);
+
+test('resource package: known credential paths never enter preview or origin, including nested and upper-case names', () => {
+  const privateFiles = privateCredentialFiles();
+  const normalFiles = [
+    sourceFile('analyst/skills/field-review/.editorconfig', 'root = true'),
+    sourceFile('analyst/skills/field-review/package.json', '{"private":true}'),
+    sourceFile('analyst/skills/field-review/config/schema.json', '{"type":"object"}'),
+    sourceFile('analyst/skills/field-review/LICENSE', 'Public fixture license.'),
+  ];
+  for (const file of privateFiles) assert(privatePackagePath(file.path), file.path);
+  for (const file of normalFiles) assert(!privatePackagePath(file.path), file.path);
+  const files = [...packageFixture(), ...privateFiles, ...normalFiles];
+  const preview = previewResourcePackage(files, parseWorkflowTemplate);
+  const excluded = new Set(privateFiles.map((f) => f.path));
+  assert.deepEqual(
+    preview.ignored
+      .filter((f) => excluded.has(f.path))
+      .map((f) => f.path)
+      .sort(),
+    [...excluded].sort(),
+  );
+  assert(!preview.files.some((f) => excluded.has(f.path)));
+  assert.doesNotMatch(JSON.stringify(preview), /SYNTHETIC_PRIVATE_AUTH/);
+  for (const file of normalFiles) assert(preview.files.some((f) => f.path === file.path));
+  assert(preview.files.some((f) => f.path.endsWith('scripts/check.py')));
+  const state = applyWorkbenchCommand(emptyWorkbench(), importCommand(files));
+  for (const resource of [...state.assets, ...state.participants])
+    assert(!resource.origin.filePaths.some((path) => excluded.has(path)));
+});
 
 test('resource package: maps persona/methods and skill files without private state or execution', () => {
   const preview = previewResourcePackage(packageFixture(), parseWorkflowTemplate);

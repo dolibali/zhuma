@@ -34,7 +34,7 @@ export function privatePackagePath(path: string): boolean {
     path
       .split('/')
       .some((s) =>
-        /^(?:\.(?:git|ssh|aws|codex|openclaw)|\.env(?:\..*)?|USER\.md|MEMORY\.md|memory|sessions?|credentials?(?:\..*)?|auth(?:\..*)?|id_(?:rsa|ed25519)(?:\..*)?)$/iu.test(
+        /^(?:\.(?:git|ssh|aws|codex|openclaw|npmrc|netrc|git-credentials|pypirc)|\.env(?:\..*)?|USER\.md|MEMORY\.md|memory|sessions?|credentials?(?:\..*)?|auth(?:\..*)?|id_(?:rsa|ed25519)(?:\..*)?)$/iu.test(
           s,
         ),
       ) || /\.(?:pem|key|p12|pfx)$/iu.test(path)

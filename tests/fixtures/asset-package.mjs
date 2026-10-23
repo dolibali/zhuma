@@ -5,6 +5,16 @@ export const sourceFile = (path, content) => ({
   path,
   data: Buffer.from(content).toString('base64'),
 });
+export function privateCredentialFiles() {
+  return ['.npmrc', '.netrc', '.git-credentials', '.pypirc'].flatMap((name) =>
+    [
+      name,
+      `analyst/${name.toUpperCase()}`,
+      `analyst/skills/field-review/${name}`,
+      `analyst/skills/field-review/nested/${name.toUpperCase()}`,
+    ].map((path) => sourceFile(path, 'SYNTHETIC_PRIVATE_AUTH')),
+  );
+}
 export function packageFixture() {
   return [
     sourceFile('analyst/SOUL.md', '# Persona\nAnalyze orders from evidence.'),

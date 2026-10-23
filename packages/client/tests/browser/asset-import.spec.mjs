@@ -5,7 +5,11 @@ import {
   previewResourcePackage,
   parseWorkflowTemplate,
 } from '@zhuma/agent-core';
-import { packageFixture, packageZip } from '../../../../tests/fixtures/asset-package.mjs';
+import {
+  packageFixture,
+  packageZip,
+  privateCredentialFiles,
+} from '../../../../tests/fixtures/asset-package.mjs';
 import { test, expect, failure } from './replay.mjs';
 
 const button = (scope, name) => scope.getByRole('button', { name, exact: true });
@@ -101,15 +105,30 @@ test('目录预览不读取私人文件；可切换定义/文件并取消，零�
 }, testInfo) => {
   imports(replay);
   const root = testInfo.outputPath('selected');
-  for (const file of packageFixture().filter((f) => f.path.startsWith('analyst/'))) {
+  const selectedFiles = [...packageFixture(), ...privateCredentialFiles()].filter((f) =>
+    f.path.startsWith('analyst/'),
+  );
+  for (const file of selectedFiles) {
     const path = resolve(root, file.path);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, Buffer.from(file.data, 'base64'));
   }
   await page.addInitScript(() => {
     const original = File.prototype.arrayBuffer;
+    const excluded = new Set([
+      'user.md',
+      '.env',
+      '.npmrc',
+      '.netrc',
+      '.git-credentials',
+      '.pypirc',
+    ]);
+    window.__assetPrivateReads = [];
     File.prototype.arrayBuffer = function () {
-      if (['USER.md', '.env'].includes(this.name)) throw Error('Private file must not be read');
+      if (excluded.has(this.name.toLowerCase())) {
+        window.__assetPrivateReads.push(this.webkitRelativePath || this.name);
+        throw Error('Private file must not be read');
+      }
       return original.call(this);
     };
   });
@@ -134,6 +153,9 @@ test('目录预览不读取私人文件；可切换定义/文件并取消，零�
   const source = replay.requests.find((r) => r.endpoint === 'preview-import');
   expect(source.files.find((f) => f.path.endsWith('USER.md')).data).toBe('');
   expect(source.files.find((f) => f.path.endsWith('.env')).data).toBe('');
+  for (const file of privateCredentialFiles().filter((f) => f.path.startsWith('analyst/')))
+    expect(source.files.find((f) => f.path === file.path).data).toBe('');
+  expect(await page.evaluate(() => window.__assetPrivateReads)).toEqual([]);
   expect(replay.state.assets).toHaveLength(12);
 });
 

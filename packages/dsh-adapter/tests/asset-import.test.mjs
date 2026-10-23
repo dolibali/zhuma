@@ -11,6 +11,7 @@ import { WorkbenchService } from '../dist/workbench-service.js';
 import { previewAssetImport, readImportArchive } from '../dist/asset-import.js';
 import {
   packageFixture,
+  privateCredentialFiles,
   importCommand as packageCommand,
   sourceFile,
   packageZip,
@@ -100,6 +101,53 @@ function serviceFixture() {
     },
   };
 }
+
+test('asset package credentials: ZIP skips private payloads and ZIP/files imports exclude them from stored versions and origin', async () => {
+  const privateFiles = privateCredentialFiles();
+  const excluded = new Set(privateFiles.map((f) => f.path));
+  const files = [
+    ...packageFixture(),
+    ...privateFiles,
+    sourceFile('analyst/skills/field-review/.editorconfig', 'root = true'),
+    sourceFile('analyst/skills/field-review/LICENSE', 'Public fixture license.'),
+  ];
+  // A wrong CRC would fail if the reader opened and decompressed a private payload.
+  const zip = packageZip(files.map((f) => (excluded.has(f.path) ? { ...f, crc: 0 } : f)));
+  const raw = await readImportArchive(zip, AbortSignal.timeout(5000));
+  for (const path of excluded) assert.equal(raw.find((f) => f.path === path).data, '');
+  const preview = await previewAssetImport({ kind: 'zip', data: zip }, AbortSignal.timeout(5000));
+  assert.deepEqual(
+    preview,
+    await previewAssetImport({ kind: 'files', files }, AbortSignal.timeout(5000)),
+  );
+  assert.deepEqual(
+    preview.ignored
+      .filter((f) => excluded.has(f.path))
+      .map((f) => f.path)
+      .sort(),
+    [...excluded].sort(),
+  );
+  assert(!preview.files.some((f) => excluded.has(f.path)));
+  assert(preview.files.some((f) => f.path.endsWith('/.editorconfig')));
+  assert(preview.files.some((f) => f.path.endsWith('/LICENSE')));
+  assert(preview.files.some((f) => f.path.endsWith('/scripts/check.py')));
+  for (const source of [files, raw]) {
+    const f = serviceFixture();
+    const state = await f.service.command(
+      { requestId: randomUUID(), expectedRevision: 0, command: importCommand(source) },
+      AbortSignal.timeout(5000),
+    );
+    assert.equal(f.versions.size, 1);
+    const stored = [...f.versions.values()][0];
+    assert(!stored.files.some((file) => excluded.has(file.path)));
+    assert.doesNotMatch(JSON.stringify(stored), /SYNTHETIC_PRIVATE_AUTH/);
+    for (const resource of [...state.assets, ...state.participants])
+      assert(!resource.origin.filePaths.some((path) => excluded.has(path)));
+    assert(
+      !f.service.resourceFiles('asset', 'imported-0').files.some((file) => excluded.has(file.path)),
+    );
+  }
+});
 
 test('asset package storage: file failure or catalog failure publishes nothing; durable retry/restart is single-write', async () => {
   const f = serviceFixture();
