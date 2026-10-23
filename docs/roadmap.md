@@ -69,6 +69,8 @@ A-UX2a 目录/表单及浏览器 CI 已合入；A-UX2b 导航见 PR #6，已合�
 
 Host 身份装配及执行装配分别由 #28／#32 跟踪，依赖与集成顺序以 #25 为准。B 已提供模块／DTO／业务组件候选，显式部署模式与可信产品空间映射仍须按实际组合通过；项目 ID 不能替代空间身份；#29 的可信归属事实由 B-ID0 提供，A 只作 Host 注入，不新建授权库。可编译签名、DI／加载顺序／导出及 Inbox／提交／评审 props 清单核对后，A 在独立批次从已打开 WorkbenchService 的 snapshot 闭包提供 Host-only readWorkbench，挂 identity/execution 并注册 B 业务组件。各 domain 只打开一次，浏览器不获全量读取接缝；B 负责成员 cookie、空间过滤及旧 exact API 的门禁适配，A 单写共享整合。成员模式缺 cookie、身份加载失败或卸载都不回落 owner；模式必须显式配置。门禁覆盖 snapshot／command／plan／preview-import／resource-files 五个 exact 入口及 import-package，在解压、读取或写包前拒绝无权请求。B PR #18 的测试配置还含构建与端口改动，由 A 在此独立批次统一审阅，不能只复制项目注册。
 
+S1a 组合使用已合入身份 PR #18 的 develop `772b59c41f1812051931348289f576aeadc5ae8f`，保留旧五接口流式门禁、显式单人兼容与 Host-only 快照闭包，见[范围](host-identity-integration.md)和[分层验证](review/s1a-host/README.md)。历史证据对应原实现 `6a0fd6f`，新组合须另绑定源版本及发行字节；S1b 等 B 提供真实项目→产品空间绑定及业务 DI 后接执行／待办／提交／评审，不提前用虚构映射挂载页面。
+
 S2 的 [LC-11／LC-T11](architecture/task-session-delivery/test-plan.md) 先做 Zhuma 加一种外部 CLI 的同工作会话交接：真实停止／写权释放、目标实际受理后切换当前执行段，原责任、历史、提交版本及评审义务保持。其余工具逐项补齐；不另建聊天库或默认 Host factory。此项只有方案，尚未实现验收。
 
 A-PROJECT 首批已随 PR #22 合入 `79a4466`；`83ab303` 的[交互／兼容边界](project-hub.md)与[分层证据](review/project-hub/README.md)单列。项目 ID 与产品空间保持独立；项目默认参与者仅初始化新草稿，显式关联资产进入现有规划预算，链接正文不自动抓取。当前不实现归档或运行中职责变更，不能据草稿／已确认推断真实阶段与已接受产物。

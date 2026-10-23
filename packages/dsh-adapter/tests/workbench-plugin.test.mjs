@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { apply } from '../dist/workbench-plugin.js';
+import { openWorkbench } from '../dist/workbench-plugin.js';
+import { apply as applyHost } from '../dist/host-plugin.js';
+import { configureDeploymentMode } from '../dist/member-session.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import {
   packageFixture,
@@ -8,7 +10,7 @@ import {
 } from '../../../tests/fixtures/asset-package.mjs';
 import { previewResourcePackage, parseWorkflowTemplate } from '@zhuma/agent-core';
 
-async function mount() {
+async function mount(mode = 'legacy-single-user') {
   const routes = new Map();
   const audits = new Map();
   const effects = [];
@@ -74,7 +76,8 @@ async function mount() {
       },
     },
   };
-  await apply(ctx);
+  if (mode !== null) configureDeploymentMode(ctx, mode);
+  const { readWorkbench } = await openWorkbench(ctx);
   async function request(endpoint, payload, method = `zhuma/${endpoint}`) {
     return routes.get(`/api/zhuma/${endpoint}`).fetch(
       new Request(`http://localhost/api/zhuma/${endpoint}`, {
@@ -84,8 +87,57 @@ async function mount() {
       }),
     );
   }
-  return { routes, request, effects, opened };
+  return { routes, request, effects, opened, readWorkbench };
 }
+
+test('Host mode contract: absent/invalid explicit config rejects before service access; public config cannot carry account verifiers', async () => {
+  for (const config of [
+    undefined,
+    {},
+    { deploymentMode: 'owner' },
+    { deploymentMode: 'multi-member', identityImport: { accounts: [] } },
+    { deploymentMode: 'legacy-single-user', bodyBytes: 0 },
+    { deploymentMode: 'multi-member', identityBootstrapKey: 'invalid-key' },
+  ]) {
+    await assert.rejects(applyHost({}, config));
+  }
+});
+
+test('Host exact gates: all five reject before touching body, even with identity unmounted or mode unset', async () => {
+  for (const [mode, status] of [
+    ['multi-member', 404],
+    [null, 401],
+  ]) {
+    const { routes, effects } = await mount(mode);
+    let reads = 0;
+    for (const route of routes.values()) {
+      assert.equal(route.requestBody, 'streaming');
+      const request = new Request('http://localhost/api/zhuma/snapshot', {
+        method: 'POST',
+        body: 'not-json',
+      });
+      Object.defineProperty(request, 'body', {
+        get() {
+          reads++;
+          throw Error('denied body must remain unread');
+        },
+      });
+      assert.equal((await route.fetch(request)).status, status);
+    }
+    assert.equal(reads, 0);
+    for (const dispose of effects) await dispose();
+  }
+});
+
+test('Host internal workbench seam: one open per domain, cloned snapshot, revoked after disposal', async () => {
+  const { readWorkbench, effects, opened } = await mount();
+  const first = readWorkbench();
+  first.projects[0].name = 'A caller mutation';
+  assert.notEqual(readWorkbench().projects[0].name, first.projects[0].name);
+  assert.deepEqual(opened, ['zhuma_workbench', 'zhuma_asset_packages']);
+  for (const dispose of effects) await dispose();
+  assert.throws(readWorkbench, /已关闭/);
+});
 
 test('Host route contract: exact authenticated carrier contribution, protocol identity and error redaction', async () => {
   const { routes, request, effects, opened } = await mount();
