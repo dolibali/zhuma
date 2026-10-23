@@ -260,14 +260,26 @@ test('契约：重试和核实断开保存失败时不改节点', async () => {
   const stopped = await session.stop();
   assert.equal(stopped.ok, true);
   await session.flush();
-  const status = session.snapshot().node.status;
-  const runs = session.snapshot().runs.length;
+  const beforeRetry = JSON.parse(JSON.stringify(session.persistence()));
+  assert.equal(beforeRetry.nodeState.status, 'cancelled');
   state.failNext = true;
   const retried = session.retry('once');
   assert.equal(retried.ok, false);
   assert.equal(retried.code, 'persist-failed');
-  assert.equal(session.snapshot().node.status, status);
-  assert.equal(session.snapshot().runs.length, runs);
+  assert.deepEqual(session.persistence(), beforeRetry);
+  assert.equal(
+    session.persistence().nodeState.stored.some((item) => item.idempotencyKey === 'recovery:once'),
+    false,
+  );
+  const again = session.retry('once');
+  assert.equal(again.ok, true);
+  assert.notEqual(again.code, 'recovery-not-available');
+  await session.waitForRun(again.runId, 'running');
+  assert.equal(session.snapshot().node.status, 'running');
+  assert.equal(
+    session.persistence().nodeState.stored.some((item) => item.idempotencyKey === 'recovery:once'),
+    true,
+  );
 
   const gapState = { failNext: false, value: running };
   const restored = ExecutionDesk.restore(running, {
