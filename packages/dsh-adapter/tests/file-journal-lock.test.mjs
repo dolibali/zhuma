@@ -886,6 +886,133 @@ test('契约：回收互斥在读到之前消失时继续抢锁，不要求删�
   }
 });
 
+function hardlinkChild() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-link-fault-'));
+  const preload = path.join(dir, 'preload.mjs');
+  const script = path.join(dir, 'drive.mjs');
+  writeFileSync(
+    preload,
+    [
+      "import { createRequire } from 'node:module';",
+      'const require = createRequire(import.meta.url);',
+      "const fs = require('node:fs');",
+      'const original = fs.linkSync;',
+      'fs.linkSync = (existing, target) => {',
+      '  const code = process.env.ZHUMA_LINK_CODE;',
+      '  if (code) {',
+      '    const error = new Error(`${code}: link`);',
+      '    error.code = code;',
+      '    throw error;',
+      '  }',
+      '  return original(existing, target);',
+      '};',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(
+    script,
+    [
+      'const { createFileJournal } = await import(process.env.ZHUMA_ADAPTER);',
+      'let text = "";',
+      'try {',
+      '  const journal = createFileJournal(process.env.ZHUMA_SESSION_FILE);',
+      '  text = JSON.stringify({',
+      '    threw: false,',
+      '    writable: journal.writable === true,',
+      '    refusal: journal.refusal ?? "",',
+      '  });',
+      '} catch (error) {',
+      '  text = JSON.stringify({',
+      '    threw: true,',
+      '    writable: null,',
+      '    refusal: error && error.message ? error.message : String(error),',
+      '  });',
+      '}',
+      'process.stdout.write(text);',
+      '',
+    ].join('\n'),
+  );
+  return { dir, preload, script };
+}
+
+async function runHardlink(code) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-link-journal-'));
+  const file = path.join(directory, 'session.json');
+  const childFiles = hardlinkChild();
+  const child = spawn(process.execPath, ['--import', childFiles.preload, childFiles.script], {
+    env: {
+      ...process.env,
+      ZHUMA_LINK_CODE: code,
+      ZHUMA_SESSION_FILE: file,
+      ZHUMA_ADAPTER: adapter,
+    },
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  try {
+    const [status] = await once(child, 'exit');
+    if (status !== 0) throw new Error(`硬链接注入进程退出 ${status}\n${stderr}\n${stdout}`);
+    return { ...JSON.parse(stdout), lockPath: `${file}.write.lock` };
+  } finally {
+    clearTimeout(timer);
+    rmSync(childFiles.dir, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test('契约：硬链接返回 EPERM、ENOTSUP 或 EXDEV 时日志只读，拒绝理由带路径', async () => {
+  for (const code of ['EPERM', 'ENOTSUP', 'EXDEV']) {
+    const reported = await runHardlink(code);
+    assert.equal(reported.threw, false, reported.refusal);
+    assert.equal(reported.writable, false);
+    assert.match(reported.refusal, /只读/);
+    assert.equal(reported.refusal.includes(reported.lockPath), true);
+  }
+});
+
+test('契约：示例服务遇到不能硬链接的目录时按只读拒绝退出，不把异常抛出进程', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-link-server-'));
+  const sessionFile = path.join(directory, 'session.json');
+  const childFiles = hardlinkChild();
+  const server = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../../examples/agent-workspace/server.mjs',
+  );
+  const env = {
+    ...process.env,
+    ZHUMA_LINK_CODE: 'EPERM',
+    ZHUMA_SESSION_FILE: sessionFile,
+  };
+  delete env.ZHUMA_MODEL_API_KEY;
+  const child = spawn(process.execPath, ['--import', childFiles.preload, server], { env });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+  try {
+    const [status] = await once(child, 'exit');
+    assert.equal(status, 1);
+    assert.match(stderr, /只读/);
+    assert.equal(stderr.includes(sessionFile), true);
+    assert.equal(stderr.includes('at '), false);
+  } finally {
+    clearTimeout(timer);
+    rmSync(childFiles.dir, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 // 回归：观察读取去掉 ENOENT 吞掉后，本用例抛 ENOENT。
 test('契约：锁在观察到存在之后被删掉时，读取一侧忽略 ENOENT', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-observe-enoent-'));

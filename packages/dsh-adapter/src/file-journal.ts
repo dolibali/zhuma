@@ -160,6 +160,13 @@ function errorCode(error: unknown): string {
   return error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
 }
 
+/** 文件系统不支持硬链接时，改成带路径的只读，不要把进程打崩。 */
+function hardlinkRefusal(targetPath: string, error: unknown): string | null {
+  const code = errorCode(error);
+  if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EXDEV') return null;
+  return `这个目录不能用硬链接保存写锁，本次改为只读。${targetPath}`;
+}
+
 /**
  * 互斥文件整段挂上，已存在就失败，不会覆盖。
  * 读得出活进程则让开。确认存在和读内容之间文件消失，就继续抢锁，不要求删除已经不在的路径。
@@ -251,6 +258,8 @@ function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
       wait: 'ZHUMA_LOCK_RECLAIM_WAIT',
     });
   } catch (error) {
+    const refusal = hardlinkRefusal(mutexPath, error);
+    if (refusal !== null) return { token: null, refusal };
     if (errorCode(error) !== 'EEXIST') throw error;
     return mutexBlock(lockPath) ?? { token: null };
   }
@@ -273,6 +282,8 @@ function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
       });
     } catch (error) {
       if (errorCode(error) === 'EEXIST') return { token: null };
+      const refusal = hardlinkRefusal(lockPath, error);
+      if (refusal !== null) return { token: null, refusal };
       if (error instanceof Error && !error.message.includes(lockPath)) {
         error.message = `${error.message} ${lockPath}`;
       }
@@ -296,6 +307,8 @@ function acquireLock(lockPath: string): AcquireResult {
     heldLocks.set(lockPath, token);
     return { token };
   } catch (error) {
+    const refusal = hardlinkRefusal(lockPath, error);
+    if (refusal !== null) return { token: null, refusal };
     if (errorCode(error) !== 'EEXIST') throw error;
   }
   const holder = readLock(lockPath);
