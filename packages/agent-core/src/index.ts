@@ -168,5 +168,8 @@ export {
   startAppliedPlan,
   submitDelivery,
   castBallot,
+  settleReview,
   unlockDownstream,
+  toNodeExecutionReport,
+  executionInbox,
 } from './human-node.js';

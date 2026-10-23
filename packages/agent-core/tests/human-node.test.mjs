@@ -4,12 +4,25 @@ import {
   applyWorkbenchCommand,
   castBallot,
   completionSource,
+  executionInbox,
+  settleReview,
   startAppliedPlan,
   submitDelivery,
+  toNodeExecutionReport,
   unlockDownstream,
   unlockKey,
 } from '@zhuma/agent-core';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
+
+const lin = {
+  id: 'lin',
+  name: '林夏',
+  kind: 'human',
+  role: '复核',
+  capabilities: [],
+  instructions: '',
+  available: true,
+};
 
 function node(partial) {
   return {
@@ -66,16 +79,6 @@ function at(records, nodeId) {
   return found;
 }
 
-const lin = {
-  id: 'lin',
-  name: '林夏',
-  kind: 'human',
-  role: '复核',
-  capabilities: [],
-  instructions: '',
-  available: true,
-};
-
 function textDraft(text) {
   return { text, files: [], links: [] };
 }
@@ -123,6 +126,19 @@ function vote(record, actorId, action, extra = {}) {
   });
 }
 
+function settle(record, actorId, key) {
+  const round = record.rounds.find((item) => item.id === record.currentRoundId);
+  assert.ok(round);
+  return settleReview({
+    record,
+    actorId,
+    idempotencyKey: key,
+    expectedVersion: record.command.version,
+    roundId: round.id,
+    artifactVersionId: round.artifactVersionId,
+  });
+}
+
 test('starts the exact revision and records entry status without using the actor as owner', () => {
   const { applied } = confirm([
     node({ id: 'design', title: '设计' }),
@@ -159,8 +175,7 @@ test('starts the exact revision and records entry status without using the actor
   assert.equal(design.ownerId, 'chen');
   assert.equal(publish.ownerId, 'chen');
   assert.notEqual(design.ownerId, 'outside');
-  assert.equal(design.handoff.inputRefs.length, 0);
-  assert.equal(publish.handoff.inputRefs.length, 0);
+  assert.equal(toNodeExecutionReport(publish).blockReason, '等待前置节点完成');
 
   const frozen = structuredClone(started.records);
   const again = start(applied, started.records, 'outside');
@@ -203,64 +218,6 @@ test('a wrong revision does not fall back to a newer applied plan', () => {
   assert.equal(exact.records[0].planId, v1.id);
 });
 
-test('a dependent node started after upstream completed stays blocked until unlock writes inputRefs', () => {
-  const { applied } = confirm([
-    node({ id: 'design', title: '设计' }),
-    node({ id: 'publish', title: '发布', assigneeId: 'outside', dependsOn: ['design'] }),
-  ]);
-  const started = start(applied);
-  const design = at(started.records, 'design');
-  const completed = {
-    ...design,
-    command: { ...design.command, status: 'completed' },
-    acceptedArtifactVersionId: 'artifact:early',
-  };
-  const retried = start(applied, [completed]);
-  assert.equal(retried.ok, true);
-  const publish = at(retried.records, 'publish');
-  assert.equal(publish.command.status, 'blocked');
-  assert.deepEqual(publish.handoff.inputRefs, []);
-  const source = completionSource(at(retried.records, 'design'));
-  assert.equal(source, 'artifact:artifact:early');
-  const unlocked = unlockDownstream({
-    record: publish,
-    dependencies: retried.records,
-    actorId: 'chen',
-    idempotencyKey: unlockKey(source, 'publish'),
-    expectedVersion: publish.command.version,
-  });
-  assert.equal(unlocked.disposition, 'applied');
-  assert.equal(unlocked.record.command.status, 'ready');
-  assert.deepEqual(unlocked.record.handoff.inputRefs, [
-    { sourceNodeId: 'design', artifactVersionId: 'artifact:early' },
-  ]);
-
-  const alreadyReady = {
-    ...publish,
-    command: { ...publish.command, status: 'ready' },
-  };
-  const repaired = unlockDownstream({
-    record: alreadyReady,
-    dependencies: retried.records,
-    actorId: 'chen',
-    idempotencyKey: unlockKey(source, 'publish-ready'),
-    expectedVersion: alreadyReady.command.version,
-  });
-  assert.equal(repaired.disposition, 'applied');
-  assert.equal(repaired.record.command.status, 'ready');
-  assert.equal(repaired.record.command.version, alreadyReady.command.version);
-  assert.equal(repaired.record.handoff.inputRefs.length, 1);
-  const again = unlockDownstream({
-    record: repaired.record,
-    dependencies: retried.records,
-    actorId: 'chen',
-    idempotencyKey: unlockKey(source, 'publish-ready'),
-    expectedVersion: repaired.record.command.version,
-  });
-  assert.equal(again.disposition, 'ignored');
-  assert.equal(again.record.handoff.inputRefs.length, 1);
-});
-
 test('an unbound owner and a non-assignee cannot submit, and a mismatched actor cannot vote', () => {
   const { applied } = confirm(
     [
@@ -283,6 +240,11 @@ test('an unbound owner and a non-assignee cannot submit, and a mismatched actor 
   assert.equal(ownerSubmit.record, design);
   assert.equal(design.artifactVersions.length, 0);
   assert.equal(design.receipts.length, 0);
+  assert.deepEqual(
+    executionInbox({ actorId: 'chen', records: [design] }).map((item) => item.action),
+    [],
+  );
+
   const reviewed = confirm(
     [
       node({
@@ -432,4 +394,256 @@ test('the same delivery key replays and a different payload conflicts', () => {
   assert.equal(changed.code, 'idempotency-mismatch');
   assert.equal(first.record.artifactVersions.length, 1);
   assert.equal(first.record.receipts.length, 1);
+});
+
+test('send-back then resubmit unlocks downstream only after every reviewer approves, once', () => {
+  const { applied } = confirm(
+    [
+      node({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['outside', 'lin'],
+      }),
+      node({
+        id: 'check',
+        title: '校对',
+        assigneeId: 'lin',
+        reviewRequired: true,
+        reviewerIds: ['outside'],
+        dependsOn: ['design', 'audit'],
+      }),
+      node({
+        id: 'audit',
+        title: '审计',
+        assigneeId: 'outside',
+        dependsOn: [],
+      }),
+      node({
+        id: 'publish',
+        title: '发布',
+        assigneeId: 'outside',
+        reviewRequired: true,
+        reviewerIds: ['lin'],
+        dependsOn: ['design'],
+      }),
+    ],
+    [lin],
+  );
+  let records = start(applied).records;
+  const design = () => at(records, 'design');
+  const publish = () => at(records, 'publish');
+  const check = () => at(records, 'check');
+  assert.equal(publish().command.status, 'blocked');
+  assert.equal(
+    executionInbox({ actorId: 'chen', records }).some(
+      (item) => item.nodeId === 'design' && item.action === 'submit',
+    ),
+    true,
+  );
+  assert.equal(
+    executionInbox({ actorId: 'outside', records }).some((item) => item.action === 'review'),
+    false,
+  );
+
+  const submitted = submit(design(), 'chen', 'design-v1', textDraft('第一版接口'));
+  assert.equal(submitted.record.command.status, 'in-review');
+  assert.equal(submitted.record.rounds[0].ballots.length, 0);
+  records = records.map((record) => (record.nodeId === 'design' ? submitted.record : record));
+  assert.equal(
+    executionInbox({ actorId: 'outside', records }).some(
+      (item) => item.nodeId === 'design' && item.action === 'review',
+    ),
+    true,
+  );
+
+  const early = settle(design(), 'outside', 'settle:design');
+  assert.equal(early.disposition, 'ignored');
+  assert.equal(early.record.command.status, 'in-review');
+  assert.equal(early.record.command.version, submitted.record.command.version);
+  const blankReturn = vote(design(), 'lin', 'request-changes', { idempotencyKey: 'empty-return' });
+  assert.equal(blankReturn.code, 'empty-request-changes');
+  assert.equal(design().rounds[0].ballots.length, 0);
+
+  const oneApproval = vote(design(), 'outside', 'approve');
+  assert.equal(oneApproval.disposition, 'applied');
+  assert.equal(oneApproval.record.rounds[0].status, 'open');
+  const returned = vote(oneApproval.record, 'lin', 'request-changes', { comment: '请补充错误码' });
+  assert.equal(returned.disposition, 'applied');
+  const sentBack = settle(returned.record, 'lin', 'settle:design');
+  assert.equal(sentBack.disposition, 'applied');
+  assert.equal(sentBack.record.command.status, 'needs-revision');
+  assert.equal(sentBack.record.command.entryStatus, 'needs-revision');
+  assert.equal(sentBack.record.acceptedArtifactVersionId, undefined);
+  records = records.map((record) => (record.nodeId === 'design' ? sentBack.record : record));
+  assert.equal(publish().command.status, 'blocked');
+  assert.equal(
+    executionInbox({ actorId: 'chen', records }).find((item) => item.nodeId === 'design')?.action,
+    'revise',
+  );
+  assert.equal(
+    executionInbox({ actorId: 'lin', records }).some((item) => item.nodeId === 'design'),
+    false,
+  );
+
+  const resubmitted = submit(design(), 'chen', 'design-v2', textDraft('第二版接口，含错误码'));
+  assert.equal(resubmitted.disposition, 'applied');
+  assert.equal(resubmitted.record.artifactVersions.map((item) => item.version).join(','), '1,2');
+  assert.equal(resubmitted.record.rounds.length, 2);
+  assert.notEqual(resubmitted.record.currentRoundId, sentBack.record.currentRoundId);
+  assert.equal(resubmitted.record.rounds.at(-1).ballots.length, 0);
+  assert.equal(resubmitted.record.rounds[0].ballots.length, 2);
+  records = records.map((record) => (record.nodeId === 'design' ? resubmitted.record : record));
+
+  const oldRound = vote(design(), 'outside', 'approve', {
+    idempotencyKey: 'old-round',
+    roundId: sentBack.record.currentRoundId,
+    artifactVersionId: sentBack.record.artifactVersions[0].id,
+  });
+  assert.equal(oldRound.code, 'stale-round');
+  const oldArtifact = vote(design(), 'outside', 'approve', {
+    idempotencyKey: 'old-artifact',
+    artifactVersionId: sentBack.record.artifactVersions[0].id,
+  });
+  assert.equal(oldArtifact.code, 'stale-version');
+
+  const firstNew = vote(design(), 'outside', 'approve');
+  const partial = settle(firstNew.record, 'outside', 'settle:design-v2');
+  assert.equal(partial.disposition, 'ignored');
+  assert.equal(partial.record.command.status, 'in-review');
+  records = records.map((record) => (record.nodeId === 'design' ? partial.record : record));
+  const premature = unlockDownstream({
+    record: publish(),
+    dependencies: records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(design().currentRoundId, 'publish'),
+    expectedVersion: publish().command.version,
+  });
+  assert.equal(premature.disposition, 'ignored');
+  assert.equal(publish().command.status, 'blocked');
+  assert.deepEqual(publish().handoff.inputRefs, []);
+
+  const secondNew = vote(partial.record, 'lin', 'approve');
+  const accepted = settle(secondNew.record, 'lin', 'settle:design-v2');
+  assert.equal(accepted.disposition, 'applied');
+  assert.equal(accepted.record.command.status, 'completed');
+  assert.equal(accepted.record.command.entryStatus, undefined);
+  assert.equal(accepted.record.acceptedArtifactVersionId, 'artifact:design-v2');
+  const settledAgain = settle(accepted.record, 'lin', 'settle:design-v2');
+  assert.equal(settledAgain.disposition, 'replayed');
+  assert.equal(settledAgain.record.command.version, accepted.record.command.version);
+  records = records.map((record) => (record.nodeId === 'design' ? accepted.record : record));
+
+  const waitingOnAudit = unlockDownstream({
+    record: check(),
+    dependencies: records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(design().currentRoundId, 'check'),
+    expectedVersion: check().command.version,
+  });
+  assert.equal(waitingOnAudit.disposition, 'ignored');
+  assert.equal(check().command.status, 'blocked');
+
+  const unlocked = unlockDownstream({
+    record: publish(),
+    dependencies: records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(completionSource(design()), 'publish'),
+    expectedVersion: publish().command.version,
+  });
+  assert.equal(unlocked.disposition, 'applied');
+  assert.equal(unlocked.record.command.status, 'ready');
+  assert.equal(unlocked.record.command.entryStatus, 'ready');
+  assert.deepEqual(unlocked.record.handoff.inputRefs, [
+    { sourceNodeId: 'design', artifactVersionId: 'artifact:design-v2' },
+  ]);
+  const unlockedAgain = unlockDownstream({
+    record: unlocked.record,
+    dependencies: records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(completionSource(design()), 'publish'),
+    expectedVersion: unlocked.record.command.version,
+  });
+  assert.equal(unlockedAgain.disposition, 'replayed');
+  assert.equal(unlockedAgain.record.command.version, unlocked.record.command.version);
+  assert.equal(unlockedAgain.record.command.status, 'ready');
+  const otherActor = unlockDownstream({
+    record: unlocked.record,
+    dependencies: records,
+    actorId: 'lin',
+    idempotencyKey: unlockKey(completionSource(design()), 'publish'),
+    expectedVersion: unlocked.record.command.version,
+  });
+  assert.equal(otherActor.code, 'idempotency-mismatch');
+  assert.equal(unlocked.record.command.status, 'ready');
+
+  const report = toNodeExecutionReport(accepted.record);
+  assert.equal(report.status, 'completed');
+  assert.equal(report.acceptedArtifactVersionId, 'artifact:design-v2');
+  assert.equal(report.reviewOutcome, 'approved');
+  assert.equal(toNodeExecutionReport(unlocked.record).status, 'ready');
+  assert.equal(
+    executionInbox({ actorId: 'outside', records: [unlocked.record] }).some(
+      (item) => item.action === 'submit',
+    ),
+    true,
+  );
+});
+
+test('a dependent node started after upstream completed stays blocked until unlock writes inputRefs', () => {
+  const { applied } = confirm([
+    node({ id: 'design', title: '设计' }),
+    node({ id: 'publish', title: '发布', assigneeId: 'outside', dependsOn: ['design'] }),
+  ]);
+  const started = start(applied);
+  const design = at(started.records, 'design');
+  const submitted = submit(design, 'chen', 'early', textDraft('上游先完成'));
+  assert.equal(submitted.record.command.status, 'completed');
+  const retried = start(applied, [submitted.record]);
+  assert.equal(retried.ok, true);
+  const publish = at(retried.records, 'publish');
+  assert.equal(publish.command.status, 'blocked');
+  assert.deepEqual(publish.handoff.inputRefs, []);
+  const source = completionSource(at(retried.records, 'design'));
+  assert.ok(source);
+  const unlocked = unlockDownstream({
+    record: publish,
+    dependencies: retried.records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(source, 'publish'),
+    expectedVersion: publish.command.version,
+  });
+  assert.equal(unlocked.disposition, 'applied');
+  assert.equal(unlocked.record.command.status, 'ready');
+  assert.deepEqual(unlocked.record.handoff.inputRefs, [
+    {
+      sourceNodeId: 'design',
+      artifactVersionId: submitted.record.acceptedArtifactVersionId,
+    },
+  ]);
+
+  const alreadyReady = {
+    ...publish,
+    command: { ...publish.command, status: 'ready' },
+  };
+  const repaired = unlockDownstream({
+    record: alreadyReady,
+    dependencies: retried.records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(source, 'publish-ready'),
+    expectedVersion: alreadyReady.command.version,
+  });
+  assert.equal(repaired.disposition, 'applied');
+  assert.equal(repaired.record.command.status, 'ready');
+  assert.equal(repaired.record.command.version, alreadyReady.command.version);
+  assert.equal(repaired.record.handoff.inputRefs.length, 1);
+  const again = unlockDownstream({
+    record: repaired.record,
+    dependencies: retried.records,
+    actorId: 'chen',
+    idempotencyKey: unlockKey(source, 'publish-ready'),
+    expectedVersion: repaired.record.command.version,
+  });
+  assert.equal(again.disposition, 'ignored');
+  assert.equal(again.record.handoff.inputRefs.length, 1);
 });

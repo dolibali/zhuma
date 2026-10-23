@@ -449,6 +449,57 @@ export function castBallot(input: {
   };
 }
 
+/**
+ * Settle the current round from its ballots. One approval leaves the node
+ * in review. Approval by every reviewer completes it. A send-back does not
+ * unlock downstream.
+ */
+export function settleReview(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly roundId: string;
+  readonly artifactVersionId: string;
+}): NodeCommandResult {
+  const round = input.record.rounds.find((item) => item.id === input.roundId);
+  const current = input.record.currentRoundId
+    ? input.record.rounds.find((item) => item.id === input.record.currentRoundId)
+    : undefined;
+  if (!round || !current) return reject(input.record, 'stale-round');
+  const outcome = applyReviewSettlementCommand(
+    input.record.command,
+    {
+      idempotencyKey: input.idempotencyKey,
+      actorId: input.actorId,
+      objectId: input.record.nodeId,
+      expectedVersion: input.expectedVersion,
+      payload: { roundId: input.roundId, artifactVersionId: input.artifactVersionId },
+    },
+    round,
+    { roundId: current.id, artifactVersionId: current.artifactVersionId },
+  );
+  const failure = failDecision(input.record, outcome.decision);
+  if (failure) return failure;
+  if (outcome.decision.status === 'replayed') {
+    return { ok: true, disposition: 'replayed', record: input.record };
+  }
+  if (outcome.decision.status !== 'applied') {
+    return { ok: true, disposition: 'ignored', record: input.record };
+  }
+  return {
+    ok: true,
+    disposition: 'applied',
+    record: {
+      ...input.record,
+      command: outcome.state,
+      ...(outcome.state.status === 'completed'
+        ? { acceptedArtifactVersionId: input.artifactVersionId }
+        : {}),
+    },
+  };
+}
+
 function dependencyRefs(
   record: ExecutionNodeRecord,
   dependencies: readonly ExecutionNodeRecord[],
@@ -517,4 +568,84 @@ export function unlockDownstream(input: {
     return { ok: true, disposition: 'replayed', record: input.record };
   }
   return { ok: true, disposition: 'ignored', record: input.record };
+}
+
+export function toNodeExecutionReport(record: ExecutionNodeRecord): NodeExecutionReport {
+  const round = record.currentRoundId
+    ? record.rounds.find((item) => item.id === record.currentRoundId)
+    : undefined;
+  let reviewOutcome: NodeExecutionReport['reviewOutcome'];
+  if (round && round.status !== 'voided') {
+    const evaluation = aggregateReview(round);
+    if (
+      evaluation.outcome === 'pending' ||
+      evaluation.outcome === 'approved' ||
+      evaluation.outcome === 'changes-requested'
+    ) {
+      reviewOutcome = evaluation.outcome;
+    }
+  }
+  return {
+    nodeId: record.nodeId,
+    taskId: record.taskId,
+    workflowVersionId: record.handoff.workflowVersionId,
+    revision: record.revision,
+    status: record.command.status,
+    upstreamAffected: record.command.upstreamAffected,
+    ...(record.command.status === 'blocked' ? { blockReason: '等待前置节点完成' } : {}),
+    ...(record.acceptedArtifactVersionId !== undefined
+      ? { acceptedArtifactVersionId: record.acceptedArtifactVersionId }
+      : {}),
+    ...(reviewOutcome !== undefined ? { reviewOutcome } : {}),
+  };
+}
+
+function terminalReviewerIds(round: ReviewRound): readonly string[] {
+  return round.reviewerIds.filter((reviewerId) =>
+    round.ballots.some(
+      (ballot) =>
+        ballot.reviewerId === reviewerId &&
+        ballot.roundId === round.id &&
+        ballot.artifactVersionId === round.artifactVersionId &&
+        (ballot.action === 'approve' || ballot.action === 'request-changes'),
+    ),
+  );
+}
+
+/** Inbox rows for one actor. The business owner is not treated as the assignee. */
+export function executionInbox(input: {
+  readonly actorId: string;
+  readonly records: readonly ExecutionNodeRecord[];
+}): readonly InboxItem[] {
+  const nodes: InboxNodeFact[] = input.records.map((record) => ({
+    nodeId: record.nodeId,
+    taskId: record.taskId,
+    status: record.command.status,
+    assignee: record.handoff.assignee,
+    access:
+      (record.handoff.assignee.kind === 'human' && record.handoff.assignee.id === input.actorId) ||
+      (assigneeUsesAgentRuntime(record.handoff.assignee.kind) && record.ownerId === input.actorId)
+        ? 'write'
+        : 'read',
+    awaitingParentConfirmation: false,
+    ...(record.currentRoundId !== undefined ? { currentRoundId: record.currentRoundId } : {}),
+    ...(record.ownerId !== null ? { ownerId: record.ownerId } : {}),
+  }));
+  const rounds: InboxRoundFact[] = input.records.flatMap((record) =>
+    record.rounds.map((round) => ({
+      roundId: round.id,
+      nodeId: record.nodeId,
+      taskId: record.taskId,
+      status: round.status,
+      reviewerIds: round.reviewerIds,
+      terminalReviewerIds: terminalReviewerIds(round),
+      ...(record.currentRoundId === round.id ? { current: true } : {}),
+    })),
+  );
+  return deriveInbox({
+    actorId: input.actorId,
+    nodes,
+    rounds,
+    confirmations: [],
+  });
 }
