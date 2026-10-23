@@ -8,6 +8,22 @@ if (mode === 'stderr-boot') {
   writeSync(2, `${process.env.ZHUMA_MODEL_API_KEY ?? ''}\n`);
   process.exit(1);
 }
+if (mode.startsWith('stderr-boot-split:')) {
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  const at = Number(mode.slice('stderr-boot-split:'.length));
+  await writeStderrChunks([`preface-${secret.slice(0, at)}`, `${secret.slice(at)}-tail`]);
+  process.exit(1);
+}
+if (mode === 'stderr-boot-bytes') {
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  await writeStderrChunks([...('preface-' + secret + '-tail')]);
+  process.exit(1);
+}
+if (mode === 'stderr-boot-repeat') {
+  const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+  await writeStderrChunks(['head ', secret, secret, ' gap ', secret, ' tail']);
+  process.exit(1);
+}
 writeFileSync(path.join(home, 'zhuma-pid'), String(process.pid), 'utf8');
 writeFileSync(path.join(home, 'zhuma-argv.json'), JSON.stringify(process.argv.slice(2)), 'utf8');
 writeFileSync(
@@ -79,43 +95,73 @@ function handle(line) {
     return;
   }
   if (message.method === 'session/prompt') {
-    if (mode === 'hang-prompt') return;
-    const blocks = message.params?.contentBlocks ?? [];
-    const bareFile = blocks.some((block) => bareFileBlock(block));
-    if (priorTurn() && !resumed && !acceptedPrompt) {
-      errorReply(message.id, 'session already exists');
-      return;
-    }
-    if (mode === 'stderr-leak' || mode === 'hold-after-messageId') {
-      process.stderr.write(`${process.env.ZHUMA_MODEL_API_KEY ?? ''}\n`);
-    }
-    const stored = admit(blocks);
-    writeFileSync(path.join(home, 'zhuma-prompt.json'), JSON.stringify(stored), 'utf8');
-    appendLog({ type: 'user', content: stored });
-    if (mode === 'no-message-id') {
-      reply(message.id, {});
-      return;
-    }
-    reply(message.id, { messageId: 'msg-1' });
-    prompted = true;
-    acceptedPrompt = true;
-    if (bareFile || sessionPoisoned()) {
-      emit('turn/end', {
-        reason: {
-          kind: 'error',
-          error: {
-            message: "Cannot read properties of undefined (reading 'attachmentId')",
-          },
+    void handlePrompt(message);
+    return;
+  }
+}
+
+async function handlePrompt(message) {
+  if (mode === 'hang-prompt') return;
+  if (mode === 'stderr-ok-split') {
+    const secret = process.env.ZHUMA_MODEL_API_KEY ?? '';
+    const at = Math.floor(secret.length / 2);
+    await writeStderrChunks([`preface-${secret.slice(0, at)}`, `${secret.slice(at)}-tail`]);
+  }
+  const blocks = message.params?.contentBlocks ?? [];
+  const bareFile = blocks.some((block) => bareFileBlock(block));
+  if (priorTurn() && !resumed && !acceptedPrompt) {
+    errorReply(message.id, 'session already exists');
+    return;
+  }
+  if (mode === 'stderr-leak' || mode === 'hold-after-messageId') {
+    process.stderr.write(`${process.env.ZHUMA_MODEL_API_KEY ?? ''}\n`);
+  }
+  const stored = admit(blocks);
+  writeFileSync(path.join(home, 'zhuma-prompt.json'), JSON.stringify(stored), 'utf8');
+  appendLog({ type: 'user', content: stored });
+  if (mode === 'no-message-id') {
+    reply(message.id, {});
+    return;
+  }
+  reply(message.id, { messageId: 'msg-1' });
+  prompted = true;
+  acceptedPrompt = true;
+  if (bareFile || sessionPoisoned()) {
+    emit('turn/end', {
+      reason: {
+        kind: 'error',
+        error: {
+          message: "Cannot read properties of undefined (reading 'attachmentId')",
         },
-      });
-      exitSoon();
-      return;
-    }
-    if (mode === 'hold-after-messageId') {
-      waitRelease(() => finishTurn());
-      return;
-    }
-    finishTurn();
+      },
+    });
+    exitSoon();
+    return;
+  }
+  if (mode === 'hold-after-messageId') {
+    waitRelease(() => finishTurn());
+    return;
+  }
+  finishTurn();
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function writeStderr(text) {
+  return new Promise((resolve, reject) => {
+    process.stderr.write(text, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function writeStderrChunks(parts) {
+  for (let index = 0; index < parts.length; index += 1) {
+    if (index > 0) await delay(70);
+    await writeStderr(parts[index]);
   }
 }
 

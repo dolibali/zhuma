@@ -396,16 +396,19 @@ export class DshChatExecutor implements AgentExecutor {
     };
     this.live.set(request.runId, state);
     if (state.stopping) child.kill('SIGTERM');
-    const rpc = new StdioRpc(child, (text) => redact(text, config.apiKey));
+    const rpc = new StdioRpc(child, config.apiKey);
     let cancelYielded = false;
     let initialized = false;
     let droppedSessionId: string | undefined;
-    const fail = (fault: ExecutionFaultKind, message: string): AgentRunEvent => ({
-      type: 'failed',
-      fault,
-      message: state.accepted ? message : withStderr(message, rpc.stderr),
-      simulated: false,
-    });
+    const fail = async (fault: ExecutionFaultKind, message: string): Promise<AgentRunEvent> => {
+      await rpc.sealStderr();
+      return {
+        type: 'failed',
+        fault,
+        message: state.accepted ? message : withStderr(message, rpc.stderr),
+        simulated: false,
+      };
+    };
     try {
       await rpc.request(
         'initialize',
@@ -438,7 +441,7 @@ export class DshChatExecutor implements AgentExecutor {
       const messageId = messageIdOf(prompted);
       if (messageId === null) {
         await stopChild(child, rpc);
-        yield fail('model-error', '执行器没有返回接收回执。');
+        yield await fail('model-error', '执行器没有返回接收回执。');
         return;
       }
       state.accepted = true;
@@ -479,7 +482,7 @@ export class DshChatExecutor implements AgentExecutor {
         return;
       }
       const timedOut = error instanceof Error && error.message === 'timeout';
-      const failed = fail(
+      const failed = await fail(
         timedOut ? 'network-interruption' : 'executor-disconnected',
         droppedSessionId !== undefined
           ? '恢复会话失败，已改用新会话。'
@@ -498,6 +501,7 @@ export class DshChatExecutor implements AgentExecutor {
       }
     } finally {
       if (!rpc.closed) await stopChild(child, rpc);
+      await rpc.sealStderr();
       if (existsSync(home)) {
         if (state.accepted) {
           writeFileSync(path.join(home, 'zhuma-collected-stderr.txt'), rpc.stderr, {
@@ -785,16 +789,26 @@ class StdioRpc {
   private readonly noise: string[] = [];
   private noteWait: (() => void) | null = null;
   private readonly finish: (code: number) => void;
+  private readonly redactor: StderrRedactor;
+  private stderrFlushed = false;
+  private readonly stderrDone: Promise<void>;
+  private readonly markStderr: () => void;
 
   constructor(
     private readonly child: ChildProcessWithoutNullStreams,
-    private readonly redactText: (text: string) => string,
+    secret: string,
   ) {
+    this.redactor = new StderrRedactor(secret);
     let finish = (_code: number) => {};
     this.finish = (code) => finish(code);
     this.exited = new Promise((resolve) => {
       finish = resolve;
     });
+    let markStderr = () => {};
+    this.stderrDone = new Promise((resolve) => {
+      markStderr = resolve;
+    });
+    this.markStderr = () => markStderr();
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdin.on('error', () => {
@@ -802,8 +816,9 @@ class StdioRpc {
     });
     child.stdout.on('data', (chunk: string) => this.push(chunk));
     child.stderr.on('data', (chunk: string) => {
-      this.stderr += this.redactText(chunk);
+      this.stderr += this.redactor.push(chunk);
     });
+    child.stderr.on('close', () => this.flushStderr());
     const close = (code: number) => {
       if (this.closed) return;
       this.closed = true;
@@ -814,6 +829,18 @@ class StdioRpc {
     };
     child.on('exit', (code) => close(code ?? 1));
     child.on('error', () => close(1));
+  }
+
+  /** 标准错误管道关闭并冲洗残留后才可以拿出去或写入磁盘。 */
+  sealStderr(): Promise<void> {
+    return this.stderrDone;
+  }
+
+  private flushStderr(): void {
+    if (this.stderrFlushed) return;
+    this.stderrFlushed = true;
+    this.stderr += this.redactor.flush();
+    this.markStderr();
   }
 
   request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
@@ -1110,4 +1137,40 @@ function yamlQuote(value: string): string {
 function redact(text: string, secret: string): string {
   if (secret.length === 0) return text;
   return text.split(secret).join('[redacted]');
+}
+
+/** 未凑齐的密钥前缀先留着，凑齐或管道关闭后再做一次整段替换。 */
+class StderrRedactor {
+  private pending = '';
+
+  constructor(private readonly secret: string) {}
+
+  push(chunk: string): string {
+    return this.consume(this.pending + chunk, false);
+  }
+
+  flush(): string {
+    return this.consume(this.pending, true);
+  }
+
+  private consume(raw: string, flush: boolean): string {
+    if (this.secret.length === 0) {
+      this.pending = '';
+      return raw;
+    }
+    const parts = raw.split(this.secret);
+    const tail = parts[parts.length - 1] ?? '';
+    const hold = flush ? 0 : heldSecretPrefix(tail, this.secret);
+    this.pending = tail.slice(tail.length - hold);
+    parts[parts.length - 1] = tail.slice(0, tail.length - hold);
+    return parts.join('[redacted]');
+  }
+}
+
+function heldSecretPrefix(tail: string, secret: string): number {
+  const max = Math.min(secret.length - 1, tail.length);
+  for (let size = max; size > 0; size -= 1) {
+    if (secret.startsWith(tail.slice(tail.length - size))) return size;
+  }
+  return 0;
 }

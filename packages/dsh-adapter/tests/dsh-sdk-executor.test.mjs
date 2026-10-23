@@ -682,6 +682,59 @@ test('契约：进程立即退出或不许执行时，这次运行失败且不�
   assert.match(crashed.events.at(-1).message, /启动失败/);
 });
 
+test('契约：密钥跨数据块时不会进入失败消息或收集的标准错误', async () => {
+  const secret = 'zhuma-synthetic-marker';
+  const env = modelEnv(secret);
+  const startup = '执行器启动失败。\npreface-[redacted]-tail';
+  for (let index = 1; index < secret.length; index += 1) {
+    const boot = await collect(`stderr-boot-split:${index}`, {
+      env,
+      initTimeoutMs: 20_000,
+      runId: `stderr-split-${index}`,
+    });
+    const failed = boot.events.at(-1);
+    assert.equal(failed.type, 'failed');
+    assert.equal(failed.message, startup);
+    assert.equal(JSON.stringify(boot.events).includes(secret), false);
+  }
+
+  const bytes = await collect('stderr-boot-bytes', {
+    env,
+    initTimeoutMs: 20_000,
+    runId: 'stderr-bytes',
+  });
+  assert.equal(bytes.events.at(-1).type, 'failed');
+  assert.equal(bytes.events.at(-1).message, startup);
+  assert.equal(JSON.stringify(bytes.events).includes(secret), false);
+
+  const repeated = await collect('stderr-boot-repeat', {
+    env,
+    initTimeoutMs: 20_000,
+    runId: 'stderr-repeat',
+  });
+  assert.equal(repeated.events.at(-1).type, 'failed');
+  assert.equal(
+    repeated.events.at(-1).message,
+    '执行器启动失败。\nhead [redacted][redacted] gap [redacted] tail',
+  );
+  assert.equal(JSON.stringify(repeated.events).includes(secret), false);
+
+  const ok = await collect('stderr-ok-split', {
+    env,
+    initTimeoutMs: 20_000,
+    promptTimeoutMs: 20_000,
+    runId: 'stderr-ok-split',
+  });
+  assert.equal(ok.events.at(-1).type, 'completed');
+  assert.equal(JSON.stringify(ok.events).includes(secret), false);
+  const accepted = ok.events.find((event) => event.type === 'accepted');
+  const home = dshSessionHome(accepted.sessionId, env);
+  assert.equal(
+    readFileSync(path.join(home, 'zhuma-collected-stderr.txt'), 'utf8'),
+    'preface-[redacted]-tail',
+  );
+});
+
 test('契约：启动时清掉孤儿会话目录', () => {
   const root = path.join(mkdtempSync(path.join(tmpdir(), 'zhuma-sweep-')), 'dsh-sessions');
   mkdirSync(root, { recursive: true });
