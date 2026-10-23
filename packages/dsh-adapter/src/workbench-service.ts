@@ -6,6 +6,7 @@ import {
   WorkbenchError,
   planningPrompt,
   parsePlanningResult,
+  validateLocalPlanningChange,
   previewResourcePackage,
   parseWorkflowTemplate,
   StoredAssetPackageSchema,
@@ -160,7 +161,13 @@ export class WorkbenchService {
         );
       baseProposal = base.proposal;
     }
-    const prompt = planningPrompt(state, task, request.instruction, baseProposal);
+    const prompt = planningPrompt(
+      state,
+      task,
+      request.instruction,
+      baseProposal,
+      request.adjustment,
+    );
     const audit: PlanningAudit = {
       id: request.requestId,
       fingerprint: hash,
@@ -184,6 +191,12 @@ export class WorkbenchService {
         await this.audits.put(structuredClone(audit));
         try {
           const result = parsePlanningResult(output, state, task, prompt.context);
+          if (request.adjustment)
+            validateLocalPlanningChange(
+              prompt.context.currentWorkflows,
+              result.workflows,
+              request.adjustment,
+            );
           const proposal: PlanProposal = {
             id: request.requestId,
             taskId: task.id,

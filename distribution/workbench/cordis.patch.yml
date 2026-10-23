@@ -9,3 +9,5 @@
 - insert:
     - id: zhuma-workbench
       name: './lib/zhuma-workbench/index.js'
+      config:
+        deploymentMode: legacy-single-user

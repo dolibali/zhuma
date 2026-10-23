@@ -1,0 +1,406 @@
+{
+  "implementation": "bb08789b65cb2d5dd61d6b2ec2f8284b344218d4",
+  "base": "b6fe7c4add9af1e8bdd783ba9fe9cf63fa3704ed",
+  "source": "independent coordinator Chromium render of unchanged member-login HTTP replay harness",
+  "proofBoundary": "Client contract/render only, no real cookie/Host/spaces/native OS theme or browser zoom acceptance; CSS zoom200 explicitly a reflow probe",
+  "check": "214/214 independently passed",
+  "browserSpec": "4/4 independently passed light/dark",
+  "ci": {
+    "run": 39997525312,
+    "scaffold": 120564835269,
+    "app": 15368,
+    "conclusion": "success"
+  },
+  "visual": [
+    {
+      "scheme": "light",
+      "width": 1440,
+      "height": 900,
+      "innerWidth": 1440,
+      "innerHeight": 900,
+      "horizontal": false,
+      "card": {
+        "x": 520,
+        "y": 287.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 553,
+        "y": 572,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "light",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(37, 42, 48)",
+      "background": "rgb(255, 255, 255)",
+      "file": "login-light-1440x900.png"
+    },
+    {
+      "scheme": "light",
+      "width": 1280,
+      "height": 800,
+      "innerWidth": 1280,
+      "innerHeight": 800,
+      "horizontal": false,
+      "card": {
+        "x": 440,
+        "y": 237.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 473,
+        "y": 522,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "light",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(37, 42, 48)",
+      "background": "rgb(255, 255, 255)",
+      "file": "login-light-1280x800.png"
+    },
+    {
+      "scheme": "light",
+      "width": 1920,
+      "height": 1080,
+      "innerWidth": 1920,
+      "innerHeight": 1080,
+      "horizontal": false,
+      "card": {
+        "x": 760,
+        "y": 377.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 793,
+        "y": 662,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "light",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(37, 42, 48)",
+      "background": "rgb(255, 255, 255)",
+      "file": "login-light-1920x1080.png"
+    },
+    {
+      "scheme": "light",
+      "width": 1024,
+      "height": 768,
+      "innerWidth": 1024,
+      "innerHeight": 768,
+      "horizontal": false,
+      "card": {
+        "x": 312,
+        "y": 221.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 345,
+        "y": 506,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "light",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(37, 42, 48)",
+      "background": "rgb(255, 255, 255)",
+      "file": "login-light-1024x768.png"
+    },
+    {
+      "scheme": "light",
+      "zoom": "CSS zoom200%, browser contract only",
+      "innerWidth": 1024,
+      "innerHeight": 768,
+      "horizontal": false,
+      "card": {
+        "x": 112,
+        "y": 113,
+        "width": 800,
+        "height": 698.078125
+      },
+      "button": {
+        "x": 178,
+        "y": 681.078125,
+        "width": 668,
+        "height": 64
+      },
+      "theme": "light",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(37, 42, 48)",
+      "background": "rgb(255, 255, 255)",
+      "file": "login-light-1024x768-css-zoom200.png"
+    },
+    {
+      "scheme": "dark",
+      "width": 1440,
+      "height": 900,
+      "innerWidth": 1440,
+      "innerHeight": 900,
+      "horizontal": false,
+      "card": {
+        "x": 520,
+        "y": 287.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 553,
+        "y": 572,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "dark",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(230, 232, 236)",
+      "background": "rgb(27, 29, 33)",
+      "file": "login-dark-1440x900.png"
+    },
+    {
+      "scheme": "dark",
+      "width": 1280,
+      "height": 800,
+      "innerWidth": 1280,
+      "innerHeight": 800,
+      "horizontal": false,
+      "card": {
+        "x": 440,
+        "y": 237.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 473,
+        "y": 522,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "dark",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(230, 232, 236)",
+      "background": "rgb(27, 29, 33)",
+      "file": "login-dark-1280x800.png"
+    },
+    {
+      "scheme": "dark",
+      "width": 1920,
+      "height": 1080,
+      "innerWidth": 1920,
+      "innerHeight": 1080,
+      "horizontal": false,
+      "card": {
+        "x": 760,
+        "y": 377.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 793,
+        "y": 662,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "dark",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(230, 232, 236)",
+      "background": "rgb(27, 29, 33)",
+      "file": "login-dark-1920x1080.png"
+    },
+    {
+      "scheme": "dark",
+      "width": 1024,
+      "height": 768,
+      "innerWidth": 1024,
+      "innerHeight": 768,
+      "horizontal": false,
+      "card": {
+        "x": 312,
+        "y": 221.984375,
+        "width": 400,
+        "height": 349.015625
+      },
+      "button": {
+        "x": 345,
+        "y": 506,
+        "width": 334,
+        "height": 32
+      },
+      "theme": "dark",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(230, 232, 236)",
+      "background": "rgb(27, 29, 33)",
+      "file": "login-dark-1024x768.png"
+    },
+    {
+      "scheme": "dark",
+      "zoom": "CSS zoom200%, browser contract only",
+      "innerWidth": 1024,
+      "innerHeight": 768,
+      "horizontal": false,
+      "card": {
+        "x": 112,
+        "y": 113,
+        "width": 800,
+        "height": 698.078125
+      },
+      "button": {
+        "x": 178,
+        "y": 681.078125,
+        "width": 668,
+        "height": 64
+      },
+      "theme": "dark",
+      "font": "-apple-system, \"system-ui\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "foreground": "rgb(230, 232, 236)",
+      "background": "rgb(27, 29, 33)",
+      "file": "login-dark-1024x768-css-zoom200.png"
+    }
+  ],
+  "interaction": {
+    "logins": 1,
+    "logouts": 1,
+    "busyDisabled": true,
+    "sizeStable": true,
+    "themePreservedDraft": true,
+    "logoutFailureClosed": true,
+    "before": {
+      "x": 553,
+      "y": 572,
+      "width": 334,
+      "height": 32
+    },
+    "during": {
+      "x": 553,
+      "y": 572,
+      "width": 334,
+      "height": 32
+    },
+    "scope": "HTTP replay/client only; no real cookie or authorization"
+  },
+  "screenshots": [
+    {
+      "file": "account-dark-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 26843,
+      "sha256": "1f1f3cbc863394b5948ea2b18c467787ce65b894227ea072b134e6514d975406"
+    },
+    {
+      "file": "account-light-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 28340,
+      "sha256": "66aefbd8696bb2ea9a3fd8099b233ac339c7b2ccfc8d7286b153fe870c1b9bff"
+    },
+    {
+      "file": "login-busy-dark-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 18985,
+      "sha256": "0a04b9ed27f8ced245f95e57563e865121d54b07ceb5520d67285d5f2ff385a0"
+    },
+    {
+      "file": "login-busy-light-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 19102,
+      "sha256": "a37752a583abb8c71e407dd1d30f9d3d706c8be6ee8b0e4e97e309ed8350f85b"
+    },
+    {
+      "file": "login-dark-1024x768-css-zoom200.png",
+      "width": 1024,
+      "height": 768,
+      "bytes": 30223,
+      "sha256": "91e996bd03f43fd801eb0317e1a84053be96c415b5f6b7bcf83ad7a6a42a80b3"
+    },
+    {
+      "file": "login-dark-1024x768.png",
+      "width": 1024,
+      "height": 768,
+      "bytes": 14962,
+      "sha256": "79c63c41fc0a73674ea5deae961f0da811abab992b49caa2e2013bee46f3106d"
+    },
+    {
+      "file": "login-dark-1280x800.png",
+      "width": 1280,
+      "height": 800,
+      "bytes": 15736,
+      "sha256": "20498767cfd9fd5be1fbf07adb49bf9176cc27087ee2444f5a89864c6400fc5e"
+    },
+    {
+      "file": "login-dark-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 17047,
+      "sha256": "6c619a80733ac0486d8325abbcf9ddbd0f6e08bacedef34f4d999e67a3fc409d"
+    },
+    {
+      "file": "login-dark-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 19669,
+      "sha256": "969ce2186afd97f930eacffe961c8f5a57288fde944059e27d91e43a0a328752"
+    },
+    {
+      "file": "login-error-light-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 24116,
+      "sha256": "5c55c1b5fdcb30816bf73dcf4de2427551680aab33e2284d78dc60ad6e7f6fd2"
+    },
+    {
+      "file": "login-light-1024x768-css-zoom200.png",
+      "width": 1024,
+      "height": 768,
+      "bytes": 30707,
+      "sha256": "f1186ca4019e6f21f249906c8c38059dccbb884b45f51c2d546f931c730678d7"
+    },
+    {
+      "file": "login-light-1024x768.png",
+      "width": 1024,
+      "height": 768,
+      "bytes": 15208,
+      "sha256": "9b167a30e866d2cc17b977e9b443e0ba4003ddb14cf6968e2125dabdb4655b61"
+    },
+    {
+      "file": "login-light-1280x800.png",
+      "width": 1280,
+      "height": 800,
+      "bytes": 15994,
+      "sha256": "43a42132e6d84762cf4692b982cc91926b8acbbb3228a6e4edc53161c46a607a"
+    },
+    {
+      "file": "login-light-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 17268,
+      "sha256": "e7843aca2a9f1e694dcc6f3ac2813d3f81e9cee82eb8fa1cf0d179e53c24681b"
+    },
+    {
+      "file": "login-light-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 19920,
+      "sha256": "389755c659c465227128dfffacc71f96c1a4d68b39cb66321f9f13cc72651804"
+    },
+    {
+      "file": "logout-failure-dark-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 20226,
+      "sha256": "1d17c2928e2fb94466ac0faa8291230307d1e9f282d437a8cde44e725f6d65d8"
+    },
+    {
+      "file": "logout-failure-light-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 20482,
+      "sha256": "b2580bc7df8fe892074d1b90aac2ad032b24e438bb3041b79e9db85fe936eb76"
+    }
+  ]
+}
