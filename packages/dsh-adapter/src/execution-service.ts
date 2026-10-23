@@ -26,7 +26,11 @@ import {
   type ProjectSpaceLookup,
 } from './project-space.js';
 import { readRevisionView, type RevisionView } from './revision-view.js';
-import { upstreamInputsFor, type UpstreamInputView } from './upstream-inputs.js';
+import {
+  upstreamBlockMessage,
+  upstreamInputsFor,
+  type UpstreamInputView,
+} from './upstream-inputs.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -342,23 +346,8 @@ export class ExecutionService {
       const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
-      const records: ExecutionNodeRecord[] = [];
-      for (const record of this.storage.listNodes()) {
-        if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
-        const space = await this.gateSpace(record.taskId, actor.value.spaceIds);
-        if (space === 'missing') continue;
-        if (!space.ok) {
-          if (space.error.code === 'unavailable') return space;
-          continue;
-        }
-        if (
-          planMembership(this.workbench.readWorkbench(), record.taskId, actor.value.actorId) !==
-          'allowed'
-        ) {
-          continue;
-        }
-        records.push(record);
-      }
+      const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+      if (!Array.isArray(records)) return records;
       const items = executionInbox({ actorId: actor.value.actorId, records });
       const nodes = records
         .filter((record) =>
@@ -371,22 +360,28 @@ export class ExecutionService {
 
   submit(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
-      this.command(caller, body, submitSchema, (actorId, request, record) => {
-        const result = submitDelivery({
-          record,
-          actorId,
-          idempotencyKey: request.idempotencyKey,
-          expectedVersion: request.expectedVersion,
-          draft: {
-            files: request.files ?? [],
-            links: request.links ?? [],
-            ...(request.text === undefined ? {} : { text: request.text }),
-          },
-          artifactId: `artifact:${request.idempotencyKey}`,
-          roundId: `round:${request.idempotencyKey}`,
-        });
-        return { result, settle: false };
-      }),
+      this.command(
+        caller,
+        body,
+        submitSchema,
+        (actorId, request, record) => {
+          const result = submitDelivery({
+            record,
+            actorId,
+            idempotencyKey: request.idempotencyKey,
+            expectedVersion: request.expectedVersion,
+            draft: {
+              files: request.files ?? [],
+              links: request.links ?? [],
+              ...(request.text === undefined ? {} : { text: request.text }),
+            },
+            artifactId: `artifact:${request.idempotencyKey}`,
+            roundId: `round:${request.idempotencyKey}`,
+          });
+          return { result, settle: false };
+        },
+        true,
+      ),
     );
   }
 
@@ -576,6 +571,41 @@ export class ExecutionService {
     return fail('not-found');
   }
 
+  /** Intact nodes this actor can read. A failed lookup stops the scan. */
+  private async readableRecords(spaceIds: readonly string[], actorId: string) {
+    const records: ExecutionNodeRecord[] = [];
+    for (const record of this.storage.listNodes()) {
+      if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
+      const space = await this.gateSpace(record.taskId, spaceIds);
+      if (space === 'missing') continue;
+      if (!space.ok) {
+        if (space.error.code === 'unavailable') return space;
+        continue;
+      }
+      if (planMembership(this.workbench.readWorkbench(), record.taskId, actorId) !== 'allowed') {
+        continue;
+      }
+      records.push(record);
+    }
+    return records;
+  }
+
+  /** Hidden upstream refs refuse the write. The message is the count placeholder. */
+  private async upstreamRefusal(
+    spaceIds: readonly string[],
+    actorId: string,
+    current: ExecutionNodeRecord,
+  ) {
+    const readable = await this.readableRecords(spaceIds, actorId);
+    if (!Array.isArray(readable)) return readable;
+    const message = upstreamBlockMessage(upstreamInputsFor(current, readable));
+    if (message === undefined) return undefined;
+    return {
+      ok: false as const,
+      error: { code: 'upstream-blocked', message, details: {} },
+    };
+  }
+
   private async startPlanNow(caller: ExecutionCaller, body: unknown) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -663,6 +693,7 @@ export class ExecutionService {
       request: T,
       record: ExecutionNodeRecord,
     ) => { result: ReturnType<typeof submitDelivery>; settle: boolean },
+    guardUpstream = false,
   ) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -707,6 +738,14 @@ export class ExecutionService {
       }
     }
     if (record !== current) {
+      if (guardUpstream) {
+        const blocked = await this.upstreamRefusal(
+          actor.value.spaceIds,
+          actor.value.actorId,
+          current,
+        );
+        if (blocked) return blocked;
+      }
       const stored = await this.persist(() =>
         this.storage.writeNode(nodeRecordKey(record), record),
       );

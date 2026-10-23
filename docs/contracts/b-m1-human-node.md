@@ -123,10 +123,11 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - `ExecutionService` 串行写。一次用户命令写一条节点；`start-plan` 再另写计划回执。每条写入先核对空间和任务成员，再核对节点角色。从参与者里移除的评审人再投票得到 `not-participant`
 - `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
 - `revision` 读取退回时的被评审版本、上一版和退回意见。不读取文件字节
-- 交付页读取节点目标，以及已接受上游产物的来源节点、版本和产物名。无权的来源只显示占位，不返回正文或文件名
+- 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名是版本序号，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
 
 未实现（后续切片）：
 
+- 需求 7.1「阅读上游产物」留给后续分支。交付页不读取上游正文和文件
 - 产物字节、预览和访问控制。这一层只校验文件元数据
 - 专家评审和 `interpretAgentReview`
 - 已安装桌面里的验收。面板已经在 client 里，还没有装进成员 A 的导航。Host 测试使用真实 Connection，但不是安装包
@@ -190,7 +191,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 ## 界面
 
-`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。退回待办会先打开修订视图，再打开原来的交付表单。修订视图不从包入口另导出。交付表单显示节点目标；已接受的上游产物列出来源节点、版本和产物名，没有权限时只显示占位。
+`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。退回待办会先打开修订视图，再打开原来的交付表单。修订视图不从包入口另导出。交付表单显示节点目标。同一任务、同一计划和同一版本的已接受上游列出来源节点、版本和产物名，产物名不带幂等键。尚无已接受版本或引用已被取代时只提示来源节点，提交仍然可用。无权或缺失的来源只显示个数，提交按钮停用。
 
 面板使用工作台已经导出的 `Button` 和 `Field`，以及 `.zhuma`、`.zm-page`、`.zm-directory`、`.zm-status`、`.zm-error`、`.zm-review` 这些现有类。不另写颜色。包内引用这些控件用相对路径，因为仓库边界不允许 `@zhuma/client` 导入自己。
 

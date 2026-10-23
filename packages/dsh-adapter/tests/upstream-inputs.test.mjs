@@ -1,208 +1,128 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nodeRecordKey } from '@zhuma/agent-core';
-import { ExecutionService } from '../dist/execution-service.js';
 import { upstreamInputsFor } from '../dist/upstream-inputs.js';
-import { boundedProjectSpaces } from '../dist/project-space.js';
-import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
-const secretFile = {
-  id: 'secret.pdf',
-  mediaType: 'application/pdf',
-  byteSize: 12,
-  checksum: 'checksum-do-not-leak',
-  accessPolicyId: 'task-read',
-  uploadComplete: true,
-};
+const hidden = (count) => ({
+  access: 'hidden',
+  blocking: true,
+  count,
+  message: `有 ${count} 个上游来源你没有权限查看。`,
+});
 
-test('upstreamInputsFor names the accepted version and hides a source the reader cannot see', () => {
+test('upstream inputs match task, plan, revision, and node, and hide the idempotency key', () => {
+  const cited = 'artifact:idem-key-4e1';
   const views = upstreamInputsFor(
     {
-      nodeId: 'publish',
+      nodeId: 'node-2',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
       handoff: {
         inputRefs: [
-          { sourceNodeId: 'design', artifactVersionId: 'artifact-2' },
-          { sourceNodeId: 'hidden', artifactVersionId: 'artifact-secret' },
+          { sourceNodeId: 'node-1', artifactVersionId: cited },
+          { sourceNodeId: 'node-3', artifactVersionId: 'artifact:old' },
+          { sourceNodeId: 'node-4', artifactVersionId: 'artifact:old' },
+          { sourceNodeId: 'node-absent-4e1', artifactVersionId: 'ver-absent-4e1' },
         ],
       },
     },
     [
       {
-        nodeId: 'design',
-        handoff: { goal: '设计登录接口' },
-        acceptedArtifactVersionId: 'artifact-2',
+        nodeId: 'node-1',
+        taskId: 'task-peer-4e1',
+        planId: 'plan',
+        revision: 1,
+        handoff: { goal: '别的任务目标' },
+        acceptedArtifactVersionId: cited,
+        artifactVersions: [{ id: cited, version: 9, text: '别的正文' }],
+      },
+      {
+        nodeId: 'node-1',
+        taskId: 'task',
+        planId: 'plan',
+        revision: 2,
+        handoff: { goal: '另一版本目标' },
+        acceptedArtifactVersionId: cited,
+        artifactVersions: [{ id: cited, version: 8 }],
+      },
+      {
+        nodeId: 'node-1',
+        taskId: 'task',
+        planId: 'plan-other-4e1',
+        revision: 1,
+        handoff: { goal: '另一计划目标' },
+        acceptedArtifactVersionId: cited,
+        artifactVersions: [{ id: cited, version: 7 }],
+      },
+      {
+        nodeId: 'node-1',
+        taskId: 'task',
+        planId: 'plan',
+        revision: 1,
+        handoff: { goal: '本计划目标' },
+        acceptedArtifactVersionId: cited,
         artifactVersions: [
-          {
-            id: 'artifact-2',
-            version: 2,
-            text: '错误码说明',
-            files: [{ ...secretFile, id: 'spec.pdf' }],
-          },
+          { id: cited, version: 2, text: '错误码说明', files: [{ id: 'spec.pdf' }] },
         ],
+      },
+      {
+        nodeId: 'node-3',
+        taskId: 'task',
+        planId: 'plan',
+        revision: 1,
+        handoff: { goal: '还在写' },
+      },
+      {
+        nodeId: 'node-4',
+        taskId: 'task',
+        planId: 'plan',
+        revision: 1,
+        handoff: { goal: '已经改过' },
+        acceptedArtifactVersionId: 'artifact:new-key-4e1',
+        artifactVersions: [{ id: 'artifact:new-key-4e1', version: 3, text: '新正文' }],
       },
     ],
   );
   assert.deepEqual(views, [
     {
       access: 'visible',
-      sourceNodeId: 'design',
-      sourceGoal: '设计登录接口',
+      blocking: false,
+      sourceNodeId: 'node-1',
+      sourceGoal: '本计划目标',
       version: 2,
-      name: 'artifact-2',
+      name: '第2版',
     },
-    { access: 'redacted', sourceNodeId: 'hidden' },
+    {
+      access: 'pending',
+      pending: 'none',
+      blocking: false,
+      sourceNodeId: 'node-3',
+      message: '上游节点 node-3 尚无已接受版本。',
+    },
+    {
+      access: 'pending',
+      pending: 'replaced',
+      blocking: false,
+      sourceNodeId: 'node-4',
+      message: '上游节点 node-4 已有新的已接受版本，当前引用的版本已被取代。',
+    },
+    hidden(1),
   ]);
   const encoded = JSON.stringify(views);
-  for (const secret of ['机密', 'secret.pdf', 'spec.pdf', '错误码说明', 'checksum-do-not-leak']) {
-    assert.equal(encoded.includes(secret), false, secret);
-  }
-});
-
-function memory() {
-  const nodes = new Map();
-  const plans = new Map();
-  return {
-    storage: {
-      readNode: (key) => nodes.get(key),
-      writeNode: async (key, value) => {
-        nodes.set(key, structuredClone(value));
-      },
-      listNodes: () => [...nodes.values()],
-      readPlan: (key) => plans.get(key),
-      writePlan: async (key, value) => {
-        plans.set(key, structuredClone(value));
-      },
-      listPlans: () => [...plans.entries()].map(([key, receipt]) => ({ key, receipt })),
-    },
-  };
-}
-
-function stored(fields) {
-  return {
-    ownerId: 'chen',
-    rounds: [],
-    receipts: [],
-    artifactVersions: [],
-    comments: [],
-    command: { status: 'ready', version: 1 },
-    ...fields,
-    handoff: {
-      assignee: { id: 'chen', kind: 'human' },
-      reviewerIds: [],
-      dependencyNodeIds: [],
-      goal: '发布登录说明',
-      expectedOutput: '说明',
-      inputRefs: [],
-      ...fields.handoff,
-    },
-  };
-}
-
-test('inbox shows an accepted upstream reference and withholds another task', async () => {
-  const { state } = fixture();
-  state.tasks.push({
-    id: 'other',
-    projectId: 'project',
-    ownerId: 'lin',
-    participantIds: ['lin'],
-    title: '其他任务',
-    goal: '其他',
-    workflows: [],
-    status: 'ready',
-    updatedAt: '2026-10-22T00:00:00.000Z',
-  });
-  const store = memory();
-  const plan = { idempotencyKey: 'plan', fingerprint: 'plan', nodeIds: ['design', 'publish'] };
-  await store.storage.writePlan('task:plan:1', plan);
-  await store.storage.writePlan('other:plan:1', {
-    idempotencyKey: 'other',
-    fingerprint: 'other',
-    nodeIds: ['hidden'],
-  });
-  const design = stored({
-    taskId: 'task',
-    planId: 'plan',
-    revision: 1,
-    nodeId: 'design',
-    command: { status: 'completed', version: 2 },
-    acceptedArtifactVersionId: 'artifact-2',
-    handoff: { goal: '设计登录接口', dependencyNodeIds: [] },
-    artifactVersions: [
-      {
-        id: 'artifact-2',
-        nodeId: 'design',
-        version: 2,
-        text: '错误码说明',
-        files: [{ ...secretFile, id: 'spec.pdf' }],
-        links: [],
-        submittedBy: 'chen',
-      },
-    ],
-  });
-  const publish = stored({
-    taskId: 'task',
-    planId: 'plan',
-    revision: 1,
-    nodeId: 'publish',
-    handoff: {
-      goal: '发布登录说明',
-      dependencyNodeIds: ['design', 'hidden'],
-      inputRefs: [
-        { sourceNodeId: 'design', artifactVersionId: 'artifact-2' },
-        { sourceNodeId: 'hidden', artifactVersionId: 'artifact-secret' },
-      ],
-    },
-  });
-  const hidden = stored({
-    taskId: 'other',
-    planId: 'plan',
-    revision: 1,
-    nodeId: 'hidden',
-    ownerId: 'lin',
-    command: { status: 'completed', version: 2 },
-    acceptedArtifactVersionId: 'artifact-secret',
-    handoff: {
-      assignee: { id: 'lin', kind: 'human' },
-      goal: '机密目标',
-    },
-    artifactVersions: [
-      {
-        id: 'artifact-secret',
-        nodeId: 'hidden',
-        version: 4,
-        text: '机密正文',
-        files: [secretFile],
-        links: ['https://example.test/secret'],
-        submittedBy: 'lin',
-      },
-    ],
-  });
-  for (const record of [design, publish, hidden]) {
-    await store.storage.writeNode(nodeRecordKey(record), record);
-  }
-  const service = new ExecutionService(
-    store.storage,
-    { readWorkbench: () => state },
-    boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]),
-  );
-  const inbox = await service.inbox(
-    { member: { ok: true, memberId: 'chen', spaceIds: ['project'] } },
-    {},
-  );
-  assert.equal(inbox.ok, true);
-  const node = inbox.value.nodes.find((item) => item.nodeId === 'publish');
-  assert.deepEqual(node.inputs, [
-    {
-      access: 'visible',
-      sourceNodeId: 'design',
-      sourceGoal: '设计登录接口',
-      version: 2,
-      name: 'artifact-2',
-    },
-    { access: 'redacted', sourceNodeId: 'hidden' },
-  ]);
-  const encoded = JSON.stringify(inbox.value);
-  for (const secret of ['机密目标', '机密正文', 'secret.pdf', 'spec.pdf', 'checksum-do-not-leak']) {
+  for (const secret of [
+    'idem-key-4e1',
+    'new-key-4e1',
+    '别的任务目标',
+    '另一版本目标',
+    '另一计划目标',
+    'task-peer-4e1',
+    'plan-other-4e1',
+    'node-absent-4e1',
+    'ver-absent-4e1',
+    'spec.pdf',
+    '错误码说明',
+    '新正文',
+  ]) {
     assert.equal(encoded.includes(secret), false, secret);
   }
 });

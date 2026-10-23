@@ -7,28 +7,38 @@ import type { ExecutionApi, ExecutionNodeWire, UpstreamInputWire } from './Execu
 function UpstreamInputs({ inputs }: { inputs: readonly UpstreamInputWire[] }) {
   return (
     <div className="zm-config-group">
-      <strong>已接受的上游产物</strong>
+      <strong>上游来源</strong>
       {!inputs.length && <p className="zm-empty">没有已接受的上游产物。</p>}
-      {inputs.map((item, index) =>
-        item.access === 'visible' ? (
-          <article className="zm-review" key={`${item.sourceNodeId}:${index}`}>
-            <p>
-              <span className="zm-kind">来源节点</span> {item.sourceNodeId}
-              {item.sourceGoal ? ` · ${item.sourceGoal}` : ''}
+      {inputs.map((item, index) => {
+        if (item.access === 'visible') {
+          return (
+            <article className="zm-review" key={`${item.sourceNodeId}:${index}`}>
+              <p>
+                <span className="zm-kind">来源节点</span> {item.sourceNodeId}
+                {item.sourceGoal ? ` · ${item.sourceGoal}` : ''}
+              </p>
+              <p>
+                <span className="zm-kind">版本</span> {item.version}
+              </p>
+              <p>
+                <span className="zm-kind">产物</span> {item.name}
+              </p>
+            </article>
+          );
+        }
+        if (item.access === 'pending') {
+          return (
+            <p className="zm-empty" key={`${item.sourceNodeId}:${index}`}>
+              {item.message}
             </p>
-            <p>
-              <span className="zm-kind">版本</span> {item.version}
-            </p>
-            <p>
-              <span className="zm-kind">产物</span> {item.name}
-            </p>
-          </article>
-        ) : (
-          <p className="zm-empty" key={`${item.sourceNodeId}:${index}`}>
-            没有权限查看来源节点 {item.sourceNodeId} 的产物。
+          );
+        }
+        return (
+          <p className="zm-error" key={`hidden:${index}`}>
+            {item.message}
           </p>
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -111,6 +121,8 @@ export function DeliveryPanel({
     }
   }
 
+  const blocked = (node.inputs ?? []).some((item) => item.blocking);
+
   return (
     <section className="zm-config-form" aria-labelledby="zhuma-delivery-title">
       <h2 id="zhuma-delivery-title">提交交付</h2>
@@ -190,7 +202,12 @@ export function DeliveryPanel({
         </label>
       </div>
       <div className="zm-actions">
-        <Button busy={pending} busyLabel="正在提交…" onClick={() => void submit()}>
+        <Button
+          busy={pending}
+          busyLabel="正在提交…"
+          disabled={blocked}
+          onClick={() => void submit()}
+        >
           提交产物
         </Button>
       </div>
