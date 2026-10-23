@@ -1290,6 +1290,36 @@ test('a pre-seeded domain with several accounts does not map the owner cookie', 
   await host.dispose();
 });
 
+test('a successful login clears earlier failures from that address', async () => {
+  const host = await mount();
+  const address = '203.0.113.70';
+  const wrong = randomBytes(12).toString('base64url');
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const failed = await call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: address,
+      body: { accountId: 'chen', password: wrong },
+    });
+    assert.equal(failed.status, 401);
+  }
+  const signedIn = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: passwords.chen },
+  });
+  assert.equal(signedIn.status, 200);
+  const after = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: address,
+    body: { accountId: 'chen', password: wrong },
+  });
+  assert.equal(after.status, 401);
+  await host.dispose();
+});
+
 test('a real http client stays logged out when only the DSH cookie remains', async () => {
   // test:ui serves the workbench fixture and does not mount /zhuma-id, so this
   // uses node:http instead of Playwright.
