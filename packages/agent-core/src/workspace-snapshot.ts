@@ -76,6 +76,8 @@ export interface AttachmentFact {
   readonly checksum: string;
   readonly reference: string;
   readonly previewText?: string;
+  /** 当前进程里还有字节时为 true。重新打开后为 false，需要重新上传。 */
+  readonly contentAvailable?: boolean;
 }
 
 export interface ContextItemFact {

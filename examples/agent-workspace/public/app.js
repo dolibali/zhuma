@@ -160,7 +160,7 @@ function renderComposer() {
   attachmentList.innerHTML = view.attachments
     .map(
       (item) =>
-        `<button class="chip" type="button" data-testid="attachment" data-remove-attachment="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}">${escapeHtml(item.name)}${item.preview ? `<small>${escapeHtml(item.preview)}</small>` : ''}</button>`,
+        `<button class="chip" type="button" data-testid="attachment" data-remove-attachment="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}" data-reupload="${item.reupload ? 'true' : 'false'}">${escapeHtml(item.name)}${item.reupload ? '（需重新上传）' : ''}${item.preview ? `<small>${escapeHtml(item.preview)}</small>` : ''}</button>`,
     )
     .join('');
 }

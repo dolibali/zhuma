@@ -107,6 +107,14 @@ export interface InterventionRecord {
   readonly body: string;
   readonly idempotencyKey: string;
   readonly payloadHash: string;
+  /** 入队时冻结的附件引用和校验和。字节不进日志。 */
+  readonly attachments?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly mediaType: string;
+    readonly byteSize: number;
+    readonly checksum: string;
+  }[];
   readonly notice?: string;
   readonly appliedRunId?: string;
 }

@@ -126,6 +126,36 @@ interface Selections {
   mcpIds: string[];
 }
 
+interface OperationalCheckpoint {
+  nodeState: NodeCommandState;
+  runs: ExecutionAttempt[];
+  turns: ConversationTurn[];
+  interventions: InterventionRecord[];
+  claims: WorkspaceClaim[];
+  faults: FaultRecord[];
+  activities: ActivityRecord[];
+  lateRecords: LateRecord[];
+  attachments: AttachmentFact[];
+  attachmentBytes: Map<string, Uint8Array>;
+  drafts: ArtifactDraftHandoff[];
+  draftRoundId: string | null;
+  recoveryRequests: RecoveryRequest[];
+  downstreamLaunches: number;
+  reviewRounds: { id: string; status: ReviewRound['status'] }[];
+  activeRoundId: string | null;
+  selections: Selections;
+  configId: string;
+  included: Set<string>;
+  expertEnabled: Map<string, boolean>;
+  executorConnected: Map<string, boolean>;
+  citations: ContextCitationFact[];
+  contextBlocks: ContextBlockFact[];
+  sequence: number;
+  lastError: CommandErrorFact | null;
+  resumeGap: { runId: string; reason: 'session-not-resumed' } | null;
+  historyNote: string | null;
+}
+
 export interface DeskPersistence {
   readonly schema: 1;
   readonly seed: DeskSeed;
@@ -213,6 +243,7 @@ export class ExecutionDesk {
   private handoffInvalid = false;
   private historyNote: string | null = null;
   private persistenceFault: CommandErrorFact | null = null;
+  private lastSaveFailed = false;
 
   private readonly seed: DeskSeed;
 
@@ -302,15 +333,19 @@ export class ExecutionDesk {
   }
 
   resumeInteraction(): DeskResult {
+    const ready = this.interactionReady;
     this.interactionReady = true;
-    if (!this.persist()) return this.persistRejected();
+    if (!this.persist()) {
+      this.interactionReady = ready;
+      return this.persistRejected();
+    }
     return { ok: true, replayed: false, snapshot: this.snapshot() };
   }
 
-  /** 存储恢复后，把当前内存事实重写进同一份日志。 */
+  /** 存储恢复后，把当前内存事实重写进同一份日志。只有这次成功才清除持久化故障。 */
   rewritePersistence(): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
-    if (!this.persist()) return this.persistRejected();
+    if (!this.persist(true)) return this.persistRejected();
     return { ok: true, replayed: false, snapshot: this.snapshot() };
   }
 
@@ -335,7 +370,10 @@ export class ExecutionDesk {
       lateRecords: this.lateRecords,
       activities: this.activities,
       faults: this.faults,
-      attachments: this.attachments,
+      attachments: this.attachments.map((item) => ({
+        ...item,
+        contentAvailable: this.attachmentBytes.has(item.id),
+      })),
       drafts: this.drafts,
       recoveryRequests: this.recoveryRequests,
       downstreamLaunches: this.downstreamLaunches,
@@ -404,6 +442,7 @@ export class ExecutionDesk {
   }): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     const before = this.turns.length;
+    const checkpoint = this.captureOperational();
     if (input.expertId !== undefined) this.selections.expertId = input.expertId;
     if (input.executorId !== undefined) this.selections.executorId = input.executorId;
     if (input.skillIds !== undefined) this.selections.skillIds = [...input.skillIds];
@@ -411,9 +450,12 @@ export class ExecutionDesk {
     this.configId = this.deps.newId('cfg');
     this.turns = [...preservedTurnsAfterExpertSwitch(this.turns)];
     if (this.turns.length !== before) {
-      return this.fail('history-lost', '对话', '切换专家时历史被改写', '停止使用这份构建');
+      return this.undoIfUnsaved(
+        checkpoint,
+        this.fail('history-lost', '对话', '切换专家时历史被改写', '停止使用这份构建'),
+      );
     }
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   setAvailability(input: {
@@ -423,6 +465,7 @@ export class ExecutionDesk {
     readonly connected?: boolean;
   }): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
+    const checkpoint = this.captureOperational();
     if (input.expertId !== undefined && input.enabled !== undefined) {
       this.expertEnabled.set(input.expertId, input.enabled);
     }
@@ -430,7 +473,7 @@ export class ExecutionDesk {
       this.executorConnected.set(input.executorId, input.connected);
     }
     this.configId = this.deps.newId('cfg');
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   setContextIncluded(id: string, included: boolean): DeskResult {
@@ -442,10 +485,11 @@ export class ExecutionDesk {
     if (item.required && !included) {
       return this.fail('context-required', item.sourceId, '这项上下文是本轮必需的', '保留勾选');
     }
+    const checkpoint = this.captureOperational();
     if (included) this.included.add(id);
     else this.included.delete(id);
     this.contextBlocks = [];
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   addAttachment(input: {
@@ -493,30 +537,35 @@ export class ExecutionDesk {
       input.mediaType.startsWith('text/') && typeof input.text === 'string'
         ? input.text.slice(0, 80)
         : '';
-    this.attachments.push({
-      id,
-      name,
-      mediaType: input.mediaType,
-      byteSize: encoded.byteLength,
-      checksum: createHash('sha256').update(encoded).digest('hex'),
-      reference: `attachment:${id}`,
-      ...(previewText.length > 0 ? { previewText } : {}),
-    });
+    const checkpoint = this.captureOperational();
+    this.attachments = [
+      ...this.attachments,
+      {
+        id,
+        name,
+        mediaType: input.mediaType,
+        byteSize: encoded.byteLength,
+        checksum: createHash('sha256').update(encoded).digest('hex'),
+        reference: `attachment:${id}`,
+        ...(previewText.length > 0 ? { previewText } : {}),
+      },
+    ];
     this.attachmentBytes.set(id, encoded);
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   removeAttachment(id: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
+    const checkpoint = this.captureOperational();
     this.attachments = this.attachments.filter((item) => item.id !== id);
     this.attachmentBytes.delete(id);
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   send(input: SendInput): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     if (this.brokenRecord()) return this.recordBlocked();
-    const replay = this.replayRun(input);
+    const replay = this.replayRun(input) ?? this.replayQueued(input);
     if (replay) return replay;
     if (this.resumeGap) return this.gapBlocked();
     const active = this.activeRun();
@@ -597,32 +646,41 @@ export class ExecutionDesk {
     }
     const transition: NodeTransition =
       recovery.transition === 'retry' ? { type: 'retry', returnTo } : { type: 'restart', returnTo };
+    const checkpoint = this.captureOperational();
     const applied = this.applyTransition(transition, `recovery:${idempotencyKey}`);
     if (!applied.ok) {
-      return this.fail(
-        'recovery-rejected',
-        '节点',
-        recoveryRejectedReason(idempotencyKey, applied.code),
-        '刷新事实后再看节点是否已经恢复。不要重复使用同一个请求标识。',
+      return this.undoIfUnsaved(
+        checkpoint,
+        this.fail(
+          'recovery-rejected',
+          '节点',
+          recoveryRejectedReason(idempotencyKey, applied.code),
+          '刷新事实后再看节点是否已经恢复。不要重复使用同一个请求标识。',
+        ),
       );
     }
     const last = [...this.turns].reverse().find((turn) => turn.role === 'user');
-    if (!last) return this.succeed();
-    return this.send({
-      text: last.body,
-      idempotencyKey: `retry-run:${idempotencyKey}`,
-      attachmentIds: last.attachmentIds,
-      intent: 'new',
-    });
+    if (!last) return this.undoIfUnsaved(checkpoint, this.succeed());
+    return this.undoIfUnsaved(
+      checkpoint,
+      this.send({
+        text: last.body,
+        idempotencyKey: `retry-run:${idempotencyKey}`,
+        attachmentIds: last.attachmentIds,
+        intent: 'new',
+      }),
+    );
   }
 
   recover(kind: 'reassign' | 'human-takeover'): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     const assignee = assigneeAfterAgentAssist(this.seed.handoff.assignee);
-    this.recoveryRequests.push(
+    const checkpoint = this.captureOperational();
+    this.recoveryRequests = [
+      ...this.recoveryRequests,
       recordRecoveryRequest({ id: this.deps.newId(kind), kind, assigneeId: assignee.id }),
-    );
-    return this.succeed();
+    ];
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   verifyAbandoned(): DeskResult {
@@ -633,12 +691,20 @@ export class ExecutionDesk {
     }
     const run = this.runs.find((item) => item.id === gap.runId);
     if (!run || isTerminalRunStatus(run.status)) {
+      const checkpoint = this.captureOperational();
       this.resumeGap = null;
-      return this.fail('terminal-run', gap.runId, '运行已经结束', '不要再次改写节点');
+      return this.undoIfUnsaved(
+        checkpoint,
+        this.fail('terminal-run', gap.runId, '运行已经结束', '不要再次改写节点'),
+      );
     }
+    const checkpoint = this.captureOperational();
     const settled = settleExecutionRun(run, 'failed');
     if (!settled.ok) {
-      return this.fail('terminal-run', run.id, '不能把已结束的运行再标成失败', '保留现有事实');
+      return this.undoIfUnsaved(
+        checkpoint,
+        this.fail('terminal-run', run.id, '不能把已结束的运行再标成失败', '保留现有事实'),
+      );
     }
     this.putRun(settled.attempt);
     if (settled.nodeTransition.type === 'execution-failed') {
@@ -660,9 +726,10 @@ export class ExecutionDesk {
     this.releaseClaim(run.id);
     this.dropEmptyExecutorTurn(run.id);
     this.discardRunSession(run);
-    return this.succeed({ runId: run.id });
+    return this.undoIfUnsaved(checkpoint, this.succeed({ runId: run.id }));
   }
 
+  /** 保存失败时草稿留在内存，返回 persist-failed，等重写日志。不把它记成已经落盘。 */
   saveDraft(text: string): DeskResult {
     if (!this.interactionReady) return this.blockedRestore();
     const producer = [...this.runs].reverse().find((run) => run.status === 'completed');
@@ -712,7 +779,8 @@ export class ExecutionDesk {
         '不要用它改变节点状态',
       );
     }
-    return this.succeed();
+    const checkpoint = this.captureOperational();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   /**
@@ -735,19 +803,23 @@ export class ExecutionDesk {
         '请走评审路径。不要跳过评审把节点标成完成。',
       );
     }
+    const checkpoint = this.captureOperational();
     const moved = this.applyTransition(
       { type: 'submit-artifact', reviewRequired: false },
       `complete:${this.deps.newId('complete')}`,
     );
     if (!moved.ok) {
-      return this.fail(
-        'illegal-transition',
-        '节点',
-        '节点现在不能标成完成',
-        '先结束当前运行。需修改的节点不能跳过评审直接完成。',
+      return this.undoIfUnsaved(
+        checkpoint,
+        this.fail(
+          'illegal-transition',
+          '节点',
+          '节点现在不能标成完成',
+          '先结束当前运行。需修改的节点不能跳过评审直接完成。',
+        ),
       );
     }
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   /** 已完成的节点被退回，进入需修改。不恢复已删除的会话，也不自动开始运行。 */
@@ -756,14 +828,18 @@ export class ExecutionDesk {
     if (this.nodeState.status !== 'completed') {
       return this.fail('not-completed', '节点', '只有已完成的节点可以退回', '先确认完成');
     }
+    const checkpoint = this.captureOperational();
     const moved = this.applyTransition(
       { type: 'reopen-for-rework' },
       `reopen:${this.deps.newId('reopen')}`,
     );
     if (!moved.ok) {
-      return this.fail('illegal-transition', '节点', '节点现在不能退回', '保持已完成');
+      return this.undoIfUnsaved(
+        checkpoint,
+        this.fail('illegal-transition', '节点', '节点现在不能退回', '保持已完成'),
+      );
     }
-    return this.succeed();
+    return this.undoIfUnsaved(checkpoint, this.succeed());
   }
 
   markWaitingForInput(): DeskResult {
@@ -775,14 +851,15 @@ export class ExecutionDesk {
     if (!marked.ok) {
       return this.fail(marked.code, active.id, '运行还不能进入等待输入', '先取得执行回执');
     }
+    const checkpoint = this.captureOperational();
     const applied = this.applyTransition({ type: 'input-required' }, `wait:${active.id}`);
     if (!applied.ok) {
       this.preserveRecordError();
-      this.persist();
-      return this.fail('illegal-transition', '节点', '节点不能进入等待输入', '刷新事实');
+      const rejected = this.fail('illegal-transition', '节点', '节点不能进入等待输入', '刷新事实');
+      return this.undoIfUnsaved(checkpoint, rejected);
     }
     this.putRun(marked.attempt);
-    return this.succeed({ runId: active.id });
+    return this.undoIfUnsaved(checkpoint, this.succeed({ runId: active.id }));
   }
 
   releaseActive(): void {
@@ -829,6 +906,28 @@ export class ExecutionDesk {
       );
     }
     return this.succeed({ replayed: true, runId: existing.id });
+  }
+
+  /** 已经入队的幂等键在运行结束后仍然只重放，不再开第二次执行。 */
+  private replayQueued(input: SendInput): DeskResult | null {
+    const existing = this.interventions.find(
+      (item) => item.idempotencyKey === input.idempotencyKey,
+    );
+    if (!existing) return null;
+    const intent = input.intent === 'next-turn' ? 'next-turn' : 'supplement';
+    const attachments = this.frozenAttachments([...(input.attachmentIds ?? [])]);
+    const payloadHash = hashPayload(
+      queueFingerprint(input.text.trim(), intent, existing.runId, attachments),
+    );
+    if (existing.payloadHash !== payloadHash) {
+      return this.fail(
+        'idempotency-mismatch',
+        input.idempotencyKey,
+        '同一个请求标识对应了不同内容',
+        '换一个新请求再发送',
+      );
+    }
+    return this.succeed({ replayed: true, runId: existing.appliedRunId ?? existing.runId });
   }
 
   private beginRun(input: SendInput): DeskResult {
@@ -1016,7 +1115,8 @@ export class ExecutionDesk {
         '如需继续，显式开始下一轮',
       );
     }
-    const payloadHash = hashPayload({ text, intent, runId: active.id });
+    const attachments = this.frozenAttachments([...(input.attachmentIds ?? [])]);
+    const payloadHash = hashPayload(queueFingerprint(text, intent, active.id, attachments));
     const deduped = acceptUserMessage({
       idempotencyKey: input.idempotencyKey,
       payloadHash,
@@ -1046,18 +1146,35 @@ export class ExecutionDesk {
       body: text,
       idempotencyKey: input.idempotencyKey,
       payloadHash,
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(routed.notice !== undefined ? { notice: routed.notice } : {}),
     };
+    const checkpoint = this.captureQueue();
     this.interventions = [...this.interventions, record];
     if (routed.kind === 'resume-input') {
       const resumed = resumeRunAfterInput(active);
       if (!resumed.ok) {
-        return this.fail('not-waiting', active.id, '运行并不在等待输入', '消息留在已接收，未应用');
+        const rejected = this.fail(
+          'not-waiting',
+          active.id,
+          '运行并不在等待输入',
+          '消息留在已接收，未应用',
+        );
+        if (this.lastSaveFailed) {
+          this.restoreQueue(checkpoint);
+          return this.persistRejected();
+        }
+        return rejected;
       }
       const applied = this.applyTransition({ type: 'input-supplied' }, `resume:${record.id}`);
       if (!applied.ok) {
         this.preserveRecordError();
-        return this.succeed({ runId: active.id });
+        const kept = this.succeed({ runId: active.id });
+        if (!kept.ok || this.lastSaveFailed) {
+          this.restoreQueue(checkpoint);
+          return this.persistRejected();
+        }
+        return kept;
       }
       const done = advanceIntervention(record.phase, 'apply');
       if (done.ok) {
@@ -1069,7 +1186,20 @@ export class ExecutionDesk {
       }
       this.putRun(resumed.attempt);
     }
-    return this.succeed({ runId: active.id });
+    let committed: DeskResult;
+    try {
+      committed = this.succeed({ runId: active.id });
+    } catch (error) {
+      this.restoreQueue(checkpoint);
+      this.persistenceFault = persistenceFaultFrom(error);
+      this.lastSaveFailed = true;
+      return this.persistRejected();
+    }
+    if (!committed.ok || this.lastSaveFailed) {
+      this.restoreQueue(checkpoint);
+      return this.persistRejected();
+    }
+    return committed;
   }
 
   private startDrive(runId: string, instruction: string, attachmentIds: readonly string[]): void {
@@ -1299,10 +1429,23 @@ export class ExecutionDesk {
     );
     const first = pending[0];
     if (!first) return;
+    const frozen = first.attachments ?? [];
+    const missingBytes = frozen.filter((item) => {
+      const bytes = this.attachmentBytes.get(item.id);
+      if (bytes === undefined || bytes.byteLength !== item.byteSize) return true;
+      return createHash('sha256').update(bytes).digest('hex') !== item.checksum;
+    });
+    if (missingBytes.length > 0) {
+      this.dropPending(finishedRunId, '附件内容不在，需重新上传');
+      this.persist();
+      return;
+    }
+    const attachmentIds = frozen.map((item) => item.id);
     const opened = this.beginRun({
       text: first.body,
       idempotencyKey: `apply:${first.id}`,
       intent: 'new',
+      attachmentIds,
     });
     if (!opened.ok) {
       this.dropPending(finishedRunId, opened.reason);
@@ -1318,7 +1461,7 @@ export class ExecutionDesk {
         moving.has(item.id) ? copyIntervention(item, item.phase, { runId: nextRunId }) : item,
       );
     }
-    this.startDrive(nextRunId, first.body, []);
+    this.startDrive(nextRunId, first.body, attachmentIds);
   }
 
   private dropPending(runId: string, blockedReason?: string): void {
@@ -1901,9 +2044,43 @@ export class ExecutionDesk {
   }
 
   private unknownAttachment(ids: readonly string[]): DeskResult | null {
-    const known = new Set(this.attachments.map((item) => item.id));
-    if (ids.every((id) => known.has(id))) return null;
-    return this.fail('unknown-attachment', '附件', '有附件不在当前工作区', '重新上传后再发送');
+    for (const id of ids) {
+      const fact = this.attachments.find((item) => item.id === id);
+      if (!fact) {
+        return this.fail('unknown-attachment', '附件', '有附件不在当前工作区', '重新上传后再发送');
+      }
+      const bytes = this.attachmentBytes.get(id);
+      if (bytes === undefined || bytes.byteLength !== fact.byteSize) {
+        return this.reuploadNeeded(fact.name);
+      }
+      const checksum = createHash('sha256').update(bytes).digest('hex');
+      if (checksum !== fact.checksum) return this.reuploadNeeded(fact.name);
+    }
+    return null;
+  }
+
+  private reuploadNeeded(name: string): DeskResult {
+    return this.fail(
+      'attachment-reupload',
+      name,
+      '附件内容不在，需重新上传',
+      '重新上传这份附件后再发送。不会用缺失的字节继续运行。',
+    );
+  }
+
+  private frozenAttachments(
+    ids: readonly string[],
+  ): NonNullable<InterventionRecord['attachments']> {
+    return ids.map((id) => {
+      const fact = this.attachments.find((item) => item.id === id);
+      return {
+        id,
+        name: fact?.name ?? id,
+        mediaType: fact?.mediaType ?? 'application/octet-stream',
+        byteSize: fact?.byteSize ?? 0,
+        checksum: fact?.checksum ?? '',
+      };
+    });
   }
 
   private gapBlocked(): DeskResult {
@@ -2009,6 +2186,118 @@ export class ExecutionDesk {
     this.lastError = checkpoint.lastError;
   }
 
+  /** 排队受理改过的队列、运行和节点。落盘失败时整段退回，避免前一轮结束后自动执行。 */
+  private captureQueue(): {
+    interventions: InterventionRecord[];
+    runs: ExecutionAttempt[];
+    nodeState: NodeCommandState;
+    claims: WorkspaceClaim[];
+    lastError: CommandErrorFact | null;
+    downstreamLaunches: number;
+  } {
+    return {
+      interventions: this.interventions,
+      runs: this.runs,
+      nodeState: structuredClone(this.nodeState),
+      claims: this.claims,
+      lastError: this.lastError,
+      downstreamLaunches: this.downstreamLaunches,
+    };
+  }
+
+  private restoreQueue(checkpoint: {
+    interventions: InterventionRecord[];
+    runs: ExecutionAttempt[];
+    nodeState: NodeCommandState;
+    claims: WorkspaceClaim[];
+    lastError: CommandErrorFact | null;
+    downstreamLaunches: number;
+  }): void {
+    this.interventions = checkpoint.interventions;
+    this.runs = checkpoint.runs;
+    this.nodeState = checkpoint.nodeState;
+    this.claims = checkpoint.claims;
+    this.lastError = checkpoint.lastError;
+    this.downstreamLaunches = checkpoint.downstreamLaunches;
+  }
+
+  /** 命令改过的内存。落盘失败时退回，避免失败的修改继续被看见或被消费。 */
+  private captureOperational(): OperationalCheckpoint {
+    return {
+      nodeState: structuredClone(this.nodeState),
+      runs: this.runs,
+      turns: this.turns,
+      interventions: this.interventions,
+      claims: this.claims,
+      faults: this.faults.slice(),
+      activities: this.activities.slice(),
+      lateRecords: this.lateRecords.slice(),
+      attachments: this.attachments.slice(),
+      attachmentBytes: new Map(this.attachmentBytes),
+      drafts: this.drafts,
+      draftRoundId: this.draftRoundId,
+      recoveryRequests: this.recoveryRequests.slice(),
+      downstreamLaunches: this.downstreamLaunches,
+      reviewRounds: this.reviewRounds.slice(),
+      activeRoundId: this.activeRoundId,
+      selections: {
+        expertId: this.selections.expertId,
+        executorId: this.selections.executorId,
+        skillIds: [...this.selections.skillIds],
+        mcpIds: [...this.selections.mcpIds],
+      },
+      configId: this.configId,
+      included: new Set(this.included),
+      expertEnabled: new Map(this.expertEnabled),
+      executorConnected: new Map(this.executorConnected),
+      citations: this.citations,
+      contextBlocks: this.contextBlocks,
+      sequence: this.sequence,
+      lastError: this.lastError,
+      resumeGap: this.resumeGap,
+      historyNote: this.historyNote,
+    };
+  }
+
+  private restoreOperational(checkpoint: OperationalCheckpoint): void {
+    this.nodeState = checkpoint.nodeState;
+    this.runs = checkpoint.runs;
+    this.turns = checkpoint.turns;
+    this.interventions = checkpoint.interventions;
+    this.claims = checkpoint.claims;
+    this.faults = checkpoint.faults;
+    this.activities = checkpoint.activities;
+    this.lateRecords = checkpoint.lateRecords;
+    this.attachments = checkpoint.attachments;
+    this.attachmentBytes.clear();
+    for (const [id, bytes] of checkpoint.attachmentBytes) this.attachmentBytes.set(id, bytes);
+    this.drafts = checkpoint.drafts;
+    this.draftRoundId = checkpoint.draftRoundId;
+    this.recoveryRequests = checkpoint.recoveryRequests;
+    this.downstreamLaunches = checkpoint.downstreamLaunches;
+    this.reviewRounds = checkpoint.reviewRounds;
+    this.activeRoundId = checkpoint.activeRoundId;
+    this.selections = checkpoint.selections;
+    this.configId = checkpoint.configId;
+    this.included = checkpoint.included;
+    this.expertEnabled = checkpoint.expertEnabled;
+    this.executorConnected = checkpoint.executorConnected;
+    this.citations = checkpoint.citations;
+    this.contextBlocks = checkpoint.contextBlocks;
+    this.sequence = checkpoint.sequence;
+    this.lastError = checkpoint.lastError;
+    this.resumeGap = checkpoint.resumeGap;
+    this.historyNote = checkpoint.historyNote;
+  }
+
+  private undoIfUnsaved(checkpoint: OperationalCheckpoint, result: DeskResult): DeskResult {
+    if (this.lastSaveFailed || (!result.ok && result.code === 'persist-failed')) {
+      this.restoreOperational(checkpoint);
+      return this.persistRejected();
+    }
+    return result;
+  }
+
   private persistRejected(): DeskResult {
     const fault = this.persistenceFault ?? persistenceFaultFrom(new Error('persist-failed'));
     this.persistenceFault = fault;
@@ -2022,17 +2311,23 @@ export class ExecutionDesk {
     };
   }
 
-  /** 失败只记持久化故障，不向外抛。受理路径另行回滚；执行器事件保留内存事实。 */
-  private persist(): boolean {
+  /**
+   * 失败只记持久化故障，不向外抛。受理路径另行回滚；执行器事件保留内存事实。
+   * 已有故障不会被无关的成功保存清掉，只有重写当前内存时才清除。
+   */
+  private persist(reconcile = false): boolean {
     if (!this.deps.journal) {
       this.persistenceFault = null;
+      this.lastSaveFailed = false;
       return true;
     }
     try {
       this.deps.journal.save(this.persistence());
-      this.persistenceFault = null;
+      this.lastSaveFailed = false;
+      if (reconcile) this.persistenceFault = null;
       return true;
     } catch (error) {
+      this.lastSaveFailed = true;
       this.persistenceFault = persistenceFaultFrom(error);
       return false;
     }
@@ -2134,8 +2429,28 @@ function copyIntervention(
     body: item.body,
     idempotencyKey: item.idempotencyKey,
     payloadHash: item.payloadHash,
+    ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
     ...(notice !== undefined ? { notice } : {}),
     ...(appliedRunId !== undefined ? { appliedRunId } : {}),
+  };
+}
+
+function queueFingerprint(
+  text: string,
+  intent: string,
+  runId: string,
+  attachments: NonNullable<InterventionRecord['attachments']>,
+): {
+  text: string;
+  intent: string;
+  runId: string;
+  attachments?: { id: string; checksum: string }[];
+} {
+  const base = { text, intent, runId };
+  if (attachments.length === 0) return base;
+  return {
+    ...base,
+    attachments: attachments.map((item) => ({ id: item.id, checksum: item.checksum })),
   };
 }
 

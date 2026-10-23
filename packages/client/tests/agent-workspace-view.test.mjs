@@ -348,3 +348,21 @@ test('契约：持久化故障出现在投影里', () => {
   assert.match(view.persistenceFault.reason, /EACCES/);
   assert.match(view.persistenceFault.nextStep, /重写/);
 });
+
+test('契约：没有字节的附件标成需重新上传', () => {
+  const snapshot = workspaceSnapshot();
+  snapshot.attachments = [
+    {
+      id: 'file-1',
+      name: 'context.txt',
+      mediaType: 'text/plain',
+      byteSize: 5,
+      checksum: 'abc',
+      reference: 'attachment:file-1',
+      contentAvailable: false,
+    },
+  ];
+  const view = createAgentWorkspaceView(snapshot);
+  assert.equal(view.attachments[0].reupload, true);
+  assert.equal(view.attachments[0].name, 'context.txt');
+});

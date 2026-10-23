@@ -273,3 +273,186 @@ test('契约：草稿保存失败不是成功回执，恢复后可以重写', ()
   assert.equal(session.snapshot().persistenceFault, null);
   assert.match(state.value.drafts.at(-1).text, /只留下草稿/);
 });
+
+function countStarts(simulated) {
+  const requests = [];
+  const run = simulated.run.bind(simulated);
+  simulated.run = (request) => {
+    requests.push(request);
+    return run(request);
+  };
+  return requests;
+}
+
+test('契约：排队受理保存失败后不会被自动执行，同键重试只启动一次', async () => {
+  const { state, journal } = failingJournal();
+  const simulated = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const requests = countStarts(simulated);
+  const session = openDesk(journal, simulated);
+  const first = session.send({ text: '整理开户字段', idempotencyKey: 'k1' });
+  await session.waitForRun(first.runId, 'running');
+  state.failNext = true;
+  const queued = session.send({ text: '排队补充', idempotencyKey: 'k2' });
+  assert.equal(queued.ok, false);
+  assert.equal(queued.code, 'persist-failed');
+  assert.equal(queued.replayed, undefined);
+  assert.equal(session.snapshot().interventions.length, 0);
+  assert.equal(state.value.interventions.length, 0);
+  session.releaseActive();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(requests.length, 1);
+  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  const retry = session.send({ text: '排队补充', idempotencyKey: 'k2' });
+  assert.equal(retry.ok, true);
+  assert.equal(retry.replayed, false);
+  await session.waitForRun(retry.runId, 'running');
+  assert.equal(requests.length, 2);
+  const duplicate = session.send({ text: '排队补充', idempotencyKey: 'k2' });
+  assert.equal(duplicate.ok, true);
+  assert.equal(duplicate.replayed, true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(requests.length, 2);
+  assert.equal(session.snapshot().persistenceFault?.code, 'persist-failed');
+  state.failNext = false;
+  const rewritten = session.rewritePersistence();
+  assert.equal(rewritten.ok, true);
+  assert.equal(session.snapshot().persistenceFault, null);
+});
+
+test('契约：排队受理失败后重新打开，同键重试只启动一次', async () => {
+  const { state, journal } = failingJournal();
+  const simulated = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const session = openDesk(journal, simulated);
+  const first = session.send({ text: '整理开户字段', idempotencyKey: 'k1' });
+  await session.waitForRun(first.runId, 'running');
+  state.failNext = true;
+  const queued = session.send({ text: '排队补充', idempotencyKey: 'k2' });
+  assert.equal(queued.ok, false);
+  session.releaseActive();
+  await session.flush();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(
+    state.value.interventions.some((item) => item.idempotencyKey === 'k2'),
+    false,
+  );
+  const saved = JSON.parse(JSON.stringify(state.value));
+  const restoredSim = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const requests = countStarts(restoredSim);
+  const reopened = ExecutionDesk.restore(saved, {
+    executors: [restoredSim],
+    newId: ids(),
+    journal: {
+      value: saved,
+      save(value) {
+        this.value = JSON.parse(JSON.stringify(value));
+      },
+    },
+  });
+  const resumed = reopened.resumeInteraction();
+  assert.equal(resumed.ok, true);
+  const retry = reopened.send({ text: '排队补充', idempotencyKey: 'k2' });
+  assert.equal(retry.ok, true);
+  assert.equal(retry.replayed, false);
+  await reopened.waitForRun(retry.runId, 'running');
+  assert.equal(requests.length, 1);
+  const duplicate = reopened.send({ text: '排队补充', idempotencyKey: 'k2' });
+  assert.equal(duplicate.ok, true);
+  assert.equal(duplicate.replayed, true);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(requests.length, 1);
+});
+
+test('契约：排队附件进入幂等指纹并交给执行器，缺失字节要求重新上传', async () => {
+  const { state, journal } = failingJournal();
+  const simulated = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const requests = countStarts(simulated);
+  const session = openDesk(journal, simulated);
+  const added = session.addAttachment({
+    name: 'context.txt',
+    mediaType: 'text/plain',
+    text: 'hello',
+  });
+  assert.equal(added.ok, true);
+  const attachmentId = added.snapshot.attachments.at(-1).id;
+  const first = session.send({ text: '整理开户字段', idempotencyKey: 'k1' });
+  await session.waitForRun(first.runId, 'running');
+  const queued = session.send({
+    text: '带附件补充',
+    idempotencyKey: 'k2',
+    attachmentIds: [attachmentId],
+  });
+  assert.equal(queued.ok, true);
+  assert.equal(queued.snapshot.interventions.at(-1).attachments[0].checksum.length > 0, true);
+  const mismatched = session.send({ text: '带附件补充', idempotencyKey: 'k2' });
+  assert.equal(mismatched.ok, false);
+  assert.equal(mismatched.code, 'idempotency-mismatch');
+  session.releaseActive();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].attachmentIds, [attachmentId]);
+  assert.equal(requests[1].attachments[0].bytes.byteLength, Buffer.from('hello').byteLength);
+});
+
+test('契约：移除或重新打开后缺失的附件字节不会启动执行器', async () => {
+  const held = new SimulatedAgentExecutor({ pauseAfterAccept: true, chunkDelayMs: 0 });
+  const heldRequests = countStarts(held);
+  const session = openDesk(failingJournal().journal, held);
+  const uploaded = session.addAttachment({
+    name: 'context.txt',
+    mediaType: 'text/plain',
+    text: 'hello',
+  });
+  const removedId = uploaded.snapshot.attachments.at(-1).id;
+  const running = session.send({ text: '整理开户字段', idempotencyKey: 'hold' });
+  await session.waitForRun(running.runId, 'running');
+  const queued = session.send({
+    text: '带附件补充',
+    idempotencyKey: 'gone',
+    attachmentIds: [removedId],
+  });
+  assert.equal(queued.ok, true);
+  assert.equal(session.removeAttachment(removedId).ok, true);
+  session.releaseActive();
+  await session.flush();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(heldRequests.length, 1);
+  const dropped = session.snapshot().interventions.find((item) => item.idempotencyKey === 'gone');
+  assert.equal(dropped.phase, 'not-applied');
+  assert.match(dropped.notice, /需重新上传/);
+
+  const { state, journal } = failingJournal();
+  const origin = openDesk(journal, new SimulatedAgentExecutor({ chunkDelayMs: 0 }));
+  const added = origin.addAttachment({
+    name: 'context.txt',
+    mediaType: 'text/plain',
+    text: 'hello',
+  });
+  const attachmentId = added.snapshot.attachments.at(-1).id;
+  const saved = JSON.parse(JSON.stringify(state.value));
+  const restoredSim = new SimulatedAgentExecutor({ chunkDelayMs: 0 });
+  const restoredRequests = countStarts(restoredSim);
+  const reopened = ExecutionDesk.restore(saved, {
+    executors: [restoredSim],
+    newId: ids(),
+    journal: {
+      value: saved,
+      save(value) {
+        this.value = JSON.parse(JSON.stringify(value));
+      },
+    },
+  });
+  assert.equal(reopened.resumeInteraction().ok, true);
+  const view = createAgentWorkspaceView(reopened.snapshot());
+  assert.equal(view.attachments[0].reupload, true);
+  assert.equal(reopened.snapshot().attachments[0].contentAvailable, false);
+  const rejected = reopened.send({
+    text: '用附件',
+    idempotencyKey: 'k9',
+    attachmentIds: [attachmentId],
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'attachment-reupload');
+  assert.match(rejected.reason, /需重新上传/);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(restoredRequests.length, 0);
+});

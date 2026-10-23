@@ -174,6 +174,7 @@ export interface AgentWorkspaceView {
     readonly name: string;
     readonly reference: string;
     readonly preview: string | null;
+    readonly reupload: boolean;
   }[];
   readonly drafts: readonly {
     readonly text: string;
@@ -465,6 +466,7 @@ export function createAgentWorkspaceView(snapshot: ExecutionDeskSnapshot): Agent
       name: item.name,
       reference: item.reference,
       preview: item.previewText ?? null,
+      reupload: item.contentAvailable === false,
     })),
     drafts: snapshot.drafts.map((draft) => ({
       text: draft.text,
