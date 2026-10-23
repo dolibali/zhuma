@@ -1,6 +1,6 @@
 # 本地专家与资产包导入：首批接口
 
-状态：A-ASSET-IMPORT 首批代码 `e3916fa` 已推送，待独立审查。领域、Host 服务契约与浏览器交互已实现；隔离的官方 DSH 桌面已验证正常 UI ZIP 导入、来源文件保存和冷重开，见[分层证据](review/asset-import/README.md)。这不代表完整产品、包发布系统或外部 Agent 运行兼容性已验收。兼容格式见[边界表](asset-import-compatibility.md)。
+状态：A-ASSET-IMPORT [PR #19](https://github.com/dolibali/zhuma/pull/19) 待独立审查；首批代码 `e3916fa`，凭据路径修复 `39f4a2d`。领域、Host 服务契约与浏览器交互已实现；隔离的官方 DSH 桌面已验证首批构建的正常 UI ZIP 导入、来源文件保存和冷重开，修复后的定向验证另见[分层证据](review/asset-import/README.md)。这不代表完整产品、包发布系统或外部 Agent 运行兼容性已验收。兼容格式见[边界表](asset-import-compatibility.md)。
 
 ## 同一目录与显式保存
 
@@ -21,7 +21,7 @@ SourceFiles 只读查看／下载当前定义的允许文件。源码正文不�
 ## 格式与边界
 
 - Agent Skills：解析 SKILL.md 的静态 YAML 元数据与正文；保留目录中的 references/assets/scripts 及上级许可证／说明文件。标签、别名、重复键、无效元数据拒绝；工具声明不授予执行权限。静态相对 Markdown 引用用于缺项预览，不是完整运行依赖解析器。
-- OpenClaw：SOUL.md 与 AGENTS.md 映射人格／方法，IDENTITY.md 可提供名称，skills/ 映射默认能力。不是 OpenClaw 运行时。USER.md、MEMORY.md、会话、常见凭据与私人目录排除；目录选择先按路径过滤，再读取内容；ZIP 在 Host 跳过这些条目的解压和保存。
+- OpenClaw：SOUL.md 与 AGENTS.md 映射人格／方法，IDENTITY.md 可提供名称，skills/ 映射默认能力。不是 OpenClaw 运行时。USER.md、MEMORY.md、会话、常见凭据与私人目录排除；包括任意层级、大小写变体的 .npmrc／.netrc／.git-credentials／.pypirc。目录选择先按路径过滤，再读取内容；ZIP 在 Host 跳过这些条目的解压和保存。
 - Zhuma 专家 JSON：format=zhuma-expert，schemaVersion=1，声明 name/role/capabilities/instructions、可选 id/version/skillPaths。未知可执行配置字段拒绝。导入时不安装 Host 插件。
 - 工作流 JSON：使用现有 v1 定义与图验证，不转成提示词；已有模板预览、参与者映射与实例化链不变。
 
@@ -39,7 +39,8 @@ SourceFiles 只读查看／下载当前定义的允许文件。源码正文不�
 
 ## 当前验证
 
-- pnpm check：181/181；其中包识别、范围／缺项、复制／更新、字节保留、版本写入失败／同键恢复及 Host 入口是契约验证。
-- 完整浏览器回归 58/58，最终导入专项 8/8：目录／ZIP 预览、取消、同键重试、来源下载、更新 ID、分类与成员互通、小窗及旧文字入口。ZIP 的浏览器测试为已标注的响应重放，不能认证实际 Host 解压。
+- `39f4a2d` 修复后 pnpm check：183/183；包识别、范围／缺项、复制／更新、字节保留、版本写入失败／同键恢复及 Host 入口是契约验证。新增负例验证 16 个合成凭据路径不进入预览文件、来源白名单或持久化版本，普通配置／许可／脚本数据仍保留。ZIP 私有条目使用错误 CRC，验证跳过载荷读取。
+- 首批完整浏览器回归 58/58，`39f4a2d` 修复后导入专项 8/8：目录／ZIP 预览、取消、同键重试、来源下载、更新 ID、分类与成员互通、小窗及旧文字入口。目录回归禁止这些凭据文件调用 arrayBuffer，且预览请求不含其字节。ZIP 的浏览器测试为已标注的响应重放，不能认证实际 Host 解压。
 - `e3916fa` 构建在隔离的官方 DSH 桌面中，通过正常 UI 导入公开 ZIP 内的 Skill 与专家，预览零写入；一次命令保存两个定义并绑定默认 Skill。6 个二进制附件共 1080000 字节保存在独立源包域，目录存储仅 2825 字节；完全关闭后冷重开，定义 ID／来源版本仍在，来源 API 返回白名单文件，全部二进制 SHA-256 一致，脚本只作数据保存，规划审计 0 条。实际加载 Client 与本次构建字节匹配；[记录](review/asset-import/native-proof.json)同时保留 Host 构建摘要。
 - 多人空间权限、包发布／维护者、历史运行包物化、原生 Agent 执行与产物评审仍单独验收。安装包、真实系统主题切换和拖窗未验收，不能由这些数量关闭 FR12。
+- 本次路径修复约束新导入，不追溯擦除修复前已保存的来源包；历史数据迁移／清理不在本批实现。
