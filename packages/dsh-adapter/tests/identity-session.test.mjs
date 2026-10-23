@@ -707,9 +707,66 @@ test('password checking yields while the hash is in flight', async () => {
   await host.dispose();
 });
 
-test('a real http client receives 413 before the socket closes', async () => {
-  const host = await mount();
+function postHttp(port, body, chunked = false) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (status, payload) => {
+      if (settled) return;
+      settled = true;
+      resolve({ status, body: payload });
+    };
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        method: 'POST',
+        path: '/zhuma-id/login',
+        headers: { 'content-type': 'application/json', host: AUTHORITY },
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => {
+          finish(res.statusCode, Buffer.concat(chunks).toString('utf8'));
+        });
+      },
+    );
+    req.on('error', (error) => finish(0, error.code ?? error.message));
+    if (!chunked) {
+      req.end(body);
+      return;
+    }
+    const buffer = Buffer.from(body);
+    let offset = 0;
+    const tick = () => {
+      if (settled || offset >= buffer.length) {
+        if (!settled) req.end();
+        return;
+      }
+      const ok = req.write(buffer.subarray(offset, offset + 4096));
+      offset += 4096;
+      if (ok) setImmediate(tick);
+      else req.once('drain', tick);
+    };
+    tick();
+  });
+}
+
+async function listenForHost(host) {
+  let closedBeforeResponse = 0;
   const server = http.createServer((req, res) => {
+    const destroy = req.destroy.bind(req);
+    let noted = false;
+    req.destroy = (...args) => {
+      const result = destroy(...args);
+      const socket = req.socket;
+      const socketGone = socket === null || socket.destroyed === true;
+      if (!noted && res.headersSent !== true && socketGone) {
+        noted = true;
+        closedBeforeResponse += 1;
+      }
+      return result;
+    };
     host.web.dispatch(req, res).catch(() => {
       if (res.headersSent !== true) {
         res.writeHead(500);
@@ -722,59 +779,71 @@ test('a real http client receives 413 before the socket closes', async () => {
   });
   const address = server.address();
   assert.equal(typeof address, 'object');
-  const port = address.port;
-  const send = (body, chunked = false) =>
-    new Promise((resolve) => {
-      const req = http.request(
-        {
-          host: '127.0.0.1',
-          port,
-          method: 'POST',
-          path: '/zhuma-id/login',
-          headers: { 'content-type': 'application/json', host: AUTHORITY },
-        },
-        (res) => {
-          const chunks = [];
-          res.on('data', (chunk) => chunks.push(chunk));
-          res.on('end', () => {
-            resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') });
-          });
-        },
-      );
-      req.on('error', (error) => resolve({ status: 0, body: error.code ?? error.message }));
-      if (!chunked) {
-        req.end(body);
-        return;
-      }
-      const buffer = Buffer.from(body);
-      let offset = 0;
-      const tick = () => {
-        if (offset >= buffer.length) {
-          req.end();
-          return;
-        }
-        const ok = req.write(buffer.subarray(offset, offset + 4096));
-        offset += 4096;
-        if (ok) setImmediate(tick);
-        else req.once('drain', tick);
-      };
-      tick();
-    });
+  return {
+    port: address.port,
+    closedBeforeResponse: () => closedBeforeResponse,
+    close: () => server.close(),
+  };
+}
+
+test('a real http client receives 413 before the socket closes', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
   try {
-    const ok = await send(JSON.stringify({ accountId: 'chen', password: passwords.chen }));
+    const ok = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'chen', password: passwords.chen }),
+    );
     assert.equal(ok.status, 200);
     const bulky = JSON.stringify({
       accountId: 'a',
       password: randomBytes(70_000).toString('base64url').slice(0, 70_000),
     });
-    const declared = await send(bulky);
+    const declared = await postHttp(server.port, bulky);
     assert.equal(declared.status, 413);
     assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
-    const chunked = await send(bulky, true);
+    const chunked = await postHttp(server.port, bulky, true);
     assert.equal(chunked.status, 413);
     assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
-    const again = await send(JSON.stringify({ accountId: 'zhao', password: passwords.zhao }));
+    const again = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'zhao', password: passwords.zhao }),
+    );
     assert.equal(again.status, 200);
+  } finally {
+    server.close();
+    await host.dispose();
+  }
+});
+
+// Mutation: reading the body with `for await (const chunk of req)` fails this
+// loop. The iterator's return() destroys the IncomingMessage when the size
+// check throws, so the socket is already gone before the 413 headers are
+// sent and `closedBeforeResponse` becomes 100. Declared Content-Length and
+// chunked bodies both have to stay at 413, with no retry and no skipped attempt.
+test('over-limit bodies get 413 on every attempt, then a normal login works', async () => {
+  const host = await mount();
+  const server = await listenForHost(host);
+  const bulky = JSON.stringify({
+    accountId: 'a',
+    password: randomBytes(70_000).toString('base64url').slice(0, 70_000),
+  });
+  try {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const declared = await postHttp(server.port, bulky);
+      assert.equal(declared.status, 413);
+      assert.equal(JSON.parse(declared.body).error.code, 'body-too-large');
+      const chunked = await postHttp(server.port, bulky, true);
+      assert.equal(chunked.status, 413);
+      assert.equal(JSON.parse(chunked.body).error.code, 'body-too-large');
+    }
+    const again = await postHttp(
+      server.port,
+      JSON.stringify({ accountId: 'chen', password: passwords.chen }),
+    );
+    assert.equal(again.status, 200);
+    assert.equal(JSON.parse(again.body).accountId, 'chen');
+    assert.equal(server.closedBeforeResponse(), 0);
   } finally {
     server.close();
     await host.dispose();

@@ -500,14 +500,15 @@ function failTooLarge(req: IncomingMessage, res: ServerResponse): void {
     'content-length': String(Buffer.byteLength(body)),
     'content-type': 'application/json; charset=utf-8',
   });
-  res.end(body);
-  const stop = () => {
+  // The 413 is flushed before the socket closes. Destroying here, or letting
+  // `for await` destroy the request, drops the response on the floor.
+  res.end(body, () => {
+    const socket = req.socket;
+    if (socket === null || socket.destroyed) return;
+    socket.on('error', () => {});
     req.resume();
-    req.destroy();
-  };
-  if (res.writableFinished === true) stop();
-  else res.on('finish', stop);
-  req.resume();
+    socket.end();
+  });
 }
 
 function permitted(
@@ -532,23 +533,66 @@ function permitted(
 
 class BodyTooLargeError extends Error {}
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+function readJson(req: IncomingMessage): Promise<unknown> {
   const declared = header(req.headers, 'content-length');
   if (declared !== undefined && (!/^[0-9]+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
-    throw new BodyTooLargeError();
+    return Promise.reject(new BodyTooLargeError());
   }
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buf.length;
-    if (total > MAX_BODY_BYTES) throw new BodyTooLargeError();
-    chunks.push(buf);
-  }
-  if (chunks.length === 0) return undefined;
-  const text = Buffer.concat(chunks).toString('utf8');
-  if (text.trim() === '') return undefined;
-  return JSON.parse(text) as unknown;
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const cleanup = () => {
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+    };
+    const finish = (error: Error | undefined, value?: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error !== undefined) {
+        // Stop reading before the 413 is written. A later 'end' must not parse
+        // the partial body. `for await` is not used here: its return() destroys
+        // the request, and the socket closes before the response is flushed.
+        req.pause();
+        reject(error);
+        return;
+      }
+      resolve(value);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.length;
+      if (total > MAX_BODY_BYTES) {
+        finish(new BodyTooLargeError());
+        return;
+      }
+      chunks.push(buf);
+    };
+    const onEnd = () => {
+      if (chunks.length === 0) {
+        finish(undefined, undefined);
+        return;
+      }
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (text.trim() === '') {
+        finish(undefined, undefined);
+        return;
+      }
+      try {
+        finish(undefined, JSON.parse(text) as unknown);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error('identity body was not json'));
+      }
+    };
+    const onError = (error: Error) => {
+      finish(error);
+    };
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+  });
 }
 
 function matchRoute(pathname: string): IdentityRoute | undefined {
