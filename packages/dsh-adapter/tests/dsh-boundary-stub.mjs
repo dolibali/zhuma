@@ -6,15 +6,26 @@ import path from 'node:path';
 const home = process.env.DSH_HOME ?? process.cwd();
 let mode = process.env.ZHUMA_DSH_STUB_MODE ?? 'ok';
 
-function holdGrandchild(pidFile, script = 'setTimeout(() => {}, 8000)') {
+function holdGrandchild(pidFile, script = 'setTimeout(() => {}, 8000)', stdio) {
   const child = spawn(process.execPath, ['-e', script], {
-    stdio: ['ignore', 'ignore', 'inherit'],
+    stdio: stdio ?? ['ignore', 'ignore', 'inherit'],
     detached: true,
   });
   writeFileSync(pidFile, String(child.pid ?? ''));
   child.unref();
 }
 
+if (mode.startsWith('stdio-gc:')) {
+  holdGrandchild(mode.slice('stdio-gc:'.length), 'setTimeout(() => {}, 8000)', [
+    'inherit',
+    'inherit',
+    'inherit',
+  ]);
+  writeSync(1, 'stdout-held\n');
+  writeSync(2, 'stderr-held\n');
+  setTimeout(() => process.exit(1), 30);
+  await new Promise(() => {});
+}
 if (mode.startsWith('stderr-gc-fail:')) {
   holdGrandchild(mode.slice('stderr-gc-fail:'.length));
   writeSync(2, 'boot crashed\n');

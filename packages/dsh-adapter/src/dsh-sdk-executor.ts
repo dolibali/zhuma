@@ -850,6 +850,7 @@ class StdioRpc {
   private stderrTail = '';
   private stderrOmitted = 0;
   private stderrTimer: ReturnType<typeof setTimeout> | null = null;
+  private stdioReleased = false;
   private readonly stderrDone: Promise<void>;
   private readonly markStderr: () => void;
 
@@ -893,9 +894,23 @@ class StdioRpc {
     child.on('error', () => close(1));
   }
 
-  /** 标准错误管道关闭并冲洗残留后才可以拿出去或写入磁盘。子进程退出后最多再等 stderrSealMs。 */
+  /** 标准错误管道关闭并冲洗残留后才可以拿出去或写入磁盘。子进程退出后最多再等 stderrSealMs。到点后标准输出和标准错误一并销毁，避免孙进程占着管道。 */
   sealStderr(): Promise<void> {
-    return this.stderrDone;
+    return this.stderrDone.then(() => {
+      this.releaseStdio();
+    });
+  }
+
+  /** 孙进程继承的管道不会随子进程退出而关闭。销毁后本进程不再占着这些文件描述符。 */
+  private releaseStdio(): void {
+    if (this.stdioReleased) return;
+    this.stdioReleased = true;
+    for (const stream of [this.child.stdout, this.child.stderr, this.child.stdin]) {
+      stream.on('error', () => {});
+      const unref = (stream as { unref?: () => void }).unref;
+      unref?.call(stream);
+      stream.destroy();
+    }
   }
 
   private armStderrDeadline(): void {
@@ -989,11 +1004,6 @@ class StdioRpc {
     this.stderrTimer = null;
     if (this.stderrFlushed) return;
     this.flushStderr();
-    const stderr = this.child.stderr;
-    stderr.on('error', () => {});
-    stderr.destroy();
-    const unref = (stderr as { unref?: () => void }).unref;
-    unref?.call(stderr);
   }
 
   request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {

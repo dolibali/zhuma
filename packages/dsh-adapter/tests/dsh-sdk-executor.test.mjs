@@ -782,6 +782,36 @@ function runInput(runId) {
   };
 }
 
+function openFdCount() {
+  return readdirSync('/proc/self/fd').length;
+}
+
+// 回归：封口时不销毁 stdout/stderr，结束后 fd 数大于开始前。
+test('契约：孙进程占着标准输出和标准错误时，一轮结束后文件描述符不增加', async () => {
+  const pidFile = grandchildPidFile();
+  const before = openFdCount();
+  const started = Date.now();
+  try {
+    const boot = await collect(`stdio-gc:${pidFile}`, {
+      env: modelEnv('zhuma-synthetic-marker'),
+      initTimeoutMs: 20_000,
+      runId: 'stdio-gc',
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(boot.events.at(-1).type, 'failed');
+    assert.match(boot.events.at(-1).message, /stderr-held/);
+    assert.equal(
+      elapsed < stderrSealBoundMs,
+      true,
+      `失败事件等了 ${elapsed}ms，孙进程还要活 ${grandchildHoldMs}ms`,
+    );
+    assert.equal(openFdCount(), before);
+  } finally {
+    await reapGrandchild(pidFile);
+    rmSync(path.dirname(pidFile), { recursive: true, force: true });
+  }
+});
+
 test('契约：孙进程占着标准错误时失败事件仍在时限内', async () => {
   const pidFile = grandchildPidFile();
   const secret = 'zhuma-synthetic-marker';
