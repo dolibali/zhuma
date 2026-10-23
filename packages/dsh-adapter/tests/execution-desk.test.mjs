@@ -1442,6 +1442,8 @@ async function driveUnreadableRead(summary) {
   const [code] = await once(child, 'exit');
   clearTimeout(timer);
   rmSync(dir, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
+  assert.equal(existsSync(root), false);
   if (code !== 0) throw new Error(`读取故障注入进程退出 ${code}\n${stderr}\n${stdout}`);
   return JSON.parse(stdout);
 }
@@ -1572,14 +1574,21 @@ async function driveReadThrow(summary, code) {
     clearTimeout(timer);
     rmSync(dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
+    assert.equal(existsSync(root), false);
   }
 }
 
-test('契约：上游文件读失败时阻塞，不把摘要当成正文', async () => {
+test('契约：上游文件读失败时阻塞，不把摘要当成正文', async (t) => {
   const summary = '上游字段表（标签摘要）';
   const text = 'field,rule\nname,required\n';
+  const roots = [];
+  t.after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+    for (const root of roots) assert.equal(existsSync(root), false);
+  });
   const open = (fileName, content, probe) => {
     const root = mkdtempSync(path.join(tmpdir(), 'zhuma-ctx-read-'));
+    roots.push(root);
     if (content !== null) writeFileSync(path.join(root, fileName), content);
     const planted = seed();
     planted.fileRoot = root;
@@ -1722,8 +1731,12 @@ test('契约：读取时遇到目录或文件刚被删，仍然阻塞且不用�
   }
 });
 
-test('契约：多轮结束后不再累积钉住的文件正文', async () => {
+test('契约：多轮结束后不再累积钉住的文件正文', async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'zhuma-pin-round-'));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    assert.equal(existsSync(root), false);
+  });
   const firstBody = 'round-one-body-alpha\n';
   const secondBody = 'round-two-body-beta\n';
   writeFileSync(path.join(root, 'need.csv'), firstBody);

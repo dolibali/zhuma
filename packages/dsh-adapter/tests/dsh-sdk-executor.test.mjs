@@ -743,23 +743,27 @@ function grandchildPidFile() {
 }
 
 async function reapGrandchild(pidFile) {
+  const dir = path.dirname(pidFile);
   let pid = 0;
   try {
     pid = Number(readFileSync(pidFile, 'utf8'));
   } catch {
-    return;
+    pid = 0;
   }
-  if (!Number.isInteger(pid) || pid <= 0) return;
-  try {
-    process.kill(pid, 'SIGKILL');
-  } catch {
-    // 已经退出。
+  if (Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // 已经退出。
+    }
+    const deadline = Date.now() + 2000;
+    while (alive(pid) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(alive(pid), false, `孙进程 ${pid} 还在`);
   }
-  const deadline = Date.now() + 2000;
-  while (alive(pid) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.equal(alive(pid), false, `孙进程 ${pid} 还在`);
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(existsSync(dir), false);
 }
 
 function runInput(runId) {
