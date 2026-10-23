@@ -1998,6 +1998,27 @@ test('契约：启动失败里 file://localhost 后面的本地路径会剥掉',
   }
 });
 
+test('契约：启动失败里路径后面的版本号和缩写留在说明里', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  try {
+    const version = await driveFreshHomeFault(env, 'open /home/qa/dir v1.2 released');
+    assert.equal(version.events[0].message, '执行器启动失败。\nopen v1.2 released');
+    assert.equal(version.events[0].message.includes('/home'), false);
+    assert.equal(version.events[0].message.includes('dir'), false);
+    const abbrev = await driveFreshHomeFault(env, 'open /home/qa/x e.g. missing');
+    assert.equal(abbrev.events[0].message, '执行器启动失败。\nopen e.g. missing');
+    assert.equal(abbrev.events[0].message.includes('/home'), false);
+    const duration = await driveFreshHomeFault(env, 'open /home/qa/x 3.5s timeout');
+    assert.equal(duration.events[0].message, '执行器启动失败。\nopen 3.5s timeout');
+    assert.equal(duration.events[0].message.includes('/home'), false);
+    const named = await driveFreshHomeFault(env, 'open /home/qa/My Docs/secret file.txt failed');
+    assert.equal(named.events[0].message, '执行器启动失败。\nopen failed');
+    assert.equal(named.events[0].message.includes('file.txt'), false);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
 test('契约：启动失败里带空格的文件名后面还有说明时，文件名也剥掉', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
