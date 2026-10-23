@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { WorkbenchError, type InboxItem } from '@zhuma/agent-core';
-import type { ExecutionApi, ExecutionNodeWire, RevisionViewWire } from './ExecutionApi.js';
+import type {
+  ExecutionApi,
+  ExecutionNodeWire,
+  InboxPlace,
+  RevisionViewWire,
+} from './ExecutionApi.js';
 import { DeliveryPanel } from './DeliveryPanel.js';
 import { InboxPanel } from './InboxPanel.js';
 import { RevisionPanel } from './RevisionPanel.js';
@@ -16,6 +21,7 @@ export function executionPanels(action: string): readonly ('revision' | 'deliver
 
 export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
+  const [places, setPlaces] = useState<readonly InboxPlace[]>([]);
   const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(true);
@@ -31,6 +37,7 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
       const inbox = await api.inbox(signal);
       if (signal?.aborted) return;
       setItems(inbox.items);
+      setPlaces(inbox.places);
       setNodes(inbox.nodes);
     } catch (caught) {
       if (signal?.aborted) return;
@@ -113,6 +120,7 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
       <InboxPanel
         items={items}
         nodes={nodes}
+        places={places}
         error={error}
         pending={pending}
         reload={() => void reload()}

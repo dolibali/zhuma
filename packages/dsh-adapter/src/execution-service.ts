@@ -299,6 +299,62 @@ function directoryIds(workbench: Workbench): readonly string[] {
     .map((participant) => participant.id);
 }
 
+export interface InboxPlace {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+
+export interface InboxCounts {
+  readonly deliver: number;
+  readonly review: number;
+  readonly confirm: number;
+}
+
+/** Project, task, then ancestor node titles. The current node title stays on the row. */
+function inboxPlace(workbench: Workbench, item: InboxItem): InboxPlace {
+  const task = workbench.tasks.find((entry) => entry.id === item.taskId);
+  const project = task
+    ? workbench.projects.find((entry) => entry.id === task.projectId)
+    : undefined;
+  const titles: string[] = [];
+  const projectName = project?.name.trim() ?? '';
+  const taskTitle = task?.title.trim() ?? '';
+  if (projectName !== '') titles.push(projectName);
+  if (taskTitle !== '') titles.push(taskTitle);
+  if (task) {
+    const located = new Map<string, { parentNodeId: string | null; title: string }>();
+    for (const workflow of task.workflows) {
+      for (const node of workflow.nodes) {
+        located.set(node.id, { parentNodeId: workflow.parentNodeId, title: node.title.trim() });
+      }
+    }
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let parentId = located.get(item.nodeId)?.parentNodeId ?? null;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = located.get(parentId);
+      if (!parent) break;
+      if (parent.title !== '') chain.push(parent.title);
+      parentId = parent.parentNodeId;
+    }
+    titles.push(...chain.reverse());
+  }
+  const owner = task?.ownerId
+    ? workbench.participants.find((person) => person.id === task.ownerId)
+    : undefined;
+  return { itemId: item.id, taskPath: titles.join(' / '), ownerName: owner?.name.trim() ?? '' };
+}
+
+function countInbox(items: readonly InboxItem[]): InboxCounts {
+  return {
+    deliver: items.filter((item) => item.kind === 'deliver').length,
+    review: items.filter((item) => item.kind === 'review').length,
+    confirm: items.filter((item) => item.kind === 'confirm').length,
+  };
+}
+
 function planMembership(
   workbench: Workbench,
   taskId: string,
@@ -396,25 +452,45 @@ export class ExecutionService {
     caller: ExecutionCaller,
     body: unknown,
   ): Promise<
-    ExecutionResult<{ actorId: string; items: readonly InboxItem[]; nodes: ExecutionNodeView[] }>
+    ExecutionResult<{
+      actorId: string;
+      items: readonly InboxItem[];
+      nodes: ExecutionNodeView[];
+      places: readonly InboxPlace[];
+    }>
   > {
     return this.enqueue(async () => {
-      const actor = this.actor(caller, body);
-      if (!actor.ok) return actor;
-      const parsed = parseBody(inboxSchema.optional(), body ?? {});
-      if (!parsed.ok) return parsed;
-      if (!this.projectSpaceDirectory()) return fail('not-found');
-      const repaired = await this.repairPendingUnlocks(actor.value.spaceIds);
-      if (repaired) return repaired;
-      const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
-      if (!Array.isArray(records)) return records;
-      const items = executionInbox({ actorId: actor.value.actorId, records });
-      const nodes = records
+      const opened = await this.openInbox(caller, body);
+      if (!opened.ok) return opened;
+      const workbench = this.workbench.readWorkbench();
+      const nodes = opened.records
         .filter((record) =>
-          items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
+          opened.items.some(
+            (item) => item.nodeId === record.nodeId && item.taskId === record.taskId,
+          ),
         )
-        .map((record) => ({ ...toNodeView(record), inputs: upstreamInputsFor(record, records) }));
-      return { ok: true, value: { actorId: actor.value.actorId, items, nodes } };
+        .map((record) => ({
+          ...toNodeView(record),
+          inputs: upstreamInputsFor(record, opened.records),
+        }));
+      return {
+        ok: true,
+        value: {
+          actorId: opened.actorId,
+          items: opened.items,
+          nodes,
+          places: opened.items.map((item) => inboxPlace(workbench, item)),
+        },
+      };
+    });
+  }
+
+  /** Counts for a shortcut. The next read follows the current node status. */
+  inboxCounts(caller: ExecutionCaller, body: unknown): Promise<ExecutionResult<InboxCounts>> {
+    return this.enqueue(async () => {
+      const opened = await this.openInbox(caller, body);
+      if (!opened.ok) return opened;
+      return { ok: true, value: countInbox(opened.items) };
     });
   }
 
@@ -756,6 +832,43 @@ export class ExecutionService {
     if (!task) return 'missing';
     if (decision === 'ok') return { ok: true, value: undefined };
     return fail('not-found');
+  }
+
+  /**
+   * Ask the directory about every workbench task before any node is read.
+   * An illegal answer is unavailable either way, so a missing node is not distinct.
+   */
+  private async directoryGate(
+    spaceIds: readonly string[],
+  ): Promise<{ readonly ok: false; readonly error: ExecutionFailure } | undefined> {
+    const seen = new Set<string>();
+    for (const task of this.workbench.readWorkbench().tasks) {
+      if (seen.has(task.id)) continue;
+      seen.add(task.id);
+      const space = await this.gateSpace(task.id, spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+    }
+    return undefined;
+  }
+
+  private async openInbox(caller: ExecutionCaller, body: unknown) {
+    const actor = this.actor(caller, body);
+    if (!actor.ok) return actor;
+    const parsed = parseBody(inboxSchema.optional(), body ?? {});
+    if (!parsed.ok) return parsed;
+    if (!this.projectSpaceDirectory()) return fail('not-found');
+    const blocked = await this.directoryGate(actor.value.spaceIds);
+    if (blocked) return blocked;
+    const repaired = await this.repairPendingUnlocks(actor.value.spaceIds);
+    if (repaired) return repaired;
+    const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+    if (!Array.isArray(records)) return records;
+    return {
+      ok: true as const,
+      actorId: actor.value.actorId,
+      records,
+      items: executionInbox({ actorId: actor.value.actorId, records }),
+    };
   }
 
   /** Intact nodes this actor can read. A failed lookup stops the scan. */
