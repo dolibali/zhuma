@@ -271,8 +271,12 @@ function reclaimStale(lockPath: string, holder: LockRecord): AcquireResult {
         arrived: 'ZHUMA_LOCK_RELOCK_ARRIVED',
         wait: 'ZHUMA_LOCK_RELOCK_WAIT',
       });
-    } catch {
-      return { token: null };
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST') return { token: null };
+      if (error instanceof Error && !error.message.includes(lockPath)) {
+        error.message = `${error.message} ${lockPath}`;
+      }
+      throw error;
     }
     heldLocks.set(lockPath, lockToken);
     return { token: lockToken };

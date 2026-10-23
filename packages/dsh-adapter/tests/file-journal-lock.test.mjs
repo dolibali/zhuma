@@ -3,10 +3,13 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -760,6 +763,49 @@ test('契约：回收出的新锁在内容发布前不存在，发布后一次�
     assert.equal(outcome.code, 0, outcome.stderr);
   } finally {
     releaseGates(session);
+  }
+});
+
+test('契约：回收新锁遇到权限错误时把路径抛出来', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-relock-eacces-'));
+  const directory = path.join(parent, 'data');
+  mkdirSync(directory);
+  const file = path.join(directory, 'session.json');
+  const report = path.join(parent, 'report');
+  const arrived = path.join(parent, 'relock-arrived');
+  const waitFile = path.join(parent, 'relock-wait');
+  staleLock(file, await deadPid(), 'dead-token');
+  const source = `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { createFileJournal } from ${JSON.stringify(adapter)};
+    ${pauseSource()}
+    let text = '';
+    try {
+      const journal = createFileJournal(${JSON.stringify(file)});
+      text = journal.writable === true ? 'writable' : 'readonly';
+    } catch (error) {
+      text = 'throw:' + (error && error.message ? error.message : String(error));
+    }
+    writeFileSync(${JSON.stringify(report)}, text);
+  `;
+  const child = spawnJournal(source, {
+    ZHUMA_LOCK_RELOCK_ARRIVED: arrived,
+    ZHUMA_LOCK_RELOCK_WAIT: waitFile,
+  });
+  try {
+    await wait(arrived, '子进程没有停在新锁发布前');
+    chmodSync(directory, 0o555);
+    writeFileSync(waitFile, 'go');
+    await wait(report, '子进程没有写下新锁错误');
+    const text = readFileSync(report, 'utf8');
+    assert.match(text, /EACCES/);
+    assert.equal(text.includes(directory), true);
+    const outcome = await child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    chmodSync(directory, 0o755);
+    if (!existsSync(waitFile)) writeFileSync(waitFile, 'go');
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 
