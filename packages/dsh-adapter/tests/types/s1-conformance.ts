@@ -27,6 +27,7 @@ import type {
 } from '../../dist/execution-service.js';
 import type {
   ApplyExecution,
+  ApplySpaceDirectory,
   BallotRequest,
   ChannelInboxValue,
   CreateMemberResolver,
@@ -117,6 +118,9 @@ export type LiveOptionsExcludeMemberResolver = Assert<
 export type StartupKeepsMemberResolver = Assert<
   Both<S1Startup['memberResolver'], CreateMemberResolver>
 >;
+export type StartupKeepsSpaceDirectory = Assert<
+  Both<S1Startup['applySpaceDirectory'], ApplySpaceDirectory>
+>;
 export type InjectBoth = Assert<Both<typeof executionInject, ExecutionInject>>;
 export type EndpointsBoth = Assert<Both<typeof executionEndpoints, ExecutionEndpoints>>;
 export type CallerBoth = Assert<Both<ServiceCaller, ExecutionCaller>>;
@@ -124,7 +128,7 @@ export type MessageExtendsError = Assert<
   Both<ExecutionMessageCode, ExecutionErrorCode & ExecutionMessageCode>
 >;
 type ServiceMethodName =
-  'startPlan' | 'inbox' | 'submit' | 'ballot' | 'settle' | 'report' | 'reconcile';
+  'startPlan' | 'inbox' | 'startable' | 'submit' | 'ballot' | 'settle' | 'report' | 'reconcile';
 export type ServiceMethodsPresent = Assert<
   ServiceMethodName extends keyof ExecutionService ? true : false
 >;
@@ -133,6 +137,9 @@ export type StartMethodBoth = Assert<
 >;
 export type InboxMethodBoth = Assert<
   Both<ExecutionService['inbox'], ExecutionServiceMethods['inbox']>
+>;
+export type StartableMethodBoth = Assert<
+  Both<ExecutionService['startable'], ExecutionServiceMethods['startable']>
 >;
 export type SubmitMethodBoth = Assert<
   Both<ExecutionService['submit'], ExecutionServiceMethods['submit']>
