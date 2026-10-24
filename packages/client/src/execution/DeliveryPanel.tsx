@@ -2,7 +2,46 @@ import { useRef, useState } from 'react';
 import type { ArtifactFileRef } from '@zhuma/agent-core';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
-import type { ExecutionApi, ExecutionNodeWire } from './ExecutionApi.js';
+import type { ExecutionApi, ExecutionNodeWire, UpstreamInputWire } from './ExecutionApi.js';
+
+function UpstreamInputs({ inputs }: { inputs: readonly UpstreamInputWire[] }) {
+  return (
+    <div className="zm-config-group">
+      <strong>上游来源</strong>
+      {!inputs.length && <p className="zm-empty">没有已接受的上游产物。</p>}
+      {inputs.map((item, index) => {
+        if (item.access === 'visible') {
+          return (
+            <article className="zm-review" key={`${item.sourceNodeId}:${index}`}>
+              <p>
+                <span className="zm-kind">来源节点</span> {item.sourceNodeId}
+                {item.sourceGoal ? ` · ${item.sourceGoal}` : ''}
+              </p>
+              <p>
+                <span className="zm-kind">版本</span> {item.version}
+              </p>
+              <p>
+                <span className="zm-kind">产物</span> {item.name}
+              </p>
+            </article>
+          );
+        }
+        if (item.access === 'pending') {
+          return (
+            <p className="zm-empty" key={`${item.sourceNodeId}:${index}`}>
+              {item.message}
+            </p>
+          );
+        }
+        return (
+          <p className="zm-error" key={`hidden:${index}`}>
+            {item.message}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
 
 const emptyFile = {
   id: '',
@@ -32,6 +71,8 @@ export function DeliveryPanel({
   function rotate() {
     key.current = crypto.randomUUID();
   }
+
+  const blocked = (node.inputs ?? []).some((item) => item.blocking);
 
   async function submit() {
     const files: ArtifactFileRef[] = [];
@@ -85,8 +126,11 @@ export function DeliveryPanel({
   return (
     <section className="zm-config-form" aria-labelledby="zhuma-delivery-title">
       <h2 id="zhuma-delivery-title">提交交付</h2>
-      <p>{node.goal}</p>
+      <p>
+        <span className="zm-kind">目标</span> {node.goal || '未填写目标'}
+      </p>
       <small>期望产出：{node.expectedOutput || '未填写'}</small>
+      <UpstreamInputs inputs={node.inputs ?? []} />
       {error && (
         <div role="alert" className="zm-error">
           {error}
@@ -158,7 +202,12 @@ export function DeliveryPanel({
         </label>
       </div>
       <div className="zm-actions">
-        <Button busy={pending} busyLabel="正在提交…" onClick={() => void submit()}>
+        <Button
+          busy={pending}
+          busyLabel="正在提交…"
+          disabled={blocked || pending}
+          onClick={() => void submit()}
+        >
           提交产物
         </Button>
       </div>

@@ -52,7 +52,31 @@ export interface ExecutionNodeWire {
   readonly reviewOutcome?: string;
   readonly blockReason?: string;
   readonly acceptedArtifactVersionId?: string;
+  readonly inputs?: readonly UpstreamInputWire[];
 }
+
+export type UpstreamInputWire =
+  | {
+      readonly access: 'visible';
+      readonly blocking: boolean;
+      readonly sourceNodeId: string;
+      readonly sourceGoal?: string;
+      readonly version: number;
+      readonly name: string;
+    }
+  | {
+      readonly access: 'pending';
+      readonly pending: 'none' | 'replaced';
+      readonly blocking: boolean;
+      readonly sourceNodeId: string;
+      readonly message: string;
+    }
+  | {
+      readonly access: 'hidden';
+      readonly blocking: boolean;
+      readonly count: number;
+      readonly message: string;
+    };
 
 export interface ExecutionInboxValue {
   readonly actorId: string;
@@ -225,6 +249,63 @@ export function readExecutionNode(value: unknown): ExecutionNodeWire {
     ...(typeof record.acceptedArtifactVersionId === 'string'
       ? { acceptedArtifactVersionId: record.acceptedArtifactVersionId }
       : {}),
+    ...(Array.isArray(record.inputs) ? { inputs: record.inputs.map(readUpstreamInput) } : {}),
+  };
+}
+
+function pendingUpstreamMessage(kind: 'none' | 'replaced', sourceNodeId: string): string {
+  return kind === 'none'
+    ? `上游节点 ${sourceNodeId} 尚无已接受版本。`
+    : `上游节点 ${sourceNodeId} 已有新的已接受版本，当前引用的版本已被取代。`;
+}
+
+function hiddenUpstreamMessage(count: number): string {
+  return `有 ${count} 个上游来源你没有权限查看。`;
+}
+
+function readUpstreamInput(value: unknown): UpstreamInputWire {
+  if (value === null || typeof value !== 'object') invalid('返回的上游产物不正确。');
+  const record = value as Record<string, unknown>;
+  const blocking = record.blocking === true;
+  if (record.access === 'hidden') {
+    if (
+      typeof record.count !== 'number' ||
+      !Number.isSafeInteger(record.count) ||
+      record.count < 1
+    ) {
+      invalid('返回的上游产物不正确。');
+    }
+    return {
+      access: 'hidden',
+      blocking,
+      count: record.count,
+      message: hiddenUpstreamMessage(record.count),
+    };
+  }
+  const sourceNodeId = text(record.sourceNodeId, '来源节点');
+  if (record.access === 'pending') {
+    if (record.pending !== 'none' && record.pending !== 'replaced') {
+      invalid('返回的上游产物不正确。');
+    }
+    return {
+      access: 'pending',
+      pending: record.pending,
+      blocking,
+      sourceNodeId,
+      message: pendingUpstreamMessage(record.pending, sourceNodeId),
+    };
+  }
+  if (record.access !== 'visible' || typeof record.version !== 'number') {
+    invalid('返回的上游产物不正确。');
+  }
+  const sourceGoal = typeof record.sourceGoal === 'string' ? record.sourceGoal.trim() : '';
+  return {
+    access: 'visible',
+    blocking,
+    sourceNodeId,
+    ...(sourceGoal === '' ? {} : { sourceGoal }),
+    version: record.version,
+    name: text(record.name, '产物'),
   };
 }
 
