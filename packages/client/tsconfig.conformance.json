@@ -7,7 +7,8 @@
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM", "ESNext.Disposable"],
     "jsx": "react-jsx",
-    "types": ["node"]
+    "types": ["node"],
+    "paths": { "@zhuma/dsh-adapter": ["../dsh-adapter/dist/index.d.ts"] }
   },
   "files": ["tests/types/s1-conformance.ts"],
   "references": [{ "path": "." }, { "path": "../dsh-adapter" }]

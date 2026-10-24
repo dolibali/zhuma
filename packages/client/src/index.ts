@@ -12,6 +12,7 @@ export type {
   ExecutionApi,
   ExecutionInboxValue,
   ExecutionNodeWire,
+  UpstreamInputWire,
   ReviewDraft,
   RevisionQuery,
   RevisionContentWire,
@@ -27,6 +28,7 @@ export {
 export { StartablePlansPanel } from './execution/StartablePlansPanel.js';
 export { StartPlanPanel, type ExecutionPlan } from './execution/StartPlanPanel.js';
 export { DeliveryPanel } from './execution/DeliveryPanel.js';
+export { UpstreamInputsPanel } from './execution/UpstreamInputsPanel.js';
 export { createExecutionHttpApi, type MemberExecutionScope } from './execution/http.js';
 export { MemberExecutionPage } from './execution/MemberExecutionPage.js';
 export { ExecutionWorkspace } from './execution/ExecutionWorkspace.js';

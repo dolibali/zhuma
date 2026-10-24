@@ -4,6 +4,7 @@ import { SelectProbe } from './select-probe.jsx';
 import { StartableProbe } from './startable-probe.jsx';
 import { ExecutionProbe } from './execution-probe.jsx';
 import { RevisionProbe } from './revision-probe.jsx';
+import { UpstreamProbe } from './upstream-probe.jsx';
 import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
 import { MemberLoginProbe } from './member-login-probe.jsx';
 import { MemberSpacesProbe } from './member-spaces-probe.jsx';
@@ -77,6 +78,8 @@ const content = new URL(location.href).searchParams.has('member-account') ? (
   <ExecutionProbe />
 ) : new URL(location.href).searchParams.has('revision-client') ? (
   <RevisionProbe />
+) : new URL(location.href).searchParams.has('upstream-client') ? (
+  <UpstreamProbe />
 ) : new URL(location.href).searchParams.has('member-login') ? (
   <MemberLoginProbe />
 ) : new URL(location.href).searchParams.has('mount-probe') ? (
