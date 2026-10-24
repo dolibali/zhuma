@@ -138,7 +138,12 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
         <ReviewWorkspace api={api} node={node} onSubmitted={submitted} />
       )}
       {selected && node && panels.includes('delivery') && (
-        <DeliveryPanel api={api} node={node} onSubmitted={submitted} />
+        <DeliveryPanel
+          key={`${node.taskId}:${node.planId}:${node.revision}:${node.nodeId}`}
+          api={api}
+          node={node}
+          onSubmitted={submitted}
+        />
       )}
       {selected && node && panels.length === 0 && (
         <p className="zm-empty">这个动作还没有接到交付或评审页面。</p>

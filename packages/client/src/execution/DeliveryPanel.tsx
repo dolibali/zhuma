@@ -68,10 +68,30 @@ export function DeliveryPanel({
   const [error, setError] = useState('');
   const [pending, setPending] = useState<'save' | 'submit' | ''>('');
   const key = useRef(crypto.randomUUID());
+  const alive = useRef(true);
+  const edited = useRef(false);
+  const nodeKey = `${node.taskId}:${node.planId}:${node.revision}:${node.nodeId}`;
+  const liveNode = useRef(nodeKey);
+  liveNode.current = nodeKey;
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
+    const savedFor = nodeKey;
     let active = true;
+    edited.current = false;
+    key.current = crypto.randomUUID();
+    setText('');
+    setLink('');
+    setFile(emptyFile);
+    setDraftVersion(0);
+    setError('');
     void api
       .readDeliveryDraft(
         {
@@ -84,24 +104,33 @@ export function DeliveryPanel({
       )
       .then(
         (draft) => {
-          if (!active) return;
+          if (!active || edited.current || liveNode.current !== savedFor) return;
           setText(draft.text);
           setLink(draft.links[0] ?? '');
           setDraftVersion(draft.version);
           const first = draft.files[0];
-          if (first) {
-            setFile({
-              id: first.id,
-              mediaType: first.mediaType,
-              byteSize: String(first.byteSize),
-              checksum: first.checksum,
-              accessPolicyId: first.accessPolicyId,
-              uploadComplete: first.uploadComplete,
-            });
-          }
+          setFile(
+            first
+              ? {
+                  id: first.id,
+                  mediaType: first.mediaType,
+                  byteSize: String(first.byteSize),
+                  checksum: first.checksum,
+                  accessPolicyId: first.accessPolicyId,
+                  uploadComplete: false,
+                }
+              : emptyFile,
+          );
         },
         (caught: unknown) => {
-          if (!active || controller.signal.aborted) return;
+          if (
+            !active ||
+            controller.signal.aborted ||
+            edited.current ||
+            liveNode.current !== savedFor
+          ) {
+            return;
+          }
           setError(caught instanceof Error ? caught.message : '草稿没有读出来。');
         },
       );
@@ -109,10 +138,15 @@ export function DeliveryPanel({
       active = false;
       controller.abort();
     };
-  }, [api, node.taskId, node.planId, node.revision, node.nodeId]);
+  }, [api, node.taskId, node.planId, node.revision, node.nodeId, nodeKey]);
 
   function rotate() {
+    edited.current = true;
     key.current = crypto.randomUUID();
+  }
+
+  function stillHere(savedFor: string) {
+    return alive.current && liveNode.current === savedFor;
   }
 
   function listedFiles(): ArtifactFileRef[] | undefined {
@@ -147,6 +181,8 @@ export function DeliveryPanel({
     }
     const files = listedFiles();
     if (files === undefined) return;
+    edited.current = true;
+    const savedFor = liveNode.current;
     setPending('submit');
     setError('');
     try {
@@ -161,6 +197,7 @@ export function DeliveryPanel({
         links: link.trim() === '' ? [] : [link.trim()],
         ...(text.trim() === '' ? {} : { text }),
       });
+      if (!stillHere(savedFor)) return;
       rotate();
       setText('');
       setLink('');
@@ -168,15 +205,18 @@ export function DeliveryPanel({
       setDraftVersion(0);
       onSubmitted(next);
     } catch (caught) {
+      if (!stillHere(savedFor)) return;
       setError(caught instanceof Error ? caught.message : '提交没有完成。');
     } finally {
-      setPending('');
+      if (stillHere(savedFor)) setPending('');
     }
   }
 
   async function save() {
     const files = listedFiles();
     if (files === undefined) return;
+    edited.current = true;
+    const savedFor = liveNode.current;
     setPending('save');
     setError('');
     try {
@@ -191,12 +231,14 @@ export function DeliveryPanel({
         links: link.trim() === '' ? [] : [link.trim()],
         ...(text === '' ? {} : { text }),
       });
+      if (!stillHere(savedFor)) return;
       setDraftVersion(saved.version);
       setText(saved.text);
     } catch (caught) {
+      if (!stillHere(savedFor)) return;
       setError(caught instanceof Error ? caught.message : '草稿没有保存。');
     } finally {
-      setPending('');
+      if (stillHere(savedFor)) setPending('');
     }
   }
 
