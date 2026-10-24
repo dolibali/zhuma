@@ -243,6 +243,24 @@ function maySettle(record: ExecutionNodeRecord, actorId: string): boolean {
   return record.handoff.reviewerIds.includes(actorId);
 }
 
+/**
+ * The round was already settled, or the node already reached the outcome of
+ * this round. A later ballot replay must not settle again as the current actor.
+ */
+function settlementLanded(record: ExecutionNodeRecord, roundId: string): boolean {
+  const round = record.rounds.find((item) => item.id === roundId);
+  if (!round || record.currentRoundId !== roundId) return false;
+  const stored = record.command.stored;
+  if (Array.isArray(stored) && stored.some((item) => item.idempotencyKey === `settle:${roundId}`)) {
+    return true;
+  }
+  if (round.status === 'approved' && record.command.status === 'completed') return true;
+  if (round.status === 'changes-requested' && record.command.status === 'needs-revision') {
+    return true;
+  }
+  return false;
+}
+
 function recordedPlan(storage: ExecutionStorage, record: ExecutionNodeRecord): boolean {
   return storage.readPlan(planKey(record.taskId, record.planId, record.revision)) !== undefined;
 }
@@ -554,6 +572,7 @@ export class ExecutionService {
     const space = await this.gateSpace(taskId, actor.value.spaceIds);
     if (space !== 'missing' && !space.ok) return space;
     const membership = planMembership(this.workbench.readWorkbench(), taskId, actor.value.actorId);
+    if (space === 'missing' || membership === 'missing') return fail('plan-not-found');
     if (membership === 'not-participant') return fail('not-participant');
     const fingerprint = canonicalPayload({ taskId, planId, revision });
     const key = planKey(taskId, planId, revision);
@@ -563,6 +582,8 @@ export class ExecutionService {
     if (reused) return fail('idempotency-mismatch');
     const prior = this.storage.readPlan(key);
     if (prior?.fingerprint === fingerprint) {
+      const compensated = await this.unlockCompleted(taskId, planId, revision);
+      if (!compensated.ok) return compensated;
       return {
         ok: true as const,
         value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
@@ -593,12 +614,8 @@ export class ExecutionService {
       const stored = await this.persist(() => this.storage.writeNode(key, record));
       if (!stored.ok) return stored;
     }
-    for (const record of started.records) {
-      const latest = this.storage.readNode(nodeRecordKey(record));
-      if (!latest || latest.command.status !== 'completed') continue;
-      const unlocked = await this.unlockFrom(latest);
-      if (!unlocked.ok) return unlocked;
-    }
+    const compensated = await this.unlockCompleted(taskId, planId, revision);
+    if (!compensated.ok) return compensated;
     const receipt: PlanReceipt = {
       idempotencyKey,
       fingerprint,
@@ -662,7 +679,11 @@ export class ExecutionService {
     let record = executed.result.record;
     if (executed.settle && record.currentRoundId) {
       const round = record.rounds.find((item) => item.id === record.currentRoundId);
-      if (round && (round.status === 'approved' || round.status === 'changes-requested')) {
+      if (
+        round &&
+        (round.status === 'approved' || round.status === 'changes-requested') &&
+        !settlementLanded(record, round.id)
+      ) {
         const settled = settleReview({
           record,
           actorId: actor.value.actorId,
@@ -693,6 +714,29 @@ export class ExecutionService {
         node: toNodeView(record),
       },
     };
+  }
+
+  /** Idempotent unlock for nodes already completed in this plan. Write failures propagate. */
+  private async unlockCompleted(
+    taskId: string,
+    planId: string,
+    revision: number,
+  ): Promise<ExecutionResult<void>> {
+    const completed = this.storage
+      .listNodes()
+      .filter(
+        (record) =>
+          intactNode(record) &&
+          samePlan(record, taskId, planId, revision) &&
+          record.command.status === 'completed',
+      );
+    for (const record of completed) {
+      const latest = this.storage.readNode(nodeRecordKey(record));
+      if (!latest || !intactNode(latest) || latest.command.status !== 'completed') continue;
+      const unlocked = await this.unlockFrom(latest);
+      if (!unlocked.ok) return unlocked;
+    }
+    return { ok: true, value: undefined };
   }
 
   private async unlockFrom(completed: ExecutionNodeRecord): Promise<ExecutionResult<number>> {

@@ -56,24 +56,28 @@ export type ConfigureDeploymentMode = (ctx: object, mode: DeploymentMode) => voi
 export type ReadDeploymentMode = (ctx: object) => DeploymentMode | undefined;
 /** Cordis `inject` for the execution plugin. */
 export type ExecutionInject = readonly ['connection', 'storageDomain'];
-/** A wraps `WorkbenchService.snapshot()` and passes that closure here. */
+/**
+ * Parameters `apply` reads. `readWorkbench` is required.
+ * `projectSpaces` is optional; omission rejects every project.
+ * B delivers the formal catalog on #29. A only injects that directory at the Host.
+ */
 export interface ExecutionApplyOptions {
   readWorkbench(): Workbench;
-  /** Omission rejects every project. The official catalog comes from A's Host/space module. */
   readonly projectSpaces?: ProjectSpaceDirectory;
 }
 export type ApplyExecution = (ctx: Context, options: ExecutionApplyOptions) => Promise<void>;
-/** Host object passed to `applyExecution`. The plugin reads `readWorkbench` and calls `resolveMember`. */
-export interface S1ExecutionOptions {
-  readonly memberResolver: MemberResolver;
-  readWorkbench(): Workbench;
-  /** Omission rejects every project. The official catalog comes from A's Host/space module. */
-  readonly projectSpaces?: ProjectSpaceDirectory;
-}
+/**
+ * Object passed to `applyExecution`. Same fields as `ExecutionApplyOptions`.
+ * `memberResolver` is not a field; each request calls `resolveMember`.
+ */
+export type S1ExecutionOptions = ExecutionApplyOptions;
 export interface ApplyWorkbench {
   (ctx: Context): Promise<void>;
 }
-/** Functions A calls, in this order: mode, identity, resolver, workbench, execution, UI. */
+/**
+ * Functions A calls, in this order: mode, identity, resolver, workbench, execution, UI.
+ * `memberResolver(ctx)` stays available for other callers. `applyExecution` does not take it.
+ */
 export interface S1Startup {
   configureDeploymentMode: ConfigureDeploymentMode;
   applyIdentity: ApplyIdentity;

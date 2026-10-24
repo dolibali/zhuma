@@ -72,8 +72,9 @@ export const inject = ['connection', 'storageDomain'] as const;
 export interface ExecutionPluginConfig {
   readWorkbench(): Workbench;
   /**
-   * Injected by A's Host/space module. Omission rejects every project.
-   * This plugin does not store the mapping or treat a project id as a space id.
+   * Directory A injects at the Host. B delivers the formal catalog on #29.
+   * Omission rejects every project. This plugin does not store the mapping
+   * or treat a project id as a space id.
    */
   readonly projectSpaces?: ProjectSpaceDirectory;
 }
