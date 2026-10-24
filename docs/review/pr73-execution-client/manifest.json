@@ -1,0 +1,176 @@
+{
+  "before": "9a872a4c5b1ec9275f0f6a0da760eac4296ad3d0",
+  "after": "8304f2699121bb5592a19c62c9b5156232a3e493",
+  "fixture": "same browser harness at the reviewed after head; only components/CSS use their corresponding source head",
+  "proof": "Synthetic RPC client preview, no real Host/auth/storage/model/file bytes",
+  "results": [
+    {
+      "file": "before-workspace-light-1440x900.png",
+      "version": "before",
+      "scene": "workspace",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "40a2e6ef8302e6544986e439e73e3d98b4fed83388ebb4be1f821987397ed758",
+      "bytes": 48195
+    },
+    {
+      "file": "before-review-light-1440x900.png",
+      "version": "before",
+      "scene": "review",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "1610a724d57e04f462ba5f636694ffdcde36dcdf0e03c8d36fc3cc2090a3326c",
+      "bytes": 48498
+    },
+    {
+      "file": "before-delivery-light-1440x900.png",
+      "version": "before",
+      "scene": "delivery",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "3a4b1de719b8a353ae09f26c8543e90eb253e516ab76019eb411d0233b4ee9f1",
+      "bytes": 73394
+    },
+    {
+      "file": "before-workspace-dark-1440x900.png",
+      "version": "before",
+      "scene": "workspace",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "12103c878d9aabba9db3ec7a57d76d7b8291390bbe9b9ae3a22664c5b3c9c578",
+      "bytes": 44192
+    },
+    {
+      "file": "before-review-dark-1440x900.png",
+      "version": "before",
+      "scene": "review",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "dd79711291927275867f9ac9cbfc141490908687e79da5f4577b3b626ce8d1c4",
+      "bytes": 42716
+    },
+    {
+      "file": "before-delivery-dark-1440x900.png",
+      "version": "before",
+      "scene": "delivery",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "0471b4dc4d6ce3791ae5cf07abb2f71627c6fa3f11042d22b325c4ea8f0398ea",
+      "bytes": 68624
+    },
+    {
+      "file": "after-workspace-light-1440x900.png",
+      "version": "after",
+      "scene": "workspace",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "31cfd24275f902c80327370f2e39fe70b4da99a2f8318625ec7c02d88f26c4ba",
+      "bytes": 56096
+    },
+    {
+      "file": "after-review-light-1440x900.png",
+      "version": "after",
+      "scene": "review",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "13eb434ef962a37d932c2c5f6536d9d1ef6708541f0877af2a83010070c3ec4f",
+      "bytes": 56227
+    },
+    {
+      "file": "after-delivery-light-1440x900.png",
+      "version": "after",
+      "scene": "delivery",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "d69b43b3aacc64a5a4bb9e46430c62fb46b9d639be4a24050cf6bd5f7030d36a",
+      "bytes": 59340
+    },
+    {
+      "file": "after-workspace-dark-1440x900.png",
+      "version": "after",
+      "scene": "workspace",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "e61a7e469e743db8ddb72b8ab32cf22d11af825b24a7be997f02bd5a551ef0cb",
+      "bytes": 51734
+    },
+    {
+      "file": "after-review-dark-1440x900.png",
+      "version": "after",
+      "scene": "review",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "59afa5697a9a70e8c7e8bd7f8d34be66049785a3a1c0cd3369befefc498fe653",
+      "bytes": 51730
+    },
+    {
+      "file": "after-delivery-dark-1440x900.png",
+      "version": "after",
+      "scene": "delivery",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "errors": [],
+      "sha256": "6349dcf922c994a0a4bb934889fc03cddbb12f1ea340e3c31a9c87ff7ca0ff55",
+      "bytes": 54452
+    }
+  ]
+}
