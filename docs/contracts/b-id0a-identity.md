@@ -196,7 +196,7 @@ interface ExecutionWorkspaceProps {
 
 请求体仍是 `StartPlanRequest`、`InboxRequest`、`SubmitRequest`、`BallotRequest`、`SettleRequest`、`ReportRequest`。没有 `BindOwnerRequest`。通道结果仍是 `{ ok: true, value } | { ok: false, error: { code, message, details } }`。`readWorkbench` 由 A 包住 `WorkbenchService.snapshot()`。界面挂 `ExecutionWorkspace`，它使用 `createExecutionApi(rpc)`。这些类型的字段以本累计 head 的 `packages/dsh-adapter/src/s1-integration.ts` 为准。执行插件已在 `packages/dsh-adapter` 实现。不要用旧的 `b/s1-signatures@5d6eafa` 推断它尚未实现。身份模块 #18 的 head 是 `eb25d30`。#18 已合入 develop（772b59c）。本 head 的身份代码经 `b/m1-align-identity` `20314eb` 带入，与 `eb25d30` 内容等价；另多 `packages/dsh-adapter/tsconfig.identity.json` 与 `packages/dsh-adapter/tests/identity-session.test.mjs` 的小增量。
 
-「不改包的公开 exports」只描述身份模块 #18：该分支不改 `workbench-plugin.ts`、宿主构建和当时的包入口。累计 Draft（PR #47）同样不改 `workbench-plugin.ts`。相对当时的 develop `f90f2d8`，三个包的 `index.ts` 另有新增导出，待 A 确认。`packages/agent-core/src/index.ts`：`ExecutionNodeRecord`、`ExecutionReceipt`、`NodeCommandResult`、`PlanStartResult`、`nodeRecordKey`、`unlockKey`、`completionSource`、`downstreamRecords`、`startAppliedPlan`、`submitDelivery`、`castBallot`、`settleReview`、`unlockDownstream`、`toNodeExecutionReport`、`executionInbox`。`packages/client/src/index.ts`：`DeliveryDraft`、`ExecutionApi`、`ExecutionInboxValue`、`ExecutionNodeWire`、`ReviewDraft`、`createExecutionApi`、`readExecutionNode`、`DeliveryPanel`、`ExecutionWorkspace`、`InboxPanel`、`ReviewWorkspace`。`packages/dsh-adapter/src/index.ts`：`ACTOR_FIELD_DEPTH_LIMIT`、`containsActorField`、`resolveActor`、`scanActorField`、`ActorFieldScan`、`ActorResolution`、`MemberRequest`、`MemberResolution`、`MemberResolver`、`ExecutionService`、`toNodeView`、`ExecutionFailure`、`ExecutionNodeView`、`ExecutionCommandResult`、`ExecutionStorage`、`PlanReceipt`、`applyExecution`、`executionEndpoints`、`executionInject`、`ExecutionPluginConfig`，以及 `export type * from './s1-integration.js'`。下面仍是 #18 的记录：该分支相对当时的 develop 新增 `packages/client/tests/browser/global-setup.mjs`，并在 `playwright.config.mjs` 里加上 `globalSetup` 和 `identity` project，也改了 webServer 的命令和 timeout。这些都是 B 加的或改的。`identity` project 是 B 在 `7668a2c` 加上的。`global-setup.mjs` 和 `globalSetup` 是 B 在 `f0eac0f` 加上的。A 的 `52d0ac0` 只把 global-setup 改成用当前 Node 跑 `tsc`；A 的 `5d356fb` 只改了 webServer 的命令和 timeout。这两个提交不是本 PR 的祖先，也没有进入 develop。B 在 `9767529` 和 `4e6a055` 里重做了同样的改动，之后没有再改这两处，所以现在的内容与 A 的 `52d0ac0`、`5d356fb` 对齐。在 `b/id0a-legacy-gate` `69c7366` 上，A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。本 head 没有接入这段注册。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
+「不改包的公开 exports」只描述身份模块 #18：该分支不改 `workbench-plugin.ts`、宿主构建和当时的包入口。B 在累计 Draft 里自己的提交仍不改 `workbench-plugin.ts`。develop `843661c` 合入的 #23 改了这个文件，在注册五条路由时先调用 `authorizeLegacyOwnerRoutes`。相对当时的 develop `f90f2d8`，三个包的 `index.ts` 另有新增导出，待 A 确认。`packages/agent-core/src/index.ts`：`ExecutionNodeRecord`、`ExecutionReceipt`、`NodeCommandResult`、`PlanStartResult`、`nodeRecordKey`、`unlockKey`、`completionSource`、`downstreamRecords`、`startAppliedPlan`、`submitDelivery`、`castBallot`、`settleReview`、`unlockDownstream`、`toNodeExecutionReport`、`executionInbox`。`packages/client/src/index.ts`：`DeliveryDraft`、`ExecutionApi`、`ExecutionInboxValue`、`ExecutionNodeWire`、`ReviewDraft`、`createExecutionApi`、`readExecutionNode`、`DeliveryPanel`、`ExecutionWorkspace`、`InboxPanel`、`ReviewWorkspace`。`packages/dsh-adapter/src/index.ts`：`ACTOR_FIELD_DEPTH_LIMIT`、`containsActorField`、`resolveActor`、`scanActorField`、`ActorFieldScan`、`ActorResolution`、`MemberRequest`、`MemberResolution`、`MemberResolver`、`ExecutionService`、`toNodeView`、`ExecutionFailure`、`ExecutionNodeView`、`ExecutionCommandResult`、`ExecutionStorage`、`PlanReceipt`、`applyExecution`、`executionEndpoints`、`executionInject`、`ExecutionPluginConfig`，以及 `export type * from './s1-integration.js'`。下面仍是 #18 的记录：该分支相对当时的 develop 新增 `packages/client/tests/browser/global-setup.mjs`，并在 `playwright.config.mjs` 里加上 `globalSetup` 和 `identity` project，也改了 webServer 的命令和 timeout。这些都是 B 加的或改的。`identity` project 是 B 在 `7668a2c` 加上的。`global-setup.mjs` 和 `globalSetup` 是 B 在 `f0eac0f` 加上的。A 的 `52d0ac0` 只把 global-setup 改成用当前 Node 跑 `tsc`；A 的 `5d356fb` 只改了 webServer 的命令和 timeout。这两个提交不是本 PR 的祖先，也没有进入 develop。B 在 `9767529` 和 `4e6a055` 里重做了同样的改动，之后没有再改这两处，所以现在的内容与 A 的 `52d0ac0`、`5d356fb` 对齐。在 `b/id0a-legacy-gate` `69c7366` 上，A 也曾用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。本 head 的可运行注册来自 #23，不是 `69c7366`；该提交仍不是本 head 的祖先。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
 
 ```ts
 import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
@@ -220,16 +220,16 @@ for (const endpoint of LEGACY_OWNER_ROUTES) {
 }
 ```
 
-可运行的那份在 `b/id0a-legacy-gate`。它 import `./member-session.js`，接在本分支之后，并盖住 `e3916fa` 的这五条路由和 `import-package`。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
+上面代码块是 `69c7366` 的记录，正文模式是 `buffered`。本 head 可运行的注册在 `packages/dsh-adapter/src/workbench-plugin.ts`：`requestBody: 'streaming'`，读正文前调用 `authorizeLegacyOwnerRoutes`，拒绝时返回空正文和对应状态码。它来自 #23（develop `843661c`），不是 `69c7366`；该提交仍不是本 head 的祖先。单独 cherry-pick `69c7366` 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
 
 ## 6. A 需要提供的挂载
 
-本切片没有改 `workbench-plugin.ts`，也没有改 `scripts/workbench/build.mjs`。宿主构建的 Host 入口仍只有工作台插件，所以桌面和 Web 包里还没有 `/zhuma-id`。
+本切片（#18）没有改 `workbench-plugin.ts`，也没有改 `scripts/workbench/build.mjs`。develop `843661c` 合入 #23 之后，宿主构建入口是 `packages/dsh-adapter/src/host-plugin.ts`。发行补丁是 `legacy-single-user`，没有 `identityBootstrapKey`，所以默认桌面和 Web 包仍不挂身份，也没有 `/zhuma-id`。`multi-member` 或配置了 `identityBootstrapKey` 时才会调用 `applyIdentity`。
 
 A 在官方 Host 上已经具备 `connection`、`storageDomain`、`credentials`、`webServer` 时，需要：
 
-1. 按上一节的顺序装配：`configureDeploymentMode(ctx, mode)`，再 `applyIdentity`，再 `memberResolver(ctx)`，再 `applyWorkbench`，再 `applyExecution`（不传 `singleUser`，不注册 `bind-owner`），最后挂 UI。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。`LEGACY_OWNER_ROUTES` 和 `import-package` 用上一节的 `authorizeLegacyOwnerRoutes`，并且放在解析正文之前。
-2. 构建入口要能带到 `packages/dsh-adapter/src/identity-session.ts`。现在的 esbuild 入口只有 `workbench-plugin.ts`。
+1. `host-plugin.ts` 已经做了 `configureDeploymentMode`，再 `openWorkbench`（`LEGACY_OWNER_ROUTES` 和 `import-package` 在解析正文之前调用 `authorizeLegacyOwnerRoutes`），`multi-member` 或有 `identityBootstrapKey` 时再挂身份子插件并调用 `applyIdentity`。仍未装进这个入口的是 `applyExecution`（不传 `singleUser`，不注册 `bind-owner`）、`projectSpaces` 和成员界面。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。
+2. 宿主 esbuild 入口已经是 `packages/dsh-adapter/src/host-plugin.ts`，`multi-member` 或 `identityBootstrapKey` 会进到 `packages/dsh-adapter/src/identity-session.ts`。登录页、空间切换和成员入口仍见下一条。
 3. 登录页、空间切换和成员入口仍由 A-SPACE 做。cookie 由 `Set-Cookie` 写入，页面不提交 actor。
 4. 若要把 `registerPolicy` 写成对真实 `RemoteAccessService` 的类型检查，需要在宿主编译里合并 `PrincipalMap` 的 `zhuma-member`。运行时 `createPeer` 不依赖这次合并；本包用了断言，因为 `@deepseek-ai/dsh-typert-protocol` 不是直接依赖。
 
@@ -241,7 +241,7 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 
 剩下的工作是这些块，而不是再换一套身份模型：
 
-- 把 `applyIdentity` 接到宿主构建，并用真实 webServer、credentials 和 RemoteAccessService 跑一遍前缀路由。成员 cookie 的 `Path` 已经是 `/`，执行入口可以收到它。`Secure` 仍是待办，留到 TLS 监听接上之后。
+- `applyIdentity` 已由 develop `843661c` 的 #23 接到 `host-plugin.ts`（`multi-member` 或 `identityBootstrapKey` 才挂）。真实服务上的前缀路由验证在 S1a 证据里，不关闭 FR16。成员 cookie 的 `Path` 已经是 `/`，执行入口可以收到它。`Secure` 仍是待办，留到 TLS 监听接上之后。
 - 空间记录独立出来：每人一个个人空间，两个团队，其中一人同时属于两个团队。种子只在空库写入。
 - 资源授权继续用“owner 或团队成员”，从一条笔记扩到任务和文件元数据。文件字节仍没有带访问控制的 DSH 存储，那是另一项。
 - B-M1 的提交、退回、重提和下游待办改用这里的 `accountId`，不再接受请求体 actor。
@@ -254,4 +254,4 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 2. `decide` 对 owner 一律允许。空间隔离放在路由里、不单放在 `registerPolicy`，是否符合预期？
 3. 无成员 cookie 即未登录。这已按 main `656bb61`（PR #15）实现，不再请 dolibali 决定：缺失、删除、过期、撤销或伪造的成员 cookie 都返回 401，不退回 DSH owner。多人导入不能再靠 `ownerAccountId` 把 owner 映射成 `lin`。宿主显式选定 `legacy-single-user`，并且恰好一个账号、`ownerAccountId` 指向该账号时，隔离的本机单人模式才做这层映射。
 4. 生产路径已经不放默认账号。导入是调用方传入的 `{ id, passwordHash }`，且不覆盖已有账号。宿主是否就用这个导入作为种子入口？
-5. `applyIdentity` 的挂载和构建入口是否由 A 加进 `workbench-plugin.ts`？B 这次没有改那个文件，也没有改 `scripts/workbench/build.mjs`。
+5. `applyIdentity` 没有加进 `workbench-plugin.ts`。develop `843661c` 的 #23 把宿主构建入口改成 `host-plugin.ts`，由它在 `multi-member` 或 `identityBootstrapKey` 时调用 `applyIdentity`。B 的身份切片没有改 `workbench-plugin.ts`，也没有改 `scripts/workbench/build.mjs`。

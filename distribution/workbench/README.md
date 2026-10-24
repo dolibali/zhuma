@@ -20,7 +20,7 @@ pnpm desktop:dev
 - `.build/workbench` 是可再生的 Host/Client 插件产物；安装脚本只修改 `.build/desktop/deepseek-harness` 的 Web Bundle，不修改 `upstream/deepseek-harness`。
 - 浏览器 React 由 DSH 的模块加载器提供，避免加载第二个 React。画布使用 React Flow。
 - HTTP 接入采用 Connection 公开的 exact Fetch routes，路径 `/api/zhuma/{snapshot,command,plan,preview-import,resource-files}`，使用官方 RPC 请求/响应信封。认证、Host/Origin 校验和 owner-only 限制由 Connection 执行。已有 `/api` RPC 拦截器保留给官方网关。
-- S1a 待审组合入口要求显式 `deploymentMode`；发行补丁明确为 `legacy-single-user`。`multi-member` 在流式读体前关闭以上全部旧接口，包括 `command` 的 `import-package`，不因身份依赖失败回落 owner。默认读体限制 8 MiB／10 秒，可显式调整；私有初始化只配置凭据记录地址。详情和待审边界见 [Host 身份接入](../../docs/host-identity-integration.md)，不代表成员业务 UI 或人工交付闭环已完成。
+- S1a 组合入口已随 develop `843661c` 合入，要求显式 `deploymentMode`；发行补丁明确为 `legacy-single-user`。`multi-member` 在流式读体前关闭以上全部旧接口，包括 `command` 的 `import-package`，不因身份依赖失败回落 owner。默认读体限制 8 MiB／10 秒，可显式调整；私有初始化只配置凭据记录地址。详情和剩余边界见 [Host 身份接入](../../docs/host-identity-integration.md)，不代表成员业务 UI 或人工交付闭环已完成。
 - 数据保存在当前 DSH home 的 `zhuma_workbench` storage domain，关闭重开继续读取。真实凭据继续由 DSH 的凭据服务管理，不在工作台目录模型中保存。
 - 已确认计划是不可变快照；任务草稿和执行端状态分开。A/B 接口方案见 [交接提案](../../docs/ab-handoff-proposal.md)。
 - `desktop:package:mac` 已挂接插件构建与组合，但本批没有生成或安装新的 macOS 包；开发环境加载成功不替代安装包验收。

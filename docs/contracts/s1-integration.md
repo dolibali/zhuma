@@ -44,7 +44,7 @@ mount({ api: createExecutionApi(rpc) });
 ## A 要接上的部分
 
 - 账户导入的形状是 `{ accounts: [{ id, passwordHash }], ownerAccountId?, notes? }`。`passwordHash` 是 scrypt 校验值。
-- 先 `configureDeploymentMode`，再 `applyIdentity`，然后 `memberResolver(ctx)`，再把 `{ memberResolver, readWorkbench, projectSpaces }` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。省略 `projectSpaces` 时，执行入口拒绝所有项目。
+- 宿主入口已经做了 `configureDeploymentMode` 和 `openWorkbench`，并在 `multi-member` 或 `identityBootstrapKey` 时调用 `applyIdentity`。仍要接上的是 `memberResolver(ctx)`，再把 `{ memberResolver, readWorkbench, projectSpaces }` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。省略 `projectSpaces` 时，执行入口拒绝所有项目。
 - 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。快捷入口调用 `inboxCounts()`，正文 `{}`，成功值是 `{ deliver, review, confirm }`。增量事件调用 `events({ taskId, planId, revision, nodeId, after, seenEventIds? })`，成功值是 `{ events }`。
 - 导航挂 `ExecutionWorkspace`。它自己挂 `InboxPanel`，并按待办动作打开 `DeliveryPanel` 或 `ReviewWorkspace`。
 - 页面里已经有 `.zhuma > main.zm-page`。
@@ -55,7 +55,7 @@ mount({ api: createExecutionApi(rpc) });
 
 ## 遗留门
 
-本 head 未接入遗留门禁。关闭 `/api/zhuma/*` 的实现在 `b/id0a-legacy-gate` `69c7366`，不是本 head 的祖先，待 A 装配。当前 Host 构建入口只有工作台插件，还没有挂上多人模式。A 提供成员进入工作台的入口。执行通道留在 `/api/zhuma-exec/*`。
+本 head 注册 `/api/zhuma/*` 时，在读取正文之前调用 `authorizeLegacyOwnerRoutes`。接线来自已合入 develop `843661c` 的 #23，不是 `b/id0a-legacy-gate` `69c7366`（该提交仍不是本 head 的祖先）。宿主构建入口是 `host-plugin.ts`。发行补丁是 `legacy-single-user`。`multi-member` 在读正文前关闭这些路由并挂身份子插件；默认桌面不挂多人模式，也没有成员进入工作台的入口。`applyExecution` 和 `projectSpaces` 仍未装进这个入口。执行通道留在 `/api/zhuma-exec/*`。
 
 ## 编译检查
 

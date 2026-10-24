@@ -1,6 +1,6 @@
 # Host 身份组合：S1a
 
-组合基线：已合入身份 PR #18 `eb25d30eae5d7758588c409b5c166808d9bb3068` 的 develop `772b59c41f1812051931348289f576aeadc5ae8f`，保留 PR #46 的 opt-in 客户端准备切片。当前 Host 装配仍由独立 PR #23／#28 复核。本批只组合身份服务、显式部署模式和旧接口门禁；没有接入执行／待办／提交／评审页面。本次已验证源组合 `a4ea4d1983ac6553fefc4ffd73fa3fa3e5758fe1`，282 项检查与六项精确发行文件 SDK 测试见[分层证据](review/s1a-host/README.md)。
+组合基线：已合入身份 PR #18 `eb25d30eae5d7758588c409b5c166808d9bb3068` 的 develop，本说明随 #23 进入 develop `843661c39bf1ac229fcdf011bb4e39cac54bf988`，保留 PR #46 的 opt-in 客户端准备切片。#28 仍跟踪其余 Host 范围。本批只组合身份服务、显式部署模式和旧接口门禁；没有接入执行／待办／提交／评审页面。本次已验证源组合 `a4ea4d1983ac6553fefc4ffd73fa3fa3e5758fe1`，282 项检查与六项精确发行文件 SDK 测试见[分层证据](review/s1a-host/README.md)。
 
 ## 显式模式与服务生命周期
 

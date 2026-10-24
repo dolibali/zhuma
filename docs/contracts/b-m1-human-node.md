@@ -1,6 +1,6 @@
 # B-M1 人工节点执行契约（S1）
 
-切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，组合现有 WP00 导出。`node-status.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts` 没有改。`packages/agent-core/src/review.ts` 相对 develop `772b59c` 是 +14/−2。#18 已合入 develop（772b59c）。`BallotRejectionCode` 增加 `empty-comment`；私有 `commentText` 去掉零宽字符和 U+00AD 后再 trim，用来判断评论和退回意见是不是空的。这处待 A 确认。
+切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，组合现有 WP00 导出。`node-status.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts` 没有改。`packages/agent-core/src/review.ts` 相对 develop `843661c` 仍是 +14/−2。#18 已合入 develop（772b59c）。`BallotRejectionCode` 增加 `empty-comment`；私有 `commentText` 去掉零宽字符和 U+00AD 后再 trim，用来判断评论和退回意见是不是空的。这处待 A 确认。
 
 带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。待办、交付和评审界面在 `packages/client/src/execution/`。`createExecutionApi` 调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
 
@@ -177,7 +177,7 @@ await rpc.call('/api', 'zhuma-exec/inbox', {});
 await rpc.call('/api', 'zhuma-exec/submit', payload);
 ```
 
-本 head 未接入遗留门禁，工作台插件注册 `/api/zhuma/*` 时不调用 `authorizeLegacyOwnerRoutes`。关闭这些路由的实现在 `b/id0a-legacy-gate` `69c7366`，该提交不是本 head 的祖先，待 A 装配。当前 Host 构建入口只有工作台插件 `packages/dsh-adapter/src/workbench-plugin.ts`，还没有挂上多人模式。A 提供成员进入工作台的入口。执行通道留在 `/api/zhuma-exec/*`，因为它已经按 `resolveMember` 认成员。
+本 head 的 `packages/dsh-adapter/src/workbench-plugin.ts` 注册 `/api/zhuma/*` 时，在读取正文之前调用 `authorizeLegacyOwnerRoutes`。这段接线来自已合入 develop `843661c` 的 #23，不是 `b/id0a-legacy-gate` `69c7366`；该提交仍不是本 head 的祖先。宿主构建入口是 `packages/dsh-adapter/src/host-plugin.ts`。发行补丁是 `legacy-single-user`。`multi-member` 在读正文前关闭这些路由，并挂上身份子插件；默认桌面补丁不挂多人模式，也没有成员进入工作台的入口。`applyExecution` 和 `projectSpaces` 仍没有装进这个入口。执行通道留在 `/api/zhuma-exec/*`，因为它已经按 `resolveMember` 认成员。
 
 客户端「需要我处理」由 A 注册。B 的面板从 `@zhuma/client` 的包入口导出；累计 Draft 新增的导出名见身份契约，待 A 确认。A 在自己的 `plugin.tsx` 里挂 `ExecutionWorkspace`。它自己读取待办并打开交付或评审，不要改挂只接受 `items` 的 `InboxPanel`。页面里已经有 `.zhuma > main.zm-page`，这个组件不再包一层 `main`：
 
