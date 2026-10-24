@@ -64,7 +64,8 @@ test('panels render delivery and review without an actor control', () => {
     createElement(DeliveryPanel, { api, node, onSubmitted() {} }),
   );
   assert.match(delivery, /交付说明/);
-  assert.match(delivery, /文件已经上传完成/);
+  assert.match(delivery, /待解析/);
+  assert.equal(delivery.includes('文件已经上传完成'), false);
   assert.equal(delivery.includes('reviewerId'), false);
   const review = renderToStaticMarkup(
     createElement(ReviewWorkspace, { api, node, onSubmitted() {} }),

@@ -135,12 +135,16 @@ export function DeliveryPanel({
         byteSize,
         checksum: file.checksum.trim(),
         accessPolicyId: file.accessPolicyId.trim(),
-        uploadComplete: file.uploadComplete,
+        uploadComplete: false,
       },
     ];
   }
 
   async function submit() {
+    if (file.id.trim() !== '') {
+      setError('文件还不能随这次提交完成。请只提交文字或链接。');
+      return;
+    }
     const files = listedFiles();
     if (files === undefined) return;
     setPending('submit');
@@ -267,14 +271,7 @@ export function DeliveryPanel({
             onChange={(event) => setFile({ ...file, accessPolicyId: event.target.value })}
           />
         </Field>
-        <label className="zm-member">
-          <input
-            type="checkbox"
-            checked={file.uploadComplete}
-            onChange={(event) => setFile({ ...file, uploadComplete: event.target.checked })}
-          />
-          <span>文件已经上传完成</span>
-        </label>
+        <p className="zm-empty">待解析</p>
       </div>
       <div className="zm-actions">
         <Button
