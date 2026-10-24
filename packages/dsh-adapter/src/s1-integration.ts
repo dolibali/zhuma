@@ -164,6 +164,7 @@ export type ExecutionMessageCode =
   | 'not-assigned-reviewer'
   | 'actor-mismatch'
   | 'upload-incomplete'
+  | 'files-not-accepted'
   | 'empty-delivery'
   | 'conflict'
   | 'idempotency-mismatch'

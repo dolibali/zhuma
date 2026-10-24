@@ -163,7 +163,7 @@ async function startChen(service, applied) {
   assert.equal(started.ok, true);
 }
 
-test('one complete file and one incomplete file block the submit', async () => {
+test('file metadata cannot complete a node before trusted upload', async () => {
   const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
   const store = memory();
   const service = serviceFor(store, state);
@@ -173,16 +173,23 @@ test('one complete file and one incomplete file block the submit', async () => {
     text: '有说明',
     files: [file(), file({ id: 'second', uploadComplete: false })],
   });
-  assert.equal(mixed.error.code, 'upload-incomplete');
+  assert.equal(mixed.error.code, 'files-not-accepted');
   assert.equal(store.node('design').command.version, 1);
   assert.equal(store.node('design').receipts.length, 0);
   assert.equal(store.node('design').artifactVersions.length, 0);
-  const fixed = await service.submit(session('chen'), {
-    ...locate(applied, 'design', 1, 'mixed'),
+  const complete = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'complete-files'),
     text: '有说明',
     files: [file(), file({ id: 'second' })],
   });
-  assert.equal(fixed.value.disposition, 'applied');
+  assert.equal(complete.error.code, 'files-not-accepted');
+  assert.equal(store.node('design').command.version, 1);
+  const text = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'text-only'),
+    text: '有说明',
+    files: [],
+  });
+  assert.equal(text.value.disposition, 'applied');
 });
 
 test('the same key and an approve against a send-back stay consistent', async () => {

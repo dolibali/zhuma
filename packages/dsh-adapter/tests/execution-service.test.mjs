@@ -366,7 +366,8 @@ test('authorization, stale delivery, and a failed write leave the node unchanged
       },
     ],
   });
-  assert.equal(incomplete.error.code, 'upload-incomplete');
+  assert.equal(incomplete.error.code, 'files-not-accepted');
+  assert.equal(incomplete.error.message, '文件还不能随这次提交完成。请只提交文字或链接。');
   assert.equal(store.node('design').receipts.length, 0);
   assert.equal(store.node('design').command.version, 1);
 
@@ -416,6 +417,44 @@ test('authorization, stale delivery, and a failed write leave the node unchanged
     ).error.code,
     'actor-from-body',
   );
+});
+
+test('file metadata cannot complete a node before trusted upload', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const file = {
+    id: 'synthetic',
+    mediaType: 'text/plain',
+    byteSize: 4,
+    checksum: 'abc',
+    accessPolicyId: 'task-read',
+    uploadComplete: true,
+  };
+  const refused = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'file-1'),
+    text: '有说明',
+    files: [file],
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error.code, 'files-not-accepted');
+  assert.equal(refused.error.message, '文件还不能随这次提交完成。请只提交文字或链接。');
+  assert.equal(store.node('design').command.version, 1);
+  assert.equal(store.node('design').artifactVersions.length, 0);
+  assert.equal(store.node('design').receipts.length, 0);
+  const missing = await service.submit(session('chen'), {
+    ...locate(applied, 'missing', 1, 'file-missing'),
+    files: [file],
+  });
+  assert.equal(missing.error.code, 'not-found');
+  const textOnly = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'text-1'),
+    text: '只有文字',
+    files: [],
+  });
+  assert.equal(textOnly.ok, true, JSON.stringify(textOnly));
+  assert.equal(textOnly.value.disposition, 'applied');
+  assert.equal(store.node('design').artifactVersions.length, 1);
 });
 
 test('concurrent submits conflict once, and two deciding ballots unlock one downstream', async () => {

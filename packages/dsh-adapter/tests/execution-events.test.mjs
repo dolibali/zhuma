@@ -6,7 +6,6 @@ import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 
 const projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
-const CHECKSUM = 'checksum-9f3e';
 const SECRET_PATH = 'https://files.example/secret-path-9f3e';
 
 function memory() {
@@ -93,17 +92,6 @@ function session(memberId) {
   return { member: { ok: true, memberId, spaceIds: ['project'] } };
 }
 
-function file() {
-  return {
-    id: 'file-1',
-    mediaType: 'text/plain',
-    byteSize: 4,
-    checksum: CHECKSUM,
-    accessPolicyId: 'policy-1',
-    uploadComplete: true,
-  };
-}
-
 test('accepted commands append monotonic events and a cursor can dedupe them', async () => {
   const lin = {
     id: 'lin',
@@ -138,7 +126,6 @@ test('accepted commands append monotonic events and a cursor can dedupe them', a
     expectedVersion: store.node('design').command.version,
     idempotencyKey: 'deliver-design',
     text: '接口说明',
-    files: [file()],
     links: [SECRET_PATH],
   };
   const submitted = await service.submit(session('chen'), submitBody);
@@ -179,9 +166,7 @@ test('accepted commands append monotonic events and a cursor can dedupe them', a
     [1, 2, 3],
   );
   const stored = JSON.stringify(store.node('design').events);
-  assert.equal(stored.includes(CHECKSUM), false);
   assert.equal(stored.includes(SECRET_PATH), false);
-  assert.equal(JSON.stringify(designEvents.value).includes(CHECKSUM), false);
   assert.equal(JSON.stringify(designEvents.value).includes(SECRET_PATH), false);
   const page = await pull('design', 1);
   assert.deepEqual(
@@ -335,7 +320,6 @@ test('one command is stored once, the unlock names the owner, and seen ids stop 
     expectedVersion: inner.node('design').command.version,
     idempotencyKey: 'deliver-design',
     text: '接口说明',
-    files: [file()],
     links: [SECRET_PATH],
   });
   assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
