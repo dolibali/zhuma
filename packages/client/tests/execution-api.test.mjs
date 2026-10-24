@@ -153,7 +153,8 @@ test('a very deep file list is a validation error and is not sent', async () => 
 test('transport failures become typed execution errors', async () => {
   const cases = [
     ['401', 'unauthenticated', '请先登录。'],
-    ['413', 'body-too-large', '这次请求太大，没有读取。'],
+    ['403', 'untrusted-request', '这次请求不可信。'],
+    ['413', 'body-too-large', '请求过大，请减少内容。'],
     ['408', 'body-timeout', '请求没有在时间内传完，请再试一次。'],
   ];
   for (const [status, code, message] of cases) {

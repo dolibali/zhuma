@@ -465,7 +465,8 @@ function transportFailure(error: unknown): WorkbenchError | undefined {
   if (!(error instanceof Error)) return undefined;
   const status = TRANSPORT_FAILURE.exec(error.message)?.[1];
   if (status === '401') return new WorkbenchError('unauthenticated', '请先登录。');
-  if (status === '413') return new WorkbenchError('body-too-large', '这次请求太大，没有读取。');
+  if (status === '403') return new WorkbenchError('untrusted-request', '这次请求不可信。');
+  if (status === '413') return new WorkbenchError('body-too-large', '请求过大，请减少内容。');
   if (status === '408')
     return new WorkbenchError('body-timeout', '请求没有在时间内传完，请再试一次。');
   return undefined;
