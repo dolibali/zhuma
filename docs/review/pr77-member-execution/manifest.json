@@ -1,0 +1,119 @@
+{
+  "head": "5688bf91a21c5d98858068f90d98932c9d355b67",
+  "baseline": "develop ad8 has no equivalent member-protected execution navigation; this is a new feature",
+  "source": "Actual MemberExecutionPage and current public components; frozen77 browser bundle with synthetic HTTP identity/execution responses; not installed desktop navigation or real Host/session integration",
+  "rows": [
+    {
+      "file": "new-login-light-1440x900.png",
+      "scene": "login",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "f40dd71c4b5d4c684f119c10e622602b510bc834ff73ff5a05508d61702a1f84",
+      "bytes": 15138
+    },
+    {
+      "file": "new-inbox-light-1440x900.png",
+      "scene": "inbox",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "c8c13d02283bd2f1ce326933e9be713d3c726ee9e68646918bb1df7d25585edb",
+      "bytes": 27234
+    },
+    {
+      "file": "new-delivery-light-1440x900.png",
+      "scene": "delivery",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "cb5ec83c7facaac446adc0fc0fe0e86701649efc355b868384ccd1b34c7ba3d9",
+      "bytes": 54778
+    },
+    {
+      "file": "new-expired-light-1440x900.png",
+      "scene": "expired",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "3f87bd8ec4deff58bc3364e0f660adafe2b9396320fc9a89cf0b99f2e3185ff4",
+      "bytes": 18543
+    },
+    {
+      "file": "new-login-dark-1440x900.png",
+      "scene": "login",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "10bc688f8827840866fdbc68de6978b52185d133193a6237b11b5c483ceb4b67",
+      "bytes": 14927
+    },
+    {
+      "file": "new-inbox-dark-1440x900.png",
+      "scene": "inbox",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "1714b93586382ddb8c950df7076771d16ecc315cb40507b28cf5eedb8c0bade5",
+      "bytes": 26019
+    },
+    {
+      "file": "new-delivery-dark-1440x900.png",
+      "scene": "delivery",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "67b849c11578b3f85eb581725fd75f623a00df1a801910675eadfb6f531d36c5",
+      "bytes": 53014
+    },
+    {
+      "file": "new-expired-dark-1440x900.png",
+      "scene": "expired",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "errors": [],
+      "legacyRequests": 0,
+      "executedCommands": 0,
+      "sha256": "1020edc5dff22a0b020bca0650c66f6810bb4bc93b913f081ad0d99f74d51524",
+      "bytes": 18417
+    }
+  ]
+}
