@@ -134,14 +134,22 @@ export interface StartPlanRequest {
   planId: string;
   revision: number;
   idempotencyKey: string;
+  /** Chosen space constraint; re-checked against the plan's owning space before replay. */
+  spaceId?: string | undefined;
 }
-export type InboxRequest = Record<string, never>;
+export interface InboxRequest {
+  /** Chosen space constraint; a filter the member must currently hold, never a grant. */
+  readonly spaceId?: string | undefined;
+}
 /** Read-only discovery of confirmed plans the member may explicitly start. */
-export type StartableRequest = Record<string, never>;
+export interface StartableRequest {
+  readonly spaceId?: string | undefined;
+}
 export interface ReportRequest {
   taskId: string;
   planId: string;
   revision: number;
+  readonly spaceId?: string | undefined;
 }
 export interface RevisionRequest {
   taskId: string;
@@ -260,6 +268,8 @@ export interface StartPlanValue {
 }
 export interface ChannelInboxValue {
   readonly actorId: string;
+  /** Echoes the requested scope so the caller can verify the answer matches. */
+  readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
 }
@@ -272,6 +282,7 @@ export interface StartablePlan {
 }
 export interface ChannelStartableValue {
   readonly actorId: string;
+  readonly spaceId?: string | undefined;
   readonly plans: readonly StartablePlan[];
 }
 export interface ExecutionCommandValue {
@@ -415,14 +426,15 @@ export interface ReviewDraft {
 }
 /**
  * Wire value of the `startable` route. The Client-side `ExecutionApi` method
- * is added by A on #32 when the entry consumes it; this layer declares the
- * route shape only.
+ * consumes this authoritative projection on #32; the declaration does not
+ * move discovery or authorization into the Client.
  */
 export interface ExecutionStartableValue {
   readonly actorId: string;
   readonly plans: readonly StartablePlan[];
 }
 export interface ExecutionApi {
+  startable(signal?: AbortSignal): Promise<ExecutionStartableValue>;
   startPlan(draft: StartPlanRequest, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
@@ -433,6 +445,7 @@ export interface ExecutionApi {
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
   api: ExecutionApi;
+  refreshKey?: number;
   plan?: Omit<StartPlanRequest, 'idempotencyKey'> & { readonly title: string };
 }
 export interface InboxPanelProps {

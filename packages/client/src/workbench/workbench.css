@@ -3526,3 +3526,23 @@ html[data-platform='darwin'] .zm-shell-chrome {
   outline-offset: 3px;
   border-radius: 2px;
 }
+.zm-execution-catalog {
+  min-width: 0;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--zm-line);
+}
+.zm-execution-catalog .zm-page-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.zm-execution-plan-picker {
+  max-width: 640px;
+  margin-bottom: 16px;
+}
+.zm-execution-plan-picker .zm-single-select {
+  width: 100%;
+}
+.zm-execution-notice {
+  color: var(--zm-success);
+}
