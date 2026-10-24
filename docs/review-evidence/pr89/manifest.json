@@ -1,0 +1,242 @@
+{
+  "before": "b9796a25d768e3111dd98f38b2b2289325d6f08b",
+  "after": "a85268e14b15eb27555735be526c4c0b6929bdea",
+  "capturedFrom": "e4ca3b979897b3bf3d62fba78a0d674fdcea69af",
+  "sameProductProof": "Ordinary base sync contains only inherited service regression tests/docs; follow-up fixes only browser test locator scope. All Client product/CSS/harness/fixture and runtime dependency source blobs remain unchanged.",
+  "clientSha256": "8dc180d1398d412c64e00c51c2b1e8d0279842046db54b87ee61c593bbde8d71",
+  "hostSha256": "0bd37ce0681fd703a5adf75fabce3620dcddb8defcd409ffc1c066821d2746b8",
+  "source": "Actual pinned ExecutionWorkspace and dependencies/CSS. Same fictional members/nodes/upstream projections and local HTTP response replay. Driver-only headers select the identical scenario on both versions.",
+  "boundary": "Not real identity/authorization/execution service, disk, file bytes, Native, models or full multi-user acceptance. 1440x900 viewport, full-page PNG heights vary. Blocking and missing inputs are new states without equivalent baseline UI.",
+  "rows": [
+    {
+      "file": "before-submit-normal-light-1440x900.png",
+      "version": "before",
+      "mode": "submit",
+      "state": "normal",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 59260,
+      "sha256": "7dd3800af0905e429322d4d05a0317f189fcdaaf883247697447575310f091dd",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-submit-normal-light-1440x900.png",
+      "version": "after",
+      "mode": "submit",
+      "state": "normal",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 83991,
+      "sha256": "63f30903129b0c21e8bedd2cfb8e2afdc78fe40fad08c05b7a54972581df0a57",
+      "imageSize": [
+        1440,
+        1034
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "before-revise-normal-light-1440x900.png",
+      "version": "before",
+      "mode": "revise",
+      "state": "normal",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 127968,
+      "sha256": "b6bafa7251cb0a3a37ca4d3fbc4374bbdf96f1636f5a7777de3da3753a7db186",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-revise-normal-light-1440x900.png",
+      "version": "after",
+      "mode": "revise",
+      "state": "normal",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 153540,
+      "sha256": "e8c67ec5b5307df36f579af163de5b5027b2c1698a3aea1b17aad82b97dba2b7",
+      "imageSize": [
+        1440,
+        1511
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-submit-blocked-light-1440x900.png",
+      "version": "after",
+      "mode": "submit",
+      "state": "blocked",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 96372,
+      "sha256": "396b893b51827e8bbf07bc80eca50302becb2b1e6ccdb70e65d17783d4af4c6a",
+      "imageSize": [
+        1440,
+        1133
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-submit-missing-light-1440x900.png",
+      "version": "after",
+      "mode": "submit",
+      "state": "missing",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 65514,
+      "sha256": "40e828679b526d16ff68470617f5ce86db8017536c0e6fc5868d1e13a87f59aa",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "before-submit-normal-dark-1440x900.png",
+      "version": "before",
+      "mode": "submit",
+      "state": "normal",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 57181,
+      "sha256": "926a20b59655abfcdf6292b9b62564ce715b864b19214e4bea3f8172ba481e2f",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-submit-normal-dark-1440x900.png",
+      "version": "after",
+      "mode": "submit",
+      "state": "normal",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 81557,
+      "sha256": "4381923b5d843bed3a05f4eca40fa8aa20d8ae4fb4cbce4fe7f8009b78539910",
+      "imageSize": [
+        1440,
+        1034
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "before-revise-normal-dark-1440x900.png",
+      "version": "before",
+      "mode": "revise",
+      "state": "normal",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 122823,
+      "sha256": "53566d90977133ea5379e527fe3555baa14a75439568e8dafa4d89b2a2705453",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-revise-normal-dark-1440x900.png",
+      "version": "after",
+      "mode": "revise",
+      "state": "normal",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 147860,
+      "sha256": "cf0044ed65fce6fef629089743eb679096c1d3b2fb9dbd826864a5a4c615c748",
+      "imageSize": [
+        1440,
+        1511
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-submit-blocked-dark-1440x900.png",
+      "version": "after",
+      "mode": "submit",
+      "state": "blocked",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 93442,
+      "sha256": "502bff84b71250bde31ef6aedb4e879bb27bfc926ca658e991a91770c5154f70",
+      "imageSize": [
+        1440,
+        1133
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-submit-missing-dark-1440x900.png",
+      "version": "after",
+      "mode": "submit",
+      "state": "missing",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 63568,
+      "sha256": "6f4189689de16d5a4630a6bb94591ae7d6e1144ef1121ae7a6c455af87bd180d",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    }
+  ],
+  "writes": 0,
+  "errors": []
+}
