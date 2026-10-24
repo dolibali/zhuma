@@ -1,7 +1,11 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import type { ExecutionApi, ExecutionNodeWire } from './ExecutionApi.js';
+
+function reviewItemKey(node: ExecutionNodeWire, roundId: string) {
+  return `${node.taskId}:${node.planId}:${node.revision}:${node.nodeId}:${roundId}`;
+}
 
 export function ReviewWorkspace({
   api,
@@ -15,10 +19,35 @@ export function ReviewWorkspace({
   const round = node.rounds.find((item) => item.id === node.currentRoundId);
   const artifact =
     node.artifacts.find((item) => item.id === round?.artifactVersionId) ?? node.artifacts.at(-1);
+  const itemKey = reviewItemKey(node, round?.id ?? '');
   const [comment, setComment] = useState('');
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const key = useRef(crypto.randomUUID());
+  const alive = useRef(true);
+  const liveItem = useRef(itemKey);
+  const seenItem = useRef(itemKey);
+  liveItem.current = itemKey;
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (seenItem.current === itemKey) return;
+    seenItem.current = itemKey;
+    key.current = crypto.randomUUID();
+    setComment('');
+    setError('');
+    setPending(false);
+  }, [itemKey]);
+
+  function stillHere(savedFor: string) {
+    return alive.current && liveItem.current === savedFor;
+  }
 
   async function vote(action: 'approve' | 'request-changes' | 'comment') {
     if (!round || !artifact) {
@@ -33,28 +62,40 @@ export function ReviewWorkspace({
       setError('请写明需要修改的地方。');
       return;
     }
+    const savedFor = liveItem.current;
+    const note = comment.trim();
+    const idempotencyKey = key.current;
+    const taskId = node.taskId;
+    const planId = node.planId;
+    const revision = node.revision;
+    const nodeId = node.nodeId;
+    const version = node.version;
+    const roundId = round.id;
+    const artifactVersionId = artifact.id;
     setPending(true);
     setError('');
     try {
       const next = await api.ballot({
-        taskId: node.taskId,
-        planId: node.planId,
-        revision: node.revision,
-        nodeId: node.nodeId,
-        expectedVersion: node.version,
-        idempotencyKey: key.current,
-        roundId: round.id,
-        artifactVersionId: artifact.id,
+        taskId,
+        planId,
+        revision,
+        nodeId,
+        expectedVersion: version,
+        idempotencyKey,
+        roundId,
+        artifactVersionId,
         action,
-        ...(comment.trim() === '' ? {} : { comment }),
+        ...(note === '' ? {} : { comment: note }),
       });
+      if (!stillHere(savedFor)) return;
       key.current = crypto.randomUUID();
       setComment('');
       onSubmitted(next);
     } catch (caught) {
+      if (!stillHere(savedFor)) return;
       setError(caught instanceof Error ? caught.message : '评审没有提交。');
     } finally {
-      setPending(false);
+      if (stillHere(savedFor)) setPending(false);
     }
   }
 
