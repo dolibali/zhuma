@@ -1,10 +1,15 @@
 import { applyIdentity } from '../../dist/identity-session.js';
-import { identityAccessMode, memberResolver, resolveMember } from '../../dist/member-session.js';
+import {
+  configureDeploymentMode,
+  deploymentMode,
+  identityAccessMode,
+  memberResolver,
+  resolveMember,
+} from '../../dist/member-session.js';
 import type {
   ApplyIdentity,
   ConfigureDeploymentMode,
   CreateMemberResolver,
-  DeploymentMode,
   IdentityAccessModeFn,
   ReadDeploymentMode,
   ResolveMember,
@@ -18,16 +23,15 @@ type Assert<T extends true> = T;
 export const resolveMemberMatches = resolveMember satisfies ResolveMember;
 export const memberResolverMatches = memberResolver satisfies CreateMemberResolver;
 export const accessModeMatches = identityAccessMode satisfies IdentityAccessModeFn;
+export const configureModeMatches = configureDeploymentMode satisfies ConfigureDeploymentMode;
+export const readModeMatches = deploymentMode satisfies ReadDeploymentMode;
 export const applyIdentityMatches = applyIdentity satisfies ApplyIdentity;
 
 export type ResolveMemberBoth = Assert<Both<typeof resolveMember, ResolveMember>>;
 export type MemberResolverBoth = Assert<Both<typeof memberResolver, CreateMemberResolver>>;
 export type AccessModeBoth = Assert<Both<typeof identityAccessMode, IdentityAccessModeFn>>;
-export type ApplyIdentityBoth = Assert<Both<typeof applyIdentity, ApplyIdentity>>;
-
-type DeclaredConfigureDeploymentMode = (ctx: object, mode: DeploymentMode) => void;
-type DeclaredReadDeploymentMode = (ctx: object) => DeploymentMode | undefined;
 export type ConfigureDeploymentModeBoth = Assert<
-  Both<ConfigureDeploymentMode, DeclaredConfigureDeploymentMode>
+  Both<typeof configureDeploymentMode, ConfigureDeploymentMode>
 >;
-export type ReadDeploymentModeBoth = Assert<Both<ReadDeploymentMode, DeclaredReadDeploymentMode>>;
+export type ReadDeploymentModeBoth = Assert<Both<typeof deploymentMode, ReadDeploymentMode>>;
+export type ApplyIdentityBoth = Assert<Both<typeof applyIdentity, ApplyIdentity>>;
