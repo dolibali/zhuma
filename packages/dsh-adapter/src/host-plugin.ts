@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { z } from 'zod';
+import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
 import { parseCredentialKey } from '@deepseek-ai/dsh-credentials';
 import { applyIdentity, identityInject, type IdentityImport } from './identity-session.js';
 import { configureDeploymentMode } from './member-session.js';
@@ -91,6 +92,14 @@ export const spaceDirectoryPlugin = {
 export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   const config = Config.parse(rawConfig);
   configureDeploymentMode(ctx, config.deploymentMode);
+  // Public boot presentation only. Authorization continues to use the Host's own configuration.
+  ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
+    table.push({
+      kind: 'global',
+      name: '__ZHUMA_WORKBENCH_BOOT__',
+      value: { version: 1, deploymentMode: config.deploymentMode },
+    });
+  });
   // Registers fail-closed streaming gates before the first asynchronous domain open.
   // The same clone-producing closure is shared with execution; no second workbench domain.
   const workbench = await openWorkbench(ctx, config);

@@ -9,15 +9,52 @@ import type { AppearanceStore } from './Appearance.js';
 import { createWorkbenchApi } from './api.js';
 import { WorkbenchPage } from './WorkbenchPage.js';
 import { MemberExecutionPage } from '../execution/MemberExecutionPage.js';
+import { createIdentityApi } from '../identity/api.js';
+import { createMemberShell } from '../identity/shell.js';
+import { SidebarAccountFooter } from '../identity/SidebarAccountFooter.js';
+import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 
 export const inject = ['slots', 'layout', 'connection', 'theme'];
+function deploymentMode(): 'legacy-single-user' | 'multi-member' {
+  const boot = (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: unknown }).__ZHUMA_WORKBENCH_BOOT__;
+  // Compatibility with existing legacy deployments which predate this presentation DTO.
+  if (boot === undefined) return 'legacy-single-user';
+  if (
+    typeof boot === 'object' &&
+    boot !== null &&
+    !Array.isArray(boot) &&
+    Object.keys(boot).length === 2 &&
+    'version' in boot &&
+    boot.version === 1 &&
+    'deploymentMode' in boot &&
+    (boot.deploymentMode === 'legacy-single-user' || boot.deploymentMode === 'multi-member')
+  )
+    return boot.deploymentMode;
+  throw new Error('Invalid workbench boot configuration');
+}
 export function apply(ctx: Context): void {
+  const mode = deploymentMode();
   const connection = ctx.get(
     'connection',
   ) as import('@deepseek-ai/dsh-client-connection/client').ConnectionHandle;
   const api = createWorkbenchApi(connection.rpc);
+  const memberShell = createMemberShell(createIdentityApi());
+  const executionPanel = 'zhuma-my-work' as MainPanelId;
+  ctx.effect(() => {
+    const syncPage = () =>
+      memberShell.setPageActive(
+        ctx.layout.panelInfo.getSnapshot().activePanelId === executionPanel,
+      );
+    syncPage();
+    const unsubscribe = ctx.layout.panelInfo.subscribe(syncPage);
+    memberShell.start();
+    return () => {
+      unsubscribe();
+      memberShell.stop();
+    };
+  });
   const appearance: AppearanceStore = {
     getSnapshot: () => ctx.theme.getTheme().preference,
     subscribe: (listener) => ctx.on('theme/change', listener),
@@ -29,7 +66,7 @@ export function apply(ctx: Context): void {
     document.head.append(style);
     return () => style.remove();
   });
-  for (const panel of [
+  const legacyPanels = [
     {
       id: 'zhuma-workbench',
       label: '团队工作台',
@@ -38,7 +75,8 @@ export function apply(ctx: Context): void {
       order: -100,
     },
     { id: 'zhuma-experts', label: '专家', section: 'assets', expertLibrary: true, order: -90 },
-  ] as const) {
+  ] as const;
+  for (const panel of mode === 'legacy-single-user' ? legacyPanels : []) {
     const panelId = panel.id as MainPanelId;
     ctx.slots.inject('main', () => {
       const dispose = ctx.slots.register(
@@ -99,17 +137,22 @@ export function apply(ctx: Context): void {
       ),
     );
   }
-  const executionPanel = 'zhuma-my-work' as MainPanelId;
   ctx.slots.inject('main', () => {
     const dispose = ctx.slots.register(
       { name: 'main', key: executionPanel, inject: () => ({}) },
       () => (
         <div className="zm-shell-panel">
           <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
-          <MemberExecutionPage />
+          <MemberExecutionPage shell={memberShell} />
         </div>
       ),
     );
+    const active = ctx.layout.panelInfo.getSnapshot().activePanelId;
+    if (
+      mode === 'multi-member' &&
+      (active === null || legacyPanels.some(({ id }) => id === active))
+    )
+      ctx.layout.selectPanel(executionPanel);
     return () => {
       if (ctx.layout.panelInfo.getSnapshot().activePanelId === executionPanel)
         ctx.layout.selectPanel(null);
@@ -131,6 +174,25 @@ export function apply(ctx: Context): void {
         >
           <path d="M9 5h11M9 12h11M9 19h11M3 5l1 1 2-2M3 12l1 1 2-2M3 19l1 1 2-2" />
         </svg>
+      ),
+    ),
+  );
+  ctx.slots.inject('sidebar.footer.action', () =>
+    ctx.slots.register(
+      {
+        name: 'sidebar.footer.action',
+        id: 'zhuma-account',
+        order: -100,
+        inject: () => ({
+          shell: memberShell,
+          openWork: () => {
+            if (ctx.layout.panelInfo.getSnapshot().activePanelId !== executionPanel)
+              ctx.layout.selectPanel(executionPanel);
+          },
+        }),
+      },
+      (props: SidebarFooterActionOwnerProps & { shell: typeof memberShell; openWork(): void }) => (
+        <SidebarAccountFooter {...props} />
       ),
     ),
   );

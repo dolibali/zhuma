@@ -7,6 +7,7 @@ const session = {
   accountId: 'member-a',
   principal: { kind: 'zhuma-member', memberId: 'member-a' },
   peerId: 'peer-a',
+  spaces: [],
 };
 
 test('identity HTTP contract: same-origin exact routes, explicit credential fields and no owner RPC', async () => {
@@ -29,6 +30,7 @@ test('identity HTTP contract: same-origin exact routes, explicit credential fiel
     accountId: 'member-a',
     principal: session.principal,
     peerId: 'peer-a',
+    spaces: [],
   });
   await api.logout();
   assert.deepEqual(
@@ -74,6 +76,35 @@ test('identity HTTP contract: success needs a member principal matching the acco
   );
   const invalidJson = createIdentityApi(async () => new Response('not-json'));
   await assert.rejects(invalidJson.session(), { code: 'invalid-response' });
+});
+
+test('identity HTTP contract: authoritative spaces are required, unique, narrowed and immutable; empty is valid', async () => {
+  const space = { id: 'space-1', kind: 'team', name: 'Design', privateExtra: 'not-exposed' };
+  const result = await createIdentityApi(async () =>
+    Response.json({ ...session, spaces: [space] }),
+  ).session();
+  assert.deepEqual(result.spaces, [{ id: 'space-1', kind: 'team', name: 'Design' }]);
+  assert.ok(Object.isFrozen(result.spaces));
+  assert.ok(Object.isFrozen(result.spaces[0]));
+  for (const spaces of [
+    undefined,
+    null,
+    {},
+    [null],
+    [{ ...space, kind: 'project' }],
+    [{ ...space, id: '' }],
+    [{ ...space, name: '' }],
+    [space, space],
+  ]) {
+    await assert.rejects(
+      createIdentityApi(async () => Response.json({ ...session, spaces })).session(),
+      { code: 'invalid-response' },
+    );
+  }
+  assert.deepEqual(
+    (await createIdentityApi(async () => Response.json(session)).session()).spaces,
+    [],
+  );
 });
 
 test('identity HTTP contract: fixed recoverable errors never echo response details', async () => {

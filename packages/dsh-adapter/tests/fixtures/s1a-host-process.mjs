@@ -147,6 +147,14 @@ async function waitIdentityState(expected) {
 }
 
 async function act(action) {
+  if (action === 'clientBoot')
+    return ctx.webServer
+      .collectIndexInjections()
+      .filter((row) => row.kind === 'global' && row.name === '__ZHUMA_WORKBENCH_BOOT__');
+  if (action === 'unmountWorkbench') {
+    await host.dispose();
+    return {};
+  }
   if (action === 'revokeTestMemberships' || action === 'grantTestMemberships') {
     const directory = hostPlugin.spaceDirectoryFor(ctx);
     for (const spaceId of ['personal-a', 'space-collaboration']) {
