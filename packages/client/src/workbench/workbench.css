@@ -3510,3 +3510,19 @@ html[data-platform='darwin'] .zm-shell-chrome {
   border-left: 2px solid var(--zm-line);
   padding-left: 12px;
 }
+.zm-execution-artifact a,
+.zm-execution-artifact a:visited {
+  color: var(--zm-action);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+.zm-execution-artifact a:hover,
+.zm-execution-artifact a:focus-visible {
+  color: var(--zm-accent-hover);
+  text-decoration-thickness: 2px;
+}
+.zm-execution-artifact a:focus-visible {
+  outline: 2px solid var(--zm-focus);
+  outline-offset: 3px;
+  border-radius: 2px;
+}

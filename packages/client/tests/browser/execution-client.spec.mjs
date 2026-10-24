@@ -188,3 +188,66 @@ test('changing the API session resets input and fences the previous session rece
   await expect(button(page, '通过')).toBeDisabled();
   expect(await probe(page, () => window.executionProbe.events.length)).toBe(0);
 });
+
+function contrastRatio(foreground, background) {
+  function luminance(color) {
+    const rgb = color.match(/^rgba?\(([^)]+)\)$/);
+    expect(rgb, `Expected an opaque computed RGB color, got ${color}`).not.toBeNull();
+    const channels = rgb[1]
+      .split(',')
+      .slice(0, 3)
+      .map((value) => Number(value.trim()) / 255);
+    const linear = channels.map((channel) =>
+      channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+    );
+    return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  }
+  const first = luminance(foreground);
+  const second = luminance(background);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+test('artifact links have readable theme colors, underlines and a keyboard focus ring', async ({
+  page,
+}) => {
+  await setup(page, 'review');
+  const link = page.getByRole('link', { name: 'https://example.com/design', exact: true });
+  const styles = () =>
+    link.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        color: style.color,
+        background: getComputedStyle(element.closest('.zm-execution-artifact')).backgroundColor,
+        decoration: style.textDecorationLine,
+        thickness: style.textDecorationThickness,
+        outline: style.outlineStyle,
+        outlineColor: style.outlineColor,
+        outlineWidth: style.outlineWidth,
+        outlineOffset: style.outlineOffset,
+      };
+    });
+  for (const state of ['normal', 'hover', 'keyboard']) {
+    if (state === 'hover') await link.hover();
+    if (state === 'keyboard') {
+      await page.mouse.move(0, 0);
+      await link.focus();
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Shift+Tab');
+      await expect(link).toBeFocused();
+    }
+    const style = await styles();
+    expect(
+      contrastRatio(style.color, style.background),
+      `${state} link text contrast`,
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(style.decoration).toContain('underline');
+    if (state === 'keyboard') {
+      expect(style.outline).not.toBe('none');
+      expect(Number.parseFloat(style.outlineWidth)).toBeGreaterThanOrEqual(2);
+      expect(Number.parseFloat(style.outlineOffset)).toBeGreaterThanOrEqual(2);
+      expect(contrastRatio(style.outlineColor, style.background)).toBeGreaterThanOrEqual(3);
+    }
+  }
+  await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(link).toHaveAttribute('href', 'https://example.com/design');
+});
