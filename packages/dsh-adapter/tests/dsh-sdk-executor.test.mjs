@@ -2250,6 +2250,225 @@ test('契约：启动失败里路径后面的普通说明会留下', async () =>
   }
 });
 
+const unboundedStartupFailures = [
+  [
+    'A1',
+    'open /tmp/synthetic/Cedar Lighthouse brief.txt failed',
+    'open failed',
+    ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'A2',
+    String.raw`open C:\\ProjectSecret\\nested\\brief.txt failed`,
+    'open failed',
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  ['C1', 'open /tmp/synthetic/brief.txt failed', 'open failed', ['brief', 'synthetic']],
+  [
+    'C2',
+    String.raw`open C:\ProjectSecret\nested\brief.txt failed`,
+    'open failed',
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  [
+    'C3',
+    'open /tmp/synthetic/Lighthouse brief.txt failed',
+    'open failed',
+    ['Lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'M1',
+    'open /tmp/Cedar Lighthouse/nested/brief.txt failed',
+    'open failed',
+    ['Cedar', 'Lighthouse', 'nested', 'brief'],
+  ],
+  [
+    'M2',
+    'open /tmp/Cedar Lighthouse Secret/brief.txt failed',
+    'open failed',
+    ['Cedar', 'Lighthouse', 'Secret', 'brief'],
+  ],
+  [
+    'M3',
+    'open /tmp/Cedar Lighthouse/Project Secret brief.txt failed',
+    'open failed',
+    ['Cedar', 'Lighthouse', 'Project', 'Secret', 'brief'],
+  ],
+  [
+    'F1',
+    'open /tmp/synthetic/Project Cedar Lighthouse brief.txt failed',
+    'open failed',
+    ['Project', 'Cedar', 'Lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'F2',
+    'open /tmp/synthetic/Cedar Lighthouse brief.txt ENOENT',
+    'open ENOENT',
+    ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'F3',
+    'open /tmp/synthetic/Cedar Lighthouse brief.txt',
+    'open',
+    ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'F4',
+    'mkdir /tmp/synthetic/Cedar Lighthouse brief',
+    'mkdir',
+    ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'F5',
+    'open /tmp/synthetic/Cedar Lighthouse brief.txt: denied',
+    'open denied',
+    ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'U1',
+    String.raw`open \\server\share\qa\brief.txt failed`,
+    'open \\ failed',
+    ['server', 'share', 'brief'],
+  ],
+  [
+    'U2',
+    String.raw`open \\\\server\\share\\qa\\brief.txt failed`,
+    'open \\\\\\ failed',
+    ['server', 'share', 'brief'],
+  ],
+  [
+    'U3',
+    String.raw`open \\server\share\Cedar Lighthouse brief.txt failed`,
+    'open failed',
+    ['server', 'share', 'Cedar', 'Lighthouse', 'brief'],
+  ],
+  [
+    'U4',
+    String.raw`open \\ProjectSecret\\nested\\brief.txt failed`,
+    'open \\ failed',
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  [
+    'W1',
+    'open C:/ProjectSecret/nested/brief.txt failed',
+    'open failed',
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  [
+    'W2',
+    'open C://ProjectSecret//nested//brief.txt failed',
+    'open failed',
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  [
+    'W3',
+    'open C:/Project Secret/Cedar Lighthouse brief.txt failed',
+    'open failed',
+    ['Project', 'Secret', 'Cedar', 'Lighthouse', 'brief'],
+  ],
+  [
+    'W4',
+    String.raw`open C:\ProjectSecret\\nested\brief.txt failed`,
+    'open failed',
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  [
+    'W5',
+    String.raw`open C:\ProjectSecret/nested\brief.txt failed`,
+    'open failed',
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  [
+    'W6',
+    String.raw`EACCES: permission denied, mkdir C:\\Users\\qa\\data`,
+    'EACCES: permission denied, mkdir',
+    ['Users', 'qa', 'data'],
+  ],
+  [
+    'W7',
+    String.raw`open C:\\Project Secret\\Cedar Lighthouse brief.txt failed`,
+    'open failed',
+    ['Project', 'Secret', 'Cedar', 'Lighthouse', 'brief'],
+  ],
+  ['P1', 'open /tmp//ProjectSecret/brief.txt failed', 'open failed', ['ProjectSecret', 'brief']],
+  [
+    'P2',
+    'open //tmp/ProjectSecret/brief.txt failed',
+    'open / failed',
+    ['tmp', 'ProjectSecret', 'brief'],
+  ],
+  [
+    'Q1',
+    "open '/tmp/Cedar Lighthouse brief.txt' failed",
+    "open '' failed",
+    ['Cedar', 'Lighthouse', 'brief'],
+  ],
+  [
+    'Q2',
+    'open "/tmp/Cedar Lighthouse brief.txt" failed',
+    'open "" failed',
+    ['Cedar', 'Lighthouse', 'brief'],
+  ],
+  [
+    'Q3',
+    String.raw`open 'C:\\ProjectSecret\\nested\\brief.txt' failed`,
+    "open '' failed",
+    ['ProjectSecret', 'nested', 'brief'],
+  ],
+  [
+    'Q4',
+    String.raw`open '\\\\server\\share\\brief.txt' failed`,
+    "open '' failed",
+    ['server', 'share', 'brief'],
+  ],
+  ['Q5', "open '~/ProjectSecret/brief.txt' failed", "open '' failed", ['ProjectSecret', 'brief']],
+  [
+    'Q6',
+    'open `/tmp/Cedar Lighthouse brief.txt` failed',
+    'open failed',
+    ['Cedar', 'Lighthouse', 'brief'],
+  ],
+  ['T1', 'open ~/ProjectSecret/brief.txt failed', 'open failed', ['ProjectSecret', 'brief']],
+  [
+    'T2',
+    'open ~/synthetic/Cedar Lighthouse brief.txt failed',
+    'open failed',
+    ['synthetic', 'Cedar', 'Lighthouse', 'brief'],
+  ],
+  [
+    'T3',
+    'open ~qa/ProjectSecret/brief.txt failed',
+    'open failed',
+    ['qa', 'ProjectSecret', 'brief'],
+  ],
+];
+
+test('契约：启动失败遇到无法界定的路径时整句只留错误类型', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  const mismatches = [];
+  try {
+    for (const [id, input, detail, forbidden] of unboundedStartupFailures) {
+      const failed = await driveFreshHomeFault(env, input);
+      const message = failed.events[0].message;
+      const expected = `执行器启动失败。\n${detail}`;
+      if (message !== expected) {
+        mismatches.push(
+          `${id} expected ${JSON.stringify(expected)} got ${JSON.stringify(message)}`,
+        );
+      }
+      for (const piece of forbidden) {
+        if (message.includes(piece))
+          mismatches.push(`${id} leaked ${piece} in ${JSON.stringify(message)}`);
+      }
+      assert.equal(failed.events[0].type, 'failed');
+      assert.equal(failed.events[0].fault, 'executor-disconnected');
+    }
+    assert.deepEqual(mismatches, []);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
 test('契约：同一会话撤掉的技能不会在下一轮被扫描', async () => {
   const { engine, pids, env } = executor('ok', {
     initTimeoutMs: 10_000,
