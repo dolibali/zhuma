@@ -156,6 +156,7 @@ export function apply(ctx: Context): void {
     ctx.slots.register(
       {
         name: 'sidebar.footer.action',
+        id: 'zhuma-account',
         order: -100,
         inject: () => ({
           shell: memberShell,

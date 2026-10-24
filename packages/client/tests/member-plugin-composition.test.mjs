@@ -6,8 +6,67 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { webcrypto } from 'node:crypto';
 
-// Compiled real plugin + registry port contract. This does not render or imitate a host sidebar.
+// Test-only compilation of the pinned SDK core; production keeps using public SDK entries.
+const slotCoreModule = build({
+  entryPoints: [
+    fileURLToPath(
+      new URL(
+        '../../../upstream/deepseek-harness/packages/client/ui-slots/src/index.ts',
+        import.meta.url,
+      ),
+    ),
+  ],
+  bundle: true,
+  write: false,
+  format: 'cjs',
+  platform: 'node',
+  logLevel: 'error',
+}).then((result) => {
+  const module = { exports: {} };
+  runInNewContext(result.outputFiles[0].text, { module, exports: module.exports, queueMicrotask });
+  return module.exports.SlotCore;
+});
+
+async function createSlotCore() {
+  const SlotCore = await slotCoreModule;
+  const core = new SlotCore();
+  core.register(
+    {
+      name: 'root',
+      children: {
+        main: { kind: 'keyed', scope: 'root' },
+        'sidebar.panellist': { kind: 'list', scope: 'root' },
+        'sidebar.footer.action': { kind: 'list', scope: 'root' },
+        'sidebar.settings': { kind: 'single', scope: 'root' },
+      },
+    },
+    () => null,
+  );
+  return core;
+}
+
+test('pinned SDK list registration requires an id and rejects duplicate live ids', async () => {
+  const core = await createSlotCore();
+  const options = { name: 'sidebar.footer.action', id: 'zhuma-account' };
+  assert.throws(
+    () => core.register({ name: options.name }, () => null),
+    /list slot "sidebar.footer.action" requires options.id/,
+  );
+  const dispose = core.register(options, () => null);
+  assert.throws(
+    () => core.register(options, () => null),
+    /already has an entry with id "zhuma-account"/,
+  );
+  dispose();
+  const disposeAgain = core.register(options, () => null);
+  assert.equal(core.entriesOfSlot(options.name).length, 1);
+  disposeAgain();
+  assert.equal(core.entriesOfSlot(options.name).length, 0);
+});
+
+// Compiled real plugin + pinned SDK registry core. No host rendering or sidebar imitation.
 test('member plugin composition contract: actual footer/main registrations share one owned session and preserve Settings', async () => {
+  const core = await createSlotCore();
   const result = await build({
     entryPoints: [fileURLToPath(new URL('../src/workbench/plugin.tsx', import.meta.url))],
     bundle: true,
@@ -94,9 +153,11 @@ test('member plugin composition contract: actual footer/main registrations share
         if (dispose) disposers.push(dispose);
       },
       register(options, component) {
+        const dispose = core.register(options, component);
         const entry = { options, component, disposed: false };
         entries.push(entry);
         return () => {
+          dispose();
           entry.disposed = true;
         };
       },
@@ -106,6 +167,8 @@ test('member plugin composition contract: actual footer/main registrations share
   await new Promise((resolve) => setImmediate(resolve));
   const footers = entries.filter(({ options }) => options.name === 'sidebar.footer.action');
   assert.equal(footers.length, 1);
+  assert.equal(footers[0].options.id, 'zhuma-account');
+  assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 1);
   assert.equal(
     entries.some(({ options }) => options.name === 'sidebar.settings'),
     false,
@@ -137,4 +200,5 @@ test('member plugin composition contract: actual footer/main registrations share
   assert.equal(injected.shell.getSnapshot().session.status, 'restoring');
   assert.equal(listeners.size, 0);
   assert.ok(entries.every(({ disposed }) => disposed));
+  assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 0);
 });
