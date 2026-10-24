@@ -15,7 +15,16 @@ import type {
   Workbench,
 } from '@zhuma/agent-core';
 import type { ProjectSpaceDirectory } from './project-space.js';
+import type { OpenedSpaceDirectoryHandle, SpaceDirectoryImport } from './space-directory.js';
 export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
+export type {
+  AuthorizedSpace,
+  OpenedSpaceDirectoryHandle,
+  SpaceDirectory,
+  SpaceDirectoryImport,
+  SpaceDirectoryWriter,
+  SpaceKind,
+} from './space-directory.js';
 export interface MemberRequest {
   readonly headers: IncomingHttpHeaders;
 }
@@ -61,12 +70,21 @@ export type ApplyIdentity = (ctx: Context, imported?: IdentityImport) => Promise
 export type DeploymentMode = 'legacy-single-user' | 'multi-member';
 export type ConfigureDeploymentMode = (ctx: object, mode: DeploymentMode) => void;
 export type ReadDeploymentMode = (ctx: object) => DeploymentMode | undefined;
+/**
+ * The trusted space directory from #29. `applySpaceDirectory` mounts it on the
+ * host root before `applyIdentity`; `spaceDirectoryFor` reads the mounted
+ * handle, including the writer side the host owns. The mount returns nothing
+ * because cordis treats a plugin `apply` result as an effect.
+ */
+export type ApplySpaceDirectory = (ctx: Context, imported?: SpaceDirectoryImport) => Promise<void>;
+export type SpaceDirectoryFor = (ctx: object) => OpenedSpaceDirectoryHandle | undefined;
 /** Cordis `inject` for the execution plugin. */
 export type ExecutionInject = readonly ['connection', 'storageDomain'];
 /**
  * Parameters `apply` reads. `readWorkbench` is required.
  * `projectSpaces` is optional; omission rejects every project.
- * B delivers the formal catalog on #29. A only injects that directory at the Host.
+ * B delivered the formal catalog on #29 (`applySpaceDirectory`); A only
+ * injects that directory at the Host.
  */
 export interface ExecutionApplyOptions {
   readWorkbench(): Workbench;
@@ -82,12 +100,17 @@ export interface ApplyWorkbench {
   (ctx: Context): Promise<void>;
 }
 /**
- * Functions A calls, in this order: mode, identity, resolver, workbench, execution, UI.
- * `memberResolver(ctx)` stays available for other callers. `applyExecution` does not take it.
+ * Functions A calls, in this order: mode, spaces, identity, resolver,
+ * workbench, execution, UI. The space directory mounts before identity so the
+ * member resolver enumerates trusted spaces from the start; mounting it later
+ * also works because consumers resolve the directory lazily per call.
+ * `memberResolver(ctx)` stays available for other callers. `applyExecution`
+ * does not take it.
  */
 export interface S1Startup {
   configureDeploymentMode: ConfigureDeploymentMode;
   deploymentMode: ReadDeploymentMode;
+  applySpaceDirectory: ApplySpaceDirectory;
   applyIdentity: ApplyIdentity;
   memberResolver: CreateMemberResolver;
   applyWorkbench: ApplyWorkbench;

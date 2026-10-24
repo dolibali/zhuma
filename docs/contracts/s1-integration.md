@@ -4,23 +4,25 @@ A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b
 
 ## 加载顺序
 
-`configureDeploymentMode(ctx, mode)` 的 `mode` 只能是 `'legacy-single-user'` 或 `'multi-member'`。`applyIdentity` 在打开身份库之前读取 `deploymentMode(ctx)`。模式还没选定时抛 `identity startup refused: deployment mode is not configured`，不会改去另一种模式，所以先选定模式。
+`configureDeploymentMode(ctx, mode)` 的 `mode` 只能是 `'legacy-single-user'` 或 `'multi-member'`。`applyIdentity` 在打开身份库之前读取 `deploymentMode(ctx)`。模式还没选定时抛 `identity startup refused: deployment mode is not configured`，不会改去另一种模式，所以先选定模式。空间目录在身份之前装配，成员解析从一开始就枚举可信空间；目录消费方每次调用时才读取挂载，后装配也会生效，但未装配时成员没有任何空间。
 
 1. `configureDeploymentMode(ctx, mode)`，`mode` 是 `'legacy-single-user' | 'multi-member'`
-2. `await applyIdentity(ctx, imported?)`
-3. `memberResolver(ctx)`
-4. `await applyWorkbench(ctx)`
-5. `await applyExecution(ctx, { readWorkbench, projectSpaces })`
-6. `mount` 的签名留在清单里。本层不实现 `ExecutionWorkspace`，打开或刷新也不调用 `start-plan`。
+2. `await applySpaceDirectory(ctx, spaceImport?)`（#29 交付的可信目录；挂载无返回值，用 `spaceDirectoryFor(ctx)` 取句柄）
+3. `await applyIdentity(ctx, imported?)`
+4. `memberResolver(ctx)`
+5. `await applyWorkbench(ctx)`
+6. `await applyExecution(ctx, { readWorkbench, projectSpaces })`
+7. `mount` 的签名留在清单里。本层不实现 `ExecutionWorkspace`，打开或刷新也不调用 `start-plan`。
 
 ```ts
 configureDeploymentMode(ctx, mode);
+await applySpaceDirectory(ctx, spaceImport);
 await applyIdentity(ctx, imported);
 const resolver = memberResolver(ctx);
 await applyWorkbench(ctx);
 await applyExecution(ctx, {
   readWorkbench: () => service.snapshot(),
-  projectSpaces,
+  projectSpaces: spaceDirectoryFor(ctx),
 });
 ```
 
@@ -30,7 +32,7 @@ await applyExecution(ctx, {
 
 `S1ExecutionOptions` 就是 `ExecutionApplyOptions`：必填 `readWorkbench`，可选 `projectSpaces`。`S1Startup.applyExecution` 使用这一组参数。`packages/dsh-adapter/tests/types/s1-conformance.ts` 用双向约束把它们和真实 `apply` 的参数、`ExecutionPluginConfig` 对齐。键里没有 `memberResolver`。每次请求仍调用 `resolveMember`。`docs/contracts/b-id0a-identity.md` 的旧签名曾把可选 `memberResolver` 写进 `ExecutionApplyOptions`。那份说明不实现执行插件。执行参数以本文件和 `execution-plugin.ts` 的 `apply` 为准。
 
-`projectSpaces` 由 A 在 Host 注入。正式的项目空间目录由 B 在 #29 交付；A 只做这次注入，本层不另建事实源，也不实现 #29 的 provider。后栈 #66–#71 不是交付 #29 事实源的前提。省略 `projectSpaces` 时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。它必须接受任意合法 id（工作台 `WorkTaskSchema` 的 id：1 到 100 个字符，匹配 `/^[\w-]+$/u`）。不认识这个 id 时返回 `unknown`，不能抛错，也不能返回 `unavailable`。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
+`projectSpaces` 由 A 在 Host 注入。正式的项目空间目录由 B 在 #29 交付，经 `applySpaceDirectory` 装配，句柄用 `spaceDirectoryFor(ctx)` 取出；A 只做这次注入，本层不另建事实源，也不实现 #29 的 provider。后栈 #66–#71 不是交付 #29 事实源的前提。省略 `projectSpaces` 时，执行入口拒绝所有项目。`spaceForProject(projectId)` 在有目录时返回该项目所属空间，或 `unknown` / `unavailable`。它必须接受任意合法 id（工作台 `WorkTaskSchema` 的 id：1 到 100 个字符，匹配 `/^[\w-]+$/u`）。不认识这个 id 时返回 `unknown`，不能抛错，也不能返回 `unavailable`。单人还是多人只看已经选定的 `deploymentMode`：`legacy-single-user` 或 `multi-member`。`identityAccessMode` 的声明类型仍包含 `unmounted`，以便和身份导出互认。运行时不根据解析器有没有装上推断这个值。模式没选定时它抛未配置错误，不表示可以跳过 `applyExecution`，也不表示旧入口可以放开。
 
 带类型的 `startPlan` 由 A 在 #32 的 Client 接手。打开页面或刷新不调用 `start-plan`，只有明确点击才开始。本层注册 `/api/zhuma-exec/start-plan`，不加按钮，也不在 `apply` 里启动计划。
 
@@ -47,7 +49,7 @@ await applyExecution(ctx, {
 ## A 要接上的部分
 
 - 账户导入的形状是 `{ accounts: [{ id, passwordHash }], ownerAccountId?, notes? }`。`passwordHash` 是 scrypt 校验值。
-- 先 `configureDeploymentMode`，再 `applyIdentity`，然后 `memberResolver(ctx)`，再把 `{ readWorkbench, projectSpaces }` 传给 `applyExecution`。不要传 `memberResolver` 或 `singleUser`。执行插件自己调用 `resolveMember`。省略 `projectSpaces` 时，执行入口拒绝所有项目。
+- 先 `configureDeploymentMode`，再 `applySpaceDirectory` 并保留 `spaceDirectoryFor(ctx)` 句柄，然后 `applyIdentity`、`memberResolver(ctx)`，最后把 `{ readWorkbench, projectSpaces: spaceDirectoryFor(ctx) }` 传给 `applyExecution`。不要传 `memberResolver` 或 `singleUser`。执行插件自己调用 `resolveMember`。省略 `projectSpaces` 时，执行入口拒绝所有项目。
 - 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。
 - 导航以后挂 `ExecutionWorkspace`。本层不加这个界面。打开或刷新不启动计划；带类型的 `startPlan` 由 A 在 #32 的 Client 做，只有明确点击才调用 `start-plan`。
 - 页面里已经有 `.zhuma > main.zm-page`。

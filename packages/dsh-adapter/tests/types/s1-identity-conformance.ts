@@ -6,13 +6,16 @@ import {
   memberResolver,
   resolveMember,
 } from '../../dist/member-session.js';
+import { applySpaceDirectory, spaceDirectoryFor } from '../../dist/space-directory.js';
 import type {
   ApplyIdentity,
+  ApplySpaceDirectory,
   ConfigureDeploymentMode,
   CreateMemberResolver,
   IdentityAccessModeFn,
   ReadDeploymentMode,
   ResolveMember,
+  SpaceDirectoryFor,
 } from '../../dist/s1-integration.js';
 
 type Assignable<A, B> = [A] extends [B] ? true : false;
@@ -26,6 +29,8 @@ export const accessModeMatches = identityAccessMode satisfies IdentityAccessMode
 export const configureModeMatches = configureDeploymentMode satisfies ConfigureDeploymentMode;
 export const readModeMatches = deploymentMode satisfies ReadDeploymentMode;
 export const applyIdentityMatches = applyIdentity satisfies ApplyIdentity;
+export const applySpaceDirectoryMatches = applySpaceDirectory satisfies ApplySpaceDirectory;
+export const spaceDirectoryForMatches = spaceDirectoryFor satisfies SpaceDirectoryFor;
 
 export type ResolveMemberBoth = Assert<Both<typeof resolveMember, ResolveMember>>;
 export type MemberResolverBoth = Assert<Both<typeof memberResolver, CreateMemberResolver>>;
@@ -35,3 +40,5 @@ export type ConfigureDeploymentModeBoth = Assert<
 >;
 export type ReadDeploymentModeBoth = Assert<Both<typeof deploymentMode, ReadDeploymentMode>>;
 export type ApplyIdentityBoth = Assert<Both<typeof applyIdentity, ApplyIdentity>>;
+export type ApplySpaceDirectoryBoth = Assert<Both<typeof applySpaceDirectory, ApplySpaceDirectory>>;
+export type SpaceDirectoryForBoth = Assert<Both<typeof spaceDirectoryFor, SpaceDirectoryFor>>;
