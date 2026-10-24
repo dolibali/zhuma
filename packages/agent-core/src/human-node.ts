@@ -55,7 +55,10 @@ export interface ExecutionNodeRecord {
   readonly acceptedArtifactVersionId?: string;
   readonly comments: readonly CitedComment[];
   readonly receipts: readonly ExecutionReceipt[];
-  /** Human assignee's unsent delivery. Cleared when a submit is stored. */
+  /**
+   * Human assignee's unsent delivery. A stored submit clears the body and
+   * advances `version`, so the next round cannot reuse the old expectedVersion.
+   */
   readonly deliveryDraft?: {
     readonly version: number;
     readonly idempotencyKey: string;

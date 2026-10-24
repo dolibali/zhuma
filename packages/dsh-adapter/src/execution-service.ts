@@ -30,6 +30,7 @@ import { readRevisionView, type RevisionView } from './revision-view.js';
 import {
   applyDeliveryDraft,
   deliveryDraftView,
+  draftFiles,
   withoutDeliveryDraft,
   type DeliveryDraftView,
 } from './delivery-draft.js';
@@ -792,7 +793,7 @@ export class ExecutionService {
       const current = opened.value;
       const text = parsed.value.text ?? '';
       const links = parsed.value.links ?? [];
-      const files = parsed.value.files ?? [];
+      const files = draftFiles(parsed.value.files ?? []);
       const applied = applyDeliveryDraft({
         current: current.deliveryDraft,
         expectedVersion: parsed.value.expectedVersion,

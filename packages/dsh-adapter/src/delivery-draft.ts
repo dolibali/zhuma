@@ -9,21 +9,41 @@ export interface DeliveryDraftView {
 
 type StoredDeliveryDraft = NonNullable<ExecutionNodeRecord['deliveryDraft']>;
 
+/** A draft never records a caller-supplied upload as finished. */
+export function draftFiles(files: readonly ArtifactFileRef[]): ArtifactFileRef[] {
+  return files.map((file) => ({ ...file, uploadComplete: false }));
+}
+
 export function deliveryDraftView(draft: StoredDeliveryDraft | undefined): DeliveryDraftView {
   if (draft === undefined) return { version: 0, text: '', links: [], files: [] };
   return {
     version: draft.version,
     text: draft.text,
     links: draft.links,
-    files: draft.files,
+    files: draftFiles(draft.files),
   };
 }
 
+/**
+ * Clear the body and consume one draft version.
+ * The draft write carries only `expectedVersion`, not a round id, so the
+ * version itself is the cross-round boundary. Leaving it at 0 lets a late
+ * `expectedVersion` from the previous round match the next round's first save.
+ */
 export function withoutDeliveryDraft(record: ExecutionNodeRecord): ExecutionNodeRecord {
-  if (record.deliveryDraft === undefined) return record;
-  const { deliveryDraft, ...rest } = record;
-  void deliveryDraft;
-  return rest;
+  const draft = record.deliveryDraft;
+  if (draft === undefined) return record;
+  return {
+    ...record,
+    deliveryDraft: {
+      version: draft.version + 1,
+      idempotencyKey: '',
+      fingerprint: '',
+      text: '',
+      links: [],
+      files: [],
+    },
+  };
 }
 
 /** One saved draft. The same key replays; a different body with that key mismatches; a stale version conflicts. */
@@ -62,7 +82,7 @@ export function applyDeliveryDraft(input: {
       fingerprint: input.fingerprint,
       text: input.text,
       links: input.links,
-      files: input.files,
+      files: draftFiles(input.files),
     },
   };
 }

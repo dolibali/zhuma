@@ -306,8 +306,149 @@ test('a successful submit clears the saved draft', async () => {
     text: '正式交付',
   });
   assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
-  assert.equal(store.node('design').deliveryDraft, undefined);
+  assert.equal(store.node('design').deliveryDraft.version, 2);
+  assert.equal(store.node('design').deliveryDraft.text, '');
+  assert.deepEqual(store.node('design').deliveryDraft.links, []);
+  assert.deepEqual(store.node('design').deliveryDraft.files, []);
   assert.equal(JSON.stringify(store.node('design')).includes('即将清掉-4e1'), false);
+});
+
+test('a late draft from the previous round cannot overwrite the next round', async () => {
+  const { state, applied, store, service } = await opened();
+  const first = await service.draft(
+    session('chen'),
+    locate(applied, { expectedVersion: 0, idempotencyKey: 'draft-round-1', text: '旧轮草稿-4e1' }),
+  );
+  assert.equal(first.ok, true, first.ok ? '' : first.error.code);
+  assert.equal(first.value.version, 1);
+  const replayRound = await service.draft(
+    session('chen'),
+    locate(applied, { expectedVersion: 0, idempotencyKey: 'draft-round-1', text: '旧轮草稿-4e1' }),
+  );
+  assert.deepEqual(replayRound.value, first.value);
+  const lateBody = locate(applied, {
+    expectedVersion: 1,
+    idempotencyKey: 'draft-late',
+    text: '迟到旧编辑-4e1',
+  });
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, { expectedVersion: 1, idempotencyKey: 'deliver-round-1' }),
+    text: '正式交付',
+  });
+  assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
+  assert.equal(store.node('design').deliveryDraft.version, 2);
+  assert.equal(store.node('design').deliveryDraft.text, '');
+  assert.equal(JSON.stringify(store.node('design')).includes('旧轮草稿-4e1'), false);
+  const sentBack = await service.ballot(session('lin'), {
+    ...locate(applied, {
+      expectedVersion: submitted.value.node.version,
+      idempotencyKey: 'vote-back',
+    }),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+    action: 'request-changes',
+    comment: '请补充错误码',
+  });
+  assert.equal(sentBack.ok, true, sentBack.ok ? '' : sentBack.error.code);
+  assert.equal(sentBack.value.node.status, 'needs-revision');
+  const cleared = await service.draft(session('chen'), locate(applied));
+  assert.deepEqual(cleared.value, { version: 2, text: '', links: [], files: [] });
+  const receipts = JSON.stringify(store.node('design').receipts);
+  const restarted = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-restart',
+      text: '不该从零开始-4e1',
+    }),
+  );
+  assert.equal(restarted.ok, false);
+  assert.equal(restarted.error.code, 'conflict');
+  assert.deepEqual(restarted.error.details, { currentVersion: 2, expectedVersion: 0 });
+  assert.equal(store.node('design').deliveryDraft.text, '');
+  assert.equal(JSON.stringify(store.node('design')).includes('不该从零开始-4e1'), false);
+  const next = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: cleared.value.version,
+      idempotencyKey: 'draft-round-2',
+      text: '新一轮正文-4e1',
+    }),
+  );
+  assert.equal(next.ok, true, next.ok ? '' : next.error.code);
+  assert.equal(next.value.version, 3);
+  assert.equal(next.value.text, '新一轮正文-4e1');
+  const nodeBefore = JSON.stringify(store.node('design'));
+  const late = await service.draft(session('chen'), lateBody);
+  assert.equal(late.ok, false);
+  assert.equal(late.error.code, 'conflict');
+  assert.equal(late.error.message, '内容已变化，请刷新后再试。');
+  assert.deepEqual(late.error.details, { currentVersion: 3, expectedVersion: 1 });
+  assert.equal(JSON.stringify(late).includes('新一轮正文-4e1'), false);
+  assert.equal(JSON.stringify(late).includes('迟到旧编辑-4e1'), false);
+  assert.equal(JSON.stringify(store.node('design')), nodeBefore);
+  assert.equal(JSON.stringify(store.node('design').receipts), receipts);
+  assert.equal(store.node('design').deliveryDraft.text, '新一轮正文-4e1');
+  const reopened = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
+  const again = await reopened.draft(session('chen'), locate(applied));
+  assert.deepEqual(again.value, next.value);
+  const replayNext = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 1,
+      idempotencyKey: 'draft-round-2',
+      text: '新一轮正文-4e1',
+    }),
+  );
+  assert.deepEqual(replayNext.value, next.value);
+  assert.equal(JSON.stringify(store.node('design')), nodeBefore);
+});
+
+test('a draft file stays incomplete when the request says the upload finished', async () => {
+  const { state, applied, store, service } = await opened();
+  const file = {
+    id: 'notes-4e1',
+    mediaType: 'text/plain',
+    byteSize: 4,
+    checksum: 'abc',
+    accessPolicyId: 'policy-4e1',
+    uploadComplete: true,
+  };
+  const saved = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-file',
+      text: '带文件',
+      files: [file],
+    }),
+  );
+  assert.equal(saved.ok, true, saved.ok ? '' : saved.error.code);
+  assert.equal(saved.value.files.length, 1);
+  assert.equal(saved.value.files[0].uploadComplete, false);
+  assert.equal(saved.value.files[0].id, 'notes-4e1');
+  assert.equal(store.node('design').deliveryDraft.files[0].uploadComplete, false);
+  const reopened = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
+  const again = await reopened.draft(session('chen'), locate(applied));
+  assert.equal(again.value.files[0].uploadComplete, false);
+  assert.deepEqual(again.value, saved.value);
+  const stored = store.node('design').deliveryDraft.files[0];
+  stored.uploadComplete = true;
+  const masked = await service.draft(session('chen'), locate(applied));
+  assert.equal(masked.value.files[0].uploadComplete, false);
+  assert.equal(store.node('design').deliveryDraft.files[0].uploadComplete, true);
+  const replay = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-file',
+      text: '带文件',
+      files: [file],
+    }),
+  );
+  assert.equal(replay.ok, true, replay.ok ? '' : replay.error.code);
+  assert.equal(replay.value.files[0].uploadComplete, false);
+  assert.equal(replay.value.text, '带文件');
 });
 
 test('an expert assignee cannot save a human delivery draft', async () => {
