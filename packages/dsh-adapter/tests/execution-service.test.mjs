@@ -2391,3 +2391,611 @@ test('startable requires a resolved member and rejects an actor field', async ()
   // A member outside the identity directory is refused the same way as inbox.
   assert.equal((await service.startable(session('ghost'), {})).error.code, 'not-in-directory');
 });
+
+/**
+ * Two tasks in two spaces: task in project→north, task2 in project2→south.
+ * chen participates in both and holds both spaces; qa only task2/south.
+ */
+function confirmTwoSpaces() {
+  const { state, task } = fixture();
+  state.projects.push({ id: 'project2', name: '数据平台', description: '内部数据平台' });
+  const first = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      title: '北空间任务',
+      participantIds: ['chen'],
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const second = applyWorkbenchCommand(first, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'task-south',
+      projectId: 'project2',
+      title: '南空间任务',
+      participantIds: ['chen'],
+      workflows: [
+        {
+          ...task.workflows[0],
+          id: 'root-south',
+          nodes: [workflowNode({ id: 'build', title: '构建' })],
+        },
+      ],
+      status: 'ready',
+    },
+  });
+  return {
+    state: second,
+    northPlan: second.appliedPlans.find((p) => p.taskId === 'task'),
+    southPlan: second.appliedPlans.find((p) => p.taskId === 'task-south'),
+  };
+}
+
+const twoSpaces = boundedProjectSpaces([
+  { projectId: 'project', spaceId: 'north' },
+  { projectId: 'project2', spaceId: 'south' },
+]);
+
+test('inbox and startable scope to the chosen space without mixing results', async () => {
+  const { state, northPlan, southPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+
+  // Start both plans so both tasks have inbox entries and are no longer startable.
+  const startedNorth = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(startedNorth.ok, true, startedNorth.ok ? '' : startedNorth.error.code);
+  const startedSouth = await service.startPlan(chen, {
+    taskId: 'task-south',
+    planId: southPlan.id,
+    revision: southPlan.revision,
+    idempotencyKey: 'start-south',
+  });
+  assert.equal(startedSouth.ok, true, startedSouth.ok ? '' : startedSouth.error.code);
+
+  const all = await service.inbox(chen, {});
+  assert.equal(all.ok, true);
+  if (all.ok) {
+    assert.deepEqual([...new Set(all.value.items.map((i) => i.taskId))].sort(), [
+      'task',
+      'task-south',
+    ]);
+  }
+
+  const north = await service.inbox(chen, { spaceId: 'north' });
+  assert.equal(north.ok, true);
+  if (!north.ok) return;
+  assert.equal(north.value.spaceId, 'north');
+  assert.deepEqual([...new Set(north.value.items.map((i) => i.taskId))], ['task']);
+
+  const south = await service.inbox(chen, { spaceId: 'south' });
+  assert.equal(south.ok, true);
+  if (!south.ok) return;
+  assert.equal(south.value.spaceId, 'south');
+  assert.deepEqual([...new Set(south.value.items.map((i) => i.taskId))], ['task-south']);
+
+  // A third ready task joins the workbench; the same storage now holds the two starts.
+  const third = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...state.tasks.find((t) => t.id === 'task'),
+      id: 'task-north-2',
+      title: '北空间任务二',
+      participantIds: ['chen'],
+      workflows: [
+        {
+          ...state.tasks.find((t) => t.id === 'task').workflows[0],
+          id: 'root-north-2',
+          nodes: [workflowNode({ id: 'review', title: '评审' })],
+        },
+      ],
+      status: 'ready',
+    },
+  });
+  const thirdService = new ExecutionService(
+    store.storage,
+    { readWorkbench: () => third },
+    twoSpaces,
+  );
+
+  // Without a scope: only the third, not-yet-started task is discoverable.
+  const allStartable = await thirdService.startable(chen, {});
+  assert.equal(allStartable.ok, true);
+  if (!allStartable.ok) return;
+  assert.deepEqual(
+    allStartable.value.plans.map((p) => p.taskId),
+    ['task-north-2'],
+  );
+
+  // Scoped to north: the same single entry with the scope echoed.
+  const northStartable = await thirdService.startable(chen, { spaceId: 'north' });
+  assert.equal(northStartable.ok, true);
+  if (!northStartable.ok) return;
+  assert.equal(northStartable.value.spaceId, 'north');
+  assert.deepEqual(
+    northStartable.value.plans.map((p) => p.taskId),
+    ['task-north-2'],
+  );
+
+  // Scoped to south: the started task is not discoverable again.
+  const southStartable = await thirdService.startable(chen, { spaceId: 'south' });
+  assert.equal(southStartable.ok, true);
+  if (southStartable.ok) assert.deepEqual(southStartable.value.plans, []);
+});
+
+test('a held but empty scope answers with an empty projection and the scope echo', async () => {
+  const { state } = confirmTwoSpaces();
+  const spaces = boundedProjectSpaces([
+    { projectId: 'project', spaceId: 'north' },
+    { projectId: 'project2', spaceId: 'south' },
+  ]);
+  const { service } = create(state, spaces);
+  const chen = session('chen', ['north', 'south', 'team-empty']);
+
+  const inbox = await service.inbox(chen, { spaceId: 'team-empty' });
+  assert.equal(inbox.ok, true);
+  if (!inbox.ok) return;
+  assert.equal(inbox.value.spaceId, 'team-empty');
+  assert.deepEqual(inbox.value.items, []);
+  assert.deepEqual(inbox.value.nodes, []);
+
+  const startable = await service.startable(chen, { spaceId: 'team-empty' });
+  assert.equal(startable.ok, true);
+  if (startable.ok) {
+    assert.equal(startable.value.spaceId, 'team-empty');
+    assert.deepEqual(startable.value.plans, []);
+  }
+});
+
+test('an unknown or unheld scope hides everything without leaking the directory', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+
+  // Unknown scope id: reads answer empty, commands not-found, nothing written.
+  const inbox = await service.inbox(chen, { spaceId: 'ghost' });
+  assert.equal(inbox.ok, true);
+  if (inbox.ok) {
+    assert.equal(inbox.value.spaceId, 'ghost');
+    assert.deepEqual(inbox.value.items, []);
+  }
+  const report = await service.report(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    spaceId: 'ghost',
+  });
+  assert.equal(report.ok, false);
+  assert.equal(report.error.code, 'not-found');
+  assert.equal(store.snapshot().writes, 0);
+});
+
+test('a mismatched scope refuses before idempotent replay, even when the member holds both spaces', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+
+  const started = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const afterStart = store.snapshot();
+
+  // The plan lives in north; retrying it under the south scope refuses and
+  // does not replay or write, although chen holds both spaces.
+  const wrongScope = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+    spaceId: 'south',
+  });
+  assert.equal(wrongScope.ok, false);
+  assert.equal(wrongScope.error.code, 'not-found');
+  assert.deepEqual(store.snapshot(), afterStart);
+
+  // Same key with the correct scope replays as before.
+  const rightScope = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+    spaceId: 'north',
+  });
+  assert.equal(rightScope.ok, true);
+  if (rightScope.ok) assert.equal(rightScope.value.disposition, 'replayed');
+
+  // No scope keeps the legacy behavior.
+  const noScope = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(noScope.ok, true);
+});
+
+test('report and revision respect the scope of the plan space', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const { service } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+  const started = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+
+  const inScope = await service.report(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    spaceId: 'north',
+  });
+  assert.equal(inScope.ok, true);
+
+  const wrongScope = await service.report(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    spaceId: 'south',
+  });
+  assert.equal(wrongScope.ok, false);
+  assert.equal(wrongScope.error.code, 'not-found');
+});
+
+function scopedNode(fields) {
+  return {
+    ownerId: 'chen',
+    rounds: [],
+    receipts: [],
+    artifactVersions: [],
+    comments: [],
+    command: {
+      status: 'ready',
+      version: 1,
+      entryStatus: 'ready',
+      upstreamAffected: false,
+      stored: [],
+    },
+    ...fields,
+    handoff: {
+      assignee: { id: 'chen', kind: 'human' },
+      reviewerIds: [],
+      dependencyNodeIds: [],
+      goal: '交付',
+      expectedOutput: '说明',
+      inputRefs: [],
+      reviewRequired: false,
+      ...fields.handoff,
+    },
+  };
+}
+
+async function storeExecution(store, record) {
+  await store.storage.writeNode(nodeRecordKey(record), record);
+  const key = `${record.taskId}:${record.planId}:${record.revision}`;
+  if (store.storage.readPlan(key) === undefined) {
+    await store.storage.writePlan(key, {
+      idempotencyKey: `kept-${record.taskId}`,
+      fingerprint: `${record.planId}:${record.revision}`,
+      nodeIds: [record.nodeId],
+    });
+  }
+}
+
+test('scoped inbox lists visible upstream inputs and hides the other space', async () => {
+  const { state, northPlan, southPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south', 'team-empty']);
+  const cited = 'artifact:north-accepted-4e1';
+  const hiddenMessage = '有 1 个上游来源你没有权限查看。';
+  await storeExecution(
+    store,
+    scopedNode({
+      taskId: 'task',
+      planId: northPlan.id,
+      revision: northPlan.revision,
+      nodeId: 'design',
+      acceptedArtifactVersionId: cited,
+      command: { status: 'completed', version: 2, upstreamAffected: false, stored: [] },
+      artifactVersions: [
+        {
+          id: cited,
+          nodeId: 'design',
+          version: 2,
+          text: 'north-body-4e1',
+          files: [],
+          links: [],
+          submittedBy: 'chen',
+        },
+      ],
+      handoff: { goal: '本计划目标' },
+    }),
+  );
+  await storeExecution(
+    store,
+    scopedNode({
+      taskId: 'task',
+      planId: northPlan.id,
+      revision: northPlan.revision,
+      nodeId: 'publish',
+      handoff: {
+        goal: '发布登录说明',
+        inputRefs: [
+          { sourceNodeId: 'design', artifactVersionId: cited },
+          { sourceNodeId: 'build', artifactVersionId: 'artifact:south-secret-4e1' },
+        ],
+      },
+    }),
+  );
+  await storeExecution(
+    store,
+    scopedNode({
+      taskId: 'task',
+      planId: northPlan.id,
+      revision: northPlan.revision,
+      nodeId: 'ship',
+      handoff: {
+        goal: '只引用可见上游',
+        inputRefs: [{ sourceNodeId: 'design', artifactVersionId: cited }],
+      },
+    }),
+  );
+  await storeExecution(
+    store,
+    scopedNode({
+      taskId: 'task',
+      planId: northPlan.id,
+      revision: northPlan.revision,
+      nodeId: 'wait',
+      handoff: {
+        goal: '引用已被取代',
+        inputRefs: [{ sourceNodeId: 'design', artifactVersionId: 'artifact:old-4e1' }],
+      },
+    }),
+  );
+  await storeExecution(
+    store,
+    scopedNode({
+      taskId: 'task-south',
+      planId: southPlan.id,
+      revision: southPlan.revision,
+      nodeId: 'build',
+      handoff: { goal: 'south-goal-4e1' },
+      artifactVersions: [
+        {
+          id: 'artifact:south-secret-4e1',
+          nodeId: 'build',
+          version: 1,
+          text: 'south-body-4e1',
+          files: [],
+          links: [],
+          submittedBy: 'chen',
+        },
+      ],
+    }),
+  );
+
+  const north = await service.inbox(chen, { spaceId: 'north' });
+  assert.equal(north.ok, true);
+  if (!north.ok) return;
+  assert.equal(north.value.actorId, 'chen');
+  assert.equal(north.value.spaceId, 'north');
+  assert.deepEqual(north.value.items.map((item) => item.nodeId).sort(), [
+    'publish',
+    'ship',
+    'wait',
+  ]);
+  assert.deepEqual(north.value.nodes.find((node) => node.nodeId === 'publish').inputs, [
+    {
+      access: 'visible',
+      blocking: false,
+      sourceNodeId: 'design',
+      sourceGoal: '本计划目标',
+      version: 2,
+      name: '第 2 版',
+    },
+    { access: 'hidden', blocking: true, count: 1, message: hiddenMessage },
+  ]);
+  assert.deepEqual(north.value.nodes.find((node) => node.nodeId === 'ship').inputs, [
+    {
+      access: 'visible',
+      blocking: false,
+      sourceNodeId: 'design',
+      sourceGoal: '本计划目标',
+      version: 2,
+      name: '第 2 版',
+    },
+  ]);
+  for (const secret of [
+    'north-body-4e1',
+    'south-body-4e1',
+    'south-goal-4e1',
+    'artifact:north-accepted-4e1',
+    'artifact:south-secret-4e1',
+    'task-south',
+  ]) {
+    assert.equal(JSON.stringify(north).includes(secret), false, secret);
+  }
+
+  const south = await service.inbox(chen, { spaceId: 'south' });
+  assert.equal(south.ok, true);
+  if (!south.ok) return;
+  assert.equal(south.value.spaceId, 'south');
+  assert.deepEqual(
+    south.value.items.map((item) => item.taskId),
+    ['task-south'],
+  );
+  assert.equal(JSON.stringify(south).includes('本计划目标'), false);
+  assert.equal(JSON.stringify(south).includes('north-body-4e1'), false);
+  assert.equal(JSON.stringify(south).includes(cited), false);
+
+  const all = await service.inbox(chen, {});
+  assert.equal(all.ok, true);
+  if (!all.ok) return;
+  assert.equal(Object.hasOwn(all.value, 'spaceId'), false);
+  assert.deepEqual([...new Set(all.value.items.map((item) => item.taskId))].sort(), [
+    'task',
+    'task-south',
+  ]);
+  assert.equal(
+    all.value.nodes.find((node) => node.nodeId === 'publish').inputs[0].access,
+    'visible',
+  );
+
+  const empty = await service.inbox(chen, { spaceId: 'team-empty' });
+  assert.equal(empty.ok, true);
+  if (!empty.ok) return;
+  assert.equal(empty.value.spaceId, 'team-empty');
+  assert.deepEqual(empty.value.items, []);
+  assert.deepEqual(empty.value.nodes, []);
+  assert.equal(JSON.stringify(empty).includes('本计划目标'), false);
+  assert.equal(JSON.stringify(empty).includes('south-goal-4e1'), false);
+
+  const ghost = await service.inbox(chen, { spaceId: 'ghost' });
+  assert.equal(ghost.ok, true);
+  if (!ghost.ok) return;
+  assert.equal(ghost.value.spaceId, 'ghost');
+  assert.deepEqual(ghost.value.items, []);
+  assert.equal(JSON.stringify(ghost).includes('本计划目标'), false);
+
+  const before = store.snapshot();
+  const blocked = await service.submit(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    nodeId: 'publish',
+    expectedVersion: 1,
+    idempotencyKey: 'block-submit',
+    text: '交付说明',
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, 'upstream-blocked');
+  assert.equal(blocked.error.message, hiddenMessage);
+  assert.deepEqual(blocked.error.details, {});
+  assert.deepEqual(store.snapshot(), before);
+  assert.equal(JSON.stringify(blocked).includes('south-goal-4e1'), false);
+  assert.equal(JSON.stringify(blocked).includes('artifact:south-secret-4e1'), false);
+
+  const pending = await service.submit(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    nodeId: 'wait',
+    expectedVersion: 1,
+    idempotencyKey: 'deliver-replaced',
+    text: '交付说明',
+  });
+  assert.equal(pending.ok, true, pending.ok ? '' : pending.error.code);
+  const visible = await service.submit(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    nodeId: 'ship',
+    expectedVersion: 1,
+    idempotencyKey: 'deliver-ok',
+    text: '交付说明',
+  });
+  assert.equal(visible.ok, true, visible.ok ? '' : visible.error.code);
+  assert.notDeepEqual(store.snapshot(), before);
+});
+
+test('a wrong scope rejects the first start and the same key without writing', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+  const body = {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+    spaceId: 'south',
+  };
+  const before = store.snapshot();
+  const first = await service.startPlan(chen, body);
+  assert.equal(first.ok, false);
+  assert.equal(first.error.code, 'not-found');
+  assert.equal(JSON.stringify(first).includes('北空间任务'), false);
+  assert.deepEqual(store.snapshot(), before);
+
+  const sameKey = await service.startPlan(chen, body);
+  assert.equal(sameKey.ok, false);
+  assert.equal(sameKey.error.code, 'not-found');
+  assert.deepEqual(store.snapshot(), before);
+
+  const started = await service.startPlan(chen, { ...body, spaceId: 'north' });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  if (started.ok) assert.equal(started.value.disposition, 'applied');
+  const after = store.snapshot();
+  assert.notDeepEqual(after, before);
+
+  const replayWrong = await service.startPlan(chen, body);
+  assert.equal(replayWrong.ok, false);
+  assert.equal(replayWrong.error.code, 'not-found');
+  assert.deepEqual(store.snapshot(), after);
+});
+
+test('a held scope still returns directory failure instead of an empty projection', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const down = {
+    async spaceForProject() {
+      throw new Error('space-down-4e1');
+    },
+  };
+  const empty = create(state, down);
+  const filled = create(state, down);
+  const node = scopedNode({
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    nodeId: 'design',
+    handoff: { goal: 'directory-secret-4e1' },
+  });
+  await filled.store.storage.writeNode(nodeRecordKey(node), node);
+  await filled.store.storage.writePlan(`${node.taskId}:${node.planId}:${node.revision}`, {
+    idempotencyKey: 'stored-plan',
+    fingerprint: 'stored',
+    nodeIds: ['design'],
+  });
+  const caller = session('chen', ['north', 'south']);
+  const absent = await empty.service.inbox(caller, { spaceId: 'north' });
+  const present = await filled.service.inbox(caller, { spaceId: 'north' });
+  sameBytes(absent, present, 'scoped-inbox');
+  assert.equal(absent.error.code, 'unavailable');
+  assert.equal(absent.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(present).includes('directory-secret-4e1'), false);
+
+  const before = empty.store.snapshot();
+  const started = await empty.service.startPlan(caller, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-down',
+    spaceId: 'north',
+  });
+  assert.equal(started.ok, false);
+  assert.equal(started.error.code, 'unavailable');
+  assert.deepEqual(empty.store.snapshot(), before);
+
+  const ghost = await filled.service.inbox(caller, { spaceId: 'ghost' });
+  assert.equal(ghost.ok, true);
+  if (!ghost.ok) return;
+  assert.equal(ghost.value.spaceId, 'ghost');
+  assert.deepEqual(ghost.value.items, []);
+  assert.deepEqual(ghost.value.nodes, []);
+  assert.equal(JSON.stringify(ghost).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(ghost).includes('directory-secret-4e1'), false);
+});

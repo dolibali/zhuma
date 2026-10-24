@@ -133,14 +133,22 @@ export interface StartPlanRequest {
   planId: string;
   revision: number;
   idempotencyKey: string;
+  /** Chosen space constraint; re-checked against the plan's owning space before replay. */
+  spaceId?: string | undefined;
 }
-export type InboxRequest = Record<string, never>;
+export interface InboxRequest {
+  /** Chosen space constraint; a filter the member must currently hold, never a grant. */
+  readonly spaceId?: string | undefined;
+}
 /** Read-only discovery of confirmed plans the member may explicitly start. */
-export type StartableRequest = Record<string, never>;
+export interface StartableRequest {
+  readonly spaceId?: string | undefined;
+}
 export interface ReportRequest {
   taskId: string;
   planId: string;
   revision: number;
+  readonly spaceId?: string | undefined;
 }
 export interface RevisionRequest {
   taskId: string;
@@ -258,6 +266,8 @@ export interface StartPlanValue {
 }
 export interface ChannelInboxValue {
   readonly actorId: string;
+  /** Echoes the requested scope so the caller can verify the answer matches. */
+  readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
 }
@@ -270,6 +280,7 @@ export interface StartablePlan {
 }
 export interface ChannelStartableValue {
   readonly actorId: string;
+  readonly spaceId?: string | undefined;
   readonly plans: readonly StartablePlan[];
 }
 export interface ExecutionCommandValue {
