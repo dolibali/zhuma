@@ -16,6 +16,7 @@ import type {
 } from '@zhuma/agent-core';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import type { OpenedSpaceDirectoryHandle, SpaceDirectoryImport } from './space-directory.js';
+import type { RevisionView } from './revision-view.js';
 export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 export type {
   AuthorizedSpace,
@@ -125,20 +126,38 @@ export type ExecutionEndpoints = readonly [
   'ballot',
   'settle',
   'report',
+  'revision',
 ];
 export interface StartPlanRequest {
   taskId: string;
   planId: string;
   revision: number;
   idempotencyKey: string;
+  /** Chosen space constraint; re-checked against the plan's owning space before replay. */
+  spaceId?: string | undefined;
 }
-export type InboxRequest = Record<string, never>;
+export interface InboxRequest {
+  /** Chosen space constraint; a filter the member must currently hold, never a grant. */
+  readonly spaceId?: string | undefined;
+}
 /** Read-only discovery of confirmed plans the member may explicitly start. */
-export type StartableRequest = Record<string, never>;
+export interface StartableRequest {
+  readonly spaceId?: string | undefined;
+}
 export interface ReportRequest {
   taskId: string;
   planId: string;
   revision: number;
+  readonly spaceId?: string | undefined;
+}
+export interface RevisionRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+}
+export interface RevisionValue {
+  readonly view: RevisionView;
 }
 interface ExecutionLocate {
   taskId: string;
@@ -194,6 +213,7 @@ export type ExecutionMessageCode =
   | 'plan-incomplete'
   | 'unavailable'
   | 'not-found'
+  | 'not-returned'
   | 'validation'
   | 'unknown-field'
   | 'invalid-handoff'
@@ -246,6 +266,8 @@ export interface StartPlanValue {
 }
 export interface ChannelInboxValue {
   readonly actorId: string;
+  /** Echoes the requested scope so the caller can verify the answer matches. */
+  readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
 }
@@ -258,6 +280,7 @@ export interface StartablePlan {
 }
 export interface ChannelStartableValue {
   readonly actorId: string;
+  readonly spaceId?: string | undefined;
   readonly plans: readonly StartablePlan[];
 }
 export interface ExecutionCommandValue {
@@ -297,6 +320,7 @@ export interface ExecutionServiceMethods {
     body: unknown,
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
+  revision(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<RevisionValue>>;
   reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
 }
 export interface ExecutionRoutes {
@@ -307,6 +331,7 @@ export interface ExecutionRoutes {
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
   readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
+  readonly revision: { readonly body: RevisionRequest; readonly value: RevisionValue };
 }
 export interface ExecutionArtifactWire {
   readonly id: string;
@@ -387,6 +412,8 @@ export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  // The Client-side `revision` method is added by A on #32 when the revision
+  // panel consumes it; this layer declares the route shape only.
 }
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {

@@ -40,9 +40,9 @@ await applyExecution(ctx, {
 
 ## 通道 DTO
 
-路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`startable`、`submit`、`ballot`、`settle`、`report`。先 `resolveMember`，再读正文。未登录是 HTTP 401，不可信请求是 HTTP 403，这两种都不解析 JSON。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。声明长度或实际读数超过 2MiB 是 HTTP 413，5 秒内没有读完是 HTTP 408。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
+路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`startable`、`submit`、`ballot`、`settle`、`report`、`revision`。先 `resolveMember`，再读正文。未登录是 HTTP 401，不可信请求是 HTTP 403，这两种都不解析 JSON。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。声明长度或实际读数超过 2MiB 是 HTTP 413，5 秒内没有读完是 HTTP 408。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
 
-`code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`startable`、`submit`、`ballot`、`settle`、`report`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
+`code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`startable`、`submit`、`ballot`、`settle`、`report`、`revision`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
 
 清单里的 M1 组件类型是 `ExecutionWorkspace`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace`。本层不实现、不导出这些组件，因此没有和组件实现做双向对齐。没有别的 M1 组件类型。带类型的 `startPlan` 不在这份适配层形状里，由 A 在 #32 的 Client 接手；打开或刷新不启动，只有明确点击才调用 `start-plan`。
 
@@ -54,7 +54,7 @@ await applyExecution(ctx, {
 - 导航以后挂 `ExecutionWorkspace`。本层不加这个界面。打开或刷新不启动计划；带类型的 `startPlan` 由 A 在 #32 的 Client 做，只有明确点击才调用 `start-plan`。
 - 页面里已经有 `.zhuma > main.zm-page`。
 
-通道注册在 `connection.fetch.register`，路径是 `/api/zhuma-exec/<endpoint>`。端点是 `start-plan`、`inbox`、`startable`、`submit`、`ballot`、`settle`、`report`。成功和失败都是 `{ ok, value | error }`。`error` 为 `{ code, message, details }`，`code` 在线上是字符串。`ExecutionMessageCode` 是已经写好文案的目录。`conflicting-ballot` 这类纯函数代码会原样穿过，并使用兜底文案。
+通道注册在 `connection.fetch.register`，路径是 `/api/zhuma-exec/<endpoint>`。端点是 `start-plan`、`inbox`、`startable`、`submit`、`ballot`、`settle`、`report`、`revision`。成功和失败都是 `{ ok, value | error }`。`error` 为 `{ code, message, details }`，`code` 在线上是字符串。`ExecutionMessageCode` 是已经写好文案的目录。`conflicting-ballot` 这类纯函数代码会原样穿过，并使用兜底文案。
 
 官方 `rpc.handle` 不携带请求头。精确 Fetch 路由保留 Fetch `Request` 的 `cookie` 和 `host`。Connection 仍只把 owner Peer 送进处理函数；成员只从 `resolveMember` 来。
 

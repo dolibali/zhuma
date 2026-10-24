@@ -2346,3 +2346,266 @@ test('startable requires a resolved member and rejects an actor field', async ()
   // A member outside the identity directory is refused the same way as inbox.
   assert.equal((await service.startable(session('ghost'), {})).error.code, 'not-in-directory');
 });
+
+/**
+ * Two tasks in two spaces: task in project→north, task2 in project2→south.
+ * chen participates in both and holds both spaces; qa only task2/south.
+ */
+function confirmTwoSpaces() {
+  const { state, task } = fixture();
+  state.projects.push({ id: 'project2', name: '数据平台', description: '内部数据平台' });
+  const first = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      title: '北空间任务',
+      participantIds: ['chen'],
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const second = applyWorkbenchCommand(first, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'task-south',
+      projectId: 'project2',
+      title: '南空间任务',
+      participantIds: ['chen'],
+      workflows: [
+        {
+          ...task.workflows[0],
+          id: 'root-south',
+          nodes: [workflowNode({ id: 'build', title: '构建' })],
+        },
+      ],
+      status: 'ready',
+    },
+  });
+  return {
+    state: second,
+    northPlan: second.appliedPlans.find((p) => p.taskId === 'task'),
+    southPlan: second.appliedPlans.find((p) => p.taskId === 'task-south'),
+  };
+}
+
+const twoSpaces = boundedProjectSpaces([
+  { projectId: 'project', spaceId: 'north' },
+  { projectId: 'project2', spaceId: 'south' },
+]);
+
+test('inbox and startable scope to the chosen space without mixing results', async () => {
+  const { state, northPlan, southPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+
+  // Start both plans so both tasks have inbox entries and are no longer startable.
+  const startedNorth = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(startedNorth.ok, true, startedNorth.ok ? '' : startedNorth.error.code);
+  const startedSouth = await service.startPlan(chen, {
+    taskId: 'task-south',
+    planId: southPlan.id,
+    revision: southPlan.revision,
+    idempotencyKey: 'start-south',
+  });
+  assert.equal(startedSouth.ok, true, startedSouth.ok ? '' : startedSouth.error.code);
+
+  const all = await service.inbox(chen, {});
+  assert.equal(all.ok, true);
+  if (all.ok) {
+    assert.deepEqual([...new Set(all.value.items.map((i) => i.taskId))].sort(), [
+      'task',
+      'task-south',
+    ]);
+  }
+
+  const north = await service.inbox(chen, { spaceId: 'north' });
+  assert.equal(north.ok, true);
+  if (!north.ok) return;
+  assert.equal(north.value.spaceId, 'north');
+  assert.deepEqual([...new Set(north.value.items.map((i) => i.taskId))], ['task']);
+
+  const south = await service.inbox(chen, { spaceId: 'south' });
+  assert.equal(south.ok, true);
+  if (!south.ok) return;
+  assert.equal(south.value.spaceId, 'south');
+  assert.deepEqual([...new Set(south.value.items.map((i) => i.taskId))], ['task-south']);
+
+  // A third ready task joins the workbench; the same storage now holds the two starts.
+  const third = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...state.tasks.find((t) => t.id === 'task'),
+      id: 'task-north-2',
+      title: '北空间任务二',
+      participantIds: ['chen'],
+      workflows: [
+        {
+          ...state.tasks.find((t) => t.id === 'task').workflows[0],
+          id: 'root-north-2',
+          nodes: [workflowNode({ id: 'review', title: '评审' })],
+        },
+      ],
+      status: 'ready',
+    },
+  });
+  const thirdService = new ExecutionService(
+    store.storage,
+    { readWorkbench: () => third },
+    twoSpaces,
+  );
+
+  // Without a scope: only the third, not-yet-started task is discoverable.
+  const allStartable = await thirdService.startable(chen, {});
+  assert.equal(allStartable.ok, true);
+  if (!allStartable.ok) return;
+  assert.deepEqual(
+    allStartable.value.plans.map((p) => p.taskId),
+    ['task-north-2'],
+  );
+
+  // Scoped to north: the same single entry with the scope echoed.
+  const northStartable = await thirdService.startable(chen, { spaceId: 'north' });
+  assert.equal(northStartable.ok, true);
+  if (!northStartable.ok) return;
+  assert.equal(northStartable.value.spaceId, 'north');
+  assert.deepEqual(
+    northStartable.value.plans.map((p) => p.taskId),
+    ['task-north-2'],
+  );
+
+  // Scoped to south: the started task is not discoverable again.
+  const southStartable = await thirdService.startable(chen, { spaceId: 'south' });
+  assert.equal(southStartable.ok, true);
+  if (southStartable.ok) assert.deepEqual(southStartable.value.plans, []);
+});
+
+test('a held but empty scope answers with an empty projection and the scope echo', async () => {
+  const { state } = confirmTwoSpaces();
+  const spaces = boundedProjectSpaces([
+    { projectId: 'project', spaceId: 'north' },
+    { projectId: 'project2', spaceId: 'south' },
+  ]);
+  const { service } = create(state, spaces);
+  const chen = session('chen', ['north', 'south', 'team-empty']);
+
+  const inbox = await service.inbox(chen, { spaceId: 'team-empty' });
+  assert.equal(inbox.ok, true);
+  if (!inbox.ok) return;
+  assert.equal(inbox.value.spaceId, 'team-empty');
+  assert.deepEqual(inbox.value.items, []);
+  assert.deepEqual(inbox.value.nodes, []);
+
+  const startable = await service.startable(chen, { spaceId: 'team-empty' });
+  assert.equal(startable.ok, true);
+  if (startable.ok) {
+    assert.equal(startable.value.spaceId, 'team-empty');
+    assert.deepEqual(startable.value.plans, []);
+  }
+});
+
+test('an unknown or unheld scope hides everything without leaking the directory', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+
+  // Unknown scope id: reads answer empty, commands not-found, nothing written.
+  const inbox = await service.inbox(chen, { spaceId: 'ghost' });
+  assert.equal(inbox.ok, true);
+  if (inbox.ok) {
+    assert.equal(inbox.value.spaceId, 'ghost');
+    assert.deepEqual(inbox.value.items, []);
+  }
+  const report = await service.report(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    spaceId: 'ghost',
+  });
+  assert.equal(report.ok, false);
+  assert.equal(report.error.code, 'not-found');
+  assert.equal(store.snapshot().writes, 0);
+});
+
+test('a mismatched scope refuses before idempotent replay, even when the member holds both spaces', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const { service, store } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+
+  const started = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  const afterStart = store.snapshot();
+
+  // The plan lives in north; retrying it under the south scope refuses and
+  // does not replay or write, although chen holds both spaces.
+  const wrongScope = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+    spaceId: 'south',
+  });
+  assert.equal(wrongScope.ok, false);
+  assert.equal(wrongScope.error.code, 'not-found');
+  assert.deepEqual(store.snapshot(), afterStart);
+
+  // Same key with the correct scope replays as before.
+  const rightScope = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+    spaceId: 'north',
+  });
+  assert.equal(rightScope.ok, true);
+  if (rightScope.ok) assert.equal(rightScope.value.disposition, 'replayed');
+
+  // No scope keeps the legacy behavior.
+  const noScope = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(noScope.ok, true);
+});
+
+test('report and revision respect the scope of the plan space', async () => {
+  const { state, northPlan } = confirmTwoSpaces();
+  const { service } = create(state, twoSpaces);
+  const chen = session('chen', ['north', 'south']);
+  const started = await service.startPlan(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    idempotencyKey: 'start-north',
+  });
+  assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+
+  const inScope = await service.report(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    spaceId: 'north',
+  });
+  assert.equal(inScope.ok, true);
+
+  const wrongScope = await service.report(chen, {
+    taskId: 'task',
+    planId: northPlan.id,
+    revision: northPlan.revision,
+    spaceId: 'south',
+  });
+  assert.equal(wrongScope.ok, false);
+  assert.equal(wrongScope.error.code, 'not-found');
+});

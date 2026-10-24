@@ -26,6 +26,7 @@ import {
   type ProjectSpaceDirectory,
   type ProjectSpaceLookup,
 } from './project-space.js';
+import { readRevisionView, type RevisionView } from './revision-view.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -56,6 +57,7 @@ const startSchema = z.strictObject({
   planId: id,
   revision: z.number().int(),
   idempotencyKey: id,
+  spaceId: id.optional(),
 });
 const submitSchema = z.strictObject({
   ...locate,
@@ -80,9 +82,16 @@ const reportSchema = z.strictObject({
   taskId: id,
   planId: id,
   revision: z.number().int(),
+  spaceId: id.optional(),
 });
-const inboxSchema = z.strictObject({});
-const startableSchema = z.strictObject({});
+const revisionSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+});
+const inboxSchema = z.strictObject({ spaceId: id.optional() });
+const startableSchema = z.strictObject({ spaceId: id.optional() });
 
 export type StartPlanRequest = z.infer<typeof startSchema>;
 export type InboxRequest = z.infer<typeof inboxSchema>;
@@ -102,6 +111,7 @@ export type SubmitRequest = z.infer<typeof submitSchema>;
 export type BallotRequest = z.infer<typeof ballotSchema>;
 export type SettleRequest = z.infer<typeof settleSchema>;
 export type ReportRequest = z.infer<typeof reportSchema>;
+export type RevisionRequest = z.infer<typeof revisionSchema>;
 
 export interface PlanReceipt {
   readonly idempotencyKey: string;
@@ -173,6 +183,7 @@ const MESSAGES = {
   'plan-incomplete': '计划还没有完整启动，暂时不能查看或写入。',
   unavailable: '执行记录暂时写不进去，请用同一个请求再试一次。',
   'not-found': '找不到这个节点。',
+  'not-returned': '这项工作还没有被退回。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',
   'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
@@ -393,10 +404,23 @@ export class ExecutionService {
       const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
+      const scope = parsed.value?.spaceId;
+      if (!this.scopeHeld(actor.value.spaceIds, scope)) {
+        // Unknown or revoked scope: an empty projection, indistinguishable from an empty space.
+        return {
+          ok: true,
+          value: {
+            actorId: actor.value.actorId,
+            ...(scope === undefined ? {} : { spaceId: scope }),
+            items: [],
+            nodes: [],
+          },
+        };
+      }
       const records: ExecutionNodeRecord[] = [];
       for (const record of this.storage.listNodes()) {
         if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
-        const space = await this.gateSpace(record.taskId, actor.value.spaceIds);
+        const space = await this.gateSpaceScoped(record.taskId, actor.value.spaceIds, scope);
         if (space === 'missing') continue;
         if (!space.ok) {
           if (space.error.code === 'unavailable') return space;
@@ -416,7 +440,15 @@ export class ExecutionService {
           items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
         )
         .map(toNodeView);
-      return { ok: true, value: { actorId: actor.value.actorId, items, nodes } };
+      return {
+        ok: true,
+        value: {
+          actorId: actor.value.actorId,
+          ...(scope === undefined ? {} : { spaceId: scope }),
+          items,
+          nodes,
+        },
+      };
     });
   }
 
@@ -437,12 +469,23 @@ export class ExecutionService {
       const parsed = parseBody(startableSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
+      const scope = parsed.value?.spaceId;
+      if (!this.scopeHeld(actor.value.spaceIds, scope)) {
+        return {
+          ok: true,
+          value: {
+            actorId: actor.value.actorId,
+            ...(scope === undefined ? {} : { spaceId: scope }),
+            plans: [],
+          },
+        };
+      }
       const workbench = this.workbench.readWorkbench();
       const plans: StartablePlan[] = [];
       for (const task of workbench.tasks) {
         if (task.status !== 'ready') continue;
         if (planMembership(workbench, task.id, actor.value.actorId) !== 'allowed') continue;
-        const space = await this.gateSpace(task.id, actor.value.spaceIds);
+        const space = await this.gateSpaceScoped(task.id, actor.value.spaceIds, scope);
         if (space === 'missing') continue;
         if (!space.ok) {
           if (space.error.code === 'unavailable') return space;
@@ -462,7 +505,14 @@ export class ExecutionService {
           title: task.title,
         });
       }
-      return { ok: true, value: { actorId: actor.value.actorId, plans } };
+      return {
+        ok: true,
+        value: {
+          actorId: actor.value.actorId,
+          ...(scope === undefined ? {} : { spaceId: scope }),
+          plans,
+        },
+      };
     });
   }
 
@@ -560,7 +610,11 @@ export class ExecutionService {
       if (!actor.ok) return actor;
       const parsed = parseBody(reportSchema, body);
       if (!parsed.ok) return parsed;
-      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      const space = await this.gateSpaceScoped(
+        parsed.value.taskId,
+        actor.value.spaceIds,
+        parsed.value.spaceId,
+      );
       if (space === 'missing' || !space.ok) {
         return space === 'missing' ? fail('not-found') : space;
       }
@@ -580,6 +634,40 @@ export class ExecutionService {
         return { ok: true, value: { reports: [] } };
       }
       return { ok: true, value: { reports: reports.map(toNodeExecutionReport) } };
+    });
+  }
+
+  /** Return notes and the two newest relevant versions. Does not write. */
+  revision(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ view: RevisionView }>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(revisionSchema, body);
+      if (!parsed.ok) return parsed;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
+      const current = this.storage.readNode(nodeRecordKey(parsed.value));
+      if (!current || !intactNode(current)) return fail('not-found');
+      const membership = planMembership(
+        this.workbench.readWorkbench(),
+        current.taskId,
+        actor.value.actorId,
+      );
+      if (membership === 'missing') return fail('not-found');
+      if (membership === 'not-participant') return fail('not-participant');
+      if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
+      const reviewerNames: Record<string, string> = {};
+      for (const participant of this.workbench.readWorkbench().participants) {
+        const name = participant.name.trim();
+        if (name !== '') reviewerNames[participant.id] = name;
+      }
+      const read = readRevisionView(current, actor.value.actorId, reviewerNames);
+      if (!read.ok) return fail(read.code);
+      return { ok: true, value: { view: read.view } };
     });
   }
 
@@ -640,6 +728,33 @@ export class ExecutionService {
    * `WorkTaskSchema`. Any other requested id is not-found and is not sent.
    * An empty string is never sent.
    */
+  /**
+   * The requested space scope is a filter the caller chose, never a grant.
+   * The member must currently hold it in the trusted session: an unknown,
+   * revoked, or foreign scope is indistinguishable from an empty one for
+   * reads (empty list) and from a missing task for commands (not-found).
+   */
+  private scopeHeld(spaceIds: readonly string[], scope: string | undefined): boolean {
+    if (scope === undefined) return true;
+    return spaceIds.includes(scope);
+  }
+
+  /**
+   * Scope check on top of the space gate: the task's owning space must equal
+   * the requested scope. Returns the gate verdict; a scoped miss collapses
+   * into not-found for commands and an empty projection for reads.
+   */
+  private async gateSpaceScoped(
+    taskId: string,
+    spaceIds: readonly string[],
+    scope: string | undefined,
+  ): Promise<'missing' | ExecutionResult<string>> {
+    const space = await this.gateSpace(taskId, spaceIds);
+    if (scope === undefined || space === 'missing' || !space.ok) return space;
+    if (space.value !== scope) return fail('not-found');
+    return space;
+  }
+
   private async gateSpace(
     taskId: string,
     spaceIds: readonly string[],
@@ -722,7 +837,10 @@ export class ExecutionService {
     const parsed = parseBody(startSchema, body);
     if (!parsed.ok) return parsed;
     const { taskId, planId, revision, idempotencyKey } = parsed.value;
-    const space = await this.gateSpace(taskId, actor.value.spaceIds);
+    // The chosen scope re-checks the plan's owning space before any idempotent
+    // replay: "currently in A, the old plan actually lives in B" refuses even
+    // when the member holds both spaces.
+    const space = await this.gateSpaceScoped(taskId, actor.value.spaceIds, parsed.value.spaceId);
     if (space === 'missing' || !space.ok) {
       return space === 'missing' ? fail('not-found') : space;
     }
