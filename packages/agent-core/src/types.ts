@@ -1,5 +1,6 @@
 /** Product contracts; these are not DSH runtime types. */
-export type ExecutionEngine = 'dsh' | 'codearts-cli';
+/** `simulated` 只能被显式选中。未配置真实执行器时不得改用它。 */
+export type ExecutionEngine = 'dsh' | 'codearts-cli' | 'simulated';
 export type StepKind = 'agent' | 'tool' | 'verify' | 'approval';
 export type TaskStatus =
   | 'draft'

@@ -1,0 +1,50 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "method": "session.event",
+    "params": {
+      "sessionId": "zhuma-s1",
+      "event": {
+        "type": "assistant/message",
+        "seq": 22,
+        "time": 1792669445594,
+        "data": {
+          "turn": 2,
+          "step": 1,
+          "message": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "你好，这是录制的回复。" }]
+          },
+          "stream": [
+            {
+              "type": "chunk",
+              "chunk": { "type": "block-start", "index": 0, "blockType": "text" }
+            },
+            { "type": "text-chunks", "index": 0, "texts": ["你好，", "这是录制的回复。"] },
+            {
+              "type": "chunk",
+              "chunk": {
+                "type": "block-end",
+                "index": 0,
+                "block": { "type": "text", "text": "你好，这是录制的回复。" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session.event",
+    "params": {
+      "sessionId": "zhuma-s1",
+      "event": {
+        "type": "turn/end",
+        "seq": 24,
+        "time": 1792669445595,
+        "data": { "turn": 2, "reason": { "kind": "completed" } }
+      }
+    }
+  }
+]

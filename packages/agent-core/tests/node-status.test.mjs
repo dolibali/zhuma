@@ -64,6 +64,19 @@ test('follows the legal node transitions and their effects', () => {
       'in-review',
       ['open-review', 'block-downstream'],
     ],
+    ['running', { type: 'execution-finished', returnTo: 'ready' }, 'ready', ['await-human-submit']],
+    [
+      'waiting-for-input',
+      { type: 'execution-finished', returnTo: 'ready' },
+      'ready',
+      ['await-human-submit'],
+    ],
+    [
+      'running',
+      { type: 'execution-finished', returnTo: 'needs-revision' },
+      'needs-revision',
+      ['await-human-submit'],
+    ],
     ['running', { type: 'input-required' }, 'waiting-for-input', []],
     ['waiting-for-input', { type: 'input-supplied' }, 'running', ['resume-execution']],
     ['ready', { type: 'child-workflow-started' }, 'child-workflow', []],
@@ -133,6 +146,7 @@ test('rejects transitions that would skip review, delivery, or an explicit resta
     ['draft', { type: 'submit-artifact', reviewRequired: false }],
     ['blocked', { type: 'submit-artifact', reviewRequired: false }],
     ['blocked', { type: 'execution-acknowledged' }],
+    ['ready', { type: 'execution-finished', returnTo: 'ready' }],
     ['ready', { type: 'input-required' }],
     ['ready', { type: 'review-resolved', outcome: 'approved' }],
     ['ready', { type: 'plan-started', dependenciesSatisfied: true }],
@@ -159,6 +173,7 @@ test('rejects transitions that would skip review, delivery, or an explicit resta
     ['in-review', { type: 'review-resolved', outcome: 'approved' }],
     ['in-review', { type: 'review-resolved', outcome: 'changes-requested' }],
     ['completed', { type: 'submit-artifact', reviewRequired: true }],
+    ['completed', { type: 'execution-finished', returnTo: 'ready' }],
     ['completed', { type: 'execution-acknowledged' }],
     ['completed', { type: 'plan-started', dependenciesSatisfied: true }],
     ['completed', { type: 'retry' }],
@@ -397,4 +412,30 @@ test('marking a completed node as upstream-affected does not execute it again', 
   assert.equal(replay.decision.status, 'replayed');
   assert.equal(replay.state.version, 4);
   assert.equal(replay.state.status, 'completed');
+});
+
+test('契约：execution-finished 拒绝和入口不一致的 returnTo', () => {
+  const running = {
+    status: 'running',
+    version: 4,
+    upstreamAffected: false,
+    stored: [],
+    entryStatus: 'needs-revision',
+  };
+  const forged = applyNodeTransitionCommand(
+    running,
+    envelope({ type: 'execution-finished', returnTo: 'ready' }, 'finish-forged', 4),
+  );
+  assert.equal(forged.decision.status, 'rejected');
+  assert.equal(forged.decision.code, 'illegal-transition');
+  assert.equal(forged.state.status, 'running');
+  assert.equal(forged.state.entryStatus, 'needs-revision');
+  assert.equal(forged.state.version, 4);
+  const matched = applyNodeTransitionCommand(
+    running,
+    envelope({ type: 'execution-finished', returnTo: 'needs-revision' }, 'finish-matched', 4),
+  );
+  assert.equal(matched.decision.status, 'applied');
+  assert.equal(matched.state.status, 'needs-revision');
+  assert.equal(matched.decision.result.effects.includes('accept-handoff'), false);
 });

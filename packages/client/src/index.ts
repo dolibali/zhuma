@@ -11,6 +11,9 @@ export {
   createNodeExecutionView,
 } from './execution-view.js';
 
+export type { AgentWorkspaceView } from './agent-workspace-view.js';
+export { createAgentWorkspaceView, phaseReached } from './agent-workspace-view.js';
+
 export const VIEW_MODES = ['chat', 'run', 'compose'] as const;
 export type ViewMode = (typeof VIEW_MODES)[number];
 

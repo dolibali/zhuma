@@ -32,10 +32,12 @@ pnpm upstream:check
 | `pnpm check:repo`                   | 检查目录、包名、版本和源码依赖方向                  |
 | `pnpm format` / `pnpm format:check` | 处理自有文件，排除上游和生成目录                    |
 | `pnpm check`                        | 仓库边界、格式、类型和单元测试                      |
+| `pnpm workspace:demo`               | 构建后启动 Agent 处理演示，地址打印在标准输出       |
+| `pnpm test:browser`                 | 构建后用本机 Chrome 跑模拟执行器的浏览器流程        |
 | `pnpm upstream:check`               | 核对子模块 URL、gitlink、HEAD、包版本及上游干净状态 |
 | `pnpm clean`                        | 只删除四个自研包的 dist                             |
 
-`pnpm check` 覆盖仓库、类型和 Node 契约测试，不等于业务验收。已有工作台、项目与资产等切片的正式 Host／隔离桌面记录分别保存在[验证记录](workbench-validation.md)和 `docs/review/`；这些历史证据只认证注明的提交和环境。契约、响应重放、作者报告、独立验证、真实 Host／多账号／模型、原生桌面与安装包分列，没有执行的层次不计通过。额外验证由对应工作项约定，不因文档维护重跑旧 UI。
+`pnpm test` 验证契约和内存事务，不调用模型。`pnpm test:browser` 用浏览器操作显式选择的模拟执行器，不计入 `pnpm check`。真实 DSH 插件、桌面安装、模型调用和 CLI 联动仍未验证，不把这些项目计为通过。`pnpm check` 覆盖仓库、类型和 Node 契约测试，不等于业务验收。已有工作台、项目与资产等切片的正式 Host／隔离桌面记录分别保存在[验证记录](workbench-validation.md)和 `docs/review/`；这些历史证据只认证注明的提交和环境。契约、响应重放、作者报告、独立验证、真实 Host／多账号／模型、原生桌面与安装包分列，没有执行的层次不计通过。额外验证由对应工作项约定，不因文档维护重跑旧 UI。
 
 ## DSH 的工具链
 
