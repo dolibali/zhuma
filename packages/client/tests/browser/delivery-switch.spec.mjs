@@ -187,3 +187,43 @@ test('保存还在飞的时候换工作项，结果不会写到新工作项', as
   expect(keys[1].nodeId).toBe('publish');
   expect(keys[0].idempotencyKey).not.toBe(keys[1].idempotencyKey);
 });
+
+test('同节点保存中继续输入', async ({ page, replay }) => {
+  const gate = deferred();
+  const saves = [];
+  replay.handlers.inbox = async () => inbox();
+  replay.handlers.draft = async (payload) => {
+    if (payload.idempotencyKey) {
+      saves.push(payload);
+      if (saves.length === 1) await gate.promise;
+      return {
+        ok: true,
+        value: {
+          version: payload.expectedVersion + 1,
+          text: payload.text ?? '',
+          links: payload.links ?? [],
+          files: payload.files ?? [],
+        },
+      };
+    }
+    return { ok: true, value: { version: 1, text: '已保存的说明', links: [], files: [] } };
+  };
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?execution');
+  await openNode(page, '设计登录');
+  await expect(page.getByLabel('交付说明')).toHaveValue('已保存的说明');
+  await page.getByLabel('交付说明').fill('sent synthetic draft');
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0].text).toBe('sent synthetic draft');
+  await page.getByLabel('交付说明').fill('next unsaved synthetic draft');
+  gate.resolve();
+  await expect(page.getByRole('button', { name: '保存草稿', exact: true })).toBeEnabled();
+  await expect(page.getByLabel('交付说明')).toHaveValue('next unsaved synthetic draft');
+  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  await expect.poll(() => saves.length).toBe(2);
+  expect(saves[1].text).toBe('next unsaved synthetic draft');
+  expect(saves[1].expectedVersion).toBe(2);
+  await expect(page.getByLabel('交付说明')).toHaveValue('next unsaved synthetic draft');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});

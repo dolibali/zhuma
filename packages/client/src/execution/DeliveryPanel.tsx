@@ -70,6 +70,7 @@ export function DeliveryPanel({
   const key = useRef(crypto.randomUUID());
   const alive = useRef(true);
   const edited = useRef(false);
+  const editGeneration = useRef(0);
   const nodeKey = `${node.taskId}:${node.planId}:${node.revision}:${node.nodeId}`;
   const liveNode = useRef(nodeKey);
   liveNode.current = nodeKey;
@@ -86,6 +87,7 @@ export function DeliveryPanel({
     const savedFor = nodeKey;
     let active = true;
     edited.current = false;
+    editGeneration.current = 0;
     key.current = crypto.randomUUID();
     setText('');
     setLink('');
@@ -142,6 +144,7 @@ export function DeliveryPanel({
 
   function rotate() {
     edited.current = true;
+    editGeneration.current += 1;
     key.current = crypto.randomUUID();
   }
 
@@ -216,6 +219,7 @@ export function DeliveryPanel({
     const files = listedFiles();
     if (files === undefined) return;
     edited.current = true;
+    const generation = editGeneration.current;
     const savedFor = liveNode.current;
     setPending('save');
     setError('');
@@ -233,7 +237,7 @@ export function DeliveryPanel({
       });
       if (!stillHere(savedFor)) return;
       setDraftVersion(saved.version);
-      setText(saved.text);
+      if (editGeneration.current === generation) setText(saved.text);
     } catch (caught) {
       if (!stillHere(savedFor)) return;
       setError(caught instanceof Error ? caught.message : '草稿没有保存。');
