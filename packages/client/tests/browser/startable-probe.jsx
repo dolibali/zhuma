@@ -84,6 +84,7 @@ export function StartableProbe() {
           accountId: 'chen',
           principal: { kind: 'zhuma-member', memberId: 'chen' },
           peerId: 'fixture-chen',
+          spaces: [],
         });
       const request = JSON.parse(options.body);
       const result = await rpc.call('/api', request.method, request.payload, options.signal);
