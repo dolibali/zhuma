@@ -269,7 +269,7 @@ test('draft submit is explicit and closes the local draft boundary until inbox/r
   await expect(status(page)).toHaveText('已提交，等待待办更新。');
   await expect(input(page)).toHaveValue('');
   await expect(button(page, '保存草稿')).toBeDisabled();
-  await expect(button(page, '查看已存草稿')).toBeDisabled();
+  await expect(button(page, '重试读取草稿')).toBeDisabled();
   expect(await page.evaluate(() => window.deliveryDraftProbe.events.length)).toBe(1);
   expect(
     await page.evaluate(
