@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "tests/types",
+    "outDir": "dist/s1-identity-conformance",
+    "tsBuildInfoFile": "dist/s1-identity-conformance/.tsbuildinfo",
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM", "ESNext.Disposable"],
+    "types": ["node"]
+  },
+  "files": ["tests/types/s1-identity-conformance.ts"],
+  "references": [{ "path": "." }]
+}
