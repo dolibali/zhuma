@@ -227,3 +227,55 @@ test('同节点保存中继续输入', async ({ page, replay }) => {
   await expect(page.getByLabel('交付说明')).toHaveValue('next unsaved synthetic draft');
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
+
+test('读取 version>0 时先编辑，再保存能真正成功', async ({ page, replay }) => {
+  const gate = deferred();
+  const saves = [];
+  replay.handlers.inbox = async () => inbox();
+  replay.handlers.draft = async (payload) => {
+    if (payload.idempotencyKey) {
+      saves.push(payload);
+      if (payload.expectedVersion !== 3) {
+        return {
+          ok: false,
+          error: { code: 'conflict', message: '内容已变化，请刷新后再试。', details: {} },
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          version: 4,
+          text: payload.text ?? '',
+          links: payload.links ?? [],
+          files: payload.files ?? [],
+        },
+      };
+    }
+    if (payload.nodeId === 'design') await gate.promise;
+    return { ok: true, value: { version: 3, text: '服务器草稿', links: [], files: [] } };
+  };
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?execution');
+  await openNode(page, '设计登录');
+  const save = page.getByRole('button', { name: '保存草稿', exact: true });
+  await expect
+    .poll(() =>
+      replay.requests.some(
+        (item) =>
+          item.endpoint === 'draft' &&
+          item.nodeId === 'design' &&
+          item.idempotencyKey === undefined,
+      ),
+    )
+    .toBe(true);
+  await page.getByLabel('交付说明').fill('用户先写');
+  gate.resolve();
+  await expect(save).toBeEnabled();
+  await expect(page.getByLabel('交付说明')).toHaveValue('用户先写');
+  await save.click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0].expectedVersion).toBe(3);
+  expect(saves[0].text).toBe('用户先写');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByLabel('交付说明')).toHaveValue('用户先写');
+});
