@@ -38,6 +38,7 @@ import {
   resolveMember,
   uninstallMemberResolver,
 } from './member-session.js';
+import { spaceDirectoryFor, type SpaceDirectory } from './space-directory.js';
 
 const PREFIX = '/zhuma-id';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -454,7 +455,7 @@ function allowsAccount(note: NoteRecord, accountId: string): boolean {
   return note.ownerId === accountId || note.teamMemberIds.includes(accountId);
 }
 
-function memberPolicy(domain: IdentityDomain) {
+function memberPolicy(domain: IdentityDomain, directoryFor: () => SpaceDirectory | undefined) {
   const notes = domain.table('notes');
   return {
     bindings(principal: { readonly memberId?: string }) {
@@ -479,10 +480,10 @@ function memberPolicy(domain: IdentityDomain) {
             }
             const spaceId = request.args?.spaceId;
             if (typeof spaceId === 'string') {
-              for (const [, note] of notes.entries()) {
-                if (note.spaceId === spaceId && allowsAccount(note, memberId)) {
-                  return { kind: 'allow' as const };
-                }
+              // Space-level access comes from the trusted membership fact,
+              // never from the existence of a readable note.
+              if (directoryFor()?.isMember(spaceId, memberId) === true) {
+                return { kind: 'allow' as const };
               }
               return { kind: 'deny' as const, reason: 'not-a-member' };
             }
@@ -720,14 +721,6 @@ function visibleNotes(domain: IdentityDomain, spaceId: string, accountId: string
   return notes;
 }
 
-function spaceIdsFor(domain: IdentityDomain, accountId: string): readonly string[] {
-  const ids = new Set<string>();
-  for (const [, note] of domain.table('notes').entries()) {
-    if (allowsAccount(note, accountId)) ids.add(note.spaceId);
-  }
-  return [...ids].sort();
-}
-
 /** Explicit only: one imported account, and `ownerAccountId` names that account. */
 function explicitSingleUser(domain: IdentityDomain): string | undefined {
   if (domain.table('accounts').size !== 1) return undefined;
@@ -754,7 +747,13 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
         secret,
         requestRejection: (headers) => ctx.connection.requestRejection({ headers }),
         findSession: (sessionId) => domain.table('sessions').get(sessionId),
-        spaceIdsFor: (accountId) => spaceIdsFor(domain, accountId),
+        // Trusted enumeration comes from the mounted space directory, not
+        // from inferring memberships out of visible notes. With no directory
+        // mounted the member has no spaces (nothing is authorized by inference).
+        spaceIdsFor: (accountId) =>
+          spaceDirectoryFor(ctx)
+            ?.spacesForMember(accountId)
+            .map((space) => space.id) ?? [],
         singleUserAccountId: () =>
           mode === 'legacy-single-user' ? explicitSingleUser(domain) : undefined,
         admitOwner: (headers) => {
@@ -762,7 +761,10 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
           return 'peer' in admission && admission.peer.principal.kind === 'owner';
         },
       });
-      const disposePolicy = remoteAccess.registerPolicy('zhuma-member', memberPolicy(domain));
+      const disposePolicy = remoteAccess.registerPolicy(
+        'zhuma-member',
+        memberPolicy(domain, () => spaceDirectoryFor(ctx)),
+      );
       const disposeRoute = webServer.register({
         kind: 'prefix',
         path: PREFIX,
@@ -923,11 +925,16 @@ async function handle(
         fail(res, 405, 'method-not-allowed');
         return;
       }
+      // The authorized space enumeration rides on the same trusted directory:
+      // personal and team spaces appear here even when they hold no project
+      // or note yet, and a revoked membership disappears on the next read.
+      const spaces = spaceDirectoryFor(ctx)?.spacesForMember(actor.accountId) ?? [];
       send(res, 200, {
         ok: true,
         accountId: actor.accountId,
         principal: actor.principal,
         peerId: actor.peerId,
+        spaces,
       });
       return;
     }
@@ -938,12 +945,16 @@ async function handle(
         return;
       }
       if (!permitted(res, remoteAccess, actor, READ_ACTION, { spaceId: route.spaceId })) return;
+      // A member can open an empty space: authorization already happened in
+      // the policy, and an empty notes list is a valid answer, not a 404.
       const notes = visibleNotes(domain, route.spaceId, actor.accountId);
-      if (notes.length === 0) {
-        fail(res, 404, 'not-found');
-        return;
-      }
-      send(res, 200, { ok: true, accountId: actor.accountId, spaceId: route.spaceId, notes });
+      send(res, 200, {
+        ok: true,
+        accountId: actor.accountId,
+        spaceId: route.spaceId,
+        space: spaceDirectoryFor(ctx)?.space(route.spaceId),
+        notes,
+      });
       return;
     }
     if (route.name === 'note') {

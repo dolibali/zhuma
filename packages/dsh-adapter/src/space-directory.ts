@@ -13,6 +13,7 @@
  * {@link ProjectSpaceDirectory} contract the execution service consumes.
  */
 import { z } from 'zod';
+import type { Context } from '@deepseek-ai/cordis';
 import { defineDomain, type Domain } from '@deepseek-ai/dsh-storage-domain';
 import { WorkbenchError } from '@zhuma/agent-core';
 import { PROJECT_SPACE_LIMIT } from './project-space.js';
@@ -250,6 +251,55 @@ export interface OpenedSpaceDirectoryHandle extends SpaceDirectory, SpaceDirecto
 
 interface StorageDomainSeam {
   open(spec: typeof spaceDirectoryDomainSpec): Promise<SpaceDirectoryDomain>;
+}
+
+/** Registration is per host root, so plugin child contexts resolve the same directory. */
+const directories = new WeakMap<object, OpenedSpaceDirectoryHandle>();
+
+function directoryHost(ctx: object): object {
+  const root = (ctx as { root?: unknown }).root;
+  return typeof root === 'object' && root !== null ? root : ctx;
+}
+
+/**
+ * The directory mounted on this host, if any. Identity and execution read it
+ * lazily at each call, so a directory mounted after `applyIdentity` still
+ * takes effect; with no directory mounted, member space enumeration is empty
+ * (a safe default: nothing is authorized by inference). The handle also
+ * carries the writer side for the host that owns the directory.
+ */
+export function spaceDirectoryFor(ctx: object): OpenedSpaceDirectoryHandle | undefined {
+  return directories.get(directoryHost(ctx));
+}
+
+/**
+ * Open the trusted directory on the host's storage and register it on the
+ * host root. Cordis treats a plugin `apply` result as an effect, so this
+ * mount returns nothing; callers read the handle via {@link spaceDirectoryFor}.
+ * The disposer unregisters first, then closes the domain; reads after
+ * disposal see no directory rather than a stale one.
+ */
+export async function applySpaceDirectory(
+  ctx: Context,
+  imported?: SpaceDirectoryImport,
+): Promise<void> {
+  const seam = (ctx as { storageDomain?: StorageDomainSeam }).storageDomain;
+  if (seam === undefined || typeof seam.open !== 'function') {
+    throw new Error('space directory startup refused: storageDomain is not available');
+  }
+  const directory = await openSpaceDirectory(seam, imported);
+  const host = directoryHost(ctx);
+  if (directories.has(host)) {
+    await directory.close();
+    throw new Error('space directory startup refused: already mounted on this host');
+  }
+  directories.set(host, directory);
+  ctx.effect(() => {
+    return async () => {
+      directories.delete(host);
+      await directory.close();
+    };
+  });
 }
 
 /**

@@ -77,6 +77,13 @@ test('a real connection and member cookie run start, report, and review', async 
       ],
     },
     'multi-member',
+    {
+      spaces: [{ id: 'project', kind: 'team', name: '项目空间' }],
+      memberships: [
+        { spaceId: 'project', accountId: 'chen' },
+        { spaceId: 'project', accountId: 'lin' },
+      ],
+    },
   );
   const executionFiber = host.ctx.plugin(
     { inject: [...executionInject], apply: applyExecution },
