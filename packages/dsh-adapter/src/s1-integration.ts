@@ -100,6 +100,8 @@ export type ExecutionEndpoints = readonly [
   'report',
   'revision',
   'draft',
+  'inbox-counts',
+  'events',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -229,10 +231,42 @@ export interface StartPlanValue {
   readonly disposition: string;
   readonly reports: NodeExecutionReport[];
 }
+export interface InboxPlace {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+export interface InboxCounts {
+  readonly deliver: number;
+  readonly review: number;
+  readonly confirm: number;
+}
+export interface EventsRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+  after: number;
+  seenEventIds?: readonly string[];
+}
+export interface ExecutionEvent {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly actorId: string;
+  readonly type: string;
+  readonly nodeId: string;
+  readonly status: string;
+  readonly version: number;
+}
+export interface EventsValue {
+  readonly events: readonly ExecutionEvent[];
+}
 export interface ChannelInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
+  readonly places?: readonly InboxPlace[];
 }
 export interface ExecutionCommandValue {
   readonly disposition: 'applied' | 'replayed' | 'ignored';
@@ -254,6 +288,8 @@ export interface ExecutionServiceMethods {
     body: unknown,
   ): Promise<ExecutionChannelResult<StartPlanValue>>;
   inbox(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ChannelInboxValue>>;
+  inboxCounts(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<InboxCounts>>;
+  events(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<EventsValue>>;
   submit(
     caller: ExecutionCaller,
     body: unknown,
@@ -277,6 +313,8 @@ export interface ExecutionServiceMethods {
 export interface ExecutionRoutes {
   readonly 'start-plan': { readonly body: StartPlanRequest; readonly value: StartPlanValue };
   readonly inbox: { readonly body: InboxRequest; readonly value: ChannelInboxValue };
+  readonly 'inbox-counts': { readonly body: InboxRequest; readonly value: InboxCounts };
+  readonly events: { readonly body: EventsRequest; readonly value: EventsValue };
   readonly submit: { readonly body: SubmitRequest; readonly value: ExecutionCommandValue };
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
@@ -344,6 +382,7 @@ export interface ExecutionInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
+  readonly places?: readonly InboxPlace[];
 }
 export interface DeliveryDraft {
   readonly taskId: string;
@@ -371,6 +410,8 @@ export interface ReviewDraft {
 }
 export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
+  inboxCounts(signal?: AbortSignal): Promise<InboxCounts>;
+  events(query: EventsRequest, signal?: AbortSignal): Promise<EventsValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   revision(
@@ -390,6 +431,7 @@ export interface ExecutionWorkspaceProps {
 export interface InboxPanelProps {
   items: readonly InboxItem[];
   nodes: readonly ExecutionNodeWire[];
+  places?: readonly InboxPlace[];
   error?: string;
   pending?: boolean;
   reload(): void;

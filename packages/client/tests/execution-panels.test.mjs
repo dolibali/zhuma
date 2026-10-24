@@ -58,6 +58,50 @@ test('panels render delivery and review without an actor control', () => {
     createElement(InboxPanel, { items: [], nodes: [], reload() {}, open() {} }),
   );
   assert.match(empty, /现在没有需要你处理的工作/);
+  const grouped = renderToStaticMarkup(
+    createElement(InboxPanel, {
+      items: [
+        item,
+        { ...item, id: 'review-1', kind: 'review', action: 'review', reason: 'review-assigned' },
+        {
+          ...item,
+          id: 'owner-1',
+          kind: 'deliver',
+          action: 'provide-input',
+          reason: 'owner-input-required',
+          nodeId: 'expert-node',
+        },
+        {
+          ...item,
+          id: 'confirm-1',
+          kind: 'confirm',
+          action: 'confirm',
+          reason: 'parent-confirmation',
+        },
+      ],
+      nodes: [
+        { ...node, status: 'ready' },
+        { ...node, nodeId: 'expert-node', status: 'waiting-for-input', goal: '专家节点' },
+      ],
+      places: [
+        { itemId: 'inbox-1', taskPath: '客户门户 / 账号登录', ownerName: '陈宁' },
+        { itemId: 'owner-1', taskPath: '客户门户 / 账号登录 / 设计登录', ownerName: '陈宁' },
+      ],
+      reload() {},
+      open() {},
+    }),
+  );
+  const deliverAt = grouped.indexOf('data-inbox-group="deliver"');
+  const reviewAt = grouped.indexOf('data-inbox-group="review"');
+  const confirmAt = grouped.indexOf('data-inbox-group="confirm"');
+  assert.deepEqual(
+    [deliverAt >= 0, reviewAt > deliverAt, confirmAt > reviewAt],
+    [true, true, true],
+  );
+  assert.match(grouped, /客户门户 \/ 账号登录/);
+  assert.match(grouped, /负责人 陈宁/);
+  assert.equal(grouped.slice(deliverAt, reviewAt).includes('专家节点'), true);
+  assert.equal(grouped.slice(reviewAt, confirmAt).includes('专家节点'), false);
 
   const api = { async submit() {}, async ballot() {}, async inbox() {} };
   const delivery = renderToStaticMarkup(

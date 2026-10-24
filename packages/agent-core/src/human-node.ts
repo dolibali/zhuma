@@ -1,5 +1,5 @@
 import { createNodeHandoffs } from './applied-handoff.js';
-import { canonicalPayload, type CommandDecision } from './concurrency.js';
+import { canonicalPayload, type CommandDecision, type DomainEvent } from './concurrency.js';
 import {
   canSubmitNode,
   createArtifactVersion,
@@ -55,6 +55,11 @@ export interface ExecutionNodeRecord {
   readonly acceptedArtifactVersionId?: string;
   readonly comments: readonly CitedComment[];
   readonly receipts: readonly ExecutionReceipt[];
+  /**
+   * Facts for this node, in sequence order. They share this record so a command
+   * and its event are one write.
+   */
+  readonly events?: readonly DomainEvent<{ readonly status: string; readonly version: number }>[];
   /** Human assignee's unsent delivery. Cleared when a submit is stored. */
   readonly deliveryDraft?: {
     readonly version: number;
