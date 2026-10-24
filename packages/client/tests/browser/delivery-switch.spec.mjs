@@ -361,3 +361,100 @@ test('读取一直不返回时会解锁并提示', async ({ page, replay }) => {
   await expect(page.getByLabel('交付说明')).toHaveValue('用户先写');
   await expect(save).toBeEnabled();
 });
+
+const fileMeta = [
+  { label: '媒体类型', prop: 'mediaType', next: 'application/json' },
+  { label: '字节数', prop: 'byteSize', next: '9' },
+  { label: '校验', prop: 'checksum', next: 'def' },
+  { label: '访问策略', prop: 'accessPolicyId', next: 'other-policy' },
+];
+
+for (const field of fileMeta) {
+  test(`保存后只改${field.label}会换幂等键再保存成功`, async ({ page, replay }) => {
+    const seen = new Map();
+    const saves = [];
+    replay.handlers.inbox = async () => inbox();
+    replay.handlers.draft = async (payload) => {
+      if (payload.idempotencyKey === undefined) {
+        return { ok: true, value: { version: 0, text: '', links: [], files: [] } };
+      }
+      const fingerprint = JSON.stringify({
+        text: payload.text ?? '',
+        links: payload.links ?? [],
+        files: payload.files ?? [],
+      });
+      const prior = seen.get(payload.idempotencyKey);
+      if (prior !== undefined && prior !== fingerprint) {
+        return {
+          ok: false,
+          error: {
+            code: 'idempotency-mismatch',
+            message: '这个请求标识已经用于另一项操作。',
+            details: {},
+          },
+        };
+      }
+      seen.set(payload.idempotencyKey, fingerprint);
+      saves.push(payload);
+      return {
+        ok: true,
+        value: {
+          version: payload.expectedVersion + 1,
+          text: payload.text ?? '',
+          links: payload.links ?? [],
+          files: payload.files ?? [],
+        },
+      };
+    };
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/?execution');
+    await openNode(page, '设计登录');
+    const save = page.getByRole('button', { name: '保存草稿', exact: true });
+    await expect
+      .poll(() =>
+        replay.requests.some(
+          (item) =>
+            item.endpoint === 'draft' &&
+            item.nodeId === 'design' &&
+            item.idempotencyKey === undefined,
+        ),
+      )
+      .toBe(true);
+    await expect(save).toBeEnabled();
+    await page.getByLabel('文件标识').fill('design-file');
+    await page.getByLabel('媒体类型').fill('text/plain');
+    await page.getByLabel('字节数').fill('4');
+    await page.getByLabel('校验').fill('abc');
+    await page.getByLabel('访问策略').fill('policy');
+    await save.click();
+    await expect.poll(() => saves.length).toBe(1);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await page.getByLabel(field.label).fill(field.next);
+    await save.click();
+    await expect.poll(() => saves.length).toBe(2);
+    expect(saves[1].idempotencyKey).not.toBe(saves[0].idempotencyKey);
+    expect(saves[1].expectedVersion).toBe(1);
+    expect(saves[0].files).toEqual([
+      {
+        id: 'design-file',
+        mediaType: 'text/plain',
+        byteSize: 4,
+        checksum: 'abc',
+        accessPolicyId: 'policy',
+        uploadComplete: false,
+      },
+    ]);
+    expect(saves[1].files).toEqual([
+      {
+        id: 'design-file',
+        mediaType: field.prop === 'mediaType' ? field.next : 'text/plain',
+        byteSize: field.prop === 'byteSize' ? 9 : 4,
+        checksum: field.prop === 'checksum' ? field.next : 'abc',
+        accessPolicyId: field.prop === 'accessPolicyId' ? field.next : 'policy',
+        uploadComplete: false,
+      },
+    ]);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByLabel(field.label)).toHaveValue(field.next);
+  });
+}

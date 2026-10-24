@@ -214,5 +214,5 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 - 提交接口的链接没有长度上限。这是 WP03 留下的问题，草稿上限不改变提交。
 
 - 同一轮已经投下的票不能撤回。先通过再改成退回会得到 `conflicting-ballot`，原先的通过仍然有效。
-- 交付的幂等键不随文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId`、`uploadComplete` 变化。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执，所以换这些字段再提交通常仍会执行；若上一次其实已经成功、只是响应丢失，再改这些字段会得到 `idempotency-mismatch`。
+- 交付表单改正文、链接、文件标识，或文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId` 时更换幂等键。`uploadComplete` 没有单独的编辑控件，草稿里仍记成未完成。同一键配上不同内容仍返回 `idempotency-mismatch`，不覆盖已保存内容。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执。
 - 解锁那一次写入失败之后，如果客户端没有用同一个键重试，下游要等到插件再次打开时的对账才会补上。运行期间没有周期性对账。

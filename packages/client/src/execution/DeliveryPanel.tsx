@@ -310,26 +310,38 @@ export function DeliveryPanel({
         <Field label="媒体类型">
           <input
             value={file.mediaType}
-            onChange={(event) => setFile({ ...file, mediaType: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, mediaType: event.target.value });
+            }}
           />
         </Field>
         <Field label="字节数">
           <input
             inputMode="numeric"
             value={file.byteSize}
-            onChange={(event) => setFile({ ...file, byteSize: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, byteSize: event.target.value });
+            }}
           />
         </Field>
         <Field label="校验">
           <input
             value={file.checksum}
-            onChange={(event) => setFile({ ...file, checksum: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, checksum: event.target.value });
+            }}
           />
         </Field>
         <Field label="访问策略">
           <input
             value={file.accessPolicyId}
-            onChange={(event) => setFile({ ...file, accessPolicyId: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, accessPolicyId: event.target.value });
+            }}
           />
         </Field>
         <p className="zm-empty">待解析</p>
