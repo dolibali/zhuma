@@ -9,6 +9,12 @@ const member = (accountId) => ({
 });
 const json = (route, status, body) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+const draftQuery = {
+  taskId: deliveryNode.taskId,
+  planId: deliveryNode.planId,
+  revision: deliveryNode.revision,
+  nodeId: deliveryNode.nodeId,
+};
 
 async function routes(page, initialAccount) {
   const state = { account: initialAccount, expired: false, calls: [], legacy: [] };
@@ -42,6 +48,14 @@ async function routes(page, initialAccount) {
     if (state.expired) {
       state.account = undefined;
       return json(route, 401, { ok: false, error: { code: 'unauthenticated' } });
+    }
+    if (body.method === 'zhuma-exec/draft') {
+      expect(body.payload).toEqual(draftQuery);
+      return json(route, 200, {
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: { version: 0, text: '', links: [], files: [] } },
+      });
     }
     if (body.method === 'zhuma-exec/startable')
       return json(route, 200, {
@@ -91,6 +105,7 @@ test('execution HTTP401 unmounts old input; another member never sees the previo
   const state = await routes(page, 'chen');
   await page.goto('/?member-execution&strict');
   await page.getByRole('button', { name: '提交产物', exact: true }).click();
+  await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
   await page.getByLabel('产物正文', { exact: true }).fill('previous-member-private-draft');
   state.expired = true;
   await page.getByRole('button', { name: '刷新', exact: true }).click();
@@ -103,6 +118,12 @@ test('execution HTTP401 unmounts old input; another member never sees the previo
   await expect(page.getByText('previous-member-private-draft')).toHaveCount(0);
   expect(state.legacy).toHaveLength(0);
   expect(
-    state.calls.every((call) => ['zhuma-exec/inbox', 'zhuma-exec/startable'].includes(call.method)),
+    state.calls.every(
+      (call) =>
+        ['zhuma-exec/inbox', 'zhuma-exec/startable'].includes(call.method) ||
+        (call.method === 'zhuma-exec/draft' &&
+          Object.keys(call.payload).length === 4 &&
+          Object.entries(draftQuery).every(([key, value]) => call.payload[key] === value)),
+    ),
   ).toBe(true);
 });
