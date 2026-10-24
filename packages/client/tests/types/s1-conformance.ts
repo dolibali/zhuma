@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
 import type { Workbench } from '@zhuma/agent-core';
+import type { ExecutionNodeView } from '@zhuma/dsh-adapter';
 import {
   DeliveryPanel,
   ExecutionWorkspace,
@@ -8,6 +9,8 @@ import {
   ReviewWorkspace,
   createExecutionApi,
   type ExecutionApi as ClientExecutionApi,
+  type UpstreamInputWire,
+  type ExecutionNodeWire as ClientExecutionNodeWire,
   type ExecutionInboxValue as ClientInboxValue,
   type ExecutionStartableValue as ClientStartableValue,
   type StartablePlanWire,
@@ -70,6 +73,12 @@ export type RevisionBodyBoth = Assert<
 >;
 export type RevisionValueBoth = Assert<
   Both<Awaited<ReturnType<ClientExecutionApi['revision']>>, RevisionValue['view']>
+>;
+export type UpstreamInputBoth = Assert<
+  Both<UpstreamInputWire, NonNullable<ExecutionNodeView['inputs']>[number]>
+>;
+export type UpstreamPropertyBoth = Assert<
+  Both<Pick<ClientExecutionNodeWire, 'inputs'>, Pick<ExecutionNodeView, 'inputs'>>
 >;
 export type InboxScopeBoth = Assert<
   Both<
