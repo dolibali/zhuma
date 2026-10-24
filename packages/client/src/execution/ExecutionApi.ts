@@ -57,6 +57,7 @@ export interface ExecutionNodeWire {
 
 export interface ExecutionInboxValue {
   readonly actorId: string;
+  readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
 }
@@ -91,6 +92,18 @@ export interface StartPlanDraft {
   readonly planId: string;
   readonly revision: number;
   readonly idempotencyKey: string;
+  readonly spaceId?: string | undefined;
+}
+export interface StartablePlanWire {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly title: string;
+}
+export interface ExecutionStartableValue {
+  readonly actorId: string;
+  readonly spaceId?: string | undefined;
+  readonly plans: readonly StartablePlanWire[];
 }
 export interface StartPlanValue {
   readonly disposition: string;
@@ -114,6 +127,7 @@ export function executionErrorMessage(error: unknown): string {
 }
 
 export interface ExecutionApi {
+  startable(signal?: AbortSignal): Promise<ExecutionStartableValue>;
   startPlan(draft: StartPlanDraft, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
@@ -258,8 +272,34 @@ function readInbox(value: unknown): ExecutionInboxValue {
   if (!Array.isArray(record.items) || !Array.isArray(record.nodes)) invalid('返回的待办不正确。');
   return {
     actorId: text(record.actorId, '待办'),
+    ...(record.spaceId === undefined ? {} : { spaceId: text(record.spaceId, '空间') }),
     items: record.items.map(readItem),
     nodes: record.nodes.map(readExecutionNode),
+  };
+}
+
+function readStartable(value: unknown): ExecutionStartableValue {
+  if (!value || typeof value !== 'object') invalid('返回的计划目录不正确。');
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.plans)) invalid('返回的计划目录不正确。');
+  const seen = new Set<string>();
+  return {
+    actorId: text(record.actorId, '成员'),
+    ...(record.spaceId === undefined ? {} : { spaceId: text(record.spaceId, '空间') }),
+    plans: record.plans.map((value) => {
+      if (!value || typeof value !== 'object') invalid('返回的计划不正确。');
+      const plan = value as Record<string, unknown>;
+      const parsed = {
+        taskId: text(plan.taskId, '任务'),
+        planId: text(plan.planId, '计划'),
+        revision: integer(plan.revision, 1, '计划版本'),
+        title: text(plan.title, '计划标题'),
+      };
+      const key = JSON.stringify([parsed.taskId, parsed.planId, parsed.revision]);
+      if (seen.has(key)) invalid('返回的计划目录包含重复版本。');
+      seen.add(key);
+      return parsed;
+    }),
   };
 }
 
@@ -321,7 +361,15 @@ function readStart(value: unknown, expected: StartPlanDraft): StartPlanValue {
   };
 }
 
-export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
+/** Optional binding preserves legacy callers. Member UI must always bind a verified space. */
+export function createExecutionApi(rpc: ClientConnectionRpc, spaceId?: string): ExecutionApi {
+  if (spaceId !== undefined) text(spaceId, '空间');
+  const scope = spaceId === undefined ? {} : { spaceId };
+  function scoped<T extends { readonly spaceId?: string | undefined }>(value: T): T {
+    if (spaceId !== undefined && value.spaceId !== spaceId)
+      throw new ExecutionError('scope-mismatch', '返回的工作空间不一致，请重新连接。');
+    return value;
+  }
   async function call(endpoint: string, payload: object, signal?: AbortSignal): Promise<unknown> {
     rejectActor(payload);
     const response = await rpc.call('/api', `zhuma-exec/${endpoint}`, payload, signal);
@@ -344,7 +392,12 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
     return response.value;
   }
   return {
+    async startable(signal) {
+      return scoped(readStartable(await call('startable', scope, signal)));
+    },
     async startPlan(draft, signal) {
+      if (spaceId !== undefined && draft.spaceId !== undefined && draft.spaceId !== spaceId)
+        throw new ExecutionError('scope-mismatch', '计划的工作空间不一致，请重新选择。');
       return readStart(
         await call(
           'start-plan',
@@ -353,6 +406,10 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
             planId: draft.planId,
             revision: draft.revision,
             idempotencyKey: draft.idempotencyKey,
+            ...scope,
+            ...(spaceId === undefined && draft.spaceId !== undefined
+              ? { spaceId: draft.spaceId }
+              : {}),
           },
           signal,
         ),
@@ -360,7 +417,7 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
       );
     },
     async inbox(signal) {
-      return readInbox(await call('inbox', {}, signal));
+      return scoped(readInbox(await call('inbox', scope, signal)));
     },
     async submit(draft, signal) {
       const payload = {

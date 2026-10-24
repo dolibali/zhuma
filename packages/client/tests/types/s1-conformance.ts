@@ -8,6 +8,9 @@ import {
   ReviewWorkspace,
   createExecutionApi,
   type ExecutionApi as ClientExecutionApi,
+  type ExecutionInboxValue as ClientInboxValue,
+  type ExecutionStartableValue as ClientStartableValue,
+  type StartablePlanWire,
   type StartPlanDraft,
   type StartPlanValue as ClientStartPlanValue,
 } from '../../dist/index.js';
@@ -23,8 +26,12 @@ import type {
   ProjectSpaceDirectory,
   ReviewWorkspaceProps,
   S1Startup,
+  ExecutionStartableValue,
+  StartablePlan,
   StartPlanRequest,
   StartPlanValue,
+  ChannelInboxValue,
+  ChannelStartableValue,
 } from '../../../dsh-adapter/dist/s1-integration.js';
 
 type Assignable<A, B> = [A] extends [B] ? true : false;
@@ -42,9 +49,23 @@ export const deliveryMatches = DeliveryPanel satisfies (props: DeliveryPanelProp
 export const reviewMatches = ReviewWorkspace satisfies (props: ReviewWorkspaceProps) => unknown;
 
 export type CreateApiBoth = Assert<Both<typeof createExecutionApi, CreateExecutionApi>>;
+export type StartableValueBoth = Assert<Both<ClientStartableValue, ExecutionStartableValue>>;
+export type StartablePlanBoth = Assert<Both<StartablePlanWire, StartablePlan>>;
 export type StartBodyBoth = Assert<Both<StartPlanDraft, StartPlanRequest>>;
 export type StartValueBoth = Assert<Both<ClientStartPlanValue, StartPlanValue>>;
 export type ApiBoth = Assert<Both<ClientExecutionApi, ExecutionApi>>;
+export type InboxScopeBoth = Assert<
+  Both<
+    Pick<ClientInboxValue, 'actorId' | 'spaceId'>,
+    Pick<ChannelInboxValue, 'actorId' | 'spaceId'>
+  >
+>;
+export type StartableScopeBoth = Assert<
+  Both<
+    Pick<ClientStartableValue, 'actorId' | 'spaceId'>,
+    Pick<ChannelStartableValue, 'actorId' | 'spaceId'>
+  >
+>;
 export type WorkspacePropsBoth = Assert<
   Both<PropsOf<typeof ExecutionWorkspace>, ExecutionWorkspaceProps>
 >;
@@ -64,11 +85,9 @@ export function mountS1(
 ): Promise<ExecutionWorkspaceProps> {
   startup.configureDeploymentMode(ctx, mode);
   return startup.applyIdentity(ctx, imported).then(async () => {
-    const resolver = startup.memberResolver(ctx);
     await startup.applyWorkbench(ctx);
-    const executionOptions = { memberResolver: resolver, readWorkbench, projectSpaces };
+    const executionOptions = { readWorkbench, projectSpaces };
     await startup.applyExecution(ctx, executionOptions);
-    await applyExecution(ctx, executionOptions);
     const props: ExecutionWorkspaceProps = { api: createExecutionApi(rpc) };
     startup.mount(props);
     return props;
