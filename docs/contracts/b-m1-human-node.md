@@ -1,6 +1,6 @@
 # B-M1 人工节点执行契约（S1）
 
-切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，组合现有 WP00 导出。`node-status.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts` 没有改。`packages/agent-core/src/review.ts` 相对 `55ebf8b...HEAD` 是 +14/−2：`BallotRejectionCode` 增加 `empty-comment`；私有 `commentText` 去掉零宽字符和 U+00AD 后再 trim，用来判断评论和退回意见是不是空的。这处待 A 确认。
+切片 S1 把一份已经确认的计划跑通：启动、待办、提交、评审、退回、全员通过、下游解锁、报告。本文固定命令、存储形状和身份映射。纯编排在 `packages/agent-core/src/human-node.ts`，组合现有 WP00 导出。`node-status.ts`、`delivery.ts`、`handoff.ts`、`concurrency.ts` 没有改。`packages/agent-core/src/review.ts` 相对 develop `772b59c` 是 +14/−2。#18 已合入 develop（772b59c）。`BallotRejectionCode` 增加 `empty-comment`；私有 `commentText` 去掉零宽字符和 U+00AD 后再 trim，用来判断评论和退回意见是不是空的。这处待 A 确认。
 
 带存储的服务和 `/api/zhuma-exec` 通道在 `packages/dsh-adapter`。待办、交付和评审界面在 `packages/client/src/execution/`。`createExecutionApi` 调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。下文用「契约」指纯函数，用「适配」指服务和 Host 通道。进程内的服务测试是契约模拟。`execution-host.test.mjs` 用真实 Connection 和成员 cookie 跑通一条链路，仍不是已安装的桌面产品。
 
@@ -39,7 +39,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 
 ## 身份
 
-单人还是多人由 `configureDeploymentMode` 选定。成员来自身份模块的 `resolveMember`。身份模块 #18 的 head 是 `b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）。`eb25d30` 不是本 head 的祖先。本 head 的身份代码经 `b/m1-align-identity` `20314eb` 带入，与 `eb25d30` 的身份实现内容等价；另多 `packages/dsh-adapter/tsconfig.identity.json` 与 `packages/dsh-adapter/tests/identity-session.test.mjs` 的小增量。`c31f062` 是更早的身份提交，不是这个 head。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。执行插件没有 `singleUser`，也没有 `bind-owner`。同一来源地址 60 秒内登录满 8 次后返回 429。
+单人还是多人由 `configureDeploymentMode` 选定。成员来自身份模块的 `resolveMember`。身份模块 #18 的 head 是 `b/id0a-identity` `eb25d30`。#18 已合入 develop（772b59c）。本 head 的身份代码经 `b/m1-align-identity` `20314eb` 带入，与 `eb25d30` 的身份实现内容等价；另多 `packages/dsh-adapter/tsconfig.identity.json` 与 `packages/dsh-adapter/tests/identity-session.test.mjs` 的小增量。`c31f062` 是更早的身份提交，不是这个 head。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。执行插件没有 `singleUser`，也没有 `bind-owner`。同一来源地址 60 秒内登录满 8 次后返回 429。
 
 1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。项目属于哪个空间，只问调用方注入的 `ProjectSpaceDirectory`。执行服务把 `spaceForProject(projectId)` 返回的空间 id 和这次成员的 `spaceIds` 做精确比较。没有注入这份目录时，不把 `projectId` 当作空间 id，启动、提交、投票、结算、报告和待办全部拒绝，也不写入。
@@ -211,7 +211,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 - 空间目录：`b/m1-space-mapping` `49d7984`
 - 身份对齐：`b/m1-align-identity` `20314eb`
 - 叠加从下到上：delivery-draft `39367a6`，review-comment `f494d12`，unlock-reconcile `49be963`，inbox-groups `951fc76`，exec-events `019b280`
-- 身份模块 #18：`b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`）。它不是本 head 的祖先；身份代码经 `20314eb` 带入，内容等价，另多上面说的两处小增量
+- 身份模块 #18：`b/id0a-identity` `eb25d30`。#18 已合入 develop（772b59c）。身份代码经 `20314eb` 带入，内容等价，另多上面说的两处小增量
 - 子模块钉在 `687f282`
 
 `f494d12` 改了 `packages/agent-core/src/review.ts` 的空评论判断（私有 `commentText`），需要 A 确认。接缝不变：B 提供可信身份、空间授权事实和执行服务消费接口；A 单写 Host 的注入、导航、导出和公共配置。

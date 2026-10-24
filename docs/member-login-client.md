@@ -14,7 +14,7 @@
 | `GET /zhuma-id/session` | 无                        | `{ ok: true, accountId, principal: { kind: 'zhuma-member', memberId }, peerId }` |
 | `POST /zhuma-id/logout` | `{}`                      | `{ ok: true, accountId }`                                                        |
 
-M1 累计候选 `e4d5dc94a3356cfc0e02bc0e78ca852660835170` 的身份模块与该 #18 版本无差异。这里是源码契约依据，不代表这两个候选已进入 develop，也不是成员会话的运行证明。
+M1 累计候选 `e4d5dc94a3356cfc0e02bc0e78ca852660835170` 的身份模块与该 #18 版本无差异。这里是源码契约依据，不代表 M1 累计候选已进入 develop。#18 已合入 develop（772b59c）。这也不是成员会话的运行证明。
 
 传输只使用固定的同源成员路由、同源 cookie 和 `no-store`；不调用 owner RPC、不把账号当 actor、不读取或存储 cookie/token。密码在输入阶段使用 LoginForm 的 React 局部状态，提交时清空，不进入会话控制器、持久存储或日志。请求限定 10 秒，支持调用者取消。错误只向界面显示固定文案，不回显响应正文或网络细节；401、429、403、服务不可用与损坏响应分别处理，没有自行推断重试倒计时。
 

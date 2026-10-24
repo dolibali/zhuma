@@ -1,6 +1,6 @@
 # S1 模块签名
 
-A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本累计 head 上与真实导出双向对齐。身份模块 #18 的 head 是 `b/id0a-identity` `eb25d30`（已同步 develop `f90f2d8`），但 `eb25d30` 不是本 head 的祖先。本 head 的身份代码经 `b/m1-align-identity` `20314eb` 带入，与 `eb25d30` 内容等价；另多 `packages/dsh-adapter/tsconfig.identity.json` 与 `packages/dsh-adapter/tests/identity-session.test.mjs` 的小增量。`c31f062` 是更早的身份提交。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。`packages/dsh-adapter/tsconfig.identity.json` 在本 head 上就能编译。
+A-INTEGRATE-S1 按 `packages/dsh-adapter/src/s1-integration.ts` 接线。`tsc -b` 会编译这份清单。执行通道和界面组件在本累计 head 上与真实导出双向对齐。身份模块 #18 的 head 是 `b/id0a-identity` `eb25d30`。#18 已合入 develop（772b59c）。本 head 的身份代码经 `b/m1-align-identity` `20314eb` 带入，与 `eb25d30` 内容等价；另多 `packages/dsh-adapter/tsconfig.identity.json` 与 `packages/dsh-adapter/tests/identity-session.test.mjs` 的小增量。`c31f062` 是更早的身份提交。不要用旧的 `b/s1-signatures@5d6eafa` 推断执行插件尚未实现。`packages/dsh-adapter/tsconfig.identity.json` 在本 head 上就能编译。
 
 ## 加载顺序
 
