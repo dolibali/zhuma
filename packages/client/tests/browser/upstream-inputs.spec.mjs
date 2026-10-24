@@ -13,6 +13,7 @@ async function open(page, mode) {
   await page.goto(`/?upstream-client&strict&upstream-mode=${mode}`);
   await button(page, mode === 'revise' ? '提交新版本' : '提交产物').click();
   await expect(panel(page)).toContainText('确认订单接口与错误码');
+  await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
 }
 async function refresh(page, held = false) {
   await button(page, '刷新').click();

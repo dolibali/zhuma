@@ -24,6 +24,7 @@ async function delivery(page) {
     .getByRole('article', { name: '编写订单状态帮助文案', exact: true })
     .getByRole('button')
     .click();
+  await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
   return page.getByLabel('产物正文', { exact: true });
 }
 async function review(page) {

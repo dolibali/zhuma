@@ -45,27 +45,29 @@ export function RevisionProbe() {
         const submit = endpoint.endsWith('/submit');
         const response = {
           ok: true,
-          value: read
-            ? { view: structuredClone(value.view) }
-            : submit
-              ? {
-                  node: {
-                    ...value.node,
-                    version: value.node.version + 1,
-                    status: 'in-review',
-                    currentRoundId: 'resubmitted-round',
-                    rounds: [
-                      {
-                        id: 'resubmitted-round',
-                        status: 'open',
-                        artifactVersionId: 'artifact-v3',
-                        reviewerIds: ['lin', 'qa'],
-                        ballots: [],
-                      },
-                    ],
-                  },
-                }
-              : { actorId: 'chen', nodes: [value.node], items: [revisionItem] },
+          value: endpoint.endsWith('/draft')
+            ? { version: 0, text: '', links: [], files: [] }
+            : read
+              ? { view: structuredClone(value.view) }
+              : submit
+                ? {
+                    node: {
+                      ...value.node,
+                      version: value.node.version + 1,
+                      status: 'in-review',
+                      currentRoundId: 'resubmitted-round',
+                      rounds: [
+                        {
+                          id: 'resubmitted-round',
+                          status: 'open',
+                          artifactVersionId: 'artifact-v3',
+                          reviewerIds: ['lin', 'qa'],
+                          ballots: [],
+                        },
+                      ],
+                    },
+                  }
+                : { actorId: 'chen', nodes: [value.node], items: [revisionItem] },
         };
         const call = { channel, endpoint, payload, signal, response };
         value.calls.push(call);

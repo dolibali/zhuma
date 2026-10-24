@@ -233,16 +233,17 @@ test('upstream SSR: missing and explicitly empty use distinct statements', () =>
   assert.ok(!empty.includes('上游输入尚未返回'));
 });
 
-test('upstream SSR: both delivery modes consume only service blocking, not the access category', () => {
+test('upstream SSR: both delivery modes keep the initial unread draft closed regardless of source category', () => {
   for (const mode of ['submit', 'revise']) {
     for (const access of ['visible', 'pending', 'hidden']) {
       const input = upstreamInputs().find((row) => row.access === access);
       for (const blocking of [true, false]) {
         const html = render([{ ...input, blocking }], mode);
-        assert.equal(/<button[^>]*disabled/.test(html), blocking, `${mode}/${access}/${blocking}`);
+        assert.ok(html.includes('草稿尚未读取。'));
+        assert.equal(/<button[^>]*disabled/.test(html), true, `${mode}/${access}/${blocking}`);
       }
     }
-    assert.equal(/<button[^>]*disabled/.test(render(undefined, mode)), false);
+    assert.equal(/<button[^>]*disabled/.test(render(undefined, mode)), true);
   }
 });
 
