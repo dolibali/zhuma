@@ -10,3 +10,4 @@ pnpm-lock.yaml
 
 .playwright-cli/
 output/playwright/
+.zhanlu/
