@@ -236,6 +236,10 @@ test('formal spaces: changed account during the current precheck returns to logi
 }) => {
   await setup(page);
   await chooseSpace(page, '团队 · 产品研发');
+  await expect(
+    page.getByRole('article', { name: '编写订单状态帮助文案', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
   await control(page, () => {
     window.memberExecutionSpaces.holdSessions = true;
   });
