@@ -11,6 +11,7 @@ A 的 Host 身份装配见 [#28](https://github.com/dolibali/zhuma/issues/28)，
 退回修改的 Client 查询、版本对照、输入生命周期和显式重提边界见[接口说明](contracts/client-revision.md)。
 上游来源的公开投影、正常提交／修改入口和服务阻塞消费见[上游输入说明](contracts/client-upstream-inputs.md)。
 文字／链接草稿的明确保存、冲突恢复、跨轮版本与文件引用边界见[草稿说明](contracts/client-delivery-drafts.md)。
+具体工作项分组、正常处理入口及独立来源投影边界见[待办说明](contracts/client-inbox-groups.md)。
 
 ## 第一次准备
 

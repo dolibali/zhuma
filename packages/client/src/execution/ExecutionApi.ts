@@ -86,6 +86,25 @@ export interface ExecutionInboxValue {
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
 }
+/** #85 candidate display contract. Not wired into inbox transport before its service DTO is accepted. */
+export interface InboxPlaceWire {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+
+export function readInboxPlaces(value: unknown): readonly InboxPlaceWire[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) invalid('返回的来源位置不正确。');
+  return value.map((raw) => {
+    const item = record(raw, '来源位置');
+    return {
+      itemId: text(item.itemId, '工作项'),
+      taskPath: typeof item.taskPath === 'string' ? item.taskPath.trim() : '',
+      ownerName: typeof item.ownerName === 'string' ? item.ownerName.trim() : '',
+    };
+  });
+}
 
 export interface DeliveryDraft {
   readonly taskId: string;
