@@ -17,6 +17,7 @@ const ENDPOINTS = [
   'settle',
   'report',
   'revision',
+  'draft',
 ] as const;
 
 type Endpoint = (typeof ENDPOINTS)[number];
@@ -214,6 +215,8 @@ function run(
       return service.report(caller, payload);
     case 'revision':
       return service.revision(caller, payload);
+    case 'draft':
+      return service.draft(caller, payload);
   }
 }
 

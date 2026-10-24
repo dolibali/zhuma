@@ -99,6 +99,7 @@ export type ExecutionEndpoints = readonly [
   'settle',
   'report',
   'revision',
+  'draft',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -176,6 +177,7 @@ export type ExecutionMessageCode =
   | 'unavailable'
   | 'not-found'
   | 'not-returned'
+  | 'not-deliverable'
   | 'validation'
   | 'unknown-field'
   | 'invalid-handoff'
@@ -265,6 +267,10 @@ export interface ExecutionServiceMethods {
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
   revision(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<RevisionValue>>;
+  draft(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<SavedDeliveryDraft>>;
   reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
 }
 export interface ExecutionRoutes {
@@ -275,6 +281,27 @@ export interface ExecutionRoutes {
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
   readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
   readonly revision: { readonly body: RevisionRequest; readonly value: RevisionValue };
+  readonly draft: {
+    readonly body: RevisionRequest | DeliveryDraftWrite;
+    readonly value: SavedDeliveryDraft;
+  };
+}
+export interface SavedDeliveryDraft {
+  readonly version: number;
+  readonly text: string;
+  readonly links: readonly string[];
+  readonly files: readonly ArtifactFileRef[];
+}
+export interface DeliveryDraftWrite {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly text?: string;
+  readonly files?: readonly ArtifactFileRef[];
+  readonly links?: readonly string[];
 }
 export interface ExecutionArtifactWire {
   readonly id: string;
@@ -348,6 +375,11 @@ export interface ExecutionApi {
     query: { taskId: string; planId: string; revision: number; nodeId: string },
     signal?: AbortSignal,
   ): Promise<RevisionView>;
+  readDeliveryDraft(
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+    signal?: AbortSignal,
+  ): Promise<SavedDeliveryDraft>;
+  saveDeliveryDraft(draft: DeliveryDraftWrite, signal?: AbortSignal): Promise<SavedDeliveryDraft>;
 }
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {

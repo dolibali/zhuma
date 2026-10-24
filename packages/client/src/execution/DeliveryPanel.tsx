@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ArtifactFileRef } from '@zhuma/agent-core';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
@@ -64,40 +64,86 @@ export function DeliveryPanel({
   const [text, setText] = useState('');
   const [link, setLink] = useState('');
   const [file, setFile] = useState(emptyFile);
+  const [draftVersion, setDraftVersion] = useState(0);
   const [error, setError] = useState('');
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<'save' | 'submit' | ''>('');
   const key = useRef(crypto.randomUUID());
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void api
+      .readDeliveryDraft(
+        {
+          taskId: node.taskId,
+          planId: node.planId,
+          revision: node.revision,
+          nodeId: node.nodeId,
+        },
+        controller.signal,
+      )
+      .then(
+        (draft) => {
+          if (!active) return;
+          setText(draft.text);
+          setLink(draft.links[0] ?? '');
+          setDraftVersion(draft.version);
+          const first = draft.files[0];
+          if (first) {
+            setFile({
+              id: first.id,
+              mediaType: first.mediaType,
+              byteSize: String(first.byteSize),
+              checksum: first.checksum,
+              accessPolicyId: first.accessPolicyId,
+              uploadComplete: first.uploadComplete,
+            });
+          }
+        },
+        (caught: unknown) => {
+          if (!active || controller.signal.aborted) return;
+          setError(caught instanceof Error ? caught.message : '草稿没有读出来。');
+        },
+      );
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [api, node.taskId, node.planId, node.revision, node.nodeId]);
 
   function rotate() {
     key.current = crypto.randomUUID();
   }
 
-  const blocked = (node.inputs ?? []).some((item) => item.blocking);
-
-  async function submit() {
-    const files: ArtifactFileRef[] = [];
-    if (file.id.trim() !== '') {
-      const byteSize = Number(file.byteSize);
-      if (
-        !Number.isInteger(byteSize) ||
-        byteSize < 0 ||
-        file.mediaType.trim() === '' ||
-        file.checksum.trim() === '' ||
-        file.accessPolicyId.trim() === ''
-      ) {
-        setError('请补全文件类型、大小、校验和访问策略。');
-        return;
-      }
-      files.push({
+  function listedFiles(): ArtifactFileRef[] | undefined {
+    if (file.id.trim() === '') return [];
+    const byteSize = Number(file.byteSize);
+    if (
+      !Number.isInteger(byteSize) ||
+      byteSize < 0 ||
+      file.mediaType.trim() === '' ||
+      file.checksum.trim() === '' ||
+      file.accessPolicyId.trim() === ''
+    ) {
+      setError('请补全文件类型、大小、校验和访问策略。');
+      return undefined;
+    }
+    return [
+      {
         id: file.id.trim(),
         mediaType: file.mediaType.trim(),
         byteSize,
         checksum: file.checksum.trim(),
         accessPolicyId: file.accessPolicyId.trim(),
         uploadComplete: file.uploadComplete,
-      });
-    }
-    setPending(true);
+      },
+    ];
+  }
+
+  async function submit() {
+    const files = listedFiles();
+    if (files === undefined) return;
+    setPending('submit');
     setError('');
     try {
       const next = await api.submit({
@@ -115,13 +161,42 @@ export function DeliveryPanel({
       setText('');
       setLink('');
       setFile(emptyFile);
+      setDraftVersion(0);
       onSubmitted(next);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '提交没有完成。');
     } finally {
-      setPending(false);
+      setPending('');
     }
   }
+
+  async function save() {
+    const files = listedFiles();
+    if (files === undefined) return;
+    setPending('save');
+    setError('');
+    try {
+      const saved = await api.saveDeliveryDraft({
+        taskId: node.taskId,
+        planId: node.planId,
+        revision: node.revision,
+        nodeId: node.nodeId,
+        expectedVersion: draftVersion,
+        idempotencyKey: key.current,
+        files,
+        links: link.trim() === '' ? [] : [link.trim()],
+        ...(text === '' ? {} : { text }),
+      });
+      setDraftVersion(saved.version);
+      setText(saved.text);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '草稿没有保存。');
+    } finally {
+      setPending('');
+    }
+  }
+
+  const blocked = (node.inputs ?? []).some((item) => item.blocking);
 
   return (
     <section className="zm-config-form" aria-labelledby="zhuma-delivery-title">
@@ -203,9 +278,17 @@ export function DeliveryPanel({
       </div>
       <div className="zm-actions">
         <Button
-          busy={pending}
+          busy={pending === 'save'}
+          busyLabel="正在保存…"
+          disabled={pending !== ''}
+          onClick={() => void save()}
+        >
+          保存草稿
+        </Button>
+        <Button
+          busy={pending === 'submit'}
           busyLabel="正在提交…"
-          disabled={blocked || pending}
+          disabled={blocked || pending !== ''}
           onClick={() => void submit()}
         >
           提交产物
