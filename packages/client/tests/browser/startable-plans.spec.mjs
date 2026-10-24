@@ -228,6 +228,7 @@ test('keyboard plan selection stays read-only until the start button is explicit
   await page.keyboard.press('Enter');
   await expect(picker(page)).toContainText(alternatives.revision);
   expect(await calls(page, 'start-plan')).toHaveLength(0);
+  await expect(picker(page)).toBeFocused();
   await page.evaluate(() => {
     window.startableProbe.holdWrites = true;
   });
