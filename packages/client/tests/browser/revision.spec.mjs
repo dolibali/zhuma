@@ -178,10 +178,12 @@ for (const outcome of ['success', 'failure', 'reject']) {
       window.revisionProbe.holdSubmits = true;
     });
     await button(page, '重新提交').click();
+    const before = await revisionCalls(page);
     await page.evaluate(() => {
       const c = window.revisionProbe;
       c.update({ ...c.node, version: c.node.version + 1 });
     });
+    await expect.poll(() => revisionCalls(page)).toBeGreaterThan(before);
     await finishLast(page, 'submit', outcome);
     await expect(input).toHaveValue('尚待核对的正文');
     await expect(input).toBeEnabled();
@@ -248,7 +250,9 @@ test('revision responsive layout has no horizontal overflow and all controls rem
   const select = page.getByRole('combobox', { name: '对照版本', exact: true });
   await select.focus();
   await page.keyboard.press('Enter');
+  await expect(page.getByRole('option', { name: '被退回 · 第 2 版', exact: true })).toBeFocused();
   await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('option', { name: '上一版 · 第 1 版', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(source(page)).toContainText('接口初稿：GET /orders。');
   await page.getByLabel('产物正文', { exact: true }).focus();
