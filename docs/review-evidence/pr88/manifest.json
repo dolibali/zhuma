@@ -1,0 +1,230 @@
+{
+  "before": "33c081e9155a88e0ef6745a80218de138a77d09d",
+  "after": "785d9cf27070053bff6f3e85bc40d4eb2bb2122c",
+  "capturedFrom": "9a5bc5fb92da13d92c699344c31afd99cf89574d",
+  "unchangedProductProof": "785d changes only four observable precondition waits in revision.spec.mjs; all product/harness/fixture/CSS source blobs equal 9a5.",
+  "clientSha256": "36b6eed1ed1f6d41c8a7f11343d167799f078ef409d67b98e1c16f8635bf2f11",
+  "hostSha256": "0bd37ce0681fd703a5adf75fabce3620dcddb8defcd409ffc1c066821d2746b8",
+  "source": "Actual pinned ExecutionWorkspace, own dependencies and CSS; same fictitious member/nodes/notes and real local HTTP response replay. Opens normal revise inbox entry.",
+  "boundary": "Not a real identity/execution service, disk, Native, file bytes, models or complete multi-user acceptance. Before has blank DeliveryPanel; expanded version picker and prior-version content are new and have no equivalent before UI. 1440x900 viewport, full-page PNG height may differ.",
+  "rows": [
+    {
+      "file": "before-returned-light-1440x900.png",
+      "version": "before",
+      "scene": "returned",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 48516,
+      "sha256": "0e6e72894ee7589b980c9843cf9f02b4da6c238842ecbf86592de3e0b987a7c6",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "before-editing-light-1440x900.png",
+      "version": "before",
+      "scene": "editing",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 66560,
+      "sha256": "d97717cdce4f490b32ca7523c17c16801a4e666f98487026b2b8006493600434",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-returned-light-1440x900.png",
+      "version": "after",
+      "scene": "returned",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 115369,
+      "sha256": "824f4bf877fae64dd78e8fd6299bb7e2fa46084aeffa3d61462deb231625124e",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-editing-light-1440x900.png",
+      "version": "after",
+      "scene": "editing",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 132973,
+      "sha256": "d6d0bec6ca99387f740802d6d1b90388580cf08cd95eac9b5198de0c4220b6fb",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-expanded-light-1440x900.png",
+      "version": "after",
+      "scene": "expanded",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 130573,
+      "sha256": "e231ba33b58db28296e6f3659207446cdcbcbd37361208aa2cbafcb745c4192c",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-previous-light-1440x900.png",
+      "version": "after",
+      "scene": "previous",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 114473,
+      "sha256": "c812967d84384d07431d9d1cf7337064a3530dec758487fcf4fe53d56fb8ec2f",
+      "imageSize": [
+        1440,
+        1274
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "before-returned-dark-1440x900.png",
+      "version": "before",
+      "scene": "returned",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 47403,
+      "sha256": "c52554361842e6bfb6b584c5a6beb3272b97b150a74fb876a36ede7ef9d5d6be",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "before-editing-dark-1440x900.png",
+      "version": "before",
+      "scene": "editing",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 62967,
+      "sha256": "8168ba525d8b66ca86d3d5971a09941fa0c05e78a7061eb37b1d53a4168cb87a",
+      "imageSize": [
+        1440,
+        900
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-returned-dark-1440x900.png",
+      "version": "after",
+      "scene": "returned",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 111296,
+      "sha256": "34cacbe87daab91b0dc2bb201f20fbc30fe134089c3c1558004326a4fe73b557",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-editing-dark-1440x900.png",
+      "version": "after",
+      "scene": "editing",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 126317,
+      "sha256": "5d60c6cff49935428c28ad5f04689501c2ce10eca8220ce6d6f035f621129a2a",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-expanded-dark-1440x900.png",
+      "version": "after",
+      "scene": "expanded",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 123261,
+      "sha256": "3d7068deeb300a8588ed9acdf66e854f84711a094158bf8d53aa4d8bf81c5018",
+      "imageSize": [
+        1440,
+        1276
+      ],
+      "metadataKeys": []
+    },
+    {
+      "file": "after-previous-dark-1440x900.png",
+      "version": "after",
+      "scene": "previous",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 107359,
+      "sha256": "0959ba66e931cb853c39d4b2e9e219626ee7d664db662d8e06a102da1d912b70",
+      "imageSize": [
+        1440,
+        1274
+      ],
+      "metadataKeys": []
+    }
+  ],
+  "errors": [],
+  "writes": 0
+}
