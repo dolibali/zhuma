@@ -141,7 +141,7 @@ await applyExecution(ctx, {
 });
 ```
 
-`applyExecution` 接受 `readWorkbench`，并可选接受 `projectSpaces`。不要传 `memberResolver` 或 `singleUser`。单人还是多人由身份模块决定。项目到空间的正式数据源由 A 的 Host／空间模块提供。B 不打开空间库，也不保存这份归属，只消费调用方注入的目录。没有记录、空间不匹配，以及根本没有注入目录，都拒绝。
+`applyExecution` 接受 `readWorkbench`，并可选接受 `projectSpaces`。不要传 `memberResolver` 或 `singleUser`。单人还是多人由身份模块决定。项目到空间的正式目录由 B 在 #29 交付。A 只在 Host 注入这份目录，不另建事实源。后栈 #66–#71 不是交付 #29 事实源的前提。B 不打开空间库，也不保存这份归属，只消费调用方注入的目录。没有记录、空间不匹配，以及根本没有注入目录，都拒绝。
 
 ```ts
 interface ProjectSpaceDirectory {

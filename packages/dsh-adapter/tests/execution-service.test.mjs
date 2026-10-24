@@ -1091,3 +1091,183 @@ test('a missing project-space directory refuses start, submit, inbox, and report
   assert.equal(store.planCount(), 0);
   assert.equal(store.node('design'), undefined);
 });
+
+test('a missing task cannot replay a stored start-plan receipt', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  let workbench = state;
+  const store = memory();
+  const service = new ExecutionService(
+    store.storage,
+    { readWorkbench: () => workbench },
+    projectSpaces,
+  );
+  const body = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-kept',
+  };
+  const started = await service.startPlan(session('chen'), body);
+  assert.equal(started.ok, true);
+  assert.equal(started.value.disposition, 'applied');
+  const replay = await service.startPlan(session('chen'), body);
+  assert.equal(replay.ok, true);
+  assert.equal(replay.value.disposition, 'replayed');
+  assert.equal(replay.value.reports.length, 1);
+
+  workbench = {
+    ...state,
+    tasks: state.tasks.filter((task) => task.id !== applied.taskId),
+  };
+  const hidden = await service.startPlan(session('chen', ['north']), body);
+  assert.equal(hidden.ok, false);
+  assert.equal(hidden.error.code, 'plan-not-found');
+  assert.equal(hidden.value, undefined);
+  assert.equal(JSON.stringify(hidden).includes('设计登录流程'), false);
+  assert.equal(store.planCount(), 1);
+  assert.equal(store.node('design').command.status, 'ready');
+  const reported = await service.report(session('chen', ['north']), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(reported.error.code, 'plan-not-found');
+});
+
+test('replaying a settled ballot does not settle again as the current actor', async () => {
+  const { state, applied } = confirm(
+    [
+      workflowNode({
+        id: 'design',
+        title: '设计',
+        reviewRequired: true,
+        reviewerIds: ['lin', 'outside'],
+      }),
+      workflowNode({
+        id: 'publish',
+        title: '发布',
+        assigneeId: 'outside',
+        dependsOn: ['design'],
+      }),
+    ],
+    [lin],
+  );
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', 1, 'deliver-settled'),
+    text: '待审稿',
+  });
+  assert.equal(submitted.ok, true);
+  const design = store.node('design');
+  const roundId = design.currentRoundId;
+  const artifactVersionId = design.artifactVersions.at(-1).id;
+  const version = design.command.version;
+  const linBody = {
+    ...locate(applied, 'design', version, 'vote-lin'),
+    roundId,
+    artifactVersionId,
+    action: 'approve',
+  };
+  const outsideBody = {
+    ...locate(applied, 'design', version, 'vote-outside'),
+    roundId,
+    artifactVersionId,
+    action: 'approve',
+  };
+  const linVote = await service.ballot(session('lin'), linBody);
+  assert.equal(linVote.ok, true);
+  assert.equal(linVote.value.disposition, 'applied');
+  assert.equal(store.node('design').command.status, 'in-review');
+  const linEarly = await service.ballot(session('lin'), linBody);
+  assert.equal(linEarly.ok, true);
+  assert.equal(linEarly.value.disposition, 'replayed');
+  assert.equal(store.node('design').command.status, 'in-review');
+
+  const outsideVote = await service.ballot(session('outside'), outsideBody);
+  assert.equal(outsideVote.ok, true);
+  assert.equal(outsideVote.value.disposition, 'applied');
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('design').rounds[0].ballots.length, 2);
+  assert.equal(store.node('publish').command.status, 'ready');
+  const publishVersion = store.node('publish').command.version;
+
+  const linReplay = await service.ballot(session('lin'), linBody);
+  assert.equal(linReplay.ok, true, JSON.stringify(linReplay));
+  assert.equal(linReplay.value.disposition, 'replayed');
+  const outsideReplay = await service.ballot(session('outside'), outsideBody);
+  assert.equal(outsideReplay.ok, true, JSON.stringify(outsideReplay));
+  assert.equal(outsideReplay.value.disposition, 'replayed');
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('design').rounds[0].ballots.length, 2);
+  assert.equal(store.node('publish').command.version, publishVersion);
+
+  const changed = await service.ballot(session('lin'), { ...linBody, comment: '改了评论' });
+  assert.equal(changed.ok, false);
+  assert.equal(changed.error.code, 'idempotency-mismatch');
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('design').rounds[0].ballots.length, 2);
+  const ghost = await service.ballot(session('ghost'), linBody);
+  assert.equal(ghost.error.code, 'not-in-directory');
+  const stranger = await service.ballot(session('chen'), linBody);
+  assert.equal(stranger.error.code, 'not-assigned-reviewer');
+  assert.equal(JSON.stringify(stranger).includes('待审稿'), false);
+});
+
+test('retrying start-plan unlocks completed nodes after a failed downstream write', async () => {
+  const { state, applied } = confirm([
+    workflowNode({ id: 'design', title: '设计' }),
+    workflowNode({
+      id: 'publish',
+      title: '发布',
+      assigneeId: 'outside',
+      dependsOn: ['design'],
+    }),
+  ]);
+  const { service, store } = create(state);
+  const startBody = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-compensate',
+  };
+  const started = await service.startPlan(session('chen'), startBody);
+  assert.equal(started.value.disposition, 'applied');
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  store.arm(2);
+  const delivered = await service.submit(session('chen'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'deliver-compensate'),
+    text: '上游完成',
+  });
+  assert.equal(delivered.ok, false);
+  assert.equal(delivered.error.code, 'unavailable');
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  store.arm(1);
+  const failedRetry = await service.startPlan(session('chen'), startBody);
+  assert.equal(failedRetry.ok, false);
+  assert.equal(failedRetry.error.code, 'unavailable');
+  assert.equal(failedRetry.value, undefined);
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  store.arm(0);
+  const retry = await service.startPlan(session('chen'), startBody);
+  assert.equal(retry.ok, true, JSON.stringify(retry));
+  assert.equal(retry.value.disposition, 'replayed');
+  assert.equal(store.node('publish').command.status, 'ready');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  assert.equal(
+    store.node('publish').handoff.inputRefs[0].artifactVersionId,
+    store.node('design').acceptedArtifactVersionId,
+  );
+  const again = await service.startPlan(session('chen'), startBody);
+  assert.equal(again.value.disposition, 'replayed');
+  assert.equal(store.node('publish').command.version, 2);
+  const reconciled = await service.reconcile();
+  assert.equal(reconciled.value.unlocked, 0);
+});
