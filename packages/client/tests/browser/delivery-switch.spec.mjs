@@ -279,3 +279,85 @@ test('读取 version>0 时先编辑，再保存能真正成功', async ({ page, 
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByLabel('交付说明')).toHaveValue('用户先写');
 });
+
+test('读取失败后解锁', async ({ page, replay }) => {
+  replay.handlers.inbox = async () => inbox();
+  replay.handlers.draft = async () => ({
+    ok: false,
+    error: { code: 'unavailable', message: '草稿没有读出来。', details: {} },
+  });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?execution');
+  await openNode(page, '设计登录');
+  await expect(page.getByRole('alert')).toHaveText('草稿没有读出来。');
+  const form = page.locator('section.zm-config-form');
+  await expect(form.getByRole('button', { name: '保存草稿', exact: true })).toBeEnabled();
+  await expect(form.getByRole('button', { name: '提交产物', exact: true })).toBeEnabled();
+});
+
+test('保存按钮受读取锁控制', async ({ page, replay }) => {
+  const gate = deferred();
+  replay.handlers.inbox = async () => inbox();
+  replay.handlers.draft = async (payload) => {
+    if (payload.nodeId === 'design' && payload.idempotencyKey === undefined) await gate.promise;
+    return { ok: true, value: { version: 1, text: '', links: [], files: [] } };
+  };
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?execution');
+  await openNode(page, '设计登录');
+  const save = page.getByRole('button', { name: '保存草稿', exact: true });
+  await expect
+    .poll(() =>
+      replay.requests.some(
+        (item) =>
+          item.endpoint === 'draft' &&
+          item.nodeId === 'design' &&
+          item.idempotencyKey === undefined,
+      ),
+    )
+    .toBe(true);
+  const form = page.locator('section.zm-config-form');
+  await expect(save).toBeDisabled();
+  await expect(form.getByRole('button', { name: '提交产物', exact: true })).toBeDisabled();
+  gate.resolve();
+  await expect(save).toBeEnabled();
+  await expect(form.getByRole('button', { name: '提交产物', exact: true })).toBeEnabled();
+});
+
+test('读取期间编辑后失败仍提示', async ({ page, replay }) => {
+  const gate = deferred();
+  replay.handlers.inbox = async () => inbox();
+  replay.handlers.draft = async (payload) => {
+    if (payload.nodeId === 'design') await gate.promise;
+    return {
+      ok: false,
+      error: { code: 'unavailable', message: '草稿没有读出来。', details: {} },
+    };
+  };
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?execution');
+  await openNode(page, '设计登录');
+  await expect.poll(() => replay.requests.some((item) => item.nodeId === 'design')).toBe(true);
+  await page.getByLabel('交付说明').fill('用户先写');
+  gate.resolve();
+  await expect(page.getByLabel('交付说明')).toHaveValue('用户先写');
+  await expect(page.getByRole('alert')).toHaveText('草稿没有读出来。');
+  await expect(page.getByRole('button', { name: '保存草稿', exact: true })).toBeEnabled();
+});
+
+test('读取一直不返回时会解锁并提示', async ({ page, replay }) => {
+  await page.clock.install();
+  replay.handlers.inbox = async () => inbox();
+  replay.handlers.draft = () => new Promise(() => {});
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?execution');
+  await openNode(page, '设计登录');
+  const save = page.getByRole('button', { name: '保存草稿', exact: true });
+  await expect.poll(() => replay.requests.some((item) => item.nodeId === 'design')).toBe(true);
+  await page.getByLabel('交付说明').fill('用户先写');
+  await expect(save).toBeDisabled();
+  await page.clock.fastForward(10_000);
+  await expect(page.getByRole('alert')).toHaveText('草稿没有在时间内读出来。');
+  await expect(page.getByLabel('交付说明')).toHaveValue('用户先写');
+  await expect(save).toBeEnabled();
+});
