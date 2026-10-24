@@ -65,6 +65,7 @@ export function DeliveryPanel({
   const [link, setLink] = useState('');
   const [file, setFile] = useState(emptyFile);
   const [draftVersion, setDraftVersion] = useState(0);
+  const [baselineReady, setBaselineReady] = useState(false);
   const [error, setError] = useState('');
   const [pending, setPending] = useState<'save' | 'submit' | ''>('');
   const key = useRef(crypto.randomUUID());
@@ -93,6 +94,7 @@ export function DeliveryPanel({
     setLink('');
     setFile(emptyFile);
     setDraftVersion(0);
+    setBaselineReady(false);
     setError('');
     void api
       .readDeliveryDraft(
@@ -106,10 +108,12 @@ export function DeliveryPanel({
       )
       .then(
         (draft) => {
-          if (!active || edited.current || liveNode.current !== savedFor) return;
+          if (!active || liveNode.current !== savedFor) return;
+          setDraftVersion(draft.version);
+          setBaselineReady(true);
+          if (edited.current) return;
           setText(draft.text);
           setLink(draft.links[0] ?? '');
-          setDraftVersion(draft.version);
           const first = draft.files[0];
           setFile(
             first
@@ -125,14 +129,9 @@ export function DeliveryPanel({
           );
         },
         (caught: unknown) => {
-          if (
-            !active ||
-            controller.signal.aborted ||
-            edited.current ||
-            liveNode.current !== savedFor
-          ) {
-            return;
-          }
+          if (!active || controller.signal.aborted || liveNode.current !== savedFor) return;
+          setBaselineReady(true);
+          if (edited.current) return;
           setError(caught instanceof Error ? caught.message : '草稿没有读出来。');
         },
       );
@@ -323,7 +322,7 @@ export function DeliveryPanel({
         <Button
           busy={pending === 'save'}
           busyLabel="正在保存…"
-          disabled={pending !== ''}
+          disabled={pending !== '' || !baselineReady}
           onClick={() => void save()}
         >
           保存草稿
@@ -331,7 +330,7 @@ export function DeliveryPanel({
         <Button
           busy={pending === 'submit'}
           busyLabel="正在提交…"
-          disabled={blocked || pending !== ''}
+          disabled={blocked || pending !== '' || !baselineReady}
           onClick={() => void submit()}
         >
           提交产物
