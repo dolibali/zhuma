@@ -27,6 +27,7 @@ import type {
 } from '../../dist/execution-service.js';
 import type {
   ApplyExecution,
+  ApplySpaceDirectory,
   BallotRequest,
   ChannelInboxValue,
   CreateMemberResolver,
@@ -116,6 +117,9 @@ export type LiveOptionsExcludeMemberResolver = Assert<
 >;
 export type StartupKeepsMemberResolver = Assert<
   Both<S1Startup['memberResolver'], CreateMemberResolver>
+>;
+export type StartupKeepsSpaceDirectory = Assert<
+  Both<S1Startup['applySpaceDirectory'], ApplySpaceDirectory>
 >;
 export type InjectBoth = Assert<Both<typeof executionInject, ExecutionInject>>;
 export type EndpointsBoth = Assert<Both<typeof executionEndpoints, ExecutionEndpoints>>;

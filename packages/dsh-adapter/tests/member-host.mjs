@@ -9,6 +9,7 @@ import {
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, identityInject } from '../dist/identity-session.js';
 import { configureDeploymentMode, resolveMember } from '../dist/member-session.js';
+import { applySpaceDirectory } from '../dist/space-directory.js';
 
 export const AUTHORITY = '127.0.0.1:3080';
 
@@ -144,8 +145,9 @@ async function callWeb(web, { method, path, cookie, body, remoteAddress }) {
  * Real Connection plus `applyIdentity`.
  * `mode` is `legacy-single-user` or `multi-member` and is selected before identity starts.
  * Callers pass scrypt hashes, never passwords in storage.
+ * `spaces` mounts the trusted space directory before identity; omitted means no directory.
  */
-export async function bootIdentity(imported, mode) {
+export async function bootIdentity(imported, mode, spaces) {
   const ctx = new Context();
   const web = createWebServer();
   ctx.provide('credentials', memoryCredentials());
@@ -157,17 +159,26 @@ export async function bootIdentity(imported, mode) {
   ctx.provide('storageDomain', new DomainFacility(ctx, { backend: 'memory', routes: {} }));
   configureDeploymentMode(ctx, mode);
   let connectionFiber;
+  let spaceFiber;
   let identityFiber;
   let connectionStarted = false;
+  let spaceStarted = false;
   let identityStarted = false;
   try {
     connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
     await connectionFiber;
     connectionStarted = true;
+    if (spaces !== undefined) {
+      spaceFiber = ctx.plugin({ inject: ['storageDomain'], apply: applySpaceDirectory }, spaces);
+      await spaceFiber;
+      spaceStarted = true;
+    }
     identityFiber = ctx.plugin({ inject: [...identityInject], apply: applyIdentity }, imported);
     await identityFiber;
     identityStarted = true;
   } catch (error) {
+    if (identityStarted) await identityFiber.dispose().catch(() => {});
+    if (spaceStarted) await spaceFiber.dispose().catch(() => {});
     if (connectionStarted) await connectionFiber.dispose();
     throw error;
   }
@@ -203,6 +214,7 @@ export async function bootIdentity(imported, mode) {
     },
     async dispose() {
       if (identityStarted) await identityFiber.dispose();
+      if (spaceStarted) await spaceFiber.dispose();
       if (connectionStarted) await connectionFiber.dispose();
     },
   };
