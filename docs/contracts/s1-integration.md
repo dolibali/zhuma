@@ -35,7 +35,7 @@ mount({ api: createExecutionApi(rpc) });
 
 ## 通道 DTO
 
-路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
+路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`submit`、`ballot`、`settle`、`report`。先 `resolveMember`，再读正文。未登录是 HTTP 401，不可信请求是 HTTP 403，这两种都不解析 JSON。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。声明长度或实际读数超过 2MiB 是 HTTP 413，5 秒内没有读完是 HTTP 408。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
 
 `code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`submit`、`ballot`、`settle`、`report`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
 

@@ -142,6 +142,7 @@ export type ExecutionMessageCode =
   | 'not-assigned-reviewer'
   | 'actor-mismatch'
   | 'upload-incomplete'
+  | 'files-not-accepted'
   | 'empty-delivery'
   | 'conflict'
   | 'idempotency-mismatch'
@@ -178,7 +179,7 @@ export type ExecutionPassthroughCode =
   | 'expert-ref-required';
 export type ExecutionErrorCode = ExecutionMessageCode | ExecutionPassthroughCode;
 /** Fetch status. Business results stay inside HTTP 200. */
-export type ExecutionTransportStatus = 200 | 400 | 415;
+export type ExecutionTransportStatus = 200 | 400 | 401 | 403 | 408 | 413 | 415;
 export interface ExecutionChannelNode {
   readonly nodeId: string;
   readonly taskId: string;

@@ -89,6 +89,90 @@ function fetchHeaders(request: Request): IncomingHttpHeaders {
   return headers;
 }
 
+/**
+ * Transport cap for `/api/zhuma-exec`. It sits above the service contract so a
+ * legal body is not refused here.
+ * Submit text and ballot comments stop at 100_000 characters. A draft's text,
+ * links, and file strings together stop at 262_144 characters. `JSON.stringify`
+ * writes one character as at most 6 bytes (`\u00XX` for U+0000–U+001F).
+ * 262_144 × 6 = 1_572_864. Two mebibytes cover that plus the RPC envelope
+ * (`type`, `method`, `rpcId`, and field names). UTF-8's 4 bytes per character
+ * (262_144 × 4 = 1_048_576) is inside the same cap.
+ */
+export const EXECUTION_BODY_BYTE_LIMIT = 2 * 1024 * 1024;
+const MAX_BODY_BYTES = EXECUTION_BODY_BYTE_LIMIT;
+const BODY_READ_MS = 5_000;
+
+class BodyRejected extends Error {
+  constructor(
+    readonly status: 413 | 408,
+    readonly code: 'body-too-large' | 'body-timeout',
+  ) {
+    super(code);
+  }
+}
+
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
+/** Reads at most `EXECUTION_BODY_BYTE_LIMIT`, and only for 5s. A declared length above the cap is not pulled. */
+async function readLimitedJson(request: Request, signal: AbortSignal): Promise<unknown> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
+    throw new BodyRejected(413, 'body-too-large');
+  }
+  const body = request.body;
+  if (body === null) throw new SyntaxError('empty body');
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let pending: Promise<ReadableStreamReadResult<Uint8Array>> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), BODY_READ_MS);
+  });
+  const aborted = waitForAbort(signal).then(() => 'abort' as const);
+  try {
+    for (;;) {
+      if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+      const read = reader.read();
+      pending = read;
+      const outcome = await Promise.race([
+        read.then((value) => ({ kind: 'chunk' as const, value })),
+        timedOut.then((kind) => ({ kind })),
+        aborted.then((kind) => ({ kind })),
+      ]);
+      pending = undefined;
+      if (outcome.kind === 'timeout') {
+        void read.catch(() => undefined);
+        throw new BodyRejected(408, 'body-timeout');
+      }
+      if (outcome.kind === 'abort') {
+        void read.catch(() => undefined);
+        throw new DOMException('aborted', 'AbortError');
+      }
+      if (outcome.value.done) break;
+      total += outcome.value.value.byteLength;
+      if (total > MAX_BODY_BYTES) throw new BodyRejected(413, 'body-too-large');
+      chunks.push(outcome.value.value);
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (pending !== undefined) void pending.catch(() => undefined);
+    void reader.cancel().catch(() => undefined);
+  }
+  const text = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8');
+  if (text.trim() === '') throw new SyntaxError('empty body');
+  return JSON.parse(text) as unknown;
+}
+
 function unavailable(aborted: boolean) {
   return {
     ok: false as const,
@@ -161,32 +245,50 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     ctx.connection.fetch.register({
       path: `/api/zhuma-exec/${endpoint}`,
       methods: ['POST'],
-      requestBody: 'buffered',
+      requestBody: 'streaming',
       fetch: async (request) => {
-        if (request.headers.get('content-type')?.split(';')[0] !== 'application/json') {
-          return new Response(null, { status: 415 });
-        }
-        let body: unknown;
-        try {
-          body = await request.json();
-        } catch {
-          return new Response(null, { status: 400 });
-        }
-        const envelope = clientRequestSchema.safeParse(body);
-        if (!envelope.success || envelope.data.method !== `zhuma-exec/${endpoint}`) {
-          return new Response(null, { status: 400 });
-        }
         const signal = AbortSignal.any([request.signal, lifetime.signal]);
+        let rpcId = '';
         try {
-          signal.throwIfAborted();
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError');
           const member = await resolveMember(ctx, { headers: fetchHeaders(request) });
+          if (!member.ok) {
+            return Response.json(
+              { ok: false, error: { code: member.code } },
+              { status: member.status },
+            );
+          }
+          if (request.headers.get('content-type')?.split(';')[0] !== 'application/json') {
+            return new Response(null, { status: 415 });
+          }
+          const body = await readLimitedJson(request, signal);
+          const envelope = clientRequestSchema.safeParse(body);
+          if (!envelope.success || envelope.data.method !== `zhuma-exec/${endpoint}`) {
+            return new Response(null, { status: 400 });
+          }
+          rpcId = envelope.data.rpcId;
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError');
           const result = await run(service, endpoint, member, envelope.data.payload);
-          return Response.json({ type: 'server-response', rpcId: envelope.data.rpcId, result });
-        } catch {
+          return Response.json({ type: 'server-response', rpcId, result });
+        } catch (error) {
+          if (error instanceof BodyRejected) {
+            return Response.json(
+              { ok: false, error: { code: error.code } },
+              { status: error.status },
+            );
+          }
+          if (signal.aborted) {
+            return Response.json({
+              type: 'server-response',
+              rpcId,
+              result: unavailable(true),
+            });
+          }
+          if (rpcId === '') return new Response(null, { status: 400 });
           return Response.json({
             type: 'server-response',
-            rpcId: envelope.data.rpcId,
-            result: unavailable(signal.aborted),
+            rpcId,
+            result: unavailable(false),
           });
         }
       },
