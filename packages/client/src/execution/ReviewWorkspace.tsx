@@ -20,9 +20,13 @@ export function ReviewWorkspace({
   const [pending, setPending] = useState(false);
   const key = useRef(crypto.randomUUID());
 
-  async function vote(action: 'approve' | 'request-changes') {
+  async function vote(action: 'approve' | 'request-changes' | 'comment') {
     if (!round || !artifact) {
       setError('这一项当前没有打开的评审。');
+      return;
+    }
+    if (action === 'comment' && comment.trim() === '') {
+      setError('请填写评论。');
       return;
     }
     if (action === 'request-changes' && comment.trim() === '') {
@@ -89,6 +93,9 @@ export function ReviewWorkspace({
         />
       </Field>
       <div className="zm-actions">
+        <Button busy={pending} busyLabel="正在提交…" onClick={() => void vote('comment')}>
+          仅评论
+        </Button>
         <Button busy={pending} busyLabel="正在提交…" onClick={() => void vote('approve')}>
           通过
         </Button>
