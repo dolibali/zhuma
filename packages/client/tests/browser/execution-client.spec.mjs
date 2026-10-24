@@ -1,5 +1,13 @@
 import { test, expect } from '@playwright/test';
-const button = (page, name) => page.getByRole('button', { name, exact: true });
+// Shared Button changes its accessible name while busy. Its original label stays
+// in the label span, so locate that stable control rather than a loading caption.
+const button = (page, name) =>
+  page
+    .locator('button')
+    .filter({
+      has: page.locator('.zm-button-label').filter({ hasText: new RegExp(`^${name}$`) }),
+    })
+    .or(page.getByRole('button', { name, exact: true }));
 const probe = (page, callback) => page.evaluate(callback);
 async function setup(page, mode) {
   await page.goto(`/?execution-client=1${mode ? `&execution-form=${mode}` : ''}&strict=1`);
