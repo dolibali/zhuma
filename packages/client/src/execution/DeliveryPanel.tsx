@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
@@ -8,6 +8,7 @@ import { nodeIdentity, useExecutionCommand, useFormKey } from './interaction.js'
 type Props = {
   api: ExecutionApi;
   node: ExecutionNodeWire;
+  mode?: 'submit' | 'revise';
   onSubmitted(node: ExecutionNodeWire): void;
 };
 
@@ -15,13 +16,29 @@ export function DeliveryPanel(props: Props) {
   const key = useFormKey(props.api, nodeIdentity(props.node));
   return <DeliveryForm key={key} {...props} />;
 }
-function DeliveryForm({ api, node, onSubmitted }: Props) {
+function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
   const titleId = useId();
   const [text, setText] = useState('');
   const [link, setLink] = useState('');
   useUnsavedChanges(!!text || !!link);
   const command = useExecutionCommand();
+  const context = JSON.stringify([
+    nodeIdentity(node),
+    node.version,
+    node.status,
+    node.currentRoundId ?? null,
+  ]);
+  const presented = useRef(context);
+  presented.current = context;
+  const attempted = useRef(context);
+  const available =
+    mode === 'revise'
+      ? node.status === 'needs-revision'
+      : ['ready', 'needs-revision'].includes(node.status);
+  const error = attempted.current === context ? command.error : '';
   function submit() {
+    if (!available) return;
+    attempted.current = context;
     const links = link
       .split('\n')
       .map((value) => value.trim())
@@ -57,6 +74,7 @@ function DeliveryForm({ api, node, onSubmitted }: Props) {
       payload,
       (idempotencyKey, signal) => api.submit({ ...payload, idempotencyKey }, signal),
       (next) => {
+        if (presented.current !== context) return;
         setText('');
         setLink('');
         onSubmitted(next);
@@ -67,14 +85,15 @@ function DeliveryForm({ api, node, onSubmitted }: Props) {
     <section className="zm-config-form zm-execution-detail" aria-labelledby={titleId}>
       <div className="zm-page-heading">
         <div>
-          <p className="zm-eyebrow">提交产物</p>
+          <p className="zm-eyebrow">{mode === 'revise' ? '修改后重新提交' : '提交产物'}</p>
           <h2 id={titleId}>{node.goal}</h2>
         </div>
       </div>
       {node.expectedOutput && <p className="zm-execution-hint">交付内容：{node.expectedOutput}</p>}
-      {command.error && (
+      {!available && <p role="status">当前节点已不接受提交，请刷新待办。</p>}
+      {error && (
         <div role="alert" className="zm-error">
-          {command.error}
+          {error}
         </div>
       )}
       <Field label="产物正文">
@@ -95,8 +114,14 @@ function DeliveryForm({ api, node, onSubmitted }: Props) {
         />
       </Field>
       <div className="zm-actions">
-        <Button variant="primary" busy={command.pending} busyLabel="正在提交…" onClick={submit}>
-          提交产物
+        <Button
+          variant="primary"
+          disabled={!available}
+          busy={command.pending}
+          busyLabel="正在提交…"
+          onClick={submit}
+        >
+          {mode === 'revise' ? '重新提交' : '提交产物'}
         </Button>
       </div>
     </section>

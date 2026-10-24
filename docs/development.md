@@ -8,6 +8,8 @@ A/B 全程用 GitHub 插件或 `gh` 处理 Issue 与 PR，不打开或自动化�
 
 A 的 Host 身份装配见 [#28](https://github.com/dolibali/zhuma/issues/28)，登录／空间 UI 见 [#31](https://github.com/dolibali/zhuma/issues/31)，执行业务和显式开始的共享装配见 [#32](https://github.com/dolibali/zhuma/issues/32)。B 的可信身份、项目空间事实和人工链分别见 [#27](https://github.com/dolibali/zhuma/issues/27)、[#29](https://github.com/dolibali/zhuma/issues/29)、[#30](https://github.com/dolibali/zhuma/issues/30)。A 消费真实接口并单写共享入口，不创建第二份授权事实或执行业务。
 
+退回修改的 Client 查询、版本对照、输入生命周期和显式重提边界见[接口说明](contracts/client-revision.md)。
+
 ## 第一次准备
 
 安装 `.node-version` 中的 Node 和 `package.json` 中的 pnpm。仓库提供版本声明，不自动修改开发者全局工具。
