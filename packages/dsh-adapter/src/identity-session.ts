@@ -455,6 +455,18 @@ function allowsAccount(note: NoteRecord, accountId: string): boolean {
   return note.ownerId === accountId || note.teamMemberIds.includes(accountId);
 }
 
+/**
+ * Note ACL is not a substitute for current space membership. A missing
+ * directory fails closed, the same as a revoked membership.
+ */
+function holdsSpaceMembership(
+  directory: SpaceDirectory | undefined,
+  spaceId: string,
+  accountId: string,
+): boolean {
+  return directory?.isMember(spaceId, accountId) === true;
+}
+
 function memberPolicy(domain: IdentityDomain, directoryFor: () => SpaceDirectory | undefined) {
   const notes = domain.table('notes');
   return {
@@ -474,6 +486,11 @@ function memberPolicy(domain: IdentityDomain, directoryFor: () => SpaceDirectory
             if (typeof noteId === 'string') {
               const note = notes.get(noteId);
               if (!note) return { kind: 'deny' as const, reason: 'not-found' };
+              // Beyond ownerId / teamMemberIds, the note's space must still
+              // list this account. Revocation and a missing directory both deny.
+              if (!holdsSpaceMembership(directoryFor(), note.spaceId, memberId)) {
+                return { kind: 'deny' as const, reason: 'not-a-member' };
+              }
               return allowsAccount(note, memberId)
                 ? { kind: 'allow' as const }
                 : { kind: 'deny' as const, reason: 'not-a-member' };
@@ -482,7 +499,7 @@ function memberPolicy(domain: IdentityDomain, directoryFor: () => SpaceDirectory
             if (typeof spaceId === 'string') {
               // Space-level access comes from the trusted membership fact,
               // never from the existence of a readable note.
-              if (directoryFor()?.isMember(spaceId, memberId) === true) {
+              if (holdsSpaceMembership(directoryFor(), spaceId, memberId)) {
                 return { kind: 'allow' as const };
               }
               return { kind: 'deny' as const, reason: 'not-a-member' };
@@ -965,7 +982,13 @@ async function handle(
       const action = method === 'PUT' ? WRITE_ACTION : READ_ACTION;
       if (!permitted(res, remoteAccess, actor, action, { noteId: route.noteId })) return;
       const note = domain.table('notes').get(route.noteId);
-      if (note === undefined || !allowsAccount(note, actor.accountId)) {
+      // decide() allows every owner principal before the member policy runs,
+      // so the route repeats the membership fact and the note ACL.
+      if (
+        note === undefined ||
+        !holdsSpaceMembership(spaceDirectoryFor(ctx), note.spaceId, actor.accountId) ||
+        !allowsAccount(note, actor.accountId)
+      ) {
         fail(res, 404, 'not-found');
         return;
       }

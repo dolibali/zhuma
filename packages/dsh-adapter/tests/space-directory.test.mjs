@@ -4,6 +4,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { WorkbenchError } from '@zhuma/agent-core';
 import { decideProjectSpace } from '../dist/project-space.js';
+import { PROJECT_SPACE_LIMIT } from '../dist/project-space.js';
 import {
   SPACE_DIRECTORY_MEMBERSHIP_LIMIT,
   SPACE_DIRECTORY_SPACE_LIMIT,
@@ -31,6 +32,7 @@ function memoryKv(media = new Map(), faults = {}) {
         },
         async putRecord(table, key, value) {
           if (closed) throw new Error('closed');
+          if (typeof faults.beforePut === 'function') await faults.beforePut(table, key);
           if (typeof faults.put === 'function') {
             const error = await faults.put(table, key);
             if (error !== undefined) throw error;
@@ -369,6 +371,216 @@ test('a closed directory reports the project lookup as unavailable, never as hid
   assert.equal(
     decideProjectSpace(await directory.spaceForProject('portal'), ['team-north']),
     'unavailable',
+  );
+});
+
+function workbenchCode(code) {
+  return (error) => error instanceof WorkbenchError && error.code === code;
+}
+
+const pausePut = {
+  async beforePut() {
+    await new Promise((resolve) => setImmediate(resolve));
+  },
+};
+
+test('concurrent first assignment keeps one space and conflicts the other', async () => {
+  for (let trial = 0; trial < 5; trial += 1) {
+    const { ctx } = mount({ faults: pausePut });
+    const directory = await openSpaceDirectory(ctx.storageDomain, {
+      spaces: [
+        { id: 'north', kind: 'team', name: '北队' },
+        { id: 'south', kind: 'team', name: '南队' },
+      ],
+    });
+    const settled = await Promise.allSettled([
+      directory.assignProjectSpace('portal', 'north'),
+      directory.assignProjectSpace('portal', 'south'),
+    ]);
+    assert.equal(settled[0].status, 'fulfilled');
+    assert.equal(settled[1].status, 'rejected');
+    assert.equal(settled[1].reason.code, 'conflict');
+    assert.deepEqual(await directory.spaceForProject('portal'), { ok: true, spaceId: 'north' });
+    await directory.close();
+  }
+});
+
+test('concurrent creates and grants cannot pass the directory caps', async () => {
+  const { ctx } = mount({ faults: pausePut });
+  const directory = await openSpaceDirectory(ctx.storageDomain);
+  for (let index = 0; index < SPACE_DIRECTORY_SPACE_LIMIT - 1; index += 1) {
+    await directory.createSpace({ id: `s${index}`, kind: 'team', name: `s${index}` });
+  }
+  const created = await Promise.allSettled([
+    directory.createSpace({ id: 'extra-a', kind: 'team', name: '甲' }),
+    directory.createSpace({ id: 'extra-b', kind: 'team', name: '乙' }),
+  ]);
+  assert.equal(created.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(created[0].status, 'fulfilled');
+  assert.equal(created[1].status, 'rejected');
+  assert.equal(created[1].reason.code, 'validation');
+  assert.equal(directory.spaces().length, SPACE_DIRECTORY_SPACE_LIMIT);
+  assert.equal(directory.space('extra-b'), undefined);
+
+  for (let index = 0; index < SPACE_DIRECTORY_MEMBERSHIP_LIMIT - 1; index += 1) {
+    await directory.grantMembership('extra-a', `m${index}`);
+  }
+  const granted = await Promise.allSettled([
+    directory.grantMembership('extra-a', 'm-extra-a'),
+    directory.grantMembership('extra-a', 'm-extra-b'),
+  ]);
+  assert.equal(granted.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(granted[0].status, 'fulfilled');
+  assert.equal(granted[1].status, 'rejected');
+  assert.equal(granted[1].reason.code, 'validation');
+  assert.equal(directory.isMember('extra-a', 'm-extra-a'), true);
+  assert.equal(directory.isMember('extra-a', 'm-extra-b'), false);
+
+  for (let index = 0; index < PROJECT_SPACE_LIMIT - 1; index += 1) {
+    await directory.assignProjectSpace(`p${index}`, 'extra-a');
+  }
+  const assigned = await Promise.allSettled([
+    directory.assignProjectSpace('p-extra-a', 'extra-a'),
+    directory.assignProjectSpace('p-extra-b', 'extra-a'),
+  ]);
+  assert.equal(assigned.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(assigned[0].status, 'fulfilled');
+  assert.equal(assigned[1].status, 'rejected');
+  assert.equal(assigned[1].reason.code, 'validation');
+  assert.deepEqual(await directory.spaceForProject('p-extra-a'), { ok: true, spaceId: 'extra-a' });
+  assert.deepEqual(await directory.spaceForProject('p-extra-b'), { ok: false, reason: 'unknown' });
+  await directory.close();
+});
+
+test('concurrent grants of the same membership stay a single row', async () => {
+  const { ctx } = mount({ faults: pausePut });
+  const directory = await openSpaceDirectory(ctx.storageDomain);
+  await directory.createSpace({ id: 'north', kind: 'team', name: '北队' });
+  const settled = await Promise.allSettled([
+    directory.grantMembership('north', 'lin'),
+    directory.grantMembership('north', 'lin'),
+  ]);
+  assert.equal(settled[0].status, 'fulfilled');
+  assert.equal(settled[1].status, 'fulfilled');
+  assert.equal(directory.isMember('north', 'lin'), true);
+  await directory.close();
+});
+
+test('an empty directory can still take its first import after an open with no seed', async () => {
+  const media = new Map();
+  const first = await openSpaceDirectory(mount({ media }).ctx.storageDomain);
+  await first.close();
+  const second = await openSpaceDirectory(mount({ media }).ctx.storageDomain, FIXTURE);
+  assert.deepEqual(await second.spaceForProject('portal'), { ok: true, spaceId: 'team-north' });
+  await second.close();
+});
+
+test('a writer-occupied directory rejects a different import and keeps its assignment', async () => {
+  const media = new Map();
+  const writer = await openSpaceDirectory(mount({ media }).ctx.storageDomain);
+  await writer.createSpace({ id: 'north', kind: 'team', name: '北队' });
+  await writer.grantMembership('north', 'portal-user');
+  await writer.assignProjectSpace('portal', 'north');
+  await writer.close();
+
+  await assert.rejects(
+    openSpaceDirectory(mount({ media }).ctx.storageDomain, {
+      spaces: [{ id: 'south', kind: 'team', name: '南队' }],
+      memberships: [{ spaceId: 'south', accountId: 'other' }],
+      projectSpaces: [{ projectId: 'portal', spaceId: 'south' }],
+    }),
+    workbenchCode('conflict'),
+  );
+
+  const again = await openSpaceDirectory(mount({ media }).ctx.storageDomain);
+  assert.deepEqual(await again.spaceForProject('portal'), { ok: true, spaceId: 'north' });
+  assert.equal(again.isMember('north', 'portal-user'), true);
+  assert.equal(again.space('south'), undefined);
+  assert.equal(again.space('north')?.name, '北队');
+  await again.close();
+});
+
+test('an unfinished import stays closed until the same seed finishes it', async () => {
+  const media = new Map();
+  let failMembership = true;
+  const faults = {
+    async put(table) {
+      if (failMembership && table === 'memberships') {
+        failMembership = false;
+        return new Error('injected membership write failure');
+      }
+      return undefined;
+    },
+  };
+  const seed = {
+    spaces: [
+      { id: 'north', kind: 'team', name: '北队' },
+      { id: 'south', kind: 'team', name: '南队' },
+    ],
+    memberships: [
+      { spaceId: 'north', accountId: 'lin' },
+      { spaceId: 'south', accountId: 'zhao' },
+    ],
+    projectSpaces: [{ projectId: 'portal', spaceId: 'north' }],
+  };
+  await assert.rejects(openSpaceDirectory(mount({ media, faults }).ctx.storageDomain, seed));
+  await assert.rejects(
+    openSpaceDirectory(mount({ media }).ctx.storageDomain),
+    workbenchCode('validation'),
+  );
+  await assert.rejects(
+    openSpaceDirectory(mount({ media }).ctx.storageDomain, {
+      spaces: [{ id: 'other', kind: 'team', name: '别的' }],
+    }),
+    workbenchCode('validation'),
+  );
+  assert.equal(media.get('zhuma_spaces').tables.get('spaces')?.has('other'), false);
+  assert.equal(media.get('zhuma_spaces').tables.get('spaces')?.has('north'), true);
+
+  const directory = await openSpaceDirectory(mount({ media }).ctx.storageDomain, seed);
+  assert.equal(directory.isMember('north', 'lin'), true);
+  assert.equal(directory.isMember('south', 'zhao'), true);
+  assert.deepEqual(await directory.spaceForProject('portal'), { ok: true, spaceId: 'north' });
+  await directory.close();
+
+  const ignored = await openSpaceDirectory(mount({ media }).ctx.storageDomain, {
+    spaces: [{ id: 'other', kind: 'team', name: '别的' }],
+    projectSpaces: [{ projectId: 'portal', spaceId: 'other' }],
+  });
+  assert.equal(ignored.space('other'), undefined);
+  assert.deepEqual(await ignored.spaceForProject('portal'), { ok: true, spaceId: 'north' });
+  await ignored.close();
+});
+
+test('an unfinished import with a row that no longer matches its seed fails closed', async () => {
+  const media = new Map();
+  let failMembership = true;
+  const faults = {
+    async put(table) {
+      if (failMembership && table === 'memberships') {
+        failMembership = false;
+        return new Error('injected membership write failure');
+      }
+      return undefined;
+    },
+  };
+  const seed = {
+    spaces: [
+      { id: 'north', kind: 'team', name: '北队' },
+      { id: 'south', kind: 'team', name: '南队' },
+    ],
+    memberships: [{ spaceId: 'north', accountId: 'lin' }],
+    projectSpaces: [{ projectId: 'portal', spaceId: 'north' }],
+  };
+  await assert.rejects(openSpaceDirectory(mount({ media, faults }).ctx.storageDomain, seed));
+  media.get('zhuma_spaces').tables.get('spaces').get('north').name = '改过';
+  await assert.rejects(
+    openSpaceDirectory(mount({ media }).ctx.storageDomain, seed),
+    (error) => error instanceof WorkbenchError && error.message === '导入与已有记录不一致。',
+  );
+  await assert.rejects(
+    openSpaceDirectory(mount({ media }).ctx.storageDomain),
+    workbenchCode('validation'),
   );
 });
 
