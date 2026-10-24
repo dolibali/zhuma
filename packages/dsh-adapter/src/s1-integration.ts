@@ -127,6 +127,7 @@ export type ExecutionEndpoints = readonly [
   'settle',
   'report',
   'revision',
+  'draft',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -206,6 +207,7 @@ export type ExecutionMessageCode =
   | 'unavailable'
   | 'not-found'
   | 'not-returned'
+  | 'not-deliverable'
   | 'validation'
   | 'unknown-field'
   | 'invalid-handoff'
@@ -310,6 +312,10 @@ export interface ExecutionServiceMethods {
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
   revision(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<RevisionValue>>;
+  draft(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<SavedDeliveryDraft>>;
   reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
 }
 export interface ExecutionRoutes {
@@ -321,6 +327,27 @@ export interface ExecutionRoutes {
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
   readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
   readonly revision: { readonly body: RevisionRequest; readonly value: RevisionValue };
+  readonly draft: {
+    readonly body: RevisionRequest | DeliveryDraftWrite;
+    readonly value: SavedDeliveryDraft;
+  };
+}
+export interface SavedDeliveryDraft {
+  readonly version: number;
+  readonly text: string;
+  readonly links: readonly string[];
+  readonly files: readonly ArtifactFileRef[];
+}
+export interface DeliveryDraftWrite {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly text?: string;
+  readonly files?: readonly ArtifactFileRef[];
+  readonly links?: readonly string[];
 }
 export interface ExecutionArtifactWire {
   readonly id: string;
@@ -401,8 +428,8 @@ export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
-  // The Client-side `revision` method is added by A on #32 when the revision
-  // panel consumes it; this layer declares the route shape only.
+  // Client-side `revision` / delivery-draft methods are added by A on #32
+  // when the panels consume them; this layer declares the route shapes only.
 }
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
