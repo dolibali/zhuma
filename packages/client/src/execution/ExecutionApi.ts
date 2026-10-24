@@ -78,10 +78,39 @@ export type UpstreamInputWire =
       readonly message: string;
     };
 
+export interface InboxPlace {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+export interface InboxCounts {
+  readonly deliver: number;
+  readonly review: number;
+  readonly confirm: number;
+}
+export interface ExecutionEvent {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly actorId: string;
+  readonly type: string;
+  readonly nodeId: string;
+  readonly status: string;
+  readonly version: number;
+}
+export interface EventsRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+  after: number;
+  seenEventIds?: readonly string[];
+}
 export interface ExecutionInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
+  readonly places?: readonly InboxPlace[];
 }
 
 export interface DeliveryDraft {
@@ -131,6 +160,11 @@ export interface DeliveryDraftWrite {
 
 export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
+  inboxCounts(signal?: AbortSignal): Promise<InboxCounts>;
+  events(
+    query: EventsRequest,
+    signal?: AbortSignal,
+  ): Promise<{ readonly events: readonly ExecutionEvent[] }>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   revision(
@@ -355,11 +389,84 @@ function readInbox(value: unknown): ExecutionInboxValue {
   if (value === null || typeof value !== 'object') invalid('返回的待办不正确。');
   const record = value as Record<string, unknown>;
   if (!Array.isArray(record.items) || !Array.isArray(record.nodes)) invalid('返回的待办不正确。');
+  const places = Array.isArray(record.places) ? record.places : [];
   return {
     actorId: text(record.actorId, '待办'),
     items: record.items.map(readItem),
     nodes: record.nodes.map(readExecutionNode),
+    places: places.map(readPlace),
   };
+}
+
+function readPlace(value: unknown): InboxPlace {
+  if (value === null || typeof value !== 'object') invalid('返回的待办不正确。');
+  const record = value as Record<string, unknown>;
+  return {
+    itemId: text(record.itemId, '待办'),
+    taskPath: typeof record.taskPath === 'string' ? record.taskPath : '',
+    ownerName: typeof record.ownerName === 'string' ? record.ownerName : '',
+  };
+}
+
+/** Drop a repeated eventId and keep sequence order. Unknown fields are not copied. */
+export function mergeExecutionEvents(events: readonly ExecutionEvent[]): readonly ExecutionEvent[] {
+  const seen = new Set<string>();
+  const unique: ExecutionEvent[] = [];
+  for (const event of events) {
+    if (seen.has(event.eventId)) continue;
+    seen.add(event.eventId);
+    unique.push(event);
+  }
+  return unique.sort(
+    (left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId),
+  );
+}
+
+export function readExecutionEvents(value: unknown): {
+  readonly events: readonly ExecutionEvent[];
+} {
+  if (value === null || typeof value !== 'object') invalid('返回的执行事件不正确。');
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.events)) invalid('返回的执行事件不正确。');
+  return { events: mergeExecutionEvents(record.events.map(readExecutionEvent)) };
+}
+
+function readExecutionEvent(value: unknown): ExecutionEvent {
+  if (value === null || typeof value !== 'object') invalid('返回的执行事件不正确。');
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.sequence !== 'number' ||
+    !Number.isSafeInteger(record.sequence) ||
+    record.sequence < 1
+  ) {
+    invalid('返回的执行事件不正确。');
+  }
+  if (typeof record.version !== 'number' || !Number.isSafeInteger(record.version)) {
+    invalid('返回的执行事件不正确。');
+  }
+  return {
+    eventId: text(record.eventId, '事件'),
+    sequence: record.sequence,
+    occurredAt: text(record.occurredAt, '事件'),
+    actorId: text(record.actorId, '事件'),
+    type: text(record.type, '事件'),
+    nodeId: text(record.nodeId, '节点'),
+    status: text(record.status, '事件'),
+    version: record.version,
+  };
+}
+
+function readInboxCounts(value: unknown): InboxCounts {
+  if (value === null || typeof value !== 'object') invalid('返回的待办计数不正确。');
+  const record = value as Record<string, unknown>;
+  const count = (field: string) => {
+    const number = record[field];
+    if (typeof number !== 'number' || !Number.isSafeInteger(number) || number < 0) {
+      invalid('返回的待办计数不正确。');
+    }
+    return number as number;
+  };
+  return { deliver: count('deliver'), review: count('review'), confirm: count('confirm') };
 }
 
 type RevisionNoteWire = RevisionViewWire['notes'][number];
@@ -490,6 +597,25 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
   return {
     async inbox(signal) {
       return readInbox(await call('inbox', {}, signal));
+    },
+    async inboxCounts(signal) {
+      return readInboxCounts(await call('inbox-counts', {}, signal));
+    },
+    async events(query, signal) {
+      return readExecutionEvents(
+        await call(
+          'events',
+          {
+            taskId: query.taskId,
+            planId: query.planId,
+            revision: query.revision,
+            nodeId: query.nodeId,
+            after: query.after,
+            ...(query.seenEventIds === undefined ? {} : { seenEventIds: [...query.seenEventIds] }),
+          },
+          signal,
+        ),
+      );
     },
     async submit(draft, signal) {
       const payload = {

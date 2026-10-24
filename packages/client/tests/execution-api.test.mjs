@@ -172,3 +172,17 @@ test('transport failures become typed execution errors', async () => {
   });
   await assert.rejects(() => other.api.inbox(), /HTTP 500/);
 });
+
+test('inbox counts accept zero and reject a negative number', async () => {
+  const zero = apiWith(() => ({
+    ok: true,
+    value: { deliver: 0, review: 0, confirm: 0 },
+  }));
+  assert.deepEqual(await zero.api.inboxCounts(), { deliver: 0, review: 0, confirm: 0 });
+  assert.equal(zero.calls[0].endpoint, 'zhuma-exec/inbox-counts');
+  const negative = apiWith(() => ({
+    ok: true,
+    value: { deliver: -1, review: 0, confirm: 0 },
+  }));
+  await assert.rejects(() => negative.api.inboxCounts(), /返回的待办计数不正确/);
+});
