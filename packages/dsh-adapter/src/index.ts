@@ -116,7 +116,6 @@ export {
   type ExecutionStorage,
   type PlanReceipt,
 } from './execution-service.js';
-export { PROJECT_SPACE_LIMIT, boundedProjectSpaces } from './project-space.js';
 export {
   applySpaceDirectory,
   openSpaceDirectory,

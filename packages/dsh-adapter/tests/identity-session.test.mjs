@@ -1874,6 +1874,22 @@ test('legacy owner routes include the asset import reads and the import-package 
   assert.deepEqual([...LEGACY_OWNER_PACKAGE_COMMANDS], ['import-package']);
 });
 
+test('a deployment mode that was never configured refuses startup and legacy owner routes', async () => {
+  const ctx = new Context();
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+  assert.throws(
+    () => identityAccessMode(ctx),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  await assert.rejects(
+    () => mount({ ctx, deploymentMode: null }),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+});
+
 test('an unset deployment mode refuses identity startup and legacy owner routes', async () => {
   const ctx = new Context();
   assert.equal(deploymentMode(ctx), undefined);
