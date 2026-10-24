@@ -29,10 +29,15 @@ test('planning RPC contract: adjustment sends only a proposal reference, with in
     },
   });
   await api.plan('task', 0, '', controller.signal);
-  await api.plan('task', 0, '第三步换陈宁，其余不变。', controller.signal, proposal.id);
+  await api.plan('task', 0, '第三步换陈宁，其余不变。', controller.signal, proposal.id, {
+    nodeId: 'node-1',
+    fields: ['assigneeId', 'rationale'],
+  });
   assert.equal(requests[0].baseProposalId, undefined);
   assert.equal(requests[1].baseProposalId, proposal.id);
   assert.equal(requests[1].instruction, '第三步换陈宁，其余不变。');
+  assert.equal(requests[1].adjustment.nodeId, 'node-1');
+  assert.equal(requests[0].adjustment, undefined);
   assert.notEqual(requests[0].requestId, requests[1].requestId);
   assert.ok(!('workflows' in requests[1]));
 });

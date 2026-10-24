@@ -1,0 +1,63 @@
+{
+  "surface": "real published DSH services, separate Node processes, private JSON/credentials files; model generation disabled",
+  "cases": [
+    {
+      "name": "multi-member-early-and-lifecycle",
+      "passed": true,
+      "credentialMode": "0600",
+      "storageUnchangedByDeniedRequests": true,
+      "models": 0,
+      "domains": [
+        "zhuma_workbench",
+        "zhuma_asset_packages",
+        "zhuma_identity",
+        "zhuma_identity",
+        "zhuma_identity"
+      ]
+    },
+    {
+      "name": "separate-process-restart",
+      "passed": true,
+      "credentialMode": "0600",
+      "sameStoredSessionAndDomains": true,
+      "ownerDoesNotBecomeMember": true
+    },
+    {
+      "name": "explicit-legacy-stream-budget",
+      "passed": true,
+      "configuredTestBudgetBytes": 4096,
+      "configuredReadTimeoutMs": 300,
+      "declared413": true,
+      "chunked413": true,
+      "incomplete408": true,
+      "durableSingleReceipt": true
+    },
+    {
+      "name": "initial-identity-failure-and-recovery",
+      "passed": true,
+      "failedChildVisible": true,
+      "legacyFenceRetained": true,
+      "privateBootstrapReferenceOnly": true
+    },
+    {
+      "name": "explicit-single-owner-identity",
+      "passed": true,
+      "explicitOwnerAccount": true
+    },
+    {
+      "name": "actual-required-service-DI-lifecycle",
+      "passed": true,
+      "pendingAndRevokedFailClosed": true,
+      "reprovideRecoversPersistedSession": true
+    }
+  ],
+  "sourceHead": "6a0fd6f428f01388ba3af37cf5ec4f5c6ce331a7",
+  "sourceClean": true,
+  "artifact": {
+    "index.js": "0e082ae0f6faaa44375aebe0b14f3d2e6180cd1b2f2491f9640634d4d5623d37",
+    "client.js": "ee6b4f3f5a4299c531536741cb45b7aed87ad2083c1bbef27176b31d637057f0",
+    "package.json": "dbd0da702a2ab1c5afeb42782542de3f58aebd996619eec12ee1abe176de24fa",
+    "THIRD_PARTY_LICENSES.txt": "042069a26d02ea59dad8b0eab0a33f00c423e30f118937834fb33fd6d51f9ff3"
+  },
+  "scope": "Exact emitted bundle; six real-service subprocess cases; a private temporary SDK package link; no installed-desktop or model-quality claim."
+}

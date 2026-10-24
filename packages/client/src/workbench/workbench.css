@@ -1,4 +1,118 @@
 /* Theme state belongs to the official DSH ui-theme service. These are presentation tokens only. */
+.zhuma.zm-member-session {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.zhuma .zm-login-entry {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  padding: 32px 16px;
+}
+.zhuma .zm-login-card {
+  display: grid;
+  gap: 24px;
+  width: min(100%, 400px);
+  padding: clamp(20px, 5vw, 32px);
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+  background: var(--zm-paper);
+}
+.zhuma .zm-login-card header {
+  display: grid;
+  gap: 8px;
+}
+.zhuma .zm-login-brand {
+  color: var(--zm-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.zhuma .zm-login-card h1,
+.zhuma .zm-login-card p {
+  margin: 0;
+}
+.zhuma .zm-login-card fieldset {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.zhuma .zm-login-card .zm-field {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.zhuma .zm-login-password {
+  position: relative;
+}
+.zhuma .zm-login-password input {
+  padding-right: 90px;
+}
+.zhuma .zm-login-password .zm-password-toggle {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 5px 7px;
+  min-height: 32px;
+  font-size: 12px;
+}
+.zhuma .zm-login-error {
+  color: var(--zm-danger);
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-login-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--zm-muted);
+}
+.zhuma .zm-current-account {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--zm-line);
+}
+.zhuma .zm-current-account > span:nth-child(2) {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-current-account small {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zhuma .zm-current-account strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 500;
+}
+.zhuma .zm-account-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--zm-soft);
+  color: var(--zm-ink);
+  font-weight: 600;
+}
+.zhuma .zm-member-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.zhuma .zm-login-card legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
 .zhuma .zm-project-page .zm-page-title {
   display: grid;
   min-width: 0;
@@ -1960,6 +2074,115 @@ html[data-platform='darwin'] .zm-shell-chrome {
 .zm-proposal-node p {
   font-size: 13px;
   color: var(--zm-muted);
+}
+.zm-plan-preview-version {
+  margin: 12px 0;
+}
+.zm-planning-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.zm-planning-scope > span {
+  color: var(--zm-muted);
+}
+.zm-planning-scope .zm-single-select {
+  flex: 1;
+  min-width: 150px;
+  width: auto;
+}
+.zm-planning-scope > small {
+  flex-basis: 100%;
+  color: var(--zm-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zm-plan-changes {
+  border-top: 1px solid var(--zm-line);
+  margin-top: 20px;
+  padding-top: 16px;
+}
+.zm-plan-changes h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.zm-change-caption {
+  font-size: 11px;
+  color: var(--zm-muted);
+}
+.zm-change-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.zm-planner .zm-change-entry {
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+  color: var(--zm-ink);
+  margin: 10px 0;
+  padding: 10px;
+}
+.zm-change-entry > summary {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.zm-change-kind {
+  color: var(--zm-accent);
+  margin-right: 6px;
+  font-size: 11px;
+}
+.zm-change-entry.removed .zm-change-kind {
+  color: var(--zm-danger);
+}
+.zm-change-location {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 8px 0;
+  color: var(--zm-muted);
+}
+.zm-change-location > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.zm-change-location > button {
+  flex-shrink: 0;
+}
+.zm-change-field {
+  margin-top: 10px;
+}
+.zm-change-field > strong {
+  font-size: 11px;
+}
+.zm-change-values {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+.zm-change-values > div {
+  border-left: 2px solid var(--zm-line-strong);
+  padding-left: 8px;
+}
+.zm-change-values > div:last-child {
+  border-left-color: var(--zm-accent);
+}
+.zm-change-values small {
+  color: var(--zm-muted);
+  font-size: 10px;
+}
+.zm-change-entry p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+  max-height: 180px;
+  overflow-y: auto;
 }
 .zm-questions {
   padding: 12px;
