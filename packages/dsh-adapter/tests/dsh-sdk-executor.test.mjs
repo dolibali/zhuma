@@ -1857,7 +1857,7 @@ async function driveWithBlockedRemove(env, sessionId, blocked) {
   return JSON.parse(stdout);
 }
 
-async function driveFreshHomeFault(env, faultText = '') {
+async function driveFreshHomeFault(env, faultText = '', faultCode = 'EACCES') {
   const dir = mkdtempSync(path.join(tmpdir(), 'zhuma-home-fault-'));
   const preload = path.join(dir, 'preload.mjs');
   const script = path.join(dir, 'drive.mjs');
@@ -1876,7 +1876,8 @@ async function driveFreshHomeFault(env, faultText = '') {
       '    const error = new Error(',
       "      detail.length > 0 ? detail : `EACCES: permission denied, open '${text}'`,",
       '    );',
-      "    error.code = 'EACCES';",
+      '    const code = process.env.ZHUMA_FAULT_CODE;',
+      '    if (code) error.code = code;',
       '    throw error;',
       '  }',
       '  return original(target, data, options);',
@@ -1948,6 +1949,7 @@ async function driveFreshHomeFault(env, faultText = '') {
       ZHUMA_MODEL_ID: env.ZHUMA_MODEL_ID,
       ZHUMA_DATA_DIR: env.ZHUMA_DATA_DIR,
       ...(faultText.length > 0 ? { ZHUMA_FAULT_TEXT: faultText } : {}),
+      ...(faultCode.length > 0 ? { ZHUMA_FAULT_CODE: faultCode } : {}),
       ZHUMA_STUB: stub,
       ZHUMA_ADAPTER: pathToFileURL(
         path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
@@ -1972,6 +1974,9 @@ async function driveFreshHomeFault(env, faultText = '') {
   return JSON.parse(stdout);
 }
 
+/** driveFreshHomeFault 默认把 error.code 写成 EACCES。公开文案不从消息正文摘词。 */
+const freshHomeStartupFailure = '执行器启动失败。\nEACCES';
+
 test('契约：新建会话还没写好家目录就失败时，目录和索引记录都清掉', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
@@ -1980,8 +1985,7 @@ test('契约：新建会话还没写好家目录就失败时，目录和索引�
     assert.equal(failed.events.length, 1);
     assert.equal(failed.events[0].type, 'failed');
     assert.equal(failed.events[0].fault, 'executor-disconnected');
-    assert.match(failed.events[0].message, /^执行器启动失败。/);
-    assert.match(failed.events[0].message, /EACCES/);
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes(env.ZHUMA_DATA_DIR), false);
     assert.deepEqual(failed.homes, []);
     assert.deepEqual(failed.sessions, {});
@@ -1990,14 +1994,13 @@ test('契约：新建会话还没写好家目录就失败时，目录和索引�
   }
 });
 
-test('契约：启动失败里不带引号的路径，空格、括号和汉字也会被剥掉', async () => {
+test('契约：启动失败里不带引号的路径，空格、括号和汉字都不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   const leaked = '/tmp/zhuma home/会话(目录)';
   try {
     const failed = await driveFreshHomeFault(env, `EACCES: permission denied, mkdir ${leaked}`);
     const message = failed.events[0].message;
-    assert.match(message, /^执行器启动失败。/);
-    assert.match(message, /EACCES/);
+    assert.equal(message, freshHomeStartupFailure);
     assert.equal(message.includes('会话'), false);
     assert.equal(message.includes('(目录)'), false);
     assert.equal(message.includes(' home/'), false);
@@ -2008,61 +2011,62 @@ test('契约：启动失败里不带引号的路径，空格、括号和汉字�
   }
 });
 
-test('契约：启动失败里 cwd: 后面的绝对路径会剥掉，后面的说明留下', async () => {
+test('契约：启动失败里 cwd: 后面的绝对路径不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(env, 'cwd:/home/qa/secret-project/x failed');
-    assert.equal(failed.events[0].message, '执行器启动失败。\ncwd: failed');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
 });
 
-test('契约：启动失败里括号中的绝对路径会剥掉，括号留下', async () => {
+test('契约：启动失败里括号中的绝对路径不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(env, '(/home/qa/secret-project/file.txt)');
-    assert.equal(failed.events[0].message, '执行器启动失败。\n()');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
 });
 
-test('契约：启动失败里调用栈的绝对路径会剥掉，行号留下', async () => {
+test('契约：启动失败里调用栈的绝对路径不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(
       env,
       'at Object.<anonymous> (/home/qa/proj/node_modules/x/index.js:10:5)',
     );
-    assert.equal(failed.events[0].message, '执行器启动失败。\nat Object.<anonymous> (:10:5)');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
 });
 
-test('契约：启动失败里 file:// 后面的绝对路径会剥掉，说明留下', async () => {
+test('契约：启动失败里 file:// 后面的绝对路径不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(env, 'file:///home/qa/x.mjs failed');
-    assert.equal(failed.events[0].message, '执行器启动失败。\nfile:// failed');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
 });
 
-test('契约：启动失败里带空格、括号和汉字的路径会剥掉，后面的 ENOENT 留下', async () => {
+test('契约：启动失败不从消息正文抄出 ENOENT', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(
       env,
       'spawn /home/qa user/My Docs (x)/数据/dsh ENOENT',
     );
-    assert.equal(failed.events[0].message, '执行器启动失败。\nspawn ENOENT');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
+    assert.equal(failed.events[0].message.includes('ENOENT'), false);
     assert.equal(failed.events[0].message.includes('My Docs'), false);
     assert.equal(failed.events[0].message.includes('数据'), false);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
@@ -2071,11 +2075,11 @@ test('契约：启动失败里带空格、括号和汉字的路径会剥掉，�
   }
 });
 
-test('契约：启动失败里最后一段带空格的路径会整段剥掉', async () => {
+test('契约：启动失败里最后一段带空格的路径不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(env, 'open /home/qa/My Docs');
-    assert.equal(failed.events[0].message, '执行器启动失败。\nopen');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('Docs'), false);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
   } finally {
@@ -2083,14 +2087,14 @@ test('契约：启动失败里最后一段带空格的路径会整段剥掉', as
   }
 });
 
-test('契约：启动失败里同一行后面的斜杠不会把说明一起吞掉', async () => {
+test('契约：启动失败不从同一行后面的斜杠说明摘词', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(
       env,
       'open /home/qa/file.txt then see /docs and leave',
     );
-    assert.equal(failed.events[0].message, '执行器启动失败。\nopen then see and leave');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
     assert.equal(failed.events[0].message.includes('file.txt'), false);
     assert.equal(failed.events[0].message.includes('/docs'), false);
@@ -2099,15 +2103,15 @@ test('契约：启动失败里同一行后面的斜杠不会把说明一起吞�
   }
 });
 
-test('契约：启动失败里 UNC 路径会剥掉，盘符外的说明留下', async () => {
+test('契约：启动失败里 UNC 路径不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const missing = await driveFreshHomeFault(env, '\\\\server\\share\\qa\\x.txt missing');
-    assert.equal(missing.events[0].message, '执行器启动失败。\n\\ missing');
+    assert.equal(missing.events[0].message, freshHomeStartupFailure);
     assert.equal(missing.events[0].message.includes('server'), false);
     assert.equal(missing.events[0].message.includes('x.txt'), false);
     const opened = await driveFreshHomeFault(env, 'open \\\\server\\share\\My Docs\\x.txt failed');
-    assert.equal(opened.events[0].message, '执行器启动失败。\nopen \\ failed');
+    assert.equal(opened.events[0].message, freshHomeStartupFailure);
     assert.equal(opened.events[0].message.includes('share'), false);
     assert.equal(opened.events[0].message.includes('My Docs'), false);
   } finally {
@@ -2115,11 +2119,11 @@ test('契约：启动失败里 UNC 路径会剥掉，盘符外的说明留下', 
   }
 });
 
-test('契约：启动失败里 file://localhost 后面的本地路径会剥掉', async () => {
+test('契约：启动失败里 file://localhost 后面的本地路径不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(env, 'file://localhost/home/qa/x failed');
-    assert.equal(failed.events[0].message, '执行器启动失败。\nfile:/ failed');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('/home'), false);
     assert.equal(failed.events[0].message.includes('localhost'), false);
   } finally {
@@ -2127,32 +2131,32 @@ test('契约：启动失败里 file://localhost 后面的本地路径会剥掉',
   }
 });
 
-test('契约：启动失败里路径后面的版本号和缩写留在说明里', async () => {
+test('契约：启动失败不从路径后面的版本号和缩写摘词', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const version = await driveFreshHomeFault(env, 'open /home/qa/dir v1.2 released');
-    assert.equal(version.events[0].message, '执行器启动失败。\nopen v1.2 released');
+    assert.equal(version.events[0].message, freshHomeStartupFailure);
     assert.equal(version.events[0].message.includes('/home'), false);
     assert.equal(version.events[0].message.includes('dir'), false);
     const abbrev = await driveFreshHomeFault(env, 'open /home/qa/x e.g. missing');
-    assert.equal(abbrev.events[0].message, '执行器启动失败。\nopen e.g. missing');
+    assert.equal(abbrev.events[0].message, freshHomeStartupFailure);
     assert.equal(abbrev.events[0].message.includes('/home'), false);
     const duration = await driveFreshHomeFault(env, 'open /home/qa/x 3.5s timeout');
-    assert.equal(duration.events[0].message, '执行器启动失败。\nopen 3.5s timeout');
+    assert.equal(duration.events[0].message, freshHomeStartupFailure);
     assert.equal(duration.events[0].message.includes('/home'), false);
     const named = await driveFreshHomeFault(env, 'open /home/qa/My Docs/secret file.txt failed');
-    assert.equal(named.events[0].message, '执行器启动失败。\nopen failed');
+    assert.equal(named.events[0].message, freshHomeStartupFailure);
     assert.equal(named.events[0].message.includes('file.txt'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
 });
 
-test('契约：启动失败里带空格的文件名后面还有说明时，文件名也剥掉', async () => {
+test('契约：启动失败里带空格的文件名不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(env, 'open /home/qa/My Docs/secret file.txt failed');
-    assert.equal(failed.events[0].message, '执行器启动失败。\nopen failed');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('file.txt'), false);
     assert.equal(failed.events[0].message.includes('My Docs'), false);
     assert.equal(failed.events[0].message.includes('/home'), false);
@@ -2162,7 +2166,7 @@ test('契约：启动失败里带空格的文件名后面还有说明时，文�
   }
 });
 
-test('契约：启动失败里扩展名带数字或下划线的带空格文件名也剥掉', async () => {
+test('契约：启动失败里扩展名带数字或下划线的文件名不会进入公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   const lines = [
     ['open /home/qa/My Docs/my clip.mp4 failed', 'clip.mp4'],
@@ -2173,7 +2177,7 @@ test('契约：启动失败里扩展名带数字或下划线的带空格文件�
   try {
     for (const [input, leaked] of lines) {
       const failed = await driveFreshHomeFault(env, input);
-      assert.equal(failed.events[0].message, '执行器启动失败。\nopen failed', input);
+      assert.equal(failed.events[0].message, freshHomeStartupFailure, input);
       assert.equal(failed.events[0].message.includes(leaked), false, input);
       assert.equal(failed.events[0].message.includes('/home'), false, input);
     }
@@ -2188,11 +2192,11 @@ for (const [label, input, residue] of [
   ['非 ASCII', 'open /home/qa/My Docs/report 报告.pdf failed', '报告.pdf'],
   ['下划线开头', 'open /home/qa/My Docs/report _draft.pdf failed', '_draft.pdf'],
 ]) {
-  test(`契约：启动失败里空格后的${label}文件名也不留下`, async () => {
+  test(`契约：启动失败里空格后的${label}文件名不会进入公开文案`, async () => {
     const env = modelEnv('zhuma-synthetic-marker');
     try {
       const failed = await driveFreshHomeFault(env, input);
-      assert.equal(failed.events[0].message, '执行器启动失败。\nopen failed');
+      assert.equal(failed.events[0].message, freshHomeStartupFailure);
       assert.equal(failed.events[0].message.includes(residue), false);
       assert.equal(failed.events[0].message.includes('/home'), false);
       assert.equal(failed.events[0].message.includes('report'), false);
@@ -2202,47 +2206,42 @@ for (const [label, input, residue] of [
   });
 }
 
-test('契约：启动失败里路径后面的网址说明会整段留下', async () => {
+test('契约：启动失败不从路径后面的网址摘词', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(
       env,
       'open /home/qa/x.json failed: see https://docs.example.invalid/errors',
     );
-    assert.equal(
-      failed.events[0].message,
-      '执行器启动失败。\nopen failed: see https://docs.example.invalid/errors',
-    );
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('/home'), false);
     assert.equal(failed.events[0].message.includes('x.json'), false);
+    assert.equal(failed.events[0].message.includes('example.invalid'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
 });
 
-test('契约：启动失败里的网址会整段留下', async () => {
+test('契约：启动失败不把网址抄进公开文案', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(env, 'fetch https://example.invalid/v1/models failed');
-    assert.equal(
-      failed.events[0].message,
-      '执行器启动失败。\nfetch https://example.invalid/v1/models failed',
-    );
-    assert.equal(failed.events[0].message.includes('https:/'), true);
-    assert.equal(failed.events[0].message.endsWith('https:/'), false);
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
+    assert.equal(failed.events[0].message.includes('https'), false);
+    assert.equal(failed.events[0].message.includes('example.invalid'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }
 });
 
-test('契约：启动失败里路径后面的普通说明会留下', async () => {
+test('契约：启动失败不从路径后面的普通说明摘词', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   try {
     const failed = await driveFreshHomeFault(
       env,
       'open /home/qa/.zhuma/sessions/a b/home.json and then exit',
     );
-    assert.equal(failed.events[0].message, '执行器启动失败。\nopen and then exit');
+    assert.equal(failed.events[0].message, freshHomeStartupFailure);
     assert.equal(failed.events[0].message.includes('home.json'), false);
     assert.equal(failed.events[0].message.includes('/home/qa'), false);
   } finally {
@@ -2254,206 +2253,152 @@ const unboundedStartupFailures = [
   [
     'A1',
     'open /tmp/synthetic/Cedar Lighthouse brief.txt failed',
-    'open failed',
     ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
   ],
   [
     'A2',
     String.raw`open C:\\ProjectSecret\\nested\\brief.txt failed`,
-    'open failed',
     ['ProjectSecret', 'nested', 'brief'],
   ],
-  ['C1', 'open /tmp/synthetic/brief.txt failed', 'open failed', ['brief', 'synthetic']],
+  ['C1', 'open /tmp/synthetic/brief.txt failed', ['brief', 'synthetic']],
   [
     'C2',
     String.raw`open C:\ProjectSecret\nested\brief.txt failed`,
-    'open failed',
     ['ProjectSecret', 'nested', 'brief'],
   ],
-  [
-    'C3',
-    'open /tmp/synthetic/Lighthouse brief.txt failed',
-    'open failed',
-    ['Lighthouse', 'brief', 'synthetic'],
-  ],
+  ['C3', 'open /tmp/synthetic/Lighthouse brief.txt failed', ['Lighthouse', 'brief', 'synthetic']],
   [
     'M1',
     'open /tmp/Cedar Lighthouse/nested/brief.txt failed',
-    'open failed',
     ['Cedar', 'Lighthouse', 'nested', 'brief'],
   ],
   [
     'M2',
     'open /tmp/Cedar Lighthouse Secret/brief.txt failed',
-    'open failed',
     ['Cedar', 'Lighthouse', 'Secret', 'brief'],
   ],
   [
     'M3',
     'open /tmp/Cedar Lighthouse/Project Secret brief.txt failed',
-    'open failed',
     ['Cedar', 'Lighthouse', 'Project', 'Secret', 'brief'],
   ],
   [
     'F1',
     'open /tmp/synthetic/Project Cedar Lighthouse brief.txt failed',
-    'open failed',
     ['Project', 'Cedar', 'Lighthouse', 'brief', 'synthetic'],
   ],
   [
     'F2',
     'open /tmp/synthetic/Cedar Lighthouse brief.txt ENOENT',
-    'open ENOENT',
-    ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
+    ['Cedar', 'Lighthouse', 'brief', 'synthetic', 'ENOENT'],
   ],
   [
     'F3',
     'open /tmp/synthetic/Cedar Lighthouse brief.txt',
-    'open',
     ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
   ],
   [
     'F4',
     'mkdir /tmp/synthetic/Cedar Lighthouse brief',
-    'mkdir',
     ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
   ],
   [
     'F5',
     'open /tmp/synthetic/Cedar Lighthouse brief.txt: denied',
-    'open denied',
     ['Cedar', 'Lighthouse', 'brief', 'synthetic'],
   ],
-  [
-    'U1',
-    String.raw`open \\server\share\qa\brief.txt failed`,
-    'open \\ failed',
-    ['server', 'share', 'brief'],
-  ],
-  [
-    'U2',
-    String.raw`open \\\\server\\share\\qa\\brief.txt failed`,
-    'open \\\\\\ failed',
-    ['server', 'share', 'brief'],
-  ],
+  ['U1', String.raw`open \\server\share\qa\brief.txt failed`, ['server', 'share', 'brief']],
+  ['U2', String.raw`open \\\\server\\share\\qa\\brief.txt failed`, ['server', 'share', 'brief']],
   [
     'U3',
     String.raw`open \\server\share\Cedar Lighthouse brief.txt failed`,
-    'open failed',
     ['server', 'share', 'Cedar', 'Lighthouse', 'brief'],
   ],
   [
     'U4',
     String.raw`open \\ProjectSecret\\nested\\brief.txt failed`,
-    'open \\ failed',
     ['ProjectSecret', 'nested', 'brief'],
   ],
-  [
-    'W1',
-    'open C:/ProjectSecret/nested/brief.txt failed',
-    'open failed',
-    ['ProjectSecret', 'nested', 'brief'],
-  ],
-  [
-    'W2',
-    'open C://ProjectSecret//nested//brief.txt failed',
-    'open failed',
-    ['ProjectSecret', 'nested', 'brief'],
-  ],
+  ['W1', 'open C:/ProjectSecret/nested/brief.txt failed', ['ProjectSecret', 'nested', 'brief']],
+  ['W2', 'open C://ProjectSecret//nested//brief.txt failed', ['ProjectSecret', 'nested', 'brief']],
   [
     'W3',
     'open C:/Project Secret/Cedar Lighthouse brief.txt failed',
-    'open failed',
     ['Project', 'Secret', 'Cedar', 'Lighthouse', 'brief'],
   ],
   [
     'W4',
     String.raw`open C:\ProjectSecret\\nested\brief.txt failed`,
-    'open failed',
     ['ProjectSecret', 'nested', 'brief'],
   ],
   [
     'W5',
     String.raw`open C:\ProjectSecret/nested\brief.txt failed`,
-    'open failed',
     ['ProjectSecret', 'nested', 'brief'],
   ],
-  [
-    'W6',
-    String.raw`EACCES: permission denied, mkdir C:\\Users\\qa\\data`,
-    'EACCES: permission denied, mkdir',
-    ['Users', 'qa', 'data'],
-  ],
+  ['W6', String.raw`EACCES: permission denied, mkdir C:\\Users\\qa\\data`, ['Users', 'qa', 'data']],
   [
     'W7',
     String.raw`open C:\\Project Secret\\Cedar Lighthouse brief.txt failed`,
-    'open failed',
     ['Project', 'Secret', 'Cedar', 'Lighthouse', 'brief'],
   ],
-  ['P1', 'open /tmp//ProjectSecret/brief.txt failed', 'open failed', ['ProjectSecret', 'brief']],
-  [
-    'P2',
-    'open //tmp/ProjectSecret/brief.txt failed',
-    'open / failed',
-    ['tmp', 'ProjectSecret', 'brief'],
-  ],
-  [
-    'Q1',
-    "open '/tmp/Cedar Lighthouse brief.txt' failed",
-    "open '' failed",
-    ['Cedar', 'Lighthouse', 'brief'],
-  ],
-  [
-    'Q2',
-    'open "/tmp/Cedar Lighthouse brief.txt" failed',
-    'open "" failed',
-    ['Cedar', 'Lighthouse', 'brief'],
-  ],
+  ['P1', 'open /tmp//ProjectSecret/brief.txt failed', ['ProjectSecret', 'brief']],
+  ['P2', 'open //tmp/ProjectSecret/brief.txt failed', ['tmp', 'ProjectSecret', 'brief']],
+  ['Q1', "open '/tmp/Cedar Lighthouse brief.txt' failed", ['Cedar', 'Lighthouse', 'brief']],
+  ['Q2', 'open "/tmp/Cedar Lighthouse brief.txt" failed', ['Cedar', 'Lighthouse', 'brief']],
   [
     'Q3',
     String.raw`open 'C:\\ProjectSecret\\nested\\brief.txt' failed`,
-    "open '' failed",
     ['ProjectSecret', 'nested', 'brief'],
   ],
-  [
-    'Q4',
-    String.raw`open '\\\\server\\share\\brief.txt' failed`,
-    "open '' failed",
-    ['server', 'share', 'brief'],
-  ],
-  ['Q5', "open '~/ProjectSecret/brief.txt' failed", "open '' failed", ['ProjectSecret', 'brief']],
-  [
-    'Q6',
-    'open `/tmp/Cedar Lighthouse brief.txt` failed',
-    'open failed',
-    ['Cedar', 'Lighthouse', 'brief'],
-  ],
-  ['T1', 'open ~/ProjectSecret/brief.txt failed', 'open failed', ['ProjectSecret', 'brief']],
+  ['Q4', String.raw`open '\\\\server\\share\\brief.txt' failed`, ['server', 'share', 'brief']],
+  ['Q5', "open '~/ProjectSecret/brief.txt' failed", ['ProjectSecret', 'brief']],
+  ['Q6', 'open `/tmp/Cedar Lighthouse brief.txt` failed', ['Cedar', 'Lighthouse', 'brief']],
+  ['T1', 'open ~/ProjectSecret/brief.txt failed', ['ProjectSecret', 'brief']],
   [
     'T2',
     'open ~/synthetic/Cedar Lighthouse brief.txt failed',
-    'open failed',
     ['synthetic', 'Cedar', 'Lighthouse', 'brief'],
   ],
+  ['T3', 'open ~qa/ProjectSecret/brief.txt failed', ['qa', 'ProjectSecret', 'brief']],
   [
-    'T3',
-    'open ~qa/ProjectSecret/brief.txt failed',
-    'open failed',
-    ['qa', 'ProjectSecret', 'brief'],
+    'N1a',
+    'open /tmp/synthetic/cedar lighthouse brief.txt failed',
+    ['cedar', 'lighthouse', 'brief', 'synthetic'],
+  ],
+  [
+    'N1b',
+    'open /tmp/synthetic/Cedar LIGHTHOUSE brief.txt failed',
+    ['Cedar', 'LIGHTHOUSE', 'brief', 'synthetic'],
+  ],
+  ['N1c', 'open /home/qa/My Docs/a b c.txt failed', ['c.txt', 'Docs', 'home', 'qa']],
+  [
+    'N2a',
+    'open /tmp/EVIDENCE_SECRET/Cedar Lighthouse brief.txt failed',
+    ['EVIDENCE_SECRET', 'EVIDENCE', 'SECRET', 'Cedar', 'Lighthouse', 'brief'],
+  ],
+  [
+    'N2b',
+    'open /srv/EXPORTS/Cedar Lighthouse brief.txt failed',
+    ['EXPORTS', 'srv', 'Cedar', 'Lighthouse', 'brief'],
+  ],
+  [
+    'N2c',
+    String.raw`open C:\Users\EMMA\Cedar Lighthouse brief.txt failed`,
+    ['EMMA', 'Users', 'Cedar', 'Lighthouse', 'brief'],
   ],
 ];
 
-test('契约：启动失败遇到无法界定的路径时整句只留错误类型', async () => {
+test('契约：启动失败只公开固定文案和 error.code 里的已知错误码', async () => {
   const env = modelEnv('zhuma-synthetic-marker');
   const mismatches = [];
   try {
-    for (const [id, input, detail, forbidden] of unboundedStartupFailures) {
+    for (const [id, input, forbidden] of unboundedStartupFailures) {
       const failed = await driveFreshHomeFault(env, input);
       const message = failed.events[0].message;
-      const expected = `执行器启动失败。\n${detail}`;
-      if (message !== expected) {
+      if (message !== freshHomeStartupFailure) {
         mismatches.push(
-          `${id} expected ${JSON.stringify(expected)} got ${JSON.stringify(message)}`,
+          `${id} expected ${JSON.stringify(freshHomeStartupFailure)} got ${JSON.stringify(message)}`,
         );
       }
       for (const piece of forbidden) {
@@ -2464,6 +2409,34 @@ test('契约：启动失败遇到无法界定的路径时整句只留错误类�
       assert.equal(failed.events[0].fault, 'executor-disconnected');
     }
     assert.deepEqual(mismatches, []);
+  } finally {
+    rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
+  }
+});
+
+test('契约：启动失败的错误码只取 error.code 里的已知值', async () => {
+  const env = modelEnv('zhuma-synthetic-marker');
+  const knownText = 'open /srv/EXPORTS/cedar lighthouse brief.txt EACCES';
+  const unknownText = String.raw`open C:\Users\EMMA\Cedar Lighthouse brief.txt failed`;
+  const missingText = 'open /tmp/EVIDENCE_SECRET/a b c.txt ENOENT';
+  try {
+    const known = await driveFreshHomeFault(env, knownText, 'ENOENT');
+    assert.equal(known.events[0].message, '执行器启动失败。\nENOENT');
+    assert.equal(known.events[0].message.includes('EXPORTS'), false);
+    assert.equal(known.events[0].message.includes('lighthouse'), false);
+    assert.equal(known.events[0].message.includes('EACCES'), false);
+
+    const unknown = await driveFreshHomeFault(env, unknownText, 'EXPORTS');
+    assert.equal(unknown.events[0].message, '执行器启动失败。');
+    assert.equal(unknown.events[0].message.includes('EXPORTS'), false);
+    assert.equal(unknown.events[0].message.includes('EMMA'), false);
+    assert.equal(unknown.events[0].message.includes('Lighthouse'), false);
+
+    const missing = await driveFreshHomeFault(env, missingText, '');
+    assert.equal(missing.events[0].message, '执行器启动失败。');
+    assert.equal(missing.events[0].message.includes('EVIDENCE_SECRET'), false);
+    assert.equal(missing.events[0].message.includes('c.txt'), false);
+    assert.equal(missing.events[0].message.includes('ENOENT'), false);
   } finally {
     rmSync(env.ZHUMA_DATA_DIR, { recursive: true, force: true });
   }

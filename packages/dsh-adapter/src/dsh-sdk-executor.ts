@@ -1125,325 +1125,47 @@ async function stopChild(child: ChildProcessWithoutNullStreams, rpc: StdioRpc): 
   await rpc.exited;
 }
 
-/** 启动前失败要把原因留下来，但不能带出本机路径。 */
+/**
+ * 启动前失败的公开文案。
+ * 消息正文可能含本机路径，不摘词、不按字形判断说明或 errno。
+ * 只有 error.code 落在这份已知列表里时，才另附这个代码。
+ */
+const startupErrno = new Set([
+  'EACCES',
+  'EADDRINUSE',
+  'EAGAIN',
+  'EBUSY',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EEXIST',
+  'EFBIG',
+  'EINVAL',
+  'EIO',
+  'EISDIR',
+  'EMFILE',
+  'ENFILE',
+  'ENOENT',
+  'ENOMEM',
+  'ENOSPC',
+  'ENOTDIR',
+  'ENOTEMPTY',
+  'EPERM',
+  'EPIPE',
+  'EROFS',
+  'ETIMEDOUT',
+]);
+
 function startupFailureMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  const detail = stripLocalPaths(raw)
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-  if (detail.length === 0) return '执行器启动失败。';
-  return `执行器启动失败。\n${detail}`;
+  const code = startupFailureCode(error);
+  if (code === undefined) return '执行器启动失败。';
+  return `执行器启动失败。\n${code}`;
 }
 
-/**
- * 引号里的路径整段去掉。
- * 不带引号的绝对路径可以从行首、空白、冒号、括号或 file:// 后面开始。
- * `http://` 这类网址整段留下。`file://` 后面的本地路径，以及 `\\server\share`，都剥掉。
- * `~/` 和 `~用户名/` 同样从 `~` 剥起。单字母加冒号按盘符处理。
- * 段里可以有空格、括号和非 ASCII。空格只有在后面紧接着的分隔符不是另起一条路径时才算在路径里。
- * 最后一段可以带一个空格和文件名。路径结束后的说明留下。
- * 路径已经开始，但空格后面分不清是文件名还是说明时，这一句只留错误类型和 errno。
- */
-function stripLocalPaths(text: string): string {
-  const quoted = /(?:[/\\]|[A-Za-z]:[/\\])[^'"]*/;
-  return stripUnquotedLocalPaths(
-    text
-      .replace(new RegExp(`'${quoted.source}'`, 'g'), "''")
-      .replace(new RegExp(`"${quoted.source}"`, 'g'), '""'),
-  );
-}
-
-/** 路径起点已经认出，但终点无法安全界定。 */
-const unboundedPath = -1;
-
-function stripUnquotedLocalPaths(text: string): string {
-  let result = '';
-  let index = 0;
-  while (index < text.length) {
-    const breakAt = text.indexOf('\n', index);
-    const lineEnd = breakAt < 0 ? text.length : breakAt;
-    result += stripUnquotedLine(text.slice(index, lineEnd));
-    if (breakAt < 0) break;
-    result += '\n';
-    index = breakAt + 1;
-  }
-  return result;
-}
-
-function stripUnquotedLine(line: string): string {
-  if (hasUnboundedLocalPath(line)) return closedFailureLine(line);
-  let result = '';
-  let index = 0;
-  while (index < line.length) {
-    const start = findLocalPathStart(line, index);
-    if (start < 0) {
-      result += line.slice(index);
-      break;
-    }
-    result += line.slice(index, start);
-    const end = localPathEnd(line, start);
-    if (end === unboundedPath || end <= start) {
-      result += line.slice(start);
-      break;
-    }
-    index = end;
-  }
-  return result;
-}
-
-function hasUnboundedLocalPath(line: string): boolean {
-  let index = 0;
-  while (index < line.length) {
-    const start = findLocalPathStart(line, index);
-    if (start < 0) return false;
-    const end = localPathEnd(line, start);
-    if (end === unboundedPath) return true;
-    if (end <= start) return false;
-    index = end;
-  }
-  return false;
-}
-
-/** 整句丢弃后留下的错误类型、errno，以及路径前面的说明。 */
-function closedFailureLine(line: string): string {
-  const start = findLocalPathStart(line, 0);
-  const head = start > 0 ? line.slice(0, start) : '';
-  const tail = start >= 0 ? line.slice(start) : line;
-  const kept: string[] = head.match(/[A-Za-z0-9_]+/g) ?? [];
-  const outcome = /^(?:denied|error|failed|missing|permission|timeout)$/;
-  for (const word of tail.match(/[A-Za-z0-9_]+/g) ?? []) {
-    if (/^E[A-Z0-9_]+$/.test(word) || outcome.test(word)) kept.push(word);
-  }
-  return kept.join(' ');
-}
-
-function findLocalPathStart(text: string, from: number): number {
-  for (let index = from; index < text.length; index += 1) {
-    const previous = index === 0 ? '' : text[index - 1];
-    if (previous !== undefined && /[\w.]/.test(previous)) continue;
-    const char = text[index];
-    if (
-      (char === '/' || char === '\\' || char === '~') &&
-      (char === '~' || schemeSlashRun(text, index) !== 2) &&
-      isLocalPathAt(text, index)
-    ) {
-      return index;
-    }
-    if (
-      char !== undefined &&
-      /[A-Za-z]/.test(char) &&
-      text[index + 1] === ':' &&
-      (text[index + 2] === '/' || text[index + 2] === '\\') &&
-      isLocalPathAt(text, index)
-    ) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function isLocalPathAt(text: string, index: number): boolean {
-  const end = localPathEnd(text, index);
-  return end === unboundedPath || end > index;
-}
-
-function localPathEnd(text: string, start: number): number {
-  let index = start;
-  if (text[index] === '~') {
-    const root = tildeSeparator(text, index);
-    if (root < 0) return start;
-    index = root;
-  }
-  let afterDrive = false;
-  const drive = text[index];
-  if (
-    drive !== undefined &&
-    /[A-Za-z]/.test(drive) &&
-    text[index + 1] === ':' &&
-    (text[index + 2] === '/' || text[index + 2] === '\\')
-  ) {
-    index += 2;
-    afterDrive = true;
-  }
-  if (text[index] !== '/' && text[index] !== '\\') return start;
-  // 没有盘符时，开头的重复分隔符不是这条路径（UNC 从下一道剥，file:// 留住 scheme）。
-  // 盘符后面的 `\\`、`//` 仍是同一条路径。
-  if (!afterDrive && (text[index + 1] === '/' || text[index + 1] === '\\')) return start;
-  let lastGood = start;
-  let cursor = index + 1;
-  while (cursor < text.length) {
-    const char = text[cursor];
-    if (char === '\n' || char === "'" || char === '"') break;
-    if (char === '/' || char === '\\') {
-      cursor += 1;
-      lastGood = cursor;
-      continue;
-    }
-    if (char === ':') break;
-    if (char !== undefined && /\s/.test(char)) {
-      const glued = gluedSeparator(text, cursor);
-      if (glued >= 0) {
-        cursor = glued;
-        continue;
-      }
-      const tail = trailingFilenameEnd(text, cursor);
-      if (tail > cursor) {
-        lastGood = tail;
-        break;
-      }
-      if (ambiguousPathTail(text, cursor)) return unboundedPath;
-      break;
-    }
-    cursor += 1;
-    lastGood = cursor;
-  }
-  if (lastGood <= index) return start;
-  return trimWrappingParen(text, start, lastGood);
-}
-
-/** `~/` 或 `~用户名/` 里，分隔符所在的位置。不是这种路径时返回 -1。 */
-function tildeSeparator(text: string, start: number): number {
-  const next = start + 1;
-  const char = text[next];
-  if (char === '/' || char === '\\') return next;
-  if (char === undefined || !/[A-Za-z0-9_]/.test(char)) return -1;
-  let index = next + 1;
-  while (index < text.length && /[A-Za-z0-9._-]/.test(text[index] ?? '')) index += 1;
-  if (text[index] === '/' || text[index] === '\\') return index;
-  return -1;
-}
-
-/**
- * 连续斜杠有多长。
- * 只有 `scheme://` 的第二道斜杠返回 2，不当成路径。`file://` 不算。
- * 单字母加冒号是盘符，不是网址。
- * 没有 scheme 的 `\\` 返回 1，让 UNC 从第二道反斜杠剥起。
- */
-function schemeSlashRun(text: string, index: number): number {
-  if (text[index] !== '/' && text[index] !== '\\') return 0;
-  if (index > 0 && text[index - 1] !== '/' && text[index - 1] !== '\\') return 1;
-  let run = 1;
-  let back = index;
-  while (back > 0 && (text[back - 1] === '/' || text[back - 1] === '\\')) {
-    run += 1;
-    back -= 1;
-  }
-  if (run !== 2) return run;
-  if (back === 0 || text[back - 1] !== ':') return 1;
-  let start = back - 1;
-  while (start > 0 && /[A-Za-z]/.test(text[start - 1] ?? '')) start -= 1;
-  const scheme = text.slice(start, back - 1).toLowerCase();
-  if (scheme.length === 0 || scheme === 'file' || scheme.length === 1) return 1;
-  return 2;
-}
-
-/** 空格后面的分隔符贴着文件名时，这一段还在同一条路径里。前面是空格的分隔符是下一条路径。 */
-function gluedSeparator(text: string, from: number): number {
-  for (let index = from; index < text.length; index += 1) {
-    const char = text[index];
-    if (char === '\n' || char === "'" || char === '"' || char === ':') return -1;
-    if (char !== '/' && char !== '\\') continue;
-    const previous = text[index - 1];
-    if (previous !== undefined && !/\s/.test(previous)) return index;
-    return -1;
-  }
-  return -1;
-}
-
-/** 最后一段可以是「名字 名字」。说明词和错误码留在路径外面。 */
-function trailingFilenameEnd(text: string, from: number): number {
-  let index = from;
-  while (index < text.length && text[index] !== '\n' && /\s/.test(text[index] ?? '')) index += 1;
-  const start = index;
-  while (
-    index < text.length &&
-    text[index] !== '\n' &&
-    text[index] !== '/' &&
-    text[index] !== '\\' &&
-    text[index] !== ':' &&
-    text[index] !== "'" &&
-    text[index] !== '"' &&
-    !/\s/.test(text[index] ?? '')
-  ) {
-    index += 1;
-  }
-  if (index === start) return -1;
-  const token = text.slice(start, index);
-  if (/^[a-z]+$/.test(token) || /^[A-Z][A-Z0-9_]*$/.test(token)) return -1;
-  let rest = index;
-  while (rest < text.length && text[rest] !== '\n' && /\s/.test(text[rest] ?? '')) rest += 1;
-  const closed =
-    rest === text.length || text[rest] === '\n' || text[rest] === "'" || text[rest] === '"';
-  // 后面还有说明时，带扩展名的最后一段也算文件名。
-  // 名字可以是数字、连字符、下划线或非 ASCII：2026.pdf、final-report.pdf、报告.pdf、_draft.pdf。
-  // 扩展名至少有一个字母，可以带数字或下划线（mp4、7z、v2、json_bak）。
-  // v1.2 的后缀没有字母，e.g. 的点在末尾，3.5s 是小数加单位，都留在说明里。
-  const dot = token.lastIndexOf('.');
-  const extension = dot >= 0 ? token.slice(dot + 1) : '';
-  const fileExtension =
-    dot > 0 && dot < token.length - 1 && /^[A-Za-z0-9_]*[A-Za-z][A-Za-z0-9_]*$/.test(extension);
-  const decimalUnit = /^\d+\.\d+[A-Za-z]*$/.test(token);
-  if (!closed && !(fileExtension && !decimalUnit)) return -1;
-  return index;
-}
-
-/**
- * 空格后面第一个词既不是说明，也不是可以一次认完的文件名。
- * 不再继续猜后面还有几个词，交给整句丢弃。
- */
-function ambiguousPathTail(text: string, from: number): boolean {
-  let index = from;
-  while (index < text.length && text[index] !== '\n' && /\s/.test(text[index] ?? '')) index += 1;
-  if (
-    index >= text.length ||
-    text[index] === '\n' ||
-    text[index] === "'" ||
-    text[index] === '"' ||
-    text[index] === '/' ||
-    text[index] === '\\' ||
-    text[index] === ':'
-  ) {
-    return false;
-  }
-  const start = index;
-  while (
-    index < text.length &&
-    text[index] !== '\n' &&
-    text[index] !== '/' &&
-    text[index] !== '\\' &&
-    text[index] !== ':' &&
-    text[index] !== "'" &&
-    text[index] !== '"' &&
-    !/\s/.test(text[index] ?? '')
-  ) {
-    index += 1;
-  }
-  if (index === start) return false;
-  return !isSafePathExplanation(text.slice(start, index));
-}
-
-function isSafePathExplanation(token: string): boolean {
-  if (/^[a-z]+$/.test(token) || /^[A-Z][A-Z0-9_]*$/.test(token)) return true;
-  if (/^\d+\.\d+[A-Za-z]*$/.test(token)) return true;
-  const dot = token.lastIndexOf('.');
-  if (dot < 0) return false;
-  const extension = token.slice(dot + 1);
-  const fileExtension =
-    dot > 0 && dot < token.length - 1 && /^[A-Za-z0-9_]*[A-Za-z][A-Za-z0-9_]*$/.test(extension);
-  return !fileExtension;
-}
-
-function trimWrappingParen(text: string, start: number, end: number): number {
-  if (start === 0 || text[start - 1] !== '(') return end;
-  let depth = 1;
-  for (let index = start; index < end; index += 1) {
-    if (text[index] === '(') depth += 1;
-    else if (text[index] === ')') {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return end;
+function startupFailureCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = error.code;
+  if (typeof code !== 'string' || !startupErrno.has(code)) return undefined;
+  return code;
 }
 
 /** 启动前失败附带的标准错误上限，按 UTF-8 字节计。超出后保留开头和最新结尾。 */
