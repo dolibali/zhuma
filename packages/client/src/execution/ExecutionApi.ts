@@ -92,6 +92,16 @@ export interface StartPlanDraft {
   readonly revision: number;
   readonly idempotencyKey: string;
 }
+export interface StartablePlanWire {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly title: string;
+}
+export interface ExecutionStartableValue {
+  readonly actorId: string;
+  readonly plans: readonly StartablePlanWire[];
+}
 export interface StartPlanValue {
   readonly disposition: string;
   readonly reports: NodeExecutionReport[];
@@ -114,6 +124,7 @@ export function executionErrorMessage(error: unknown): string {
 }
 
 export interface ExecutionApi {
+  startable(signal?: AbortSignal): Promise<ExecutionStartableValue>;
   startPlan(draft: StartPlanDraft, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
@@ -263,6 +274,30 @@ function readInbox(value: unknown): ExecutionInboxValue {
   };
 }
 
+function readStartable(value: unknown): ExecutionStartableValue {
+  if (!value || typeof value !== 'object') invalid('返回的计划目录不正确。');
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.plans)) invalid('返回的计划目录不正确。');
+  const seen = new Set<string>();
+  return {
+    actorId: text(record.actorId, '成员'),
+    plans: record.plans.map((value) => {
+      if (!value || typeof value !== 'object') invalid('返回的计划不正确。');
+      const plan = value as Record<string, unknown>;
+      const parsed = {
+        taskId: text(plan.taskId, '任务'),
+        planId: text(plan.planId, '计划'),
+        revision: integer(plan.revision, 1, '计划版本'),
+        title: text(plan.title, '计划标题'),
+      };
+      const key = JSON.stringify([parsed.taskId, parsed.planId, parsed.revision]);
+      if (seen.has(key)) invalid('返回的计划目录包含重复版本。');
+      seen.add(key);
+      return parsed;
+    }),
+  };
+}
+
 function readCommand(value: unknown, expected: DeliveryDraft | ReviewDraft): ExecutionNodeWire {
   if (value === null || typeof value !== 'object' || !('node' in value))
     invalid('返回的节点不正确。');
@@ -344,6 +379,9 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
     return response.value;
   }
   return {
+    async startable(signal) {
+      return readStartable(await call('startable', {}, signal));
+    },
     async startPlan(draft, signal) {
       return readStart(
         await call(

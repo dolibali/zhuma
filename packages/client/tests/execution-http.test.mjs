@@ -4,15 +4,19 @@ import { createExecutionHttpApi } from '../dist/execution/http.js';
 import { ExecutionError } from '../dist/execution/ExecutionApi.js';
 import { inbox, reviewNode } from './browser/execution-fixture.mjs';
 
-function transport(handler, invalidate = () => {}) {
+function transport(handler, invalidate = () => {}, expectedActorId) {
   const calls = [];
   return {
     calls,
-    api: createExecutionHttpApi(async (url, options) => {
-      const request = JSON.parse(options.body);
-      calls.push({ url, options, request });
-      return handler(request, options);
-    }, invalidate),
+    api: createExecutionHttpApi(
+      async (url, options) => {
+        const request = JSON.parse(options.body);
+        calls.push({ url, options, request });
+        return handler(request, options);
+      },
+      invalidate,
+      expectedActorId,
+    ),
   };
 }
 const reply = (request, value) =>
@@ -101,5 +105,37 @@ test('wrong RPC ids, malformed results and directory rejection never turn into a
     () => invalidations++,
   );
   await assert.rejects(api.inbox(), (error) => error.code === 'not-in-directory');
+  assert.equal(invalidations, 0);
+});
+
+for (const method of ['inbox', 'startable']) {
+  test(`${method} from a different member never reaches the current session view`, async () => {
+    let invalidations = 0;
+    const value =
+      method === 'inbox' ? { actorId: 'lin', nodes: [], items: [] } : { actorId: 'lin', plans: [] };
+    const { api } = transport(
+      (request) => reply(request, value),
+      () => invalidations++,
+      'chen',
+    );
+    await assert.rejects(api[method](), (error) => error.code === 'unauthenticated');
+    assert.equal(invalidations, 1);
+  });
+}
+
+test('startable uses the member HTTP route and aborted reads cannot invalidate another session', async () => {
+  let invalidations = 0;
+  const controller = new AbortController();
+  const { api, calls } = transport(
+    (request) => {
+      controller.abort();
+      return reply(request, { actorId: 'lin', plans: [] });
+    },
+    () => invalidations++,
+    'chen',
+  );
+  await assert.rejects(api.startable(controller.signal), (error) => error.name === 'AbortError');
+  assert.equal(calls[0].url, '/api/zhuma-exec/startable');
+  assert.deepEqual(calls[0].request.payload, {});
   assert.equal(invalidations, 0);
 });

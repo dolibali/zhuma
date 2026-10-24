@@ -11,13 +11,13 @@ import { ReviewWorkspace } from './ReviewWorkspace.js';
 import { StartPlanPanel, type ExecutionPlan } from './StartPlanPanel.js';
 import { nodeIdentity, reviewIdentity, useFormKey } from './interaction.js';
 
-type Props = { api: ExecutionApi; plan?: ExecutionPlan };
+type Props = { api: ExecutionApi; plan?: ExecutionPlan; refreshKey?: number };
 type Selection = { item: InboxItem; identity: string; token: object };
 export function ExecutionWorkspace(props: Props) {
   const key = useFormKey(props.api, 'workspace');
   return <Workspace key={key} {...props} />;
 }
-function Workspace({ api, plan }: Props) {
+function Workspace({ api, plan, refreshKey }: Props) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
   const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
   const [error, setError] = useState('');
@@ -53,7 +53,7 @@ function Workspace({ api, plan }: Props) {
       alive.current = false;
       request.current?.abort();
     };
-  }, [reload]);
+  }, [reload, refreshKey]);
 
   const node = selected
     ? nodes.find((item) => nodeIdentity(item) === selected.identity)
