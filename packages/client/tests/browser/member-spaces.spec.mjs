@@ -102,12 +102,38 @@ test('space boundary: permission loss bypasses discard prompt and cannot reopen 
   await expect(page.getByRole('alert')).toContainText('此空间已不可访问');
   await expect(page.getByRole('textbox')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: '重新连接' }).click();
+  await expect(page.getByRole('alert')).toContainText('此空间已不可访问');
+  await expect(page.getByTestId('space-id')).toHaveCount(0);
+  state.directory['member-a'] = [personal('a'), teamA, teamB];
+  await page.getByRole('button', { name: '重新连接' }).click();
+  await expect(page.getByTestId('space-id')).toHaveText('team-a');
+  state.directory['member-a'] = [personal('a'), teamB];
+  await page.getByRole('button', { name: '模拟当前空间权限失效' }).click();
+  await expect(page.getByRole('alert')).toContainText('此空间已不可访问');
   await choose(page, '团队 · 产品研发');
   await expect(page.getByRole('alert')).toContainText('此空间已不可访问');
   await expect(page.getByTestId('space-id')).toHaveCount(0);
   await choose(page, '团队 · 运营支持');
   await expect(page.getByTestId('space-id')).toHaveText('team-b');
   await expect(page.getByRole('textbox')).toHaveValue('');
+});
+
+test('space boundary: revoked directory refresh retries the original space and reopens it only when restored', async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  await choose(page, '团队 · 产品研发');
+  await expect(page.getByTestId('space-id')).toHaveText('team-a');
+  state.directory['member-a'] = [personal('a'), teamB];
+  await page.getByRole('button', { name: '刷新空间', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('此空间已不可访问');
+  await page.getByRole('button', { name: '重新连接' }).click();
+  await expect(page.getByRole('alert')).toContainText('此空间已不可访问');
+  await expect(page.getByTestId('space-id')).toHaveCount(0);
+  state.directory['member-a'] = [personal('a'), teamA, teamB];
+  await page.getByRole('button', { name: '刷新空间', exact: true }).click();
+  await expect(page.getByTestId('space-id')).toHaveText('team-a');
 });
 
 test('space boundary: current failures close content, recover explicitly, and old invalidation cannot close a new space', async ({

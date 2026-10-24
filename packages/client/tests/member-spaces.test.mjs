@@ -166,6 +166,34 @@ test('space selection contract: same-space refresh keeps the presentation genera
   controller.dispose();
 });
 
+for (const trigger of ['directory refresh', 'scoped invalidation']) {
+  test(`space selection contract: ${trigger} retries only the unavailable target until explicitly changed`, async () => {
+    let next = member();
+    const controller = createMemberSpaceController({ session: async () => next }, member(), () =>
+      assert.fail('space failure is not a login failure'),
+    );
+    await controller.select(teamA.id);
+    next = member([personal, teamB]);
+    if (trigger === 'directory refresh') await controller.refresh();
+    else controller.invalidate(controller.getSnapshot().epoch);
+    assert.equal(controller.getSnapshot().status, 'error');
+    assert.equal(controller.getSnapshot().requestedSpaceId, teamA.id);
+    await controller.refresh();
+    assert.equal(controller.getSnapshot().status, 'error');
+    assert.equal(controller.getSnapshot().requestedSpaceId, teamA.id);
+    assert.equal(controller.getSnapshot().space, undefined);
+    next = member();
+    await controller.refresh();
+    assert.equal(controller.getSnapshot().status, 'ready');
+    assert.equal(controller.getSnapshot().space.id, teamA.id);
+    next = member([personal, teamB]);
+    await controller.refresh();
+    await controller.select(teamB.id);
+    assert.equal(controller.getSnapshot().space.id, teamB.id);
+    controller.dispose();
+  });
+}
+
 test('space selection contract: failures close content, only current authentication errors invalidate the login boundary', async () => {
   for (const failure of [
     new IdentityApiError('unauthenticated'),

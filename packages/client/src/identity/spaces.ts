@@ -61,6 +61,7 @@ export function createMemberSpaceController(
           status: 'error',
           session,
           epoch,
+          requestedSpaceId,
           error: new IdentityApiError('space-unavailable'),
         });
       } else if (space) {
@@ -114,11 +115,13 @@ export function createMemberSpaceController(
     /** Used by the scoped transport after a membership failure; no stale content remains visible. */
     invalidate(expectedEpoch: number) {
       if (state.status !== 'ready' || state.epoch !== expectedEpoch) return;
+      const requestedSpaceId = state.space.id;
       cancel();
       publish({
         status: 'error',
         session: state.session,
         epoch,
+        requestedSpaceId,
         error: new IdentityApiError('space-unavailable'),
       });
     },
