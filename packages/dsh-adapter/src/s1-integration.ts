@@ -178,6 +178,9 @@ export type ExecutionMessageCode =
   | 'not-found'
   | 'not-returned'
   | 'not-deliverable'
+  | 'empty-request-changes'
+  | 'empty-comment'
+  | 'comment-not-unresolved'
   | 'validation'
   | 'unknown-field'
   | 'invalid-handoff'
@@ -191,8 +194,6 @@ export type ExecutionPassthroughCode =
   | 'invalid-round'
   | 'invalid-ballot'
   | 'conflicting-ballot'
-  | 'comment-not-unresolved'
-  | 'empty-request-changes'
   | 'round-closed'
   | 'non-passing-availability'
   | 'illegal-transition'
@@ -364,8 +365,9 @@ export interface ReviewDraft {
   readonly idempotencyKey: string;
   readonly roundId: string;
   readonly artifactVersionId: string;
-  readonly action: 'approve' | 'request-changes';
+  readonly action: 'approve' | 'request-changes' | 'comment';
   readonly comment?: string;
+  readonly unresolvedCommentIds?: readonly string[];
 }
 export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;

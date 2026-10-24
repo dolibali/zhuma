@@ -202,6 +202,9 @@ const MESSAGES = {
   'not-found': '找不到这个节点。',
   'not-returned': '这项工作还没有被退回。',
   'not-deliverable': '这项工作现在不能保存交付草稿。',
+  'empty-request-changes': '退回要写意见，或引用一条还没解决的评论。',
+  'empty-comment': '只评论时要写下评论，不能只留空白。',
+  'comment-not-unresolved': '引用的评论不是这条产物上还没解决的评论。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',
   'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
@@ -474,6 +477,11 @@ export class ExecutionService {
       const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
+      const visible = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+      if (!Array.isArray(visible)) return visible;
+      for (const taskId of new Set(visible.map((record) => record.taskId))) {
+        await this.repairTaskUnlocks(taskId, actor.value.spaceIds);
+      }
       const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
       if (!Array.isArray(records)) return records;
       const items = executionInbox({ actorId: actor.value.actorId, records });
@@ -542,6 +550,7 @@ export class ExecutionService {
               ? {}
               : { unresolvedCommentIds: request.unresolvedCommentIds }),
           },
+          comments: record.comments,
         });
         return { result, settle: true };
       }),
@@ -598,14 +607,16 @@ export class ExecutionService {
       if (membership === 'missing') return fail('not-found');
       if (membership === 'not-participant') return fail('not-participant');
       const { taskId, planId, revision } = parsed.value;
-      const reports = this.storage
-        .listNodes()
-        .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision));
+      const listed = () =>
+        this.storage
+          .listNodes()
+          .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision));
       if (this.storage.readPlan(planKey(taskId, planId, revision)) === undefined) {
-        if (reports.length > 0) return fail('plan-incomplete');
+        if (listed().length > 0) return fail('plan-incomplete');
         return { ok: true, value: { reports: [] } };
       }
-      return { ok: true, value: { reports: reports.map(toNodeExecutionReport) } };
+      await this.repairTaskUnlocks(taskId, actor.value.spaceIds);
+      return { ok: true, value: { reports: listed().map(toNodeExecutionReport) } };
     });
   }
 
@@ -629,10 +640,13 @@ export class ExecutionService {
     if (current.command.status !== 'ready' && current.command.status !== 'needs-revision') {
       return fail('not-deliverable');
     }
-    return { ok: true, value: current };
+    await this.repairTaskUnlocks(query.taskId, spaceIds);
+    const refreshed = this.storage.readNode(nodeRecordKey(query));
+    if (!refreshed || !intactNode(refreshed)) return fail('not-found');
+    return { ok: true, value: refreshed };
   }
 
-  /** Read or save the assignee's delivery draft. A read does not write. */
+  /** Read or save the assignee's delivery draft. The draft itself is unchanged by a read. */
   draft(caller: ExecutionCaller, body: unknown): Promise<ExecutionResult<DeliveryDraftView>> {
     return this.enqueue(async () => {
       const actor = this.actor(caller, body);
@@ -659,14 +673,17 @@ export class ExecutionService {
         parsed.value.files ?? [],
       );
       if (sized) return sized;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
+      const keyed = draftKeyLimit(parsed.value.idempotencyKey);
+      if (keyed) return keyed;
       const opened = await this.prepareDraft(
         actor.value.spaceIds,
         actor.value.actorId,
         parsed.value,
       );
       if (!opened.ok) return opened;
-      const keyed = draftKeyLimit(parsed.value.idempotencyKey);
-      if (keyed) return keyed;
       const current = opened.value;
       const text = parsed.value.text ?? '';
       const links = parsed.value.links ?? [];
@@ -709,7 +726,7 @@ export class ExecutionService {
     });
   }
 
-  /** Return notes and the two newest relevant versions. Does not write. */
+  /** Return notes and the two newest relevant versions. The revision record itself is unchanged. */
   revision(
     caller: ExecutionCaller,
     body: unknown,
@@ -739,6 +756,7 @@ export class ExecutionService {
       }
       const read = readRevisionView(current, actor.value.actorId, reviewerNames);
       if (!read.ok) return fail(read.code);
+      await this.repairTaskUnlocks(current.taskId, actor.value.spaceIds);
       return { ok: true, value: { view: read.view } };
     });
   }
@@ -746,6 +764,31 @@ export class ExecutionService {
   /** Fill unlocks that were settled before their downstream write landed. */
   reconcile(): Promise<ExecutionResult<{ unlocked: number }>> {
     return this.enqueue(() => this.reconcileNow());
+  }
+
+  /**
+   * Finish unlocks for one task the caller is already allowed to see.
+   * A failed write is left for the next authorized request and does not
+   * change this request's result. Other tasks are not written.
+   */
+  private async repairTaskUnlocks(taskId: string, spaceIds: readonly string[]): Promise<void> {
+    const space = await this.gateSpace(taskId, spaceIds);
+    if (space === 'missing' || !space.ok) return;
+    for (const record of [...this.storage.listNodes()]) {
+      if (
+        !intactNode(record) ||
+        record.command.status !== 'completed' ||
+        record.taskId !== taskId
+      ) {
+        continue;
+      }
+      try {
+        const result = await this.unlockFrom(record);
+        if (!result.ok) return;
+      } catch {
+        return;
+      }
+    }
   }
 
   private enqueue<T>(work: () => Promise<ExecutionResult<T>>): Promise<ExecutionResult<T>> {
@@ -1078,6 +1121,7 @@ export class ExecutionService {
       const unlocked = await this.unlockFrom(record);
       if (!unlocked.ok) return unlocked;
     }
+    await this.repairTaskUnlocks(current.taskId, actor.value.spaceIds);
     return {
       ok: true as const,
       value: {
@@ -1125,7 +1169,7 @@ export class ExecutionService {
       if (!intactNode(record) || record.command.status !== 'completed') continue;
       try {
         const result = await this.unlockFrom(record);
-        if (!result.ok) return result;
+        if (!result.ok) continue;
         unlocked += result.value;
       } catch {
         continue;
