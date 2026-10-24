@@ -7,6 +7,7 @@ function session(accountId) {
     accountId,
     principal: { kind: 'zhuma-member', memberId: accountId },
     peerId: `fixture-peer-${accountId}`,
+    spaces: [],
   };
 }
 async function reply(route, status, body) {

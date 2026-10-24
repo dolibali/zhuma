@@ -22,6 +22,8 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 ## 本地优先，登录策略与数据隔离
 
+成员模式的原生HTTP登录运输使用壳内单槽载体，复用现有Host签发／校验与执行权限；所有Set-Cookie仍不回renderer。窗口重载可恢复同一Host会话，整App／Host换代需重新登录，业务数据仍由原持久存储恢复。格式、路径、来源、退出与迟到回执边界见[桌面成员运输契约](../../docs/contracts/desktop-member-cookie.md)；实现／契约测试不等于原生安装版验收。
+
 Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek 账号登录/欢迎界面。此修改发生在 Electron 壳的窗口选择逻辑，不伪造服务器账号状态、不修改模型服务身份验证、不自动填入或上传 API Key。用户如需调用在线模型，应在模型设置中自行配置有效的供应商凭据。
 
 使用 `Zhuma` 应用名称和独立的 App ID `dev.zhuma.app`、`zhuma://` URL 协议；`DSH_HOME` 默认隔离在 Zhuma userData 下，避免与另一个 DSH 桌面安装共用工作区。开发版使用上游开发器自己的隔离目录。升级、遥测、登录回调、CLI 命令安装均不应沿用上游官方发布基础设施而未经评审启用。

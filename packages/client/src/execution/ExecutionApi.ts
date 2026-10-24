@@ -57,6 +57,7 @@ export interface ExecutionNodeWire {
 
 export interface ExecutionInboxValue {
   readonly actorId: string;
+  readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
 }
@@ -91,10 +92,51 @@ export interface StartPlanDraft {
   readonly planId: string;
   readonly revision: number;
   readonly idempotencyKey: string;
+  readonly spaceId?: string | undefined;
+}
+export interface StartablePlanWire {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly title: string;
+}
+export interface ExecutionStartableValue {
+  readonly actorId: string;
+  readonly spaceId?: string | undefined;
+  readonly plans: readonly StartablePlanWire[];
 }
 export interface StartPlanValue {
   readonly disposition: string;
   readonly reports: NodeExecutionReport[];
+}
+
+export interface RevisionQuery {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+}
+export interface RevisionContentWire {
+  readonly id: string;
+  readonly version: number;
+  readonly text?: string;
+  readonly links: readonly string[];
+  readonly files: readonly {
+    readonly id: string;
+    readonly mediaType: string;
+    readonly byteSize: number;
+  }[];
+}
+export interface RevisionViewWire {
+  readonly reviewed?: RevisionContentWire;
+  readonly previous?: RevisionContentWire;
+  readonly notes: readonly {
+    readonly id: string;
+    readonly reviewerName: string;
+    readonly body: string;
+    readonly artifactVersionId: string;
+    readonly citedCommentIds: readonly string[];
+  }[];
 }
 
 /** Preserves the service failure DTO, including conflict/version details. */
@@ -114,10 +156,12 @@ export function executionErrorMessage(error: unknown): string {
 }
 
 export interface ExecutionApi {
+  startable(signal?: AbortSignal): Promise<ExecutionStartableValue>;
   startPlan(draft: StartPlanDraft, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  revision(query: RevisionQuery, signal?: AbortSignal): Promise<RevisionViewWire>;
 }
 
 const ACTOR_FIELD_DEPTH_LIMIT = 32;
@@ -171,6 +215,64 @@ function readArtifact(value: unknown): ExecutionArtifactWire {
       ? { links: record.links.map((link) => text(link, '链接')) }
       : {}),
   };
+}
+
+function record(value: unknown, field: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    invalid(`返回的${field}不正确。`);
+  return value as Record<string, unknown>;
+}
+function unique<T>(items: readonly T[], key: (item: T) => string, field: string): void {
+  if (new Set(items.map(key)).size !== items.length) invalid(`返回的${field}有重复标识。`);
+}
+function readRevisionContent(value: unknown): RevisionContentWire {
+  const item = record(value, '退回版本');
+  if (!Array.isArray(item.links) || !Array.isArray(item.files)) invalid('返回的退回版本不正确。');
+  if (item.text !== undefined && typeof item.text !== 'string') invalid('返回的版本正文不正确。');
+  const files = item.files.map((raw) => {
+    const file = record(raw, '文件信息');
+    return {
+      id: text(file.id, '文件'),
+      mediaType: text(file.mediaType, '文件类型'),
+      byteSize: integer(file.byteSize, 0, '文件大小'),
+    };
+  });
+  return {
+    id: text(item.id, '产物'),
+    version: integer(item.version, 1, '产物版本'),
+    ...(item.text === undefined ? {} : { text: item.text as string }),
+    links: item.links.map((link) => text(link, '链接')),
+    files,
+  };
+}
+/** Exact #80 view projection. It carries metadata and reference ids, never file bytes or comment ranges. */
+export function readRevisionView(value: unknown): RevisionViewWire {
+  const container = record(value, '退回响应');
+  const view = record(container.view, '退回意见');
+  if (!Array.isArray(view.notes)) invalid('返回的退回意见不正确。');
+  const reviewed = view.reviewed === undefined ? undefined : readRevisionContent(view.reviewed);
+  const previous = view.previous === undefined ? undefined : readRevisionContent(view.previous);
+  if (
+    previous &&
+    (!reviewed || previous.id === reviewed.id || previous.version !== reviewed.version - 1)
+  )
+    invalid('返回的对照版本不正确。');
+  const notes = view.notes.map((raw) => {
+    const note = record(raw, '退回意见');
+    if (typeof note.body !== 'string' || !Array.isArray(note.citedCommentIds))
+      invalid('返回的退回意见不正确。');
+    const citedCommentIds = note.citedCommentIds.map((id) => text(id, '评论引用'));
+    unique(citedCommentIds, (id) => id, '评论引用');
+    return {
+      id: text(note.id, '退回意见'),
+      reviewerName: text(note.reviewerName, '评审人'),
+      body: note.body,
+      artifactVersionId: text(note.artifactVersionId, '引用版本'),
+      citedCommentIds,
+    };
+  });
+  unique(notes, (note) => note.id, '退回意见');
+  return { ...(reviewed ? { reviewed } : {}), ...(previous ? { previous } : {}), notes };
 }
 
 function readBallot(value: unknown): ExecutionBallotWire {
@@ -258,8 +360,34 @@ function readInbox(value: unknown): ExecutionInboxValue {
   if (!Array.isArray(record.items) || !Array.isArray(record.nodes)) invalid('返回的待办不正确。');
   return {
     actorId: text(record.actorId, '待办'),
+    ...(record.spaceId === undefined ? {} : { spaceId: text(record.spaceId, '空间') }),
     items: record.items.map(readItem),
     nodes: record.nodes.map(readExecutionNode),
+  };
+}
+
+function readStartable(value: unknown): ExecutionStartableValue {
+  if (!value || typeof value !== 'object') invalid('返回的计划目录不正确。');
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.plans)) invalid('返回的计划目录不正确。');
+  const seen = new Set<string>();
+  return {
+    actorId: text(record.actorId, '成员'),
+    ...(record.spaceId === undefined ? {} : { spaceId: text(record.spaceId, '空间') }),
+    plans: record.plans.map((value) => {
+      if (!value || typeof value !== 'object') invalid('返回的计划不正确。');
+      const plan = value as Record<string, unknown>;
+      const parsed = {
+        taskId: text(plan.taskId, '任务'),
+        planId: text(plan.planId, '计划'),
+        revision: integer(plan.revision, 1, '计划版本'),
+        title: text(plan.title, '计划标题'),
+      };
+      const key = JSON.stringify([parsed.taskId, parsed.planId, parsed.revision]);
+      if (seen.has(key)) invalid('返回的计划目录包含重复版本。');
+      seen.add(key);
+      return parsed;
+    }),
   };
 }
 
@@ -321,7 +449,15 @@ function readStart(value: unknown, expected: StartPlanDraft): StartPlanValue {
   };
 }
 
-export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
+/** Optional binding preserves legacy callers. Member UI must always bind a verified space. */
+export function createExecutionApi(rpc: ClientConnectionRpc, spaceId?: string): ExecutionApi {
+  if (spaceId !== undefined) text(spaceId, '空间');
+  const scope = spaceId === undefined ? {} : { spaceId };
+  function scoped<T extends { readonly spaceId?: string | undefined }>(value: T): T {
+    if (spaceId !== undefined && value.spaceId !== spaceId)
+      throw new ExecutionError('scope-mismatch', '返回的工作空间不一致，请重新连接。');
+    return value;
+  }
   async function call(endpoint: string, payload: object, signal?: AbortSignal): Promise<unknown> {
     rejectActor(payload);
     const response = await rpc.call('/api', `zhuma-exec/${endpoint}`, payload, signal);
@@ -344,7 +480,12 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
     return response.value;
   }
   return {
+    async startable(signal) {
+      return scoped(readStartable(await call('startable', scope, signal)));
+    },
     async startPlan(draft, signal) {
+      if (spaceId !== undefined && draft.spaceId !== undefined && draft.spaceId !== spaceId)
+        throw new ExecutionError('scope-mismatch', '计划的工作空间不一致，请重新选择。');
       return readStart(
         await call(
           'start-plan',
@@ -353,6 +494,10 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
             planId: draft.planId,
             revision: draft.revision,
             idempotencyKey: draft.idempotencyKey,
+            ...scope,
+            ...(spaceId === undefined && draft.spaceId !== undefined
+              ? { spaceId: draft.spaceId }
+              : {}),
           },
           signal,
         ),
@@ -360,7 +505,17 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
       );
     },
     async inbox(signal) {
-      return readInbox(await call('inbox', {}, signal));
+      return scoped(readInbox(await call('inbox', scope, signal)));
+    },
+    async revision(query, signal) {
+      const payload = {
+        taskId: text(query.taskId, '任务'),
+        planId: text(query.planId, '计划'),
+        revision: integer(query.revision, 1, '计划版本'),
+        nodeId: text(query.nodeId, '节点'),
+      };
+      // revision's strict request has no spaceId. The bound HTTP precheck and frozen node reference remain in force.
+      return readRevisionView(await call('revision', payload, signal));
     },
     async submit(draft, signal) {
       const payload = {

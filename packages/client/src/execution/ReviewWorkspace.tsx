@@ -1,6 +1,7 @@
 import { useId, useState } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
+import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type { ExecutionApi, ExecutionNodeWire, ReviewDraft } from './ExecutionApi.js';
 import { reviewIdentity, useExecutionCommand, useFormKey } from './interaction.js';
 
@@ -19,6 +20,7 @@ function ReviewForm({ api, node, onSubmitted }: Props) {
   // A review is always tied to its exact submitted artifact, never the latest unrelated one.
   const artifact = node.artifacts.find((item) => item.id === round?.artifactVersionId);
   const [comment, setComment] = useState('');
+  useUnsavedChanges(!!comment);
   const command = useExecutionCommand();
   const unavailable = !round || round.status !== 'open' || !artifact;
   function vote(action: ReviewDraft['action']) {
