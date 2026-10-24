@@ -9,7 +9,15 @@ import { ExecutionService, type ExecutionStorage, type PlanReceipt } from './exe
 import { resolveMember } from './member-session.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
 
-const ENDPOINTS = ['start-plan', 'inbox', 'submit', 'ballot', 'settle', 'report'] as const;
+const ENDPOINTS = [
+  'start-plan',
+  'inbox',
+  'startable',
+  'submit',
+  'ballot',
+  'settle',
+  'report',
+] as const;
 
 type Endpoint = (typeof ENDPOINTS)[number];
 
@@ -197,6 +205,8 @@ function run(
       return service.startPlan(caller, payload);
     case 'inbox':
       return service.inbox(caller, payload);
+    case 'startable':
+      return service.startable(caller, payload);
     case 'submit':
       return service.submit(caller, payload);
     case 'ballot':

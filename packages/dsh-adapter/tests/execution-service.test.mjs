@@ -2260,3 +2260,89 @@ test('an unexpected handoff failure says the record is unavailable, not that the
   assert.equal(JSON.stringify(failed).includes('写不进去'), false);
   assert.deepEqual(store.snapshot(), before);
 });
+
+test('startable lists confirmed, not-yet-started plans the member may start', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service } = create(state);
+
+  const result = await service.startable(session('chen'), {});
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.actorId, 'chen');
+  assert.deepEqual(result.value.plans, [
+    {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      title: '账号登录',
+    },
+  ]);
+
+  // After the plan has been started, it no longer appears as startable.
+  await startChen(service, applied);
+  const after = await service.startable(session('chen'), {});
+  assert.equal(after.ok, true);
+  if (after.ok) assert.deepEqual(after.value.plans, []);
+});
+
+test('startable hides draft tasks, non-participants, and other spaces without leaking', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service } = create(state);
+
+  // In the identity directory but not a task participant: sees nothing.
+  const outsider = await service.startable(session('outside'), {});
+  assert.equal(outsider.ok, true);
+  if (outsider.ok) assert.deepEqual(outsider.value.plans, []);
+
+  // A member whose spaces do not cover the project sees nothing.
+  const wrongSpace = await service.startable(session('chen', ['team-south']), {});
+  assert.equal(wrongSpace.ok, true);
+  if (wrongSpace.ok) assert.deepEqual(wrongSpace.value.plans, []);
+
+  // Draft tasks are not startable even for the owner: the plan is only a draft.
+  const draftState = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...state.tasks.find((item) => item.id === applied.taskId),
+      status: 'draft',
+    },
+  });
+  const draftService = create(draftState).service;
+  const draft = await draftService.startable(session('chen'), {});
+  assert.equal(draft.ok, true);
+  if (draft.ok) assert.deepEqual(draft.value.plans, []);
+});
+
+test('startable refuses without a directory, and reports a directory failure as unavailable', async () => {
+  const { state } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const withoutDirectory = new ExecutionService(
+    memory().storage,
+    { readWorkbench: () => state },
+    undefined,
+  );
+  const refused = await withoutDirectory.startable(session('chen'), {});
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error.code, 'not-found');
+
+  const failing = {
+    async spaceForProject() {
+      throw new Error('directory backend down');
+    },
+  };
+  const { service } = create(state, failing);
+  const unavailable = await service.startable(session('chen'), {});
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.error.code, 'unavailable');
+});
+
+test('startable requires a resolved member and rejects an actor field', async () => {
+  const { state } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const { service } = create(state);
+  assert.equal((await service.startable({}, {})).error.code, 'unauthenticated');
+  assert.equal(
+    (await service.startable(session('chen'), { actorId: 'lin' })).error.code,
+    'actor-from-body',
+  );
+  // A member outside the identity directory is refused the same way as inbox.
+  assert.equal((await service.startable(session('ghost'), {})).error.code, 'not-in-directory');
+});

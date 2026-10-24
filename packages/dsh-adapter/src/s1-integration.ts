@@ -97,6 +97,7 @@ export interface S1Startup {
 export type ExecutionEndpoints = readonly [
   'start-plan',
   'inbox',
+  'startable',
   'submit',
   'ballot',
   'settle',
@@ -109,6 +110,8 @@ export interface StartPlanRequest {
   idempotencyKey: string;
 }
 export type InboxRequest = Record<string, never>;
+/** Read-only discovery of confirmed plans the member may explicitly start. */
+export type StartableRequest = Record<string, never>;
 export interface ReportRequest {
   taskId: string;
   planId: string;
@@ -223,6 +226,17 @@ export interface ChannelInboxValue {
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
 }
+/** One confirmed, not-yet-started plan the member may explicitly start. */
+export interface StartablePlan {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly title: string;
+}
+export interface ChannelStartableValue {
+  readonly actorId: string;
+  readonly plans: readonly StartablePlan[];
+}
 export interface ExecutionCommandValue {
   readonly disposition: 'applied' | 'replayed' | 'ignored';
   readonly report: NodeExecutionReport;
@@ -243,6 +257,10 @@ export interface ExecutionServiceMethods {
     body: unknown,
   ): Promise<ExecutionChannelResult<StartPlanValue>>;
   inbox(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ChannelInboxValue>>;
+  startable(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<ChannelStartableValue>>;
   submit(
     caller: ExecutionCaller,
     body: unknown,
@@ -261,6 +279,7 @@ export interface ExecutionServiceMethods {
 export interface ExecutionRoutes {
   readonly 'start-plan': { readonly body: StartPlanRequest; readonly value: StartPlanValue };
   readonly inbox: { readonly body: InboxRequest; readonly value: ChannelInboxValue };
+  readonly startable: { readonly body: StartableRequest; readonly value: ChannelStartableValue };
   readonly submit: { readonly body: SubmitRequest; readonly value: ExecutionCommandValue };
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
@@ -329,6 +348,15 @@ export interface ReviewDraft {
   readonly artifactVersionId: string;
   readonly action: 'approve' | 'request-changes' | 'comment';
   readonly comment?: string;
+}
+/**
+ * Wire value of the `startable` route. The Client-side `ExecutionApi` method
+ * is added by A on #32 when the entry consumes it; this layer declares the
+ * route shape only.
+ */
+export interface ExecutionStartableValue {
+  readonly actorId: string;
+  readonly plans: readonly StartablePlan[];
 }
 export interface ExecutionApi {
   startPlan(draft: StartPlanRequest, signal?: AbortSignal): Promise<StartPlanValue>;
