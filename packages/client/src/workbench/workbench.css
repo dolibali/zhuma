@@ -3446,3 +3446,83 @@ html[data-platform='darwin'] .zm-shell-chrome {
     flex-basis: 100%;
   }
 }
+
+/* Execution client uses the shared console tokens and compact control scale. */
+.zm-execution-workspace {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+.zm-execution-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  padding: 16px 20px;
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+}
+.zm-execution-start h3,
+.zm-execution-start p {
+  margin: 0;
+}
+.zm-execution-start p,
+.zm-execution-hint {
+  color: var(--zm-muted);
+}
+.zm-execution-start .zm-error {
+  flex-basis: 100%;
+}
+.zm-execution-inbox .zm-directory-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.zm-execution-detail {
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.zm-execution-detail h2 {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.zm-execution-detail .zm-field {
+  margin-block: 16px;
+}
+.zm-execution-artifact {
+  padding: 16px;
+  margin-block: 16px;
+  background: var(--zm-bg);
+  border: 1px solid var(--zm-line);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.zm-execution-artifact h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.zm-execution-text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.zm-execution-ballots {
+  border-left: 2px solid var(--zm-line);
+  padding-left: 12px;
+}
+.zm-execution-artifact a,
+.zm-execution-artifact a:visited {
+  color: var(--zm-action);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+.zm-execution-artifact a:hover,
+.zm-execution-artifact a:focus-visible {
+  color: var(--zm-accent-hover);
+  text-decoration-thickness: 2px;
+}
+.zm-execution-artifact a:focus-visible {
+  outline: 2px solid var(--zm-focus);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
