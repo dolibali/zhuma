@@ -1,0 +1,181 @@
+{
+  "sourceHead": "6054e906d1fc2fd11b562575cb5e7f2508b67a0d",
+  "equivalentHead": "cdd058cd945f48e4aa816fea101ab63f7796ab46",
+  "clientSha256": "6ef26dead3d0bb38a53060a8079800bb6a991af4b5fbbe9f1b7ce0b37b49ec9c",
+  "hostSha256": "d43599905c5cbe411cb5696e635a5e3de1f4a32e584cdbb71be1e9a7d302da6b",
+  "officialNativeMainSha256": "df730874ca56fb474994a31e3dbcf5510bcb7880e76e451a19571f56ba3d7ccd",
+  "neutralOfficialLayoutBundleSha256": "04c3b383ecaf40452e1fd2be5191a12c251aae0df78e32ca05629ce49395f9e8",
+  "pin": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "surface": "Actual official Electron app, main window and dsh-app protocol with the prepared forwarding patch. Official tsdown main build; unchanged fixed compiled libraries/preloads reused, current neutral layout source rebuilt. Electron WebContents screenshots, not OS desktop screenshots or installer acceptance.",
+  "fixtures": "Three fictional member accounts, three personal spaces, two business teams and an empty team. Actual JSON persistence. Long navigation uses24 real official workspaceRegistry records over owned empty directories. No user reference image or personal data.",
+  "observed": [
+    "Real A/B/C login and authorized space lists",
+    "Valid report DTO: C unauthorized and missing yield same not-found bytes; allowed south report returns actual ready node",
+    "Native window reload retains member; whole App and Host reopen returns normal login, relogin reads same actual business node",
+    "Long navigation27 rows: actual scroll609 over1034/425, footer staysx12/y745",
+    "Native whole column collapses tozero; clipped account not hit; menu closes and existing Open sidebar restores",
+    "Official Light/Dark settings, nested menu Escape and trigger focus return"
+  ],
+  "openFinding": {
+    "review": 5639775292,
+    "status": "fix assigned A",
+    "description": "Multi-member cold start and window reload select the old workbench, showing snapshot HTTP404 until explicit My work navigation. The two landing images are actual failures, not accepted states."
+  },
+  "notCertified": [
+    "Installer/cross-platform acceptance",
+    "Real system theme switch, native browser zoom or actual drag movement",
+    "Complete multi-person submit/review, fixed file bytes, Agent/tool handoff or model execution"
+  ],
+  "images": [
+    {
+      "file": "native-personal-light.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 147181,
+      "sha256": "771bc6cdbb22651b37aeec0baefce9f7dc5429b1db8a93650f10bc6f9fbdaedf",
+      "gitBlob": "2b466096221bd525a00823e80730b27a1e4dc3dd",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "native-personal-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 146134,
+      "sha256": "76ae7abdc1a7b3d5c22ce5dfcf6e9fb08ab308a21fa8c4447338b8fa9eff1f7c",
+      "gitBlob": "c177f1c511e746da1a7853782b8ae5ad67ef9c69",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "native-account-menu-light.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 153342,
+      "sha256": "9a7a3529397b0ef12568559b67db057513a0ea48df845f3a2be70c235a8367cc",
+      "gitBlob": "d8e8cc55e65494fbb651621ded935e29b3290842",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "native-account-menu-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 149782,
+      "sha256": "2b0125c908b14f1258c346dfa8fb27c073c10edc1bcb3411806b2f636d8d0574",
+      "gitBlob": "d60727fbe3a1062cb62a5751b2546b2d71618501",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "native-space-menu-light.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 163576,
+      "sha256": "eaa67c5286e640a26b6574b17977089687384ce6b7363da87c9eb07638a3680c",
+      "gitBlob": "7733a347d3ce8032b8a8b0e9e46f3b31dfebe6ee",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "native-space-menu-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 158290,
+      "sha256": "847956097bb99076af1a36b82e607feb8850bfde3806496b578ba7d0e6d79c19",
+      "gitBlob": "bc8425af07a548c93a6072fea3416b8632d9d020",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "native-long-navigation-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 152371,
+      "sha256": "2d9f7daa38f73b32fe98dcfbf18cc80c19409da75073f5a114d1a28d59aa7f85",
+      "gitBlob": "d6bc17e5744f7c84b9eeb8f60721ace109ba9908",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "native-sidebar-hidden-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 63788,
+      "sha256": "8e2cb316826b23dbdbcaa0b4d2c3bceb0e977bc5f76d0064597e21de592c02ee",
+      "gitBlob": "092a062bc685a1b6621549342557347108357390",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "native-cold-member-landing-dark.png",
+      "width": 2560,
+      "height": 1640,
+      "viewport": {
+        "width": 1280,
+        "height": 820
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 110404,
+      "sha256": "d27b687c0762cd3181715ebc93acddc744e2318970e03e5d69abca47a1c3a2a0",
+      "gitBlob": "54631b2380ffff8abae21e8adb809120587cb121",
+      "personallyViewed": true,
+      "account": "signed-out"
+    },
+    {
+      "file": "native-reload-member-landing-dark.png",
+      "width": 2560,
+      "height": 1640,
+      "viewport": {
+        "width": 1280,
+        "height": 820
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 111684,
+      "sha256": "09800666edb91b9d7df006206ec458b7a867ff133a4c803133ca04b4bb829c7e",
+      "gitBlob": "00759e3ab9de554b0841b3b1939225365da99cb6",
+      "personallyViewed": true,
+      "account": "member-c"
+    }
+  ]
+}
