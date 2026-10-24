@@ -58,7 +58,7 @@ test('normal member entry discovers and selects without executing; explicit star
   });
   await button(page, '开始执行').dblclick({ force: true });
   await expect(button(page, '开始执行')).toBeDisabled();
-  expect(await calls(page, 'start-plan')).toHaveLength(1);
+  await expect.poll(() => calls(page, 'start-plan')).toHaveLength(1);
   expect((await calls(page, 'start-plan'))[0]).toMatchObject({
     taskId: 'orders',
     planId: 'plan-main',
@@ -71,6 +71,7 @@ test('normal member entry discovers and selects without executing; explicit star
   await expect.poll(async () => (await calls(page, 'inbox')).length).toBe(beforeInbox + 1);
   await picker(page).click();
   await expect(page.getByRole('option', { name: base, exact: true })).toHaveCount(0);
+  expect(await calls(page, 'start-plan')).toHaveLength(1);
 });
 
 for (const [axis, name] of Object.entries(alternatives)) {
