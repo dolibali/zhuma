@@ -7,6 +7,8 @@ const button = (page, label) =>
 const panel = (page) => page.getByRole('region', { name: '上游输入', exact: true });
 const input = (page) => page.getByLabel('产物正文', { exact: true });
 const submitLabel = (mode) => (mode === 'revise' ? '重新提交' : '提交产物');
+const submitButton = (page, mode = 'submit') =>
+  button(page, submitLabel(mode)).and(page.locator('.zm-execution-detail button'));
 async function open(page, mode) {
   await page.goto(`/?upstream-client&strict&upstream-mode=${mode}`);
   await button(page, mode === 'revise' ? '提交新版本' : '提交产物').click();
@@ -27,7 +29,7 @@ for (const mode of ['submit', 'revise']) {
     await expect(panel(page)).toContainText('第 2 版');
     await expect(panel(page)).toContainText('help-copy 尚无已接受版本');
     await expect(panel(page)).toContainText('引用的版本已被取代');
-    await expect(button(page, submitLabel(mode))).toBeEnabled();
+    await expect(submitButton(page, mode)).toBeEnabled();
     await expect(panel(page).locator('a, button, iframe')).toHaveCount(0);
     await input(page).fill('保留这段正在编辑的内容');
     await refresh(page);
@@ -69,7 +71,7 @@ for (const mode of ['submit', 'revise']) {
     expect(await panel(page).evaluate((element) => element.outerHTML.includes('sealed-'))).toBe(
       false,
     );
-    await expect(button(page, submitLabel(mode))).toBeDisabled();
+    await expect(submitButton(page, mode)).toBeDisabled();
     await expect(input(page)).toHaveValue('已有交付草稿');
     expect(
       await page.evaluate(
@@ -81,7 +83,7 @@ for (const mode of ['submit', 'revise']) {
     });
     await refresh(page);
     await expect(panel(page)).toContainText('没有上游输入。');
-    await expect(button(page, submitLabel(mode))).toBeEnabled();
+    await expect(submitButton(page, mode)).toBeEnabled();
     await expect(input(page)).toHaveValue('已有交付草稿');
   });
 }
@@ -114,15 +116,15 @@ test('upstream only service blocking controls submission, and the write still ac
     window.upstreamProbe.node.inputs[0].blocking = true;
   });
   await refresh(page);
-  await expect(button(page, '提交产物')).toBeDisabled();
+  await expect(submitButton(page)).toBeDisabled();
   await page.evaluate(() => {
     window.upstreamProbe.node.inputs[0].blocking = false;
     window.upstreamProbe.denySubmit = true;
   });
   await refresh(page);
-  await expect(button(page, '提交产物')).toBeEnabled();
+  await expect(submitButton(page)).toBeEnabled();
   await input(page).fill('明确提交的正文');
-  await button(page, '提交产物').click();
+  await submitButton(page).click();
   await expect(page.getByRole('alert')).toContainText('上游来源已不可用');
   await expect(input(page)).toHaveValue('明确提交的正文');
   const commands = await page.evaluate(() =>
