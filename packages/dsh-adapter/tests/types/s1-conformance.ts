@@ -139,6 +139,7 @@ type ServiceMethodName =
   | 'settle'
   | 'report'
   | 'revision'
+  | 'draft'
   | 'reconcile';
 export type ServiceMethodsPresent = Assert<
   ServiceMethodName extends keyof ExecutionService ? true : false
@@ -166,6 +167,9 @@ export type ReportMethodBoth = Assert<
 >;
 export type RevisionMethodBoth = Assert<
   Both<ExecutionService['revision'], ExecutionServiceMethods['revision']>
+>;
+export type DraftMethodBoth = Assert<
+  Both<ExecutionService['draft'], ExecutionServiceMethods['draft']>
 >;
 export type ReconcileMethodBoth = Assert<
   Both<ExecutionService['reconcile'], ExecutionServiceMethods['reconcile']>
