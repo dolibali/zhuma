@@ -8,7 +8,7 @@ import {
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, identityInject } from '../dist/identity-session.js';
-import { resolveMember } from '../dist/member-session.js';
+import { configureDeploymentMode, resolveMember } from '../dist/member-session.js';
 
 export const AUTHORITY = '127.0.0.1:3080';
 
@@ -140,8 +140,12 @@ async function callWeb(web, { method, path, cookie, body, remoteAddress }) {
   };
 }
 
-/** Real Connection plus `applyIdentity`. Callers pass scrypt hashes, never passwords in storage. */
-export async function bootIdentity(imported) {
+/**
+ * Real Connection plus `applyIdentity`.
+ * `mode` is `legacy-single-user` or `multi-member` and is selected before identity starts.
+ * Callers pass scrypt hashes, never passwords in storage.
+ */
+export async function bootIdentity(imported, mode) {
   const ctx = new Context();
   const web = createWebServer();
   ctx.provide('credentials', memoryCredentials());
@@ -151,10 +155,22 @@ export async function bootIdentity(imported) {
     backend: { get: () => ({ kv: memoryKv(), close: async () => {} }) },
   });
   ctx.provide('storageDomain', new DomainFacility(ctx, { backend: 'memory', routes: {} }));
-  const connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
-  await connectionFiber;
-  const identityFiber = ctx.plugin({ inject: [...identityInject], apply: applyIdentity }, imported);
-  await identityFiber;
+  configureDeploymentMode(ctx, mode);
+  let connectionFiber;
+  let identityFiber;
+  let connectionStarted = false;
+  let identityStarted = false;
+  try {
+    connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
+    await connectionFiber;
+    connectionStarted = true;
+    identityFiber = ctx.plugin({ inject: [...identityInject], apply: applyIdentity }, imported);
+    await identityFiber;
+    identityStarted = true;
+  } catch (error) {
+    if (connectionStarted) await connectionFiber.dispose();
+    throw error;
+  }
   return {
     ctx,
     web,
@@ -186,8 +202,14 @@ export async function bootIdentity(imported) {
       return resolveMember(ctx, { headers });
     },
     async dispose() {
-      await identityFiber.dispose();
-      await connectionFiber.dispose();
+      if (identityStarted) await identityFiber.dispose();
+      if (connectionStarted) await connectionFiber.dispose();
     },
   };
+}
+
+/** Dispose a host that finished starting. An unstarted host is left alone. */
+export async function disposeHost(host) {
+  if (host === undefined) return;
+  await host.dispose();
 }

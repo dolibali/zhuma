@@ -60,21 +60,24 @@ test('a real connection and member cookie run start, report, and review', async 
   });
   const applied = workbench.appliedPlans.at(-1);
   const passwordHash = hashPassword(password);
-  const host = await bootIdentity({
-    accounts: [
-      { id: 'chen', passwordHash },
-      { id: 'lin', passwordHash },
-    ],
-    notes: [
-      {
-        id: 'note',
-        spaceId: 'project',
-        ownerId: 'chen',
-        teamMemberIds: ['chen', 'lin'],
-        text: 'shared',
-      },
-    ],
-  });
+  const host = await bootIdentity(
+    {
+      accounts: [
+        { id: 'chen', passwordHash },
+        { id: 'lin', passwordHash },
+      ],
+      notes: [
+        {
+          id: 'note',
+          spaceId: 'project',
+          ownerId: 'chen',
+          teamMemberIds: ['chen', 'lin'],
+          text: 'shared',
+        },
+      ],
+    },
+    'multi-member',
+  );
   const executionFiber = host.ctx.plugin(
     { inject: [...executionInject], apply: applyExecution },
     {
