@@ -6,6 +6,16 @@
 
 ## 显式模式与服务生命周期
 
+### #31 的公开启动展示合同
+
+当前 `host-plugin` 在 `Config.parse`／`configureDeploymentMode` 之后，通过固定 SDK 的 `webserver/index-inject` 贡献唯一 global row：`__ZHUMA_WORKBENCH_BOOT__ = { version: 1, deploymentMode }`。值只投影 Host 已校验的显式模式，不包含初始化地址、账号、凭据、权限或业务数据，不增加必须提供的服务依赖。身份子作用域 pending、失败、卸载／重挂载均不改变该值；整个工作台插件卸载时贡献随其 Cordis 生命周期清理。
+
+官方 Web 的 index renderer 与桌面的 ready.injections 使用同一表；Client 在既有 boot-ready 后读取一次该展示 DTO。当前正式 Host 必须发布 version1 的两个字段；缺省 legacy 仅兼容没有此合同的旧版部署。非法版本／字段／模式令客户端插件拒绝装配，修正 Host 配置并重载可恢复，不能因401、404或身份失败静默选择 legacy。renderer 篡改只能改变展示提示，服务仍使用自己的模式及成员授权，不能开启旧 owner 接口。
+
+成员模式仅注册可用的“我的工作”入口，空落点或旧自有 owner 落点进入正式成员页，未登录展示真实登录、恢复后读取有权空间；不抢占已选的其它官方 panel。legacy 保留原工作台／专家导航与默认落点。隐藏成员模式中依赖已关闭 owner RPC 的两个旧入口不取消组织编排和个人／团队专家范围，后续按原授权接口依赖接入。打开、恢复和刷新只读，不开始计划或调用模型。
+
+`member-plugin-composition.test.mjs` 通过公开 SlotCore 与真实插件验证两模式、登录／恢复SSR、旧／其它落点、非法DTO、共享会话与零业务RPC；`s1a-host.test.mjs` 从实际公开 WebServer 的 collectIndexInjections 断言模式、身份生命周期稳定及卸载移除，原门禁／持久化用例保留。这些不是实际冷启动／重载的原生界面证明，后者由协调按实现SHA独立验收。
+
 发行入口为 `dsh-adapter/host-plugin`，配置必须明确指定 `deploymentMode`，缺失或非法配置拒绝加载，不根据 cookie、身份模块是否存在或账号数量猜测模式。发行补丁明确配置 `legacy-single-user`，用于既有本地单人工作台。
 
 | 配置                 | 旧五接口                            | 身份服务                                                                                           |

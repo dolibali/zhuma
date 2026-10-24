@@ -23,7 +23,7 @@ export {
 export { StartablePlansPanel } from './execution/StartablePlansPanel.js';
 export { StartPlanPanel, type ExecutionPlan } from './execution/StartPlanPanel.js';
 export { DeliveryPanel } from './execution/DeliveryPanel.js';
-export { createExecutionHttpApi } from './execution/http.js';
+export { createExecutionHttpApi, type MemberExecutionScope } from './execution/http.js';
 export { MemberExecutionPage } from './execution/MemberExecutionPage.js';
 export { ExecutionWorkspace } from './execution/ExecutionWorkspace.js';
 export { InboxPanel } from './execution/InboxPanel.js';

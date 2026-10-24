@@ -32,6 +32,7 @@
     "desktop:verify:mac": "node scripts/desktop/verify.mjs",
     "brand:check": "node scripts/desktop/check-icons.mjs",
     "desktop:verify:icons": "node scripts/desktop/check-running-icons.mjs",
+    "desktop:verify:member": "node scripts/desktop/verify-member-transport.mjs",
     "workbench:build": "node scripts/workbench/build.mjs",
     "workbench:stage": "pnpm workbench:build && node scripts/workbench/install-stage.mjs",
     "test:ui": "pnpm workbench:build && pnpm test:ui:run",

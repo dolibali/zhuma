@@ -11,11 +11,18 @@ import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import type { IdentityApi, LoginCredentials, MemberSession } from './api.js';
 import { createMemberSessionController, type MemberSessionState } from './session.js';
+import type { MemberSessionController } from './shell.js';
 
 export interface MemberSessionBoundaryProps {
   readonly api: IdentityApi;
+  readonly controller?: MemberSessionController | undefined;
+  readonly showAccountHeader?: boolean;
   /** Consumers must abort their own requests on unmount and report member 401 responses. */
-  readonly children: (session: MemberSession, onUnauthenticated: () => void) => ReactNode;
+  readonly children: (
+    session: MemberSession,
+    onUnauthenticated: () => void,
+    isCurrent: () => boolean,
+  ) => ReactNode;
 }
 
 function LoginForm({
@@ -55,6 +62,7 @@ function LoginForm({
         <Field label="账号">
           <input
             name="username"
+            autoFocus
             autoComplete="username"
             autoCapitalize="none"
             autoCorrect="off"
@@ -111,29 +119,33 @@ export function MemberSessionView({
   retry,
   logout,
   children,
+  showAccountHeader = true,
 }: {
   readonly state: MemberSessionState;
   login(credentials: LoginCredentials): void;
   retry(): void;
   logout(): void;
   readonly children?: ReactNode;
+  readonly showAccountHeader?: boolean;
 }) {
   return (
     <div className="zhuma zm-member-session">
       {state.status === 'authenticated' ? (
         <>
-          <header className="zm-current-account">
-            <span className="zm-account-mark" aria-hidden>
-              {state.session.accountId.slice(0, 1)}
-            </span>
-            <span>
-              <small>当前账号</small>
-              <strong>{state.session.accountId}</strong>
-            </span>
-            <Button variant="quiet" onClick={logout}>
-              退出登录
-            </Button>
-          </header>
+          {showAccountHeader && (
+            <header className="zm-current-account">
+              <span className="zm-account-mark" aria-hidden>
+                {state.session.accountId.slice(0, 1)}
+              </span>
+              <span>
+                <small>当前账号</small>
+                <strong>{state.session.accountId}</strong>
+              </span>
+              <Button variant="quiet" onClick={logout}>
+                退出登录
+              </Button>
+            </header>
+          )}
           <div className="zm-member-content" key={state.epoch}>
             {children}
           </div>
@@ -183,20 +195,27 @@ export function MemberSessionView({
 }
 
 /** Opt-in boundary. The Host installs member mode and its routes before mounting this component. */
-export function MemberSessionBoundary({ api, children }: MemberSessionBoundaryProps) {
-  const controller = useMemo(() => createMemberSessionController(api), [api]);
+export function MemberSessionBoundary({
+  api,
+  children,
+  controller: provided,
+  showAccountHeader = true,
+}: MemberSessionBoundaryProps) {
+  const controller = useMemo(() => provided ?? createMemberSessionController(api), [api, provided]);
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
     controller.getSnapshot,
   );
   useEffect(() => {
+    if (provided) return;
     void controller.restore();
     return () => controller.dispose();
-  }, [controller]);
+  }, [controller, provided]);
   return (
     <MemberSessionView
       state={state}
+      showAccountHeader={showAccountHeader}
       login={(credentials) => {
         void controller.login(credentials);
       }}
@@ -210,7 +229,14 @@ export function MemberSessionBoundary({ api, children }: MemberSessionBoundaryPr
       }}
     >
       {state.status === 'authenticated'
-        ? children(state.session, () => controller.invalidate(state.epoch))
+        ? children(
+            state.session,
+            () => controller.invalidate(state.epoch),
+            () => {
+              const current = controller.getSnapshot();
+              return current.status === 'authenticated' && current.epoch === state.epoch;
+            },
+          )
         : null}
     </MemberSessionView>
   );
