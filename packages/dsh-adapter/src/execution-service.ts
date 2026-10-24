@@ -82,9 +82,22 @@ const reportSchema = z.strictObject({
   revision: z.number().int(),
 });
 const inboxSchema = z.strictObject({});
+const startableSchema = z.strictObject({});
 
 export type StartPlanRequest = z.infer<typeof startSchema>;
 export type InboxRequest = z.infer<typeof inboxSchema>;
+export type StartableRequest = z.infer<typeof startableSchema>;
+
+/**
+ * One confirmed plan the member may explicitly start. Read-only discovery for
+ * the "task → confirmed plan → explicit start" entry; nothing here launches.
+ */
+export interface StartablePlan {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly title: string;
+}
 export type SubmitRequest = z.infer<typeof submitSchema>;
 export type BallotRequest = z.infer<typeof ballotSchema>;
 export type SettleRequest = z.infer<typeof settleSchema>;
@@ -404,6 +417,52 @@ export class ExecutionService {
         )
         .map(toNodeView);
       return { ok: true, value: { actorId: actor.value.actorId, items, nodes } };
+    });
+  }
+
+  /**
+   * Confirmed plans this member may explicitly start. A task qualifies when it
+   * is `ready`, the member owns or participates in it, the trusted directory
+   * places its project in a space the member belongs to, and its latest
+   * applied plan has not been started yet. No directory, an unknown project,
+   * or a mismatched space hides the task; a directory failure is unavailable.
+   */
+  startable(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ actorId: string; plans: readonly StartablePlan[] }>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(startableSchema.optional(), body ?? {});
+      if (!parsed.ok) return parsed;
+      if (!this.projectSpaceDirectory()) return fail('not-found');
+      const workbench = this.workbench.readWorkbench();
+      const plans: StartablePlan[] = [];
+      for (const task of workbench.tasks) {
+        if (task.status !== 'ready') continue;
+        if (planMembership(workbench, task.id, actor.value.actorId) !== 'allowed') continue;
+        const space = await this.gateSpace(task.id, actor.value.spaceIds);
+        if (space === 'missing') continue;
+        if (!space.ok) {
+          if (space.error.code === 'unavailable') return space;
+          continue;
+        }
+        const applied = workbench.appliedPlans
+          .filter((plan) => plan.taskId === task.id)
+          .sort((a, b) => b.revision - a.revision)[0];
+        if (applied === undefined) continue;
+        if (this.storage.readPlan(planKey(task.id, applied.id, applied.revision)) !== undefined) {
+          continue;
+        }
+        plans.push({
+          taskId: task.id,
+          planId: applied.id,
+          revision: applied.revision,
+          title: task.title,
+        });
+      }
+      return { ok: true, value: { actorId: actor.value.actorId, plans } };
     });
   }
 

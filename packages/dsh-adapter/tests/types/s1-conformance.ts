@@ -128,7 +128,7 @@ export type MessageExtendsError = Assert<
   Both<ExecutionMessageCode, ExecutionErrorCode & ExecutionMessageCode>
 >;
 type ServiceMethodName =
-  'startPlan' | 'inbox' | 'submit' | 'ballot' | 'settle' | 'report' | 'reconcile';
+  'startPlan' | 'inbox' | 'startable' | 'submit' | 'ballot' | 'settle' | 'report' | 'reconcile';
 export type ServiceMethodsPresent = Assert<
   ServiceMethodName extends keyof ExecutionService ? true : false
 >;
@@ -137,6 +137,9 @@ export type StartMethodBoth = Assert<
 >;
 export type InboxMethodBoth = Assert<
   Both<ExecutionService['inbox'], ExecutionServiceMethods['inbox']>
+>;
+export type StartableMethodBoth = Assert<
+  Both<ExecutionService['startable'], ExecutionServiceMethods['startable']>
 >;
 export type SubmitMethodBoth = Assert<
   Both<ExecutionService['submit'], ExecutionServiceMethods['submit']>
