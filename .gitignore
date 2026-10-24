@@ -22,7 +22,6 @@ logs/
 *.mobileprovision
 .DS_Store
 .idea/
-.zhanlu/
 .vscode/
 local-overrides/
 
