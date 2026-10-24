@@ -17,6 +17,7 @@ const ENDPOINTS = [
   'ballot',
   'settle',
   'report',
+  'revision',
 ] as const;
 
 type Endpoint = (typeof ENDPOINTS)[number];
@@ -215,6 +216,8 @@ function run(
       return service.settle(caller, payload);
     case 'report':
       return service.report(caller, payload);
+    case 'revision':
+      return service.revision(caller, payload);
   }
 }
 

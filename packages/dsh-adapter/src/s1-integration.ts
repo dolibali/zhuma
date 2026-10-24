@@ -16,6 +16,7 @@ import type {
 } from '@zhuma/agent-core';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import type { OpenedSpaceDirectoryHandle, SpaceDirectoryImport } from './space-directory.js';
+import type { RevisionView } from './revision-view.js';
 export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 export type {
   AuthorizedSpace,
@@ -125,6 +126,7 @@ export type ExecutionEndpoints = readonly [
   'ballot',
   'settle',
   'report',
+  'revision',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -139,6 +141,15 @@ export interface ReportRequest {
   taskId: string;
   planId: string;
   revision: number;
+}
+export interface RevisionRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+}
+export interface RevisionValue {
+  readonly view: RevisionView;
 }
 interface ExecutionLocate {
   taskId: string;
@@ -194,6 +205,7 @@ export type ExecutionMessageCode =
   | 'plan-incomplete'
   | 'unavailable'
   | 'not-found'
+  | 'not-returned'
   | 'validation'
   | 'unknown-field'
   | 'invalid-handoff'
@@ -297,6 +309,7 @@ export interface ExecutionServiceMethods {
     body: unknown,
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
+  revision(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<RevisionValue>>;
   reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
 }
 export interface ExecutionRoutes {
@@ -307,6 +320,7 @@ export interface ExecutionRoutes {
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
   readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
+  readonly revision: { readonly body: RevisionRequest; readonly value: RevisionValue };
 }
 export interface ExecutionArtifactWire {
   readonly id: string;
@@ -386,6 +400,8 @@ export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  // The Client-side `revision` method is added by A on #32 when the revision
+  // panel consumes it; this layer declares the route shape only.
 }
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
