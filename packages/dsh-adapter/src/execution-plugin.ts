@@ -98,7 +98,18 @@ function fetchHeaders(request: Request): IncomingHttpHeaders {
   return headers;
 }
 
-const MAX_BODY_BYTES = 64 * 1024;
+/**
+ * Transport cap for `/api/zhuma-exec`. It sits above the service contract so a
+ * legal body is not refused here.
+ * Submit text and ballot comments stop at 100_000 characters. A draft's text,
+ * links, and file strings together stop at 262_144 characters. `JSON.stringify`
+ * writes one character as at most 6 bytes (`\u00XX` for U+0000–U+001F).
+ * 262_144 × 6 = 1_572_864. Two mebibytes cover that plus the RPC envelope
+ * (`type`, `method`, `rpcId`, and field names). UTF-8's 4 bytes per character
+ * (262_144 × 4 = 1_048_576) is inside the same cap.
+ */
+export const EXECUTION_BODY_BYTE_LIMIT = 2 * 1024 * 1024;
+const MAX_BODY_BYTES = EXECUTION_BODY_BYTE_LIMIT;
 const BODY_READ_MS = 5_000;
 
 class BodyRejected extends Error {
@@ -120,7 +131,7 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Reads at most 64KiB, and only for 5s. A declared length above the cap is not pulled. */
+/** Reads at most `EXECUTION_BODY_BYTE_LIMIT`, and only for 5s. A declared length above the cap is not pulled. */
 async function readLimitedJson(request: Request, signal: AbortSignal): Promise<unknown> {
   const declared = request.headers.get('content-length');
   if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {

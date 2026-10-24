@@ -7,7 +7,7 @@ import {
   startAppliedPlan,
   submitDelivery,
 } from '@zhuma/agent-core';
-import { apply, executionEndpoints } from '../dist/execution-plugin.js';
+import { EXECUTION_BODY_BYTE_LIMIT, apply, executionEndpoints } from '../dist/execution-plugin.js';
 import { boundedProjectSpaces } from '../dist/project-space.js';
 import {
   MEMBER_COOKIE_NAME,
@@ -691,7 +691,7 @@ test('an invalid session does not read the execution body', async () => {
   assert.ok(primed >= 1);
 });
 
-test('a declared execution body over 64KiB is refused before it is read', async () => {
+test('a declared execution body over the transport cap is refused before it is read', async () => {
   const host = await mount({ workbench: confirmed().state });
   let pulls = 0;
   const stream = new ReadableStream({
@@ -703,7 +703,7 @@ test('a declared execution body over 64KiB is refused before it is read', async 
   const opened = await primedRequest(host, 'inbox', {
     cookie: host.cookie,
     stream,
-    headers: { 'content-length': String(64 * 1024 + 1) },
+    headers: { 'content-length': String(EXECUTION_BODY_BYTE_LIMIT + 1) },
   });
   const primed = pulls;
   const response = await opened.fetch();
@@ -712,7 +712,7 @@ test('a declared execution body over 64KiB is refused before it is read', async 
   assert.equal(pulls, primed);
 });
 
-test('an execution body that grows past 64KiB is refused without waiting for the rest', async () => {
+test('an execution body that grows past the transport cap is refused without waiting for the rest', async () => {
   const host = await mount({ workbench: confirmed().state });
   host.arm('should-not-run');
   let pulls = 0;
@@ -720,7 +720,7 @@ test('an execution body that grows past 64KiB is refused without waiting for the
     pull(controller) {
       pulls += 1;
       if (pulls > 1) return new Promise(() => {});
-      controller.enqueue(new Uint8Array(64 * 1024 + 1));
+      controller.enqueue(new Uint8Array(EXECUTION_BODY_BYTE_LIMIT + 1));
     },
   });
   const started = Date.now();
@@ -751,6 +751,175 @@ test(
   },
 );
 
+function draftFile(partial) {
+  return {
+    id: 'file',
+    mediaType: 'text/plain',
+    byteSize: 1,
+    checksum: 'sum',
+    accessPolicyId: 'policy',
+    uploadComplete: false,
+    ...partial,
+  };
+}
+
+async function readyDesign(key) {
+  const { state, applied } = confirmed();
+  const host = await mount({ workbench: state });
+  const started = await host.call(
+    'start-plan',
+    {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: key,
+    },
+    { cookie: host.cookie },
+  );
+  assert.equal(started.status, 200);
+  assert.equal(started.body.result.ok, true, JSON.stringify(started.body));
+  const design = [...host.nodes.values()].find((record) => record.nodeId === 'design');
+  return { host, applied, version: design.command.version };
+}
+
+function locate(applied, payload) {
+  return {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    ...payload,
+  };
+}
+
+test('70000 ascii characters pass for a draft and a submit', async () => {
+  const text = 'a'.repeat(70_000);
+  const { host, applied, version } = await readyDesign('start-ascii');
+  const draft = await host.call(
+    'draft',
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-ascii',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.result.ok, true, JSON.stringify(draft.body.result.error ?? draft.body));
+  assert.equal(draft.body.result.value.text.length, 70_000);
+  const submitted = await host.call(
+    'submit',
+    locate(applied, {
+      expectedVersion: version,
+      idempotencyKey: 'submit-ascii',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.body.result.ok, true, JSON.stringify(submitted.body.result.error ?? {}));
+});
+
+test('30000 han characters pass for a draft and a submit', async () => {
+  const text = '汉'.repeat(30_000);
+  const { host, applied, version } = await readyDesign('start-han');
+  const draft = await host.call(
+    'draft',
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-han',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.result.ok, true, JSON.stringify(draft.body.result.error ?? {}));
+  assert.equal(draft.body.result.value.text.length, 30_000);
+  const submitted = await host.call(
+    'submit',
+    locate(applied, {
+      expectedVersion: version,
+      idempotencyKey: 'submit-han',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.body.result.ok, true, JSON.stringify(submitted.body.result.error ?? {}));
+});
+
+test('a contract-maximum draft and submit pass the transport cap', async () => {
+  const text = 't'.repeat(100_000);
+  const full = 'd'.repeat(2048);
+  const files = [
+    ...Array.from({ length: 19 }, () =>
+      draftFile({ id: full, mediaType: full, checksum: full, accessPolicyId: full }),
+    ),
+    draftFile({ id: full, mediaType: full, checksum: full, accessPolicyId: 'e'.repeat(352) }),
+  ];
+  const drafted = await readyDesign('start-max-draft');
+  const draft = await drafted.host.call(
+    'draft',
+    locate(drafted.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-max',
+      text,
+      files,
+      links: [],
+    }),
+    { cookie: drafted.host.cookie },
+  );
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.result.ok, true, JSON.stringify(draft.body.result.error ?? {}));
+  assert.equal(draft.body.result.value.text.length, 100_000);
+
+  const submittedHost = await readyDesign('start-max-submit');
+  const submitted = await submittedHost.host.call(
+    'submit',
+    locate(submittedHost.applied, {
+      expectedVersion: submittedHost.version,
+      idempotencyKey: 'submit-max',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: submittedHost.host.cookie },
+  );
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.body.result.ok, true, JSON.stringify(submitted.body.result.error ?? {}));
+});
+
+test('a declared body exactly at the transport cap is not refused as too large', async () => {
+  const { state } = confirmed();
+  const host = await mount({ workbench: state });
+  const payload = JSON.stringify({
+    type: 'client-request',
+    rpcId: 'plugin',
+    method: 'zhuma-exec/inbox',
+    payload: {},
+  });
+  const response = await postStream(host, 'inbox', {
+    cookie: host.cookie,
+    headers: { 'content-length': String(EXECUTION_BODY_BYTE_LIMIT) },
+    stream: new ReadableStream({
+      start(controller) {
+        controller.enqueue(Buffer.from(payload));
+        controller.close();
+      },
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).result.ok, true);
+});
+
 test('cancelling an execution body does not run the service', async () => {
   const host = await mount({ workbench: confirmed().state });
   host.arm('should-not-run');
@@ -769,4 +938,29 @@ test('cancelling an execution body does not run the service', async () => {
   const response = await pending;
   assert.equal(response.status, 200);
   assert.equal((await response.json()).result.error.code, 'cancelled');
+});
+
+test('cancelling an execution body clears the read timer', async () => {
+  const host = await mount({ workbench: confirmed().state });
+  host.arm('should-not-run');
+  const timeouts = () =>
+    process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+  const before = timeouts();
+  const controller = new AbortController();
+  const stream = new ReadableStream({
+    pull() {
+      return new Promise(() => {});
+    },
+  });
+  const pending = postStream(host, 'inbox', {
+    cookie: host.cookie,
+    stream,
+    signal: controller.signal,
+  });
+  setTimeout(() => controller.abort(), 20);
+  const response = await pending;
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).result.error.code, 'cancelled');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts(), before);
 });
