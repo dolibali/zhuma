@@ -43,6 +43,8 @@ function UpstreamInputs({ inputs }: { inputs: readonly UpstreamInputWire[] }) {
   );
 }
 
+const READ_TIMEOUT_MS = 10_000;
+
 const emptyFile = {
   id: '',
   mediaType: 'text/plain',
@@ -87,6 +89,7 @@ export function DeliveryPanel({
     const controller = new AbortController();
     const savedFor = nodeKey;
     let active = true;
+    let timedOut = false;
     edited.current = false;
     editGeneration.current = 0;
     key.current = crypto.randomUUID();
@@ -96,6 +99,10 @@ export function DeliveryPanel({
     setDraftVersion(0);
     setBaselineReady(false);
     setError('');
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, READ_TIMEOUT_MS);
     void api
       .readDeliveryDraft(
         {
@@ -108,6 +115,7 @@ export function DeliveryPanel({
       )
       .then(
         (draft) => {
+          clearTimeout(timer);
           if (!active || liveNode.current !== savedFor) return;
           setDraftVersion(draft.version);
           setBaselineReady(true);
@@ -129,14 +137,22 @@ export function DeliveryPanel({
           );
         },
         (caught: unknown) => {
-          if (!active || controller.signal.aborted || liveNode.current !== savedFor) return;
+          clearTimeout(timer);
+          if (!active || liveNode.current !== savedFor) return;
+          if (controller.signal.aborted && !timedOut) return;
           setBaselineReady(true);
-          if (edited.current) return;
-          setError(caught instanceof Error ? caught.message : '草稿没有读出来。');
+          setError(
+            timedOut
+              ? '草稿没有在时间内读出来。'
+              : caught instanceof Error
+                ? caught.message
+                : '草稿没有读出来。',
+          );
         },
       );
     return () => {
       active = false;
+      clearTimeout(timer);
       controller.abort();
     };
   }, [api, node.taskId, node.planId, node.revision, node.nodeId, nodeKey]);
