@@ -3703,6 +3703,45 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 
 /* Returned content stays next to named feedback; the existing delivery form owns edits. */
+.zm-upstream-inputs {
+  margin-block: 18px;
+  padding-block: 14px;
+  border-block: 1px solid var(--zm-line);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.zm-upstream-inputs h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+.zm-upstream-inputs > p {
+  margin: 0;
+  font-size: 13px;
+}
+.zm-upstream-inputs ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.zm-upstream-inputs li + li {
+  margin-top: 14px;
+}
+.zm-upstream-heading,
+.zm-upstream-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+.zm-upstream-heading strong {
+  font-size: 13px;
+}
+.zm-upstream-meta,
+.zm-upstream-inputs li > p {
+  color: var(--zm-muted);
+  margin: 4px 0 0;
+  font-size: 12px;
+}
 .zm-revision-workspace {
   display: grid;
   gap: 20px;

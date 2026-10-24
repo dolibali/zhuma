@@ -53,7 +53,32 @@ export interface ExecutionNodeWire {
   readonly reviewOutcome?: string;
   readonly blockReason?: string;
   readonly acceptedArtifactVersionId?: string;
+  readonly inputs?: readonly UpstreamInputWire[];
 }
+
+/** Public #81 projection. Hidden rows carry no source identifiers or content. */
+export type UpstreamInputWire =
+  | {
+      readonly access: 'visible';
+      readonly blocking: boolean;
+      readonly sourceNodeId: string;
+      readonly sourceGoal?: string;
+      readonly version: number;
+      readonly name: string;
+    }
+  | {
+      readonly access: 'pending';
+      readonly blocking: boolean;
+      readonly pending: 'none' | 'replaced';
+      readonly sourceNodeId: string;
+      readonly message: string;
+    }
+  | {
+      readonly access: 'hidden';
+      readonly blocking: boolean;
+      readonly count: number;
+      readonly message: string;
+    };
 
 export interface ExecutionInboxValue {
   readonly actorId: string;
@@ -225,6 +250,43 @@ function record(value: unknown, field: string): Record<string, unknown> {
 function unique<T>(items: readonly T[], key: (item: T) => string, field: string): void {
   if (new Set(items.map(key)).size !== items.length) invalid(`返回的${field}有重复标识。`);
 }
+function readUpstreamInput(value: unknown): UpstreamInputWire {
+  const item = record(value, '上游输入');
+  if (typeof item.blocking !== 'boolean') invalid('返回的上游阻塞状态不正确。');
+  const blocking = item.blocking;
+  switch (item.access) {
+    case 'visible':
+      if (item.sourceGoal !== undefined && typeof item.sourceGoal !== 'string')
+        invalid('返回的来源目标不正确。');
+      return {
+        access: 'visible',
+        blocking,
+        sourceNodeId: text(item.sourceNodeId, '来源节点'),
+        ...(item.sourceGoal === undefined ? {} : { sourceGoal: item.sourceGoal as string }),
+        version: integer(item.version, 1, '上游版本'),
+        name: text(item.name, '产物名称'),
+      };
+    case 'pending':
+      if (item.pending !== 'none' && item.pending !== 'replaced')
+        invalid('返回的上游提示状态不正确。');
+      return {
+        access: 'pending',
+        blocking,
+        pending: item.pending,
+        sourceNodeId: text(item.sourceNodeId, '来源节点'),
+        message: text(item.message, '上游提示'),
+      };
+    case 'hidden':
+      return {
+        access: 'hidden',
+        blocking,
+        count: integer(item.count, 1, '受限来源数量'),
+        message: text(item.message, '受限来源提示'),
+      };
+    default:
+      return invalid('返回的上游可见状态不正确。');
+  }
+}
 function readRevisionContent(value: unknown): RevisionContentWire {
   const item = record(value, '退回版本');
   if (!Array.isArray(item.links) || !Array.isArray(item.files)) invalid('返回的退回版本不正确。');
@@ -310,6 +372,8 @@ export function readExecutionNode(value: unknown): ExecutionNodeWire {
   if (!Array.isArray(record.rounds) || !Array.isArray(record.comments)) {
     invalid('返回的节点不正确。');
   }
+  if (record.inputs !== undefined && !Array.isArray(record.inputs))
+    invalid('返回的上游输入不完整，请刷新待办。');
   return {
     nodeId: text(record.nodeId, '节点'),
     taskId: text(record.taskId, '任务'),
@@ -334,6 +398,7 @@ export function readExecutionNode(value: unknown): ExecutionNodeWire {
     ...(typeof record.acceptedArtifactVersionId === 'string'
       ? { acceptedArtifactVersionId: record.acceptedArtifactVersionId }
       : {}),
+    ...(Array.isArray(record.inputs) ? { inputs: record.inputs.map(readUpstreamInput) } : {}),
   };
 }
 

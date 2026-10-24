@@ -4,6 +4,7 @@ import { Field } from '../workbench/controls.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type { ExecutionApi, ExecutionNodeWire } from './ExecutionApi.js';
 import { nodeIdentity, useExecutionCommand, useFormKey } from './interaction.js';
+import { UpstreamInputsPanel } from './UpstreamInputsPanel.js';
 
 type Props = {
   api: ExecutionApi;
@@ -35,9 +36,10 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
     mode === 'revise'
       ? node.status === 'needs-revision'
       : ['ready', 'needs-revision'].includes(node.status);
+  const upstreamBlocked = node.inputs?.some((input) => input.blocking) === true;
   const error = attempted.current === context ? command.error : '';
   function submit() {
-    if (!available) return;
+    if (!available || upstreamBlocked) return;
     attempted.current = context;
     const links = link
       .split('\n')
@@ -90,6 +92,8 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
         </div>
       </div>
       {node.expectedOutput && <p className="zm-execution-hint">交付内容：{node.expectedOutput}</p>}
+      <UpstreamInputsPanel inputs={node.inputs} />
+      {upstreamBlocked && <p role="status">上游输入不可用，暂不能提交。</p>}
       {!available && <p role="status">当前节点已不接受提交，请刷新待办。</p>}
       {error && (
         <div role="alert" className="zm-error">
@@ -116,7 +120,7 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
       <div className="zm-actions">
         <Button
           variant="primary"
-          disabled={!available}
+          disabled={!available || upstreamBlocked}
           busy={command.pending}
           busyLabel="正在提交…"
           onClick={submit}
