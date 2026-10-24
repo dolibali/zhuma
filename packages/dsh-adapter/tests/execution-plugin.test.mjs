@@ -7,7 +7,7 @@ import {
   startAppliedPlan,
   submitDelivery,
 } from '@zhuma/agent-core';
-import { apply, EXECUTION_BODY_BYTE_LIMIT, executionEndpoints } from '../dist/execution-plugin.js';
+import { EXECUTION_BODY_BYTE_LIMIT, apply, executionEndpoints } from '../dist/execution-plugin.js';
 import { boundedProjectSpaces } from '../dist/project-space.js';
 import {
   MEMBER_COOKIE_NAME,
@@ -134,6 +134,7 @@ async function mount(options = {}) {
   return {
     routes,
     nodes,
+    plans,
     effects,
     cookie,
     arm(message) {
@@ -179,14 +180,18 @@ test('the execution channel is an exact fetch route and hides storage failures',
     executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
   );
   assert.equal(executionEndpoints.includes('bind-owner'), false);
+  assert.equal(
+    host.routes.every((route) => route.requestBody === 'streaming'),
+    true,
+  );
   const anonymous = await host.call('inbox', {}, { cookie: undefined });
   assert.equal(anonymous.status, 401);
-  assert.deepEqual(anonymous.body, { ok: false, error: { code: 'unauthenticated' } });
-  const malformed = await host.call('inbox', {}, { cookie: host.cookie, raw: '{' });
+  assert.equal(anonymous.body.error.code, 'unauthenticated');
+  const malformed = await host.call('inbox', {}, { raw: '{', cookie: host.cookie });
   assert.equal(malformed.status, 400);
-  const wrongMethod = await host.call('inbox', {}, { cookie: host.cookie, method: 'zhuma/inbox' });
+  const wrongMethod = await host.call('inbox', {}, { method: 'zhuma/inbox', cookie: host.cookie });
   assert.equal(wrongMethod.status, 400);
-  const text = await host.call('inbox', {}, { cookie: host.cookie, type: 'text/plain', raw: '{}' });
+  const text = await host.call('inbox', {}, { type: 'text/plain', raw: '{}', cookie: host.cookie });
   assert.equal(text.status, 415);
 
   const started = await host.call(
@@ -292,6 +297,345 @@ test('opening the channel finishes an unlock that was settled before its write',
   assert.equal(publish.handoff.inputRefs[0].sourceNodeId, 'design');
 });
 
+const hiddenMessage = '有 1 个上游来源你没有权限查看。';
+const doneCommand = { status: 'completed', version: 2, upstreamAffected: false, stored: [] };
+
+function upstreamRecord(fields) {
+  return {
+    ownerId: 'chen',
+    rounds: [],
+    receipts: [],
+    artifactVersions: [],
+    comments: [],
+    command: {
+      status: 'ready',
+      version: 1,
+      entryStatus: 'ready',
+      upstreamAffected: false,
+      stored: [],
+    },
+    ...fields,
+    handoff: {
+      assignee: { id: 'chen', kind: 'human' },
+      reviewerIds: ['qa'],
+      dependencyNodeIds: [],
+      goal: '发布',
+      expectedOutput: '说明',
+      inputRefs: [],
+      reviewRequired: true,
+      ...fields.handoff,
+    },
+  };
+}
+
+function upstreamSource(nodeId, taskId, planId, revision, acceptedId, extra = {}) {
+  return upstreamRecord({
+    taskId,
+    planId,
+    revision,
+    nodeId,
+    ...(acceptedId ? { command: doneCommand, acceptedArtifactVersionId: acceptedId } : {}),
+    handoff: { assignee: { id: 'lin', kind: 'human' }, goal: extra.goal ?? nodeId },
+    ...(acceptedId
+      ? {
+          artifactVersions: [
+            {
+              id: acceptedId,
+              nodeId,
+              version: extra.version ?? 2,
+              text: extra.text ?? '',
+              files: [],
+              links: [],
+              submittedBy: 'lin',
+            },
+          ],
+        }
+      : {}),
+  });
+}
+
+function upstreamPublish(refs) {
+  return upstreamRecord({
+    taskId: 'task',
+    planId: 'plan',
+    revision: 1,
+    nodeId: 'node-2',
+    handoff: { goal: '发布登录说明', inputRefs: refs },
+  });
+}
+
+function upstreamTask(id, extra = {}) {
+  return {
+    id,
+    projectId: 'project',
+    ownerId: 'chen',
+    participantIds: ['chen'],
+    title: id,
+    goal: id,
+    workflows: [],
+    status: 'ready',
+    updatedAt: '2026-10-22T00:00:00.000Z',
+    ...extra,
+  };
+}
+
+async function upstreamHttp(records, extra = {}) {
+  const { state } = fixture();
+  for (const item of extra.tasks ?? []) state.tasks.push(item);
+  const plans = new Map();
+  for (const item of records) {
+    plans.set(`${item.taskId}:${item.planId}:${item.revision}`, {
+      idempotencyKey: item.taskId,
+      fingerprint: item.planId,
+      nodeIds: [item.nodeId],
+    });
+  }
+  const opened = await mount({
+    workbench: state,
+    nodes: records.map((item) => [nodeRecordKey(item), item]),
+    plans: [...plans],
+    ...(extra.spaces ? { projectSpaces: boundedProjectSpaces(extra.spaces) } : {}),
+  });
+  const snap = () =>
+    JSON.stringify({ nodes: [...opened.nodes.entries()], plans: [...opened.plans.entries()] });
+  return {
+    snap,
+    async call(endpoint, payload) {
+      return opened.call(endpoint, payload, { cookie: opened.cookie });
+    },
+  };
+}
+
+function upstreamInputs(response) {
+  assert.equal(response.body.result.ok, true, JSON.stringify(response.body));
+  return response.body.result.value.nodes.find((item) => item.nodeId === 'node-2').inputs;
+}
+
+async function upstreamBlocked(opened) {
+  const before = opened.snap();
+  const result = await opened.call('submit', {
+    taskId: 'task',
+    planId: 'plan',
+    revision: 1,
+    nodeId: 'node-2',
+    expectedVersion: 1,
+    idempotencyKey: 'block-submit',
+    text: '交付说明',
+  });
+  assert.equal(opened.snap(), before);
+  assert.deepEqual(result.body.result.error, {
+    code: 'upstream-blocked',
+    message: hiddenMessage,
+    details: {},
+  });
+  return result;
+}
+
+async function upstreamWrote(opened, key) {
+  const before = opened.snap();
+  const result = await opened.call('submit', {
+    taskId: 'task',
+    planId: 'plan',
+    revision: 1,
+    nodeId: 'node-2',
+    expectedVersion: 1,
+    idempotencyKey: key,
+    text: '交付说明',
+  });
+  assert.equal(result.body.result.ok, true, JSON.stringify(result.body));
+  assert.notEqual(opened.snap(), before);
+}
+
+test('http inbox uses this plan when another task reuses the node id', async () => {
+  const cited = 'artifact:idem-key-4e1';
+  const opened = await upstreamHttp(
+    [
+      upstreamSource('node-1', 'task-peer-4e1', 'plan', 1, cited, {
+        goal: '别的任务目标',
+        version: 9,
+        text: '别的正文',
+      }),
+      upstreamSource('node-1', 'task', 'plan', 2, cited, { goal: '另一版本目标', version: 8 }),
+      upstreamSource('node-1', 'task', 'plan-other-4e1', 1, cited, {
+        goal: '另一计划目标',
+        version: 7,
+      }),
+      upstreamSource('node-1', 'task', 'plan', 1, cited, {
+        goal: '本计划目标',
+        text: '错误码说明',
+      }),
+      upstreamPublish([{ sourceNodeId: 'node-1', artifactVersionId: cited }]),
+    ],
+    { tasks: [upstreamTask('task-peer-4e1', { participantIds: ['chen', 'lin'] })] },
+  );
+  const inbox = await opened.call('inbox', {});
+  assert.deepEqual(upstreamInputs(inbox), [
+    {
+      access: 'visible',
+      blocking: false,
+      sourceNodeId: 'node-1',
+      sourceGoal: '本计划目标',
+      version: 2,
+      name: '第 2 版',
+    },
+  ]);
+  for (const secret of [
+    'idem-key-4e1',
+    '别的任务目标',
+    '另一版本目标',
+    '另一计划目标',
+    'task-peer-4e1',
+    'plan-other-4e1',
+    '错误码说明',
+  ]) {
+    assert.equal(JSON.stringify(inbox.body).includes(secret), false, secret);
+  }
+  await upstreamWrote(opened, 'deliver-ok');
+});
+
+test('http counts a source in another task the caller belongs to and blocks the write', async () => {
+  const opened = await upstreamHttp(
+    [
+      upstreamSource('node-1', 'task-peer-4e1', 'plan', 1, 'artifact:peer-key-4e1', {
+        goal: 'peer-goal-4e1',
+        text: 'peer-body-4e1',
+      }),
+      upstreamPublish([{ sourceNodeId: 'node-1', artifactVersionId: 'artifact:peer-key-4e1' }]),
+    ],
+    { tasks: [upstreamTask('task-peer-4e1', { participantIds: ['chen', 'lin'] })] },
+  );
+  const inbox = await opened.call('inbox', {});
+  assert.deepEqual(upstreamInputs(inbox), [
+    { access: 'hidden', blocking: true, count: 1, message: hiddenMessage },
+  ]);
+  assert.equal(JSON.stringify(inbox.body).includes('peer-key-4e1'), false);
+  assert.equal(JSON.stringify(inbox.body).includes('task-peer-4e1'), false);
+  const refused = await upstreamBlocked(opened);
+  assert.equal(JSON.stringify(refused.body).includes('task'), false);
+});
+
+test('http missing and unreadable upstream bodies match byte for byte', async () => {
+  const secrets = [
+    'node-absent-4e1',
+    'ver-absent-4e1',
+    'node-sealed-4e1',
+    'task-sealed-4e1',
+    'space-sealed-4e1',
+    'sealed-key-4e1',
+  ];
+  async function scenario(ref, extra) {
+    const records = [upstreamPublish([ref])];
+    if (extra) records.unshift(extra);
+    const opened = await upstreamHttp(
+      records,
+      extra
+        ? {
+            tasks: [
+              upstreamTask('task-sealed-4e1', {
+                projectId: 'project-sealed-4e1',
+                participantIds: ['lin'],
+                ownerId: 'lin',
+              }),
+            ],
+            spaces: [
+              { projectId: 'project', spaceId: 'project' },
+              { projectId: 'project-sealed-4e1', spaceId: 'space-sealed-4e1' },
+            ],
+          }
+        : {},
+    );
+    const inbox = await opened.call('inbox', {});
+    const refused = await upstreamBlocked(opened);
+    for (const secret of secrets) {
+      assert.equal(JSON.stringify(inbox.body).includes(secret), false, secret);
+      assert.equal(JSON.stringify(refused.body).includes(secret), false, secret);
+    }
+    return {
+      inbox: Buffer.from(JSON.stringify(inbox.body)),
+      refused: Buffer.from(JSON.stringify(refused.body)),
+    };
+  }
+  const missing = await scenario({
+    sourceNodeId: 'node-absent-4e1',
+    artifactVersionId: 'ver-absent-4e1',
+  });
+  const unreadable = await scenario(
+    { sourceNodeId: 'node-sealed-4e1', artifactVersionId: 'artifact:sealed-key-4e1' },
+    upstreamSource('node-sealed-4e1', 'task-sealed-4e1', 'plan', 1, 'artifact:sealed-key-4e1', {
+      text: 'sealed-body-4e1',
+    }),
+  );
+  assert.equal(Buffer.compare(missing.inbox, unreadable.inbox), 0);
+  assert.equal(Buffer.compare(missing.refused, unreadable.refused), 0);
+});
+
+test('http names a source with no accepted version and still writes', async () => {
+  const opened = await upstreamHttp([
+    upstreamSource('node-3', 'task', 'plan', 1),
+    upstreamPublish([{ sourceNodeId: 'node-3', artifactVersionId: 'artifact:old-key-4e1' }]),
+  ]);
+  const inbox = await opened.call('inbox', {});
+  assert.deepEqual(upstreamInputs(inbox), [
+    {
+      access: 'pending',
+      pending: 'none',
+      blocking: false,
+      sourceNodeId: 'node-3',
+      message: '上游节点 node-3 尚无已接受版本。',
+    },
+  ]);
+  assert.equal(JSON.stringify(inbox.body).includes('old-key-4e1'), false);
+  await upstreamWrote(opened, 'deliver-none');
+});
+
+test('http names a replaced accepted version and still writes', async () => {
+  const opened = await upstreamHttp([
+    upstreamSource('node-4', 'task', 'plan', 1, 'artifact:new-key-4e1', { text: '新正文' }),
+    upstreamPublish([{ sourceNodeId: 'node-4', artifactVersionId: 'artifact:old-key-4e1' }]),
+  ]);
+  const inbox = await opened.call('inbox', {});
+  assert.deepEqual(upstreamInputs(inbox), [
+    {
+      access: 'pending',
+      pending: 'replaced',
+      blocking: false,
+      sourceNodeId: 'node-4',
+      message: '上游节点 node-4 已有新的已接受版本，当前引用的版本已被取代。',
+    },
+  ]);
+  assert.equal(JSON.stringify(inbox.body).includes('new-key-4e1'), false);
+  assert.equal(JSON.stringify(inbox.body).includes('新正文'), false);
+  await upstreamWrote(opened, 'deliver-replaced');
+});
+
+test('http counts a corrupt record and does not leak its id', async () => {
+  const opened = await upstreamHttp([
+    {
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node-corrupt-4e1',
+      ownerId: 'chen',
+      command: { status: 'completed', version: 2 },
+      rounds: [],
+      acceptedArtifactVersionId: 'artifact:corrupt-key-4e1',
+      handoff: { goal: 'corrupt-goal-4e1', assignee: { id: 'lin', kind: 'human' } },
+      artifactVersions: [{ id: 'artifact:corrupt-key-4e1', version: 2, text: 'corrupt-body-4e1' }],
+    },
+    upstreamPublish([
+      { sourceNodeId: 'node-corrupt-4e1', artifactVersionId: 'artifact:corrupt-key-4e1' },
+    ]),
+  ]);
+  const inbox = await opened.call('inbox', {});
+  assert.deepEqual(upstreamInputs(inbox), [
+    { access: 'hidden', blocking: true, count: 1, message: hiddenMessage },
+  ]);
+  for (const secret of ['node-corrupt-4e1', 'corrupt-key-4e1', 'corrupt-body-4e1']) {
+    assert.equal(JSON.stringify(inbox.body).includes(secret), false, secret);
+  }
+  await upstreamBlocked(opened);
+});
+
 function postStream(host, endpoint, { cookie, stream, headers = {}, signal } = {}) {
   const route = host.routes.find((item) => item.path === `/api/zhuma-exec/${endpoint}`);
   return route.fetch(
@@ -390,7 +734,8 @@ test(
   'an unfinished execution body stops at 5 seconds and does not run',
   { timeout: 15_000 },
   async () => {
-    const host = await mount({ workbench: confirmed().state });
+    const { state } = confirmed();
+    const host = await mount({ workbench: state });
     host.arm('should-not-run');
     const stream = new ReadableStream({
       pull() {
@@ -406,8 +751,155 @@ test(
   },
 );
 
+function draftFile(partial) {
+  return {
+    id: 'file',
+    mediaType: 'text/plain',
+    byteSize: 1,
+    checksum: 'sum',
+    accessPolicyId: 'policy',
+    uploadComplete: false,
+    ...partial,
+  };
+}
+
+async function readyDesign(key) {
+  const { state, applied } = confirmed();
+  const host = await mount({ workbench: state });
+  const started = await host.call(
+    'start-plan',
+    {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: key,
+    },
+    { cookie: host.cookie },
+  );
+  assert.equal(started.status, 200);
+  assert.equal(started.body.result.ok, true, JSON.stringify(started.body));
+  const design = [...host.nodes.values()].find((record) => record.nodeId === 'design');
+  return { host, applied, version: design.command.version };
+}
+
+function locate(applied, payload) {
+  return {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    ...payload,
+  };
+}
+
+test('70000 ascii characters pass for a draft and a submit', async () => {
+  const text = 'a'.repeat(70_000);
+  const { host, applied, version } = await readyDesign('start-ascii');
+  const draft = await host.call(
+    'draft',
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-ascii',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.result.ok, true, JSON.stringify(draft.body.result.error ?? draft.body));
+  assert.equal(draft.body.result.value.text.length, 70_000);
+  const submitted = await host.call(
+    'submit',
+    locate(applied, {
+      expectedVersion: version,
+      idempotencyKey: 'submit-ascii',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.body.result.ok, true, JSON.stringify(submitted.body.result.error ?? {}));
+});
+
+test('30000 han characters pass for a draft and a submit', async () => {
+  const text = '汉'.repeat(30_000);
+  const { host, applied, version } = await readyDesign('start-han');
+  const draft = await host.call(
+    'draft',
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-han',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.result.ok, true, JSON.stringify(draft.body.result.error ?? {}));
+  assert.equal(draft.body.result.value.text.length, 30_000);
+  const submitted = await host.call(
+    'submit',
+    locate(applied, {
+      expectedVersion: version,
+      idempotencyKey: 'submit-han',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: host.cookie },
+  );
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.body.result.ok, true, JSON.stringify(submitted.body.result.error ?? {}));
+});
+
+test('a contract-maximum draft and submit pass the transport cap', async () => {
+  const text = 't'.repeat(100_000);
+  const full = 'd'.repeat(2048);
+  const files = [
+    ...Array.from({ length: 19 }, () =>
+      draftFile({ id: full, mediaType: full, checksum: full, accessPolicyId: full }),
+    ),
+    draftFile({ id: full, mediaType: full, checksum: full, accessPolicyId: 'e'.repeat(352) }),
+  ];
+  const drafted = await readyDesign('start-max-draft');
+  const draft = await drafted.host.call(
+    'draft',
+    locate(drafted.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-max',
+      text,
+      files,
+      links: [],
+    }),
+    { cookie: drafted.host.cookie },
+  );
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.result.ok, true, JSON.stringify(draft.body.result.error ?? {}));
+  assert.equal(draft.body.result.value.text.length, 100_000);
+
+  const submittedHost = await readyDesign('start-max-submit');
+  const submitted = await submittedHost.host.call(
+    'submit',
+    locate(submittedHost.applied, {
+      expectedVersion: submittedHost.version,
+      idempotencyKey: 'submit-max',
+      text,
+      files: [],
+      links: [],
+    }),
+    { cookie: submittedHost.host.cookie },
+  );
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.body.result.ok, true, JSON.stringify(submitted.body.result.error ?? {}));
+});
+
 test('a declared body exactly at the transport cap is not refused as too large', async () => {
-  const host = await mount({ workbench: confirmed().state });
+  const { state } = confirmed();
+  const host = await mount({ workbench: state });
   const payload = JSON.stringify({
     type: 'client-request',
     rpcId: 'plugin',

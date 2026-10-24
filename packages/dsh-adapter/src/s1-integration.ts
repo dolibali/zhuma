@@ -127,6 +127,9 @@ export type ExecutionEndpoints = readonly [
   'settle',
   'report',
   'revision',
+  'draft',
+  'inbox-counts',
+  'events',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -206,6 +209,10 @@ export type ExecutionMessageCode =
   | 'unavailable'
   | 'not-found'
   | 'not-returned'
+  | 'not-deliverable'
+  | 'empty-request-changes'
+  | 'empty-comment'
+  | 'comment-not-unresolved'
   | 'validation'
   | 'unknown-field'
   | 'invalid-handoff'
@@ -219,8 +226,6 @@ export type ExecutionPassthroughCode =
   | 'invalid-round'
   | 'invalid-ballot'
   | 'conflicting-ballot'
-  | 'comment-not-unresolved'
-  | 'empty-request-changes'
   | 'round-closed'
   | 'non-passing-availability'
   | 'illegal-transition'
@@ -256,10 +261,42 @@ export interface StartPlanValue {
   readonly disposition: string;
   readonly reports: NodeExecutionReport[];
 }
+export interface InboxPlace {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+export interface InboxCounts {
+  readonly deliver: number;
+  readonly review: number;
+  readonly confirm: number;
+}
+export interface EventsRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+  after: number;
+  seenEventIds?: readonly string[];
+}
+export interface ExecutionEvent {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly actorId: string;
+  readonly type: string;
+  readonly nodeId: string;
+  readonly status: string;
+  readonly version: number;
+}
+export interface EventsValue {
+  readonly events: readonly ExecutionEvent[];
+}
 export interface ChannelInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
+  readonly places?: readonly InboxPlace[];
 }
 /** One confirmed, not-yet-started plan the member may explicitly start. */
 export interface StartablePlan {
@@ -296,6 +333,8 @@ export interface ExecutionServiceMethods {
     caller: ExecutionCaller,
     body: unknown,
   ): Promise<ExecutionChannelResult<ChannelStartableValue>>;
+  inboxCounts(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<InboxCounts>>;
+  events(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<EventsValue>>;
   submit(
     caller: ExecutionCaller,
     body: unknown,
@@ -310,17 +349,44 @@ export interface ExecutionServiceMethods {
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
   revision(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<RevisionValue>>;
+  draft(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<SavedDeliveryDraft>>;
   reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
 }
 export interface ExecutionRoutes {
   readonly 'start-plan': { readonly body: StartPlanRequest; readonly value: StartPlanValue };
   readonly inbox: { readonly body: InboxRequest; readonly value: ChannelInboxValue };
   readonly startable: { readonly body: StartableRequest; readonly value: ChannelStartableValue };
+  readonly 'inbox-counts': { readonly body: InboxRequest; readonly value: InboxCounts };
+  readonly events: { readonly body: EventsRequest; readonly value: EventsValue };
   readonly submit: { readonly body: SubmitRequest; readonly value: ExecutionCommandValue };
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
   readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
   readonly revision: { readonly body: RevisionRequest; readonly value: RevisionValue };
+  readonly draft: {
+    readonly body: RevisionRequest | DeliveryDraftWrite;
+    readonly value: SavedDeliveryDraft;
+  };
+}
+export interface SavedDeliveryDraft {
+  readonly version: number;
+  readonly text: string;
+  readonly links: readonly string[];
+  readonly files: readonly ArtifactFileRef[];
+}
+export interface DeliveryDraftWrite {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly text?: string;
+  readonly files?: readonly ArtifactFileRef[];
+  readonly links?: readonly string[];
 }
 export interface ExecutionArtifactWire {
   readonly id: string;
@@ -362,6 +428,7 @@ export interface ExecutionInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
+  readonly places?: readonly InboxPlace[];
 }
 export interface DeliveryDraft {
   readonly taskId: string;
@@ -385,6 +452,7 @@ export interface ReviewDraft {
   readonly artifactVersionId: string;
   readonly action: 'approve' | 'request-changes' | 'comment';
   readonly comment?: string;
+  readonly unresolvedCommentIds?: readonly string[];
 }
 /**
  * Wire value of the `startable` route. The Client-side `ExecutionApi` method
@@ -401,8 +469,9 @@ export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
-  // The Client-side `revision` method is added by A on #32 when the revision
-  // panel consumes it; this layer declares the route shape only.
+  // Client-side `startable` / `inboxCounts` / `events` / `revision` /
+  // delivery-draft methods are added by A on #32 when the panels consume
+  // them; this layer declares the route shapes only.
 }
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
@@ -413,6 +482,7 @@ export interface ExecutionWorkspaceProps {
 export interface InboxPanelProps {
   items: readonly InboxItem[];
   nodes: readonly ExecutionNodeWire[];
+  places?: readonly InboxPlace[];
   error?: string;
   pending?: boolean;
   reload(): void;

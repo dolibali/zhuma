@@ -164,6 +164,11 @@ test('a real connection and member cookie run start, report, and review', async 
     );
     assert.equal(started.status, 200, JSON.stringify(started));
     assert.equal(started.body.result.ok, true, JSON.stringify(started.body));
+    const counts = await exec('inbox-counts', {}, chen);
+    assert.equal(counts.body.result.ok, true, JSON.stringify(counts.body));
+    assert.equal(typeof counts.body.result.value.deliver, 'number');
+    assert.equal(counts.body.result.value.confirm, 0);
+    assert.equal(Object.hasOwn(counts.body.result.value, 'items'), false);
     const reported = await exec(
       'report',
       { taskId: applied.taskId, planId: applied.id, revision: applied.revision },

@@ -1,11 +1,12 @@
 import { createNodeHandoffs } from './applied-handoff.js';
-import { canonicalPayload, type CommandDecision } from './concurrency.js';
+import { canonicalPayload, type CommandDecision, type DomainEvent } from './concurrency.js';
 import {
   canSubmitNode,
   createArtifactVersion,
   deriveInbox,
   taskAccess,
   type ArtifactDraft,
+  type ArtifactFileRef,
   type ArtifactVersion,
   type InboxItem,
   type InboxNodeFact,
@@ -54,6 +55,20 @@ export interface ExecutionNodeRecord {
   readonly acceptedArtifactVersionId?: string;
   readonly comments: readonly CitedComment[];
   readonly receipts: readonly ExecutionReceipt[];
+  /**
+   * Facts for this node, in sequence order. They share this record so a command
+   * and its event are one write.
+   */
+  readonly events?: readonly DomainEvent<{ readonly status: string; readonly version: number }>[];
+  /** Human assignee's unsent delivery. Cleared when a submit is stored. */
+  readonly deliveryDraft?: {
+    readonly version: number;
+    readonly idempotencyKey: string;
+    readonly fingerprint: string;
+    readonly text: string;
+    readonly links: readonly string[];
+    readonly files: readonly ArtifactFileRef[];
+  };
 }
 
 /** Business idempotency. Node command receipts do not cover delivery text. */
