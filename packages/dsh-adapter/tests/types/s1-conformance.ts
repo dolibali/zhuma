@@ -22,6 +22,7 @@ import type {
   ExecutionNodeView,
   InboxRequest as ServiceInboxRequest,
   ReportRequest as ServiceReportRequest,
+  RevisionRequest as ServiceRevisionRequest,
   SettleRequest as ServiceSettleRequest,
   StartPlanRequest as ServiceStartPlanRequest,
   SubmitRequest as ServiceSubmitRequest,
@@ -48,6 +49,8 @@ import type {
   ProjectSpaceDirectory,
   ReportRequest,
   ReportValue,
+  RevisionRequest,
+  RevisionValue,
   SettleRequest,
   ReconcileValue,
   S1ExecutionOptions,
@@ -98,7 +101,7 @@ export type MessageExtendsError = Assert<
   Both<ExecutionMessageCode, ExecutionErrorCode & ExecutionMessageCode>
 >;
 type ServiceMethodName =
-  'startPlan' | 'inbox' | 'submit' | 'ballot' | 'settle' | 'report' | 'reconcile';
+  'startPlan' | 'inbox' | 'submit' | 'ballot' | 'settle' | 'report' | 'revision' | 'reconcile';
 export type ServiceMethodsPresent = Assert<
   ServiceMethodName extends keyof ExecutionService ? true : false
 >;
@@ -119,6 +122,9 @@ export type SettleMethodBoth = Assert<
 >;
 export type ReportMethodBoth = Assert<
   Both<ExecutionService['report'], ExecutionServiceMethods['report']>
+>;
+export type RevisionMethodBoth = Assert<
+  Both<ExecutionService['revision'], ExecutionServiceMethods['revision']>
 >;
 export type ReconcileMethodBoth = Assert<
   Both<ExecutionService['reconcile'], ExecutionServiceMethods['reconcile']>
@@ -145,6 +151,7 @@ export type SubmitRequestBoth = Assert<Both<ServiceSubmitRequest, SubmitRequest>
 export type BallotRequestBoth = Assert<Both<ServiceBallotRequest, BallotRequest>>;
 export type SettleRequestBoth = Assert<Both<ServiceSettleRequest, SettleRequest>>;
 export type ReportRequestBoth = Assert<Both<ServiceReportRequest, ReportRequest>>;
+export type RevisionRequestBoth = Assert<Both<ServiceRevisionRequest, RevisionRequest>>;
 
 type StartResult = ResultOf<ReturnType<ExecutionService['startPlan']>>;
 type InboxResult = ResultOf<ReturnType<ExecutionService['inbox']>>;
@@ -152,6 +159,7 @@ type SubmitResult = ResultOf<ReturnType<ExecutionService['submit']>>;
 type BallotResult = ResultOf<ReturnType<ExecutionService['ballot']>>;
 type SettleResult = ResultOf<ReturnType<ExecutionService['settle']>>;
 type ReportResult = ResultOf<ReturnType<ExecutionService['report']>>;
+type RevisionResult = ResultOf<ReturnType<ExecutionService['revision']>>;
 
 export type StartResultBoth = Assert<Both<StartResult, ExecutionChannelResult<StartPlanValue>>>;
 export type InboxResultBoth = Assert<Both<InboxResult, ExecutionChannelResult<ChannelInboxValue>>>;
@@ -165,6 +173,9 @@ export type SettleResultBoth = Assert<
   Both<SettleResult, ExecutionChannelResult<ExecutionCommandValue>>
 >;
 export type ReportResultBoth = Assert<Both<ReportResult, ExecutionChannelResult<ReportValue>>>;
+export type RevisionResultBoth = Assert<
+  Both<RevisionResult, ExecutionChannelResult<RevisionValue>>
+>;
 export type SubmitValueBoth = Assert<
   Both<OkValue<ReturnType<ExecutionService['submit']>>, ExecutionCommandValue>
 >;

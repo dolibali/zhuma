@@ -26,6 +26,7 @@ import {
   type ProjectSpaceDirectory,
   type ProjectSpaceLookup,
 } from './project-space.js';
+import { readRevisionView, type RevisionView } from './revision-view.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -81,6 +82,12 @@ const reportSchema = z.strictObject({
   planId: id,
   revision: z.number().int(),
 });
+const revisionSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+});
 const inboxSchema = z.strictObject({});
 
 export type StartPlanRequest = z.infer<typeof startSchema>;
@@ -89,6 +96,7 @@ export type SubmitRequest = z.infer<typeof submitSchema>;
 export type BallotRequest = z.infer<typeof ballotSchema>;
 export type SettleRequest = z.infer<typeof settleSchema>;
 export type ReportRequest = z.infer<typeof reportSchema>;
+export type RevisionRequest = z.infer<typeof revisionSchema>;
 
 export interface PlanReceipt {
   readonly idempotencyKey: string;
@@ -160,6 +168,7 @@ const MESSAGES = {
   'plan-incomplete': '计划还没有完整启动，暂时不能查看或写入。',
   unavailable: '执行记录暂时写不进去，请用同一个请求再试一次。',
   'not-found': '找不到这个节点。',
+  'not-returned': '这项工作还没有被退回。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',
   'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
@@ -503,6 +512,40 @@ export class ExecutionService {
         return { ok: true, value: { reports: [] } };
       }
       return { ok: true, value: { reports: reports.map(toNodeExecutionReport) } };
+    });
+  }
+
+  /** Return notes and the two newest relevant versions. Does not write. */
+  revision(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ view: RevisionView }>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(revisionSchema, body);
+      if (!parsed.ok) return parsed;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
+      const current = this.storage.readNode(nodeRecordKey(parsed.value));
+      if (!current || !intactNode(current)) return fail('not-found');
+      const membership = planMembership(
+        this.workbench.readWorkbench(),
+        current.taskId,
+        actor.value.actorId,
+      );
+      if (membership === 'missing') return fail('not-found');
+      if (membership === 'not-participant') return fail('not-participant');
+      if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
+      const reviewerNames: Record<string, string> = {};
+      for (const participant of this.workbench.readWorkbench().participants) {
+        const name = participant.name.trim();
+        if (name !== '') reviewerNames[participant.id] = name;
+      }
+      const read = readRevisionView(current, actor.value.actorId, reviewerNames);
+      if (!read.ok) return fail(read.code);
+      return { ok: true, value: { view: read.view } };
     });
   }
 

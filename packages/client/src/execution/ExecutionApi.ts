@@ -85,10 +85,38 @@ export interface ReviewDraft {
   readonly comment?: string;
 }
 
+export interface RevisionContentWire {
+  readonly id: string;
+  readonly version: number;
+  readonly text?: string;
+  readonly links: readonly string[];
+  readonly files: readonly {
+    readonly id: string;
+    readonly mediaType: string;
+    readonly byteSize: number;
+  }[];
+}
+
+export interface RevisionViewWire {
+  readonly reviewed?: RevisionContentWire;
+  readonly previous?: RevisionContentWire;
+  readonly notes: readonly {
+    readonly id: string;
+    readonly reviewerName: string;
+    readonly body: string;
+    readonly artifactVersionId: string;
+    readonly citedCommentIds: readonly string[];
+  }[];
+}
+
 export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  revision(
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+    signal?: AbortSignal,
+  ): Promise<RevisionViewWire>;
 }
 
 const ACTOR_FIELD_DEPTH_LIMIT = 32;
@@ -228,6 +256,61 @@ function readInbox(value: unknown): ExecutionInboxValue {
   };
 }
 
+type RevisionNoteWire = RevisionViewWire['notes'][number];
+
+function readRevisionContent(value: unknown): RevisionContentWire {
+  if (value === null || typeof value !== 'object') invalid('返回的产物不正确。');
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.links) || !Array.isArray(record.files)) invalid('返回的产物不正确。');
+  return {
+    id: text(record.id, '产物'),
+    version:
+      typeof record.version === 'number' ? record.version : invalid('返回的产物版本不正确。'),
+    ...(typeof record.text === 'string' ? { text: record.text } : {}),
+    links: record.links.map((item) => text(item, '链接')),
+    files: record.files.map((item) => {
+      if (item === null || typeof item !== 'object') invalid('返回的文件不正确。');
+      const file = item as Record<string, unknown>;
+      if (typeof file.byteSize !== 'number') invalid('返回的文件大小不正确。');
+      return {
+        id: text(file.id, '文件'),
+        mediaType: text(file.mediaType, '文件类型'),
+        byteSize: file.byteSize,
+      };
+    }),
+  };
+}
+
+function readRevisionNote(value: unknown): RevisionNoteWire {
+  if (value === null || typeof value !== 'object') invalid('返回的退回意见不正确。');
+  const record = value as Record<string, unknown>;
+  if (typeof record.body !== 'string' || !Array.isArray(record.citedCommentIds)) {
+    invalid('返回的退回意见不正确。');
+  }
+  return {
+    id: text(record.id, '退回意见'),
+    reviewerName: text(record.reviewerName, '评审人'),
+    body: record.body,
+    artifactVersionId: text(record.artifactVersionId, '产物版本'),
+    citedCommentIds: record.citedCommentIds.map((item) => text(item, '评论')),
+  };
+}
+
+export function readRevisionView(value: unknown): RevisionViewWire {
+  if (value === null || typeof value !== 'object' || !('view' in value)) {
+    invalid('返回的退回意见不正确。');
+  }
+  const view = (value as { view: unknown }).view;
+  if (view === null || typeof view !== 'object') invalid('返回的退回意见不正确。');
+  const record = view as Record<string, unknown>;
+  if (!Array.isArray(record.notes)) invalid('返回的退回意见不正确。');
+  return {
+    ...(record.reviewed === undefined ? {} : { reviewed: readRevisionContent(record.reviewed) }),
+    ...(record.previous === undefined ? {} : { previous: readRevisionContent(record.previous) }),
+    notes: record.notes.map(readRevisionNote),
+  };
+}
+
 function readCommand(value: unknown): ExecutionNodeWire {
   if (value === null || typeof value !== 'object' || !('node' in value))
     invalid('返回的节点不正确。');
@@ -258,6 +341,15 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
         ...(draft.text === undefined ? {} : { text: draft.text }),
       };
       return readCommand(await call('submit', payload, signal));
+    },
+    async revision(query, signal) {
+      const payload = {
+        taskId: query.taskId,
+        planId: query.planId,
+        revision: query.revision,
+        nodeId: query.nodeId,
+      };
+      return readRevisionView(await call('revision', payload, signal));
     },
     async ballot(draft, signal) {
       const payload = {
