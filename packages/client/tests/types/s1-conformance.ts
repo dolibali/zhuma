@@ -64,11 +64,9 @@ export function mountS1(
 ): Promise<ExecutionWorkspaceProps> {
   startup.configureDeploymentMode(ctx, mode);
   return startup.applyIdentity(ctx, imported).then(async () => {
-    const resolver = startup.memberResolver(ctx);
     await startup.applyWorkbench(ctx);
-    const executionOptions = { memberResolver: resolver, readWorkbench, projectSpaces };
+    const executionOptions = { readWorkbench, projectSpaces };
     await startup.applyExecution(ctx, executionOptions);
-    await applyExecution(ctx, executionOptions);
     const props: ExecutionWorkspaceProps = { api: createExecutionApi(rpc) };
     startup.mount(props);
     return props;

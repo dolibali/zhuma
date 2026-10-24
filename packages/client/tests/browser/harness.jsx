@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { StrictMode, useState } from 'react';
 import { SelectProbe } from './select-probe.jsx';
 import { ExecutionProbe } from './execution-probe.jsx';
+import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
 import { MemberLoginProbe } from './member-login-probe.jsx';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
@@ -57,7 +58,9 @@ function MountProbe() {
     </>
   );
 }
-const content = new URL(location.href).searchParams.has('execution-client') ? (
+const content = new URL(location.href).searchParams.has('member-execution') ? (
+  <MemberExecutionPage />
+) : new URL(location.href).searchParams.has('execution-client') ? (
   <ExecutionProbe />
 ) : new URL(location.href).searchParams.has('member-login') ? (
   <MemberLoginProbe />

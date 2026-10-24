@@ -83,7 +83,23 @@ async function boot(options) {
   hostPlugin = await import(
     options.modulePath ? pathToFileURL(options.modulePath).href : '../../dist/host-plugin.js'
   );
-  host = ctx.plugin(hostPlugin, options.config);
+  const composition =
+    options.syntheticProjectSpaces === undefined
+      ? hostPlugin
+      : hostPlugin.createWorkbenchHost({
+          // Private test-only records. Production must inject B's trusted provider.
+          projectSpaces: {
+            async spaceForProject(projectId) {
+              const record = options.syntheticProjectSpaces.find(
+                (entry) => entry.projectId === projectId,
+              );
+              return record
+                ? { ok: true, spaceId: record.spaceId }
+                : { ok: false, reason: 'unknown' };
+            },
+          },
+        });
+  host = ctx.plugin(composition, options.config);
   forks.push(host);
   await host;
   notify('ready');

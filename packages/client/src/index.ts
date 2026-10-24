@@ -20,6 +20,8 @@ export {
 } from './execution/ExecutionApi.js';
 export { StartPlanPanel, type ExecutionPlan } from './execution/StartPlanPanel.js';
 export { DeliveryPanel } from './execution/DeliveryPanel.js';
+export { createExecutionHttpApi } from './execution/http.js';
+export { MemberExecutionPage } from './execution/MemberExecutionPage.js';
 export { ExecutionWorkspace } from './execution/ExecutionWorkspace.js';
 export { InboxPanel } from './execution/InboxPanel.js';
 export { ReviewWorkspace } from './execution/ReviewWorkspace.js';

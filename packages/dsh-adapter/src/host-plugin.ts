@@ -5,6 +5,8 @@ import { applyIdentity, identityInject, type IdentityImport } from './identity-s
 import { configureDeploymentMode } from './member-session.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
+import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
+import type { ProjectSpaceDirectory } from './project-space.js';
 
 export const Config = z.strictObject({
   deploymentMode: z.enum(['legacy-single-user', 'multi-member']),
@@ -52,13 +54,37 @@ export const identityPlugin = {
   },
 };
 
-/** Official Host composition. A mode is never inferred from identity's presence. */
+export const executionPlugin = { inject: [...executionInject], apply: applyExecution };
+
+export interface WorkbenchHostDependencies {
+  /** A trusted Host provider, never JSON configuration or client-supplied mappings. */
+  readonly projectSpaces?: ProjectSpaceDirectory;
+}
+
+/** The formal directory producer can use this exact composition without reopening domains. */
+export function createWorkbenchHost(dependencies: WorkbenchHostDependencies = {}) {
+  return {
+    Config,
+    inject,
+    apply: (ctx: Context, rawConfig: unknown) => mountHost(ctx, rawConfig, dependencies),
+  };
+}
+
+/** Official Host entry. Missing directory facts remain missing; no project-id fallback. */
 export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
+  await mountHost(ctx, rawConfig, {});
+}
+
+async function mountHost(
+  ctx: Context,
+  rawConfig: unknown,
+  dependencies: WorkbenchHostDependencies,
+): Promise<void> {
   const config = Config.parse(rawConfig);
   configureDeploymentMode(ctx, config.deploymentMode);
   // Registers fail-closed streaming gates before the first asynchronous domain open.
-  // The returned snapshot closure stays Host-internal for the later S1b consumer.
-  await openWorkbench(ctx, config);
+  // The same clone-producing closure is shared with execution; no second workbench domain.
+  const workbench = await openWorkbench(ctx, config);
   if (config.deploymentMode === 'multi-member' || config.identityBootstrapKey !== undefined) {
     try {
       await ctx.plugin(identityPlugin, config.identityBootstrapKey);
@@ -68,5 +94,15 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         'Zhuma identity is unavailable; the configured owner-route policy remains in force.',
       );
     }
+  }
+  if (config.deploymentMode === 'multi-member') {
+    // Even if identity failed, mount the member-gated routes. They reject absent
+    // identity or directory facts; they never fall back to the owner principal.
+    await ctx.plugin(executionPlugin, {
+      readWorkbench: workbench.readWorkbench,
+      ...(dependencies.projectSpaces === undefined
+        ? {}
+        : { projectSpaces: dependencies.projectSpaces }),
+    });
   }
 }

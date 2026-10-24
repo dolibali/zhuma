@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { hashPassword } from '../dist/identity-session.js';
 import { LEGACY_OWNER_ROUTES } from '../dist/member-session.js';
 import { previewResourcePackage, parseWorkflowTemplate } from '@zhuma/agent-core';
+import { fixture as workbenchFixture } from '../../../tests/fixtures/workbench.mjs';
 import { packageFixture, importCommand } from '../../../tests/fixtures/asset-package.mjs';
 
 const children = new Set();
@@ -32,7 +33,11 @@ const imported = {
   ],
 };
 
-async function start(directory, config, { deferIdentity = false, skipRemoteAccess = false } = {}) {
+async function start(
+  directory,
+  config,
+  { deferIdentity = false, skipRemoteAccess = false, syntheticProjectSpaces } = {},
+) {
   const child = fork(
     fileURLToPath(new URL('./fixtures/s1a-host-process.mjs', import.meta.url)),
     [],
@@ -100,6 +105,7 @@ async function start(directory, config, { deferIdentity = false, skipRemoteAcces
       identityImport,
       deferIdentity,
       skipRemoteAccess,
+      ...(syntheticProjectSpaces === undefined ? {} : { syntheticProjectSpaces }),
       ...(process.env.S1A_HOST_MODULE ? { modulePath: resolve(process.env.S1A_HOST_MODULE) } : {}),
     },
   });
@@ -564,6 +570,135 @@ test(
         passed: true,
         pendingAndRevokedFailClosed: true,
         reprovideRecoversPersistedSession: true,
+      });
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'S1b actual Host: single workbench open, member-gated execution and explicit Host directory injection',
+  { timeout: 45000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-s1b-composition-'));
+    let host;
+    try {
+      // Seed legitimate persisted task definitions through the legacy owner entry,
+      // then restart in member mode. This is test data, not a formal provider.
+      host = await start(directory, { deploymentMode: 'legacy-single-user' });
+      await host.wait('ready');
+      const { state, task, node } = workbenchFixture();
+      const member = { ...state.participants[0], id: 'member-a' };
+      const ready = {
+        ...task,
+        participantIds: [member.id],
+        ownerId: member.id,
+        status: 'ready',
+        workflows: [
+          {
+            ...task.workflows[0],
+            nodes: [
+              {
+                ...node,
+                assigneeId: member.id,
+                skillIds: [],
+                reviewerIds: [],
+                reviewRequired: false,
+              },
+            ],
+          },
+        ],
+      };
+      let revision = 0;
+      for (const command of [
+        { type: 'save-project', project: state.projects[0] },
+        { type: 'save-participant', participant: member },
+        { type: 'save-task', task: ready },
+      ]) {
+        const response = await post(
+          host,
+          '/api/zhuma/command',
+          envelope('command', { requestId: randomUUID(), expectedRevision: revision, command }),
+        );
+        assert.equal(response.status, 200);
+        const saved = (await response.json()).result;
+        assert.equal(saved.ok, true);
+        revision = saved.value.revision;
+      }
+      const snapshot = await (
+        await post(host, '/api/zhuma/snapshot', envelope('snapshot', {}))
+      ).json();
+      const plan = snapshot.result.value.state.appliedPlans.at(-1);
+      const startPlan = {
+        taskId: plan.taskId,
+        planId: plan.id,
+        revision: plan.revision,
+        idempotencyKey: 'formal-host-start',
+      };
+      await host.close();
+      host = null;
+      host = await start(directory, { deploymentMode: 'multi-member', identityImport: imported });
+      await host.wait('ready');
+      const exec = (target, endpoint, payload, cookie) =>
+        post(
+          target,
+          `/api/zhuma-exec/${endpoint}`,
+          {
+            type: 'client-request',
+            rpcId: randomUUID(),
+            method: `zhuma-exec/${endpoint}`,
+            payload,
+          },
+          cookie,
+        );
+      assert.equal((await exec(host, 'inbox', {}, host.cookie)).status, 401);
+      let memberCookie = `${host.cookie}; ${await login(host)}`;
+      const denied = await (await exec(host, 'start-plan', startPlan, memberCookie)).json();
+      assert.equal(denied.result.ok, false);
+      assert.equal(denied.result.error.code, 'not-found');
+      const counts = await host.act('inspect');
+      for (const name of ['zhuma_workbench', 'zhuma_asset_packages', 'zhuma_execution'])
+        assert.equal(counts.opened.filter((entry) => entry === name).length, 1);
+      await host.close();
+      host = null;
+      host = await start(
+        directory,
+        { deploymentMode: 'multi-member', identityImport: imported },
+        { syntheticProjectSpaces: [{ projectId: 'project', spaceId: 'personal-a' }] },
+      );
+      await host.wait('ready');
+      memberCookie = `${host.cookie}; ${await login(host)}`;
+      const started = await (await exec(host, 'start-plan', startPlan, memberCookie)).json();
+      assert.equal(started.result.ok, true);
+      const inbox = await (await exec(host, 'inbox', {}, memberCookie)).json();
+      assert.equal(inbox.result.ok, true);
+      assert.equal(inbox.result.value.items.length, 1);
+      const current = inbox.result.value.nodes[0];
+      const submitted = await (
+        await exec(
+          host,
+          'submit',
+          {
+            ...startPlan,
+            nodeId: current.nodeId,
+            expectedVersion: current.version,
+            idempotencyKey: 'formal-host-delivery',
+            text: 'Contract-only text delivery',
+          },
+          memberCookie,
+        )
+      ).json();
+      assert.equal(submitted.result.ok, true);
+      assert.equal(submitted.result.value.node.status, 'completed');
+      proof.cases.push({
+        name: 'member-execution-composition',
+        passed: true,
+        singleWorkbenchDomain: true,
+        ownerNeverMember: true,
+        absentDirectoryClosed: true,
+        syntheticDirectoryInjectionConsumed: true,
       });
     } finally {
       if (host) await host.close();

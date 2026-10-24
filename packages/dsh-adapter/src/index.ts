@@ -124,3 +124,5 @@ export {
   inject as executionInject,
   type ExecutionPluginConfig,
 } from './execution-plugin.js';
+
+export { createWorkbenchHost, type WorkbenchHostDependencies } from './host-plugin.js';
