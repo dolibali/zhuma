@@ -558,6 +558,29 @@ test('a draft link over the per-item or total limit is refused before any write'
   assert.deepEqual(kept.value.links, ['https://example.test/short']);
 });
 
+test('a saved draft keeps file metadata pending instead of uploaded', async () => {
+  const host = await opened();
+  const saved = await host.service.draft(
+    session('chen'),
+    locate(host.applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-file-pending',
+      files: [
+        draftFile({
+          id: 'notes',
+          mediaType: 'text/plain',
+          checksum: 'abc',
+          accessPolicyId: 'policy',
+        }),
+      ],
+    }),
+  );
+  assert.equal(saved.ok, true, saved.ok ? '' : saved.error.code);
+  assert.equal(saved.value.files[0].uploadComplete, false);
+  assert.equal(saved.value.files[0].id, 'notes');
+  assert.equal(host.store.node('design').deliveryDraft.files[0].uploadComplete, false);
+});
+
 function draftFile(fields) {
   return {
     id: fields.id,
