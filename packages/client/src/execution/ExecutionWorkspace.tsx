@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { WorkbenchError, type InboxItem } from '@zhuma/agent-core';
 import type { ExecutionApi, ExecutionNodeWire, RevisionViewWire } from './ExecutionApi.js';
 import { DeliveryPanel } from './DeliveryPanel.js';
@@ -20,6 +20,8 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(true);
   const [selected, setSelected] = useState<InboxItem | undefined>();
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const [revision, setRevision] = useState<RevisionViewWire | undefined>();
   const [revisionError, setRevisionError] = useState('');
   const [revisionPending, setRevisionPending] = useState(false);
@@ -104,6 +106,8 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
         item.nodeId === next.nodeId && item.taskId === next.taskId ? next : item,
       ),
     );
+    const current = selectedRef.current;
+    if (!current || current.nodeId !== next.nodeId || current.taskId !== next.taskId) return;
     setSelected(undefined);
     void reload();
   }
@@ -127,7 +131,12 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
         />
       )}
       {selected && node && panels.includes('review') && (
-        <ReviewWorkspace api={api} node={node} onSubmitted={submitted} />
+        <ReviewWorkspace
+          key={`${node.taskId}:${node.planId}:${node.revision}:${node.nodeId}:${node.currentRoundId ?? ''}`}
+          api={api}
+          node={node}
+          onSubmitted={submitted}
+        />
       )}
       {selected && node && panels.includes('delivery') && (
         <DeliveryPanel
