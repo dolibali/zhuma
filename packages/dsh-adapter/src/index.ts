@@ -117,10 +117,12 @@ export {
   type PlanReceipt,
 } from './execution-service.js';
 export {
+  applySpaceDirectory,
+  openSpaceDirectory,
   SPACE_DIRECTORY_MEMBERSHIP_LIMIT,
   SPACE_DIRECTORY_SPACE_LIMIT,
-  openSpaceDirectory,
   spaceDirectoryDomainSpec,
+  spaceDirectoryFor,
   type AuthorizedSpace,
   type OpenedSpaceDirectoryHandle,
   type SpaceDirectory,
