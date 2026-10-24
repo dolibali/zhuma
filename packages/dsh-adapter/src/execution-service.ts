@@ -145,6 +145,7 @@ const MESSAGES = {
   'not-assigned-reviewer': '你不是这一轮的评审人。',
   'actor-mismatch': '不能代替其他评审人投票。',
   'upload-incomplete': '文件还没有上传完成，不能提交。',
+  'files-not-accepted': '文件还不能随这次提交完成。请只提交文字或链接。',
   'empty-delivery': '请填写交付说明，或附上已上传完成的文件。',
   conflict: '内容已变化，请刷新后再试。',
   'idempotency-mismatch': '这个请求标识已经用于另一项操作。',
@@ -360,13 +361,24 @@ export class ExecutionService {
   submit(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
       this.command(caller, body, submitSchema, (actorId, request, record) => {
+        if ((request.files ?? []).length > 0) {
+          return {
+            result: {
+              ok: false as const,
+              disposition: 'rejected' as const,
+              code: 'files-not-accepted',
+              record,
+            },
+            settle: false,
+          };
+        }
         const result = submitDelivery({
           record,
           actorId,
           idempotencyKey: request.idempotencyKey,
           expectedVersion: request.expectedVersion,
           draft: {
-            files: request.files ?? [],
+            files: [],
             links: request.links ?? [],
             ...(request.text === undefined ? {} : { text: request.text }),
           },
