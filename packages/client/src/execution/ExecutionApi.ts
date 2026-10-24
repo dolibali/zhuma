@@ -52,7 +52,31 @@ export interface ExecutionNodeWire {
   readonly reviewOutcome?: string;
   readonly blockReason?: string;
   readonly acceptedArtifactVersionId?: string;
+  readonly inputs?: readonly UpstreamInputWire[];
 }
+
+export type UpstreamInputWire =
+  | {
+      readonly access: 'visible';
+      readonly blocking: boolean;
+      readonly sourceNodeId: string;
+      readonly sourceGoal?: string;
+      readonly version: number;
+      readonly name: string;
+    }
+  | {
+      readonly access: 'pending';
+      readonly pending: 'none' | 'replaced';
+      readonly blocking: boolean;
+      readonly sourceNodeId: string;
+      readonly message: string;
+    }
+  | {
+      readonly access: 'hidden';
+      readonly blocking: boolean;
+      readonly count: number;
+      readonly message: string;
+    };
 
 export interface ExecutionInboxValue {
   readonly actorId: string;
@@ -85,10 +109,62 @@ export interface ReviewDraft {
   readonly comment?: string;
 }
 
+export interface SavedDeliveryDraft {
+  readonly version: number;
+  readonly text: string;
+  readonly links: readonly string[];
+  readonly files: readonly ArtifactFileRef[];
+}
+
+export interface DeliveryDraftWrite {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly text?: string;
+  readonly files?: readonly ArtifactFileRef[];
+  readonly links?: readonly string[];
+}
+
 export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  revision(
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+    signal?: AbortSignal,
+  ): Promise<RevisionViewWire>;
+  readDeliveryDraft(
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+    signal?: AbortSignal,
+  ): Promise<SavedDeliveryDraft>;
+  saveDeliveryDraft(draft: DeliveryDraftWrite, signal?: AbortSignal): Promise<SavedDeliveryDraft>;
+}
+
+export interface RevisionContentWire {
+  readonly id: string;
+  readonly version: number;
+  readonly text?: string;
+  readonly links: readonly string[];
+  readonly files: readonly {
+    readonly id: string;
+    readonly mediaType: string;
+    readonly byteSize: number;
+  }[];
+}
+
+export interface RevisionViewWire {
+  readonly reviewed?: RevisionContentWire;
+  readonly previous?: RevisionContentWire;
+  readonly notes: readonly {
+    readonly id: string;
+    readonly reviewerName: string;
+    readonly body: string;
+    readonly artifactVersionId: string;
+    readonly citedCommentIds: readonly string[];
+  }[];
 }
 
 const ACTOR_FIELD_DEPTH_LIMIT = 32;
@@ -197,6 +273,63 @@ export function readExecutionNode(value: unknown): ExecutionNodeWire {
     ...(typeof record.acceptedArtifactVersionId === 'string'
       ? { acceptedArtifactVersionId: record.acceptedArtifactVersionId }
       : {}),
+    ...(Array.isArray(record.inputs) ? { inputs: record.inputs.map(readUpstreamInput) } : {}),
+  };
+}
+
+function pendingUpstreamMessage(kind: 'none' | 'replaced', sourceNodeId: string): string {
+  return kind === 'none'
+    ? `上游节点 ${sourceNodeId} 尚无已接受版本。`
+    : `上游节点 ${sourceNodeId} 已有新的已接受版本，当前引用的版本已被取代。`;
+}
+
+function hiddenUpstreamMessage(count: number): string {
+  return `有 ${count} 个上游来源你没有权限查看。`;
+}
+
+function readUpstreamInput(value: unknown): UpstreamInputWire {
+  if (value === null || typeof value !== 'object') invalid('返回的上游产物不正确。');
+  const record = value as Record<string, unknown>;
+  const blocking = record.blocking === true;
+  if (record.access === 'hidden') {
+    if (
+      typeof record.count !== 'number' ||
+      !Number.isSafeInteger(record.count) ||
+      record.count < 1
+    ) {
+      invalid('返回的上游产物不正确。');
+    }
+    return {
+      access: 'hidden',
+      blocking,
+      count: record.count,
+      message: hiddenUpstreamMessage(record.count),
+    };
+  }
+  const sourceNodeId = text(record.sourceNodeId, '来源节点');
+  if (record.access === 'pending') {
+    if (record.pending !== 'none' && record.pending !== 'replaced') {
+      invalid('返回的上游产物不正确。');
+    }
+    return {
+      access: 'pending',
+      pending: record.pending,
+      blocking,
+      sourceNodeId,
+      message: pendingUpstreamMessage(record.pending, sourceNodeId),
+    };
+  }
+  if (record.access !== 'visible' || typeof record.version !== 'number') {
+    invalid('返回的上游产物不正确。');
+  }
+  const sourceGoal = typeof record.sourceGoal === 'string' ? record.sourceGoal.trim() : '';
+  return {
+    access: 'visible',
+    blocking,
+    sourceNodeId,
+    ...(sourceGoal === '' ? {} : { sourceGoal }),
+    version: record.version,
+    name: text(record.name, '产物'),
   };
 }
 
@@ -225,6 +358,98 @@ function readInbox(value: unknown): ExecutionInboxValue {
     actorId: text(record.actorId, '待办'),
     items: record.items.map(readItem),
     nodes: record.nodes.map(readExecutionNode),
+  };
+}
+
+type RevisionNoteWire = RevisionViewWire['notes'][number];
+
+function readRevisionContent(value: unknown): RevisionContentWire {
+  if (value === null || typeof value !== 'object') invalid('返回的产物不正确。');
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.links) || !Array.isArray(record.files)) invalid('返回的产物不正确。');
+  return {
+    id: text(record.id, '产物'),
+    version:
+      typeof record.version === 'number' ? record.version : invalid('返回的产物版本不正确。'),
+    ...(typeof record.text === 'string' ? { text: record.text } : {}),
+    links: record.links.map((item) => text(item, '链接')),
+    files: record.files.map((item) => {
+      if (item === null || typeof item !== 'object') invalid('返回的文件不正确。');
+      const file = item as Record<string, unknown>;
+      if (typeof file.byteSize !== 'number') invalid('返回的文件大小不正确。');
+      return {
+        id: text(file.id, '文件'),
+        mediaType: text(file.mediaType, '文件类型'),
+        byteSize: file.byteSize,
+      };
+    }),
+  };
+}
+
+function readRevisionNote(value: unknown): RevisionNoteWire {
+  if (value === null || typeof value !== 'object') invalid('返回的退回意见不正确。');
+  const record = value as Record<string, unknown>;
+  if (typeof record.body !== 'string' || !Array.isArray(record.citedCommentIds)) {
+    invalid('返回的退回意见不正确。');
+  }
+  return {
+    id: text(record.id, '退回意见'),
+    reviewerName: text(record.reviewerName, '评审人'),
+    body: record.body,
+    artifactVersionId: text(record.artifactVersionId, '产物版本'),
+    citedCommentIds: record.citedCommentIds.map((item) => text(item, '评论')),
+  };
+}
+
+export function readRevisionView(value: unknown): RevisionViewWire {
+  if (value === null || typeof value !== 'object' || !('view' in value)) {
+    invalid('返回的退回意见不正确。');
+  }
+  const view = (value as { view: unknown }).view;
+  if (view === null || typeof view !== 'object') invalid('返回的退回意见不正确。');
+  const record = view as Record<string, unknown>;
+  if (!Array.isArray(record.notes)) invalid('返回的退回意见不正确。');
+  return {
+    ...(record.reviewed === undefined ? {} : { reviewed: readRevisionContent(record.reviewed) }),
+    ...(record.previous === undefined ? {} : { previous: readRevisionContent(record.previous) }),
+    notes: record.notes.map(readRevisionNote),
+  };
+}
+
+export function readSavedDeliveryDraft(value: unknown): SavedDeliveryDraft {
+  if (value === null || typeof value !== 'object') invalid('返回的交付草稿不正确。');
+  const record = value as Record<string, unknown>;
+  if (typeof record.version !== 'number' || !Number.isSafeInteger(record.version)) {
+    invalid('返回的交付草稿不正确。');
+  }
+  if (
+    typeof record.text !== 'string' ||
+    !Array.isArray(record.links) ||
+    !Array.isArray(record.files)
+  ) {
+    invalid('返回的交付草稿不正确。');
+  }
+  return {
+    version: record.version,
+    text: record.text,
+    links: record.links.map((item) => text(item, '链接')),
+    files: record.files.map(readDraftFile),
+  };
+}
+
+function readDraftFile(value: unknown): ArtifactFileRef {
+  if (value === null || typeof value !== 'object') invalid('返回的文件信息不正确。');
+  const file = value as Record<string, unknown>;
+  if (typeof file.byteSize !== 'number' || typeof file.uploadComplete !== 'boolean') {
+    invalid('返回的文件信息不正确。');
+  }
+  return {
+    id: text(file.id, '文件'),
+    mediaType: text(file.mediaType, '媒体类型'),
+    byteSize: file.byteSize,
+    checksum: text(file.checksum, '校验'),
+    accessPolicyId: text(file.accessPolicyId, '访问策略'),
+    uploadComplete: file.uploadComplete,
   };
 }
 
@@ -258,6 +483,48 @@ export function createExecutionApi(rpc: ClientConnectionRpc): ExecutionApi {
         ...(draft.text === undefined ? {} : { text: draft.text }),
       };
       return readCommand(await call('submit', payload, signal));
+    },
+    async revision(query, signal) {
+      const payload = {
+        taskId: query.taskId,
+        planId: query.planId,
+        revision: query.revision,
+        nodeId: query.nodeId,
+      };
+      return readRevisionView(await call('revision', payload, signal));
+    },
+    async readDeliveryDraft(query, signal) {
+      return readSavedDeliveryDraft(
+        await call(
+          'draft',
+          {
+            taskId: query.taskId,
+            planId: query.planId,
+            revision: query.revision,
+            nodeId: query.nodeId,
+          },
+          signal,
+        ),
+      );
+    },
+    async saveDeliveryDraft(draft, signal) {
+      return readSavedDeliveryDraft(
+        await call(
+          'draft',
+          {
+            taskId: draft.taskId,
+            planId: draft.planId,
+            revision: draft.revision,
+            nodeId: draft.nodeId,
+            expectedVersion: draft.expectedVersion,
+            idempotencyKey: draft.idempotencyKey,
+            files: [...(draft.files ?? [])],
+            links: [...(draft.links ?? [])],
+            ...(draft.text === undefined ? {} : { text: draft.text }),
+          },
+          signal,
+        ),
+      );
     },
     async ballot(draft, signal) {
       const payload = {
