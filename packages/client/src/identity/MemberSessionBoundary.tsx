@@ -15,7 +15,11 @@ import { createMemberSessionController, type MemberSessionState } from './sessio
 export interface MemberSessionBoundaryProps {
   readonly api: IdentityApi;
   /** Consumers must abort their own requests on unmount and report member 401 responses. */
-  readonly children: (session: MemberSession, onUnauthenticated: () => void) => ReactNode;
+  readonly children: (
+    session: MemberSession,
+    onUnauthenticated: () => void,
+    isCurrent: () => boolean,
+  ) => ReactNode;
 }
 
 function LoginForm({
@@ -210,7 +214,14 @@ export function MemberSessionBoundary({ api, children }: MemberSessionBoundaryPr
       }}
     >
       {state.status === 'authenticated'
-        ? children(state.session, () => controller.invalidate(state.epoch))
+        ? children(
+            state.session,
+            () => controller.invalidate(state.epoch),
+            () => {
+              const current = controller.getSnapshot();
+              return current.status === 'authenticated' && current.epoch === state.epoch;
+            },
+          )
         : null}
     </MemberSessionView>
   );

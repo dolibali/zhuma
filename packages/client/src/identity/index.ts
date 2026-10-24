@@ -9,7 +9,11 @@ export {
 } from './api.js';
 export { createMemberSessionController, type MemberSessionState } from './session.js';
 export { createMemberSpaceController, type MemberSpaceState } from './spaces.js';
-export { MemberSpaceBoundary, type MemberSpaceBoundaryProps } from './MemberSpaceBoundary.js';
+export {
+  MemberSpaceBoundary,
+  type MemberSpaceBoundaryProps,
+  type MemberSpaceLifetime,
+} from './MemberSpaceBoundary.js';
 export {
   MemberSessionBoundary,
   MemberSessionView,

@@ -5,6 +5,8 @@ import { createExecutionApi, ExecutionError, type ExecutionApi } from './Executi
 export interface MemberExecutionScope {
   readonly spaceId: string;
   onUnavailable(): void;
+  /** Optional view-generation fence. It grants no server permissions. */
+  isCurrent?(): boolean;
 }
 
 /** Same-origin member Fetch routes preserve HTTP failures that SDK RPC flattens. */
@@ -17,6 +19,10 @@ export function createExecutionHttpApi(
   if (scope && !expectedActorId)
     throw new ExecutionError('validation', '成员空间必须绑定当前账号。');
   const identity = createIdentityApi(fetcher);
+  function requireCurrent(signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (scope?.isCurrent?.() === false) throw new DOMException('Space view changed', 'AbortError');
+  }
   type Inspection = {
     promise: Promise<MemberSession>;
     abort: AbortController;
@@ -68,6 +74,8 @@ export function createExecutionHttpApi(
       if (!session.spaces.some(({ id }) => id === scope.spaceId))
         throw new ExecutionError('space-unavailable', '此空间已不可访问，请重新选择。');
     } catch (error) {
+      if (scope?.isCurrent?.() === false)
+        throw new DOMException('Space view changed', 'AbortError');
       if (callerSignal?.aborted) throw callerSignal.reason;
       if (error instanceof ExecutionError) throw error;
       if (
@@ -83,9 +91,9 @@ export function createExecutionHttpApi(
       const signal = callerSignal
         ? AbortSignal.any([callerSignal, AbortSignal.timeout(10_000)])
         : AbortSignal.timeout(10_000);
-      signal.throwIfAborted();
+      requireCurrent(signal);
       if (scope) await verifySpace(signal, callerSignal);
-      signal.throwIfAborted();
+      requireCurrent(signal);
       const rpcId = crypto.randomUUID();
       const response = await fetcher(`${channel}/${endpoint}`, {
         method: 'POST',
@@ -96,7 +104,7 @@ export function createExecutionHttpApi(
         body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload }),
         signal,
       });
-      signal.throwIfAborted();
+      requireCurrent(signal);
       if (!response.ok) {
         const code =
           response.status === 401
@@ -113,7 +121,7 @@ export function createExecutionHttpApi(
         throw new ExecutionError(code, message, { status: response.status });
       }
       const envelope: unknown = await response.json();
-      signal.throwIfAborted();
+      requireCurrent(signal);
       if (
         !envelope ||
         typeof envelope !== 'object' ||
@@ -164,6 +172,8 @@ export function createExecutionHttpApi(
     try {
       return await request;
     } catch (error) {
+      if (scope?.isCurrent?.() === false)
+        throw new DOMException('Space view changed', 'AbortError');
       if (!signal?.aborted && error instanceof ExecutionError && error.code === 'unauthenticated')
         onUnauthenticated();
       else if (

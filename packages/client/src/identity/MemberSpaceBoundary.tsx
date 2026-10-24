@@ -14,17 +14,28 @@ import { UnsavedChangesBoundary } from '../workbench/UnsavedChanges.js';
 import type { IdentityApi, MemberSession, MemberSpace } from './api.js';
 import { createMemberSpaceController } from './spaces.js';
 
+export interface MemberSpaceLifetime {
+  /** UI generation only, never an authorization fact. */
+  isCurrent(): boolean;
+  onUnauthenticated(): void;
+}
 export interface MemberSpaceBoundaryProps {
   readonly api: IdentityApi;
   readonly session: MemberSession;
+  readonly isSessionCurrent?: () => boolean;
   onUnauthenticated(): void;
   /** The transport must bind all work queries and commands to this explicit space. */
-  readonly children: (space: MemberSpace, onSpaceUnavailable: () => void) => ReactNode;
+  readonly children: (
+    space: MemberSpace,
+    onSpaceUnavailable: () => void,
+    lifetime: MemberSpaceLifetime,
+  ) => ReactNode;
 }
 
 export function MemberSpaceBoundary({
   api,
   session,
+  isSessionCurrent,
   onUnauthenticated,
   children,
 }: MemberSpaceBoundaryProps) {
@@ -69,6 +80,15 @@ export function MemberSpaceBoundary({
     value: space.id,
     label: `${space.kind === 'personal' ? '个人' : '团队'} · ${space.name}`,
   }));
+  const isCurrent = () => {
+    const current = controller.getSnapshot();
+    return (
+      isSessionCurrent?.() !== false &&
+      state.status === 'ready' &&
+      current.status === 'ready' &&
+      current.epoch === state.epoch
+    );
+  };
   return (
     <div className="zm-space-boundary">
       <nav className="zm-space-bar" aria-label="工作空间">
@@ -120,7 +140,12 @@ export function MemberSpaceBoundary({
       {state.status === 'ready' && (
         <UnsavedChangesBoundary register={register}>
           <div key={`${state.epoch}:${state.space.id}`} className="zm-space-content">
-            {children(state.space, () => controller.invalidate(state.epoch))}
+            {children(state.space, () => controller.invalidate(state.epoch), {
+              isCurrent,
+              onUnauthenticated: () => {
+                if (isCurrent()) invalidation.current();
+              },
+            })}
           </div>
         </UnsavedChangesBoundary>
       )}

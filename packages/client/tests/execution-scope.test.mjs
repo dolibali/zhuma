@@ -32,6 +32,7 @@ function scoped({
   identity = async () => Response.json(session()),
   service,
   binding = spaceId,
+  isCurrent,
 } = {}) {
   const calls = [],
     inspections = [];
@@ -54,11 +55,66 @@ function scoped({
     },
     () => failures.member++,
     'chen',
-    { spaceId: binding, onUnavailable: () => failures.space++ },
+    { spaceId: binding, onUnavailable: () => failures.space++, isCurrent },
   );
   return { api, calls, inspections, failures };
 }
 const plan = { taskId: 'task', planId: 'plan', revision: 1, idempotencyKey: 'begin-once' };
+
+test('scoped HTTP contract: changed view generation before React cleanup prevents dispatch after a pending precheck', async () => {
+  let current = true;
+  const held = deferred();
+  const caller = new AbortController();
+  const { api, calls, failures } = scoped({
+    identity: () => held.promise,
+    isCurrent: () => current,
+  });
+  const pending = api.startPlan(plan, caller.signal);
+  current = false;
+  held.resolve(Response.json(session()));
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(caller.signal.aborted, false);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(failures, { member: 0, space: 0 });
+});
+
+for (const outcome of ['success', '401', 'not-found', 'reject']) {
+  test(`scoped HTTP contract: stale generation ${outcome} is ignored before its caller signal is aborted`, async () => {
+    let current = true;
+    const entered = deferred(),
+      held = deferred();
+    const caller = new AbortController();
+    let request;
+    const { api, failures } = scoped({
+      isCurrent: () => current,
+      service: (next) => {
+        request = next;
+        entered.resolve();
+        return held.promise;
+      },
+    });
+    const pending = api.inbox(caller.signal);
+    await entered.promise;
+    current = false;
+    if (outcome === 'reject') held.reject(Error('old network rejection'));
+    else
+      held.resolve(
+        outcome === '401'
+          ? new Response('', { status: 401 })
+          : Response.json({
+              type: 'server-response',
+              rpcId: request.rpcId,
+              result:
+                outcome === 'not-found'
+                  ? { ok: false, error: { code: 'not-found', message: 'old denial', details: {} } }
+                  : { ok: true, value: valueFor(request.method, request.payload) },
+            }),
+      );
+    await assert.rejects(pending, { name: 'AbortError' });
+    assert.equal(caller.signal.aborted, false);
+    assert.deepEqual(failures, { member: 0, space: 0 });
+  });
+}
 
 test('scoped RPC contract: queries and explicit start bind the selected space, commands retain their actual DTOs', async () => {
   const calls = [];

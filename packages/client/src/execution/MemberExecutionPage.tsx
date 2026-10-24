@@ -1,34 +1,40 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { createIdentityApi } from '../identity/api.js';
 import { MemberSessionBoundary } from '../identity/MemberSessionBoundary.js';
-import { MemberSpaceBoundary } from '../identity/MemberSpaceBoundary.js';
+import { MemberSpaceBoundary, type MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import { createExecutionHttpApi } from './http.js';
 import { StartablePlansPanel } from './StartablePlansPanel.js';
 import { ExecutionWorkspace } from './ExecutionWorkspace.js';
 
 function MemberWork({
   fetcher,
-  invalidate,
   accountId,
   spaceId,
   spaceUnavailable,
+  lifetime,
 }: {
   fetcher: typeof fetch;
-  invalidate(): void;
   accountId: string;
   spaceId: string;
   spaceUnavailable(): void;
+  lifetime: MemberSpaceLifetime;
 }) {
-  const currentInvalidation = useRef(invalidate);
-  currentInvalidation.current = invalidate;
   const currentSpaceUnavailable = useRef(spaceUnavailable);
   currentSpaceUnavailable.current = spaceUnavailable;
+  const currentLifetime = useRef(lifetime);
+  currentLifetime.current = lifetime;
   const api = useMemo(
     () =>
-      createExecutionHttpApi(fetcher, () => currentInvalidation.current(), accountId, {
-        spaceId,
-        onUnavailable: () => currentSpaceUnavailable.current(),
-      }),
+      createExecutionHttpApi(
+        fetcher,
+        () => currentLifetime.current.onUnauthenticated(),
+        accountId,
+        {
+          spaceId,
+          onUnavailable: () => currentSpaceUnavailable.current(),
+          isCurrent: () => currentLifetime.current.isCurrent(),
+        },
+      ),
     [fetcher, accountId, spaceId],
   );
   const [refreshKey, setRefreshKey] = useState(0);
@@ -49,15 +55,20 @@ export function MemberExecutionPage({ fetcher = globalThis.fetch }: { fetcher?: 
   const identity = useMemo(() => createIdentityApi(fetcher), [fetcher]);
   return (
     <MemberSessionBoundary api={identity}>
-      {(session, invalidate) => (
-        <MemberSpaceBoundary api={identity} session={session} onUnauthenticated={invalidate}>
-          {(space, spaceUnavailable) => (
+      {(session, invalidate, isSessionCurrent) => (
+        <MemberSpaceBoundary
+          api={identity}
+          session={session}
+          onUnauthenticated={invalidate}
+          isSessionCurrent={isSessionCurrent}
+        >
+          {(space, spaceUnavailable, lifetime) => (
             <MemberWork
               fetcher={fetcher}
-              invalidate={invalidate}
               accountId={session.accountId}
               spaceId={space.id}
               spaceUnavailable={spaceUnavailable}
+              lifetime={lifetime}
             />
           )}
         </MemberSpaceBoundary>
