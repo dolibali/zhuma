@@ -236,3 +236,23 @@ export type {
   WorkspaceClaimFact,
   ExecutionDeskSnapshot,
 } from './workspace-snapshot.js';
+
+export type {
+  ExecutionNodeRecord,
+  ExecutionReceipt,
+  NodeCommandResult,
+  PlanStartResult,
+} from './human-node.js';
+export {
+  nodeRecordKey,
+  unlockKey,
+  completionSource,
+  downstreamRecords,
+  startAppliedPlan,
+  submitDelivery,
+  castBallot,
+  settleReview,
+  unlockDownstream,
+  toNodeExecutionReport,
+  executionInbox,
+} from './human-node.js';

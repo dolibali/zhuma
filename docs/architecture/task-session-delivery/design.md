@@ -24,7 +24,7 @@
 | 外部会话接入有验证门槛    | DSH `packages/core/agent/src/index.ts` 的 AgentFactory/setFactory，`packages/subagent/subagent-{codex,claude-code}/README.md`                           | 单 factory；当前外部委派一次性、无完整连续流。公开驱动接缝或最小发行补丁须先 PoC；禁止全局抢占默认驱动                            |
 | 文件呈现不是不可变交付    | DSH `packages/deliverables/{tool-present,workspace-changes}/README.md`                                                                                  | 本地路径/临时变更可助预览，提交时仍需持久化固定内容                                                                               |
 
-上表为 2026-10-23 01:23 UTC 之前的历史检查快照，不能代表当前分支。01:58 UTC 已核对 main 为 `5aa75c0`（PR13/14 已合入且 main push CI 成功），develop 为 `180fffc`；PR10 新 head `d840ee4` 含 PR11/12 和记录异常修复，独立 `pnpm check` 为 220 通过、4 个真实模型测试跳过。B 另已推送 `b/id0a-identity`（检查 `74b841a`）和 `b/m1-1-core` → `b/m1-2-service` → `b/m1-3-ui`（检查 UI head `0228ca7`），尚未作为正式 Host 多人链验收。最新提交与进度以各 PR 为准。
+上表为 2026-10-23 01:23 UTC 之前的历史检查快照，不能代表当前分支。累计联调 head 和身份、空间门禁的当前 SHA 见 `docs/contracts/b-m1-human-node.md` 的「当前累计组合」。不要用这里的旧 SHA，或旧的 `b/s1-signatures@5d6eafa`，推断身份或执行插件尚未实现。01:58 UTC 已核对 main 为 `5aa75c0`（PR13/14 已合入且 main push CI 成功），develop 为 `180fffc`；PR10 新 head `d840ee4` 含 PR11/12 和记录异常修复，独立 `pnpm check` 为 220 通过、4 个真实模型测试跳过。B 另已推送 `b/id0a-identity`（检查 `74b841a`）和 `b/m1-1-core` → `b/m1-2-service` → `b/m1-3-ui`（检查 UI head `0228ca7`），尚未作为正式 Host 多人链验收。最新提交与进度以各 PR 为准。
 
 02:35 UTC 增量：main 为 `656bb61`（PR15 已合入），PR10 head 为 `c0102fa`；B 在 [6355978037](https://github.com/dolibali/zhuma/pull/10#issuecomment-6355978037) 报告修复演示种子引用和记录异常按钮，作者检查 238 通过/4 模型跳过、示例浏览器 1/1、公共 UI 40/40。此报告尚未由协调者完成最新 head 的独立全量评审，不能覆盖上面的历史证据或当作正式 Host 联动验收。PR11/12 已普通合并当时的 main，当前 head 分别为 `2defb9b` / `be4ba69`，仍未合入。旧 exact 工作台 API 的认证改动由 B 提供适配/补丁、A 审核后单写整合。
 
@@ -132,7 +132,7 @@ B 的 `b/id0a-identity` / `docs/contracts/b-id0a-identity.md` 已用发布的 Co
 
 - 产品多人模式必须持有效成员会话。缺失、删除、伪造、过期、撤销的成员 cookie 均返回未登录，不退回 DSH owner；owner 的本机控制能力不自动授予产品账号或空间权限。
 - 会话由服务端凭据校验后确定 account，成员 Peer 只由可信服务创建。策略允许不能替代每次资源/空间授权；同源/Host 防护也不能代替身份。正文、查询串和请求头中的 actor/member 都不决定操作者。
-- B 单一维护认证解析与执行入口的连接：当前 cookie `Path=/zhuma-id` 不会覆盖 `/zhuma-exec`，普通 RPC 又会落到 owner，因此不能把两者原样相接就声称多人已通。B 提交覆盖所有产品请求/事件的统一认证适配及路由/cookie 范围；A 只挂载，不在 UI 或 plugin 再实现一份身份逻辑。
+- B 单一维护认证解析与执行入口的连接：当前 cookie `Path=/zhuma-id` 不会覆盖 `/api/zhuma-exec`，普通 RPC 又会落到 owner，因此不能把两者原样相接就声称多人已通。B 提交覆盖所有产品请求/事件的统一认证适配及路由/cookie 范围；A 只挂载，不在 UI 或 plugin 再实现一份身份逻辑。
 - 旧 exact 工作台读写入口在多人暴露前也须受相同产品会话/空间门禁，或保持只能由隔离的本机 owner 访问；不能留下绕过登录读取全局工作台的旁路。当前单份 global 不直接成为跨空间数据源。
 - 账号种子通过显式导入验证器、只在空库写入；不提交固定口令或真实凭据。先单实例测试，复用 DSH 持久化；TLS 监听/可信代理下 Secure cookie 的处理随测试入口一起验证，不宣称当前 HTTP 探针已适合对外部署。
 

@@ -77,7 +77,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 生产路径没有默认账号。`applyIdentity(ctx)` 不传导入时不写账号、不写笔记、也不保存任何口令。`seedIfEmpty` 不使用内置口令。调用方只能显式传入已经算好的 `{ id, passwordHash }`。导入先写账号和笔记，最后才把 global 的 `importComplete` 写成 true。标记还没写上时，下一次用同一份导入打开会把缺的行补上。标记已经是 true 的 domain 不会被另一份导入覆盖。
 
-测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。没有写死的 `lin` 默认账号。多人导入（两个及以上账号）如果再写 `ownerAccountId`，导入直接拒绝。没有导入，或导入没有把 `ownerAccountId` 设成唯一账号时，DSH cookie 不是产品账号，`/session` 返回 401。只有导入恰好一个账号，并且 `ownerAccountId` 就是这个账号时，隔离的本机单人模式才接受这张 DSH cookie。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。拼错的键、空的账号列表、重复的 id，以及笔记引用了未导入的账号，都会拒绝并报错。请求体超过 64KiB 时先把完整的 413 写出去，带 `Content-Length`，这个值等于响应正文的字节数，并且不带 `Connection: close`。对端还可能继续上传时不调用 `res.end()`。Node 会在响应结束时收起套接字；分块上传还没写完就被收起时，解析失败，客户端看到 ECONNRESET 或 EPIPE，状态是 0，读不到 413。正文用 `data`/`end` 读取；超限后停止解析，继续把剩余正文读完并丢掉。客户端把请求写完之后才 `res.end()`。丢掉的上限是再读 32MiB，时间上限是 5 秒，用来挡住一直不写完的连接。先碰到上限时，要等这 413 的字节已经写出，再留 500 毫秒给客户端读完，然后才 `destroy`。不能用 `for await` 读请求：循环抛错时异步迭代器会销毁 `IncomingMessage`，套接字在 413 写出之前就被拆掉。声明了超限 `Content-Length` 的请求和分块超限请求都会收到完整的 413，客户端仍在按大块写入并占用事件循环时也一样，之后正常登录仍然成功。登录核对走异步 `scrypt`，次数在计算摘要之前先占名额，所以同一地址的并发登录也不能全部越过限额。同一个来源地址在 60 秒内的登录合计达到 8 次后，该地址再登录返回 429，不再计算摘要；账号 id 是否存在、是否换一个账号，都数进这一窗口，所以 429 出现的时刻不能用来判断账号在不在。同一地址上的单个账号另外还有一份计数，上限同样是 8。登录成功会清掉该地址的计数和这次登录的账号计数，另一个账号在同一地址上已经累计的失败次数还留着，所以这个账号仍会在 8 次后得到 429，而该地址上的其他账号还可以登录。过期的计数会在下一次占名额、清除或读取时删掉。失败计数表由每次 `applyIdentity` 各自创建，同一个进程里的两个宿主不共用一张表。进程里同时进行的口令摘要最多 4 路。再多的登录排队，队列最多 32 个。队列已满时这次登录返回 503 `login-unavailable`，不计算摘要，也不占用上面的 8 次名额。账号是否存在，503 的状态和正文都一样。同一个宿主上，本地部署通常共用一个来源地址，因此这一地址上连续 8 次登录就会把该地址锁 60 秒，锁定期内换账号或使用正确口令也是 429。`hashPassword` 仍是同步的，只给准备导入的调用方使用，请求处理不会调用它。登录成功时删掉 `expiresAt` 已经过去的会话行。没有定时器。只读请求和过期 cookie 的 401 不会删行；没有人登录时，过期行会留到下一次成功登录。成员 cookie 的 `Path` 是 `/`，这样 `/zhuma-exec` 也能带上它；`HttpOnly` 和 `SameSite=Strict` 保留。`Secure` 仍是待办：在 0.2.1-rc.2 上 DSH 只在监听协议为 https 时才加 `Secure`，这里同样留到 TLS 监听接上之后。
+测试在每次运行时自己生成随机口令，算出摘要后再导入。夹具里的账号 id 是 `lin`、`zhao`、`chen`。`north-note` 属于 `team-north`，owner 是 `lin`，成员还有 `zhao`。`south-note` 属于 `team-south`，owner 是 `chen`。没有写死的 `lin` 默认账号。多人导入（两个及以上账号）如果再写 `ownerAccountId`，导入直接拒绝。没有导入，或导入没有把 `ownerAccountId` 设成唯一账号时，DSH cookie 不是产品账号，`/session` 返回 401。只有导入恰好一个账号，并且 `ownerAccountId` 就是这个账号时，隔离的本机单人模式才接受这张 DSH cookie。摘要是 `node:crypto` 的 salted scrypt（N=16384，r=8，p=1），盐和摘要一起放在 `passwordHash` 里。导入不接受口令明文。拼错的键、空的账号列表、重复的 id，以及笔记引用了未导入的账号，都会拒绝并报错。请求体超过 64KiB 时先把完整的 413 写出去，带 `Content-Length`，这个值等于响应正文的字节数，并且不带 `Connection: close`。对端还可能继续上传时不调用 `res.end()`。Node 会在响应结束时收起套接字；分块上传还没写完就被收起时，解析失败，客户端看到 ECONNRESET 或 EPIPE，状态是 0，读不到 413。正文用 `data`/`end` 读取；超限后停止解析，继续把剩余正文读完并丢掉。客户端把请求写完之后才 `res.end()`。丢掉的上限是再读 32MiB，时间上限是 5 秒，用来挡住一直不写完的连接。先碰到上限时，要等这 413 的字节已经写出，再留 500 毫秒给客户端读完，然后才 `destroy`。不能用 `for await` 读请求：循环抛错时异步迭代器会销毁 `IncomingMessage`，套接字在 413 写出之前就被拆掉。声明了超限 `Content-Length` 的请求和分块超限请求都会收到完整的 413，客户端仍在按大块写入并占用事件循环时也一样，之后正常登录仍然成功。登录核对走异步 `scrypt`，次数在计算摘要之前先占名额，所以同一地址的并发登录也不能全部越过限额。同一个来源地址在 60 秒内的登录合计达到 8 次后，该地址再登录返回 429，不再计算摘要；账号 id 是否存在、是否换一个账号，都数进这一窗口，所以 429 出现的时刻不能用来判断账号在不在。同一地址上的单个账号另外还有一份计数，上限同样是 8。登录成功会清掉该地址的计数和这次登录的账号计数，另一个账号在同一地址上已经累计的失败次数还留着，所以这个账号仍会在 8 次后得到 429，而该地址上的其他账号还可以登录。过期的计数会在下一次占名额、清除或读取时删掉。失败计数表由每次 `applyIdentity` 各自创建，同一个进程里的两个宿主不共用一张表。进程里同时进行的口令摘要最多 4 路。再多的登录排队，队列最多 32 个。队列已满时这次登录返回 503 `login-unavailable`，不计算摘要，也不占用上面的 8 次名额。账号是否存在，503 的状态和正文都一样。同一个宿主上，本地部署通常共用一个来源地址，因此这一地址上连续 8 次登录就会把该地址锁 60 秒，锁定期内换账号或使用正确口令也是 429。`hashPassword` 仍是同步的，只给准备导入的调用方使用，请求处理不会调用它。登录成功时删掉 `expiresAt` 已经过去的会话行。没有定时器。只读请求和过期 cookie 的 401 不会删行；没有人登录时，过期行会留到下一次成功登录。成员 cookie 的 `Path` 是 `/`，这样 `/api/zhuma-exec` 也能带上它；`HttpOnly` 和 `SameSite=Strict` 保留。`Secure` 仍是待办：在 0.2.1-rc.2 上 DSH 只在监听协议为 https 时才加 `Secure`，这里同样留到 TLS 监听接上之后。
 
 探针里真实跑到的 DSH 层：
 
@@ -102,7 +102,7 @@ M+ 必须守住四条，否则两个会话会再次合成一个人：
 
 ## 5.1 给执行入口的成员解析
 
-`/zhuma-id` 和以后的 `/zhuma-exec` 用同一份解析。执行插件注入 `MemberResolver`，不要再从 `admit` 的 owner principal 推导成员。
+`/zhuma-id` 和以后的 `/api/zhuma-exec` 用同一份解析。执行插件注入 `MemberResolver`，不要再从 `admit` 的 owner principal 推导成员。
 
 导出在 `packages/dsh-adapter/src/member-session.ts`：
 
@@ -194,9 +194,9 @@ interface ExecutionWorkspaceProps {
 }
 ```
 
-请求体仍是 `StartPlanRequest`、`InboxRequest`、`SubmitRequest`、`BallotRequest`、`SettleRequest`、`ReportRequest`。没有 `BindOwnerRequest`。通道结果仍是 `{ ok: true, value } | { ok: false, error: { code, message, details } }`。`readWorkbench` 由 A 包住 `WorkbenchService.snapshot()`。界面挂 `ExecutionWorkspace`，它使用 `createExecutionApi(rpc)`。这些类型的其余字段在 `b/s1-signatures` 的 `packages/dsh-adapter/src/s1-integration.ts`；本分支不实现执行插件。
+请求体仍是 `StartPlanRequest`、`InboxRequest`、`SubmitRequest`、`BallotRequest`、`SettleRequest`、`ReportRequest`。没有 `BindOwnerRequest`。通道结果仍是 `{ ok: true, value } | { ok: false, error: { code, message, details } }`。`readWorkbench` 由 A 包住 `WorkbenchService.snapshot()`。界面挂 `ExecutionWorkspace`，它使用 `createExecutionApi(rpc)`。这些类型的字段以本累计 head 的 `packages/dsh-adapter/src/s1-integration.ts` 为准。执行插件已在 `packages/dsh-adapter` 实现。不要用旧的 `b/s1-signatures@5d6eafa` 推断它尚未实现。身份模块 #18 的 head 是 `eb25d30`。#18 已合入 develop（772b59c）。本 head 的身份代码经 `b/m1-align-identity` `20314eb` 带入，与 `eb25d30` 内容等价；另多 `packages/dsh-adapter/tsconfig.identity.json` 与 `packages/dsh-adapter/tests/identity-session.test.mjs` 的小增量。
 
-本 PR 不改 `workbench-plugin.ts`、宿主构建和包的公开 exports。相对 develop，本 PR 新增 `packages/client/tests/browser/global-setup.mjs`，并在 `playwright.config.mjs` 里加上 `globalSetup` 和 `identity` project，也改了 webServer 的命令和 timeout。这些都是 B 加的或改的。`identity` project 是 B 在 `7668a2c` 加上的。`global-setup.mjs` 和 `globalSetup` 是 B 在 `f0eac0f` 加上的。A 的 `52d0ac0` 只把 global-setup 改成用当前 Node 跑 `tsc`；A 的 `5d356fb` 只改了 webServer 的命令和 timeout。这两个提交不是本 PR 的祖先，也没有进入 develop。B 在 `9767529` 和 `4e6a055` 里重做了同样的改动，之后没有再改这两处，所以现在的内容与 A 的 `52d0ac0`、`5d356fb` 对齐。A 用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
+「不改包的公开 exports」只描述身份模块 #18：该分支不改 `workbench-plugin.ts`、宿主构建和当时的包入口。B 在累计 Draft 里自己的提交仍不改 `workbench-plugin.ts`。develop `843661c` 合入的 #23 改了这个文件，在注册五条路由时先调用 `authorizeLegacyOwnerRoutes`。相对当时的 develop `f90f2d8`，三个包的 `index.ts` 另有新增导出，待 A 确认。`packages/agent-core/src/index.ts`：`ExecutionNodeRecord`、`ExecutionReceipt`、`NodeCommandResult`、`PlanStartResult`、`nodeRecordKey`、`unlockKey`、`completionSource`、`downstreamRecords`、`startAppliedPlan`、`submitDelivery`、`castBallot`、`settleReview`、`unlockDownstream`、`toNodeExecutionReport`、`executionInbox`。`packages/client/src/index.ts`：`DeliveryDraft`、`ExecutionApi`、`ExecutionInboxValue`、`ExecutionNodeWire`、`ReviewDraft`、`createExecutionApi`、`readExecutionNode`、`DeliveryPanel`、`ExecutionWorkspace`、`InboxPanel`、`ReviewWorkspace`。`packages/dsh-adapter/src/index.ts`：`ACTOR_FIELD_DEPTH_LIMIT`、`containsActorField`、`resolveActor`、`scanActorField`、`ActorFieldScan`、`ActorResolution`、`MemberRequest`、`MemberResolution`、`MemberResolver`、`ExecutionService`、`toNodeView`、`ExecutionFailure`、`ExecutionNodeView`、`ExecutionCommandResult`、`ExecutionStorage`、`PlanReceipt`、`applyExecution`、`executionEndpoints`、`executionInject`、`ExecutionPluginConfig`，以及 `export type * from './s1-integration.js'`。下面仍是 #18 的记录：该分支相对当时的 develop 新增 `packages/client/tests/browser/global-setup.mjs`，并在 `playwright.config.mjs` 里加上 `globalSetup` 和 `identity` project，也改了 webServer 的命令和 timeout。这些都是 B 加的或改的。`identity` project 是 B 在 `7668a2c` 加上的。`global-setup.mjs` 和 `globalSetup` 是 B 在 `f0eac0f` 加上的。A 的 `52d0ac0` 只把 global-setup 改成用当前 Node 跑 `tsc`；A 的 `5d356fb` 只改了 webServer 的命令和 timeout。这两个提交不是本 PR 的祖先，也没有进入 develop。B 在 `9767529` 和 `4e6a055` 里重做了同样的改动，之后没有再改这两处，所以现在的内容与 A 的 `52d0ac0`、`5d356fb` 对齐。在 `b/id0a-legacy-gate` `69c7366` 上，A 也曾用 `LEGACY_OWNER_ROUTES` 注册五条路由，并在读取正文之前调用门禁。本 head 的可运行注册来自 #23，不是 `69c7366`；该提交仍不是本 head 的祖先。`command` 被关掉时，`import-package` 不会进入 `previewResourcePackage` 或包存储的 `put`：
 
 ```ts
 import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
@@ -220,16 +220,16 @@ for (const endpoint of LEGACY_OWNER_ROUTES) {
 }
 ```
 
-可运行的那份在 `b/id0a-legacy-gate`。它 import `./member-session.js`，接在本分支之后，并盖住 `e3916fa` 的这五条路由和 `import-package`。单独 cherry-pick 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
+上面代码块是 `69c7366` 的记录，正文模式是 `buffered`。本 head 可运行的注册在 `packages/dsh-adapter/src/workbench-plugin.ts`：`requestBody: 'streaming'`，读正文前调用 `authorizeLegacyOwnerRoutes`，拒绝时返回空正文和对应状态码。它来自 #23（develop `843661c`），不是 `69c7366`；该提交仍不是本 head 的祖先。单独 cherry-pick `69c7366` 到还没有 `member-session.ts` 的树上，类型检查会找不到这个模块。
 
 ## 6. A 需要提供的挂载
 
-本切片没有改 `workbench-plugin.ts`，也没有改 `scripts/workbench/build.mjs`。宿主构建的 Host 入口仍只有工作台插件，所以桌面和 Web 包里还没有 `/zhuma-id`。
+本切片（#18）没有改 `workbench-plugin.ts`，也没有改 `scripts/workbench/build.mjs`。develop `843661c` 合入 #23 之后，宿主构建入口是 `packages/dsh-adapter/src/host-plugin.ts`。发行补丁是 `legacy-single-user`，没有 `identityBootstrapKey`，所以默认桌面和 Web 包仍不挂身份，也没有 `/zhuma-id`。`multi-member` 或配置了 `identityBootstrapKey` 时才会调用 `applyIdentity`。
 
 A 在官方 Host 上已经具备 `connection`、`storageDomain`、`credentials`、`webServer` 时，需要：
 
-1. 按上一节的顺序装配：`configureDeploymentMode(ctx, mode)`，再 `applyIdentity`，再 `memberResolver(ctx)`，再 `applyWorkbench`，再 `applyExecution`（不传 `singleUser`，不注册 `bind-owner`），最后挂 UI。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。`LEGACY_OWNER_ROUTES` 和 `import-package` 用上一节的 `authorizeLegacyOwnerRoutes`，并且放在解析正文之前。
-2. 构建入口要能带到 `packages/dsh-adapter/src/identity-session.ts`。现在的 esbuild 入口只有 `workbench-plugin.ts`。
+1. `host-plugin.ts` 已经做了 `configureDeploymentMode`，再 `openWorkbench`（`LEGACY_OWNER_ROUTES` 和 `import-package` 在解析正文之前调用 `authorizeLegacyOwnerRoutes`），`multi-member` 或有 `identityBootstrapKey` 时再挂身份子插件并调用 `applyIdentity`。仍未装进这个入口的是 `applyExecution`（不传 `singleUser`，不注册 `bind-owner`）、`projectSpaces` 和成员界面。不要再打开名为 `zhuma_identity` 的 domain，也不要为了读工作台再打开 `zhuma_workbench`。
+2. 宿主 esbuild 入口已经是 `packages/dsh-adapter/src/host-plugin.ts`，`multi-member` 或 `identityBootstrapKey` 会进到 `packages/dsh-adapter/src/identity-session.ts`。登录页、空间切换和成员入口仍见下一条。
 3. 登录页、空间切换和成员入口仍由 A-SPACE 做。cookie 由 `Set-Cookie` 写入，页面不提交 actor。
 4. 若要把 `registerPolicy` 写成对真实 `RemoteAccessService` 的类型检查，需要在宿主编译里合并 `PrincipalMap` 的 `zhuma-member`。运行时 `createPeer` 不依赖这次合并；本包用了断言，因为 `@deepseek-ai/dsh-typert-protocol` 不是直接依赖。
 
@@ -241,7 +241,7 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 
 剩下的工作是这些块，而不是再换一套身份模型：
 
-- 把 `applyIdentity` 接到宿主构建，并用真实 webServer、credentials 和 RemoteAccessService 跑一遍前缀路由。成员 cookie 的 `Path` 已经是 `/`，执行入口可以收到它。`Secure` 仍是待办，留到 TLS 监听接上之后。
+- `applyIdentity` 已由 develop `843661c` 的 #23 接到 `host-plugin.ts`（`multi-member` 或 `identityBootstrapKey` 才挂）。真实服务上的前缀路由验证在 S1a 证据里，不关闭 FR16。成员 cookie 的 `Path` 已经是 `/`，执行入口可以收到它。`Secure` 仍是待办，留到 TLS 监听接上之后。
 - 空间记录独立出来：每人一个个人空间，两个团队，其中一人同时属于两个团队。种子只在空库写入。
 - 资源授权继续用“owner 或团队成员”，从一条笔记扩到任务和文件元数据。文件字节仍没有带访问控制的 DSH 存储，那是另一项。
 - B-M1 的提交、退回、重提和下游待办改用这里的 `accountId`，不再接受请求体 actor。
@@ -254,4 +254,4 @@ FR16 的退出是：3 个账号、2 个团队、其中一人跨团队；两个�
 2. `decide` 对 owner 一律允许。空间隔离放在路由里、不单放在 `registerPolicy`，是否符合预期？
 3. 无成员 cookie 即未登录。这已按 main `656bb61`（PR #15）实现，不再请 dolibali 决定：缺失、删除、过期、撤销或伪造的成员 cookie 都返回 401，不退回 DSH owner。多人导入不能再靠 `ownerAccountId` 把 owner 映射成 `lin`。宿主显式选定 `legacy-single-user`，并且恰好一个账号、`ownerAccountId` 指向该账号时，隔离的本机单人模式才做这层映射。
 4. 生产路径已经不放默认账号。导入是调用方传入的 `{ id, passwordHash }`，且不覆盖已有账号。宿主是否就用这个导入作为种子入口？
-5. `applyIdentity` 的挂载和构建入口是否由 A 加进 `workbench-plugin.ts`？B 这次没有改那个文件，也没有改 `scripts/workbench/build.mjs`。
+5. `applyIdentity` 没有加进 `workbench-plugin.ts`。develop `843661c` 的 #23 把宿主构建入口改成 `host-plugin.ts`，由它在 `multi-member` 或 `identityBootstrapKey` 时调用 `applyIdentity`。B 的身份切片没有改 `workbench-plugin.ts`，也没有改 `scripts/workbench/build.mjs`。

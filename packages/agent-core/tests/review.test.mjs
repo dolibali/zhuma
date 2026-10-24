@@ -92,7 +92,10 @@ test('comments, timeouts, unavailability, and silence are not approvals', () => 
   assert.equal(timedOut.ok, false);
   assert.equal(timedOut.code, 'non-passing-availability');
 
-  const unavailable = cast(open(['h1']), ballot('h1', 'comment', { availability: 'unavailable' }));
+  const unavailable = cast(
+    open(['h1']),
+    ballot('h1', 'comment', { comment: '暂时不能看', availability: 'unavailable' }),
+  );
   assert.equal(unavailable.evaluation.outcome, 'pending');
   assert.deepEqual(unavailable.evaluation.outstandingReviewerIds, ['h1']);
 

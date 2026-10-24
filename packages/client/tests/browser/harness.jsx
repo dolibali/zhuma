@@ -1,6 +1,8 @@
 import { createRoot } from 'react-dom/client';
 import { StrictMode, useState } from 'react';
 import { SelectProbe } from './select-probe.jsx';
+import { ExecutionWorkspace } from '../../src/execution/ExecutionWorkspace.js';
+import { createExecutionApi } from '../../src/execution/ExecutionApi.js';
 import { MemberLoginProbe } from './member-login-probe.jsx';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
@@ -8,18 +10,18 @@ import styles from '../../src/workbench/workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 
 // Test doubles for the two official DSH service boundaries, never shipped in the product.
-const api = createWorkbenchApi({
-  async call(prefix, method, payload, signal) {
-    const response = await fetch(`${prefix}/${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method, payload }),
-      signal,
-    });
-    if (!response.ok) throw Error(`Fixture transport failed: ${response.status}`);
-    return (await response.json()).result;
-  },
-});
+async function call(prefix, method, payload, signal) {
+  const response = await fetch(`${prefix}/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method, payload }),
+    signal,
+  });
+  if (!response.ok) throw Error(`Fixture transport failed: ${response.status}`);
+  return (await response.json()).result;
+}
+const api = createWorkbenchApi({ call });
+const executionApi = createExecutionApi({ call });
 let preference = 'system';
 const subscribers = new Set();
 const systemTheme = matchMedia('(prefers-color-scheme: dark)');
@@ -62,6 +64,10 @@ const content = new URL(location.href).searchParams.has('member-login') ? (
   <MountProbe />
 ) : new URL(location.href).searchParams.has('select-probe') ? (
   <SelectProbe />
+) : new URL(location.href).searchParams.has('execution') ? (
+  <div className="zhuma">
+    <ExecutionWorkspace api={executionApi} />
+  </div>
 ) : new URL(location.href).searchParams.has('expert-library') ? (
   <WorkbenchPage api={api} initialSection="assets" expertLibrary appearance={appearance} />
 ) : (

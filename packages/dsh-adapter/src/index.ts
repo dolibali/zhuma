@@ -95,3 +95,31 @@ export { ExecutionDesk, executionHint } from './execution-desk.js';
 
 export type { WorkbenchServerOptions } from './workbench-server.js';
 export { createWorkbenchServer } from './workbench-server.js';
+
+export {
+  ACTOR_FIELD_DEPTH_LIMIT,
+  containsActorField,
+  resolveActor,
+  scanActorField,
+  type ActorFieldScan,
+  type ActorResolution,
+  type MemberRequest,
+  type MemberResolution,
+  type MemberResolver,
+} from './execution-identity.js';
+export {
+  ExecutionService,
+  toNodeView,
+  type ExecutionFailure,
+  type ExecutionNodeView,
+  type ExecutionResult as ExecutionCommandResult,
+  type ExecutionStorage,
+  type PlanReceipt,
+} from './execution-service.js';
+export type * from './s1-integration.js';
+export {
+  apply as applyExecution,
+  executionEndpoints,
+  inject as executionInject,
+  type ExecutionPluginConfig,
+} from './execution-plugin.js';

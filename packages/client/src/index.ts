@@ -3,6 +3,18 @@ import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 export * from './identity/index.js';
 
 export type { InboxItemView, NodeExecutionView } from './execution-view.js';
+export type {
+  DeliveryDraft,
+  ExecutionApi,
+  ExecutionInboxValue,
+  ExecutionNodeWire,
+  ReviewDraft,
+} from './execution/ExecutionApi.js';
+export { createExecutionApi, readExecutionNode } from './execution/ExecutionApi.js';
+export { DeliveryPanel } from './execution/DeliveryPanel.js';
+export { ExecutionWorkspace } from './execution/ExecutionWorkspace.js';
+export { InboxPanel } from './execution/InboxPanel.js';
+export { ReviewWorkspace } from './execution/ReviewWorkspace.js';
 export {
   INBOX_ACTION_LABELS,
   INBOX_KIND_LABELS,
