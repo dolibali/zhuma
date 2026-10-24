@@ -42,15 +42,15 @@ await applyExecution(ctx, {
 
 路径是 `/api/zhuma-exec/<endpoint>`，端点是 `start-plan`、`inbox`、`startable`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`inbox-counts`、`events`。先认成员，再读正文。没有成员会话是 HTTP 401，Host/Origin 不被信任是 HTTP 403。正文超过传输上限是 HTTP 413，5 秒内没有读完是 HTTP 408。传输上限是 2MiB：提交或投票说明最长 100000 个字符，草稿的说明、链接和文件字符串合计最长 262144 个字符；JSON 里一个字符最多写成 6 字节，262144 × 6 再加 RPC 信封仍放得进 2MiB。正文不是 JSON 时 HTTP 415。信封无法解析时 HTTP 400。业务成功和失败都是 HTTP 200，`result` 为 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。
 
-`code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`inboxCounts`、`events`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`inbox-counts`、`events`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
+`code` 在线上是字符串。`ExecutionMessageCode` 是服务写了文案的目录。`ExecutionPassthroughCode` 是纯函数原样穿过、使用兜底文案的代码，例如 `conflicting-ballot`。`ExecutionService` 的方法是 `startPlan`、`inbox`、`startable`、`inboxCounts`、`events`、`submit`、`ballot`、`settle`、`report`、`revision`、`draft`、`reconcile`。`inbox` 先按空间和 `planMembership` 留下仍是任务负责人或参与者的记录，再生成待办；节点视图只附在这些待办上。
 
 清单里的 M1 组件类型是 `ExecutionWorkspace`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace`。本层不实现、不导出这些组件，因此没有和组件实现做双向对齐。没有别的 M1 组件类型。带类型的 `startPlan` 不在这份适配层形状里，由 A 在 #32 的 Client 接手；打开或刷新不启动，只有明确点击才调用 `start-plan`。
 
 ## A 要接上的部分
 
 - 账户导入的形状是 `{ accounts: [{ id, passwordHash }], ownerAccountId?, notes? }`。`passwordHash` 是 scrypt 校验值。
-- 先 `configureDeploymentMode`，再 `applyIdentity`，然后 `memberResolver(ctx)`，再把 `{ memberResolver, readWorkbench, projectSpaces }` 传给 `applyExecution`。执行插件自己调用 `resolveMember`。省略 `projectSpaces` 时，执行入口拒绝所有项目。
-- 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。快捷入口调用 `inboxCounts()`，正文 `{}`，成功值是 `{ deliver, review, confirm }`。增量事件调用 `events({ taskId, planId, revision, nodeId, after, seenEventIds? })`，成功值是 `{ events }`。
+- 先 `configureDeploymentMode`，再 `applySpaceDirectory`，再 `applyIdentity`。`memberResolver(ctx)` 留给其他调用方，不传给 `applyExecution`。`applyExecution` 只接收 `{ readWorkbench, projectSpaces }`，`projectSpaces` 用同一次 `spaceDirectoryFor(ctx)` 句柄。省略 `projectSpaces` 时，执行入口拒绝所有项目。
+- 客户端调用 `createExecutionApi(rpc)`。内部是 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。快捷入口调用 `inboxCounts({})` 或 `inboxCounts({ spaceId })`。成功值带可信 `actorId`、`deliver` / `review` / `confirm`；请求里有 `spaceId` 时一并回显，没有则不含该字段。空成功和回显不是授权证明。增量事件调用 `events({ taskId, planId, revision, nodeId, after, seenEventIds?, spaceId? })`。成功值带 `actorId`、节点定位和 `{ events }`；请求里有 `spaceId` 时一并回显。不带 `spaceId` 时只核对调用者是否持有该任务的空间，成功值不含 `spaceId`。
 - 导航挂 `ExecutionWorkspace`。它自己挂 `InboxPanel`，并按待办动作打开 `DeliveryPanel` 或 `ReviewWorkspace`。
 - 页面里已经有 `.zhuma > main.zm-page`。
 

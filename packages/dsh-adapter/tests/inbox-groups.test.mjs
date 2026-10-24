@@ -133,7 +133,8 @@ test('inbox groups carry the task path and owner, and counts follow status', asy
   assert.equal(detailPlace.ownerName.includes('chen'), false);
   assert.equal(Object.hasOwn(detailPlace, 'ownerId'), false);
   const before = await service.inboxCounts(session('chen'), {});
-  assert.deepEqual(before.value, { deliver: 2, review: 0, confirm: 0 });
+  assert.deepEqual(before.value, { actorId: 'chen', deliver: 2, review: 0, confirm: 0 });
+  assert.equal(Object.hasOwn(before.value, 'spaceId'), false);
 
   const submitted = await service.submit(session('chen'), {
     ...locate(applied, 'design', store.node('design').command.version, 'deliver-design'),
@@ -141,9 +142,9 @@ test('inbox groups carry the task path and owner, and counts follow status', asy
   });
   assert.equal(submitted.value.disposition, 'applied');
   const afterSubmit = await service.inboxCounts(session('chen'), {});
-  assert.deepEqual(afterSubmit.value, { deliver: 1, review: 0, confirm: 0 });
+  assert.deepEqual(afterSubmit.value, { actorId: 'chen', deliver: 1, review: 0, confirm: 0 });
   const review = await service.inboxCounts(session('lin'), {});
-  assert.deepEqual(review.value, { deliver: 0, review: 1, confirm: 0 });
+  assert.deepEqual(review.value, { actorId: 'lin', deliver: 0, review: 1, confirm: 0 });
   const voted = await service.ballot(session('lin'), {
     ...locate(applied, 'design', store.node('design').command.version, 'approve-design'),
     roundId: store.node('design').currentRoundId,
@@ -152,7 +153,7 @@ test('inbox groups carry the task path and owner, and counts follow status', asy
   });
   assert.equal(voted.ok, true, voted.ok ? '' : voted.error.code);
   const afterVote = await service.inboxCounts(session('lin'), {});
-  assert.deepEqual(afterVote.value, { deliver: 0, review: 0, confirm: 0 });
+  assert.deepEqual(afterVote.value, { actorId: 'lin', deliver: 0, review: 0, confirm: 0 });
 });
 
 test('an expert node waiting on its owner is a delivery count, not a review count', async () => {
@@ -172,7 +173,7 @@ test('an expert node waiting on its owner is a delivery count, not a review coun
   assert.equal(inbox.value.items[0].kind, 'deliver');
   assert.equal(inbox.value.items[0].reason, 'owner-input-required');
   const counts = await service.inboxCounts(session('chen'), {});
-  assert.deepEqual(counts.value, { deliver: 1, review: 0, confirm: 0 });
+  assert.deepEqual(counts.value, { actorId: 'chen', deliver: 1, review: 0, confirm: 0 });
 });
 
 test('a hidden node does not change counts or groups, and a down directory is the same either way', async () => {
@@ -250,4 +251,92 @@ test('a hidden node does not change counts or groups, and a down directory is th
   assert.equal(missingCounts.error.code, 'not-found');
   assert.equal(missingCounts.error.message, '找不到这个节点。');
   assert.equal(JSON.stringify(missingCounts).includes('deliver'), false);
+});
+
+test('counts echo the member and the requested scope, and an empty echo is not a grant', async () => {
+  const { state, task } = fixture();
+  state.projects.push({ id: 'project2', name: '数据平台', description: '内部数据平台' });
+  const northReady = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      title: '北空间任务',
+      participantIds: ['chen'],
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(northReady, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'task-south',
+      projectId: 'project2',
+      title: '南空间任务',
+      participantIds: ['chen'],
+      workflows: [
+        {
+          ...task.workflows[0],
+          id: 'root-south',
+          nodes: [workflowNode({ id: 'build', title: '构建' })],
+        },
+      ],
+      status: 'ready',
+    },
+  });
+  const spaces = boundedProjectSpaces([
+    { projectId: 'project', spaceId: 'north' },
+    { projectId: 'project2', spaceId: 'south' },
+  ]);
+  const { service, store } = create(ready, spaces);
+  const chen = session('chen', ['north', 'south']);
+  for (const applied of ready.appliedPlans) {
+    const started = await service.startPlan(chen, {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: `start-${applied.taskId}`,
+    });
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  }
+  const north = await service.inboxCounts(chen, { spaceId: 'north' });
+  assert.deepEqual(north.value, {
+    actorId: 'chen',
+    spaceId: 'north',
+    deliver: 1,
+    review: 0,
+    confirm: 0,
+  });
+  const south = await service.inboxCounts(chen, { spaceId: 'south' });
+  assert.deepEqual(south.value, {
+    actorId: 'chen',
+    spaceId: 'south',
+    deliver: 1,
+    review: 0,
+    confirm: 0,
+  });
+  const all = await service.inboxCounts(chen, {});
+  assert.deepEqual(all.value, { actorId: 'chen', deliver: 2, review: 0, confirm: 0 });
+  assert.equal(Object.hasOwn(all.value, 'spaceId'), false);
+
+  const stored = JSON.stringify(store.storage.listNodes());
+  const ghost = await service.inboxCounts(chen, { spaceId: 'ghost' });
+  assert.deepEqual(ghost.value, {
+    actorId: 'chen',
+    spaceId: 'ghost',
+    deliver: 0,
+    review: 0,
+    confirm: 0,
+  });
+  const revoked = await service.inboxCounts(session('chen', ['south']), { spaceId: 'north' });
+  assert.deepEqual(revoked.value, {
+    actorId: 'chen',
+    spaceId: 'north',
+    deliver: 0,
+    review: 0,
+    confirm: 0,
+  });
+  assert.equal(JSON.stringify(ghost).includes('design'), false);
+  assert.equal(JSON.stringify(revoked).includes('build'), false);
+  assert.equal(JSON.stringify(store.storage.listNodes()), stored);
 });

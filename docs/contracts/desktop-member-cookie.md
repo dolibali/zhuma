@@ -33,8 +33,8 @@
 | 报告       | POST `/api/zhuma-exec/report`，原channel envelope／计划引用             | 原只读返回；401清载体                                          |
 | 修订读取   | POST `/api/zhuma-exec/revision`，原channel envelope／计划引用           | 原只读返回；401清载体                                          |
 | 交付草稿   | POST `/api/zhuma-exec/draft`，原channel envelope／节点草稿读写          | 原版本与未完成文件标记；401清载体                              |
-| 待办计数   | POST `/api/zhuma-exec/inbox-counts`，原channel envelope／可选 scope     | 分组计数；401清载体                                            |
-| 执行事件   | POST `/api/zhuma-exec/events`，原channel envelope／游标                 | 游标之后的事件；401清载体                                      |
+| 待办计数   | POST `/api/zhuma-exec/inbox-counts`，原channel envelope／可选 scope     | 分组计数，带回 actorId 与请求 scope；401清载体                 |
+| 执行事件   | POST `/api/zhuma-exec/events`，原channel envelope／游标与可选 scope     | 游标之后的事件，带回成员、scope 与节点引用；401清载体          |
 
 现有 Host 的其它 method 仍由 Host 拒绝；未知 endpoint、额外路径段、编码斜线、普通插件／owner API 不携带成员值。没有新增 WebSocket 成员协议；官方 owner WebSocket 路径保持原实现。上表与实现路径集合为身份6操作加执行11操作，无新增／漏列操作；内部 `forward` callback 和 `clear` 只在主进程内调用，不是新的跨进程接口。
 

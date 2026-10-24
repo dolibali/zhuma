@@ -134,8 +134,8 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - 提交、投票和结算共用的命令也先查目录，再读节点。八种目录故障下，节点在不在、记录损坏与否，都是同一份 `unavailable`，拒绝前不写
 - 人工执行者把交付草稿写在节点记录上。关闭后再打开，包括退回后，仍能读到自己的草稿。只有这位执行者能读写。空间不对和任务不存在，在写之前返回同一份 `not-found`。目录不可用或结果不合法时，任务和节点在不在都返回同一份稍后重试的 `unavailable`，拒绝前不写。不是参与者要等空间通过之后才拒绝。节点不是 `ready` 或 `needs-revision` 时不写。草稿版本不符时不覆盖，并在 `details` 里返回当前版本。同一个幂等键被拿去写另一份内容时也不覆盖。幂等键不超过 200 个字符。超限在空间检查通过之后、写之前拒绝，响应不包含这段键。目录不可用或任务不存在时，超长键和合法键返回同一份响应。单条链接不超过 2048 个字符，全部链接合计不超过 8192 个字符。文件的 id、mediaType、checksum、accessPolicyId 每一项不超过 2048 个字符。正文、链接和这些字段合计不超过 262144 个字符。超出都在写之前拒绝。提交成功后清掉正文、链接和文件，并把草稿版本加一留下；此前没有保存过草稿时按 0 加一，留下版本 1 的空墓碑。这个版本跨轮次有效，旧的 expectedVersion（包括 0）冲突且不覆盖新一轮正文，同一轮里同一个幂等键的重放仍然返回已保存正文。草稿文件无论传入的 uploadComplete 是什么，写入和读回都是未完成
 - 解锁那一次写入失败后，不必等插件再次打开。只有这次请求已经通过权限检查，才补调用者自己空间里、这次请求涉及的任务：写入 `inputRefs`，并把仍是 `blocked` 的下游推进到 `ready`。同一把解锁键不会重复应用。拒绝、找不到和目录不可用都不补写。补写失败不改变这次请求的结果，也不写别的空间，留到下一次再补。插件打开时的对账仍然保留；其中一次写失败不会挡住其他任务
-- 待办分成交付、评审、确认三组。专家节点派给负责人的事项归在交付。每一项带上层路径（项目、任务、父节点标题）和负责人姓名，不写负责人标识。`POST /api/zhuma-exec/inbox-counts`，正文 `{}`，返回 `{ deliver, review, confirm }`。状态变了以后，下一次读取就是新的个数。先查目录：没有目录是 `not-found`，目录不可用是和待办同一份 `unavailable`，两种都不返回个数。看不见的节点不改变个数，也不出现在分组里
-- 执行事件写在节点记录的 `events` 上，不另建存储。每条有 `eventId` 和该节点上单调递增的 `sequence`。只有已接受的启动、提交、投票、结算和解锁才追加；重放不追加。`POST /api/zhuma-exec/events`，正文是节点定位、`after` 和可选的 `seenEventIds`。返回游标之后、且 `eventId` 还没见过的事件。事件只带状态和版本，不带路径、密钥或校验值。先查目录：目录不可用是和待办同一份 `unavailable`。节点不存在或没有权限是同一份 `not-found`。两种都不带事件个数或 `sequence`，节点在不在字节相同。`after` 为负数、非整数或超出安全整数范围时直接拒绝，不读也不写。权限通过之后可以补上本任务还没写完的解锁，再读事件；拒绝、找不到和目录不可用都不写。补写失败不改变这次查询的结果
+- 待办分成交付、评审、确认三组。专家节点派给负责人的事项归在交付。每一项带上层路径（项目、任务、父节点标题）和负责人姓名，不写负责人标识。`POST /api/zhuma-exec/inbox-counts` 与 `inbox` 使用同一份可选 `spaceId` 过滤，正文可以是 `{}`。成功值带可信 `actorId` 和 `{ deliver, review, confirm }`；请求里有 `spaceId` 时原样回显，没有则不含该字段，旧的无范围调用仍可用。状态变了以后，下一次读取就是新的个数。先查目录：没有目录是 `not-found`，目录不可用是和待办同一份 `unavailable`，两种都不返回个数。看不见的节点不改变个数，也不出现在分组里。未持有的范围得到该范围的空个数和回显。空成功和回显只说明这次过滤后的个数，不是授权证明，调用方不能拿全空间结果自己再滤
+- 执行事件写在节点记录的 `events` 上，不另建存储。每条有 `eventId` 和该节点上单调递增的 `sequence`。只有已接受的启动、提交、投票、结算和解锁才追加；重放不追加。`eventId` 写成 `evt:<nodeId>:<seq>`。两个任务可以复用同一个 `nodeId`，所以这个 id 不区分账号、空间或完整节点定位。调用方必须按账号、空间和 `taskId` / `planId` / `revision` / `nodeId` 分开保存 `after` 与 `seenEventIds`。带着另一处的游标来读当前节点时，同名 id 会从这次结果里去掉；服务仍只回答所请求的那一个节点，不把两处事件放进同一次响应。`POST /api/zhuma-exec/events` 的正文是节点定位、`after`、可选的 `seenEventIds`，以及可选的 `spaceId`。`spaceId` 沿用显式空间约束：调用者必须当前持有它，且它必须等于任务所属空间。对不上、未持有、任务不存在或没有权限，都在读节点和补写之前返回同一份 `not-found`，不写。不带 `spaceId` 时仍只核对调用者是否持有该任务的空间，成功值不含 `spaceId`。要限定当前页，必须带上 `spaceId`。成功值带回 `actorId`、请求中的 `spaceId`（若有）和节点定位，以及游标之后、且 `eventId` 还没见过的事件。事件只带状态和版本，不带路径、密钥或校验值。先查目录：目录不可用是和待办同一份 `unavailable`，也在读节点和补写之前返回，节点在不在字节相同。两种拒绝都不带事件个数或 `sequence`。权限通过之后可以补上本任务还没写完的解锁，再读事件；拒绝、找不到和目录不可用都不写。补写失败不改变这次查询的结果
 
 未实现（后续切片）：
 
@@ -146,19 +146,20 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 
 ## 需要成员 A 接入
 
-B 不改 `workbench-plugin.ts` 的业务，也不把工作台域再 `open` 一次。A 自己保住已打开的工作台，把 `readWorkbench` 传进来。加载顺序是先选定部署模式，再 `applyIdentity`，然后工作台，然后执行：
+B 不改 `workbench-plugin.ts` 的业务，也不把工作台域再 `open` 一次。A 自己保住已打开的工作台，把 `readWorkbench` 传进来。加载顺序是先选定部署模式，再 `applySpaceDirectory`，再 `applyIdentity`，然后工作台，然后执行：
 
 ```ts
 configureDeploymentMode(ctx, mode);
+await applySpaceDirectory(ctx, spaceImport);
 await applyIdentity(ctx, imported);
 await applyWorkbench(ctx);
 await applyExecution(ctx, {
   readWorkbench: () => service.snapshot(),
-  projectSpaces,
+  projectSpaces: spaceDirectoryFor(ctx),
 });
 ```
 
-`applyExecution` 接受 `readWorkbench`，并可选接受 `projectSpaces`。不要传 `memberResolver` 或 `singleUser`。单人还是多人是上一步选定的 `deploymentMode`，不从解析器是否存在来推断。项目到空间的正式目录由 B 在 #29 交付。A 只在 Host 注入这份目录，不另建事实源。后栈 #66–#71 不是交付 #29 事实源的前提。B 不打开空间库，也不保存这份归属，只消费调用方注入的目录。没有记录、空间不匹配，以及根本没有注入目录，都拒绝。
+`applyExecution` 只接受 `readWorkbench`，并可选接受 `projectSpaces`。`projectSpaces` 用同一次 `spaceDirectoryFor(ctx)` 句柄，不要传 `memberResolver` 或 `singleUser`。单人还是多人是上一步选定的 `deploymentMode`，不从解析器是否存在来推断。项目到空间的正式目录由 B 在 #29 交付，经 `applySpaceDirectory` 装配。A 只在 Host 注入这份目录，不另建事实源。后栈 #66–#71 不是交付 #29 事实源的前提。B 不打开空间库，也不保存这份归属，只消费调用方注入的目录。没有记录、空间不匹配，以及根本没有注入目录，都拒绝。
 
 ```ts
 interface ProjectSpaceDirectory {
@@ -229,7 +230,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 - 任何一个空间目录出问题时所有人的待办都不可用。
 - 事件没有上限、没有分页（400 条评论约 69KB）。
 - 事件里没有运行引用。
-- 客户端只在单次响应内去重。
+- 客户端只在单次响应内去重。`after` 与 `seenEventIds` 还要按账号、空间和完整节点定位分开保存；`evt:<nodeId>:<seq>` 在两个任务复用 `nodeId` 时同名。
 
 - 同一轮已经投下的票不能撤回。先通过再改成退回会得到 `conflicting-ballot`，原先的通过仍然有效。
 - 本层服务事实：同一个幂等键配上不同内容返回 `idempotency-mismatch`，不覆盖已保存内容；同一个键配上相同内容则重放。内容包含正文、链接、文件标识，以及文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId`。草稿文件无论传入的 `uploadComplete` 是什么，写入和读回都是未完成。被拒绝的请求不写回执。

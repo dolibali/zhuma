@@ -134,6 +134,7 @@ const eventsSchema = z.strictObject({
   nodeId: id,
   after: z.number().refine((value) => Number.isSafeInteger(value) && value >= 0),
   seenEventIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  spaceId: id.optional(),
 });
 
 export type StartPlanRequest = z.infer<typeof startSchema>;
@@ -406,6 +407,9 @@ export interface InboxPlace {
 }
 
 export interface InboxCounts {
+  readonly actorId: string;
+  /** Echoes the requested scope. Absent when the caller did not send one. */
+  readonly spaceId?: string | undefined;
   readonly deliver: number;
   readonly review: number;
   readonly confirm: number;
@@ -447,7 +451,9 @@ function inboxPlace(workbench: Workbench, item: InboxItem): InboxPlace {
   return { itemId: item.id, taskPath: titles.join(' / '), ownerName: owner?.name.trim() ?? '' };
 }
 
-function countInbox(items: readonly InboxItem[]): InboxCounts {
+function countInbox(
+  items: readonly InboxItem[],
+): Pick<InboxCounts, 'deliver' | 'review' | 'confirm'> {
   return {
     deliver: items.filter((item) => item.kind === 'deliver').length,
     review: items.filter((item) => item.kind === 'review').length,
@@ -653,26 +659,50 @@ export class ExecutionService {
     });
   }
 
-  /** Counts for a shortcut. The next read follows the current node status. */
+  /**
+   * Counts for a shortcut. The next read follows the current node status.
+   * `actorId` and a requested `spaceId` are echoes, not a grant.
+   */
   inboxCounts(caller: ExecutionCaller, body: unknown): Promise<ExecutionResult<InboxCounts>> {
     return this.enqueue(async () => {
       const opened = await this.openInbox(caller, body);
       if (!opened.ok) return opened;
-      return { ok: true, value: countInbox(opened.items) };
+      return {
+        ok: true,
+        value: {
+          actorId: opened.actorId,
+          ...(opened.scope === undefined ? {} : { spaceId: opened.scope }),
+          ...countInbox(opened.items),
+        },
+      };
     });
   }
 
-  /** Events after a cursor. Seen ids are dropped so a replay does not apply twice. */
+  /**
+   * Events after a cursor. A requested scope is checked before the node is
+   * read or an unlock is repaired. Seen ids are dropped inside that one node.
+   */
   events(
     caller: ExecutionCaller,
     body: unknown,
-  ): Promise<ExecutionResult<{ readonly events: readonly ExecutionEvent[] }>> {
+  ): Promise<
+    ExecutionResult<{
+      readonly actorId: string;
+      readonly spaceId?: string | undefined;
+      readonly taskId: string;
+      readonly planId: string;
+      readonly revision: number;
+      readonly nodeId: string;
+      readonly events: readonly ExecutionEvent[];
+    }>
+  > {
     return this.enqueue(async () => {
       const actor = this.actor(caller, body);
       if (!actor.ok) return actor;
       const parsed = parseBody(eventsSchema, body);
       if (!parsed.ok) return parsed;
-      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      const scope = parsed.value.spaceId;
+      const space = await this.gateSpaceScoped(parsed.value.taskId, actor.value.spaceIds, scope);
       if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
       if (space === 'missing' || !space.ok) return fail('not-found');
       const current = this.storage.readNode(nodeRecordKey(parsed.value));
@@ -694,6 +724,12 @@ export class ExecutionService {
       return {
         ok: true,
         value: {
+          actorId: actor.value.actorId,
+          ...(scope === undefined ? {} : { spaceId: scope }),
+          taskId: parsed.value.taskId,
+          planId: parsed.value.planId,
+          revision: parsed.value.revision,
+          nodeId: parsed.value.nodeId,
           events: page.flatMap((event) => {
             const published = publishExecutionEvent(event);
             return published ? [published] : [];

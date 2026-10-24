@@ -88,8 +88,8 @@ function confirm(nodes, extra = []) {
   return { state: ready, applied };
 }
 
-function session(memberId) {
-  return { member: { ok: true, memberId, spaceIds: ['project'] } };
+function session(memberId, spaceIds = ['project']) {
+  return { member: { ok: true, memberId, spaceIds } };
 }
 
 test('accepted commands append monotonic events and a cursor can dedupe them', async () => {
@@ -157,6 +157,12 @@ test('accepted commands append monotonic events and a cursor can dedupe them', a
     });
   const designEvents = await pull('design', 0);
   assert.equal(designEvents.ok, true);
+  assert.equal(designEvents.value.actorId, 'chen');
+  assert.equal(Object.hasOwn(designEvents.value, 'spaceId'), false);
+  assert.equal(designEvents.value.taskId, applied.taskId);
+  assert.equal(designEvents.value.planId, applied.id);
+  assert.equal(designEvents.value.revision, applied.revision);
+  assert.equal(designEvents.value.nodeId, 'design');
   assert.deepEqual(
     designEvents.value.events.map((event) => event.type),
     ['node-started', 'delivery-submitted', 'ballot-recorded'],
@@ -363,3 +369,151 @@ function create(state, spaces = projectSpaces) {
   const service = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
   return { service, store };
 }
+
+test('events check the requested space before reading, and a stale cursor stays with its node', async () => {
+  const { state, task } = fixture();
+  state.projects.push({ id: 'project2', name: '数据平台', description: '内部数据平台' });
+  const northReady = applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      title: '北空间任务',
+      participantIds: ['chen'],
+      workflows: [{ ...task.workflows[0], nodes: [workflowNode({ id: 'design', title: '设计' })] }],
+      status: 'ready',
+    },
+  });
+  const ready = applyWorkbenchCommand(northReady, {
+    type: 'save-task',
+    task: {
+      ...task,
+      id: 'task-south',
+      projectId: 'project2',
+      title: '南空间任务',
+      participantIds: ['chen'],
+      workflows: [
+        {
+          ...task.workflows[0],
+          id: 'root-south',
+          nodes: [workflowNode({ id: 'design', title: '设计' })],
+        },
+      ],
+      status: 'ready',
+    },
+  });
+  const spaces = boundedProjectSpaces([
+    { projectId: 'project', spaceId: 'north' },
+    { projectId: 'project2', spaceId: 'south' },
+  ]);
+  const inner = memory();
+  let writes = 0;
+  const storage = {
+    ...inner.storage,
+    writeNode: async (key, value) => {
+      writes += 1;
+      return inner.storage.writeNode(key, value);
+    },
+    writePlan: async (key, value) => {
+      writes += 1;
+      return inner.storage.writePlan(key, value);
+    },
+  };
+  const service = new ExecutionService(storage, { readWorkbench: () => ready }, spaces);
+  const chen = session('chen', ['north', 'south']);
+  const northPlan = ready.appliedPlans.find((plan) => plan.taskId === 'task');
+  const southPlan = ready.appliedPlans.find((plan) => plan.taskId === 'task-south');
+  for (const [applied, idempotencyKey] of [
+    [northPlan, 'start-north'],
+    [southPlan, 'start-south'],
+  ]) {
+    const started = await service.startPlan(chen, {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey,
+    });
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+  }
+  const locate = (applied) => ({
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    after: 0,
+  });
+  const north = await service.events(chen, { ...locate(northPlan), spaceId: 'north' });
+  assert.equal(north.ok, true, north.ok ? '' : north.error.code);
+  assert.equal(north.value.actorId, 'chen');
+  assert.equal(north.value.spaceId, 'north');
+  assert.equal(north.value.taskId, 'task');
+  assert.equal(north.value.planId, northPlan.id);
+  assert.equal(north.value.revision, northPlan.revision);
+  assert.equal(north.value.nodeId, 'design');
+  assert.deepEqual(
+    north.value.events.map((event) => event.type),
+    ['node-started'],
+  );
+  const south = await service.events(chen, { ...locate(southPlan), spaceId: 'south' });
+  assert.equal(south.ok, true, south.ok ? '' : south.error.code);
+  assert.equal(south.value.actorId, 'chen');
+  assert.equal(south.value.spaceId, 'south');
+  assert.equal(south.value.taskId, 'task-south');
+  assert.equal(south.value.nodeId, 'design');
+  assert.equal(north.value.events[0].eventId, south.value.events[0].eventId);
+
+  const mark = writes;
+  const wrong = await service.events(chen, { ...locate(northPlan), spaceId: 'south' });
+  const missing = await service.events(chen, {
+    ...locate(northPlan),
+    nodeId: 'missing-node',
+    spaceId: 'north',
+  });
+  assert.equal(wrong.ok, false);
+  assert.equal(wrong.error.code, 'not-found');
+  assert.equal(JSON.stringify(wrong), JSON.stringify(missing));
+  assert.equal(JSON.stringify(wrong).includes('evt:'), false);
+  assert.equal(JSON.stringify(wrong).includes('sequence'), false);
+  const revoked = await service.events(session('chen', ['north']), {
+    ...locate(southPlan),
+    spaceId: 'south',
+  });
+  assert.equal(revoked.ok, false);
+  assert.equal(revoked.error.code, 'not-found');
+  const down = {
+    async spaceForProject() {
+      throw new Error('space-down-4e1');
+    },
+  };
+  const broken = new ExecutionService(storage, { readWorkbench: () => ready }, down);
+  const unavailable = await broken.events(chen, { ...locate(northPlan), spaceId: 'north' });
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.error.code, 'unavailable');
+  assert.equal(unavailable.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(unavailable).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(unavailable).includes('evt:'), false);
+  assert.equal(writes, mark);
+
+  const switched = await service.events(chen, {
+    ...locate(southPlan),
+    spaceId: 'south',
+    seenEventIds: [north.value.events[0].eventId],
+  });
+  assert.equal(switched.ok, true, switched.ok ? '' : switched.error.code);
+  assert.equal(switched.value.actorId, 'chen');
+  assert.equal(switched.value.spaceId, 'south');
+  assert.equal(switched.value.taskId, 'task-south');
+  assert.equal(switched.value.planId, southPlan.id);
+  assert.equal(switched.value.nodeId, 'design');
+  assert.deepEqual(switched.value.events, []);
+  const fresh = await service.events(chen, { ...locate(southPlan), spaceId: 'south' });
+  assert.equal(fresh.value.events.length, 1);
+  assert.equal(fresh.value.events[0].eventId, south.value.events[0].eventId);
+
+  const unscoped = await service.events(chen, locate(northPlan));
+  assert.equal(unscoped.ok, true, unscoped.ok ? '' : unscoped.error.code);
+  assert.equal(Object.hasOwn(unscoped.value, 'spaceId'), false);
+  assert.equal(unscoped.value.actorId, 'chen');
+  assert.equal(unscoped.value.taskId, 'task');
+  assert.equal(unscoped.value.nodeId, 'design');
+  assert.equal(unscoped.value.events.length, 1);
+});

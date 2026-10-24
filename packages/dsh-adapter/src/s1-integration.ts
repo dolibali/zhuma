@@ -275,6 +275,9 @@ export interface InboxPlace {
   readonly ownerName: string;
 }
 export interface InboxCounts {
+  readonly actorId: string;
+  /** Echoes the requested scope. Absent when the caller did not send one. */
+  readonly spaceId?: string | undefined;
   readonly deliver: number;
   readonly review: number;
   readonly confirm: number;
@@ -286,6 +289,8 @@ export interface EventsRequest {
   nodeId: string;
   after: number;
   seenEventIds?: readonly string[];
+  /** Chosen space constraint; checked against the task's owning space before the node is read. */
+  readonly spaceId?: string | undefined;
 }
 export interface ExecutionEvent {
   readonly eventId: string;
@@ -298,6 +303,13 @@ export interface ExecutionEvent {
   readonly version: number;
 }
 export interface EventsValue {
+  readonly actorId: string;
+  /** Echoes the requested scope. Absent when the caller did not send one. */
+  readonly spaceId?: string | undefined;
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
   readonly events: readonly ExecutionEvent[];
 }
 export interface ChannelInboxValue {
