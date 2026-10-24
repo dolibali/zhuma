@@ -5,30 +5,10 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { webcrypto } from 'node:crypto';
+import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots';
 
-// Test-only compilation of the pinned SDK core; production keeps using public SDK entries.
-const slotCoreModule = build({
-  entryPoints: [
-    fileURLToPath(
-      new URL(
-        '../../../upstream/deepseek-harness/packages/client/ui-slots/src/index.ts',
-        import.meta.url,
-      ),
-    ),
-  ],
-  bundle: true,
-  write: false,
-  format: 'cjs',
-  platform: 'node',
-  logLevel: 'error',
-}).then((result) => {
-  const module = { exports: {} };
-  runInNewContext(result.outputFiles[0].text, { module, exports: module.exports, queueMicrotask });
-  return module.exports.SlotCore;
-});
-
-async function createSlotCore() {
-  const SlotCore = await slotCoreModule;
+// Exercise the pinned SDK's public registry entry without upstream source imports.
+function createSlotCore() {
   const core = new SlotCore();
   core.register(
     {
@@ -46,7 +26,7 @@ async function createSlotCore() {
 }
 
 test('pinned SDK list registration requires an id and rejects duplicate live ids', async () => {
-  const core = await createSlotCore();
+  const core = createSlotCore();
   const options = { name: 'sidebar.footer.action', id: 'zhuma-account' };
   assert.throws(
     () => core.register({ name: options.name }, () => null),
@@ -66,7 +46,7 @@ test('pinned SDK list registration requires an id and rejects duplicate live ids
 
 // Compiled real plugin + pinned SDK registry core. No host rendering or sidebar imitation.
 test('member plugin composition contract: actual footer/main registrations share one owned session and preserve Settings', async () => {
-  const core = await createSlotCore();
+  const core = createSlotCore();
   const result = await build({
     entryPoints: [fileURLToPath(new URL('../src/workbench/plugin.tsx', import.meta.url))],
     bundle: true,
