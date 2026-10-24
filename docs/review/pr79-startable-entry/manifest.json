@@ -1,0 +1,318 @@
+{
+  "before": "8070b3073047138737b31e168245cd50c0017ca9",
+  "after": "466d7cc13e7775235d8f79fa1d06a97cd66a3bd4",
+  "clientSha256": "b2f47a787bd572f498dd0a3270551e37cd5d916d627d00a500fb501a424db64d",
+  "source": "Actual MemberExecutionPage plus own components and CSS from each pinned source; same synthetic identity/execution HTTP values, common comparison caption. Four synthetic plans intentionally include version contrasts; not a real Host or authoritative list.",
+  "boundary": "Before has no plan picker/start equivalent. Overview and delivery draft are paired; expanded picker and started state are after-only. Not installed desktop/sidebar/identity/storage/model proof. Full-page screenshots at1440x900 viewport; height can exceed900.",
+  "rows": [
+    {
+      "file": "before-overview-light-1440x900.png",
+      "version": "before",
+      "scene": "overview",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 39829,
+      "sha256": "ab6ba9d94291dc09c6dfcaa86d22f913028536f2a31c879e56ab8d2b0a4741c2",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "file": "before-draft-light-1440x900.png",
+      "version": "before",
+      "scene": "draft",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 71183,
+      "sha256": "6efc69304915b204f7e85e0e5e221644d0e2aa10be5a8b19fa6418d86357c424",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 981
+      }
+    },
+    {
+      "file": "before-overview-dark-1440x900.png",
+      "version": "before",
+      "scene": "overview",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 38318,
+      "sha256": "b7a4308bfc7497edb75fa2578395692e7d7d367599f4c97cd75fa7c6bbcba53f",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "file": "before-draft-dark-1440x900.png",
+      "version": "before",
+      "scene": "draft",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 68613,
+      "sha256": "202f9b8077714852b846a58bdfa7ffd102212efa0921790b0cf6166fa8e23be0",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 981
+      }
+    },
+    {
+      "file": "after-overview-light-1440x900.png",
+      "version": "after",
+      "scene": "overview",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 47200,
+      "sha256": "8abc7e61fe548fc7949ab77d9e6021349374fbdb4d6d789f5ef807974ed26cc5",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "file": "after-expanded-light-1440x900.png",
+      "version": "after",
+      "scene": "expanded",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 58577,
+      "sha256": "1cfeb72fd9c21a2596344f3e7ec58139b3bae951780015f4af8d7221f9f48a17",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "file": "after-draft-light-1440x900.png",
+      "version": "after",
+      "scene": "draft",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 88866,
+      "sha256": "acf85c3664a521c2de557e6c195141fea11b1cc887bec677c1545c310fa92470",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 1238
+      }
+    },
+    {
+      "file": "after-started-light-1440x900.png",
+      "version": "after",
+      "scene": "started",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 92437,
+      "sha256": "b4ad6e0760b81347c118c21195b50ae5a4f7f6a1fe84e9a185b2e40b0ecbc2c1",
+      "errors": [],
+      "commands": 1,
+      "png": {
+        "width": 1440,
+        "height": 1276
+      }
+    },
+    {
+      "file": "after-overview-dark-1440x900.png",
+      "version": "after",
+      "scene": "overview",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 45168,
+      "sha256": "093ca94ff7f6de3ab2d0a1986e1a1b807c8b3bb09c5137f15f9a7343b2c468bf",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "file": "after-expanded-dark-1440x900.png",
+      "version": "after",
+      "scene": "expanded",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 56663,
+      "sha256": "fc2d37ad889ead7752de4cd6d761729b38225770bd3587cbb175833e56acce3e",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "file": "after-draft-dark-1440x900.png",
+      "version": "after",
+      "scene": "draft",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 85563,
+      "sha256": "090ace51d4626b3efabeacd96fc6dbeb3ad10d99d52d51117ea7b26a2013c7a2",
+      "errors": [],
+      "commands": 0,
+      "png": {
+        "width": 1440,
+        "height": 1238
+      }
+    },
+    {
+      "file": "after-started-dark-1440x900.png",
+      "version": "after",
+      "scene": "started",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "bytes": 88118,
+      "sha256": "b179e2c46cc84978109e9a492f368a001c9774846ce7e0432f37578726b70d0f",
+      "errors": [],
+      "commands": 1,
+      "png": {
+        "width": 1440,
+        "height": 1276
+      }
+    }
+  ],
+  "layout": [
+    {
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    },
+    {
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    },
+    {
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    },
+    {
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "CSSZoom": 2,
+      "boundary": "CSS stress, not native browser zoom",
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    },
+    {
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    },
+    {
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    },
+    {
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    },
+    {
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "CSSZoom": 2,
+      "boundary": "CSS stress, not native browser zoom",
+      "overflow": false,
+      "draft": "订单状态说明（示例）\n待支付、已支付和已取消各有明确原因，并保留正在处理的交付草稿。"
+    }
+  ],
+  "afterOriginalCapture": "1668ff0bd058360a4a9f6d6fe14d9e60ec8dfeef",
+  "afterCompatibility": "Only test focus assertions changed after1668 capture; Client and CSS source byte-identical through466d, emittedClient SHA256 unchanged",
+  "personallyViewed": true
+}
