@@ -319,10 +319,11 @@ export interface ReviewDraft {
   readonly idempotencyKey: string;
   readonly roundId: string;
   readonly artifactVersionId: string;
-  readonly action: 'approve' | 'request-changes';
+  readonly action: 'approve' | 'request-changes' | 'comment';
   readonly comment?: string;
 }
 export interface ExecutionApi {
+  startPlan(draft: StartPlanRequest, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
@@ -330,6 +331,7 @@ export interface ExecutionApi {
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
   api: ExecutionApi;
+  plan?: Omit<StartPlanRequest, 'idempotencyKey'> & { readonly title: string };
 }
 export interface InboxPanelProps {
   items: readonly InboxItem[];
