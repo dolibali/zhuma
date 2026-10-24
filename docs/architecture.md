@@ -47,7 +47,7 @@
 
 `agent-core/workbench` 与 `planning` 保存可序列化目录、草稿、确认快照和规划协议。`dsh-adapter/workbench-service` 串行处理带版本/幂等键的持久化命令；`workbench-plugin` 通过 DSH Connection、storageDomain 和 llm 接入真实 Host。`client/workbench` 仅调用公共 RPC 并渲染工作流，不导入 Host。
 
-S1a 的 `host-plugin` 已随 develop `843661c` 合入。它把显式部署模式、先注册的流式门禁及 B 身份子作用域组合起来；旧五接口在成员模式全部拒绝，不把身份失败解释为单人模式。已打开 WorkbenchService 的克隆快照仅通过 Host 内部闭包交接，各工作台域单开。服务 DI／真实凭据与重启、发行文件和单人原生桌面分别验证；[实现与剩余 S1b 边界](host-identity-integration.md)。产品空间映射和业务页面仍待正式接入。
+S1a 待审 `host-plugin` 将显式部署模式、先注册的流式门禁及 B 身份子作用域组合起来；旧五接口在成员模式全部拒绝，不把身份失败解释为单人模式。已打开 WorkbenchService 的克隆快照仅通过 Host 内部闭包交接，各工作台域单开。服务 DI／真实凭据与重启、发行文件和单人原生桌面分别验证；[实现与剩余 S1b 边界](host-identity-integration.md)。产品空间映射和业务页面仍待正式接入。
 
 当前是本地 Host owner 模式；已确认计划独立版本化，不能据此宣称多人权限或执行调度已完成。子任务容器方向及 A/B 分工见 [交接方案](ab-handoff-proposal.md)；当前同任务嵌套只用于编辑草稿，不冻结为执行树模型。
 

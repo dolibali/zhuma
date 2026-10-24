@@ -35,7 +35,7 @@ SourceFiles 只读查看／下载当前定义的允许文件。源码正文不�
 
 同一 command(expectedRevision/requestId) 增加 import-package，payload 为 versionId、files(path/base64) 与 choices。纯领域校验后，先持久化不可变包，再提交带收据的目录。目录写入失败只留下不可见包，原请求可重试；同版本不同文件拒绝。尚未实现未引用版本清理或用户容量管理。
 
-新增 exact /api/zhuma/preview-import（files 或 zip）、/api/zhuma/resource-files（asset/expert 与当前目录 ID），沿用官方 Connection owner carrier。后者只返回当前定义 origin 允许的文件，不接受任意 Host 路径／原始版本扫描。WorkbenchApi 对应 previewImport/resourceFiles。**S1 成员模式必须由显式模式／失败关闭门禁覆盖这两个入口及 import-package 写入**，不能因 identity 模块缺失落回 owner；A 的 [S1a 组合](host-identity-integration.md)已随 develop `843661c` 合入，已接 B 的模式门禁并验证流式提前拒绝，尚未提供按空间授权的导入入口。本批单人契约不认证多人授权。B 的执行、提交、评审与文件物化不在这里实现。
+新增 exact /api/zhuma/preview-import（files 或 zip）、/api/zhuma/resource-files（asset/expert 与当前目录 ID），沿用官方 Connection owner carrier。后者只返回当前定义 origin 允许的文件，不接受任意 Host 路径／原始版本扫描。WorkbenchApi 对应 previewImport/resourceFiles。**S1 成员模式必须由显式模式／失败关闭门禁覆盖这两个入口及 import-package 写入**，不能因 identity 模块缺失落回 owner；A 的 [S1a 待审组合](host-identity-integration.md)已接 B 的模式门禁并验证流式提前拒绝，尚未提供按空间授权的导入入口。本批单人契约不认证多人授权。B 的执行、提交、评审与文件物化不在这里实现。
 
 ## 当前验证
 
