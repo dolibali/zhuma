@@ -5,7 +5,7 @@ const member = (accountId) => ({
   accountId,
   principal: { kind: 'zhuma-member', memberId: accountId },
   peerId: `fixture-${accountId}`,
-  spaces: [],
+  spaces: [{ id: `personal-${accountId}`, kind: 'personal', name: '我的空间' }],
 });
 const json = (route, status, body) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -47,7 +47,10 @@ async function routes(page, initialAccount) {
       return json(route, 200, {
         type: 'server-response',
         rpcId: body.rpcId,
-        result: { ok: true, value: { actorId: state.account, plans: [] } },
+        result: {
+          ok: true,
+          value: { actorId: state.account, spaceId: body.payload.spaceId, plans: [] },
+        },
       });
     expect(body.method).toBe('zhuma-exec/inbox');
     const value =
@@ -57,7 +60,7 @@ async function routes(page, initialAccount) {
     return json(route, 200, {
       type: 'server-response',
       rpcId: body.rpcId,
-      result: { ok: true, value },
+      result: { ok: true, value: { ...value, spaceId: body.payload.spaceId } },
     });
   });
   return state;

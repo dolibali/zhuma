@@ -60,9 +60,22 @@ export function StartableProbe() {
     const rpc = {
       call(channel, endpoint, payload, signal) {
         const response = endpoint.endsWith('/startable')
-          ? { ok: true, value: { actorId: data.replyActor, plans: structuredClone(data.plans) } }
+          ? {
+              ok: true,
+              value: {
+                actorId: data.replyActor,
+                ...(payload.spaceId === undefined ? {} : { spaceId: payload.spaceId }),
+                plans: structuredClone(data.plans),
+              },
+            }
           : endpoint.endsWith('/inbox')
-            ? { ok: true, value: inbox(structuredClone(data.nodes)) }
+            ? {
+                ok: true,
+                value: {
+                  ...inbox(structuredClone(data.nodes)),
+                  ...(payload.spaceId === undefined ? {} : { spaceId: payload.spaceId }),
+                },
+              }
             : { ok: true, value: { disposition: 'applied', reports: [] } };
         const entry = { channel, endpoint, payload, signal, response, settled: false };
         data.calls.push(entry);
@@ -84,7 +97,7 @@ export function StartableProbe() {
           accountId: 'chen',
           principal: { kind: 'zhuma-member', memberId: 'chen' },
           peerId: 'fixture-chen',
-          spaces: [],
+          spaces: [{ id: 'fixture-space', kind: 'personal', name: '个人空间' }],
         });
       const request = JSON.parse(options.body);
       const result = await rpc.call('/api', request.method, request.payload, options.signal);

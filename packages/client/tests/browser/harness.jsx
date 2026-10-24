@@ -6,6 +6,7 @@ import { ExecutionProbe } from './execution-probe.jsx';
 import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
 import { MemberLoginProbe } from './member-login-probe.jsx';
 import { MemberSpacesProbe } from './member-spaces-probe.jsx';
+import { MemberExecutionSpacesProbe } from './member-execution-spaces-probe.jsx';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
 import styles from '../../src/workbench/workbench.css';
@@ -62,6 +63,8 @@ function MountProbe() {
 }
 const content = new URL(location.href).searchParams.has('startable-plans') ? (
   <StartableProbe />
+) : new URL(location.href).searchParams.has('member-execution-spaces') ? (
+  <MemberExecutionSpacesProbe />
 ) : new URL(location.href).searchParams.has('member-spaces') ? (
   <MemberSpacesProbe />
 ) : new URL(location.href).searchParams.has('member-execution') ? (
