@@ -141,6 +141,19 @@ export interface RevisionQuery {
   readonly revision: number;
   readonly nodeId: string;
 }
+export interface SavedDeliveryDraftWire {
+  readonly version: number;
+  readonly text: string;
+  readonly links: readonly string[];
+  readonly files: readonly ArtifactFileRef[];
+}
+export interface DeliveryDraftSave extends RevisionQuery {
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly text?: string;
+  readonly links?: readonly string[];
+  readonly files?: readonly ArtifactFileRef[];
+}
 export interface RevisionContentWire {
   readonly id: string;
   readonly version: number;
@@ -187,6 +200,11 @@ export interface ExecutionApi {
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   revision(query: RevisionQuery, signal?: AbortSignal): Promise<RevisionViewWire>;
+  readDeliveryDraft(query: RevisionQuery, signal?: AbortSignal): Promise<SavedDeliveryDraftWire>;
+  saveDeliveryDraft(
+    draft: DeliveryDraftSave,
+    signal?: AbortSignal,
+  ): Promise<SavedDeliveryDraftWire>;
 }
 
 const ACTOR_FIELD_DEPTH_LIMIT = 32;
@@ -286,6 +304,36 @@ function readUpstreamInput(value: unknown): UpstreamInputWire {
     default:
       return invalid('返回的上游可见状态不正确。');
   }
+}
+export function readSavedDeliveryDraft(value: unknown): SavedDeliveryDraftWire {
+  const draft = record(value, '已存草稿');
+  if (typeof draft.text !== 'string' || !Array.isArray(draft.links) || !Array.isArray(draft.files))
+    invalid('返回的草稿不完整，请重新读取。');
+  return {
+    version: integer(draft.version, 0, '草稿版本'),
+    text: draft.text,
+    links: draft.links.map((link) => text(link, '草稿链接')),
+    files: draft.files.map((raw) => {
+      const file = record(raw, '草稿文件引用');
+      if (file.uploadComplete !== false) invalid('草稿文件尚未上传，返回状态不正确。');
+      return {
+        id: text(file.id, '文件引用'),
+        mediaType: text(file.mediaType, '文件类型'),
+        byteSize: integer(file.byteSize, 0, '文件大小'),
+        checksum: text(file.checksum, '文件校验'),
+        accessPolicyId: text(file.accessPolicyId, '文件访问策略'),
+        uploadComplete: false,
+      };
+    }),
+  };
+}
+function draftQuery(query: RevisionQuery): RevisionQuery {
+  return {
+    taskId: text(query.taskId, '任务'),
+    planId: text(query.planId, '计划'),
+    revision: integer(query.revision, 1, '计划版本'),
+    nodeId: text(query.nodeId, '节点'),
+  };
 }
 function readRevisionContent(value: unknown): RevisionContentWire {
   const item = record(value, '退回版本');
@@ -581,6 +629,22 @@ export function createExecutionApi(rpc: ClientConnectionRpc, spaceId?: string): 
       };
       // revision's strict request has no spaceId. The bound HTTP precheck and frozen node reference remain in force.
       return readRevisionView(await call('revision', payload, signal));
+    },
+    async readDeliveryDraft(query, signal) {
+      return readSavedDeliveryDraft(await call('draft', draftQuery(query), signal));
+    },
+    async saveDeliveryDraft(draft, signal) {
+      const payload = {
+        ...draftQuery(draft),
+        expectedVersion: integer(draft.expectedVersion, 0, '草稿版本'),
+        idempotencyKey: text(draft.idempotencyKey, '幂等键'),
+        ...(draft.text === undefined ? {} : { text: draft.text }),
+        ...(draft.links === undefined ? {} : { links: [...draft.links] }),
+        ...(draft.files === undefined ? {} : { files: draft.files.map((file) => ({ ...file })) }),
+      };
+      const saved = readSavedDeliveryDraft(await call('draft', payload, signal));
+      if (saved.version !== draft.expectedVersion + 1) invalid('返回的草稿版本与本次保存不一致。');
+      return saved;
     },
     async submit(draft, signal) {
       const payload = {

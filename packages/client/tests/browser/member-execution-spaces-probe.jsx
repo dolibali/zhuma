@@ -150,9 +150,11 @@ export function createMemberExecutionSpacesReplay() {
         ? { ...inbox(structuredClone(visible.nodes)), actorId: data.account, ...echo }
         : method === 'startable'
           ? { actorId: data.account, plans: structuredClone(visible.plans), ...echo }
-          : method === 'start-plan'
-            ? { disposition: 'applied', reports: [] }
-            : { node: structuredClone(method === 'ballot' ? nodeB : deliveryNode) };
+          : method === 'draft'
+            ? { version: 0, text: '', links: [], files: [] }
+            : method === 'start-plan'
+              ? { disposition: 'applied', reports: [] }
+              : { node: structuredClone(method === 'ballot' ? nodeB : deliveryNode) };
     return reply(
       {
         kind: 'service',
