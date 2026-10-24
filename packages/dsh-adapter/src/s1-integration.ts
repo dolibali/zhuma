@@ -15,6 +15,7 @@ import type {
   Workbench,
 } from '@zhuma/agent-core';
 import type { ProjectSpaceDirectory } from './project-space.js';
+import type { RevisionView } from './revision-view.js';
 export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 export interface MemberRequest {
   readonly headers: IncomingHttpHeaders;
@@ -97,6 +98,8 @@ export type ExecutionEndpoints = readonly [
   'ballot',
   'settle',
   'report',
+  'revision',
+  'draft',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -109,6 +112,15 @@ export interface ReportRequest {
   taskId: string;
   planId: string;
   revision: number;
+}
+export interface RevisionRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+}
+export interface RevisionValue {
+  readonly view: RevisionView;
 }
 interface ExecutionLocate {
   taskId: string;
@@ -163,6 +175,8 @@ export type ExecutionMessageCode =
   | 'plan-incomplete'
   | 'unavailable'
   | 'not-found'
+  | 'not-returned'
+  | 'not-deliverable'
   | 'validation'
   | 'unknown-field'
   | 'invalid-handoff'
@@ -251,6 +265,11 @@ export interface ExecutionServiceMethods {
     body: unknown,
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
+  revision(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<RevisionValue>>;
+  draft(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<SavedDeliveryDraft>>;
   reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
 }
 export interface ExecutionRoutes {
@@ -260,6 +279,28 @@ export interface ExecutionRoutes {
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
   readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
+  readonly revision: { readonly body: RevisionRequest; readonly value: RevisionValue };
+  readonly draft: {
+    readonly body: RevisionRequest | DeliveryDraftWrite;
+    readonly value: SavedDeliveryDraft;
+  };
+}
+export interface SavedDeliveryDraft {
+  readonly version: number;
+  readonly text: string;
+  readonly links: readonly string[];
+  readonly files: readonly ArtifactFileRef[];
+}
+export interface DeliveryDraftWrite {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly text?: string;
+  readonly files?: readonly ArtifactFileRef[];
+  readonly links?: readonly string[];
 }
 export interface ExecutionArtifactWire {
   readonly id: string;
@@ -329,6 +370,15 @@ export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
+  revision(
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+    signal?: AbortSignal,
+  ): Promise<RevisionView>;
+  readDeliveryDraft(
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+    signal?: AbortSignal,
+  ): Promise<SavedDeliveryDraft>;
+  saveDeliveryDraft(draft: DeliveryDraftWrite, signal?: AbortSignal): Promise<SavedDeliveryDraft>;
 }
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {

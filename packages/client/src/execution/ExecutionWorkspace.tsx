@@ -1,9 +1,18 @@
 import { useEffect, useState } from 'react';
 import { WorkbenchError, type InboxItem } from '@zhuma/agent-core';
-import type { ExecutionApi, ExecutionNodeWire } from './ExecutionApi.js';
+import type { ExecutionApi, ExecutionNodeWire, RevisionViewWire } from './ExecutionApi.js';
 import { DeliveryPanel } from './DeliveryPanel.js';
 import { InboxPanel } from './InboxPanel.js';
+import { RevisionPanel } from './RevisionPanel.js';
 import { ReviewWorkspace } from './ReviewWorkspace.js';
+
+/** Which panels an inbox action opens. A return lands on the reviewed content. */
+export function executionPanels(action: string): readonly ('revision' | 'delivery' | 'review')[] {
+  if (action === 'review') return ['review'];
+  if (action === 'revise') return ['revision', 'delivery'];
+  if (action === 'submit') return ['delivery'];
+  return [];
+}
 
 export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
@@ -11,6 +20,9 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(true);
   const [selected, setSelected] = useState<InboxItem | undefined>();
+  const [revision, setRevision] = useState<RevisionViewWire | undefined>();
+  const [revisionError, setRevisionError] = useState('');
+  const [revisionPending, setRevisionPending] = useState(false);
 
   async function reload(signal?: AbortSignal) {
     setPending(true);
@@ -34,9 +46,58 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
     return () => controller.abort();
   }, [api]);
 
+  useEffect(() => {
+    const panels = selected ? executionPanels(selected.action) : [];
+    if (!selected || !panels.includes('revision')) {
+      setRevision(undefined);
+      setRevisionError('');
+      setRevisionPending(false);
+      return;
+    }
+    const current = nodes.find(
+      (item) => item.nodeId === selected.nodeId && item.taskId === selected.taskId,
+    );
+    if (!current) return;
+    const controller = new AbortController();
+    setRevision(undefined);
+    setRevisionError('');
+    setRevisionPending(true);
+    void api
+      .revision(
+        {
+          taskId: current.taskId,
+          planId: current.planId,
+          revision: current.revision,
+          nodeId: current.nodeId,
+        },
+        controller.signal,
+      )
+      .then((view) => {
+        if (controller.signal.aborted) return;
+        setRevision(view);
+        setRevisionPending(false);
+      })
+      .catch((caught: unknown) => {
+        if (controller.signal.aborted) return;
+        setRevisionError(
+          caught instanceof WorkbenchError ? caught.message : '退回意见暂时读不出来。',
+        );
+        setRevisionPending(false);
+      });
+    return () => controller.abort();
+  }, [api, nodes, selected]);
+
+  useEffect(() => {
+    if (!revision) return;
+    const target = document.getElementById('revision-reviewed');
+    target?.scrollIntoView({ block: 'start' });
+    target?.focus();
+  }, [revision]);
+
   const node = selected
     ? nodes.find((item) => item.nodeId === selected.nodeId && item.taskId === selected.taskId)
     : undefined;
+  const panels = selected ? executionPanels(selected.action) : [];
   function submitted(next: ExecutionNodeWire) {
     setNodes((current) =>
       current.map((item) =>
@@ -58,19 +119,22 @@ export function ExecutionWorkspace({ api }: { api: ExecutionApi }) {
         open={setSelected}
       />
       {selected && !node && <p className="zm-empty">这项工作的详情还没有同步。</p>}
-      {selected && node && selected.action === 'review' && (
+      {selected && node && panels.includes('revision') && (
+        <RevisionPanel
+          {...(revision === undefined ? {} : { view: revision })}
+          pending={revisionPending}
+          error={revisionError}
+        />
+      )}
+      {selected && node && panels.includes('review') && (
         <ReviewWorkspace api={api} node={node} onSubmitted={submitted} />
       )}
-      {selected && node && (selected.action === 'submit' || selected.action === 'revise') && (
+      {selected && node && panels.includes('delivery') && (
         <DeliveryPanel api={api} node={node} onSubmitted={submitted} />
       )}
-      {selected &&
-        node &&
-        selected.action !== 'review' &&
-        selected.action !== 'submit' &&
-        selected.action !== 'revise' && (
-          <p className="zm-empty">这个动作还没有接到交付或评审页面。</p>
-        )}
+      {selected && node && panels.length === 0 && (
+        <p className="zm-empty">这个动作还没有接到交付或评审页面。</p>
+      )}
     </>
   );
 }

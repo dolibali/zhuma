@@ -26,6 +26,18 @@ import {
   type ProjectSpaceDirectory,
   type ProjectSpaceLookup,
 } from './project-space.js';
+import { readRevisionView, type RevisionView } from './revision-view.js';
+import {
+  applyDeliveryDraft,
+  deliveryDraftView,
+  withoutDeliveryDraft,
+  type DeliveryDraftView,
+} from './delivery-draft.js';
+import {
+  upstreamBlockMessage,
+  upstreamInputsFor,
+  type UpstreamInputView,
+} from './upstream-inputs.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -81,6 +93,32 @@ const reportSchema = z.strictObject({
   planId: id,
   revision: z.number().int(),
 });
+const revisionSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+});
+const draftLocate = {
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+};
+const draftReadSchema = z.strictObject(draftLocate);
+const DRAFT_LINK_MAX = 2048;
+const DRAFT_LINK_TOTAL_MAX = 8192;
+const DRAFT_FILE_FIELD_MAX = 2048;
+const DRAFT_BODY_MAX = 262_144;
+const DRAFT_KEY_MAX = 200;
+const draftWriteSchema = z.strictObject({
+  ...draftLocate,
+  expectedVersion: z.number().int().nonnegative(),
+  idempotencyKey: id,
+  text: boundedText.optional(),
+  files: z.array(fileSchema).max(20).optional(),
+  links: z.array(z.string().min(1)).max(20).optional(),
+});
 const inboxSchema = z.strictObject({});
 
 export type StartPlanRequest = z.infer<typeof startSchema>;
@@ -89,6 +127,7 @@ export type SubmitRequest = z.infer<typeof submitSchema>;
 export type BallotRequest = z.infer<typeof ballotSchema>;
 export type SettleRequest = z.infer<typeof settleSchema>;
 export type ReportRequest = z.infer<typeof reportSchema>;
+export type RevisionRequest = z.infer<typeof revisionSchema>;
 
 export interface PlanReceipt {
   readonly idempotencyKey: string;
@@ -136,6 +175,7 @@ export interface ExecutionNodeView {
   readonly acceptedArtifactVersionId?: string;
   readonly reviewOutcome?: NodeExecutionReport['reviewOutcome'];
   readonly blockReason?: string;
+  readonly inputs?: readonly UpstreamInputView[];
 }
 
 const MESSAGES = {
@@ -159,6 +199,8 @@ const MESSAGES = {
   'plan-incomplete': '计划还没有完整启动，暂时不能查看或写入。',
   unavailable: '执行记录暂时写不进去，请用同一个请求再试一次。',
   'not-found': '找不到这个节点。',
+  'not-returned': '这项工作还没有被退回。',
+  'not-deliverable': '这项工作现在不能保存交付草稿。',
   validation: '提交的数据格式不正确。',
   'unknown-field': '请求里有无法识别的字段。',
   'invalid-handoff': '计划还不能派发，请补选负责人后重新确认。',
@@ -191,6 +233,76 @@ function fail(
     ok: false,
     error: { code, message, details },
   };
+}
+
+function draftLinkLimit(
+  links: readonly string[],
+): { readonly ok: false; readonly error: ExecutionFailure } | undefined {
+  if (links.some((link) => link.length > DRAFT_LINK_MAX)) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '单条链接不能超过 2048 个字符。', details: {} },
+    };
+  }
+  let total = 0;
+  for (const link of links) total += link.length;
+  if (total > DRAFT_LINK_TOTAL_MAX) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '草稿里的链接合计不能超过 8192 个字符。', details: {} },
+    };
+  }
+  return undefined;
+}
+
+function draftFileLimit(
+  text: string,
+  links: readonly string[],
+  files: readonly {
+    id: string;
+    mediaType: string;
+    checksum: string;
+    accessPolicyId: string;
+  }[],
+): { readonly ok: false; readonly error: ExecutionFailure } | undefined {
+  for (const file of files) {
+    const fields = [file.id, file.mediaType, file.checksum, file.accessPolicyId];
+    if (fields.some((field) => field.length > DRAFT_FILE_FIELD_MAX)) {
+      return {
+        ok: false,
+        error: {
+          code: 'validation',
+          message: '文件信息的每一项不能超过 2048 个字符。',
+          details: {},
+        },
+      };
+    }
+  }
+  let total = text.length;
+  for (const link of links) total += link.length;
+  for (const file of files) {
+    total +=
+      file.id.length + file.mediaType.length + file.checksum.length + file.accessPolicyId.length;
+  }
+  if (total > DRAFT_BODY_MAX) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '草稿合计不能超过 262144 个字符。', details: {} },
+    };
+  }
+  return undefined;
+}
+
+function draftKeyLimit(
+  idempotencyKey: string,
+): { readonly ok: false; readonly error: ExecutionFailure } | undefined {
+  if (idempotencyKey.length > DRAFT_KEY_MAX) {
+    return {
+      ok: false,
+      error: { code: 'validation', message: '幂等键不能超过 200 个字符。', details: {} },
+    };
+  }
+  return undefined;
 }
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
@@ -361,51 +473,42 @@ export class ExecutionService {
       const parsed = parseBody(inboxSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
-      const records: ExecutionNodeRecord[] = [];
-      for (const record of this.storage.listNodes()) {
-        if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
-        const space = await this.gateSpace(record.taskId, actor.value.spaceIds);
-        if (space === 'missing') continue;
-        if (!space.ok) {
-          if (space.error.code === 'unavailable') return space;
-          continue;
-        }
-        if (
-          planMembership(this.workbench.readWorkbench(), record.taskId, actor.value.actorId) !==
-          'allowed'
-        ) {
-          continue;
-        }
-        records.push(record);
-      }
+      const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+      if (!Array.isArray(records)) return records;
       const items = executionInbox({ actorId: actor.value.actorId, records });
       const nodes = records
         .filter((record) =>
           items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
         )
-        .map(toNodeView);
+        .map((record) => ({ ...toNodeView(record), inputs: upstreamInputsFor(record, records) }));
       return { ok: true, value: { actorId: actor.value.actorId, items, nodes } };
     });
   }
 
   submit(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
-      this.command(caller, body, submitSchema, (actorId, request, record) => {
-        const result = submitDelivery({
-          record,
-          actorId,
-          idempotencyKey: request.idempotencyKey,
-          expectedVersion: request.expectedVersion,
-          draft: {
-            files: request.files ?? [],
-            links: request.links ?? [],
-            ...(request.text === undefined ? {} : { text: request.text }),
-          },
-          artifactId: `artifact:${request.idempotencyKey}`,
-          roundId: `round:${request.idempotencyKey}`,
-        });
-        return { result, settle: false };
-      }),
+      this.command(
+        caller,
+        body,
+        submitSchema,
+        (actorId, request, record) => {
+          const result = submitDelivery({
+            record,
+            actorId,
+            idempotencyKey: request.idempotencyKey,
+            expectedVersion: request.expectedVersion,
+            draft: {
+              files: request.files ?? [],
+              links: request.links ?? [],
+              ...(request.text === undefined ? {} : { text: request.text }),
+            },
+            artifactId: `artifact:${request.idempotencyKey}`,
+            roundId: `round:${request.idempotencyKey}`,
+          });
+          return { result, settle: false };
+        },
+        true,
+      ),
     );
   }
 
@@ -491,6 +594,140 @@ export class ExecutionService {
         return { ok: true, value: { reports: [] } };
       }
       return { ok: true, value: { reports: reports.map(toNodeExecutionReport) } };
+    });
+  }
+
+  /** Space, membership, and assignee checks shared by reading and saving a draft. */
+  private async prepareDraft(
+    spaceIds: readonly string[],
+    actorId: string,
+    query: { taskId: string; planId: string; revision: number; nodeId: string },
+  ): Promise<ExecutionResult<ExecutionNodeRecord>> {
+    const space = await this.gateSpace(query.taskId, spaceIds);
+    if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+    if (space === 'missing' || !space.ok) return fail('not-found');
+    const current = this.storage.readNode(nodeRecordKey(query));
+    if (!current || !intactNode(current)) return fail('not-found');
+    const membership = planMembership(this.workbench.readWorkbench(), current.taskId, actorId);
+    if (membership === 'missing') return fail('not-found');
+    if (membership === 'not-participant') return fail('not-participant');
+    if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
+    const assignee = current.handoff.assignee;
+    if (assignee.kind !== 'human' || assignee.id !== actorId) return fail('not-assignee');
+    if (current.command.status !== 'ready' && current.command.status !== 'needs-revision') {
+      return fail('not-deliverable');
+    }
+    return { ok: true, value: current };
+  }
+
+  /** Read or save the assignee's delivery draft. A read does not write. */
+  draft(caller: ExecutionCaller, body: unknown): Promise<ExecutionResult<DeliveryDraftView>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const writing = body !== null && typeof body === 'object' && 'idempotencyKey' in body;
+      if (!writing) {
+        const parsed = parseBody(draftReadSchema, body);
+        if (!parsed.ok) return parsed;
+        const opened = await this.prepareDraft(
+          actor.value.spaceIds,
+          actor.value.actorId,
+          parsed.value,
+        );
+        if (!opened.ok) return opened;
+        return { ok: true, value: deliveryDraftView(opened.value.deliveryDraft) };
+      }
+      const parsed = parseBody(draftWriteSchema, body);
+      if (!parsed.ok) return parsed;
+      const limited = draftLinkLimit(parsed.value.links ?? []);
+      if (limited) return limited;
+      const sized = draftFileLimit(
+        parsed.value.text ?? '',
+        parsed.value.links ?? [],
+        parsed.value.files ?? [],
+      );
+      if (sized) return sized;
+      const opened = await this.prepareDraft(
+        actor.value.spaceIds,
+        actor.value.actorId,
+        parsed.value,
+      );
+      if (!opened.ok) return opened;
+      const keyed = draftKeyLimit(parsed.value.idempotencyKey);
+      if (keyed) return keyed;
+      const current = opened.value;
+      const text = parsed.value.text ?? '';
+      const links = parsed.value.links ?? [];
+      const files = parsed.value.files ?? [];
+      const applied = applyDeliveryDraft({
+        current: current.deliveryDraft,
+        expectedVersion: parsed.value.expectedVersion,
+        idempotencyKey: parsed.value.idempotencyKey,
+        fingerprint: canonicalPayload({
+          kind: 'delivery-draft',
+          actorId: actor.value.actorId,
+          nodeId: current.nodeId,
+          text,
+          links,
+          files,
+        }),
+        text,
+        links,
+        files,
+      });
+      if (!applied.ok) {
+        if (applied.code === 'conflict') {
+          return fail('conflict', {
+            currentVersion: applied.currentVersion,
+            expectedVersion: parsed.value.expectedVersion,
+          });
+        }
+        return fail(applied.code);
+      }
+      if (applied.disposition === 'applied') {
+        const stored = await this.persist(() =>
+          this.storage.writeNode(nodeRecordKey(current), {
+            ...current,
+            deliveryDraft: applied.draft,
+          }),
+        );
+        if (!stored.ok) return stored;
+      }
+      return { ok: true, value: deliveryDraftView(applied.draft) };
+    });
+  }
+
+  /** Return notes and the two newest relevant versions. Does not write. */
+  revision(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ view: RevisionView }>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(revisionSchema, body);
+      if (!parsed.ok) return parsed;
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
+      const current = this.storage.readNode(nodeRecordKey(parsed.value));
+      if (!current || !intactNode(current)) return fail('not-found');
+      const membership = planMembership(
+        this.workbench.readWorkbench(),
+        current.taskId,
+        actor.value.actorId,
+      );
+      if (membership === 'missing') return fail('not-found');
+      if (membership === 'not-participant') return fail('not-participant');
+      if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
+      const reviewerNames: Record<string, string> = {};
+      for (const participant of this.workbench.readWorkbench().participants) {
+        const name = participant.name.trim();
+        if (name !== '') reviewerNames[participant.id] = name;
+      }
+      const read = readRevisionView(current, actor.value.actorId, reviewerNames);
+      if (!read.ok) return fail(read.code);
+      return { ok: true, value: { view: read.view } };
     });
   }
 
@@ -582,6 +819,46 @@ export class ExecutionService {
     if (decision === 'unavailable') return directoryUnavailable();
     if (!task) return 'missing';
     return fail('not-found');
+  }
+
+  /** Intact nodes this actor can read. A failed lookup stops the scan. */
+  private async readableRecords(spaceIds: readonly string[], actorId: string) {
+    // A down directory is the same answer whether or not any node is stored.
+    for (const task of this.workbench.readWorkbench().tasks) {
+      const space = await this.gateSpace(task.id, spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+    }
+    const records: ExecutionNodeRecord[] = [];
+    for (const record of this.storage.listNodes()) {
+      if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
+      const space = await this.gateSpace(record.taskId, spaceIds);
+      if (space === 'missing') continue;
+      if (!space.ok) {
+        if (space.error.code === 'unavailable') return space;
+        continue;
+      }
+      if (planMembership(this.workbench.readWorkbench(), record.taskId, actorId) !== 'allowed') {
+        continue;
+      }
+      records.push(record);
+    }
+    return records;
+  }
+
+  /** Hidden upstream refs refuse the write. The message is the count placeholder. */
+  private async upstreamRefusal(
+    spaceIds: readonly string[],
+    actorId: string,
+    current: ExecutionNodeRecord,
+  ) {
+    const readable = await this.readableRecords(spaceIds, actorId);
+    if (!Array.isArray(readable)) return readable;
+    const message = upstreamBlockMessage(upstreamInputsFor(current, readable));
+    if (message === undefined) return undefined;
+    return {
+      ok: false as const,
+      error: { code: 'upstream-blocked', message, details: {} },
+    };
   }
 
   /**
@@ -726,6 +1003,7 @@ export class ExecutionService {
       request: T,
       record: ExecutionNodeRecord,
     ) => { result: ReturnType<typeof submitDelivery>; settle: boolean },
+    guardUpstream = false,
   ) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -770,6 +1048,15 @@ export class ExecutionService {
       }
     }
     if (record !== current) {
+      if (guardUpstream) {
+        const blocked = await this.upstreamRefusal(
+          actor.value.spaceIds,
+          actor.value.actorId,
+          current,
+        );
+        if (blocked) return blocked;
+        record = withoutDeliveryDraft(record);
+      }
       const stored = await this.persist(() =>
         this.storage.writeNode(nodeRecordKey(record), record),
       );

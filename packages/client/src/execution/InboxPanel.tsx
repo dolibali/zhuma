@@ -71,7 +71,12 @@ export function InboxPanel({
                 {node?.blockReason && <small>{node.blockReason}</small>}
               </div>
               <div className="zm-directory-actions">
-                <Button onClick={() => open(item)}>{view.actionLabel}</Button>
+                <Button
+                  data-revision-target={item.action === 'revise' ? 'revision-reviewed' : undefined}
+                  onClick={() => open(item)}
+                >
+                  {view.actionLabel}
+                </Button>
               </div>
             </article>
           ))}

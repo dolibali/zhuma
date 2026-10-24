@@ -992,6 +992,7 @@ test('a failed project-space lookup is refused and does not write', async () => 
     idempotencyKey: 'start-unavailable',
   });
   assert.equal(blocked.error.code, 'unavailable');
+  assert.equal(blocked.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
   assert.equal(denied.store.planCount(), 0);
   assert.equal(denied.store.node('design'), undefined);
 
@@ -1015,6 +1016,7 @@ test('a failed project-space lookup is refused and does not write', async () => 
     text: '目录故障后的交付',
   });
   assert.equal(submitted.error.code, 'unavailable');
+  assert.equal(submitted.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
   assert.equal(JSON.stringify(submitted).includes('space-directory-down'), false);
   assert.equal(JSON.stringify(submitted).includes('目录故障后的交付'), false);
   assert.equal(store.node('design').receipts.length, 0);
@@ -1239,6 +1241,49 @@ async function commandProbe(service, taskId, applied, idempotencyKey, caller) {
     }),
   };
 }
+
+test('inbox returns the same unavailable bytes whether or not a node is stored', async () => {
+  const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+  const down = {
+    async spaceForProject() {
+      throw new Error('space-down-4e1');
+    },
+  };
+  const empty = create(state, down);
+  const filled = create(state, down);
+  const node = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'design',
+    ownerId: 'chen',
+    handoff: {
+      assignee: { id: 'chen', kind: 'human' },
+      reviewerIds: [],
+      dependencyNodeIds: [],
+      goal: '设计',
+      expectedOutput: '说明',
+    },
+    command: { status: 'needs-revision', version: 2 },
+    rounds: [],
+    artifactVersions: [],
+    comments: [],
+    receipts: [],
+  };
+  await filled.store.storage.writeNode(nodeRecordKey(node), node);
+  await filled.store.storage.writePlan(`${applied.taskId}:${applied.id}:${applied.revision}`, {
+    idempotencyKey: 'stored-plan',
+    fingerprint: 'stored',
+    nodeIds: ['design'],
+  });
+  const absent = await empty.service.inbox(session('chen'), {});
+  const present = await filled.service.inbox(session('chen'), {});
+  sameBytes(absent, present, 'inbox');
+  assert.equal(absent.error.code, 'unavailable');
+  assert.equal(absent.error.message, '执行记录暂时不可用，请稍后用同一个请求再试一次。');
+  assert.equal(JSON.stringify(present).includes('space-down-4e1'), false);
+  assert.equal(JSON.stringify(present).includes('design'), false);
+});
 
 test('a directory fault returns the same unavailable bytes whether or not the task exists', async () => {
   const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
