@@ -549,3 +549,36 @@ diff --git a/packages/client/ui-layout/src/client/AppFrame.module.css b/packages
  }
  
  :global([data-platform='darwin']) .centerCol {
+diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
+--- a/apps/desktop/src/web-document.ts
++++ b/apps/desktop/src/web-document.ts
+@@ -1,6 +1,9 @@
+ /** Local Web document and authenticated HTTP forwarding for the application window. */
+ import { readFile } from 'node:fs/promises'
+ import { extname, resolve, sep } from 'node:path'
++import { createDesktopMemberCookieBridge } from './zhuma-member-cookie.ts'
++
++const memberCookies = createDesktopMemberCookieBridge()
+ 
+ const MIME: Readonly<Record<string, string>> = {
+   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+@@ -41,6 +44,7 @@
+  * @returns Cookie header for requests forwarded to that Host.
+  */
+ export async function authenticateWebHost(url: string): Promise<string> {
++  memberCookies.clear()
+   const response = await fetch(url, { redirect: 'manual' })
+   const cookie = response.headers.get('set-cookie')
+   await response.body?.cancel()
+@@ -85,7 +89,10 @@
+   for (const name of ['host', 'origin', 'cookie', 'sec-fetch-site']) headers.delete(name)
+   headers.set('cookie', cookie)
+   const init = { method: request.method, headers, body: request.body, signal: request.signal, duplex: 'half', redirect: 'manual' as const }
+-  const response = await fetch(target, init)
++  const response = await memberCookies.forward(request, host, cookie, (credential) => {
++    headers.set('cookie', credential)
++    return fetch(target, init)
++  })
+   const outgoing = new Headers(response.headers)
+   for (const name of WITHHELD_RESPONSE_HEADERS) outgoing.delete(name)
+   if (PLUGIN_BUNDLE_PATH.test(source.pathname)) outgoing.set('cache-control', 'no-store')
