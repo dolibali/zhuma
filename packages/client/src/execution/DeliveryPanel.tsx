@@ -65,7 +65,7 @@ export function DeliveryPanel({
   const [link, setLink] = useState('');
   const [file, setFile] = useState(emptyFile);
   const [draftVersion, setDraftVersion] = useState(0);
-  const [baselineReady, setBaselineReady] = useState(false);
+  const [baselineReady, setBaselineReady] = useState(true);
   const [error, setError] = useState('');
   const [pending, setPending] = useState<'save' | 'submit' | ''>('');
   const key = useRef(crypto.randomUUID());
