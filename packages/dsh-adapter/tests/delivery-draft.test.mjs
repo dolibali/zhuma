@@ -404,6 +404,59 @@ test('a late draft from the previous round cannot overwrite the next round', asy
   assert.equal(JSON.stringify(store.node('design')), nodeBefore);
 });
 
+test('a submit with no saved draft leaves a version 1 tombstone that rejects expectedVersion 0', async () => {
+  const { state, applied, store, service } = await opened();
+  assert.equal(store.node('design').deliveryDraft, undefined);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, { expectedVersion: 1, idempotencyKey: 'deliver-no-draft' }),
+    text: '直接提交',
+  });
+  assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
+  assert.deepEqual(store.node('design').deliveryDraft, {
+    version: 1,
+    idempotencyKey: '',
+    fingerprint: '',
+    text: '',
+    links: [],
+    files: [],
+  });
+  const sentBack = await service.ballot(session('lin'), {
+    ...locate(applied, {
+      expectedVersion: submitted.value.node.version,
+      idempotencyKey: 'vote-back-no-draft',
+    }),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+    action: 'request-changes',
+    comment: '请补充错误码',
+  });
+  assert.equal(sentBack.ok, true, sentBack.ok ? '' : sentBack.error.code);
+  assert.equal(sentBack.value.node.status, 'needs-revision');
+  assert.equal(store.node('design').deliveryDraft.version, 1);
+  const cleared = await service.draft(session('chen'), locate(applied));
+  assert.deepEqual(cleared.value, { version: 1, text: '', links: [], files: [] });
+  const nodeBefore = JSON.stringify(store.node('design'));
+  const late = await service.draft(
+    session('chen'),
+    locate(applied, {
+      expectedVersion: 0,
+      idempotencyKey: 'draft-late-first',
+      text: '迟到首次正文-4e1',
+    }),
+  );
+  assert.equal(late.ok, false);
+  assert.equal(late.error.code, 'conflict');
+  assert.equal(late.error.message, '内容已变化，请刷新后再试。');
+  assert.deepEqual(late.error.details, { currentVersion: 1, expectedVersion: 0 });
+  assert.equal(JSON.stringify(late).includes('迟到首次正文-4e1'), false);
+  assert.equal(JSON.stringify(store.node('design')), nodeBefore);
+  assert.equal(store.node('design').deliveryDraft.version, 1);
+  assert.equal(store.node('design').deliveryDraft.text, '');
+  const reopened = new ExecutionService(store.storage, { readWorkbench: () => state }, spaces);
+  const again = await reopened.draft(session('chen'), locate(applied));
+  assert.deepEqual(again.value, { version: 1, text: '', links: [], files: [] });
+});
+
 test('a draft file stays incomplete when the request says the upload finished', async () => {
   const { state, applied, store, service } = await opened();
   const file = {

@@ -27,16 +27,16 @@ export function deliveryDraftView(draft: StoredDeliveryDraft | undefined): Deliv
 /**
  * Clear the body and consume one draft version.
  * The draft write carries only `expectedVersion`, not a round id, so the
- * version itself is the cross-round boundary. Leaving it at 0 lets a late
- * `expectedVersion` from the previous round match the next round's first save.
+ * version itself is the cross-round boundary. A submit with no stored draft
+ * still leaves version 1 (previous counted as 0), so a late `expectedVersion`
+ * of 0 cannot become the next round's first save.
  */
 export function withoutDeliveryDraft(record: ExecutionNodeRecord): ExecutionNodeRecord {
-  const draft = record.deliveryDraft;
-  if (draft === undefined) return record;
+  const previous = record.deliveryDraft?.version ?? 0;
   return {
     ...record,
     deliveryDraft: {
-      version: draft.version + 1,
+      version: previous + 1,
       idempotencyKey: '',
       fingerprint: '',
       text: '',

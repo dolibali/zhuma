@@ -57,7 +57,8 @@ export interface ExecutionNodeRecord {
   readonly receipts: readonly ExecutionReceipt[];
   /**
    * Human assignee's unsent delivery. A stored submit clears the body and
-   * advances `version`, so the next round cannot reuse the old expectedVersion.
+   * advances `version` by one, counting a missing draft as 0, so the next
+   * round cannot reuse the old expectedVersion.
    */
   readonly deliveryDraft?: {
     readonly version: number;
