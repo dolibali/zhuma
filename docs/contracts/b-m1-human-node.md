@@ -45,7 +45,7 @@ DSH 浏览器 Peer 仍然是 owner。成员是 `zhuma-member` cookie，由 `reso
 1. `configureDeploymentMode(ctx, mode)` 先选定 `legacy-single-user` 或 `multi-member`。然后 `applyIdentity` 装上解析器。`resolveMember(ctx, { headers })` 读这次请求的头。成功是 `{ ok: true, memberId, spaceIds }`。拒绝是 `{ ok: false, status: 401, code: 'unauthenticated' }`，或 `{ ok: false, status: 403, code: 'untrusted-request' }`。模式没选定时 `applyIdentity` 拒绝启动。
 2. 没有装上解析器、cookie 无效，或结果不是成功时，返回 `unauthenticated`，不回退到 owner。`untrusted-request` 原样拒绝，`details` 为空。`memberId` 必须是目录里的 human，否则 `not-in-directory`。专家不能当执行 actor。项目属于哪个空间，只问调用方注入的 `ProjectSpaceDirectory`。执行服务把 `spaceForProject(projectId)` 返回的空间 id 和这次成员的 `spaceIds` 做精确比较。没有注入这份目录时，不把 `projectId` 当作空间 id，启动、提交、投票、结算、报告和待办全部拒绝，也不写入。
 3. `legacy-single-user` 并且导入恰好一个账户、`ownerAccountId` 写明是这个账户时，owner cookie 才解析成那个账户。`multi-member` 即使导入是这个形状，也不把 DSH owner cookie 当成成员。
-4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。目录正常应答时，任务不存在、目录没有这个项目，或空间对不上，前五个命令返回同一份 `not-found`（`code`、`message`、`details` 都相同），待办不列出这些任务，也不能靠响应区分任务不存在和任务在别的空间。目录抛错、返回 `unavailable`，或返回 `ok` 但空间 id 缺失、为空、不是字符串时，不论任务是否存在，这五个命令都返回同一份 `unavailable`，文案是「执行记录暂时不可用，请稍后用同一个请求再试一次。」，待办也返回这份 `unavailable`，并且不写入。`revision` 同样先返回这份 `unavailable`，任务在不在字节相同，拒绝前不写。任务不在工作台里时，不把空字符串传给 `spaceForProject`。请求里的 `taskId` 必须符合工作台 `WorkTaskSchema` 的 id，和 `save-task`、已有存储是同一条规则：1 到 100 个字符，匹配 `/^[\w-]+$/u`。不符合的五个入口都返回和任务不存在一样的 `not-found`，不调用目录，也不写入。符合时才用这个 `taskId` 判断目录能不能应答；目录正常应答时仍返回 `not-found`，不采用返回的空间。目录整体故障时，符合这条规则的 id 无论任务是否还在工作台，都返回同一份 `unavailable`。待办遇到已经不在工作台、且 id 符合这条规则的任务时也这样询问。A 的 `spaceForProject` 必须接受任意这种合法 id，对不认识的返回 `unknown`，不能抛错，也不能返回 `unavailable`。写盘失败仍是「执行记录暂时写不进去，请用同一个请求再试一次。」计划交接抛出预期之外的错误时用「执行记录暂时不可用，请稍后用同一个请求再试一次。」，因为这不是写盘失败。目录核对在 `submit`、`ballot`、`settle` 的任何写入之前完成。空间通过之后才检查任务成员，然后才检查节点角色。已经通过空间核对的任务，修订对不上时 `start-plan` 仍返回 `plan-not-found`。
+4. 没有注入目录时，`start-plan`、`report`、`submit`、`ballot`、`settle` 和待办都返回 `not-found`，待办不是空列表，也不写入。目录正常应答时，任务不存在、目录没有这个项目，或空间对不上，前五个命令返回同一份 `not-found`（`code`、`message`、`details` 都相同），待办不列出这些任务，也不能靠响应区分任务不存在和任务在别的空间。目录抛错、返回 `unavailable`，或返回 `ok` 但空间 id 缺失、为空、不是字符串时，不论任务是否存在，这五个命令都返回同一份 `unavailable`，文案是「执行记录暂时不可用，请稍后用同一个请求再试一次。」，待办也返回这份 `unavailable`，并且不写入。`revision` 和 `draft` 同样先返回这份 `unavailable`，任务在不在字节相同，拒绝前不写。任务不在工作台里时，不把空字符串传给 `spaceForProject`。请求里的 `taskId` 必须符合工作台 `WorkTaskSchema` 的 id，和 `save-task`、已有存储是同一条规则：1 到 100 个字符，匹配 `/^[\w-]+$/u`。不符合的五个入口都返回和任务不存在一样的 `not-found`，不调用目录，也不写入。符合时才用这个 `taskId` 判断目录能不能应答；目录正常应答时仍返回 `not-found`，不采用返回的空间。目录整体故障时，符合这条规则的 id 无论任务是否还在工作台，都返回同一份 `unavailable`。待办遇到已经不在工作台、且 id 符合这条规则的任务时也这样询问。A 的 `spaceForProject` 必须接受任意这种合法 id，对不认识的返回 `unknown`，不能抛错，也不能返回 `unavailable`。写盘失败仍是「执行记录暂时写不进去，请用同一个请求再试一次。」计划交接抛出预期之外的错误时用「执行记录暂时不可用，请稍后用同一个请求再试一次。」，因为这不是写盘失败。目录核对在 `submit`、`ballot`、`settle` 的任何写入之前完成。空间通过之后才检查任务成员，然后才检查节点角色。已经通过空间核对的任务，修订对不上时 `start-plan` 仍返回 `plan-not-found`。
 
 官方 `rpc.handle` 的 Peer 没有请求头，所以执行通道不用它。`connection.fetch.register` 的 Fetch `Request` 保留 `cookie` 和 `host`。Connection 的精确路由仍然只把 owner Peer 送进处理函数；成员身份只从 `resolveMember` 来。
 
@@ -126,10 +126,14 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - 精确修订、入口状态、提交门禁、退回重提、全员通过后只解锁一次
 - `resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。`untrusted-request` 保持原代码。`containsActorField` 拒绝正文里的 actor 字段
 - `ExecutionService` 串行写。一次用户命令写一条节点；`start-plan` 再另写计划回执。每条写入先核对空间和任务成员，再核对节点角色。从参与者里移除的评审人再投票得到 `not-participant`
-- `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
+- `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`。先 `resolveMember`，再读正文；正文超过 2MiB 或 5 秒没读完就拒绝，无效会话不读正文
+- 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名写成「第 2 版」，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
+- 提交、投票和结算共用的命令也先查目录，再读节点。八种目录故障下，节点在不在、记录损坏与否，都是同一份 `unavailable`，拒绝前不写
+- 人工执行者把交付草稿写在节点记录上。关闭后再打开，包括退回后，仍能读到自己的草稿。只有这位执行者能读写。空间不对和任务不存在，在写之前返回同一份 `not-found`。目录不可用或结果不合法时，任务和节点在不在都返回同一份稍后重试的 `unavailable`，拒绝前不写。不是参与者要等空间通过之后才拒绝。节点不是 `ready` 或 `needs-revision` 时不写。草稿版本不符时不覆盖，并在 `details` 里返回当前版本。同一个幂等键被拿去写另一份内容时也不覆盖。幂等键不超过 200 个字符。超限在空间检查通过之后、写之前拒绝，响应不包含这段键。目录不可用或任务不存在时，超长键和合法键返回同一份响应。单条链接不超过 2048 个字符，全部链接合计不超过 8192 个字符。文件的 id、mediaType、checksum、accessPolicyId 每一项不超过 2048 个字符。正文、链接和这些字段合计不超过 262144 个字符。超出都在写之前拒绝。提交成功后清掉草稿
 
 未实现（后续切片）：
 
+- 需求 7.1「阅读上游产物」留给后续分支。交付页不读取上游正文和文件
 - 产物字节、预览和访问控制。可信上传（#33）接入前，文件元数据不能把节点标成完成
 - 专家评审和 `interpretAgentReview`
 - 已安装桌面里的验收。面板已经在 client 里，还没有装进成员 A 的导航。Host 测试使用真实 Connection，但不是安装包
@@ -193,7 +197,7 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 ## 界面
 
-`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。
+`packages/client/src/execution/` 提供 `createExecutionApi`、`InboxPanel`、`DeliveryPanel`、`ReviewWorkspace` 和把它们串起来的 `ExecutionWorkspace`。客户端调用 `rpc.call('/api', 'zhuma-exec/<endpoint>', payload)`。提交和投票只抄写允许的字段；嵌套的 `actorId`、`memberId`、`reviewerId` 在发出前拒绝。退回修订视图与交付表单的上游来源展示由 A 在 #32 的客户端接续时实现；服务端语义见上文退回与交付条目。
 
 面板使用工作台已经导出的 `Button` 和 `Field`，以及 `.zhuma`、`.zm-page`、`.zm-directory`、`.zm-status`、`.zm-error`、`.zm-review` 这些现有类。不另写颜色。包内引用这些控件用相对路径，因为仓库边界不允许 `@zhuma/client` 导入自己。
 
@@ -209,7 +213,9 @@ A 负责把它放进现有导航，并复用 `@zhuma/client/workbench/ui` 与已
 
 这些行为在本切片里保持原样：
 
-- 退回之后再提交，执行者的页面不显示评审意见，也不显示上一版产物。下游的交付页不显示已经接受的上游产物。
+- 可信上传（#33）接入前，带非空 files 的提交返回 `files-not-accepted`，不写。文字和链接仍可提交。草稿里的文件记成未完成。
+- 提交接口的链接没有长度上限。这是 WP03 留下的问题，草稿上限不改变提交。
+
 - 同一轮已经投下的票不能撤回。先通过再改成退回会得到 `conflicting-ballot`，原先的通过仍然有效。
-- 交付的幂等键不随文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId`、`uploadComplete` 变化。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执，所以换这些字段再提交通常仍会执行；若上一次其实已经成功、只是响应丢失，再改这些字段会得到 `idempotency-mismatch`。
+- 交付表单改正文、链接、文件标识，或文件的 `mediaType`、`byteSize`、`checksum`、`accessPolicyId` 时更换幂等键。`uploadComplete` 没有单独的编辑控件，草稿里仍记成未完成。同一键配上不同内容仍返回 `idempotency-mismatch`，不覆盖已保存内容。评审页在通过和退回之间、评论尚未改动时共用一个键。被拒绝的请求不写回执。
 - 解锁那一次写入失败之后，如果客户端没有用同一个键重试，下游要等到插件再次打开时的对账才会补上。运行期间没有周期性对账。
