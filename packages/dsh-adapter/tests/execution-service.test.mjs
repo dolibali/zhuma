@@ -1228,6 +1228,28 @@ test('replaying a settled ballot does not settle again as the current actor', as
   assert.equal(JSON.stringify(stranger).includes('待审稿'), false);
 });
 
+function assertReplayReportsMatchStorage(result, store) {
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.value.disposition, 'replayed');
+  const reports = result.value.reports;
+  assert.ok(Array.isArray(reports));
+  for (const report of reports) {
+    const stored = store.node(report.nodeId);
+    assert.ok(stored, report.nodeId);
+    assert.equal(report.status, stored.command.status, report.nodeId);
+    if (stored.command.status === 'blocked') {
+      assert.equal(report.blockReason, '等待前置节点完成');
+    } else {
+      assert.equal(report.blockReason, undefined, report.nodeId);
+    }
+  }
+  const publish = reports.find((item) => item.nodeId === 'publish');
+  assert.ok(publish);
+  assert.equal(publish.status, 'ready');
+  assert.equal(store.node('publish').command.status, 'ready');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+}
+
 test('retrying start-plan unlocks completed nodes after a failed downstream write', async () => {
   const { state, applied } = confirm([
     workflowNode({ id: 'design', title: '设计' }),
@@ -1271,19 +1293,79 @@ test('retrying start-plan unlocks completed nodes after a failed downstream writ
 
   store.arm(0);
   const retry = await service.startPlan(session('chen'), startBody);
-  assert.equal(retry.ok, true, JSON.stringify(retry));
-  assert.equal(retry.value.disposition, 'replayed');
-  assert.equal(store.node('publish').command.status, 'ready');
-  assert.equal(store.node('publish').handoff.inputRefs.length, 1);
+  assertReplayReportsMatchStorage(retry, store);
   assert.equal(
     store.node('publish').handoff.inputRefs[0].artifactVersionId,
     store.node('design').acceptedArtifactVersionId,
   );
   const again = await service.startPlan(session('chen'), startBody);
-  assert.equal(again.value.disposition, 'replayed');
+  assertReplayReportsMatchStorage(again, store);
   assert.equal(store.node('publish').command.version, 2);
   const reconciled = await service.reconcile();
   assert.equal(reconciled.value.unlocked, 0);
+});
+
+test('replaying start-plan with a new idempotency key returns post-compensation reports', async () => {
+  const { state, applied } = confirm([
+    workflowNode({ id: 'design', title: '设计' }),
+    workflowNode({
+      id: 'publish',
+      title: '发布',
+      assigneeId: 'outside',
+      dependsOn: ['design'],
+    }),
+  ]);
+  const { service, store } = create(state);
+  const started = await service.startPlan(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-compensate-orig',
+  });
+  assert.equal(started.value.disposition, 'applied');
+
+  store.arm(2);
+  const delivered = await service.submit(session('chen'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'deliver-compensate-new'),
+    text: '上游完成',
+  });
+  assert.equal(delivered.ok, false);
+  assert.equal(delivered.error.code, 'unavailable');
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  const nextKey = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    idempotencyKey: 'start-compensate-new-key',
+  };
+  store.arm(1);
+  const failedRetry = await service.startPlan(session('chen'), nextKey);
+  assert.equal(failedRetry.ok, false);
+  assert.equal(failedRetry.error.code, 'unavailable');
+  assert.equal(failedRetry.value, undefined);
+  assert.equal(store.node('publish').command.status, 'blocked');
+  assert.equal(store.node('publish').handoff.inputRefs.length, 0);
+
+  store.arm(0);
+  const retry = await service.startPlan(session('chen'), nextKey);
+  assertReplayReportsMatchStorage(retry, store);
+  assert.equal(
+    store.node('publish').handoff.inputRefs[0].artifactVersionId,
+    store.node('design').acceptedArtifactVersionId,
+  );
+  const listed = await service.report(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.equal(listed.ok, true, JSON.stringify(listed));
+  const listedPublish = listed.value.reports.find((item) => item.nodeId === 'publish');
+  const retryPublish = retry.value.reports.find((item) => item.nodeId === 'publish');
+  assert.equal(retryPublish.status, listedPublish.status);
+  assert.equal(retryPublish.blockReason, listedPublish.blockReason);
 });
 
 test('rejected submit, ballot, and settle leave the storage snapshot unchanged', async () => {

@@ -674,17 +674,21 @@ export class ExecutionService {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === taskId);
     if (!task) return fail('not-found');
     const prior = this.storage.readPlan(key);
-    const replayed = {
-      ok: true as const,
-      value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
-    };
     // The same key replays before the conflict scan, so another project's
     // directory fault cannot change that retry. Any other key is checked first.
     // A replay still compensates unlocks that failed after the nodes completed.
-    if (prior?.fingerprint === fingerprint && prior.idempotencyKey === idempotencyKey) {
+    // Reports are read only after that compensation succeeds, so a retry that
+    // finishes a previously failed downstream write does not return the blocked snapshot.
+    const replayAfterUnlock = async () => {
       const compensated = await this.unlockCompleted(taskId, planId, revision);
       if (!compensated.ok) return compensated;
-      return replayed;
+      return {
+        ok: true as const,
+        value: { disposition: 'replayed', reports: this.reportsFor(taskId, planId, revision) },
+      };
+    };
+    if (prior?.fingerprint === fingerprint && prior.idempotencyKey === idempotencyKey) {
+      return replayAfterUnlock();
     }
     const conflict = await this.sameSpaceIdempotencyConflict(
       idempotencyKey,
@@ -695,9 +699,7 @@ export class ExecutionService {
     if (!conflict.ok) return conflict;
     if (conflict.value) return fail('idempotency-mismatch');
     if (prior?.fingerprint === fingerprint) {
-      const compensated = await this.unlockCompleted(taskId, planId, revision);
-      if (!compensated.ok) return compensated;
-      return replayed;
+      return replayAfterUnlock();
     }
     let applied;
     try {
