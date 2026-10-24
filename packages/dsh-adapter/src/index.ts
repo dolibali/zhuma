@@ -96,4 +96,13 @@ export { ExecutionDesk, executionHint } from './execution-desk.js';
 export type { WorkbenchServerOptions } from './workbench-server.js';
 export { createWorkbenchServer } from './workbench-server.js';
 
+export {
+  ExecutionService,
+  toNodeView,
+  type ExecutionFailure,
+  type ExecutionNodeView,
+  type ExecutionResult as ExecutionCommandResult,
+  type ExecutionStorage,
+  type PlanReceipt,
+} from './execution-service.js';
 export { PROJECT_SPACE_LIMIT, boundedProjectSpaces } from './project-space.js';
