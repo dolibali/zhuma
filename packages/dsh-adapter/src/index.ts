@@ -117,6 +117,18 @@ export {
   type PlanReceipt,
 } from './execution-service.js';
 export { PROJECT_SPACE_LIMIT, boundedProjectSpaces } from './project-space.js';
+export {
+  SPACE_DIRECTORY_MEMBERSHIP_LIMIT,
+  SPACE_DIRECTORY_SPACE_LIMIT,
+  openSpaceDirectory,
+  spaceDirectoryDomainSpec,
+  type AuthorizedSpace,
+  type OpenedSpaceDirectoryHandle,
+  type SpaceDirectory,
+  type SpaceDirectoryImport,
+  type SpaceDirectoryWriter,
+  type SpaceKind,
+} from './space-directory.js';
 export type * from './s1-integration.js';
 export {
   apply as applyExecution,
