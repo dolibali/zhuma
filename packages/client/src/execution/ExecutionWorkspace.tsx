@@ -12,7 +12,7 @@ import { StartPlanPanel, type ExecutionPlan } from './StartPlanPanel.js';
 import { nodeIdentity, reviewIdentity, useFormKey } from './interaction.js';
 
 type Props = { api: ExecutionApi; plan?: ExecutionPlan };
-type Selection = { item: InboxItem; identity: string; review: string; token: object };
+type Selection = { item: InboxItem; identity: string; token: object };
 export function ExecutionWorkspace(props: Props) {
   const key = useFormKey(props.api, 'workspace');
   return <Workspace key={key} {...props} />;
@@ -58,6 +58,11 @@ function Workspace({ api, plan }: Props) {
   const node = selected
     ? nodes.find((item) => nodeIdentity(item) === selected.identity)
     : undefined;
+  // Compare receipts with the context currently presented, rather than the round
+  // that happened to be selected before a later inbox refresh.
+  const presentedReview = node ? reviewIdentity(node) : undefined;
+  const presentation = useRef<{ token: object; review: string | undefined } | undefined>(undefined);
+  presentation.current = selected ? { token: selected.token, review: presentedReview } : undefined;
   function open(item: InboxItem) {
     const matches = nodes.filter(
       (node) => node.nodeId === item.nodeId && node.taskId === item.taskId,
@@ -67,13 +72,12 @@ function Workspace({ api, plan }: Props) {
     const selection = {
       item,
       identity: nodeIdentity(node),
-      review: reviewIdentity(node),
       token: {},
     };
     selectedRef.current = selection;
     setSelected(selection);
   }
-  function submitted(next: ExecutionNodeWire, selection: Selection) {
+  function submitted(next: ExecutionNodeWire, selection: Selection, requestReview?: string) {
     if (
       !alive.current ||
       selectedRef.current?.token !== selection.token ||
@@ -81,7 +85,11 @@ function Workspace({ api, plan }: Props) {
     )
       return;
     // A refreshed round must not be dismissed by a receipt from the previous round.
-    if (selection.item.action === 'review' && node && reviewIdentity(node) !== selection.review)
+    if (
+      selection.item.action === 'review' &&
+      (presentation.current?.token !== selection.token ||
+        presentation.current.review !== requestReview)
+    )
       return;
     selectedRef.current = undefined;
     setSelected(undefined);
@@ -100,7 +108,11 @@ function Workspace({ api, plan }: Props) {
       />
       {selected && !node && <p className="zm-empty">这项工作的版本已变化，请重新选择待办。</p>}
       {selected && node && selected.item.action === 'review' && (
-        <ReviewWorkspace api={api} node={node} onSubmitted={(next) => submitted(next, selected)} />
+        <ReviewWorkspace
+          api={api}
+          node={node}
+          onSubmitted={(next) => submitted(next, selected, presentedReview)}
+        />
       )}
       {selected &&
         node &&

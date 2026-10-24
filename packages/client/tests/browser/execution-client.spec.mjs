@@ -251,3 +251,95 @@ test('artifact links have readable theme colors, underlines and a keyboard focus
   await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(link).toHaveAttribute('href', 'https://example.com/design');
 });
+
+async function refreshedRound(page) {
+  await probe(page, () => {
+    const control = window.executionProbe;
+    const node = control.nodes[0];
+    control.nodes[0] = {
+      ...node,
+      version: 3,
+      currentRoundId: 'round-2',
+      artifacts: [...node.artifacts, { id: 'artifact-2', version: 2, text: '第二轮当前产物' }],
+      rounds: [
+        ...node.rounds,
+        { ...node.rounds[0], id: 'round-2', artifactVersionId: 'artifact-2', ballots: [] },
+      ],
+    };
+  });
+  await button(page, '刷新').click();
+  await expect(page.getByText('第二轮当前产物', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('评审意见', { exact: true })).toHaveValue('');
+}
+const readCount = (page) =>
+  probe(
+    page,
+    () => window.executionProbe.calls.filter((call) => call.endpoint.endsWith('/inbox')).length,
+  );
+async function finishBallot(page, index, outcome = 'success') {
+  await page.evaluate(
+    ({ ballotIndex, result }) => {
+      const control = window.executionProbe;
+      const call = control.calls.filter((call) => call.endpoint.endsWith('/ballot'))[ballotIndex];
+      control.complete(control.calls.indexOf(call), result);
+    },
+    { ballotIndex: index, result: outcome },
+  );
+}
+async function expectClosedAndRefreshed(page, previousReads) {
+  await expect(page.getByLabel('评审意见', { exact: true })).toHaveCount(0);
+  await expect.poll(() => readCount(page)).toBe(previousReads + 1);
+}
+
+test('a newly presented review round can submit and refresh after inbox changes the original selection', async ({
+  page,
+}) => {
+  await setup(page);
+  await button(page, '提交评审').click();
+  await refreshedRound(page);
+  await hold(page);
+  await page.getByLabel('评审意见', { exact: true }).fill('当前轮次意见');
+  const previousReads = await readCount(page);
+  await button(page, '提交评论').click();
+  const payload = await probe(page, () => window.executionProbe.calls.at(-1).payload);
+  expect(payload).toMatchObject({
+    roundId: 'round-2',
+    artifactVersionId: 'artifact-2',
+    expectedVersion: 3,
+    comment: '当前轮次意见',
+  });
+  await finishBallot(page, 0);
+  await expectClosedAndRefreshed(page, previousReads);
+});
+
+for (const outcome of ['success', 'failure', 'reject']) {
+  test(`a refreshed workspace ignores the previous round ${outcome} and accepts the current round receipt`, async ({
+    page,
+  }) => {
+    await setup(page);
+    await button(page, '提交评审').click();
+    await hold(page);
+    const input = page.getByLabel('评审意见', { exact: true });
+    await input.fill('上一轮意见');
+    await button(page, '提交评论').click();
+    await refreshedRound(page);
+    await input.fill('新轮次意见');
+    await button(page, '提交评论').click();
+    const previousReads = await readCount(page);
+    await finishBallot(page, 0, outcome);
+    await expect(input).toHaveValue('新轮次意见');
+    await expect(button(page, '通过')).toBeDisabled();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(await readCount(page)).toBe(previousReads);
+    expect(
+      await probe(
+        page,
+        () =>
+          window.executionProbe.calls.filter((call) => call.endpoint.endsWith('/ballot'))[0].signal
+            .aborted,
+      ),
+    ).toBe(true);
+    await finishBallot(page, 1);
+    await expectClosedAndRefreshed(page, previousReads);
+  });
+}
