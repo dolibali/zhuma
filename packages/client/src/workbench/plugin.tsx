@@ -9,6 +9,10 @@ import type { AppearanceStore } from './Appearance.js';
 import { createWorkbenchApi } from './api.js';
 import { WorkbenchPage } from './WorkbenchPage.js';
 import { MemberExecutionPage } from '../execution/MemberExecutionPage.js';
+import { createIdentityApi } from '../identity/api.js';
+import { createMemberShell } from '../identity/shell.js';
+import { SidebarAccountFooter } from '../identity/SidebarAccountFooter.js';
+import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 
@@ -18,6 +22,21 @@ export function apply(ctx: Context): void {
     'connection',
   ) as import('@deepseek-ai/dsh-client-connection/client').ConnectionHandle;
   const api = createWorkbenchApi(connection.rpc);
+  const memberShell = createMemberShell(createIdentityApi());
+  const executionPanel = 'zhuma-my-work' as MainPanelId;
+  ctx.effect(() => {
+    const syncPage = () =>
+      memberShell.setPageActive(
+        ctx.layout.panelInfo.getSnapshot().activePanelId === executionPanel,
+      );
+    syncPage();
+    const unsubscribe = ctx.layout.panelInfo.subscribe(syncPage);
+    memberShell.start();
+    return () => {
+      unsubscribe();
+      memberShell.stop();
+    };
+  });
   const appearance: AppearanceStore = {
     getSnapshot: () => ctx.theme.getTheme().preference,
     subscribe: (listener) => ctx.on('theme/change', listener),
@@ -99,14 +118,13 @@ export function apply(ctx: Context): void {
       ),
     );
   }
-  const executionPanel = 'zhuma-my-work' as MainPanelId;
   ctx.slots.inject('main', () => {
     const dispose = ctx.slots.register(
       { name: 'main', key: executionPanel, inject: () => ({}) },
       () => (
         <div className="zm-shell-panel">
           <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
-          <MemberExecutionPage />
+          <MemberExecutionPage shell={memberShell} />
         </div>
       ),
     );
@@ -131,6 +149,24 @@ export function apply(ctx: Context): void {
         >
           <path d="M9 5h11M9 12h11M9 19h11M3 5l1 1 2-2M3 12l1 1 2-2M3 19l1 1 2-2" />
         </svg>
+      ),
+    ),
+  );
+  ctx.slots.inject('sidebar.footer.action', () =>
+    ctx.slots.register(
+      {
+        name: 'sidebar.footer.action',
+        order: -100,
+        inject: () => ({
+          shell: memberShell,
+          openWork: () => {
+            if (ctx.layout.panelInfo.getSnapshot().activePanelId !== executionPanel)
+              ctx.layout.selectPanel(executionPanel);
+          },
+        }),
+      },
+      (props: SidebarFooterActionOwnerProps & { shell: typeof memberShell; openWork(): void }) => (
+        <SidebarAccountFooter {...props} />
       ),
     ),
   );

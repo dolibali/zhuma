@@ -1,5 +1,15 @@
 # 成员空间选择与切换边界
 
+## 宿主账号入口与组合
+
+插件在公开的 root-scoped `sidebar.footer.action` 注册唯一账号组件，读取宿主 `wide`。展开时显示紧凑头像、可信账号标识与当前空间摘要；56px 窄栏只保留36px头像触发器及完整辅助名称／tooltip。弹层贴近头像，展开栏向上、窄栏向右并避让窗口，按账号信息、可信空间选择、退出分组；不添加未接服务的资料、计费、多账号同时登录等项目。页内只保留当前工作空间摘要与刷新，不重复放账号／退出或空间选择器。
+
+`plugin.apply` 生命周期创建并启动一个 `MemberShell`。其成员 controller 唯一，空间 controller 按真实成员会话代次创建／清理；main 与 footer 显式注入同一实例，不依赖跨槽 React Context，也不各自恢复／销毁登录。页面卸载保留全局登录和空间选择，页面活动代次同步关闭旧请求门禁。活动工作页注册可取消的脏输入守卫，侧栏选择先经过它；没有活动工作页时，选择只打开“我的工作”并重新授权／只读加载，不执行任务。退出、账号失效和插件卸载立即清理共享空间及旧界面；主题仍由官方服务管理。
+
+固定 SDK 的 `SidebarRoot.tsx` 将 footer.action 放在 `sidebar.settings` 之前，renderer 的 outlet anchor 为 display:contents；组件自行处理可用宽度。Settings 座位仍由官方 ui-settings-general 占用，保留原设置／主题与快捷键，不接管单一座位，不造第二套设置状态。有窄栏与整列隐藏是两种语义：桌面收起整列时 footer 随列隐藏，通过宿主已有展开入口恢复；不为此修改固定上游或悬浮重建账号壳。账号弹层在 owner 宽度变化及锚点隐藏时关闭／隐藏，避免孤立浮层。
+
+参考机制与取舍见 [#31 设计决定](https://github.com/dolibali/zhuma/issues/31#issuecomment-6387176107)：采用 Slack 左下稳定身份入口和 Notion 的账号／空间分组；Linear 只借空间与成员／设置语义，其公开入口是左上，不照搬位置。依据是官方文档研究，非登录后竞品实测；继续使用公共中性浅深 token 与系统字体。只呈现已接通能力，账号菜单本身不开始模型／执行，不迁移资料。
+
 ## 可信输入
 
 `GET /zhuma-id/session` 的成功响应必须包含成员主体、`accountId`、`peerId` 与 `spaces: readonly { id, kind: 'personal' | 'team', name }[]`。Client 只保留这些公开字段；缺失空间数组、非法类型或重复 ID 均拒绝，空数组有效。空间类型与成员关系来自同一可信目录，不从便笺、项目 ID、旧 owner snapshot 或浏览器参数推导。
@@ -29,5 +39,9 @@
 `member-spaces.test.mjs` 验证目录／生命周期契约，`identity-api.test.mjs` 验证实际 HTTP DTO 的收窄；浏览器 `member-spaces.spec.mjs` 使用 HTTP 响应重放和边界交互夹具。夹具不是执行服务、不签发真实 cookie，不证明跨空间业务过滤。真实 Host 多成员、空业务空间、撤销、命令重授权和界面验收须使用正式集成另行验证，Node 或夹具编译通过不能替代。
 
 `execution-scope.test.mjs` 覆盖显式 scope、回显、在途 session 共享／取消、预检拒绝、服务拒绝和迟到结果；`member-execution-spaces.spec.mjs` 通过真实 `MemberExecutionPage` 重放接口，覆盖空空间、切换／可取消清空、显式开始、预检期间切换／退出与旧开始／提交结果。协调诊断入口为 `/?member-execution-spaces&strict`，仍是响应重放，不是正式数据初始化或真实 Cookie 证明。正式应用入口继续是插件导航“我的工作”。
+
+共享入口组件契约为 `/?member-account&strict`：两个实际 React 根显式共享同一个 shell，分别渲染真实账号组件和工作页，不仿制侧栏／设置／宿主几何。`member-shell.test.mjs` 验证共享拥有权、活动页守卫与销毁，`member-plugin-composition.test.mjs` 编译真实插件并以 registry port 核对 footer/main 同实例及未占用 Settings；它们是契约测试，不是宿主验收。正式位置、侧栏滚动／展开／隐藏、弹层与官方设置兼容及实际 Cookie 多成员流程须由真实 DSH 宿主验证并提供前后图。
+
+未传 shell 的独立组件入口保留旧隔离诊断控件，以兼容既有契约；它不是软件导航装配。正式插件始终传同一 shell，页顶账号条及空间选择器关闭。不得把独立组件截图或为页面套一个仿制侧栏当作新宿主布局证据。
 
 视觉沿用现有中性浅深 token、系统字体与公共单选控件。参考 diagram-design 的语义层级与删除冗余，将空间选择与账号操作分开，避免把所有空间摊开成卡片；不复制静态图解配色、字体或节点预算。

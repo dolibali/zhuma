@@ -13,6 +13,7 @@ import { SingleSelect } from '../workbench/SingleSelect.js';
 import { UnsavedChangesBoundary } from '../workbench/UnsavedChanges.js';
 import type { IdentityApi, MemberSession, MemberSpace } from './api.js';
 import { createMemberSpaceController } from './spaces.js';
+import type { MemberSpaceController } from './shell.js';
 
 export interface MemberSpaceLifetime {
   /** UI generation only, never an authorization fact. */
@@ -23,6 +24,10 @@ export interface MemberSpaceBoundaryProps {
   readonly api: IdentityApi;
   readonly session: MemberSession;
   readonly isSessionCurrent?: () => boolean;
+  readonly isPageCurrent?: (() => boolean) | undefined;
+  readonly controller?: MemberSpaceController | undefined;
+  readonly showSpacePicker?: boolean;
+  readonly registerSwitchGuard?: ((select: (id: string) => void) => () => void) | undefined;
   onUnauthenticated(): void;
   /** The transport must bind all work queries and commands to this explicit space. */
   readonly children: (
@@ -36,14 +41,18 @@ export function MemberSpaceBoundary({
   api,
   session,
   isSessionCurrent,
+  isPageCurrent,
+  controller: provided,
+  showSpacePicker = true,
+  registerSwitchGuard,
   onUnauthenticated,
   children,
 }: MemberSpaceBoundaryProps) {
   const invalidation = useRef(onUnauthenticated);
   invalidation.current = onUnauthenticated;
   const controller = useMemo(
-    () => createMemberSpaceController(api, session, () => invalidation.current()),
-    [api, session],
+    () => provided ?? createMemberSpaceController(api, session, () => invalidation.current()),
+    [api, session, provided],
   );
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -59,17 +68,28 @@ export function MemberSpaceBoundary({
   }, []);
   const [proposed, setProposed] = useState<string>();
   useEffect(() => {
+    if (provided) return;
     void controller.refresh();
     return () => controller.dispose();
-  }, [controller]);
+  }, [controller, provided]);
   useEffect(() => {
     if (state.status !== 'ready') setProposed(undefined);
   }, [state.status]);
-  function select(id: string) {
-    if (state.status === 'ready' && state.space.id === id) return;
-    if (dirtyForms.current.size) setProposed(id);
-    else void controller.select(id);
-  }
+  const select = useCallback(
+    (id: string) => {
+      const current = controller.getSnapshot();
+      if (current.status === 'ready') {
+        if (current.space.id === id) return;
+        if (dirtyForms.current.size) {
+          setProposed(id);
+          return;
+        }
+      }
+      void controller.select(id);
+    },
+    [controller],
+  );
+  useEffect(() => registerSwitchGuard?.(select), [registerSwitchGuard, select]);
   const selected =
     state.status === 'ready'
       ? state.space.id
@@ -84,6 +104,7 @@ export function MemberSpaceBoundary({
     const current = controller.getSnapshot();
     return (
       isSessionCurrent?.() !== false &&
+      isPageCurrent?.() !== false &&
       state.status === 'ready' &&
       current.status === 'ready' &&
       current.epoch === state.epoch
@@ -92,21 +113,28 @@ export function MemberSpaceBoundary({
   return (
     <div className="zm-space-boundary">
       <nav className="zm-space-bar" aria-label="工作空间">
-        <SingleSelect
-          label="当前空间"
-          value={selected}
-          options={options}
-          onValueChange={select}
-          disabled={!options.length}
-          triggerContent={
-            selected ? undefined : (
-              <>
-                <span>{state.status === 'checking' ? '正在确认空间…' : '选择空间'}</span>
-                <span aria-hidden>⌄</span>
-              </>
-            )
-          }
-        />
+        {showSpacePicker ? (
+          <SingleSelect
+            label="当前空间"
+            value={selected}
+            options={options}
+            onValueChange={select}
+            disabled={!options.length}
+            triggerContent={
+              selected ? undefined : (
+                <>
+                  <span>{state.status === 'checking' ? '正在确认空间…' : '选择空间'}</span>
+                  <span aria-hidden>⌄</span>
+                </>
+              )
+            }
+          />
+        ) : (
+          <div className="zm-space-summary">
+            <span>工作空间</span>
+            <strong>{state.status === 'ready' ? state.space.name : '正在确认'}</strong>
+          </div>
+        )}
         <Button
           variant="quiet"
           busy={state.status === 'checking' || (state.status === 'ready' && state.refreshing)}

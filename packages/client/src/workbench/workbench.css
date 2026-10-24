@@ -1,4 +1,128 @@
 /* Theme state belongs to the official DSH ui-theme service. These are presentation tokens only. */
+.zhuma.zm-account-footer {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  overflow: visible;
+  background: transparent;
+}
+.zhuma .zm-account-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 8px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+.zhuma .zm-account-trigger:hover:not(:disabled),
+.zhuma .zm-account-trigger[data-popup-open] {
+  background: var(--zm-hover);
+}
+.zhuma .zm-account-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--zm-soft);
+  color: var(--zm-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+.zhuma .zm-account-caption {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+.zhuma .zm-account-caption strong,
+.zhuma .zm-account-caption small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zhuma .zm-account-caption strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.zhuma .zm-account-caption small {
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+.zhuma .zm-account-chevron {
+  flex: none;
+  color: var(--zm-muted);
+}
+.zhuma.zm-account-footer[data-wide='false'] {
+  width: 36px;
+}
+.zhuma.zm-account-footer[data-wide='false'] .zm-account-trigger {
+  width: 36px;
+  min-height: 36px;
+  padding: 3px;
+  justify-content: center;
+}
+.zm-account-positioner {
+  z-index: 180;
+}
+.zm-account-positioner[data-anchor-hidden] {
+  visibility: hidden;
+}
+.zhuma.zm-account-popup {
+  display: grid;
+  gap: 12px;
+  width: min(296px, calc(100vw - 24px));
+  height: auto;
+  max-height: min(420px, calc(100dvh - var(--dsh-frame-overlay-top, 12px) - 120px));
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+  background: var(--zm-overlay);
+  box-shadow: 0 8px 28px var(--zm-shadow);
+}
+.zhuma .zm-account-identity {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-account-identity small {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zhuma .zm-account-identity strong {
+  font-size: 14px;
+}
+.zhuma .zm-account-exit {
+  padding-top: 8px;
+  border-top: 1px solid var(--zm-line);
+}
+.zhuma .zm-account-exit .zm-button {
+  width: 100%;
+  justify-content: flex-start;
+}
+.zhuma .zm-space-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  align-items: center;
+}
+.zhuma .zm-space-summary span {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zhuma .zm-space-summary strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 600;
+}
 .zhuma.zm-member-session {
   display: flex;
   flex-direction: column;
