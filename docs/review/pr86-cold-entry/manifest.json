@@ -1,0 +1,225 @@
+{
+  "sourceHead": "d3662b923179c3746f4c6b4de12f1f47f8ae7834",
+  "hostSha256": "0cf99d66623079f26b92b479d4e0c96981f87db5bdbba4178a2c1da9eabcd931",
+  "clientSha256": "294fe3755dde8af572e218ae30ef4f961bb92ec2c79a9ff98caa289460f047c3",
+  "officialNativeMainSha256": "df730874ca56fb474994a31e3dbcf5510bcb7880e76e451a19571f56ba3d7ccd",
+  "neutralOfficialLayoutBundleSha256": "04c3b383ecaf40452e1fd2be5191a12c251aae0df78e32ca05629ce49395f9e8",
+  "nativeSource": "Official Electron app, actual dsh-app protocol/private main transport, current frozen Host and Client; official Settings Light/Dark; fictional test accounts and own JSON persistence",
+  "webSource": "Official CLI/Web SidebarRoot; real Cookie/HTTP. Web revoked-login images show actual server-revoked session then normal form login and reload. Model setup was explicitly deferred without entering a credential.",
+  "beforeEvidenceCommit": "88a8b4a5bfab522db1c2078448aa3b3fc383acbc",
+  "beforeEquivalentHead": "cdd058cd945f48e4aa816fea101ab63f7796ab46",
+  "sameViewportComparison": "native-cold-compare-dark/native-reloaded-compare-dark match previous cold/reload failure viewport1280x820/DPR2; same fictional account and fixture, version changed only",
+  "boundaries": "No user attachment, real personal data or path tooltip. No installer/cross-platform/system theme-switch/window drag/full human review/file bytes/Agent/model acceptance. Native 1440x856 viewport is real screen clamp, not requested 1440x900.",
+  "images": [
+    {
+      "file": "native-account-menu-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 152491,
+      "sha256": "35848f96046c5af41f5f95a72c3a4a60100afaaaa6f59adb2aaea6b8d1d17eb6",
+      "gitBlob": "1aa0b02421fdb183201053660214cdc0700e9bc1",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "native-account-menu-light.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 155944,
+      "sha256": "ba663eb2e0e73339add644cca2adee7406a7bbbf0212e2a8bc5f279c90fee556",
+      "gitBlob": "7d4d0a0e7a97e5ad4c092cebd25c93b3ea117359",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "native-cold-compare-dark.png",
+      "width": 2560,
+      "height": 1640,
+      "viewport": {
+        "width": 1280,
+        "height": 820
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 114814,
+      "sha256": "cbdc5ecff11eb9ecc31dbef2014ed7bf1b457156727841b950798abc7e29980b",
+      "gitBlob": "c2fa3a986a13dffd7ce2c71f7a43f788ffd6bd98",
+      "personallyViewed": true,
+      "account": "signed-out"
+    },
+    {
+      "file": "native-cold-login-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 121067,
+      "sha256": "5ede91ed0a08a2b5a8fd3211685832fb1700f8eb4f661b9d014b6632cc08bf90",
+      "gitBlob": "2b0ef8faaba9f97a7ac6080e7b968c6974f759bb",
+      "personallyViewed": true,
+      "account": "signed-out"
+    },
+    {
+      "file": "native-cold-login-light.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 121829,
+      "sha256": "6eae7ac2a04b6d2746d8ca210ece44bed64886274448c30136571650b3439cd6",
+      "gitBlob": "ed41169a5f12f1cb0f75e0ddc2f15d90707525b8",
+      "personallyViewed": true,
+      "account": "signed-out"
+    },
+    {
+      "file": "native-reloaded-compare-dark.png",
+      "width": 2560,
+      "height": 1640,
+      "viewport": {
+        "width": 1280,
+        "height": 820
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 139575,
+      "sha256": "83b45db88fbeecffd6fc0cd6b7e85ba97fbc295fea08312947b18421d6d1db12",
+      "gitBlob": "ab3583a2fc6993a638126987843323e3869df0f8",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "native-reloaded-member-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 147098,
+      "sha256": "7f73f0a66b15def7cee810d01af7c2d91098df6371a162c4bdedb30301c7444b",
+      "gitBlob": "bca6e3227ccc4bc05ee9505012d58875793bd733",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "native-reloaded-member-light.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 148337,
+      "sha256": "51fc80d97b9c6abf58b4f76b5add3368b2b0b679d28a5c9b80240587c8ad7d3b",
+      "gitBlob": "e51d69cb3f73be1b6fd76a42ad396c1cd865aa62",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "native-space-menu-dark.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 161552,
+      "sha256": "f5337f484885baf215d8fe38953b501b0d44b56971a8beb47a4a2d84c392576e",
+      "gitBlob": "e355e61289612e3481133000d5ffe211c9497a40",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "native-space-menu-light.png",
+      "width": 2880,
+      "height": 1712,
+      "viewport": {
+        "width": 1440,
+        "height": 856
+      },
+      "deviceScaleFactor": 2,
+      "bytes": 166256,
+      "sha256": "a7a29e6711c3603585f423073cb499f1100a1913d022fa26873fc388b5c763ea",
+      "gitBlob": "437e17514e75a91bf32be3d39e5db3a3b3566fab",
+      "personallyViewed": true,
+      "account": "member-c"
+    },
+    {
+      "file": "web-revoked-login-dark.png",
+      "width": 1440,
+      "height": 900,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "deviceScaleFactor": 1,
+      "bytes": 30908,
+      "sha256": "e61113df7f1a7d5699e7cf0707119697240401e9e879ab3fe3d989564517dd8f",
+      "gitBlob": "16eea9208c27b20ec02cdb5233e1ea91195fb9ce",
+      "personallyViewed": true,
+      "account": "signed-out"
+    },
+    {
+      "file": "web-revoked-login-light.png",
+      "width": 1440,
+      "height": 900,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "deviceScaleFactor": 1,
+      "bytes": 31272,
+      "sha256": "ae2cbf6e0a2867706ee07986ce34deb920069989eafd225172d6b94c458d8bf2",
+      "gitBlob": "bdebbc137ed852138412f9ef8390e15862515ab6",
+      "personallyViewed": true,
+      "account": "signed-out"
+    },
+    {
+      "file": "web-reloaded-member-dark.png",
+      "width": 1440,
+      "height": 900,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "deviceScaleFactor": 1,
+      "bytes": 41479,
+      "sha256": "6196eb2976e4f171ce5a157a7e7314de457e8c48b21ca1035c494c694daf1f53",
+      "gitBlob": "ae39f5bbf08400211a46b82d1bf6a9b69f974e83",
+      "personallyViewed": true,
+      "account": "member-a"
+    },
+    {
+      "file": "web-reloaded-member-light.png",
+      "width": 1440,
+      "height": 900,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "deviceScaleFactor": 1,
+      "bytes": 42573,
+      "sha256": "266f4535f26e7b4dc9917fca9594b993229767c5b6fcc919f793b9a1cce220eb",
+      "gitBlob": "00c906598dba301f66d2c709f22be20a775ffdb8",
+      "personallyViewed": true,
+      "account": "member-a"
+    }
+  ]
+}
