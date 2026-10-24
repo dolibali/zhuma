@@ -6,22 +6,28 @@ import { configureDeploymentMode } from './member-session.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
-import type { ProjectSpaceDirectory } from './project-space.js';
+import {
+  applySpaceDirectory,
+  spaceDirectoryFor,
+  type OpenedSpaceDirectoryHandle,
+  type SpaceDirectoryImport,
+} from './space-directory.js';
+export { spaceDirectoryFor } from './space-directory.js';
+
+const bootstrapRecordKey = z.string().refine((key) => {
+  try {
+    parseCredentialKey(key);
+    return true;
+  } catch {
+    return false;
+  }
+}, '需要合法的私有凭据记录地址。');
 
 export const Config = z.strictObject({
   deploymentMode: z.enum(['legacy-single-user', 'multi-member']),
-  // Configuration carries only a private record address, never account verifiers.
-  identityBootstrapKey: z
-    .string()
-    .refine((key) => {
-      try {
-        parseCredentialKey(key);
-        return true;
-      } catch {
-        return false;
-      }
-    }, '需要合法的私有凭据记录地址。')
-    .optional(),
+  // Only private DSH credential record addresses, never inline seed/account data.
+  identityBootstrapKey: bootstrapRecordKey.optional(),
+  spaceDirectoryBootstrapKey: bootstrapRecordKey.optional(),
   bodyBytes: z
     .number()
     .int()
@@ -56,36 +62,57 @@ export const identityPlugin = {
 
 export const executionPlugin = { inject: [...executionInject], apply: applyExecution };
 
-export interface WorkbenchHostDependencies {
-  /** A trusted Host provider, never JSON configuration or client-supplied mappings. */
-  readonly projectSpaces?: ProjectSpaceDirectory;
+interface DirectoryMountConfig {
+  bootstrapKey?: string | undefined;
+  publish(directory: OpenedSpaceDirectoryHandle): () => void;
 }
 
-/** The formal directory producer can use this exact composition without reopening domains. */
-export function createWorkbenchHost(dependencies: WorkbenchHostDependencies = {}) {
-  return {
-    Config,
-    inject,
-    apply: (ctx: Context, rawConfig: unknown) => mountHost(ctx, rawConfig, dependencies),
-  };
-}
+/** The same producer instance is used by identity and execution in this Host bundle. */
+export const spaceDirectoryPlugin = {
+  inject: ['storageDomain', 'credentials'],
+  async apply(ctx: Context, config: DirectoryMountConfig): Promise<void> {
+    let imported: SpaceDirectoryImport | undefined;
+    if (config.bootstrapKey !== undefined) {
+      const record = await ctx.credentials.readRecord(parseCredentialKey(config.bootstrapKey));
+      if (record?.kind !== 'grant' || record.payload === undefined || record.payload === null)
+        throw new Error('Space directory bootstrap record is unavailable.');
+      imported = record.payload as SpaceDirectoryImport;
+    }
+    // B validates, persists and registers the directory; A only owns startup and scope.
+    await applySpaceDirectory(ctx, imported);
+    const directory = spaceDirectoryFor(ctx);
+    if (!directory) throw new Error('Space directory did not become available.');
+    const unpublish = config.publish(directory);
+    ctx.effect(() => unpublish);
+  },
+};
 
-/** Official Host entry. Missing directory facts remain missing; no project-id fallback. */
+/** Official Host composition; no seed or missing facts can become inferred authority. */
 export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
-  await mountHost(ctx, rawConfig, {});
-}
-
-async function mountHost(
-  ctx: Context,
-  rawConfig: unknown,
-  dependencies: WorkbenchHostDependencies,
-): Promise<void> {
   const config = Config.parse(rawConfig);
   configureDeploymentMode(ctx, config.deploymentMode);
   // Registers fail-closed streaming gates before the first asynchronous domain open.
   // The same clone-producing closure is shared with execution; no second workbench domain.
   const workbench = await openWorkbench(ctx, config);
-  if (config.deploymentMode === 'multi-member' || config.identityBootstrapKey !== undefined) {
+  let ownedDirectory: OpenedSpaceDirectoryHandle | undefined;
+  const identitySelected =
+    config.deploymentMode === 'multi-member' || config.identityBootstrapKey !== undefined;
+  if (identitySelected || config.spaceDirectoryBootstrapKey !== undefined) {
+    try {
+      await ctx.plugin(spaceDirectoryPlugin, {
+        bootstrapKey: config.spaceDirectoryBootstrapKey,
+        publish(directory: OpenedSpaceDirectoryHandle) {
+          ownedDirectory = directory;
+          return () => {
+            if (ownedDirectory === directory) ownedDirectory = undefined;
+          };
+        },
+      });
+    } catch {
+      ctx.logger.error('Zhuma space directory is unavailable; member space access remains closed.');
+    }
+  }
+  if (identitySelected) {
     try {
       await ctx.plugin(identityPlugin, config.identityBootstrapKey);
     } catch {
@@ -100,9 +127,19 @@ async function mountHost(
     // identity or directory facts; they never fall back to the owner principal.
     await ctx.plugin(executionPlugin, {
       readWorkbench: workbench.readWorkbench,
-      ...(dependencies.projectSpaces === undefined
-        ? {}
-        : { projectSpaces: dependencies.projectSpaces }),
+      projectSpaces: {
+        async spaceForProject(projectId: string) {
+          const current = ownedDirectory;
+          if (!current || spaceDirectoryFor(ctx) !== current)
+            return { ok: false as const, reason: 'unavailable' as const };
+          const result = await current.spaceForProject(projectId);
+          // Revocation/failed close removes the registration before the close awaits.
+          // A lookup from a previous producer lifetime cannot authorize this request.
+          if (ownedDirectory !== current || spaceDirectoryFor(ctx) !== current)
+            return { ok: false as const, reason: 'unavailable' as const };
+          return result;
+        },
+      },
     });
   }
 }

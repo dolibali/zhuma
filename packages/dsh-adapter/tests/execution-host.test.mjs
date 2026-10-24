@@ -100,6 +100,20 @@ test('a real connection and member cookie run start, report, and review', async 
         ],
       },
       'multi-member',
+      // Membership comes from the directory. chen and lin belong to the
+      // project's space team-north. zhao belongs only to the space whose id
+      // matches the project id, which must not authorize this project.
+      {
+        spaces: [
+          { id: 'team-north', kind: 'team', name: '北队' },
+          { id: 'project', kind: 'team', name: '项目别名空间' },
+        ],
+        memberships: [
+          { spaceId: 'team-north', accountId: 'chen' },
+          { spaceId: 'team-north', accountId: 'lin' },
+          { spaceId: 'project', accountId: 'zhao' },
+        ],
+      },
     );
     executionFiber = host.ctx.plugin(
       { inject: [...executionInject], apply: applyExecution },

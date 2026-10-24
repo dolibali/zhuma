@@ -33,11 +33,7 @@ const imported = {
   ],
 };
 
-async function start(
-  directory,
-  config,
-  { deferIdentity = false, skipRemoteAccess = false, syntheticProjectSpaces } = {},
-) {
+async function start(directory, config, { deferIdentity = false, skipRemoteAccess = false } = {}) {
   const child = fork(
     fileURLToPath(new URL('./fixtures/s1a-host-process.mjs', import.meta.url)),
     [],
@@ -91,7 +87,7 @@ async function start(
     child.send({ id, action });
     return response;
   };
-  const { identityImport, ...publicConfig } = config;
+  const { identityImport, spaceDirectoryImport, ...publicConfig } = config;
   child.send({
     type: 'boot',
     options: {
@@ -101,11 +97,14 @@ async function start(
         ...(identityImport === undefined
           ? {}
           : { identityBootstrapKey: 'zhuma-identity/bootstrap' }),
+        ...(spaceDirectoryImport === undefined
+          ? {}
+          : { spaceDirectoryBootstrapKey: 'zhuma-spaces/bootstrap' }),
       },
       identityImport,
       deferIdentity,
       skipRemoteAccess,
-      ...(syntheticProjectSpaces === undefined ? {} : { syntheticProjectSpaces }),
+      ...(spaceDirectoryImport === undefined ? {} : { spaceDirectoryImport }),
       ...(process.env.S1A_HOST_MODULE ? { modulePath: resolve(process.env.S1A_HOST_MODULE) } : {}),
     },
   });
@@ -579,7 +578,7 @@ test(
 );
 
 test(
-  'S1b actual Host: single workbench open, member-gated execution and explicit Host directory injection',
+  'S1b actual Host: trusted directory seed, persistence, member execution and fail-closed lifecycle',
   { timeout: 45000 },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'zhuma-s1b-composition-'));
@@ -659,17 +658,71 @@ test(
       assert.equal(denied.result.ok, false);
       assert.equal(denied.result.error.code, 'not-found');
       const counts = await host.act('inspect');
-      for (const name of ['zhuma_workbench', 'zhuma_asset_packages', 'zhuma_execution'])
+      for (const name of [
+        'zhuma_workbench',
+        'zhuma_asset_packages',
+        'zhuma_execution',
+        'zhuma_spaces',
+      ])
         assert.equal(counts.opened.filter((entry) => entry === name).length, 1);
       await host.close();
       host = null;
-      host = await start(
-        directory,
-        { deploymentMode: 'multi-member', identityImport: imported },
-        { syntheticProjectSpaces: [{ projectId: 'project', spaceId: 'personal-a' }] },
-      );
+      // A missing private record or invalid seed fails closed and leaves the
+      // producer child visibly failed. Neither can borrow note memberships.
+      for (const seedConfig of [
+        { spaceDirectoryBootstrapKey: 'zhuma-spaces/missing' },
+        { spaceDirectoryImport: { spaces: [{ id: 'invalid id', name: 'Invalid', kind: 'team' }] } },
+      ]) {
+        host = await start(directory, {
+          deploymentMode: 'multi-member',
+          identityImport: imported,
+          ...seedConfig,
+        });
+        await host.wait('ready');
+        memberCookie = `${host.cookie}; ${await login(host)}`;
+        const session = await (
+          await fetch(host.baseURL + '/zhuma-id/session', { headers: { cookie: memberCookie } })
+        ).json();
+        assert.deepEqual(session.spaces, []);
+        assert.ok((await host.act('inspect')).directoryStates.includes(3));
+        const refused = await (await exec(host, 'start-plan', startPlan, memberCookie)).json();
+        assert.equal(refused.result.ok, false);
+        await host.close();
+        host = null;
+      }
+      const spaceDirectoryImport = {
+        spaces: [
+          { id: 'personal-a', kind: 'personal', name: 'Notes space' },
+          { id: 'personal-empty', kind: 'personal', name: 'Empty personal' },
+          { id: 'team-empty', kind: 'team', name: 'Empty team' },
+          { id: 'space-collaboration', kind: 'team', name: 'Project team' },
+        ],
+        memberships: ['personal-a', 'personal-empty', 'team-empty', 'space-collaboration'].map(
+          (spaceId) => ({ spaceId, accountId: 'member-a' }),
+        ),
+        projectSpaces: [{ projectId: 'project', spaceId: 'space-collaboration' }],
+      };
+      host = await start(directory, {
+        deploymentMode: 'multi-member',
+        identityImport: imported,
+        spaceDirectoryImport,
+      });
       await host.wait('ready');
       memberCookie = `${host.cookie}; ${await login(host)}`;
+      const authorized = await (
+        await fetch(host.baseURL + '/zhuma-id/session', { headers: { cookie: memberCookie } })
+      ).json();
+      assert.deepEqual(
+        authorized.spaces.map((space) => space.id).sort(),
+        spaceDirectoryImport.spaces.map((space) => space.id).sort(),
+      );
+      for (const spaceId of ['personal-empty', 'team-empty']) {
+        const response = await fetch(`${host.baseURL}/zhuma-id/spaces/${spaceId}`, {
+          headers: { cookie: memberCookie },
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual((await response.json()).notes, []);
+      }
       const started = await (await exec(host, 'start-plan', startPlan, memberCookie)).json();
       assert.equal(started.result.ok, true);
       const inbox = await (await exec(host, 'inbox', {}, memberCookie)).json();
@@ -692,13 +745,86 @@ test(
       ).json();
       assert.equal(submitted.result.ok, true);
       assert.equal(submitted.result.value.node.status, 'completed');
+      await host.act('revokeTestMemberships');
+      for (const method of ['GET', 'PUT']) {
+        const response = await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+          method,
+          headers: { cookie: memberCookie, 'content-type': 'application/json' },
+          ...(method === 'PUT' ? { body: JSON.stringify({ text: 'must-not-persist' }) } : {}),
+        });
+        assert.equal(response.status, 404);
+      }
+      const revokedReport = await (
+        await exec(
+          host,
+          'report',
+          { taskId: plan.taskId, planId: plan.id, revision: plan.revision },
+          memberCookie,
+        )
+      ).json();
+      assert.equal(revokedReport.result.ok, false);
+      await host.close();
+      host = null;
+      // No bootstrap source on reopen: consume the real persisted directory,
+      // preserving the revocation and the empty personal/team spaces.
+      host = await start(directory, { deploymentMode: 'multi-member', identityImport: imported });
+      await host.wait('ready');
+      memberCookie = `${host.cookie}; ${await login(host)}`;
+      const restored = await (
+        await fetch(host.baseURL + '/zhuma-id/session', { headers: { cookie: memberCookie } })
+      ).json();
+      assert.deepEqual(restored.spaces.map((space) => space.id).sort(), [
+        'personal-empty',
+        'team-empty',
+      ]);
+      assert.equal(
+        (
+          await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+            headers: { cookie: memberCookie },
+          })
+        ).status,
+        404,
+      );
+      await host.act('grantTestMemberships');
+      const note = await (
+        await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+          headers: { cookie: memberCookie },
+        })
+      ).json();
+      assert.equal(note.note.text, 'Synthetic private note');
+      await host.act('holdProjectLookup');
+      const pendingReport = exec(
+        host,
+        'report',
+        { taskId: plan.taskId, planId: plan.id, revision: plan.revision },
+        memberCookie,
+      );
+      await host.wait('lookup-pending');
+      assert.deepEqual(await host.act('unmountDirectoryWithCloseFailure'), { registered: false });
+      await host.act('releaseProjectLookup');
+      const stale = await (await pendingReport).json();
+      assert.equal(stale.result.ok, false);
+      assert.equal(stale.result.error.code, 'unavailable');
+      assert.equal(
+        (
+          await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+            headers: { cookie: memberCookie },
+          })
+        ).status,
+        404,
+      );
       proof.cases.push({
         name: 'member-execution-composition',
         passed: true,
         singleWorkbenchDomain: true,
         ownerNeverMember: true,
         absentDirectoryClosed: true,
-        syntheticDirectoryInjectionConsumed: true,
+        trustedPersistentDirectoryConsumed: true,
+        privateSeedValidated: true,
+        emptySpacesAuthorized: true,
+        projectAndSpaceDiffer: true,
+        revocationSurvivesRestart: true,
+        failedCloseAndStaleLookupClosed: true,
       });
     } finally {
       if (host) await host.close();

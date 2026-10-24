@@ -116,6 +116,20 @@ export {
   type ExecutionStorage,
   type PlanReceipt,
 } from './execution-service.js';
+export {
+  applySpaceDirectory,
+  openSpaceDirectory,
+  SPACE_DIRECTORY_MEMBERSHIP_LIMIT,
+  SPACE_DIRECTORY_SPACE_LIMIT,
+  spaceDirectoryDomainSpec,
+  spaceDirectoryFor,
+  type AuthorizedSpace,
+  type OpenedSpaceDirectoryHandle,
+  type SpaceDirectory,
+  type SpaceDirectoryImport,
+  type SpaceDirectoryWriter,
+  type SpaceKind,
+} from './space-directory.js';
 export type * from './s1-integration.js';
 export {
   apply as applyExecution,
@@ -123,5 +137,3 @@ export {
   inject as executionInject,
   type ExecutionPluginConfig,
 } from './execution-plugin.js';
-
-export { createWorkbenchHost, type WorkbenchHostDependencies } from './host-plugin.js';

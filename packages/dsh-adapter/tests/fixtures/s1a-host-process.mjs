@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 
 let ctx, host, hostPlugin, home, pendingIdentity, releaseIdentity;
-let originalModify, remoteAccessFiber;
+let originalModify, remoteAccessFiber, releaseProjectLookup;
 let modelCalls = 0;
 const forks = [];
 const opened = [];
@@ -56,6 +56,12 @@ async function boot(options) {
       payload: options.identityImport,
     }));
   }
+  if (options.spaceDirectoryImport !== undefined) {
+    await ctx.credentials.modifyRecord(credentialKey('zhuma-spaces', 'bootstrap'), async () => ({
+      kind: 'grant',
+      payload: options.spaceDirectoryImport,
+    }));
+  }
   if (options.deferIdentity) {
     pendingIdentity = new Promise((resolve) => {
       releaseIdentity = resolve;
@@ -83,23 +89,7 @@ async function boot(options) {
   hostPlugin = await import(
     options.modulePath ? pathToFileURL(options.modulePath).href : '../../dist/host-plugin.js'
   );
-  const composition =
-    options.syntheticProjectSpaces === undefined
-      ? hostPlugin
-      : hostPlugin.createWorkbenchHost({
-          // Private test-only records. Production must inject B's trusted provider.
-          projectSpaces: {
-            async spaceForProject(projectId) {
-              const record = options.syntheticProjectSpaces.find(
-                (entry) => entry.projectId === projectId,
-              );
-              return record
-                ? { ok: true, spaceId: record.spaceId }
-                : { ok: false, reason: 'unknown' };
-            },
-          },
-        });
-  host = ctx.plugin(composition, options.config);
+  host = ctx.plugin(hostPlugin, options.config);
   forks.push(host);
   await host;
   notify('ready');
@@ -124,6 +114,10 @@ async function inspect() {
     files,
     modelCalls,
     credentialMode: (await stat(join(home, '.credentials.yaml'))).mode & 0o777,
+    directoryStates: [...(ctx.registry.get(hostPlugin.spaceDirectoryPlugin)?.fibers ?? [])].map(
+      (fiber) => fiber.state,
+    ),
+    directoryRegistered: hostPlugin.spaceDirectoryFor(ctx) !== undefined,
     identityStates: [...(ctx.registry.get(hostPlugin.identityPlugin)?.fibers ?? [])].map(
       (fiber) => fiber.state,
     ),
@@ -153,6 +147,49 @@ async function waitIdentityState(expected) {
 }
 
 async function act(action) {
+  if (action === 'revokeTestMemberships' || action === 'grantTestMemberships') {
+    const directory = hostPlugin.spaceDirectoryFor(ctx);
+    for (const spaceId of ['personal-a', 'space-collaboration']) {
+      if (action === 'revokeTestMemberships') await directory.revokeMembership(spaceId, 'member-a');
+      else await directory.grantMembership(spaceId, 'member-a');
+    }
+    return {};
+  }
+  if (action === 'holdProjectLookup') {
+    const directory = hostPlugin.spaceDirectoryFor(ctx);
+    const original = directory.spaceForProject.bind(directory);
+    const gate = new Promise((resolve) => {
+      releaseProjectLookup = resolve;
+    });
+    directory.spaceForProject = async (projectId) => {
+      const result = await original(projectId);
+      notify('lookup-pending');
+      await gate;
+      return result;
+    };
+    return {};
+  }
+  if (action === 'releaseProjectLookup') {
+    releaseProjectLookup?.();
+    return {};
+  }
+  if (action === 'unmountDirectoryWithCloseFailure') {
+    const directory = hostPlugin.spaceDirectoryFor(ctx);
+    const close = directory.close.bind(directory);
+    directory.close = async () => {
+      throw Error('Synthetic directory close failure');
+    };
+    const fibers = [...(ctx.registry.get(hostPlugin.spaceDirectoryPlugin)?.fibers ?? [])];
+    try {
+      for (const fiber of fibers) await fiber.dispose();
+    } catch {
+      /* Disposer errors are expected. */
+    } finally {
+      directory.close = close;
+      await close();
+    }
+    return { registered: hostPlugin.spaceDirectoryFor(ctx) !== undefined };
+  }
   if (action === 'waitIdentityActive') return waitIdentityState(2);
   if (action === 'waitIdentityPending') return waitIdentityState(0);
   if (action === 'inspect') return inspect();

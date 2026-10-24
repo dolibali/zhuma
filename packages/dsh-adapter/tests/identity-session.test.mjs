@@ -30,6 +30,7 @@ import {
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../dist/identity-session.js';
+import { applySpaceDirectory, spaceDirectoryFor } from '../dist/space-directory.js';
 import {
   authorizeLegacyOwnerRoutes,
   configureDeploymentMode,
@@ -80,6 +81,27 @@ function fixtureImport() {
   };
 }
 
+/**
+ * The default trusted space facts mirror the note fixture: lin and zhao share
+ * team-north, chen owns team-south, and lin also belongs to the empty
+ * team-empty space that has no notes at all.
+ */
+function fixtureSpaces() {
+  return {
+    spaces: [
+      { id: 'team-north', kind: 'team', name: '北队' },
+      { id: 'team-south', kind: 'team', name: '南队' },
+      { id: 'team-empty', kind: 'team', name: '空团队' },
+    ],
+    memberships: [
+      { spaceId: 'team-north', accountId: 'lin' },
+      { spaceId: 'team-north', accountId: 'zhao' },
+      { spaceId: 'team-south', accountId: 'chen' },
+      { spaceId: 'team-empty', accountId: 'lin' },
+    ],
+  };
+}
+
 function memoryCredentials(records = new Map()) {
   return {
     records,
@@ -105,7 +127,7 @@ function memoryKv(media = new Map(), faults = {}) {
         async loadAll() {
           if (closed) throw new Error('closed');
           if (typeof faults.load === 'function') {
-            const error = await faults.load();
+            const error = await faults.load(descriptor.name);
             if (error !== undefined) throw error;
           }
           const tables = {};
@@ -131,7 +153,7 @@ function memoryKv(media = new Map(), faults = {}) {
         async setGlobal(value) {
           if (closed) throw new Error('closed');
           if (typeof faults.global === 'function') {
-            const error = await faults.global(value);
+            const error = await faults.global(descriptor.name, value);
             if (error !== undefined) throw error;
           }
           medium.global = structuredClone(value);
@@ -139,7 +161,7 @@ function memoryKv(media = new Map(), faults = {}) {
         async close() {
           closed = true;
           if (typeof faults.close === 'function') {
-            const error = await faults.close();
+            const error = await faults.close(descriptor.name);
             if (error !== undefined) throw error;
           }
         },
@@ -282,6 +304,22 @@ async function mount(shared = {}) {
   if (shared.hashProbe !== undefined) ctx.provide('zhumaIdentityHashProbe', shared.hashProbe);
   const connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
   await connectionFiber;
+  // The trusted space directory mounts before identity; shared.spaces === null
+  // leaves the host without a directory (members then hold no spaces).
+  const spaceFiber =
+    shared.spaces === null
+      ? undefined
+      : ctx.plugin(
+          { inject: ['storageDomain'], apply: applySpaceDirectory },
+          shared.spaces === undefined ? fixtureSpaces() : shared.spaces,
+        );
+  try {
+    await spaceFiber;
+  } catch (error) {
+    await spaceFiber?.dispose().catch(() => {});
+    await connectionFiber.dispose();
+    throw error;
+  }
   const identityFiber = ctx.plugin(
     { inject: [...identityInject], apply: applyIdentity },
     shared.imported === undefined ? fixtureImport() : shared.imported,
@@ -290,6 +328,7 @@ async function mount(shared = {}) {
     await identityFiber;
   } catch (error) {
     await identityFiber.dispose().catch(() => {});
+    await spaceFiber?.dispose().catch(() => {});
     await connectionFiber.dispose();
     throw error;
   }
@@ -301,8 +340,10 @@ async function mount(shared = {}) {
     credentials,
     media: kv.media,
     identityFiber,
+    spaceFiber,
     dispose: async () => {
       await identityFiber.dispose();
+      await spaceFiber?.dispose();
       await connectionFiber.dispose();
     },
   };
@@ -1785,6 +1826,10 @@ test('a single-user owner mapping exists only when the import names that one acc
         },
       ],
     },
+    spaces: {
+      spaces: [{ id: 'solo-space', kind: 'personal', name: '个人空间' }],
+      memberships: [{ spaceId: 'solo-space', accountId: 'lin' }],
+    },
   });
   const owner = ownerCookie(named.connection);
   const session = await call(named.web, {
@@ -1926,7 +1971,10 @@ test('legacy owner routes stay denied while multi-member identity disposes and r
     ctx,
     deploymentMode: null,
     faults: {
-      close: () => {
+      close: (name) => {
+        // Only the identity domain participates in this dispose/remount
+        // choreography; the space directory's own close/load stay immediate.
+        if (name !== 'zhuma_identity') return undefined;
         closeCount += 1;
         if (closeCount > 1) return undefined;
         return new Promise((resolve) => {
@@ -1934,7 +1982,8 @@ test('legacy owner routes stay denied while multi-member identity disposes and r
           releaseClose = () => resolve(undefined);
         });
       },
-      load: () => {
+      load: (name) => {
+        if (name !== 'zhuma_identity') return undefined;
         opens += 1;
         if (opens === 1) return undefined;
         return new Promise((resolve) => {
@@ -2237,7 +2286,8 @@ test('a notes put failure resumes the same import', async () => {
 test('a completion marker failure resumes the same import', async () => {
   await resumeSameImport(
     {
-      global() {
+      global(name) {
+        if (name !== 'zhuma_identity') return undefined;
         return new Error('injected identity write failure');
       },
     },
@@ -2410,4 +2460,271 @@ test('a real http client stays logged out when only the DSH cookie remains', asy
     server.close();
     await host.dispose();
   }
+});
+
+test('the session enumerates authorized spaces, including ones with no notes', async () => {
+  const host = await mount();
+  const lin = await login(host.web, 'lin');
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: lin,
+  });
+  assert.equal(session.status, 200);
+  assert.deepEqual(
+    session.json.spaces.map((space) => space.id),
+    ['team-empty', 'team-north'],
+  );
+  assert.deepEqual(
+    session.json.spaces.find((space) => space.id === 'team-empty'),
+    {
+      id: 'team-empty',
+      kind: 'team',
+      name: '空团队',
+    },
+  );
+  // The empty space opens with an empty notes list instead of a 404.
+  const empty = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-empty',
+    cookie: lin,
+  });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.json.notes, []);
+  assert.deepEqual(empty.json.space, { id: 'team-empty', kind: 'team', name: '空团队' });
+  // A non-member gets the same not-found as a missing space.
+  const chen = await login(host.web, 'chen');
+  const denied = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-empty',
+    cookie: chen,
+  });
+  assert.equal(denied.status, 404);
+  assert.deepEqual(denied.json, { ok: false, error: { code: 'not-found' } });
+  await host.dispose();
+});
+
+test('a revoked membership disappears from session, resolver, space reads, and direct note access at once', async () => {
+  const host = await mount();
+  const zhao = await login(host.web, 'zhao');
+  const lin = await login(host.web, 'lin');
+  const before = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.deepEqual(
+    before.json.spaces.map((space) => space.id),
+    ['team-north'],
+  );
+  const beforeNote = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(beforeNote.status, 200);
+  assert.equal(beforeNote.json.note.text, 'north-initial');
+
+  const directory = spaceDirectoryFor(host.ctx);
+  assert.ok(directory);
+  await directory.revokeMembership('team-north', 'zhao');
+
+  const after = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.deepEqual(after.json.spaces, []);
+  const resolved = await resolveMember(host.ctx, {
+    headers: { host: AUTHORITY, cookie: zhao },
+  });
+  assert.equal(resolved.ok, true);
+  if (resolved.ok) assert.deepEqual([...resolved.spaceIds], []);
+  const space = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: zhao,
+  });
+  assert.equal(space.status, 404);
+  assert.deepEqual(space.json, { ok: false, error: { code: 'not-found' } });
+  // The note id is not a second door: teamMemberIds still names zhao, but
+  // the membership fact is gone, so GET and PUT both fail closed.
+  const noteGet = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(noteGet.status, 404);
+  assert.deepEqual(noteGet.json, { ok: false, error: { code: 'not-found' } });
+  const notePut = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+    body: { text: 'zhao-after-revoke' },
+  });
+  assert.equal(notePut.status, 404);
+  assert.deepEqual(notePut.json, { ok: false, error: { code: 'not-found' } });
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'zhao' },
+      action: 'zhuma-id/read-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'zhao' },
+      action: 'zhuma-id/write-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  const control = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: lin,
+  });
+  assert.equal(control.status, 200);
+  assert.equal(control.json.note.text, 'north-initial');
+  await host.dispose();
+});
+
+test('a current space member who is absent from the note ACL still cannot read or write it', async () => {
+  const host = await mount();
+  const directory = spaceDirectoryFor(host.ctx);
+  assert.ok(directory);
+  await directory.grantMembership('team-north', 'chen');
+  const chen = await login(host.web, 'chen');
+  const zhao = await login(host.web, 'zhao');
+  const space = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: chen,
+  });
+  assert.equal(space.status, 200);
+  assert.deepEqual(space.json.notes, []);
+  const read = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+  });
+  assert.equal(read.status, 404);
+  assert.deepEqual(read.json, { ok: false, error: { code: 'not-found' } });
+  const write = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+    body: { text: 'chen-should-not-land' },
+  });
+  assert.equal(write.status, 404);
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'chen' },
+      action: 'zhuma-id/write-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  const kept = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(kept.status, 200);
+  assert.equal(kept.json.note.text, 'north-initial');
+  await host.dispose();
+});
+
+test('space facts survive a host restart on the same medium', async () => {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const first = await mount({ media, credentials });
+  const lin = await login(first.web, 'lin');
+  const before = await call(first.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: lin,
+  });
+  assert.deepEqual(
+    before.json.spaces.map((space) => space.id),
+    ['team-empty', 'team-north'],
+  );
+  await first.dispose();
+
+  const second = await mount({ media, credentials });
+  const relogin = await login(second.web, 'lin');
+  const after = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: relogin,
+  });
+  assert.deepEqual(
+    after.json.spaces.map((space) => space.id),
+    ['team-empty', 'team-north'],
+  );
+  const empty = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-empty',
+    cookie: relogin,
+  });
+  assert.equal(empty.status, 200);
+  await second.dispose();
+});
+
+test('without a mounted directory members hold no spaces and cannot open a space or a note', async () => {
+  const host = await mount({ spaces: null });
+  const zhao = await login(host.web, 'zhao');
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.equal(session.status, 200);
+  assert.deepEqual(session.json.spaces, []);
+  const resolved = await resolveMember(host.ctx, {
+    headers: { host: AUTHORITY, cookie: zhao },
+  });
+  assert.equal(resolved.ok, true);
+  if (resolved.ok) assert.deepEqual([...resolved.spaceIds], []);
+  const space = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: zhao,
+  });
+  assert.equal(space.status, 404);
+  assert.deepEqual(space.json, { ok: false, error: { code: 'not-found' } });
+  // teamMemberIds still names zhao. With no directory that is not enough.
+  const noteGet = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(noteGet.status, 404);
+  assert.deepEqual(noteGet.json, { ok: false, error: { code: 'not-found' } });
+  const notePut = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+    body: { text: 'no-dir-write' },
+  });
+  assert.equal(notePut.status, 404);
+  assert.deepEqual(notePut.json, { ok: false, error: { code: 'not-found' } });
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'zhao' },
+      action: 'zhuma-id/read-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  assert.equal(
+    host.media.get('zhuma_identity').tables.get('notes').get('north-note').text,
+    'north-initial',
+  );
+  await host.dispose();
 });
