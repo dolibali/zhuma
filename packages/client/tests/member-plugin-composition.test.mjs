@@ -45,7 +45,7 @@ test('pinned SDK list registration requires an id and rejects duplicate live ids
 });
 
 // Compiled real plugin + pinned SDK registry core. No host rendering or sidebar imitation.
-test('member plugin composition contract: actual footer/main registrations share one owned session and preserve Settings', async () => {
+async function checkComposition({ boot, initialPanel = null, restored = false } = {}) {
   const core = createSlotCore();
   const result = await build({
     entryPoints: [fileURLToPath(new URL('../src/workbench/plugin.tsx', import.meta.url))],
@@ -66,11 +66,20 @@ test('member plugin composition contract: actual footer/main registrations share
     exports: module.exports,
     require,
     window: {},
+    __ZHUMA_WORKBENCH_BOOT__: boot,
     navigator: { userAgent: 'Node contract' },
     document: { createElement: () => ({ textContent: '', remove() {} }), head: { append() {} } },
     fetch: async (url) => {
       reads.push(url);
-      return new Response('', { status: 401 });
+      return restored
+        ? Response.json({
+            ok: true,
+            accountId: 'contract-member',
+            principal: { kind: 'zhuma-member', memberId: 'contract-member' },
+            peerId: 'contract-peer',
+            spaces: [{ id: 'personal-contract', kind: 'personal', name: 'Current member space' }],
+          })
+        : new Response('', { status: 401 });
     },
     AbortController,
     AbortSignal,
@@ -87,7 +96,7 @@ test('member plugin composition contract: actual footer/main registrations share
   const entries = [],
     disposers = [],
     listeners = new Set();
-  let panel = { activePanelId: null },
+  let panel = { activePanelId: initialPanel },
     rpcCalls = 0;
   const layout = {
     panelInfo: {
@@ -143,9 +152,27 @@ test('member plugin composition contract: actual footer/main registrations share
       },
     },
   };
-  module.exports.apply(ctx);
+  try {
+    module.exports.apply(ctx);
+  } catch (error) {
+    assert.equal(entries.length, 0);
+    assert.equal(reads.length, 0);
+    throw error;
+  }
   await new Promise((resolve) => setImmediate(resolve));
   const footers = entries.filter(({ options }) => options.name === 'sidebar.footer.action');
+  const memberMode = boot?.deploymentMode === 'multi-member';
+  const legacyIds = ['zhuma-workbench', 'zhuma-experts'];
+  assert.equal(
+    panel.activePanelId,
+    memberMode && (initialPanel === null || legacyIds.includes(initialPanel))
+      ? 'zhuma-my-work'
+      : (initialPanel ?? 'zhuma-workbench'),
+  );
+  const legacyNav = entries.filter(
+    ({ options }) => options.name === 'sidebar.panellist' && legacyIds.includes(options.id),
+  );
+  assert.equal(legacyNav.length, memberMode ? 0 : 2);
   assert.equal(footers.length, 1);
   assert.equal(footers[0].options.id, 'zhuma-account');
   assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 1);
@@ -168,17 +195,47 @@ test('member plugin composition contract: actual footer/main registrations share
   assert.equal(findShell(element), injected.shell);
   assert.equal(footers[0].component({ ...injected, wide: false }).props.shell, injected.shell);
   assert.equal(footers[0].component({ ...injected, wide: false }).props.wide, false);
-  assert.deepEqual(reads, ['/zhuma-id/session']);
+  assert.deepEqual(reads, Array(restored ? 2 : 1).fill('/zhuma-id/session'));
+  if (memberMode && panel.activePanelId === 'zhuma-my-work') {
+    const html = require('react-dom/server').renderToStaticMarkup(element);
+    assert.ok(html.includes(restored ? '我的工作' : '登录工作台'));
+    assert.equal(html.includes('HTTP 404'), false);
+    assert.equal(html.includes('重新连接'), false);
+  }
   injected.openWork();
   const epoch = injected.shell.getSnapshot().pageEpoch;
   injected.openWork();
   assert.equal(injected.shell.getSnapshot().pageEpoch, epoch);
   assert.equal(injected.shell.getSnapshot().pageActive, true);
   assert.equal(rpcCalls, 0);
-  assert.equal(reads.length, 1);
+  assert.equal(reads.length, restored ? 2 : 1);
   disposers.reverse().forEach((dispose) => dispose());
   assert.equal(injected.shell.getSnapshot().session.status, 'restoring');
   assert.equal(listeners.size, 0);
   assert.ok(entries.every(({ disposed }) => disposed));
   assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 0);
+}
+
+test('member plugin composition contract: actual footer/main registrations share one owned session and preserve Settings', () =>
+  checkComposition());
+test('member plugin composition contract: explicit legacy boot preserves owner navigation and its landing', () =>
+  checkComposition({ boot: { version: 1, deploymentMode: 'legacy-single-user' } }));
+for (const restored of [false, true]) {
+  test(`member plugin composition contract: member cold landing shows ${restored ? 'restored work' : 'login'} without owner RPC`, () =>
+    checkComposition({ boot: { version: 1, deploymentMode: 'multi-member' }, restored }));
+}
+for (const initialPanel of ['zhuma-workbench', 'zhuma-experts', 'official-existing-panel']) {
+  test(`member plugin composition contract: member boot handles prior panel ${initialPanel}`, () =>
+    checkComposition({ boot: { version: 1, deploymentMode: 'multi-member' }, initialPanel }));
+}
+test('member plugin composition contract: invalid presentation boot fails before effects or RPC', async () => {
+  for (const boot of [
+    null,
+    'multi-member',
+    { version: 2, deploymentMode: 'multi-member' },
+    { version: 1, deploymentMode: 'owner' },
+    { version: 1, deploymentMode: 'multi-member', identityBootstrapKey: 'not-a-client-field' },
+  ]) {
+    await assert.rejects(checkComposition({ boot }), /Invalid workbench boot configuration/);
+  }
 });

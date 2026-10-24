@@ -138,6 +138,15 @@ async function start(directory, config, { deferIdentity = false, skipRemoteAcces
 function envelope(endpoint, payload) {
   return { type: 'client-request', rpcId: randomUUID(), method: `zhuma/${endpoint}`, payload };
 }
+async function assertClientBoot(host, deploymentMode) {
+  assert.deepEqual(await host.act('clientBoot'), [
+    {
+      kind: 'global',
+      name: '__ZHUMA_WORKBENCH_BOOT__',
+      value: { version: 1, deploymentMode },
+    },
+  ]);
+}
 async function post(host, path, payload, cookie = host.cookie) {
   return fetch(host.baseURL + path, {
     method: 'POST',
@@ -217,6 +226,7 @@ test(
         { deferIdentity: true },
       );
       await host.wait('identity-pending');
+      await assertClientBoot(host, 'multi-member');
       for (const endpoint of LEGACY_OWNER_ROUTES) {
         const result = await earlyRequest(host, endpoint);
         assert.equal(result.status, 404);
@@ -283,6 +293,7 @@ test(
         const result = await host.act(lifecycle);
         if (lifecycle === 'failIdentity') assert.equal(result.loaded, false);
         if (lifecycle === 'remountIdentity') assert.equal(result.loaded, true);
+        await assertClientBoot(host, 'multi-member');
         for (const endpoint of LEGACY_OWNER_ROUTES)
           assert.equal((await earlyRequest(host, endpoint)).status, 404);
       }
@@ -301,6 +312,8 @@ test(
         models: 0,
         domains: final.opened,
       });
+      await host.act('unmountWorkbench');
+      assert.deepEqual(await host.act('clientBoot'), []);
     } finally {
       if (host) await host.close();
       await rm(directory, { recursive: true, force: true });
@@ -366,6 +379,7 @@ test(
         bodyTimeoutMs: 300,
       });
       await host.wait('ready');
+      await assertClientBoot(host, 'legacy-single-user');
       assert.equal((await earlyRequest(host, 'snapshot', { declared: true })).status, 413);
       assert.equal((await earlyRequest(host, 'snapshot')).status, 408);
       const tooLarge = await fetch(host.baseURL + '/api/zhuma/snapshot', {
@@ -545,6 +559,7 @@ test(
         { skipRemoteAccess: true },
       );
       await host.act('waitIdentityPending'); // Cordis PENDING: the real remoteAccess service is absent.
+      await assertClientBoot(host, 'multi-member');
       for (const endpoint of LEGACY_OWNER_ROUTES)
         assert.equal((await earlyRequest(host, endpoint)).status, 404);
       await host.act('mountRemoteAccess');
@@ -553,6 +568,7 @@ test(
       const member = await login(host);
       await host.act('unmountRemoteAccess');
       await host.act('waitIdentityPending');
+      await assertClientBoot(host, 'multi-member');
       for (const endpoint of LEGACY_OWNER_ROUTES)
         assert.equal((await earlyRequest(host, endpoint)).status, 404);
       await host.act('mountRemoteAccess');

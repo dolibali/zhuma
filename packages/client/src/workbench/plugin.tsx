@@ -17,7 +17,25 @@ import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 
 export const inject = ['slots', 'layout', 'connection', 'theme'];
+function deploymentMode(): 'legacy-single-user' | 'multi-member' {
+  const boot = (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: unknown }).__ZHUMA_WORKBENCH_BOOT__;
+  // Compatibility with existing legacy deployments which predate this presentation DTO.
+  if (boot === undefined) return 'legacy-single-user';
+  if (
+    typeof boot === 'object' &&
+    boot !== null &&
+    !Array.isArray(boot) &&
+    Object.keys(boot).length === 2 &&
+    'version' in boot &&
+    boot.version === 1 &&
+    'deploymentMode' in boot &&
+    (boot.deploymentMode === 'legacy-single-user' || boot.deploymentMode === 'multi-member')
+  )
+    return boot.deploymentMode;
+  throw new Error('Invalid workbench boot configuration');
+}
 export function apply(ctx: Context): void {
+  const mode = deploymentMode();
   const connection = ctx.get(
     'connection',
   ) as import('@deepseek-ai/dsh-client-connection/client').ConnectionHandle;
@@ -48,7 +66,7 @@ export function apply(ctx: Context): void {
     document.head.append(style);
     return () => style.remove();
   });
-  for (const panel of [
+  const legacyPanels = [
     {
       id: 'zhuma-workbench',
       label: '团队工作台',
@@ -57,7 +75,8 @@ export function apply(ctx: Context): void {
       order: -100,
     },
     { id: 'zhuma-experts', label: '专家', section: 'assets', expertLibrary: true, order: -90 },
-  ] as const) {
+  ] as const;
+  for (const panel of mode === 'legacy-single-user' ? legacyPanels : []) {
     const panelId = panel.id as MainPanelId;
     ctx.slots.inject('main', () => {
       const dispose = ctx.slots.register(
@@ -128,6 +147,12 @@ export function apply(ctx: Context): void {
         </div>
       ),
     );
+    const active = ctx.layout.panelInfo.getSnapshot().activePanelId;
+    if (
+      mode === 'multi-member' &&
+      (active === null || legacyPanels.some(({ id }) => id === active))
+    )
+      ctx.layout.selectPanel(executionPanel);
     return () => {
       if (ctx.layout.panelInfo.getSnapshot().activePanelId === executionPanel)
         ctx.layout.selectPanel(null);
