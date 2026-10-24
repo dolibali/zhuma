@@ -4,8 +4,10 @@ import {
   completionSource,
   createExecutionHandoff,
   downstreamRecords,
+  eventsAfter,
   executionInbox,
   nodeRecordKey,
+  recordCommandEvent,
   settleReview,
   startAppliedPlan,
   submitDelivery,
@@ -15,6 +17,7 @@ import {
   castBallot,
   WorkbenchError,
   WorkTaskSchema,
+  type DomainEvent,
   type ExecutionNodeRecord,
   type InboxItem,
   type NodeExecutionReport,
@@ -120,6 +123,14 @@ const draftWriteSchema = z.strictObject({
   links: z.array(z.string().min(1)).max(20).optional(),
 });
 const inboxSchema = z.strictObject({});
+const eventsSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+  after: z.number().refine((value) => Number.isSafeInteger(value) && value >= 0),
+  seenEventIds: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+});
 
 export type StartPlanRequest = z.infer<typeof startSchema>;
 export type InboxRequest = z.infer<typeof inboxSchema>;
@@ -372,6 +383,121 @@ function directoryIds(workbench: Workbench): readonly string[] {
     .map((participant) => participant.id);
 }
 
+export interface InboxPlace {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+
+export interface InboxCounts {
+  readonly deliver: number;
+  readonly review: number;
+  readonly confirm: number;
+}
+
+/** Project, task, then ancestor node titles. The current node title stays on the row. */
+function inboxPlace(workbench: Workbench, item: InboxItem): InboxPlace {
+  const task = workbench.tasks.find((entry) => entry.id === item.taskId);
+  const project = task
+    ? workbench.projects.find((entry) => entry.id === task.projectId)
+    : undefined;
+  const titles: string[] = [];
+  const projectName = project?.name.trim() ?? '';
+  const taskTitle = task?.title.trim() ?? '';
+  if (projectName !== '') titles.push(projectName);
+  if (taskTitle !== '') titles.push(taskTitle);
+  if (task) {
+    const located = new Map<string, { parentNodeId: string | null; title: string }>();
+    for (const workflow of task.workflows) {
+      for (const node of workflow.nodes) {
+        located.set(node.id, { parentNodeId: workflow.parentNodeId, title: node.title.trim() });
+      }
+    }
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let parentId = located.get(item.nodeId)?.parentNodeId ?? null;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = located.get(parentId);
+      if (!parent) break;
+      if (parent.title !== '') chain.push(parent.title);
+      parentId = parent.parentNodeId;
+    }
+    titles.push(...chain.reverse());
+  }
+  const owner = task?.ownerId
+    ? workbench.participants.find((person) => person.id === task.ownerId)
+    : undefined;
+  return { itemId: item.id, taskPath: titles.join(' / '), ownerName: owner?.name.trim() ?? '' };
+}
+
+function countInbox(items: readonly InboxItem[]): InboxCounts {
+  return {
+    deliver: items.filter((item) => item.kind === 'deliver').length,
+    review: items.filter((item) => item.kind === 'review').length,
+    confirm: items.filter((item) => item.kind === 'confirm').length,
+  };
+}
+
+type NodeEvent = DomainEvent<{ readonly status: string; readonly version: number }>;
+
+export interface ExecutionEvent {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly actorId: string;
+  readonly type: string;
+  readonly nodeId: string;
+  readonly status: string;
+  readonly version: number;
+}
+
+/** Append one accepted fact onto the node record. The id is the next sequence. */
+function withExecutionEvent(
+  record: ExecutionNodeRecord,
+  type: string,
+  actorId: string,
+): ExecutionNodeRecord | undefined {
+  const log: readonly NodeEvent[] = Array.isArray(record.events) ? record.events : [];
+  const sequence = log.reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
+  const appended = recordCommandEvent({
+    decisionStatus: 'applied',
+    log,
+    event: {
+      eventId: `evt:${record.nodeId}:${sequence}`,
+      sequence,
+      occurredAt: new Date().toISOString(),
+      actorId,
+      object: { type: 'node', id: record.nodeId },
+      type,
+      payload: { status: record.command.status, version: record.command.version },
+    },
+  });
+  if (!appended.ok || !appended.emitted) return undefined;
+  return { ...record, events: appended.log };
+}
+
+function publishExecutionEvent(event: NodeEvent): ExecutionEvent | undefined {
+  const payload = event.payload;
+  if (
+    event.object.type !== 'node' ||
+    typeof payload?.status !== 'string' ||
+    typeof payload.version !== 'number'
+  ) {
+    return undefined;
+  }
+  return {
+    eventId: event.eventId,
+    sequence: event.sequence,
+    occurredAt: event.occurredAt,
+    actorId: event.actorId,
+    type: event.type,
+    nodeId: event.object.id,
+    status: payload.status,
+    version: payload.version,
+  };
+}
+
 function planMembership(
   workbench: Workbench,
   taskId: string,
@@ -469,28 +595,86 @@ export class ExecutionService {
     caller: ExecutionCaller,
     body: unknown,
   ): Promise<
-    ExecutionResult<{ actorId: string; items: readonly InboxItem[]; nodes: ExecutionNodeView[] }>
+    ExecutionResult<{
+      actorId: string;
+      items: readonly InboxItem[];
+      nodes: ExecutionNodeView[];
+      places?: readonly InboxPlace[];
+    }>
   > {
+    return this.enqueue(async () => {
+      const opened = await this.openInbox(caller, body);
+      if (!opened.ok) return opened;
+      const workbench = this.workbench.readWorkbench();
+      const nodes = opened.records
+        .filter((record) =>
+          opened.items.some(
+            (item) => item.nodeId === record.nodeId && item.taskId === record.taskId,
+          ),
+        )
+        .map((record) => ({
+          ...toNodeView(record),
+          inputs: upstreamInputsFor(record, opened.records),
+        }));
+      return {
+        ok: true,
+        value: {
+          actorId: opened.actorId,
+          items: opened.items,
+          nodes,
+          places: opened.items.map((item) => inboxPlace(workbench, item)),
+        },
+      };
+    });
+  }
+
+  /** Counts for a shortcut. The next read follows the current node status. */
+  inboxCounts(caller: ExecutionCaller, body: unknown): Promise<ExecutionResult<InboxCounts>> {
+    return this.enqueue(async () => {
+      const opened = await this.openInbox(caller, body);
+      if (!opened.ok) return opened;
+      return { ok: true, value: countInbox(opened.items) };
+    });
+  }
+
+  /** Events after a cursor. Seen ids are dropped so a replay does not apply twice. */
+  events(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<{ readonly events: readonly ExecutionEvent[] }>> {
     return this.enqueue(async () => {
       const actor = this.actor(caller, body);
       if (!actor.ok) return actor;
-      const parsed = parseBody(inboxSchema.optional(), body ?? {});
+      const parsed = parseBody(eventsSchema, body);
       if (!parsed.ok) return parsed;
-      if (!this.projectSpaceDirectory()) return fail('not-found');
-      const visible = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
-      if (!Array.isArray(visible)) return visible;
-      for (const taskId of new Set(visible.map((record) => record.taskId))) {
-        await this.repairTaskUnlocks(taskId, actor.value.spaceIds);
+      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      if (space === 'missing' || !space.ok) return fail('not-found');
+      const current = this.storage.readNode(nodeRecordKey(parsed.value));
+      if (!current || !intactNode(current)) return fail('not-found');
+      if (
+        planMembership(this.workbench.readWorkbench(), current.taskId, actor.value.actorId) !==
+        'allowed'
+      ) {
+        return fail('not-found');
       }
-      const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
-      if (!Array.isArray(records)) return records;
-      const items = executionInbox({ actorId: actor.value.actorId, records });
-      const nodes = records
-        .filter((record) =>
-          items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
-        )
-        .map((record) => ({ ...toNodeView(record), inputs: upstreamInputsFor(record, records) }));
-      return { ok: true, value: { actorId: actor.value.actorId, items, nodes } };
+      if (!recordedPlan(this.storage, current)) return fail('not-found');
+      await this.repairTaskUnlocks(current.taskId, actor.value.spaceIds);
+      const latest = this.storage.readNode(nodeRecordKey(parsed.value)) ?? current;
+      const log: readonly NodeEvent[] = Array.isArray(latest.events) ? latest.events : [];
+      const page = eventsAfter(log, {
+        sequence: parsed.value.after,
+        seenEventIds: parsed.value.seenEventIds ?? [],
+      });
+      return {
+        ok: true,
+        value: {
+          events: page.flatMap((event) => {
+            const published = publishExecutionEvent(event);
+            return published ? [published] : [];
+          }),
+        },
+      };
     });
   }
 
@@ -527,6 +711,7 @@ export class ExecutionService {
           });
           return { result, settle: false };
         },
+        'delivery-submitted',
         true,
       ),
     );
@@ -534,55 +719,67 @@ export class ExecutionService {
 
   ballot(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
-      this.command(caller, body, ballotSchema, (actorId, request, record) => {
-        const result = castBallot({
-          record,
-          actorId,
-          idempotencyKey: request.idempotencyKey,
-          expectedVersion: request.expectedVersion,
-          ballot: {
-            reviewerId: actorId,
-            roundId: request.roundId,
-            artifactVersionId: request.artifactVersionId,
-            action: request.action,
-            ...(request.comment === undefined ? {} : { comment: request.comment }),
-            ...(request.unresolvedCommentIds === undefined
-              ? {}
-              : { unresolvedCommentIds: request.unresolvedCommentIds }),
-          },
-          comments: record.comments,
-        });
-        return { result, settle: true };
-      }),
+      this.command(
+        caller,
+        body,
+        ballotSchema,
+        (actorId, request, record) => {
+          const result = castBallot({
+            record,
+            actorId,
+            idempotencyKey: request.idempotencyKey,
+            expectedVersion: request.expectedVersion,
+            ballot: {
+              reviewerId: actorId,
+              roundId: request.roundId,
+              artifactVersionId: request.artifactVersionId,
+              action: request.action,
+              ...(request.comment === undefined ? {} : { comment: request.comment }),
+              ...(request.unresolvedCommentIds === undefined
+                ? {}
+                : { unresolvedCommentIds: request.unresolvedCommentIds }),
+            },
+            comments: record.comments,
+          });
+          return { result, settle: true };
+        },
+        'ballot-recorded',
+      ),
     );
   }
 
   settle(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(() =>
-      this.command(caller, body, settleSchema, (actorId, request, record) => {
-        if (!maySettle(record, actorId)) {
+      this.command(
+        caller,
+        body,
+        settleSchema,
+        (actorId, request, record) => {
+          if (!maySettle(record, actorId)) {
+            return {
+              result: {
+                ok: false as const,
+                disposition: 'rejected' as const,
+                code: 'not-assigned-reviewer',
+                record,
+              },
+              settle: false,
+            };
+          }
           return {
-            result: {
-              ok: false as const,
-              disposition: 'rejected' as const,
-              code: 'not-assigned-reviewer',
+            result: settleReview({
               record,
-            },
+              actorId,
+              idempotencyKey: request.idempotencyKey,
+              expectedVersion: request.expectedVersion,
+              roundId: request.roundId,
+              artifactVersionId: request.artifactVersionId,
+            }),
             settle: false,
           };
-        }
-        return {
-          result: settleReview({
-            record,
-            actorId,
-            idempotencyKey: request.idempotencyKey,
-            expectedVersion: request.expectedVersion,
-            roundId: request.roundId,
-            artifactVersionId: request.artifactVersionId,
-          }),
-          settle: false,
-        };
-      }),
+        },
+        'review-settled',
+      ),
     );
   }
 
@@ -876,6 +1073,46 @@ export class ExecutionService {
     return fail('not-found');
   }
 
+  /**
+   * Ask the directory about every workbench task before any node is read.
+   * An illegal answer is unavailable either way, so a missing node is not distinct.
+   */
+  private async directoryGate(
+    spaceIds: readonly string[],
+  ): Promise<{ readonly ok: false; readonly error: ExecutionFailure } | undefined> {
+    const seen = new Set<string>();
+    for (const task of this.workbench.readWorkbench().tasks) {
+      if (seen.has(task.id)) continue;
+      seen.add(task.id);
+      const space = await this.gateSpace(task.id, spaceIds);
+      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+    }
+    return undefined;
+  }
+
+  private async openInbox(caller: ExecutionCaller, body: unknown) {
+    const actor = this.actor(caller, body);
+    if (!actor.ok) return actor;
+    const parsed = parseBody(inboxSchema.optional(), body ?? {});
+    if (!parsed.ok) return parsed;
+    if (!this.projectSpaceDirectory()) return fail('not-found');
+    const blocked = await this.directoryGate(actor.value.spaceIds);
+    if (blocked) return blocked;
+    const visible = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+    if (!Array.isArray(visible)) return visible;
+    for (const taskId of new Set(visible.map((record) => record.taskId))) {
+      await this.repairTaskUnlocks(taskId, actor.value.spaceIds);
+    }
+    const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+    if (!Array.isArray(records)) return records;
+    return {
+      ok: true as const,
+      actorId: actor.value.actorId,
+      records,
+      items: executionInbox({ actorId: actor.value.actorId, records }),
+    };
+  }
+
   /** Intact nodes this actor can read. A failed lookup stops the scan. */
   private async readableRecords(spaceIds: readonly string[], actorId: string) {
     // A down directory is the same answer whether or not any node is stored.
@@ -1016,7 +1253,9 @@ export class ExecutionService {
     for (const record of started.records) {
       const key = nodeRecordKey(record);
       if (this.storage.readNode(key) === record) continue;
-      const stored = await this.persist(() => this.storage.writeNode(key, record));
+      const stamped = withExecutionEvent(record, 'node-started', actor.value.actorId);
+      if (!stamped) return fail('unavailable');
+      const stored = await this.persist(() => this.storage.writeNode(key, stamped));
       if (!stored.ok) return stored;
     }
     for (const record of started.records) {
@@ -1058,6 +1297,7 @@ export class ExecutionService {
       request: T,
       record: ExecutionNodeRecord,
     ) => { result: ReturnType<typeof submitDelivery>; settle: boolean },
+    eventType: string,
     guardUpstream = false,
   ) {
     const actor = this.actor(caller, body);
@@ -1112,6 +1352,11 @@ export class ExecutionService {
         if (blocked) return blocked;
         record = withoutDeliveryDraft(record);
       }
+      if (executed.result.disposition === 'applied') {
+        const stamped = withExecutionEvent(record, eventType, actor.value.actorId);
+        if (!stamped) return fail('unavailable');
+        record = stamped;
+      }
       const stored = await this.persist(() =>
         this.storage.writeNode(nodeRecordKey(record), record),
       );
@@ -1154,8 +1399,10 @@ export class ExecutionService {
         expectedVersion: latest.command.version,
       });
       if (!moved.ok || moved.disposition !== 'applied') continue;
+      const stamped = withExecutionEvent(moved.record, 'downstream-unlocked', completed.ownerId);
+      if (!stamped) return fail('unavailable');
       const stored = await this.persist(() =>
-        this.storage.writeNode(nodeRecordKey(moved.record), moved.record),
+        this.storage.writeNode(nodeRecordKey(stamped), stamped),
       );
       if (!stored.ok) return stored;
       unlocked += 1;
