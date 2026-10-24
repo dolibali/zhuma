@@ -33,6 +33,7 @@ import { readRevisionView, type RevisionView } from './revision-view.js';
 import {
   applyDeliveryDraft,
   deliveryDraftView,
+  draftFiles,
   withoutDeliveryDraft,
   type DeliveryDraftView,
 } from './delivery-draft.js';
@@ -71,6 +72,7 @@ const startSchema = z.strictObject({
   planId: id,
   revision: z.number().int(),
   idempotencyKey: id,
+  spaceId: id.optional(),
 });
 const submitSchema = z.strictObject({
   ...locate,
@@ -95,6 +97,7 @@ const reportSchema = z.strictObject({
   taskId: id,
   planId: id,
   revision: z.number().int(),
+  spaceId: id.optional(),
 });
 const revisionSchema = z.strictObject({
   taskId: id,
@@ -122,8 +125,8 @@ const draftWriteSchema = z.strictObject({
   files: z.array(fileSchema).max(20).optional(),
   links: z.array(z.string().min(1)).max(20).optional(),
 });
-const inboxSchema = z.strictObject({});
-const startableSchema = z.strictObject({});
+const inboxSchema = z.strictObject({ spaceId: id.optional() });
+const startableSchema = z.strictObject({ spaceId: id.optional() });
 const eventsSchema = z.strictObject({
   taskId: id,
   planId: id,
@@ -637,22 +640,13 @@ export class ExecutionService {
       const opened = await this.openInbox(caller, body);
       if (!opened.ok) return opened;
       const workbench = this.workbench.readWorkbench();
-      const nodes = opened.records
-        .filter((record) =>
-          opened.items.some(
-            (item) => item.nodeId === record.nodeId && item.taskId === record.taskId,
-          ),
-        )
-        .map((record) => ({
-          ...toNodeView(record),
-          inputs: upstreamInputsFor(record, opened.records),
-        }));
       return {
         ok: true,
         value: {
           actorId: opened.actorId,
+          ...(opened.scope === undefined ? {} : { spaceId: opened.scope }),
           items: opened.items,
-          nodes,
+          nodes: opened.nodes,
           places: opened.items.map((item) => inboxPlace(workbench, item)),
         },
       };
@@ -726,12 +720,23 @@ export class ExecutionService {
       const parsed = parseBody(startableSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
+      const scope = parsed.value?.spaceId;
+      if (!this.scopeHeld(actor.value.spaceIds, scope)) {
+        return {
+          ok: true,
+          value: {
+            actorId: actor.value.actorId,
+            ...(scope === undefined ? {} : { spaceId: scope }),
+            plans: [],
+          },
+        };
+      }
       const workbench = this.workbench.readWorkbench();
       const plans: StartablePlan[] = [];
       for (const task of workbench.tasks) {
         if (task.status !== 'ready') continue;
         if (planMembership(workbench, task.id, actor.value.actorId) !== 'allowed') continue;
-        const space = await this.gateSpace(task.id, actor.value.spaceIds);
+        const space = await this.gateSpaceScoped(task.id, actor.value.spaceIds, scope);
         if (space === 'missing') continue;
         if (!space.ok) {
           if (space.error.code === 'unavailable') return space;
@@ -751,7 +756,14 @@ export class ExecutionService {
           title: task.title,
         });
       }
-      return { ok: true, value: { actorId: actor.value.actorId, plans } };
+      return {
+        ok: true,
+        value: {
+          actorId: actor.value.actorId,
+          ...(scope === undefined ? {} : { spaceId: scope }),
+          plans,
+        },
+      };
     });
   }
 
@@ -869,7 +881,11 @@ export class ExecutionService {
       if (!actor.ok) return actor;
       const parsed = parseBody(reportSchema, body);
       if (!parsed.ok) return parsed;
-      const space = await this.gateSpace(parsed.value.taskId, actor.value.spaceIds);
+      const space = await this.gateSpaceScoped(
+        parsed.value.taskId,
+        actor.value.spaceIds,
+        parsed.value.spaceId,
+      );
       if (space === 'missing' || !space.ok) {
         return space === 'missing' ? fail('not-found') : space;
       }
@@ -961,7 +977,7 @@ export class ExecutionService {
       const current = opened.value;
       const text = parsed.value.text ?? '';
       const links = parsed.value.links ?? [];
-      const files = (parsed.value.files ?? []).map((file) => ({ ...file, uploadComplete: false }));
+      const files = draftFiles(parsed.value.files ?? []);
       const applied = applyDeliveryDraft({
         current: current.deliveryDraft,
         expectedVersion: parsed.value.expectedVersion,
@@ -1117,6 +1133,33 @@ export class ExecutionService {
    * `WorkTaskSchema`. Any other requested id is not-found and is not sent.
    * An empty string is never sent.
    */
+  /**
+   * The requested space scope is a filter the caller chose, never a grant.
+   * The member must currently hold it in the trusted session: an unknown,
+   * revoked, or foreign scope is indistinguishable from an empty one for
+   * reads (empty list) and from a missing task for commands (not-found).
+   */
+  private scopeHeld(spaceIds: readonly string[], scope: string | undefined): boolean {
+    if (scope === undefined) return true;
+    return spaceIds.includes(scope);
+  }
+
+  /**
+   * Scope check on top of the space gate: the task's owning space must equal
+   * the requested scope. Returns the gate verdict; a scoped miss collapses
+   * into not-found for commands and an empty projection for reads.
+   */
+  private async gateSpaceScoped(
+    taskId: string,
+    spaceIds: readonly string[],
+    scope: string | undefined,
+  ): Promise<'missing' | ExecutionResult<string>> {
+    const space = await this.gateSpace(taskId, spaceIds);
+    if (scope === undefined || space === 'missing' || !space.ok) return space;
+    if (space.value !== scope) return fail('not-found');
+    return space;
+  }
+
   private async gateSpace(
     taskId: string,
     spaceIds: readonly string[],
@@ -1151,56 +1194,56 @@ export class ExecutionService {
   }
 
   /**
-   * Ask the directory about every workbench task before any node is read.
-   * An illegal answer is unavailable either way, so a missing node is not distinct.
+   * Shared inbox read. An unknown scope is an empty projection and does not
+   * ask the directory. A held scope keeps that space; no scope keeps every
+   * space the member can already see.
    */
-  private async directoryGate(
-    spaceIds: readonly string[],
-  ): Promise<{ readonly ok: false; readonly error: ExecutionFailure } | undefined> {
-    const seen = new Set<string>();
-    for (const task of this.workbench.readWorkbench().tasks) {
-      if (seen.has(task.id)) continue;
-      seen.add(task.id);
-      const space = await this.gateSpace(task.id, spaceIds);
-      if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
-    }
-    return undefined;
-  }
-
   private async openInbox(caller: ExecutionCaller, body: unknown) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
     const parsed = parseBody(inboxSchema.optional(), body ?? {});
     if (!parsed.ok) return parsed;
     if (!this.projectSpaceDirectory()) return fail('not-found');
-    const blocked = await this.directoryGate(actor.value.spaceIds);
-    if (blocked) return blocked;
-    const visible = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+    const scope = parsed.value?.spaceId;
+    if (!this.scopeHeld(actor.value.spaceIds, scope)) {
+      // Unknown or revoked scope: an empty projection, indistinguishable from an empty space.
+      return {
+        ok: true as const,
+        actorId: actor.value.actorId,
+        scope,
+        items: [] as readonly InboxItem[],
+        nodes: [] as ExecutionNodeView[],
+      };
+    }
+    const visible = await this.readableRecords(actor.value.spaceIds, actor.value.actorId, scope);
     if (!Array.isArray(visible)) return visible;
     for (const taskId of new Set(visible.map((record) => record.taskId))) {
       await this.repairTaskUnlocks(taskId, actor.value.spaceIds);
     }
-    const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId);
+    const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId, scope);
     if (!Array.isArray(records)) return records;
-    return {
-      ok: true as const,
-      actorId: actor.value.actorId,
-      records,
-      items: executionInbox({ actorId: actor.value.actorId, records }),
-    };
+    const items = executionInbox({ actorId: actor.value.actorId, records });
+    const nodes = records
+      .filter((record) =>
+        items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
+      )
+      .map((record) => ({ ...toNodeView(record), inputs: upstreamInputsFor(record, records) }));
+    return { ok: true as const, actorId: actor.value.actorId, scope, items, nodes };
   }
 
-  /** Intact nodes this actor can read. A failed lookup stops the scan. */
-  private async readableRecords(spaceIds: readonly string[], actorId: string) {
-    // A down directory is the same answer whether or not any node is stored.
+  /**
+   * Intact nodes this actor can read. A requested scope keeps that space only.
+   * A failed lookup stops the scan, whether or not any node is stored.
+   */
+  private async readableRecords(spaceIds: readonly string[], actorId: string, scope?: string) {
     for (const task of this.workbench.readWorkbench().tasks) {
-      const space = await this.gateSpace(task.id, spaceIds);
+      const space = await this.gateSpaceScoped(task.id, spaceIds, scope);
       if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
     }
     const records: ExecutionNodeRecord[] = [];
     for (const record of this.storage.listNodes()) {
       if (!intactNode(record) || !recordedPlan(this.storage, record)) continue;
-      const space = await this.gateSpace(record.taskId, spaceIds);
+      const space = await this.gateSpaceScoped(record.taskId, spaceIds, scope);
       if (space === 'missing') continue;
       if (!space.ok) {
         if (space.error.code === 'unavailable') return space;
@@ -1279,7 +1322,10 @@ export class ExecutionService {
     const parsed = parseBody(startSchema, body);
     if (!parsed.ok) return parsed;
     const { taskId, planId, revision, idempotencyKey } = parsed.value;
-    const space = await this.gateSpace(taskId, actor.value.spaceIds);
+    // The chosen scope re-checks the plan's owning space before any idempotent
+    // replay: "currently in A, the old plan actually lives in B" refuses even
+    // when the member holds both spaces.
+    const space = await this.gateSpaceScoped(taskId, actor.value.spaceIds, parsed.value.spaceId);
     if (space === 'missing' || !space.ok) {
       return space === 'missing' ? fail('not-found') : space;
     }

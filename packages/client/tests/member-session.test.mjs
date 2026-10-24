@@ -7,6 +7,7 @@ const member = (accountId) => ({
   accountId,
   principal: { kind: 'zhuma-member', memberId: accountId },
   peerId: `peer-${accountId}`,
+  spaces: [],
 });
 const deferred = () => {
   let resolve, reject;

@@ -1,10 +1,10 @@
 import { useId } from 'react';
 import { Button } from '../workbench/Button.js';
-import type { ExecutionApi, StartPlanDraft } from './ExecutionApi.js';
+import type { ExecutionApi, StartablePlanWire } from './ExecutionApi.js';
 import { useExecutionCommand, useFormKey } from './interaction.js';
 
-export type ExecutionPlan = Omit<StartPlanDraft, 'idempotencyKey'> & { readonly title: string };
-type Props = { api: ExecutionApi; plan: ExecutionPlan; onStarted(): void };
+export type ExecutionPlan = StartablePlanWire;
+type Props = { api: ExecutionApi; plan: ExecutionPlan; disabled?: boolean; onStarted(): void };
 export function StartPlanPanel(props: Props) {
   const key = useFormKey(
     props.api,
@@ -12,7 +12,7 @@ export function StartPlanPanel(props: Props) {
   );
   return <StartPlanForm key={key} {...props} />;
 }
-function StartPlanForm({ api, plan, onStarted }: Props) {
+function StartPlanForm({ api, plan, disabled, onStarted }: Props) {
   const titleId = useId();
   const command = useExecutionCommand();
   const payload = { taskId: plan.taskId, planId: plan.planId, revision: plan.revision };
@@ -24,6 +24,7 @@ function StartPlanForm({ api, plan, onStarted }: Props) {
       </div>
       <Button
         variant="primary"
+        disabled={disabled}
         busy={command.pending}
         busyLabel="正在派发…"
         onClick={() =>

@@ -60,7 +60,11 @@ export interface ExecutionNodeRecord {
    * and its event are one write.
    */
   readonly events?: readonly DomainEvent<{ readonly status: string; readonly version: number }>[];
-  /** Human assignee's unsent delivery. Cleared when a submit is stored. */
+  /**
+   * Human assignee's unsent delivery. A stored submit clears the body and
+   * advances `version` by one, counting a missing draft as 0, so the next
+   * round cannot reuse the old expectedVersion.
+   */
   readonly deliveryDraft?: {
     readonly version: number;
     readonly idempotencyKey: string;

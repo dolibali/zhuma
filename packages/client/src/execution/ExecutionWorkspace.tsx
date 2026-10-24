@@ -8,16 +8,17 @@ import {
 import { DeliveryPanel } from './DeliveryPanel.js';
 import { InboxPanel } from './InboxPanel.js';
 import { ReviewWorkspace } from './ReviewWorkspace.js';
+import { RevisionWorkspace } from './RevisionWorkspace.js';
 import { StartPlanPanel, type ExecutionPlan } from './StartPlanPanel.js';
 import { nodeIdentity, reviewIdentity, useFormKey } from './interaction.js';
 
-type Props = { api: ExecutionApi; plan?: ExecutionPlan };
+type Props = { api: ExecutionApi; plan?: ExecutionPlan; refreshKey?: number };
 type Selection = { item: InboxItem; identity: string; token: object };
 export function ExecutionWorkspace(props: Props) {
   const key = useFormKey(props.api, 'workspace');
   return <Workspace key={key} {...props} />;
 }
-function Workspace({ api, plan }: Props) {
+function Workspace({ api, plan, refreshKey }: Props) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
   const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
   const [error, setError] = useState('');
@@ -53,7 +54,7 @@ function Workspace({ api, plan }: Props) {
       alive.current = false;
       request.current?.abort();
     };
-  }, [reload]);
+  }, [reload, refreshKey]);
 
   const node = selected
     ? nodes.find((item) => nodeIdentity(item) === selected.identity)
@@ -114,11 +115,16 @@ function Workspace({ api, plan }: Props) {
           onSubmitted={(next) => submitted(next, selected, presentedReview)}
         />
       )}
-      {selected &&
-        node &&
-        (selected.item.action === 'submit' || selected.item.action === 'revise') && (
-          <DeliveryPanel api={api} node={node} onSubmitted={(next) => submitted(next, selected)} />
-        )}
+      {selected && node && selected.item.action === 'submit' && (
+        <DeliveryPanel api={api} node={node} onSubmitted={(next) => submitted(next, selected)} />
+      )}
+      {selected && node && selected.item.action === 'revise' && (
+        <RevisionWorkspace
+          api={api}
+          node={node}
+          onSubmitted={(next) => submitted(next, selected)}
+        />
+      )}
       {selected && node && !['review', 'submit', 'revise'].includes(selected.item.action) && (
         <p className="zm-empty">这个动作暂未接入当前执行入口。</p>
       )}
