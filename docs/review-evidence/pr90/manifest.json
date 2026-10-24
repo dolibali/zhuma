@@ -1,0 +1,145 @@
+{
+  "before": "b6b165582c4f283021ad35ce30356124c7a5f3c6",
+  "after": "a20d45e91b6385317ce6c357039fa06acf028b32",
+  "capturedProduct": "7793eebda340bcea605ace507ddc88ea2937467b",
+  "productBlobsEqual": true,
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fullPage": true,
+  "normalSameInputAndFocus": true,
+  "normalBeforeInput": "Old Client has no draft entry; identical text/links entered manually, body textarea focused on both sides.",
+  "newStates": "Recovery conflict/expanded/explicit keep/saved and uncompleted metadata/remove are new states without equivalent old UI.",
+  "proof": "Actual ExecutionWorkspace components + typed Client HTTP response replay; fictional actors/data; not real identity/storage/files/native/model acceptance.",
+  "files": [
+    {
+      "file": "after-conflict-expanded-dark.png",
+      "width": 1440,
+      "height": 1212,
+      "bytes": 91714,
+      "sha256": "63547de7fcdcd344894b010bbd314fa5a6275d5c8ec8e8ab0c17e3c68cdfb437",
+      "theme": "dark"
+    },
+    {
+      "file": "after-conflict-expanded-light.png",
+      "width": 1440,
+      "height": 1212,
+      "bytes": 96263,
+      "sha256": "e8fa4d92d7155a45c95ff7871cb4bdad9cd1604b2a0fc81b9db389beb88361f1",
+      "theme": "light"
+    },
+    {
+      "file": "after-conflict-resolved-dark.png",
+      "width": 1440,
+      "height": 933,
+      "bytes": 62438,
+      "sha256": "cfcc4b742ccbc4d45e69f7485ca5167e16d0ccf9ae32c05b429940ac56dae58a",
+      "theme": "dark"
+    },
+    {
+      "file": "after-conflict-resolved-light.png",
+      "width": 1440,
+      "height": 933,
+      "bytes": 64960,
+      "sha256": "3d23930010621f39640a1d89140a75db6088a60d18bab3dbb74b4d91907dab7f",
+      "theme": "light"
+    },
+    {
+      "file": "after-files-pending-dark.png",
+      "width": 1440,
+      "height": 1108,
+      "bytes": 78651,
+      "sha256": "cb20cee0f3c860573692e12873185c58ee0084c3923f76f59f17bbd7de07d363",
+      "theme": "dark"
+    },
+    {
+      "file": "after-files-pending-light.png",
+      "width": 1440,
+      "height": 1108,
+      "bytes": 80836,
+      "sha256": "857ed17658468da0b8ece718a038080800a7d4728de870411ade7018981b1a4d",
+      "theme": "light"
+    },
+    {
+      "file": "after-files-removed-dark.png",
+      "width": 1440,
+      "height": 933,
+      "bytes": 62701,
+      "sha256": "252c8bb14c707026db9f24d6b551ecd73e1fa595b55ef29d351f960d93d8aa22",
+      "theme": "dark"
+    },
+    {
+      "file": "after-files-removed-light.png",
+      "width": 1440,
+      "height": 933,
+      "bytes": 65010,
+      "sha256": "716b66544313998180eda68156f9994057b32574dadf77f5c1c8154fdb4f863a",
+      "theme": "light"
+    },
+    {
+      "file": "after-revise-dark.png",
+      "width": 1440,
+      "height": 1409,
+      "bytes": 130340,
+      "sha256": "9f73341dc096978f9a0f6185b039abb075b98bcd9e47bf8f02a126f4fc8a5768",
+      "theme": "dark"
+    },
+    {
+      "file": "after-revise-light.png",
+      "width": 1440,
+      "height": 1409,
+      "bytes": 135448,
+      "sha256": "21d5772f6e0b4bd3bde1b204afd7351afa2356db048612bed05913ca22b47804",
+      "theme": "light"
+    },
+    {
+      "file": "after-submit-dark.png",
+      "width": 1440,
+      "height": 933,
+      "bytes": 64228,
+      "sha256": "3c80329080afd2ed538810be5379c0f1a59735c756eea8751e060cb6c3e4b2dd",
+      "theme": "dark"
+    },
+    {
+      "file": "after-submit-light.png",
+      "width": 1440,
+      "height": 933,
+      "bytes": 65628,
+      "sha256": "ac1b6938d66eabaec7505126471085b6371ee724000f8f686accde97110c7be7",
+      "theme": "light"
+    },
+    {
+      "file": "before-revise-dark.png",
+      "width": 1440,
+      "height": 1374,
+      "bytes": 123886,
+      "sha256": "60ffb8855fd9d3608c5e34c672ab7ddcbfa3007f62d8b70e2978e24fc4c38842",
+      "theme": "dark"
+    },
+    {
+      "file": "before-revise-light.png",
+      "width": 1440,
+      "height": 1374,
+      "bytes": 129122,
+      "sha256": "df9f594435da6b167569a218030be836735c607f5d0a1ccba5cec99d60ad0a45",
+      "theme": "light"
+    },
+    {
+      "file": "before-submit-dark.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 57862,
+      "sha256": "7711f43b1713a25004a5bd9cbf98475bbc7288e5958ead4897e82820a70b91d6",
+      "theme": "dark"
+    },
+    {
+      "file": "before-submit-light.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 59242,
+      "sha256": "b7f18810a622e3423e27e867eb02ea568ed6a09df69fb5366699f242c2ef98ef",
+      "theme": "light"
+    }
+  ]
+}
