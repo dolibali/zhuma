@@ -42,6 +42,12 @@ async function routes(page, initialAccount) {
       state.account = undefined;
       return json(route, 401, { ok: false, error: { code: 'unauthenticated' } });
     }
+    if (body.method === 'zhuma-exec/startable')
+      return json(route, 200, {
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: { actorId: state.account, plans: [] } },
+      });
     expect(body.method).toBe('zhuma-exec/inbox');
     const value =
       state.account === 'chen'
@@ -69,7 +75,9 @@ test('formal member entry remains behind login and never falls back to owner rou
   await page.getByRole('button', { name: '登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '提交产物', exact: true })).toBeVisible();
-  expect(state.calls.every((call) => call.method === 'zhuma-exec/inbox')).toBe(true);
+  expect(
+    state.calls.every((call) => ['zhuma-exec/inbox', 'zhuma-exec/startable'].includes(call.method)),
+  ).toBe(true);
   expect(state.legacy).toHaveLength(0);
 });
 
@@ -90,5 +98,7 @@ test('execution HTTP401 unmounts old input; another member never sees the previo
   await expect(page.getByText('现在没有需要你处理的工作。', { exact: true })).toBeVisible();
   await expect(page.getByText('previous-member-private-draft')).toHaveCount(0);
   expect(state.legacy).toHaveLength(0);
-  expect(state.calls.every((call) => call.method === 'zhuma-exec/inbox')).toBe(true);
+  expect(
+    state.calls.every((call) => ['zhuma-exec/inbox', 'zhuma-exec/startable'].includes(call.method)),
+  ).toBe(true);
 });

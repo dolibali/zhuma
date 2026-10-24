@@ -5,6 +5,7 @@ import { createExecutionApi, ExecutionError, type ExecutionApi } from './Executi
 export function createExecutionHttpApi(
   fetcher: typeof fetch = globalThis.fetch,
   onUnauthenticated: () => void = () => undefined,
+  expectedActorId?: string,
 ): ExecutionApi {
   const rpc: ClientConnectionRpc = {
     async call(channel, endpoint, payload, callerSignal) {
@@ -91,9 +92,25 @@ export function createExecutionHttpApi(
       throw error;
     }
   }
+  function memberRead<T extends { readonly actorId: string }>(
+    request: Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return observed(
+      request.then((value) => {
+        signal?.throwIfAborted();
+        if (expectedActorId !== undefined && value.actorId !== expectedActorId) {
+          throw new ExecutionError('unauthenticated', '账号已发生变化，请重新登录。');
+        }
+        return value;
+      }),
+      signal,
+    );
+  }
   return {
+    startable: (signal) => memberRead(api.startable(signal), signal),
     startPlan: (draft, signal) => observed(api.startPlan(draft, signal), signal),
-    inbox: (signal) => observed(api.inbox(signal), signal),
+    inbox: (signal) => memberRead(api.inbox(signal), signal),
     submit: (draft, signal) => observed(api.submit(draft, signal), signal),
     ballot: (draft, signal) => observed(api.ballot(draft, signal), signal),
   };
