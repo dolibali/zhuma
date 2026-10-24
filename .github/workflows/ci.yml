@@ -36,6 +36,8 @@ jobs:
         run: pnpm check
       - name: Build workbench Host and Client bundles
         run: pnpm workbench:build
+      - name: Check composed Host artifact (real services, private test files, no models)
+        run: pnpm test:host:run
       - name: Install Chromium for browser contracts
         run: pnpm exec playwright install --with-deps chromium
       - name: Check workbench browser contracts (fixture RPC, no models)

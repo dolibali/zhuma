@@ -32,6 +32,8 @@
     "workbench:build": "node scripts/workbench/build.mjs",
     "workbench:stage": "pnpm workbench:build && node scripts/workbench/install-stage.mjs",
     "test:ui": "pnpm workbench:build && pnpm test:ui:run",
+    "test:host": "pnpm workbench:build && pnpm test:host:run",
+    "test:host:run": "node scripts/workbench/verify-host.mjs",
     "test:ui:run": "playwright test --config packages/client/tests/browser/playwright.config.mjs"
   },
   "devDependencies": {
