@@ -670,7 +670,7 @@ export class ExecutionService {
       const current = opened.value;
       const text = parsed.value.text ?? '';
       const links = parsed.value.links ?? [];
-      const files = parsed.value.files ?? [];
+      const files = (parsed.value.files ?? []).map((file) => ({ ...file, uploadComplete: false }));
       const applied = applyDeliveryDraft({
         current: current.deliveryDraft,
         expectedVersion: parsed.value.expectedVersion,

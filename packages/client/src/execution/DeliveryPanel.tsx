@@ -43,6 +43,8 @@ function UpstreamInputs({ inputs }: { inputs: readonly UpstreamInputWire[] }) {
   );
 }
 
+const READ_TIMEOUT_MS = 10_000;
+
 const emptyFile = {
   id: '',
   mediaType: 'text/plain',
@@ -65,13 +67,42 @@ export function DeliveryPanel({
   const [link, setLink] = useState('');
   const [file, setFile] = useState(emptyFile);
   const [draftVersion, setDraftVersion] = useState(0);
+  const [baselineReady, setBaselineReady] = useState(true);
   const [error, setError] = useState('');
   const [pending, setPending] = useState<'save' | 'submit' | ''>('');
   const key = useRef(crypto.randomUUID());
+  const alive = useRef(true);
+  const edited = useRef(false);
+  const editGeneration = useRef(0);
+  const nodeKey = `${node.taskId}:${node.planId}:${node.revision}:${node.nodeId}`;
+  const liveNode = useRef(nodeKey);
+  liveNode.current = nodeKey;
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
+    const savedFor = nodeKey;
     let active = true;
+    let timedOut = false;
+    edited.current = false;
+    editGeneration.current = 0;
+    key.current = crypto.randomUUID();
+    setText('');
+    setLink('');
+    setFile(emptyFile);
+    setDraftVersion(0);
+    setBaselineReady(false);
+    setError('');
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, READ_TIMEOUT_MS);
     void api
       .readDeliveryDraft(
         {
@@ -84,35 +115,56 @@ export function DeliveryPanel({
       )
       .then(
         (draft) => {
-          if (!active) return;
+          clearTimeout(timer);
+          if (!active || liveNode.current !== savedFor) return;
+          setDraftVersion(draft.version);
+          setBaselineReady(true);
+          if (edited.current) return;
           setText(draft.text);
           setLink(draft.links[0] ?? '');
-          setDraftVersion(draft.version);
           const first = draft.files[0];
-          if (first) {
-            setFile({
-              id: first.id,
-              mediaType: first.mediaType,
-              byteSize: String(first.byteSize),
-              checksum: first.checksum,
-              accessPolicyId: first.accessPolicyId,
-              uploadComplete: first.uploadComplete,
-            });
-          }
+          setFile(
+            first
+              ? {
+                  id: first.id,
+                  mediaType: first.mediaType,
+                  byteSize: String(first.byteSize),
+                  checksum: first.checksum,
+                  accessPolicyId: first.accessPolicyId,
+                  uploadComplete: false,
+                }
+              : emptyFile,
+          );
         },
         (caught: unknown) => {
-          if (!active || controller.signal.aborted) return;
-          setError(caught instanceof Error ? caught.message : '草稿没有读出来。');
+          clearTimeout(timer);
+          if (!active || liveNode.current !== savedFor) return;
+          if (controller.signal.aborted && !timedOut) return;
+          setBaselineReady(true);
+          setError(
+            timedOut
+              ? '草稿没有在时间内读出来。'
+              : caught instanceof Error
+                ? caught.message
+                : '草稿没有读出来。',
+          );
         },
       );
     return () => {
       active = false;
+      clearTimeout(timer);
       controller.abort();
     };
-  }, [api, node.taskId, node.planId, node.revision, node.nodeId]);
+  }, [api, node.taskId, node.planId, node.revision, node.nodeId, nodeKey]);
 
   function rotate() {
+    edited.current = true;
+    editGeneration.current += 1;
     key.current = crypto.randomUUID();
+  }
+
+  function stillHere(savedFor: string) {
+    return alive.current && liveNode.current === savedFor;
   }
 
   function listedFiles(): ArtifactFileRef[] | undefined {
@@ -135,14 +187,20 @@ export function DeliveryPanel({
         byteSize,
         checksum: file.checksum.trim(),
         accessPolicyId: file.accessPolicyId.trim(),
-        uploadComplete: file.uploadComplete,
+        uploadComplete: false,
       },
     ];
   }
 
   async function submit() {
+    if (file.id.trim() !== '') {
+      setError('文件还不能随这次提交完成。请只提交文字或链接。');
+      return;
+    }
     const files = listedFiles();
     if (files === undefined) return;
+    edited.current = true;
+    const savedFor = liveNode.current;
     setPending('submit');
     setError('');
     try {
@@ -157,6 +215,7 @@ export function DeliveryPanel({
         links: link.trim() === '' ? [] : [link.trim()],
         ...(text.trim() === '' ? {} : { text }),
       });
+      if (!stillHere(savedFor)) return;
       rotate();
       setText('');
       setLink('');
@@ -164,15 +223,19 @@ export function DeliveryPanel({
       setDraftVersion(0);
       onSubmitted(next);
     } catch (caught) {
+      if (!stillHere(savedFor)) return;
       setError(caught instanceof Error ? caught.message : '提交没有完成。');
     } finally {
-      setPending('');
+      if (stillHere(savedFor)) setPending('');
     }
   }
 
   async function save() {
     const files = listedFiles();
     if (files === undefined) return;
+    edited.current = true;
+    const generation = editGeneration.current;
+    const savedFor = liveNode.current;
     setPending('save');
     setError('');
     try {
@@ -187,12 +250,14 @@ export function DeliveryPanel({
         links: link.trim() === '' ? [] : [link.trim()],
         ...(text === '' ? {} : { text }),
       });
+      if (!stillHere(savedFor)) return;
       setDraftVersion(saved.version);
-      setText(saved.text);
+      if (editGeneration.current === generation) setText(saved.text);
     } catch (caught) {
+      if (!stillHere(savedFor)) return;
       setError(caught instanceof Error ? caught.message : '草稿没有保存。');
     } finally {
-      setPending('');
+      if (stillHere(savedFor)) setPending('');
     }
   }
 
@@ -245,42 +310,47 @@ export function DeliveryPanel({
         <Field label="媒体类型">
           <input
             value={file.mediaType}
-            onChange={(event) => setFile({ ...file, mediaType: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, mediaType: event.target.value });
+            }}
           />
         </Field>
         <Field label="字节数">
           <input
             inputMode="numeric"
             value={file.byteSize}
-            onChange={(event) => setFile({ ...file, byteSize: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, byteSize: event.target.value });
+            }}
           />
         </Field>
         <Field label="校验">
           <input
             value={file.checksum}
-            onChange={(event) => setFile({ ...file, checksum: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, checksum: event.target.value });
+            }}
           />
         </Field>
         <Field label="访问策略">
           <input
             value={file.accessPolicyId}
-            onChange={(event) => setFile({ ...file, accessPolicyId: event.target.value })}
+            onChange={(event) => {
+              rotate();
+              setFile({ ...file, accessPolicyId: event.target.value });
+            }}
           />
         </Field>
-        <label className="zm-member">
-          <input
-            type="checkbox"
-            checked={file.uploadComplete}
-            onChange={(event) => setFile({ ...file, uploadComplete: event.target.checked })}
-          />
-          <span>文件已经上传完成</span>
-        </label>
+        <p className="zm-empty">待解析</p>
       </div>
       <div className="zm-actions">
         <Button
           busy={pending === 'save'}
           busyLabel="正在保存…"
-          disabled={pending !== ''}
+          disabled={pending !== '' || !baselineReady}
           onClick={() => void save()}
         >
           保存草稿
@@ -288,7 +358,7 @@ export function DeliveryPanel({
         <Button
           busy={pending === 'submit'}
           busyLabel="正在提交…"
-          disabled={blocked || pending !== ''}
+          disabled={blocked || pending !== '' || !baselineReady}
           onClick={() => void submit()}
         >
           提交产物
