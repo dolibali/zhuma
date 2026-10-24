@@ -234,8 +234,9 @@ test('a real connection and member cookie run start, report, and review', async 
       { taskId: applied.taskId, planId: applied.id, revision: applied.revision },
       'zhuma-member=forged',
     );
-    assert.equal(forged.body.result.ok, false);
-    assert.equal(forged.body.result.error.code, 'unauthenticated');
+    assert.equal(forged.status, 401);
+    assert.equal(forged.body.ok, false);
+    assert.equal(forged.body.error.code, 'unauthenticated');
   } finally {
     if (executionStarted) await executionFiber.dispose();
     await disposeHost(host);

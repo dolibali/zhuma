@@ -121,7 +121,7 @@ DSH storage-domain 没有跨记录事务。一次用户命令只写一条记录�
 - 精确修订、入口状态、提交门禁、退回重提、全员通过后只解锁一次
 - `resolveActor` 只接受 `{ ok: true, memberId, spaceIds }`。`untrusted-request` 保持原代码。`containsActorField` 拒绝正文里的 actor 字段
 - `ExecutionService` 串行写。一次用户命令写一条节点；`start-plan` 再另写计划回执。每条写入先核对空间和任务成员，再核对节点角色。从参与者里移除的评审人再投票得到 `not-participant`
-- `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`，并调用 `resolveMember`
+- `applyExecution` 把 `/api/zhuma-exec/<endpoint>` 注册到 `connection.fetch.register`。先 `resolveMember`，再读正文；正文超过 64KiB 或 5 秒没读完就拒绝，无效会话不读正文
 - `revision` 读取退回时的被评审版本、上一版和每一次退回的意见。意见显示评审人姓名，不显示标识。第二次退回保留第一次的意见。不读取文件字节。已投票的评审人仍可读，内容不超出评审范围。被移出当前名单的评审人与节点不存在是同一份 `not-found`。目录不可用或结果不合法时先查目录，不论任务或节点是否存在都返回同一份 `unavailable`：「执行记录暂时不可用，请稍后用同一个请求再试一次。」拒绝前不写。目录正常时，任务不存在、节点不存在和在别的空间返回同一份 `not-found`
 - 交付页读取节点目标。同一任务、同一计划和同一版本里，已接受的上游列出来源节点、版本和产物名；产物名写成「第 2 版」，不带提交者的幂等键。还没有已接受版本，或引用已被新的已接受版本取代时，只提示来源节点，不阻止提交。其余来源只计个数，不带来源、任务或空间标识，并在写盘前拒绝
 - 评审人可以只评论。评论不改变轮次状态，也不改变已经投下的票。评论去掉空白、零宽字符和 U+00AD 后为空时返回 `empty-comment`，不写。退回的意见同样去掉这些字符后为空、也没有引用未解决评论时返回 `empty-request-changes`，引用对不上返回 `comment-not-unresolved`，三种都不写
