@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Agent 处理 · 铸码</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#message">跳到发送</a>
+    <header class="topbar">
+      <a class="brand" href="?view=task" id="back-link">返回任务</a>
+      <div class="topbar-title">
+        <p class="crumb" id="crumb"></p>
+        <h1 id="page-title">Agent 处理</h1>
+      </div>
+      <p class="status-pill" id="node-status" data-testid="node-status"></p>
+    </header>
+    <div id="banner" class="banner" role="status" data-testid="banner"></div>
+    <section id="task-page" class="task-page" hidden>
+      <h2 id="task-heading"></h2>
+      <p id="task-goal"></p>
+      <p id="task-node"></p>
+      <p class="note">
+        这里只显示当前工作项的返回位置。计划编排由组织与编排侧负责，本页不会启动运行。
+      </p>
+      <a class="btn primary" id="open-agent" href="/">打开 Agent 处理</a>
+    </section>
+    <div id="workspace" class="workspace">
+      <main>
+        <section id="thread" class="thread" aria-live="polite" aria-label="Agent 对话"></section>
+        <form id="composer" class="composer">
+          <div id="attachment-list" class="chips"></div>
+          <label class="sr-only" for="message">发送给 Agent 的消息</label>
+          <textarea
+            id="message"
+            rows="3"
+            placeholder="描述要完成的工作，或继续提出修改要求"
+          ></textarea>
+          <div class="composer-bar">
+            <div class="composer-tools">
+              <label class="btn ghost file-button">
+                上传附件
+                <input
+                  id="file"
+                  type="file"
+                  accept=".txt,.md,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,text/plain,image/png,image/jpeg,image/webp,image/gif"
+                />
+              </label>
+              <label class="intent" id="intent-wrap" hidden>
+                生效方式
+                <select id="intent" data-testid="intent">
+                  <option value="supplement">补充信息</option>
+                  <option value="next-turn">排队下一轮</option>
+                </select>
+              </label>
+              <p id="intent-note" class="note" hidden></p>
+              <p class="note">Ctrl + Enter 发送。关闭页面不会停止运行。</p>
+            </div>
+            <div class="composer-actions">
+              <p id="primary-reason" class="reason"></p>
+              <button class="btn danger" id="stop" type="button" data-testid="stop" hidden>
+                停止
+              </button>
+              <button class="btn primary" id="primary" type="submit" data-testid="primary">
+                发送
+              </button>
+            </div>
+          </div>
+        </form>
+      </main>
+      <aside id="config" class="settings" aria-label="本次配置"></aside>
+    </div>
+    <dialog id="draft-dialog">
+      <form method="dialog" id="draft-form">
+        <h2>编辑产物草稿</h2>
+        <p class="note">保存后交给交付流程。不会自动交付，也不会跳过评审。</p>
+        <label class="sr-only" for="draft-text">草稿正文</label>
+        <textarea id="draft-text" rows="10"></textarea>
+        <div class="dialog-actions">
+          <button class="btn ghost" id="draft-cancel" type="button" value="cancel">取消</button>
+          <button class="btn primary" id="draft-save" type="submit" value="save">保存草稿</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

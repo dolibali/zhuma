@@ -1,7 +1,7 @@
 import type { ActorRef, ExecutionEngine } from '@zhuma/agent-core';
 import type { ContextPack } from '@zhuma/context';
 
-/** Future adapters implement this port; no DSH or CLI is executed by this scaffold. */
+/** DSH runs only when this port is given an explicit native engine. */
 export interface ExecutionRequest {
   readonly taskId: string;
   readonly instruction: string;
@@ -48,6 +48,53 @@ export function selectExecutor(
   if (!executor) throw new Error(`Executor is not configured: ${engine}`);
   return executor;
 }
+
+export type {
+  AgentActivity,
+  AgentExecutor,
+  AgentRunEvent,
+  AgentRunRequest,
+  AgentRunResult,
+  CancelReceipt,
+  DshModelConfig,
+  DshModelConfigResult,
+  ExecutorCapabilities,
+  ResourceGrant,
+  SimulatedExecutorOptions,
+} from './agent-executor.js';
+export {
+  ExecutorNotImplementedError,
+  SimulatedAgentExecutor,
+  UnimplementedNativeExecutor,
+  readDshModelConfig,
+  selectAgentExecutor,
+} from './agent-executor.js';
+export {
+  DshChatExecutor,
+  describeDshSessionEvent,
+  dshSessionHome,
+  resolveDshBinary,
+  resolveDshDataDir,
+  sweepDshSessionOrphans,
+} from './dsh-sdk-executor.js';
+
+export type { FileProbeResult } from './file-probe.js';
+export { probeRelativeFile, readRelativeFile } from './file-probe.js';
+
+export type { DeskJournal } from './file-journal.js';
+export { createFileJournal } from './file-journal.js';
+
+export type {
+  DeskContextSeed,
+  DeskDependencies,
+  DeskPersistence,
+  DeskResult,
+  DeskSeed,
+} from './execution-desk.js';
+export { ExecutionDesk, executionHint } from './execution-desk.js';
+
+export type { WorkbenchServerOptions } from './workbench-server.js';
+export { createWorkbenchServer } from './workbench-server.js';
 
 export {
   ACTOR_FIELD_DEPTH_LIMIT,

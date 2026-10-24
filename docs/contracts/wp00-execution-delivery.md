@@ -331,3 +331,12 @@ B 在本包仍未实现、留给后续包的项：多层工作流转换服务、
 - 待办确认事项里，除父节点返回外，其余确认事实要由后续工作包放入输入。
 - 文件大小、预览器和真实权限服务都还没有。`accessPolicyId` 只是引用。
 - 模拟执行与真实执行的区分属于后续运行适配，不在本次结果类型里伪造成功。
+
+## 13. WP03 正在使用的增补
+
+WP03 的执行与上下文见 [wp03-execution-context.md](wp03-execution-context.md)。它复用 `observeRunSignal`、`deriveInbox`、`validateDeliveryContent` 和 `ReviewRound`，不另写一套终态、待办或空交付规则。执行侧保留的增补是：
+
+- `ExecutionEngine` 增加显式的 `simulated`。它只表示操作者选中的演示执行器，不是 `dsh` 或 `codearts-cli` 未配置、未验证或调用失败时的回退。运行时不得因为缺少真实执行器而改用它。
+- `execution-finished` 从 `running` 或 `waiting-for-input` 回到记下的入口，效果是 `await-human-submit`，不触发下游。命令层拒绝与 `NodeCommandState.entryStatus` 不一致的 `returnTo`。`review-resolved` 仍然一律非法，结算只走 `applyReviewToNode` / `applyReviewSettlementCommand`。执行台的 `retry` 与 `restart` 读取同一份入口。新建时写入它，读回不一致时记 `entry-inconsistent`，不改写。
+- `admitExecutionSignal` 在世代和终态上调用 `observeRunSignal`。已结束运行上的迟到信号不改变节点。`requested` 上的失败只更新运行记录。`requested` 上的成功或产物到达只作附属记录，并且不带 `terminal-run`。执行层另外拦住 `superseded-run`；`cancel-confirmed` 在信号可以生效时仍要求已经请求停止。
+- WP03 不设置 `activeRoundId`。当前轮次留给后续评审工作包。执行台只在校验结果时读取它；校验通过只表示这不是旧轮次或作废轮次，不结算节点，也不让节点离开 `in-review`。

@@ -35,6 +35,8 @@
 
 节点执行、产物、评审和并发契约由成员 B 起草，见 [WP00 执行与交付契约](contracts/wp00-execution-delivery.md)。骨架里的 `TaskStatus` 仍是任务快照，不是该契约的节点状态机。项目、任务、计划版本和节点编排字段待成员 A 对齐。
 
+WP03 的运行、停止恢复和上下文装配见 [WP03 执行与上下文](contracts/wp03-execution-context.md)。本地演示必须显式选择执行器。选择 DSH 会启动 `dsh --profile sdk`。自测使用桩，没有对真实网关做过验收。
+
 ## 插件与发行
 
 四个代码包不要求与插件数量相同。Host 插件可以组合核心服务；Client 插件显示相应模型；Rules、Skills、专家与模板是资源。实际插件声明、Peer dependencies、Bundle 配置以固定上游接口的集成测试为准。
@@ -47,12 +49,12 @@
 
 `agent-core/workbench` 与 `planning` 保存可序列化目录、草稿、确认快照和规划协议。`dsh-adapter/workbench-service` 串行处理带版本/幂等键的持久化命令；`workbench-plugin` 通过 DSH Connection、storageDomain 和 llm 接入真实 Host。`client/workbench` 仅调用公共 RPC 并渲染工作流，不导入 Host。
 
-S1a 待审 `host-plugin` 将显式部署模式、先注册的流式门禁及 B 身份子作用域组合起来；旧五接口在成员模式全部拒绝，不把身份失败解释为单人模式。已打开 WorkbenchService 的克隆快照仅通过 Host 内部闭包交接，各工作台域单开。服务 DI／真实凭据与重启、发行文件和单人原生桌面分别验证；[实现与剩余 S1b 边界](host-identity-integration.md)。产品空间映射和业务页面仍待正式接入。
+S1a `host-plugin` 已随 [PR #23](https://github.com/dolibali/zhuma/pull/23)／[PR #48](https://github.com/dolibali/zhuma/pull/48) 合入 main `843661c`，将显式部署模式、先注册的流式门禁及 B 身份子作用域组合起来；旧五接口在成员模式全部拒绝，不把身份失败解释为单人模式。已打开 WorkbenchService 的克隆快照仅通过 Host 内部闭包交接，各工作台域单开。服务 DI／真实凭据与重启、发行文件和历史单人原生桌面证据按原 SHA／环境分别记录；[实现与剩余 S1b 边界](host-identity-integration.md)。产品空间映射和业务页面仍待正式接入，合入不等于多人产品验收。
 
-当前是本地 Host owner 模式；已确认计划独立版本化，不能据此宣称多人权限或执行调度已完成。子任务容器方向及 A/B 分工见 [交接方案](ab-handoff-proposal.md)；当前同任务嵌套只用于编辑草稿，不冻结为执行树模型。
+发行补丁默认使用 `legacy-single-user` 的本地 Host；已确认计划独立版本化，不能据此宣称多人权限或执行调度已完成。子任务容器方向及 A/B 分工见 [交接方案](ab-handoff-proposal.md)；当前同任务嵌套只用于编辑草稿，不冻结为执行树模型。
 
 ## 任务、持续会话与产物评审
 
 补充范围见 [联动方案](architecture/task-session-delivery/design.md)、[A/B 分期](architecture/task-session-delivery/development-plan.md)及[验收清单](architecture/task-session-delivery/test-plan.md)，[PR #13](https://github.com/dolibali/zhuma/pull/13) 已合入 main `b8c5d18`。任务和 workspace 两处打开同一个持续会话，产物固定版本经评审接受后才交下游；方案合入不代表该链路已实现。
 
-B 维护可信身份、会话绑定、上下文物化、执行及产物评审的前后端和 DTO 映射；A 消费已集成版本，维护组织定义、共享 UI／导航／注册／导出及项目和专家入口。[B PR #10](https://github.com/dolibali/zhuma/pull/10) 已提供待审执行实现，独立演示与正式 Host 集成、流式和评审接续的边界分别验证，不按演示回执宣称正式链路完成。
+B 维护可信身份、会话绑定、上下文物化、执行及产物评审的前后端和 DTO 映射；A 消费已集成版本，维护组织定义、共享 UI／导航／注册／导出及项目和专家入口。[B PR #10](https://github.com/dolibali/zhuma/pull/10) 的执行适配实现已合入 main `f26bf4946f5e5a4792fd9f5e30b6191317865ebb`；独立演示、正式 Host 集成、真实模型／CLI 及流式和评审接续仍分别验证，不按代码合入或演示回执宣称正式链路完成。

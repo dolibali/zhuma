@@ -1,6 +1,8 @@
 # Host 身份组合：S1a
 
-组合基线：已合入身份 PR #18 `eb25d30eae5d7758588c409b5c166808d9bb3068` 的 develop `772b59c41f1812051931348289f576aeadc5ae8f`，保留 PR #46 的 opt-in 客户端准备切片。当前 Host 装配仍由独立 PR #23／#28 复核。本批只组合身份服务、显式部署模式和旧接口门禁；没有接入执行／待办／提交／评审页面。本次已验证源组合 `a4ea4d1983ac6553fefc4ffd73fa3fa3e5758fe1`，282 项检查与六项精确发行文件 SDK 测试见[分层证据](review/s1a-host/README.md)。
+组合基线：已合入身份 PR #18 `eb25d30eae5d7758588c409b5c166808d9bb3068` 的 develop `772b59c41f1812051931348289f576aeadc5ae8f`，保留 PR #46 的 opt-in 客户端准备切片。Host 装配已通过 [PR #23](https://github.com/dolibali/zhuma/pull/23) 合入 develop `5b542148917cb735cd85fea6a9fd83cb5d615a07`，再由 [PR #48](https://github.com/dolibali/zhuma/pull/48) 单独集成至 main `843661c39bf1ac229fcdf011bb4e39cac54bf988`；范围与退出条件见 [#28](https://github.com/dolibali/zhuma/issues/28)。本切片只组合身份服务、显式部署模式和旧接口门禁，没有接入执行／待办／提交／评审页面。
+
+原验证源组合 `a4ea4d1983ac6553fefc4ffd73fa3fa3e5758fe1` 的 282 项检查与六项精确发行文件 SDK 测试见[分层证据](review/s1a-host/README.md)。验证 SHA、发行摘要、合成账号／私有临时环境及历史原生桌面边界保持原记录，不据此认证后续 WP03、M1 或正式成员业务组合。
 
 ## 显式模式与服务生命周期
 

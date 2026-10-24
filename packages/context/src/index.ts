@@ -34,3 +34,21 @@ export function createContextPack(
     evidence: Object.freeze(snapshot),
   });
 }
+
+export type {
+  ContextItemKind,
+  ContextBlockReason,
+  ContextFileProbe,
+  ContextSourceInput,
+  ContextCitation,
+  ContextBlock,
+  RunContextManifest,
+  WorkspaceClaim,
+} from './run-context.js';
+export {
+  CONTEXT_ITEM_KINDS,
+  assembleRunContext,
+  isolateWorkspaceId,
+  claimWritableWorkspace,
+  releaseWritableWorkspace,
+} from './run-context.js';
