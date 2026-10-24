@@ -14,6 +14,7 @@ import {
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../../dist/identity-session.js';
 import { configureDeploymentMode } from '../../dist/member-session.js';
+import { applySpaceDirectory } from '../../dist/space-directory.js';
 
 function randomPassword() {
   return randomBytes(24).toString('base64url');
@@ -210,6 +211,23 @@ export async function startIdentitySite() {
   ctx.provide('storageDomain', new DomainFacility(ctx, { backend: 'memory', routes: {} }));
   const connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
   await connectionFiber;
+  // Note routes require current space membership in addition to the note ACL.
+  // These facts match the imported notes so a legitimate member can still read.
+  const spaceFiber = ctx.plugin(
+    { inject: ['storageDomain'], apply: applySpaceDirectory },
+    {
+      spaces: [
+        { id: 'team-north', kind: 'team', name: '北队' },
+        { id: 'team-south', kind: 'team', name: '南队' },
+      ],
+      memberships: [
+        { spaceId: 'team-north', accountId: 'lin' },
+        { spaceId: 'team-north', accountId: 'zhao' },
+        { spaceId: 'team-south', accountId: 'chen' },
+      ],
+    },
+  );
+  await spaceFiber;
   const identityFiber = ctx.plugin(
     { inject: [...identityInject], apply: applyIdentity },
     {
@@ -273,6 +291,7 @@ export async function startIdentitySite() {
       server.close();
       other.close();
       await identityFiber.dispose();
+      await spaceFiber.dispose();
       await connectionFiber.dispose();
     },
   };
