@@ -8,6 +8,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-theme/client';
 import type { AppearanceStore } from './Appearance.js';
 import { createWorkbenchApi } from './api.js';
 import { WorkbenchPage } from './WorkbenchPage.js';
+import { MemberExecutionPage } from '../execution/MemberExecutionPage.js';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 
@@ -98,4 +99,39 @@ export function apply(ctx: Context): void {
       ),
     );
   }
+  const executionPanel = 'zhuma-my-work' as MainPanelId;
+  ctx.slots.inject('main', () => {
+    const dispose = ctx.slots.register(
+      { name: 'main', key: executionPanel, inject: () => ({}) },
+      () => (
+        <div className="zm-shell-panel">
+          <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
+          <MemberExecutionPage />
+        </div>
+      ),
+    );
+    return () => {
+      if (ctx.layout.panelInfo.getSnapshot().activePanelId === executionPanel)
+        ctx.layout.selectPanel(null);
+      dispose();
+    };
+  });
+  ctx.slots.inject('sidebar.panellist', () =>
+    ctx.slots.register(
+      { name: 'sidebar.panellist', id: executionPanel, order: -95, label: '我的工作' },
+      () => (
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          aria-hidden="true"
+        >
+          <path d="M9 5h11M9 12h11M9 19h11M3 5l1 1 2-2M3 12l1 1 2-2M3 19l1 1 2-2" />
+        </svg>
+      ),
+    ),
+  );
 }
