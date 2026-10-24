@@ -13,12 +13,16 @@ export type {
   ExecutionInboxValue,
   ExecutionNodeWire,
   ReviewDraft,
+  RevisionQuery,
+  RevisionContentWire,
+  RevisionViewWire,
 } from './execution/ExecutionApi.js';
 export {
   ExecutionError,
   executionErrorMessage,
   createExecutionApi,
   readExecutionNode,
+  readRevisionView,
 } from './execution/ExecutionApi.js';
 export { StartablePlansPanel } from './execution/StartablePlansPanel.js';
 export { StartPlanPanel, type ExecutionPlan } from './execution/StartPlanPanel.js';
@@ -28,6 +32,8 @@ export { MemberExecutionPage } from './execution/MemberExecutionPage.js';
 export { ExecutionWorkspace } from './execution/ExecutionWorkspace.js';
 export { InboxPanel } from './execution/InboxPanel.js';
 export { ReviewWorkspace } from './execution/ReviewWorkspace.js';
+export { RevisionPanel } from './execution/RevisionPanel.js';
+export { RevisionWorkspace } from './execution/RevisionWorkspace.js';
 export {
   INBOX_ACTION_LABELS,
   INBOX_KIND_LABELS,
