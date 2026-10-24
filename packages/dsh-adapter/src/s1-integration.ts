@@ -39,6 +39,12 @@ export type MemberResolution = ({ readonly ok: true } & ResolvedMember) | Member
 export interface MemberResolver {
   resolve(request: MemberRequest): Promise<MemberResolution>;
 }
+/**
+ * Declared return union of `identityAccessMode`. `unmounted` stays so this
+ * declaration matches the identity export. Runtime does not infer it from a
+ * missing resolver. An unset mode throws
+ * `identity startup refused: deployment mode is not configured`.
+ */
 export type IdentityAccessMode = 'unmounted' | 'single-user' | 'multi-member';
 /** `passwordHash` is a scrypt verifier, never a password. */
 export interface IdentityImport {
@@ -57,8 +63,9 @@ export type CreateMemberResolver = (ctx: object) => MemberResolver;
 export type IdentityAccessModeFn = (ctx: object) => IdentityAccessMode;
 export type ApplyIdentity = (ctx: Context, imported?: IdentityImport) => Promise<void>;
 /**
- * Declared from b/id0a-identity `bb3f847`. This module does not import that commit.
- * `applyIdentity` reads the mode before it opens the identity domain.
+ * Selected by `configureDeploymentMode` before `applyIdentity`.
+ * `applyIdentity` reads `deploymentMode` before it opens the identity domain
+ * and refuses to start when the mode is unset.
  */
 export type DeploymentMode = 'legacy-single-user' | 'multi-member';
 export type ConfigureDeploymentMode = (ctx: object, mode: DeploymentMode) => void;
@@ -102,6 +109,7 @@ export interface ApplyWorkbench {
  */
 export interface S1Startup {
   configureDeploymentMode: ConfigureDeploymentMode;
+  deploymentMode: ReadDeploymentMode;
   applySpaceDirectory: ApplySpaceDirectory;
   applyIdentity: ApplyIdentity;
   memberResolver: CreateMemberResolver;
@@ -342,10 +350,11 @@ export interface ReviewDraft {
   readonly idempotencyKey: string;
   readonly roundId: string;
   readonly artifactVersionId: string;
-  readonly action: 'approve' | 'request-changes';
+  readonly action: 'approve' | 'request-changes' | 'comment';
   readonly comment?: string;
 }
 export interface ExecutionApi {
+  startPlan(draft: StartPlanRequest, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
@@ -353,6 +362,7 @@ export interface ExecutionApi {
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
   api: ExecutionApi;
+  plan?: Omit<StartPlanRequest, 'idempotencyKey'> & { readonly title: string };
 }
 export interface InboxPanelProps {
   items: readonly InboxItem[];

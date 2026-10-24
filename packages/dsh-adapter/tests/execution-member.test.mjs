@@ -160,6 +160,48 @@ test.after(async () => {
   await disposeHost(host);
 });
 
+test('cleanup skips a host that never started', async () => {
+  let started;
+  await assert.rejects(
+    () => bootIdentity({ accounts: [{ id: 'chen', passwordHash }] }, 'single-user'),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  await disposeHost(started);
+});
+
+test('a rejected identity import does not dispose an identity fiber that never finished', async () => {
+  await assert.rejects(
+    () => bootIdentity({ accounts: [] }, 'multi-member'),
+    /identity import was rejected: accounts is empty/,
+  );
+});
+
+test('multi-member does not map an owner cookie even for one named account', async () => {
+  const alone = await bootIdentity(
+    {
+      accounts: [{ id: 'chen', passwordHash }],
+      ownerAccountId: 'chen',
+      notes: [
+        {
+          id: 'only',
+          spaceId: 'project',
+          ownerId: 'chen',
+          teamMemberIds: ['chen'],
+          text: 'local',
+        },
+      ],
+    },
+    'multi-member',
+  );
+  try {
+    const member = await alone.member(alone.ownerCookie());
+    assert.equal(member.ok, false);
+    assert.equal(member.code, 'unauthenticated');
+  } finally {
+    await disposeHost(alone);
+  }
+});
+
 async function actor(accountId) {
   const member = await host.member(cookies[accountId]);
   assert.equal(member.ok, true, JSON.stringify(member));
