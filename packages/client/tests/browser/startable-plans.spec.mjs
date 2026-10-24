@@ -224,7 +224,11 @@ test('keyboard plan selection stays read-only until the start button is explicit
   await setup(page);
   await picker(page).focus();
   await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('option', { name: '选择一个计划', exact: true })).toBeFocused();
   await page.keyboard.press('End');
+  await expect(
+    page.getByRole('option', { name: alternatives.revision, exact: true }),
+  ).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(picker(page)).toContainText(alternatives.revision);
   expect(await calls(page, 'start-plan')).toHaveLength(0);
