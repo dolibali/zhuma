@@ -136,6 +136,20 @@ test.before(async () => {
       ],
     },
     'multi-member',
+    // spaceIdsFor reads the trusted directory. These memberships match the
+    // notes above: chen, lin, and outside share project; zhao only has north.
+    {
+      spaces: [
+        { id: 'project', kind: 'team', name: '项目空间' },
+        { id: 'north', kind: 'team', name: '北方空间' },
+      ],
+      memberships: [
+        { spaceId: 'project', accountId: 'chen' },
+        { spaceId: 'project', accountId: 'lin' },
+        { spaceId: 'project', accountId: 'outside' },
+        { spaceId: 'north', accountId: 'zhao' },
+      ],
+    },
   );
   for (const id of ['chen', 'lin', 'outside', 'zhao']) {
     cookies[id] = await host.login(id, password);
@@ -413,6 +427,10 @@ test('single-user mode is the account identity configured, and a removed reviewe
         ],
       },
       'legacy-single-user',
+      {
+        spaces: [{ id: 'project', kind: 'personal', name: '个人空间' }],
+        memberships: [{ spaceId: 'project', accountId: 'chen' }],
+      },
     );
     const member = await single.member(single.ownerCookie());
     assert.equal(member.ok, true);
