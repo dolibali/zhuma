@@ -13,6 +13,8 @@ export type {
   ExecutionInboxValue,
   ExecutionNodeWire,
   UpstreamInputWire,
+  SavedDeliveryDraftWire,
+  DeliveryDraftSave,
   ReviewDraft,
   RevisionQuery,
   RevisionContentWire,
@@ -24,6 +26,7 @@ export {
   createExecutionApi,
   readExecutionNode,
   readRevisionView,
+  readSavedDeliveryDraft,
 } from './execution/ExecutionApi.js';
 export { StartablePlansPanel } from './execution/StartablePlansPanel.js';
 export { StartPlanPanel, type ExecutionPlan } from './execution/StartPlanPanel.js';

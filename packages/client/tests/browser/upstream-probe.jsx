@@ -39,15 +39,17 @@ export function UpstreamProbe() {
                 ok: true,
                 value: endpoint.endsWith('/inbox')
                   ? inbox([structuredClone(value.node)])
-                  : endpoint.endsWith('/revision')
-                    ? { view: revisionView() }
-                    : {
-                        node: {
-                          ...value.node,
-                          version: value.node.version + 1,
-                          status: 'in-review',
+                  : endpoint.endsWith('/draft')
+                    ? { version: 0, text: '', links: [], files: [] }
+                    : endpoint.endsWith('/revision')
+                      ? { view: revisionView() }
+                      : {
+                          node: {
+                            ...value.node,
+                            version: value.node.version + 1,
+                            status: 'in-review',
+                          },
                         },
-                      },
               };
         const call = { channel, endpoint, payload, signal, response };
         value.calls.push(call);

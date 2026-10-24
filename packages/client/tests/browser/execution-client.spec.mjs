@@ -12,6 +12,8 @@ const probe = (page, callback) => page.evaluate(callback);
 async function setup(page, mode) {
   await page.goto(`/?execution-client=1${mode ? `&execution-form=${mode}` : ''}&strict=1`);
   await page.waitForFunction(() => window.executionProbe);
+  if (mode === 'delivery')
+    await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
 }
 async function hold(page) {
   await probe(page, () => {

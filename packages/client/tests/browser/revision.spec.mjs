@@ -13,6 +13,7 @@ async function open(page, direct = false) {
   await page.goto(`/?revision-client&strict${direct ? '&revision-direct' : ''}`);
   if (!direct) await button(page, '提交新版本').click();
   await expect(source(page)).toContainText('增加 status 筛选');
+  await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
 }
 async function finishLast(page, kind, outcome = 'success') {
   await page.evaluate(

@@ -209,5 +209,7 @@ export function createExecutionHttpApi(
     submit: (draft, signal) => observed(api.submit(draft, signal), signal),
     ballot: (draft, signal) => observed(api.ballot(draft, signal), signal),
     revision: (query, signal) => observed(api.revision(query, signal), signal),
+    readDeliveryDraft: (query, signal) => observed(api.readDeliveryDraft(query, signal), signal),
+    saveDeliveryDraft: (draft, signal) => observed(api.saveDeliveryDraft(draft, signal), signal),
   };
 }

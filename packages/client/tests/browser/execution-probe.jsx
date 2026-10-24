@@ -51,6 +51,12 @@ export function ExecutionProbe() {
     // Deliberately ignores abort to prove UI receipt isolation even for late transports.
     const rpc = {
       call(channel, endpoint, payload, signal) {
+        // This legacy probe records its original commands; focused draft replay records draft reads separately.
+        if (endpoint.endsWith('/draft') && !('idempotencyKey' in payload))
+          return Promise.resolve({
+            ok: true,
+            value: { version: 0, text: '', links: [], files: [] },
+          });
         const selected =
           control.nodes.find((entry) => entry.nodeId === payload.nodeId) ??
           control.formNode ??
