@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { StartablePlansPanel } from '../dist/execution/StartablePlansPanel.js';
 import { StartPlanPanel } from '../dist/execution/StartPlanPanel.js';
 import { DeliveryPanel } from '../dist/execution/DeliveryPanel.js';
 import { ExecutionWorkspace } from '../dist/execution/ExecutionWorkspace.js';
@@ -115,4 +116,21 @@ test('read-only rendering never starts a plan and missing round artifact cannot 
   assert.match(review, /当前评审轮次或对应产物不可用/);
   assert.equal(review.includes('第一版接口说明'), false);
   assert.match(review, /disabled=""/);
+});
+
+test('catalog server rendering cannot read or execute before the member client mounts', () => {
+  let calls = 0;
+  const api = {
+    startable: async () => {
+      calls++;
+    },
+    startPlan: async () => {
+      calls++;
+    },
+  };
+  const markup = renderToStaticMarkup(createElement(StartablePlansPanel, { api, onStarted() {} }));
+  assert.match(markup, /待开始/);
+  assert.match(markup, /正在读取计划/);
+  assert.equal(calls, 0);
+  assert.equal(markup.includes('开始执行'), false);
 });

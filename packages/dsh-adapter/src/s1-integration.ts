@@ -388,14 +388,15 @@ export interface ReviewDraft {
 }
 /**
  * Wire value of the `startable` route. The Client-side `ExecutionApi` method
- * is added by A on #32 when the entry consumes it; this layer declares the
- * route shape only.
+ * consumes this authoritative projection on #32; the declaration does not
+ * move discovery or authorization into the Client.
  */
 export interface ExecutionStartableValue {
   readonly actorId: string;
   readonly plans: readonly StartablePlan[];
 }
 export interface ExecutionApi {
+  startable(signal?: AbortSignal): Promise<ExecutionStartableValue>;
   startPlan(draft: StartPlanRequest, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
@@ -406,6 +407,7 @@ export interface ExecutionApi {
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
   api: ExecutionApi;
+  refreshKey?: number;
   plan?: Omit<StartPlanRequest, 'idempotencyKey'> & { readonly title: string };
 }
 export interface InboxPanelProps {

@@ -252,3 +252,42 @@ test('the runnable preview uses valid service projections for delivery, review a
   assert.equal(value.nodes[1].assigneeId, value.actorId);
   assert.equal(value.nodes[2].status, 'needs-revision');
 });
+
+const startablePlan = { taskId: 'task', planId: 'plan', revision: 1, title: '已确认接口计划' };
+test('typed startable discovery reads exact references without starting or sending an actor', async () => {
+  const { api, calls } = apiWith(() => ({
+    ok: true,
+    value: { actorId: 'chen', plans: [startablePlan] },
+  }));
+  const controller = new AbortController();
+  assert.deepEqual(await api.startable(controller.signal), {
+    actorId: 'chen',
+    plans: [startablePlan],
+  });
+  assert.equal(calls[0].endpoint, 'zhuma-exec/startable');
+  assert.equal(calls[0].channel, '/api');
+  assert.deepEqual(calls[0].payload, {});
+  assert.equal(calls[0].signal, controller.signal);
+  assert.equal(calls.length, 1);
+});
+
+test('catalog parsing rejects ambiguous or malformed references while retaining distinct task/plan/revision identities', async () => {
+  for (const value of [
+    {},
+    { actorId: 'chen', plans: [startablePlan, startablePlan] },
+    { actorId: 'chen', plans: [{ ...startablePlan, revision: 0 }] },
+    { actorId: 'chen', plans: [{ ...startablePlan, planId: '' }] },
+    { actorId: 'chen', plans: [{ ...startablePlan, title: '' }] },
+  ]) {
+    const { api } = apiWith(() => ({ ok: true, value }));
+    await assert.rejects(api.startable(), (error) => error.code === 'validation');
+  }
+  const plans = [
+    startablePlan,
+    { ...startablePlan, taskId: 'other-task' },
+    { ...startablePlan, planId: 'other-plan' },
+    { ...startablePlan, revision: 2 },
+  ];
+  const { api } = apiWith(() => ({ ok: true, value: { actorId: 'chen', plans } }));
+  assert.deepEqual((await api.startable()).plans, plans);
+});
