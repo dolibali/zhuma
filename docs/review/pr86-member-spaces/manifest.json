@@ -1,0 +1,366 @@
+{
+  "implementation": "8e7145358d43bcdb22a731af4b9b425f35b10d55",
+  "originalCapture": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+  "newFeature": true,
+  "before": "No equivalent prepared space-boundary UI at base; formal member entry remains unchanged. No fabricated before picture.",
+  "source": "Actual browser boundary fixture; synthetic HTTP identity responses; children are input/invalidation probes, not execution/workspace.",
+  "compatibility": "471->8e714 changes only three controller lines preserving retry target; unchanged rendered component/API/CSS/probe blobs listed. Error/retry-recovered scenes recaptured at8e714, other10presentation images retained at471; retained images do not prove fixed retry.",
+  "unchangedPresentationBlobs": {
+    "packages/client/src/identity/MemberSpaceBoundary.tsx": "f65583d636aec21d84259cad053eb1f93a35c69c",
+    "packages/client/src/identity/api.ts": "f7ee9470da979e4e6b85b68f02a1598ad7d3a49c",
+    "packages/client/src/workbench/UnsavedChanges.tsx": "9ce3bc0a9615f660d1c34d0e8772da52d0f83ecb",
+    "packages/client/src/workbench/workbench.css": "e75baf21db7df91b14c37eb51a6a64a9432c75cd",
+    "packages/client/tests/browser/member-spaces-probe.jsx": "2cbcdf4e0c0603a0d35343ac690784a19aec1a8a"
+  },
+  "previewBytes": {
+    "head": "8e7145358d43bcdb22a731af4b9b425f35b10d55",
+    "harnessDevSha256": "6c68d13138ff2769b6a02c5b1a1a6b9f8836a1ec103749165e91d5c19707dbf0",
+    "harnessBytes": 3061017,
+    "compiledSpacesSha256": "95253a427ebc76f2a54648bdba80e757fd857899abe57b13ffcce1ccf1b2bd29",
+    "mainClientSha256": "8a0d1d3cf34520e7e170a04aa6a385e549e8cb8cfff05700c00ab00fe30fb299",
+    "boundary": "Main entry does not use MemberSpaceBoundary yet; mainClient hash unchanged does not certify new boundary. UI uses separately emitted harness-dev.js."
+  },
+  "rows": [
+    {
+      "file": "after-discard-dark-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 58541,
+      "sha256": "88c1196bab9722b6c11097ed9fa37b1523ff386cce844a513163078ea96b40df",
+      "pngChunks": [
+        "IHDR",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "after-discard-light-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 66442,
+      "sha256": "cb766072b81dc02f3ebcda96c7822e50f6587bb0fc89e25fc4650edf3fb8882d",
+      "pngChunks": [
+        "IHDR",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "after-empty-dark-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 23421,
+      "sha256": "9501feb93da626e4e44390a86f217076ef22d9e2bd16fc542998334fd7dfc51c",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-empty-light-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 24915,
+      "sha256": "37613e5fc87059a07a8fe0e5b530f9c4224ccde103d931114b3fc3a291304f02",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-expanded-dark-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 30279,
+      "sha256": "27b5f16acd0a50bdc2a7cc0dc435901ecdac0e4feabf907ccb38ada767a0bf38",
+      "pngChunks": [
+        "IHDR",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "after-expanded-light-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 31678,
+      "sha256": "7a2d9a5b39c13661ebf0af5c26c2939d383673005eb766d926de4bfeeb6825f8",
+      "pngChunks": [
+        "IHDR",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "after-personal-dark-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 25179,
+      "sha256": "c016dbb27145fca6ac236a8a8abf669ac3e5a60814360c179e94bdd1cf11c66d",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-personal-light-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 26592,
+      "sha256": "41419b0b5ee762677fe47c4fa9c6dcc840ac81a5d6cb7fd7ee1919a73c97ff84",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-retry-recovered-dark-1440x900.png",
+      "sourceCommit": "8e7145358d43bcdb22a731af4b9b425f35b10d55",
+      "kind": "updated-retry-proof",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 23604,
+      "sha256": "358df8e45d27deb17a9bafc1dd43f5444e5d9e88d1d0cd305bd9a7b07f3bbc00",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-retry-recovered-light-1440x900.png",
+      "sourceCommit": "8e7145358d43bcdb22a731af4b9b425f35b10d55",
+      "kind": "updated-retry-proof",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 24912,
+      "sha256": "614460369a5fc4b6e8f94f9dfb38300d2b7851219456ae34795e958a2880c5f8",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-team-dark-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 23604,
+      "sha256": "358df8e45d27deb17a9bafc1dd43f5444e5d9e88d1d0cd305bd9a7b07f3bbc00",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-team-light-1440x900.png",
+      "sourceCommit": "471e25acc3a7ddd5694e769952e8a5c69481e794",
+      "kind": "unchanged-presentation",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 24912,
+      "sha256": "614460369a5fc4b6e8f94f9dfb38300d2b7851219456ae34795e958a2880c5f8",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-unavailable-dark-1440x900.png",
+      "sourceCommit": "8e7145358d43bcdb22a731af4b9b425f35b10d55",
+      "kind": "updated-retry-proof",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 24114,
+      "sha256": "efb7b7ee312439625cf210515f0a2e6339e0e07bb977000fc9d255cfdcffc67a",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    },
+    {
+      "file": "after-unavailable-light-1440x900.png",
+      "sourceCommit": "8e7145358d43bcdb22a731af4b9b425f35b10d55",
+      "kind": "updated-retry-proof",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "fullPage": true,
+      "png": {
+        "width": 1440,
+        "height": 900
+      },
+      "bytes": 25650,
+      "sha256": "4a6a0d543e1b6b4db3897d1d996c370286fe779668fb5df8e6ae5a27d2ac892b",
+      "pngChunks": ["IHDR", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IDAT", "IEND"]
+    }
+  ],
+  "verification": {
+    "originalHeadNode": {
+      "total": 632,
+      "pass": 628,
+      "skip": 4,
+      "fail": 0
+    },
+    "originalAffectedBrowser": {
+      "pass": 118,
+      "fail": 0,
+      "newCases": 12
+    },
+    "fixedSpaceNode": {
+      "pass": 13,
+      "fail": 0
+    },
+    "fixedOriginalProbes": {
+      "pass": 2,
+      "fail": 0
+    },
+    "fixedAffectedBrowser": {
+      "pass": 4,
+      "fail": 0
+    },
+    "originalFailure": "471 original two extra probes0/2; manual retry silently switched team-a to personal-a. Retained in PR review; not rewritten as pass.",
+    "fixedManual": "8e714 revoked team-a retries remain closed; restore authorization then retry reopens originalteam-a; no explicit personal selection.",
+    "personallyViewedOriginal12": true,
+    "personallyViewedUpdated4": true,
+    "smallViewportCheck": {
+      "width": 1024,
+      "height": 768,
+      "theme": "dark",
+      "documentScrollWidth": 1024,
+      "selectedSpace": "team-a",
+      "overflow": false,
+      "boundary": "One current boundary preview; not nativezoom or complete responsive acceptance"
+    }
+  },
+  "boundary": "No real cookie, authoritative business-space query, Host command, file bytes, multiuser product, native theme/zoom or installer acceptance. Empty account-directory scene does not prove empty business-space filtering."
+}
