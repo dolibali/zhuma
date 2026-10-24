@@ -2,7 +2,11 @@
 
 工作项：[#29](https://github.com/dolibali/zhuma/issues/29)。主责：B；范围：FR16 的授权事实部分。
 
-本切片交付可信、持久的空间目录纯模块：空间存在性、成员归属、项目归属。它替代「从可见便笺推断空间成员关系」的旧路径，供成员会话枚举（本项后续切片）、执行授权（#55 交付的 `ProjectSpaceDirectory` 消费方）和 A 的登录／空间入口（#31）使用。本切片不改动 `member-session.ts`、`identity-session.ts`、`execution-service.ts`，也不接线任何路由；接线路径在后续切片完成。
+本契约分三个切片交付可信、持久的空间目录：
+
+1. **纯模块**（[PR #72](https://github.com/dolibali/zhuma/pull/72)）：`zhuma_spaces` 域、导入与校验、读侧 `SpaceDirectory`、写侧 `SpaceDirectoryWriter`。
+2. **身份接线**（[PR #75](https://github.com/dolibali/zhuma/pull/75)）：成员会话 `spaceIdsFor`、`/zhuma-id/session` 空间枚举、`/zhuma-id/spaces/:id` 与 `memberPolicy` 空间分支统一改消费目录；便笺级授权不变；无目录时成员无空间，不从便笺推断。
+3. **S1 对齐**（本切片）：`applySpaceDirectory` 进入 `S1Startup` 加载顺序，`spaceDirectoryFor` 供给 A 注入 `applyExecution` 的 `projectSpaces`；conformance 类型双向约束。
 
 ## 事实与存储
 
@@ -45,13 +49,14 @@
 
 ## 验证层级
 
-| 层级   | 证据                                                             | 不是什么                 |
-| ------ | ---------------------------------------------------------------- | ------------------------ |
-| 纯模块 | `tests/space-directory.test.mjs`：内存介质 + 共享 media 模拟重开 | 不是真实 Host 持久化验收 |
-| 接线   | 后续切片：成员会话枚举、执行注入、`/zhuma-id` 空间路由           | 本切片不含               |
+| 层级   | 证据                                                                                       | 不是什么                 |
+| ------ | ------------------------------------------------------------------------------------------ | ------------------------ |
+| 纯模块 | `tests/space-directory.test.mjs`：内存介质 + 共享 media 模拟重开                           | 不是真实 Host 持久化验收 |
+| 接线   | `tests/identity-session.test.mjs`：真实 Connection／成员 cookie 的枚举、空空间、撤销与重开 | 不是已安装桌面产品       |
+| 装配   | `tests/types/s1-identity-conformance.ts`、`s1-conformance.ts`：签名双向约束                | 不是 A 的 Host 集成验收  |
 
 ## 延期项
 
 - 空间的项目移除、空间删除与归档语义：随 #31／资产管理批次评估。
-- 便笺级授权（`ownerId`／`teamMemberIds`）语义不变；空间级可见性改消费成员事实在接线切片完成。
+- 便笺级授权（`ownerId`／`teamMemberIds`）语义不变；空间级可见性已改消费成员事实。
 - 运行时创建空间的 UI：A 的 #31 范围。
