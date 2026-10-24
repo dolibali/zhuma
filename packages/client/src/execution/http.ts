@@ -208,5 +208,6 @@ export function createExecutionHttpApi(
     inbox: (signal) => memberRead(api.inbox(signal), signal),
     submit: (draft, signal) => observed(api.submit(draft, signal), signal),
     ballot: (draft, signal) => observed(api.ballot(draft, signal), signal),
+    revision: (query, signal) => observed(api.revision(query, signal), signal),
   };
 }

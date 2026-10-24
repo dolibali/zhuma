@@ -3701,3 +3701,97 @@ html[data-platform='darwin'] .zm-shell-chrome {
 .zm-execution-notice {
   color: var(--zm-success);
 }
+
+/* Returned content stays next to named feedback; the existing delivery form owns edits. */
+.zm-revision-workspace {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.zm-revision-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr);
+  gap: 24px;
+  min-width: 0;
+}
+.zm-revision-source,
+.zm-revision-notes {
+  min-width: 0;
+}
+.zm-revision-source .zm-field {
+  margin-top: 0;
+  max-width: 400px;
+}
+.zm-revision .zm-execution-artifact:focus-visible {
+  outline: 2px solid var(--zm-focus);
+  outline-offset: 3px;
+}
+.zm-revision-notes {
+  border-left: 1px solid var(--zm-line);
+  padding-left: 24px;
+}
+.zm-revision-notes > h3 {
+  margin: 0 0 16px;
+  font-size: 14px;
+}
+.zm-revision-note {
+  padding-block: 16px;
+  border-top: 1px solid var(--zm-line);
+  overflow-wrap: anywhere;
+}
+.zm-revision-note header,
+.zm-revision-references {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+.zm-revision-note p {
+  margin-block: 12px;
+}
+.zm-revision-references {
+  margin-block: 12px;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-revision-references code {
+  font-family: var(--dsh-font-family-code, monospace);
+}
+.zm-revision-links {
+  padding-left: 20px;
+  margin-block: 16px;
+}
+.zm-revision-files {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--zm-line);
+}
+.zm-revision-files h4,
+.zm-revision-files p {
+  margin: 0 0 10px;
+}
+.zm-revision-files ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+}
+.zm-revision-files li {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.zm-revision-files span,
+.zm-revision-version-note {
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+@media (max-width: 900px) {
+  .zm-revision-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .zm-revision-notes {
+    padding: 20px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--zm-line);
+  }
+}

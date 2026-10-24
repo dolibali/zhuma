@@ -8,6 +8,7 @@ import {
 import { DeliveryPanel } from './DeliveryPanel.js';
 import { InboxPanel } from './InboxPanel.js';
 import { ReviewWorkspace } from './ReviewWorkspace.js';
+import { RevisionWorkspace } from './RevisionWorkspace.js';
 import { StartPlanPanel, type ExecutionPlan } from './StartPlanPanel.js';
 import { nodeIdentity, reviewIdentity, useFormKey } from './interaction.js';
 
@@ -114,11 +115,16 @@ function Workspace({ api, plan, refreshKey }: Props) {
           onSubmitted={(next) => submitted(next, selected, presentedReview)}
         />
       )}
-      {selected &&
-        node &&
-        (selected.item.action === 'submit' || selected.item.action === 'revise') && (
-          <DeliveryPanel api={api} node={node} onSubmitted={(next) => submitted(next, selected)} />
-        )}
+      {selected && node && selected.item.action === 'submit' && (
+        <DeliveryPanel api={api} node={node} onSubmitted={(next) => submitted(next, selected)} />
+      )}
+      {selected && node && selected.item.action === 'revise' && (
+        <RevisionWorkspace
+          api={api}
+          node={node}
+          onSubmitted={(next) => submitted(next, selected)}
+        />
+      )}
       {selected && node && !['review', 'submit', 'revise'].includes(selected.item.action) && (
         <p className="zm-empty">这个动作暂未接入当前执行入口。</p>
       )}
