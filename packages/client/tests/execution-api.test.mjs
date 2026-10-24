@@ -149,3 +149,25 @@ test('a very deep file list is a validation error and is not sent', async () => 
   );
   assert.equal(calls.length, 0);
 });
+
+test('transport failures become typed execution errors', async () => {
+  const cases = [
+    ['401', 'unauthenticated', '请先登录。'],
+    ['413', 'body-too-large', '这次请求太大，没有读取。'],
+    ['408', 'body-timeout', '请求没有在时间内传完，请再试一次。'],
+  ];
+  for (const [status, code, message] of cases) {
+    const { api, calls } = apiWith(() => {
+      throw new Error(`transport failure for /api/zhuma-exec/inbox: HTTP ${status}`);
+    });
+    await assert.rejects(
+      () => api.inbox(),
+      (error) => error.code === code && error.message === message,
+    );
+    assert.equal(calls.length, 1);
+  }
+  const other = apiWith(() => {
+    throw new Error('transport failure for /api/zhuma-exec/inbox: HTTP 500');
+  });
+  await assert.rejects(() => other.api.inbox(), /HTTP 500/);
+});

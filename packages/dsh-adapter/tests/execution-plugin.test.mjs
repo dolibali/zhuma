@@ -180,14 +180,18 @@ test('the execution channel is an exact fetch route and hides storage failures',
     executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
   );
   assert.equal(executionEndpoints.includes('bind-owner'), false);
+  assert.equal(
+    host.routes.every((route) => route.requestBody === 'streaming'),
+    true,
+  );
   const anonymous = await host.call('inbox', {}, { cookie: undefined });
-  assert.equal(anonymous.status, 200);
-  assert.equal(anonymous.body.result.error.code, 'unauthenticated');
-  const malformed = await host.call('inbox', {}, { raw: '{' });
+  assert.equal(anonymous.status, 401);
+  assert.equal(anonymous.body.error.code, 'unauthenticated');
+  const malformed = await host.call('inbox', {}, { raw: '{', cookie: host.cookie });
   assert.equal(malformed.status, 400);
-  const wrongMethod = await host.call('inbox', {}, { method: 'zhuma/inbox' });
+  const wrongMethod = await host.call('inbox', {}, { method: 'zhuma/inbox', cookie: host.cookie });
   assert.equal(wrongMethod.status, 400);
-  const text = await host.call('inbox', {}, { type: 'text/plain', raw: '{}' });
+  const text = await host.call('inbox', {}, { type: 'text/plain', raw: '{}', cookie: host.cookie });
   assert.equal(text.status, 415);
 
   const started = await host.call(
@@ -630,4 +634,139 @@ test('http counts a corrupt record and does not leak its id', async () => {
     assert.equal(JSON.stringify(inbox.body).includes(secret), false, secret);
   }
   await upstreamBlocked(opened);
+});
+
+function postStream(host, endpoint, { cookie, stream, headers = {}, signal } = {}) {
+  const route = host.routes.find((item) => item.path === `/api/zhuma-exec/${endpoint}`);
+  return route.fetch(
+    new Request(`http://127.0.0.1:3080/api/zhuma-exec/${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookie === undefined ? {} : { cookie }),
+        ...headers,
+      },
+      body: stream,
+      duplex: 'half',
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  );
+}
+
+async function primedRequest(host, endpoint, { cookie, stream, headers = {}, signal } = {}) {
+  const route = host.routes.find((item) => item.path === `/api/zhuma-exec/${endpoint}`);
+  const request = new Request(`http://127.0.0.1:3080/api/zhuma-exec/${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(cookie === undefined ? {} : { cookie }),
+      ...headers,
+    },
+    body: stream,
+    duplex: 'half',
+    ...(signal === undefined ? {} : { signal }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return { request, fetch: () => route.fetch(request) };
+}
+
+test('an invalid session does not read the execution body', async () => {
+  const host = await mount({ workbench: confirmed().state });
+  let pulls = 0;
+  const stream = new ReadableStream({
+    pull() {
+      pulls += 1;
+      if (pulls > 1) throw new Error('handler read the body');
+    },
+  });
+  const opened = await primedRequest(host, 'inbox', {
+    cookie: 'zhuma-member=forged',
+    stream,
+  });
+  const primed = pulls;
+  const response = await opened.fetch();
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { ok: false, error: { code: 'unauthenticated' } });
+  assert.equal(pulls, primed);
+  assert.ok(primed >= 1);
+});
+
+test('a declared execution body over 64KiB is refused before it is read', async () => {
+  const host = await mount({ workbench: confirmed().state });
+  let pulls = 0;
+  const stream = new ReadableStream({
+    pull() {
+      pulls += 1;
+      if (pulls > 1) throw new Error('handler read the body');
+    },
+  });
+  const opened = await primedRequest(host, 'inbox', {
+    cookie: host.cookie,
+    stream,
+    headers: { 'content-length': String(64 * 1024 + 1) },
+  });
+  const primed = pulls;
+  const response = await opened.fetch();
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), { ok: false, error: { code: 'body-too-large' } });
+  assert.equal(pulls, primed);
+});
+
+test('an execution body that grows past 64KiB is refused without waiting for the rest', async () => {
+  const host = await mount({ workbench: confirmed().state });
+  host.arm('should-not-run');
+  let pulls = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      if (pulls > 1) return new Promise(() => {});
+      controller.enqueue(new Uint8Array(64 * 1024 + 1));
+    },
+  });
+  const started = Date.now();
+  const response = await postStream(host, 'inbox', { cookie: host.cookie, stream });
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), { ok: false, error: { code: 'body-too-large' } });
+  assert.ok(Date.now() - started < 1000);
+});
+
+test(
+  'an unfinished execution body stops at 5 seconds and does not run',
+  { timeout: 15_000 },
+  async () => {
+    const { state } = confirmed();
+    const host = await mount({ workbench: state });
+    host.arm('should-not-run');
+    const stream = new ReadableStream({
+      pull() {
+        return new Promise(() => {});
+      },
+    });
+    const started = Date.now();
+    const response = await postStream(host, 'inbox', { cookie: host.cookie, stream });
+    const elapsed = Date.now() - started;
+    assert.equal(response.status, 408);
+    assert.deepEqual(await response.json(), { ok: false, error: { code: 'body-timeout' } });
+    assert.ok(elapsed >= 4_500 && elapsed < 8_000, String(elapsed));
+  },
+);
+
+test('cancelling an execution body does not run the service', async () => {
+  const host = await mount({ workbench: confirmed().state });
+  host.arm('should-not-run');
+  const controller = new AbortController();
+  const stream = new ReadableStream({
+    pull() {
+      return new Promise(() => {});
+    },
+  });
+  const pending = postStream(host, 'inbox', {
+    cookie: host.cookie,
+    stream,
+    signal: controller.signal,
+  });
+  setTimeout(() => controller.abort(), 20);
+  const response = await pending;
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).result.error.code, 'cancelled');
 });
