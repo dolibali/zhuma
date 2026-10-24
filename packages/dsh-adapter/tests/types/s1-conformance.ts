@@ -1,5 +1,4 @@
 import type { Context } from '@deepseek-ai/cordis';
-import type { Workbench } from '@zhuma/agent-core';
 import {
   apply,
   executionEndpoints,
@@ -30,6 +29,7 @@ import type {
   ApplyExecution,
   BallotRequest,
   ChannelInboxValue,
+  CreateMemberResolver,
   ExecutionApplyOptions,
   ExecutionCaller,
   ExecutionChannelFailure,
@@ -45,12 +45,12 @@ import type {
   MemberRequest,
   MemberResolution,
   MemberResolver,
-  ProjectSpaceDirectory,
   ReportRequest,
   ReportValue,
   SettleRequest,
   ReconcileValue,
   S1ExecutionOptions,
+  S1Startup,
   StartPlanRequest,
   StartPlanValue,
   SubmitRequest,
@@ -72,25 +72,51 @@ export const applyMatches = apply satisfies ApplyExecution;
 export const endpointsMatch = executionEndpoints satisfies ExecutionEndpoints;
 export const injectMatches = executionInject satisfies ExecutionInject;
 
+type LiveApplyOptions = Parameters<typeof apply>[1];
+type HostApply = (ctx: Context, options: S1ExecutionOptions) => Promise<void>;
+type StartupOptions = Parameters<S1Startup['applyExecution']>[1];
+
 declare const hostOptions: S1ExecutionOptions;
+declare const pluginOptions: ExecutionPluginConfig;
 export const hostOptionsFitPlugin = hostOptions satisfies ExecutionPluginConfig;
-export const applyAcceptsHostOptions = apply satisfies (
-  ctx: Context,
-  options: S1ExecutionOptions,
-) => Promise<void>;
+export const pluginOptionsFitHost = pluginOptions satisfies S1ExecutionOptions;
+
+declare const hostApply: HostApply;
+export const applyAcceptsHostOptions = apply satisfies HostApply;
+export const hostApplyMatchesLive = hostApply satisfies typeof apply;
 
 export function passExecutionOptions(
   ctx: Context,
-  resolver: S1ExecutionOptions['memberResolver'],
-  readWorkbench: () => Workbench,
-  projectSpaces: ProjectSpaceDirectory,
+  readWorkbench: S1ExecutionOptions['readWorkbench'],
+  projectSpaces?: S1ExecutionOptions['projectSpaces'],
 ): Promise<void> {
-  const executionOptions = { memberResolver: resolver, readWorkbench, projectSpaces };
-  return apply(ctx, executionOptions);
+  return apply(
+    ctx,
+    projectSpaces === undefined ? { readWorkbench } : { readWorkbench, projectSpaces },
+  );
 }
 
 export type ApplyBoth = Assert<Both<typeof apply, ApplyExecution>>;
 export type OptionsBoth = Assert<Both<ExecutionPluginConfig, ExecutionApplyOptions>>;
+export type HostOptionsBoth = Assert<Both<S1ExecutionOptions, ExecutionPluginConfig>>;
+export type LiveOptionsBoth = Assert<Both<S1ExecutionOptions, LiveApplyOptions>>;
+export type ApplyHostBoth = Assert<Both<typeof apply, HostApply>>;
+export type StartupOptionsBoth = Assert<Both<StartupOptions, LiveApplyOptions>>;
+export type OptionKeysBoth = Assert<Both<keyof S1ExecutionOptions, keyof ExecutionPluginConfig>>;
+export type LiveOptionKeysBoth = Assert<Both<keyof S1ExecutionOptions, keyof LiveApplyOptions>>;
+export type StartupOptionKeysBoth = Assert<Both<keyof StartupOptions, keyof LiveApplyOptions>>;
+export type ApplyOptionsExcludeMemberResolver = Assert<
+  'memberResolver' extends keyof S1ExecutionOptions ? false : true
+>;
+export type PluginOptionsExcludeMemberResolver = Assert<
+  'memberResolver' extends keyof ExecutionPluginConfig ? false : true
+>;
+export type LiveOptionsExcludeMemberResolver = Assert<
+  'memberResolver' extends keyof LiveApplyOptions ? false : true
+>;
+export type StartupKeepsMemberResolver = Assert<
+  Both<S1Startup['memberResolver'], CreateMemberResolver>
+>;
 export type InjectBoth = Assert<Both<typeof executionInject, ExecutionInject>>;
 export type EndpointsBoth = Assert<Both<typeof executionEndpoints, ExecutionEndpoints>>;
 export type CallerBoth = Assert<Both<ServiceCaller, ExecutionCaller>>;
