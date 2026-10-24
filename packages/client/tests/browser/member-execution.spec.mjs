@@ -5,6 +5,7 @@ const member = (accountId) => ({
   accountId,
   principal: { kind: 'zhuma-member', memberId: accountId },
   peerId: `fixture-${accountId}`,
+  spaces: [],
 });
 const json = (route, status, body) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });

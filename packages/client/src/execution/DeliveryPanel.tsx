@@ -1,6 +1,7 @@
 import { useId, useState } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
+import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type { ExecutionApi, ExecutionNodeWire } from './ExecutionApi.js';
 import { nodeIdentity, useExecutionCommand, useFormKey } from './interaction.js';
 
@@ -18,6 +19,7 @@ function DeliveryForm({ api, node, onSubmitted }: Props) {
   const titleId = useId();
   const [text, setText] = useState('');
   const [link, setLink] = useState('');
+  useUnsavedChanges(!!text || !!link);
   const command = useExecutionCommand();
   function submit() {
     const links = link

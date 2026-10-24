@@ -7,6 +7,7 @@ import {
   MemberSessionBoundary,
   MemberSessionView,
 } from '../dist/identity/MemberSessionBoundary.js';
+import { MemberSpaceBoundary } from '../dist/identity/MemberSpaceBoundary.js';
 
 function markup(state) {
   return renderToStaticMarkup(
@@ -17,6 +18,28 @@ function markup(state) {
     ),
   );
 }
+
+test('space static component contract: authorization is rechecked before any business child mounts', () => {
+  const html = renderToStaticMarkup(
+    createElement(MemberSpaceBoundary, {
+      api: {
+        session() {
+          assert.fail('render must not issue requests');
+        },
+      },
+      session: {
+        accountId: 'member-a',
+        principal: { kind: 'zhuma-member', memberId: 'member-a' },
+        peerId: 'request-peer',
+        spaces: [{ id: 'team-a', kind: 'team', name: 'Product' }],
+      },
+      onUnauthenticated() {},
+      children: () => 'protected-space-content',
+    }),
+  );
+  assert.equal(html.includes('protected-space-content'), false);
+  assert.match(html, /正在确认空间访问权限/);
+});
 
 test('identity static component contract: labelled native login form supports password managers and errors', () => {
   const html = markup({ status: 'signed-out', error: new IdentityApiError('invalid-login') });
@@ -46,6 +69,7 @@ test('identity static component contract: protected content appears only for the
       accountId: '<member-a>',
       principal: { kind: 'zhuma-member', memberId: '<member-a>' },
       peerId: 'peer-a',
+      spaces: [],
     },
   });
   assert.match(html, /当前账号/);
