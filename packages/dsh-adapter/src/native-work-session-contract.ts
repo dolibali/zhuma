@@ -52,6 +52,15 @@ export interface NativeSessionBinding {
   readonly nativeAgentId: string;
   readonly selection: NativeSessionSelection;
   readonly receipts: readonly NativeMessageReceipt[];
+  /** Aggregate reservation counters only; tool content/provenance stays in DSH. */
+  readonly inputReadBudget?:
+    { readonly attempts: number; readonly chargedBytes: number } | undefined;
+}
+
+/** Process-local capability, never a model argument or a persistent read ledger. */
+export interface NativeInputReadReservation {
+  readonly id: string;
+  readonly maximumBytes: number;
 }
 
 export interface NativeWorkStorage {
@@ -123,6 +132,10 @@ export class NativeWorkError extends Error {
       | 'capacity'
       | 'delivery-unknown'
       | 'read-timeout'
+      | 'input-read-busy'
+      | 'input-read-budget-exceeded'
+      | 'input-context-unavailable'
+      | 'input-required-unavailable'
       | 'unavailable'
       | 'not-pending'
       | 'cancelled',
