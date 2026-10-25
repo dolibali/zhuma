@@ -16,6 +16,11 @@ export function InboxGroupsProbe() {
       opened: [],
       reloads: 0,
       failInbox: false,
+      holdInbox: false,
+      complete(index) {
+        const call = value.calls[index];
+        call.resolve(call.response);
+      },
       update(next) {
         value.data = next;
         render((n) => n + 1);
@@ -27,14 +32,19 @@ export function InboxGroupsProbe() {
     if (session) value.data.nodes[0] = { ...value.data.nodes[0], goal: '新会话待交付工作' };
     value.api = createExecutionApi({
       async call(channel, endpoint, payload, signal) {
-        value.calls.push({ channel, endpoint, payload, signal });
-        if (endpoint.endsWith('/inbox'))
-          return value.failInbox
+        const call = { channel, endpoint, payload, signal };
+        value.calls.push(call);
+        if (endpoint.endsWith('/inbox')) {
+          const response = value.failInbox
             ? {
                 ok: false,
                 error: { code: 'unavailable', message: '待办暂时无法读取。', details: {} },
               }
             : { ok: true, value: structuredClone(value.data) };
+          if (value.holdInbox)
+            return new Promise((resolve) => Object.assign(call, { response, resolve }));
+          return response;
+        }
         if (endpoint.endsWith('/draft'))
           return { ok: true, value: { version: 0, text: '', links: [], files: [] } };
         if (endpoint.endsWith('/revision')) return { ok: true, value: { view: revisionView() } };
@@ -54,7 +64,7 @@ export function InboxGroupsProbe() {
     <div className="zhuma">
       <main className="zm-page">
         <p className="zm-muted">
-          {preview ? '候选来源投影独立预览 · 未正式接线' : '当前执行入口响应重放 · 无真实权限服务'}
+          {preview ? '来源组件独立预览 · 非真实服务' : '当前执行入口响应重放 · 无真实权限服务'}
         </p>
         {preview ? (
           <InboxPanel

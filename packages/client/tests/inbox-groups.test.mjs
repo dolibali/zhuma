@@ -62,7 +62,7 @@ test('inbox SSR: only service-provided path and task owner names render, with no
   assert.ok(!missing.includes('任务负责人：mei'));
 });
 
-test('places candidate: missing fields remain unknown, extra identities never become fallback locations', () => {
+test('places projection: missing fields remain unknown, extra identities never become fallback locations', () => {
   const parsed = readInboxPlaces([
     {
       itemId: 'item-0',
@@ -85,14 +85,14 @@ test('places candidate: missing fields remain unknown, extra identities never be
 });
 
 for (const value of [null, {}, [null], [{ taskPath: 'no item identifier' }], [{ itemId: '' }]])
-  test(`places candidate rejects unattachable shape ${JSON.stringify(value)}`, () => {
+  test(`places projection rejects unattachable shape ${JSON.stringify(value)}`, () => {
     assert.throws(
       () => readInboxPlaces(value),
       (error) => error.code === 'validation',
     );
   });
 
-test('places candidate: duplicate mappings or duplicate work-item IDs are unknown instead of selecting the first', () => {
+test('places projection: duplicate mappings or duplicate work-item IDs are unknown instead of selecting the first', () => {
   const data = groupedInbox();
   const places = [
     { itemId: 'item-0', taskPath: 'ambiguous-path', ownerName: 'ambiguous-owner' },
@@ -165,7 +165,7 @@ test('inbox SSR: parallel panels use unique semantic IDs and escape authoritativ
   assert.ok(!html.includes('<script>'));
 });
 
-test('places candidate: standalone parser does not silently wire unreviewed inbox fields, counts or event routes', async () => {
+test('places approved inbox projection is consumed without adding counts or event routes', async () => {
   const calls = [];
   const api = createExecutionApi({
     async call(channel, endpoint, payload) {
@@ -174,8 +174,26 @@ test('places candidate: standalone parser does not silently wire unreviewed inbo
     },
   });
   const value = await api.inbox();
-  assert.equal('places' in value, false);
+  assert.deepEqual(value.places, readInboxPlaces(groupedInbox().places));
   assert.deepEqual(calls, [{ channel: '/api', endpoint: 'zhuma-exec/inbox', payload: {} }]);
   assert.equal('inboxCounts' in api, false);
   assert.equal('events' in api, false);
+});
+
+test('places inbox accepts old responses, copies public fields and preserves unknown display values', async () => {
+  const source = groupedInbox();
+  source.places[0].actorId = 'not-a-display-field';
+  delete source.places[1].ownerName;
+  const api = createExecutionApi({
+    async call() {
+      return { ok: true, value: source };
+    },
+  });
+  const value = await api.inbox();
+  assert.equal('actorId' in value.places[0], false);
+  assert.equal(value.places[1].ownerName, '');
+  source.places[0].taskPath = 'changed-after-read';
+  assert.notEqual(value.places[0].taskPath, source.places[0].taskPath);
+  delete source.places;
+  assert.equal('places' in (await api.inbox()), false);
 });

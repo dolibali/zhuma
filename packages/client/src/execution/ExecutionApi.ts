@@ -85,8 +85,9 @@ export interface ExecutionInboxValue {
   readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
+  readonly places?: readonly InboxPlaceWire[];
 }
-/** #85 candidate display contract. Not wired into inbox transport before its service DTO is accepted. */
+/** Public #85 projection. Empty fields remain unknown; no client-side source reconstruction. */
 export interface InboxPlaceWire {
   readonly itemId: string;
   readonly taskPath: string;
@@ -490,11 +491,13 @@ function readInbox(value: unknown): ExecutionInboxValue {
   if (value === null || typeof value !== 'object') invalid('返回的待办不正确。');
   const record = value as Record<string, unknown>;
   if (!Array.isArray(record.items) || !Array.isArray(record.nodes)) invalid('返回的待办不正确。');
+  const places = readInboxPlaces(record.places);
   return {
     actorId: text(record.actorId, '待办'),
     ...(record.spaceId === undefined ? {} : { spaceId: text(record.spaceId, '空间') }),
     items: record.items.map(readItem),
     nodes: record.nodes.map(readExecutionNode),
+    ...(places === undefined ? {} : { places }),
   };
 }
 

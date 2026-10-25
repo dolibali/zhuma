@@ -21,7 +21,10 @@ test('inbox normal entry groups loaded work items, preserves unsupported obligat
   await expect(group(page, '其他工作项').getByRole('button')).toHaveCount(0);
   await expect(page.getByText('只有节点状态的等待事项', { exact: true })).toHaveCount(0);
   await expect(page.getByText('请核对发票范围后确认交付。', { exact: true })).toBeVisible();
-  await expect(page.locator('.zm-inbox-path')).toHaveText(Array(6).fill('来源路径未提供'));
+  await expect(page.locator('.zm-inbox-path')).toHaveText(
+    Array(6).fill('订单项目 / 结算能力升级 / 客户服务 / 交付说明'),
+  );
+  await expect(row(page, '编写订单状态帮助文案')).toContainText('任务负责人：林夏');
   const endpoints = await page.evaluate(() => window.inboxGroupsProbe.calls.map((c) => c.endpoint));
   expect(endpoints.every((endpoint) => endpoint.endsWith('/inbox'))).toBe(true);
 });
@@ -56,7 +59,23 @@ test('inbox refreshing a grouped list preserves a dirty delivery and a failed re
   await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
   const input = page.getByLabel('产物正文', { exact: true });
   await input.fill('刷新后也保留的内容');
+  await page.evaluate(() => {
+    const c = window.inboxGroupsProbe;
+    c.data.places = c.data.places.map((p) => ({
+      ...p,
+      taskPath: '服务返回的新来源',
+      ownerName: '当前任务负责人',
+    }));
+  });
   await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect(row(page, '编写订单状态帮助文案')).toContainText('服务返回的新来源');
+  await expect(row(page, '编写订单状态帮助文案')).toContainText('任务负责人：当前任务负责人');
+  await expect(input).toHaveValue('刷新后也保留的内容');
+  await page.evaluate(() => {
+    delete window.inboxGroupsProbe.data.places;
+  });
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect(page.locator('.zm-inbox-path')).toHaveText(Array(6).fill('来源路径未提供'));
   await expect(input).toHaveValue('刷新后也保留的内容');
   await page.evaluate(() => {
     window.inboxGroupsProbe.failInbox = true;
@@ -83,6 +102,40 @@ test('places independent preview displays only supplied task path/owner, without
   await expect(work).toContainText('来源路径未提供');
   await expect(work).toContainText('服务给定负责人');
   await expect(row(page, '确认订单状态接口')).toContainText('任务负责人：未提供');
+});
+
+test('places from a late inbox response cannot enter a replacement API generation', async ({
+  page,
+}) => {
+  await open(page);
+  await page.evaluate(() => {
+    const c = window.inboxGroupsProbe;
+    c.holdInbox = true;
+    c.data.places = c.data.places.map((p) => ({
+      ...p,
+      taskPath: '旧请求来源',
+      ownerName: '旧请求负责人',
+    }));
+  });
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect(
+    page
+      .locator('button')
+      .filter({ has: page.locator('.zm-button-label').filter({ hasText: /^刷新$/ }) }),
+  ).toBeDisabled();
+  await page.evaluate(() => {
+    const c = window.inboxGroupsProbe;
+    window.oldInboxGroups = c;
+    c.heldIndex = c.calls.length - 1;
+    c.replaceSession();
+  });
+  await expect(row(page, '新会话待交付工作')).toBeVisible();
+  await page.evaluate(() => window.oldInboxGroups.complete(window.oldInboxGroups.heldIndex));
+  await expect(page.locator('.zm-inbox-path')).toHaveText(
+    Array(6).fill('订单项目 / 结算能力升级 / 客户服务 / 交付说明'),
+  );
+  await expect(page.getByText('旧请求来源', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('任务负责人：旧请求负责人', { exact: true })).toHaveCount(0);
 });
 
 test('places duplicate mappings or multiple node revisions keep source unknown and prevent ambiguous operations', async ({
