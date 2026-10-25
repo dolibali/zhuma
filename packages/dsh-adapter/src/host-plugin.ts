@@ -14,6 +14,7 @@ import {
   type SpaceDirectoryImport,
 } from './space-directory.js';
 export { spaceDirectoryFor } from './space-directory.js';
+export { workbenchDomainSpec } from './workbench-plugin.js';
 
 const bootstrapRecordKey = z.string().refine((key) => {
   try {

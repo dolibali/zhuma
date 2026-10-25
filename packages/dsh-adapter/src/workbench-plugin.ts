@@ -33,12 +33,18 @@ const AuditSchema = z.object({
   status: z.enum(['started', 'completed', 'failed']),
   proposal: PlanProposalSchema.optional(),
 });
-const domainSpec = {
+/**
+ * The workbench domain spec, exported so the acceptance fixture can seed a
+ * confirmed plan before the Host mounts. Seeding is a Host-level preparation
+ * act, recorded as such; it never impersonates member creation.
+ */
+export const workbenchDomainSpec = {
   name: 'zhuma_workbench',
   version: 1,
   global: { schema: WorkbenchSchema, initial: emptyWorkbench() },
   tables: { planning: { valueSchema: AuditSchema } },
 };
+const domainSpec = workbenchDomainSpec;
 const packageDomainSpec = {
   name: 'zhuma_asset_packages',
   version: 1,

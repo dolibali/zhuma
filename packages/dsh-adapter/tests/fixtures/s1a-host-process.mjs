@@ -11,7 +11,7 @@ import * as Connection from '@deepseek-ai/dsh-client-connection';
 import RemoteAccess from '@deepseek-ai/dsh-api-remote-access';
 import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 
 let ctx, host, hostPlugin, home, pendingIdentity, releaseIdentity;
@@ -74,6 +74,35 @@ async function boot(options) {
       return originalModify(key, mutate);
     };
   }
+  // One import of the Host entry. A seeded plan is written through the domain
+  // spec that same module exports, then the module is mounted. The path is
+  // the one the caller passed; nothing renames host to workbench or substitutes
+  // another file when that path is set.
+  if (options.workbenchSeed !== undefined && options.modulePath === undefined) {
+    throw Error('Host module path is required to seed the workbench');
+  }
+  const modulePath =
+    options.modulePath ?? fileURLToPath(new URL('../../dist/host-plugin.js', import.meta.url));
+  hostPlugin = await import(pathToFileURL(modulePath).href);
+  const contentDigest = createHash('sha256')
+    .update(await readFile(modulePath))
+    .digest('hex');
+  notify('bound-module', { modulePath, contentDigest });
+  if (options.workbenchSeed !== undefined) {
+    const spec = hostPlugin.workbenchDomainSpec;
+    if (spec === undefined || spec === null || typeof spec !== 'object') {
+      throw Error('Host entry does not export workbenchDomainSpec');
+    }
+    const core = await import('@zhuma/agent-core');
+    const domain = await ctx.storageDomain.open(spec);
+    let state = core.emptyWorkbench();
+    for (const command of options.workbenchSeed) {
+      state = core.applyWorkbenchCommand(state, command);
+    }
+    await domain.global.set(state);
+    await domain.close();
+    notify('workbench-seeded', { domain: spec.name });
+  }
   await load(WebServer, { host: '127.0.0.1', port: 0 });
   await load(Connection);
   if (!options.skipRemoteAccess) remoteAccessFiber = await load(RemoteAccess);
@@ -86,9 +115,6 @@ async function boot(options) {
   });
   const baseURL = `http://127.0.0.1:${ctx.webServer.port}`;
   notify('listening', { baseURL, ownerURL: ctx.connection.authenticatedUrl(baseURL) });
-  hostPlugin = await import(
-    options.modulePath ? pathToFileURL(options.modulePath).href : '../../dist/host-plugin.js'
-  );
   host = ctx.plugin(hostPlugin, options.config);
   forks.push(host);
   await host;
