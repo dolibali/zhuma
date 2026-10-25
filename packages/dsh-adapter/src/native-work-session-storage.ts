@@ -3,50 +3,10 @@ import type {} from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { NativeWorkSessionService } from './native-work-session.js';
 import { DshNativeWorkRuntime, type NativeDshOptions } from './native-work-session-dsh.js';
-import type { NativeSessionBinding, NativeWorkStorage } from './native-work-session-contract.js';
+import type { NativeWorkSessionRecord, NativeWorkStorage } from './native-work-session-contract.js';
 
-const id = z.string().min(1).max(200);
-const positive = z.number().int().positive().refine(Number.isSafeInteger);
-export const nativeWorkSessionBindingSchema = z.strictObject({
-  schemaVersion: z.literal(1),
-  scope: z.strictObject({
-    actorId: id,
-    spaceId: id,
-    taskId: id,
-    planId: id,
-    revision: positive,
-    nodeId: id,
-    runId: id,
-    generation: positive,
-    segmentId: id,
-  }),
-  nativeSessionId: id,
-  nativeAgentId: id,
-  selection: z.strictObject({
-    provider: id,
-    model: id,
-    reasoningEffort: id.optional(),
-    maxTokens: positive.max(65_536),
-    configurationId: id,
-  }),
-  receipts: z
-    .array(
-      z.strictObject({
-        requestId: id,
-        messageId: id,
-        fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-        mode: z.enum(['followup', 'steer', 'queue']),
-        status: z.enum(['reserved', 'received', 'claimed', 'discarded', 'unknown']),
-      }),
-    )
-    .max(256),
-  inputReadBudget: z
-    .strictObject({
-      attempts: z.number().int().min(0).max(16),
-      chargedBytes: z.number().int().min(0).max(65_536),
-    })
-    .optional(),
-});
+import { nativeWorkSessionRecordSchema } from './native-work-session-record.js';
+export { nativeWorkSessionBindingSchema } from './native-work-session-record.js';
 
 export const nativeWorkSessionDomainSpec = {
   name: 'zhuma_native_work_sessions',
@@ -55,7 +15,7 @@ export const nativeWorkSessionDomainSpec = {
     schema: z.strictObject({ schemaVersion: z.literal(1) }),
     initial: { schemaVersion: 1 as const },
   },
-  tables: { bindings: { valueSchema: nativeWorkSessionBindingSchema } },
+  tables: { bindings: { valueSchema: nativeWorkSessionRecordSchema } },
 };
 
 export const nativeWorkSessionInject = [
@@ -77,8 +37,8 @@ export async function openNativeWorkSessions(ctx: Context, options: NativeDshOpt
       const value = bindings.get(key);
       return value === undefined ? undefined : structuredClone(value);
     },
-    write: async (key, value: NativeSessionBinding) => {
-      await bindings.put(key, nativeWorkSessionBindingSchema.parse(structuredClone(value)));
+    write: async (key, value: NativeWorkSessionRecord) => {
+      await bindings.put(key, nativeWorkSessionRecordSchema.parse(structuredClone(value)));
     },
   };
   const service = new NativeWorkSessionService(storage, runtime);

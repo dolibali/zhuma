@@ -57,6 +57,54 @@ export interface NativeSessionBinding {
     { readonly attempts: number; readonly chargedBytes: number } | undefined;
 }
 
+/** One atomic mapping row; prior bindings are metadata, never transcript copies. */
+export interface NativeSessionLineage {
+  readonly schemaVersion: 2;
+  /** Total segments, including current. Matches prior.length + 1. */
+  readonly version: number;
+  readonly current: NativeSessionBinding;
+  readonly prior: readonly {
+    readonly binding: NativeSessionBinding;
+    readonly migration: {
+      readonly requestId: string;
+      readonly inputFingerprint: string;
+      readonly fingerprint: string;
+    };
+  }[];
+}
+export type NativeWorkSessionRecord = NativeSessionBinding | NativeSessionLineage;
+
+/** Issued from D's durable old/new Run pair, not derived from a drive/read grant.
+ * assertCurrent rechecks old terminal/resource-settled and exact new current
+ * scope/selection/input fingerprint plus live permission. Never a JSON DTO.
+ */
+export interface NativeRunMigrationGrant {
+  readonly requestId: string;
+  readonly inputFingerprint: string;
+  readonly previousScope: NativeWorkScope;
+  readonly scope: NativeWorkScope;
+  readonly selection: NativeSessionSelection;
+  readonly signal: AbortSignal;
+  assertCurrent(phase: 'prepare' | 'migrate'): void;
+}
+/** Read-only, process-local evidence of actual native cleanup, not Run authority. */
+export interface NativeMigrationDrain {
+  readonly signal: AbortSignal;
+  readonly basis: 'flushed-and-closed' | 'absent-unadmitted';
+  assertCurrent(): void;
+}
+export type NativeBindingReference = Pick<
+  NativeSessionBinding,
+  'scope' | 'nativeSessionId' | 'nativeAgentId' | 'selection'
+>;
+export type NativeRunMigrationResult =
+  | { readonly status: 'pending' }
+  | {
+      readonly status: 'migrated' | 'replayed';
+      readonly previous: NativeBindingReference;
+      readonly next: NativeBindingReference;
+    };
+
 /** Process-local capability, never a model argument or a persistent read ledger. */
 export interface NativeInputReadReservation {
   readonly id: string;
@@ -64,8 +112,8 @@ export interface NativeInputReadReservation {
 }
 
 export interface NativeWorkStorage {
-  read(key: string): NativeSessionBinding | undefined;
-  write(key: string, binding: NativeSessionBinding): Promise<void>;
+  read(key: string): NativeWorkSessionRecord | undefined;
+  write(key: string, binding: NativeWorkSessionRecord): Promise<void>;
 }
 
 export interface NativeSessionMessage {
@@ -116,9 +164,27 @@ export interface NativeWorkRuntime {
     after: number,
     limit: number,
     signal: AbortSignal,
+    allowAbsent?: boolean,
   ): Promise<readonly NativeHistoryEvent[]>;
-  follow(sessionId: string, after: number, signal: AbortSignal): AsyncIterable<NativeWorkFrame>;
+  follow(
+    sessionId: string,
+    after: number,
+    signal: AbortSignal,
+    allowAbsent?: boolean,
+  ): AsyncIterable<NativeWorkFrame>;
   disconnect(sessionId: string): Promise<void>;
+  /** Independent cleanup authority is checked by the service, not an expired old drive grant.
+   * A cancelled caller wait must not abandon native disposal/flush/source drain.
+   */
+  retire(
+    sessionId: string,
+    signal: AbortSignal,
+    allowAbsent?: boolean,
+  ): Promise<NativeMigrationDrain>;
+  /** Read-only: migration-not-ready is an uncertified cold/pending epoch;
+   * known ownership, identity or cleanup failures remain unavailable.
+   */
+  migrationDrain(sessionId: string): NativeMigrationDrain;
 }
 
 export class NativeWorkError extends Error {
@@ -136,6 +202,10 @@ export class NativeWorkError extends Error {
       | 'input-read-budget-exceeded'
       | 'input-context-unavailable'
       | 'input-required-unavailable'
+      | 'binding-state-invalid'
+      | 'migration-conflict'
+      | 'migration-not-ready'
+      | 'migration-unknown'
       | 'unavailable'
       | 'not-pending'
       | 'cancelled',
