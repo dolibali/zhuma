@@ -33,6 +33,17 @@ A 只读取私有记录地址并管理子作用域；不复制 B 的事实模型
 目录子作用域重新挂载会发布新实例，旧实例的清理不会清掉新句柄。
 子作用域关闭使用 B 现有的“先注销、再关闭”机制，不增加第二套目录或授权库。
 
+持续执行授权复用 [成员 lease 接缝](execution-member-lease.md)。Host 将私有
+`currentDirectoryBinding` getter 通过 `applyIdentity` 的第三参交给实际身份安装源。
+每次目录发布持有稳定 binding 与独立 token；替换、撤回及 Host `beforeClose` 在首个
+await 前撤销 publication，旧 disposer 不能撤销重新发布的同一 handle。
+binding 同时观察真实目录的原始 signal；直接关闭目录也立即失效，不等待存储 drain。
+异步项目查询返回后复核同一 binding，不能用同对象的后续发布接纳旧查询。
+
+执行侧调用正式 Host 入口导出的两参数 `openExecutionMemberLease(ctx, originalRequest)`，
+与已安装身份保持同一个模块图。不能另从源码或第二份 bundle 导入签发函数，否则私有
+安装源不相同。此装配不新增 HTTP 签发入口、授权快照或轮询，不接入节点／Run 调度。
+
 旧工作台 owner 路由仍遵守原有早期门禁。服务已有的恢复逻辑照常运行；
 装配或打开界面不会派发新计划，也不调用模型。
 
