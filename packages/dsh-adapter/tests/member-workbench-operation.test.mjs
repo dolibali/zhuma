@@ -25,6 +25,7 @@ const intentFor = (input) => ({
   commandType: input.command.type,
   expectedRevision: input.expectedRevision,
   fingerprint: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
+  contextFingerprint: 'a'.repeat(64),
 });
 
 test('member intent contract: missing operation storage is read-only, denied/bad/over-budget requests persist no intent', async () => {
@@ -228,4 +229,28 @@ test('member intent contract: a different create request cannot take over a rese
   assert.equal(f.writes, 0);
   await f.service().command(input, signal());
   assert.equal(f.writes, 1);
+});
+
+test('member intent compatibility contract: old unpinned records remain readable but cannot adopt current definitions on retry', async () => {
+  for (const phase of ['pending', 'completed']) {
+    const f = setup();
+    const input = request(0, projectCommand());
+    if (phase === 'pending') {
+      f.failWrites(true);
+      await assert.rejects(f.service().command(input, signal()));
+      f.failWrites(false);
+    } else await f.service().command(input, signal());
+    const [key, original] = [...f.intents.entries()][0];
+    const { contextFingerprint: _pin, ...legacy } = original;
+    f.intents.set(key, legacy);
+    f.reopen();
+    assert.equal(
+      (await f.service().snapshot({ spaceId: 'north' })).state.revision,
+      phase === 'pending' ? 0 : 1,
+    );
+    const writes = f.writes;
+    await assert.rejects(f.service().command(input, signal()), rejected('operation-unresolved'));
+    assert.equal(f.writes, writes);
+    assert.deepEqual(f.intents.get(key), legacy);
+  }
 });

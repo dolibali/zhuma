@@ -160,3 +160,78 @@ test(
     }
   },
 );
+
+for (const kind of ['expert', 'skill', 'mcp']) {
+  test(
+    `member catalog pin real JSON/new-process recovery: pending ${kind} definition stays fixed through replacement/revocation/restoration`,
+    { timeout: 45000 },
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), 'zhuma-member-catalog-recovery-'));
+      try {
+        const { catalogTask, catalogFixture } =
+          await import('./member-workbench-catalog-fixture.mjs');
+        await boot({
+          home,
+          catalogMode: 'old',
+          commands: [
+            request(0, projectCommand()),
+            request(1, { type: 'create-task', task: catalogTask() }),
+          ],
+        });
+        const input = request(2, { type: 'confirm-task', taskId: 'task-one' });
+        const interrupted = await boot({
+          home,
+          catalogMode: 'old',
+          faultStage: 'after-intent',
+          crash: true,
+          commands: [input],
+        });
+        assert.equal(interrupted.revision, 2);
+        assert.equal(interrupted.planCount, 0);
+        assert.equal(interrupted.responses[0].ok, false);
+        const pending = (await rows(home)).at(-1);
+        assert.equal(pending.state, 'pending');
+        assert.match(pending.contextFingerprint, /^[a-f0-9]{64}$/);
+        for (const change of ['content', 'revoke', ...(kind === 'mcp' ? [] : ['version'])]) {
+          const replaced = await boot({
+            home,
+            catalogMode: `${kind}:${change}`,
+            commands: [input],
+          });
+          assert.equal(replaced.responses[0].error.code, 'context-changed');
+          assert.equal(replaced.before, 2);
+          assert.equal(replaced.revision, 2);
+          assert.equal(replaced.taskCount, 1);
+          assert.equal(replaced.planCount, 0);
+          assert.deepEqual((await rows(home)).at(-1), pending);
+        }
+        const recovered = await boot({ home, catalogMode: 'old', commands: [input, input] });
+        assert.equal(
+          recovered.responses.every((value) => value.ok),
+          true,
+        );
+        assert.equal(recovered.revision, 3);
+        assert.equal(recovered.taskCount, 1);
+        assert.equal(recovered.planCount, 1);
+        const completed = (await rows(home)).at(-1);
+        assert.equal(completed.contextFingerprint, pending.contextFingerprint);
+        assert.equal(completed.state, 'completed');
+        assert.doesNotMatch(
+          JSON.stringify(completed),
+          /OLD_AUTHORIZED|NEW_AUTHORIZED|instructions|content/,
+        );
+        const canonical = JSON.parse(
+          await readFile(join(home, 'storages', 'zhuma_workbench.json'), 'utf8'),
+        ).global;
+        const original = catalogFixture();
+        assert.deepEqual(
+          canonical.appliedPlans[0].participants.find((p) => p.kind === 'expert'),
+          original.experts[0],
+        );
+        assert.deepEqual(canonical.appliedPlans[0].assets, original.assets);
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+}

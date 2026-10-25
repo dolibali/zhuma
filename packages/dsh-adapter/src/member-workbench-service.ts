@@ -310,6 +310,26 @@ export class MemberWorkbenchService {
     const initial = await this.scope(request.spaceId);
     const journal = this.options.operations;
     if (!journal) fail('unavailable', '成员操作恢复存储尚未接入。');
+    // apply merges this authorized catalog and freezes its actual definitions, not only their IDs.
+    const definitionFingerprint = (scope: Scope) =>
+      digest([
+        [...scope.participants].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+        [...scope.catalog.assets].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+      ]);
+    const contextFingerprint = definitionFingerprint(initial);
+    const pinnedScope = async () => {
+      let scope: Scope;
+      try {
+        scope = await this.scope(request.spaceId, initial.actorId);
+      } catch (error) {
+        if (error instanceof WorkbenchError && error.code === 'resource-unavailable')
+          fail('context-changed', '授权定义已变化，请刷新后核对原操作。');
+        throw error;
+      }
+      if (definitionFingerprint(scope) !== contextFingerprint)
+        fail('context-changed', '授权定义已变化，请刷新后核对原操作。');
+      return scope;
+    };
     const command = request.command;
     const intent: MemberWorkbenchIntent = {
       actorId: initial.actorId,
@@ -324,9 +344,12 @@ export class MemberWorkbenchService {
       commandType: command.type,
       expectedRevision: request.expectedRevision,
       fingerprint: digest([initial.actorId, request]),
+      contextFingerprint,
     };
+    // Compare an interrupted operation's durable pin before considering the current catalog.
+    journal.inspect(intent);
     const authorize = async () => {
-      const scope = await this.scope(request.spaceId, initial.actorId);
+      const scope = await pinnedScope();
       const state = this.workbench.snapshot();
       const command = request.command;
       if (command.type === 'create-project' || command.type === 'update-project') {
@@ -349,7 +372,7 @@ export class MemberWorkbenchService {
           );
         } else if (existing) this.validateTask(existing, state, scope);
       }
-      const fresh = await this.scope(request.spaceId, initial.actorId);
+      const fresh = await pinnedScope();
       if (command.type === 'create-project' || command.type === 'update-project')
         this.validateProject(command.project, fresh);
       else {
@@ -369,12 +392,19 @@ export class MemberWorkbenchService {
       signal,
       authorize,
       async (state) => {
-        const scope = await this.scope(request.spaceId, initial.actorId);
-        return this.apply(state, scope, request.command, signal, async () => {
-          signal.throwIfAborted();
-          await authorize();
-          await journal.begin(intent);
-        });
+        const scope = await pinnedScope();
+        return this.apply(
+          state,
+          scope,
+          request.command,
+          signal,
+          async () => {
+            signal.throwIfAborted();
+            await authorize();
+            await journal.begin(intent);
+          },
+          authorize,
+        );
       },
       { journal, intent },
     );
@@ -388,6 +418,7 @@ export class MemberWorkbenchService {
     command: MemberWorkbenchCommand['command'],
     signal: AbortSignal,
     begin: () => Promise<void>,
+    reauthorize: () => Promise<void>,
   ): Promise<Workbench> {
     if (command.type === 'create-project' || command.type === 'update-project') {
       const exists = state.projects.some((p) => p.id === command.project.id);
@@ -414,7 +445,7 @@ export class MemberWorkbenchService {
         const writer = this.options.writer();
         if (!writer) fail('unavailable', '项目目录尚未接入写入。');
         signal.throwIfAborted();
-        await this.scope(scope.spaceId, scope.actorId);
+        await reauthorize();
         const prior = await scope.directory.spaceForProject(command.project.id);
         if (!prior.ok && prior.reason === 'unavailable') fail('unavailable', '项目目录暂不可用。');
         if (prior.ok && prior.spaceId !== scope.spaceId) fail('conflict', '项目已有其他空间归属。');

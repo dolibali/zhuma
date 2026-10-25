@@ -1,9 +1,13 @@
 /** Isolated test worker. Each boot is a new OS process over the same DSH JSON domains. */
 import { startMemberWorkbenchHost } from './member-workbench-host.mjs';
-process.once('message', async ({ home, faultStage, commands = [], revoke, crash }) => {
+import { catalogForMode } from './member-workbench-catalog-fixture.mjs';
+process.once('message', async ({ home, faultStage, commands = [], revoke, crash, catalogMode }) => {
   let host;
   try {
-    host = await startMemberWorkbenchHost(home, { faultStage });
+    host = await startMemberWorkbenchHost(home, {
+      faultStage,
+      ...(catalogMode ? { catalog: async () => catalogForMode(catalogMode) } : {}),
+    });
     const cookie = await host.login('ann');
     if (revoke) await host.directory.revokeMembership('north', 'ann');
     const before = host.service.snapshot().revision;

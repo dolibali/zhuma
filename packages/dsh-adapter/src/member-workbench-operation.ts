@@ -8,7 +8,9 @@ const id = z
   .min(1)
   .max(100)
   .regex(/^[\w-]+$/u);
-export const MemberWorkbenchIntentSchema = z.strictObject({
+const digest = z.string().regex(/^[a-f0-9]{64}$/u);
+// Existing v1 records remain readable. An unpinned legacy operation cannot be resumed.
+const StoredIntentSchema = z.strictObject({
   actorId: id,
   spaceId: id,
   requestId: z.uuid(),
@@ -21,12 +23,16 @@ export const MemberWorkbenchIntentSchema = z.strictObject({
     'confirm-task',
   ]),
   expectedRevision: z.number().int().nonnegative(),
-  fingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+  fingerprint: digest,
+  contextFingerprint: digest.optional(),
+});
+export const MemberWorkbenchIntentSchema = StoredIntentSchema.required({
+  contextFingerprint: true,
 });
 export type MemberWorkbenchIntent = z.infer<typeof MemberWorkbenchIntentSchema>;
 export const MemberWorkbenchOperationSchema = z.discriminatedUnion('state', [
-  MemberWorkbenchIntentSchema.extend({ state: z.literal('pending') }),
-  MemberWorkbenchIntentSchema.extend({
+  StoredIntentSchema.extend({ state: z.literal('pending') }),
+  StoredIntentSchema.extend({
     state: z.literal('completed'),
     resultRevision: z.number().int().positive(),
   }),
@@ -63,12 +69,27 @@ export class MemberWorkbenchOperations {
     const intent = MemberWorkbenchIntentSchema.parse(raw);
     const previous = this.storage.get(memberWorkbenchOperationKey(intent));
     if (!previous) return undefined;
-    const { state: _state, ...fields } = MemberWorkbenchOperationSchema.parse(previous);
+    const {
+      state: _state,
+      contextFingerprint,
+      ...fields
+    } = MemberWorkbenchOperationSchema.parse(previous);
     const { resultRevision: _revision, ...original } = fields as MemberWorkbenchIntent & {
       resultRevision?: number;
     };
-    if (JSON.stringify(original) !== JSON.stringify(intent))
+    const { contextFingerprint: requestedContext, ...requested } = intent;
+    if (JSON.stringify(original) !== JSON.stringify(requested))
       throw new WorkbenchError('request-reused', '请求标识已用于另一个操作。');
+    if (!contextFingerprint)
+      throw new WorkbenchError(
+        'operation-unresolved',
+        '原操作没有固定授权定义，需要核实后再处理。',
+      );
+    if (contextFingerprint !== requestedContext)
+      throw new WorkbenchError(
+        'context-changed',
+        '授权定义已变化，请核对原操作，不能采用最新版本重试。',
+      );
     return structuredClone(previous);
   }
 

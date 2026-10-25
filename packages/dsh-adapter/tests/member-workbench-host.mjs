@@ -21,7 +21,7 @@ import { people, spaces, memberships } from './member-workbench-fixture.mjs';
 
 export const password = 'isolated-contract-password';
 const accounts = people.map((id) => ({ id, passwordHash: hashPassword(password) }));
-export async function startMemberWorkbenchHost(directory, { faultStage } = {}) {
+export async function startMemberWorkbenchHost(directory, { faultStage, catalog } = {}) {
   const ctx = new Context();
   const fibers = [];
   let domain;
@@ -97,7 +97,13 @@ export async function startMemberWorkbenchHost(directory, { faultStage } = {}) {
     );
     await load(
       { inject: ['connection'], apply: applyMemberWorkbench },
-      { workbench: service, directory: () => directoryAdapter, writer: () => trusted, operations },
+      {
+        workbench: service,
+        directory: () => directoryAdapter,
+        writer: () => trusted,
+        operations,
+        ...(catalog ? { catalog } : {}),
+      },
     );
     ctx.webServer.register({
       kind: 'exact',
