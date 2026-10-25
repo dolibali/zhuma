@@ -990,6 +990,16 @@ test(
       for (const name of ['zhuma_workbench', 'zhuma_asset_packages', 'zhuma_member_operations'])
         assert.equal(inspected.opened.filter((entry) => entry === name).length, 1);
       assert.equal(inspected.modelCalls, 0);
+      const lease = await (
+        await post(host, '/api/zhuma-test/execution-member-lease', { spaceId }, memberCookie)
+      ).json();
+      assert.equal(lease.ok, true);
+      assert.equal(lease.memberId, 'member-a');
+      assert.deepEqual(await host.act('executionLeaseStatus'), {
+        exists: true,
+        aborted: false,
+        allowed: true,
+      });
       await host.act('holdWorkbenchWrite');
       const held = rpc('command', {
         spaceId,
@@ -1001,13 +1011,23 @@ test(
         },
       });
       await host.wait('workbench-write-pending');
+      assert.deepEqual(await host.act('beginWorkbenchClose'), {
+        rawAborted: false,
+        identityActive: true,
+        leaseAborted: true,
+      });
       let disposed = false;
-      const disposing = host.act('unmountWorkbench').then(() => {
+      const disposing = host.act('finishWorkbenchClose').then(() => {
         disposed = true;
       });
-      // The real plugin disposer must wait for the held storage invocation.
+      // The original SDK close effect waits for the held storage invocation.
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(disposed, false);
+      assert.deepEqual(await host.act('executionLeaseStatus'), {
+        exists: true,
+        aborted: true,
+        allowed: false,
+      });
       const duringClose = await host.act('inspect');
       assert.equal(duringClose.domainCloseOrder.includes('zhuma_workbench'), false);
       assert.equal(duringClose.domainCloseOrder.includes('zhuma_member_operations'), false);
@@ -1021,6 +1041,7 @@ test(
       assert.ok(
         afterClose.indexOf('zhuma_workbench') > afterClose.indexOf('zhuma_member_operations'),
       );
+      await host.act('unmountWorkbench');
       await host.close();
       host = null;
       host = await start(directory, { deploymentMode: 'multi-member' }, { noModels: true });
@@ -1041,6 +1062,90 @@ test(
         confirmedPlanDiscoverable: true,
         sameDiskReopen: true,
         drainsAcceptedWrites: true,
+        memberLeaseRevokedBeforeDrain: true,
+        publicationRevokedWithIdentityAndDirectoryStillActive: true,
+      });
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'S1c actual Host: the mounted identity graph issues leases and revokes before raw directory drain',
+  { timeout: 45000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-host-member-lease-'));
+    let host;
+    try {
+      host = await start(
+        directory,
+        {
+          deploymentMode: 'multi-member',
+          identityImport: imported,
+          spaceDirectoryImport: {
+            spaces: [{ id: 'personal-a', kind: 'personal', name: 'Private test space' }],
+            memberships: [{ spaceId: 'personal-a', accountId: 'member-a' }],
+          },
+        },
+        { noModels: true },
+      );
+      await host.wait('ready');
+      const path = '/api/zhuma-test/execution-member-lease';
+      assert.deepEqual(await (await post(host, path, { spaceId: 'personal-a' })).json(), {
+        ok: false,
+      });
+      const member = await login(host);
+      const result = await (
+        await post(host, path, { spaceId: 'personal-a' }, `${host.cookie}; ${member}`)
+      ).json();
+      assert.equal(result.ok, true);
+      assert.equal(result.memberId, 'member-a');
+      assert.ok(Number.isSafeInteger(result.expiresAt) && result.expiresAt > Date.now());
+      const before = await host.act('inspect');
+      await host.act('holdDirectoryClose');
+      assert.deepEqual(await host.act('beginDirectoryClose'), {
+        rawAborted: true,
+        leaseAborted: true,
+      });
+      await host.wait('directory-close-pending');
+      assert.deepEqual(await host.act('executionLeaseStatus'), {
+        exists: true,
+        aborted: true,
+        allowed: false,
+      });
+      assert.deepEqual(
+        await (
+          await post(host, path, { spaceId: 'personal-a' }, `${host.cookie}; ${member}`)
+        ).json(),
+        { ok: false },
+      );
+      await host.act('releaseDirectoryClose');
+      const after = await host.act('inspect');
+      assert.deepEqual(after.files, before.files);
+      assert.equal(after.modelCalls, 0);
+      await host.close();
+      host = null;
+
+      // Reopen the real disk and original signed session in a new process.
+      // This issues a new lease; no old in-process lease is reused or revived.
+      host = await start(directory, { deploymentMode: 'multi-member' }, { noModels: true });
+      await host.wait('ready');
+      const reopened = await (
+        await post(host, path, { spaceId: 'personal-a' }, `${host.cookie}; ${member}`)
+      ).json();
+      assert.equal(reopened.ok, true);
+      assert.equal(reopened.memberId, 'member-a');
+      assert.equal((await host.act('inspect')).modelCalls, 0);
+      proof.cases.push({
+        name: 'execution-member-lease-source-lifecycle',
+        passed: true,
+        sameHostIdentityGraph: true,
+        rawCloseRevokesBeforeDrain: true,
+        leaseWritesNothing: true,
+        restartedSessionRevalidated: true,
+        models: 0,
       });
     } finally {
       if (host) await host.close();

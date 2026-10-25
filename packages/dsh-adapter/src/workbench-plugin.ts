@@ -211,13 +211,16 @@ export async function openWorkbench(
     });
   }
   const domain = await ctx.storageDomain.open(domainSpec);
-  ctx.effect(() => async () => {
-    try {
-      await lifecycle.beforeClose?.();
-    } finally {
-      await domain.close();
-    }
-  });
+  ctx.effect(
+    () => async () => {
+      try {
+        await lifecycle.beforeClose?.();
+      } finally {
+        await domain.close();
+      }
+    },
+    'zhuma-workbench.close',
+  );
   const packageDomain = await ctx.storageDomain.open(packageDomainSpec);
   ctx.effect(() => async () => {
     try {
