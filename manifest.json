@@ -1,0 +1,81 @@
+{
+  "purpose": "PR99 personally operated first-use release-overlay review",
+  "before": "596c2316794caad68f00d57b755efcb2705b06bc",
+  "after": "85c43bb68c57d9edb5f4db1b4fc0bc5df5b4cf52",
+  "runtime": "actual official Web/distribution Host with exact committed release overlay in an isolated private profile; synthetic definitions; no real credentials or model calls",
+  "theme": "official system preference resolved with Web light/dark media; not native OS switching",
+  "privacy": "self-generated individually inspected pixels; no user attachments/real users/credentials/private paths/internal materials",
+  "status": "Draft; narrow model settings failure awaiting correction; not accepted",
+  "items": [
+    {
+      "file": "before-model-light.png",
+      "sha256": "a0ce2bad821cf46085f603fd93c0096c692850bc5ab8a9e46295ae37527ba4e5",
+      "bytes": 72166,
+      "width": 1440,
+      "height": 900,
+      "source": "596c2316794caad68f00d57b755efcb2705b06bc",
+      "personallyViewed": true,
+      "result": "actual observed UI"
+    },
+    {
+      "file": "before-model-dark.png",
+      "sha256": "06d72cf5fcbbd74b31cdc839bdab7474f24b52d093b4e522126b6d7051ed599c",
+      "bytes": 67428,
+      "width": 1440,
+      "height": 900,
+      "source": "596c2316794caad68f00d57b755efcb2705b06bc",
+      "personallyViewed": true,
+      "result": "actual observed UI"
+    },
+    {
+      "file": "final-after-workbench-light.png",
+      "sha256": "147769217d7301522f4b53edec32c1fb992c9d70daa5b4f0adb8945b583ecf7f",
+      "bytes": 52727,
+      "width": 1440,
+      "height": 900,
+      "source": "85c43bb68c57d9edb5f4db1b4fc0bc5df5b4cf52",
+      "personallyViewed": true,
+      "result": "actual observed UI"
+    },
+    {
+      "file": "final-after-workbench-dark.png",
+      "sha256": "55e2cdd17ce7c9ae4b3424367390f88cfae54cceda03509f67d5b309d07bdc4c",
+      "bytes": 51982,
+      "width": 1440,
+      "height": 900,
+      "source": "85c43bb68c57d9edb5f4db1b4fc0bc5df5b4cf52",
+      "personallyViewed": true,
+      "result": "actual observed UI"
+    },
+    {
+      "file": "after-model-settings-zh-light.png",
+      "sha256": "c054a474bee71e0bcc2dd7d1e039404b7916c34a00c2a7f02f1c34f072d72694",
+      "bytes": 73731,
+      "width": 1440,
+      "height": 900,
+      "source": "85c43bb68c57d9edb5f4db1b4fc0bc5df5b4cf52",
+      "personallyViewed": true,
+      "result": "actual observed UI"
+    },
+    {
+      "file": "after-model-settings-zh-dark.png",
+      "sha256": "1d307e5cca0d3bba5917579b3e137c872943cba6ca81ac101ddc437a9708e55f",
+      "bytes": 70730,
+      "width": 1440,
+      "height": 900,
+      "source": "85c43bb68c57d9edb5f4db1b4fc0bc5df5b4cf52",
+      "personallyViewed": true,
+      "result": "actual observed UI"
+    },
+    {
+      "file": "after-settings-narrow.png",
+      "sha256": "1929a784f1500c17af1fbf9f60b2d0f04549801d5fe8fed6907af2ced1954087",
+      "bytes": 41749,
+      "width": 360,
+      "height": 800,
+      "source": "85c43bb68c57d9edb5f4db1b4fc0bc5df5b4cf52",
+      "personallyViewed": true,
+      "result": "rejected narrow layout"
+    }
+  ]
+}
