@@ -76,11 +76,13 @@ test('account component contract: footer switching honors the active page discar
   await choose(page, '团队 · 运营支持');
   await expect(dialog(page)).toHaveCount(0);
   const confirm = page.getByRole('dialog', { name: '切换空间？', exact: true });
+  await expect(confirm.getByRole('button', { name: '留在当前空间' })).toBeFocused();
   await confirm.getByRole('button', { name: '留在当前空间' }).click();
+  await expect(account(page)).toBeFocused();
   await expect(input).toHaveValue('侧栏切换前的产物');
   await expect(account(page)).toContainText('团队 · 产品研发');
   await choose(page, '团队 · 运营支持');
-  await confirm.getByRole('button', { name: '清空并切换' }).click();
+  await confirm.getByRole('button', { name: '放弃修改并切换' }).click();
   await expect(
     page.getByRole('article', { name: '评审导出字段脱敏方案', exact: true }),
   ).toBeVisible();

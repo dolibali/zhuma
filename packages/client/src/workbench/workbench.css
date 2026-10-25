@@ -284,14 +284,8 @@
   margin: 0;
   font-size: 22px;
 }
-.zhuma .zm-space-state p,
-.zm-space-discard p {
+.zhuma .zm-space-state p {
   margin: 0;
-}
-.zm-space-discard {
-  display: grid;
-  gap: 16px;
-  padding: 24px;
 }
 .zhuma .zm-login-card legend {
   position: absolute;
@@ -1358,10 +1352,71 @@ html[data-platform='darwin'] .zm-shell-chrome {
 .zm-dialog h2 {
   font-size: 20px;
 }
-.zm-dialog > header button {
+.zm-dialog > header .zm-dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
   border: 0;
-  font-size: 22px;
-  padding: 0 5px;
+  padding: 0;
+  color: var(--zm-muted);
+  background: transparent;
+  box-shadow: none;
+}
+.zm-dialog > header .zm-dialog-close:hover:not(:disabled) {
+  color: var(--zm-ink);
+  background: var(--zm-hover);
+}
+.zm-dialog > header .zm-dialog-close:active:not(:disabled) {
+  background: var(--zm-button-pressed);
+}
+.zm-dialog > header .zm-dialog-close:focus-visible {
+  outline: 2px solid var(--zm-focus);
+  outline-offset: 2px;
+}
+/* Short decisions use their own rhythm; editing dialogs keep their existing layout. */
+.zm-dialog.zm-dialog-confirmation {
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+.zm-dialog.zm-dialog-confirmation > header {
+  position: static;
+  padding: 20px 20px 0;
+  gap: 12px;
+  border-bottom: 0;
+}
+.zm-dialog.zm-dialog-confirmation > header h2 {
+  font-size: 18px;
+  line-height: 26px;
+}
+.zm-dialog-confirmation .zm-confirmation-body {
+  display: grid;
+  gap: 20px;
+  padding: 12px 20px 20px;
+}
+.zm-dialog-confirmation .zm-confirmation-message {
+  display: grid;
+  gap: 8px;
+}
+.zm-dialog-confirmation .zm-confirmation-message p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+.zm-dialog-confirmation .zm-confirmation-note {
+  color: var(--zm-muted);
+}
+.zm-dialog-confirmation .zm-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .zm-form-body {
   padding: 22px 26px;

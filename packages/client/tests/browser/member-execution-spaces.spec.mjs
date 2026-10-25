@@ -124,7 +124,7 @@ test('formal spaces: same-space refresh and explicit start preserve delivery inp
   await dialog.getByRole('button', { name: '留在当前空间' }).click();
   await expect(input).toHaveValue('当前团队未提交产物');
   await chooseSpace(page, '团队 · 运营支持');
-  await dialog.getByRole('button', { name: '清空并切换' }).click();
+  await dialog.getByRole('button', { name: '放弃修改并切换' }).click();
   await expect(await review(page)).toHaveValue('');
   await chooseSpace(page, '团队 · 产品研发');
   await expect(await delivery(page)).toHaveValue('');
@@ -299,7 +299,7 @@ for (const outcome of ['success', 'failure', 'reject']) {
       .click();
     const index = await held(page, 'service', 'submit');
     await chooseSpace(page, '团队 · 运营支持');
-    await page.getByRole('dialog').getByRole('button', { name: '清空并切换' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '放弃修改并切换' }).click();
     const input = await review(page);
     await input.fill('新空间的评审意见');
     await finish(page, index, outcome);

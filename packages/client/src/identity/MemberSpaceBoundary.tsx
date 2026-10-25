@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -13,7 +14,7 @@ import { SingleSelect } from '../workbench/SingleSelect.js';
 import { UnsavedChangesBoundary } from '../workbench/UnsavedChanges.js';
 import type { IdentityApi, MemberSession, MemberSpace } from './api.js';
 import { createMemberSpaceController } from './spaces.js';
-import type { MemberSpaceController } from './shell.js';
+import type { MemberSpaceController, SpaceSwitch } from './shell.js';
 
 export interface MemberSpaceLifetime {
   /** UI generation only, never an authorization fact. */
@@ -27,7 +28,7 @@ export interface MemberSpaceBoundaryProps {
   readonly isPageCurrent?: (() => boolean) | undefined;
   readonly controller?: MemberSpaceController | undefined;
   readonly showSpacePicker?: boolean;
-  readonly registerSwitchGuard?: ((select: (id: string) => void) => () => void) | undefined;
+  readonly registerSwitchGuard?: ((select: SpaceSwitch) => () => void) | undefined;
   onUnauthenticated(): void;
   /** The transport must bind all work queries and commands to this explicit space. */
   readonly children: (
@@ -66,7 +67,12 @@ export function MemberSpaceBoundary({
       dirtyForms.current.delete(token);
     };
   }, []);
-  const [proposed, setProposed] = useState<string>();
+  const pickerId = useId();
+  const confirmationId = useId();
+  const [proposed, setProposed] = useState<{
+    id: string;
+    restoreFocus: (() => void) | undefined;
+  }>();
   useEffect(() => {
     if (provided) return;
     void controller.refresh();
@@ -76,12 +82,12 @@ export function MemberSpaceBoundary({
     if (state.status !== 'ready') setProposed(undefined);
   }, [state.status]);
   const select = useCallback(
-    (id: string) => {
+    (id: string, restoreFocus?: () => void) => {
       const current = controller.getSnapshot();
       if (current.status === 'ready') {
         if (current.space.id === id) return;
         if (dirtyForms.current.size) {
-          setProposed(id);
+          setProposed({ id, restoreFocus });
           return;
         }
       }
@@ -124,12 +130,13 @@ export function MemberSpaceBoundary({
       <nav className="zm-space-bar" aria-label="工作空间">
         {showSpacePicker ? (
           <SingleSelect
+            id={pickerId}
             label="当前空间"
             className="zm-space-switcher"
             title={options.find((option) => option.value === selected)?.label ?? caption}
             value={selected}
             options={options}
-            onValueChange={select}
+            onValueChange={(id) => select(id, () => document.getElementById(pickerId)?.focus())}
             disabled={!options.length}
             triggerContent={
               <>
@@ -202,21 +209,32 @@ export function MemberSpaceBoundary({
         </UnsavedChangesBoundary>
       )}
       {state.status === 'ready' && proposed && (
-        <Modal title="切换空间？" close={() => setProposed(undefined)}>
-          <div className="zm-space-discard">
-            <p>切换后会清空未提交的产物和评审意见。</p>
-            <p>已经发送的操作仍可能在服务端完成。</p>
-            <div className="zm-actions">
-              <Button onClick={() => setProposed(undefined)}>留在当前空间</Button>
+        <Modal
+          title="切换空间？"
+          variant="confirmation"
+          descriptionId={confirmationId}
+          initialFocusId={`${confirmationId}-cancel`}
+          restoreFocus={proposed.restoreFocus}
+          close={() => setProposed(undefined)}
+        >
+          <div className="zm-confirmation-body">
+            <div className="zm-confirmation-message" id={confirmationId}>
+              <p>切换后，当前未保存的产物或评审意见将被放弃。</p>
+              <p className="zm-confirmation-note">已保存的内容不受影响；已发送的操作仍可能完成。</p>
+            </div>
+            <div className="zm-confirmation-actions">
+              <Button id={`${confirmationId}-cancel`} onClick={() => setProposed(undefined)}>
+                留在当前空间
+              </Button>
               <Button
                 variant="primary"
                 onClick={() => {
-                  const id = proposed;
+                  const id = proposed.id;
                   setProposed(undefined);
                   void controller.select(id);
                 }}
               >
-                清空并切换
+                放弃修改并切换
               </Button>
             </div>
           </div>
