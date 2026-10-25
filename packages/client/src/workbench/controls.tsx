@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { Participant } from '@zhuma/agent-core';
+import { ControlIcon } from './ControlIcon.js';
 
 export type ParticipantChoice = Participant & { placeholder?: boolean };
 
@@ -258,7 +259,7 @@ export function ParticipantSelect({
             ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` +${names.length - 3}` : ''}`
             : `选择${label}`}
         </span>
-        <span aria-hidden>⌄</span>
+        <ControlIcon direction="right" />
       </button>
       {open && (
         <Modal title={`选择${label}`} close={() => setOpen(false)}>

@@ -44,7 +44,7 @@ test('三层工作树保持全图选择；搜索、折叠、依赖和返回记�
   await button(page, '折叠 交付结算报表').click();
   await expect(page.locator('.react-flow__node')).toHaveCount(11);
   await expect(selected(page, 'exceptions')).toHaveCount(1);
-  await button(page.locator('.zm-tree-selection'), '字段映射 →').click();
+  await button(page.locator('.zm-tree-selection'), '字段映射').click();
   await expect(selected(page, 'mapping')).toHaveCount(1);
   await expect(page.locator('.zm-tree-selection')).toContainText('0 前置 · 2 后续');
   await findNode(page, '核对对账数据');
@@ -54,13 +54,13 @@ test('三层工作树保持全图选择；搜索、折叠、依赖和返回记�
   await expect(selected(page, 'reports')).toHaveCount(1);
   await button(page, '进入本层工作流').click();
   await expect(button(page, '工作流')).toHaveAttribute('aria-pressed', 'true');
-  await button(page, '打开子工作流 →').click();
+  await button(page, '打开子工作流').click();
   await expect(selected(page, 'reconcile')).toHaveCount(1);
-  await button(page, '↑ 上一级').click();
+  await button(page, '上一级').click();
   await expect(selected(page, 'reports')).toHaveCount(1);
   expect(replay.requests).toHaveLength(requests);
   // Save a real edit through the reducer and reopen the nested task from its normal list entry.
-  await button(page, '打开子工作流 →').click();
+  await button(page, '打开子工作流').click();
   await page.getByLabel('节点名称', { exact: true }).fill('核对对账数据与差异');
   await button(page, '保存草稿').click();
   await expect(button(page, '保存草稿')).toBeDisabled();

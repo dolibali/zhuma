@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   createIdentityApi,
   createMemberShell,
-  SidebarAccountFooter,
+  SidebarAccountSettingsLauncher,
 } from '../../src/identity/index.js';
 import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
 import { createMemberExecutionSpacesReplay } from './member-execution-spaces-probe.jsx';
@@ -19,7 +19,14 @@ export function createMemberAccountProbe() {
   function setWide(wide) {
     footerHost.style.width = wide ? '260px' : '56px';
     footer.render(
-      <SidebarAccountFooter shell={shell} wide={wide} openWork={() => shell.setPageActive(true)} />,
+      <SidebarAccountSettingsLauncher
+        shell={shell}
+        wide={wide}
+        openWork={() => shell.setPageActive(true)}
+        settingsOpen={false}
+        openSettings={() => {}}
+        openOnboarding={() => {}}
+      />,
     );
   }
   shell.setPageActive(true);

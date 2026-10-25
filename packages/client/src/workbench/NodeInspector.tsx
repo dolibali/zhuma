@@ -1,5 +1,6 @@
 import type { Participant, Workbench, Workflow, WorkNode } from '@zhuma/agent-core';
 import { ExpandableText, Field, MultiSelect, ParticipantSelect } from './controls.js';
+import { ControlIcon } from './ControlIcon.js';
 
 export function NodeInspector({
   node,
@@ -85,14 +86,18 @@ export function NodeInspector({
             <p>{node.rationale}</p>
           </details>
         )}
-        {hasChild && <button onClick={split}>打开子工作流 →</button>}
+        {hasChild && (
+          <button onClick={split}>
+            打开子工作流 <ControlIcon direction="right" />
+          </button>
+        )}
       </div>
     );
   return (
     <fieldset className="zm-config-form" disabled={disabled}>
       {hasChild && (
         <button className="zm-child-entry" onClick={split}>
-          打开子工作流 →
+          打开子工作流 <ControlIcon direction="right" />
         </button>
       )}
       <Field label="节点名称">
