@@ -232,15 +232,47 @@
 }
 .zhuma .zm-space-bar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 12px 24px;
+  gap: 4px;
+  padding: 8px 24px;
   border-bottom: 1px solid var(--zm-line);
 }
 .zhuma .zm-space-bar .zm-single-select {
-  width: min(100%, 320px);
+  flex: 0 1 auto;
+  max-width: min(320px, calc(100% - 36px));
   min-width: 0;
+}
+.zhuma .zm-space-bar .zm-space-switcher {
+  gap: 8px;
+  padding: 6px 8px;
+  font-weight: 600;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.zhuma .zm-space-bar .zm-space-switcher:hover:not(:disabled),
+.zhuma .zm-space-bar .zm-space-switcher[data-popup-open] {
+  background: var(--zm-hover);
+  border-color: var(--zm-line);
+}
+.zhuma .zm-space-bar .zm-space-switcher:active:not(:disabled) {
+  background: var(--zm-button-pressed);
+}
+.zhuma .zm-space-bar .zm-space-switcher:disabled {
+  color: var(--zm-disabled-ink);
+  background: var(--zm-disabled-bg);
+  border-color: var(--zm-disabled-line);
+}
+.zhuma .zm-space-bar .zm-space-refresh {
+  flex: none;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 6px;
+  color: var(--zm-muted);
+}
+.zhuma .zm-space-bar .zm-space-refresh:disabled {
+  color: var(--zm-disabled-ink);
 }
 .zhuma .zm-space-state {
   display: grid;

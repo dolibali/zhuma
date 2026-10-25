@@ -151,7 +151,7 @@ test('root shell contract: stopped ownership rejects late directory results and 
   shell.stop();
 });
 
-test('root shell static contract: account belongs to footer; shared main has no top account/space selectors', async () => {
+test('root shell static contract: account stays in footer and the shared main exposes its current space switcher', async () => {
   const { shell, reads } = fixture();
   shell.start();
   await tick();
@@ -171,7 +171,11 @@ test('root shell static contract: account belongs to footer; shared main has no 
   assert.match(main, /我的工作/);
   assert.match(main, /工作空间/);
   assert.equal(main.includes('zm-current-account'), false);
-  assert.equal(main.includes('当前空间'), false);
+  assert.match(main, /aria-label="当前空间"/);
+  assert.match(main, /title="个人 · 个人空间"/);
+  assert.match(main, /zm-space-switcher/);
+  assert.equal(main.includes('zm-space-summary'), false);
+  assert.match(main, /aria-label="刷新空间"/);
   assert.equal(reads(), before); // Rendering consumers never restores or reads again.
   shell.stop();
 });

@@ -100,6 +100,15 @@ export function MemberSpaceBoundary({
     value: space.id,
     label: `${space.kind === 'personal' ? '个人' : '团队'} · ${space.name}`,
   }));
+  const refreshing = state.status === 'checking' || (state.status === 'ready' && state.refreshing);
+  const caption =
+    state.status === 'ready'
+      ? state.space.name
+      : state.status === 'checking'
+        ? '正在确认空间…'
+        : state.status === 'empty'
+          ? '尚未分配空间'
+          : '选择空间';
   const isCurrent = () => {
     const current = controller.getSnapshot();
     return (
@@ -116,17 +125,17 @@ export function MemberSpaceBoundary({
         {showSpacePicker ? (
           <SingleSelect
             label="当前空间"
+            className="zm-space-switcher"
+            title={options.find((option) => option.value === selected)?.label ?? caption}
             value={selected}
             options={options}
             onValueChange={select}
             disabled={!options.length}
             triggerContent={
-              selected ? undefined : (
-                <>
-                  <span>{state.status === 'checking' ? '正在确认空间…' : '选择空间'}</span>
-                  <span aria-hidden>⌄</span>
-                </>
-              )
+              <>
+                <span className="zm-select-value">{caption}</span>
+                <span aria-hidden="true">⌄</span>
+              </>
             }
           />
         ) : (
@@ -137,14 +146,29 @@ export function MemberSpaceBoundary({
         )}
         <Button
           variant="quiet"
-          busy={state.status === 'checking' || (state.status === 'ready' && state.refreshing)}
-          busyLabel="正在刷新…"
+          className="zm-space-refresh"
+          aria-label="刷新空间"
+          title={refreshing ? '正在刷新空间…' : '刷新空间'}
+          busy={refreshing}
+          busyLabel=""
           onClick={() => {
             // Revalidation can revoke access. It must not wait on a discard prompt.
             void controller.refresh();
           }}
         >
-          刷新空间
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20 4v6h-6M20 10a8 8 0 1 0-2 8" />
+          </svg>
         </Button>
       </nav>
       {state.status === 'checking' && (

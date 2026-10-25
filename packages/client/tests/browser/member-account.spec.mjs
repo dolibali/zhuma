@@ -29,7 +29,7 @@ test('account component contract: shared roots show identity only in footer and 
   await expect(page.locator('#root .zm-current-account')).toHaveCount(0);
   await expect(
     page.locator('#root').getByRole('combobox', { name: '当前空间', exact: true }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   const before = await inspect(page, () => window.memberAccountProbe.replay.requests.length);
   await account(page).focus();
   await page.keyboard.press('Enter');
@@ -50,7 +50,9 @@ test('account component contract: selected space is shared with main and menu, w
     page.getByRole('article', { name: '编写订单状态帮助文案', exact: true }),
   ).toBeVisible();
   await expect(account(page)).toContainText('团队 · 产品研发');
-  await expect(page.locator('.zm-space-summary')).toContainText('产品研发');
+  await expect(page.getByRole('combobox', { name: '当前空间', exact: true })).toContainText(
+    '产品研发',
+  );
   await account(page).click();
   await dialog(page).getByRole('combobox', { name: '切换工作空间' }).click();
   await expect(page.getByRole('option', { name: '团队 · 产品研发', exact: true })).toHaveAttribute(

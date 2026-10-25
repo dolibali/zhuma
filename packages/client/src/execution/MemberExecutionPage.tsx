@@ -89,7 +89,6 @@ export function MemberExecutionPage({
             onUnauthenticated={invalidate}
             isSessionCurrent={isSessionCurrent}
             controller={shell?.space}
-            showSpacePicker={!shell}
             isPageCurrent={pageCurrent}
             registerSwitchGuard={shell ? registerSwitchGuard : undefined}
           >
