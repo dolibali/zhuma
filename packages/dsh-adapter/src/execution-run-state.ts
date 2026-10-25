@@ -144,6 +144,7 @@ export const EXECUTION_RUN_ERRORS = [
   'run-effect-unknown',
   'run-authority-denied',
   'run-authority-unavailable',
+  'run-migration-pending',
 ] as const;
 type OpenFailure = Extract<ReturnType<typeof openRunAttempt>, { ok: false }>['code'];
 type SettleFailure = Extract<ReturnType<typeof settleExecutionRun>, { ok: false }>['code'];

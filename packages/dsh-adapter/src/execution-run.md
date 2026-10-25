@@ -145,6 +145,60 @@ Stable state errors are `EXECUTION_RUN_ERRORS` plus `run-${OpenRunCode|SettleFai
 writer errors are run-writer-unavailable/incompatible. Both classes have constant messages.
 A/B map codes to public errors and never serialize arbitrary cause/stack/provider text.
 
+## Explicit new-attempt migration capability
+
+`openMigration(original MemberRequest,newRunLocator)` returns `{grant,dispose}`. Its exact
+shape matches C's final frozen `NativeRunMigrationGrant`:
+`{requestId,inputFingerprint,previousScope,scope,selection,signal,assertCurrent(phase)}`,
+where phase is **only** `prepare` or `migrate`. The caller supplies no scope pair, selection,
+input hash or new migration key. All come from one current durable-backed B node read;
+requestId is the new attempt's persisted begin key and receipt, inputFingerprint its stored
+payloadHash. Old must be adjacent/terminal/resource-settled; new must be current/requested,
+unacknowledged, have no admitted nativeSessionId, retain its claim and not be stopping.
+Actor/space/task/node/plan stay the same. Both phases recheck actual member lease,
+controller/task rights, immutable input/resource/config refs and real workspace composition.
+
+Issuance validates only `prepare`, without consulting or inventing a C readiness proof.
+This phase authorizes C solely to stop/flush/drain/retire the old scope. Cold C may perform
+the controlled existing-native-log write-open/flush/close barrier; it cannot create/resume
+an Agent, replay tools/queued input, allocate a new ID or write the new mapping. Missing
+logs are never replaced because a D string says they should exist: C must distinguish its
+never-materialized reserved mapping from missing/corrupt admitted history. An old Run still
+holding resources must first use its existing internal cleanup path; no new pair is begun.
+
+After actual C preparation, `assertCurrent('migrate')` queries the synchronous read-only
+`source.migrationDrain(previousScope)` for `{signal,assertCurrent():void}`. It must be C's
+actual resource epoch, not a B settled flag, drive grant or snapshot. Missing port/proof
+refuses only mapping advancement with unavailable/pending and retains preparation rights.
+On readiness the manager binds its source identity and epoch signal; every subsequent
+migrate assertion rechecks both the fresh source and bound closure. Once bound, lost or
+replaced ownership aborts the capability rather than silently adopting a new epoch.
+
+C owns the real stop/flush/source drain, handle retirement, epoch invalidation and its
+serialized v2 mapping write. Its own same-request/same-capability prepared migration ticket
+must not be mistaken for an unrelated active C writer when it queries readiness from inside
+the slot; other send/queue/source/connecting/dispose activity still refuses. Completed
+barriers are C-owned and must not disappear merely because the caller disposes a completed
+prepare handle. Genuine new native I/O, foreign ownership, producer/service replacement or
+close invalidate them. C's actual component tests establish this, not D's state flags.
+
+`assertMigration(grant,phase)` checks manager-issued object identity and the live closure.
+Drive/read/cleanup, copies, JSON and labels do not qualify. C must call the method on the
+exact issued grant; copied objects or detached functions cannot reuse the bound closure.
+The grant rejects every other
+action, zero arguments and extra arguments, so structural assignability in JS cannot turn
+it into a native send/open grant. Member/expiry/unmount/pair/config/workspace changes revoke
+both phases. After epoch binding, its abort immediately interrupts a waiting migration.
+Unauthorized members are denied before any native readiness query.
+
+Issuance and preparation assertions do not write mappings, reserve native IDs or run an
+Agent. C reserves a fresh native ID only after the migrate assertion and its actual checks;
+reservation is not native admission. Previous binding metadata and original DSH history
+remain bounded/retained, without replaying the old inbox. Same-Run turns keep their IDs.
+Unknown cross-domain outcomes compare the durable pair/key and actual C mapping and never
+blindly allocate or resend. D's tests use contract member/drain sources; formal C/B
+component and authenticated cross-domain recovery proof remain separately required.
+
 ## Remaining owner changes and evidence gates
 
 B must replace the execution global schema with `executionRunGlobalSchema`, validate the

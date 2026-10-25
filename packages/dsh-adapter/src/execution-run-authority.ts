@@ -6,6 +6,7 @@ import type {
   NativeWorkAction,
   NativeWorkGrant,
   NativeWorkScope,
+  NativeSessionSelection,
 } from './native-work-session-contract.js';
 import {
   ExecutionRunError,
@@ -13,6 +14,7 @@ import {
   readExecutionRunState,
   type ExecutionRun,
   type ExecutionWorkspace,
+  type ExecutionRunState,
 } from './execution-run-state.js';
 
 const id = z.string().min(1).max(200);
@@ -60,6 +62,29 @@ export interface ExecutionRunAuthoritySource {
   /** Post-durable domain changes AND resolver/directory replacement/unmount invalidation. */
   onChange(recheck: () => void): () => void;
   readonly signal: AbortSignal;
+  /** C's actual old-scope stop/flush/source-drain proof, not B's persisted settled label.
+   * Undefined means still pending. Its closure/signal must track the real native owner.
+   * Optional for old consumers: migration alone refuses when this port is absent.
+   */
+  migrationDrain?(previousScope: NativeWorkScope): ExecutionRunMigrationDrain | undefined;
+}
+export interface ExecutionRunMigrationDrain {
+  readonly signal: AbortSignal;
+  assertCurrent(): void;
+}
+/** Structurally matches C's frozen NativeRunMigrationGrant. Host-only, never deserialized. */
+export interface ExecutionRunMigrationGrant {
+  readonly requestId: string;
+  readonly inputFingerprint: string;
+  readonly previousScope: NativeWorkScope;
+  readonly scope: NativeWorkScope;
+  readonly selection: NativeSessionSelection;
+  readonly signal: AbortSignal;
+  assertCurrent(phase: 'prepare' | 'migrate'): void;
+}
+export interface OpenedExecutionRunMigration {
+  readonly grant: ExecutionRunMigrationGrant;
+  dispose(): void;
 }
 export interface ExecutionRunCleanupAuthority {
   readonly scope: NativeWorkScope;
@@ -83,12 +108,15 @@ function fingerprint(run: ExecutionRun): string {
     segmentId: run.segmentId,
     runId: run.attempt.id,
     generation: run.attempt.generation,
+    payloadHash: run.attempt.payloadHash,
+    contextRefs: run.attempt.contextRefs,
+    expertVersionId: run.attempt.expertVersionId,
+    entryNodeStatus: run.attempt.entryNodeStatus,
     selection: run.selection,
     workspace: run.workspace,
   });
 }
 interface OwnedAuthority {
-  readonly grant: NativeWorkGrant;
   readonly lease: ExecutionMemberLease;
   readonly controller: AbortController;
   readonly check: (action: NativeWorkAction) => void;
@@ -103,6 +131,7 @@ export class ExecutionRunAuthorities {
   private readonly owned = new Set<OwnedAuthority>();
   private readonly grants = new WeakSet<object>();
   private readonly cleanups = new WeakSet<object>();
+  private readonly migrations = new WeakSet<object>();
   private readonly pending = new Set<Promise<unknown>>();
   private readonly unsubscribe: () => void;
   private fenced = false;
@@ -137,6 +166,7 @@ export class ExecutionRunAuthorities {
     node: ExecutionNodeRecord;
     run: ExecutionRun;
     current: boolean;
+    state: ExecutionRunState;
   } {
     let node: ExecutionNodeRecord | undefined;
     try {
@@ -156,7 +186,7 @@ export class ExecutionRunAuthorities {
     const state = readExecutionRunState(node);
     const run = state?.runs.find((r) => r.attempt.id === locator.runId);
     if (!run) return denied();
-    return { node, run, current: state!.currentRunId === run.attempt.id };
+    return { node, run, current: state!.currentRunId === run.attempt.id, state: state! };
   }
   open(
     request: MemberRequest,
@@ -287,7 +317,7 @@ export class ExecutionRunAuthorities {
         release();
       };
       const onRevoked = () => dispose();
-      const owned: OwnedAuthority = { grant, lease, controller, check, dispose };
+      const owned: OwnedAuthority = { lease, controller, check, dispose };
       ownedDispose = dispose;
       check('open');
       this.owned.add(owned);
@@ -313,6 +343,247 @@ export class ExecutionRunAuthorities {
       else release();
       return denied();
     }
+  }
+  private migrationPair(locator: ExecutionRunLocator) {
+    const current = this.current(locator);
+    const previous = current.state.runs.at(-2);
+    if (
+      !current.current ||
+      !previous ||
+      !isTerminalRunStatus(previous.attempt.status) ||
+      previous.resources !== 'settled' ||
+      current.run.resources !== 'held' ||
+      current.run.attempt.status !== 'requested' ||
+      current.run.attempt.acknowledged ||
+      current.run.attempt.sessionId !== undefined ||
+      current.run.attempt.stopPhase !== 'none' ||
+      previous.actorId !== current.run.actorId ||
+      previous.spaceId !== current.run.spaceId ||
+      previous.attempt.generation + 1 !== current.run.attempt.generation ||
+      !current.state.receipts.some(
+        (receipt) =>
+          receipt.requestId === current.run.attempt.idempotencyKey &&
+          receipt.actorId === current.run.actorId &&
+          receipt.runId === current.run.attempt.id,
+      )
+    )
+      return denied();
+    return {
+      ...current,
+      previous,
+      previousScope: executionRunScope(current.node, previous),
+      scope: executionRunScope(current.node, current.run),
+      requestId: current.run.attempt.idempotencyKey,
+    };
+  }
+  /** Only a new, already durable attempt supplies a migration. No raw scope pair,
+   * selection, idempotency key, old snapshot or drive/read grant is accepted as input.
+   */
+  openMigration(request: MemberRequest, rawLocator: unknown): Promise<OpenedExecutionRunMigration> {
+    if (this.fenced || this.disposed || this.source.signal.aborted)
+      return Promise.reject(new ExecutionRunError('run-authority-denied'));
+    const parsed = locatorSchema.safeParse(rawLocator);
+    if (!parsed.success) return Promise.reject(new ExecutionRunError('run-validation'));
+    if (this.owned.size + this.pending.size >= 256)
+      return Promise.reject(new ExecutionRunError('run-capacity'));
+    const work = Promise.resolve().then(() => this.migrationNow(request, parsed.data));
+    this.pending.add(work);
+    void work.finally(() => this.pending.delete(work)).catch(() => undefined);
+    return work;
+  }
+  private async migrationNow(
+    request: MemberRequest,
+    locator: ExecutionRunLocator,
+  ): Promise<OpenedExecutionRunMigration> {
+    let lease: ExecutionMemberLease;
+    try {
+      lease = await this.source.memberLease(request);
+    } catch {
+      return denied();
+    }
+    let released = false;
+    let ownedDispose: (() => void) | undefined;
+    const release = () => {
+      if (released) return;
+      released = true;
+      try {
+        lease.release();
+      } catch {
+        this.releaseFailed = true;
+      }
+    };
+    try {
+      if (
+        this.fenced ||
+        this.disposed ||
+        this.source.signal.aborted ||
+        !lease ||
+        typeof lease.memberId !== 'string' ||
+        !lease.memberId ||
+        !Number.isSafeInteger(lease.expiresAt) ||
+        lease.expiresAt <= Date.now() ||
+        !(lease.signal instanceof AbortSignal) ||
+        typeof lease.assertCurrent !== 'function' ||
+        typeof lease.release !== 'function'
+      )
+        return denied();
+      const initial = this.migrationPair(locator);
+      const assertAccess = (pair: ReturnType<typeof this.migrationPair>) => {
+        if (lease.memberId !== pair.run.actorId) return denied();
+        lease.assertCurrent(pair.run.spaceId);
+        this.source.assertNodeAccess(lease.memberId, pair.run.spaceId, pair.node, 'send');
+        this.source.assertWorkspace(
+          lease.memberId,
+          pair.run.spaceId,
+          pair.run.workspace,
+          pair.run.workspace.kind === 'local' ? pair.run.workspace.access : 'read',
+          pair.run.selection.configurationId,
+        );
+      };
+      assertAccess(initial);
+      const bound = canonicalPayload([
+        initial.requestId,
+        fingerprint(initial.previous),
+        fingerprint(initial.run),
+      ]);
+      const controller = new AbortController();
+      let disposed = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let drain: ExecutionRunMigrationDrain | undefined;
+      let drainProducer: ExecutionRunAuthoritySource['migrationDrain'];
+      const check = (phase: 'prepare' | 'migrate') => {
+        if (
+          disposed ||
+          this.fenced ||
+          this.disposed ||
+          this.source.signal.aborted ||
+          controller.signal.aborted ||
+          lease.signal.aborted ||
+          drain?.signal.aborted ||
+          Date.now() >= lease.expiresAt
+        )
+          return denied();
+        const latest = this.migrationPair(locator);
+        if (
+          canonicalPayload([
+            latest.requestId,
+            fingerprint(latest.previous),
+            fingerprint(latest.run),
+          ]) !== bound
+        )
+          return denied();
+        assertAccess(latest);
+        if (phase === 'prepare') return;
+        const producer = this.source.migrationDrain;
+        if (typeof producer !== 'function') {
+          if (drain) return denied();
+          throw new ExecutionRunError('run-authority-unavailable');
+        }
+        const current = producer.call(this.source, latest.previousScope);
+        if (!current) {
+          if (drain) return denied();
+          throw new ExecutionRunError('run-migration-pending');
+        }
+        if (
+          !(current.signal instanceof AbortSignal) ||
+          current.signal.aborted ||
+          typeof current.assertCurrent !== 'function'
+        )
+          return denied();
+        if (drain && (drainProducer !== producer || drain.signal !== current.signal))
+          return denied();
+        current.assertCurrent();
+        if (drain) drain.assertCurrent();
+        else {
+          // Only bind a real ready epoch AFTER C has performed authorized preparation.
+          drain = current;
+          drainProducer = producer;
+          drain.signal.addEventListener('abort', onRevoked, { once: true });
+          if (drain.signal.aborted) return denied();
+        }
+      };
+      const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        clearTimeout(timer);
+        lease.signal.removeEventListener('abort', onRevoked);
+        drain?.signal.removeEventListener('abort', onRevoked);
+        this.owned.delete(owned);
+        controller.abort();
+        release();
+      };
+      const onRevoked = () => dispose();
+      ownedDispose = dispose;
+      const grant: ExecutionRunMigrationGrant = Object.freeze({
+        requestId: initial.requestId,
+        inputFingerprint: initial.run.attempt.payloadHash,
+        previousScope: initial.previousScope,
+        scope: initial.scope,
+        selection: Object.freeze(structuredClone(initial.run.selection)),
+        signal: controller.signal,
+        assertCurrent(this: ExecutionRunMigrationGrant, ...args: readonly unknown[]) {
+          // C calls this method on the exact issued object. Copying its closure must not
+          // authorize a different scope/selection carried by a reconstructed object.
+          if (this !== grant) return denied();
+          // Neither a NativeWorkAction nor a zero-argument snapshot is a migration phase.
+          if (args.length !== 1 || !['prepare', 'migrate'].includes(args[0] as string))
+            return denied();
+          const phase = args[0] as 'prepare' | 'migrate';
+          try {
+            check(phase);
+          } catch (error) {
+            // No ready C proof yet blocks mapping advancement, not the cleanup needed to
+            // establish it. Once bound, never silently adopt a replacement resource epoch.
+            if (
+              phase === 'migrate' &&
+              !drain &&
+              error instanceof ExecutionRunError &&
+              ['run-migration-pending', 'run-authority-unavailable'].includes(error.code)
+            ) {
+              try {
+                check('prepare');
+              } catch {
+                dispose();
+                return denied();
+              }
+              throw error;
+            }
+            dispose();
+            return denied();
+          }
+        },
+      });
+      const owned: OwnedAuthority = {
+        lease,
+        controller,
+        check: () => check(drain ? 'migrate' : 'prepare'),
+        dispose,
+      };
+      check('prepare');
+      this.owned.add(owned);
+      this.migrations.add(grant);
+      const expire = () => {
+        if (disposed) return;
+        const remaining = lease.expiresAt - Date.now();
+        if (remaining <= 0) dispose();
+        else {
+          timer = setTimeout(expire, Math.min(remaining, 2_147_483_647));
+          timer.unref();
+        }
+      };
+      expire();
+      lease.signal.addEventListener('abort', onRevoked, { once: true });
+      check('prepare');
+      return Object.freeze({ grant, dispose });
+    } catch {
+      if (ownedDispose) ownedDispose();
+      else release();
+      return denied();
+    }
+  }
+  assertMigration(grant: ExecutionRunMigrationGrant, phase: 'prepare' | 'migrate'): void {
+    if (!this.migrations.has(grant)) return denied();
+    grant.assertCurrent(phase);
   }
   private makeCleanup(
     locator: ExecutionRunLocator,
