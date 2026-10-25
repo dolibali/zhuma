@@ -26,7 +26,7 @@ test('从空项目创建任务：建项目前后保留目标和规划方式，�
   await expect(page.getByRole('dialog', { name: '创建任务' })).toBeVisible();
   await expect(button(page, '先创建项目')).toBeVisible();
   await page.getByRole('radio', { name: '从空白开始' }).check();
-  await button(page, '新建项目').click();
+  await button(page, '先创建项目').click();
   await expect(page.getByRole('dialog', { name: '新建项目' })).toContainText(
     '保存项目后继续创建任务。',
   );
@@ -56,6 +56,59 @@ test('从空项目创建任务：建项目前后保留目标和规划方式，�
   expect(requests(replay, 'command')[0].requestId).toBe(requests(replay, 'command')[1].requestId);
   expect(requests(replay, 'plan')).toHaveLength(0);
   expect(replay.state.tasks[0].projectId).toBe(replay.state.projects[0].id);
+});
+
+test('人工清空参与者后新建项目，返回任务时仍为空', async ({ page, replay }) => {
+  replay.state.projects[0].defaultParticipantIds = ['chen'];
+  await creation(page, '人工核对首版交付');
+  await button(page, '选择参与者').click();
+  const taskPicker = page.getByRole('dialog', { name: '选择参与者', exact: true });
+  await taskPicker
+    .locator('.zm-member')
+    .filter({ has: page.getByText('陈宁', { exact: true }) })
+    .getByRole('checkbox')
+    .uncheck();
+  await button(taskPicker, '确认选择').click();
+  await expect(page.getByText('参与者 · 0 位', { exact: true })).toBeVisible();
+  await page.getByRole('radio', { name: '从空白开始' }).check();
+  await button(page, '新建项目').click();
+  await page.getByLabel('项目名称', { exact: true }).fill('新交付项目');
+  await button(page, '选择默认参与者').click();
+  const projectPicker = page.getByRole('dialog', { name: '选择默认参与者', exact: true });
+  await projectPicker
+    .locator('.zm-member')
+    .filter({ has: page.getByText('陈宁', { exact: true }) })
+    .getByRole('checkbox')
+    .check();
+  await button(projectPicker, '确认选择').click();
+  await button(page, '保存').click();
+  await expect(page.getByText('参与者 · 0 位', { exact: true })).toBeVisible();
+  await button(page, '创建工作流').click();
+  expect(replay.state.tasks.at(-1).participantIds).toEqual([]);
+  expect(replay.state.projects.at(-1).defaultParticipantIds).toEqual(['chen']);
+  expect(requests(replay, 'plan')).toHaveLength(0);
+});
+
+test('未编辑参与者时，新项目默认参与者进入原任务草稿', async ({ page, replay }) => {
+  replay.state.projects[0].defaultParticipantIds = ['chen'];
+  await creation(page, '按新项目人员安排工作');
+  await page.getByRole('radio', { name: '从空白开始' }).check();
+  await button(page, '新建项目').click();
+  await page.getByLabel('项目名称', { exact: true }).fill('新协作项目');
+  await button(page, '选择默认参与者').click();
+  const picker = page.getByRole('dialog', { name: '选择默认参与者', exact: true });
+  await picker
+    .locator('.zm-member')
+    .filter({ has: page.getByText('林可', { exact: true }) })
+    .getByRole('checkbox')
+    .check();
+  await button(picker, '确认选择').click();
+  await button(page, '保存').click();
+  await expect(page.getByText('参与者 · 1 位', { exact: true })).toBeVisible();
+  await expect(button(page, '选择参与者')).toContainText('林可');
+  await button(page, '创建工作流').click();
+  expect(replay.state.tasks.at(-1).participantIds).toEqual(['lin']);
+  expect(requests(replay, 'plan')).toHaveLength(0);
 });
 
 test('普通新建项目仍进入项目详情，不打开任务草稿', async ({ page, replay }) => {

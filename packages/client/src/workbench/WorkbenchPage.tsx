@@ -37,6 +37,7 @@ type Dialog =
   | {
       kind: 'task';
       value: WorkTask;
+      participantIdsEdited: boolean;
       planning: 'ai' | 'manual' | 'template';
       template: {
         assetId: string;
@@ -275,7 +276,7 @@ export function WorkbenchPage({
             value: {
               ...taskAfterProject.value,
               projectId: command.project.id,
-              participantIds: taskAfterProject.value.participantIds.length
+              participantIds: taskAfterProject.participantIdsEdited
                 ? taskAfterProject.value.participantIds
                 : defaultProjectParticipants(command.project, committed),
             },
@@ -377,6 +378,7 @@ export function WorkbenchPage({
       : undefined;
     openDialog({
       kind: 'task',
+      participantIdsEdited: false,
       planning: 'ai',
       template: null,
       value: {
@@ -401,6 +403,7 @@ export function WorkbenchPage({
     if (dialog?.kind !== 'task') return;
     setDialog({
       ...dialog,
+      participantIdsEdited: true,
       value: {
         ...dialog.value,
         participantIds,
@@ -1274,45 +1277,47 @@ export function WorkbenchPage({
                     </Field>
                     <div className="zm-creation-context">
                       <div className="zm-task-project-choice">
+                        <div className="zm-creation-field-heading">
+                          <span>所属项目</span>
+                          {!!state.projects.length && (
+                            <Button variant="quiet" onClick={() => createProjectForTask(dialog)}>
+                              新建项目
+                            </Button>
+                          )}
+                        </div>
                         {state.projects.length ? (
-                          <Field label="所属项目">
-                            <SingleSelect
-                              label="所属项目"
-                              value={dialog.value.projectId}
-                              onValueChange={(projectId) =>
-                                setDialog({ ...dialog, value: { ...dialog.value, projectId } })
-                              }
-                              options={state.projects.map((p) => ({ value: p.id, label: p.name }))}
-                            />
-                          </Field>
+                          <SingleSelect
+                            label="所属项目"
+                            value={dialog.value.projectId}
+                            onValueChange={(projectId) =>
+                              setDialog({ ...dialog, value: { ...dialog.value, projectId } })
+                            }
+                            options={state.projects.map((p) => ({ value: p.id, label: p.name }))}
+                          />
                         ) : (
-                          <div className="zm-field">
-                            <span className="zm-field-label">所属项目</span>
-                            <span className="zm-project-needed">尚无项目</span>
-                          </div>
+                          <span className="zm-project-needed">尚无项目</span>
                         )}
-                        <Button variant="quiet" onClick={() => createProjectForTask(dialog)}>
-                          新建项目
-                        </Button>
                       </div>
                       <div className="zm-creation-participants">
-                        <span>参与者 · {dialog.value.participantIds.length} 位</span>
-                        {state.projects.find((p) => p.id === dialog.value.projectId)
-                          ?.defaultParticipantIds !== undefined && (
-                          <Button
-                            variant="quiet"
-                            onClick={() =>
-                              changeTaskParticipants(
-                                defaultProjectParticipants(
-                                  state.projects.find((p) => p.id === dialog.value.projectId),
-                                  state,
-                                ),
-                              )
-                            }
-                          >
-                            使用项目默认参与者
-                          </Button>
-                        )}
+                        <div className="zm-creation-field-heading">
+                          <span>参与者 · {dialog.value.participantIds.length} 位</span>
+                          {state.projects.find((p) => p.id === dialog.value.projectId)
+                            ?.defaultParticipantIds !== undefined && (
+                            <Button
+                              variant="quiet"
+                              onClick={() =>
+                                changeTaskParticipants(
+                                  defaultProjectParticipants(
+                                    state.projects.find((p) => p.id === dialog.value.projectId),
+                                    state,
+                                  ),
+                                )
+                              }
+                            >
+                              使用项目默认
+                            </Button>
+                          )}
+                        </div>
                         <ParticipantSelect
                           label="参与者"
                           multiple
