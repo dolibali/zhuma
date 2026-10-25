@@ -10,6 +10,11 @@ import * as Domain from '@deepseek-ai/dsh-storage-domain';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { apply } from '../dist/execution-plugin.js';
 import { currentExecutionRun } from '../dist/execution-run-state.js';
+import {
+  freezeExecutionRunComposition,
+  executionRunCompositionRequest,
+} from '../dist/execution-run-composition.js';
+import { upstreamInputsFor } from '../dist/upstream-inputs.js';
 import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { command, event, stable } from './execution-run-fixture.mjs';
@@ -38,11 +43,12 @@ function confirmed() {
         {
           ...task.workflows[0],
           nodes: [
-            { ...node, id: 'produce', reviewerIds: ['outside'] },
-            { ...node, id: 'parallel', reviewerIds: [], reviewRequired: false },
+            { ...node, id: 'produce', skillIds: [], reviewerIds: ['outside'] },
+            { ...node, id: 'parallel', skillIds: [], reviewerIds: [], reviewRequired: false },
             {
               ...node,
               id: 'consume',
+              skillIds: [],
               dependsOn: ['produce'],
               reviewerIds: [],
               reviewRequired: false,
@@ -132,6 +138,7 @@ export async function open(
                       if (faults.global) throw Error('PRIVATE_GLOBAL_WRITE_FAILURE');
                       await domain.global.set(next);
                       counters.global++;
+                      await faults.afterGlobalWrite?.();
                     },
                   },
                   table(name) {
@@ -177,9 +184,43 @@ export async function open(
       nodeId,
     });
     const read = (nodeId) => service.readRunNode(locate(nodeId));
-    const begin = (patch = {}, nodeId = 'produce') => {
-      const { actorId: _actor, ...input } = command(read(nodeId), patch);
-      return { ...locate(nodeId), ...input };
+    const begin = (patch = {}, nodeId = 'produce', tools = { kind: 'text-only' }) => {
+      const row = read(nodeId);
+      const { actorId, ...input } = command(row, patch);
+      const prior = row.nativeExecution?.receipts.find(
+        (receipt) => receipt.requestId === input.requestId,
+      );
+      const previous =
+        prior && row.nativeExecution.runs.find((run) => run.attempt.id === prior.runId);
+      const { configurationId: _configuration, ...model } = input.selection;
+      const composition = freezeExecutionRunComposition({
+        workbench,
+        node: row,
+        scope: {
+          ...locate(nodeId),
+          actorId,
+          spaceId: input.spaceId,
+          runId: input.newRunId,
+          generation: previous
+            ? previous.attempt.generation
+            : (row.nativeExecution?.runs.length ?? 0) + 1,
+          segmentId: input.newSegmentId,
+        },
+        model,
+        executor: { kind: 'builtin' },
+        tools,
+        inputs: {
+          ...locate(nodeId),
+          actorId,
+          spaceId: input.spaceId,
+          items: upstreamInputsFor(
+            row,
+            [...domain.table('nodes').entries()].map(([, item]) => item),
+          ),
+        },
+      });
+      const { firstMessage: _message, ...projected } = executionRunCompositionRequest(composition);
+      return { ...locate(nodeId), ...input, ...projected, composition };
     };
     if (seed)
       checked(
@@ -217,12 +258,16 @@ export async function open(
           return assertionResults.project?.();
         },
         assertConfiguration(_member, _space, _node, input) {
-          if (faults.configuration || input.selection.configurationId !== 'configuration-1')
+          if (
+            faults.configuration ||
+            input.selection.provider !== 'contract' ||
+            input.selection.model !== 'contract-model'
+          )
             throw Error('PRIVATE_CONFIGURATION_REFUSAL');
           return assertionResults.configuration?.();
         },
         assertWorkspace(_member, _space, _workspace, _access, configurationId) {
-          if (faults.workspace || source.signal.aborted || configurationId !== 'configuration-1')
+          if (faults.workspace || source.signal.aborted || !configurationId)
             throw Error('PRIVATE_WORKSPACE_REFUSAL');
           return assertionResults.workspace?.();
         },
@@ -244,6 +289,7 @@ export async function open(
       assertionResults,
       locate,
       read,
+      readWorkbench: () => structuredClone(workbench),
       begin,
       close,
       closeState,
