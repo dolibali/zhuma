@@ -1,11 +1,16 @@
 import { useId } from 'react';
-import type { UpstreamInputWire } from './ExecutionApi.js';
+import type { ExecutionApi, ExecutionNodeWire, UpstreamInputWire } from './ExecutionApi.js';
+import { UpstreamContent } from './UpstreamContent.js';
 
-/** Only the service's public projection: no inferred authorization, content lookup or links. */
+/** The service owns visibility; only visible pinned references offer an explicit read. */
 export function UpstreamInputsPanel({
   inputs,
+  api,
+  node,
 }: {
   inputs?: readonly UpstreamInputWire[] | undefined;
+  api?: ExecutionApi;
+  node?: ExecutionNodeWire;
 }) {
   const heading = useId();
   return (
@@ -32,14 +37,17 @@ export function UpstreamInputsPanel({
                 </span>
               </div>
               {input.access === 'visible' ? (
-                <div className="zm-upstream-meta">
-                  {input.sourceGoal && <span>节点 {input.sourceNodeId}</span>}
-                  <span>
-                    {input.name === `第 ${input.version} 版`
-                      ? input.name
-                      : `第 ${input.version} 版 · ${input.name}`}
-                  </span>
-                </div>
+                <>
+                  <div className="zm-upstream-meta">
+                    {input.sourceGoal && <span>节点 {input.sourceNodeId}</span>}
+                    <span>
+                      {input.name === `第 ${input.version} 版`
+                        ? input.name
+                        : `第 ${input.version} 版 · ${input.name}`}
+                    </span>
+                  </div>
+                  {api && node && <UpstreamContent api={api} node={node} input={input} />}
+                </>
               ) : (
                 <p>{input.message}</p>
               )}
