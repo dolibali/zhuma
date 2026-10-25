@@ -40,3 +40,9 @@ A 每个 publication 持有稳定 binding、token 与 signal；`isCurrent` 同�
 ## 验证边界
 
 定向测试复用真实 identity 登录／签名／解析和发布的 DomainFacility；KV、凭据介质、HTTP 运输及 Host publication 使用隔离契约夹具。覆盖注销、新旧同账号会话、行变化、账号／成员撤销、期限、源替换和同源 remount、publication 替换、伪目录、原 handle 的 held／失败关闭、订阅期间失效、释放／容量及冷重开。源码与契约测试不认证正式 Host 装配、真实磁盘、原生模型、桌面 GUI 或产品验收；这些由集成 owner 在对应提交上另行证明。
+
+## Host 同步项目归属读取
+
+`OpenedSpaceDirectoryHandle.spaceForProjectNow(projectId): ProjectSpaceLookup` 是同一真实目录 handle 的 Host-only 同步读口，不增加到普通 `SpaceDirectory` 或 Client 显示接口。它直接读取原 domain 的 `project_spaces` 当前行：有行返回 `{ok:true,spaceId}`；无行返回 `{ok:false,reason:'unknown'}`，不把 projectId 当作 spaceId；handle.signal 已失效或域读取失败返回 `{ok:false,reason:'unavailable'}`。close 进入后即拒绝，不等异步 drain，重开应使用新 handle。原异步 `spaceForProject` 仅委托这个函数，响应形状不变；不增加缓存、第二份状态、注册、订阅、轮询、I/O 或持久写入。
+
+A 的同步授权回调必须使用同一个 owned handle 和仍有效的 publication，继续验证请求空间／成员事实；缺少真实同步 producer 时拒绝，不用旧异步结果或资源定义快照代替。此读口本身不授权成员／节点／Run／工作区。定向控制使用真实 DomainFacility 与测试内存介质，验证持久写入落定前后、权威行变化／删除、未知、原 handle held／失败 close、域故障和重开；它不认证正式 Host／真实磁盘或完整运行链路。

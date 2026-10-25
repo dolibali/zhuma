@@ -159,6 +159,7 @@ test('facts survive a reopen on the same medium', async () => {
   const firstMount = mount({ media });
   const first = await openSpaceDirectory(firstMount.ctx.storageDomain, FIXTURE);
   await first.close();
+  assert.deepEqual(first.spaceForProjectNow('portal'), { ok: false, reason: 'unavailable' });
 
   const secondMount = mount({ media });
   const second = await openSpaceDirectory(secondMount.ctx.storageDomain);
@@ -167,6 +168,7 @@ test('facts survive a reopen on the same medium', async () => {
     ['personal-lin', 'team-empty', 'team-north'],
   );
   assert.deepEqual(await second.spaceForProject('portal'), { ok: true, spaceId: 'team-north' });
+  assert.deepEqual(second.spaceForProjectNow('portal'), { ok: true, spaceId: 'team-north' });
   await second.close();
 });
 
@@ -622,6 +624,9 @@ test('directory close invalidates synchronously before a held backend drain and 
   });
   const closing = directory.close();
   assert.equal(directory.signal.aborted, true);
+  assert.deepEqual(directory.spaceForProjectNow('portal'), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(directory.spaceForProjectNow('missing'), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(await directory.spaceForProject('portal'), { ok: false, reason: 'unavailable' });
   assert.equal(aborted, 1);
   assert.equal(directory.close(), closing);
   await started;
@@ -651,7 +656,78 @@ test('failed directory close remains invalidated and does not start a second tea
   const closing = directory.close();
   assert.equal(directory.signal.aborted, true);
   await assert.rejects(closing, /fixture close refused/);
+  assert.deepEqual(directory.spaceForProjectNow('portal'), { ok: false, reason: 'unavailable' });
   assert.equal(directory.close(), closing);
   await assert.rejects(directory.close(), /fixture close refused/);
   assert.equal(closes, 1);
+});
+
+test('synchronous project lookup reads current domain facts only after durable assignment and follows row changes', async () => {
+  const entered = Promise.withResolvers();
+  const durable = Promise.withResolvers();
+  let hold = false;
+  const { ctx } = mount({
+    faults: {
+      async beforePut(table, key) {
+        if (hold && table === 'project_spaces' && key === 'later') {
+          entered.resolve();
+          await durable.promise;
+        }
+      },
+    },
+  });
+  let domain;
+  const directory = await openSpaceDirectory(
+    {
+      async open(spec) {
+        domain = await ctx.storageDomain.open(spec);
+        return domain;
+      },
+    },
+    FIXTURE,
+  );
+  assert.deepEqual(directory.spaceForProjectNow('portal'), { ok: true, spaceId: 'team-north' });
+  assert.deepEqual(directory.spaceForProjectNow('team-north'), { ok: false, reason: 'unknown' });
+  assert.deepEqual(directory.spaceForProjectNow('later'), { ok: false, reason: 'unknown' });
+  hold = true;
+  const assignment = directory.assignProjectSpace('later', 'team-north');
+  await entered.promise;
+  assert.deepEqual(directory.spaceForProjectNow('later'), { ok: false, reason: 'unknown' });
+  durable.resolve();
+  await assignment;
+  assert.deepEqual(directory.spaceForProjectNow('later'), { ok: true, spaceId: 'team-north' });
+  // Test-owned authoritative domain mutations exercise live reads, not a new public move API.
+  await domain
+    .table('project_spaces')
+    .update('portal', (record) => ({ ...record, spaceId: 'personal-lin' }));
+  assert.deepEqual(directory.spaceForProjectNow('portal'), { ok: true, spaceId: 'personal-lin' });
+  assert.deepEqual(
+    await directory.spaceForProject('portal'),
+    directory.spaceForProjectNow('portal'),
+  );
+  await domain.table('project_spaces').delete('portal');
+  assert.deepEqual(directory.spaceForProjectNow('portal'), { ok: false, reason: 'unknown' });
+  assert.deepEqual(await directory.spaceForProject('portal'), { ok: false, reason: 'unknown' });
+  await directory.close();
+});
+
+test('synchronous project lookup refuses a failed domain even before the handle lifetime is aborted', async () => {
+  const { ctx } = mount();
+  let domain;
+  const directory = await openSpaceDirectory(
+    {
+      async open(spec) {
+        domain = await ctx.storageDomain.open(spec);
+        return domain;
+      },
+    },
+    FIXTURE,
+  );
+  assert.deepEqual(directory.spaceForProjectNow('portal'), { ok: true, spaceId: 'team-north' });
+  await domain.close();
+  assert.equal(directory.signal.aborted, false);
+  assert.deepEqual(directory.spaceForProjectNow('portal'), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(directory.spaceForProjectNow('missing'), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(await directory.spaceForProject('portal'), { ok: false, reason: 'unavailable' });
+  await directory.close();
 });

@@ -377,7 +377,8 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
     return list.sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  async spaceForProject(projectId: string): Promise<ProjectSpaceLookup> {
+  spaceForProjectNow(projectId: string): ProjectSpaceLookup {
+    if (this.signal.aborted) return { ok: false, reason: 'unavailable' };
     try {
       const record = this.domain.table('project_spaces').get(projectId);
       if (record === undefined) return { ok: false, reason: 'unknown' };
@@ -387,6 +388,10 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
       // instead of leaking an exception through the authorization gate.
       return { ok: false, reason: 'unavailable' };
     }
+  }
+
+  async spaceForProject(projectId: string): Promise<ProjectSpaceLookup> {
+    return this.spaceForProjectNow(projectId);
   }
 
   async createSpace(space: AuthorizedSpace): Promise<void> {
@@ -462,6 +467,8 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
 
 export interface OpenedSpaceDirectoryHandle extends SpaceDirectory, SpaceDirectoryWriter {
   readonly signal: AbortSignal;
+  /** Host authorization reads the same current domain; closed/failed sources refuse. */
+  spaceForProjectNow(projectId: string): ProjectSpaceLookup;
   close(): Promise<void>;
 }
 
