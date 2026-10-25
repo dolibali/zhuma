@@ -17,6 +17,7 @@ import {
   castBallot,
   WorkbenchError,
   WorkTaskSchema,
+  type ArtifactFileRef,
   type DomainEvent,
   type ExecutionNodeRecord,
   type InboxItem,
@@ -105,6 +106,15 @@ const revisionSchema = z.strictObject({
   revision: z.number().int().positive(),
   nodeId: id,
 });
+const upstreamContentSchema = z.strictObject({
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+  sourceNodeId: id,
+  artifactVersionId: id,
+  spaceId: id.optional(),
+});
 const draftLocate = {
   taskId: id,
   planId: id,
@@ -145,6 +155,26 @@ export type StartableRequest = z.infer<typeof startableSchema>;
  * One confirmed plan the member may explicitly start. Read-only discovery for
  * the "task → confirmed plan → explicit start" entry; nothing here launches.
  */
+export type UpstreamContentRequest = z.infer<typeof upstreamContentSchema>;
+
+/** Accepted content of a pinned upstream input. File refs carry metadata only, never bytes. */
+export interface UpstreamContentValue {
+  readonly actorId: string;
+  readonly spaceId?: string | undefined;
+  readonly source: {
+    readonly nodeId: string;
+    readonly taskId: string;
+    readonly planId: string;
+    readonly revision: number;
+  };
+  readonly version: { readonly id: string; readonly version: number };
+  readonly content: {
+    readonly text?: string;
+    readonly links: readonly string[];
+    readonly files: readonly ArtifactFileRef[];
+  };
+}
+
 export interface StartablePlan {
   readonly taskId: string;
   readonly planId: string;
@@ -1053,6 +1083,85 @@ export class ExecutionService {
   }
 
   /** Return notes and the two newest relevant versions. The revision record itself is unchanged. */
+  /**
+   * Read the content of the accepted version a downstream node froze as its
+   * input. Bounded, on demand, read-only: the member must be a participant of
+   * the downstream task, the frozen ref must be among the node's inputRefs,
+   * and the source's current accepted version must be exactly the pinned one.
+   * No hidden source leaks; pending or replaced refs stay a hint, not content.
+   * A read writes nothing.
+   */
+  upstreamContent(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionResult<UpstreamContentValue>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(upstreamContentSchema, body);
+      if (!parsed.ok) return parsed;
+      if (!this.projectSpaceDirectory()) return fail('not-found');
+      const scope = parsed.value.spaceId;
+      if (!this.scopeHeld(actor.value.spaceIds, scope)) return fail('not-found');
+      // Authorize the downstream node first: the member must belong to its task.
+      const space = await this.gateSpaceScoped(parsed.value.taskId, actor.value.spaceIds, scope);
+      if (space === 'missing' || !space.ok) return space === 'missing' ? fail('not-found') : space;
+      const downstream = this.storage.readNode(nodeRecordKey(parsed.value));
+      if (!downstream || !intactNode(downstream)) return fail('not-found');
+      const membership = planMembership(
+        this.workbench.readWorkbench(),
+        downstream.taskId,
+        actor.value.actorId,
+      );
+      if (membership !== 'allowed') return fail('not-found');
+      // The frozen ref must be exactly one of this node's declared inputs.
+      const ref = (downstream.handoff.inputRefs ?? []).find(
+        (input) =>
+          input.sourceNodeId === parsed.value.sourceNodeId &&
+          input.artifactVersionId === parsed.value.artifactVersionId,
+      );
+      if (!ref) return fail('not-found');
+      // Read the source node in the same task.
+      const source = this.storage.readNode(
+        nodeRecordKey({
+          taskId: parsed.value.taskId,
+          planId: parsed.value.planId,
+          revision: parsed.value.revision,
+          nodeId: parsed.value.sourceNodeId,
+        }),
+      );
+      if (!source || !intactNode(source)) return fail('not-found');
+      // The source's current accepted version must be exactly the pinned one:
+      // pending or replaced refs stay a hint and never serve content.
+      if (source.acceptedArtifactVersionId !== parsed.value.artifactVersionId) {
+        return fail('not-found');
+      }
+      const artifact = source.artifactVersions.find(
+        (item) => item.id === parsed.value.artifactVersionId,
+      );
+      if (!artifact) return fail('not-found');
+      return {
+        ok: true,
+        value: {
+          actorId: actor.value.actorId,
+          ...(scope === undefined ? {} : { spaceId: scope }),
+          source: {
+            nodeId: parsed.value.sourceNodeId,
+            taskId: parsed.value.taskId,
+            planId: parsed.value.planId,
+            revision: parsed.value.revision,
+          },
+          version: { id: artifact.id, version: artifact.version },
+          content: {
+            ...(artifact.text === undefined ? {} : { text: artifact.text }),
+            links: artifact.links,
+            files: artifact.files,
+          },
+        },
+      };
+    });
+  }
+
   revision(
     caller: ExecutionCaller,
     body: unknown,

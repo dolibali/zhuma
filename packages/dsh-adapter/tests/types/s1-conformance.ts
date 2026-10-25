@@ -139,6 +139,7 @@ type ServiceMethodName =
   | 'settle'
   | 'report'
   | 'revision'
+  | 'upstreamContent'
   | 'draft'
   | 'inboxCounts'
   | 'events'
@@ -169,6 +170,9 @@ export type ReportMethodBoth = Assert<
 >;
 export type RevisionMethodBoth = Assert<
   Both<ExecutionService['revision'], ExecutionServiceMethods['revision']>
+>;
+export type UpstreamContentMethodBoth = Assert<
+  Both<ExecutionService['upstreamContent'], ExecutionServiceMethods['upstreamContent']>
 >;
 export type DraftMethodBoth = Assert<
   Both<ExecutionService['draft'], ExecutionServiceMethods['draft']>

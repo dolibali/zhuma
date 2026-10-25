@@ -128,6 +128,7 @@ export type ExecutionEndpoints = readonly [
   'report',
   'revision',
   'draft',
+  'upstream-content',
   'inbox-counts',
   'events',
 ];
@@ -312,6 +313,33 @@ export interface EventsValue {
   readonly nodeId: string;
   readonly events: readonly ExecutionEvent[];
 }
+/** Pinned upstream input content query: full downstream location, source, pinned version. */
+export interface UpstreamContentRequest {
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly sourceNodeId: string;
+  readonly artifactVersionId: string;
+  readonly spaceId?: string | undefined;
+}
+export interface UpstreamContentValue {
+  readonly actorId: string;
+  readonly spaceId?: string | undefined;
+  readonly source: {
+    readonly nodeId: string;
+    readonly taskId: string;
+    readonly planId: string;
+    readonly revision: number;
+  };
+  readonly version: { readonly id: string; readonly version: number };
+  readonly content: {
+    readonly text?: string;
+    readonly links: readonly string[];
+    readonly files: readonly ArtifactFileRef[];
+  };
+}
+
 export interface ChannelInboxValue {
   readonly actorId: string;
   /** Echoes the requested scope so the caller can verify the answer matches. */
@@ -372,6 +400,10 @@ export interface ExecutionServiceMethods {
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   report(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<ReportValue>>;
   revision(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<RevisionValue>>;
+  upstreamContent(
+    caller: ExecutionCaller,
+    body: unknown,
+  ): Promise<ExecutionChannelResult<UpstreamContentValue>>;
   draft(
     caller: ExecutionCaller,
     body: unknown,
@@ -389,6 +421,10 @@ export interface ExecutionRoutes {
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
   readonly report: { readonly body: ReportRequest; readonly value: ReportValue };
   readonly revision: { readonly body: RevisionRequest; readonly value: RevisionValue };
+  readonly 'upstream-content': {
+    readonly body: UpstreamContentRequest;
+    readonly value: UpstreamContentValue;
+  };
   readonly draft: {
     readonly body: RevisionRequest | DeliveryDraftWrite;
     readonly value: SavedDeliveryDraft;

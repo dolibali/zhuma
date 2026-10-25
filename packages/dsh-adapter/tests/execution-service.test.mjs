@@ -3153,3 +3153,184 @@ test('a held scope still returns directory failure instead of an empty projectio
   assert.equal(JSON.stringify(ghost).includes('space-down-4e1'), false);
   assert.equal(JSON.stringify(ghost).includes('directory-secret-4e1'), false);
 });
+
+test('upstreamContent serves the pinned accepted input to the downstream assignee, read-only', async () => {
+  // design delivers and both reviewers approve; publish unlocks with a frozen ref.
+  const lin = {
+    id: 'lin',
+    name: '林夏',
+    kind: 'human',
+    role: '复核',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const zhao = {
+    id: 'zhao',
+    name: '赵岚',
+    kind: 'human',
+    role: '复核',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const design = workflowNode({
+    id: 'design',
+    title: '设计',
+    reviewerIds: ['lin', 'zhao'],
+    reviewRequired: true,
+  });
+  const publish = workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] });
+  const { state, applied } = confirm([design, publish], [lin, zhao]);
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const version = store.node('design').command.version;
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', version, 'deliver-1'),
+    text: '接口定义正文',
+    links: ['https://example.internal/spec'],
+  });
+  assert.equal(submitted.ok, true);
+  const roundId = submitted.value.node.currentRoundId;
+  const artifactVersionId = submitted.value.node.artifacts.at(-1).id;
+  for (const reviewer of ['lin', 'zhao']) {
+    const vote = await service.ballot(session(reviewer), {
+      ...locate(applied, 'design', store.node('design').command.version, `vote-${reviewer}`),
+      roundId,
+      artifactVersionId,
+      action: 'approve',
+    });
+    assert.equal(vote.ok, true, JSON.stringify(vote.ok ? '' : vote.error));
+  }
+  assert.equal(store.node('design').command.status, 'completed');
+  assert.equal(store.node('publish').command.status, 'ready');
+  const pinned = store.node('publish').handoff.inputRefs[0];
+  assert.equal(pinned.sourceNodeId, 'design');
+  assert.equal(pinned.artifactVersionId, artifactVersionId);
+
+  const factsBefore = JSON.stringify(store.node('publish'));
+  const eventsBefore = (store.node('design').events ?? []).length;
+
+  // The downstream assignee reads the pinned accepted content.
+  const content = await service.upstreamContent(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'publish',
+    sourceNodeId: 'design',
+    artifactVersionId: pinned.artifactVersionId,
+  });
+  assert.equal(content.ok, true, JSON.stringify(content.ok ? '' : content.error));
+  if (!content.ok) return;
+  assert.equal(content.value.actorId, 'chen');
+  assert.equal(content.value.source.nodeId, 'design');
+  assert.equal(content.value.version.version, 1);
+  assert.equal(content.value.content.text, '接口定义正文');
+  assert.deepEqual(content.value.content.links, ['https://example.internal/spec']);
+  assert.deepEqual(content.value.content.files, []);
+
+  // Read-only: no artifact/round/receipt/event is produced by the read.
+  assert.equal(JSON.stringify(store.node('publish')), factsBefore);
+  assert.equal((store.node('design').events ?? []).length, eventsBefore);
+
+  // Repeated reads are stable.
+  const again = await service.upstreamContent(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'publish',
+    sourceNodeId: 'design',
+    artifactVersionId: pinned.artifactVersionId,
+  });
+  assert.deepEqual(again, content);
+});
+
+test('upstreamContent refuses without leaking: non-participant, wrong version, replaced pin, wrong scope', async () => {
+  const lin = {
+    id: 'lin',
+    name: '林夏',
+    kind: 'human',
+    role: '复核',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const design = workflowNode({
+    id: 'design',
+    title: '设计',
+    reviewerIds: ['lin'],
+    reviewRequired: true,
+  });
+  const publish = workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] });
+  const { state, applied } = confirm([design, publish], [lin]);
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'deliver-1'),
+    text: '正文',
+  });
+  const roundId = submitted.value.node.currentRoundId;
+  const artifactVersionId = submitted.value.node.artifacts.at(-1).id;
+  await service.ballot(session('lin'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'vote-lin'),
+    roundId,
+    artifactVersionId,
+    action: 'approve',
+  });
+  const pinned = store.node('publish').handoff.inputRefs[0];
+  const base = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'publish',
+    sourceNodeId: 'design',
+    artifactVersionId: pinned.artifactVersionId,
+  };
+  const factsBefore = JSON.stringify(store.node('design'));
+
+  // A member who is not a task participant reads nothing.
+  const outsider = await service.upstreamContent(session('outside'), base);
+  assert.equal(outsider.ok, false);
+  assert.equal(outsider.error.code, 'not-found');
+
+  // A version that is not the pinned ref refuses.
+  const wrongVersion = await service.upstreamContent(session('chen'), {
+    ...base,
+    artifactVersionId: 'artifact:other',
+  });
+  assert.equal(wrongVersion.ok, false);
+  assert.equal(wrongVersion.error.code, 'not-found');
+
+  // A node that does not declare this input refuses.
+  const notDeclared = await service.upstreamContent(session('chen'), {
+    ...base,
+    sourceNodeId: 'publish',
+  });
+  assert.equal(notDeclared.ok, false);
+  assert.equal(notDeclared.error.code, 'not-found');
+
+  // Wrong space scope refuses.
+  const wrongScope = await service.upstreamContent(session('chen', ['team-south']), base);
+  assert.equal(wrongScope.ok, false);
+  assert.equal(wrongScope.error.code, 'not-found');
+
+  // After the source's accepted version moves on, the pinned ref is replaced.
+  // (Test-level medium change: a completed node cannot be resubmitted.)
+  const designRecord = store.node('design');
+  const replacedRecord = {
+    ...designRecord,
+    acceptedArtifactVersionId: 'artifact:newer-version',
+  };
+  await store.storage.writeNode(nodeRecordKey(designRecord), replacedRecord);
+  // The pin is now replaced; reading it stays a hint, not content.
+  const replaced = await service.upstreamContent(session('chen'), base);
+  assert.equal(replaced.ok, false);
+  assert.equal(replaced.error.code, 'not-found');
+
+  // No read wrote anything.
+  assert.equal(JSON.stringify(store.node('design')) === factsBefore, false); // second submit changed it
+  const afterRefusals = JSON.stringify(store.node('design'));
+  const again = await service.upstreamContent(session('chen'), base);
+  assert.equal(again.ok, false);
+  assert.equal(JSON.stringify(store.node('design')), afterRefusals);
+});
