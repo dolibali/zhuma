@@ -1,0 +1,117 @@
+{
+  "target": "dolibali/zhuma PR95",
+  "images": [
+    {
+      "file": "member-light-wide.png",
+      "bytes": 42555,
+      "sha256": "4611a6c538d50c447297b3500777fa9fc65dcf631671a21f2a6d6e01936be88c",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-dark-default-wide.png",
+      "bytes": 41605,
+      "sha256": "ca19287df865d050ae782db8f21a24dd139be804f9550099c88436d71b576f06",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-light-space-open.png",
+      "bytes": 57235,
+      "sha256": "b8045416368292caee6b9cd71684d04862e83948331f0d2f5d80c84ff523ea13",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-dark-space-open.png",
+      "bytes": 55999,
+      "sha256": "a92be41e4c76855142fd6b35a15151bbd58d9ddfd99d63d1e4cfa9190c5de741",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-light-account-open.png",
+      "bytes": 56845,
+      "sha256": "1b6c1e60b84accc6da490f0b115c1440d722446f465dbb4b9dbc82d997473736",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-dark-account-open.png",
+      "bytes": 54060,
+      "sha256": "fb3c349a27c5fe8235927be6d47e9b172866aeec6f04f4e4c7cd69d175301332",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-light-footer-focus-full.png",
+      "bytes": 43449,
+      "sha256": "0cc2a7da5bfeb980c05ba978d13adf963aac09527d3351469ed22102ca2b88fa",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-dark-wide.png",
+      "bytes": 42363,
+      "sha256": "68e4213682e33fc5b685fd293a9b7c5d285482dd8e558d922693ebe4238e73e6",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-dark-rail-stable.png",
+      "bytes": 30387,
+      "sha256": "da5cec756c7dcf9306c5c11fc712e586e1f79ab470c58d3aaecc6e256da0392d",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "1440x900",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-light-360-rail-stable.png",
+      "bytes": 24873,
+      "sha256": "6d0d462ec0eabc3ac0b913430968735efa0c417f2d4b252cd2975c577945dd40",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "360x740",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-light-360-spaces-stable.png",
+      "bytes": 42626,
+      "sha256": "87a981c4c392e81ec60b33e9f0b3bbd46f38fa506f5cff9f8e7e70ab72e264ec",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "360x740",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    },
+    {
+      "file": "member-dark-360-account-stable.png",
+      "bytes": 30382,
+      "sha256": "bc4b68d1e357494981501903471821298d5f510e5c84d8d426ee6a10396b6d2e",
+      "sourceHead": "5471b416cdb111a4d6956cc4d16d29104390a5d4",
+      "viewport": "360x740",
+      "personallyViewed": true,
+      "actual": "official Web/distribution Host, synthetic member/project, real test Cookie, no models"
+    }
+  ],
+  "privacy": "No user attachments, real users, credentials, personal paths or private materials",
+  "authorizationBasis": "Explicit user approval for this collection and subsequent inspected, sanitized project UI evidence publication",
+  "exclusions": "Transition frames and rejected495 surface/focus screenshots excluded; no full personal/team expert restoration, complete delivery chain, models or native/install claim",
+  "sourceAfterNormalSync": "10ccd1c3a4c5f205101ff3815a6dbf7ed4e94443; normal sync only added the independently reviewed acceptance test; Client and Host product source trees equal capture547"
+}
