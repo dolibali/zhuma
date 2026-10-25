@@ -4006,6 +4006,67 @@ html[data-platform='darwin'] .zm-shell-chrome {
   margin: 4px 0 0;
   font-size: 12px;
 }
+.zm-upstream-disclosure {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.zm-upstream-disclosure > summary {
+  width: fit-content;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--zm-action);
+  cursor: pointer;
+}
+.zm-upstream-disclosure > summary:hover {
+  background: var(--zm-hover);
+}
+.zm-upstream-disclosure > summary:focus-visible {
+  outline: 2px solid var(--zm-focus);
+  outline-offset: 2px;
+}
+.zm-upstream-content,
+.zm-upstream-error {
+  margin-top: 8px;
+}
+.zm-upstream-content h4 {
+  margin: 12px 0 8px;
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+.zm-upstream-body {
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  background: var(--zm-bg);
+  border: 1px solid var(--zm-line);
+  border-radius: 6px;
+  line-height: 1.65;
+}
+.zm-upstream-body:focus-visible {
+  outline: 2px solid var(--zm-focus);
+  outline-offset: 2px;
+}
+.zm-upstream-content .zm-upstream-links {
+  margin-top: 12px;
+}
+.zm-upstream-links li + li,
+.zm-upstream-files li + li {
+  margin-top: 6px;
+}
+.zm-upstream-files li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.zm-upstream-files span,
+.zm-upstream-files p {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-upstream-error p {
+  margin: 0 0 6px;
+  color: var(--zm-danger);
+}
 .zm-revision-workspace {
   display: grid;
   gap: 20px;

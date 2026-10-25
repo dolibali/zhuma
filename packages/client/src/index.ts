@@ -14,6 +14,8 @@ export type {
   InboxPlaceWire,
   ExecutionNodeWire,
   UpstreamInputWire,
+  UpstreamContentQuery,
+  UpstreamContentWire,
   SavedDeliveryDraftWire,
   DeliveryDraftSave,
   ReviewDraft,

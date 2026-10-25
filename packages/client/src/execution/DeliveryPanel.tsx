@@ -51,7 +51,7 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
         </div>
       </div>
       {node.expectedOutput && <p className="zm-execution-hint">交付内容：{node.expectedOutput}</p>}
-      <UpstreamInputsPanel inputs={node.inputs} />
+      <UpstreamInputsPanel inputs={node.inputs} api={api} node={node} />
       {upstreamBlocked && <p role="status">上游输入不可用，暂不能提交；仍可保存草稿。</p>}
       {!available && <p role="status">当前节点已不接受交付，请刷新待办。</p>}
       <p role="status" className="zm-draft-status">

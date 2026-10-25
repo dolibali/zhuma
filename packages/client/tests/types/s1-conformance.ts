@@ -10,6 +10,8 @@ import {
   createExecutionApi,
   type ExecutionApi as ClientExecutionApi,
   type UpstreamInputWire,
+  type UpstreamContentQuery,
+  type UpstreamContentWire,
   type ExecutionNodeWire as ClientExecutionNodeWire,
   type SavedDeliveryDraftWire,
   type DeliveryDraftSave,
@@ -43,6 +45,8 @@ import type {
   RevisionValue,
   SavedDeliveryDraft,
   DeliveryDraftWrite,
+  UpstreamContentRequest,
+  UpstreamContentValue,
 } from '../../../dsh-adapter/dist/s1-integration.js';
 
 type Assignable<A, B> = [A] extends [B] ? true : false;
@@ -67,7 +71,7 @@ export const reviewMatches = ReviewWorkspace satisfies (
 // The frozen common API remains exact; the new Client read is independently checked against #80's channel DTO.
 type ExistingClientApi = Omit<
   ClientExecutionApi,
-  'revision' | 'readDeliveryDraft' | 'saveDeliveryDraft'
+  'revision' | 'readDeliveryDraft' | 'saveDeliveryDraft' | 'upstreamContent'
 >;
 export type CreateApiBoth = Assert<
   Both<(...args: Parameters<typeof createExecutionApi>) => ExistingClientApi, CreateExecutionApi>
@@ -89,6 +93,13 @@ export type UpstreamInputBoth = Assert<
 export type UpstreamPropertyBoth = Assert<
   Both<Pick<ClientExecutionNodeWire, 'inputs'>, Pick<ExecutionNodeView, 'inputs'>>
 >;
+export type UpstreamContentBodyBoth = Assert<
+  Both<
+    Omit<UpstreamContentQuery, 'expectedArtifactVersion'> & { readonly spaceId: string },
+    UpstreamContentRequest
+  >
+>;
+export type UpstreamContentValueBoth = Assert<Both<UpstreamContentWire, UpstreamContentValue>>;
 export type DraftValueBoth = Assert<Both<SavedDeliveryDraftWire, SavedDeliveryDraft>>;
 export type DraftWriteBoth = Assert<Both<DeliveryDraftSave, DeliveryDraftWrite>>;
 export type DraftReadBoth = Assert<
