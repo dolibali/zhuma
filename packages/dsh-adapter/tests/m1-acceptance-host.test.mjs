@@ -4,14 +4,29 @@
  * cookies; a confirmed plan is seeded through the Host-level workbench seed
  * (recorded below), never impersonating member creation. No browser, no model
  * call, no external execution. GUI evidence stays with the coordinator.
+ *
+ * `S1A_HOST_MODULE` is the Host entry for every boot. When a caller has not
+ * set it, this file binds the built package entry so the source commit and
+ * that file's digest are what the run records. A release-byte run sets the
+ * variable to the emitted bundle instead; this file does not replace a value
+ * that is already set. The seven Host release cases are a separate proof.
  */
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { hashPassword } from '../dist/identity-session.js';
-import { startAcceptanceHost } from './fixtures/m1-acceptance-harness.mjs';
+import { acceptanceModulePath, startAcceptanceHost } from './fixtures/m1-acceptance-harness.mjs';
+
+if (process.env.S1A_HOST_MODULE === undefined) {
+  process.env.S1A_HOST_MODULE = fileURLToPath(new URL('../dist/host-plugin.js', import.meta.url));
+}
+
+const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
 const PASSWORDS = {
   chen: 'chen-acceptance-secret',
@@ -138,9 +153,89 @@ function locate(plan, nodeId, extra = {}) {
   };
 }
 
+const executionPath = (directory) => join(directory, 'storages', 'zhuma_execution.json');
+
+async function executionText(directory) {
+  try {
+    return await readFile(executionPath(directory), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function executionFacts(text) {
+  const document = JSON.parse(text);
+  const nodes = {};
+  for (const record of Object.values(document.tables.nodes)) nodes[record.nodeId] = record;
+  return { nodes, plans: document.tables.plans };
+}
+
+/** Fields a restart must still show. Dropping one makes the loss controls below equal. */
+function retained(facts) {
+  const design = facts.nodes.design;
+  const publish = facts.nodes.publish;
+  return {
+    designDraft: design.deliveryDraft ?? null,
+    designReceipts: design.receipts,
+    designEvents: design.events ?? [],
+    designRounds: design.rounds,
+    designArtifacts: design.artifactVersions,
+    designComments: design.comments,
+    designStatus: design.command.status,
+    designVersion: design.command.version,
+    publishReceipts: publish.receipts,
+    publishEvents: publish.events ?? [],
+    publishStatus: publish.command.status,
+    publishVersion: publish.command.version,
+    plans: facts.plans,
+  };
+}
+
+function assertLossVisible(text, mutate) {
+  const original = retained(executionFacts(text));
+  const copy = structuredClone(executionFacts(text));
+  mutate(copy);
+  assert.notDeepEqual(retained(copy), original);
+}
+
+async function assertBoundModule(host) {
+  const modulePath = acceptanceModulePath();
+  assert.equal(isAbsolute(modulePath), true);
+  assert.equal(host.boundModule.modulePath, modulePath);
+  assert.equal(
+    host.boundModule.contentDigest,
+    createHash('sha256')
+      .update(await readFile(modulePath))
+      .digest('hex'),
+  );
+  assert.equal(
+    host.boundModule.sourceSha,
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(),
+  );
+  assert.match(host.boundModule.sourceSha, /^[0-9a-f]{40}$/);
+  assert.match(host.boundModule.contentDigest, /^[0-9a-f]{64}$/);
+}
+
+async function listedEvents(host, plan, nodeId, cookie) {
+  const result = await host.exec(
+    'events',
+    {
+      taskId: plan.taskId,
+      planId: plan.planId ?? plan.id,
+      revision: plan.revision,
+      nodeId,
+      after: 0,
+    },
+    cookie,
+  );
+  assert.equal(result.result?.ok, true, JSON.stringify(result.result ?? result));
+  return result.result.value.events;
+}
+
 test(
   'M1 acceptance: seeded confirmed plan runs the text loop to downstream unlock, surviving a real restart',
-  { timeout: 60000 },
+  { timeout: 90000 },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'zhuma-m1-acceptance-'));
     let host;
@@ -151,10 +246,16 @@ test(
         spaceDirectoryImport,
         workbenchSeed,
       });
+      await assertBoundModule(host);
+      assert.equal(host.seeded, true);
+      assert.equal(
+        (await host.act('inspect')).opened.filter((name) => name === 'zhuma_workbench').length,
+        2,
+      );
 
-      const chen = await host.login('chen', PASSWORDS.chen);
-      const lin = await host.login('lin', PASSWORDS.lin);
-      const zhao = await host.login('zhao', PASSWORDS.zhao);
+      let chen = await host.login('chen', PASSWORDS.chen);
+      let lin = await host.login('lin', PASSWORDS.lin);
+      let zhao = await host.login('zhao', PASSWORDS.zhao);
       const outside = await host.login('outside', PASSWORDS.outside);
 
       // The confirmed plan is discoverable for the member.
@@ -189,6 +290,28 @@ test(
       );
       assert.equal(draft.result.ok, true, JSON.stringify(draft.result));
       assert.equal(draft.result.value.version, 1);
+      assert.equal(draft.result.value.text, '接口说明草稿');
+
+      // Reopen after the draft is saved and read the same content and version back.
+      await host.close();
+      host = await startAcceptanceHost(directory, {
+        deploymentMode: 'multi-member',
+        identityImport,
+        spaceDirectoryImport,
+      });
+      await assertBoundModule(host);
+      assert.equal(host.seeded, false);
+      chen = await host.login('chen', PASSWORDS.chen);
+      lin = await host.login('lin', PASSWORDS.lin);
+      zhao = await host.login('zhao', PASSWORDS.zhao);
+      const draftAgain = await host.exec('draft', locate(plan, 'design'), chen);
+      assert.equal(draftAgain.result.ok, true, JSON.stringify(draftAgain.result));
+      assert.deepEqual(draftAgain.result.value, {
+        version: 1,
+        text: '接口说明草稿',
+        links: [],
+        files: [],
+      });
 
       const inbox0 = await host.exec('inbox', {}, chen);
       assert.equal(inbox0.result?.ok, true, JSON.stringify(inbox0.result ?? inbox0));
@@ -236,6 +359,26 @@ test(
       );
       assert.equal(back.result.ok, true, JSON.stringify(back.result));
       assert.equal(back.result.value.node.status, 'needs-revision');
+
+      // The submit tombstone is the cross-round boundary: version advanced, body cleared.
+      const tombstone = await host.exec('draft', locate(plan, 'design'), chen);
+      assert.equal(tombstone.result.ok, true, JSON.stringify(tombstone.result));
+      assert.deepEqual(tombstone.result.value, { version: 2, text: '', links: [], files: [] });
+      const duringReturn = await executionText(directory);
+      const lateDraft = await host.exec(
+        'draft',
+        locate(plan, 'design', {
+          expectedVersion: 0,
+          idempotencyKey: 'draft-old-round',
+          text: '旧轮正文',
+        }),
+        chen,
+      );
+      assert.equal(lateDraft.result.ok, false);
+      assert.equal(lateDraft.result.error.code, 'conflict');
+      assert.equal(await executionText(directory), duringReturn);
+      const tombstoneStill = await host.exec('draft', locate(plan, 'design'), chen);
+      assert.deepEqual(tombstoneStill.result.value, tombstone.result.value);
 
       // chen reads the returned revision with both reviewers' notes.
       const review = await host.exec('revision', locate(plan, 'design', {}), chen);
@@ -300,28 +443,125 @@ test(
       const publish = afterReport.result.value.reports.find((r) => r.nodeId === 'publish');
       assert.equal(publish.status, 'ready');
 
-      // A real process restart keeps nodes, drafts, rounds, receipts, events.
+      const eventsBefore = {
+        design: await listedEvents(host, plan, 'design', chen),
+        publish: await listedEvents(host, plan, 'publish', chen),
+      };
+      const revisionBefore = await host.exec('revision', locate(plan, 'design'), chen);
+      assert.equal(revisionBefore.result.ok, true, JSON.stringify(revisionBefore.result));
+      const storedBefore = await executionText(directory);
+      const kept = retained(executionFacts(storedBefore));
+      assert.deepEqual(kept.designDraft, {
+        version: 3,
+        idempotencyKey: '',
+        fingerprint: '',
+        text: '',
+        links: [],
+        files: [],
+      });
+      assert.equal(kept.designStatus, 'completed');
+      assert.equal(kept.publishStatus, 'ready');
+      assert.equal(kept.designArtifacts.length, 2);
+      assert.equal(kept.designRounds.length, 2);
+      assert.ok(kept.designRounds.some((round) => round.status === 'changes-requested'));
+      assert.ok(kept.designRounds.some((round) => round.status === 'approved'));
+      assert.ok(
+        kept.designRounds.some((round) =>
+          round.ballots.some((ballot) => (ballot.comment ?? '').includes('补充错误码表')),
+        ),
+      );
+      assert.ok(
+        kept.designRounds.some((round) =>
+          round.ballots.some((ballot) => (ballot.comment ?? '').includes('错误码请附示例')),
+        ),
+      );
+      assert.ok(kept.designReceipts.length > 0);
+      assert.ok(kept.designEvents.length > 0);
+      assert.ok(kept.publishEvents.length > 0);
+      assert.deepEqual(
+        eventsBefore.design.map((event) => event.eventId),
+        kept.designEvents.map((event) => event.eventId),
+      );
+      assert.deepEqual(
+        eventsBefore.publish.map((event) => event.eventId),
+        kept.publishEvents.map((event) => event.eventId),
+      );
+      // Losing the tombstone, receipts, or events must make this same comparison fail.
+      assertLossVisible(storedBefore, (facts) => {
+        facts.nodes.design.deliveryDraft = undefined;
+      });
+      assertLossVisible(storedBefore, (facts) => {
+        facts.nodes.design.receipts = [];
+        facts.nodes.publish.receipts = [];
+      });
+      assertLossVisible(storedBefore, (facts) => {
+        facts.nodes.design.events = [];
+        facts.nodes.publish.events = [];
+      });
+
       await host.close();
       host = await startAcceptanceHost(directory, {
         deploymentMode: 'multi-member',
         identityImport,
         spaceDirectoryImport,
       });
+      await assertBoundModule(host);
+      assert.equal(host.seeded, false);
+      assert.equal(
+        (await host.act('inspect')).opened.filter((name) => name === 'zhuma_workbench').length,
+        1,
+      );
       const chenAgain = await host.login('chen', PASSWORDS.chen);
+      assert.equal(await executionText(directory), storedBefore);
+      assert.deepEqual(retained(executionFacts(await executionText(directory))), kept);
+      const eventsAfter = {
+        design: await listedEvents(host, plan, 'design', chenAgain),
+        publish: await listedEvents(host, plan, 'publish', chenAgain),
+      };
+      assert.deepEqual(eventsAfter, eventsBefore);
+      const revisionAfter = await host.exec('revision', locate(plan, 'design'), chenAgain);
+      assert.deepEqual(revisionAfter.result.value.view, revisionBefore.result.value.view);
       const afterRestart = await host.exec('report', planRef(plan), chenAgain);
       assert.equal(afterRestart.result.ok, true, JSON.stringify(afterRestart.result));
-      const designAfter = afterRestart.result.value.reports.find((r) => r.nodeId === 'design');
-      assert.equal(designAfter.status, 'completed');
-      assert.equal(
-        afterRestart.result.value.reports.find((r) => r.nodeId === 'publish').status,
-        'ready',
-      );
+      assert.deepEqual(afterRestart.result.value.reports, afterReport.result.value.reports);
       const inboxAfter = await host.exec('inbox', {}, chenAgain);
       assert.equal(inboxAfter.result.ok, true);
       assert.ok(
         inboxAfter.result.value.items.some((item) => item.nodeId === 'publish'),
         'publish must be in the inbox after restart',
       );
+
+      const bytesAfterRead = await executionText(directory);
+      const startAgain = await host.exec(
+        'start-plan',
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          idempotencyKey: 'start-portal-1',
+        },
+        chenAgain,
+      );
+      assert.equal(startAgain.result.ok, true, JSON.stringify(startAgain.result));
+      assert.equal(startAgain.result.value.disposition, 'replayed');
+      assert.equal(await executionText(directory), bytesAfterRead);
+      const submitAgain = await host.exec(
+        'submit',
+        locate(plan, 'design', {
+          expectedVersion: version1,
+          idempotencyKey: 'deliver-design-2',
+          text: '接口定义 v2，含错误码表',
+          links: ['https://example.internal/spec-v2'],
+        }),
+        chenAgain,
+      );
+      assert.equal(submitAgain.result.ok, true, JSON.stringify(submitAgain.result));
+      assert.equal(submitAgain.result.value.disposition, 'replayed');
+      assert.deepEqual(
+        submitAgain.result.value.node.artifacts.map((item) => item.id),
+        kept.designArtifacts.map((item) => item.id),
+      );
+      assert.equal(await executionText(directory), bytesAfterRead);
     } finally {
       if (host) await host.close();
       await rm(directory, { recursive: true, force: true });
@@ -331,7 +571,7 @@ test(
 
 test(
   'M1 acceptance negatives: unauthorized member refused, same-key replays, stale versions conflict, no phantom artifacts',
-  { timeout: 60000 },
+  { timeout: 90000 },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'zhuma-m1-acceptance-neg-'));
     let host;
@@ -342,8 +582,9 @@ test(
         spaceDirectoryImport,
         workbenchSeed,
       });
+      await assertBoundModule(host);
+      assert.equal(host.seeded, true);
       const chen = await host.login('chen', PASSWORDS.chen);
-      const lin = await host.login('lin', PASSWORDS.lin);
       const outside = await host.login('outside', PASSWORDS.outside);
 
       const startable = await host.exec('startable', {}, chen);
@@ -351,6 +592,7 @@ test(
       assert.ok(plan);
 
       // Unauthorized member: no discovery, no start, no read — nothing leaks.
+      const beforeRefusal = await executionText(directory);
       const outsideStartable = await host.exec('startable', {}, outside);
       assert.equal(outsideStartable.result.ok, true);
       assert.deepEqual(outsideStartable.result.value.plans, []);
@@ -366,6 +608,10 @@ test(
       );
       assert.equal(outsideStart.result.ok, false);
       assert.equal(outsideStart.result.error.code, 'not-found');
+      const outsideRead = await host.exec('report', planRef(plan), outside);
+      assert.equal(outsideRead.result.ok, false);
+      assert.equal(outsideRead.result.error.code, 'not-found');
+      assert.equal(await executionText(directory), beforeRefusal);
 
       // Explicit start by the assignee.
       const started = await host.exec(
@@ -379,6 +625,12 @@ test(
         chen,
       );
       assert.equal(started.result.ok, true);
+      const afterStart = await executionText(directory);
+      const startedFacts = retained(executionFacts(afterStart));
+      const startedEvents = {
+        design: await listedEvents(host, plan, 'design', chen),
+        publish: await listedEvents(host, plan, 'publish', chen),
+      };
 
       // Same key replays without a second start (no duplicate nodes/events).
       const replay = await host.exec(
@@ -393,10 +645,22 @@ test(
       );
       assert.equal(replay.result.ok, true);
       assert.equal(replay.result.value.disposition, 'replayed');
+      assert.deepEqual(replay.result.value.reports, started.result.value.reports);
+      assert.equal(await executionText(directory), afterStart);
+      assert.deepEqual(retained(executionFacts(await executionText(directory))), startedFacts);
+      assert.deepEqual(
+        {
+          design: await listedEvents(host, plan, 'design', chen),
+          publish: await listedEvents(host, plan, 'publish', chen),
+        },
+        startedEvents,
+      );
 
       // Stale expectedVersion refuses, writes nothing.
       const inbox0 = await host.exec('inbox', {}, chen);
       const current = inbox0.result.value.nodes.find((n) => n.nodeId === 'design').version;
+      const beforeStale = await executionText(directory);
+      const staleFacts = retained(executionFacts(beforeStale));
       const stale = await host.exec(
         'submit',
         locate(plan, 'design', {
@@ -408,6 +672,8 @@ test(
       );
       assert.equal(stale.result.ok, false);
       assert.equal(stale.result.error.code, 'conflict');
+      assert.equal(await executionText(directory), beforeStale);
+      assert.deepEqual(retained(executionFacts(beforeStale)), staleFacts);
 
       // The retry with the same key and the same body replays.
       const submit = await host.exec(
@@ -420,6 +686,9 @@ test(
         chen,
       );
       assert.equal(submit.result.ok, true, JSON.stringify(submit.result));
+      const afterSubmit = await executionText(directory);
+      const submittedFacts = retained(executionFacts(afterSubmit));
+      const submittedEvents = await listedEvents(host, plan, 'design', chen);
       const replaySubmit = await host.exec(
         'submit',
         locate(plan, 'design', {
@@ -431,14 +700,80 @@ test(
       );
       assert.equal(replaySubmit.result.ok, true);
       assert.equal(replaySubmit.result.value.disposition, 'replayed');
+      assert.deepEqual(replaySubmit.result.value.report, submit.result.value.report);
+      assert.deepEqual(replaySubmit.result.value.node, submit.result.value.node);
+      assert.equal(await executionText(directory), afterSubmit);
+      assert.deepEqual(retained(executionFacts(afterSubmit)), submittedFacts);
+      assert.deepEqual(await listedEvents(host, plan, 'design', chen), submittedEvents);
+      assert.deepEqual(
+        submittedFacts.designArtifacts.map((item) => item.id),
+        ['artifact:deliver-neg-1'],
+      );
+      assert.equal(submittedFacts.designRounds.length, 1);
+      assert.deepEqual(
+        submittedFacts.designEvents.map((event) => event.eventId),
+        submittedEvents.map((event) => event.eventId),
+      );
+      assert.deepEqual(
+        submittedEvents.map((event) => event.eventId),
+        ['evt:design:1', 'evt:design:2'],
+      );
 
-      // The report still shows a single artifact version for the round.
+      // An extra stored artifact or event must fail the same comparison.
+      assertLossVisible(afterSubmit, (facts) => {
+        facts.nodes.design.artifactVersions = [
+          ...facts.nodes.design.artifactVersions,
+          { id: 'artifact:phantom' },
+        ];
+      });
+      assertLossVisible(afterSubmit, (facts) => {
+        facts.nodes.design.events = [
+          ...(facts.nodes.design.events ?? []),
+          { eventId: 'evt:phantom', sequence: 99, type: 'phantom' },
+        ];
+      });
+
       const report = await host.exec('report', planRef(plan), chen);
       const design = report.result.value.reports.find((r) => r.nodeId === 'design');
       assert.equal(design.reviewOutcome, 'pending');
+      assert.equal(await executionText(directory), afterSubmit);
     } finally {
       if (host) await host.close();
       await rm(directory, { recursive: true, force: true });
     }
   },
 );
+
+test('an explicit missing or non-host S1A_HOST_MODULE fails and does not use another entry', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zhuma-m1-module-'));
+  const probe = fileURLToPath(
+    new URL('./fixtures/m1-acceptance-module-probe.mjs', import.meta.url),
+  );
+  const decoy = join(directory, 'decoy-entry.js');
+  await writeFile(decoy, 'export const marker = "decoy";\n');
+  const cases = [
+    { modulePath: undefined, expect: /S1A_HOST_MODULE must name the Host entry/ },
+    { modulePath: join(directory, 'missing-entry.js'), expect: /does not exist/ },
+    { modulePath: decoy, expect: /Host boot failed/ },
+  ];
+  try {
+    for (const item of cases) {
+      const env = { ...process.env };
+      if (item.modulePath === undefined) delete env.S1A_HOST_MODULE;
+      else env.S1A_HOST_MODULE = item.modulePath;
+      const child = spawnSync(process.execPath, [probe], {
+        env,
+        encoding: 'utf8',
+        timeout: 20000,
+      });
+      assert.equal(
+        child.status,
+        1,
+        `${item.modulePath ?? '(unset)'}\n${child.stdout}\n${child.stderr}`,
+      );
+      assert.match(child.stdout, item.expect, child.stderr);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
