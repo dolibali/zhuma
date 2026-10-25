@@ -582,3 +582,65 @@ diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
    const outgoing = new Headers(response.headers)
    for (const name of WITHHELD_RESPONSE_HEADERS) outgoing.delete(name)
    if (PLUGIN_BUNDLE_PATH.test(source.pathname)) outgoing.set('cache-control', 'no-store')
+
+diff --git a/packages/client/ui-settings-general/src/client/SettingsRoot.module.css b/packages/client/ui-settings-general/src/client/SettingsRoot.module.css
+--- a/packages/client/ui-settings-general/src/client/SettingsRoot.module.css
++++ b/packages/client/ui-settings-general/src/client/SettingsRoot.module.css
+@@ -246,3 +246,57 @@
+    ui-web base.css's `body > :not(#root)` subtraction covers it wherever it
+    overlaps a chrome row's drag — including above every column, which an in-root
+    overlay could not promise once a chrome row declares drag itself. */
++
++/* The fixed desktop rail leaves only 44px for the API-key input at 360px.
++   Keep the same settings dialog and sections, but give small viewports a
++   full-width content column with a horizontally scrollable section strip. */
++@media (max-width: 640px) {
++  .panel {
++    flex-direction: column;
++    width: calc(100vw - 16px);
++    max-width: calc(100vw - 16px);
++    height: min(800px, calc(100dvh - 2 * max(8px, var(--dsh-frame-overlay-top, 8px))));
++  }
++
++  .nav {
++    width: 100%;
++    gap: 8px;
++    padding: 12px 12px 0;
++    border-bottom: 0.5px solid var(--dsw-alias-border-l2);
++  }
++
++  .navTitle {
++    padding: 0 4px;
++  }
++
++  .navList {
++    flex-direction: row;
++    gap: 4px;
++    overflow-x: auto;
++    overflow-y: hidden;
++    padding-bottom: 8px;
++  }
++
++  .navCell {
++    flex: none;
++    white-space: nowrap;
++  }
++
++  .navLabel {
++    flex: none;
++  }
++
++  .content {
++    min-height: 0;
++  }
++
++  .header {
++    height: 40px;
++    padding: 6px 12px;
++  }
++
++  .options {
++    min-width: 0;
++    padding: 0 16px 16px;
++  }
++}
