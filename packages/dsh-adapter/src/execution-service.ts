@@ -43,6 +43,34 @@ import {
   upstreamInputsFor,
   type UpstreamInputView,
 } from './upstream-inputs.js';
+import type { MemberRequest } from './member-session.js';
+import type { NativeWorkGrant } from './native-work-session-contract.js';
+import {
+  ExecutionRunAuthorities,
+  type ExecutionMemberLease,
+  type ExecutionRunAuthoritySource,
+  type ExecutionRunCleanupAuthority,
+} from './execution-run-authority.js';
+import {
+  assertExecutionRunQuiescent,
+  beginExecutionRun,
+  beginExecutionRunSchema,
+  currentExecutionRun,
+  ExecutionRunError,
+  executionRunScope,
+  readExecutionRunState,
+  recordExecutionRunEvent,
+  requestExecutionRunStop,
+  stopExecutionRunSchema,
+  type ExecutionRunDecision,
+  type ExecutionRunEvent,
+} from './execution-run-state.js';
+import {
+  assertExecutionRunStoreCompatibility,
+  enableExecutionRunWriter,
+  ExecutionRunProtocolError,
+  requireExecutionRunWriter,
+} from './execution-run-protocol.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -122,6 +150,45 @@ const draftLocate = {
   nodeId: id,
 };
 const draftReadSchema = z.strictObject(draftLocate);
+const beginRunSchema = beginExecutionRunSchema.omit({ actorId: true }).extend(draftLocate);
+const stopRunSchema = stopExecutionRunSchema
+  .omit({ actorId: true })
+  .extend({ ...draftLocate, spaceId: id });
+export type BeginRunRequest = z.infer<typeof beginRunSchema>;
+export type StopRunRequest = z.infer<typeof stopRunSchema>;
+export type ExecutionNodeLocator = z.infer<typeof draftReadSchema>;
+
+/** Host-only real producers. Omission refuses Run admission; no DTO is a capability. */
+export interface ExecutionRunHostPorts extends Pick<
+  ExecutionRunAuthoritySource,
+  'memberLease' | 'onChange' | 'signal' | 'migrationOrigin' | 'migrationDrain'
+> {
+  /** Current authoritative mapping (and its source lifetime), not a browser-selected space. */
+  assertProjectSpace(projectId: string, spaceId: string): undefined;
+  /** Verify the exact frozen expert/input/model/tool composition and executor readiness. */
+  assertConfiguration(
+    memberId: string,
+    spaceId: string,
+    node: ExecutionNodeRecord,
+    request: BeginRunRequest,
+  ): undefined;
+  assertWorkspace(...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>): undefined;
+}
+
+/** `void` accepts async callbacks in TypeScript. Recheck runtime JS producers too:
+ * only synchronous undefined means the assertion completed. Observe a rejected
+ * promise to avoid an unhandled rejection, but never await it as authorization.
+ */
+function synchronousRunAssertion(result: unknown): undefined {
+  if (result !== undefined) {
+    void Promise.resolve(result).catch(() => undefined);
+    throw new ExecutionRunError('run-authority-unavailable');
+  }
+  return undefined;
+}
+
+export type RunEventAuthority =
+  { readonly grant: NativeWorkGrant } | { readonly cleanup: ExecutionRunCleanupAuthority };
 const DRAFT_LINK_MAX = 2048;
 const DRAFT_LINK_TOTAL_MAX = 8192;
 const DRAFT_FILE_FIELD_MAX = 2048;
@@ -206,6 +273,9 @@ export interface ExecutionStorage {
   readPlan(key: string): PlanReceipt | undefined;
   writePlan(key: string, value: PlanReceipt): Promise<void>;
   listPlans(): readonly { readonly key: string; readonly receipt: PlanReceipt }[];
+  /** Same execution domain global. Optional only for legacy non-Run consumers. */
+  readGlobal?(): unknown;
+  writeGlobal?(value: { schemaVersion: 1; nativeExecutionWriter: 1 }): Promise<void>;
 }
 
 export interface ExecutionFailure {
@@ -653,12 +723,336 @@ function rejectionDetails(
 /** Serializes durable execution commands. One user command writes one node record. */
 export class ExecutionService {
   private writes: Promise<unknown> = Promise.resolve();
+  private readonly runLifetime = new AbortController();
+  private readonly runChanges = new Set<() => void>();
+  private runHost: ExecutionRunHostPorts | undefined;
+  private runAuthorities: ExecutionRunAuthorities | undefined;
 
   constructor(
     private readonly storage: ExecutionStorage,
     private readonly workbench: { readWorkbench(): Workbench },
     private readonly projectSpaces: ProjectSpaceDirectory | undefined,
-  ) {}
+  ) {
+    this.assertRunStoreCompatibility();
+  }
+
+  /** Install once on this owner. A supplies the SAME Host bundle's real member lease issuer. */
+  installRunHost(host: ExecutionRunHostPorts): ExecutionRunAuthorities {
+    if (
+      this.runHost ||
+      this.runLifetime.signal.aborted ||
+      !host ||
+      !(host.signal instanceof AbortSignal) ||
+      host.signal.aborted ||
+      [
+        'memberLease',
+        'assertProjectSpace',
+        'assertConfiguration',
+        'assertWorkspace',
+        'onChange',
+      ].some((key) => typeof (host as unknown as Record<string, unknown>)[key] !== 'function')
+    )
+      throw new ExecutionRunError('run-authority-unavailable');
+    const migrationOrigin = host.migrationOrigin?.bind(host);
+    const migrationDrain = host.migrationDrain?.bind(host);
+    const authorities = new ExecutionRunAuthorities({
+      writerState: () => this.readRunGlobal(),
+      memberLease: (request) => host.memberLease(request),
+      readNode: (locator) => this.readRunNode(locator),
+      assertNodeAccess: (memberId, spaceId, node, action) => {
+        this.assertRunNodeAccess(host, memberId, spaceId, node);
+        if (['send', 'queue', 'stop'].includes(action)) this.assertRunController(memberId, node);
+      },
+      assertWorkspace: (...args) => synchronousRunAssertion(host.assertWorkspace(...args)),
+      onChange: (recheck) => {
+        const stop = host.onChange(recheck);
+        this.runChanges.add(recheck);
+        return () => {
+          this.runChanges.delete(recheck);
+          stop();
+        };
+      },
+      signal: AbortSignal.any([host.signal, this.runLifetime.signal]),
+      ...(migrationOrigin ? { migrationOrigin } : {}),
+      ...(migrationDrain ? { migrationDrain } : {}),
+    });
+    this.runHost = host;
+    this.runAuthorities = authorities;
+    return authorities;
+  }
+
+  /** Host-only current facts, copied so a consumer cannot mutate the domain's live row. */
+  readRunNode(locator: ExecutionNodeLocator): ExecutionNodeRecord | undefined {
+    const parsed = draftReadSchema.parse({
+      taskId: locator.taskId,
+      planId: locator.planId,
+      revision: locator.revision,
+      nodeId: locator.nodeId,
+    });
+    const node = this.storage.readNode(nodeRecordKey(parsed));
+    if (!node) return undefined;
+    if (
+      !intactNode(node) ||
+      node.taskId !== parsed.taskId ||
+      node.planId !== parsed.planId ||
+      node.revision !== parsed.revision ||
+      node.nodeId !== parsed.nodeId
+    )
+      throw new ExecutionRunError('run-state-invalid');
+    readExecutionRunState(node);
+    return structuredClone(node);
+  }
+
+  readRunGlobal(): unknown {
+    if (!this.storage.readGlobal) throw new ExecutionRunError('run-authority-unavailable');
+    return structuredClone(this.storage.readGlobal());
+  }
+
+  /** Explicit opt-in only, after guards are installed. Reads and startup never enable it. */
+  enableRunWriter(): Promise<ExecutionResult<void>> {
+    return this.enqueue(async () => {
+      this.requireRunHost();
+      if (!this.storage.writeGlobal) throw new ExecutionRunError('run-authority-unavailable');
+      await enableExecutionRunWriter(
+        () => this.readRunGlobal(),
+        (next) => this.storage.writeGlobal!(next),
+        this.storage.listNodes(),
+      );
+      return { ok: true, value: undefined };
+    });
+  }
+
+  /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
+  beginRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(beginRunSchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      return this.withRunMember(request, input, async (host, lease, node) => {
+        synchronousRunAssertion(
+          host.assertConfiguration(lease.memberId, input.spaceId, node, input),
+        );
+        synchronousRunAssertion(
+          host.assertWorkspace(
+            lease.memberId,
+            input.spaceId,
+            input.workspace,
+            input.workspace.kind === 'local' ? input.workspace.access : 'read',
+            input.selection.configurationId,
+          ),
+        );
+        const decision = beginExecutionRun(
+          node,
+          this.runInput(input, lease.memberId),
+          this.storage.listNodes(),
+          { expertEnabled: true, executorConnected: true, writerState: this.readRunGlobal() },
+        );
+        lease.assertCurrent(input.spaceId);
+        return this.commitRunDecision(decision);
+      });
+    });
+  }
+
+  stopRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(stopRunSchema, body);
+      if (!parsed.ok) return parsed;
+      return this.withRunMember(request, parsed.value, async (_host, lease, node) => {
+        const { spaceId, ...input } = parsed.value;
+        const run = currentExecutionRun(node);
+        if (!run || run.spaceId !== spaceId || run.actorId !== lease.memberId)
+          throw new ExecutionRunError('run-authority-denied');
+        const decision = requestExecutionRunStop(node, this.runInput(input, lease.memberId));
+        lease.assertCurrent(spaceId);
+        return this.commitRunDecision(decision);
+      });
+    });
+  }
+
+  /** Native bridge only: require a capability issued by THIS owner, never a Client envelope. */
+  recordRunEvent(
+    locator: ExecutionNodeLocator,
+    event: ExecutionRunEvent,
+    authority: RunEventAuthority,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+    return this.enqueue(async () => {
+      requireExecutionRunWriter(this.readRunGlobal());
+      const manager = this.runAuthorities;
+      if (!manager) throw new ExecutionRunError('run-authority-unavailable');
+      const node = this.readRunNode(locator);
+      if (!node || !recordedPlan(this.storage, node))
+        throw new ExecutionRunError('run-authority-denied');
+      const state = readExecutionRunState(node);
+      const run = state?.runs.find((item) => item.attempt.id === event.runId);
+      if (!run) throw new ExecutionRunError('run-scope-mismatch');
+      const capability = 'grant' in authority ? authority.grant : authority.cleanup;
+      if (canonicalPayload(capability.scope) !== canonicalPayload(executionRunScope(node, run)))
+        throw new ExecutionRunError('run-scope-mismatch');
+      // `stop` is permitted by drive grants even while stopping, and denied by
+      // read grants. Checking only `open` would let a history reader emit events.
+      if ('grant' in authority) manager.assertGrant(authority.grant, 'stop');
+      else {
+        if (!['failed', 'stop-pending', 'stopped', 'cleanup'].includes(event.kind))
+          throw new ExecutionRunError('run-authority-denied');
+        manager.assertCleanup(
+          authority.cleanup,
+          event.kind as 'failed' | 'stop-pending' | 'stopped' | 'cleanup',
+        );
+      }
+      return this.commitRunDecision(recordExecutionRunEvent(node, event));
+    });
+  }
+
+  /** Fence driving first. A may still commit capability-checked cleanup during native drain. */
+  fenceRuns(): void {
+    this.runLifetime.abort();
+    this.runAuthorities?.fence();
+  }
+
+  /** Call only after the native owner drained and its cleanup facts committed. */
+  async closeRuns(): Promise<void> {
+    this.fenceRuns();
+    await this.writes;
+    await this.runAuthorities?.close();
+  }
+
+  private requireRunHost(): ExecutionRunHostPorts {
+    const host = this.runHost;
+    if (!host || host.signal.aborted || this.runLifetime.signal.aborted)
+      throw new ExecutionRunError('run-authority-unavailable');
+    return host;
+  }
+
+  private assertRunNodeAccess(
+    host: ExecutionRunHostPorts,
+    memberId: string,
+    spaceId: string,
+    node: ExecutionNodeRecord,
+  ): void {
+    const workbench = this.workbench.readWorkbench();
+    const task = workbench.tasks.find((item) => item.id === node.taskId);
+    if (
+      !task ||
+      !workbench.participants.some(
+        (item) => item.id === memberId && item.kind === 'human' && item.available,
+      ) ||
+      planMembership(workbench, node.taskId, memberId) !== 'allowed' ||
+      !recordedPlan(this.storage, node)
+    )
+      throw new ExecutionRunError('run-authority-denied');
+    synchronousRunAssertion(host.assertProjectSpace(task.projectId, spaceId));
+  }
+
+  private assertRunController(memberId: string, node: ExecutionNodeRecord): void {
+    const task = this.workbench.readWorkbench().tasks.find((item) => item.id === node.taskId);
+    const controller =
+      node.handoff.assignee.kind === 'human'
+        ? node.handoff.assignee.id
+        : node.ownerId === task?.ownerId
+          ? node.ownerId
+          : undefined;
+    if (controller !== memberId) throw new ExecutionRunError('run-not-controller');
+  }
+
+  private async withRunMember(
+    request: MemberRequest,
+    input: ExecutionNodeLocator & { spaceId: string },
+    work: (
+      host: ExecutionRunHostPorts,
+      lease: ExecutionMemberLease,
+      node: ExecutionNodeRecord,
+    ) => Promise<ExecutionResult<ExecutionRunDecision>>,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+    const host = this.requireRunHost();
+    requireExecutionRunWriter(this.readRunGlobal());
+    let lease: ExecutionMemberLease;
+    try {
+      lease = await host.memberLease(request);
+    } catch {
+      throw new ExecutionRunError('run-authority-denied');
+    }
+    try {
+      this.requireRunHost();
+      if (
+        !lease ||
+        !Number.isSafeInteger(lease.expiresAt) ||
+        lease.expiresAt <= Date.now() ||
+        lease.signal.aborted
+      )
+        throw new ExecutionRunError('run-authority-denied');
+      lease.assertCurrent(input.spaceId);
+      const node = this.readRunNode(input);
+      if (!node) throw new ExecutionRunError('run-authority-denied');
+      this.assertRunNodeAccess(host, lease.memberId, input.spaceId, node);
+      this.assertRunController(lease.memberId, node);
+      return await work(host, lease, node);
+    } catch (error) {
+      if (error instanceof ExecutionRunError || error instanceof ExecutionRunProtocolError)
+        throw error;
+      throw new ExecutionRunError('run-authority-denied');
+    } finally {
+      try {
+        lease?.release();
+      } catch {
+        // A release failure cannot turn a durable commit into a retryable write failure.
+        this.fenceRuns();
+      }
+    }
+  }
+
+  private runInput<T extends ExecutionNodeLocator>(input: T, actorId: string) {
+    const { taskId: _task, planId: _plan, revision: _revision, nodeId: _node, ...fields } = input;
+    return { ...fields, actorId };
+  }
+
+  private async commitRunDecision(
+    decision: ExecutionRunDecision,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+    if (decision.disposition === 'applied') {
+      const stored = await this.persist(() => this.writeNode(decision.record, true));
+      if (!stored.ok) return stored;
+    }
+    return { ok: true, value: structuredClone(decision) };
+  }
+
+  private assertRunStoreCompatibility(): void {
+    const nodes = this.storage.listNodes();
+    assertExecutionRunStoreCompatibility(
+      this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
+      nodes,
+    );
+    for (const node of nodes) readExecutionRunState(node);
+  }
+
+  /** Every old writer passes here in the original queue. Never drop native metadata. */
+  private async writeNode(record: ExecutionNodeRecord, native = false): Promise<void> {
+    assertExecutionRunStoreCompatibility(
+      this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
+      [record],
+    );
+    readExecutionRunState(record);
+    const current = this.storage.readNode(nodeRecordKey(record));
+    if (current && !native) {
+      assertExecutionRunQuiescent(current);
+      if (
+        canonicalPayload(readExecutionRunState(current) ?? null) !==
+        canonicalPayload(readExecutionRunState(record) ?? null)
+      )
+        throw new ExecutionRunError('run-state-invalid');
+    }
+    await this.storage.writeNode(nodeRecordKey(record), record);
+    for (const recheck of this.runChanges) {
+      try {
+        recheck();
+      } catch {
+        /* A notification cannot undo a durable commit. */
+      }
+    }
+  }
 
   startPlan(
     caller: ExecutionCaller,
@@ -1047,6 +1441,7 @@ export class ExecutionService {
       );
       if (!opened.ok) return opened;
       const current = opened.value;
+      assertExecutionRunQuiescent(current);
       const text = parsed.value.text ?? '';
       const links = parsed.value.links ?? [];
       const files = draftFiles(parsed.value.files ?? []);
@@ -1077,7 +1472,7 @@ export class ExecutionService {
       }
       if (applied.disposition === 'applied') {
         const stored = await this.persist(() =>
-          this.storage.writeNode(nodeRecordKey(current), {
+          this.writeNode({
             ...current,
             deliveryDraft: applied.draft,
           }),
@@ -1244,7 +1639,11 @@ export class ExecutionService {
   }
 
   private enqueue<T>(work: () => Promise<ExecutionResult<T>>): Promise<ExecutionResult<T>> {
-    const operation = this.writes.then(work, work);
+    const operation = this.writes.then(work, work).catch((error: unknown) => {
+      if (error instanceof ExecutionRunError || error instanceof ExecutionRunProtocolError)
+        return fail(error.code);
+      throw error;
+    });
     this.writes = operation.then(
       () => undefined,
       () => undefined,
@@ -1549,7 +1948,7 @@ export class ExecutionService {
       if (this.storage.readNode(key) === record) continue;
       const stamped = withExecutionEvent(record, 'node-started', actor.value.actorId);
       if (!stamped) return fail('unavailable');
-      const stored = await this.persist(() => this.storage.writeNode(key, stamped));
+      const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
     }
     const compensated = await this.unlockCompleted(taskId, planId, revision);
@@ -1609,6 +2008,7 @@ export class ExecutionService {
     if (membership === 'missing') return fail('not-found');
     if (membership === 'not-participant') return fail('not-participant');
     if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
+    assertExecutionRunQuiescent(current);
     const executed = run(actor.value.actorId, parsed.value, current);
     if (!executed.result.ok) {
       return fail(
@@ -1651,9 +2051,7 @@ export class ExecutionService {
         if (!stamped) return fail('unavailable');
         record = stamped;
       }
-      const stored = await this.persist(() =>
-        this.storage.writeNode(nodeRecordKey(record), record),
-      );
+      const stored = await this.persist(() => this.writeNode(record));
       if (!stored.ok) return stored;
     }
     if (record.command.status === 'completed') {
@@ -1718,9 +2116,7 @@ export class ExecutionService {
       if (!moved.ok || moved.disposition !== 'applied') continue;
       const stamped = withExecutionEvent(moved.record, 'downstream-unlocked', completed.ownerId);
       if (!stamped) return fail('unavailable');
-      const stored = await this.persist(() =>
-        this.storage.writeNode(nodeRecordKey(stamped), stamped),
-      );
+      const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
       unlocked += 1;
     }
@@ -1753,7 +2149,9 @@ export class ExecutionService {
     try {
       await write();
       return { ok: true, value: undefined };
-    } catch {
+    } catch (error) {
+      if (error instanceof ExecutionRunError || error instanceof ExecutionRunProtocolError)
+        return fail(error.code);
       return fail('unavailable');
     }
   }

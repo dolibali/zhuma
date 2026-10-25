@@ -7,9 +7,77 @@ C owns native binding/turns/tools/drain; B supplies the real member and workspac
 
 This first slice implements strict state, durable-before-effect orchestration, capability
 consumption, lifetime cleanup and a storage compatibility barrier. It does **not** certify
-B's lease issuer, its formal write hooks, a native binding handoff, fixed expert submission,
+B's lease issuer, a native binding handoff, fixed expert submission,
 actual workspace tools, normal Host/GUI, model quality or installation. Missing source ports
 refuse; the tests' supplied identities/availability/native facts are explicitly contracts.
+
+## Existing ExecutionService integration
+
+`ExecutionService` now owns Run admission, stop and native-event commits in its existing
+`enqueue`. Its constructor parameters are unchanged. `ExecutionStorage.readGlobal/writeGlobal`
+are optional for old non-Run consumers; the product plugin supplies closures over its same
+`zhuma_execution` domain. Startup validates the current global and all present native wrappers.
+The plugin schema retains the whole node and rejects malformed/future native metadata.
+
+A receives this **same instance** through optional
+`ExecutionPluginConfig.publishRunService(service)`. The S1 option type mirrors that one
+Host-only field; it does not put a service object into a Client DTO. No Run HTTP routes are
+installed by this slice. A retains public exports and actual Host/transport assembly.
+
+- `installRunHost(ExecutionRunHostPorts)` installs once and returns the existing
+  `ExecutionRunAuthorities`. The member lease producer must use the same Host bundle's
+  `openExecutionMemberLease(ctx, originalRequest)`; a `MemberResolution` is not accepted.
+  The Host must also provide current `assertProjectSpace`, exact frozen configuration and
+  expert/input composition checks, workspace access, source lifetime and change notifications.
+  Missing producers refuse. The service independently rechecks the live workbench task,
+  human membership, controller, and recorded plan. Source replacement must invalidate the
+  old publication; neither a remembered mapping nor a text-only label proves authorization.
+  The three Host assertion ports return exactly synchronous `undefined`, not TypeScript
+  `void`. Runtime producers returning a Promise/thenable or any other value refuse both
+  admission and ongoing authority; rejected thenables are observed without awaiting them
+  or treating a future resolution as permission.
+- `enableRunWriter()` is an explicit operation in that queue. Installing the Host, mounting
+  the plugin, reading or reopening never enables the marker. A failed marker write permits
+  no begin. All old node writes pass the native-aware guard before admission is enabled.
+- `beginRun(originalRequest, BeginRunRequest)` and `stopRun(originalRequest, StopRunRequest)`
+  derive the actor from a fresh real member lease. The locator includes task/plan/revision/node;
+  the space is checked against current facts. The Host supplies new IDs and verified frozen
+  configuration/input facts, rather than forwarding a browser's complete command unchecked.
+- `recordRunEvent(locator,event,{grant}|{cleanup})` accepts only capabilities minted by this
+  instance's authority manager. A read/history grant cannot emit native events. Independent
+  cleanup authority permits only failed/stop-pending/stopped/cleanup, including after member
+  revocation; it cannot complete or submit an artifact. Stale/cross-scope capabilities refuse.
+- These three operations return `ExecutionResult<ExecutionRunDecision>` after at most one
+  whole-node put. A must await success before handling an effect, outside the queue, using
+  actual C operations. Replay returns read-only reconciliation, not another dispatch.
+- `readRunNode` and `readRunGlobal` are copied Host-only current facts. `fenceRuns()` stops
+  new driving/admission while allowing existing cleanup. The publication's async disposer
+  drains actual native work and commits cleanup; the plugin then calls `closeRuns()` to drain
+  its queue/authority issuers before its existing domain closes.
+
+Cordis executes independent effect disposers concurrently. Consequently the plugin registers
+one cached close job immediately after opening the domain, before constructing the service.
+That job aborts request lifetime and fences Run driving, then awaits publication/native cleanup,
+then service/authority close, and only then domain close. Constructor, reconcile and publication
+failures still have this registered owner for the opened domain. Every release is attempted
+even when a preceding one fails; the original error or all failures in an aggregate remain
+observable. A failed drain/close never writes a cancelled or resource-settled Run receipt.
+
+Old human submit and draft writes refuse while a Run holds resources; old start/recovery
+and downstream writers cannot drop or replace native state. Quiescent later submission still
+uses the original artifact/review/downstream path and retains the complete native history.
+A native completion alone restores the entry obligation and never accepts a product.
+
+`execution-service-run.test.mjs` mounts the actual product plugin/service in a real Cordis
+plugin/fiber on published DSH JSON storage. It covers durable marker/write failures, one put for concurrent same-key
+admission, effects outside the queue, whole-row draft/artifact/review retention, active writer
+guards, event/stop/retry fencing, copied reads, same-root exclusion and a separate OS-process
+read-only reopen with byte-for-byte unchanged disk. Identity/workspace/configuration/native
+event producers remain **contract fixtures**, not proof of real Host, native/model, file-byte
+or GUI integration. Those boundaries are not closed by these tests.
+Lifecycle tests hold the actual fiber's unpublish disposer while performing trusted cleanup
+writes, and cover startup failures plus drain/authority/domain-close faults. They do not
+emulate effect cleanup with a reverse sequential stack.
 
 ## Persistent ownership and compatibility
 

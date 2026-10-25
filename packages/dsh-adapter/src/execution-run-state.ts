@@ -271,7 +271,7 @@ function canDrive(record: ExecutionNodeRecord, actorId: string): boolean {
     ? record.handoff.assignee.id === actorId
     : record.ownerId === actorId;
 }
-const beginSchema = z.strictObject({
+export const beginExecutionRunSchema = z.strictObject({
   requestId: id,
   actorId: id,
   spaceId: id,
@@ -286,7 +286,7 @@ const beginSchema = z.strictObject({
   contextRefs: z.array(id).max(256),
   workspace: executionWorkspaceSchema,
 });
-export type BeginExecutionRun = z.infer<typeof beginSchema>;
+export type BeginExecutionRun = z.infer<typeof beginExecutionRunSchema>;
 type InputEffect<K extends 'dispatch' | 'reconcile'> = {
   readonly kind: K;
   readonly scope: NativeWorkScope;
@@ -337,7 +337,7 @@ export function beginExecutionRun(
   },
 ): ExecutionRunDecision {
   requireExecutionRunWriter(availability.writerState);
-  const request = parsed(beginSchema, input);
+  const request = parsed(beginExecutionRunSchema, input);
   if (!canDrive(record, request.actorId)) refuse('run-not-controller');
   const state = readExecutionRunState(record);
   if (state?.runs.some((run) => run.actorId !== request.actorId || run.spaceId !== request.spaceId))
@@ -483,7 +483,7 @@ export function beginExecutionRun(
   };
 }
 
-const stopSchema = z.strictObject({
+export const stopExecutionRunSchema = z.strictObject({
   requestId: id,
   actorId: id,
   runId: id,
@@ -496,7 +496,7 @@ export function requestExecutionRunStop(
   record: ExecutionNodeRecord,
   input: unknown,
 ): ExecutionRunDecision {
-  const request = parsed(stopSchema, input);
+  const request = parsed(stopExecutionRunSchema, input);
   if (!canDrive(record, request.actorId)) refuse('run-not-controller');
   const state = readExecutionRunState(record);
   if (!state) refuse('run-not-started');
