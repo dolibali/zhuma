@@ -11,6 +11,10 @@ import {
   type NativeWorkScope,
   type NativeWorkStorage,
   type NativeInputReadReservation,
+  type NativeRunMigrationGrant,
+  type NativeRunMigrationResult,
+  type NativeBindingReference,
+  type NativeMigrationDrain,
 } from './native-work-session-contract.js';
 
 export const NATIVE_WORK_LIMITS = Object.freeze({
@@ -35,17 +39,20 @@ export function assertNativeInputReadOwner(sessionId: string, runtime: NativeWor
   if (active && active.owner !== runtime) throw new NativeWorkError('input-read-busy');
 }
 
-/** Stable task/workspace lookup; the complete Run is compared separately. */
-export function nativeWorkSessionKey(scope: NativeWorkScope): string {
-  return JSON.stringify([
-    scope.actorId,
-    scope.spaceId,
-    scope.taskId,
-    scope.planId,
-    scope.revision,
-    scope.nodeId,
-  ]);
-}
+import {
+  nativeWorkSessionKey,
+  nativeScopeKey,
+  currentBinding,
+  bindingForScope,
+  readNativeRecord,
+  nativeMigrationDataSchema,
+  nativeScopeSchema,
+  migrationFingerprint,
+  validMigrationPair,
+  NATIVE_LINEAGE_LIMITS,
+} from './native-work-session-record.js';
+export { nativeWorkSessionKey } from './native-work-session-record.js';
+import { inspectNativeMigration, appendNativeMigration } from './native-work-session-migration.js';
 
 function sameScope(a: NativeWorkScope, b: NativeWorkScope): boolean {
   return (
@@ -98,6 +105,29 @@ function textInput(value: string): void {
 export class NativeWorkSessionService {
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly stopEpochs = new Map<string, number>();
+  private readonly retiredScopes = new Set<string>();
+  private readonly unknownMigrations = new Set<string>();
+  private readonly migrating = new Map<
+    string,
+    {
+      readonly requestId: string;
+      readonly fingerprint: string;
+      readonly work: Promise<NativeRunMigrationResult>;
+    }
+  >();
+  private readonly scopeEpochs = new Map<string, number>();
+  private readonly scopeActivity = new Map<string, Set<Promise<unknown>>>();
+  private readonly prepared = new Map<
+    string,
+    {
+      readonly controller: AbortController;
+      readonly signal: AbortSignal;
+      readonly epoch: number;
+      readonly native: NativeMigrationDrain;
+      readonly binding: NativeBindingReference;
+      readonly digest: string;
+    }
+  >();
   private inputReadsSealed = false;
   private readonly inputReadDrains = new Map<string, Promise<void>>();
   private readonly inputReadReservations = new WeakMap<
@@ -114,12 +144,36 @@ export class NativeWorkSessionService {
     private readonly runtime: NativeWorkRuntime,
   ) {}
 
+  private touchScope(scope: NativeWorkScope): void {
+    const key = nativeScopeKey(scope);
+    this.scopeEpochs.set(key, (this.scopeEpochs.get(key) ?? 0) + 1);
+    this.prepared.get(key)?.controller.abort();
+  }
+  private trackScope<T>(scope: NativeWorkScope, work: Promise<T>): Promise<T> {
+    const key = nativeScopeKey(scope);
+    let active = this.scopeActivity.get(key);
+    if (!active) this.scopeActivity.set(key, (active = new Set()));
+    active.add(work);
+    void work
+      .finally(() => {
+        active.delete(work);
+        if (!active.size) this.scopeActivity.delete(key);
+      })
+      .catch(() => undefined);
+    return work;
+  }
+  private async whenScopeIdle(scope: NativeWorkScope): Promise<void> {
+    while (this.scopeActivity.get(nativeScopeKey(scope))?.size)
+      await Promise.allSettled(this.scopeActivity.get(nativeScopeKey(scope))!);
+  }
+
   private serial<T>(
     grant: NativeWorkGrant,
     action: NativeWorkAction,
     operation: (verify: () => void) => Promise<T>,
   ): Promise<T> {
     check(grant, action);
+    this.touchScope(grant.scope);
     const key = nativeWorkSessionKey(grant.scope);
     const scope = structuredClone(grant.scope);
     const epoch = this.stopEpochs.get(key) ?? 0;
@@ -128,10 +182,13 @@ export class NativeWorkSessionService {
       if (!sameScope(scope, grant.scope)) throw new NativeWorkError('scope-mismatch');
       if ((this.stopEpochs.get(key) ?? 0) !== epoch) throw new NativeWorkError('cancelled');
     };
-    return this.enqueueKey(key, () => {
-      verify();
-      return operation(verify);
-    });
+    return this.trackScope(
+      scope,
+      this.enqueueKey(key, () => {
+        verify();
+        return operation(verify);
+      }),
+    );
   }
 
   private enqueueKey<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -208,7 +265,7 @@ export class NativeWorkSessionService {
       try {
         // Claim the ephemeral slot synchronously before the first persistence
         // await, so a second Host cannot pass its own independent queue.
-        await this.storage.write(key, next);
+        await this.writeBinding(grant, 'send', next);
         verify();
         if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
         this.inputReadReservations.set(reservation, issued);
@@ -246,7 +303,7 @@ export class NativeWorkSessionService {
         const budget = binding.inputReadBudget;
         if (!budget || budget.chargedBytes < reservation.maximumBytes)
           throw new NativeWorkError('invalid-request');
-        await this.storage.write(issued.key, {
+        await this.writeBinding(grant, 'send', {
           ...binding,
           inputReadBudget: {
             attempts: budget.attempts,
@@ -272,15 +329,285 @@ export class NativeWorkSessionService {
 
   sealInputReads(): Promise<void> {
     this.inputReadsSealed = true;
+    for (const prepared of this.prepared.values()) prepared.controller.abort();
     return this.whenInputReadsIdle();
+  }
+
+  /** Pure readiness observation for D. Own migration metadata slots are not
+   * external scope activity; a send/queue/source/restore always invalidates it. */
+  migrationDrain(scope: NativeWorkScope): NativeMigrationDrain {
+    if (!nativeScopeSchema.safeParse(scope).success) throw new NativeWorkError('invalid-request');
+    const record = this.storage.read(nativeWorkSessionKey(scope));
+    if (!record) throw new NativeWorkError('not-started');
+    const binding = bindingForScope(readNativeRecord(record), scope);
+    if (!binding) throw new NativeWorkError('scope-mismatch');
+    const key = nativeScopeKey(scope),
+      prepared = this.prepared.get(key);
+    if (!prepared) {
+      // A pending/cold certificate is distinct from a known native ownership or
+      // cleanup failure, including physical failure after a caller timed out.
+      try {
+        this.runtime.migrationDrain(binding.nativeSessionId);
+      } catch (error) {
+        if (!(error instanceof NativeWorkError) || error.code !== 'migration-not-ready')
+          throw error;
+      }
+      throw new NativeWorkError('migration-not-ready');
+    }
+    const signal = prepared.signal;
+    const assertCurrent = () => {
+      try {
+        if (
+          signal.aborted ||
+          this.inputReadsSealed ||
+          this.prepared.get(key) !== prepared ||
+          (this.scopeEpochs.get(key) ?? 0) !== prepared.epoch ||
+          this.scopeActivity.get(key)?.size ||
+          activeInputReads.has(prepared.binding.nativeSessionId)
+        )
+          throw new NativeWorkError('unavailable');
+        const stored = this.storage.read(nativeWorkSessionKey(scope));
+        const binding = stored && bindingForScope(readNativeRecord(stored), scope);
+        if (
+          !binding ||
+          createHash('sha256').update(JSON.stringify(binding)).digest('hex') !== prepared.digest
+        )
+          throw new NativeWorkError('unavailable');
+        prepared.native.assertCurrent();
+      } catch {
+        prepared.controller.abort();
+        throw new NativeWorkError('unavailable');
+      }
+    };
+    assertCurrent();
+    return Object.freeze({ signal, basis: prepared.native.basis, assertCurrent });
+  }
+
+  private migrationAuthority(authority: NativeRunMigrationGrant) {
+    const get = () =>
+      nativeMigrationDataSchema.safeParse({
+        requestId: authority?.requestId,
+        inputFingerprint: authority?.inputFingerprint,
+        previousScope: authority?.previousScope,
+        scope: authority?.scope,
+        selection: authority?.selection,
+      });
+    const parsed = get();
+    if (
+      !parsed.success ||
+      !(authority?.signal instanceof AbortSignal) ||
+      typeof authority?.assertCurrent !== 'function'
+    )
+      throw new NativeWorkError('invalid-request');
+    const data = parsed.data,
+      body = JSON.stringify(data),
+      signal = authority.signal,
+      method = authority.assertCurrent;
+    if (!validMigrationPair(data.previousScope, data.scope))
+      throw new NativeWorkError('scope-mismatch');
+    const key = nativeWorkSessionKey(data.scope);
+    const verify = (phase: 'prepare' | 'migrate') => {
+      if (this.inputReadsSealed || signal.aborted) throw new NativeWorkError('cancelled');
+      if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
+      const latest = get();
+      if (
+        !latest.success ||
+        authority.signal !== signal ||
+        authority.assertCurrent !== method ||
+        JSON.stringify(latest.data) !== body
+      )
+        throw new NativeWorkError('scope-mismatch');
+      authority.assertCurrent(phase);
+    };
+    verify('prepare');
+    return { data, key, signal, verify };
+  }
+
+  /** Cleanup phase only. No mapping write, Agent creation/resume, tool or model. */
+  async prepareMigration(
+    authority: NativeRunMigrationGrant,
+  ): Promise<
+    | { readonly status: 'pending' }
+    | { readonly status: 'prepared'; readonly drain: NativeMigrationDrain }
+  > {
+    const { data, key, signal, verify } = this.migrationAuthority(authority);
+    const stored = this.storage.read(key);
+    if (!stored) throw new NativeWorkError('not-started');
+    const record = readNativeRecord(stored);
+    inspectNativeMigration(record, data);
+    const previous = bindingForScope(record, data.previousScope);
+    if (!previous) throw new NativeWorkError('scope-mismatch');
+    try {
+      const drain = this.migrationDrain(data.previousScope);
+      verify('prepare');
+      return { status: 'prepared', drain };
+    } catch (error) {
+      if (
+        !(error instanceof NativeWorkError) ||
+        !['unavailable', 'migration-not-ready'].includes(error.code)
+      )
+        throw error;
+    }
+    this.retiredScopes.add(nativeScopeKey(data.previousScope));
+    if (this.locks.has(key)) this.stopEpochs.set(key, (this.stopEpochs.get(key) ?? 0) + 1);
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), 5_000);
+    const bounded = AbortSignal.any([signal, timeout.signal]);
+    let abort!: () => void;
+    const interrupted = new Promise<{ readonly status: 'pending' }>((resolve, reject) => {
+      abort = () =>
+        signal.aborted ? reject(new NativeWorkError('cancelled')) : resolve({ status: 'pending' });
+      bounded.addEventListener('abort', abort, { once: true });
+    });
+    const work = (async () => {
+      // Wait outside the mapping queue: an in-flight source must be able to
+      // settle/refund in that same queue. Retire owns late physical cleanup.
+      const [native] = await Promise.all([
+        this.runtime.retire(previous.nativeSessionId, bounded, previous.receipts.length === 0),
+        this.whenScopeIdle(data.previousScope),
+        this.whenInputReadsIdle(data.previousScope),
+      ]);
+      if (bounded.aborted) throw new NativeWorkError('cancelled');
+      verify('prepare');
+      const latest = this.storage.read(key);
+      const binding = latest && bindingForScope(readNativeRecord(latest), data.previousScope);
+      if (!binding || binding.nativeSessionId !== previous.nativeSessionId)
+        throw new NativeWorkError('scope-mismatch');
+      this.prepared.get(nativeScopeKey(data.previousScope))?.controller.abort();
+      const controller = new AbortController();
+      this.prepared.set(nativeScopeKey(data.previousScope), {
+        controller,
+        signal: AbortSignal.any([controller.signal, native.signal]),
+        epoch: this.scopeEpochs.get(nativeScopeKey(data.previousScope)) ?? 0,
+        native,
+        binding: {
+          scope: binding.scope,
+          nativeSessionId: binding.nativeSessionId,
+          nativeAgentId: binding.nativeAgentId,
+          selection: binding.selection,
+        },
+        digest: createHash('sha256').update(JSON.stringify(binding)).digest('hex'),
+      });
+      return { status: 'prepared' as const, drain: this.migrationDrain(data.previousScope) };
+    })();
+    try {
+      if (bounded.aborted) abort();
+      return await Promise.race([
+        interrupted,
+        work.catch((error) => {
+          if (timeout.signal.aborted && !signal.aborted) return { status: 'pending' as const };
+          throw error;
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      bounded.removeEventListener('abort', abort);
+    }
+  }
+
+  migrate(authority: NativeRunMigrationGrant): Promise<NativeRunMigrationResult> {
+    const { data, key, verify } = this.migrationAuthority(authority);
+    const fingerprint = migrationFingerprint(
+      data.previousScope,
+      data.scope,
+      data.selection,
+      data.inputFingerprint,
+    );
+    const prior = this.migrating.get(key);
+    if (prior) {
+      if (prior.requestId !== data.requestId)
+        return Promise.reject(new NativeWorkError('migration-conflict'));
+      if (prior.fingerprint !== fingerprint)
+        return Promise.reject(new NativeWorkError('idempotency-mismatch'));
+      return prior.work.then((result) => {
+        verify(result.status === 'pending' ? 'prepare' : 'migrate');
+        return structuredClone(result);
+      });
+    }
+    const work = this.performMigration(authority);
+    const owned = { requestId: data.requestId, fingerprint, work };
+    this.migrating.set(key, owned);
+    void work
+      .finally(() => {
+        if (this.migrating.get(key) === owned) this.migrating.delete(key);
+      })
+      .catch(() => undefined);
+    return work.then((result) => structuredClone(result));
+  }
+
+  private async performMigration(
+    authority: NativeRunMigrationGrant,
+  ): Promise<NativeRunMigrationResult> {
+    const { data, key, verify } = this.migrationAuthority(authority);
+    const prepared = await this.prepareMigration(authority);
+    if (prepared.status === 'pending') return prepared;
+    verify('migrate');
+    prepared.drain.assertCurrent();
+    return this.enqueueKey(key, async () => {
+      verify('migrate');
+      prepared.drain.assertCurrent();
+      const stored = this.storage.read(key);
+      if (!stored) throw new NativeWorkError('not-started');
+      const record = readNativeRecord(stored);
+      const replay = inspectNativeMigration(record, data);
+      if (replay) return replay;
+      const next = appendNativeMigration(record, data);
+      verify('migrate');
+      // Once admitted, await durability. Never call a possible committed put
+      // "pending/no change" or roll back to the old binding on an unknown error.
+      try {
+        await this.storage.write(key, next.record);
+      } catch {
+        this.unknownMigrations.add(key);
+        throw new NativeWorkError('migration-unknown');
+      }
+      verify('migrate');
+      prepared.drain.assertCurrent();
+      return next.result;
+    });
   }
 
   private read(grant: NativeWorkGrant, action: NativeWorkAction): NativeSessionBinding | undefined {
     check(grant, action);
-    const value = this.storage.read(nativeWorkSessionKey(grant.scope));
-    if (value !== undefined && !sameScope(value.scope, grant.scope))
+    const key = nativeWorkSessionKey(grant.scope);
+    if (['send', 'queue'].includes(action)) {
+      if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
+      if (this.retiredScopes.has(nativeScopeKey(grant.scope)))
+        throw new NativeWorkError('scope-mismatch');
+    }
+    const stored = this.storage.read(key);
+    if (stored === undefined) return undefined;
+    const record = readNativeRecord(stored);
+    const value = ['open', 'history', 'follow'].includes(action)
+      ? bindingForScope(record, grant.scope)
+      : currentBinding(record);
+    if (value === undefined || !sameScope(value.scope, grant.scope))
       throw new NativeWorkError('scope-mismatch');
-    return value === undefined ? undefined : structuredClone(value);
+    return structuredClone(value);
+  }
+
+  private async writeBinding(
+    grant: NativeWorkGrant,
+    action: NativeWorkAction,
+    binding: NativeSessionBinding,
+  ): Promise<void> {
+    check(grant, action);
+    const key = nativeWorkSessionKey(grant.scope);
+    if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
+    const stored = this.storage.read(key);
+    if (!stored) throw new NativeWorkError('not-started');
+    const record = readNativeRecord(stored);
+    const current = currentBinding(record);
+    if (
+      !sameScope(current.scope, binding.scope) ||
+      current.nativeSessionId !== binding.nativeSessionId ||
+      current.nativeAgentId !== binding.nativeAgentId
+    )
+      throw new NativeWorkError('scope-mismatch');
+    const next = record.schemaVersion === 1 ? binding : { ...record, current: binding };
+    if (Buffer.byteLength(JSON.stringify(next)) > NATIVE_LINEAGE_LIMITS.bytes)
+      throw new NativeWorkError('capacity');
+    await this.storage.write(key, next);
   }
 
   private required(grant: NativeWorkGrant, action: NativeWorkAction): NativeSessionBinding {
@@ -413,7 +740,7 @@ export class NativeWorkSessionService {
       ],
     };
     check(grant, action);
-    await this.storage.write(nativeWorkSessionKey(grant.scope), next);
+    await this.writeBinding(grant, action, next);
     return next;
   }
 
@@ -497,7 +824,13 @@ export class NativeWorkSessionService {
     )
       throw new NativeWorkError('invalid-request');
     const combined = AbortSignal.any([grant.signal, signal]);
-    const events = await this.runtime.history(binding.nativeSessionId, after, limit, combined);
+    const events = await this.runtime.history(
+      binding.nativeSessionId,
+      after,
+      limit,
+      combined,
+      binding.receipts.length === 0,
+    );
     combined.throwIfAborted();
     check(grant, 'history');
     return { binding, events: structuredClone(events) };
@@ -507,7 +840,12 @@ export class NativeWorkSessionService {
     const binding = this.required(grant, 'follow');
     if (!Number.isSafeInteger(after) || after < -1) throw new NativeWorkError('invalid-request');
     const combined = AbortSignal.any([grant.signal, signal]);
-    for await (const frame of this.runtime.follow(binding.nativeSessionId, after, combined)) {
+    for await (const frame of this.runtime.follow(
+      binding.nativeSessionId,
+      after,
+      combined,
+      binding.receipts.length === 0,
+    )) {
       if (combined.aborted) return;
       check(grant, 'follow');
       yield {
