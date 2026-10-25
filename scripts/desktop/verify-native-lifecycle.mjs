@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { build } from 'esbuild';
@@ -133,12 +133,18 @@ const nativeInputFixture = join(
   root,
   'packages/dsh-adapter/tests/native-work-session-input-fixture.mjs',
 );
+const nativeMigrationFixture = join(
+  root,
+  'packages/dsh-adapter/tests/native-work-session-migration-fixture.mjs',
+);
 const workbenchFixture = join(root, 'tests/fixtures/workbench.mjs');
 const nativeSpecs = [
   'native-work-session',
   'native-work-session-read',
   'native-work-session-retention',
   'native-work-session-input-tool',
+  'native-work-session-migration',
+  'native-work-session-origin',
 ];
 for (const name of nativeSpecs)
   copyFileSync(
@@ -150,13 +156,14 @@ const mappedProductionSources = new Set();
 const productionModules = [
   'native-work-session-storage',
   'native-work-session-input-tool',
+  'native-work-session-record',
   'execution-service',
   'project-space',
   'upstream-inputs',
 ];
 const nativeBuild = await build({
   absWorkingDir: root,
-  entryPoints: [nativeInputFixture],
+  entryPoints: [nativeMigrationFixture],
   outfile: nativeBundle,
   bundle: true,
   // The runtime must resolve through Vitest's single patched native alias.
@@ -171,7 +178,11 @@ const nativeBuild = await build({
       name: 'native-production-fixture',
       setup(builder) {
         builder.onResolve({ filter: /^\.\.\/dist\/[\w-]+\.js$/ }, (args) => {
-          if (![nativeFixture, nativeInputFixture].includes(resolve(args.importer)))
+          if (
+            ![nativeFixture, nativeInputFixture, nativeMigrationFixture].includes(
+              resolve(args.importer),
+            )
+          )
             throw new Error('Unexpected native fixture importer.');
           const name = args.path.slice('../dist/'.length, -'.js'.length);
           if (!productionModules.includes(name))
@@ -206,6 +217,17 @@ for (const output of Object.values(nativeBuild.metafile.outputs))
   if (output.imports.some((entry) => /^(@zhuma\/|yaml$|zod(?:\/|$))/u.test(entry.path)))
     throw new Error('Native fixture left a product dependency external.');
 const nativeBundleSha256 = hash(nativeBundle);
+const nativeSourcePaths = Object.keys(nativeBuild.metafile.inputs)
+  .map((path) => relative(root, resolve(root, path)).split(sep).join('/'))
+  .filter((path) => path.startsWith('packages/dsh-adapter/src/') && path.endsWith('.ts'))
+  .sort();
+for (const name of ['native-work-session-record', 'native-work-session-migration'])
+  if (!nativeSourcePaths.includes(`packages/dsh-adapter/src/${name}.ts`))
+    throw new Error(`Native fixture did not bundle the current migration source: ${name}`);
+const nativeSourceSha256 = nativeSourcePaths.map((path) => ({
+  path,
+  sha256: hash(join(root, path)),
+}));
 
 const phases = [];
 function verify(name, files, expectedTests, extraEnv = {}) {
@@ -314,7 +336,7 @@ for (const mode of ['write', 'read'])
 verify(
   'native-work-session',
   nativeSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
-  35,
+  52,
 );
 const nativeData = join(evidence, 'native-work-session-data');
 mkdirSync(nativeData, { mode: 0o700 });
@@ -341,6 +363,8 @@ writeFileSync(
       nativeBundleSha256,
       nativeFixtureSha256: hash(nativeFixture),
       nativeInputFixtureSha256: hash(nativeInputFixture),
+      nativeMigrationFixtureSha256: hash(nativeMigrationFixture),
+      nativeSourceSha256,
       navigationFixtureSha256: hash(navigationFixture),
       nativeSpecSha256: nativeSpecs.map((name) => ({
         name,
