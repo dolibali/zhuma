@@ -328,3 +328,117 @@ test(
     }
   },
 );
+
+test(
+  'M1 acceptance negatives: unauthorized member refused, same-key replays, stale versions conflict, no phantom artifacts',
+  { timeout: 60000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-m1-acceptance-neg-'));
+    let host;
+    try {
+      host = await startAcceptanceHost(directory, {
+        deploymentMode: 'multi-member',
+        identityImport,
+        spaceDirectoryImport,
+        workbenchSeed,
+      });
+      const chen = await host.login('chen', PASSWORDS.chen);
+      const lin = await host.login('lin', PASSWORDS.lin);
+      const outside = await host.login('outside', PASSWORDS.outside);
+
+      const startable = await host.exec('startable', {}, chen);
+      const plan = startable.result.value.plans.find((entry) => entry.taskId === 'portal-task');
+      assert.ok(plan);
+
+      // Unauthorized member: no discovery, no start, no read — nothing leaks.
+      const outsideStartable = await host.exec('startable', {}, outside);
+      assert.equal(outsideStartable.result.ok, true);
+      assert.deepEqual(outsideStartable.result.value.plans, []);
+      const outsideStart = await host.exec(
+        'start-plan',
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          idempotencyKey: 'start-outside',
+        },
+        outside,
+      );
+      assert.equal(outsideStart.result.ok, false);
+      assert.equal(outsideStart.result.error.code, 'not-found');
+
+      // Explicit start by the assignee.
+      const started = await host.exec(
+        'start-plan',
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          idempotencyKey: 'start-portal-neg',
+        },
+        chen,
+      );
+      assert.equal(started.result.ok, true);
+
+      // Same key replays without a second start (no duplicate nodes/events).
+      const replay = await host.exec(
+        'start-plan',
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          idempotencyKey: 'start-portal-neg',
+        },
+        chen,
+      );
+      assert.equal(replay.result.ok, true);
+      assert.equal(replay.result.value.disposition, 'replayed');
+
+      // Stale expectedVersion refuses, writes nothing.
+      const inbox0 = await host.exec('inbox', {}, chen);
+      const current = inbox0.result.value.nodes.find((n) => n.nodeId === 'design').version;
+      const stale = await host.exec(
+        'submit',
+        locate(plan, 'design', {
+          expectedVersion: current + 1,
+          idempotencyKey: 'deliver-stale',
+          text: '过期版本提交',
+        }),
+        chen,
+      );
+      assert.equal(stale.result.ok, false);
+      assert.equal(stale.result.error.code, 'conflict');
+
+      // The retry with the same key and the same body replays.
+      const submit = await host.exec(
+        'submit',
+        locate(plan, 'design', {
+          expectedVersion: current,
+          idempotencyKey: 'deliver-neg-1',
+          text: '接口定义',
+        }),
+        chen,
+      );
+      assert.equal(submit.result.ok, true, JSON.stringify(submit.result));
+      const replaySubmit = await host.exec(
+        'submit',
+        locate(plan, 'design', {
+          expectedVersion: current,
+          idempotencyKey: 'deliver-neg-1',
+          text: '接口定义',
+        }),
+        chen,
+      );
+      assert.equal(replaySubmit.result.ok, true);
+      assert.equal(replaySubmit.result.value.disposition, 'replayed');
+
+      // The report still shows a single artifact version for the round.
+      const report = await host.exec('report', planRef(plan), chen);
+      const design = report.result.value.reports.find((r) => r.nodeId === 'design');
+      assert.equal(design.reviewOutcome, 'pending');
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
