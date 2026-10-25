@@ -328,6 +328,9 @@ async function reconcileImport(
 }
 
 class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
+  private readonly lifetime = new AbortController();
+  readonly signal = this.lifetime.signal;
+  private closing: Promise<void> | undefined;
   /** Next mutation waits until the previous check and its durable write have both finished. */
   private tail: Promise<void> = Promise.resolve();
 
@@ -449,12 +452,16 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
   }
 
   /** Close the domain; later reads reject and `spaceForProject` reports unavailable. */
-  async close(): Promise<void> {
-    await this.exclusive(() => this.domain.close());
+  close(): Promise<void> {
+    // Reserve the close before notifying listeners, including reentrant close calls.
+    this.closing ??= this.exclusive(() => this.domain.close());
+    this.lifetime.abort();
+    return this.closing;
   }
 }
 
 export interface OpenedSpaceDirectoryHandle extends SpaceDirectory, SpaceDirectoryWriter {
+  readonly signal: AbortSignal;
   close(): Promise<void>;
 }
 
