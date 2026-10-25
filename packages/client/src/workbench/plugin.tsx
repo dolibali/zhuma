@@ -143,7 +143,10 @@ export function apply(ctx: Context): void {
       () => (
         <div className="zm-shell-panel">
           <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
-          <MemberExecutionPage shell={memberShell} />
+          <MemberExecutionPage
+            shell={memberShell}
+            {...(mode === 'multi-member' ? { workbenchAppearance: appearance } : {})}
+          />
         </div>
       ),
     );
@@ -161,7 +164,12 @@ export function apply(ctx: Context): void {
   });
   ctx.slots.inject('sidebar.panellist', () =>
     ctx.slots.register(
-      { name: 'sidebar.panellist', id: executionPanel, order: -95, label: '我的工作' },
+      {
+        name: 'sidebar.panellist',
+        id: executionPanel,
+        order: -95,
+        label: mode === 'multi-member' ? '工作台' : '我的工作',
+      },
       () => (
         <svg
           width="18"

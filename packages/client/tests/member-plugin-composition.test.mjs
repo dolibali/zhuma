@@ -211,7 +211,11 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
   assert.deepEqual(reads, Array(restored ? 2 : 1).fill('/zhuma-id/session'));
   if (memberMode && panel.activePanelId === 'zhuma-my-work') {
     const html = require('react-dom/server').renderToStaticMarkup(element);
-    assert.ok(html.includes(restored ? '我的工作' : '登录工作台'));
+    assert.ok(html.includes(restored ? '项目与任务' : '登录工作台'));
+    if (restored) {
+      assert.ok(html.includes('待我处理'));
+      assert.ok(html.includes('正在连接工作台'));
+    }
     assert.equal(html.includes('HTTP 404'), false);
     assert.equal(html.includes('重新连接'), false);
   }

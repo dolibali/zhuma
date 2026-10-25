@@ -16,6 +16,8 @@ import { join } from 'node:path';
 
 let ctx, host, hostPlugin, home, pendingIdentity, releaseIdentity;
 let originalModify, remoteAccessFiber, releaseProjectLookup;
+let workbenchWriteGate, releaseWorkbenchWrite;
+const domainCloseOrder = [];
 let modelCalls = 0;
 const forks = [];
 const opened = [];
@@ -25,15 +27,17 @@ async function boot(options) {
   home = options.directory;
   await mkdir(join(home, 'storages'), { recursive: true });
   ctx = new Context();
-  ctx.provide('llm', {
-    prepareCall() {
-      modelCalls++;
-      throw Error('No models are enabled in S1a tests');
-    },
-  });
-  ctx.provide('agentDefaultModel', {
-    currentSelection: () => ({ provider: 'fixture', model: 'disabled' }),
-  });
+  if (!options.noModels)
+    ctx.provide('llm', {
+      prepareCall() {
+        modelCalls++;
+        throw Error('No models are enabled in S1a tests');
+      },
+    });
+  if (!options.noModels)
+    ctx.provide('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'fixture', model: 'disabled' }),
+    });
   const load = async (plugin, config) => {
     const fiber = ctx.plugin(plugin, config);
     forks.push(fiber);
@@ -46,7 +50,23 @@ async function boot(options) {
   const originalOpen = ctx.storageDomain.open.bind(ctx.storageDomain);
   ctx.storageDomain.open = async (spec) => {
     opened.push(spec.name);
-    return originalOpen(spec);
+    const domain = await originalOpen(spec);
+    const close = domain.close.bind(domain);
+    domain.close = async () => {
+      domainCloseOrder.push(spec.name);
+      await close();
+    };
+    if (spec.name === 'zhuma_workbench') {
+      const set = domain.global.set.bind(domain.global);
+      domain.global.set = async (value) => {
+        if (workbenchWriteGate) {
+          notify('workbench-write-pending');
+          await workbenchWriteGate;
+        }
+        await set(value);
+      };
+    }
+    return domain;
   };
   await load(Credentials, { path: join(home, '.credentials.yaml'), watch: false });
   originalModify = ctx.credentials.modifyRecord.bind(ctx.credentials);
@@ -139,6 +159,7 @@ async function inspect() {
     opened,
     files,
     modelCalls,
+    domainCloseOrder,
     credentialMode: (await stat(join(home, '.credentials.yaml'))).mode & 0o777,
     directoryStates: [...(ctx.registry.get(hostPlugin.spaceDirectoryPlugin)?.fibers ?? [])].map(
       (fiber) => fiber.state,
@@ -173,6 +194,17 @@ async function waitIdentityState(expected) {
 }
 
 async function act(action) {
+  if (action === 'holdWorkbenchWrite') {
+    workbenchWriteGate = new Promise((resolve) => {
+      releaseWorkbenchWrite = resolve;
+    });
+    return {};
+  }
+  if (action === 'releaseWorkbenchWrite') {
+    releaseWorkbenchWrite?.();
+    workbenchWriteGate = undefined;
+    return {};
+  }
   if (action === 'clientBoot')
     return ctx.webServer
       .collectIndexInjections()

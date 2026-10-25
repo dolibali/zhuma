@@ -21,6 +21,8 @@ export interface MemberSpaceLifetime {
   /** UI generation only, never an authorization fact. */
   isCurrent(): boolean;
   onUnauthenticated(): void;
+  /** UI form presence only; never a service permission or execution fact. */
+  hasUnsavedChanges?(): boolean;
 }
 export interface MemberSpaceBoundaryProps {
   readonly api: IdentityApi;
@@ -202,6 +204,7 @@ export function MemberSpaceBoundary({
           <div key={`${state.epoch}:${state.space.id}`} className="zm-space-content">
             {children(state.space, () => controller.invalidate(state.epoch), {
               isCurrent,
+              hasUnsavedChanges: () => dirtyForms.current.size > 0,
               onUnauthenticated: () => {
                 if (isCurrent()) invalidation.current();
               },

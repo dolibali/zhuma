@@ -6,6 +6,8 @@ import { applyIdentity, identityInject, type IdentityImport } from './identity-s
 import { configureDeploymentMode } from './member-session.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
+import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
+import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import {
   applySpaceDirectory,
@@ -103,7 +105,14 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   });
   // Registers fail-closed streaming gates before the first asynchronous domain open.
   // The same clone-producing closure is shared with execution; no second workbench domain.
-  const workbench = await openWorkbench(ctx, config);
+  let closed = false;
+  let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
+  const beforeClose = async () => {
+    closed = true;
+    const member = await memberOpening;
+    await member?.close();
+  };
+  const workbench = await openWorkbench(ctx, config, { beforeClose });
   let ownedDirectory: OpenedSpaceDirectoryHandle | undefined;
   const identitySelected =
     config.deploymentMode === 'multi-member' || config.identityBootstrapKey !== undefined;
@@ -122,6 +131,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       ctx.logger.error('Zhuma space directory is unavailable; member space access remains closed.');
     }
   }
+  if (closed) return;
   if (identitySelected) {
     try {
       await ctx.plugin(identityPlugin, config.identityBootstrapKey);
@@ -132,7 +142,52 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       );
     }
   }
+  if (closed) return;
   if (config.deploymentMode === 'multi-member') {
+    // Member commands share the opened workbench. Only their durable intent
+    // journal is separate; failure to open it leaves a read-only projection.
+    memberOpening = (async () => {
+      let operations: Awaited<ReturnType<typeof openMemberWorkbenchOperations>> | undefined;
+      try {
+        operations = await openMemberWorkbenchOperations(ctx.storageDomain);
+      } catch {
+        ctx.logger.error('Zhuma member operations are unavailable; editing remains closed.');
+      }
+      if (closed) {
+        await operations?.close();
+        return undefined;
+      }
+      let http: ReturnType<typeof workbench.openMemberWorkbench>;
+      try {
+        http = workbench.openMemberWorkbench(ctx, {
+          directory: () => memberWorkbenchDirectoryFor(ctx),
+          writer: () => {
+            const current = ownedDirectory;
+            if (!current || spaceDirectoryFor(ctx) !== current) return undefined;
+            return { assignProjectSpace: current.assignProjectSpace.bind(current) };
+          },
+          model: workbench.planningModel,
+          ...(operations ? { operations: operations.journal } : {}),
+        });
+      } catch (error) {
+        await operations?.close();
+        throw error;
+      }
+      let closing: Promise<void> | undefined;
+      return {
+        close() {
+          return (closing ??= (async () => {
+            try {
+              await http.close();
+            } finally {
+              await operations?.close();
+            }
+          })());
+        },
+      };
+    })();
+    await memberOpening;
+    if (closed) return;
     // Even if identity failed, mount the member-gated routes. They reject absent
     // identity or directory facts; they never fall back to the owner principal.
     await ctx.plugin(executionPlugin, {

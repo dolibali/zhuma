@@ -60,6 +60,7 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/session',
     '/zhuma-id/spaces/team-empty',
     '/zhuma-id/notes/note-a',
+    ...['snapshot', 'command', 'plan'].map((endpoint) => `/api/zhuma-member/${endpoint}`),
     ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
   ])
     assert.equal(await sentCookie(bridge, path), `${OWNER}; zhuma-member=${COOKIE_A}`);
@@ -70,6 +71,8 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/unknown',
     '/api/zhuma-exec/unknown',
     '/api/zhuma-exec/inbox/extra',
+    '/api/zhuma-member/command/extra',
+    '/api/zhuma-member/unknown',
     '/zhuma-id/spaces/%2F',
   ])
     assert.equal(await sentCookie(bridge, path), OWNER);

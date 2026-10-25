@@ -74,6 +74,8 @@ const content = new URL(location.href).searchParams.has('member-account') ? (
   <MemberExecutionSpacesProbe />
 ) : new URL(location.href).searchParams.has('member-spaces') ? (
   <MemberSpacesProbe />
+) : new URL(location.href).searchParams.has('member-workbench') ? (
+  <MemberExecutionPage workbenchAppearance={appearance} />
 ) : new URL(location.href).searchParams.has('member-execution') ? (
   <MemberExecutionPage />
 ) : new URL(location.href).searchParams.has('execution-client') ? (

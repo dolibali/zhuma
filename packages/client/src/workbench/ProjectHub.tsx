@@ -151,6 +151,9 @@ export function ProjectHub({
   openTask,
   createTask,
   edit,
+  canCreateTask = true,
+  canEdit = true,
+  resourcesConnected = true,
 }: {
   project: Project;
   state: Workbench;
@@ -159,6 +162,9 @@ export function ProjectHub({
   openTask(id: string): void;
   createTask(): void;
   edit(): void;
+  canCreateTask?: boolean;
+  canEdit?: boolean;
+  resourcesConnected?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const tasks = state.tasks
@@ -250,7 +256,9 @@ export function ProjectHub({
               ) : (
                 <div className="zm-project-empty">
                   <p>从项目目标开始一项工作。</p>
-                  <Button onClick={createTask}>创建任务</Button>
+                  <Button disabled={!canCreateTask} onClick={createTask}>
+                    创建任务
+                  </Button>
                 </div>
               )}
             </section>
@@ -320,7 +328,10 @@ export function ProjectHub({
           ) : (
             <div className="zm-project-empty">
               <p>{tasks.length ? '没有匹配的工作。' : '项目中还没有任务。'}</p>
-              <Button onClick={() => (tasks.length ? setSearch('') : createTask())}>
+              <Button
+                disabled={!tasks.length && !canCreateTask}
+                onClick={() => (tasks.length ? setSearch('') : createTask())}
+              >
                 {tasks.length ? '清除搜索' : '创建任务'}
               </Button>
             </div>
@@ -334,7 +345,9 @@ export function ProjectHub({
               <h2>
                 参考链接 <small>{references.length}</small>
               </h2>
-              <Button onClick={edit}>管理资料</Button>
+              <Button disabled={!canEdit} onClick={edit}>
+                管理资料
+              </Button>
             </header>
             {references.length ? (
               <ul className="zm-project-links">
@@ -374,7 +387,11 @@ export function ProjectHub({
                 ))}
               </ul>
             ) : (
-              <p className="zm-project-muted">可在“管理资料”中关联已有 Skill、MCP 或工作流。</p>
+              <p className="zm-project-muted">
+                {resourcesConnected
+                  ? '可在“管理资料”中关联已有 Skill、MCP 或工作流。'
+                  : '当前空间的团队资产尚未接入。'}
+              </p>
             )}
           </section>
           <section className="zm-project-panel">
@@ -392,7 +409,9 @@ export function ProjectHub({
               <h2>
                 默认参与者 <small>{people.length}</small>
               </h2>
-              <Button onClick={edit}>更改默认参与者</Button>
+              <Button disabled={!canEdit} onClick={edit}>
+                更改默认参与者
+              </Button>
             </header>
             <p className="zm-project-muted">
               新任务默认加入，可在创建时调整；不改变已有任务和访问权限。

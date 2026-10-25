@@ -41,7 +41,7 @@ try {
   if (code !== 0) process.exitCode = code ?? 1;
   else {
     const proof = JSON.parse(await readFile(temporaryProof, 'utf8'));
-    if (proof.cases.length !== 7 || proof.cases.some((entry) => entry.passed !== true))
+    if (proof.cases.length !== 8 || proof.cases.some((entry) => entry.passed !== true))
       throw Error('Incomplete Host artifact proof');
     proof.sourceHead = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: root,
@@ -68,7 +68,7 @@ try {
       ),
     );
     proof.scope =
-      'Exact emitted bundle; seven real-service subprocess cases; a private temporary SDK package link; no installed-desktop or model-quality claim.';
+      'Exact emitted bundle; eight real-service subprocess cases; a private temporary SDK package link; no installed-desktop or model-quality claim.';
     if (process.env.S1A_PROOF_FILE) {
       const target = resolve(process.env.S1A_PROOF_FILE);
       await mkdir(dirname(target), { recursive: true });
