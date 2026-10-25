@@ -137,6 +137,14 @@ const nativeMigrationFixture = join(
   root,
   'packages/dsh-adapter/tests/native-work-session-migration-fixture.mjs',
 );
+const executionRunFixture = join(
+  root,
+  'packages/dsh-adapter/tests/execution-run-native-fixture.mjs',
+);
+const executionRunHelperFixture = join(
+  root,
+  'packages/dsh-adapter/tests/execution-run-fixture.mjs',
+);
 const workbenchFixture = join(root, 'tests/fixtures/workbench.mjs');
 const nativeSpecs = [
   'native-work-session',
@@ -146,12 +154,17 @@ const nativeSpecs = [
   'native-work-session-migration',
   'native-work-session-origin',
 ];
-for (const name of nativeSpecs)
+const executionRunSpecs = ['execution-run-native-migration', 'execution-run-native-recovery'];
+for (const name of [...nativeSpecs, ...executionRunSpecs])
   copyFileSync(
     join(root, `packages/dsh-adapter/tests/${name}.spec.ts`),
     join(stage, `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
   );
 const nativeBundle = join(stage, 'packages/core/agent-loop/tests/zhuma-native-work-bundle.ts');
+const executionRunBundle = join(
+  stage,
+  'packages/core/agent-loop/tests/zhuma-execution-run-bundle.ts',
+);
 const mappedProductionSources = new Set();
 const productionModules = [
   'native-work-session-storage',
@@ -161,10 +174,14 @@ const productionModules = [
   'project-space',
   'upstream-inputs',
 ];
-const nativeBuild = await build({
+const executionRunProductionModules = [
+  'execution-run-authority',
+  'execution-run-protocol',
+  'execution-run-state',
+  'native-work-session-contract',
+];
+const nativeBuildOptions = {
   absWorkingDir: root,
-  entryPoints: [nativeMigrationFixture],
-  outfile: nativeBundle,
   bundle: true,
   // The runtime must resolve through Vitest's single patched native alias.
   // Ordinary product dependencies (including yaml/zod) belong in this bundle.
@@ -179,13 +196,17 @@ const nativeBuild = await build({
       setup(builder) {
         builder.onResolve({ filter: /^\.\.\/dist\/[\w-]+\.js$/ }, (args) => {
           if (
-            ![nativeFixture, nativeInputFixture, nativeMigrationFixture].includes(
-              resolve(args.importer),
-            )
+            ![
+              nativeFixture,
+              nativeInputFixture,
+              nativeMigrationFixture,
+              executionRunFixture,
+              executionRunHelperFixture,
+            ].includes(resolve(args.importer))
           )
             throw new Error('Unexpected native fixture importer.');
           const name = args.path.slice('../dist/'.length, -'.js'.length);
-          if (!productionModules.includes(name))
+          if (![...productionModules, ...executionRunProductionModules].includes(name))
             throw new Error('Unexpected fixture production module.');
           mappedProductionSources.add(name);
           return { path: join(root, `packages/dsh-adapter/src/${name}.ts`) };
@@ -207,27 +228,54 @@ const nativeBuild = await build({
       },
     },
   ],
+};
+const nativeBuild = await build({
+  ...nativeBuildOptions,
+  entryPoints: [nativeMigrationFixture],
+  outfile: nativeBundle,
 });
 for (const name of [...productionModules, 'agent-core', 'workbench-fixture-core'])
   if (!mappedProductionSources.has(name))
     throw new Error(`Native fixture did not use the current production source: ${name}`);
-if (Object.keys(nativeBuild.metafile.inputs).some((path) => /^packages\/[^/]+\/dist\//u.test(path)))
-  throw new Error('Native fixture bundled a stale product dist input.');
-for (const output of Object.values(nativeBuild.metafile.outputs))
-  if (output.imports.some((entry) => /^(@zhuma\/|yaml$|zod(?:\/|$))/u.test(entry.path)))
-    throw new Error('Native fixture left a product dependency external.');
+// This bundle includes C's fixture source directly, never the generated C bundle.
+// D's error classification and C's runtime must share one actual module graph.
+const executionRunBuild = await build({
+  ...nativeBuildOptions,
+  entryPoints: [executionRunFixture],
+  outfile: executionRunBundle,
+});
+for (const result of [nativeBuild, executionRunBuild]) {
+  if (Object.keys(result.metafile.inputs).some((path) => /^packages\/[^/]+\/dist\//u.test(path)))
+    throw new Error('Native fixture bundled a stale product dist input.');
+  for (const output of Object.values(result.metafile.outputs))
+    if (output.imports.some((entry) => /^(@zhuma\/|yaml$|zod(?:\/|$))/u.test(entry.path)))
+      throw new Error('Native fixture left a product dependency external.');
+}
 const nativeBundleSha256 = hash(nativeBundle);
-const nativeSourcePaths = Object.keys(nativeBuild.metafile.inputs)
-  .map((path) => relative(root, resolve(root, path)).split(sep).join('/'))
-  .filter((path) => path.startsWith('packages/dsh-adapter/src/') && path.endsWith('.ts'))
-  .sort();
+const executionRunBundleSha256 = hash(executionRunBundle);
+const sourcePaths = (result) =>
+  Object.keys(result.metafile.inputs)
+    .map((path) => relative(root, resolve(root, path)).split(sep).join('/'))
+    .filter((path) => path.startsWith('packages/dsh-adapter/src/') && path.endsWith('.ts'))
+    .sort();
+const sourceSha256 = (paths) => paths.map((path) => ({ path, sha256: hash(join(root, path)) }));
+const nativeSourcePaths = sourcePaths(nativeBuild);
 for (const name of ['native-work-session-record', 'native-work-session-migration'])
   if (!nativeSourcePaths.includes(`packages/dsh-adapter/src/${name}.ts`))
     throw new Error(`Native fixture did not bundle the current migration source: ${name}`);
-const nativeSourceSha256 = nativeSourcePaths.map((path) => ({
-  path,
-  sha256: hash(join(root, path)),
-}));
+const nativeSourceSha256 = sourceSha256(nativeSourcePaths);
+const executionRunSourcePaths = sourcePaths(executionRunBuild);
+for (const name of [
+  ...executionRunProductionModules,
+  'native-work-session',
+  'native-work-session-dsh',
+  'native-work-session-storage',
+  'native-work-session-record',
+  'native-work-session-migration',
+])
+  if (!executionRunSourcePaths.includes(`packages/dsh-adapter/src/${name}.ts`))
+    throw new Error(`Run fixture did not bundle the current production source: ${name}`);
+const executionRunSourceSha256 = sourceSha256(executionRunSourcePaths);
 
 const phases = [];
 function verify(name, files, expectedTests, extraEnv = {}) {
@@ -238,6 +286,8 @@ function verify(name, files, expectedTests, extraEnv = {}) {
     'ZHUMA_RETENTION_TEST_MODE',
     'ZHUMA_NATIVE_WORK_RETENTION_ROOT',
     'ZHUMA_NATIVE_WORK_RETENTION_MODE',
+    'ZHUMA_RUN_RECOVERY_ROOT',
+    'ZHUMA_RUN_RECOVERY_MODE',
   ])
     delete env[variable];
   Object.assign(env, extraEnv);
@@ -350,6 +400,20 @@ for (const mode of ['write', 'read'])
       ZHUMA_NATIVE_WORK_RETENTION_MODE: mode,
     },
   );
+verify(
+  'execution-run-native',
+  executionRunSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
+  7,
+);
+const executionRunData = join(evidence, 'execution-run-data');
+mkdirSync(executionRunData, { mode: 0o700 });
+for (const mode of ['write', 'read'])
+  verify(
+    `execution-run-process-${mode}`,
+    ['packages/core/agent-loop/tests/zhuma-execution-run-native-recovery.spec.ts'],
+    1,
+    { ZHUMA_RUN_RECOVERY_ROOT: executionRunData, ZHUMA_RUN_RECOVERY_MODE: mode },
+  );
 writeFileSync(
   join(evidence, 'proof.json'),
   `${JSON.stringify(
@@ -365,6 +429,14 @@ writeFileSync(
       nativeInputFixtureSha256: hash(nativeInputFixture),
       nativeMigrationFixtureSha256: hash(nativeMigrationFixture),
       nativeSourceSha256,
+      executionRunBundleSha256,
+      executionRunFixtureSha256: hash(executionRunFixture),
+      executionRunHelperFixtureSha256: hash(executionRunHelperFixture),
+      executionRunSourceSha256,
+      executionRunSpecSha256: executionRunSpecs.map((name) => ({
+        name,
+        sha256: hash(join(root, `packages/dsh-adapter/tests/${name}.spec.ts`)),
+      })),
       navigationFixtureSha256: hash(navigationFixture),
       nativeSpecSha256: nativeSpecs.map((name) => ({
         name,
