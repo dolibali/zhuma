@@ -40,6 +40,12 @@ export const nativeWorkSessionBindingSchema = z.strictObject({
       }),
     )
     .max(256),
+  inputReadBudget: z
+    .strictObject({
+      attempts: z.number().int().min(0).max(16),
+      chargedBytes: z.number().int().min(0).max(65_536),
+    })
+    .optional(),
 });
 
 export const nativeWorkSessionDomainSpec = {
@@ -79,9 +85,13 @@ export async function openNativeWorkSessions(ctx: Context, options: NativeDshOpt
   let closed: Promise<void> | undefined;
   const close = () =>
     (closed ??= (async () => {
+      const drain = service.sealInputReads();
       try {
         await runtime.close();
       } finally {
+        // Tool scope disposal retains the native persistence handle until the
+        // actual source promise settles. Do not release metadata before it.
+        await drain;
         await domain.close();
       }
     })());
