@@ -32,8 +32,11 @@ export function refused(result, code) {
   assert.equal(result.error.code, code);
 }
 
-function confirmed() {
+function confirmed(expertNode) {
   const { state, task, node } = fixture();
+  if (expertNode)
+    state.participants.find((person) => person.id === 'qa').instructions =
+      '依据当前固定输入完成分配的工作，返回可审查的产物。';
   return applyWorkbenchCommand(state, {
     type: 'save-task',
     task: {
@@ -53,7 +56,7 @@ function confirmed() {
               reviewerIds: [],
               reviewRequired: false,
             },
-          ],
+          ].map((step) => (step.id === expertNode ? { ...step, assigneeId: 'qa' } : step)),
         },
       ],
       status: 'ready',
@@ -69,6 +72,8 @@ export async function open(
     beforePublish,
     prepareDomain,
     startupFailure,
+    expertNode,
+    projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
     closeState = { calls: 0, closed: false, errors: [] },
   } = {},
 ) {
@@ -82,7 +87,7 @@ export async function open(
   const changes = new Set();
   const request = Object.freeze({ headers: {} });
   const members = new Map([[request, 'chen']]);
-  let workbench = confirmed();
+  let workbench = confirmed(expertNode);
   const plan = workbench.appliedPlans.at(-1);
   let service;
   let authorities;
@@ -164,7 +169,7 @@ export async function open(
           },
           {
             readWorkbench: () => workbench,
-            projectSpaces: boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
+            projectSpaces,
             publishRunService(value) {
               service = value;
               return beforePublish?.(value);

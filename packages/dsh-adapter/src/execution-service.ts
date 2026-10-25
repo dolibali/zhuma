@@ -50,6 +50,7 @@ import {
   readExecutionRunComposition,
   assertExecutionRunComposition,
   ExecutionRunCompositionError,
+  type ExecutionRunCompositionInput,
   type FrozenExecutionRunComposition,
 } from './execution-run-composition.js';
 import {
@@ -159,6 +160,7 @@ const draftLocate = {
   nodeId: id,
 };
 const draftReadSchema = z.strictObject(draftLocate);
+const runCompositionInputsSchema = draftReadSchema.extend({ spaceId: id });
 const beginRunSchema = beginExecutionRunSchema
   .omit({ actorId: true })
   .extend({ ...draftLocate, composition: executionRunCompositionSchema });
@@ -168,6 +170,7 @@ const stopRunSchema = stopExecutionRunSchema
 export type BeginRunRequest = z.infer<typeof beginRunSchema>;
 export type StopRunRequest = z.infer<typeof stopRunSchema>;
 export type ExecutionNodeLocator = z.infer<typeof draftReadSchema>;
+export type ExecutionRunCompositionInputs = ExecutionRunCompositionInput['inputs'];
 
 /** Host-only real producers. Omission refuses Run admission; no DTO is a capability. */
 export interface ExecutionRunHostPorts extends Pick<
@@ -827,6 +830,45 @@ export class ExecutionService {
     return readExecutionRunComposition(run.composition);
   }
 
+  /** Host-only preparation for this node's current controller, independent of human inbox items. */
+  readRunCompositionInputs(
+    request: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionRunCompositionInputs>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(runCompositionInputsSchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      return this.withRunMember(
+        request,
+        input,
+        async (host, lease) => {
+          const visible = await this.readableRecords(
+            [input.spaceId],
+            lease.memberId,
+            input.spaceId,
+          );
+          const { node, items } = this.currentRunCompositionInputs(host, lease, input, visible);
+          return {
+            ok: true,
+            value: structuredClone({
+              actorId: lease.memberId,
+              spaceId: input.spaceId,
+              taskId: node.taskId,
+              planId: node.planId,
+              revision: node.revision,
+              nodeId: node.nodeId,
+              items,
+            }),
+          };
+        },
+        false,
+      );
+    });
+  }
+
   /** Explicit opt-in only, after guards are installed. Reads and startup never enable it. */
   enableRunWriter(): Promise<ExecutionResult<void>> {
     return this.enqueue(async () => {
@@ -880,13 +922,8 @@ export class ExecutionService {
             lease.memberId,
             input.spaceId,
           );
-          if (!Array.isArray(visible)) throw new ExecutionRunError('run-authority-unavailable');
-          this.requireRunHost();
-          lease.assertCurrent(input.spaceId);
-          node = this.readRunNode(input)!;
-          if (!node) throw new ExecutionRunError('run-authority-denied');
-          this.assertRunNodeAccess(host, lease.memberId, input.spaceId, node);
-          this.assertRunController(lease.memberId, node);
+          const fresh = this.currentRunCompositionInputs(host, lease, input, visible);
+          node = fresh.node;
           const state = readExecutionRunState(node);
           const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
           const generation = prior
@@ -923,7 +960,7 @@ export class ExecutionService {
                 planId: node.planId,
                 revision: node.revision,
                 nodeId: node.nodeId,
-                items: upstreamInputsFor(node, visible),
+                items: fresh.items,
               },
             },
             input,
@@ -1076,16 +1113,16 @@ export class ExecutionService {
     if (controller !== memberId) throw new ExecutionRunError('run-not-controller');
   }
 
-  private async withRunMember(
+  private async withRunMember<T>(
     request: MemberRequest,
     input: ExecutionNodeLocator & { spaceId: string },
     work: (
       host: ExecutionRunHostPorts,
       lease: ExecutionMemberLease,
       node: ExecutionNodeRecord,
-    ) => Promise<ExecutionResult<ExecutionRunDecision>>,
+    ) => Promise<ExecutionResult<T>>,
     requireWriter = true,
-  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+  ): Promise<ExecutionResult<T>> {
     const host = this.requireRunHost();
     if (requireWriter) requireExecutionRunWriter(this.readRunGlobal());
     else this.assertRunStoreCompatibility();
@@ -1126,6 +1163,43 @@ export class ExecutionService {
         this.fenceRuns();
       }
     }
+  }
+
+  private currentRunCompositionInputs(
+    host: ExecutionRunHostPorts,
+    lease: ExecutionMemberLease,
+    input: ExecutionNodeLocator & { spaceId: string },
+    visible: ExecutionNodeRecord[] | ExecutionResult<never>,
+  ): { node: ExecutionNodeRecord; items: UpstreamInputView[] } {
+    if (!Array.isArray(visible)) throw new ExecutionRunError('run-authority-unavailable');
+    this.requireRunHost();
+    lease.assertCurrent(input.spaceId);
+    const node = this.readRunNode(input);
+    if (!node) throw new ExecutionRunError('run-authority-denied');
+    this.assertRunNodeAccess(host, lease.memberId, input.spaceId, node);
+    this.assertRunController(lease.memberId, node);
+    if (
+      !visible.some(
+        (record) =>
+          samePlan(record, node.taskId, node.planId, node.revision) &&
+          record.nodeId === node.nodeId,
+      )
+    )
+      throw new ExecutionRunError('run-authority-denied');
+
+    // A directory lookup awaited later in the scan may outlive an earlier source row.
+    // Re-read only same-plan refs synchronously, after the final task/space/controller gate.
+    const refs = new Set(node.handoff.inputRefs.map((ref) => ref.sourceNodeId.trim()));
+    const sources = visible
+      .filter(
+        (record) =>
+          samePlan(record, node.taskId, node.planId, node.revision) && refs.has(record.nodeId),
+      )
+      .flatMap((record) => {
+        const current = this.readRunNode(record);
+        return current ? [current] : [];
+      });
+    return { node, items: upstreamInputsFor(node, sources) };
   }
 
   private runInput<T extends ExecutionNodeLocator>(input: T, actorId: string) {

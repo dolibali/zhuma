@@ -57,6 +57,22 @@ derived context/message fields; it never resolves a pointer to latest.
 
 ## Same-owner durability and explicit start
 
+`ExecutionService.readRunCompositionInputs(originalRequest: MemberRequest, body: unknown)`
+is a Host-only preparation read in the same existing queue. The body is exactly
+`{taskId,planId,revision,nodeId,spaceId}`; the result is
+`ExecutionResult<ExecutionRunCompositionInputs>`, where
+`ExecutionRunCompositionInputs = ExecutionRunCompositionInput['inputs']`:
+`{actorId,spaceId,taskId,planId,revision,nodeId,items: readonly UpstreamInputView[]}`.
+It uses the real current member lease, node/controller, recorded plan and space gates,
+then the normal `readableRecords` / `upstreamInputsFor` projection. After asynchronous
+directory reads it rechecks publication, member, task, plan, controller and current
+directory, and synchronously copies current same-plan source rows before projecting.
+Both expert-assigned and human-assigned nodes are covered even when absent from human
+inbox items. Hidden/pending/replaced rows remain explicit; they never become a successful
+empty catalog. The copied result contains metadata only, is not an execution grant, and
+does not enable the writer marker, repair unlocks, write a node, create a Run, connect or
+call a model. Start independently rechecks inputs with the same projection helper.
+
 Formal `ExecutionService.startRun(originalMemberRequest, BeginRunRequest)` requires the
 complete snapshot. In the existing queue it opens a real fresh member lease, checks the
 current node/controller/space, normal readable B inputs, exact composition, Host model/
