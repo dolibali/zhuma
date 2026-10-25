@@ -28,6 +28,8 @@
 
 ## 交付约束
 
+Agent整体能力采用[长期机制/成本/主责对照](architecture/task-session-delivery/design.md#agent-能力对照与证据边界2026-10-25)、[正常会话交互](ui-design.md#agent-工作会话补充队列与协作设计要求待真实接缝)和[专项证据门槛](architecture/task-session-delivery/test-plan.md#agent-专项场景2026-10-25增补待执行)：运行中Steer/下一轮Queue、定向通信、按需固定输入、全Agent串并行/独立评审均保留于原FR07/08/10/13及LC范围。它们是设计/验收要求，旧执行切片和原23行为不认证新增能力；实时顺序/阻塞继续只看[#25](https://github.com/dolibali/zhuma/issues/25)、[#35](https://github.com/dolibali/zhuma/issues/35)与各关联工作项。
+
 - 继续删除独立 Rules 资产/配置、独立讨论页、单独“多层演示”专区、强制冗余验收面板。后台必要版本/权限/完成条件不等于恢复这些页面。
 - 主要能力暂缓必须保留本表中的主责、依赖和退出条件；只改视觉不关闭业务条目。
 - 每批 PR 记采用的交互机制、解决的用户操作与取舍；官方文档研究不冒充登录后产品实测。
