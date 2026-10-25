@@ -4,13 +4,13 @@
 
 ## 复用取舍
 
-**采用**：上游固定提交 `687f282` 的 `attachment-local` 原字节存储（`packages/attachment/attachment-local/src/file-store.ts`）：
-- `saveFileStreamVerbatim`（流式原字节保存，内容寻址 sha256，原子发布＋目录 fsync，崩溃安全）
-- `readFileStreamVerbatim`（流式读取＋字节数与摘要校验，损坏在最后一块拒绝）
-- `storedFilePath`（`sha256:<digest>` 寻址＋文件名叶子）
+**采用**：上游固定提交 `687f282` 的公开附件接口——Cordis 服务 `ctx.attachments: AttachmentStore`（`packages/attachment/attachment/src/index.ts`）：
+
+- `saveFileStream(input)`（流式原字节保存，内容寻址 sha256，原子发布＋目录 fsync，崩溃安全）
+- `readFileStream(ref)`（流式读取＋字节数与摘要校验，见修正 4 的完成语义）
 - `FileAttachmentRef = { attachmentId: 'sha256:<digest>', name, bytes }`
 
-它提供：不可变原字节持久、可信回执（服务端计算的 digest/长度）、崩溃恢复。**它不提供**：本产品的成员／空间／固定产物授权，也不提供应用限额。
+产品经公开 `ctx.attachments` 注入，不跨包导入内部 `attachment-local` 函数、不自行硬编码存储根目录（内部 `file-store.ts` 仅作行为依据）。它提供：不可变原字节持久、可信回执（服务端计算的 digest/长度）、崩溃恢复。**它不提供**：本产品的成员／空间／固定产物授权，也不提供应用限额。
 
 **舍弃**：不自建文件系统或第二份字节库；不把字节塞进现有 JSON 命令通道；不把浏览器 `uploadComplete:true` 或客户端算的哈希当证明。
 
@@ -20,33 +20,40 @@
 
 ### 1. 上传 `POST /api/zhuma-exec/upload-file`（字节流，不进 JSON 信封）
 
-- 请求头声明：`x-zhuma-file-name`、`x-zhuma-file-type`、`x-zhuma-file-size`、`x-zhuma-file-sha256`（调用方声明）＋成员会话＋`spaceId`（必填，#87 scope 约定）。
-- 服务流式写入上游存储并**实际计算** sha256 与长度；声明值与实际不符即失败，不写元数据。可信回执返回服务端计算的 `{ attachmentId, name, bytes, sha256 }`。
-- 幂等：同 sha256 内容寻址天然幂等（重复上传同字节返回同一回执，不重复写）。
-- 取消：AbortSignal 中断流；中断不写元数据，不完整对象不发布。
-- 授权：成员会话当前持有该 spaceId；无权／撤销／未知即 `not-found` 不泄露。
+- 请求头声明：`x-zhuma-file-name`、`x-zhuma-file-type`、`x-zhuma-file-size`、`x-zhuma-file-sha256`（调用方声明，仅作失败诊断，不作证明）＋成员会话＋完整定位 `taskId/planId/revision/nodeId`（待提交文件绑定有权执行节点）＋`spaceId`（必填）＋幂等键 `x-zhuma-idempotency-key`。
+- **字节去重与产品回执分开**：sha256 只去重底层对象；产品上传回执用独立的逻辑标识 `uploadId`（服务端发放的 uuid）＋`spaceId/accountId` 归属。相同字节由不同账号上传到不同团队/节点产生各自的回执与元数据，不共享授权事实。
+- 服务流式写入上游存储并**实际计算** sha256 与长度；声明值与实际不符即失败，不写元数据。可信回执返回服务端计算的 `{ uploadId, attachmentId, name, bytes, sha256 }`。
+- 幂等键：同键重试返回同一回执（不重复登记元数据）；同键异体返回 `idempotency-mismatch`。
+- 恢复：完整字节已发布但元数据写失败／回执丢失／取消迟到时，按同幂等键重试——字节对象已存在则直接补登元数据返回回执；中断的不完整对象不发布。
+- 授权：成员会话当前持有该 spaceId **且**是该任务该节点的当前执行者；非参与者／无权／撤销即 `not-found` 不泄露。
+- 元数据 `zhuma_files` 记录 `{ uploadId, attachmentId, name, mediaType, byteSize, sha256, spaceId, taskId, planId, revision, nodeId, uploadedBy, uploadedAt, state }`。
 
-### 2. 读取/下载/预览 `GET /api/zhuma-exec/file/<attachmentId>`
+### 2. 读取/下载/预览 `GET /api/zhuma-exec/file/<uploadId>`
 
-- 授权：文件登记的 spaceId 必须在请求成员当前空间枚举内（可信目录）；无权／撤销／伪造 ID 即 `not-found`。
-- 流式返回并校验字节与摘要；损坏或丢失 `unavailable`。
-- 预览白名单（`text/*`、`image/png`、`image/jpeg`、`application/pdf`、`text/markdown`）`inline` 且限界（大小上限内）；其余 `Content-Disposition: attachment` 如实下载原名。预览不执行上传内容。
+- **对象授权（不只核空间成员）**：哈希只定位字节，授权按用途绑定——待提交文件读取绑定上传者＋有权执行节点；评审读取绑定固定产物/轮次的当前评审人；下游读取绑定准确 inputRef 与固定版本（复用 `upstream-content` 的完整定位与引用校验）。读取要求显式 `spaceId`，响应回显完整定位（uploadId、taskId/planId/revision/nodeId、版本）供 A 做迟到门禁。
+- 负例：同团队非参与者、非引用文件、错轮次/节点、撤销后旧回执均 `not-found`，拒绝不读取字节、不增加业务事实。
+- **校验完成才暴露**：单文件在内存/并发预算内先完整读入并校验字节数与摘要，校验通过才响应；损坏或丢失 `unavailable`。**不**把上游流直接转发 HTTP（上游先 yield 数据后校验，直接转发会在校验前发出损坏字节）。等长末字节损坏及流中断的负例证明不产生成功回执/可用预览。
+- **安全呈现**：纯文本按 `text/plain; charset=utf-8` 显示（不随调用方声明的 `text/html` 等类型 inline）；Markdown 禁止原始 HTML 执行；主动内容（HTML/SVG/脚本类）一律 `Content-Disposition: attachment` 下载；图片/PDF 按验证后的支持范围预览。所有响应带 `X-Content-Type-Options: nosniff` 与隔离的 `Content-Security-Policy`，缓存 `private, no-store`。nosniff 只约束类型嗅探，不能替代安全呈现。真实 HTML、伪装 MIME/扩展名、SVG/HTML 改名图片的负例证明不执行脚本、不发起上传内容指定的请求。
 
 ### 3. 草稿引用与固定提交
 
-- 草稿 `files` 的 `ArtifactFileRef` 引用可信回执（`checksum`＝服务端回执的 sha256）；保存草稿时校验回执存在且属于当前空间。`uploadComplete` 由服务端据回执判定，客户端声明无效。
-- `submit` 提交固定版本：校验每个文件回执存在、字节与摘要匹配、属当前空间；固定版本的文件不可变（内容寻址不可覆盖）；重提产生新版本，旧版本可追溯；同键重放／并发不多产物或重复引用。
+- 草稿 `files` 的 `ArtifactFileRef` 引用可信回执：`checksum`＝服务端回执的 sha256，`uploadComplete` 由服务端据 `zhuma_files` 中该回执的完成状态判定，客户端声明无效。保存草稿时校验回执存在、属当前空间、且该成员是当前执行者。
+- `submit` 提交固定版本：校验每个文件回执存在、字节与摘要匹配、属当前空间与本轮节点；固定版本的文件不可变（内容寻址不可覆盖）；重提产生新版本，旧版本可追溯；同键重放／并发不多产物或重复引用。
 - 下游授权读取（`upstream-content`）的文件元信息来自固定版本事实。
+- 移除草稿里引用的文件：仅解除引用，不删字节——同一字节可被其他固定版本共用，移除不删底层对象。
 
 ### 预算（明确，不沿用底层默认值）
 
-| 项 | 上限 |
-| --- | --- |
-| 单文件大小 | 20 MiB |
-| 单次提交文件数 | 20 |
-| 单节点文件总量 | 100 MiB |
-| 上传时间预算 | 60 秒／文件 |
-| 数量上限（单空间） | 1000 文件 |
+| 项                       | 上限         | 计量点                                   |
+| ------------------------ | ------------ | ---------------------------------------- |
+| 单文件大小               | 20 MiB       | 实际流入字节（声明不符即失败）           |
+| 单次提交文件数           | 20           | 固定提交时                               |
+| 单节点文件总量           | 100 MiB      | 固定版本事实                             |
+| 上传时间预算             | 60 秒／文件  | 流式上传                                 |
+| 数量上限（单空间）       | 1000 文件    | 元数据登记                               |
+| 并发上传预留             | 8            | 同空间在途上传                           |
+| 临时／未引用对象         | 计入空间配额 | 发布成功但元数据未登的对象按周期对账清理 |
+| 上传内存（单文件／并发） | 20 MiB／8    | 校验完成才暴露的先读后验缓冲             |
 
 ## 负例与恢复
 
