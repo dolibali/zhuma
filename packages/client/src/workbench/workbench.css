@@ -787,11 +787,6 @@ body[data-ds-dark-theme] {
   height: 100%;
   min-height: 0;
 }
-.zm-member-work > .zm-member-views {
-  flex: none;
-  margin: 0;
-  padding: 12px 24px;
-}
 .zm-member-catalog {
   flex: 1;
   min-height: 0;

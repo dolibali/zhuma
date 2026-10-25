@@ -36,17 +36,27 @@ function deploymentMode(): 'legacy-single-user' | 'multi-member' {
 }
 export function apply(ctx: Context): void {
   const mode = deploymentMode();
+  const layout = ctx.layout as typeof ctx.layout & {
+    registerPanelGuard?: (
+      guard: (target: MainPanelId | null, proceed: () => void, signal: AbortSignal) => void,
+    ) => () => void;
+  };
+  if (mode === 'multi-member' && !layout.registerPanelGuard)
+    throw new Error('成员工作台需要更新配套界面，请刷新 Zhuma 发行文件后重试。');
   const connection = ctx.get(
     'connection',
   ) as import('@deepseek-ai/dsh-client-connection/client').ConnectionHandle;
   const api = createWorkbenchApi(connection.rpc);
   const memberShell = createMemberShell(createIdentityApi());
   const executionPanel = 'zhuma-my-work' as MainPanelId;
+  const workbenchPanel = 'zhuma-workbench' as MainPanelId;
   ctx.effect(() => {
-    const syncPage = () =>
-      memberShell.setPageActive(
-        ctx.layout.panelInfo.getSnapshot().activePanelId === executionPanel,
-      );
+    const syncPage = () => {
+      const active = ctx.layout.panelInfo.getSnapshot().activePanelId;
+      const memberPage =
+        active === executionPanel || (mode === 'multi-member' && active === workbenchPanel);
+      memberShell.setPageActive(memberPage, memberPage ? active : undefined);
+    };
     syncPage();
     const unsubscribe = ctx.layout.panelInfo.subscribe(syncPage);
     memberShell.start();
@@ -55,6 +65,13 @@ export function apply(ctx: Context): void {
       memberShell.stop();
     };
   });
+  if (mode === 'multi-member')
+    ctx.effect(() =>
+      layout.registerPanelGuard!((target, proceed, signal) => {
+        if (target === layout.panelInfo.getSnapshot().activePanelId) proceed();
+        else memberShell.requestLeave(proceed, signal);
+      }),
+    );
   const appearance: AppearanceStore = {
     getSnapshot: () => ctx.theme.getTheme().preference,
     subscribe: (listener) => ctx.on('theme/change', listener),
@@ -137,54 +154,72 @@ export function apply(ctx: Context): void {
       ),
     );
   }
-  ctx.slots.inject('main', () => {
-    const dispose = ctx.slots.register(
-      { name: 'main', key: executionPanel, inject: () => ({}) },
-      () => (
-        <div className="zm-shell-panel">
-          <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
-          <MemberExecutionPage
-            shell={memberShell}
-            {...(mode === 'multi-member' ? { workbenchAppearance: appearance } : {})}
-          />
-        </div>
+  const memberPanels =
+    mode === 'multi-member'
+      ? [
+          { id: workbenchPanel, label: '团队工作台', view: 'catalog' as const, order: -100 },
+          { id: executionPanel, label: '我的工作', view: 'work' as const, order: -95 },
+        ]
+      : [{ id: executionPanel, label: '我的工作', view: 'work' as const, order: -95 }];
+  for (const panel of memberPanels) {
+    ctx.slots.inject('main', () => {
+      const dispose = ctx.slots.register(
+        { name: 'main', key: panel.id, inject: () => ({}) },
+        () => (
+          <div className="zm-shell-panel">
+            <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
+            <MemberExecutionPage
+              shell={memberShell}
+              view={panel.view}
+              openWork={() => ctx.layout.selectPanel(executionPanel)}
+              {...(panel.view === 'catalog' ? { workbenchAppearance: appearance } : {})}
+            />
+          </div>
+        ),
+      );
+      return () => {
+        if (ctx.layout.panelInfo.getSnapshot().activePanelId === panel.id)
+          ctx.layout.selectPanel(null);
+        dispose();
+      };
+    });
+    ctx.slots.inject('sidebar.panellist', () =>
+      ctx.slots.register(
+        {
+          name: 'sidebar.panellist',
+          id: panel.id,
+          order: panel.order,
+          label: panel.label,
+        },
+        () => (
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            aria-hidden="true"
+          >
+            {panel.view === 'catalog' ? (
+              <>
+                <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                <path d="M14 17.5h7m-3.5-3.5v7" />
+              </>
+            ) : (
+              <path d="M9 5h11M9 12h11M9 19h11M3 5l1 1 2-2M3 12l1 1 2-2M3 19l1 1 2-2" />
+            )}
+          </svg>
+        ),
       ),
     );
+  }
+  if (mode === 'multi-member') {
     const active = ctx.layout.panelInfo.getSnapshot().activePanelId;
-    if (
-      mode === 'multi-member' &&
-      (active === null || legacyPanels.some(({ id }) => id === active))
-    )
-      ctx.layout.selectPanel(executionPanel);
-    return () => {
-      if (ctx.layout.panelInfo.getSnapshot().activePanelId === executionPanel)
-        ctx.layout.selectPanel(null);
-      dispose();
-    };
-  });
-  ctx.slots.inject('sidebar.panellist', () =>
-    ctx.slots.register(
-      {
-        name: 'sidebar.panellist',
-        id: executionPanel,
-        order: -95,
-        label: mode === 'multi-member' ? '工作台' : '我的工作',
-      },
-      () => (
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          aria-hidden="true"
-        >
-          <path d="M9 5h11M9 12h11M9 19h11M3 5l1 1 2-2M3 12l1 1 2-2M3 19l1 1 2-2" />
-        </svg>
-      ),
-    ),
-  );
+    if (active === null || active === 'zhuma-experts') ctx.layout.selectPanel(workbenchPanel);
+  }
   ctx.slots.inject('settings.launcher', () =>
     ctx.slots.register(
       {

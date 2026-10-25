@@ -42,6 +42,8 @@ Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek �
 
 在已安装固定上游测试工具链后执行 `pnpm desktop:verify:native-lifecycle`，也可用 `--upstream /path/to/fixed-upstream` 指定精确检出。脚本仅在独立临时 Git worktree 应用完整发行补丁，运行既有取消／child 清理回归、新 opt-in 与挂起唤醒用例，并以两个独立 Node 进程验证同盘关闭／恢复没有自动模型请求。测试使用本地脚本 Adapter，输出补丁／夹具摘要及分层证据；它不认证真实模型、产品 Run 授权或已安装桌面。失败证据保留，不修改固定上游、gitlink 或用户应用数据。
 
+同一入口还定向检查配套布局守卫：编译当前 LayoutController（依赖按原项目引用边界构建），运行官方原用例与新增导航负例，核对一次确认、目标注销、New Session／工作区返回 Conversation、后续导航／卸载／异常抑制。该层是实际补丁布局对象测试，不驱动浏览器，也不替代真实窗口、取消回焦和慢业务回执验收。
+
 ## 原图一致性验收
 
 `pnpm brand:check` 检查原始 PNG 的固定 SHA-256 和全部导出资源；`pnpm desktop:verify:mac` 继续检查安装包内 ICNS 与本次准备的 ICNS 完全相同。运行时通过 CDP 读取两个品牌图标的实际 `currentSrc`、像素密度和响应字节摘要，确认窗口加载的是原图导出而不是缓存中的旧图。修订安装包采用 `brand.json` 的独立构建版本，保留旧包作为历史，不将同名旧包误认为已修复。

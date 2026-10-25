@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createIdentityApi } from '../identity/api.js';
 import { MemberSessionBoundary } from '../identity/MemberSessionBoundary.js';
 import { MemberSpaceBoundary, type MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
@@ -10,6 +10,7 @@ import type { AppearanceStore } from '../workbench/Appearance.js';
 import { WorkbenchPage } from '../workbench/WorkbenchPage.js';
 import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { createMemberWorkbenchAdapter } from '../workbench/member-adapter.js';
+import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 
 function MemberWork({
   fetcher,
@@ -18,6 +19,9 @@ function MemberWork({
   spaceUnavailable,
   lifetime,
   appearance,
+  view,
+  openWork,
+  registerLeaveGuard,
 }: {
   fetcher: typeof fetch;
   accountId: string;
@@ -25,14 +29,36 @@ function MemberWork({
   spaceUnavailable(): void;
   lifetime: MemberSpaceLifetime;
   appearance?: AppearanceStore;
+  view: 'catalog' | 'work';
+  openWork?: (() => void) | undefined;
+  registerLeaveGuard?:
+    ((leave: (proceed: () => void, signal?: AbortSignal) => void) => () => void) | undefined;
 }) {
   const currentSpaceUnavailable = useRef(spaceUnavailable);
   currentSpaceUnavailable.current = spaceUnavailable;
   const currentLifetime = useRef(lifetime);
   currentLifetime.current = lifetime;
-  const [view, setView] = useState<'catalog' | 'work'>(appearance ? 'catalog' : 'work');
-  const presentation = useRef<object>({});
-  const currentPresentation = presentation.current;
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const leaveConfirmation = useLeaveConfirmation(
+    () => alive.current && currentLifetime.current.isCurrent(),
+  );
+  useEffect(
+    () =>
+      registerLeaveGuard?.((proceed, signal) => {
+        leaveConfirmation.request(
+          proceed,
+          currentLifetime.current.hasUnsavedChanges?.() ?? false,
+          signal,
+        );
+      }),
+    [registerLeaveGuard, leaveConfirmation.request],
+  );
   const api = useMemo(
     () =>
       createExecutionHttpApi(
@@ -42,13 +68,10 @@ function MemberWork({
         {
           spaceId,
           onUnavailable: () => currentSpaceUnavailable.current(),
-          isCurrent: () =>
-            currentLifetime.current.isCurrent() &&
-            view === 'work' &&
-            presentation.current === currentPresentation,
+          isCurrent: () => alive.current && currentLifetime.current.isCurrent() && view === 'work',
         },
       ),
-    [fetcher, accountId, spaceId, view, currentPresentation],
+    [fetcher, accountId, spaceId, view],
   );
   const workbench = useMemo(
     () =>
@@ -58,9 +81,7 @@ function MemberWork({
             actorId: accountId,
             spaceId,
             isCurrent: () =>
-              currentLifetime.current.isCurrent() &&
-              view === 'catalog' &&
-              presentation.current === currentPresentation,
+              alive.current && currentLifetime.current.isCurrent() && view === 'catalog',
             onUnauthenticated: () => currentLifetime.current.onUnauthenticated(),
             onUnavailable: () => currentSpaceUnavailable.current(),
           },
@@ -68,45 +89,20 @@ function MemberWork({
         ),
         accountId,
       ),
-    [fetcher, accountId, spaceId, view, currentPresentation],
+    [fetcher, accountId, spaceId, view],
   );
-  function selectView(next: 'catalog' | 'work') {
-    if (next === view || !currentLifetime.current.isCurrent()) return;
-    if (
-      currentLifetime.current.hasUnsavedChanges?.() &&
-      !confirm('有未保存的内容，确定切换吗？已发送的操作仍可能完成。')
-    )
-      return;
-    presentation.current = {};
-    setView(next);
-  }
   const [refreshKey, setRefreshKey] = useState(0);
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
   return (
     <div className="zm-member-work">
-      {appearance && (
-        <nav className="zm-tabs zm-member-views" aria-label="工作内容">
-          <button
-            aria-current={view === 'catalog' ? 'page' : undefined}
-            onClick={() => selectView('catalog')}
-          >
-            项目与任务
-          </button>
-          <button
-            aria-current={view === 'work' ? 'page' : undefined}
-            onClick={() => selectView('work')}
-          >
-            待我处理
-          </button>
-        </nav>
-      )}
+      {leaveConfirmation.dialog}
       {appearance && view === 'catalog' ? (
         <div className="zm-member-catalog">
           <WorkbenchPage
             api={workbench}
             initialSection="tasks"
             appearance={appearance}
-            openWork={() => selectView('work')}
+            {...(openWork ? { openWork } : {})}
           />
         </div>
       ) : (
@@ -129,10 +125,14 @@ export function MemberExecutionPage({
   fetcher = globalThis.fetch,
   shell,
   workbenchAppearance,
+  view,
+  openWork,
 }: {
   fetcher?: typeof fetch;
   shell?: MemberShell;
   workbenchAppearance?: AppearanceStore;
+  view?: 'catalog' | 'work';
+  openWork?: () => void;
 }) {
   const snapshot = useSyncExternalStore(
     shell?.subscribe ?? noSubscription,
@@ -146,6 +146,11 @@ export function MemberExecutionPage({
   );
   const registerSwitchGuard = useCallback(
     (select: SpaceSwitch) => shell?.registerSpaceGuard(epoch, select) ?? (() => {}),
+    [shell, epoch],
+  );
+  const registerLeaveGuard = useCallback(
+    (leave: (proceed: () => void, signal?: AbortSignal) => void) =>
+      shell?.registerLeaveGuard(epoch, leave) ?? (() => {}),
     [shell, epoch],
   );
   const identity = useMemo(() => shell?.api ?? createIdentityApi(fetcher), [fetcher, shell]);
@@ -167,11 +172,15 @@ export function MemberExecutionPage({
           >
             {(space, spaceUnavailable, lifetime) => (
               <MemberWork
+                key={view ?? (workbenchAppearance ? 'catalog' : 'work')}
                 fetcher={fetcher}
                 accountId={session.accountId}
                 spaceId={space.id}
                 spaceUnavailable={spaceUnavailable}
                 lifetime={lifetime}
+                view={view ?? (workbenchAppearance ? 'catalog' : 'work')}
+                openWork={openWork}
+                registerLeaveGuard={shell ? registerLeaveGuard : undefined}
                 {...(workbenchAppearance ? { appearance: workbenchAppearance } : {})}
               />
             )}

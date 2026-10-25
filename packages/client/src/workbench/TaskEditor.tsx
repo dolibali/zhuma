@@ -28,6 +28,7 @@ import { SingleSelect } from './SingleSelect.js';
 import { PlanningChanges } from './PlanningChanges.js';
 import { ControlIcon } from './ControlIcon.js';
 import { useUnsavedChanges } from './UnsavedChanges.js';
+import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -149,6 +150,13 @@ export function TaskEditor({
     task: WorkTask;
   } | null>(null);
   const dirty = JSON.stringify(task) !== baseline;
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const memberCapability = api.member
     ?.capabilities()
     ?.tasks.find((item) => item.taskId === task.id);
@@ -156,6 +164,7 @@ export function TaskEditor({
   const canConfirm = !api.member || memberCapability?.confirm === true;
   const canPlan = !api.member || memberCapability?.plan === true;
   useUnsavedChanges(dirty || busy || planning || !!proposal);
+  const leaveConfirmation = useLeaveConfirmation(() => alive.current);
   const previewTask = useMemo(
     () =>
       proposal?.result.workflows.length ? { ...task, workflows: proposal.result.workflows } : null,
@@ -381,6 +390,7 @@ export function TaskEditor({
         pendingSave.current.requestId,
         pendingSave.current.task.status === 'ready' ? 'confirm-task' : 'update-task',
       );
+      if (api.member && !alive.current) return null;
       const committed = result.tasks.find((t) => t.id === next.id);
       if (!committed) {
         saved(result);
@@ -398,6 +408,7 @@ export function TaskEditor({
       setConflict(false);
       return result;
     } catch (error) {
+      if (api.member && !alive.current) return null;
       setError(error instanceof Error ? error.message : '保存失败，请重试。');
       setConflict(error instanceof WorkbenchError && error.code === 'conflict');
       return null;
@@ -480,6 +491,7 @@ export function TaskEditor({
           : undefined,
       );
       abort.signal.throwIfAborted();
+      if (api.member && !alive.current) return;
       setProposal(next);
       setComparison({ workflows: comparedWorkflows, label: comparisonLabel });
       setPreviewOriginal(false);
@@ -573,19 +585,14 @@ export function TaskEditor({
   }
   return (
     <div className="zm-editor" ref={editorRef}>
+      {leaveConfirmation.dialog}
       <div className="zm-toolbar">
         <button
           className="zm-quiet"
           onClick={() => {
-            if (
-              !(dirty || (!!api.member && (busy || planning || !!proposal))) ||
-              confirm(
-                api.member
-                  ? '有未保存的内容，确定离开吗？已发送的操作仍可能完成。'
-                  : '有未保存的修改，确定离开吗？',
-              )
-            )
-              close();
+            if (api.member)
+              leaveConfirmation.request(close, dirty || busy || planning || !!proposal);
+            else if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
           }}
         >
           <ControlIcon direction="left" /> {backLabel}

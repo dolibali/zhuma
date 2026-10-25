@@ -58,6 +58,8 @@ async function replay(page, { empty = false, model = true } = {}) {
     control.calls.push(request);
     expect(request.payload.spaceId).toBe(space.id);
     let result;
+    if (request.method === 'zhuma-member/command') await control.commandGate;
+    if (request.method === 'zhuma-member/plan') await control.planGate;
     if (request.method === 'zhuma-member/plan')
       result = {
         ok: false,
@@ -165,3 +167,91 @@ test('member UI replay: save before confirm, explicit planning failure preserves
   ).toEqual(['update-task', 'confirm-task']);
   expect(control.legacy).toEqual([]);
 });
+
+test('member UI replay: compact editor leave modal cancels and escapes back to its trigger without losing input', async ({
+  page,
+}) => {
+  const control = await replay(page);
+  const native = [];
+  page.on('dialog', async (dialog) => {
+    native.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.goto('/?member-workbench&strict');
+  await expect(button(page, '团队工作台')).toBeVisible();
+  await expect(button(page, '我的工作')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '工作内容' })).toHaveCount(0);
+  await page.locator('.zm-task-row').filter({ hasText: '账号登录' }).click();
+  const title = page.getByLabel('任务标题', { exact: true });
+  await title.fill('尚未保存的登录要求');
+  const back = button(page, '任务清单');
+  await back.click();
+  const modal = page.getByRole('dialog', { name: '离开当前页面？', exact: true });
+  await expect(modal).toBeVisible();
+  expect((await modal.boundingBox()).width).toBeLessThanOrEqual(440);
+  await button(modal, '继续编辑').click();
+  await expect(back).toBeFocused();
+  await expect(title).toHaveValue('尚未保存的登录要求');
+  await back.click();
+  await page.keyboard.press('Escape');
+  await expect(modal).toHaveCount(0);
+  await expect(back).toBeFocused();
+  await expect(title).toHaveValue('尚未保存的登录要求');
+  await back.click();
+  await button(modal, '放弃并离开').click();
+  await expect(title).toHaveCount(0);
+  await expect(page.locator('.zm-task-row')).toContainText('账号登录');
+  expect(control.state.tasks[0].title).toBe('账号登录');
+  expect(native).toEqual([]);
+});
+
+for (const operation of ['command', 'plan'])
+  test(`member UI replay: sidebar leave during slow ${operation} preserves cancel and fences a reply after confirmed navigation`, async ({
+    page,
+  }) => {
+    const control = await replay(page);
+    const gate = Promise.withResolvers();
+    control[`${operation}Gate`] = gate.promise;
+    const native = [];
+    page.on('dialog', async (dialog) => {
+      native.push(dialog.type());
+      await dialog.dismiss();
+    });
+    try {
+      await page.goto('/?member-workbench&strict');
+      await page.locator('.zm-task-row').filter({ hasText: '账号登录' }).click();
+      const title = page.getByLabel('任务标题', { exact: true });
+      if (operation === 'command') {
+        await title.fill('已经发送的保存');
+        await button(page, '保存草稿').click();
+      } else {
+        await button(page, '✧ AI 规划').click();
+        await button(page, '生成工作流草案').click();
+      }
+      await expect
+        .poll(() => control.calls.some((request) => request.method === `zhuma-member/${operation}`))
+        .toBe(true);
+      const work = button(page, '我的工作');
+      await work.click();
+      const modal = page.getByRole('dialog', { name: '离开当前页面？', exact: true });
+      await expect(modal).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(work).toBeFocused();
+      await expect(title).toBeVisible();
+      await work.click();
+      await button(modal, '继续编辑').click();
+      await expect(title).toHaveValue(operation === 'command' ? '已经发送的保存' : '账号登录');
+      await work.click();
+      await button(modal, '放弃并离开').click();
+      await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
+      gate.resolve();
+      await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '登录工作台', exact: true })).toHaveCount(0);
+      expect(control.execution.some((request) => request.method === 'zhuma-exec/start-plan')).toBe(
+        false,
+      );
+      expect(native).toEqual([]);
+    } finally {
+      gate.resolve();
+    }
+  });
