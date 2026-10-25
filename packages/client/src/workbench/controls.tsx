@@ -15,19 +15,35 @@ export function Modal({
   title,
   children,
   close,
+  variant = 'default',
+  initialFocusId,
+  descriptionId,
+  restoreFocus,
 }: {
   title: string;
   children: ReactNode;
   close(): void;
+  variant?: 'default' | 'confirmation';
+  initialFocusId?: string;
+  descriptionId?: string;
+  restoreFocus?: (() => void) | undefined;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
-    ref.current?.showModal();
-  }, []);
+    const dialog = ref.current;
+    if (!dialog) return;
+    dialog.showModal();
+    if (initialFocusId) document.getElementById(initialFocusId)?.focus();
+    if (variant === 'confirmation')
+      return () => {
+        dialog.close();
+        restoreFocus?.();
+      };
+  }, [initialFocusId, restoreFocus, variant]);
   return (
     <dialog
-      className="zm-dialog"
+      className={`zm-dialog${variant === 'confirmation' ? ' zm-dialog-confirmation' : ''}`}
       ref={ref}
       onCancel={(event) => {
         event.preventDefault();
@@ -35,11 +51,19 @@ export function Modal({
         close();
       }}
       aria-labelledby={titleId}
+      aria-describedby={descriptionId}
     >
       <header>
         <h2 id={titleId}>{title}</h2>
-        <button type="button" aria-label="关闭" onClick={close}>
-          ×
+        <button type="button" className="zm-dialog-close" aria-label="关闭" onClick={close}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="m4 4 8 8m0-8-8 8"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
         </button>
       </header>
       {children}

@@ -6,7 +6,8 @@ const spacePicker = (page) => page.getByRole('combobox', { name: '当前空间',
 const planPicker = (page) => page.getByRole('combobox', { name: '已确认计划', exact: true });
 async function setup(page) {
   await page.goto('/?member-execution-spaces&strict');
-  await expect(spacePicker(page)).toContainText('个人 · 我的空间');
+  await expect(spacePicker(page)).toContainText('我的空间');
+  await expect(spacePicker(page)).toHaveAttribute('title', '个人 · 我的空间');
   await expect(page.getByText('现在没有需要你处理的工作。', { exact: true })).toBeVisible();
   await expect(page.getByText('暂无待开始的计划', { exact: true })).toBeVisible();
 }
@@ -123,7 +124,7 @@ test('formal spaces: same-space refresh and explicit start preserve delivery inp
   await dialog.getByRole('button', { name: '留在当前空间' }).click();
   await expect(input).toHaveValue('当前团队未提交产物');
   await chooseSpace(page, '团队 · 运营支持');
-  await dialog.getByRole('button', { name: '清空并切换' }).click();
+  await dialog.getByRole('button', { name: '放弃修改并切换' }).click();
   await expect(await review(page)).toHaveValue('');
   await chooseSpace(page, '团队 · 产品研发');
   await expect(await delivery(page)).toHaveValue('');
@@ -150,7 +151,8 @@ for (const method of ['inbox', 'startable'])
         window.memberExecutionSpaces.badEcho = {};
       });
       await page.getByRole('button', { name: '重新连接' }).click();
-      await expect(spacePicker(page)).toContainText('团队 · 产品研发');
+      await expect(spacePicker(page)).toContainText('产品研发');
+      await expect(spacePicker(page)).toHaveAttribute('title', '团队 · 产品研发');
       await expect(
         page.getByRole('article', { name: '编写订单状态帮助文案', exact: true }),
       ).toBeVisible();
@@ -184,7 +186,8 @@ test('formal spaces: revoked session membership closes dirty content before anot
     });
   });
   await page.getByRole('button', { name: '重新连接' }).click();
-  await expect(spacePicker(page)).toContainText('团队 · 产品研发');
+  await expect(spacePicker(page)).toContainText('产品研发');
+  await expect(spacePicker(page)).toHaveAttribute('title', '团队 · 产品研发');
   await expect(await delivery(page)).toHaveValue('');
 });
 
@@ -211,7 +214,8 @@ test('formal spaces: session prechecks held across switching and logout cannot c
     page.getByRole('article', { name: '评审导出字段脱敏方案', exact: true }),
   ).toBeVisible();
   await finish(page, old, '401');
-  await expect(spacePicker(page)).toContainText('团队 · 运营支持');
+  await expect(spacePicker(page)).toContainText('运营支持');
+  await expect(spacePicker(page)).toHaveAttribute('title', '团队 · 运营支持');
   await control(page, () => {
     window.memberExecutionSpaces.holdSessions = true;
   });
@@ -295,7 +299,7 @@ for (const outcome of ['success', 'failure', 'reject']) {
       .click();
     const index = await held(page, 'service', 'submit');
     await chooseSpace(page, '团队 · 运营支持');
-    await page.getByRole('dialog').getByRole('button', { name: '清空并切换' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '放弃修改并切换' }).click();
     const input = await review(page);
     await input.fill('新空间的评审意见');
     await finish(page, index, outcome);

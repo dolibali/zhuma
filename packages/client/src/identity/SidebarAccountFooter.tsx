@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Popover } from '@base-ui/react/popover';
 import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import { Button } from '../workbench/Button.js';
@@ -37,6 +37,7 @@ function PersonIcon() {
 export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFooterProps) {
   const snapshot = useSyncExternalStore(shell.subscribe, shell.getSnapshot, shell.getSnapshot);
   const state = snapshot.session;
+  const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (state.status !== 'authenticated') setOpen(false);
@@ -91,6 +92,7 @@ export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFo
       {state.status === 'authenticated' ? (
         <Popover.Root open={open} onOpenChange={setOpen}>
           <Popover.Trigger
+            ref={trigger}
             className="zm-account-trigger"
             aria-label={label}
             title={`${accountId} · ${caption}`}
@@ -124,7 +126,7 @@ export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFo
                     onValueChange={(id) => {
                       setOpen(false);
                       openWork();
-                      shell.requestSpace(id);
+                      shell.requestSpace(id, () => trigger.current?.focus());
                     }}
                   />
                 </Field>

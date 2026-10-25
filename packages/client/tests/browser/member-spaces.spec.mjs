@@ -83,7 +83,7 @@ test('space boundary: unsaved change prompt can cancel, and confirmed switch cle
   await expect(page.getByTestId('space-id')).toHaveText('personal-a');
   await expect(page.getByRole('textbox')).toHaveValue('留在个人空间的正文');
   await choose(page, '团队 · 产品研发');
-  await dialog.getByRole('button', { name: '清空并切换' }).click();
+  await dialog.getByRole('button', { name: '放弃修改并切换' }).click();
   await expect(page.getByTestId('space-id')).toHaveText('team-a');
   await expect(page.getByRole('textbox')).toHaveValue('');
   await choose(page, '个人 · a 的个人空间');
