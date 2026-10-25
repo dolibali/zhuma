@@ -1,0 +1,162 @@
+# Native execution Run: first consumable modules
+
+Work item: #113, related #35/#30/#33/#104. These modules are Host-internal. They add no route,
+domain, queue, native factory, transcript database, model call, or owner/member fallback.
+B retains the one `ExecutionService`/`zhuma_execution` owner. A owns transport/exports/Host;
+C owns native binding/turns/tools/drain; B supplies the real member and workspace facts.
+
+This first slice implements strict state, durable-before-effect orchestration, capability
+consumption, lifetime cleanup and a storage compatibility barrier. It does **not** certify
+B's lease issuer, its formal write hooks, a native binding handoff, fixed expert submission,
+actual workspace tools, normal Host/GUI, model quality or installation. Missing source ports
+refuse; the tests' supplied identities/availability/native facts are explicitly contracts.
+
+## Persistent ownership and compatibility
+
+`ExecutionRunNode = ExecutionNodeRecord & { nativeExecution?: ExecutionRunState }`. The
+optional extension has schemaVersion=1, a monotonic native version, currentRunId, at most
+64 attempts and 256 command receipts. Attempts are never silently evicted. Each wrapper
+contains the existing `ExecutionAttempt` plus actor/space/segment, exact native selection,
+workspace reference, dispatch state, resource state and last trusted event cursor/hash.
+No prompt body, cookie, filesystem root path or provider error is stored here.
+
+Missing extension is legacy. A present malformed, future, inconsistent, duplicate or
+partly missing state refuses. Current generation/attempt must be monotonic; only the last
+attempt may be nonterminal or hold resources. All core attempt reconstruction stays inside
+`wrapper.attempt`, so it cannot drop Host metadata. Existing node fields are spread whole.
+Reads and JSON reload never add a Run or produce a dispatch effect.
+
+`executionRunGlobalSchema` preserves the existing global `{schemaVersion:1}` and adds
+optional `nativeExecutionWriter:1`. B must run `assertExecutionRunStoreCompatibility`
+at startup: native rows without a barrier refuse rather than being adopted. After every
+old write path has the native-aware queue/guards, B explicitly persists
+`prepareExecutionRunWriter(domain.global.get())` **before** first native admission.
+`enableExecutionRunWriter(readGlobal,writeGlobal,nodes)` is the explicit same-queue helper:
+failed/stale persistence cannot enable a begin, and an already durable marker is zero-write.
+Native begin and authority issuance require the **current persisted** global via
+`requireExecutionRunWriter`/`source.writerState`, not a Client-provided protocol flag.
+
+An old Host's actual strict `{schemaVersion:1}` global schema rejects the extra field.
+The barrier therefore fences old reopening without a second domain, direct JSON edit or
+backend format migration. A crash after the marker but before first Run is conservative:
+modern Host reads all old nodes/plans; old Host refuses. The marker must never be removed
+to “fix” a downgrade. `compatibleVersions` does not fix single-layout version migration
+in the pinned DSH JSON backend. This is a **single Host writer** contract; it does not
+claim a lock against two independent processes already holding the same backend.
+
+## Exact B command hooks
+
+All state functions are synchronous pure RMW decisions. Their actor/space, availability,
+peer rows, selection and workspace are **Host facts**, not public request DTOs. B must
+construct them after real authentication/resource authorization. Existing `scanActorField`
+rules still apply to untrusted bodies. A must not forward a complete `BeginExecutionRun`
+object from a browser.
+
+| Operation                                                             | Input and result                                                                                                                                                                                                                                                                                                                                                                                                                            | Ordering / refusal                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `beginExecutionRun(record,input,peers,availability)`                  | input: requestId, actorId/spaceId, expectedNodeVersion/expectedRunVersion, begin/retry/restart, Host-generated newRunId/newSegmentId, input SHA256, selection/provider/model/reasoning/maxTokens/configurationId, expertVersionId, contextRefs, text-only or authorized local workspace ref. availability: current writerState, real expertEnabled/executorConnected. Result: disposition, whole record, wrapper, dispatch/reconcile effect | In existing **global** ExecutionService.enqueue only. Compare exact versions, current controller, same actor/space, active attempts and all same-root writers. One node put saves Run/claim/receipt. Same body/key replays read reconciliation; altered body mismatches. Retry/restart keep the old attempt and its entry obligation |
+| `requestExecutionRunStop(record,input)`                               | requestId/actorId, exact Run/generation/segment, expected node/native versions → whole record + stop effect                                                                                                                                                                                                                                                                                                                                 | Persist requested before calling C outside queue. New sends/queue refuse. Replayed active stop may recheck/repeat cancellation, never send model input. pending does not release                                                                                                                                                     |
+| `recordExecutionRunEvent(record,event)`                               | exact Run/generation/segment + positive per-Run trusted sequence + one event below → whole record                                                                                                                                                                                                                                                                                                                                           | Native/cleanup **internal** port only. Never an HTTP payload/model statement. Exact last-event duplicate replays, changed same cursor mismatches; older attempt/cursor is ignored. No event auto-dispatches                                                                                                                          |
+| `readExecutionRunState` / `currentExecutionRun` / `executionRunScope` | current B node → validated clone/selected wrapper/immutable full scope                                                                                                                                                                                                                                                                                                                                                                      | Sync, read-only; no C attach/resume or storage writes                                                                                                                                                                                                                                                                                |
+| `assertExecutionRunQuiescent(record)`                                 | whole current node → void or run-active/state-invalid                                                                                                                                                                                                                                                                                                                                                                                       | Before old human submit, reassignment, recovery or any operation that could overwrite/retire an active writer. Draft/comments can coexist if they preserve the complete row in the same queue                                                                                                                                        |
+| `afterExecutionRunCommit(commit,driver)`                              | B durable callback → decision; dispatch/reconcile/stop driver → optional native result                                                                                                                                                                                                                                                                                                                                                      | Await commit first, then native effect outside queue. Rejected write produces zero native calls. Reconcile is explicitly read-only, never dispatch/resume. Native errors become run-effect-unknown, with the already durable claim retained                                                                                          |
+
+There is no D-owned queue. A second service reading a row then putting the full row can
+lose a B draft even if the new service serializes itself. Adding table.update to just one
+new path is insufficient while old paths still read+put. B's existing queue must encompass
+**all** RMW operations, including native events; it must recheck real authority immediately
+before the persistence slot. Once a write is admitted to durability, later revocation is
+not a claimed rollback. Subsequent effects/frames/results still refuse.
+
+Driver callbacks must acquire real capabilities. `effect.scope` is a locator, never a
+capability. Dispatch effects for a new attempt also contain `previousScope`: a complete
+old/new pair for C's **explicit** binding handoff after the old resources are settled.
+Each new attempt requires a distinct nativeSessionId/segment; same-Run turns keep theirs.
+C retains the old DSH history and binding metadata, without replaying its pending input.
+It is not permission to replace another actor/space's native history. This first slice
+refuses controller/space changes; reassign/transfer requires a separately authorized
+handoff. A native idle/read refresh does not create a new pair or advance a segment.
+
+## Native events and Run/turn behavior
+
+An attempt can contain many native turns. C's inbox/model history remains in DSH.
+
+| Event            | Additional fields                              | Effect                                                                                                                                      |
+| ---------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| received         | nativeSessionId                                | Record durable admission; Run stays requested until actual execution acknowledgement                                                        |
+| accepted         | nativeSessionId/executorRunId                  | Core acknowledge; node becomes running once; repeated acceptance must identify the same session                                             |
+| dispatch-unknown | none                                           | Hold resources; explicit same-key reconciliation, no blind resend                                                                           |
+| idle             | none                                           | Advance native cursor only; same Run, generation, segment and claim survive between turns                                                   |
+| waiting          | none                                           | Core waiting + node input-required                                                                                                          |
+| resumed          | none                                           | Core resume + node input-supplied; disallowed while stopping                                                                                |
+| stop-pending     | none                                           | Persist receipt-rejected; keep node and claim                                                                                               |
+| stopped          | idle=true, flushed=true, resourcesSettled=true | Requires prior stop request; cancel Run, update acknowledged node, release resources                                                        |
+| completed        | same three stable native facts                 | Explicit authorized Run finalization, not idle/received or model text. Return to recorded entry; no artifact, approval or downstream effect |
+| failed           | resourcesSettled boolean                       | End the attempt. A held native/tool resource remains claimed until separate cleanup; pre-accept failure does not fake running/failed node   |
+| cleanup          | all three stable native facts                  | Only a terminal exact attempt; release resources after actual drain. Never grants submission or model execution                             |
+
+The bridge must supply stable, persisted native event ordering/correlation; a per-process
+counter reset is not sufficient after recovery. The schema's stable flags are asserted
+only by B/C's real idle/flush/resource receipts. They are **not** client-authorized booleans.
+The state module validates facts and transitions; it cannot make a fake receipt genuine.
+Unknown admission, pending stop and crashed native setup remain visible, explicitly
+reconciled states. Original message bodies which never reached DSH must be resupplied
+under the same fingerprint; B does not invent a second chat store to recover them.
+
+## Authority source and lifetime
+
+`ExecutionRunAuthorities(source)` requires all source ports; no permissive defaults exist.
+
+- `writerState()` reads B's current durable global.
+- `memberLease(original MemberRequest)` is implemented by B's real resolver source, with
+  memberId/expiresAt/signal/assertCurrent(spaceId)/release. Recheck actual Host/Origin,
+  session/source instance, expiry and live space membership. A MemberResolution snapshot
+  or static participant list cannot stand in for it.
+- `readNode(locator)` is the same B instance's synchronous reader.
+- `assertNodeAccess` checks live task/controller/read permissions. Its send check is the
+  controller permission, **not** the native stop phase (the manager owns that check).
+- `assertWorkspace` receives configurationId and checks the actual frozen tool composition
+  and Host-selected capability. A text-only label without that real proof must refuse. Text-only forbids file
+  tools; local refs contain deviceId/rootId/grantId/generation/access, not an absolute path.
+- `onChange` rechecks actual facts after domain/changed and on resolver/directory replacement
+  or unmount; events are hints, not a permission cache. Source signal closes issuance.
+
+`open(request,locator,'drive'|'read')` returns `{grant,cleanup?,dispose}`. Full scope comes
+from the stored wrapper; a different authorized history reader is not impersonated as
+its controller. Every check reads current state/permissions/config/workspace. Read grants
+cannot send/queue/stop. Drive grants require current nonterminal attempt and controller;
+stop request blocks send/queue while retaining the stop wait. Source/lease abort, expiry,
+terminal transition and invalid state abort/dispose authority. UI stream cancellation
+is a different signal and does not enter this authority lifetime.
+
+B can call `cleanupAfterCommit(locator)` before awaiting member/native setup. It rereads
+the already durable current held Run and creates an identity-checked internal token.
+This handles member expiry between reservation and authority attachment. Cleanup tokens
+survive member/drive revocation and allow only failed/stop-pending/stopped/cleanup facts;
+they cannot produce a model, history, completed result, expert identity or submission.
+`assertGrant` and `assertCleanup` reject serialized or copied token objects.
+
+Teardown: fence new issuance/driving → C actual idle/flush/tool drain → B trusted cleanup
+commits → await authorities.close() → close B execution storage. close is awaitable,
+idempotent and reentrant; it drains admitted asynchronous lease resolution and releases late
+leases. It does not itself certify native drain. Limit: 256 active/pending authority handles.
+
+Stable state errors are `EXECUTION_RUN_ERRORS` plus `run-${OpenRunCode|SettleFailure}`;
+writer errors are run-writer-unavailable/incompatible. Both classes have constant messages.
+A/B map codes to public errors and never serialize arbitrary cause/stack/provider text.
+
+## Remaining owner changes and evidence gates
+
+B must replace the execution global schema with `executionRunGlobalSchema`, validate the
+inventory and persist the marker after its guards are installed, provide true member leases,
+delegate the four existing write paths and new Run methods through one queue, check current
+resource/config facts, and project trusted native/cleanup events. A supplies explicit local
+workspace selection and bounded actual tool composition; C supplies old/new binding handoff,
+real event correlation, native drain receipts and tool path enforcement. Human assistance
+retains explicit human submit. Expert fixed native output needs B's internal Run capability
+into the existing immutable artifact/review chain; no owner/member impersonation is added.
+
+The real DSH JSON protocol tests verify marker persistence, byte-preserving old strict-schema
+refusal, retained nodes/plans, and a separate-process read reopening without writes or native
+execution. Other tests are contracts for state/concurrency/effect ordering and source leases.
+They do not replace the formal Cookie+Run+native+workspace+fixed submission vertical proof.
