@@ -2,7 +2,7 @@ import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export * from './identity/index.js';
 
-export type { InboxItemView, NodeExecutionView } from './execution-view.js';
+export type { InboxItemView, NodeExecutionView, InboxGroup } from './execution-view.js';
 export type {
   StartablePlanWire,
   ExecutionStartableValue,
@@ -11,6 +11,7 @@ export type {
   DeliveryDraft,
   ExecutionApi,
   ExecutionInboxValue,
+  InboxPlaceWire,
   ExecutionNodeWire,
   UpstreamInputWire,
   SavedDeliveryDraftWire,
@@ -27,6 +28,7 @@ export {
   readExecutionNode,
   readRevisionView,
   readSavedDeliveryDraft,
+  readInboxPlaces,
 } from './execution/ExecutionApi.js';
 export { StartablePlansPanel } from './execution/StartablePlansPanel.js';
 export { StartPlanPanel, type ExecutionPlan } from './execution/StartPlanPanel.js';
@@ -44,6 +46,8 @@ export {
   INBOX_KIND_LABELS,
   NODE_STATUS_LABELS,
   createInboxItemView,
+  INBOX_GROUPS,
+  inboxItemGroup,
   createNodeExecutionView,
 } from './execution-view.js';
 

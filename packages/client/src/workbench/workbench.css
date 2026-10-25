@@ -3714,6 +3714,40 @@ html[data-platform='darwin'] .zm-shell-chrome {
   color: var(--zm-muted);
   font-size: 12px;
 }
+.zm-inbox-title,
+.zm-inbox-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+.zm-inbox-title h2 {
+  margin-bottom: 0;
+}
+.zm-inbox-group {
+  margin-block: 24px;
+}
+.zm-inbox-group > h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.zm-inbox-path,
+.zm-inbox-meta,
+.zm-inbox-unavailable {
+  font-size: 12px;
+  color: var(--zm-muted);
+  overflow-wrap: anywhere;
+}
+.zm-inbox-path {
+  margin-block: 5px 8px;
+}
+.zm-inbox-detail {
+  font-size: 13px;
+  white-space: pre-wrap;
+}
 .zm-draft-recovery,
 .zm-draft-files {
   padding-block: 16px;
