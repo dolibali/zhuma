@@ -4,6 +4,8 @@ import { createMemberSpaceController, type MemberSpaceState } from './spaces.js'
 
 export type MemberSessionController = ReturnType<typeof createMemberSessionController>;
 export type MemberSpaceController = ReturnType<typeof createMemberSpaceController>;
+/** Presentation callback only; cancellation returns focus to the initiating control. */
+export type SpaceSwitch = (id: string, restoreFocus?: () => void) => void;
 export interface MemberShellSnapshot {
   readonly session: MemberSessionState;
   readonly space: MemberSpaceState | undefined;
@@ -20,7 +22,7 @@ export function createMemberShell(api: IdentityApi) {
   let stopSpace: (() => void) | undefined;
   let pageActive = false;
   let pageEpoch = 0;
-  let guard: { epoch: number; select(id: string): void } | undefined;
+  let guard: { epoch: number; select: SpaceSwitch } | undefined;
   const listeners = new Set<() => void>();
   let snapshot: MemberShellSnapshot = {
     session: session.getSnapshot(),
@@ -101,7 +103,7 @@ export function createMemberShell(api: IdentityApi) {
     isPageCurrent(epoch: number) {
       return pageActive && pageEpoch === epoch;
     },
-    registerSpaceGuard(epoch: number, select: (id: string) => void) {
+    registerSpaceGuard(epoch: number, select: SpaceSwitch) {
       if (!pageActive || epoch !== pageEpoch) return () => {};
       const current = { epoch, select };
       guard = current;
@@ -109,8 +111,8 @@ export function createMemberShell(api: IdentityApi) {
         if (guard === current) guard = undefined;
       };
     },
-    requestSpace(id: string) {
-      if (guard && pageActive && guard.epoch === pageEpoch) guard.select(id);
+    requestSpace(id: string, restoreFocus?: () => void) {
+      if (guard && pageActive && guard.epoch === pageEpoch) guard.select(id, restoreFocus);
       else void space?.select(id);
     },
   };

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 're
 import { createIdentityApi } from '../identity/api.js';
 import { MemberSessionBoundary } from '../identity/MemberSessionBoundary.js';
 import { MemberSpaceBoundary, type MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
-import type { MemberShell } from '../identity/shell.js';
+import type { MemberShell, SpaceSwitch } from '../identity/shell.js';
 import { createExecutionHttpApi } from './http.js';
 import { StartablePlansPanel } from './StartablePlansPanel.js';
 import { ExecutionWorkspace } from './ExecutionWorkspace.js';
@@ -72,7 +72,7 @@ export function MemberExecutionPage({
     [shell, epoch],
   );
   const registerSwitchGuard = useCallback(
-    (select: (id: string) => void) => shell?.registerSpaceGuard(epoch, select) ?? (() => {}),
+    (select: SpaceSwitch) => shell?.registerSpaceGuard(epoch, select) ?? (() => {}),
     [shell, epoch],
   );
   const identity = useMemo(() => shell?.api ?? createIdentityApi(fetcher), [fetcher, shell]);
@@ -89,7 +89,6 @@ export function MemberExecutionPage({
             onUnauthenticated={invalidate}
             isSessionCurrent={isSessionCurrent}
             controller={shell?.space}
-            showSpacePicker={!shell}
             isPageCurrent={pageCurrent}
             registerSwitchGuard={shell ? registerSwitchGuard : undefined}
           >
