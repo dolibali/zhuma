@@ -3284,6 +3284,61 @@ test('upstreamContent serves the pinned accepted input to the downstream assigne
   assert.deepEqual(viaProjection.ok ? viaProjection.value.content : null, content.value.content);
 });
 
+test('upstreamContent returns copies: mutating the DTO never rewrites the stored artifact', async () => {
+  const lin = {
+    id: 'lin',
+    name: '林夏',
+    kind: 'human',
+    role: '复核',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const design = workflowNode({
+    id: 'design',
+    title: '设计',
+    reviewerIds: ['lin'],
+    reviewRequired: true,
+  });
+  const publish = workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'] });
+  const { state, applied } = confirm([design, publish], [lin]);
+  const { service, store } = create(state);
+  await startChen(service, applied);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'deliver-1'),
+    text: '正文',
+    links: ['https://example.internal/a'],
+  });
+  await service.ballot(session('lin'), {
+    ...locate(applied, 'design', store.node('design').command.version, 'vote-lin'),
+    roundId: submitted.value.node.currentRoundId,
+    artifactVersionId: submitted.value.node.artifacts.at(-1).id,
+    action: 'approve',
+  });
+  const pinned = store.node('publish').handoff.inputRefs[0];
+  const query = {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'publish',
+    sourceNodeId: 'design',
+    artifactVersionId: pinned.artifactVersionId,
+    spaceId: 'project',
+  };
+  const first = await service.upstreamContent(session('chen'), query);
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  // Mutate the returned DTO.
+  first.value.content.links.push('https://example.internal/injected');
+  const storedAfter = JSON.stringify(store.node('design').artifactVersions);
+  assert.equal(storedAfter.includes('injected'), false);
+  // A second read of the same pinned version returns the stored fact unchanged.
+  const second = await service.upstreamContent(session('chen'), query);
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  assert.deepEqual(second.value.content.links, ['https://example.internal/a']);
+});
+
 test('upstreamContent refuses without leaking: non-participant, wrong version, replaced pin, wrong scope', async () => {
   const lin = {
     id: 'lin',

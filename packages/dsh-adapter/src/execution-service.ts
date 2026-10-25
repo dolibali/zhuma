@@ -1168,8 +1168,11 @@ export class ExecutionService {
           version: { id: artifact.id, version: artifact.version },
           content: {
             ...(artifact.text === undefined ? {} : { text: artifact.text }),
-            links: artifact.links,
-            files: artifact.files,
+            // Copy the arrays and file metadata: the domain table returns the
+            // stored objects, and a caller mutating this DTO must not rewrite
+            // the stored fact.
+            links: [...artifact.links],
+            files: artifact.files.map((file) => ({ ...file })),
           },
         },
       };
