@@ -1305,6 +1305,7 @@ export function WorkbenchPage({
                             ?.defaultParticipantIds !== undefined && (
                             <Button
                               variant="quiet"
+                              aria-label="使用项目默认参与者"
                               onClick={() =>
                                 changeTaskParticipants(
                                   defaultProjectParticipants(
