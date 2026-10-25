@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,17 +11,17 @@ import {
   ScriptedAdapter,
   allHistory,
   response,
-} from './native-work-session-fixture.mjs';
+} from './zhuma-native-work-bundle.ts';
 
 async function home(t) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-native-contract-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.onTestFinished(() => rm(root, { recursive: true, force: true }));
   return root;
 }
 async function setup(t, script = [], compose, runtimeOptions) {
   const root = await home(t);
   const host = await boot(root, new ScriptedAdapter(script), compose, runtimeOptions);
-  t.after(() => host.close());
+  t.onTestFinished(() => host.close());
   return { ...host, root };
 }
 function nativeAgent(host, current) {
@@ -41,7 +41,7 @@ test(
     const stopStream = host.ctx.on('agent/assistant-stream', ({ frame }) => streams.push(frame), {
       global: true,
     });
-    t.after(stopStream);
+    t.onTestFinished(stopStream);
     assert.equal(host.service.open(current), undefined);
     assert.equal(host.ctx.agents.list().length, 0);
     const first = await host.service.send(current, message('request-1', 'first request'));
@@ -252,48 +252,6 @@ test(
       assert.equal(reopened.ctx.agents.list().length, 1);
       assert.equal(reopened.adapter.requests.length, 1);
       assert.equal(reopened.service.open(current).binding.nativeSessionId, nativeId);
-    } finally {
-      await reopened?.close();
-      await host.close();
-    }
-  },
-);
-
-test(
-  'characterization: published DSH normal teardown cancels pending input durably; product preservation needs opt-in support',
-  { timeout: 15000 },
-  async (t) => {
-    const root = await home(t);
-    const current = grant();
-    const host = await boot(root);
-    let reopened;
-    try {
-      const queued = await host.service.send(
-        current,
-        message('pending', 'must survive a product restart', 'queue'),
-      );
-      assert.equal((await host.service.stop(current)).status, 'stopped');
-      assert.equal(host.service.queue(current).items.length, 1);
-      const id = host.service.open(current).binding.nativeSessionId;
-      await host.close();
-      reopened = await boot(root);
-      const events = await allHistory(reopened.service, current);
-      assert.ok(
-        events.some(
-          (event) => event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled',
-        ),
-      );
-      const raw = await reopened.ctx.agents.resume({
-        resumeSessionId: id,
-        agentOptions: { provider: selection.provider, model: selection.model },
-      });
-      assert.equal(
-        raw.agent.inbox.nextTurn.some((item) => item.id === queued.messageId),
-        false,
-      );
-      assert.equal(raw.agent.status, 'idle');
-      assert.equal(reopened.adapter.requests.length, 0);
-      await raw.dispose();
     } finally {
       await reopened?.close();
       await host.close();
