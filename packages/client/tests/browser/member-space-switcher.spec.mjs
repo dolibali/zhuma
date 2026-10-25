@@ -56,6 +56,39 @@ test('space switcher: one-click menu exposes current space and keyboard switchin
   expect(await inspect(page, () => window.memberAccountProbe.replay.effects)).toEqual([]);
 });
 
+test('space switcher: same-account reload restores the confirmed team after a fresh directory read', async ({
+  page,
+}) => {
+  await setup(page);
+  await choose(page, '团队 · 产品研发');
+  await expect(picker(page)).toContainText('产品研发');
+  await page.reload();
+  await expect(picker(page)).toContainText('产品研发');
+  await expect(account(page)).toContainText('团队 · 产品研发');
+  await expect(
+    page.getByRole('article', { name: '编写订单状态帮助文案', exact: true }),
+  ).toBeVisible();
+  expect(
+    await inspect(
+      page,
+      () => window.memberAccountProbe.replay.requests.filter((r) => r.kind === 'session').length,
+    ),
+  ).toBeGreaterThanOrEqual(2);
+  expect(await inspect(page, () => window.memberAccountProbe.replay.effects)).toEqual([]);
+});
+
+test('space switcher: a saved ID absent from the trusted directory falls back to personal on reload', async ({
+  page,
+}) => {
+  await setup(page);
+  await inspect(page, () => localStorage.setItem('zhuma:member-space:v1:chen', 'removed-team'));
+  await page.reload();
+  await expect(picker(page)).toContainText('我的空间');
+  await expect(account(page)).toContainText('个人 · 我的空间');
+  expect(await inspect(page, () => localStorage.getItem('zhuma:member-space:v1:chen'))).toBeNull();
+  expect(await inspect(page, () => window.memberAccountProbe.replay.effects)).toEqual([]);
+});
+
 test('space switcher: top entry uses the same cancelable dirty guard as the account menu', async ({
   page,
 }) => {

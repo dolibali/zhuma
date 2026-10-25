@@ -16,13 +16,22 @@ export type MemberSpaceState = SpaceSnapshot &
       }
   );
 
+export interface MemberSpacePreference {
+  /** Untrusted hint; accepted only after a fresh member directory contains the ID. */
+  readonly preferredSpaceId?: string | undefined;
+  onConfirmedSelect?(spaceId: string): void;
+  onUnavailable?(spaceId: string): void;
+}
+
 /** UI selection only. Every transition refreshes directory facts; business APIs authorize again. */
 export function createMemberSpaceController(
   api: Pick<IdentityApi, 'session'>,
   initial: MemberSession,
   invalidate: () => void,
+  preference?: MemberSpacePreference,
 ) {
   let state: MemberSpaceState = { status: 'checking', session: initial, epoch: 0 };
+  let restoringPreference = preference?.preferredSpaceId;
   let epoch = 0;
   let pending: AbortController | undefined;
   const listeners = new Set<() => void>();
@@ -35,7 +44,12 @@ export function createMemberSpaceController(
     pending?.abort();
     pending = undefined;
   }
-  async function refresh(requestedSpaceId?: string, keepCurrent = false) {
+  async function refresh(requestedSpaceId?: string, keepCurrent = false, explicit = false) {
+    const restoring =
+      !explicit &&
+      restoringPreference !== undefined &&
+      (requestedSpaceId === undefined || requestedSpaceId === restoringPreference);
+    const targetId = restoring ? restoringPreference : requestedSpaceId;
     const previous = keepCurrent && state.status === 'ready' ? state : undefined;
     cancel();
     const currentEpoch = epoch;
@@ -44,7 +58,7 @@ export function createMemberSpaceController(
     publish(
       previous
         ? { ...previous, refreshing: true }
-        : { status: 'checking', session: state.session, epoch, requestedSpaceId },
+        : { status: 'checking', session: state.session, epoch, requestedSpaceId: targetId },
     );
     const current = () => epoch === currentEpoch && !request.signal.aborted;
     try {
@@ -52,19 +66,23 @@ export function createMemberSpaceController(
       if (!current()) return;
       // Host creates a fresh HTTP peer per request; peerId is not a stable login/session ID.
       if (session.accountId !== initial.accountId) throw new IdentityApiError('session-changed');
-      const space =
-        requestedSpaceId !== undefined
-          ? session.spaces.find(({ id }) => id === requestedSpaceId)
-          : (session.spaces.find(({ kind }) => kind === 'personal') ?? session.spaces[0]);
-      if (requestedSpaceId !== undefined && !space) {
+      if (restoring) restoringPreference = undefined;
+      const defaultSpace = () =>
+        session.spaces.find(({ kind }) => kind === 'personal') ?? session.spaces[0];
+      const chosen =
+        targetId === undefined ? defaultSpace() : session.spaces.find(({ id }) => id === targetId);
+      if (targetId !== undefined && !chosen) preference?.onUnavailable?.(targetId);
+      const space = chosen ?? (restoring ? defaultSpace() : undefined);
+      if (targetId !== undefined && !chosen && !restoring) {
         publish({
           status: 'error',
           session,
           epoch,
-          requestedSpaceId,
+          requestedSpaceId: targetId,
           error: new IdentityApiError('space-unavailable'),
         });
       } else if (space) {
+        if (explicit) preference?.onConfirmedSelect?.(space.id);
         publish({
           status: 'ready',
           session,
@@ -79,7 +97,13 @@ export function createMemberSpaceController(
       if (!current()) return;
       const failure =
         error instanceof IdentityApiError ? error : new IdentityApiError('unavailable');
-      publish({ status: 'error', session: state.session, epoch, error: failure, requestedSpaceId });
+      publish({
+        status: 'error',
+        session: state.session,
+        epoch,
+        error: failure,
+        requestedSpaceId: targetId,
+      });
       if (
         failure.code === 'unauthenticated' ||
         failure.code === 'session-changed' ||
@@ -110,7 +134,8 @@ export function createMemberSpaceController(
     },
     select(spaceId: string) {
       if (state.status === 'ready' && state.space.id === spaceId) return Promise.resolve();
-      return refresh(spaceId);
+      restoringPreference = undefined;
+      return refresh(spaceId, false, true);
     },
     /** Used by the scoped transport after a membership failure; no stale content remains visible. */
     invalidate(expectedEpoch: number) {

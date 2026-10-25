@@ -49,6 +49,81 @@ test('space selection contract: no eager work, trusted personal default, empty s
   }
 });
 
+test('saved space is a hint: a fresh directory read must confirm it before showing content', async () => {
+  const next = deferred();
+  const changed = [];
+  const controller = createMemberSpaceController(
+    { session: () => next.promise },
+    member(),
+    () => assert.fail('valid preference does not invalidate login'),
+    {
+      preferredSpaceId: teamA.id,
+      onConfirmedSelect: (id) => changed.push(`selected:${id}`),
+      onUnavailable: (id) => changed.push(`unavailable:${id}`),
+    },
+  );
+  const pending = controller.refresh();
+  assert.equal(controller.getSnapshot().status, 'checking');
+  assert.equal(controller.getSnapshot().space, undefined);
+  next.resolve(member());
+  await pending;
+  assert.equal(controller.getSnapshot().space.id, teamA.id);
+  assert.deepEqual(changed, []); // A restored hint is not a new user selection.
+  controller.dispose();
+});
+
+test('removed saved space falls back only on reopen; a live revoked selection still closes content', async () => {
+  let directory = member([personal]);
+  const unavailable = [];
+  const controller = createMemberSpaceController(
+    { session: async () => directory },
+    member(),
+    () => {},
+    { preferredSpaceId: teamA.id, onUnavailable: (id) => unavailable.push(id) },
+  );
+  await controller.refresh();
+  assert.equal(controller.getSnapshot().space.id, personal.id);
+  assert.deepEqual(unavailable, [teamA.id]);
+  directory = member();
+  await controller.select(teamA.id);
+  assert.equal(controller.getSnapshot().space.id, teamA.id);
+  directory = member([personal]);
+  await controller.refresh();
+  assert.equal(controller.getSnapshot().status, 'error');
+  assert.equal(controller.getSnapshot().space, undefined);
+  assert.deepEqual(unavailable, [teamA.id, teamA.id]);
+  controller.dispose();
+});
+
+test('failed directory reads retain the saved hint for retry; a superseded read cannot save it', async () => {
+  let calls = 0;
+  const late = deferred();
+  const selected = [];
+  const controller = createMemberSpaceController(
+    { session: async () => (++calls === 1 ? Promise.reject(Error('offline')) : member()) },
+    member(),
+    () => {},
+    { preferredSpaceId: teamA.id, onConfirmedSelect: (id) => selected.push(id) },
+  );
+  await controller.refresh();
+  assert.equal(controller.getSnapshot().status, 'error');
+  await controller.refresh();
+  assert.equal(controller.getSnapshot().space.id, teamA.id);
+  controller.dispose();
+
+  const raced = createMemberSpaceController({ session: () => late.promise }, member(), () => {}, {
+    preferredSpaceId: teamA.id,
+    onConfirmedSelect: (id) => selected.push(id),
+  });
+  const first = raced.refresh();
+  const second = raced.select(teamB.id);
+  late.resolve(member());
+  await Promise.all([first, second]);
+  assert.equal(raced.getSnapshot().space.id, teamB.id);
+  assert.deepEqual(selected, [teamB.id]);
+  raced.dispose();
+});
+
 test('space selection contract: each actual switch revalidates and immediately removes the old ready projection', async () => {
   const next = deferred();
   let reads = 0;

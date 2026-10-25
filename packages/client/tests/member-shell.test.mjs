@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { IdentityApiError } from '../dist/identity/api.js';
 import { createMemberShell } from '../dist/identity/shell.js';
+import { createSpacePreferenceStore } from '../dist/identity/space-preferences.js';
 import { SidebarAccountFooter } from '../dist/identity/SidebarAccountFooter.js';
 import { SidebarAccountSettingsLauncher } from '../dist/identity/SidebarAccountSettingsLauncher.js';
 import { MemberExecutionPage } from '../dist/execution/MemberExecutionPage.js';
@@ -45,6 +46,84 @@ function fixture(overrides = {}) {
   const shell = createMemberShell(api);
   return { shell, api, reads: () => reads };
 }
+
+test('space preference stores only a space ID per account and tolerates disabled browser storage', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+  const preferences = createSpacePreferenceStore(() => storage);
+  preferences.save('member-a', 'team-a');
+  assert.equal(preferences.read('member-a'), 'team-a');
+  assert.equal(preferences.read('member-b'), undefined);
+  assert.deepEqual([...values.values()], ['team-a']);
+  preferences.clearIfMatches('member-a', 'team-b');
+  assert.equal(preferences.read('member-a'), 'team-a');
+  preferences.clearIfMatches('member-a', 'team-a');
+  assert.equal(preferences.read('member-a'), undefined);
+  const blocked = createSpacePreferenceStore(() => {
+    throw Error('storage disabled');
+  });
+  assert.equal(blocked.read('member-a'), undefined);
+  assert.doesNotThrow(() => blocked.save('member-a', 'team-a'));
+  assert.doesNotThrow(() => blocked.clearIfMatches('member-a', 'team-a'));
+});
+
+test('same account restores a confirmed team after restart; revocation and account change never reuse it', async () => {
+  const values = new Map();
+  const preferences = createSpacePreferenceStore(() => ({
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  }));
+  let accountId = 'member-a';
+  let directory = spaces;
+  let reads = 0;
+  const api = {
+    session: async () => {
+      reads++;
+      return { ...member(accountId), spaces: directory };
+    },
+    login: async () => ({ accountId }),
+    logout: async () => ({ accountId }),
+  };
+  const first = createMemberShell(api, preferences);
+  first.start();
+  await tick();
+  assert.equal(first.getSnapshot().space.space.id, 'personal-a');
+  await first.space.select('team-a');
+  assert.equal(preferences.read(accountId), 'team-a');
+  first.stop();
+
+  const reopened = createMemberShell(api, preferences);
+  const before = reads;
+  reopened.start();
+  assert.equal(reopened.getSnapshot().space, undefined);
+  await tick();
+  assert.equal(reads, before + 2); // Session restore, then fresh directory verification.
+  assert.equal(reopened.getSnapshot().space.space.id, 'team-a');
+  directory = [spaces[0]];
+  await reopened.space.refresh();
+  assert.equal(reopened.getSnapshot().space.status, 'error');
+  assert.equal(preferences.read(accountId), undefined);
+  reopened.stop();
+
+  const afterRevocation = createMemberShell(api, preferences);
+  afterRevocation.start();
+  await tick();
+  assert.equal(afterRevocation.getSnapshot().space.space.id, 'personal-a');
+  afterRevocation.stop();
+
+  accountId = 'member-b';
+  directory = [{ id: 'personal-b', kind: 'personal', name: 'Another account' }];
+  const other = createMemberShell(api, preferences);
+  other.start();
+  await tick();
+  assert.equal(other.getSnapshot().space.space.id, 'personal-b');
+  other.stop();
+});
 
 test('root shell contract: one owner starts once, footer/main observe the same controller and space projection', async () => {
   const { shell, reads } = fixture();
