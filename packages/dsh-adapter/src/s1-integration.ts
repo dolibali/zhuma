@@ -204,6 +204,9 @@ export type ExecutionMessageCode =
   | 'actor-mismatch'
   | 'upload-incomplete'
   | 'files-not-accepted'
+  | 'file-too-large'
+  | 'quota-exceeded'
+  | 'digest-mismatch'
   | 'empty-delivery'
   | 'conflict'
   | 'idempotency-mismatch'
@@ -348,6 +351,33 @@ export interface UpstreamContentValue {
   };
 }
 
+/** File upload: declarations ride headers, the body is the byte stream. */
+export interface UploadFileDeclare {
+  readonly name: string;
+  readonly mediaType: string;
+  readonly byteSize: number;
+  readonly sha256: string;
+}
+export interface UploadFileOptions {
+  readonly declare: UploadFileDeclare;
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly spaceId: string;
+  readonly idempotencyKey: string;
+  readonly data: AsyncIterable<Uint8Array>;
+  readonly signal?: AbortSignal;
+}
+export interface FileUploadReceiptValue {
+  readonly uploadId: string;
+  readonly attachmentId: string;
+  readonly name: string;
+  readonly mediaType: string;
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
 export interface ChannelInboxValue {
   readonly actorId: string;
   /** Echoes the requested scope so the caller can verify the answer matches. */
@@ -412,6 +442,11 @@ export interface ExecutionServiceMethods {
     caller: ExecutionCaller,
     body: unknown,
   ): Promise<ExecutionChannelResult<UpstreamContentValue>>;
+  /** Raw byte upload rides headers + a byte stream, never the JSON envelope. */
+  uploadFile(
+    caller: ExecutionCaller,
+    options: UploadFileOptions,
+  ): Promise<ExecutionChannelResult<FileUploadReceiptValue>>;
   draft(
     caller: ExecutionCaller,
     body: unknown,

@@ -103,6 +103,10 @@ async function boot(options) {
     await domain.close();
     notify('workbench-seeded', { domain: spec.name });
   }
+  // The attachment store mounts for the acceptance fixture so the upload
+  // service can reach `ctx.attachments`; the product Host wiring stays with A.
+  const attachmentLocal = await import('@deepseek-ai/dsh-attachment-local');
+  await load(attachmentLocal.LocalAttachmentStore, { dshHome: home });
   await load(WebServer, { host: '127.0.0.1', port: 0 });
   await load(Connection);
   if (!options.skipRemoteAccess) remoteAccessFiber = await load(RemoteAccess);

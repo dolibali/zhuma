@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -43,6 +44,13 @@ import {
   upstreamInputsFor,
   type UpstreamInputView,
 } from './upstream-inputs.js';
+import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
+import {
+  ARTIFACT_FILE_LIMITS,
+  type ArtifactFileStore,
+  type ArtifactFileUploadDeclare,
+  type FileUploadReceipt,
+} from './artifact-files.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -250,6 +258,9 @@ const MESSAGES = {
   'not-assigned-reviewer': '你不是这一轮的评审人。',
   'actor-mismatch': '不能代替其他评审人投票。',
   'upload-incomplete': '文件还没有上传完成，不能提交。',
+  'file-too-large': '文件超过大小上限。',
+  'quota-exceeded': '文件数量或总量已达上限。',
+  'digest-mismatch': '文件内容与声明的摘要不一致。',
   'files-not-accepted': '文件还不能随这次提交完成。请只提交文字或链接。',
   'empty-delivery': '请填写交付说明，或附上已上传完成的文件。',
   conflict: '内容已变化，请刷新后再试。',
@@ -407,6 +418,24 @@ export function toNodeView(record: ExecutionNodeRecord): ExecutionNodeView {
       : {}),
     ...(report.reviewOutcome !== undefined ? { reviewOutcome: report.reviewOutcome } : {}),
     ...(report.blockReason !== undefined ? { blockReason: report.blockReason } : {}),
+  };
+}
+
+function receiptOf(record: {
+  readonly uploadId: string;
+  readonly attachmentId: string;
+  readonly name: string;
+  readonly mediaType: string;
+  readonly byteSize: number;
+  readonly sha256: string;
+}): FileUploadReceipt {
+  return {
+    uploadId: record.uploadId,
+    attachmentId: record.attachmentId,
+    name: record.name,
+    mediaType: record.mediaType,
+    bytes: record.byteSize,
+    sha256: record.sha256,
   };
 }
 
@@ -658,6 +687,8 @@ export class ExecutionService {
     private readonly storage: ExecutionStorage,
     private readonly workbench: { readWorkbench(): Workbench },
     private readonly projectSpaces: ProjectSpaceDirectory | undefined,
+    private readonly attachments?: AttachmentStore,
+    private readonly fileStore?: ArtifactFileStore,
   ) {}
 
   startPlan(
@@ -1089,6 +1120,143 @@ export class ExecutionService {
   }
 
   /** Return notes and the two newest relevant versions. The revision record itself is unchanged. */
+  /**
+   * Upload one file's exact bytes for a node this member currently executes.
+   * The server computes the digest and length from the streamed bytes; a
+   * declared size/digest mismatch fails. The trusted receipt is a server-issued
+   * uploadId plus the content-addressed attachment reference; the client cannot
+   * prove completion itself. Bytes publish through the upstream store; metadata
+   * lands in `zhuma_files`. A missing provider, budget, or attachment service
+   * fails closed.
+   */
+  uploadFile(
+    caller: ExecutionCaller,
+    options: {
+      readonly declare: ArtifactFileUploadDeclare;
+      readonly taskId: string;
+      readonly planId: string;
+      readonly revision: number;
+      readonly nodeId: string;
+      readonly spaceId: string;
+      readonly idempotencyKey: string;
+      readonly data: AsyncIterable<Uint8Array>;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<ExecutionResult<FileUploadReceipt>> {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, options);
+      if (!actor.ok) return actor;
+      const attachments = this.attachments;
+      const fileStore = this.fileStore;
+      if (!attachments || !fileStore) return fail('unavailable');
+      if (!this.projectSpaceDirectory()) return fail('not-found');
+      // The member must currently hold the space and be the node's assignee on
+      // a deliverable node (ready or needs-revision).
+      if (!this.scopeHeld(actor.value.spaceIds, options.spaceId)) return fail('not-found');
+      const space = await this.gateSpaceScoped(
+        options.taskId,
+        actor.value.spaceIds,
+        options.spaceId,
+      );
+      if (space === 'missing' || !space.ok) return space === 'missing' ? fail('not-found') : space;
+      const current = this.storage.readNode(
+        nodeRecordKey({
+          taskId: options.taskId,
+          planId: options.planId,
+          revision: options.revision,
+          nodeId: options.nodeId,
+        }),
+      );
+      if (!current || !intactNode(current)) return fail('not-found');
+      const membership = planMembership(
+        this.workbench.readWorkbench(),
+        current.taskId,
+        actor.value.actorId,
+      );
+      if (membership !== 'allowed') return fail('not-found');
+      const assignee = current.handoff.assignee;
+      if (assignee.kind !== 'human' || assignee.id !== actor.value.actorId) {
+        return fail('not-assignee');
+      }
+      if (current.command.status !== 'ready' && current.command.status !== 'needs-revision') {
+        return fail('not-deliverable');
+      }
+
+      // Idempotency: the same key returns the same receipt, but the fingerprint
+      // (declared name/size/digest) is still verified against the real bytes.
+      const prior = fileStore.findByIdempotencyKey(options.idempotencyKey);
+      if (prior) {
+        if (
+          prior.name !== options.declare.name ||
+          prior.byteSize !== options.declare.byteSize ||
+          prior.sha256 !== options.declare.sha256
+        ) {
+          return fail('idempotency-mismatch');
+        }
+        return { ok: true, value: receiptOf(prior) };
+      }
+
+      // Budget: declared size over the cap refuses before any byte is read.
+      if (options.declare.byteSize > ARTIFACT_FILE_LIMITS.maxFileBytes)
+        return fail('file-too-large');
+      if (fileStore.countInSpace(options.spaceId) >= ARTIFACT_FILE_LIMITS.maxFilesPerSpace) {
+        return fail('quota-exceeded');
+      }
+      if (
+        fileStore.bytesForNode(options.taskId, options.planId, options.revision, options.nodeId) +
+          options.declare.byteSize >
+        ARTIFACT_FILE_LIMITS.maxNodeBytes
+      ) {
+        return fail('quota-exceeded');
+      }
+
+      // Stream to the upstream store; it computes the real digest and length.
+      let ref: FileAttachmentRef;
+      try {
+        ref = await attachments.saveFileStream({
+          name: options.declare.name,
+          data: options.data,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        });
+      } catch (error) {
+        if (options.signal?.aborted) return fail('cancelled');
+        if (error instanceof Error && error.name === 'AttachmentError') return fail('unavailable');
+        return fail('unavailable');
+      }
+      const digest = ref.attachmentId.startsWith('sha256:') ? ref.attachmentId.slice(7) : '';
+      // The server-computed digest/length are the proof; the declaration only
+      // diagnoses a mismatch, it never proves anything.
+      if (digest !== options.declare.sha256 || ref.bytes !== options.declare.byteSize) {
+        return fail('digest-mismatch');
+      }
+
+      const record = {
+        uploadId: randomUUID(),
+        attachmentId: ref.attachmentId,
+        name: ref.name,
+        mediaType: options.declare.mediaType,
+        byteSize: ref.bytes,
+        sha256: digest,
+        spaceId: options.spaceId,
+        taskId: options.taskId,
+        planId: options.planId,
+        revision: options.revision,
+        nodeId: options.nodeId,
+        uploadedBy: actor.value.actorId,
+        idempotencyKey: options.idempotencyKey,
+        state: 'completed' as const,
+        uploadedAt: new Date().toISOString(),
+      };
+      try {
+        await fileStore.put(record);
+      } catch (error) {
+        if (error instanceof WorkbenchError) return fail(error.code);
+        return fail('unavailable');
+      }
+      return { ok: true, value: receiptOf(record) };
+    });
+  }
+
   /**
    * Read the content of the accepted version a downstream node froze as its
    * input. Bounded, on demand, read-only: the member must be a participant of

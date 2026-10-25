@@ -96,6 +96,32 @@ async function mount(options = {}) {
     },
     storageDomain: {
       async open(spec) {
+        const files = new Map();
+        const idempotency = new Map();
+        if (spec.name === 'zhuma_files') {
+          assert.equal(spec.version, 1);
+          assert.deepEqual(Object.keys(spec.tables), ['files', 'idempotency']);
+          return {
+            close() {},
+            global: { get: () => spec.global.initial, set: async () => {} },
+            table(name) {
+              const table = name === 'files' ? files : idempotency;
+              const schema = spec.tables[name].valueSchema;
+              return {
+                get: (key) => table.get(key),
+                entries: () => table.entries(),
+                size: table.size,
+                async put(key, value) {
+                  schema.parse(value);
+                  table.set(key, structuredClone(value));
+                },
+                async delete(key) {
+                  table.delete(key);
+                },
+              };
+            },
+          };
+        }
         assert.equal(spec.name, 'zhuma_execution');
         assert.equal(spec.version, 1);
         assert.deepEqual(Object.keys(spec.tables), ['nodes', 'plans']);
@@ -177,7 +203,10 @@ test('the execution channel is an exact fetch route and hides storage failures',
   const host = await mount({ workbench: state });
   assert.deepEqual(
     host.routes.map((route) => route.path),
-    executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
+    [
+      ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
+      '/api/zhuma-exec/upload-file',
+    ],
   );
   assert.equal(executionEndpoints.includes('bind-owner'), false);
   assert.equal(

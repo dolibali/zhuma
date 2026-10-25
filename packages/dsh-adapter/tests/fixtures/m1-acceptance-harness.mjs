@@ -202,6 +202,37 @@ export async function startAcceptanceHost(directory, config) {
     return { status: response.status, json, headers: response.headers };
   }
 
+  async function upload(declare, options, bytes, memberCookie) {
+    const combined = memberCookie ? `${ownerCookie}; ${memberCookie}` : ownerCookie;
+    const response = await fetch(`${listener.baseURL}/api/zhuma-exec/upload-file`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        host: authority,
+        origin: listener.baseURL,
+        cookie: combined,
+        'x-zhuma-file-name': declare.name,
+        'x-zhuma-file-type': declare.mediaType,
+        'x-zhuma-file-size': String(declare.byteSize),
+        'x-zhuma-file-sha256': declare.sha256,
+        'x-zhuma-space': options.spaceId,
+        'x-zhuma-task': options.taskId,
+        'x-zhuma-plan': options.planId,
+        'x-zhuma-revision': String(options.revision),
+        'x-zhuma-node': options.nodeId,
+        'x-zhuma-idempotency-key': options.idempotencyKey,
+      },
+      body: bytes,
+      redirect: 'manual',
+    });
+    const text = await response.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status: response.status, json };
+  }
+
   async function exec(endpoint, payload, memberCookie) {
     // Member execution routes sit behind the owner transport cookie plus the
     // member cookie, the same combination a member session carries.
@@ -223,6 +254,7 @@ export async function startAcceptanceHost(directory, config) {
     child,
     post,
     exec,
+    upload,
     async login(memberId, password) {
       const response = await post('/zhuma-id/login', { accountId: memberId, password }, undefined);
       assert.equal(response.status, 200, `login ${memberId}: ${response.status}`);

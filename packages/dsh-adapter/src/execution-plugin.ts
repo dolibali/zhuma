@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { ExecutionService, type ExecutionStorage, type PlanReceipt } from './execution-service.js';
 import { resolveMember } from './member-session.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
+import { openArtifactFileStore } from './artifact-files.js';
 
 const ENDPOINTS = [
   'start-plan',
@@ -137,6 +138,20 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
 }
 
 /** Reads at most `EXECUTION_BODY_BYTE_LIMIT`, and only for 5s. A declared length above the cap is not pulled. */
+/** Turn a request body stream into bounded byte chunks for the upload service. */
+async function* streamBytes(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function readLimitedJson(request: Request, signal: AbortSignal): Promise<unknown> {
   const declared = request.headers.get('content-length');
   if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
@@ -260,10 +275,18 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
       plans.put(key, { ...value, nodeIds: [...value.nodeIds] }),
     listPlans: () => [...plans.entries()].map(([key, receipt]) => ({ key, receipt })),
   };
+  // The attachment service is mounted by the Host (A 装配); the metadata
+  // ledger opens on this storage domain. Without either, uploads fail closed.
+  const attachments = ctx.get?.('attachments') as
+    import('@deepseek-ai/dsh-attachment').AttachmentStore | undefined;
+  const fileStore = await openArtifactFileStore(ctx);
+  ctx.effect(() => () => fileStore.close());
   const service = new ExecutionService(
     storage,
     { readWorkbench: () => config.readWorkbench() },
     projectSpaces,
+    attachments,
+    fileStore,
   );
   const reconciled = await service.reconcile();
   if (!reconciled.ok) throw new WorkbenchError(reconciled.error.code, reconciled.error.message);
@@ -320,6 +343,91 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
       },
     }),
   );
+  // Raw byte upload rides the same member gate but never enters the JSON
+  // envelope: declarations ride headers, the body is the byte stream.
+  const uploadStop = ctx.connection.fetch.register({
+    path: '/api/zhuma-exec/upload-file',
+    methods: ['POST'],
+    requestBody: 'streaming',
+    fetch: async (request) => {
+      const signal = AbortSignal.any([request.signal, lifetime.signal]);
+      try {
+        if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+        const member = await resolveMember(ctx, { headers: fetchHeaders(request) });
+        if (!member.ok) {
+          return Response.json(
+            { ok: false, error: { code: member.code } },
+            { status: member.status },
+          );
+        }
+        if (request.headers.get('content-type')?.split(';')[0] !== 'application/octet-stream') {
+          return new Response(null, { status: 415 });
+        }
+        const headers = request.headers;
+        const declaredBytes = Number(headers.get('x-zhuma-file-size') ?? '');
+        const revision = Number(headers.get('x-zhuma-revision') ?? '');
+        if (
+          !Number.isSafeInteger(declaredBytes) ||
+          declaredBytes < 0 ||
+          !Number.isSafeInteger(revision) ||
+          revision <= 0
+        ) {
+          return Response.json({ ok: false, error: { code: 'validation' } }, { status: 400 });
+        }
+        const required = {
+          name: headers.get('x-zhuma-file-name') ?? '',
+          mediaType: headers.get('x-zhuma-file-type') ?? '',
+          sha256: headers.get('x-zhuma-file-sha256') ?? '',
+          spaceId: headers.get('x-zhuma-space') ?? '',
+          taskId: headers.get('x-zhuma-task') ?? '',
+          planId: headers.get('x-zhuma-plan') ?? '',
+          nodeId: headers.get('x-zhuma-node') ?? '',
+          idempotencyKey: headers.get('x-zhuma-idempotency-key') ?? '',
+        };
+        if (Object.values(required).some((value) => value.trim() === '')) {
+          return Response.json({ ok: false, error: { code: 'validation' } }, { status: 400 });
+        }
+        const body = request.body;
+        if (body === null) return new Response(null, { status: 400 });
+        const result = await service.uploadFile(
+          { member },
+          {
+            declare: {
+              name: required.name,
+              mediaType: required.mediaType,
+              byteSize: declaredBytes,
+              sha256: required.sha256,
+            },
+            taskId: required.taskId,
+            planId: required.planId,
+            revision,
+            nodeId: required.nodeId,
+            spaceId: required.spaceId,
+            idempotencyKey: required.idempotencyKey,
+            data: streamBytes(body),
+            signal,
+          },
+        );
+        return Response.json({
+          ok: result.ok,
+          ...(result.ok ? { value: result.value } : { error: result.error }),
+        });
+      } catch (error) {
+        if (error instanceof BodyRejected) {
+          return Response.json(
+            { ok: false, error: { code: error.code } },
+            { status: error.status },
+          );
+        }
+        if (signal.aborted) {
+          return Response.json({ ok: false, error: { code: 'cancelled' } });
+        }
+        return Response.json({ ok: false, error: { code: 'unavailable' } });
+      }
+    },
+  });
+  stops.push(uploadStop);
+
   ctx.effect(() => () => {
     for (const stop of stops) void stop();
   });

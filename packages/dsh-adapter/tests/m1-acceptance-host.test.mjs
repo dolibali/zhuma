@@ -777,3 +777,125 @@ test('an explicit missing or non-host S1A_HOST_MODULE fails and does not use ano
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  'M1 acceptance: a real file uploads to durable storage with a server-computed receipt, surviving restart',
+  { timeout: 60000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-m1-upload-'));
+    let host;
+    try {
+      host = await startAcceptanceHost(directory, {
+        deploymentMode: 'multi-member',
+        identityImport,
+        spaceDirectoryImport,
+        workbenchSeed,
+      });
+      const chen = await host.login('chen', PASSWORDS.chen);
+      const outside = await host.login('outside', PASSWORDS.outside);
+
+      const startable = await host.exec('startable', {}, chen);
+      const plan = startable.result.value.plans.find((entry) => entry.taskId === 'portal-task');
+      assert.ok(plan);
+      const started = await host.exec(
+        'start-plan',
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          idempotencyKey: 'start-upload',
+        },
+        chen,
+      );
+      assert.equal(started.result.ok, true);
+
+      // A real file uploads: the server computes the digest and length.
+      const bytes = new TextEncoder().encode('# 接口说明\n\n真实文件内容。\n');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const uploaded = await host.upload(
+        { name: 'spec.md', mediaType: 'text/markdown', byteSize: bytes.byteLength, sha256 },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-spec-1',
+        },
+        bytes,
+        chen,
+      );
+      assert.equal(uploaded.json?.ok, true, JSON.stringify(uploaded.json));
+      assert.equal(uploaded.json.value.sha256, sha256);
+      assert.equal(uploaded.json.value.bytes, bytes.byteLength);
+      assert.equal(uploaded.json.value.name, 'spec.md');
+      assert.ok(uploaded.json.value.uploadId.length > 0);
+
+      // A forged declaration fails closed and writes nothing.
+      const forged = await host.upload(
+        {
+          name: 'fake.md',
+          mediaType: 'text/markdown',
+          byteSize: bytes.byteLength,
+          sha256: '0'.repeat(64),
+        },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-forged',
+        },
+        bytes,
+        chen,
+      );
+      assert.equal(forged.json?.ok, false);
+      assert.equal(forged.json?.error?.code, 'digest-mismatch');
+
+      // An unauthorized member cannot upload.
+      const denied = await host.upload(
+        { name: 'spec.md', mediaType: 'text/markdown', byteSize: bytes.byteLength, sha256 },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-outside',
+        },
+        bytes,
+        outside,
+      );
+      assert.equal(denied.json?.ok, false);
+
+      // A real restart keeps the receipt metadata.
+      await host.close();
+      host = await startAcceptanceHost(directory, {
+        deploymentMode: 'multi-member',
+        identityImport,
+        spaceDirectoryImport,
+      });
+      const chenAgain = await host.login('chen', PASSWORDS.chen);
+      // Same idempotency key replays the same receipt after the restart.
+      const replayed = await host.upload(
+        { name: 'spec.md', mediaType: 'text/markdown', byteSize: bytes.byteLength, sha256 },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-spec-1',
+        },
+        bytes,
+        chenAgain,
+      );
+      assert.equal(replayed.json?.ok, true);
+      assert.equal(replayed.json?.value?.uploadId, uploaded.json.value.uploadId);
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
