@@ -1,0 +1,58 @@
+{
+  "target": "dolibali/zhuma PR97",
+  "images": [
+    {
+      "file": "final-before-light.png",
+      "bytes": 42092,
+      "sha256": "f47e4931b9a0a2b5c86b3d8087d635fd83b537b07c2876840189d46dd1bb0341",
+      "sourceHead": "01558da09dc8928711787a8d5155f41d41af34fd",
+      "theme": "light",
+      "viewport": "1440x900",
+      "data": "same synthetic member-a, projects, preconfirmed task and selected north team before reload",
+      "scene": "same-origin reload after selecting team; before loses team, after restores it",
+      "actual": "official Web/distribution Host;real synthetic Cookie;models disabled",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-before-dark.png",
+      "bytes": 41335,
+      "sha256": "741c7c37abc044766e0b166579c9fbc6fe36bed7126bc5edfdd3d0dbe99e9f28",
+      "sourceHead": "01558da09dc8928711787a8d5155f41d41af34fd",
+      "theme": "dark",
+      "viewport": "1440x900",
+      "data": "same synthetic member-a, projects, preconfirmed task and selected north team before reload",
+      "scene": "same-origin reload after selecting team; before loses team, after restores it",
+      "actual": "official Web/distribution Host;real synthetic Cookie;models disabled",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-light.png",
+      "bytes": 42550,
+      "sha256": "7e17e02520a87d4493aaab9c57ee9879346f1f6147a90a1bcb31f2b63cb39f9e",
+      "sourceHead": "ee5f772bff95fc332611e8a2e07d2ca8830e522b",
+      "theme": "light",
+      "viewport": "1440x900",
+      "data": "same synthetic member-a, projects, preconfirmed task and selected north team before reload",
+      "scene": "same-origin reload after selecting team; before loses team, after restores it",
+      "actual": "official Web/distribution Host;real synthetic Cookie;models disabled",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-dark.png",
+      "bytes": 41644,
+      "sha256": "cfbba9c401f773ca10868aa26828e5866477e085c6e36454e4a8cb789f260a9d",
+      "sourceHead": "ee5f772bff95fc332611e8a2e07d2ca8830e522b",
+      "theme": "dark",
+      "viewport": "1440x900",
+      "data": "same synthetic member-a, projects, preconfirmed task and selected north team before reload",
+      "scene": "same-origin reload after selecting team; before loses team, after restores it",
+      "actual": "official Web/distribution Host;real synthetic Cookie;models disabled",
+      "personallyViewed": true
+    }
+  ],
+  "capture": "Web system media light/dark;reduced motion and screenshot animations disabled for stable final state;not native system theme proof",
+  "privacy": "No user attachments, real users, credentials, private paths or internal materials",
+  "authorizationBasis": "Direct user continuing authorization for inspected and sanitized project UI evidence",
+  "excluded": "Earlier eight captures excluded from publication;stable final four retained",
+  "boundary": "Images show reload continuity;not full personal/team expert restore, multi-account delivery, file bytes, Agent/models or native/install"
+}
