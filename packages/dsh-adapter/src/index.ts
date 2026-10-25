@@ -131,6 +131,16 @@ export {
   type SpaceKind,
 } from './space-directory.js';
 export type * from './s1-integration.js';
+export type {
+  NativeSessionLineage,
+  NativeWorkSessionRecord,
+  NativeRunMigrationGrant,
+  NativeMigrationOriginRequest,
+  NativeMigrationOrigin,
+  NativeMigrationDrain,
+  NativeBindingReference,
+  NativeRunMigrationResult,
+} from './native-work-session-contract.js';
 export {
   requireNativeInboxRetention,
   NativeInboxRetentionUnsupportedError,
