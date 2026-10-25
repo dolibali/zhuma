@@ -15,18 +15,24 @@ import { configureDeploymentMode } from '../dist/member-session.js';
 import { applySpaceDirectory, spaceDirectoryFor } from '../dist/space-directory.js';
 import { workbenchDomainSpec } from '../dist/workbench-plugin.js';
 import { WorkbenchService } from '../dist/workbench-service.js';
-import { applyMemberWorkbench } from '../dist/member-workbench-http.js';
+import { openMemberWorkbenchHttp } from '../dist/member-workbench-http.js';
+import { memberWorkbenchDirectoryFor } from '../dist/member-workbench-directory.js';
 import { openMemberWorkbenchOperations } from '../dist/member-workbench-operation.js';
 import { people, spaces, memberships } from './member-workbench-fixture.mjs';
 
 export const password = 'isolated-contract-password';
 const accounts = people.map((id) => ({ id, passwordHash: hashPassword(password) }));
-export async function startMemberWorkbenchHost(directory, { faultStage, catalog } = {}) {
+export async function startMemberWorkbenchHost(
+  directory,
+  { faultStage, catalog, beforeWorkbenchWrite } = {},
+) {
   const ctx = new Context();
   const fibers = [];
   let domain;
   let operationHandle;
+  let httpHandle;
   async function close() {
+    if (httpHandle) await httpHandle.close();
     if (operationHandle) await operationHandle.close();
     if (domain) await domain.close();
     for (const fiber of fibers.toReversed()) await fiber.dispose();
@@ -47,26 +53,18 @@ export async function startMemberWorkbenchHost(directory, { faultStage, catalog 
     await load(Connection);
     await load(RemoteAccess);
     configureDeploymentMode(ctx, 'multi-member');
-    await load(
+    const directoryFiber = await load(
       { inject: ['storageDomain'], apply: applySpaceDirectory },
       {
         spaces,
         memberships: memberships.map(([spaceId, accountId]) => ({ spaceId, accountId })),
       },
     );
-    await load({ inject: [...identityInject], apply: applyIdentity }, { accounts });
+    const identityFiber = await load(
+      { inject: [...identityInject], apply: applyIdentity },
+      { accounts },
+    );
     const trusted = spaceDirectoryFor(ctx);
-    // Test-only account projection from the explicit identity import plus current trusted membership.
-    // Production must use B's account directory, not this fixture's enumeration.
-    const directoryAdapter = {
-      spaces: () => trusted.spaces(),
-      space: (id) => trusted.space(id),
-      spacesForMember: (id) => trusted.spacesForMember(id),
-      isMember: (space, id) => trusted.isMember(space, id),
-      spaceForProject: (id) => trusted.spaceForProject(id),
-      membersForSpace: (space) =>
-        people.filter((id) => trusted.isMember(space, id)).map((id) => ({ id })),
-    };
     domain = await ctx.storageDomain.open(workbenchDomainSpec);
     operationHandle = await openMemberWorkbenchOperations(ctx.storageDomain);
     const operations = operationHandle.journal;
@@ -86,6 +84,7 @@ export async function startMemberWorkbenchHost(directory, { faultStage, catalog 
       {
         read: () => domain.global.get(),
         write: async (value) => {
+          await beforeWorkbenchWrite?.(value);
           if (faultStage === 'after-assign') throw Error('synthetic Workbench write failure');
           await domain.global.set(value);
         },
@@ -95,16 +94,18 @@ export async function startMemberWorkbenchHost(directory, { faultStage, catalog 
         put: (audit) => domain.table('planning').put(audit.id, audit),
       },
     );
-    await load(
-      { inject: ['connection'], apply: applyMemberWorkbench },
-      {
-        workbench: service,
-        directory: () => directoryAdapter,
-        writer: () => trusted,
-        operations,
-        ...(catalog ? { catalog } : {}),
+    const httpFiber = await load({
+      inject: ['connection', 'storageDomain'],
+      apply(ctx) {
+        httpHandle = openMemberWorkbenchHttp(ctx, {
+          workbench: service,
+          directory: () => memberWorkbenchDirectoryFor(ctx),
+          writer: () => trusted,
+          operations,
+          ...(catalog ? { catalog } : {}),
+        });
       },
-    );
+    });
     ctx.webServer.register({
       kind: 'exact',
       path: '/',
@@ -141,6 +142,10 @@ export async function startMemberWorkbenchHost(directory, { faultStage, catalog 
     }
     return {
       ctx,
+      identityFiber,
+      directoryFiber,
+      httpHandle,
+      httpFiber,
       directory: trusted,
       service,
       close,
