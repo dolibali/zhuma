@@ -34,7 +34,7 @@
 
 返回 `UpstreamContentWire` 与服务公共DTO双向类型检查：`{actorId, spaceId, downstream, source, version:{id,version}, content:{text?,links,files}}`。逐层严格解码、复制公开字段，核对空间、完整下游定位、同任务/计划/修订的来源节点、固定ID及数字版本；异常响应拒绝，不降级为空正文或latest。文本上限100000字符、链接/文件各20项沿当前提交边界，文件只接收既定元信息，不接路径或字节。成员入口沿 `createExecutionHttpApi` 的可信session预检、same-origin/no-store、RPC关联、账号回显与isCurrent/Abort门禁；不另造认证库。
 
-`UpstreamInputsPanel` 的可选 `api/node` 保持原纯投影调用兼容；正式 `DeliveryPanel` 传入当前API及节点。visible行默认收起，原生details/summary显式展开才挂载读取器。关闭取消等待并清除正文，再打开重新请求；切API/节点版本/状态/轮次/固定引用会重挂该来源，迟到成功或错误都不能回显。刷新元信息不全量读取，也不重置交付草稿；没有跨来源或跨会话正文缓存。已合法送达内容不被宣称可远程撤回；刷新为hidden/pending时立即去掉当前展开内容。
+`UpstreamInputsPanel` 的可选 `api/node` 保持原纯投影调用兼容；正式 `DeliveryPanel` 传入当前API及节点。visible行默认收起，原生details/summary显式展开才挂载读取器；隐藏浏览器marker并复用空间/账号同一 `ControlIcon` SVG箭头，闭合向右、展开向下，沿共享图标盒居中。关闭取消等待并清除正文，再打开重新请求；切API/节点版本/状态/轮次/固定引用会重挂该来源，迟到成功或错误都不能回显。刷新元信息不全量读取，也不重置交付草稿；没有跨来源或跨会话正文缓存。已合法送达内容不被宣称可远程撤回；刷新为hidden/pending时立即去掉当前展开内容。
 
 正文作为转义纯文本呈现，局部滚动/键盘聚焦；只有无账号密码的HTTP(S)链接可点击，其他链接为普通文本，不执行HTML。文件仅显示标识、类型与大小并说明内容尚不可查看，不生成预览/下载URL。pending/hidden/replaced保持服务提示，不提供内容操作。来源not-found/不可用和解码错误在当前来源显示，并可显式重试；它们不清空交付草稿。账号失效/错误账号及空间不匹配仍由现有边界关闭旧视图，来源拒绝不冒充账号退出。
 

@@ -18,6 +18,21 @@ const readCount = (page) =>
         .length,
   );
 
+async function heldContentRead(page) {
+  const index = () =>
+    page.evaluate(() =>
+      window.upstreamProbe.calls.findLastIndex(
+        (call) =>
+          call.endpoint.endsWith('/upstream-content') &&
+          typeof call.resolve === 'function' &&
+          !call.signal.aborted,
+      ),
+    );
+  // Loading can render before dispatch; StrictMode may already have aborted an earlier read.
+  await expect.poll(index).toBeGreaterThanOrEqual(0);
+  return index();
+}
+
 for (const mode of ['submit', 'revise']) {
   test(`upstream content ${mode}: read only on expand, preserve draft, close and reauthorize on reopen`, async ({
     page,
@@ -86,12 +101,16 @@ test('upstream content: close aborts a held read; its late reply cannot replace 
   });
   await disclosure(page).locator('summary').click();
   await expect(sources(page).getByRole('status')).toHaveText('正在读取…');
-  const old = await page.evaluate(() => window.upstreamProbe.calls.length - 1);
+  const old = await heldContentRead(page);
   await disclosure(page).locator('summary').click();
+  // Native toggle is asynchronous. An absent body during loading does not prove cleanup.
+  await expect(disclosure(page)).not.toHaveAttribute('open', '');
+  await expect(disclosure(page).locator('summary')).toHaveText('查看内容');
+  await expect(disclosure(page).locator('[role="status"]')).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate((index) => window.upstreamProbe.calls[index].signal.aborted, old))
+    .toBe(true);
   await expect(body(page)).toHaveCount(0);
-  expect(
-    await page.evaluate((index) => window.upstreamProbe.calls[index].signal.aborted, old),
-  ).toBe(true);
   await page.evaluate(() => {
     window.upstreamProbe.holdContent = false;
     window.upstreamProbe.contentText = '本次授权读取的正文';
@@ -113,7 +132,7 @@ test('upstream content: refreshed hidden source removes open content and late re
   });
   await disclosure(page).locator('summary').click();
   await expect(sources(page).getByRole('status')).toHaveText('正在读取…');
-  const old = await page.evaluate(() => window.upstreamProbe.calls.length - 1);
+  const old = await heldContentRead(page);
   await page.evaluate(() => {
     window.upstreamProbe.node.inputs = [
       { access: 'hidden', blocking: true, count: 1, message: '来源已不可访问。' },
@@ -137,12 +156,13 @@ test('upstream content: an old API read cannot leak into a replacement session',
   });
   await disclosure(page).locator('summary').click();
   await expect(sources(page).getByRole('status')).toHaveText('正在读取…');
-  await page.evaluate(() => {
+  const oldIndex = await heldContentRead(page);
+  await page.evaluate((index) => {
     const old = window.upstreamProbe;
     window.oldUpstream = old;
-    old.oldIndex = old.calls.length - 1;
+    old.oldIndex = index;
     old.replaceSession();
-  });
+  }, oldIndex);
   await expect(sources(page)).toHaveCount(0);
   await page.getByRole('button', { name: '提交产物', exact: true }).click();
   await draft(page).fill('新会话工作');
@@ -163,7 +183,7 @@ test('upstream content: refreshed node generation closes an old read without rep
   });
   await disclosure(page).locator('summary').click();
   await expect(sources(page).getByRole('status')).toHaveText('正在读取…');
-  const old = await page.evaluate(() => window.upstreamProbe.calls.length - 1);
+  const old = await heldContentRead(page);
   await page.evaluate(() => {
     window.upstreamProbe.node.version += 1;
   });
@@ -183,9 +203,13 @@ test('upstream content: native disclosure and scrollable text remain keyboard ac
   await page.evaluate(() => {
     window.upstreamProbe.contentText = '很长的中文来源内容'.repeat(1000);
   });
+  const icon = disclosure(page).locator('summary .zm-control-icon svg path');
+  await expect(icon).toHaveCount(1);
+  const closedDirection = await icon.getAttribute('transform');
   await disclosure(page).locator('summary').focus();
   await page.keyboard.press('Enter');
   await expect(body(page)).toBeVisible();
+  await expect(icon).not.toHaveAttribute('transform', closedDirection);
   await body(page).focus();
   await expect(body(page)).toBeFocused();
   expect(await body(page).evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(

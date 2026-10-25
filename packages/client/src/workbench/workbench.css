@@ -4011,14 +4011,27 @@ html[data-platform='darwin'] .zm-shell-chrome {
   font-size: 13px;
 }
 .zm-upstream-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
   width: fit-content;
   padding: 6px 8px;
   border-radius: 6px;
   color: var(--zm-action);
   cursor: pointer;
 }
+.zm-upstream-disclosure > summary::marker {
+  content: '';
+}
+.zm-upstream-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
 .zm-upstream-disclosure > summary:hover {
   background: var(--zm-hover);
+}
+.zm-upstream-disclosure > summary:active {
+  background: var(--zm-button-pressed);
 }
 .zm-upstream-disclosure > summary:focus-visible {
   outline: 2px solid var(--zm-focus);

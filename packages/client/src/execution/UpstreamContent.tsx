@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '../workbench/Button.js';
+import { ControlIcon } from '../workbench/ControlIcon.js';
 import {
   executionErrorMessage,
   type ExecutionApi,
@@ -44,7 +45,8 @@ function Disclosure(props: Props) {
       <summary
         aria-label={`${open ? '收起' : '查看'}${props.input.sourceGoal || props.input.sourceNodeId}第 ${props.input.version} 版内容`}
       >
-        {open ? '收起内容' : '查看内容'}
+        <ControlIcon direction={open ? 'down' : 'right'} />
+        <span>{open ? '收起内容' : '查看内容'}</span>
       </summary>
       {open && <ContentRead {...props} />}
     </details>

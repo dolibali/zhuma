@@ -282,6 +282,7 @@ test('upstream content SSR: only visible inputs offer closed disclosure; renderi
   );
   assert.equal(reads, 0);
   assert.equal((html.match(/<details/g) ?? []).length, 1);
+  assert.ok(html.includes('class="zm-control-icon"'));
   assert.ok(html.includes('查看内容'));
   assert.ok(!html.includes('订单接口约定'));
 });
