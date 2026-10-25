@@ -1,8 +1,11 @@
-import type { Context } from '@deepseek-ai/cordis';
+import { Service, type Context } from '@deepseek-ai/cordis';
 import type { Agent, AgentHandle, AgentSetup } from '@deepseek-ai/dsh-agent';
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { SessionId, type UserMessage } from '@deepseek-ai/dsh-session';
-import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence';
+import {
+  SessionPersistenceNotFoundError,
+  type SessionHandle,
+} from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
 import { assertNativeInputReadOwner } from './native-work-session.js';
 import {
@@ -19,6 +22,7 @@ import {
   type NativeWorkFrame,
   type NativeWorkGrant,
   type NativeWorkRuntime,
+  type NativeMigrationDrain,
 } from './native-work-session-contract.js';
 
 const MAX_FRAME_BYTES = 262_144;
@@ -26,6 +30,22 @@ const MAX_BUFFER_BYTES = 524_288;
 const MAX_BUFFER_FRAMES = 128;
 const STOP_MS = 5_000;
 const READ_MS = 15_000;
+interface ResourceEpoch {
+  readonly owner: DshNativeWorkRuntime;
+  readonly controller: AbortController;
+  basis?: NativeMigrationDrain['basis'];
+  proof?: { readonly persistence: symbol; readonly registry: object };
+  failed?: true;
+}
+// Process-local resource observations, never Run/workspace authority.
+const resourceEpochs = new Map<string, ResourceEpoch>();
+function registryIdentity(ctx: Context): object {
+  // Cordis returns fresh trace proxies on service lookup; its public tracker
+  // metadata belongs to the actual service instance and passes through proxies.
+  const identity: unknown = Reflect.get(ctx.agents, Service.tracker);
+  if (identity === null || typeof identity !== 'object') throw new NativeWorkError('unavailable');
+  return identity;
+}
 
 interface LiveSession {
   readonly handle: AgentHandle;
@@ -120,12 +140,59 @@ function textOf(message: UserMessage): string {
 /** Public DSH registry adapter. No child process, replacement factory, or transcript cache. */
 export class DshNativeWorkRuntime implements NativeWorkRuntime {
   private readonly live = new Map<string, LiveSession>();
+  private readonly disconnecting = new Map<string, Promise<void>>();
+  private readonly retiring = new Map<string, Promise<void>>();
+  private readonly barrierHandles = new Map<string, SessionHandle>();
+  private readonly retired = new Set<string>();
   private readonly connecting = new Map<
     string,
     { readonly promise: Promise<void>; readonly abort: AbortController }
   >();
   private readonly lifetime = new AbortController();
   private readonly readTimeoutMs: number;
+
+  private touch(sessionId: string): ResourceEpoch {
+    resourceEpochs.get(sessionId)?.controller.abort();
+    const next = { owner: this, controller: new AbortController() };
+    if (this.lifetime.signal.aborted) next.controller.abort();
+    resourceEpochs.set(sessionId, next);
+    return next;
+  }
+
+  migrationDrain(sessionId: string): NativeMigrationDrain {
+    if (this.lifetime.signal.aborted) throw new NativeWorkError('unavailable');
+    assertNativeInputReadOwner(sessionId, this);
+    const epoch = resourceEpochs.get(sessionId);
+    if (epoch && (epoch.owner !== this || epoch.failed || epoch.controller.signal.aborted))
+      throw new NativeWorkError('unavailable');
+    if (!epoch || !epoch.basis || !epoch.proof) throw new NativeWorkError('migration-not-ready');
+    const { persistence, registry } = epoch.proof;
+    const signal = epoch.controller.signal;
+    const assertCurrent = () => {
+      try {
+        assertNativeInputReadOwner(sessionId, this);
+        if (
+          signal.aborted ||
+          this.lifetime.signal.aborted ||
+          resourceEpochs.get(sessionId) !== epoch ||
+          this.ctx.sessionPersistence.identity !== persistence ||
+          registryIdentity(this.ctx) !== registry ||
+          this.live.has(sessionId) ||
+          this.connecting.has(sessionId) ||
+          this.disconnecting.has(sessionId) ||
+          this.retiring.has(sessionId) ||
+          this.barrierHandles.has(sessionId) ||
+          this.ctx.agents.get(SessionId(sessionId)) !== undefined
+        )
+          throw new NativeWorkError('unavailable');
+      } catch {
+        epoch.controller.abort();
+        throw new NativeWorkError('unavailable');
+      }
+    };
+    assertCurrent();
+    return { signal, basis: epoch.basis, assertCurrent };
+  }
 
   constructor(
     private readonly ctx: Context,
@@ -146,7 +213,15 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     allowCreate: boolean,
   ): Promise<void> {
     current(grant);
+    // Even a parked resume constructs an executable Agent scope/writer. A
+    // separate historical read grant must never authorize that factory call.
+    grant.assertCurrent('send');
     assertNativeInputReadOwner(binding.nativeSessionId, this);
+    if (
+      this.retired.has(binding.nativeSessionId) ||
+      this.disconnecting.has(binding.nativeSessionId)
+    )
+      throw new NativeWorkError('unavailable');
     if (this.lifetime.signal.aborted) throw new NativeWorkError('unavailable');
     const live = this.live.get(binding.nativeSessionId);
     if (live) {
@@ -159,6 +234,9 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       current(grant);
       return;
     }
+    const owner = resourceEpochs.get(binding.nativeSessionId);
+    if (owner && owner.owner !== this && !owner.basis) throw new NativeWorkError('unavailable');
+    this.touch(binding.nativeSessionId);
     const abort = new AbortController();
     const signal = AbortSignal.any([grant.signal, abort.signal, this.lifetime.signal]);
     const promise = this.attach(binding, grant, signal, allowCreate);
@@ -319,6 +397,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
   }
 
   private agent(sessionId: string): Agent {
+    if (this.retired.has(sessionId)) throw new NativeWorkError('unavailable');
     const live = this.live.get(sessionId);
     if (!live) throw new NativeWorkError('not-started');
     current(live.grant);
@@ -351,6 +430,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
 
   send(sessionId: string, message: NativeSessionMessage, mode: NativeMessageMode): void {
     const agent = this.agent(sessionId);
+    this.touch(sessionId);
     const input = identified(message);
     if (mode === 'queue') agent.send(input, 'next-turn', false);
     else if (mode === 'steer') {
@@ -361,6 +441,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
 
   edit(sessionId: string, messageId: string, text: string): boolean {
     const agent = this.agent(sessionId);
+    this.touch(sessionId);
     const old = [...agent.inbox.nextTurn, ...agent.inbox.nextStep].find(
       (message) => message.id === messageId,
     );
@@ -369,10 +450,13 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       : agent.inbox.replace(old.id, identified({ id: old.id, text }));
   }
   remove(sessionId: string, messageId: string): boolean {
-    return this.agent(sessionId).inbox.remove(MessageId(messageId));
+    const agent = this.agent(sessionId);
+    this.touch(sessionId);
+    return agent.inbox.remove(MessageId(messageId));
   }
   reorder(sessionId: string, messageIds: readonly string[]): void {
     const agent = this.agent(sessionId);
+    this.touch(sessionId);
     const pending = agent.inbox.nextTurn;
     if (
       messageIds.length !== pending.length ||
@@ -390,6 +474,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     );
   }
   async stop(sessionId: string, signal: AbortSignal): Promise<'stopped' | 'pending'> {
+    this.touch(sessionId);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'pending'>((resolve) => {
       timer = setTimeout(() => resolve('pending'), STOP_MS);
@@ -417,6 +502,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
 
   async flush(sessionId: string): Promise<void> {
     const agent = this.live.get(sessionId)?.handle.agent;
+    if (agent) this.touch(sessionId);
     if (agent && !(await this.ctx.sessions.flush(agent.session)))
       throw new NativeWorkError('unavailable');
   }
@@ -426,6 +512,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     after: number,
     limit: number,
     signal: AbortSignal,
+    allowAbsent = false,
   ): Promise<readonly NativeHistoryEvent[]> {
     const bounded = AbortSignal.any([
       signal,
@@ -437,12 +524,18 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         signal.aborted || this.lifetime.signal.aborted ? 'cancelled' : 'read-timeout',
       );
     await waitForRead(() => this.flush(sessionId), bounded, interrupted);
-    const handle = await waitForRead(
-      () => this.ctx.sessionPersistence.open(SessionId(sessionId), 'read', { signal: bounded }),
-      bounded,
-      interrupted,
-      (late) => this.closeReadHandle(late),
-    );
+    let handle: SessionHandle;
+    try {
+      handle = await waitForRead(
+        () => this.ctx.sessionPersistence.open(SessionId(sessionId), 'read', { signal: bounded }),
+        bounded,
+        interrupted,
+        (late) => this.closeReadHandle(late),
+      );
+    } catch (error) {
+      if (allowAbsent && error instanceof SessionPersistenceNotFoundError) return [];
+      throw error;
+    }
     try {
       const result = await waitForRead(
         () => handle.read(after + 1, limit, { signal: bounded }),
@@ -517,6 +610,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     sessionId: string,
     after: number,
     callerSignal: AbortSignal,
+    allowAbsent = false,
   ): AsyncIterable<NativeWorkFrame> {
     const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
     signal.throwIfAborted();
@@ -573,7 +667,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     try {
       // Subscribe first, then native durable history. The seq cursor drops overlap.
       for (;;) {
-        const events = await this.history(sessionId, cursor, 100, signal);
+        const events = await this.history(sessionId, cursor, 100, signal, allowAbsent);
         for (const event of events) {
           if (signal.aborted) return;
           cursor = event.seq;
@@ -611,20 +705,133 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
   }
 
   async disconnect(sessionId: string): Promise<void> {
+    const prior = this.disconnecting.get(sessionId);
+    if (prior) return prior;
     const live = this.live.get(sessionId);
     if (!live) return;
     this.live.delete(sessionId);
+    this.touch(sessionId);
     live.grant.signal.removeEventListener('abort', live.revoke);
-    await live.handle.dispose();
+    const work = Promise.resolve().then(() => live.handle.dispose());
+    this.disconnecting.set(sessionId, work);
+    // A failed disposal is still owned/unknown, never evidence of a closed writer.
+    void work.then(
+      () => {
+        if (this.disconnecting.get(sessionId) === work) this.disconnecting.delete(sessionId);
+      },
+      () => undefined,
+    );
+    return work;
+  }
+
+  async retire(
+    sessionId: string,
+    signal: AbortSignal,
+    allowAbsent = false,
+  ): Promise<NativeMigrationDrain> {
+    if (signal.aborted || this.lifetime.signal.aborted) throw new NativeWorkError('cancelled');
+    assertNativeInputReadOwner(sessionId, this);
+    const owner = resourceEpochs.get(sessionId);
+    if (owner && owner.owner !== this && !owner.basis) throw new NativeWorkError('unavailable');
+    this.retired.add(sessionId);
+    let work = this.retiring.get(sessionId);
+    if (!work) {
+      work = Promise.resolve().then(async () => {
+        this.touch(sessionId);
+        const persistence = this.ctx.sessionPersistence.identity;
+        const registry = registryIdentity(this.ctx);
+        const connecting = this.connecting.get(sessionId);
+        if (connecting) {
+          connecting.abort.abort();
+          await connecting.promise.catch(() => undefined);
+        }
+        const live = this.live.get(sessionId);
+        if (live) {
+          live.handle.agent.cancel({ kind: 'user' }, { keepInbox: true });
+          await live.handle.agent.whenIdle();
+          await this.flush(sessionId);
+          await this.disconnect(sessionId);
+        }
+        const disposing = this.disconnecting.get(sessionId);
+        if (disposing) await disposing;
+        if (this.ctx.agents.get(SessionId(sessionId))) throw new NativeWorkError('unavailable');
+        let basis: NativeMigrationDrain['basis'] = 'flushed-and-closed';
+        let handle: SessionHandle | undefined;
+        try {
+          // Explicit cleanup only: history never write-opens, creates or resumes.
+          handle = await this.ctx.sessionPersistence.open(SessionId(sessionId), 'write');
+          this.barrierHandles.set(sessionId, handle);
+          await handle.flush();
+        } catch (error) {
+          if (!handle && allowAbsent && error instanceof SessionPersistenceNotFoundError)
+            basis = 'absent-unadmitted';
+          else throw error;
+        } finally {
+          if (handle) {
+            await handle.close();
+            if (this.barrierHandles.get(sessionId) === handle)
+              this.barrierHandles.delete(sessionId);
+          }
+        }
+        if (
+          this.ctx.sessionPersistence.identity !== persistence ||
+          registryIdentity(this.ctx) !== registry
+        )
+          throw new NativeWorkError('unavailable');
+        const epoch = resourceEpochs.get(sessionId);
+        if (!epoch || epoch.owner !== this) throw new NativeWorkError('unavailable');
+        epoch.basis = basis;
+        epoch.proof = { persistence, registry };
+      });
+      this.retiring.set(sessionId, work);
+      const owned = work;
+      const release = () => {
+        if (this.retiring.get(sessionId) === owned) this.retiring.delete(sessionId);
+      };
+      void owned.then(release, () => {
+        const epoch = resourceEpochs.get(sessionId);
+        if (epoch?.owner === this) {
+          epoch.failed = true;
+          epoch.controller.abort();
+        }
+        // Do not forget an unconfirmed writer after flush/disposal failure.
+        if (
+          !this.barrierHandles.has(sessionId) &&
+          !this.live.has(sessionId) &&
+          !this.disconnecting.has(sessionId) &&
+          !this.connecting.has(sessionId)
+        )
+          release();
+      });
+    }
+    try {
+      await waitForRead(
+        () => work!,
+        signal,
+        () => new NativeWorkError('cancelled'),
+      );
+    } catch (error) {
+      if (error instanceof NativeWorkError) throw error;
+      throw new NativeWorkError('unavailable');
+    }
+    return this.migrationDrain(sessionId);
   }
 
   async close(): Promise<void> {
     this.lifetime.abort();
+    for (const epoch of resourceEpochs.values()) if (epoch.owner === this) epoch.controller.abort();
     await Promise.allSettled([...this.connecting.values()].map((value) => value.promise));
-    const outcomes = await Promise.allSettled(
-      [...this.live.keys()].map((id) => this.disconnect(id)),
-    );
+    const outcomes = await Promise.allSettled([
+      ...this.retiring.values(),
+      ...this.disconnecting.values(),
+      ...[...this.barrierHandles.entries()].map(async ([id, handle]) => {
+        await handle.close();
+        if (this.barrierHandles.get(id) === handle) this.barrierHandles.delete(id);
+      }),
+      ...[...this.live.keys()].map((id) => this.disconnect(id)),
+    ]);
     if (outcomes.some((outcome) => outcome.status === 'rejected'))
       throw new NativeWorkError('unavailable');
+    for (const [id, epoch] of resourceEpochs) if (epoch.owner === this) resourceEpochs.delete(id);
   }
 }
