@@ -1,0 +1,132 @@
+{
+  "purpose": "PR98 task creation continuity evidence",
+  "before": "a926dfaef4059c51e76e961d8c13e1c3520fe3c6",
+  "afterVisualCapture": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+  "runtime": "actual official Web/distribution Host; isolated legacy single-user workbench, synthetic definitions; real connection cookie; models disabled",
+  "theme": "official system preference resolved using Web media light/dark; reduced motion, screenshot animations disabled; not native OS theme switching",
+  "privacy": "self-generated and individually inspected; no user attachments, real members, credentials, private paths or internal materials",
+  "items": [
+    {
+      "file": "before-project-light.png",
+      "sha256": "135c560ba80580d7e228eee188af55b73b93070ac6f989e37630e32b3f3d7dde",
+      "gitBlob": "0e4637a6c402819233bbaf9968a65a9423b39e69",
+      "bytes": 81818,
+      "width": 1440,
+      "height": 900,
+      "source": "a926dfaef4059c51e76e961d8c13e1c3520fe3c6",
+      "personallyViewed": true
+    },
+    {
+      "file": "before-project-dark.png",
+      "sha256": "6febc543d8dbc7267ced13c42b770e341a08b16e78722a0e0f6c75fd2d30497f",
+      "gitBlob": "19a09b32d409b9efe1f2480679e114e26fca383a",
+      "bytes": 72685,
+      "width": 1440,
+      "height": 900,
+      "source": "a926dfaef4059c51e76e961d8c13e1c3520fe3c6",
+      "personallyViewed": true
+    },
+    {
+      "file": "before-return-light.png",
+      "sha256": "5b5e7ec4a7c3c5cfef6e06c8ac7acb7aa406ff26160e40cf8e6bdfc5ad0c294a",
+      "gitBlob": "7ee724848976e1e5386b7126a8456735f00682c8",
+      "bytes": 68892,
+      "width": 1440,
+      "height": 900,
+      "source": "a926dfaef4059c51e76e961d8c13e1c3520fe3c6",
+      "personallyViewed": true
+    },
+    {
+      "file": "before-return-dark.png",
+      "sha256": "66ff19d1f6ae5b0600b14e4844bbdda26c73bb7fe0b4145ae3cfc07c260e9e51",
+      "gitBlob": "9d32d382e16089968cc67e53c1071827cebff630",
+      "bytes": 66268,
+      "width": 1440,
+      "height": 900,
+      "source": "a926dfaef4059c51e76e961d8c13e1c3520fe3c6",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-task-light.png",
+      "sha256": "2a84d524451faacf87ea152a8ef757da737d89590cc7a1b724d1bec1deb00ba4",
+      "gitBlob": "29c189addb39375d27ce8eeff4fd6bebf505755f",
+      "bytes": 88285,
+      "width": 1440,
+      "height": 900,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-task-dark.png",
+      "sha256": "cdfc6b60fdb10165089ac2756b3555591af2ae5529e1d3c4322b66478b99e2b1",
+      "gitBlob": "688f30abc20a562b99f25da2ab91d4784cc9dc00",
+      "bytes": 78694,
+      "width": 1440,
+      "height": 900,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-project-light.png",
+      "sha256": "53d92c90db9808f94332b48b122805a03f5d1d022330520235d5adbe6f99223d",
+      "gitBlob": "d82654db0b9e08ac87b5401cbefe329cabe055be",
+      "bytes": 84395,
+      "width": 1440,
+      "height": 900,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-project-dark.png",
+      "sha256": "791d6b3fdc5d9ffd332718c71eba1cb8b607e835347035cc1942d38cd529fdd4",
+      "gitBlob": "2bf6aaf78cd6fdb989d65f7cde5201b6d55193a4",
+      "bytes": 76387,
+      "width": 1440,
+      "height": 900,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-return-light.png",
+      "sha256": "d1227c721f20d353d021b133615f4e788ba1c38d839d3292986433bd6aa73ead",
+      "gitBlob": "ab179599a71a0b8ed323d0a08b1d6ae6a8f4fb07",
+      "bytes": 93095,
+      "width": 1440,
+      "height": 900,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-after-return-dark.png",
+      "sha256": "d1eb6edbb6074d88576c4839093cbda517aaf0f7196d49d1aeb0f152a045ad21",
+      "gitBlob": "fe0d1e9853ccbf40d2d5086e95a8934d64cb0f90",
+      "bytes": 83230,
+      "width": 1440,
+      "height": 900,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-empty-choice-preserved.png",
+      "sha256": "16896c04200a82dcd7e5850e145bf30d633b6480e2cd9fca10f7997bd976baf9",
+      "gitBlob": "769445f767cc68c197719aad15beeeb6d7043faa",
+      "bytes": 84076,
+      "width": 1440,
+      "height": 900,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    },
+    {
+      "file": "final-narrow-draft.png",
+      "sha256": "215a883b0e9d7a0a7427a21324213bc81c19cc059e9cdc537b1d2d2dc14dc2ef",
+      "gitBlob": "71c8667e7172e8f5893ae81525dd42d58bae7f87",
+      "bytes": 38556,
+      "width": 360,
+      "height": 800,
+      "source": "3b7e7bc328e0da66b2415fcefaefb31d84656387",
+      "personallyViewed": true
+    }
+  ],
+  "finalImplementation": "8d8b421c479ed0983bc0ff02aaa4b1f50149df52",
+  "captureMapping": "Final delta from 3b7 only restores the accessible button name; visible text, CSS and creation/participant behavior are identical."
+}
