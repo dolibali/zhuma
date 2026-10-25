@@ -14,7 +14,7 @@
 
 沿用原 `forwardWebRequest(Request, host, ownerCookie): Promise<Response>`；不增加 renderer API。原 Request 的 method、路径／query、headers、body stream、signal 输入，原 Response 的 status、statusText、headers、body stream 输出。Cookie 以外的业务 DTO、授权、错误和幂等键保持原身份／Execution 契约，运输层不解释业务 JSON。身份请求体仍受 Host 64KiB 限制，执行请求仍受2MiB／5秒读取限制；Client 原10秒 deadline及取消信号继续传给原 fetch，无额外重放。已到 Host 的命令可能完成，取消或丢弃响应不等于取消业务提交。
 
-所有操作先校验 source 为 `dsh-app://app`，Origin 只能缺省或精确该源；拒绝 `null`、跨源和 `sec-fetch-site: cross-site`，在任何绑定／清理前返回403。owned target 只允许无用户信息的回环 HTTP(S)。来路全部 Cookie 忽略；仅使用主进程持有的 owner，加上载体中、且路径精确匹配的指定成员 Cookie。所有 Set-Cookie 始终剥离；产品响应强制 no-store。以下15个网络操作是本接缝的完整产品集合：
+所有操作先校验 source 为 `dsh-app://app`，Origin 只能缺省或精确该源；拒绝 `null`、跨源和 `sec-fetch-site: cross-site`，在任何绑定／清理前返回403。owned target 只允许无用户信息的回环 HTTP(S)。来路全部 Cookie 忽略；仅使用主进程持有的 owner，加上载体中、且路径精确匹配的指定成员 Cookie。所有 Set-Cookie 始终剥离；产品响应强制 no-store。以下17个网络操作是本接缝的完整产品集合：
 
 | 操作       | method／路径及原业务输入                                                | 运输响应／状态变更                                             |
 | ---------- | ----------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -33,8 +33,10 @@
 | 报告       | POST `/api/zhuma-exec/report`，原channel envelope／计划引用             | 原只读返回；401清载体                                          |
 | 修订读取   | POST `/api/zhuma-exec/revision`，原channel envelope／计划引用           | 原只读返回；401清载体                                          |
 | 交付草稿   | POST `/api/zhuma-exec/draft`，原channel envelope／节点草稿读写          | 原版本与未完成文件标记；401清载体                              |
+| 待办计数   | POST `/api/zhuma-exec/inbox-counts`，原channel envelope／可选 scope     | 分组计数，带回 actorId 与请求 scope；401清载体                 |
+| 执行事件   | POST `/api/zhuma-exec/events`，原channel envelope／游标与可选 scope     | 游标之后的事件，带回成员、scope 与节点引用；401清载体          |
 
-现有 Host 的其它 method 仍由 Host 拒绝；未知 endpoint、额外路径段、编码斜线、普通插件／owner API 不携带成员值。没有新增 WebSocket 成员协议；官方 owner WebSocket 路径保持原实现。上表与实现路径集合为身份6操作加执行9操作，无新增／漏列操作；内部 `forward` callback 和 `clear` 只在主进程内调用，不是新的跨进程接口。
+现有 Host 的其它 method 仍由 Host 拒绝；未知 endpoint、额外路径段、编码斜线、普通插件／owner API 不携带成员值。没有新增 WebSocket 成员协议；官方 owner WebSocket 路径保持原实现。上表与实现路径集合为身份6操作加执行11操作，无新增／漏列操作；内部 `forward` callback 和 `clear` 只在主进程内调用，不是新的跨进程接口。
 
 只接受登录响应中唯一的 `zhuma-member`，值为1–4096位当前格式的 ASCII token；属性恰为 `Max-Age`（1–43200秒）、`Path=/`、`HttpOnly`、`SameSite=Strict`，重复／额外／缺失属性及重复成员 Cookie 均拒绝。该格式是当前 Host 的窄运输合同，不是通用 Set-Cookie parser。其它 Cookie 不保存、不下发。TTL 到期清理；401清理；空间403或业务404不清全局身份。
 
