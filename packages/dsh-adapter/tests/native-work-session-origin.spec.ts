@@ -185,57 +185,67 @@ test('actual native origin: failed writer close refuses without retrying or open
   assert.equal(host.adapter.requests.length, 0);
 });
 
-test('actual native origin: a timed-out physical barrier refuses until its owned cleanup actually settles', async (t) => {
-  const root = await home(t),
-    old = grant();
-  let host = await boot(root, new ScriptedAdapter([]));
-  await host.service.send(old, message('old', 'parked', 'queue'));
-  const binding = host.service.open(old).binding,
-    input = query(binding);
-  await host.close();
-  host = await boot(root, new ScriptedAdapter([]));
-  t.onTestFinished(() => host.close());
-  const release = Promise.withResolvers(),
-    entered = Promise.withResolvers(),
-    closed = Promise.withResolvers();
-  t.onTestFinished(() => release.resolve());
-  const open = host.ctx.sessionPersistence.open.bind(host.ctx.sessionPersistence);
-  let opens = 0;
-  host.ctx.sessionPersistence.open = async (...args) => {
-    const handle = await open(...args);
-    if (args[1] === 'write') {
-      opens++;
-      const flush = handle.flush.bind(handle),
-        close = handle.close.bind(handle);
-      handle.flush = async () => {
-        entered.resolve();
-        await release.promise;
-        return flush();
-      };
-      handle.close = async () => {
-        await close();
-        closed.resolve();
-      };
-    }
-    return handle;
-  };
-  const waiting = host.service.migrate(
-    migrationGrant(host.service, binding.scope, binding.selection, input),
-  );
-  await entered.promise;
-  assert.deepEqual(await waiting, { status: 'pending' });
-  const bytes = await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json'));
-  assert.throws(() => observeWithoutNativeIO(host, input), { code: 'unavailable' });
-  assert.equal(opens, 1);
-  assert.deepEqual(await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json')), bytes);
-  release.resolve();
-  await closed.promise;
-  await new Promise(setImmediate);
-  assert.deepEqual(observeWithoutNativeIO(host, input), {
-    scope: binding.scope,
-    selection: binding.selection,
-  });
-  assert.equal(opens, 1, 'observing late settled origin must not start another barrier');
-  assert.deepEqual(await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json')), bytes);
-  assert.equal(host.adapter.requests.length, 0);
-});
+test(
+  'actual native origin: a timed-out physical barrier refuses until its owned cleanup actually settles',
+  { timeout: 15000 },
+  async (t) => {
+    const root = await home(t),
+      old = grant();
+    let host = await boot(root, new ScriptedAdapter([]));
+    await host.service.send(old, message('old', 'parked', 'queue'));
+    const binding = host.service.open(old).binding,
+      input = query(binding);
+    await host.close();
+    host = await boot(root, new ScriptedAdapter([]));
+    t.onTestFinished(() => host.close());
+    const release = Promise.withResolvers(),
+      entered = Promise.withResolvers(),
+      closed = Promise.withResolvers();
+    t.onTestFinished(() => release.resolve());
+    const open = host.ctx.sessionPersistence.open.bind(host.ctx.sessionPersistence);
+    let opens = 0;
+    host.ctx.sessionPersistence.open = async (...args) => {
+      const handle = await open(...args);
+      if (args[1] === 'write') {
+        opens++;
+        const flush = handle.flush.bind(handle),
+          close = handle.close.bind(handle);
+        handle.flush = async () => {
+          entered.resolve();
+          await release.promise;
+          return flush();
+        };
+        handle.close = async () => {
+          await close();
+          closed.resolve();
+        };
+      }
+      return handle;
+    };
+    const waiting = host.service.migrate(
+      migrationGrant(host.service, binding.scope, binding.selection, input),
+    );
+    await entered.promise;
+    assert.deepEqual(await waiting, { status: 'pending' });
+    const bytes = await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json'));
+    assert.throws(() => observeWithoutNativeIO(host, input), { code: 'unavailable' });
+    assert.equal(opens, 1);
+    assert.deepEqual(
+      await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json')),
+      bytes,
+    );
+    release.resolve();
+    await closed.promise;
+    await new Promise(setImmediate);
+    assert.deepEqual(observeWithoutNativeIO(host, input), {
+      scope: binding.scope,
+      selection: binding.selection,
+    });
+    assert.equal(opens, 1, 'observing late settled origin must not start another barrier');
+    assert.deepEqual(
+      await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json')),
+      bytes,
+    );
+    assert.equal(host.adapter.requests.length, 0);
+  },
+);
