@@ -74,6 +74,24 @@ async function boot(options) {
       return originalModify(key, mutate);
     };
   }
+  // A confirmed plan is seeded before the Host mounts: a Host-level
+  // preparation act written through the real domain, never impersonating a
+  // member. The acceptance suite records this as the plan's准备方式.
+  if (options.workbenchSeed !== undefined) {
+    const workbenchModule = await import(
+      options.modulePath
+        ? pathToFileURL(options.modulePath.replace('host-plugin.js', 'workbench-plugin.js')).href
+        : '../../dist/workbench-plugin.js'
+    );
+    const core = await import('@zhuma/agent-core');
+    const domain = await ctx.storageDomain.open(workbenchModule.workbenchDomainSpec);
+    let state = core.emptyWorkbench();
+    for (const command of options.workbenchSeed) {
+      state = core.applyWorkbenchCommand(state, command);
+    }
+    await domain.global.set(state);
+    await domain.close();
+  }
   await load(WebServer, { host: '127.0.0.1', port: 0 });
   await load(Connection);
   if (!options.skipRemoteAccess) remoteAccessFiber = await load(RemoteAccess);
