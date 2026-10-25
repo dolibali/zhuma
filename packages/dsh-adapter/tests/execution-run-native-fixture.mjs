@@ -8,7 +8,8 @@ import {
   executionRunGlobalSchema,
   enableExecutionRunWriter,
 } from '../dist/execution-run-protocol.js';
-import { begin, records, locator } from './execution-run-fixture.mjs';
+import { begin, records, locator, applyEvent, stopCommand } from './execution-run-fixture.mjs';
+import { currentExecutionRun, requestExecutionRunStop } from '../dist/execution-run-state.js';
 
 export { boot, ScriptedAdapter, allHistory } from './native-work-session-fixture.mjs';
 export { NativeWorkError } from '../dist/native-work-session-contract.js';
@@ -39,6 +40,7 @@ export async function attachExecutionRuns(host) {
     await nodes.put('native-control', begin(records()[0]).record);
   }
   let memberLifetime = new AbortController();
+  let taskAllowed = true;
   const sourceLifetime = new AbortController();
   const source = {
     signal: sourceLifetime.signal,
@@ -58,6 +60,7 @@ export async function attachExecutionRuns(host) {
     },
     readNode: () => nodes.get('native-control'),
     assertNodeAccess(memberId, spaceId) {
+      assert.equal(taskAllowed, true);
       assert.equal(memberId, 'chen');
       assert.equal(spaceId, 'north');
     },
@@ -76,6 +79,9 @@ export async function attachExecutionRuns(host) {
         },
         { global: true },
       );
+    },
+    migrationOrigin(query) {
+      return host.service.migrationOrigin(query);
     },
     migrationDrain(previousScope) {
       try {
@@ -104,6 +110,9 @@ export async function attachExecutionRuns(host) {
       assert.equal(memberLifetime.signal.aborted, true);
       memberLifetime = new AbortController();
     },
+    setContractTaskAccess(allowed) {
+      taskAllowed = allowed;
+    },
     get row() {
       return nodes.get('native-control');
     },
@@ -118,4 +127,61 @@ export async function attachExecutionRuns(host) {
       return authorities.openMigration(memberRequest, locator(nodes.get('native-control')));
     },
   };
+}
+
+export async function reserveNext(host, runs) {
+  const previous = await runs.open();
+  const queued = await host.service.send(previous.grant, {
+    requestId: 'old-queue',
+    text: 'OLD-QUEUED-CONTENT',
+    mode: 'queue',
+    selection: currentExecutionRun(runs.row).selection,
+  });
+  const binding = host.service.open(previous.grant).binding;
+  await runs.save(
+    applyEvent(runs.row, 'accepted', {
+      nativeSessionId: binding.nativeSessionId,
+      executorRunId: binding.nativeAgentId,
+    }).record,
+  );
+  await runs.save(requestExecutionRunStop(runs.row, stopCommand(runs.row)).record);
+  assert.equal((await host.service.stop(previous.grant)).status, 'stopped');
+  // Actual C stop is this fixture's bridge fact, not a real B receipt issuer.
+  await runs.save(
+    applyEvent(runs.row, 'stopped', {
+      idle: true,
+      flushed: true,
+      resourcesSettled: true,
+    }).record,
+  );
+  const oldLocator = locator(runs.row);
+  await runs.save(
+    begin(runs.row, {
+      mode: 'restart',
+      requestId: 'restart-2',
+      newRunId: 'run-2',
+      newSegmentId: 'segment-2',
+    }).record,
+  );
+  assert.equal(previous.grant.signal.aborted, true);
+  return { binding, oldLocator, queued };
+}
+
+export async function failUnboundAndRetry(runs) {
+  assert.equal(currentExecutionRun(runs.row).attempt.id, 'run-2');
+  assert.equal(currentExecutionRun(runs.row).attempt.acknowledged, false);
+  const cleanup = runs.authorities.cleanupAfterCommit(locator(runs.row));
+  runs.memberLifetime.abort();
+  cleanup.assertCurrent('failed');
+  // Run2 never called C. Settling an empty claim cannot fabricate a C binding.
+  await runs.save(applyEvent(runs.row, 'failed', { resourcesSettled: true }).record);
+  runs.renewContractMember();
+  await runs.save(
+    begin(runs.row, {
+      mode: 'retry',
+      requestId: 'retry-3',
+      newRunId: 'run-3',
+      newSegmentId: 'segment-3',
+    }).record,
+  );
 }

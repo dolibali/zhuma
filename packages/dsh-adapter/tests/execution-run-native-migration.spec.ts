@@ -11,13 +11,12 @@ import {
   allHistory,
   NativeWorkError,
   attachExecutionRuns,
-  begin,
   applyEvent,
   currentExecutionRun,
   locator,
   memberRequest,
-  requestExecutionRunStop,
-  stopCommand,
+  reserveNext,
+  failUnboundAndRetry,
 } from './zhuma-execution-run-bundle.ts';
 
 async function home(t) {
@@ -28,40 +27,6 @@ async function home(t) {
 function input(row, requestId, text, mode = 'followup') {
   return { requestId, text, mode, selection: currentExecutionRun(row).selection };
 }
-async function reserveNext(host, runs) {
-  const previous = await runs.open();
-  const queued = await host.service.send(
-    previous.grant,
-    input(runs.row, 'old-queue', 'OLD-QUEUED-CONTENT', 'queue'),
-  );
-  const binding = host.service.open(previous.grant).binding;
-  await runs.save(
-    applyEvent(runs.row, 'accepted', {
-      nativeSessionId: binding.nativeSessionId,
-      executorRunId: binding.nativeAgentId,
-    }).record,
-  );
-  await runs.save(requestExecutionRunStop(runs.row, stopCommand(runs.row)).record);
-  const stopped = await host.service.stop(previous.grant);
-  assert.equal(stopped.status, 'stopped');
-  // C's real completed stop is the fixture's bridge fact. The production B
-  // receipt hook is intentionally absent, rather than replaced by a fake issuer.
-  await runs.save(
-    applyEvent(runs.row, 'stopped', { idle: true, flushed: true, resourcesSettled: true }).record,
-  );
-  const oldLocator = locator(runs.row);
-  await runs.save(
-    begin(runs.row, {
-      mode: 'restart',
-      requestId: 'restart-2',
-      newRunId: 'run-2',
-      newSegmentId: 'segment-2',
-    }).record,
-  );
-  assert.equal(previous.grant.signal.aborted, true);
-  return { binding, oldLocator, queued };
-}
-
 test(
   'D/C integration: actual native cleanup unlocks one reserved segment; only explicit send runs the model',
   { timeout: 15000 },
@@ -217,7 +182,7 @@ test(
 );
 
 test(
-  'D/C recovery boundary: an unbound middle Run fails closed without inventing a native binding',
+  'D/C recovery: skip an unbound failed attempt while preserving all B Runs and only one new C segment',
   { timeout: 15000 },
   async (t) => {
     const root = await home(t);
@@ -225,25 +190,9 @@ test(
     t.onTestFinished(() => host.close());
     const runs = await attachExecutionRuns(host);
     const old = await reserveNext(host, runs);
-    assert.equal(currentExecutionRun(runs.row).attempt.id, 'run-2');
-    assert.equal(currentExecutionRun(runs.row).attempt.acknowledged, false);
-    const cleanup = runs.authorities.cleanupAfterCommit(locator(runs.row));
-    runs.memberLifetime.abort();
-    cleanup.assertCurrent('failed');
-    // No Run2 native call was admitted. Internal cleanup may settle that empty
-    // claim, but it cannot create a C mapping for an attempt which never ran.
-    await runs.save(applyEvent(runs.row, 'failed', { resourcesSettled: true }).record);
-    runs.renewContractMember();
-    await runs.save(
-      begin(runs.row, {
-        mode: 'retry',
-        requestId: 'retry-3',
-        newRunId: 'run-3',
-        newSegmentId: 'segment-3',
-      }).record,
-    );
+    await failUnboundAndRetry(runs);
     const opened = await runs.migrate();
-    assert.equal(opened.grant.previousScope.runId, 'run-2');
+    assert.equal(opened.grant.previousScope.runId, 'run-1');
     assert.equal(opened.grant.scope.runId, 'run-3');
     opened.grant.assertCurrent('prepare');
     const historical = await runs.open('read', old.oldLocator);
@@ -251,15 +200,69 @@ test(
     assert.equal(actualBinding.scope.runId, 'run-1');
     assert.equal(actualBinding.nativeSessionId, old.binding.nativeSessionId);
     const mappingPath = join(root, 'domains/zhuma_native_work_sessions.json');
-    const before = await readFile(mappingPath);
-    await assert.rejects(async () => host.service.prepareMigration(opened.grant), {
-      code: 'scope-mismatch',
-    });
-    assert.deepEqual(await readFile(mappingPath), before);
+    assert.equal((await host.service.prepareMigration(opened.grant)).status, 'prepared');
+    const moved = await host.service.migrate(opened.grant);
+    assert.equal(moved.status, 'migrated');
+    assert.equal(moved.previous.nativeSessionId, old.binding.nativeSessionId);
+    assert.notEqual(moved.next.nativeSessionId, old.binding.nativeSessionId);
+    const mapping = JSON.parse(await readFile(mappingPath, 'utf8')).tables.bindings;
+    const row = Object.values(mapping)[0];
+    assert.equal(row.schemaVersion, 2);
+    assert.equal(row.prior.length, 1);
+    assert.equal(row.prior[0].binding.scope.runId, 'run-1');
+    assert.equal(row.current.scope.runId, 'run-3');
+    assert.deepEqual(
+      runs.row.nativeExecution.runs.map((run) => run.attempt.id),
+      ['run-1', 'run-2', 'run-3'],
+    );
     assert.equal(currentExecutionRun(runs.row).attempt.id, 'run-3');
     assert.equal(currentExecutionRun(runs.row).resources, 'held');
     assert.equal(host.adapter.requests.length, 0);
-    // This passing refusal control records a recovery gap. It does not claim
-    // that Run3 can proceed or authorize skipping Run2's durable lineage.
+    assert.equal(host.ctx.agents.list().length, 0);
+    assert.equal(await host.ctx.sessionPersistence.stat(moved.next.nativeSessionId), undefined);
+  },
+);
+
+test(
+  'D/C origin: denied members never read C; ineligible middle attempts never acquire migration authority',
+  { timeout: 15000 },
+  async (t) => {
+    const root = await home(t);
+    const host = await boot(root, new ScriptedAdapter([]));
+    t.onTestFinished(() => host.close());
+    const runs = await attachExecutionRuns(host);
+    await reserveNext(host, runs);
+    await failUnboundAndRetry(runs);
+    const valid = structuredClone(runs.row);
+    let lookups = 0;
+    const origin = host.service.migrationOrigin.bind(host.service);
+    host.service.migrationOrigin = (query) => {
+      lookups++;
+      return origin(query);
+    };
+    runs.setContractTaskAccess(false);
+    await assert.rejects(runs.migrate(), { code: 'run-authority-denied' });
+    assert.equal(lookups, 0);
+    runs.setContractTaskAccess(true);
+    runs.memberLifetime.abort();
+    await assert.rejects(runs.migrate(), { code: 'run-authority-denied' });
+    assert.equal(lookups, 0);
+    runs.renewContractMember();
+    const path = join(root, 'domains/zhuma_native_work_sessions.json');
+    const before = await readFile(path);
+    for (const evidence of ['ack', 'session', 'unknown', 'received']) {
+      const changed = structuredClone(valid);
+      const middle = changed.nativeExecution.runs[1];
+      if (evidence === 'ack') {
+        middle.attempt.acknowledged = true;
+        middle.attempt.executorRunId = 'contract-admitted-middle';
+      } else if (evidence === 'session') middle.attempt.sessionId = 'contract-native-middle';
+      else middle.dispatch = evidence;
+      await runs.save(changed);
+      await assert.rejects(runs.migrate(), { code: 'run-authority-denied' });
+      assert.deepEqual(await readFile(path), before);
+    }
+    await runs.save(valid);
+    assert.equal(host.adapter.requests.length, 0);
   },
 );

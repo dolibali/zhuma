@@ -18,12 +18,23 @@ import {
 } from './execution-run-state.js';
 
 const id = z.string().min(1).max(200);
+const positive = z.number().int().positive().refine(Number.isSafeInteger);
 const locatorSchema = z.strictObject({
   taskId: id,
   planId: id,
-  revision: z.number().int().positive().refine(Number.isSafeInteger),
+  revision: positive,
   nodeId: id,
   runId: id,
+});
+const migrationOriginSchema = z.strictObject({
+  scope: locatorSchema.extend({
+    actorId: id,
+    spaceId: id,
+    generation: positive,
+    segmentId: id,
+  }),
+  // Equality with the already validated B selection below is the whitelist.
+  selection: z.unknown(),
 });
 export type ExecutionRunLocator = z.infer<typeof locatorSchema>;
 
@@ -62,6 +73,11 @@ export interface ExecutionRunAuthoritySource {
   /** Post-durable domain changes AND resolver/directory replacement/unmount invalidation. */
   onChange(recheck: () => void): () => void;
   readonly signal: AbortSignal;
+  /** Read-only metadata from the SAME C owner. Issuance calls only after member/B
+   * authorization; absent/unknown/inflight/failed facts refuse, never guess a neighbor.
+   * This is neither migration permission nor physical drain evidence.
+   */
+  migrationOrigin?(query: ExecutionRunMigrationQuery): ExecutionRunMigrationOrigin;
   /** C's actual old-scope stop/flush/source-drain proof, not B's persisted settled label.
    * Undefined means still pending. Its closure/signal must track the real native owner.
    * Optional for old consumers: migration alone refuses when this port is absent.
@@ -71,6 +87,16 @@ export interface ExecutionRunAuthoritySource {
 export interface ExecutionRunMigrationDrain {
   readonly signal: AbortSignal;
   assertCurrent(): void;
+}
+export interface ExecutionRunMigrationQuery {
+  readonly requestId: string;
+  readonly inputFingerprint: string;
+  readonly scope: NativeWorkScope;
+  readonly selection: NativeSessionSelection;
+}
+export interface ExecutionRunMigrationOrigin {
+  readonly scope: NativeWorkScope;
+  readonly selection: NativeSessionSelection;
 }
 /** Structurally matches C's frozen NativeRunMigrationGrant. Host-only, never deserialized. */
 export interface ExecutionRunMigrationGrant {
@@ -344,36 +370,69 @@ export class ExecutionRunAuthorities {
       return denied();
     }
   }
-  private migrationPair(locator: ExecutionRunLocator) {
+  private migrationCurrent(locator: ExecutionRunLocator) {
     const current = this.current(locator);
-    const previous = current.state.runs.at(-2);
+    const receipt = current.state.receipts.find(
+      (item) =>
+        item.requestId === current.run.attempt.idempotencyKey &&
+        item.actorId === current.run.actorId &&
+        item.runId === current.run.attempt.id,
+    );
     if (
       !current.current ||
-      !previous ||
-      !isTerminalRunStatus(previous.attempt.status) ||
-      previous.resources !== 'settled' ||
+      current.state.runs.length < 2 ||
       current.run.resources !== 'held' ||
       current.run.attempt.status !== 'requested' ||
       current.run.attempt.acknowledged ||
       current.run.attempt.sessionId !== undefined ||
       current.run.attempt.stopPhase !== 'none' ||
-      previous.actorId !== current.run.actorId ||
-      previous.spaceId !== current.run.spaceId ||
-      previous.attempt.generation + 1 !== current.run.attempt.generation ||
-      !current.state.receipts.some(
-        (receipt) =>
-          receipt.requestId === current.run.attempt.idempotencyKey &&
-          receipt.actorId === current.run.actorId &&
-          receipt.runId === current.run.attempt.id,
-      )
+      !receipt
+    )
+      return denied();
+    return {
+      ...current,
+      receipt,
+      scope: executionRunScope(current.node, current.run),
+      requestId: current.run.attempt.idempotencyKey,
+    };
+  }
+  private migrationPair(locator: ExecutionRunLocator, rawOrigin: unknown) {
+    const current = this.migrationCurrent(locator);
+    const parsed = migrationOriginSchema.safeParse(rawOrigin);
+    if (!parsed.success) return denied();
+    const previousIndex = current.state.runs.findIndex(
+      (run) =>
+        canonicalPayload(executionRunScope(current.node, run)) ===
+        canonicalPayload(parsed.data.scope),
+    );
+    if (previousIndex < 0 || previousIndex >= current.state.runs.length - 1) return denied();
+    const history = current.state.runs.slice(previousIndex);
+    const previous = history[0]!;
+    if (
+      canonicalPayload(previous.selection) !== canonicalPayload(parsed.data.selection) ||
+      history.some(
+        (run) => run.actorId !== current.run.actorId || run.spaceId !== current.run.spaceId,
+      ) ||
+      history
+        .slice(0, -1)
+        .some((run) => !isTerminalRunStatus(run.attempt.status) || run.resources !== 'settled') ||
+      history
+        .slice(1, -1)
+        .some(
+          (run) =>
+            run.attempt.acknowledged ||
+            run.attempt.sessionId !== undefined ||
+            run.attempt.executorRunId !== undefined ||
+            run.attempt.sessionDiscarded !== undefined ||
+            run.dispatch !== 'reserved',
+        )
     )
       return denied();
     return {
       ...current,
       previous,
+      history,
       previousScope: executionRunScope(current.node, previous),
-      scope: executionRunScope(current.node, current.run),
-      requestId: current.run.attempt.idempotencyKey,
     };
   }
   /** Only a new, already durable attempt supplies a migration. No raw scope pair,
@@ -423,12 +482,13 @@ export class ExecutionRunAuthorities {
         !Number.isSafeInteger(lease.expiresAt) ||
         lease.expiresAt <= Date.now() ||
         !(lease.signal instanceof AbortSignal) ||
+        lease.signal.aborted ||
         typeof lease.assertCurrent !== 'function' ||
         typeof lease.release !== 'function'
       )
         return denied();
-      const initial = this.migrationPair(locator);
-      const assertAccess = (pair: ReturnType<typeof this.migrationPair>) => {
+      const candidate = this.migrationCurrent(locator);
+      const assertAccess = (pair: ReturnType<typeof this.migrationCurrent>) => {
         if (lease.memberId !== pair.run.actorId) return denied();
         lease.assertCurrent(pair.run.spaceId);
         this.source.assertNodeAccess(lease.memberId, pair.run.spaceId, pair.node, 'send');
@@ -440,12 +500,32 @@ export class ExecutionRunAuthorities {
           pair.run.selection.configurationId,
         );
       };
-      assertAccess(initial);
-      const bound = canonicalPayload([
-        initial.requestId,
-        fingerprint(initial.previous),
-        fingerprint(initial.run),
-      ]);
+      assertAccess(candidate);
+      const originProducer = this.source.migrationOrigin;
+      if (typeof originProducer !== 'function') return denied();
+      const query: ExecutionRunMigrationQuery = Object.freeze({
+        requestId: candidate.requestId,
+        inputFingerprint: candidate.run.attempt.payloadHash,
+        scope: candidate.scope,
+        selection: Object.freeze(structuredClone(candidate.run.selection)),
+      });
+      const initial = this.migrationPair(locator, originProducer.call(this.source, query));
+      // A reentrant metadata reader may have observed/mutated a different B target.
+      // Do not bind an origin found for a changed key, input, scope or configuration.
+      if (
+        initial.requestId !== query.requestId ||
+        initial.run.attempt.payloadHash !== query.inputFingerprint ||
+        canonicalPayload(initial.scope) !== canonicalPayload(query.scope) ||
+        canonicalPayload(initial.run.selection) !== canonicalPayload(query.selection)
+      )
+        return denied();
+      const origin: ExecutionRunMigrationOrigin = Object.freeze({
+        scope: initial.previousScope,
+        selection: Object.freeze(structuredClone(initial.previous.selection)),
+      });
+      const snapshot = (pair: ReturnType<typeof this.migrationPair>) =>
+        canonicalPayload([pair.requestId, pair.scope, pair.receipt, pair.history]);
+      const bound = snapshot(initial);
       const controller = new AbortController();
       let disposed = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -457,21 +537,17 @@ export class ExecutionRunAuthorities {
           this.fenced ||
           this.disposed ||
           this.source.signal.aborted ||
+          this.source.migrationOrigin !== originProducer ||
           controller.signal.aborted ||
           lease.signal.aborted ||
           drain?.signal.aborted ||
           Date.now() >= lease.expiresAt
         )
           return denied();
-        const latest = this.migrationPair(locator);
-        if (
-          canonicalPayload([
-            latest.requestId,
-            fingerprint(latest.previous),
-            fingerprint(latest.run),
-          ]) !== bound
-        )
-          return denied();
+        // The lookup is deliberately NOT repeated inside C's own migration slot.
+        // B history stays live; C independently rechecks its current/replay and drain.
+        const latest = this.migrationPair(locator, origin);
+        if (snapshot(latest) !== bound) return denied();
         assertAccess(latest);
         if (phase === 'prepare') return;
         const producer = this.source.migrationDrain;
