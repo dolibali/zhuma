@@ -103,10 +103,16 @@ for (const name of ['retained-inbox', 'cross-process'])
   );
 
 const nativeFixture = join(root, 'packages/dsh-adapter/tests/native-work-session-fixture.mjs');
+const nativeInputFixture = join(
+  root,
+  'packages/dsh-adapter/tests/native-work-session-input-fixture.mjs',
+);
+const workbenchFixture = join(root, 'tests/fixtures/workbench.mjs');
 const nativeSpecs = [
   'native-work-session',
   'native-work-session-read',
   'native-work-session-retention',
+  'native-work-session-input-tool',
 ];
 for (const name of nativeSpecs)
   copyFileSync(
@@ -114,13 +120,23 @@ for (const name of nativeSpecs)
     join(stage, `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
   );
 const nativeBundle = join(stage, 'packages/core/agent-loop/tests/zhuma-native-work-bundle.ts');
-let mappedProductionSource = false;
-await build({
+const mappedProductionSources = new Set();
+const productionModules = [
+  'native-work-session-storage',
+  'native-work-session-input-tool',
+  'execution-service',
+  'project-space',
+  'upstream-inputs',
+];
+const nativeBuild = await build({
   absWorkingDir: root,
-  entryPoints: [nativeFixture],
+  entryPoints: [nativeInputFixture],
   outfile: nativeBundle,
   bundle: true,
-  packages: 'external',
+  // The runtime must resolve through Vitest's single patched native alias.
+  // Ordinary product dependencies (including yaml/zod) belong in this bundle.
+  external: ['@deepseek-ai/*'],
+  metafile: true,
   platform: 'node',
   format: 'esm',
   target: 'node24',
@@ -128,18 +144,41 @@ await build({
     {
       name: 'native-production-fixture',
       setup(builder) {
-        builder.onResolve({ filter: /^\.\.\/dist\/native-work-session-storage\.js$/ }, (args) => {
-          if (resolve(args.importer) !== nativeFixture)
+        builder.onResolve({ filter: /^\.\.\/dist\/[\w-]+\.js$/ }, (args) => {
+          if (![nativeFixture, nativeInputFixture].includes(resolve(args.importer)))
             throw new Error('Unexpected native fixture importer.');
-          mappedProductionSource = true;
-          return { path: join(root, 'packages/dsh-adapter/src/native-work-session-storage.ts') };
+          const name = args.path.slice('../dist/'.length, -'.js'.length);
+          if (!productionModules.includes(name))
+            throw new Error('Unexpected fixture production module.');
+          mappedProductionSources.add(name);
+          return { path: join(root, `packages/dsh-adapter/src/${name}.ts`) };
         });
+        builder.onResolve({ filter: /^@zhuma\/(agent-core|context)$/ }, (args) => {
+          const name = args.path.slice('@zhuma/'.length);
+          mappedProductionSources.add(name);
+          return { path: join(root, `packages/${name}/src/index.ts`) };
+        });
+        builder.onResolve(
+          { filter: /^\.\.\/\.\.\/packages\/agent-core\/dist\/index\.js$/ },
+          (args) => {
+            if (resolve(args.importer) !== workbenchFixture)
+              throw new Error('Unexpected workbench fixture importer.');
+            mappedProductionSources.add('workbench-fixture-core');
+            return { path: join(root, 'packages/agent-core/src/index.ts') };
+          },
+        );
       },
     },
   ],
 });
-if (!mappedProductionSource)
-  throw new Error('Native fixture did not use the current production source.');
+for (const name of [...productionModules, 'agent-core', 'workbench-fixture-core'])
+  if (!mappedProductionSources.has(name))
+    throw new Error(`Native fixture did not use the current production source: ${name}`);
+if (Object.keys(nativeBuild.metafile.inputs).some((path) => /^packages\/[^/]+\/dist\//u.test(path)))
+  throw new Error('Native fixture bundled a stale product dist input.');
+for (const output of Object.values(nativeBuild.metafile.outputs))
+  if (output.imports.some((entry) => /^(@zhuma\/|yaml$|zod(?:\/|$))/u.test(entry.path)))
+    throw new Error('Native fixture left a product dependency external.');
 const nativeBundleSha256 = hash(nativeBundle);
 
 const phases = [];
@@ -226,7 +265,7 @@ for (const mode of ['write', 'read'])
 verify(
   'native-work-session',
   nativeSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
-  23,
+  35,
 );
 const nativeData = join(evidence, 'native-work-session-data');
 mkdirSync(nativeData, { mode: 0o700 });
@@ -251,6 +290,7 @@ writeFileSync(
       sdkTypecheck: true,
       nativeBundleSha256,
       nativeFixtureSha256: hash(nativeFixture),
+      nativeInputFixtureSha256: hash(nativeInputFixture),
       nativeSpecSha256: nativeSpecs.map((name) => ({
         name,
         sha256: hash(join(root, `packages/dsh-adapter/tests/${name}.spec.ts`)),
