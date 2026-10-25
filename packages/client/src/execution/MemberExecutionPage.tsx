@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { createIdentityApi } from '../identity/api.js';
 import { MemberSessionBoundary } from '../identity/MemberSessionBoundary.js';
 import { MemberSpaceBoundary, type MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
@@ -39,7 +47,8 @@ function MemberWork({
   const currentLifetime = useRef(lifetime);
   currentLifetime.current = lifetime;
   const alive = useRef(true);
-  useEffect(() => {
+  // Restore before child passive effects start requests during StrictMode replay.
+  useLayoutEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
