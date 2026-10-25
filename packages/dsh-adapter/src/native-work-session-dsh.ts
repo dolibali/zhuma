@@ -1,4 +1,5 @@
 import { Service, type Context } from '@deepseek-ai/cordis';
+import { isAbsolute } from 'node:path';
 import type { Agent, AgentHandle, AgentSetup } from '@deepseek-ai/dsh-agent';
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { SessionId, type UserMessage } from '@deepseek-ai/dsh-session';
@@ -23,6 +24,7 @@ import {
   type NativeWorkGrant,
   type NativeWorkRuntime,
   type NativeMigrationDrain,
+  type NativeWorkScope,
 } from './native-work-session-contract.js';
 
 const MAX_FRAME_BYTES = 262_144;
@@ -51,8 +53,47 @@ interface LiveSession {
   readonly handle: AgentHandle;
   readonly grant: NativeWorkGrant;
   readonly binding: NativeSessionBinding;
+  readonly directory: NativeDirectoryContext;
   readonly revoke: () => void;
 }
+
+/** A Host-owned live directory capability, not a request path or workspace catalog row. */
+export type NativeDshWorkingDirectory =
+  | { readonly kind: 'text-only' }
+  | {
+      readonly kind: 'local';
+      readonly scope: NativeWorkScope;
+      readonly cwd: string;
+      readonly signal: AbortSignal;
+      assertCurrent(): undefined;
+    };
+
+interface NativeDirectoryContext {
+  readonly signal: AbortSignal;
+  readonly meta: { readonly cwd: string } | undefined;
+  assert(agent?: Agent): void;
+  prepare(agent: Agent): Promise<void>;
+}
+
+/** The public working-directory service's narrow read/validation surface. */
+interface NativeDirectoryService {
+  get(session: Agent['session']): string;
+  ensure(agent: Agent, signal?: AbortSignal): Promise<string>;
+}
+
+const scopeFields = [
+  'actorId',
+  'spaceId',
+  'taskId',
+  'planId',
+  'revision',
+  'nodeId',
+  'runId',
+  'generation',
+  'segmentId',
+] as const;
+const scopeAddress = (scope: NativeWorkScope) =>
+  JSON.stringify(scopeFields.map((key) => scope[key]));
 
 export interface NativeDshComposition {
   /** Already-authorized task goal and bounded fixed-reference catalog, not source bodies. */
@@ -64,6 +105,11 @@ export interface NativeDshComposition {
 export interface NativeDshOptions {
   /** Host-owned per-page wait budget, 10–15,000ms. Does not stop native I/O. */
   readonly readTimeoutMs?: number;
+  /** From the actual Run and a currently authorized Host root, before session creation. */
+  workingDirectory(
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+  ): NativeDshWorkingDirectory | Promise<NativeDshWorkingDirectory>;
   /** Host-owned scoped composition, before native publication; never drives the Agent. */
   compose(
     ctx: Context,
@@ -207,6 +253,100 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       throw new NativeWorkError('invalid-request');
   }
 
+  private async directory(
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+    parentSignal: AbortSignal,
+  ): Promise<NativeDirectoryContext> {
+    current(grant);
+    const address = scopeAddress(binding.scope);
+    if (
+      scopeAddress(grant.scope) !== address ||
+      typeof this.options.workingDirectory !== 'function'
+    )
+      throw new NativeWorkError('unavailable');
+    let selected: NativeDshWorkingDirectory;
+    try {
+      selected = await this.options.workingDirectory(structuredClone(binding), grant);
+    } catch {
+      throw new NativeWorkError('unavailable');
+    }
+    current(grant);
+    if (parentSignal.aborted) throw new NativeWorkError('cancelled');
+    if (selected?.kind === 'text-only') {
+      const assert = () => {
+        current(grant);
+        if (parentSignal.aborted) throw new NativeWorkError('cancelled');
+        if (selected.kind !== 'text-only' || scopeAddress(grant.scope) !== address)
+          throw new NativeWorkError('configuration-mismatch');
+      };
+      assert();
+      return { signal: parentSignal, meta: undefined, assert, prepare: async () => assert() };
+    }
+    if (
+      selected?.kind !== 'local' ||
+      typeof selected.cwd !== 'string' ||
+      !isAbsolute(selected.cwd) ||
+      !(selected.signal instanceof AbortSignal) ||
+      typeof selected.assertCurrent !== 'function' ||
+      !selected.scope
+    )
+      throw new NativeWorkError('unavailable');
+    const { cwd, signal: sourceSignal, assertCurrent } = selected;
+    const signal = AbortSignal.any([parentSignal, sourceSignal]);
+    const directories = this.ctx.get('workingDirectory') as NativeDirectoryService | undefined;
+    if (typeof directories?.get !== 'function' || typeof directories.ensure !== 'function')
+      throw new NativeWorkError('unavailable');
+    const directoryIdentity: unknown = Reflect.get(directories, Service.tracker);
+    if (!directoryIdentity || typeof directoryIdentity !== 'object')
+      throw new NativeWorkError('unavailable');
+    const assert = (agent?: Agent) => {
+      current(grant);
+      if (signal.aborted) throw new NativeWorkError('cancelled');
+      if (
+        selected.kind !== 'local' ||
+        selected.cwd !== cwd ||
+        selected.signal !== sourceSignal ||
+        selected.assertCurrent !== assertCurrent ||
+        scopeAddress(selected.scope) !== address ||
+        scopeAddress(grant.scope) !== address
+      )
+        throw new NativeWorkError('configuration-mismatch');
+      try {
+        const latest = this.ctx.get('workingDirectory');
+        if (!latest || Reflect.get(latest, Service.tracker) !== directoryIdentity)
+          throw new NativeWorkError('unavailable');
+        const result: unknown = selected.assertCurrent();
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined);
+          throw new NativeWorkError('unavailable');
+        }
+        if (agent && (agent.session.header.cwd !== cwd || directories.get(agent.session) !== cwd))
+          throw new NativeWorkError('configuration-mismatch');
+      } catch (error) {
+        if (error instanceof NativeWorkError) throw error;
+        throw new NativeWorkError('unavailable');
+      }
+    };
+    assert();
+    return {
+      signal,
+      meta: { cwd },
+      assert,
+      prepare: async (agent) => {
+        assert(agent);
+        let effective: string;
+        try {
+          effective = await directories.ensure(agent, signal);
+        } catch {
+          throw new NativeWorkError(signal.aborted ? 'cancelled' : 'unavailable');
+        }
+        assert(agent);
+        if (effective !== cwd) throw new NativeWorkError('configuration-mismatch');
+      },
+    };
+  }
+
   async connect(
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
@@ -232,6 +372,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     if (prior) {
       await prior.promise;
       current(grant);
+      this.agent(binding.nativeSessionId);
       return;
     }
     const owner = resourceEpochs.get(binding.nativeSessionId);
@@ -252,7 +393,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
   private async attach(
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
-    signal: AbortSignal,
+    parentSignal: AbortSignal,
     allowCreate: boolean,
   ): Promise<void> {
     // Read-only history never reaches this factory gate. Creation/resume must
@@ -261,17 +402,24 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const id = SessionId(binding.nativeSessionId);
     // Never adopt another consumer's same-id handle or global owner session.
     if (this.ctx.agents.get(id)) throw new NativeWorkError('unavailable');
+    const directory = await this.directory(binding, grant, parentSignal);
+    const signal = directory.signal;
     const stored = await this.ctx.sessionPersistence.stat(id, { signal });
     signal.throwIfAborted();
     current(grant);
+    directory.assert();
     assertNativeInputReadOwner(binding.nativeSessionId, this);
     if (!stored && !allowCreate) throw new NativeWorkError('delivery-unknown');
     const setup: AgentSetup = async (agentCtx, unpublishedAgent) => {
       current(grant);
+      await directory.prepare(unpublishedAgent);
       assertNativeInputReadOwner(binding.nativeSessionId, this);
+      // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
+      agentCtx.tools.presentAs('native');
       const composition = await this.options.compose(agentCtx, structuredClone(binding), grant);
       signal.throwIfAborted();
       current(grant);
+      directory.assert(unpublishedAgent);
       if (
         typeof composition.context !== 'string' ||
         composition.context.length > 20_000 ||
@@ -287,6 +435,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       agentCtx.tools.guard((exec) => {
         try {
           current(grant);
+          directory.assert(unpublishedAgent);
           grant.assertCurrent('send');
           return allowed.has(exec.name) ? undefined : 'native-tool-not-authorized';
         } catch {
@@ -307,23 +456,28 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       });
       agentCtx.on('agent/pre-step', async (_payload, next) => {
         current(grant);
+        await directory.prepare(unpublishedAgent);
         grant.assertCurrent('send');
         checkToolSurface();
         const result = await next();
         current(grant);
+        directory.assert(unpublishedAgent);
         checkToolSurface();
         return result;
       });
       agentCtx.on('tools/pre-execute', async (_exec, next) => {
         current(grant);
+        await directory.prepare(unpublishedAgent);
         grant.assertCurrent('send');
         return next();
       });
       agentCtx.on('agent/request', async (_payload, next) => {
         current(grant);
+        directory.assert(unpublishedAgent);
         grant.assertCurrent('send');
         const config = await next();
         current(grant);
+        directory.assert(unpublishedAgent);
         if (
           config.provider !== binding.selection.provider ||
           config.model !== binding.selection.model
@@ -334,6 +488,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       return {
         commit: () => {
           current(grant);
+          directory.assert(unpublishedAgent);
           checkToolSurface();
         },
       };
@@ -347,6 +502,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     };
     const create: RetainedInboxCreateOptions = {
       sessionId: id,
+      ...(directory.meta ? { meta: directory.meta } : {}),
       agentOptions,
       setup,
       signal,
@@ -366,6 +522,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     }
     try {
       current(grant);
+      directory.assert(handle.agent);
     } catch (error) {
       await handle.dispose();
       throw error;
@@ -389,11 +546,12 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     this.live.set(binding.nativeSessionId, {
       handle,
       binding: structuredClone(binding),
+      directory,
       grant,
       revoke,
     });
-    grant.signal.addEventListener('abort', revoke, { once: true });
-    if (grant.signal.aborted) revoke();
+    directory.signal.addEventListener('abort', revoke, { once: true });
+    if (directory.signal.aborted) revoke();
   }
 
   private agent(sessionId: string): Agent {
@@ -401,6 +559,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const live = this.live.get(sessionId);
     if (!live) throw new NativeWorkError('not-started');
     current(live.grant);
+    live.directory.assert(live.handle.agent);
     if (this.ctx.agents.get(SessionId(sessionId)) !== live.handle.agent)
       throw new NativeWorkError('unavailable');
     return live.handle.agent;
@@ -711,7 +870,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     if (!live) return;
     this.live.delete(sessionId);
     this.touch(sessionId);
-    live.grant.signal.removeEventListener('abort', live.revoke);
+    live.directory.signal.removeEventListener('abort', live.revoke);
     const work = Promise.resolve().then(() => live.handle.dispose());
     this.disconnecting.set(sessionId, work);
     // A failed disposal is still owned/unknown, never evidence of a closed writer.

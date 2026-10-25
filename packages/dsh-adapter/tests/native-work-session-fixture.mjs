@@ -103,6 +103,7 @@ export async function boot(root, adapter = new ScriptedAdapter(), compose, runti
     await ctx.plugin(Domain, { backend: 'json' });
     ctx.llm.registerAdapter(['contract'], adapter);
     const work = await openNativeWorkSessions(ctx, {
+      workingDirectory: () => ({ kind: 'text-only' }),
       ...runtimeOptions,
       compose:
         compose ??

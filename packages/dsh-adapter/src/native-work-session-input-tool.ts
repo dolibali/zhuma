@@ -120,6 +120,92 @@ const linksOutputSchema = z.strictObject({
 });
 const outputSchema = z.union([textOutputSchema, linksOutputSchema, errorSchema]);
 type InputOutput = z.infer<typeof outputSchema>;
+
+export interface NativeAcceptedInputToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: ToolDefinition['parameters'];
+  readonly outputSchema: JsonSchemaNode;
+  readonly sourceVersion: string;
+}
+
+function freezeDefinition<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeDefinition(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+const object = (properties: Record<string, JsonSchemaNode>): JsonSchemaNode => ({
+  type: 'object',
+  properties,
+  additionalProperties: false,
+  required: Object.keys(properties),
+});
+const string: JsonSchemaNode = { type: 'string' };
+const integer: JsonSchemaNode = { type: 'integer' };
+const common = {
+  ok: { type: 'boolean', const: true } satisfies JsonSchemaNode,
+  inputRef: string,
+  source: object({
+    actorId: string,
+    spaceId: string,
+    taskId: string,
+    planId: string,
+    revision: integer,
+    downstreamNodeId: string,
+    sourceNodeId: string,
+    artifactVersionId: string,
+    version: integer,
+  }),
+  range: object({
+    offset: integer,
+    returned: integer,
+    total: integer,
+    hasMore: { type: 'boolean' },
+    nextOffset: integer,
+  }),
+};
+
+// Bump this version whenever any model-visible schema or description changes.
+const acceptedInputDefinition: NativeAcceptedInputToolDefinition = freezeDefinition({
+  name: ACCEPTED_INPUT_TOOL,
+  description:
+    'Read a bounded page from an explicitly listed accepted input. Only the catalog handle, part and range are accepted. Never fetches links or reads file bytes.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['inputRef', 'part'],
+    properties: {
+      inputRef: string,
+      part: { type: 'string', enum: ['text', 'links'] },
+      offset: integer,
+      limit: integer,
+    },
+  },
+  outputSchema: {
+    oneOf: [
+      object({
+        ok: { type: 'boolean', const: false },
+        code: { type: 'string', enum: [...errors] },
+      }),
+      object({ ...common, part: { type: 'string', const: 'text' }, text: string }),
+      object({
+        ...common,
+        part: { type: 'string', const: 'links' },
+        links: { type: 'array', items: string },
+      }),
+    ],
+  },
+  sourceVersion: '1',
+});
+
+/** Pure JSON metadata from the same declaration used by the real registration. */
+export function describeAcceptedInputTool(): NativeAcceptedInputToolDefinition {
+  return freezeDefinition(structuredClone(acceptedInputDefinition));
+}
+
 const failure = (code: InputError) => ({ ok: false as const, code });
 const bytes = (value: InputOutput) => Buffer.byteLength(JSON.stringify(value));
 const blocks = (value: InputOutput): ContentBlock[] => [
@@ -235,69 +321,15 @@ export function registerNativeAcceptedInputTool(
     lifetime.abort();
     await sessions.whenInputReadsIdle(scope);
   });
-  const object = (properties: Record<string, JsonSchemaNode>): JsonSchemaNode => ({
-    type: 'object',
-    properties,
-    additionalProperties: false,
-    required: Object.keys(properties),
-  });
-  const string: JsonSchemaNode = { type: 'string' };
-  const integer: JsonSchemaNode = { type: 'integer' };
-  const common = {
-    ok: { type: 'boolean', const: true } satisfies JsonSchemaNode,
-    inputRef: string,
-    source: object({
-      actorId: string,
-      spaceId: string,
-      taskId: string,
-      planId: string,
-      revision: integer,
-      downstreamNodeId: string,
-      sourceNodeId: string,
-      artifactVersionId: string,
-      version: integer,
-    }),
-    range: object({
-      offset: integer,
-      returned: integer,
-      total: integer,
-      hasMore: { type: 'boolean' },
-      nextOffset: integer,
-    }),
-  };
   const issuedOutputs = new Map<ToolExecution['token'], string>();
   const digest = (value: InputOutput) =>
     createHash('sha256').update(JSON.stringify(value)).digest('hex');
   ctx.tools.register({
-    name: ACCEPTED_INPUT_TOOL,
-    description:
-      'Read a bounded page from an explicitly listed accepted input. Only the catalog handle, part and range are accepted. Never fetches links or reads file bytes.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['inputRef', 'part'],
-      properties: {
-        inputRef: string,
-        part: { type: 'string', enum: ['text', 'links'] },
-        offset: integer,
-        limit: integer,
-      },
-    },
+    name: acceptedInputDefinition.name,
+    description: acceptedInputDefinition.description,
+    parameters: acceptedInputDefinition.parameters,
     output: {
-      schema: {
-        oneOf: [
-          object({
-            ok: { type: 'boolean', const: false },
-            code: { type: 'string', enum: [...errors] },
-          }),
-          object({ ...common, part: { type: 'string', const: 'text' }, text: string }),
-          object({
-            ...common,
-            part: { type: 'string', const: 'links' },
-            links: { type: 'array', items: string },
-          }),
-        ],
-      },
+      schema: acceptedInputDefinition.outputSchema,
       render: (_args, value) => blocks(outputSchema.parse(value)),
     },
     async execute(raw, exec): Promise<InputOutput> {
