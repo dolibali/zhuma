@@ -135,3 +135,30 @@ test('Host publication contract: a newer publication from an abort listener wins
   assert.equal(lifecycle.currentDirectory(), latest);
   assert.equal(lifecycle.currentDirectoryBinding().isCurrent(), true);
 });
+
+test('Host publication contract: same handle reentry preserves the newer binding through stale cleanup', () => {
+  const handle = directory();
+  const lifecycle = createHostDirectoryLifecycle(() => handle);
+  lifecycle.publish(handle);
+  const oldBinding = lifecycle.currentDirectoryBinding();
+  let latestBinding;
+  oldBinding.signal.addEventListener(
+    'abort',
+    () => {
+      lifecycle.publish(handle);
+      latestBinding = lifecycle.currentDirectoryBinding();
+    },
+    { once: true },
+  );
+
+  const staleDispose = lifecycle.publish(handle);
+  assert.ok(latestBinding);
+  assert.notEqual(latestBinding, oldBinding);
+  assert.equal(oldBinding.signal.aborted, true);
+  assert.equal(lifecycle.currentDirectoryBinding(), latestBinding);
+  assert.equal(latestBinding.isCurrent(), true);
+  staleDispose();
+  assert.equal(lifecycle.currentDirectoryBinding(), latestBinding);
+  assert.equal(latestBinding.isCurrent(), true);
+  assert.equal(latestBinding.signal.aborted, false);
+});
