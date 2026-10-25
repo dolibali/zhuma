@@ -2989,6 +2989,29 @@ html[data-platform='darwin'] .zm-shell-chrome {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
 }
+.zm-task-project-choice {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.zm-task-project-choice .zm-field {
+  width: 100%;
+}
+.zm-task-project-choice > button {
+  padding-left: 0;
+}
+.zm-project-needed {
+  display: block;
+  color: var(--zm-muted);
+  padding: 10px 0;
+}
+.zm-project-task-context {
+  margin: 0 0 16px;
+  color: var(--zm-muted);
+  font-size: 13px;
+}
 .zm-creation-participants {
   min-width: 0;
 }

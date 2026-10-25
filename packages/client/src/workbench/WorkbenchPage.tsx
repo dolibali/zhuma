@@ -73,6 +73,10 @@ export function WorkbenchPage({
   const pending = useRef<{ content: string; id: string; revision: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [taskAfterProject, setTaskAfterProject] = useState<Extract<
+    Dialog,
+    { kind: 'task' }
+  > | null>(null);
   const [templateBrowserOpen, setTemplateBrowserOpen] = useState(false);
   const [definitionEditorOpen, setDefinitionEditorOpen] = useState(false);
   const templateId = dialog?.kind === 'task' ? dialog.template?.assetId : null;
@@ -128,9 +132,25 @@ export function WorkbenchPage({
   } | null>(null);
   function openDialog(next: Dialog) {
     setDialog(structuredClone(next));
+    setTaskAfterProject(null);
     setError('');
     setDialogError('');
     pending.current = null;
+  }
+  function createProjectForTask(draft: Extract<Dialog, { kind: 'task' }>) {
+    openDialog({
+      kind: 'project',
+      value: { id: uid(), name: '', description: '', defaultParticipantIds: [] },
+    });
+    setTaskAfterProject(structuredClone(draft));
+  }
+  function closeDialog() {
+    if (dialog?.kind === 'project' && taskAfterProject) {
+      setDialog(taskAfterProject);
+      setTaskAfterProject(null);
+      setDialogError('');
+      pending.current = null;
+    } else setDialog(null);
   }
   function createCatalogItem() {
     if (activeProject) newTask(activeProject.id);
@@ -249,9 +269,27 @@ export function WorkbenchPage({
       const committed = await api.save(pending.current.revision, command, pending.current.id);
       setState(committed);
       if (command.type === 'save-project') {
-        setActiveProjectId(command.project.id);
-        setSection('projects');
-        setSearch('');
+        if (taskAfterProject) {
+          setDialog({
+            ...taskAfterProject,
+            value: {
+              ...taskAfterProject.value,
+              projectId: command.project.id,
+              participantIds: taskAfterProject.value.participantIds.length
+                ? taskAfterProject.value.participantIds
+                : defaultProjectParticipants(command.project, committed),
+            },
+          });
+          setTaskAfterProject(null);
+          setProjectFilter(command.project.id);
+        } else {
+          setActiveProjectId(command.project.id);
+          setSection('projects');
+          setSearch('');
+          setDialog(null);
+        }
+      } else {
+        setDialog(null);
       }
       if (
         expertLibrary &&
@@ -260,7 +298,6 @@ export function WorkbenchPage({
       )
         setExpertView({ search: '', role: '', selectedId: command.participant.id });
       pending.current = null;
-      setDialog(null);
       return committed;
     } catch (e) {
       setDialogError(e instanceof Error ? e.message : '保存失败，请重试。');
@@ -271,6 +308,10 @@ export function WorkbenchPage({
     }
   }
   async function createTask(draft: Extract<Dialog, { kind: 'task' }>) {
+    if (!draft.value.projectId) {
+      createProjectForTask(draft);
+      return;
+    }
     const generation = pageGeneration.current;
     const goal = draft.value.goal.trim();
     if (!goal) {
@@ -330,27 +371,22 @@ export function WorkbenchPage({
     } else setSection('tasks');
   }
   function newTask(projectId = projectFilter || state.projects[0]?.id) {
-    if (!projectId) {
-      openDialog({
-        kind: 'project',
-        value: { id: uid(), name: '', description: '', defaultParticipantIds: [] },
-      });
-      return;
-    }
     openDialog({
       kind: 'task',
       planning: 'ai',
       template: null,
       value: {
         id: uid(),
-        projectId,
+        projectId: projectId ?? '',
         title: '',
         goal: '',
         status: 'draft',
-        participantIds: defaultProjectParticipants(
-          state.projects.find((p) => p.id === projectId),
-          state,
-        ),
+        participantIds: projectId
+          ? defaultProjectParticipants(
+              state.projects.find((p) => p.id === projectId),
+              state,
+            )
+          : [],
         ownerId: null,
         updatedAt: new Date().toISOString(),
         workflows: [{ id: uid(), name: '主工作流', parentNodeId: null, nodes: [] }],
@@ -920,7 +956,7 @@ export function WorkbenchPage({
               ? '创建任务'
               : `${dialogExists ? '编辑' : '新建'}${dialog.kind === 'project' ? '项目' : dialog.kind === 'member' ? (dialog.value.kind === 'expert' ? '专家' : '成员') : '资产'}`
           }
-          close={() => !saving && setDialog(null)}
+          close={() => !saving && closeDialog()}
         >
           <form
             className={dialog.kind === 'task' ? 'zm-task-form' : 'zm-catalog-form'}
@@ -951,11 +987,16 @@ export function WorkbenchPage({
             <div className="zm-form-body">
               <fieldset className="zm-form-fields" disabled={saving}>
                 {dialog.kind === 'project' && (
-                  <ProjectFields
-                    project={dialog.value}
-                    state={state}
-                    change={(value) => setDialog({ ...dialog, value })}
-                  />
+                  <>
+                    {taskAfterProject && (
+                      <p className="zm-project-task-context">保存项目后继续创建任务。</p>
+                    )}
+                    <ProjectFields
+                      project={dialog.value}
+                      state={state}
+                      change={(value) => setDialog({ ...dialog, value })}
+                    />
+                  </>
                 )}
                 {dialog.kind === 'member' && (
                   <>
@@ -1228,16 +1269,28 @@ export function WorkbenchPage({
                       />
                     </Field>
                     <div className="zm-creation-context">
-                      <Field label="所属项目">
-                        <SingleSelect
-                          label="所属项目"
-                          value={dialog.value.projectId}
-                          onValueChange={(projectId) =>
-                            setDialog({ ...dialog, value: { ...dialog.value, projectId } })
-                          }
-                          options={state.projects.map((p) => ({ value: p.id, label: p.name }))}
-                        />
-                      </Field>
+                      <div className="zm-task-project-choice">
+                        {state.projects.length ? (
+                          <Field label="所属项目">
+                            <SingleSelect
+                              label="所属项目"
+                              value={dialog.value.projectId}
+                              onValueChange={(projectId) =>
+                                setDialog({ ...dialog, value: { ...dialog.value, projectId } })
+                              }
+                              options={state.projects.map((p) => ({ value: p.id, label: p.name }))}
+                            />
+                          </Field>
+                        ) : (
+                          <div className="zm-field">
+                            <span className="zm-field-label">所属项目</span>
+                            <span className="zm-project-needed">尚无项目</span>
+                          </div>
+                        )}
+                        <Button variant="quiet" onClick={() => createProjectForTask(dialog)}>
+                          新建项目
+                        </Button>
+                      </div>
                       <div className="zm-creation-participants">
                         <span>参与者 · {dialog.value.participantIds.length} 位</span>
                         {state.projects.find((p) => p.id === dialog.value.projectId)
@@ -1380,17 +1433,20 @@ export function WorkbenchPage({
               </div>
             )}
             <footer>
-              <Button disabled={saving} onClick={() => setDialog(null)}>
+              <Button disabled={saving} onClick={closeDialog}>
                 取消
               </Button>
               <Button
                 type={
-                  dialog.kind === 'task' && dialog.planning === 'template' && !dialog.template
+                  dialog.kind === 'task' &&
+                  (!dialog.value.projectId || (dialog.planning === 'template' && !dialog.template))
                     ? 'button'
                     : 'submit'
                 }
                 onClick={() => {
-                  if (dialog.kind === 'task' && dialog.planning === 'template' && !dialog.template)
+                  if (dialog.kind !== 'task') return;
+                  if (!dialog.value.projectId) createProjectForTask(dialog);
+                  else if (dialog.planning === 'template' && !dialog.template)
                     setTemplateBrowserOpen(true);
                 }}
                 variant="primary"
@@ -1398,15 +1454,17 @@ export function WorkbenchPage({
                 busyLabel="正在保存…"
               >
                 {dialog.kind === 'task'
-                  ? dialog.planning === 'ai'
-                    ? '生成计划'
-                    : dialog.planning === 'template' && !dialog.template
-                      ? '选择工作流'
-                      : dialog.planning === 'template' &&
-                          (Object.values(dialog.template!.roles).some((v) => !v) ||
-                            Object.values(dialog.template?.resources ?? {}).some((v) => !v))
-                        ? '保存草稿'
-                        : '创建工作流'
+                  ? !dialog.value.projectId
+                    ? '先创建项目'
+                    : dialog.planning === 'ai'
+                      ? '生成计划'
+                      : dialog.planning === 'template' && !dialog.template
+                        ? '选择工作流'
+                        : dialog.planning === 'template' &&
+                            (Object.values(dialog.template!.roles).some((v) => !v) ||
+                              Object.values(dialog.template?.resources ?? {}).some((v) => !v))
+                          ? '保存草稿'
+                          : '创建工作流'
                   : '保存'}
               </Button>
             </footer>

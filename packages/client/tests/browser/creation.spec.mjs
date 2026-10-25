@@ -9,6 +9,69 @@ async function creation(page, goal, url = '/') {
   await page.getByLabel('任务目标', { exact: true }).fill(goal);
 }
 
+test('从空项目创建任务：建项目前后保留目标和规划方式，取消可返回原草稿', async ({
+  page,
+  replay,
+}) => {
+  replay.state.projects = [];
+  replay.state.tasks = [];
+  let projectAttempts = 0;
+  replay.handlers.command = async (payload) => {
+    if (payload.command.type === 'save-project' && projectAttempts++ === 0)
+      return failure('unavailable', '项目暂时无法保存，请重试。');
+    replay.state = applyWorkbenchCommand(replay.state, payload.command);
+    return { ok: true, value: replay.state };
+  };
+  await creation(page, '整理首个项目的交付说明');
+  await expect(page.getByRole('dialog', { name: '创建任务' })).toBeVisible();
+  await expect(button(page, '先创建项目')).toBeVisible();
+  await page.getByRole('radio', { name: '从空白开始' }).check();
+  await button(page, '新建项目').click();
+  await expect(page.getByRole('dialog', { name: '新建项目' })).toContainText(
+    '保存项目后继续创建任务。',
+  );
+  await page.getByLabel('项目名称', { exact: true }).fill('首个项目');
+  await button(page, '取消').click();
+  await expect(page.getByLabel('任务目标', { exact: true })).toHaveValue('整理首个项目的交付说明');
+  await expect(page.getByRole('radio', { name: '从空白开始' })).toBeChecked();
+  await button(page, '先创建项目').click();
+  await page.getByLabel('项目名称', { exact: true }).fill('首个项目');
+  await button(page, '保存').click();
+  await expect(page.getByRole('dialog', { name: '新建项目' }).getByRole('alert')).toContainText(
+    '项目暂时无法保存',
+  );
+  await expect(page.getByLabel('项目名称', { exact: true })).toHaveValue('首个项目');
+  await button(page, '保存').click();
+  await expect(page.getByRole('dialog', { name: '创建任务' })).toBeVisible();
+  await expect(page.getByLabel('任务目标', { exact: true })).toHaveValue('整理首个项目的交付说明');
+  await expect(page.getByRole('radio', { name: '从空白开始' })).toBeChecked();
+  await expect(page.getByLabel('所属项目', { exact: true })).toContainText('首个项目');
+  await button(page, '创建工作流').click();
+  await expect(page.getByLabel('任务标题', { exact: true })).toHaveValue('整理首个项目的交付说明');
+  expect(requests(replay, 'command').map((r) => r.command.type)).toEqual([
+    'save-project',
+    'save-project',
+    'save-task',
+  ]);
+  expect(requests(replay, 'command')[0].requestId).toBe(requests(replay, 'command')[1].requestId);
+  expect(requests(replay, 'plan')).toHaveLength(0);
+  expect(replay.state.tasks[0].projectId).toBe(replay.state.projects[0].id);
+});
+
+test('普通新建项目仍进入项目详情，不打开任务草稿', async ({ page, replay }) => {
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: '工作台导航' })
+    .getByRole('button', { name: /^项目/ })
+    .click();
+  await button(page, '＋ 新建项目').click();
+  await page.getByLabel('项目名称', { exact: true }).fill('独立建项');
+  await button(page, '保存').click();
+  await expect(page.getByRole('dialog', { name: '创建任务' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '独立建项' })).toBeVisible();
+  expect(requests(replay, 'command').map((r) => r.command.type)).toEqual(['save-project']);
+});
+
 test('默认从目标创建一次并直达规划，结果可应用编辑；刷新和重开不调用模型', async ({
   page,
   replay,
