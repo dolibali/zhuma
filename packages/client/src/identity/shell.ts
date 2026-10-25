@@ -1,6 +1,7 @@
 import type { IdentityApi } from './api.js';
 import { createMemberSessionController, type MemberSessionState } from './session.js';
 import { createMemberSpaceController, type MemberSpaceState } from './spaces.js';
+import { createSpacePreferenceStore, type SpacePreferenceStore } from './space-preferences.js';
 
 export type MemberSessionController = ReturnType<typeof createMemberSessionController>;
 export type MemberSpaceController = ReturnType<typeof createMemberSpaceController>;
@@ -14,7 +15,10 @@ export interface MemberShellSnapshot {
 }
 
 /** One plugin-owned UI projection. No credentials, business data or authorization cache. */
-export function createMemberShell(api: IdentityApi) {
+export function createMemberShell(
+  api: IdentityApi,
+  preferences: SpacePreferenceStore = createSpacePreferenceStore(),
+) {
   const session = createMemberSessionController(api);
   let space: MemberSpaceController | undefined;
   let memberEpoch: number | undefined;
@@ -53,8 +57,16 @@ export function createMemberShell(api: IdentityApi) {
     else if (state.epoch !== memberEpoch) {
       clearSpace();
       memberEpoch = state.epoch;
-      const current = createMemberSpaceController(api, state.session, () =>
-        session.invalidate(state.epoch),
+      const accountId = state.session.accountId;
+      const current = createMemberSpaceController(
+        api,
+        state.session,
+        () => session.invalidate(state.epoch),
+        {
+          preferredSpaceId: preferences.read(accountId),
+          onConfirmedSelect: (id) => preferences.save(accountId, id),
+          onUnavailable: (id) => preferences.clearIfMatches(accountId, id),
+        },
       );
       space = current;
       stopSpace = current.subscribe(publish);
