@@ -211,7 +211,7 @@ export async function startAcceptanceHost(directory, config) {
         host: authority,
         origin: listener.baseURL,
         cookie: combined,
-        'x-zhuma-file-name': declare.name,
+        'x-zhuma-file-name': encodeURIComponent(declare.name),
         'x-zhuma-file-type': declare.mediaType,
         'x-zhuma-file-size': String(declare.byteSize),
         'x-zhuma-file-sha256': declare.sha256,

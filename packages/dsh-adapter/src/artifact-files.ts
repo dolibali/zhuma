@@ -47,8 +47,10 @@ export const artifactFilesDomainSpec = defineDomain({
   version: 1,
   global: { schema: GlobalSchema, initial: {} },
   tables: {
+    // One durable unit: the receipt record carries its idempotency key and the
+    // full object binding (member/space/node/fingerprint). No separate index
+    // table means a crash cannot leave a completed receipt without its key.
     files: { valueSchema: FileRecordSchema },
-    idempotency: { valueSchema: z.strictObject({ uploadId: id }) },
   },
 });
 
@@ -82,7 +84,11 @@ export interface FileUploadReceipt {
 export interface ArtifactFileStore {
   /** Read one receipt by its logical upload id. */
   get(uploadId: string): UploadFileRecord | undefined;
-  /** Read the receipt a prior request with the same idempotency key produced. */
+  /**
+   * Read the full idempotency record a prior request produced: the receipt id
+   * plus its member/space/node/fingerprint binding, so the caller re-verifies
+   * the object identity instead of trusting the raw key.
+   */
   findByIdempotencyKey(idempotencyKey: string): UploadFileRecord | undefined;
   /** Persist a completed receipt; a conflict on the id rejects. */
   put(record: UploadFileRecord): Promise<void>;
@@ -101,22 +107,24 @@ class OpenedArtifactFileStore implements ArtifactFileStore {
   }
 
   findByIdempotencyKey(idempotencyKey: string): UploadFileRecord | undefined {
-    const link = this.domain.table('idempotency').get(idempotencyKey);
-    if (link === undefined) return undefined;
-    return this.get(link.uploadId);
+    for (const [, record] of this.domain.table('files').entries()) {
+      if (record.idempotencyKey === idempotencyKey) return record;
+    }
+    return undefined;
   }
 
   async put(record: UploadFileRecord): Promise<void> {
+    // The record must parse before any write; an invalid record can never
+    // poison the domain.
+    const parsed = FileRecordSchema.safeParse(record);
+    if (!parsed.success) throw new WorkbenchError('validation', '上传记录不合法。');
     if (this.domain.table('files').get(record.uploadId) !== undefined) {
       throw new WorkbenchError('conflict', '上传回执已存在。');
     }
     if (this.countInSpace(record.spaceId) >= ARTIFACT_FILE_LIMITS.maxFilesPerSpace) {
       throw new WorkbenchError('validation', '空间的文件数量已达上限。');
     }
-    await this.domain.table('files').put(record.uploadId, record);
-    await this.domain
-      .table('idempotency')
-      .put(record.idempotencyKey, { uploadId: record.uploadId });
+    await this.domain.table('files').put(record.uploadId, parsed.data);
   }
 
   countInSpace(spaceId: string): number {

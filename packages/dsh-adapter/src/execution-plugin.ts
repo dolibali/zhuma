@@ -374,8 +374,17 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
         ) {
           return Response.json({ ok: false, error: { code: 'validation' } }, { status: 400 });
         }
+        // The name header is ASCII-safe: clients percent-encode UTF-8, the
+        // service strictly decodes. A bad encoding refuses, never garbles.
+        const rawName = headers.get('x-zhuma-file-name') ?? '';
+        let decodedName = '';
+        try {
+          decodedName = decodeURIComponent(rawName);
+        } catch {
+          return Response.json({ ok: false, error: { code: 'validation' } }, { status: 400 });
+        }
         const required = {
-          name: headers.get('x-zhuma-file-name') ?? '',
+          name: decodedName,
           mediaType: headers.get('x-zhuma-file-type') ?? '',
           sha256: headers.get('x-zhuma-file-sha256') ?? '',
           spaceId: headers.get('x-zhuma-space') ?? '',

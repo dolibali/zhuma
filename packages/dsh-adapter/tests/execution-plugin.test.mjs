@@ -100,7 +100,7 @@ async function mount(options = {}) {
         const idempotency = new Map();
         if (spec.name === 'zhuma_files') {
           assert.equal(spec.version, 1);
-          assert.deepEqual(Object.keys(spec.tables), ['files', 'idempotency']);
+          assert.deepEqual(Object.keys(spec.tables), ['files']);
           return {
             close() {},
             global: { get: () => spec.global.initial, set: async () => {} },

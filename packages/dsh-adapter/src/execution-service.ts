@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -123,6 +123,24 @@ const upstreamContentSchema = z.strictObject({
   artifactVersionId: id,
   spaceId: id,
 });
+const uploadOptionsSchema = z.strictObject({
+  declare: z.strictObject({
+    name: z.string().min(1).max(255),
+    mediaType: z.string().min(1).max(200),
+    byteSize: z.number().int().nonnegative(),
+    sha256: z
+      .string()
+      .length(64)
+      .regex(/^[0-9a-f]+$/),
+  }),
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive(),
+  nodeId: id,
+  spaceId: id,
+  idempotencyKey: id,
+});
+
 const draftLocate = {
   taskId: id,
   planId: id,
@@ -437,6 +455,50 @@ function receiptOf(record: {
     bytes: record.byteSize,
     sha256: record.sha256,
   };
+}
+
+/**
+ * Consume the declared stream and verify its real digest/length. The stored
+ * receipt is never trusted without re-checking the actual bytes.
+ */
+async function consumeAndVerify(
+  data: AsyncIterable<Uint8Array>,
+  expectedBytes: number,
+  expectedSha256: string,
+  signal?: AbortSignal,
+): Promise<ExecutionResult<string>> {
+  const hash = createHash('sha256');
+  let bytes = 0;
+  for await (const chunk of data) {
+    signal?.throwIfAborted();
+    hash.update(chunk);
+    bytes += chunk.byteLength;
+  }
+  const sha256 = hash.digest('hex');
+  if (sha256 !== expectedSha256 || bytes !== expectedBytes) return fail('digest-mismatch');
+  return { ok: true, value: sha256 };
+}
+
+/**
+ * Bounded stream: a chunk crossing the cap refuses before it reaches the
+ * provider, a real deadline applies, and aborting cancels the reader so no
+ * partial object publishes.
+ */
+async function* boundedByteStream(
+  data: AsyncIterable<Uint8Array>,
+  maxBytes: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  let total = 0;
+  const deadline = Date.now() + timeoutMs;
+  for await (const chunk of data) {
+    signal?.throwIfAborted();
+    if (Date.now() > deadline) throw new Error('upload-timeout');
+    total += chunk.byteLength;
+    if (total > maxBytes) throw new Error('file-too-large');
+    yield chunk;
+  }
 }
 
 function planKey(taskId: string, planId: string, revision: number): string {
@@ -1150,8 +1212,19 @@ export class ExecutionService {
       const fileStore = this.fileStore;
       if (!attachments || !fileStore) return fail('unavailable');
       if (!this.projectSpaceDirectory()) return fail('not-found');
-      // The member must currently hold the space and be the node's assignee on
-      // a deliverable node (ready or needs-revision).
+
+      // Strict schema before any byte is consumed (declarations and location).
+      const located = uploadOptionsSchema.safeParse({
+        declare: options.declare,
+        taskId: options.taskId,
+        planId: options.planId,
+        revision: options.revision,
+        nodeId: options.nodeId,
+        spaceId: options.spaceId,
+        idempotencyKey: options.idempotencyKey,
+      });
+      if (!located.success) return fail('validation');
+
       if (!this.scopeHeld(actor.value.spaceIds, options.spaceId)) return fail('not-found');
       const space = await this.gateSpaceScoped(
         options.taskId,
@@ -1168,6 +1241,8 @@ export class ExecutionService {
         }),
       );
       if (!current || !intactNode(current)) return fail('not-found');
+      // The plan receipt must exist: an incomplete plan refuses, like drafts.
+      if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
       const membership = planMembership(
         this.workbench.readWorkbench(),
         current.taskId,
@@ -1182,21 +1257,37 @@ export class ExecutionService {
         return fail('not-deliverable');
       }
 
-      // Idempotency: the same key returns the same receipt, but the fingerprint
-      // (declared name/size/digest) is still verified against the real bytes.
+      // Idempotency bound to the full object identity: member, space, the
+      // complete node location and the declared fingerprint must all match,
+      // and the current bytes are still verified against the declaration.
       const prior = fileStore.findByIdempotencyKey(options.idempotencyKey);
       if (prior) {
-        if (
-          prior.name !== options.declare.name ||
-          prior.byteSize !== options.declare.byteSize ||
-          prior.sha256 !== options.declare.sha256
-        ) {
-          return fail('idempotency-mismatch');
-        }
+        const sameObject =
+          prior.uploadedBy === actor.value.actorId &&
+          prior.spaceId === options.spaceId &&
+          prior.taskId === options.taskId &&
+          prior.planId === options.planId &&
+          prior.revision === options.revision &&
+          prior.nodeId === options.nodeId;
+        const sameFingerprint =
+          prior.name === options.declare.name &&
+          prior.byteSize === options.declare.byteSize &&
+          prior.sha256 === options.declare.sha256;
+        if (!sameObject || !sameFingerprint) return fail('idempotency-mismatch');
+        // The same key still verifies the current bytes: consume and compare
+        // the actual stream instead of trusting a stored receipt.
+        const verified = await consumeAndVerify(
+          options.data,
+          options.declare.byteSize,
+          options.declare.sha256,
+          options.signal,
+        );
+        if (!verified.ok) return verified;
+        if (verified.value !== prior.sha256) return fail('idempotency-mismatch');
         return { ok: true, value: receiptOf(prior) };
       }
 
-      // Budget: declared size over the cap refuses before any byte is read.
+      // Budget: the declared size over the cap refuses before any byte is read.
       if (options.declare.byteSize > ARTIFACT_FILE_LIMITS.maxFileBytes)
         return fail('file-too-large');
       if (fileStore.countInSpace(options.spaceId) >= ARTIFACT_FILE_LIMITS.maxFilesPerSpace) {
@@ -1210,17 +1301,28 @@ export class ExecutionService {
         return fail('quota-exceeded');
       }
 
-      // Stream to the upstream store; it computes the real digest and length.
+      // The stream is bounded: a chunk crossing the cap refuses before it
+      // reaches the provider, a real deadline applies, and aborting cancels
+      // the reader so no partial object publishes.
+      const bounded = boundedByteStream(
+        options.data,
+        ARTIFACT_FILE_LIMITS.maxFileBytes,
+        ARTIFACT_FILE_LIMITS.uploadTimeoutMs,
+        options.signal,
+      );
       let ref: FileAttachmentRef;
       try {
         ref = await attachments.saveFileStream({
           name: options.declare.name,
-          data: options.data,
+          data: bounded,
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
       } catch (error) {
         if (options.signal?.aborted) return fail('cancelled');
-        if (error instanceof Error && error.name === 'AttachmentError') return fail('unavailable');
+        if (error instanceof Error && error.message === 'file-too-large')
+          return fail('file-too-large');
+        if (error instanceof Error && error.message === 'upload-timeout')
+          return fail('unavailable');
         return fail('unavailable');
       }
       const digest = ref.attachmentId.startsWith('sha256:') ? ref.attachmentId.slice(7) : '';
@@ -1228,6 +1330,31 @@ export class ExecutionService {
       // diagnoses a mismatch, it never proves anything.
       if (digest !== options.declare.sha256 || ref.bytes !== options.declare.byteSize) {
         return fail('digest-mismatch');
+      }
+
+      // Re-authorize with the live record after the async I/O: a member
+      // revoked mid-upload must not receive a receipt.
+      const refreshed = this.storage.readNode(
+        nodeRecordKey({
+          taskId: options.taskId,
+          planId: options.planId,
+          revision: options.revision,
+          nodeId: options.nodeId,
+        }),
+      );
+      if (!refreshed || !intactNode(refreshed)) return fail('not-found');
+      const membershipNow = planMembership(
+        this.workbench.readWorkbench(),
+        refreshed.taskId,
+        actor.value.actorId,
+      );
+      if (membershipNow !== 'allowed') return fail('not-found');
+      const assigneeNow = refreshed.handoff.assignee;
+      if (assigneeNow.kind !== 'human' || assigneeNow.id !== actor.value.actorId) {
+        return fail('not-assignee');
+      }
+      if (refreshed.command.status !== 'ready' && refreshed.command.status !== 'needs-revision') {
+        return fail('not-deliverable');
       }
 
       const record = {
