@@ -578,8 +578,12 @@ export function TaskEditor({
           className="zm-quiet"
           onClick={() => {
             if (
-              !(dirty || busy || planning || proposal) ||
-              confirm('有未保存的内容，确定离开吗？已发送的操作仍可能完成。')
+              !(dirty || (!!api.member && (busy || planning || !!proposal))) ||
+              confirm(
+                api.member
+                  ? '有未保存的内容，确定离开吗？已发送的操作仍可能完成。'
+                  : '有未保存的修改，确定离开吗？',
+              )
             )
               close();
           }}
