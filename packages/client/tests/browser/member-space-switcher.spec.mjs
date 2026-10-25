@@ -34,6 +34,7 @@ test('space switcher: one-click menu exposes current space and keyboard switchin
   );
   await expect(page.getByRole('option', { name: '团队 · 产品研发', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox')).toBeHidden();
   await expect(picker(page)).toBeFocused();
   expect(await inspect(page, () => window.memberAccountProbe.replay.requests.length)).toBe(before);
   await page.keyboard.press('Tab');
@@ -41,8 +42,14 @@ test('space switcher: one-click menu exposes current space and keyboard switchin
   await page.keyboard.press('Shift+Tab');
   await expect(picker(page)).toBeFocused();
   await page.keyboard.press('ArrowDown');
+  // Opening schedules option focus separately. Observe both before sending navigation keys.
+  await expect(picker(page)).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('listbox')).toBeVisible();
+  await expect(page.getByRole('option', { name: '个人 · 我的空间', exact: true })).toBeFocused();
   await page.keyboard.press('End');
+  await expect(page.getByRole('option', { name: '团队 · 新建团队', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
+  await expect(page.getByRole('listbox')).toBeHidden();
   await expect(picker(page)).toContainText('新建团队');
   await expect(account(page)).toContainText('团队 · 新建团队');
   await expect(picker(page)).toBeFocused();
