@@ -5,6 +5,11 @@ import { SessionId, type UserMessage } from '@deepseek-ai/dsh-session';
 import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
 import {
+  requireNativeInboxRetention,
+  type RetainedInboxCreateOptions,
+  type RetainedInboxResumeOptions,
+} from './native-session-lifecycle.js';
+import {
   NativeWorkError,
   type NativeHistoryEvent,
   type NativeMessageMode,
@@ -170,6 +175,9 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal: AbortSignal,
     allowCreate: boolean,
   ): Promise<void> {
+    // Read-only history never reaches this factory gate. Creation/resume must
+    // inspect the real active factory; an ignored option on the old SDK is unsafe.
+    const registry = requireNativeInboxRetention(this.ctx.agents);
     const id = SessionId(binding.nativeSessionId);
     // Never adopt another consumer's same-id handle or global owner session.
     if (this.ctx.agents.get(id)) throw new NativeWorkError('unavailable');
@@ -229,9 +237,21 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         ? {}
         : { reasoningEffort: ReasoningEffortId(reasoningEffort) }),
     };
-    const handle = stored
-      ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions, setup, signal })
-      : await this.ctx.agents.create({ sessionId: id, agentOptions, setup, signal });
+    const create: RetainedInboxCreateOptions = {
+      sessionId: id,
+      agentOptions,
+      setup,
+      signal,
+      retainPendingInboxOnDispose: true,
+    };
+    const resume: RetainedInboxResumeOptions = {
+      resumeSessionId: id,
+      agentOptions,
+      setup,
+      signal,
+      retainPendingInboxOnDispose: true,
+    };
+    const handle = stored ? await registry.resume(resume) : await registry.create(create);
     if (signal.aborted) {
       await handle.dispose();
       throw new NativeWorkError('cancelled');

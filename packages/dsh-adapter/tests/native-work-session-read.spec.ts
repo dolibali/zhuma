@@ -1,17 +1,17 @@
 /** Real DSH sessions/checkpoints plus explicitly injected native I/O delays/failures. */
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
-import { boot, grant, message, ScriptedAdapter } from './native-work-session-fixture.mjs';
+import { boot, grant, message, ScriptedAdapter } from './zhuma-native-work-bundle.ts';
 
 async function setup(t, options) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-native-read-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.onTestFinished(() => rm(root, { recursive: true, force: true }));
   const host = await boot(root, new ScriptedAdapter(['native response']), undefined, options);
-  t.after(() => host.close());
+  t.onTestFinished(() => host.close());
   const current = grant();
   await host.service.send(current, message('one', 'synthetic native history'));
   const agent = host.ctx.agents.get(host.service.open(current).binding.nativeSessionId);
