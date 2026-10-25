@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { build } from 'esbuild';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({ options: { upstream: { type: 'string' } } });
@@ -101,9 +102,58 @@ for (const name of ['retained-inbox', 'cross-process'])
     join(stage, `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
   );
 
+const nativeFixture = join(root, 'packages/dsh-adapter/tests/native-work-session-fixture.mjs');
+const nativeSpecs = [
+  'native-work-session',
+  'native-work-session-read',
+  'native-work-session-retention',
+];
+for (const name of nativeSpecs)
+  copyFileSync(
+    join(root, `packages/dsh-adapter/tests/${name}.spec.ts`),
+    join(stage, `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
+  );
+const nativeBundle = join(stage, 'packages/core/agent-loop/tests/zhuma-native-work-bundle.ts');
+let mappedProductionSource = false;
+await build({
+  absWorkingDir: root,
+  entryPoints: [nativeFixture],
+  outfile: nativeBundle,
+  bundle: true,
+  packages: 'external',
+  platform: 'node',
+  format: 'esm',
+  target: 'node24',
+  plugins: [
+    {
+      name: 'native-production-fixture',
+      setup(builder) {
+        builder.onResolve({ filter: /^\.\.\/dist\/native-work-session-storage\.js$/ }, (args) => {
+          if (resolve(args.importer) !== nativeFixture)
+            throw new Error('Unexpected native fixture importer.');
+          mappedProductionSource = true;
+          return { path: join(root, 'packages/dsh-adapter/src/native-work-session-storage.ts') };
+        });
+      },
+    },
+  ],
+});
+if (!mappedProductionSource)
+  throw new Error('Native fixture did not use the current production source.');
+const nativeBundleSha256 = hash(nativeBundle);
+
 const phases = [];
-function verify(name, files, extraEnv = {}) {
+function verify(name, files, expectedTests, extraEnv = {}) {
   const report = join(evidence, `${name}.json`);
+  const env = { ...process.env };
+  for (const variable of [
+    'ZHUMA_RETENTION_TEST_ROOT',
+    'ZHUMA_RETENTION_TEST_MODE',
+    'ZHUMA_NATIVE_WORK_RETENTION_ROOT',
+    'ZHUMA_NATIVE_WORK_RETENTION_MODE',
+  ])
+    delete env[variable];
+  Object.assign(env, extraEnv);
   const result = spawnSync(
     process.execPath,
     [
@@ -120,7 +170,7 @@ function verify(name, files, extraEnv = {}) {
     ],
     {
       cwd: stage,
-      env: { ...process.env, ...extraEnv },
+      env,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
     },
@@ -132,7 +182,8 @@ function verify(name, files, extraEnv = {}) {
   if (
     !summary.success ||
     summary.numFailedTests ||
-    !summary.numPassedTests ||
+    summary.numPassedTests !== expectedTests ||
+    summary.numTotalTests !== expectedTests ||
     summary.numPendingTests
   )
     throw new Error(`${name} did not complete all required tests; see ${report}`);
@@ -156,18 +207,39 @@ writeFileSync(
   ),
 );
 console.log('Patched SDK typecheck passed');
-verify('lifecycle', [
-  'packages/core/agent-loop/tests/zhuma-retained-inbox.spec.ts',
-  'packages/core/agent-loop/tests/resource-lifecycle.spec.ts',
-  'packages/core/agent-loop/tests/cancel.spec.ts',
-]);
+verify(
+  'lifecycle',
+  [
+    'packages/core/agent-loop/tests/zhuma-retained-inbox.spec.ts',
+    'packages/core/agent-loop/tests/resource-lifecycle.spec.ts',
+    'packages/core/agent-loop/tests/cancel.spec.ts',
+  ],
+  58,
+);
 const data = join(evidence, 'session-data');
 mkdirSync(data, { mode: 0o700 });
 for (const mode of ['write', 'read'])
-  verify(`process-${mode}`, ['packages/core/agent-loop/tests/zhuma-cross-process.spec.ts'], {
+  verify(`process-${mode}`, ['packages/core/agent-loop/tests/zhuma-cross-process.spec.ts'], 1, {
     ZHUMA_RETENTION_TEST_ROOT: data,
     ZHUMA_RETENTION_TEST_MODE: mode,
   });
+verify(
+  'native-work-session',
+  nativeSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
+  23,
+);
+const nativeData = join(evidence, 'native-work-session-data');
+mkdirSync(nativeData, { mode: 0o700 });
+for (const mode of ['write', 'read'])
+  verify(
+    `native-work-process-${mode}`,
+    ['packages/core/agent-loop/tests/zhuma-native-work-session-retention.spec.ts'],
+    1,
+    {
+      ZHUMA_NATIVE_WORK_RETENTION_ROOT: nativeData,
+      ZHUMA_NATIVE_WORK_RETENTION_MODE: mode,
+    },
+  );
 writeFileSync(
   join(evidence, 'proof.json'),
   `${JSON.stringify(
@@ -177,6 +249,12 @@ writeFileSync(
       patchSha256: hash(patch),
       verifierSha256: hash(fileURLToPath(import.meta.url)),
       sdkTypecheck: true,
+      nativeBundleSha256,
+      nativeFixtureSha256: hash(nativeFixture),
+      nativeSpecSha256: nativeSpecs.map((name) => ({
+        name,
+        sha256: hash(join(root, `packages/dsh-adapter/tests/${name}.spec.ts`)),
+      })),
       fixtureSha256: ['retained-inbox', 'cross-process'].map((name) => ({
         name,
         sha256: hash(join(fixtures, `${name}.spec.ts`)),
