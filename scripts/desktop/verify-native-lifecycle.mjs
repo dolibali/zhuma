@@ -96,11 +96,37 @@ export default { ...config, cacheDir: './.zhuma-test-cache/root', test: {
 } }
 `,
 );
+writeFileSync(
+  join(stage, '.zhuma-panel-navigation.typecheck.json'),
+  JSON.stringify({
+    extends: './tsconfig.base.client.json',
+    compilerOptions: {
+      composite: false,
+      incremental: false,
+      noEmit: true,
+      jsx: 'react-jsx',
+      lib: ['ES2023', 'DOM', 'DOM.Iterable'],
+    },
+    files: ['packages/client/ui-layout/src/client/service.ts'],
+    include: [],
+    references: [
+      { path: './vendor/cordis' },
+      { path: './packages/util/brand' },
+      { path: './packages/client/store' },
+      { path: './packages/client/ui-slots' },
+    ],
+  }),
+);
 for (const name of ['retained-inbox', 'cross-process'])
   copyFileSync(
     join(fixtures, `${name}.spec.ts`),
     join(stage, `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
   );
+const navigationFixture = join(root, 'tests/fixtures/member-navigation/panel-navigation.spec.ts');
+copyFileSync(
+  navigationFixture,
+  join(stage, 'packages/client/ui-layout/tests/zhuma-panel-navigation.spec.ts'),
+);
 
 const nativeFixture = join(root, 'packages/dsh-adapter/tests/native-work-session-fixture.mjs');
 const nativeInputFixture = join(
@@ -239,6 +265,7 @@ writeFileSync(
       '-b',
       'packages/core/agent',
       'packages/core/agent-loop',
+      'packages/client/ui-slots',
       '--pretty',
       'false',
     ],
@@ -246,6 +273,28 @@ writeFileSync(
   ),
 );
 console.log('Patched SDK typecheck passed');
+writeFileSync(
+  join(evidence, 'layout-typecheck.log'),
+  command(
+    process.execPath,
+    [
+      join(upstream, 'node_modules/typescript/bin/tsc'),
+      '-p',
+      '.zhuma-panel-navigation.typecheck.json',
+      '--pretty',
+      'false',
+    ],
+    stage,
+  ),
+);
+verify(
+  'panel-navigation',
+  [
+    'packages/client/ui-layout/tests/service.client.spec.ts',
+    'packages/client/ui-layout/tests/zhuma-panel-navigation.spec.ts',
+  ],
+  13,
+);
 verify(
   'lifecycle',
   [
@@ -288,9 +337,11 @@ writeFileSync(
       patchSha256: hash(patch),
       verifierSha256: hash(fileURLToPath(import.meta.url)),
       sdkTypecheck: true,
+      layoutTypecheck: true,
       nativeBundleSha256,
       nativeFixtureSha256: hash(nativeFixture),
       nativeInputFixtureSha256: hash(nativeInputFixture),
+      navigationFixtureSha256: hash(navigationFixture),
       nativeSpecSha256: nativeSpecs.map((name) => ({
         name,
         sha256: hash(join(root, `packages/dsh-adapter/tests/${name}.spec.ts`)),

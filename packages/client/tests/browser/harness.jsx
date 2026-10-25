@@ -8,6 +8,7 @@ import { UpstreamProbe } from './upstream-probe.jsx';
 import { DeliveryDraftProbe } from './delivery-draft-probe.jsx';
 import { InboxGroupsProbe } from './inbox-groups-probe.jsx';
 import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
+import { MemberWorkbenchProbe } from './member-workbench-probe.jsx';
 import { MemberLoginProbe } from './member-login-probe.jsx';
 import { MemberSpacesProbe } from './member-spaces-probe.jsx';
 import { MemberExecutionSpacesProbe } from './member-execution-spaces-probe.jsx';
@@ -74,6 +75,8 @@ const content = new URL(location.href).searchParams.has('member-account') ? (
   <MemberExecutionSpacesProbe />
 ) : new URL(location.href).searchParams.has('member-spaces') ? (
   <MemberSpacesProbe />
+) : new URL(location.href).searchParams.has('member-workbench') ? (
+  <MemberWorkbenchProbe appearance={appearance} />
 ) : new URL(location.href).searchParams.has('member-execution') ? (
   <MemberExecutionPage />
 ) : new URL(location.href).searchParams.has('execution-client') ? (

@@ -9,7 +9,8 @@ import {
   type TeamAsset,
   type WorkbenchCommand,
 } from '@zhuma/agent-core';
-import type { WorkbenchApi } from './api.js';
+import type { WorkbenchApi, WorkbenchWriteIntent } from './api.js';
+import { useUnsavedChanges } from './UnsavedChanges.js';
 import { Field, Modal, ParticipantSelect, MultiSelect } from './controls.js';
 import { TaskEditor, type InitialPlanning } from './TaskEditor.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
@@ -58,11 +59,13 @@ export function WorkbenchPage({
   initialSection,
   appearance,
   expertLibrary = false,
+  openWork,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
   appearance: AppearanceStore;
   expertLibrary?: boolean;
+  openWork?: () => void;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
@@ -71,9 +74,18 @@ export function WorkbenchPage({
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [dialogError, setDialogError] = useState('');
-  const pending = useRef<{ content: string; id: string; revision: number } | null>(null);
+  const pending = useRef<{
+    content: string;
+    id: string;
+    revision: number;
+    intent: WorkbenchWriteIntent | undefined;
+  } | null>(null);
+  const member = api.member;
+  const capabilities = member?.capabilities();
+  const dialogBaseline = useRef('');
   const [saving, setSaving] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  useUnsavedChanges(saving || (!!dialog && JSON.stringify(dialog) !== dialogBaseline.current));
   const [taskAfterProject, setTaskAfterProject] = useState<Extract<
     Dialog,
     { kind: 'task' }
@@ -132,6 +144,7 @@ export function WorkbenchPage({
     versionId: string;
   } | null>(null);
   function openDialog(next: Dialog) {
+    dialogBaseline.current = JSON.stringify(next);
     setDialog(structuredClone(next));
     setTaskAfterProject(null);
     setError('');
@@ -211,6 +224,21 @@ export function WorkbenchPage({
             ? '新建专家'
             : '新建资产'
           : '创建任务';
+  const canCreate =
+    !member ||
+    (activeProject || section === 'tasks'
+      ? capabilities?.createTask || (!state.projects.length && capabilities?.createProject)
+      : section === 'projects' && capabilities?.createProject);
+  function initialParticipants(project: Project | undefined, current = state) {
+    if (!member && !project) return [];
+    const ids = defaultProjectParticipants(project, current);
+    const self =
+      member &&
+      current.participants.find(
+        (p) => p.id === member.actorId && p.kind === 'human' && p.available,
+      );
+    return self ? [...new Set([self.id, ...ids])] : ids;
+  }
   function originInfo(value: Participant | TeamAsset, kind: 'asset' | 'expert') {
     if (!value.origin) return null;
     return (
@@ -264,10 +292,28 @@ export function WorkbenchPage({
     setSaving(true);
     setDialogError('');
     const content = JSON.stringify(command);
-    if (pending.current?.content !== content)
-      pending.current = { content, id: uid(), revision: state.revision };
+    if (pending.current?.content !== content) {
+      const intent: WorkbenchWriteIntent | undefined =
+        command.type === 'save-project'
+          ? state.projects.some((p) => p.id === command.project.id)
+            ? 'update-project'
+            : 'create-project'
+          : command.type === 'save-task'
+            ? command.task.status === 'ready'
+              ? 'confirm-task'
+              : state.tasks.some((t) => t.id === command.task.id)
+                ? 'update-task'
+                : 'create-task'
+            : undefined;
+      pending.current = { content, id: uid(), revision: state.revision, intent };
+    }
     try {
-      const committed = await api.save(pending.current.revision, command, pending.current.id);
+      const committed = await api.save(
+        pending.current.revision,
+        command,
+        pending.current.id,
+        pending.current.intent,
+      );
       setState(committed);
       if (command.type === 'save-project') {
         if (taskAfterProject) {
@@ -278,7 +324,7 @@ export function WorkbenchPage({
               projectId: command.project.id,
               participantIds: taskAfterProject.participantIdsEdited
                 ? taskAfterProject.value.participantIds
-                : defaultProjectParticipants(command.project, committed),
+                : initialParticipants(command.project, committed),
             },
           });
           setTaskAfterProject(null);
@@ -373,13 +419,19 @@ export function WorkbenchPage({
     } else setSection('tasks');
   }
   function newTask(projectId = projectFilter || state.projects[0]?.id) {
+    if (
+      member &&
+      !capabilities?.createTask &&
+      !(!state.projects.length && capabilities?.createProject)
+    )
+      return;
     const availableProjectId = state.projects.some((project) => project.id === projectId)
       ? projectId
       : undefined;
     openDialog({
       kind: 'task',
       participantIdsEdited: false,
-      planning: 'ai',
+      planning: member && !capabilities?.planning ? 'manual' : 'ai',
       template: null,
       value: {
         id: uid(),
@@ -387,13 +439,10 @@ export function WorkbenchPage({
         title: '',
         goal: '',
         status: 'draft',
-        participantIds: availableProjectId
-          ? defaultProjectParticipants(
-              state.projects.find((p) => p.id === availableProjectId),
-              state,
-            )
-          : [],
-        ownerId: null,
+        participantIds: initialParticipants(
+          state.projects.find((p) => p.id === availableProjectId),
+        ),
+        ownerId: member?.actorId ?? null,
         updatedAt: new Date().toISOString(),
         workflows: [{ id: uid(), name: '主工作流', parentNodeId: null, nodes: [] }],
       },
@@ -527,6 +576,7 @@ export function WorkbenchPage({
           appearance={appearance}
           backLabel={activeProject ? '项目' : '任务清单'}
           {...(initialPlanning ? { initialPlanning } : {})}
+          {...(openWork ? { openWork } : {})}
         />
       </div>
     );
@@ -554,17 +604,21 @@ export function WorkbenchPage({
             <Button variant="quiet" onClick={() => void refresh()}>
               刷新
             </Button>
-            {activeProject && (
+            {activeProject && (!member || capabilities?.createProject) && (
               <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
                 编辑项目
               </Button>
             )}
-            {section === 'assets' && (
+            {!member && section === 'assets' && (
               <Button onClick={() => setImportOpen(true)}>
                 {expertLibrary ? '导入专家' : '导入定义'}
               </Button>
             )}
-            <Button variant="primary" onClick={createCatalogItem}>
+            <Button
+              variant="primary"
+              disabled={!!member && (loading || saving || !canCreate)}
+              onClick={createCatalogItem}
+            >
               ＋ {createLabel}
             </Button>
           </div>
@@ -572,28 +626,30 @@ export function WorkbenchPage({
         {!expertLibrary && (
           <div className="zm-page-bar">
             <nav className="zm-tabs" aria-label="工作台导航">
-              {(Object.keys(labels) as Section[]).map((s) => (
-                <button
-                  key={s}
-                  aria-current={s === section ? 'page' : undefined}
-                  onClick={() => {
-                    setSection(s);
-                    setSearch('');
-                    setActiveProjectId(null);
-                  }}
-                >
-                  {labels[s]}
-                  <span>
-                    {s === 'projects'
-                      ? state.projects.length
-                      : s === 'tasks'
-                        ? state.tasks.length
-                        : s === 'members'
-                          ? state.participants.length
-                          : catalog.length}
-                  </span>
-                </button>
-              ))}
+              {(Object.keys(labels) as Section[])
+                .filter((s) => !member || s === 'projects' || s === 'tasks')
+                .map((s) => (
+                  <button
+                    key={s}
+                    aria-current={s === section ? 'page' : undefined}
+                    onClick={() => {
+                      setSection(s);
+                      setSearch('');
+                      setActiveProjectId(null);
+                    }}
+                  >
+                    {labels[s]}
+                    <span>
+                      {s === 'projects'
+                        ? state.projects.length
+                        : s === 'tasks'
+                          ? state.tasks.length
+                          : s === 'members'
+                            ? state.participants.length
+                            : catalog.length}
+                    </span>
+                  </button>
+                ))}
             </nav>
             {section === 'tasks' && (
               <div className="zm-filter">
@@ -712,6 +768,9 @@ export function WorkbenchPage({
             openTask={setActiveTaskId}
             createTask={() => newTask(activeProject.id)}
             edit={() => openDialog({ kind: 'project', value: activeProject })}
+            canCreateTask={!member || capabilities?.createTask === true}
+            canEdit={!member || capabilities?.createProject === true}
+            resourcesConnected={!member || capabilities?.resources === 'authorized'}
           />
         )}
         {section === 'projects' && !activeProject && !!projects.length && (
@@ -739,10 +798,15 @@ export function WorkbenchPage({
                   {state.tasks.filter((t) => t.projectId === p.id).length} 项任务
                 </span>
                 <div className="zm-directory-actions">
-                  <Button variant="quiet" onClick={() => openDialog({ kind: 'project', value: p })}>
+                  <Button
+                    variant="quiet"
+                    disabled={!!member && !capabilities?.createProject}
+                    onClick={() => openDialog({ kind: 'project', value: p })}
+                  >
                     编辑
                   </Button>
                   <Button
+                    disabled={!!member && !capabilities?.createTask}
                     onClick={() => {
                       setActiveProjectId(p.id);
                       setProjectTab('work');
@@ -821,7 +885,7 @@ export function WorkbenchPage({
                     清除筛选
                   </button>
                 ) : (
-                  <button onClick={() => newTask()} className="primary">
+                  <button onClick={() => newTask()} className="primary" disabled={!canCreate}>
                     创建任务
                   </button>
                 )}
@@ -949,7 +1013,7 @@ export function WorkbenchPage({
                 清除筛选
               </Button>
             ) : (
-              <Button variant="primary" onClick={createCatalogItem}>
+              <Button variant="primary" onClick={createCatalogItem} disabled={!canCreate}>
                 {createLabel}
               </Button>
             )}
@@ -1279,7 +1343,7 @@ export function WorkbenchPage({
                       <div className="zm-task-project-choice">
                         <div className="zm-creation-field-heading">
                           <span>所属项目</span>
-                          {!!state.projects.length && (
+                          {!!state.projects.length && (!member || capabilities?.createProject) && (
                             <Button variant="quiet" onClick={() => createProjectForTask(dialog)}>
                               新建项目
                             </Button>
@@ -1308,7 +1372,7 @@ export function WorkbenchPage({
                               aria-label="使用项目默认参与者"
                               onClick={() =>
                                 changeTaskParticipants(
-                                  defaultProjectParticipants(
+                                  initialParticipants(
                                     state.projects.find((p) => p.id === dialog.value.projectId),
                                     state,
                                   ),
@@ -1335,6 +1399,12 @@ export function WorkbenchPage({
                           type="radio"
                           name="planning-mode"
                           value="ai"
+                          disabled={
+                            !!member &&
+                            (!capabilities?.planning ||
+                              (dialog.value.ownerId !== null &&
+                                dialog.value.ownerId !== member.actorId))
+                          }
                           checked={dialog.planning === 'ai'}
                           onChange={() => setDialog({ ...dialog, planning: 'ai' })}
                         />
@@ -1342,21 +1412,23 @@ export function WorkbenchPage({
                           <strong>AI 规划</strong>
                         </span>
                       </label>
-                      <label>
-                        <input
-                          type="radio"
-                          name="planning-mode"
-                          value="template"
-                          checked={dialog.planning === 'template'}
-                          onChange={() => {
-                            setDialog({ ...dialog, planning: 'template' });
-                            if (!dialog.template) setTemplateBrowserOpen(true);
-                          }}
-                        />
-                        <span>
-                          <strong>使用工作流</strong>
-                        </span>
-                      </label>
+                      {!member && (
+                        <label>
+                          <input
+                            type="radio"
+                            name="planning-mode"
+                            value="template"
+                            checked={dialog.planning === 'template'}
+                            onChange={() => {
+                              setDialog({ ...dialog, planning: 'template' });
+                              if (!dialog.template) setTemplateBrowserOpen(true);
+                            }}
+                          />
+                          <span>
+                            <strong>使用工作流</strong>
+                          </span>
+                        </label>
+                      )}
                       <label>
                         <input
                           type="radio"
@@ -1428,6 +1500,8 @@ export function WorkbenchPage({
                       change={(ids) =>
                         setDialog({
                           ...dialog,
+                          planning:
+                            member && ids[0] !== member.actorId ? 'manual' : dialog.planning,
                           value: { ...dialog.value, ownerId: ids[0] ?? null },
                         })
                       }

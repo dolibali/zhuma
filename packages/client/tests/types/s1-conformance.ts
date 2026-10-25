@@ -2,6 +2,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
 import type { Workbench } from '@zhuma/agent-core';
 import type { ExecutionNodeView } from '@zhuma/dsh-adapter';
+import type {
+  MemberWorkbenchSnapshot as HostMemberSnapshot,
+  MemberWorkbenchCommand as HostMemberCommand,
+  MemberWorkbenchPlan as HostMemberPlan,
+  MemberWorkbenchPlanValue as HostMemberPlanValue,
+} from '@zhuma/dsh-adapter';
 import {
   DeliveryPanel,
   ExecutionWorkspace,
@@ -21,6 +27,11 @@ import {
   type StartablePlanWire,
   type StartPlanDraft,
   type StartPlanValue as ClientStartPlanValue,
+  type MemberWorkbenchSnapshot,
+  type MemberWorkbenchCommand,
+  type MemberWorkbenchCommandInput,
+  type MemberWorkbenchPlanValue,
+  type MemberWorkbenchApi,
 } from '../../dist/index.js';
 import { apply as applyExecution } from '../../../dsh-adapter/dist/execution-plugin.js';
 import type {
@@ -54,6 +65,16 @@ type Both<A, B> =
   Assignable<A, B> extends true ? (Assignable<B, A> extends true ? true : false) : false;
 type Assert<T extends true> = T;
 type PropsOf<T> = T extends (props: infer P) => unknown ? P : never;
+
+export type MemberSnapshotBoth = Assert<Both<MemberWorkbenchSnapshot, HostMemberSnapshot>>;
+export type MemberCommandBoth = Assert<Both<MemberWorkbenchCommand, HostMemberCommand['command']>>;
+export type MemberCommandInputBoth = Assert<
+  Both<MemberWorkbenchCommandInput & { spaceId: string }, HostMemberCommand>
+>;
+export type MemberPlanBoth = Assert<
+  Both<Parameters<MemberWorkbenchApi['plan']>[0] & { spaceId: string }, HostMemberPlan>
+>;
+export type MemberPlanValueBoth = Assert<Both<MemberWorkbenchPlanValue, HostMemberPlanValue>>;
 
 export const createApiMatches = createExecutionApi satisfies CreateExecutionApi;
 type WithRevision<P extends { api: ExecutionApi }> = Omit<P, 'api'> & { api: ClientExecutionApi };

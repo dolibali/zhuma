@@ -787,3 +787,121 @@ index dd8d09e6..c8e29237 100644
      const receiver = getTraceable(ownerCtx, target)
      // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
      return Reflect.apply(target.resume, receiver, [ownerCtx, options])
+diff --git a/packages/client/ui-layout/src/client/index.ts b/packages/client/ui-layout/src/client/index.ts
+index 3948c198..545406eb 100644
+--- a/packages/client/ui-layout/src/client/index.ts
++++ b/packages/client/ui-layout/src/client/index.ts
+@@ -27,7 +27,7 @@ import { ThemePresenter } from './theme-presenter.ts'
+ // OwnerShare contracts below are the render-side halves registrants compose
+ // against; the frame components and the store factory are package-internal.
+ export { LayoutController } from './service.ts'
+-export type { ILayout, MainPanelId, PanelInfo } from './service.ts'
++export type { ILayout, MainPanelId, PanelInfo, PanelSelectionGuard } from './service.ts'
+ 
+ /** Selector hook over root-scoped panel selection. */
+ export type UsePanelInfo = SnapshotSelectorHook<PanelInfo>
+diff --git a/packages/client/ui-layout/src/client/service.ts b/packages/client/ui-layout/src/client/service.ts
+index 22dd77a4..bd2e4645 100644
+--- a/packages/client/ui-layout/src/client/service.ts
++++ b/packages/client/ui-layout/src/client/service.ts
+@@ -24,6 +24,13 @@ export interface PanelInfo {
+ /** The layout store's bound action set (framework-baked, draft params peeled). */
+ export type PanelActions = BoundActions<ReturnType<typeof createLayoutStore>>
+ 
++/** Presentation-only guard; proceed is valid once within this navigation's lifetime. */
++export type PanelSelectionGuard = (
++  target: MainPanelId | null,
++  proceed: () => void,
++  signal: AbortSignal,
++) => void
++
+ /** Panel navigation and geometry actions exposed through ctx.layout. */
+ export interface ILayout {
+   /** Selected central panel from the same root store used by `usePanelInfo`. */
+@@ -34,6 +41,12 @@ export interface ILayout {
+    * @throws if the selected main key is not registered; preserves the current selection.
+    */
+   selectPanel(panelId: MainPanelId | null): void
++  /**
++   * Defer a panel selection until the current view permits leaving.
++   * @param guard - receives the target, one-use continuation, and navigation lifetime.
++   * @returns disposer; removing a guard invalidates pending selections.
++   */
++  registerPanelGuard?(guard: PanelSelectionGuard): () => void
+   /**
+    * Start an asynchronous navigation, superseding any earlier pending navigation.
+    * @returns a signal aborted by the next navigation or layout disposal; check it before committing UI state.
+@@ -56,6 +69,8 @@ export interface ILayout {
+ /** Cross-plugin panel-action face (ctx.layout). */
+ export class LayoutController implements ILayout {
+   private navigation = new AbortController()
++  private readonly panelGuards = new Set<PanelSelectionGuard>()
++  private disposed = false
+ 
+   /**
+    * @param panels - actions of the instance shared with the root entry.
+@@ -73,12 +88,52 @@ export class LayoutController implements ILayout {
+     if (panelId !== null && !this.hasMainPanel(panelId)) {
+       throw new Error(`layout.selectPanel: main panel "${panelId}" is not registered`)
+     }
+-    this.navigation.abort()
+-    this.panels.selectPanel(panelId)
++    const signal = this.beginNavigation()
++    const guards = [...this.panelGuards]
++    const visit = (index: number): void => {
++      if (signal.aborted || this.disposed) return
++      const guard = guards[index]
++      if (guard === undefined) {
++        // A deferred target may have disappeared while its view asked the user.
++        if (panelId === null || this.hasMainPanel(panelId)) this.panels.selectPanel(panelId)
++        return
++      }
++      let invoking = true
++      let requested = false
++      const proceed = (): void => {
++        if (requested || signal.aborted || this.disposed) return
++        requested = true
++        if (!invoking) visit(index + 1)
++      }
++      try {
++        guard(panelId, proceed, signal)
++      } catch (_error: unknown) {
++        // A failed guard cannot discard the current view, even after requesting proceed.
++        this.navigation.abort()
++        return
++      }
++      invoking = false
++      if (requested) visit(index + 1)
++    }
++    visit(0)
++  }
++
++  /**
++   * Install one presentation guard in registration order.
++   * @param guard - decides whether and when to continue the selection.
++   * @returns idempotent disposer that invalidates outstanding continuations.
++   */
++  registerPanelGuard(guard: PanelSelectionGuard): () => void {
++    if (this.disposed) throw new Error('layout is disposed')
++    this.panelGuards.add(guard)
++    return () => {
++      if (this.panelGuards.delete(guard)) this.navigation.abort()
++    }
+   }
+ 
+   /** @returns the new pending navigation's cancellation signal. */
+   beginNavigation(): AbortSignal {
++    if (this.disposed) return this.navigation.signal
+     this.navigation.abort()
+     this.navigation = new AbortController()
+     return this.navigation.signal
+@@ -86,7 +141,9 @@ export class LayoutController implements ILayout {
+ 
+   /** Invalidate pending navigations when the layout owner is unloaded. */
+   dispose(): void {
++    this.disposed = true
+     this.navigation.abort()
++    this.panelGuards.clear()
+   }
+ 
+   /** Toggle the sidebar panel (closed ⟷ contract default width). */

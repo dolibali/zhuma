@@ -33,7 +33,11 @@ const imported = {
   ],
 };
 
-async function start(directory, config, { deferIdentity = false, skipRemoteAccess = false } = {}) {
+async function start(
+  directory,
+  config,
+  { deferIdentity = false, skipRemoteAccess = false, noModels = false } = {},
+) {
   const child = fork(
     fileURLToPath(new URL('./fixtures/s1a-host-process.mjs', import.meta.url)),
     [],
@@ -104,6 +108,7 @@ async function start(directory, config, { deferIdentity = false, skipRemoteAcces
       identityImport,
       deferIdentity,
       skipRemoteAccess,
+      noModels,
       ...(spaceDirectoryImport === undefined ? {} : { spaceDirectoryImport }),
       ...(process.env.S1A_HOST_MODULE ? { modulePath: resolve(process.env.S1A_HOST_MODULE) } : {}),
     },
@@ -841,6 +846,201 @@ test(
         projectAndSpaceDiffer: true,
         revocationSurvivesRestart: true,
         failedCloseAndStaleLookupClosed: true,
+      });
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'normal member Host assembly: manual project/task save and confirmation work without any model service',
+  { timeout: 45000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-member-entry-'));
+    let host;
+    const config = {
+      deploymentMode: 'multi-member',
+      identityImport: imported,
+      spaceDirectoryImport: {
+        spaces: [{ id: 'space-collaboration', kind: 'team', name: '协作空间' }],
+        memberships: [{ spaceId: 'space-collaboration', accountId: 'member-a' }],
+      },
+    };
+    try {
+      host = await start(directory, config, { noModels: true });
+      await host.wait('ready');
+      let memberCookie = `${host.cookie}; ${await login(host)}`;
+      const spaceId = 'space-collaboration';
+      const rpc = async (
+        endpoint,
+        payload,
+        credential = memberCookie,
+        channel = 'zhuma-member',
+      ) => {
+        const response = await post(
+          host,
+          `/api/${channel}/${endpoint}`,
+          {
+            type: 'client-request',
+            rpcId: randomUUID(),
+            method: `${channel}/${endpoint}`,
+            payload,
+          },
+          credential,
+        );
+        assert.equal(response.status, 200);
+        return (await response.json()).result;
+      };
+      let result = await rpc('snapshot', { spaceId });
+      assert.equal(result.ok, true);
+      assert.equal(result.value.actorId, 'member-a');
+      assert.equal(result.value.model, null);
+      assert.equal(result.value.capabilities.planning, false);
+      assert.equal(result.value.capabilities.createProject, true);
+      assert.deepEqual(result.value.state.projects, []);
+      assert.deepEqual(
+        result.value.state.participants.map(({ id }) => id),
+        ['member-a'],
+      );
+      let revision = result.value.state.revision;
+      const save = async (command) => {
+        const input = { spaceId, expectedRevision: revision, requestId: randomUUID(), command };
+        const reply = await rpc('command', input);
+        assert.equal(reply.ok, true, JSON.stringify(reply));
+        // Lost acknowledgments retry the identical command instead of reclassifying create as update.
+        const retried = await rpc('command', input);
+        assert.deepEqual(retried, reply);
+        assert.deepEqual(reply.value.state.receipts, []);
+        revision = reply.value.state.revision;
+        return reply.value;
+      };
+      const project = {
+        id: 'new-member-project',
+        name: '报表导出',
+        description: '优化报表导出体验',
+      };
+      await save({ type: 'create-project', project });
+      await save({
+        type: 'update-project',
+        project: { ...project, description: '整理字段与导出格式' },
+      });
+      const task = {
+        id: 'new-member-task',
+        projectId: project.id,
+        title: '确认报表导出字段',
+        goal: '整理导出字段与展示格式',
+        participantIds: ['member-a'],
+        ownerId: 'member-a',
+        workflows: [
+          {
+            id: 'main',
+            name: '主工作流',
+            parentNodeId: null,
+            nodes: [
+              {
+                id: 'spec',
+                title: '整理导出字段',
+                description: '',
+                assigneeId: 'member-a',
+                reviewerIds: [],
+                reviewRequired: false,
+                dependsOn: [],
+                skillIds: [],
+                mcpIds: [],
+                input: '现有报表',
+                output: '导出字段说明',
+                rationale: '',
+                position: { x: 0, y: 0 },
+              },
+            ],
+          },
+        ],
+      };
+      await save({ type: 'create-task', task });
+      task.goal = '整理导出字段，时间统一使用北京时间';
+      const draft = await save({ type: 'update-task', task });
+      const failedPlan = await rpc('plan', {
+        spaceId,
+        taskId: task.id,
+        expectedRevision: revision,
+        requestId: randomUUID(),
+        instruction: '拆成两个步骤',
+      });
+      assert.equal(failedPlan.ok, false);
+      assert.equal(failedPlan.error.code, 'model-unavailable');
+      const afterFailure = await rpc('snapshot', { spaceId });
+      assert.deepEqual(afterFailure.value.state, draft.state);
+      const confirmed = await save({ type: 'confirm-task', taskId: task.id });
+      assert.equal(confirmed.state.tasks[0].status, 'ready');
+      const plan = confirmed.state.appliedPlans[0];
+      assert.equal(plan.taskId, task.id);
+      const startable = await rpc('startable', { spaceId }, memberCookie, 'zhuma-exec');
+      assert.equal(startable.ok, true);
+      assert.equal(startable.value.plans.length, 1);
+      assert.equal(startable.value.plans[0].planId, plan.id);
+      assert.equal((await rpc('snapshot', { spaceId: 'hidden-space' })).ok, false);
+      for (const endpoint of LEGACY_OWNER_ROUTES)
+        assert.equal(
+          (await post(host, `/api/zhuma/${endpoint}`, envelope(endpoint, {}), memberCookie)).status,
+          404,
+        );
+      const inspected = await host.act('inspect');
+      for (const name of ['zhuma_workbench', 'zhuma_asset_packages', 'zhuma_member_operations'])
+        assert.equal(inspected.opened.filter((entry) => entry === name).length, 1);
+      assert.equal(inspected.modelCalls, 0);
+      await host.act('holdWorkbenchWrite');
+      const held = rpc('command', {
+        spaceId,
+        expectedRevision: revision,
+        requestId: randomUUID(),
+        command: {
+          type: 'create-project',
+          project: { id: 'drained-project', name: '已接纳的写入', description: '' },
+        },
+      });
+      await host.wait('workbench-write-pending');
+      let disposed = false;
+      const disposing = host.act('unmountWorkbench').then(() => {
+        disposed = true;
+      });
+      // The real plugin disposer must wait for the held storage invocation.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(disposed, false);
+      const duringClose = await host.act('inspect');
+      assert.equal(duringClose.domainCloseOrder.includes('zhuma_workbench'), false);
+      assert.equal(duringClose.domainCloseOrder.includes('zhuma_member_operations'), false);
+      await host.act('releaseWorkbenchWrite');
+      const cancelled = await held;
+      assert.equal(cancelled.ok, false);
+      assert.equal(cancelled.error.code, 'cancelled');
+      await disposing;
+      const afterClose = (await host.act('inspect')).domainCloseOrder;
+      assert.ok(afterClose.indexOf('zhuma_member_operations') >= 0);
+      assert.ok(
+        afterClose.indexOf('zhuma_workbench') > afterClose.indexOf('zhuma_member_operations'),
+      );
+      await host.close();
+      host = null;
+      host = await start(directory, { deploymentMode: 'multi-member' }, { noModels: true });
+      await host.wait('ready');
+      memberCookie = `${host.cookie}; ${await login(host)}`;
+      result = await rpc('snapshot', { spaceId });
+      assert.equal(result.ok, true);
+      assert.equal(result.value.state.tasks[0].goal, task.goal);
+      assert.equal(result.value.state.appliedPlans[0].id, plan.id);
+      assert.equal(result.value.state.revision, revision + 1);
+      assert.ok(result.value.state.projects.some((project) => project.id === 'drained-project'));
+      proof.cases.push({
+        name: 'normal-member-create-save-confirm',
+        passed: true,
+        noModelService: true,
+        explicitPlanFailurePreservesDraft: true,
+        sameBodyRetry: true,
+        confirmedPlanDiscoverable: true,
+        sameDiskReopen: true,
+        drainsAcceptedWrites: true,
       });
     } finally {
       if (host) await host.close();
