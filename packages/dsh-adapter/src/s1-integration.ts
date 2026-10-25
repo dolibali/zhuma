@@ -17,6 +17,7 @@ import type {
 import type { ProjectSpaceDirectory } from './project-space.js';
 import type { OpenedSpaceDirectoryHandle, SpaceDirectoryImport } from './space-directory.js';
 import type { RevisionView } from './revision-view.js';
+import type { ExecutionPluginConfig } from './execution-plugin.js';
 export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 export type {
   AuthorizedSpace,
@@ -90,6 +91,7 @@ export type ExecutionInject = readonly ['connection', 'storageDomain'];
 export interface ExecutionApplyOptions {
   readWorkbench(): Workbench;
   readonly projectSpaces?: ProjectSpaceDirectory;
+  publishRunService?: NonNullable<ExecutionPluginConfig['publishRunService']>;
 }
 export type ApplyExecution = (ctx: Context, options: ExecutionApplyOptions) => Promise<void>;
 /**

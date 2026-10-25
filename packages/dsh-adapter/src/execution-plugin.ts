@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { ExecutionService, type ExecutionStorage, type PlanReceipt } from './execution-service.js';
 import { resolveMember } from './member-session.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
+import { readExecutionRunState } from './execution-run-state.js';
+import { executionRunGlobalSchema } from './execution-run-protocol.js';
 
 const ENDPOINTS = [
   'start-plan',
@@ -60,7 +62,15 @@ function isNodeRecord(value: unknown): value is ExecutionNodeRecord {
   );
 }
 
-const nodeSchema = z.custom<ExecutionNodeRecord>((value) => isNodeRecord(value));
+const nodeSchema = z.custom<ExecutionNodeRecord>((value) => {
+  if (!isNodeRecord(value)) return false;
+  try {
+    readExecutionRunState(value);
+    return true;
+  } catch {
+    return false;
+  }
+});
 const planSchema = z.strictObject({
   idempotencyKey: z.string().min(1),
   fingerprint: z.string().min(1),
@@ -70,7 +80,7 @@ const domainSpec = {
   name: 'zhuma_execution',
   version: 1,
   global: {
-    schema: z.strictObject({ schemaVersion: z.literal(1) }),
+    schema: executionRunGlobalSchema,
     initial: { schemaVersion: 1 as const },
   },
   tables: {
@@ -90,6 +100,10 @@ export interface ExecutionPluginConfig {
    * or treat a project id as a space id.
    */
   readonly projectSpaces?: ProjectSpaceDirectory;
+  /** Host-only publication of this existing owner, never an RPC or a second service.
+   * The disposer drains native work and commits cleanup before the execution domain closes.
+   */
+  publishRunService?(service: ExecutionService): void | (() => void | Promise<void>);
 }
 
 function fetchHeaders(request: Request): IncomingHttpHeaders {
@@ -259,6 +273,8 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     writePlan: (key, value: PlanReceipt) =>
       plans.put(key, { ...value, nodeIds: [...value.nodeIds] }),
     listPlans: () => [...plans.entries()].map(([key, receipt]) => ({ key, receipt })),
+    readGlobal: () => domain.global.get(),
+    writeGlobal: (next) => domain.global.set(next),
   };
   const service = new ExecutionService(
     storage,
@@ -267,6 +283,15 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   );
   const reconciled = await service.reconcile();
   if (!reconciled.ok) throw new WorkbenchError(reconciled.error.code, reconciled.error.message);
+  const unpublish = config.publishRunService?.(service);
+  ctx.effect(() => async () => {
+    service.fenceRuns();
+    try {
+      await unpublish?.();
+    } finally {
+      await service.closeRuns();
+    }
+  });
   const stops = ENDPOINTS.map((endpoint) =>
     ctx.connection.fetch.register({
       path: `/api/zhuma-exec/${endpoint}`,
