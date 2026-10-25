@@ -1,0 +1,188 @@
+{
+  "date": "2026-10-25",
+  "pullRequest": "https://github.com/dolibali/zhuma/pull/115",
+  "baselineNote": "04 is the initial PR implementation before the final navigation fixes, not the develop baseline. Normal member creation is new in this PR. 04 and 16 show the same visible fictional project/task/node text, viewport and unsaved editing state. The full dark baseline does not exist; final light/dark pairs use the same saved data.",
+  "upstreamSha": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "boundary": "Real member Cookie and product persistence; only fictional identity/directory seeded. No real user data, paid model, file bytes, full Agent workflow, native installer, or real operating-system theme/zoom proof. 1024 is a desktop narrow window; no mobile support claim.",
+  "files": [
+    {
+      "file": "04-draft-retained-light.png",
+      "sourceSha": "b57078b589bd948ffa4ee063526ad718d6663f89",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "c0a2cc496c96b1fd76b3aee9c75f81994d34698c493a8e8de1c93f038f9c7fd7",
+      "bytes": 102369,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "16-final-draft-light-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "8a01b44fbf1ea9da482804b58e12eb313994815c658c74f5a524044d26098081",
+      "bytes": 104997,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "17-final-leave-modal-light-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "ed0cad2e6b7aa7aeec14fadcdf8559fc34205e3432000318d859be4e10a4a900",
+      "bytes": 129180,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "19-final-leave-modal-dark-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "7ddfa524f7e6040733875a344c58ab7f2f7c80a46b191bc46a68b907ca70cbdf",
+      "bytes": 122325,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "20-final-my-work-dark-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "03a659ac65542f2882ef59752bed5f9fa25bb11381871773527b02136c7d60f8",
+      "bytes": 44706,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "21-final-task-list-dark-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "bfeb91056b4a37a5b7fb17d322d2f122b1af1f25746d2c6773d0e031841770f0",
+      "bytes": 48992,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "22-final-restored-editor-dark-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "a7c5f36845369afea6976ed5f873cafb9793a512ba63f39b0ce20555243e6794",
+      "bytes": 101743,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "23-final-restored-editor-light-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "c6fb055b41e7c69b85f66024885a634b88588f9c2e3eb8c09672227a02f74e22",
+      "bytes": 107365,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "24-final-editor-light-1280.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1280,
+        800
+      ],
+      "sha256": "e0109d04a048bba6791deb73dc9d4e77c2aaa8763ba670a455451cc20512081d",
+      "bytes": 98779,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "25-final-editor-light-1920.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1920,
+        1080
+      ],
+      "sha256": "13a2ffb8b30d9585621ee9f3768ee40a59e168496552f382732ad2783e67c3b5",
+      "bytes": 120595,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "26-final-editor-dark-1920.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1920,
+        1080
+      ],
+      "sha256": "ea8168f7d51256ae17c7bca4e0e42384ba0a5a9401124726fc5fcf9fbff884bf",
+      "bytes": 116704,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "27-final-editor-dark-1280.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1280,
+        800
+      ],
+      "sha256": "e3e7c6a533c4feef2be6c4e4802a7fd1ac6085f906873299521cdb449a8092a8",
+      "bytes": 94119,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "29-final-leave-modal-dark-1024.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1024,
+        800
+      ],
+      "sha256": "0e84803635475fb772884e2bce391951daeff5fd7f07b4c7f514a6a1a37269c2",
+      "bytes": 85662,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "30-final-task-list-light-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "647a261124368c648923b1595ffdd62d9a9a7523437c33878b7e0adc745b3e17",
+      "bytes": 50530,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "31-final-my-work-light-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "1fa18bb4952813cd4b016a4138c652e6721b65e46571fb877c077597e8cf6200",
+      "bytes": 45285,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    },
+    {
+      "file": "32-final-process-reopen-light-1440.png",
+      "sourceSha": "c87696189f8157fa118cd2b73207b0cf04d4f87f",
+      "viewport": [
+        1440,
+        900
+      ],
+      "sha256": "7506ee244b5ff741ea26018ba4e6b72dfbee5dd57a237edd6c2f5b1c57d95f69",
+      "bytes": 104889,
+      "pixels": "actual official Web/Host; coordinator-operated isolated fictional member/project"
+    }
+  ],
+  "finalHostSha256": "83f933c0f5a29501082997ad6cf85db9318ba5cec95fbde2e6aa7049aa9df6e3",
+  "finalClientSha256": "e0380f6aa036fa6497ecad144b256d34dde84ec688f00068a5ecd18b1bc43a4a",
+  "finalLayoutSha256": "caa24f6b7470df0de0bfd471723dd1c82a9436415ef2418ad9b6006e6f7e3d9c"
+}
