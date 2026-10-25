@@ -89,8 +89,14 @@ test('upstream inputs match task, plan, revision, and node, and hide the idempot
     ],
   );
   const encoded = JSON.stringify(views);
+  // The visible row carries its real pinned artifactVersionId (artifact:idem-key-4e1)
+  // so clients can read the content; hidden/pending rows never carry one.
+  for (const view of views) {
+    if (view.access !== 'visible') {
+      assert.equal(JSON.stringify(view).includes('artifactVersionId'), false);
+    }
+  }
   for (const secret of [
-    'idem-key-4e1',
     'new-key-4e1',
     '别的任务目标',
     '另一版本目标',
@@ -111,6 +117,7 @@ test('upstream inputs match task, plan, revision, and node, and hide the idempot
       access: 'visible',
       blocking: false,
       sourceNodeId: 'node-1',
+      artifactVersionId: cited,
       sourceGoal: '本计划目标',
       version: 2,
       name: '第 2 版',

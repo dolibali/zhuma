@@ -2,6 +2,8 @@ export interface VisibleUpstreamInput {
   readonly access: 'visible';
   readonly blocking: boolean;
   readonly sourceNodeId: string;
+  /** The pinned accepted version id, so clients can read its content without guessing. */
+  readonly artifactVersionId: string;
   readonly sourceGoal?: string;
   readonly version: number;
   readonly name: string;
@@ -112,6 +114,7 @@ export function upstreamInputsFor(
         row({
           access: 'visible',
           sourceNodeId,
+          artifactVersionId,
           ...(sourceGoal === '' ? {} : { sourceGoal }),
           version: named.version,
           name: named.name,

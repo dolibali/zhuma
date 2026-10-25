@@ -19,6 +19,7 @@ const ENDPOINTS = [
   'report',
   'revision',
   'draft',
+  'upstream-content',
   'inbox-counts',
   'events',
 ] as const;
@@ -221,6 +222,8 @@ function run(
       return service.report(caller, payload);
     case 'revision':
       return service.revision(caller, payload);
+    case 'upstream-content':
+      return service.upstreamContent(caller, payload);
     case 'draft':
       return service.draft(caller, payload);
     case 'inbox-counts':
