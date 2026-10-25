@@ -260,6 +260,44 @@ test('root shell static contract: account stays in footer and the shared main ex
   shell.stop();
 });
 
+test('member entries share their controllers while page changes fence an old deferred leave', async () => {
+  const { shell } = fixture();
+  shell.start();
+  await tick();
+  const space = shell.space;
+  const session = shell.session;
+  shell.setPageActive(true, 'team');
+  const epoch = shell.getSnapshot().pageEpoch;
+  let pending;
+  let navigated = 0;
+  const remove = shell.registerLeaveGuard(epoch, (proceed) => {
+    pending = proceed;
+  });
+  shell.requestLeave(() => navigated++);
+  assert.equal(navigated, 0);
+  pending();
+  assert.equal(navigated, 1);
+  shell.requestLeave(() => navigated++);
+  shell.setPageActive(true, 'work');
+  assert.equal(shell.isPageCurrent(epoch), false);
+  assert.equal(shell.space, space);
+  assert.equal(shell.session, session);
+  pending();
+  assert.equal(navigated, 1);
+  const next = shell.getSnapshot().pageEpoch;
+  shell.registerLeaveGuard(next, (proceed) => {
+    pending = proceed;
+  });
+  remove();
+  shell.requestLeave(() => navigated++);
+  assert.equal(navigated, 1);
+  pending();
+  assert.equal(navigated, 2);
+  shell.setPageActive(true, 'work');
+  assert.equal(shell.getSnapshot().pageEpoch, next);
+  shell.stop();
+});
+
 test('root shell static contract: signed-out footer opens the login destination without fabricating an identity', async () => {
   const { shell } = fixture({
     session: async () => {

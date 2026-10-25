@@ -7,6 +7,8 @@ import {
   type NativeSessionBinding,
   type NativeSessionLineage,
   type NativeWorkSessionRecord,
+  type NativeMigrationOriginRequest,
+  type NativeMigrationOrigin,
 } from './native-work-session-contract.js';
 import {
   currentBinding,
@@ -29,6 +31,20 @@ export const nativeBindingReference = (binding: NativeSessionBinding): NativeBin
     nativeAgentId: binding.nativeAgentId,
     selection: binding.selection,
   });
+
+/** Exact persisted origin, including replay after the current pointer committed.
+ * No native ID, receipts, body, permission, I/O or new Run facts are returned.
+ */
+export function nativeMigrationOrigin(
+  record: NativeWorkSessionRecord,
+  data: NativeMigrationOriginRequest,
+): NativeMigrationOrigin {
+  const previous =
+    previousBindings(record).find((entry) => entry.migration.requestId === data.requestId)
+      ?.binding ?? currentBinding(record);
+  inspectNativeMigration(record, { ...data, previousScope: previous.scope });
+  return structuredClone({ scope: previous.scope, selection: previous.selection });
+}
 
 /** Pure metadata validation; performs no native creation, drive or persistence. */
 export function inspectNativeMigration(

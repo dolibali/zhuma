@@ -18,6 +18,9 @@ async function mount(mode = 'legacy-single-user') {
   const packages = new Map();
   let state = fixture().state;
   const ctx = {
+    get(name) {
+      return this[name];
+    },
     effect(callback) {
       const dispose = callback();
       effects.push(dispose);

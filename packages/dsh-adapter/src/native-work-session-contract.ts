@@ -87,6 +87,18 @@ export interface NativeRunMigrationGrant {
   readonly signal: AbortSignal;
   assertCurrent(phase: 'prepare' | 'migrate'): void;
 }
+/** D supplies these current persisted facts only after member/node authorization.
+ * This observation is neither a permission nor a native readiness certificate.
+ */
+export type NativeMigrationOriginRequest = Pick<
+  NativeRunMigrationGrant,
+  'requestId' | 'inputFingerprint' | 'scope' | 'selection'
+>;
+export interface NativeMigrationOrigin {
+  readonly scope: NativeWorkScope;
+  /** Frozen selection of the actual old binding, not the new requested selection. */
+  readonly selection: NativeSessionSelection;
+}
 /** Read-only, process-local evidence of actual native cleanup, not Run authority. */
 export interface NativeMigrationDrain {
   readonly signal: AbortSignal;

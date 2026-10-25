@@ -15,6 +15,8 @@ import {
   type NativeRunMigrationResult,
   type NativeBindingReference,
   type NativeMigrationDrain,
+  type NativeMigrationOriginRequest,
+  type NativeMigrationOrigin,
 } from './native-work-session-contract.js';
 
 export const NATIVE_WORK_LIMITS = Object.freeze({
@@ -52,7 +54,13 @@ import {
   NATIVE_LINEAGE_LIMITS,
 } from './native-work-session-record.js';
 export { nativeWorkSessionKey } from './native-work-session-record.js';
-import { inspectNativeMigration, appendNativeMigration } from './native-work-session-migration.js';
+import {
+  inspectNativeMigration,
+  appendNativeMigration,
+  nativeMigrationOrigin,
+} from './native-work-session-migration.js';
+
+const originRequestSchema = nativeMigrationDataSchema.omit({ previousScope: true });
 
 function sameScope(a: NativeWorkScope, b: NativeWorkScope): boolean {
   return (
@@ -331,6 +339,47 @@ export class NativeWorkSessionService {
     this.inputReadsSealed = true;
     for (const prepared of this.prepared.values()) prepared.controller.abort();
     return this.whenInputReadsIdle();
+  }
+
+  /** Host-only observation after D authorizes the original member/current node.
+   * D pins this origin once; C's canonical migration still checks the actual row
+   * and physical barrier. Never invoke from that migration's own metadata slot.
+   */
+  migrationOrigin(input: NativeMigrationOriginRequest): NativeMigrationOrigin {
+    const parsed = originRequestSchema.safeParse(input);
+    if (!parsed.success) throw new NativeWorkError('invalid-request');
+    if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
+    const data = parsed.data,
+      key = nativeWorkSessionKey(data.scope);
+    if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
+    if (this.migrating.has(key) || this.locks.has(key) || this.inputReadDrains.has(key))
+      throw new NativeWorkError('unavailable');
+    const stored = this.storage.read(key);
+    if (stored === undefined) throw new NativeWorkError('not-started');
+    const record = readNativeRecord(stored),
+      origin = nativeMigrationOrigin(record, data),
+      previous = bindingForScope(record, origin.scope);
+    if (!previous) throw new NativeWorkError('binding-state-invalid');
+    for (const binding of new Set([previous, currentBinding(record)])) {
+      if (
+        this.scopeActivity.get(nativeScopeKey(binding.scope))?.size ||
+        activeInputReads.has(binding.nativeSessionId) ||
+        (this.runtime.isConnected(binding.nativeSessionId) &&
+          this.runtime.status(binding.nativeSessionId) !== 'idle')
+      )
+        throw new NativeWorkError('unavailable');
+      try {
+        this.runtime.migrationDrain(binding.nativeSessionId).assertCurrent();
+      } catch (error) {
+        // A cold/never-prepared binding may be observed without inventing a
+        // ready certificate. An owned pending preparation must finish first.
+        if (!(error instanceof NativeWorkError) || error.code !== 'migration-not-ready')
+          throw error;
+        if (this.retiredScopes.has(nativeScopeKey(binding.scope)))
+          throw new NativeWorkError('unavailable');
+      }
+    }
+    return origin;
   }
 
   /** Pure readiness observation for D. Own migration metadata slots are not

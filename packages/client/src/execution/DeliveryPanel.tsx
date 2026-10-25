@@ -24,7 +24,7 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
       ? node.status === 'needs-revision'
       : ['ready', 'needs-revision'].includes(node.status);
   const editor = useDeliveryEditor(api, node, available, onSubmitted);
-  useUnsavedChanges(editor.dirty);
+  useUnsavedChanges(editor.dirty || !!editor.pending);
   const upstreamBlocked = node.inputs?.some((input) => input.blocking) === true;
   const locked = editor.pending === 'save' || editor.pending === 'submit' || editor.submitted;
   const status = editor.submitted

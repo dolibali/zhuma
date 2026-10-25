@@ -92,3 +92,15 @@ export function createTaskView(task: TaskSnapshot, view: ViewMode): TaskViewMode
     planRevision: task.planRevision,
   };
 }
+
+export {
+  createMemberWorkbenchApi,
+  type MemberWorkbenchApi,
+  type MemberWorkbenchCommand,
+  type MemberWorkbenchCommandInput,
+  type MemberWorkbenchPlanValue,
+  type MemberWorkbenchScope,
+  type MemberWorkbenchSnapshot,
+  type MemberTaskInput,
+} from './workbench/member-api.js';
+export { createMemberWorkbenchAdapter } from './workbench/member-adapter.js';

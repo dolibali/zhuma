@@ -26,7 +26,10 @@ export function createMemberShell(
   let stopSpace: (() => void) | undefined;
   let pageActive = false;
   let pageEpoch = 0;
+  let pageKey: string | undefined;
   let guard: { epoch: number; select: SpaceSwitch } | undefined;
+  let leaveGuard:
+    { epoch: number; leave: (proceed: () => void, signal?: AbortSignal) => void } | undefined;
   const listeners = new Set<() => void>();
   let snapshot: MemberShellSnapshot = {
     session: session.getSnapshot(),
@@ -50,6 +53,7 @@ export function createMemberShell(
     space = undefined;
     memberEpoch = undefined;
     guard = undefined;
+    leaveGuard = undefined;
   }
   function changed() {
     const state = session.getSnapshot();
@@ -102,14 +106,18 @@ export function createMemberShell(
       clearSpace();
       session.dispose();
       pageActive = false;
+      pageKey = undefined;
       ++pageEpoch;
       publish();
     },
-    setPageActive(active: boolean) {
-      if (active === pageActive) return;
+    setPageActive(active: boolean, key?: string) {
+      const nextKey = active ? key : undefined;
+      if (active === pageActive && nextKey === pageKey) return;
       pageActive = active;
+      pageKey = nextKey;
       ++pageEpoch;
       guard = undefined;
+      leaveGuard = undefined;
       publish();
     },
     isPageCurrent(epoch: number) {
@@ -122,6 +130,25 @@ export function createMemberShell(
       return () => {
         if (guard === current) guard = undefined;
       };
+    },
+    registerLeaveGuard(epoch: number, leave: (proceed: () => void, signal?: AbortSignal) => void) {
+      if (!pageActive || epoch !== pageEpoch) return () => {};
+      const current = { epoch, leave };
+      leaveGuard = current;
+      return () => {
+        if (leaveGuard === current) leaveGuard = undefined;
+      };
+    },
+    requestLeave(proceed: () => void, signal?: AbortSignal) {
+      if (signal?.aborted) return;
+      if (leaveGuard && pageActive && leaveGuard.epoch === pageEpoch) {
+        const epoch = pageEpoch;
+        const member = memberEpoch;
+        leaveGuard.leave(() => {
+          if (!signal?.aborted && pageActive && epoch === pageEpoch && member === memberEpoch)
+            proceed();
+        }, signal);
+      } else proceed();
     },
     requestSpace(id: string, restoreFocus?: () => void) {
       if (guard && pageActive && guard.epoch === pageEpoch) guard.select(id, restoreFocus);

@@ -13,6 +13,11 @@ import {
   AssetImportError,
 } from '@zhuma/agent-core';
 import { WorkbenchService, type PlanningModel } from './workbench-service.js';
+import {
+  openMemberWorkbenchHttp,
+  type MemberWorkbenchHttpHandle,
+  type MemberWorkbenchMountOptions,
+} from './member-workbench-http.js';
 import { previewAssetImport } from './asset-import.js';
 import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
 import {
@@ -52,13 +57,62 @@ const packageDomainSpec = {
   tables: { versions: { valueSchema: StoredAssetPackageSchema } },
 };
 
-export const inject = ['connection', 'storageDomain', 'llm', 'agentDefaultModel'];
+export const inject = ['connection', 'storageDomain'];
+
+/** Reading and manual editing do not require a configured model service. */
+function planningModel(ctx: Context): PlanningModel | undefined {
+  const llm = ctx.get('llm');
+  const defaults = ctx.get('agentDefaultModel');
+  if (!llm || !defaults) return undefined;
+  let route: ReturnType<typeof defaults.currentSelection>;
+  try {
+    route = defaults.currentSelection();
+  } catch {
+    return undefined;
+  }
+  return {
+    name: `${route.provider} / ${route.model}`,
+    generate: async (system, input, abort) => {
+      const call = await llm.prepareCall({ ...route, maxTokens: 12000 }, abort);
+      let text = '';
+      let stopped = false;
+      for await (const chunk of call.stream({
+        ...call.config,
+        system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: input }] }],
+        signal: abort,
+      })) {
+        abort.throwIfAborted();
+        if (chunk.type === 'text-delta') text += chunk.text;
+        if (text.length > 150000)
+          throw new WorkbenchError('output-limit', '模型输出过长，请缩小任务范围。');
+        if (chunk.type === 'finish') stopped = chunk.reason.kind === 'stop';
+      }
+      if (!stopped)
+        throw new WorkbenchError(
+          'model-incomplete',
+          '模型请求未正常结束，请检查模型连接或缩小任务后重试。',
+        );
+      return text;
+    },
+  };
+}
+
+export interface OpenedWorkbench {
+  readWorkbench(): ReturnType<WorkbenchService['snapshot']>;
+  planningModel(): PlanningModel | undefined;
+  openMemberWorkbench(
+    ctx: Context,
+    options: Omit<MemberWorkbenchMountOptions, 'workbench'>,
+  ): MemberWorkbenchHttpHandle;
+}
 
 /** Loaded as an ordinary DSH Host/Client plugin; storage and transport remain DSH-owned. */
 export async function openWorkbench(
   ctx: Context,
   limits: WorkbenchHttpLimits = WORKBENCH_HTTP_LIMITS,
-): Promise<{ readWorkbench(): ReturnType<WorkbenchService['snapshot']> }> {
+  lifecycle: { beforeClose?(): Promise<void> } = {},
+): Promise<OpenedWorkbench> {
   let service: WorkbenchService | undefined;
   const lifetime = new AbortController();
   ctx.effect(() => () => lifetime.abort());
@@ -86,45 +140,19 @@ export async function openWorkbench(
         }
         case 'snapshot': {
           z.strictObject({}).parse(payload);
-          const selection = ctx.agentDefaultModel.currentSelection();
           return {
             ok: true,
             value: {
               state: active.snapshot(),
-              model: `${selection.provider} / ${selection.model}`,
+              model: planningModel(ctx)?.name ?? '未配置模型',
             },
           };
         }
         case 'command':
           return { ok: true, value: await active.command(payload, signal) };
         case 'plan': {
-          const route = ctx.agentDefaultModel.currentSelection();
-          const model: PlanningModel = {
-            name: `${route.provider} / ${route.model}`,
-            generate: async (system, input, abort) => {
-              const call = await ctx.llm.prepareCall({ ...route, maxTokens: 12000 }, abort);
-              let text = '';
-              let stopped = false;
-              for await (const chunk of call.stream({
-                ...call.config,
-                system,
-                messages: [{ role: 'user', content: [{ type: 'text', text: input }] }],
-                signal: abort,
-              })) {
-                abort.throwIfAborted();
-                if (chunk.type === 'text-delta') text += chunk.text;
-                if (text.length > 150000)
-                  throw new WorkbenchError('output-limit', '模型输出过长，请缩小任务范围。');
-                if (chunk.type === 'finish') stopped = chunk.reason.kind === 'stop';
-              }
-              if (!stopped)
-                throw new WorkbenchError(
-                  'model-incomplete',
-                  '模型请求未正常结束，请检查模型连接或缩小任务后重试。',
-                );
-              return text;
-            },
-          };
+          const model = planningModel(ctx);
+          if (!model) throw new WorkbenchError('model-unavailable', '请先配置规划模型。');
           return { ok: true, value: await active.plan(payload, model, signal) };
         }
         default:
@@ -183,9 +211,22 @@ export async function openWorkbench(
     });
   }
   const domain = await ctx.storageDomain.open(domainSpec);
-  ctx.effect(() => () => domain.close());
+  ctx.effect(() => async () => {
+    try {
+      await lifecycle.beforeClose?.();
+    } finally {
+      await domain.close();
+    }
+  });
   const packageDomain = await ctx.storageDomain.open(packageDomainSpec);
-  ctx.effect(() => () => packageDomain.close());
+  ctx.effect(() => async () => {
+    try {
+      await lifecycle.beforeClose?.();
+    } finally {
+      await packageDomain.close();
+    }
+  });
+  lifetime.signal.throwIfAborted();
   service = new WorkbenchService(
     { read: () => domain.global.get(), write: (value) => domain.global.set(value) },
     {
@@ -205,6 +246,15 @@ export async function openWorkbench(
   );
 
   return {
+    planningModel: () => {
+      if (lifetime.signal.aborted) return undefined;
+      return planningModel(ctx);
+    },
+    openMemberWorkbench: (memberCtx, options) => {
+      if (lifetime.signal.aborted || !service)
+        throw new WorkbenchError('unavailable', '工作台已关闭。');
+      return openMemberWorkbenchHttp(memberCtx, { ...options, workbench: service });
+    },
     readWorkbench: () => {
       if (lifetime.signal.aborted || !service)
         throw new WorkbenchError('unavailable', '工作台已关闭。');

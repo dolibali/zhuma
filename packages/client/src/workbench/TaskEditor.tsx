@@ -27,6 +27,8 @@ import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings
 import { SingleSelect } from './SingleSelect.js';
 import { PlanningChanges } from './PlanningChanges.js';
 import { ControlIcon } from './ControlIcon.js';
+import { useUnsavedChanges } from './UnsavedChanges.js';
+import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -62,6 +64,7 @@ export function TaskEditor({
   appearance,
   initialPlanning,
   backLabel = '任务清单',
+  openWork,
 }: {
   original: WorkTask;
   state: Workbench;
@@ -72,6 +75,7 @@ export function TaskEditor({
   appearance: AppearanceStore;
   initialPlanning?: InitialPlanning;
   backLabel?: string;
+  openWork?: () => void;
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
@@ -146,6 +150,21 @@ export function TaskEditor({
     task: WorkTask;
   } | null>(null);
   const dirty = JSON.stringify(task) !== baseline;
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const memberCapability = api.member
+    ?.capabilities()
+    ?.tasks.find((item) => item.taskId === task.id);
+  const canEdit = !api.member || memberCapability?.edit === true;
+  const canConfirm = !api.member || memberCapability?.confirm === true;
+  const canPlan = !api.member || memberCapability?.plan === true;
+  useUnsavedChanges(dirty || busy || planning || !!proposal);
+  const leaveConfirmation = useLeaveConfirmation(() => alive.current);
   const previewTask = useMemo(
     () =>
       proposal?.result.workflows.length ? { ...task, workflows: proposal.result.workflows } : null,
@@ -165,7 +184,7 @@ export function TaskEditor({
     [comparison.workflows, proposal],
   );
   const workTree = useMemo(() => indexWorkTree(displayTask), [displayTask]);
-  const locked = busy || planning || task.status === 'ready' || !!previewTask;
+  const locked = busy || planning || task.status === 'ready' || !!previewTask || !canEdit;
   const workflow = workTree.workflows.get(workflowId) ?? workTree.root;
   const node = workflow.nodes.find((n) => n.id === selectedId);
   const ancestors = workflowPath(workTree, workflow.id);
@@ -320,6 +339,12 @@ export function TaskEditor({
       });
   }
   async function persist(next = task, expectedRevision = revision): Promise<Workbench | null> {
+    if (api.member && (next.status === 'ready' ? !canConfirm || dirty : !canEdit)) {
+      setError(
+        next.status === 'ready' && dirty ? '请先保存修改，再确认工作流。' : '当前任务只可查看。',
+      );
+      return null;
+    }
     if (!next.title.trim()) {
       setError('请填写任务标题。');
       return null;
@@ -363,8 +388,16 @@ export function TaskEditor({
         pendingSave.current.revision,
         { type: 'save-task', task: pendingSave.current.task },
         pendingSave.current.requestId,
+        pendingSave.current.task.status === 'ready' ? 'confirm-task' : 'update-task',
       );
-      const committed = result.tasks.find((t) => t.id === next.id)!;
+      if (api.member && !alive.current) return null;
+      const committed = result.tasks.find((t) => t.id === next.id);
+      if (!committed) {
+        saved(result);
+        pendingSave.current = null;
+        close();
+        return result;
+      }
       setTask(structuredClone(committed));
       setBaseline(JSON.stringify(committed));
       setRevision(result.revision);
@@ -375,6 +408,7 @@ export function TaskEditor({
       setConflict(false);
       return result;
     } catch (error) {
+      if (api.member && !alive.current) return null;
       setError(error instanceof Error ? error.message : '保存失败，请重试。');
       setConflict(error instanceof WorkbenchError && error.code === 'conflict');
       return null;
@@ -408,6 +442,10 @@ export function TaskEditor({
     }
   }
   async function generate() {
+    if (!canPlan) {
+      setError('当前任务暂不可使用 AI 规划。');
+      return;
+    }
     if (previewOriginal && proposal) {
       setError('请先切回规划结果，再继续调整。');
       return;
@@ -425,7 +463,7 @@ export function TaskEditor({
       return;
     }
     const result = dirty ? await persist() : state;
-    if (!result) return;
+    if (!result || !result.tasks.some((item) => item.id === task.id)) return;
     setPlanning(true);
     setPlanFailed(false);
     setError('');
@@ -453,6 +491,7 @@ export function TaskEditor({
           : undefined,
       );
       abort.signal.throwIfAborted();
+      if (api.member && !alive.current) return;
       setProposal(next);
       setComparison({ workflows: comparedWorkflows, label: comparisonLabel });
       setPreviewOriginal(false);
@@ -546,11 +585,14 @@ export function TaskEditor({
   }
   return (
     <div className="zm-editor" ref={editorRef}>
+      {leaveConfirmation.dialog}
       <div className="zm-toolbar">
         <button
           className="zm-quiet"
           onClick={() => {
-            if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
+            if (api.member)
+              leaveConfirmation.request(close, dirty || busy || planning || !!proposal);
+            else if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
           }}
         >
           <ControlIcon direction="left" /> {backLabel}
@@ -560,20 +602,22 @@ export function TaskEditor({
           {state.projects.find((p) => p.id === task.projectId)?.name}
         </span>
         <span className="zm-spacer" />
-        <Button
-          variant="quiet"
-          disabled={busy || planning || !!previewTask || !!pendingSave.current || hasGaps}
-          title={hasGaps ? '先补齐映射，再保存为新工作流' : undefined}
-          onClick={() => {
-            try {
-              setTemplateSave(captureWorkflowTemplate(task, state));
-            } catch (e) {
-              setError(e instanceof Error ? e.message : '请先补齐节点交付内容。');
-            }
-          }}
-        >
-          保存为工作流
-        </Button>
+        {!api.member && (
+          <Button
+            variant="quiet"
+            disabled={busy || planning || !!previewTask || !!pendingSave.current || hasGaps}
+            title={hasGaps ? '先补齐映射，再保存为新工作流' : undefined}
+            onClick={() => {
+              try {
+                setTemplateSave(captureWorkflowTemplate(task, state));
+              } catch (e) {
+                setError(e instanceof Error ? e.message : '请先补齐节点交付内容。');
+              }
+            }}
+          >
+            保存为工作流
+          </Button>
+        )}
         <Appearance store={appearance} />
         {conflict && (
           <Button disabled={busy || planning} onClick={() => void readLatest()}>
@@ -584,12 +628,20 @@ export function TaskEditor({
           {dirty ? '未保存' : message || '已保存'}
         </span>
         {task.status === 'ready' ? (
-          <button
-            disabled={busy || planning}
-            onClick={() => void persist({ ...task, status: 'draft' })}
-          >
-            继续编辑
-          </button>
+          api.member ? (
+            openWork && (
+              <Button variant="primary" onClick={openWork}>
+                查看待办
+              </Button>
+            )
+          ) : (
+            <button
+              disabled={busy || planning}
+              onClick={() => void persist({ ...task, status: 'draft' })}
+            >
+              继续编辑
+            </button>
+          )
         ) : (
           <>
             <Button
@@ -603,7 +655,8 @@ export function TaskEditor({
             </Button>
             <button
               className="primary"
-              disabled={locked}
+              disabled={locked || !canConfirm || (!!api.member && dirty)}
+              title={api.member && dirty ? '先保存草稿，再确认工作流' : undefined}
               onClick={() => void persist({ ...task, status: 'ready' })}
             >
               确认工作流
@@ -627,7 +680,7 @@ export function TaskEditor({
         <div className="zm-task-meta">
           <span className={`zm-status ${task.status}`}>
             {task.status === 'ready'
-              ? `已确认 v${state.appliedPlans.filter((p) => p.taskId === task.id).at(-1)?.revision ?? 1} · 待执行接入`
+              ? `已确认 v${state.appliedPlans.filter((p) => p.taskId === task.id).at(-1)?.revision ?? 1}${api.member ? '' : ' · 待执行接入'}`
               : '计划草稿'}
           </span>
           {locked ? (
@@ -649,7 +702,12 @@ export function TaskEditor({
           )}
           <Button
             variant="quiet"
-            disabled={busy || planning || !!previewTask}
+            disabled={
+              busy ||
+              planning ||
+              !!previewTask ||
+              (!!api.member && (task.status === 'ready' || !canEdit))
+            }
             onClick={() => {
               setMemberDraft(task.participantIds);
               setMemberError('');
@@ -1230,6 +1288,7 @@ export function TaskEditor({
                             : undefined
                     }
                     disabled={
+                      !canPlan ||
                       busy ||
                       planning ||
                       conflict ||
@@ -1287,6 +1346,7 @@ export function TaskEditor({
                                 : undefined
                       }
                       disabled={
+                        !canEdit ||
                         busy ||
                         planning ||
                         conflict ||

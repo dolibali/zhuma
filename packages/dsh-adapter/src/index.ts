@@ -145,3 +145,25 @@ export {
   inject as executionInject,
   type ExecutionPluginConfig,
 } from './execution-plugin.js';
+export type {
+  MemberWorkbenchCommand,
+  MemberWorkbenchPlan,
+  MemberWorkbenchDirectory,
+  MemberWorkbenchCatalog,
+  MemberWorkbenchOptions,
+  MemberWorkbenchSnapshot,
+  MemberWorkbenchPlanValue,
+  MemberWorkbenchResult,
+} from './member-workbench-dto.js';
+export {
+  applyMemberWorkbench,
+  openMemberWorkbenchHttp,
+  memberWorkbenchEndpoints,
+  type MemberWorkbenchMountOptions,
+  type MemberWorkbenchHttpHandle,
+} from './member-workbench-http.js';
+export { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
+export {
+  MemberWorkbenchOperations,
+  openMemberWorkbenchOperations,
+} from './member-workbench-operation.js';

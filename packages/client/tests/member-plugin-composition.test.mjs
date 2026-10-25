@@ -52,7 +52,12 @@ test('pinned SDK list registration requires an id and rejects duplicate live ids
 });
 
 // Compiled real plugin + pinned SDK registry core. No host rendering or sidebar imitation.
-async function checkComposition({ boot, initialPanel = null, restored = false } = {}) {
+async function checkComposition({
+  boot,
+  initialPanel = null,
+  restored = false,
+  missingGuard = false,
+} = {}) {
   const core = createSlotCore();
   const result = await build({
     entryPoints: [fileURLToPath(new URL('../src/workbench/plugin.tsx', import.meta.url))],
@@ -105,6 +110,7 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
     listeners = new Set();
   let panel = { activePanelId: initialPanel },
     rpcCalls = 0;
+  let panelGuard;
   const layout = {
     panelInfo: {
       getSnapshot: () => panel,
@@ -118,10 +124,21 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
         id === null || entries.some(({ options }) => options.name === 'main' && options.key === id),
       );
       if (panel.activePanelId === id) return;
-      panel = { activePanelId: id };
-      listeners.forEach((listener) => listener());
+      const proceed = () => {
+        panel = { activePanelId: id };
+        listeners.forEach((listener) => listener());
+      };
+      if (panelGuard) panelGuard(id, proceed, new AbortController().signal);
+      else proceed();
+    },
+    registerPanelGuard(guard) {
+      panelGuard = guard;
+      return () => {
+        panelGuard = undefined;
+      };
     },
   };
+  if (missingGuard) delete layout.registerPanelGuard;
   const ctx = {
     get: () => ({
       rpc: {
@@ -172,14 +189,25 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
   const legacyIds = ['zhuma-workbench', 'zhuma-experts'];
   assert.equal(
     panel.activePanelId,
-    memberMode && (initialPanel === null || legacyIds.includes(initialPanel))
-      ? 'zhuma-my-work'
+    memberMode && (initialPanel === null || initialPanel === 'zhuma-experts')
+      ? 'zhuma-workbench'
       : (initialPanel ?? 'zhuma-workbench'),
   );
   const legacyNav = entries.filter(
     ({ options }) => options.name === 'sidebar.panellist' && legacyIds.includes(options.id),
   );
-  assert.equal(legacyNav.length, memberMode ? 0 : 2);
+  assert.equal(legacyNav.length, memberMode ? 1 : 2);
+  if (memberMode) {
+    assert.deepEqual(
+      entries
+        .filter(({ options }) => options.name === 'sidebar.panellist')
+        .map(({ options }) => [options.id, options.label]),
+      [
+        ['zhuma-workbench', '团队工作台'],
+        ['zhuma-my-work', '我的工作'],
+      ],
+    );
+  }
   assert.equal(launchers.length, 1);
   assert.equal(core.entriesOfSlot('settings.launcher').length, 1);
   assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 0);
@@ -189,7 +217,8 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
   );
   const injected = launchers[0].options.inject();
   const main = entries.find(
-    ({ options }) => options.name === 'main' && options.key === 'zhuma-my-work',
+    ({ options }) =>
+      options.name === 'main' && options.key === (memberMode ? 'zhuma-workbench' : 'zhuma-my-work'),
   );
   const element = main.component({});
   const findShell = (node) =>
@@ -209,9 +238,12 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
   assert.equal(launcher.props.children[0].props.shell, injected.shell);
   assert.equal(launcher.props.children[0].props.wide, false);
   assert.deepEqual(reads, Array(restored ? 2 : 1).fill('/zhuma-id/session'));
-  if (memberMode && panel.activePanelId === 'zhuma-my-work') {
+  if (memberMode && panel.activePanelId === 'zhuma-workbench') {
     const html = require('react-dom/server').renderToStaticMarkup(element);
-    assert.ok(html.includes(restored ? '我的工作' : '登录工作台'));
+    assert.ok(html.includes(restored ? '正在连接工作台' : '登录工作台'));
+    if (restored) {
+      assert.equal(html.includes('aria-label="工作内容"'), false);
+    }
     assert.equal(html.includes('HTTP 404'), false);
     assert.equal(html.includes('重新连接'), false);
   }
@@ -234,6 +266,11 @@ test('member plugin composition contract: account and settings share the public 
   checkComposition());
 test('member plugin composition contract: explicit legacy boot preserves owner navigation and its landing', () =>
   checkComposition({ boot: { version: 1, deploymentMode: 'legacy-single-user' } }));
+test('member plugin composition contract: missing patched navigation capability fails before effects or owner fallback', () =>
+  assert.rejects(
+    checkComposition({ boot: { version: 1, deploymentMode: 'multi-member' }, missingGuard: true }),
+    /成员工作台需要更新配套界面/,
+  ));
 for (const restored of [false, true]) {
   test(`member plugin composition contract: member cold landing shows ${restored ? 'restored work' : 'login'} without owner RPC`, () =>
     checkComposition({ boot: { version: 1, deploymentMode: 'multi-member' }, restored }));
