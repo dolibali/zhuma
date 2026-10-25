@@ -22,6 +22,13 @@ function createSlotCore() {
     },
     () => null,
   );
+  core.register(
+    {
+      name: 'sidebar.settings',
+      children: { 'settings.launcher': { kind: 'single', scope: 'root' } },
+    },
+    () => null,
+  );
   return core;
 }
 
@@ -160,7 +167,7 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
     throw error;
   }
   await new Promise((resolve) => setImmediate(resolve));
-  const footers = entries.filter(({ options }) => options.name === 'sidebar.footer.action');
+  const launchers = entries.filter(({ options }) => options.name === 'settings.launcher');
   const memberMode = boot?.deploymentMode === 'multi-member';
   const legacyIds = ['zhuma-workbench', 'zhuma-experts'];
   assert.equal(
@@ -173,14 +180,14 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
     ({ options }) => options.name === 'sidebar.panellist' && legacyIds.includes(options.id),
   );
   assert.equal(legacyNav.length, memberMode ? 0 : 2);
-  assert.equal(footers.length, 1);
-  assert.equal(footers[0].options.id, 'zhuma-account');
-  assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 1);
+  assert.equal(launchers.length, 1);
+  assert.equal(core.entriesOfSlot('settings.launcher').length, 1);
+  assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 0);
   assert.equal(
     entries.some(({ options }) => options.name === 'sidebar.settings'),
     false,
   );
-  const injected = footers[0].options.inject();
+  const injected = launchers[0].options.inject();
   const main = entries.find(
     ({ options }) => options.name === 'main' && options.key === 'zhuma-my-work',
   );
@@ -193,8 +200,14 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
           ? node.props.children.map(findShell).find(Boolean)
           : findShell(node?.props?.children)));
   assert.equal(findShell(element), injected.shell);
-  assert.equal(footers[0].component({ ...injected, wide: false }).props.shell, injected.shell);
-  assert.equal(footers[0].component({ ...injected, wide: false }).props.wide, false);
+  const launcher = launchers[0].component({
+    ...injected,
+    wide: false,
+    settingsOpen: false,
+    openSettings() {},
+  });
+  assert.equal(launcher.props.children[0].props.shell, injected.shell);
+  assert.equal(launcher.props.children[0].props.wide, false);
   assert.deepEqual(reads, Array(restored ? 2 : 1).fill('/zhuma-id/session'));
   if (memberMode && panel.activePanelId === 'zhuma-my-work') {
     const html = require('react-dom/server').renderToStaticMarkup(element);
@@ -214,9 +227,10 @@ async function checkComposition({ boot, initialPanel = null, restored = false } 
   assert.equal(listeners.size, 0);
   assert.ok(entries.every(({ disposed }) => disposed));
   assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 0);
+  assert.equal(core.entriesOfSlot('settings.launcher').length, 0);
 }
 
-test('member plugin composition contract: actual footer/main registrations share one owned session and preserve Settings', () =>
+test('member plugin composition contract: account and settings share the public launcher and owned session', () =>
   checkComposition());
 test('member plugin composition contract: explicit legacy boot preserves owner navigation and its landing', () =>
   checkComposition({ boot: { version: 1, deploymentMode: 'legacy-single-user' } }));

@@ -26,6 +26,7 @@ import { TemplateSaveDialog } from './TemplateSaveDialog.js';
 import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
 import { SingleSelect } from './SingleSelect.js';
 import { PlanningChanges } from './PlanningChanges.js';
+import { ControlIcon } from './ControlIcon.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -552,7 +553,7 @@ export function TaskEditor({
             if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
           }}
         >
-          ← {backLabel}
+          <ControlIcon direction="left" /> {backLabel}
         </button>
         <span className="zm-path-divider">/</span>
         <span className="zm-editor-project">
@@ -807,7 +808,7 @@ export function TaskEditor({
                   setInspectorOpen(true);
                 }}
               >
-                审阅草案 →
+                审阅草案 <ControlIcon direction="right" />
               </button>
             </div>
           )}

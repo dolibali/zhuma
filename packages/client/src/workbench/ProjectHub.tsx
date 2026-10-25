@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Project, Workbench, WorkTask } from '@zhuma/agent-core';
 import { Button } from './Button.js';
 import { Field, MultiSelect, ParticipantSelect } from './controls.js';
+import { ControlIcon } from './ControlIcon.js';
 
 export type ProjectTab = 'overview' | 'work' | 'materials' | 'people';
 const tabs: Record<ProjectTab, string> = {
@@ -188,7 +189,7 @@ export function ProjectHub({
             <span className={`zm-badge ${task.status}`}>
               {task.status === 'ready' ? '计划已确认' : '计划草稿'}
             </span>
-            <span aria-hidden>›</span>
+            <ControlIcon direction="right" />
           </button>
         ))}
       </div>

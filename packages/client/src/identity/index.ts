@@ -18,6 +18,10 @@ export {
 } from './shell.js';
 export { SidebarAccountFooter, type SidebarAccountFooterProps } from './SidebarAccountFooter.js';
 export {
+  SidebarAccountSettingsLauncher,
+  type SidebarAccountSettingsLauncherProps,
+} from './SidebarAccountSettingsLauncher.js';
+export {
   MemberSpaceBoundary,
   type MemberSpaceBoundaryProps,
   type MemberSpaceLifetime,

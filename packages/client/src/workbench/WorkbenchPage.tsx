@@ -21,6 +21,7 @@ import { TemplateDefinitionEditor } from './TemplateDefinitionEditor.js';
 import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
+import { ControlIcon } from './ControlIcon.js';
 import {
   ProjectHub,
   ProjectFields,
@@ -493,7 +494,7 @@ export function WorkbenchPage({
           <div className="zm-page-title">
             {activeProject && (
               <Button variant="quiet" onClick={() => setActiveProjectId(null)}>
-                ← 全部项目
+                <ControlIcon direction="left" /> 全部项目
               </Button>
             )}
             <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>

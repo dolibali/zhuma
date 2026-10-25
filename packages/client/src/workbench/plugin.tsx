@@ -5,14 +5,14 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client';
+import type {} from '@deepseek-ai/dsh-client-ui-settings-general/client';
 import type { AppearanceStore } from './Appearance.js';
 import { createWorkbenchApi } from './api.js';
 import { WorkbenchPage } from './WorkbenchPage.js';
 import { MemberExecutionPage } from '../execution/MemberExecutionPage.js';
 import { createIdentityApi } from '../identity/api.js';
 import { createMemberShell } from '../identity/shell.js';
-import { SidebarAccountFooter } from '../identity/SidebarAccountFooter.js';
-import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client';
+import { SidebarAccountSettingsLauncher } from '../identity/SidebarAccountSettingsLauncher.js';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 
@@ -177,12 +177,10 @@ export function apply(ctx: Context): void {
       ),
     ),
   );
-  ctx.slots.inject('sidebar.footer.action', () =>
+  ctx.slots.inject('settings.launcher', () =>
     ctx.slots.register(
       {
-        name: 'sidebar.footer.action',
-        id: 'zhuma-account',
-        order: -100,
+        name: 'settings.launcher',
         inject: () => ({
           shell: memberShell,
           openWork: () => {
@@ -191,9 +189,7 @@ export function apply(ctx: Context): void {
           },
         }),
       },
-      (props: SidebarFooterActionOwnerProps & { shell: typeof memberShell; openWork(): void }) => (
-        <SidebarAccountFooter {...props} />
-      ),
+      SidebarAccountSettingsLauncher,
     ),
   );
 }

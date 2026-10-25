@@ -1,4 +1,54 @@
 /* Theme state belongs to the official DSH ui-theme service. These are presentation tokens only. */
+.zhuma.zm-account-settings {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.zhuma.zm-account-settings .zm-account-footer {
+  flex: 1 1 auto;
+}
+.zhuma .zm-settings-trigger {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--zm-ink);
+  box-shadow: none;
+  cursor: pointer;
+}
+.zhuma .zm-settings-trigger:hover,
+.zhuma .zm-settings-trigger[aria-expanded='true'] {
+  background: var(--zm-hover);
+}
+.zhuma .zm-settings-trigger:focus-visible {
+  outline: 2px solid var(--zm-accent);
+  outline-offset: 2px;
+}
+.zhuma.zm-account-settings[data-wide='false'] {
+  flex-direction: column;
+  gap: 4px;
+  width: 36px;
+}
+.zhuma.zm-account-settings[data-wide='false'] .zm-account-footer {
+  flex: none;
+}
+.zm-control-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  line-height: 0;
+  vertical-align: middle;
+  color: currentColor;
+}
 .zhuma.zm-account-footer {
   width: 100%;
   min-width: 0;
@@ -55,8 +105,7 @@
   font-size: 12px;
   color: var(--zm-muted);
 }
-.zhuma .zm-account-chevron {
-  flex: none;
+.zhuma .zm-account-trigger > .zm-control-icon {
   color: var(--zm-muted);
 }
 .zhuma.zm-account-footer[data-wide='false'] {
@@ -1593,6 +1642,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
 .zm-person-select {
   width: 100%;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   text-align: left;
@@ -1906,6 +1956,9 @@ html[data-platform='darwin'] .zm-shell-chrome {
   color: var(--zm-muted);
 }
 .zm-preview-banner button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
   background: transparent;
   border: 0;
@@ -2748,6 +2801,9 @@ html[data-platform='darwin'] .zm-shell-chrome {
   margin-left: auto;
 }
 .zm-child-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   width: 100%;
   margin-bottom: 16px;
   text-align: left;
@@ -2781,6 +2837,9 @@ html[data-platform='darwin'] .zm-shell-chrome {
   gap: 6px;
 }
 .zm-tree-selection .zm-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12px;
 }
 .zm-tree-dependencies {
@@ -2807,6 +2866,9 @@ html[data-platform='darwin'] .zm-shell-chrome {
   color: var(--zm-muted);
 }
 .zm-tree-relations button {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   border: 0;
   padding: 3px 4px;
   font-size: 12px;
@@ -2838,15 +2900,16 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 .zm-tree-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   padding-left: min(calc(var(--tree-depth) * 16px), 96px);
 }
 .zhuma .zm-tree-toggle,
 .zm-tree-leaf {
   flex: 0 0 24px;
   min-height: 36px;
-  padding: 8px 0;
-  text-align: center;
+  display: grid;
+  place-items: center;
+  padding: 0;
   color: var(--zm-muted);
 }
 .zhuma .zm-tree-toggle {
@@ -3021,8 +3084,8 @@ html[data-platform='darwin'] .zm-shell-chrome {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.zm-single-select > span:last-child {
-  flex: none;
+.zm-single-select > .zm-control-icon {
+  margin-left: auto;
 }
 .zm-select-positioner {
   z-index: 1500;
