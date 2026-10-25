@@ -105,6 +105,20 @@ export interface NativeMigrationDrain {
   readonly basis: 'flushed-and-closed' | 'absent-unadmitted';
   assertCurrent(): void;
 }
+/** A adapts D's original cleanup capability through that manager's identity check.
+ * This never grants history, driving, migration or product submission.
+ */
+export interface NativeScopeCleanupAuthority {
+  readonly scope: NativeWorkScope;
+  assertCurrent(): undefined;
+}
+export type NativeScopeCleanupResult =
+  | { readonly status: 'pending' }
+  | {
+      readonly status: 'retired';
+      readonly binding: NativeBindingReference | undefined;
+      readonly drain: NativeMigrationDrain;
+    };
 export type NativeBindingReference = Pick<
   NativeSessionBinding,
   'scope' | 'nativeSessionId' | 'nativeAgentId' | 'selection'
