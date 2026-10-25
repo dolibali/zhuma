@@ -153,10 +153,35 @@ shape matches C's final frozen `NativeRunMigrationGrant`:
 where phase is **only** `prepare` or `migrate`. The caller supplies no scope pair, selection,
 input hash or new migration key. All come from one current durable-backed B node read;
 requestId is the new attempt's persisted begin key and receipt, inputFingerprint its stored
-payloadHash. Old must be adjacent/terminal/resource-settled; new must be current/requested,
+payloadHash. Old must be C's actual origin and terminal/resource-settled; new must be current/requested,
 unacknowledged, have no admitted nativeSessionId, retain its claim and not be stopping.
-Actor/space/task/node/plan stay the same. Both phases recheck actual member lease,
-controller/task rights, immutable input/resource/config refs and real workspace composition.
+Actor/space/task/node/plan stay the same. Every intervening B attempt must be terminal and
+settled, have no acknowledgement/session/executor/discarded-session evidence and dispatch
+strictly reserved. Received/unknown cannot be skipped. B retains every attempt. Both phases
+recheck actual member lease, controller/task rights, the complete old-to-new history and
+new begin receipt, immutable input/resource/config refs and real workspace composition.
+
+`source.migrationOrigin({requestId,inputFingerprint,scope,selection}) -> {scope,selection}`
+is an optional Host-internal port to the same C owner. Input scope/selection are the new
+Run; output scope/selection describe the actual old binding. Missing port refuses migration
+issuance, without changing drive/read/cleanup behavior. Before looking at C, D authenticates
+the original member lease (including abort/expiry) and checks current B controller, space,
+task and workspace/config access. The C locator is metadata, never permission or readiness.
+
+C reads only its bounded mapping/current and migration receipts. A same-key committed
+receipt must recover the original previous scope using the exact target scope, selection
+and input hash, rather than mistaking current=new for the old origin. C refuses missing,
+malformed, unknown, inflight, foreign-owner or failed-close facts; origin errors are never
+translated to undefined. This query performs no native open/stat/flush/cleanup/restore or
+model call. Its producer must stay bound to the same C instance/lifetime.
+
+D matches the complete returned scope and old selection to the same current B node history,
+checks every skipped attempt, then pins the B-derived origin, entire old-to-new wrapper
+vector and begin receipt. A changed target during the lookup refuses. Only this one origin
+lookup occurs at issuance: phase checks reread B and verify the pinned producer identity,
+without reentering the C migration's own metadata slot. C independently rechecks its actual
+current or exact same-key replay inside its existing queue before writing. No new queue,
+store, internal binding-reservation permission or fake intermediate segment is introduced.
 
 Issuance validates only `prepare`, without consulting or inventing a C readiness proof.
 This phase authorizes C solely to stop/flush/drain/retire the old scope. Cold C may perform

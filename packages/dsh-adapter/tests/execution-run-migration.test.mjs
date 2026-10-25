@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ExecutionRunAuthorities } from '../dist/execution-run-authority.js';
-import { requestExecutionRunStop } from '../dist/execution-run-state.js';
+import { requestExecutionRunStop, executionRunScope } from '../dist/execution-run-state.js';
 import { begin, accepted, applyEvent, locator, stopCommand } from './execution-run-fixture.mjs';
 
 // Contract member issuer and native drain proof only. No real Cookie, C mapping or native driver.
@@ -23,6 +23,22 @@ function pendingAttempt() {
     newSegmentId: 'segment-2',
   }).record;
 }
+function unboundMiddle() {
+  const failed = applyEvent(pendingAttempt(), 'failed', { resourcesSettled: true }).record;
+  return begin(failed, {
+    mode: 'retry',
+    requestId: 'retry-3',
+    newRunId: 'run-3',
+    newSegmentId: 'segment-3',
+  }).record;
+}
+function origin(row) {
+  const previous = row.nativeExecution.runs[0];
+  return {
+    scope: executionRunScope(row, previous),
+    selection: structuredClone(previous.selection),
+  };
+}
 function setup({ row = pendingAttempt(), leaseGate } = {}) {
   const sourceLifetime = new AbortController();
   const memberLifetime = new AbortController();
@@ -36,6 +52,7 @@ function setup({ row = pendingAttempt(), leaseGate } = {}) {
     releases = 0,
     expiresAt = Date.now() + 60_000;
   const requestedDrains = [];
+  const requestedOrigins = [];
   const source = {
     writerState: () => ({ schemaVersion: 1, nativeExecutionWriter: 1 }),
     signal: sourceLifetime.signal,
@@ -73,6 +90,10 @@ function setup({ row = pendingAttempt(), leaseGate } = {}) {
       changes.add(check);
       return () => changes.delete(check);
     },
+    migrationOrigin(query) {
+      requestedOrigins.push(structuredClone(query));
+      return origin(currentRow);
+    },
     migrationDrain(previousScope) {
       requestedDrains.push(structuredClone(previousScope));
       if (pending) return undefined;
@@ -89,6 +110,7 @@ function setup({ row = pendingAttempt(), leaseGate } = {}) {
     manager,
     source,
     requestedDrains,
+    requestedOrigins,
     sourceLifetime,
     memberLifetime,
     drainLifetime,
@@ -138,11 +160,13 @@ test('contract: migration derives immutable durable pair/input/key and initially
     assert.equal(grant.previousScope[key], grant.scope[key], key);
   assert.deepEqual(grant.selection, h.row.nativeExecution.runs[1].selection);
   assert.equal(h.requestedDrains.length, 0);
+  assert.equal(h.requestedOrigins.length, 1);
   h.manager.assertMigration(grant, 'prepare');
   assert.equal(h.requestedDrains.length, 0, 'prepare never manufactures native readiness');
   h.manager.assertMigration(grant, 'migrate');
   assert.deepEqual(h.requestedDrains, [grant.previousScope]);
   assert.deepEqual(h.row, before);
+  assert.equal(h.requestedOrigins.length, 1, 'phase checks must not reenter C metadata slots');
   assert.throws(() => {
     grant.scope.runId = 'injected';
   }, TypeError);
@@ -256,12 +280,227 @@ test('contract: unauthorized or revoked members cannot query native pending/drai
     code: 'run-authority-denied',
   });
   assert.equal(h.requestedDrains.length, 0);
+  assert.equal(h.requestedOrigins.length, 0);
   h.setMember('chen');
   h.revoke();
   await assert.rejects(h.manager.openMigration(request, locator(h.row)), {
     code: 'run-authority-denied',
   });
   assert.equal(h.requestedDrains.length, 0);
+  assert.equal(h.requestedOrigins.length, 0);
+});
+
+test('contract: actual origin may precede zero-native attempts; the full B lineage is retained and pinned', async (t) => {
+  const h = setup({ row: unboundMiddle() });
+  t.after(() => h.manager.close());
+  const before = structuredClone(h.row);
+  const opened = await h.manager.openMigration(request, locator(h.row));
+  assert.equal(opened.grant.previousScope.runId, 'run-1');
+  assert.equal(opened.grant.scope.runId, 'run-3');
+  assert.deepEqual(h.requestedOrigins[0], {
+    requestId: 'retry-3',
+    inputFingerprint: 'a'.repeat(64),
+    scope: opened.grant.scope,
+    selection: opened.grant.selection,
+  });
+  opened.grant.assertCurrent('prepare');
+  opened.grant.assertCurrent('migrate');
+  opened.grant.assertCurrent('prepare');
+  assert.equal(h.requestedOrigins.length, 1);
+  assert.deepEqual(h.row, before);
+  h.row = structuredClone(h.row);
+  h.row.nativeExecution.runs[1].attempt.payloadHash = 'c'.repeat(64);
+  assert.throws(() => opened.grant.assertCurrent('prepare'), { code: 'run-authority-denied' });
+  assert.equal(opened.grant.signal.aborted, true);
+});
+
+for (const [label, mutate] of [
+  [
+    'acknowledged',
+    (run) => {
+      run.attempt.acknowledged = true;
+      run.attempt.executorRunId = 'native-middle';
+    },
+  ],
+  [
+    'session',
+    (run) => {
+      run.attempt.sessionId = 'native-middle';
+    },
+  ],
+  [
+    'executor',
+    (run) => {
+      run.attempt.executorRunId = 'native-middle';
+    },
+  ],
+  [
+    'discarded session',
+    (run) => {
+      run.attempt.sessionDiscarded = true;
+    },
+  ],
+  [
+    'received',
+    (run) => {
+      run.dispatch = 'received';
+    },
+  ],
+  [
+    'unknown',
+    (run) => {
+      run.dispatch = 'unknown';
+    },
+  ],
+  [
+    'resource held',
+    (run) => {
+      run.resources = 'held';
+    },
+  ],
+  [
+    'nonterminal',
+    (run) => {
+      run.attempt.status = 'requested';
+    },
+  ],
+  [
+    'other actor',
+    (run) => {
+      run.actorId = 'outside';
+    },
+  ],
+  [
+    'other space',
+    (run) => {
+      run.spaceId = 'south';
+    },
+  ],
+])
+  test(`contract: an intermediate attempt with ${label} cannot be skipped`, async (t) => {
+    const row = unboundMiddle();
+    const target = locator(row);
+    mutate(row.nativeExecution.runs[1]);
+    const h = setup({ row });
+    t.after(() => h.manager.close());
+    await assert.rejects(h.manager.openMigration(request, target));
+  });
+
+for (const field of [
+  'actorId',
+  'spaceId',
+  'taskId',
+  'planId',
+  'revision',
+  'nodeId',
+  'runId',
+  'generation',
+  'segmentId',
+])
+  test(`contract: the C origin must match B's complete ${field}`, async (t) => {
+    const h = setup({ row: unboundMiddle() });
+    t.after(() => h.manager.close());
+    h.source.migrationOrigin = () => {
+      const value = origin(h.row);
+      value.scope = {
+        ...value.scope,
+        [field]: typeof value.scope[field] === 'number' ? value.scope[field] + 1 : 'foreign',
+      };
+      return value;
+    };
+    await assert.rejects(h.manager.openMigration(request, locator(h.row)), {
+      code: 'run-authority-denied',
+    });
+  });
+
+for (const field of ['provider', 'model', 'reasoningEffort', 'maxTokens', 'configurationId'])
+  test(`contract: C's old ${field} must match B's frozen old configuration`, async (t) => {
+    const h = setup();
+    t.after(() => h.manager.close());
+    h.source.migrationOrigin = () => {
+      const value = origin(h.row);
+      value.selection[field] = field === 'maxTokens' ? 123 : 'other';
+      return value;
+    };
+    await assert.rejects(h.manager.openMigration(request, locator(h.row)), {
+      code: 'run-authority-denied',
+    });
+  });
+
+test('contract: missing, malformed, busy or unknown origin never falls back to an adjacent B attempt', async (t) => {
+  const h = setup();
+  t.after(() => h.manager.close());
+  for (const producer of [
+    undefined,
+    () => undefined,
+    () => ({}),
+    () => ({ ...origin(h.row), extra: true }),
+    () => {
+      throw Object.assign(Error('PRIVATE_MAPPING'), { code: 'migration-unknown' });
+    },
+    () => {
+      throw Object.assign(Error('PRIVATE_OWNER'), { code: 'unavailable' });
+    },
+  ]) {
+    h.source.migrationOrigin = producer;
+    await assert.rejects(h.manager.openMigration(request, locator(h.row)), {
+      code: 'run-authority-denied',
+    });
+  }
+  const read = await h.manager.open(request, locator(h.row), 'read');
+  read.grant.assertCurrent('history');
+});
+
+test('contract: aborted member and B access/config failures precede any C origin lookup', async (t) => {
+  for (const deny of [
+    (h) => h.memberLifetime.abort(),
+    (h) => h.setExpiry(Date.now() - 1),
+    (h) => {
+      h.source.assertNodeAccess = () => {
+        throw Error('PRIVATE_TASK');
+      };
+    },
+    (h) => {
+      h.source.assertWorkspace = () => {
+        throw Error('PRIVATE_WORKSPACE');
+      };
+    },
+  ]) {
+    const h = setup();
+    t.after(() => h.manager.close());
+    deny(h);
+    await assert.rejects(h.manager.openMigration(request, locator(h.row)), {
+      code: 'run-authority-denied',
+    });
+    assert.equal(h.requestedOrigins.length, 0);
+  }
+});
+
+test('contract: origin producer replacement and changed begin receipt revoke a pinned migration', async (t) => {
+  const h = setup({ row: unboundMiddle() });
+  t.after(() => h.manager.close());
+  const one = await h.manager.openMigration(request, locator(h.row));
+  h.source.migrationOrigin = () => origin(h.row);
+  assert.throws(() => one.grant.assertCurrent('prepare'), { code: 'run-authority-denied' });
+  const two = await h.manager.openMigration(request, locator(h.row));
+  h.row = structuredClone(h.row);
+  h.row.nativeExecution.receipts.find((receipt) => receipt.requestId === 'retry-3').fingerprint =
+    'c'.repeat(64);
+  assert.throws(() => two.grant.assertCurrent('prepare'), { code: 'run-authority-denied' });
+});
+
+test('contract: reentrant origin lookup cannot silently switch the authorized new target', async (t) => {
+  const h = setup();
+  t.after(() => h.manager.close());
+  h.source.migrationOrigin = () => {
+    const value = origin(h.row);
+    h.row = structuredClone(h.row);
+    h.row.nativeExecution.runs[1].attempt.payloadHash = 'c'.repeat(64);
+    return value;
+  };
+  await assert.rejects(h.manager.openMigration(request, locator(h.row)), {
+    code: 'run-authority-denied',
+  });
 });
 for (const [label, mutate] of [
   [
