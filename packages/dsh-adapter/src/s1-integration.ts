@@ -128,6 +128,8 @@ export type ExecutionEndpoints = readonly [
   'report',
   'revision',
   'draft',
+  'inbox-counts',
+  'events',
 ];
 export interface StartPlanRequest {
   taskId: string;
@@ -267,12 +269,56 @@ export interface StartPlanValue {
   readonly disposition: string;
   readonly reports: NodeExecutionReport[];
 }
+export interface InboxPlace {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+export interface InboxCounts {
+  readonly actorId: string;
+  /** Echoes the requested scope. Absent when the caller did not send one. */
+  readonly spaceId?: string | undefined;
+  readonly deliver: number;
+  readonly review: number;
+  readonly confirm: number;
+}
+export interface EventsRequest {
+  taskId: string;
+  planId: string;
+  revision: number;
+  nodeId: string;
+  after: number;
+  seenEventIds?: readonly string[];
+  /** Chosen space constraint; checked against the task's owning space before the node is read. */
+  readonly spaceId?: string | undefined;
+}
+export interface ExecutionEvent {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly occurredAt: string;
+  readonly actorId: string;
+  readonly type: string;
+  readonly nodeId: string;
+  readonly status: string;
+  readonly version: number;
+}
+export interface EventsValue {
+  readonly actorId: string;
+  /** Echoes the requested scope. Absent when the caller did not send one. */
+  readonly spaceId?: string | undefined;
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+  readonly events: readonly ExecutionEvent[];
+}
 export interface ChannelInboxValue {
   readonly actorId: string;
   /** Echoes the requested scope so the caller can verify the answer matches. */
   readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: ExecutionChannelNode[];
+  readonly places?: readonly InboxPlace[];
 }
 /** One confirmed, not-yet-started plan the member may explicitly start. */
 export interface StartablePlan {
@@ -310,6 +356,8 @@ export interface ExecutionServiceMethods {
     caller: ExecutionCaller,
     body: unknown,
   ): Promise<ExecutionChannelResult<ChannelStartableValue>>;
+  inboxCounts(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<InboxCounts>>;
+  events(caller: ExecutionCaller, body: unknown): Promise<ExecutionChannelResult<EventsValue>>;
   submit(
     caller: ExecutionCaller,
     body: unknown,
@@ -334,6 +382,8 @@ export interface ExecutionRoutes {
   readonly 'start-plan': { readonly body: StartPlanRequest; readonly value: StartPlanValue };
   readonly inbox: { readonly body: InboxRequest; readonly value: ChannelInboxValue };
   readonly startable: { readonly body: StartableRequest; readonly value: ChannelStartableValue };
+  readonly 'inbox-counts': { readonly body: InboxRequest; readonly value: InboxCounts };
+  readonly events: { readonly body: EventsRequest; readonly value: EventsValue };
   readonly submit: { readonly body: SubmitRequest; readonly value: ExecutionCommandValue };
   readonly ballot: { readonly body: BallotRequest; readonly value: ExecutionCommandValue };
   readonly settle: { readonly body: SettleRequest; readonly value: ExecutionCommandValue };
@@ -401,6 +451,7 @@ export interface ExecutionInboxValue {
   readonly actorId: string;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
+  readonly places?: readonly InboxPlace[];
 }
 export interface DeliveryDraft {
   readonly taskId: string;
@@ -441,8 +492,9 @@ export interface ExecutionApi {
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
-  // Client-side `revision` / delivery-draft methods are added by A on #32
-  // when the panels consume them; this layer declares the route shapes only.
+  // Client-side `startable` / `inboxCounts` / `events` / `revision` /
+  // delivery-draft methods are added by A on #32 when the panels consume
+  // them; this layer declares the route shapes only.
 }
 export type CreateExecutionApi = (rpc: ClientConnectionRpc) => ExecutionApi;
 export interface ExecutionWorkspaceProps {
@@ -453,6 +505,7 @@ export interface ExecutionWorkspaceProps {
 export interface InboxPanelProps {
   items: readonly InboxItem[];
   nodes: readonly ExecutionNodeWire[];
+  places?: readonly InboxPlace[];
   error?: string;
   pending?: boolean;
   reload(): void;
