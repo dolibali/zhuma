@@ -4,6 +4,7 @@ import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { SessionId, type UserMessage } from '@deepseek-ai/dsh-session';
 import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
+import { assertNativeInputReadOwner } from './native-work-session.js';
 import {
   requireNativeInboxRetention,
   type RetainedInboxCreateOptions,
@@ -145,6 +146,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     allowCreate: boolean,
   ): Promise<void> {
     current(grant);
+    assertNativeInputReadOwner(binding.nativeSessionId, this);
     if (this.lifetime.signal.aborted) throw new NativeWorkError('unavailable');
     const live = this.live.get(binding.nativeSessionId);
     if (live) {
@@ -184,9 +186,11 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const stored = await this.ctx.sessionPersistence.stat(id, { signal });
     signal.throwIfAborted();
     current(grant);
+    assertNativeInputReadOwner(binding.nativeSessionId, this);
     if (!stored && !allowCreate) throw new NativeWorkError('delivery-unknown');
-    const setup: AgentSetup = async (agentCtx) => {
+    const setup: AgentSetup = async (agentCtx, unpublishedAgent) => {
       current(grant);
+      assertNativeInputReadOwner(binding.nativeSessionId, this);
       const composition = await this.options.compose(agentCtx, structuredClone(binding), grant);
       signal.throwIfAborted();
       current(grant);
@@ -196,7 +200,26 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         composition.toolAllowlist.length > 100
       )
         throw new NativeWorkError('invalid-request');
-      agentCtx.tools.restrict({ allow: [...composition.toolAllowlist] });
+      const allowed = new Set(composition.toolAllowlist);
+      // DSH restrict() masks inherited/global capabilities, not registrations
+      // owned by this Agent scope; passing a scope-local name is an error.
+      agentCtx.tools.restrict({
+        allow: composition.toolAllowlist.filter((name) => this.ctx.tools.get(name) !== undefined),
+      });
+      agentCtx.tools.guard((exec) => {
+        try {
+          current(grant);
+          grant.assertCurrent('send');
+          return allowed.has(exec.name) ? undefined : 'native-tool-not-authorized';
+        } catch {
+          return 'native-work-not-authorized';
+        }
+      });
+      const checkToolSurface = () => {
+        const names = this.ctx.tools.schemas(unpublishedAgent).map((tool) => tool.name);
+        if (names.length !== allowed.size || names.some((name) => !allowed.has(name)))
+          throw new NativeWorkError('invalid-request');
+      };
       agentCtx.systemPrompt.context({
         name: 'zhuma-work',
         order: 10,
@@ -207,8 +230,10 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       agentCtx.on('agent/pre-step', async (_payload, next) => {
         current(grant);
         grant.assertCurrent('send');
+        checkToolSurface();
         const result = await next();
         current(grant);
+        checkToolSurface();
         return result;
       });
       agentCtx.on('tools/pre-execute', async (_exec, next) => {
@@ -228,7 +253,12 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           throw new NativeWorkError('configuration-mismatch');
         return config;
       });
-      return { commit: () => current(grant) };
+      return {
+        commit: () => {
+          current(grant);
+          checkToolSurface();
+        },
+      };
     };
     const { configurationId: _configurationId, reasoningEffort, ...selection } = binding.selection;
     const agentOptions = {

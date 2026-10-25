@@ -10,6 +10,7 @@ import {
   type NativeWorkRuntime,
   type NativeWorkScope,
   type NativeWorkStorage,
+  type NativeInputReadReservation,
 } from './native-work-session-contract.js';
 
 export const NATIVE_WORK_LIMITS = Object.freeze({
@@ -17,6 +18,22 @@ export const NATIVE_WORK_LIMITS = Object.freeze({
   receipts: 256,
   historyEvents: 100,
 });
+export const NATIVE_INPUT_READ_LIMITS = Object.freeze({
+  attempts: 16,
+  bytes: 65_536,
+  pageBytes: 24_576,
+});
+
+// Native persistence locking alone is not a same-process, cross-Host I/O
+// fence. Keep only an ephemeral owner/drain, never content or authority facts.
+const activeInputReads = new Map<
+  string,
+  { readonly owner: NativeWorkRuntime; readonly drain: Promise<void> }
+>();
+export function assertNativeInputReadOwner(sessionId: string, runtime: NativeWorkRuntime): void {
+  const active = activeInputReads.get(sessionId);
+  if (active && active.owner !== runtime) throw new NativeWorkError('input-read-busy');
+}
 
 /** Stable task/workspace lookup; the complete Run is compared separately. */
 export function nativeWorkSessionKey(scope: NativeWorkScope): string {
@@ -81,6 +98,17 @@ function textInput(value: string): void {
 export class NativeWorkSessionService {
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly stopEpochs = new Map<string, number>();
+  private inputReadsSealed = false;
+  private readonly inputReadDrains = new Map<string, Promise<void>>();
+  private readonly inputReadReservations = new WeakMap<
+    NativeInputReadReservation,
+    {
+      readonly key: string;
+      readonly scope: NativeWorkScope;
+      readonly epoch: number;
+      readonly release: () => void;
+    }
+  >();
   constructor(
     private readonly storage: NativeWorkStorage,
     private readonly runtime: NativeWorkRuntime,
@@ -100,23 +128,151 @@ export class NativeWorkSessionService {
       if (!sameScope(scope, grant.scope)) throw new NativeWorkError('scope-mismatch');
       if ((this.stopEpochs.get(key) ?? 0) !== epoch) throw new NativeWorkError('cancelled');
     };
+    return this.enqueueKey(key, () => {
+      verify();
+      return operation(verify);
+    });
+  }
+
+  private enqueueKey<T>(key: string, operation: () => Promise<T>): Promise<T> {
     const prior = this.locks.get(key) ?? Promise.resolve();
     const next = prior
       .catch(() => undefined)
       .then(() => {
-        verify();
-        return operation(verify);
+        return operation();
       });
     this.locks.set(key, next);
     void next
       .finally(() => {
         if (this.locks.get(key) === next) {
           this.locks.delete(key);
-          this.stopEpochs.delete(key);
+          if (!this.inputReadDrains.has(key)) this.stopEpochs.delete(key);
         }
       })
       .catch(() => undefined);
     return next;
+  }
+
+  /** Reserve before any source I/O. Unknown outcomes retain the conservative charge. */
+  reserveInputRead(grant: NativeWorkGrant): Promise<NativeInputReadReservation> {
+    return this.serial(grant, 'send', async (verify) => {
+      if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
+      const binding = this.required(grant, 'send');
+      assertNativeInputReadOwner(binding.nativeSessionId, this.runtime);
+      const key = nativeWorkSessionKey(grant.scope);
+      const budget = binding.inputReadBudget ?? { attempts: 0, chargedBytes: 0 };
+      if (
+        !Number.isSafeInteger(budget.attempts) ||
+        !Number.isSafeInteger(budget.chargedBytes) ||
+        budget.attempts < 0 ||
+        budget.chargedBytes < 0 ||
+        budget.attempts >= NATIVE_INPUT_READ_LIMITS.attempts ||
+        budget.chargedBytes >= NATIVE_INPUT_READ_LIMITS.bytes
+      )
+        throw new NativeWorkError('input-read-budget-exceeded');
+      if (this.inputReadDrains.has(key) || activeInputReads.has(binding.nativeSessionId))
+        throw new NativeWorkError('input-read-busy');
+      const maximumBytes = Math.min(
+        NATIVE_INPUT_READ_LIMITS.pageBytes,
+        NATIVE_INPUT_READ_LIMITS.bytes - budget.chargedBytes,
+      );
+      const next = {
+        ...binding,
+        inputReadBudget: {
+          attempts: budget.attempts + 1,
+          chargedBytes: budget.chargedBytes + maximumBytes,
+        },
+      };
+      const reservation = Object.freeze({ id: randomUUID(), maximumBytes });
+      let resolveDrain!: () => void;
+      const drain = {
+        promise: new Promise<void>((resolve) => {
+          resolveDrain = resolve;
+        }),
+        resolve: () => resolveDrain(),
+      };
+      this.inputReadDrains.set(key, drain.promise);
+      const active = { owner: this.runtime, drain: drain.promise };
+      activeInputReads.set(binding.nativeSessionId, active);
+      const issued = {
+        key,
+        scope: structuredClone(grant.scope),
+        epoch: this.stopEpochs.get(key) ?? 0,
+        release: () => {
+          if (this.inputReadDrains.get(key) === drain.promise) this.inputReadDrains.delete(key);
+          if (activeInputReads.get(binding.nativeSessionId) === active)
+            activeInputReads.delete(binding.nativeSessionId);
+          drain.resolve();
+        },
+      };
+      try {
+        // Claim the ephemeral slot synchronously before the first persistence
+        // await, so a second Host cannot pass its own independent queue.
+        await this.storage.write(key, next);
+        verify();
+        if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
+        this.inputReadReservations.set(reservation, issued);
+        return reservation;
+      } catch (error) {
+        issued.release();
+        throw error;
+      }
+    });
+  }
+
+  /** Call only when the underlying read settles; omitting bytes never refunds. */
+  finishInputRead(
+    grant: NativeWorkGrant,
+    reservation: NativeInputReadReservation,
+    usedBytes?: number,
+  ): Promise<void> {
+    const issued = this.inputReadReservations.get(reservation);
+    if (!issued) return Promise.reject(new NativeWorkError('invalid-request'));
+    return this.enqueueKey(issued.key, async () => {
+      if (this.inputReadReservations.get(reservation) !== issued)
+        throw new NativeWorkError('invalid-request');
+      try {
+        if (usedBytes === undefined) return;
+        if (
+          !Number.isSafeInteger(usedBytes) ||
+          usedBytes < 0 ||
+          usedBytes > reservation.maximumBytes
+        )
+          throw new NativeWorkError('invalid-request');
+        check(grant, 'send');
+        if (!sameScope(grant.scope, issued.scope)) throw new NativeWorkError('scope-mismatch');
+        if ((this.stopEpochs.get(issued.key) ?? 0) !== issued.epoch) return;
+        const binding = this.required(grant, 'send');
+        const budget = binding.inputReadBudget;
+        if (!budget || budget.chargedBytes < reservation.maximumBytes)
+          throw new NativeWorkError('invalid-request');
+        await this.storage.write(issued.key, {
+          ...binding,
+          inputReadBudget: {
+            attempts: budget.attempts,
+            chargedBytes: budget.chargedBytes - (reservation.maximumBytes - usedBytes),
+          },
+        });
+      } finally {
+        this.inputReadReservations.delete(reservation);
+        issued.release();
+      }
+    });
+  }
+
+  /** Actual source-Promise drain, not the logical tool wait or native driver idle. */
+  async whenInputReadsIdle(scope?: NativeWorkScope): Promise<void> {
+    if (scope) {
+      const key = nativeWorkSessionKey(scope);
+      while (this.inputReadDrains.has(key)) await this.inputReadDrains.get(key);
+    } else {
+      while (this.inputReadDrains.size) await Promise.all(this.inputReadDrains.values());
+    }
+  }
+
+  sealInputReads(): Promise<void> {
+    this.inputReadsSealed = true;
+    return this.whenInputReadsIdle();
   }
 
   private read(grant: NativeWorkGrant, action: NativeWorkAction): NativeSessionBinding | undefined {
@@ -302,11 +458,27 @@ export class NativeWorkSessionService {
   async stop(grant: NativeWorkGrant) {
     check(grant, 'stop');
     const key = nativeWorkSessionKey(grant.scope);
-    if (this.locks.has(key)) this.stopEpochs.set(key, (this.stopEpochs.get(key) ?? 0) + 1);
+    if (this.locks.has(key) || this.inputReadDrains.has(key))
+      this.stopEpochs.set(key, (this.stopEpochs.get(key) ?? 0) + 1);
     const binding = this.required(grant, 'stop');
-    const result = await this.runtime.stop(binding.nativeSessionId, grant.signal);
-    check(grant, 'stop');
-    return { status: result };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pending = new Promise<'pending'>((resolve) => {
+      timer = setTimeout(() => resolve('pending'), 5_000);
+    });
+    try {
+      const result = await Promise.race([
+        (async () => {
+          const stopped = await this.runtime.stop(binding.nativeSessionId, grant.signal);
+          if (stopped === 'stopped') await this.whenInputReadsIdle(grant.scope);
+          return stopped;
+        })(),
+        pending,
+      ]);
+      check(grant, 'stop');
+      return { status: result };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async history(
