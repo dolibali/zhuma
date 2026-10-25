@@ -189,6 +189,7 @@ export function createExecutionHttpApi(
   function memberRead<T extends { readonly actorId: string }>(
     request: Promise<T>,
     signal?: AbortSignal,
+    closeOnFailure = true,
   ): Promise<T> {
     return observed(
       request.then((value) => {
@@ -199,7 +200,7 @@ export function createExecutionHttpApi(
         return value;
       }),
       signal,
-      true,
+      closeOnFailure,
     );
   }
   return {
@@ -209,6 +210,8 @@ export function createExecutionHttpApi(
     submit: (draft, signal) => observed(api.submit(draft, signal), signal),
     ballot: (draft, signal) => observed(api.ballot(draft, signal), signal),
     revision: (query, signal) => observed(api.revision(query, signal), signal),
+    upstreamContent: (query, signal) =>
+      memberRead(api.upstreamContent(query, signal), signal, false),
     readDeliveryDraft: (query, signal) => observed(api.readDeliveryDraft(query, signal), signal),
     saveDeliveryDraft: (draft, signal) => observed(api.saveDeliveryDraft(draft, signal), signal),
   };

@@ -163,6 +163,24 @@ export interface RevisionQuery {
   readonly revision: number;
   readonly nodeId: string;
 }
+export interface UpstreamContentQuery extends RevisionQuery {
+  readonly sourceNodeId: string;
+  readonly artifactVersionId: string;
+  /** Local response expectation from the visible row; never sent as a service field. */
+  readonly expectedArtifactVersion: number;
+}
+export interface UpstreamContentWire {
+  readonly actorId: string;
+  readonly spaceId: string;
+  readonly downstream: RevisionQuery;
+  readonly source: RevisionQuery;
+  readonly version: { readonly id: string; readonly version: number };
+  readonly content: {
+    readonly text?: string;
+    readonly links: readonly string[];
+    readonly files: readonly ArtifactFileRef[];
+  };
+}
 export interface SavedDeliveryDraftWire {
   readonly version: number;
   readonly text: string;
@@ -222,6 +240,7 @@ export interface ExecutionApi {
   submit(draft: DeliveryDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   ballot(draft: ReviewDraft, signal?: AbortSignal): Promise<ExecutionNodeWire>;
   revision(query: RevisionQuery, signal?: AbortSignal): Promise<RevisionViewWire>;
+  upstreamContent(query: UpstreamContentQuery, signal?: AbortSignal): Promise<UpstreamContentWire>;
   readDeliveryDraft(query: RevisionQuery, signal?: AbortSignal): Promise<SavedDeliveryDraftWire>;
   saveDeliveryDraft(
     draft: DeliveryDraftSave,
@@ -289,6 +308,100 @@ function record(value: unknown, field: string): Record<string, unknown> {
 }
 function unique<T>(items: readonly T[], key: (item: T) => string, field: string): void {
   if (new Set(items.map(key)).size !== items.length) invalid(`返回的${field}有重复标识。`);
+}
+
+function exactRecord(value: unknown, keys: readonly string[], field: string) {
+  const item = record(value, field);
+  if (Object.keys(item).some((key) => !keys.includes(key))) invalid(`返回的${field}包含未知字段。`);
+  return item;
+}
+
+/** #100 read: exact public fields and all echoed identities must match this request. */
+function readUpstreamContent(
+  value: unknown,
+  query: UpstreamContentQuery,
+  spaceId: string,
+): UpstreamContentWire {
+  const item = exactRecord(
+    value,
+    ['actorId', 'spaceId', 'downstream', 'source', 'version', 'content'],
+    '上游内容',
+  );
+  const locate = (raw: unknown): RevisionQuery => {
+    const location = exactRecord(raw, ['taskId', 'planId', 'revision', 'nodeId'], '上游定位');
+    return {
+      taskId: text(location.taskId, '任务'),
+      planId: text(location.planId, '计划'),
+      revision: integer(location.revision, 1, '计划版本'),
+      nodeId: text(location.nodeId, '节点'),
+    };
+  };
+  const actorId = text(item.actorId, '操作者');
+  const returnedSpace = text(item.spaceId, '空间');
+  if (returnedSpace !== spaceId)
+    throw new ExecutionError('scope-mismatch', '返回的工作空间不一致，请重新连接。');
+  const downstream = locate(item.downstream),
+    source = locate(item.source);
+  const version = exactRecord(item.version, ['id', 'version'], '上游版本');
+  const pinned = {
+    id: text(version.id, '上游版本标识'),
+    version: integer(version.version, 1, '上游版本'),
+  };
+  if (
+    downstream.taskId !== query.taskId ||
+    downstream.planId !== query.planId ||
+    downstream.revision !== query.revision ||
+    downstream.nodeId !== query.nodeId ||
+    source.taskId !== query.taskId ||
+    source.planId !== query.planId ||
+    source.revision !== query.revision ||
+    source.nodeId !== query.sourceNodeId ||
+    pinned.id !== query.artifactVersionId ||
+    pinned.version !== query.expectedArtifactVersion
+  )
+    throw new ExecutionError(
+      'upstream-mismatch',
+      '上游内容与当前工作或引用版本不一致，请刷新待办。',
+    );
+  const content = exactRecord(item.content, ['text', 'links', 'files'], '上游正文');
+  if (
+    (content.text !== undefined &&
+      (typeof content.text !== 'string' || content.text.length > 100_000)) ||
+    !Array.isArray(content.links) ||
+    content.links.length > 20 ||
+    !Array.isArray(content.files) ||
+    content.files.length > 20
+  )
+    invalid('返回的上游内容不完整。');
+  const files = content.files.map((raw) => {
+    const file = exactRecord(
+      raw,
+      ['id', 'mediaType', 'byteSize', 'checksum', 'accessPolicyId', 'uploadComplete'],
+      '上游文件信息',
+    );
+    if (typeof file.uploadComplete !== 'boolean') invalid('返回的上游文件状态不正确。');
+    return {
+      id: text(file.id, '文件'),
+      mediaType: text(file.mediaType, '文件类型'),
+      byteSize: integer(file.byteSize, 0, '文件大小'),
+      checksum: text(file.checksum, '文件摘要'),
+      accessPolicyId: text(file.accessPolicyId, '文件权限引用'),
+      uploadComplete: file.uploadComplete,
+    };
+  });
+  unique(files, (file) => file.id, '上游文件');
+  return {
+    actorId,
+    spaceId: returnedSpace,
+    downstream,
+    source,
+    version: pinned,
+    content: {
+      ...(content.text === undefined ? {} : { text: content.text as string }),
+      links: content.links.map((link) => text(link, '上游链接')),
+      files,
+    },
+  };
 }
 function readUpstreamInput(value: unknown): UpstreamInputWire {
   const item = record(value, '上游输入');
@@ -654,6 +767,29 @@ export function createExecutionApi(rpc: ClientConnectionRpc, spaceId?: string): 
       };
       // revision's strict request has no spaceId. The bound HTTP precheck and frozen node reference remain in force.
       return readRevisionView(await call('revision', payload, signal));
+    },
+    async upstreamContent(query, signal) {
+      signal?.throwIfAborted();
+      if (spaceId === undefined)
+        throw new ExecutionError('scope-required', '请先选择工作空间，再查看上游内容。');
+      const expected: UpstreamContentQuery = {
+        ...draftQuery(query),
+        sourceNodeId: text(query.sourceNodeId, '来源节点'),
+        artifactVersionId: text(query.artifactVersionId, '上游版本标识'),
+        expectedArtifactVersion: integer(query.expectedArtifactVersion, 1, '上游版本'),
+      };
+      const value = await call(
+        'upstream-content',
+        {
+          ...draftQuery(expected),
+          sourceNodeId: expected.sourceNodeId,
+          artifactVersionId: expected.artifactVersionId,
+          spaceId,
+        },
+        signal,
+      );
+      signal?.throwIfAborted();
+      return readUpstreamContent(value, expected, spaceId);
     },
     async readDeliveryDraft(query, signal) {
       return readSavedDeliveryDraft(await call('draft', draftQuery(query), signal));

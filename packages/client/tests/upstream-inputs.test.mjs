@@ -62,6 +62,27 @@ for (const [label, change] of [
   ['null collection', () => null],
   ['object collection', () => ({})],
   [
+    'missing visible pin',
+    (rows) => {
+      delete rows[0].artifactVersionId;
+      return rows;
+    },
+  ],
+  [
+    'empty visible pin',
+    (rows) => {
+      rows[0].artifactVersionId = ' ';
+      return rows;
+    },
+  ],
+  [
+    'nonstring visible pin',
+    (rows) => {
+      rows[0].artifactVersionId = 2;
+      return rows;
+    },
+  ],
+  [
     'null row',
     (rows) => {
       rows[0] = null;
