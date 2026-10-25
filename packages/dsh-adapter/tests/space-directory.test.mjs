@@ -51,6 +51,7 @@ function memoryKv(media = new Map(), faults = {}) {
         },
         async close() {
           closed = true;
+          if (typeof faults.close === 'function') await faults.close();
         },
       };
     },
@@ -595,4 +596,62 @@ test('the membership cap is enforced on the import path', async () => {
   };
   const { ctx } = mount({ media });
   await assert.rejects(openSpaceDirectory(ctx.storageDomain, bigImport), WorkbenchError);
+});
+
+test('directory close invalidates synchronously before a held backend drain and shares one close', async () => {
+  let finish;
+  let entered;
+  const held = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const { ctx } = mount({
+    faults: {
+      close: async () => {
+        entered();
+        await held;
+      },
+    },
+  });
+  const directory = await openSpaceDirectory(ctx.storageDomain, FIXTURE);
+  let aborted = 0;
+  directory.signal.addEventListener('abort', () => {
+    aborted++;
+  });
+  const closing = directory.close();
+  assert.equal(directory.signal.aborted, true);
+  assert.equal(aborted, 1);
+  assert.equal(directory.close(), closing);
+  await started;
+  let settled = false;
+  void closing.then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  finish();
+  await closing;
+  assert.equal(aborted, 1);
+  assert.equal(directory.close(), closing);
+});
+
+test('failed directory close remains invalidated and does not start a second teardown', async () => {
+  let closes = 0;
+  const { ctx } = mount({
+    faults: {
+      close: async () => {
+        closes++;
+        throw new Error('fixture close refused');
+      },
+    },
+  });
+  const directory = await openSpaceDirectory(ctx.storageDomain, FIXTURE);
+  const closing = directory.close();
+  assert.equal(directory.signal.aborted, true);
+  await assert.rejects(closing, /fixture close refused/);
+  assert.equal(directory.close(), closing);
+  await assert.rejects(directory.close(), /fixture close refused/);
+  assert.equal(closes, 1);
 });

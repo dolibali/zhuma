@@ -15,6 +15,8 @@
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
+import type { ExecutionMemberLease } from './execution-run-authority.js';
+import { spaceDirectoryFor, type SpaceDirectory } from './space-directory.js';
 
 export const MEMBER_COOKIE_NAME = 'zhuma-member';
 export const MEMBER_COOKIE_PATH = '/';
@@ -43,6 +45,23 @@ export interface MemberResolver {
   resolve(request: MemberRequest): Promise<MemberResolution>;
 }
 
+/** Host-only publication backed by the current real directory, never a DTO. */
+export interface ExecutionMemberDirectoryBinding {
+  readonly directory: SpaceDirectory & { readonly signal: AbortSignal };
+  readonly signal: AbortSignal;
+  isCurrent(): boolean;
+}
+
+export interface IdentityExecutionOptions {
+  currentDirectoryBinding(): ExecutionMemberDirectoryBinding | undefined;
+}
+
+interface ExecutionMemberSource extends IdentityExecutionOptions {
+  accountExists(memberId: string): boolean;
+  /** Observe the same authoritative facts after their durable changes. */
+  onChange(recheck: () => void): () => void;
+}
+
 export interface MemberResolverSource {
   readonly secret: Buffer;
   requestRejection(headers: IncomingHttpHeaders): number | undefined;
@@ -53,10 +72,13 @@ export interface MemberResolverSource {
   /** Set only when this host imported exactly one account and named it. */
   singleUserAccountId(): string | undefined;
   admitOwner(headers: IncomingHttpHeaders): boolean;
+  readonly execution?: ExecutionMemberSource;
 }
 
 interface InstalledResolver {
   readonly source: MemberResolverSource;
+  readonly lifetime: AbortController;
+  leases: number;
 }
 
 const installed = new WeakMap<object, InstalledResolver>();
@@ -104,12 +126,214 @@ function resolverHost(ctx: object): object {
   return typeof root === 'object' && root !== null ? root : ctx;
 }
 
-export function installMemberResolver(ctx: object, source: MemberResolverSource): void {
-  installed.set(resolverHost(ctx), { source });
+export function installMemberResolver(ctx: object, source: MemberResolverSource): () => void {
+  const host = resolverHost(ctx);
+  const previous = installed.get(host);
+  const current: InstalledResolver = { source, lifetime: new AbortController(), leases: 0 };
+  installed.set(host, current);
+  previous?.lifetime.abort();
+  // Installation identity also distinguishes a remount of the same source object.
+  return () => {
+    if (installed.get(host) === current) installed.delete(host);
+    current.lifetime.abort();
+  };
 }
 
 export function uninstallMemberResolver(ctx: object): void {
-  installed.delete(resolverHost(ctx));
+  const host = resolverHost(ctx);
+  const current = installed.get(host);
+  installed.delete(host);
+  current?.lifetime.abort();
+}
+
+const EXECUTION_MEMBER_LEASE_LIMIT = 256;
+
+interface MemberLeaseState {
+  readonly host: object;
+  readonly owner: InstalledResolver;
+  readonly execution: ExecutionMemberSource;
+  readonly headers: IncomingHttpHeaders;
+  readonly binding: ExecutionMemberDirectoryBinding;
+  readonly spaces: Set<string>;
+}
+
+/** Constant failure text: never project the request, cookie, or source errors. */
+function leaseDenied(): Error {
+  return new Error('execution member lease unavailable');
+}
+
+class CurrentMemberLease implements ExecutionMemberLease {
+  readonly memberId: string;
+  readonly expiresAt: number;
+  readonly signal: AbortSignal;
+  readonly #controller = new AbortController();
+  #state: MemberLeaseState | undefined;
+  #lifetime: AbortSignal | undefined;
+  #disposeChange: (() => void) | undefined;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  readonly #invalidate = () => this.release();
+  readonly #recheck = () => {
+    try {
+      this.#check();
+    } catch {
+      this.release();
+    }
+  };
+
+  constructor(state: MemberLeaseState, memberId: string, expiresAt: number) {
+    this.#state = state;
+    this.memberId = memberId;
+    this.expiresAt = expiresAt;
+    this.signal = this.#controller.signal;
+    state.owner.leases++;
+    Object.freeze(this);
+  }
+
+  start(): this {
+    try {
+      const state = this.#check();
+      const directory = spaceDirectoryFor(state.host);
+      if (!directory) throw leaseDenied();
+      // Native composition avoids strong per-lease listeners on shared signals.
+      this.#lifetime = AbortSignal.any([
+        state.owner.lifetime.signal,
+        state.binding.signal,
+        directory.signal,
+      ]);
+      this.#lifetime.addEventListener('abort', this.#invalidate, { once: true });
+      const dispose = state.execution.onChange(this.#recheck);
+      // A source may invalidate synchronously while registering the observer.
+      if (this.#state === undefined) dispose();
+      else this.#disposeChange = dispose;
+      this.#check();
+      this.#scheduleExpiry();
+      this.#check();
+      return this;
+    } catch {
+      this.release();
+      throw leaseDenied();
+    }
+  }
+
+  assertCurrent(spaceId: string): void {
+    try {
+      const state = this.#check();
+      this.#checkSpace(state, spaceId);
+      state.spaces.add(spaceId);
+    } catch {
+      this.release();
+      throw leaseDenied();
+    }
+  }
+
+  #checkSpace(state: MemberLeaseState, spaceId: string): void {
+    const directory = state.binding.directory;
+    if (!directory.space(spaceId) || !directory.isMember(spaceId, this.memberId)) {
+      throw leaseDenied();
+    }
+  }
+
+  #check(): MemberLeaseState {
+    const state = this.#state;
+    if (state === undefined || Date.now() >= this.expiresAt) throw leaseDenied();
+    const { owner, binding, execution } = state;
+    const directory = spaceDirectoryFor(state.host);
+    const current = execution.currentDirectoryBinding();
+    if (
+      installed.get(state.host) !== owner ||
+      owner.lifetime.signal.aborted ||
+      owner.source.execution !== execution ||
+      directory !== binding.directory ||
+      directory.signal.aborted ||
+      binding.signal.aborted ||
+      !binding.isCurrent() ||
+      current?.directory !== binding.directory ||
+      current.signal !== binding.signal ||
+      !current.isCurrent()
+    ) {
+      throw leaseDenied();
+    }
+    const member = decideMember(owner.source, state.headers);
+    if (
+      !member.ok ||
+      member.memberId !== this.memberId ||
+      !execution.accountExists(this.memberId)
+    ) {
+      throw leaseDenied();
+    }
+    for (const space of state.spaces) this.#checkSpace(state, space);
+    return state;
+  }
+
+  #scheduleExpiry(): void {
+    const remaining = this.expiresAt - Date.now();
+    if (remaining <= 0) {
+      this.release();
+      return;
+    }
+    this.#timer = setTimeout(
+      () => {
+        // Long deadlines and backward clock changes still use one expiry task.
+        if (Date.now() < this.expiresAt) this.#scheduleExpiry();
+        else this.release();
+      },
+      Math.min(remaining, 2_147_483_647),
+    );
+    this.#timer.unref();
+  }
+
+  release(): void {
+    const state = this.#state;
+    if (state === undefined) return;
+    // Drop request/source/directory references before invoking external callbacks.
+    this.#state = undefined;
+    state.owner.leases--;
+    clearTimeout(this.#timer);
+    this.#timer = undefined;
+    this.#lifetime?.removeEventListener('abort', this.#invalidate);
+    this.#lifetime = undefined;
+    const dispose = this.#disposeChange;
+    this.#disposeChange = undefined;
+    try {
+      dispose?.();
+    } catch {
+      // A failing producer cleanup must not expose source errors or revive the lease.
+    }
+    this.#controller.abort();
+  }
+}
+
+/** Issue from the original member cookie and installed source; never owner fallback. */
+export async function openExecutionMemberLease(
+  ctx: object,
+  request: MemberRequest,
+): Promise<ExecutionMemberLease> {
+  try {
+    const host = resolverHost(ctx);
+    const owner = installed.get(host);
+    const execution = owner?.source.execution;
+    if (!owner || !execution || owner.leases >= EXECUTION_MEMBER_LEASE_LIMIT) {
+      throw leaseDenied();
+    }
+    const headers: IncomingHttpHeaders = Object.fromEntries(
+      Object.entries(request.headers).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? [...value] : value,
+      ]),
+    );
+    const cookie = readMemberCookie(headerValue(headers, 'cookie'));
+    if (cookie === undefined) throw leaseDenied();
+    const member = decideMember(owner.source, headers);
+    const binding = execution.currentDirectoryBinding();
+    if (!member.ok || binding === undefined) throw leaseDenied();
+    return new CurrentMemberLease(
+      { host, owner, execution, headers, binding, spaces: new Set() },
+      member.memberId,
+      cookie.expiresAt,
+    ).start();
+  } catch {
+    throw leaseDenied();
+  }
 }
 
 export function configureDeploymentMode(ctx: object, mode: DeploymentMode): void {
