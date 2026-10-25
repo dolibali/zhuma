@@ -474,13 +474,19 @@ test('http inbox uses this plan when another task reuses the node id', async () 
       access: 'visible',
       blocking: false,
       sourceNodeId: 'node-1',
+      artifactVersionId: cited,
       sourceGoal: '本计划目标',
       version: 2,
       name: '第 2 版',
     },
   ]);
+  // The visible row carries its real pinned version id (artifact:idem-key-4e1)
+  // so clients can read content; hidden/pending rows and other spaces never carry one.
+  const nonVisible = JSON.stringify(
+    upstreamInputs(inbox).filter((input) => input.access !== 'visible'),
+  );
+  assert.equal(nonVisible.includes('idem-key-4e1'), false);
   for (const secret of [
-    'idem-key-4e1',
     '别的任务目标',
     '另一版本目标',
     '另一计划目标',

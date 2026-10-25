@@ -26,7 +26,8 @@ test('upstream DTO: copy only the public projection; hidden source identifiers a
   const inputs = upstreamInputs();
   inputs[0].text = 'not-public-body';
   inputs[0].files = [{ id: 'not-public-file' }];
-  inputs[0].artifactVersionId = 'not-public-artifact';
+  // visible 行的 artifactVersionId 是公共投影（供内容读取），透传注入值
+  inputs[0].artifactVersionId = 'artifact:injected-visible-pin';
   inputs[3].sourceNodeId = 'not-public-node';
   inputs[3].sourceGoal = 'not-public-goal';
   inputs[3].taskId = 'not-public-task';
@@ -34,7 +35,9 @@ test('upstream DTO: copy only the public projection; hidden source identifiers a
   inputs[3].version = 99;
   inputs[3].name = 'not-public-name';
   const parsed = readExecutionNode({ ...deliveryNode, inputs });
-  assert.deepEqual(parsed.inputs, upstreamInputs());
+  const expected = upstreamInputs();
+  expected[0].artifactVersionId = 'artifact:injected-visible-pin';
+  assert.deepEqual(parsed.inputs, expected);
   assert.ok(!JSON.stringify(parsed).includes('not-public-'));
   assert.ok(
     !renderToStaticMarkup(createElement(UpstreamInputsPanel, { inputs: parsed.inputs })).includes(

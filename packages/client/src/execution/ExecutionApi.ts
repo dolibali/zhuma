@@ -62,6 +62,8 @@ export type UpstreamInputWire =
       readonly access: 'visible';
       readonly blocking: boolean;
       readonly sourceNodeId: string;
+      /** Pinned accepted version id carried by the #81 projection for content reads. */
+      readonly artifactVersionId: string;
       readonly sourceGoal?: string;
       readonly version: number;
       readonly name: string;
@@ -300,6 +302,7 @@ function readUpstreamInput(value: unknown): UpstreamInputWire {
         access: 'visible',
         blocking,
         sourceNodeId: text(item.sourceNodeId, '来源节点'),
+        artifactVersionId: text(item.artifactVersionId, '上游版本标识'),
         ...(item.sourceGoal === undefined ? {} : { sourceGoal: item.sourceGoal as string }),
         version: integer(item.version, 1, '上游版本'),
         name: text(item.name, '产物名称'),

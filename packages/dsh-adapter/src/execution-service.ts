@@ -113,7 +113,7 @@ const upstreamContentSchema = z.strictObject({
   nodeId: id,
   sourceNodeId: id,
   artifactVersionId: id,
-  spaceId: id.optional(),
+  spaceId: id,
 });
 const draftLocate = {
   taskId: id,
@@ -160,7 +160,13 @@ export type UpstreamContentRequest = z.infer<typeof upstreamContentSchema>;
 /** Accepted content of a pinned upstream input. File refs carry metadata only, never bytes. */
 export interface UpstreamContentValue {
   readonly actorId: string;
-  readonly spaceId?: string | undefined;
+  readonly spaceId: string;
+  readonly downstream: {
+    readonly nodeId: string;
+    readonly taskId: string;
+    readonly planId: string;
+    readonly revision: number;
+  };
   readonly source: {
     readonly nodeId: string;
     readonly taskId: string;
@@ -1101,6 +1107,8 @@ export class ExecutionService {
       const parsed = parseBody(upstreamContentSchema, body);
       if (!parsed.ok) return parsed;
       if (!this.projectSpaceDirectory()) return fail('not-found');
+      // The scope is required for this read: a member holding two spaces must
+      // name the current one, so the chosen constraint is always explicit.
       const scope = parsed.value.spaceId;
       if (!this.scopeHeld(actor.value.spaceIds, scope)) return fail('not-found');
       // Authorize the downstream node first: the member must belong to its task.
@@ -1144,7 +1152,13 @@ export class ExecutionService {
         ok: true,
         value: {
           actorId: actor.value.actorId,
-          ...(scope === undefined ? {} : { spaceId: scope }),
+          spaceId: scope,
+          downstream: {
+            nodeId: parsed.value.nodeId,
+            taskId: parsed.value.taskId,
+            planId: parsed.value.planId,
+            revision: parsed.value.revision,
+          },
           source: {
             nodeId: parsed.value.sourceNodeId,
             taskId: parsed.value.taskId,

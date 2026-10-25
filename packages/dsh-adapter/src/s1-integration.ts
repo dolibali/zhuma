@@ -321,11 +321,19 @@ export interface UpstreamContentRequest {
   readonly nodeId: string;
   readonly sourceNodeId: string;
   readonly artifactVersionId: string;
-  readonly spaceId?: string | undefined;
+  /** Required: a member holding two spaces must name the current one. */
+  readonly spaceId: string;
 }
 export interface UpstreamContentValue {
   readonly actorId: string;
-  readonly spaceId?: string | undefined;
+  readonly spaceId: string;
+  /** Full downstream location echo so the caller can verify the correlation. */
+  readonly downstream: {
+    readonly nodeId: string;
+    readonly taskId: string;
+    readonly planId: string;
+    readonly revision: number;
+  };
   readonly source: {
     readonly nodeId: string;
     readonly taskId: string;

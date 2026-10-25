@@ -5,6 +5,7 @@ export function upstreamInputs() {
       access: 'visible',
       blocking: false,
       sourceNodeId: 'api-contract',
+      artifactVersionId: 'artifact:accept-api-contract-v2',
       sourceGoal: '确认订单接口与错误码',
       version: 2,
       name: '第 2 版',

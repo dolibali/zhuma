@@ -2957,6 +2957,7 @@ test('scoped inbox lists visible upstream inputs and hides the other space', asy
       access: 'visible',
       blocking: false,
       sourceNodeId: 'design',
+      artifactVersionId: cited,
       sourceGoal: '本计划目标',
       version: 2,
       name: '第 2 版',
@@ -2968,16 +2969,19 @@ test('scoped inbox lists visible upstream inputs and hides the other space', asy
       access: 'visible',
       blocking: false,
       sourceNodeId: 'design',
+      artifactVersionId: cited,
       sourceGoal: '本计划目标',
       version: 2,
       name: '第 2 版',
     },
   ]);
+  // The north scope's visible pin id is carried for content reads; nothing
+  // from the south space (its bodies, goal, pin id, task) leaks into it.
+  assert.equal(JSON.stringify(north).includes('artifact:north-accepted-4e1'), true);
   for (const secret of [
     'north-body-4e1',
     'south-body-4e1',
     'south-goal-4e1',
-    'artifact:north-accepted-4e1',
     'artifact:south-secret-4e1',
     'task-south',
   ]) {
@@ -3219,11 +3223,24 @@ test('upstreamContent serves the pinned accepted input to the downstream assigne
     nodeId: 'publish',
     sourceNodeId: 'design',
     artifactVersionId: pinned.artifactVersionId,
+    spaceId: 'project',
   });
   assert.equal(content.ok, true, JSON.stringify(content.ok ? '' : content.error));
   if (!content.ok) return;
   assert.equal(content.value.actorId, 'chen');
-  assert.equal(content.value.source.nodeId, 'design');
+  assert.equal(content.value.spaceId, 'project');
+  assert.deepEqual(content.value.downstream, {
+    nodeId: 'publish',
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
+  assert.deepEqual(content.value.source, {
+    nodeId: 'design',
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+  });
   assert.equal(content.value.version.version, 1);
   assert.equal(content.value.content.text, '接口定义正文');
   assert.deepEqual(content.value.content.links, ['https://example.internal/spec']);
@@ -3241,8 +3258,30 @@ test('upstreamContent serves the pinned accepted input to the downstream assigne
     nodeId: 'publish',
     sourceNodeId: 'design',
     artifactVersionId: pinned.artifactVersionId,
+    spaceId: 'project',
   });
   assert.deepEqual(again, content);
+
+  // The client closes the loop: the visible inbox projection carries the real
+  // pinned version id, and that id completes the content read (no key
+  // assembly, no owner snapshot, no whole-space scan).
+  const inbox = await service.inbox(session('chen'), {});
+  assert.equal(inbox.ok, true);
+  if (!inbox.ok) return;
+  const publishView = inbox.value.nodes.find((node) => node.nodeId === 'publish');
+  const visibleInput = publishView.inputs.find((input) => input.access === 'visible');
+  assert.ok(visibleInput && 'artifactVersionId' in visibleInput);
+  const viaProjection = await service.upstreamContent(session('chen'), {
+    taskId: applied.taskId,
+    planId: applied.id,
+    revision: applied.revision,
+    nodeId: 'publish',
+    sourceNodeId: visibleInput.sourceNodeId,
+    artifactVersionId: visibleInput.artifactVersionId,
+    spaceId: 'project',
+  });
+  assert.equal(viaProjection.ok, true, JSON.stringify(viaProjection.ok ? '' : viaProjection.error));
+  assert.deepEqual(viaProjection.ok ? viaProjection.value.content : null, content.value.content);
 });
 
 test('upstreamContent refuses without leaking: non-participant, wrong version, replaced pin, wrong scope', async () => {
@@ -3285,6 +3324,7 @@ test('upstreamContent refuses without leaking: non-participant, wrong version, r
     nodeId: 'publish',
     sourceNodeId: 'design',
     artifactVersionId: pinned.artifactVersionId,
+    spaceId: 'project',
   };
   const factsBefore = JSON.stringify(store.node('design'));
 
@@ -3313,6 +3353,27 @@ test('upstreamContent refuses without leaking: non-participant, wrong version, r
   const wrongScope = await service.upstreamContent(session('chen', ['team-south']), base);
   assert.equal(wrongScope.ok, false);
   assert.equal(wrongScope.error.code, 'not-found');
+
+  // Missing scope refuses at the schema level (the scope is required).
+  const noScope = await service.upstreamContent(session('chen'), {
+    taskId: base.taskId,
+    planId: base.planId,
+    revision: base.revision,
+    nodeId: base.nodeId,
+    sourceNodeId: base.sourceNodeId,
+    artifactVersionId: base.artifactVersionId,
+  });
+  assert.equal(noScope.ok, false);
+  assert.equal(noScope.error.code, 'validation');
+
+  // A member holding BOTH spaces must still name the current one: the wrong
+  // scope refuses even with both memberships.
+  const bothHeld = await service.upstreamContent(session('chen', ['project', 'team-south']), {
+    ...base,
+    spaceId: 'team-south',
+  });
+  assert.equal(bothHeld.ok, false);
+  assert.equal(bothHeld.error.code, 'not-found');
 
   // After the source's accepted version moves on, the pinned ref is replaced.
   // (Test-level medium change: a completed node cannot be resubmitted.)
