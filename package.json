@@ -33,6 +33,7 @@
     "brand:check": "node scripts/desktop/check-icons.mjs",
     "desktop:verify:icons": "node scripts/desktop/check-running-icons.mjs",
     "desktop:verify:member": "node scripts/desktop/verify-member-transport.mjs",
+    "desktop:verify:native-lifecycle": "node scripts/desktop/verify-native-lifecycle.mjs",
     "workbench:build": "node scripts/workbench/build.mjs",
     "workbench:stage": "pnpm workbench:build && node scripts/workbench/install-stage.mjs",
     "test:ui": "pnpm workbench:build && pnpm test:ui:run",

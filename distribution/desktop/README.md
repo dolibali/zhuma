@@ -34,6 +34,14 @@ Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek �
 
 保持 DSH 上游的版权与 MIT 许可声明；公开仓库中的独立 Zhuma 许可另行确定。当前四个自研包仍处于基础骨架阶段。
 
+## 持续会话的队列保留能力
+
+发行补丁为可信 Host 生命周期拥有者提供 `retainPendingInboxOnDispose`：在 `ctx.agents.lifecycleCapabilities.retainPendingInboxOnDispose === true` 时，方可在 `agents.create`／`resume` 顶层选项显式开启。A 的 `requireNativeInboxRetention` 提供公开兼容类型与能力检查；未补丁 npm SDK、缺失／不支持的 factory 关闭该能力，不能以接受未知字段判断支持。实际发行绑定固定上游、补丁 SHA-256 和准备配方摘要，不只判断同为 `0.2.1-rc.2`。
+
+默认仍销毁并取消队列；只有成功发布且 opt-in 的会话在销毁时保留未消费输入。销毁先封住该实例的新输入和唤醒，再取消、等待静止、关闭持久句柄；保留不代表自动重放。默认 child、配置与失败 setup 的清理不变，显式清空仍持久取消。该选项是 Host 策略，不是 Client／模型权限；真实成员 Run、撤权、工作区和工具授权仍由业务接缝验证。
+
+在已安装固定上游测试工具链后执行 `pnpm desktop:verify:native-lifecycle`，也可用 `--upstream /path/to/fixed-upstream` 指定精确检出。脚本仅在独立临时 Git worktree 应用完整发行补丁，运行既有取消／child 清理回归、新 opt-in 与挂起唤醒用例，并以两个独立 Node 进程验证同盘关闭／恢复没有自动模型请求。测试使用本地脚本 Adapter，输出补丁／夹具摘要及分层证据；它不认证真实模型、产品 Run 授权或已安装桌面。失败证据保留，不修改固定上游、gitlink 或用户应用数据。
+
 ## 原图一致性验收
 
 `pnpm brand:check` 检查原始 PNG 的固定 SHA-256 和全部导出资源；`pnpm desktop:verify:mac` 继续检查安装包内 ICNS 与本次准备的 ICNS 完全相同。运行时通过 CDP 读取两个品牌图标的实际 `currentSrc`、像素密度和响应字节摘要，确认窗口加载的是原图导出而不是缓存中的旧图。修订安装包采用 `brand.json` 的独立构建版本，保留旧包作为历史，不将同名旧包误认为已修复。

@@ -582,3 +582,208 @@ diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
    const outgoing = new Headers(response.headers)
    for (const name of WITHHELD_RESPONSE_HEADERS) outgoing.delete(name)
    if (PLUGIN_BUNDLE_PATH.test(source.pathname)) outgoing.set('cache-control', 'no-store')
+diff --git a/packages/core/agent-loop/src/agent.ts b/packages/core/agent-loop/src/agent.ts
+index adf2e33d..8543ca72 100644
+--- a/packages/core/agent-loop/src/agent.ts
++++ b/packages/core/agent-loop/src/agent.ts
+@@ -99,6 +99,7 @@ export class ReactLoopAgent implements Agent {
+   readonly inbox: ReactLoopInbox
+   private phase: Phase
+   private activityDone: Promise<void> = Promise.resolve()
++  private disposing = false
+ 
+   /** The agent-scoped registration boundary; the lifecycle owner unwinds it after the driver exits. */
+   readonly scope: Scope
+@@ -152,6 +153,7 @@ export class ReactLoopAgent implements Agent {
+   }
+ 
+   send(message: UserMessage, target: InboxTarget, wakeup: boolean): void {
++    if (this.disposing) throw new Error(`agent "${this.id}" lifecycle is disposed`)
+     // Waking input cannot join an aborted activity, so it starts the next turn.
+     // Captured before the insertion so a reentrant cancel from a splice observer cannot reclassify it.
+     const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
+@@ -180,7 +182,15 @@ export class ReactLoopAgent implements Agent {
+     if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
+   }
+ 
++  /** Seal input/wake admission before cancellation; retained work remains pending, never driven here. */
++  beginRetainedDisposal(): void {
++    this.disposing = true
++    if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
++    this.cancel({ kind: 'disposed' }, { keepInbox: true })
++  }
++
+   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {
++    if (this.disposing) throw new Error(`agent "${this.id}" lifecycle is disposed`)
+     if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}" already has active work`)
+     const done = Promise.withResolvers<void>()
+     const maintenance: Phase = {
+@@ -212,6 +222,7 @@ export class ReactLoopAgent implements Agent {
+    *   the inbox insertion so a reentrant cancel cannot reclassify it.
+    */
+   private wakeDriver(wakeAfterAbort = false): void {
++    if (this.disposing) return
+     if (this.phase.kind !== 'idle') {
+       // Maintenance and aborted drivers cannot deliver the wake: latch it for
+       // replay at convergence. Live drivers claim queued work themselves;
+diff --git a/packages/core/agent-loop/src/index.ts b/packages/core/agent-loop/src/index.ts
+index ca4532af..898d0b5d 100644
+--- a/packages/core/agent-loop/src/index.ts
++++ b/packages/core/agent-loop/src/index.ts
+@@ -339,6 +339,7 @@ function validateConfiguredAgents(agents: Config['agents']): void {
+ 
+ /** Concrete agent factory and driver service. */
+ export class AgentLoop extends Service implements AgentFactory {
++  readonly lifecycleCapabilities = Object.freeze({ retainPendingInboxOnDispose: true })
+   static inject = ['agents', 'sessions', 'llm', 'tools', 'systemPrompt', 'sessionProjections']
+ 
+   /** Runtime schema for declarative agents. */
+@@ -502,6 +503,7 @@ export class AgentLoop extends Service implements AgentFactory {
+     callerSignal?: AbortSignal,
+     handle?: SessionHandle,
+     parentAgent?: Agent,
++    retainPendingInboxOnDispose = false,
+   ): PreparedAgent {
+     assertAgentOptions(options)
+     ownerCtx.fiber.assertActive()
+@@ -537,6 +539,7 @@ export class AgentLoop extends Service implements AgentFactory {
+     let detachAgent: (() => void) | undefined
+     let disposing: Promise<void> | undefined
+     let publication: ReturnType<typeof Promise.withResolvers<void>> | undefined
++    let published = false
+     const machineReady = Promise.withResolvers<void>()
+     // Reverse teardown, memoized so every racing owner awaits one quiescence:
+     // stop the machine, unwind the scope, drain and close the session's write
+@@ -561,7 +564,8 @@ export class AgentLoop extends Service implements AgentFactory {
+         if (machine === undefined) await machineReady.promise
+         /* v8 ignore next -- setup failure untracks this disposer before resolving without a machine. */
+         if (machine !== undefined) {
+-          machine.cancel({ kind: 'disposed' })
++          if (retainPendingInboxOnDispose && published) machine.beginRetainedDisposal()
++          else machine.cancel({ kind: 'disposed' })
+           await machine.whenIdle()
+         }
+       } catch (error: unknown) {
+@@ -659,6 +663,7 @@ export class AgentLoop extends Service implements AgentFactory {
+             assertLive()
+             await loopCtx.agents.announce(agent, source, abort.signal)
+             assertLive()
++            published = true
+             return { agent, dispose }
+           } finally {
+             publication.resolve()
+@@ -748,6 +753,7 @@ export class AgentLoop extends Service implements AgentFactory {
+    * @returns the published handle.
+    */
+   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
++    const retainPendingInboxOnDispose = options.retainPendingInboxOnDispose === true
+     const preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(options.sessionId, {
+       ...options.seed === undefined ? {} : { seed: options.seed },
+       ...options.meta === undefined ? {} : { meta: options.meta },
+@@ -780,6 +786,7 @@ export class AgentLoop extends Service implements AgentFactory {
+         'startup',
+         stored,
+         options.parentAgent,
++        retainPendingInboxOnDispose,
+       )
+     })()
+     this.ownership.trackWrapper(published)
+@@ -797,12 +804,13 @@ export class AgentLoop extends Service implements AgentFactory {
+     source: SessionStartSource,
+     stored?: StoredSession,
+     parentAgent?: Agent,
++    retainPendingInboxOnDispose = false,
+   ): Promise<AgentHandle> {
+     using ownedPreparation = preparation
+     const session = ownedPreparation.session
+     let prepared: PreparedAgent
+     try {
+-      prepared = this.prepare(ownerCtx, id, agentOptions, session, signal, stored?.handle, parentAgent)
++      prepared = this.prepare(ownerCtx, id, agentOptions, session, signal, stored?.handle, parentAgent, retainPendingInboxOnDispose)
+     } catch (error: unknown) {
+       await stored?.handle.close().catch(() => {})
+       throw error
+@@ -854,6 +862,7 @@ export class AgentLoop extends Service implements AgentFactory {
+     persistence: SessionPersistence,
+     options: ResumeAgentOptions,
+   ): Promise<AgentHandle> {
++    const retainPendingInboxOnDispose = options.retainPendingInboxOnDispose === true
+     const id = options.resumeSessionId
+     const published = (async () => {
+       // The open and read may outlive their owner: race them against caller
+@@ -915,6 +924,7 @@ export class AgentLoop extends Service implements AgentFactory {
+           'resume',
+           owned,
+           options.parentAgent,
++          retainPendingInboxOnDispose,
+         )
+       } finally {
+         preparation?.[Symbol.dispose]()
+diff --git a/packages/core/agent/src/index.ts b/packages/core/agent/src/index.ts
+index dd8d09e6..c8e29237 100644
+--- a/packages/core/agent/src/index.ts
++++ b/packages/core/agent/src/index.ts
+@@ -61,6 +61,8 @@ export type AgentSetup = (
+  * lineage); the factory creates the session and agent under that identity.
+  */
+ export interface CreateAgentOptions {
++  /** Trusted lifecycle owner opt-in; defaults to canceling pending input on disposal. */
++  readonly retainPendingInboxOnDispose?: boolean
+   /** The live agent/session identity. */
+   readonly sessionId: SessionId
+   /** Live parent Agent for runtime ownership; omit for a root Agent. */
+@@ -123,6 +125,8 @@ export interface CreateAgentOptions {
+  * ({@link AgentRegistry.resume}).
+  */
+ export interface ResumeAgentOptions {
++  /** Trusted lifecycle owner opt-in; never inferred from persisted input or model options. */
++  readonly retainPendingInboxOnDispose?: boolean
+   /** The persisted session id to load and use as the live agent/session identity. */
+   readonly resumeSessionId: SessionId
+   /** Live parent Agent for runtime ownership; omit for a root Agent. */
+@@ -169,6 +173,8 @@ export interface AgentHandle {
+  * depending on the concrete `dsh-agent-loop` package.
+  */
+ export interface AgentFactory {
++  /** Behavior negotiated by the active factory, not by accepting unknown option fields. */
++  readonly lifecycleCapabilities?: { readonly retainPendingInboxOnDispose?: boolean }
+   /**
+    * Create a new agent on a caller-supplied session id. Async because creation
+    * awaits unpublished setup, invokes its optional synchronous commit, inserts
+@@ -381,6 +387,20 @@ export class AgentRegistry extends Service {
+     return this.factory
+   }
+ 
++  /** Snapshot the current factory's lifecycle capabilities; old factories default to unsupported. */
++  get lifecycleCapabilities(): Readonly<{ retainPendingInboxOnDispose: boolean }> {
++    return Object.freeze({
++      retainPendingInboxOnDispose: this.requireFactory().target.lifecycleCapabilities?.retainPendingInboxOnDispose === true,
++    })
++  }
++
++  private assertLifecycleOptions(factory: AgentFactory, value: boolean | undefined): void {
++    if (value !== undefined && typeof value !== 'boolean') throw new TypeError('invalid retainPendingInboxOnDispose option')
++    if (value === true && factory.lifecycleCapabilities?.retainPendingInboxOnDispose !== true) {
++      throw new Error('agent factory does not support retainPendingInboxOnDispose')
++    }
++  }
++
+   /**
+    * Create and publish a new agent through the registered factory.
+    * Distinct from {@link register} (which records an already-constructed
+@@ -397,6 +417,7 @@ export class AgentRegistry extends Service {
+     // its effects to ownerCtx; plain factories receive ownerCtx as an explicit
+     // capability and need no Cordis tracker magic.
+     const { target } = this.requireFactory()
++    this.assertLifecycleOptions(target, options.retainPendingInboxOnDispose)
+     const receiver = getTraceable(ownerCtx, target)
+     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+     return Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
+@@ -412,6 +433,7 @@ export class AgentRegistry extends Service {
+   async resume(options: ResumeAgentOptions): Promise<AgentHandle> {
+     const ownerCtx = this.ctx
+     const { target } = this.requireFactory()
++    this.assertLifecycleOptions(target, options.retainPendingInboxOnDispose)
+     const receiver = getTraceable(ownerCtx, target)
+     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+     return Reflect.apply(target.resume, receiver, [ownerCtx, options])
