@@ -1,6 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { Select } from '@base-ui/react/select';
 import { Combobox } from '@base-ui/react/combobox';
+import { ControlIcon } from './ControlIcon.js';
 
 export interface SelectOption {
   value: string;
@@ -67,7 +68,7 @@ export function SingleSelect({
   const content = triggerContent ?? (
     <>
       <span className="zm-select-value">{caption}</span>
-      <span aria-hidden>⌄</span>
+      <ControlIcon direction="down" />
     </>
   );
   if (searchable) {

@@ -4,6 +4,7 @@ import type { SidebarFooterActionOwnerProps } from '@deepseek-ai/dsh-client-ui-s
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
+import { ControlIcon } from '../workbench/ControlIcon.js';
 import type { MemberShell, MemberShellSnapshot } from './shell.js';
 
 export type SidebarAccountFooterProps = SidebarFooterActionOwnerProps & {
@@ -33,7 +34,7 @@ function PersonIcon() {
   );
 }
 
-/** Occupies the real sidebar footer action slot; owns no session or theme state. */
+/** Account action reused by the composed Settings launcher; owns no session or theme state. */
 export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFooterProps) {
   const snapshot = useSyncExternalStore(shell.subscribe, shell.getSnapshot, shell.getSnapshot);
   const state = snapshot.session;
@@ -70,9 +71,7 @@ export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFo
             <strong>{accountId ?? label}</strong>
             {accountId && <small>{caption}</small>}
           </span>
-          <span className="zm-account-chevron" aria-hidden="true">
-            ⌄
-          </span>
+          {accountId && <ControlIcon direction="down" />}
         </>
       )}
     </>

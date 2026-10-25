@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { IdentityApiError } from '../dist/identity/api.js';
 import { createMemberShell } from '../dist/identity/shell.js';
 import { SidebarAccountFooter } from '../dist/identity/SidebarAccountFooter.js';
+import { SidebarAccountSettingsLauncher } from '../dist/identity/SidebarAccountSettingsLauncher.js';
 import { MemberExecutionPage } from '../dist/execution/MemberExecutionPage.js';
 
 const spaces = [
@@ -193,5 +194,30 @@ test('root shell static contract: signed-out footer opens the login destination 
   );
   assert.match(html, /登录账号/);
   assert.equal(html.includes('member-a'), false);
+  assert.equal(html.includes('zm-control-icon'), false);
+  shell.stop();
+});
+
+test('settings launcher keeps account and Settings as separate controls in both sidebar widths', async () => {
+  const { shell } = fixture();
+  shell.start();
+  await tick();
+  const props = {
+    shell,
+    settingsOpen: false,
+    openWork() {},
+    openSettings() {},
+    openOnboarding() {},
+  };
+  for (const wide of [true, false]) {
+    const html = renderToStaticMarkup(
+      createElement(SidebarAccountSettingsLauncher, { ...props, wide }),
+    );
+    assert.match(html, new RegExp(`data-wide="${wide}"`));
+    assert.match(html, /aria-label="账号与空间：member-a"/);
+    assert.match(html, /aria-label="设置"/);
+    assert.match(html, /aria-haspopup="dialog"/);
+    assert.equal((html.match(/zm-settings-trigger/g) ?? []).length, 1);
+  }
   shell.stop();
 });

@@ -54,7 +54,7 @@ test('默认从目标创建一次并直达规划，结果可应用编辑；刷�
     await page.getByLabel('节点名称', { exact: true }).fill('核对业务边界与数据范围');
     await button(page, '保存草稿').click();
     await expect(button(page, '保存草稿')).toBeDisabled();
-    await button(page, '← 任务清单').click();
+    await button(page, '任务清单').click();
     await page.getByRole('button', { name: /^新增订单状态筛选和 CSV 导出/ }).click();
     await expect(page.getByLabel('节点名称', { exact: true })).toHaveValue(
       '核对业务边界与数据范围',
@@ -144,7 +144,7 @@ test('创建失败不启动规划；重试复用请求和任务；离开待规�
     expect(requests(replay, 'command')[0].command.task.id).toBe(
       requests(replay, 'command')[1].command.task.id,
     );
-    await button(page, '← 任务清单').click();
+    await button(page, '任务清单').click();
     gate.resolve();
     await expect
       .poll(() => replay.completed.includes(requests(replay, 'plan')[0].requestId))

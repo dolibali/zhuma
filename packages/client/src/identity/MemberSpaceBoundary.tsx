@@ -11,6 +11,7 @@ import {
 import { Button } from '../workbench/Button.js';
 import { Modal } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
+import { ControlIcon } from '../workbench/ControlIcon.js';
 import { UnsavedChangesBoundary } from '../workbench/UnsavedChanges.js';
 import type { IdentityApi, MemberSession, MemberSpace } from './api.js';
 import { createMemberSpaceController } from './spaces.js';
@@ -141,7 +142,7 @@ export function MemberSpaceBoundary({
             triggerContent={
               <>
                 <span className="zm-select-value">{caption}</span>
-                <span aria-hidden="true">⌄</span>
+                <ControlIcon direction="down" />
               </>
             }
           />

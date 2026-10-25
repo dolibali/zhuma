@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { nodeRelations, workflowPath, type WorkTree } from './navigation.js';
 import type { WorkNode, Workflow } from '@zhuma/agent-core';
+import { ControlIcon } from './ControlIcon.js';
 
 export function TreeNavigator({
   tree,
@@ -65,7 +66,7 @@ export function TreeNavigator({
                     title={activePath.has(child.id) ? '当前定位位于此分支' : undefined}
                     onClick={() => toggle(child.id)}
                   >
-                    {expanded.has(child.id) ? '⌄' : '›'}
+                    <ControlIcon direction={expanded.has(child.id) ? 'down' : 'right'} />
                   </button>
                 ) : (
                   <span className="zm-tree-leaf" aria-hidden="true">
@@ -88,7 +89,7 @@ export function TreeNavigator({
       {nodes.length ? (
         nodes.map((n) => (
           <button key={n.id} onClick={() => select(n.id)}>
-            {n.title} →
+            {n.title} <ControlIcon direction="right" />
           </button>
         ))
       ) : (
@@ -105,7 +106,9 @@ export function TreeNavigator({
         <div className="zm-actions">
           <button onClick={() => enter(workflow.id)}>进入本层工作流</button>
           {selected && tree.child.has(selected.id) && (
-            <button onClick={() => enter(tree.child.get(selected.id)!.id)}>打开子工作流 →</button>
+            <button onClick={() => enter(tree.child.get(selected.id)!.id)}>
+              打开子工作流 <ControlIcon direction="right" />
+            </button>
           )}
         </div>
         {selected && (
