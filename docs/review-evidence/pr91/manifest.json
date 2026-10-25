@@ -1,0 +1,115 @@
+{
+  "baseline": "f20ac348909aeccd6ed5a3dd2fa77a041db2d8ca",
+  "implementation": "66710ea8cdbaf6eb9754fed1270f190c081ad8c5",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "theme": "light/dark via browser media emulation, not system OS",
+  "capture": "actual ExecutionWorkspace and typed Client local HTTP response replay;fictional work items and supplied source fields",
+  "sameNormalData": true,
+  "sameDeliveryInputsAndBodyFocus": true,
+  "noUIBeforeFor": "ambiguous source after-state only;normal/selected delivery/initial error have real baseline counterparts",
+  "boundary": "not true identity/authorization/persistence/Host/native/Agent/model proof",
+  "files": [
+    {
+      "file": "after-ambiguous-dark.png",
+      "width": 1440,
+      "height": 1128,
+      "bytes": 127481,
+      "sha256": "ae66eae1dfa5f7a16cba4c59ec893f083e9eb777beb03ab36d6b037189cac267"
+    },
+    {
+      "file": "after-ambiguous-light.png",
+      "width": 1440,
+      "height": 1128,
+      "bytes": 129840,
+      "sha256": "3516b98c97a0fd1df64b6553c9a3eb3c702dde313e1ff8deebea18a0eb40945c"
+    },
+    {
+      "file": "after-delivery-dark.png",
+      "width": 1440,
+      "height": 1769,
+      "bytes": 176041,
+      "sha256": "6c858db44ba6054bd8c8cfa45e7d703586655efa25e3398563c24669d5f5f4f1"
+    },
+    {
+      "file": "after-delivery-light.png",
+      "width": 1440,
+      "height": 1769,
+      "bytes": 179892,
+      "sha256": "1973687857c63e586275b82c00969b79c743427f4dda49904b3c27238cc72538"
+    },
+    {
+      "file": "after-error-dark.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 23119,
+      "sha256": "ac93577c83b1b6316fafbeb3496679d4c984b8d46f995aaa1f8cb920f8f80914"
+    },
+    {
+      "file": "after-error-light.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 23465,
+      "sha256": "70a60f2d8f1f6faf24ef62fdbb561e8e491b51cf8704f45f9dfd14997a73efa1"
+    },
+    {
+      "file": "after-inbox-dark.png",
+      "width": 1440,
+      "height": 1112,
+      "bytes": 130401,
+      "sha256": "19aafa7ca870dc788cedcaa3127561d6b66791023ef2456ca7cb4510916affef"
+    },
+    {
+      "file": "after-inbox-light.png",
+      "width": 1440,
+      "height": 1112,
+      "bytes": 133383,
+      "sha256": "9078b66ff0fe0cef24c2b1f4058ddf04a06a7f917b18f5306444c65321991df4"
+    },
+    {
+      "file": "before-delivery-dark.png",
+      "width": 1440,
+      "height": 1349,
+      "bytes": 107685,
+      "sha256": "68b8ae3f76bc8ed10451bcaeb7ae62b8a92afdfc5f40792f2379d63b42e0b15a"
+    },
+    {
+      "file": "before-delivery-light.png",
+      "width": 1440,
+      "height": 1349,
+      "bytes": 112187,
+      "sha256": "3da7987b8556fe64ddbb1e37610b7e829f04e398000ca5406ba42438632c49f8"
+    },
+    {
+      "file": "before-error-dark.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 27483,
+      "sha256": "1fb54c7b79b1a7b553532fd04e50b9b412acd9c05a1b04c63a195e0d477e50e3"
+    },
+    {
+      "file": "before-error-light.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 27798,
+      "sha256": "d9d42d4e4d57ff604832057e5c3de55a8f7d70c7fd1a14a6bbfdfdf7f1f8c028"
+    },
+    {
+      "file": "before-inbox-dark.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 64010,
+      "sha256": "f09453922219255d52ad9459b7b0c03377b8f6d2539889328e014779b56ab565"
+    },
+    {
+      "file": "before-inbox-light.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 67619,
+      "sha256": "0d6a0764d5a0497e9967ed3fb3f841a807eee0d06c96d88f154cdc75d18ffa69"
+    }
+  ],
+  "sameHover": "pointer at blank top-left before every shot;delivery body focus matched"
+}
