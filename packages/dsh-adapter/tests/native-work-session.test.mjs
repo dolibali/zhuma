@@ -18,9 +18,9 @@ async function home(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
-async function setup(t, script = [], compose) {
+async function setup(t, script = [], compose, runtimeOptions) {
   const root = await home(t);
-  const host = await boot(root, new ScriptedAdapter(script), compose);
+  const host = await boot(root, new ScriptedAdapter(script), compose, runtimeOptions);
   t.after(() => host.close());
   return { ...host, root };
 }
@@ -434,5 +434,50 @@ test(
       await nativeAgent(host, current).whenIdle();
     }
     assert.equal((await host.service.stop(current)).status, 'stopped');
+  },
+);
+
+test(
+  'real DSH: cancelling a history read does not wait for a held native durability checkpoint',
+  { timeout: 15000 },
+  async (t) => {
+    const host = await setup(t, ['persisted']);
+    const current = grant();
+    await host.service.send(current, message('one', 'create history'));
+    await nativeAgent(host, current).whenIdle();
+    const entered = deferred(),
+      release = deferred();
+    const remove = host.ctx.on(
+      'session/flush',
+      async () => {
+        entered.resolve();
+        await release.promise;
+      },
+      { global: true },
+    );
+    const ui = new AbortController();
+    const reading = host.service.history(current, -1, 10, ui.signal);
+    const finished = reading.then(
+      () => 'resolved',
+      () => 'rejected',
+    );
+    let timer;
+    try {
+      await entered.promise;
+      ui.abort();
+      const result = await Promise.race([
+        finished,
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve('still-waiting'), 250);
+        }),
+      ]);
+      assert.equal(result, 'rejected', 'read cancellation must not await the held checkpoint');
+      assert.equal(current.signal.aborted, false, 'UI cancellation must not revoke the Run');
+    } finally {
+      clearTimeout(timer);
+      release.resolve();
+      remove();
+      await finished;
+    }
   },
 );

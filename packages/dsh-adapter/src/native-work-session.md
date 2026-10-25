@@ -28,6 +28,8 @@ All locators below come from the grant. Errors are stable `NativeWorkError.code`
 
 There is no new Client/wire protocol in this slice. The nine operation rows describe the Host-internal service seam; public transport decoding and its operation inventory must be supplied with A's registration.
 
+History's complete page wait (checkpoint, native read-open/read and reader-close) has a default 15-second deadline; the trusted Host may lower `readTimeoutMs` within 10–15,000ms. An expired wait returns `read-timeout`, and UI/authority/Host-lifetime cancellation returns `cancelled`. This interrupts the request's wait and suppresses late content; it does not claim that shared native flush/I/O stopped or that a Run was stopped. A late successful open is closed without reading its body; a late rejection is consumed, and a failed reader cleanup emits only a constant diagnostic. A close already started is allowed to settle independently. Initial `follow` uses this same bounded read and immediately removes its three listeners on cancellation/timeout. The live subscription also ends on the runtime's own close. Actual stop and Host teardown still require their native idle/durability evidence.
+
 ## Native and persistent facts
 
 The mapping schema is version 1, strict and JSON-validated. It contains full scope, native session/Agent ID (one identity in DSH), provider/model selection/configuration ID, and receipt IDs/fingerprints/statuses. Transcript, queue bodies and tool history remain in DSH's native session JSONL. The metadata store is single-open at Host lifetime; asynchronous writes are serialized per locator. No conversation cache or alternative execution state machine exists.

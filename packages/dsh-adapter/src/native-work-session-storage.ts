@@ -63,6 +63,7 @@ export const nativeWorkSessionInject = [
 
 /** A mounts this once at Host lifetime; callers never open a second mapping domain. */
 export async function openNativeWorkSessions(ctx: Context, options: NativeDshOptions) {
+  const runtime = new DshNativeWorkRuntime(ctx, options);
   const domain = await ctx.storageDomain.open(nativeWorkSessionDomainSpec);
   const bindings = domain.table('bindings');
   const storage: NativeWorkStorage = {
@@ -74,7 +75,6 @@ export async function openNativeWorkSessions(ctx: Context, options: NativeDshOpt
       await bindings.put(key, nativeWorkSessionBindingSchema.parse(structuredClone(value)));
     },
   };
-  const runtime = new DshNativeWorkRuntime(ctx, options);
   const service = new NativeWorkSessionService(storage, runtime);
   let closed: Promise<void> | undefined;
   const close = () =>

@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent, AgentHandle, AgentSetup } from '@deepseek-ai/dsh-agent';
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { SessionId, type UserMessage } from '@deepseek-ai/dsh-session';
-import type {} from '@deepseek-ai/dsh-session-persistence';
+import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
 import {
   NativeWorkError,
@@ -19,6 +19,7 @@ const MAX_FRAME_BYTES = 262_144;
 const MAX_BUFFER_BYTES = 524_288;
 const MAX_BUFFER_FRAMES = 128;
 const STOP_MS = 5_000;
+const READ_MS = 15_000;
 
 interface LiveSession {
   readonly handle: AgentHandle;
@@ -35,12 +36,61 @@ export interface NativeDshComposition {
 }
 
 export interface NativeDshOptions {
+  /** Host-owned per-page wait budget, 10–15,000ms. Does not stop native I/O. */
+  readonly readTimeoutMs?: number;
   /** Host-owned scoped composition, before native publication; never drives the Agent. */
   compose(
     ctx: Context,
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
   ): NativeDshComposition | Promise<NativeDshComposition>;
+}
+
+/** Cancel the caller's wait while consuming every late completion/rejection. */
+function waitForRead<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+  interrupted: () => NativeWorkError,
+  abandoned?: (value: T) => Promise<unknown>,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(interrupted());
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', abort);
+      reject(interrupted());
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    void Promise.resolve()
+      .then(() => {
+        if (signal.aborted) throw interrupted();
+        return operation();
+      })
+      .then(
+        (value) => {
+          if (settled) {
+            // A native open may ignore abort and still hand out an owned reader.
+            if (abandoned)
+              void Promise.resolve()
+                .then(() => abandoned(value))
+                .catch(() => undefined);
+            return;
+          }
+          settled = true;
+          signal.removeEventListener('abort', abort);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener('abort', abort);
+          reject(error);
+        },
+      );
+    if (signal.aborted) abort();
+  });
 }
 
 function current(grant: NativeWorkGrant): void {
@@ -69,11 +119,20 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     { readonly promise: Promise<void>; readonly abort: AbortController }
   >();
   private readonly lifetime = new AbortController();
+  private readonly readTimeoutMs: number;
 
   constructor(
     private readonly ctx: Context,
     private readonly options: NativeDshOptions,
-  ) {}
+  ) {
+    this.readTimeoutMs = options.readTimeoutMs ?? READ_MS;
+    if (
+      !Number.isSafeInteger(this.readTimeoutMs) ||
+      this.readTimeoutMs < 10 ||
+      this.readTimeoutMs > READ_MS
+    )
+      throw new NativeWorkError('invalid-request');
+  }
 
   async connect(
     binding: NativeSessionBinding,
@@ -318,19 +377,45 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     limit: number,
     signal: AbortSignal,
   ): Promise<readonly NativeHistoryEvent[]> {
-    signal.throwIfAborted();
-    await this.flush(sessionId);
-    signal.throwIfAborted();
-    const handle = await this.ctx.sessionPersistence.open(SessionId(sessionId), 'read', { signal });
+    const bounded = AbortSignal.any([
+      signal,
+      this.lifetime.signal,
+      AbortSignal.timeout(this.readTimeoutMs),
+    ]);
+    const interrupted = () =>
+      new NativeWorkError(
+        signal.aborted || this.lifetime.signal.aborted ? 'cancelled' : 'read-timeout',
+      );
+    await waitForRead(() => this.flush(sessionId), bounded, interrupted);
+    const handle = await waitForRead(
+      () => this.ctx.sessionPersistence.open(SessionId(sessionId), 'read', { signal: bounded }),
+      bounded,
+      interrupted,
+      (late) => this.closeReadHandle(late),
+    );
     try {
-      const result = await handle.read(after + 1, limit, { signal });
-      signal.throwIfAborted();
+      const result = await waitForRead(
+        () => handle.read(after + 1, limit, { signal: bounded }),
+        bounded,
+        interrupted,
+      );
       if (Buffer.byteLength(JSON.stringify(result.events)) > MAX_FRAME_BYTES)
         throw new NativeWorkError('capacity');
       return result.events;
     } finally {
-      await handle.close();
+      // Start close even after abort, without making a cancelled UI wait for it.
+      const closing = this.closeReadHandle(handle);
+      await waitForRead(() => closing, bounded, interrupted);
     }
+  }
+
+  private closeReadHandle(handle: SessionHandle): Promise<void> {
+    const closing = Promise.resolve().then(() => handle.close());
+    void closing.catch(() => {
+      // No provider diagnostics, source body, native path or abort reason is logged.
+      this.ctx.logger.warn('Native work session reader cleanup failed.');
+    });
+    return closing;
   }
 
   async messageStatus(
@@ -381,8 +466,9 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
   async *follow(
     sessionId: string,
     after: number,
-    signal: AbortSignal,
+    callerSignal: AbortSignal,
   ): AsyncIterable<NativeWorkFrame> {
+    const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
     signal.throwIfAborted();
     const queue: { readonly value: NativeWorkFrame; readonly bytes: number }[] = [];
     let bufferedBytes = 0;
