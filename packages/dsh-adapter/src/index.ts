@@ -131,6 +131,12 @@ export {
   type SpaceKind,
 } from './space-directory.js';
 export type * from './s1-integration.js';
+export {
+  openExecutionMemberLease,
+  type ExecutionMemberDirectoryBinding,
+  type IdentityExecutionOptions,
+} from './member-session.js';
+export type { ExecutionMemberLease } from './execution-run-authority.js';
 export type {
   NativeSessionLineage,
   NativeWorkSessionRecord,

@@ -17,6 +17,9 @@ import { join } from 'node:path';
 let ctx, host, hostPlugin, home, pendingIdentity, releaseIdentity;
 let originalModify, remoteAccessFiber, releaseProjectLookup;
 let workbenchWriteGate, releaseWorkbenchWrite;
+let directoryCloseGate, releaseDirectoryClose, directoryClosing;
+let executionLease, executionLeaseSpace;
+let closeWorkbench, workbenchClosing;
 const domainCloseOrder = [];
 let modelCalls = 0;
 const forks = [];
@@ -54,6 +57,10 @@ async function boot(options) {
     const close = domain.close.bind(domain);
     domain.close = async () => {
       domainCloseOrder.push(spec.name);
+      if (spec.name === 'zhuma_spaces' && directoryCloseGate) {
+        notify('directory-close-pending');
+        await directoryCloseGate;
+      }
       await close();
     };
     if (spec.name === 'zhuma_workbench') {
@@ -135,9 +142,53 @@ async function boot(options) {
   });
   const baseURL = `http://127.0.0.1:${ctx.webServer.port}`;
   notify('listening', { baseURL, ownerURL: ctx.connection.authenticatedUrl(baseURL) });
-  host = ctx.plugin(hostPlugin, options.config);
-  forks.push(host);
-  await host;
+  // Capture the SDK's original, labeled disposer. Calling it alone exercises
+  // Host beforeClose while identity/directory fibers remain active, so their
+  // own teardown cannot mask a delayed publication revocation.
+  const stopObserving = ctx.on('internal/plugin', (fiber) => {
+    if (fiber.runtime.callback !== hostPlugin.apply) return;
+    const effect = fiber.effect.bind(fiber);
+    fiber.effect = (callback, label) => {
+      const dispose = effect(callback, label);
+      if (label === 'zhuma-workbench.close') closeWorkbench = dispose;
+      return dispose;
+    };
+  });
+  try {
+    host = ctx.plugin(hostPlugin, options.config);
+    forks.push(host);
+    await host;
+  } finally {
+    stopObserving();
+  }
+  // Test-only carrier. The signer comes from the exact mounted Host artifact,
+  // never a second dist module with an unrelated private installed-source map.
+  ctx.connection.fetch.register({
+    path: '/api/zhuma-test/execution-member-lease',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    async fetch(request) {
+      executionLease?.release();
+      executionLease = undefined;
+      try {
+        const { spaceId } = await request.json();
+        const lease = await hostPlugin.openExecutionMemberLease(ctx, {
+          headers: Object.fromEntries(request.headers),
+        });
+        try {
+          lease.assertCurrent(spaceId);
+        } catch {
+          lease.release();
+          throw Error('lease space refused');
+        }
+        executionLease = lease;
+        executionLeaseSpace = spaceId;
+        return Response.json({ ok: true, memberId: lease.memberId, expiresAt: lease.expiresAt });
+      } catch {
+        return Response.json({ ok: false });
+      }
+    },
+  });
   notify('ready');
 }
 
@@ -194,6 +245,58 @@ async function waitIdentityState(expected) {
 }
 
 async function act(action) {
+  if (action === 'beginWorkbenchClose') {
+    if (!closeWorkbench) throw Error('Workbench close effect is unavailable');
+    workbenchClosing = Promise.resolve(closeWorkbench());
+    void workbenchClosing.catch(() => {});
+    return {
+      rawAborted: hostPlugin.spaceDirectoryFor(ctx)?.signal.aborted,
+      identityActive: [...(ctx.registry.get(hostPlugin.identityPlugin)?.fibers ?? [])].some(
+        (fiber) => fiber.state === 2,
+      ),
+      leaseAborted: executionLease?.signal.aborted,
+    };
+  }
+  if (action === 'finishWorkbenchClose') {
+    await workbenchClosing;
+    return {};
+  }
+  if (action === 'executionLeaseStatus') {
+    let allowed = false;
+    try {
+      executionLease?.assertCurrent(executionLeaseSpace);
+      allowed = executionLease !== undefined;
+    } catch {
+      /* Only the bounded status is projected; no source error or request. */
+    }
+    return {
+      exists: executionLease !== undefined,
+      aborted: executionLease?.signal.aborted,
+      allowed,
+    };
+  }
+  if (action === 'holdDirectoryClose') {
+    directoryCloseGate = new Promise((resolve) => {
+      releaseDirectoryClose = resolve;
+    });
+    return {};
+  }
+  if (action === 'beginDirectoryClose') {
+    const directory = hostPlugin.spaceDirectoryFor(ctx);
+    directoryClosing = directory.close();
+    // Observe a possible rejection now; callers still await it on release.
+    void directoryClosing.catch(() => {});
+    return {
+      rawAborted: directory.signal.aborted,
+      leaseAborted: executionLease?.signal.aborted,
+    };
+  }
+  if (action === 'releaseDirectoryClose') {
+    releaseDirectoryClose?.();
+    directoryCloseGate = undefined;
+    await directoryClosing;
+    return {};
+  }
   if (action === 'holdWorkbenchWrite') {
     workbenchWriteGate = new Promise((resolve) => {
       releaseWorkbenchWrite = resolve;
@@ -297,6 +400,9 @@ async function act(action) {
     }
   }
   if (action === 'stop') {
+    executionLease?.release();
+    releaseDirectoryClose?.();
+    releaseWorkbenchWrite?.();
     for (const fiber of forks.reverse()) await fiber.dispose();
     return {};
   }

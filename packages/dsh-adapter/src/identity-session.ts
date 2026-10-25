@@ -36,7 +36,7 @@ import {
   memberCredential,
   memberSessionId,
   resolveMember,
-  uninstallMemberResolver,
+  type IdentityExecutionOptions,
 } from './member-session.js';
 import { spaceDirectoryFor, type SpaceDirectory } from './space-directory.js';
 
@@ -748,7 +748,11 @@ function explicitSingleUser(domain: IdentityDomain): string | undefined {
 }
 
 /** Mount an explicit account import, member cookies, and space checks. */
-export async function applyIdentity(ctx: Context, imported?: IdentityImport): Promise<void> {
+export async function applyIdentity(
+  ctx: Context,
+  imported?: IdentityImport,
+  executionOptions?: IdentityExecutionOptions,
+): Promise<void> {
   const mode = deploymentMode(ctx);
   if (mode === undefined) {
     throw new Error('identity startup refused: deployment mode is not configured');
@@ -760,10 +764,34 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
     const secret = await signingSecret(credentials);
     await seedIfEmpty(domain, readImport(imported));
     ctx.effect(() => {
-      installMemberResolver(ctx, {
+      const disposeResolver = installMemberResolver(ctx, {
         secret,
         requestRejection: (headers) => ctx.connection.requestRejection({ headers }),
         findSession: (sessionId) => domain.table('sessions').get(sessionId),
+        ...(executionOptions === undefined
+          ? {}
+          : {
+              execution: {
+                currentDirectoryBinding: () => executionOptions.currentDirectoryBinding(),
+                accountExists: (memberId: string) =>
+                  domain.table('accounts').get(memberId) !== undefined,
+                onChange: (recheck: () => void) =>
+                  ctx.on(
+                    'domain/changed',
+                    (event) => {
+                      if (
+                        (event.domain === 'zhuma_identity' &&
+                          (event.table === 'sessions' || event.table === 'accounts')) ||
+                        (event.domain === 'zhuma_spaces' &&
+                          (event.table === 'spaces' || event.table === 'memberships'))
+                      ) {
+                        recheck();
+                      }
+                    },
+                    { global: true },
+                  ),
+              },
+            }),
         // Trusted enumeration comes from the mounted space directory, not
         // from inferring memberships out of visible notes. With no directory
         // mounted the member has no spaces (nothing is authorized by inference).
@@ -778,21 +806,28 @@ export async function applyIdentity(ctx: Context, imported?: IdentityImport): Pr
           return 'peer' in admission && admission.peer.principal.kind === 'owner';
         },
       });
-      const disposePolicy = remoteAccess.registerPolicy(
-        'zhuma-member',
-        memberPolicy(domain, () => spaceDirectoryFor(ctx)),
-      );
-      const disposeRoute = webServer.register({
-        kind: 'prefix',
-        path: PREFIX,
-        handler: (req, res) => handle(ctx, domain, secret, remoteAccess, attempts, req, res),
-      });
-      return async () => {
-        uninstallMemberResolver(ctx);
-        disposeRoute();
-        disposePolicy();
-        await domain.close();
-      };
+      let disposePolicy: (() => void) | undefined;
+      try {
+        disposePolicy = remoteAccess.registerPolicy(
+          'zhuma-member',
+          memberPolicy(domain, () => spaceDirectoryFor(ctx)),
+        );
+        const disposeRoute = webServer.register({
+          kind: 'prefix',
+          path: PREFIX,
+          handler: (req, res) => handle(ctx, domain, secret, remoteAccess, attempts, req, res),
+        });
+        return async () => {
+          disposeResolver();
+          disposeRoute();
+          disposePolicy?.();
+          await domain.close();
+        };
+      } catch (error) {
+        disposeResolver();
+        disposePolicy?.();
+        throw error;
+      }
     });
   } catch (error) {
     await domain.close();

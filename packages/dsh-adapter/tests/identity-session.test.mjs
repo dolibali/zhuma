@@ -37,9 +37,13 @@ import {
   deploymentMode,
   identityAccessMode,
   installMemberResolver,
+  memberCredential,
+  memberSessionId,
+  openExecutionMemberLease,
   LEGACY_OWNER_PACKAGE_COMMANDS,
   LEGACY_OWNER_ROUTES,
   resolveMember,
+  uninstallMemberResolver,
 } from '../dist/member-session.js';
 
 const AUTHORITY = '127.0.0.1:3080';
@@ -300,7 +304,19 @@ async function mount(shared = {}) {
       },
     },
   });
-  ctx.provide('storageDomain', new DomainFacility(ctx, { backend: 'memory', routes: {} }));
+  const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} });
+  ctx.provide(
+    'storageDomain',
+    shared.domains === undefined
+      ? facility
+      : {
+          async open(spec) {
+            const domain = await facility.open(spec);
+            shared.domains.set(spec.name, domain);
+            return domain;
+          },
+        },
+  );
   if (shared.hashProbe !== undefined) ctx.provide('zhumaIdentityHashProbe', shared.hashProbe);
   const connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
   await connectionFiber;
@@ -321,7 +337,10 @@ async function mount(shared = {}) {
     throw error;
   }
   const identityFiber = ctx.plugin(
-    { inject: [...identityInject], apply: applyIdentity },
+    {
+      inject: [...identityInject],
+      apply: (ctx, imported) => applyIdentity(ctx, imported, shared.executionOptions?.(ctx)),
+    },
     shared.imported === undefined ? fixtureImport() : shared.imported,
   );
   try {
@@ -2727,4 +2746,384 @@ test('without a mounted directory members hold no spaces and cannot open a space
     'north-initial',
   );
   await host.dispose();
+});
+
+// Member leases use the real identity resolver, login route and DomainFacility.
+// The KV/credentials/HTTP transport and Host publication are contract fixtures.
+async function mountLease(options = {}) {
+  const domains = new Map();
+  let binding;
+  let publication;
+  const host = await mount({
+    ...options,
+    domains,
+    executionOptions(ctx) {
+      const directory = spaceDirectoryFor(ctx);
+      if (directory) {
+        publication = new AbortController();
+        binding = {
+          directory,
+          signal: publication.signal,
+          isCurrent: () => !publication.signal.aborted && spaceDirectoryFor(ctx) === directory,
+        };
+      }
+      return { currentDirectoryBinding: () => binding };
+    },
+  });
+  return {
+    ...host,
+    domains,
+    cookie: await login(host.web, 'lin'),
+    publication,
+    get binding() {
+      return binding;
+    },
+    setBinding(value) {
+      binding = value;
+    },
+  };
+}
+
+function leaseRequest(cookie, extra = {}) {
+  return { headers: { host: AUTHORITY, cookie, ...extra } };
+}
+
+function openLease(host, cookie = host.cookie) {
+  return openExecutionMemberLease(host.ctx, leaseRequest(cookie));
+}
+
+function fixtureSecret(host) {
+  // Only this test's generated, in-memory credential; never a user profile.
+  return Buffer.from(
+    host.credentials.records.get('zhuma-identity/member-session').payload.secret,
+    'base64url',
+  );
+}
+
+function replacementSource(host, observers = new Set()) {
+  const identity = host.domains.get('zhuma_identity');
+  return {
+    secret: fixtureSecret(host),
+    requestRejection: (headers) => host.connection.requestRejection({ headers }),
+    findSession: (id) => identity.table('sessions').get(id),
+    spaceIdsFor: (id) => host.binding.directory.spacesForMember(id).map((space) => space.id),
+    singleUserAccountId: () => 'lin',
+    admitOwner: () => true,
+    execution: {
+      currentDirectoryBinding: () => host.binding,
+      accountExists: (id) => identity.table('accounts').get(id) !== undefined,
+      onChange(recheck) {
+        observers.add(recheck);
+        return () => observers.delete(recheck);
+      },
+    },
+  };
+}
+
+test('member lease uses the real login session, synchronously checks spaces and keeps secrets private', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const request = leaseRequest(host.cookie);
+  const lease = await openExecutionMemberLease({ root: host.ctx.root }, request);
+  t.after(() => lease.release());
+  const row = host.domains
+    .get('zhuma_identity')
+    .table('sessions')
+    .get(memberSessionId(host.cookie));
+  assert.equal(lease.memberId, 'lin');
+  assert.equal(lease.expiresAt, row.expiresAt);
+  assert.equal(lease.signal.aborted, false);
+  assert.equal(lease.assertCurrent('team-north'), undefined);
+  assert.equal(lease.assertCurrent('team-empty'), undefined);
+  request.headers.cookie = 'invalid replacement';
+  assert.equal(lease.assertCurrent('team-north'), undefined);
+  assert.equal(Object.isFrozen(lease), true);
+  for (const text of [JSON.stringify(lease), String(lease)]) {
+    assert.equal(text.includes(host.cookie), false);
+    assert.equal(text.includes(fixtureSecret(host).toString('base64url')), false);
+  }
+  assert.throws(() => lease.assertCurrent('team-south'), /execution member lease unavailable/);
+  assert.equal(lease.signal.aborted, true);
+});
+
+test('member lease refuses owner fallback, forged or untrusted requests and missing execution source', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  for (const request of [
+    leaseRequest(undefined),
+    leaseRequest(ownerCookie(host.connection)),
+    leaseRequest(`${host.cookie}x`),
+    leaseRequest(host.cookie, { origin: 'https://untrusted.invalid' }),
+    leaseRequest(host.cookie, { host: 'untrusted.invalid' }),
+  ]) {
+    await assert.rejects(
+      openExecutionMemberLease(host.ctx, request),
+      /^Error: execution member lease unavailable$/,
+    );
+  }
+  const source = replacementSource(host);
+  delete source.execution;
+  installMemberResolver(host.ctx, source);
+  assert.equal((await resolveMember(host.ctx, leaseRequest(undefined))).ok, true);
+  await assert.rejects(openLease(host), /execution member lease unavailable/);
+  uninstallMemberResolver(host.ctx);
+  await assert.rejects(openLease(host), /execution member lease unavailable/);
+});
+
+test('ordinary identity mounts remain compatible but cannot issue an execution lease', async (t) => {
+  const host = await mount();
+  t.after(() => host.dispose());
+  const cookie = await login(host.web, 'lin');
+  assert.equal((await resolveMember(host.ctx, leaseRequest(cookie))).ok, true);
+  await assert.rejects(openExecutionMemberLease(host.ctx, leaseRequest(cookie)), /unavailable/);
+});
+
+test('logout revokes the original session without substituting a newer session of the same actor', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const oldLease = await openLease(host);
+  const newerCookie = await login(host.web, 'lin');
+  const newLease = await openLease(host, newerCookie);
+  t.after(() => newLease.release());
+  oldLease.assertCurrent('team-north');
+  newLease.assertCurrent('team-north');
+  const result = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/logout',
+    cookie: host.cookie,
+    body: {},
+  });
+  assert.equal(result.status, 200);
+  assert.equal(oldLease.signal.aborted, true);
+  assert.throws(() => oldLease.assertCurrent('team-north'), /unavailable/);
+  assert.equal(newLease.signal.aborted, false);
+  assert.equal(newLease.assertCurrent('team-north'), undefined);
+  await assert.rejects(openLease(host), /unavailable/);
+});
+
+test('membership changes recheck the same directory after durability and leave unrelated sessions active', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const lease = await openLease(host);
+  t.after(() => lease.release());
+  lease.assertCurrent('team-north');
+  await host.binding.directory.revokeMembership('team-empty', 'lin');
+  assert.equal(lease.signal.aborted, false);
+  await host.binding.directory.revokeMembership('team-north', 'zhao');
+  assert.equal(lease.signal.aborted, false);
+  await host.binding.directory.revokeMembership('team-north', 'lin');
+  assert.equal(lease.signal.aborted, true);
+  await host.binding.directory.grantMembership('team-north', 'lin');
+  assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+  const next = await openLease(host);
+  assert.equal(next.assertCurrent('team-north'), undefined);
+  next.release();
+});
+
+test('session actor, expiry and account changes revoke leases through the real domain event', async (t) => {
+  for (const mutation of ['actor', 'expiry', 'account']) {
+    await t.test(mutation, async (t) => {
+      const host = await mountLease();
+      t.after(() => host.dispose());
+      const lease = await openLease(host);
+      const domain = host.domains.get('zhuma_identity');
+      const id = memberSessionId(host.cookie);
+      if (mutation === 'account') await domain.table('accounts').delete('lin');
+      else
+        await domain.table('sessions').update(id, (row) => ({
+          ...row,
+          ...(mutation === 'actor' ? { accountId: 'zhao' } : { expiresAt: row.expiresAt + 1 }),
+        }));
+      assert.equal(lease.signal.aborted, true);
+      assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+    });
+  }
+});
+
+test('expiry aborts a waiting lease without polling or a subsequent request', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const id = memberSessionId(host.cookie);
+  const expiresAt = Date.now() + 500;
+  await host.domains
+    .get('zhuma_identity')
+    .table('sessions')
+    .update(id, (row) => ({ ...row, expiresAt }));
+  const cookie = `zhuma-member=${memberCredential(fixtureSecret(host), id, expiresAt)}`;
+  const lease = await openLease(host, cookie);
+  lease.assertCurrent('team-north');
+  await new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error('expiry did not abort')), 2_000);
+    lease.signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(deadline);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+  assert.equal(lease.signal.aborted, true);
+  assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+  await assert.rejects(openLease(host, cookie), /unavailable/);
+});
+
+test('source replacement and same-object remount revoke old leases; old disposers cannot remove a new generation', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const source = replacementSource(host);
+  const firstDispose = installMemberResolver(host.ctx, source);
+  const first = await openLease(host);
+  const secondDispose = installMemberResolver(host.ctx, source);
+  assert.equal(first.signal.aborted, true);
+  const second = await openLease(host);
+  firstDispose();
+  assert.equal(second.assertCurrent('team-north'), undefined);
+  const third = await openLease(host);
+  third.release();
+  secondDispose();
+  assert.equal(second.signal.aborted, true);
+  await assert.rejects(openLease(host), /unavailable/);
+});
+
+test('publication invalidation aborts immediately and a new publication never revives its predecessor', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const first = await openLease(host);
+  const previous = host.binding;
+  const nextController = new AbortController();
+  host.setBinding({
+    directory: previous.directory,
+    signal: nextController.signal,
+    isCurrent: () => !nextController.signal.aborted,
+  });
+  host.publication.abort();
+  assert.equal(first.signal.aborted, true);
+  const second = await openLease(host);
+  assert.equal(second.assertCurrent('team-north'), undefined);
+  host.setBinding(previous);
+  assert.throws(() => second.assertCurrent('team-north'), /unavailable/);
+  assert.equal(second.signal.aborted, true);
+});
+
+test('an absent directory or caller-shaped copy cannot replace the registered authoritative handle', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const binding = host.binding;
+  host.setBinding({
+    ...binding,
+    directory: { ...binding.directory, signal: binding.directory.signal },
+  });
+  await assert.rejects(openLease(host), /unavailable/);
+  host.setBinding(undefined);
+  await assert.rejects(openLease(host), /unavailable/);
+  host.setBinding(binding);
+  const lease = await openLease(host);
+  const closing = binding.directory.close();
+  assert.equal(lease.signal.aborted, true);
+  await closing;
+  await assert.rejects(openLease(host), /unavailable/);
+});
+
+test('lease release is idempotent, removes observers and recycles the bounded source capacity', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const observers = new Set();
+  installMemberResolver(host.ctx, replacementSource(host, observers));
+  const leases = await Promise.all(Array.from({ length: 256 }, () => openLease(host)));
+  assert.equal(observers.size, 256);
+  await assert.rejects(openLease(host), /unavailable/);
+  for (const lease of leases) {
+    lease.release();
+    lease.release();
+  }
+  assert.equal(observers.size, 0);
+  for (let i = 0; i < 512; i++) {
+    const lease = await openLease(host);
+    lease.release();
+    assert.equal(lease.signal.aborted, true);
+    assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+  }
+  assert.equal(observers.size, 0);
+  uninstallMemberResolver(host.ctx);
+});
+
+test('invalidation during observer registration refuses issuance and removes the observer', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const source = replacementSource(host);
+  let active = 0;
+  source.execution.onChange = () => {
+    active++;
+    host.publication.abort();
+    return () => active--;
+  };
+  installMemberResolver(host.ctx, source);
+  await assert.rejects(openLease(host), /unavailable/);
+  assert.equal(active, 0);
+  uninstallMemberResolver(host.ctx);
+});
+
+test('cold remount retains durable session facts but never retains an old lease', async (t) => {
+  const first = await mountLease();
+  const lease = await openLease(first);
+  const { cookie, media, credentials } = first;
+  await first.dispose();
+  assert.equal(lease.signal.aborted, true);
+  const second = await mountLease({ media, credentials });
+  t.after(() => second.dispose());
+  const current = await openLease(second, cookie);
+  assert.equal(current.assertCurrent('team-north'), undefined);
+  current.release();
+  assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+});
+
+test('synchronous assertions recheck trust and time without waiting for an event or expiry callback', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const trust = await openLease(host);
+  const original = host.connection.requestRejection;
+  host.connection.requestRejection = () => 403;
+  try {
+    assert.throws(() => trust.assertCurrent('team-north'), /unavailable/);
+    assert.equal(trust.signal.aborted, true);
+  } finally {
+    host.connection.requestRejection = original;
+  }
+  const clock = await openLease(host);
+  const now = t.mock.method(Date, 'now', () => clock.expiresAt);
+  try {
+    assert.throws(() => clock.assertCurrent('team-north'), /unavailable/);
+    assert.equal(clock.signal.aborted, true);
+  } finally {
+    now.mock.restore();
+  }
+});
+
+test('directory unmount and real remount issue only from the new authoritative handle', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const oldDirectory = host.binding.directory;
+  const previous = await openLease(host);
+  await host.spaceFiber.dispose();
+  assert.equal(previous.signal.aborted, true);
+  await assert.rejects(openLease(host), /unavailable/);
+  const freshFiber = host.ctx.plugin(
+    { inject: ['storageDomain'], apply: applySpaceDirectory },
+    fixtureSpaces(),
+  );
+  await freshFiber;
+  t.after(() => freshFiber.dispose());
+  const directory = spaceDirectoryFor(host.ctx);
+  assert.notEqual(directory, oldDirectory);
+  const publication = new AbortController();
+  host.setBinding({
+    directory,
+    signal: publication.signal,
+    isCurrent: () => !publication.signal.aborted && spaceDirectoryFor(host.ctx) === directory,
+  });
+  const fresh = await openLease(host);
+  assert.equal(fresh.assertCurrent('team-north'), undefined);
+  fresh.release();
+  assert.throws(() => previous.assertCurrent('team-north'), /unavailable/);
 });
