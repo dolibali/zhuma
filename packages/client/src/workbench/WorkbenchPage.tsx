@@ -308,8 +308,9 @@ export function WorkbenchPage({
     }
   }
   async function createTask(draft: Extract<Dialog, { kind: 'task' }>) {
-    if (!draft.value.projectId) {
-      createProjectForTask(draft);
+    if (!state.projects.some((project) => project.id === draft.value.projectId)) {
+      if (!state.projects.length) createProjectForTask(draft);
+      else setDialogError('所属项目已不可用，请重新选择或新建项目。');
       return;
     }
     const generation = pageGeneration.current;
@@ -371,19 +372,22 @@ export function WorkbenchPage({
     } else setSection('tasks');
   }
   function newTask(projectId = projectFilter || state.projects[0]?.id) {
+    const availableProjectId = state.projects.some((project) => project.id === projectId)
+      ? projectId
+      : undefined;
     openDialog({
       kind: 'task',
       planning: 'ai',
       template: null,
       value: {
         id: uid(),
-        projectId: projectId ?? '',
+        projectId: availableProjectId ?? '',
         title: '',
         goal: '',
         status: 'draft',
-        participantIds: projectId
+        participantIds: availableProjectId
           ? defaultProjectParticipants(
-              state.projects.find((p) => p.id === projectId),
+              state.projects.find((p) => p.id === availableProjectId),
               state,
             )
           : [],
