@@ -32,6 +32,10 @@ installed by this slice. A retains public exports and actual Host/transport asse
   Missing producers refuse. The service independently rechecks the live workbench task,
   human membership, controller, and recorded plan. Source replacement must invalidate the
   old publication; neither a remembered mapping nor a text-only label proves authorization.
+  The three Host assertion ports return exactly synchronous `undefined`, not TypeScript
+  `void`. Runtime producers returning a Promise/thenable or any other value refuse both
+  admission and ongoing authority; rejected thenables are observed without awaiting them
+  or treating a future resolution as permission.
 - `enableRunWriter()` is an explicit operation in that queue. Installing the Host, mounting
   the plugin, reading or reopening never enables the marker. A failed marker write permits
   no begin. All old node writes pass the native-aware guard before admission is enabled.

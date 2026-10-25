@@ -161,17 +161,30 @@ export type ExecutionNodeLocator = z.infer<typeof draftReadSchema>;
 /** Host-only real producers. Omission refuses Run admission; no DTO is a capability. */
 export interface ExecutionRunHostPorts extends Pick<
   ExecutionRunAuthoritySource,
-  'memberLease' | 'assertWorkspace' | 'onChange' | 'signal' | 'migrationOrigin' | 'migrationDrain'
+  'memberLease' | 'onChange' | 'signal' | 'migrationOrigin' | 'migrationDrain'
 > {
   /** Current authoritative mapping (and its source lifetime), not a browser-selected space. */
-  assertProjectSpace(projectId: string, spaceId: string): void;
+  assertProjectSpace(projectId: string, spaceId: string): undefined;
   /** Verify the exact frozen expert/input/model/tool composition and executor readiness. */
   assertConfiguration(
     memberId: string,
     spaceId: string,
     node: ExecutionNodeRecord,
     request: BeginRunRequest,
-  ): void;
+  ): undefined;
+  assertWorkspace(...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>): undefined;
+}
+
+/** `void` accepts async callbacks in TypeScript. Recheck runtime JS producers too:
+ * only synchronous undefined means the assertion completed. Observe a rejected
+ * promise to avoid an unhandled rejection, but never await it as authorization.
+ */
+function synchronousRunAssertion(result: unknown): undefined {
+  if (result !== undefined) {
+    void Promise.resolve(result).catch(() => undefined);
+    throw new ExecutionRunError('run-authority-unavailable');
+  }
+  return undefined;
 }
 
 export type RunEventAuthority =
@@ -750,7 +763,7 @@ export class ExecutionService {
         this.assertRunNodeAccess(host, memberId, spaceId, node);
         if (['send', 'queue', 'stop'].includes(action)) this.assertRunController(memberId, node);
       },
-      assertWorkspace: (...args) => host.assertWorkspace(...args),
+      assertWorkspace: (...args) => synchronousRunAssertion(host.assertWorkspace(...args)),
       onChange: (recheck) => {
         const stop = host.onChange(recheck);
         this.runChanges.add(recheck);
@@ -818,13 +831,17 @@ export class ExecutionService {
       if (!parsed.ok) return parsed;
       const input = parsed.value;
       return this.withRunMember(request, input, async (host, lease, node) => {
-        host.assertConfiguration(lease.memberId, input.spaceId, node, input);
-        host.assertWorkspace(
-          lease.memberId,
-          input.spaceId,
-          input.workspace,
-          input.workspace.kind === 'local' ? input.workspace.access : 'read',
-          input.selection.configurationId,
+        synchronousRunAssertion(
+          host.assertConfiguration(lease.memberId, input.spaceId, node, input),
+        );
+        synchronousRunAssertion(
+          host.assertWorkspace(
+            lease.memberId,
+            input.spaceId,
+            input.workspace,
+            input.workspace.kind === 'local' ? input.workspace.access : 'read',
+            input.selection.configurationId,
+          ),
         );
         const decision = beginExecutionRun(
           node,
@@ -927,7 +944,7 @@ export class ExecutionService {
       !recordedPlan(this.storage, node)
     )
       throw new ExecutionRunError('run-authority-denied');
-    host.assertProjectSpace(task.projectId, spaceId);
+    synchronousRunAssertion(host.assertProjectSpace(task.projectId, spaceId));
   }
 
   private assertRunController(memberId: string, node: ExecutionNodeRecord): void {

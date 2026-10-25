@@ -61,6 +61,7 @@ export async function open(root, { seed = true, mount = true, beforePublish } = 
   const effects = [];
   const counters = { global: 0, nodes: 0, plans: 0 };
   const faults = { global: false, node: false, configuration: false, workspace: false };
+  const assertionResults = {};
   const source = new AbortController();
   const member = new AbortController();
   const changes = new Set();
@@ -174,14 +175,17 @@ export async function open(root, { seed = true, mount = true, beforePublish } = 
         assertProjectSpace(projectId, spaceId) {
           if (source.signal.aborted || projectId !== 'project' || spaceId !== 'north')
             throw Error('PRIVATE_SPACE_REFUSAL');
+          return assertionResults.project?.();
         },
         assertConfiguration(_member, _space, _node, input) {
           if (faults.configuration || input.selection.configurationId !== 'configuration-1')
             throw Error('PRIVATE_CONFIGURATION_REFUSAL');
+          return assertionResults.configuration?.();
         },
         assertWorkspace(_member, _space, _workspace, _access, configurationId) {
           if (faults.workspace || source.signal.aborted || configurationId !== 'configuration-1')
             throw Error('PRIVATE_WORKSPACE_REFUSAL');
+          return assertionResults.workspace?.();
         },
         onChange(callback) {
           changes.add(callback);
@@ -198,6 +202,7 @@ export async function open(root, { seed = true, mount = true, beforePublish } = 
       source,
       counters,
       faults,
+      assertionResults,
       locate,
       read,
       begin,

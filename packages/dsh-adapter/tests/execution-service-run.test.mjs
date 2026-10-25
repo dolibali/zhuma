@@ -427,6 +427,76 @@ test('real JSON service: same workspace has one writer across nodes; forged call
   assert.deepEqual(h.read(), before);
 });
 
+for (const port of ['project', 'configuration', 'workspace']) {
+  test(`real JSON service: ${port} assertion must finish synchronously with undefined before admission`, async (t) => {
+    const h = await hostFor(t);
+    checked(await h.service.enableRunWriter());
+    h.resetCounts();
+    const before = h.read();
+    let dispatches = 0;
+    const driver = {
+      async dispatch() {
+        dispatches++;
+      },
+      async reconcile() {
+        dispatches++;
+      },
+      async stop() {
+        dispatches++;
+      },
+    };
+    for (const produce of [
+      () => Promise.resolve(undefined),
+      () => Promise.reject(Error('PRIVATE_ASYNC_ASSERTION_FAILURE')),
+      () => ({
+        then(resolve) {
+          resolve(undefined);
+        },
+      }),
+      () => ({
+        then(_resolve, reject) {
+          reject(Error('PRIVATE_THENABLE_FAILURE'));
+        },
+      }),
+      () => false,
+      () => true,
+      () => null,
+      () => ({}),
+    ]) {
+      h.assertionResults[port] = produce;
+      await assert.rejects(
+        afterExecutionRunCommit(() => committed(h.service.beginRun(h.request, h.begin())), driver),
+        { code: 'run-authority-unavailable' },
+      );
+      assert.deepEqual(h.read(), before);
+      assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+    }
+    assert.equal(dispatches, 0);
+    delete h.assertionResults[port];
+    checked(await h.service.beginRun(h.request, h.begin()));
+    assert.equal(h.counters.nodes, 1, 'a completed synchronous assertion still admits normally');
+  });
+}
+
+for (const port of ['project', 'workspace']) {
+  test(`real JSON service: ${port} assertion cannot become async after a grant was issued`, async (t) => {
+    const h = await hostFor(t);
+    checked(await h.service.enableRunWriter());
+    checked(await h.service.beginRun(h.request, h.begin()));
+    const before = h.read();
+    const opened = await h.authorities.open(h.request, h.runLocator(), 'drive');
+    h.resetCounts();
+    h.assertionResults[port] = () => Promise.reject(Error('PRIVATE_ASYNC_ASSERTION_FAILURE'));
+    assert.throws(() => opened.grant.assertCurrent('send'), { code: 'run-authority-denied' });
+    assert.equal(opened.grant.signal.aborted, true);
+    await assert.rejects(h.authorities.open(h.request, h.runLocator(), 'drive'), {
+      code: 'run-authority-denied',
+    });
+    assert.deepEqual(h.read(), before);
+    assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  });
+}
+
 test('real JSON service: same-disk new process reopens read-only without enable, dispatch or resend', async (t) => {
   const h = await hostFor(t);
   checked(await h.service.enableRunWriter());
