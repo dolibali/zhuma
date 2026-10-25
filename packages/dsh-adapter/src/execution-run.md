@@ -55,18 +55,29 @@ installed by this slice. A retains public exports and actual Host/transport asse
   drains actual native work and commits cleanup; the plugin then calls `closeRuns()` to drain
   its queue/authority issuers before its existing domain closes.
 
+Cordis executes independent effect disposers concurrently. Consequently the plugin registers
+one cached close job immediately after opening the domain, before constructing the service.
+That job aborts request lifetime and fences Run driving, then awaits publication/native cleanup,
+then service/authority close, and only then domain close. Constructor, reconcile and publication
+failures still have this registered owner for the opened domain. Every release is attempted
+even when a preceding one fails; the original error or all failures in an aggregate remain
+observable. A failed drain/close never writes a cancelled or resource-settled Run receipt.
+
 Old human submit and draft writes refuse while a Run holds resources; old start/recovery
 and downstream writers cannot drop or replace native state. Quiescent later submission still
 uses the original artifact/review/downstream path and retains the complete native history.
 A native completion alone restores the entry obligation and never accepts a product.
 
-`execution-service-run.test.mjs` mounts the actual product plugin/service on published DSH
-JSON storage. It covers durable marker/write failures, one put for concurrent same-key
+`execution-service-run.test.mjs` mounts the actual product plugin/service in a real Cordis
+plugin/fiber on published DSH JSON storage. It covers durable marker/write failures, one put for concurrent same-key
 admission, effects outside the queue, whole-row draft/artifact/review retention, active writer
 guards, event/stop/retry fencing, copied reads, same-root exclusion and a separate OS-process
 read-only reopen with byte-for-byte unchanged disk. Identity/workspace/configuration/native
 event producers remain **contract fixtures**, not proof of real Host, native/model, file-byte
 or GUI integration. Those boundaries are not closed by these tests.
+Lifecycle tests hold the actual fiber's unpublish disposer while performing trusted cleanup
+writes, and cover startup failures plus drain/authority/domain-close faults. They do not
+emulate effect cleanup with a reverse sequential stack.
 
 ## Persistent ownership and compatibility
 

@@ -1,4 +1,4 @@
-/** Real product plugin/service + published DSH JSON metadata. Identity, workspace,
+/** Real Cordis plugin/fiber + product plugin/service + published DSH JSON metadata. Identity, workspace,
  * configuration and native event producers below are explicit contract fixtures.
  * No real login, native driver, attachment bytes or model is exercised here.
  */
@@ -55,10 +55,19 @@ function confirmed() {
   });
 }
 
-export async function open(root, { seed = true, mount = true, beforePublish } = {}) {
+export async function open(
+  root,
+  {
+    seed = true,
+    mount = true,
+    beforePublish,
+    prepareDomain,
+    startupFailure,
+    closeState = { calls: 0, closed: false, errors: [] },
+  } = {},
+) {
   const ctx = new Context();
   const fibers = [];
-  const effects = [];
   const counters = { global: 0, nodes: 0, plans: 0 };
   const faults = { global: false, node: false, configuration: false, workspace: false };
   const assertionResults = {};
@@ -72,6 +81,7 @@ export async function open(root, { seed = true, mount = true, beforePublish } = 
   let service;
   let authorities;
   let domain;
+  let executionFiber;
   for (const [plugin, config] of [
     [Storage],
     [JsonStorage, { root }],
@@ -82,53 +92,81 @@ export async function open(root, { seed = true, mount = true, beforePublish } = 
     await fiber;
   }
   const close = async () => {
-    for (const stop of effects.splice(0).reverse()) await stop?.();
+    await executionFiber?.dispose();
     for (const fiber of fibers.splice(0).reverse()) await fiber.dispose();
   };
   try {
-    await apply(
-      {
-        root: ctx.root,
-        effect: (callback) => effects.push(callback()),
-        connection: { fetch: { register: () => () => {} } },
-        storageDomain: {
-          async open(spec) {
-            domain = await ctx.storageDomain.open(spec);
-            return {
-              close: () => domain.close(),
-              global: {
-                get: () => domain.global.get(),
-                async set(next) {
-                  if (faults.global) throw Error('PRIVATE_GLOBAL_WRITE_FAILURE');
-                  await domain.global.set(next);
-                  counters.global++;
-                },
-              },
-              table(name) {
-                const table = domain.table(name);
+    executionFiber = ctx.plugin({
+      apply: async (fiberCtx) => {
+        await apply(
+          {
+            root: ctx.root,
+            effect: (callback) =>
+              fiberCtx.effect(() => {
+                const stop = callback();
+                return async () => {
+                  try {
+                    await stop?.();
+                  } catch (error) {
+                    closeState.errors.push(error);
+                    throw error;
+                  }
+                };
+              }),
+            connection: { fetch: { register: () => () => {} } },
+            storageDomain: {
+              async open(spec) {
+                domain = await ctx.storageDomain.open(spec);
+                await prepareDomain?.(domain);
+                let nodeLists = 0;
                 return {
-                  get: (key) => table.get(key),
-                  entries: () => table.entries(),
-                  async put(key, value) {
-                    if (name === 'nodes' && faults.node) throw Error('PRIVATE_NODE_WRITE_FAILURE');
-                    await table.put(key, value);
-                    counters[name]++;
+                  close: async () => {
+                    closeState.calls++;
+                    if (faults.close) throw Error('CONTRACT_DOMAIN_CLOSE_FAILURE');
+                    await domain.close();
+                    closeState.closed = true;
+                  },
+                  global: {
+                    get: () => domain.global.get(),
+                    async set(next) {
+                      if (faults.global) throw Error('PRIVATE_GLOBAL_WRITE_FAILURE');
+                      await domain.global.set(next);
+                      counters.global++;
+                    },
+                  },
+                  table(name) {
+                    const table = domain.table(name);
+                    return {
+                      get: (key) => table.get(key),
+                      entries: () => {
+                        if (name === 'nodes' && ++nodeLists === 2 && startupFailure === 'reconcile')
+                          throw Error('CONTRACT_RECONCILE_FAILURE');
+                        return table.entries();
+                      },
+                      async put(key, value) {
+                        if (name === 'nodes' && faults.node)
+                          throw Error('PRIVATE_NODE_WRITE_FAILURE');
+                        await table.put(key, value);
+                        counters[name]++;
+                      },
+                    };
                   },
                 };
               },
-            };
+            },
           },
-        },
+          {
+            readWorkbench: () => workbench,
+            projectSpaces: boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
+            publishRunService(value) {
+              service = value;
+              return beforePublish?.(value);
+            },
+          },
+        );
       },
-      {
-        readWorkbench: () => workbench,
-        projectSpaces: boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
-        publishRunService(value) {
-          service = value;
-          beforePublish?.(value);
-        },
-      },
-    );
+    });
+    await executionFiber;
     const prior = [...domain.table('nodes').entries()]
       .map(([, node]) => node)
       .find((node) => node.nodeId === 'produce');
@@ -169,6 +207,7 @@ export async function open(root, { seed = true, mount = true, beforePublish } = 
             },
             release() {
               released = true;
+              if (faults.release) throw Error('CONTRACT_LEASE_RELEASE_FAILURE');
             },
           };
         },
@@ -207,6 +246,8 @@ export async function open(root, { seed = true, mount = true, beforePublish } = 
       read,
       begin,
       close,
+      closeState,
+      disposeExecution: () => executionFiber.dispose(),
       resetCounts() {
         counters.global = counters.nodes = counters.plans = 0;
       },

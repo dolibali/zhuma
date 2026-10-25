@@ -11,7 +11,7 @@ import { afterExecutionRunCommit } from '../dist/execution-run-effects.js';
 import { currentExecutionRun, beginExecutionRun } from '../dist/execution-run-state.js';
 import { ExecutionService } from '../dist/execution-service.js';
 import { open, caller, checked, refused, stable } from './execution-service-run-fixture.mjs';
-import { available, command, localWorkspace } from './execution-run-fixture.mjs';
+import { available, command, localWorkspace, records } from './execution-run-fixture.mjs';
 
 async function hostFor(t, options) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-service-run-'));
@@ -514,6 +514,154 @@ test('real JSON service: same-disk new process reopens read-only without enable,
   assert.deepEqual(reopened.writes, { global: 0, nodes: 0, plans: 0 });
   assert.deepEqual(await bytes(h.root), before);
 });
+
+test('real Cordis fiber + JSON: held unpublish keeps the domain open for trusted cleanup before close', async (t) => {
+  let enter;
+  let release;
+  const entered = new Promise((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const h = await hostFor(t, {
+    beforePublish: () => async () => {
+      enter();
+      await gate;
+    },
+  });
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const cleanup = h.authorities.cleanupAfterCommit(h.runLocator());
+  const opened = await h.authorities.open(h.request, h.runLocator(), 'drive');
+  let disposed = false;
+  const stopping = h.disposeExecution().then(() => {
+    disposed = true;
+  });
+  try {
+    await entered;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(disposed, false);
+    assert.equal(h.closeState.calls, 0);
+    assert.equal(h.closeState.closed, false);
+    assert.equal(opened.grant.signal.aborted, true, 'fence precedes the native drain wait');
+    refused(await h.service.beginRun(h.request, h.begin()), 'run-authority-unavailable');
+    checked(await h.native('failed', { cleanup }, { resourcesSettled: false }));
+    assert.equal(currentExecutionRun(h.read()).resources, 'held');
+    checked(await h.native('cleanup', { cleanup }, stable));
+    assert.equal(currentExecutionRun(h.read()).resources, 'settled');
+    assert.deepEqual(h.service.readRunGlobal(), { schemaVersion: 1, nativeExecutionWriter: 1 });
+    assert.equal(h.closeState.calls, 0, 'cleanup writes happen while unpublish is still held');
+  } finally {
+    release();
+    await stopping;
+  }
+  assert.equal(h.closeState.calls, 1);
+  assert.equal(h.closeState.closed, true);
+  assert.deepEqual(h.closeState.errors, []);
+  assert.throws(() => h.service.readRunGlobal());
+});
+
+test('real Cordis fiber + JSON: failed drain still closes service/domain without inventing resource settlement', async (t) => {
+  const failure = Error('CONTRACT_NATIVE_DRAIN_FAILURE');
+  const h = await hostFor(t, {
+    beforePublish: () => async () => {
+      throw failure;
+    },
+  });
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  await h.disposeExecution(); // Cordis reports disposer errors through its logger.
+  assert.equal(h.closeState.calls, 1);
+  assert.equal(h.closeState.closed, true);
+  assert.equal(h.closeState.errors[0], failure, 'the original drain error is retained');
+  await h.close();
+  const reopened = await open(h.root, { seed: false, mount: false });
+  t.after(() => reopened.close());
+  const run = currentExecutionRun(reopened.read());
+  assert.equal(run.resources, 'held');
+  assert.equal(run.attempt.status, 'requested');
+  assert.deepEqual(reopened.counters, { global: 0, nodes: 0, plans: 0 });
+});
+
+test('real Cordis fiber + JSON: authority close failure still attempts domain close', async (t) => {
+  const h = await hostFor(t);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const opened = await h.authorities.open(h.request, h.runLocator(), 'drive');
+  h.faults.release = true; // Contract lease release fault; actual manager.close rejects.
+  await h.disposeExecution();
+  assert.equal(opened.grant.signal.aborted, true);
+  assert.equal(h.closeState.calls, 1);
+  assert.equal(h.closeState.closed, true);
+  assert.equal(h.closeState.errors[0].code, 'run-authority-unavailable');
+});
+
+test('real Cordis fiber + JSON: drain and domain-close failures remain separate, with no false close success', async (t) => {
+  const drainFailure = Error('CONTRACT_NATIVE_DRAIN_FAILURE');
+  const h = await hostFor(t, {
+    beforePublish: () => async () => {
+      throw drainFailure;
+    },
+  });
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  h.faults.close = true; // Explicit contract fault before the real domain close.
+  try {
+    await h.disposeExecution();
+    assert.equal(h.closeState.calls, 1);
+    assert.equal(h.closeState.closed, false);
+    const failure = h.closeState.errors[0];
+    assert(failure instanceof AggregateError);
+    assert.equal(failure.errors[0], drainFailure);
+    assert.equal(failure.errors[1].message, 'CONTRACT_DOMAIN_CLOSE_FAILURE');
+    assert.equal(currentExecutionRun(h.read()).resources, 'held');
+    assert.equal(currentExecutionRun(h.read()).attempt.status, 'requested');
+  } finally {
+    await h.domain.close(); // Test cleanup, not a successful product close receipt.
+  }
+});
+
+for (const phase of ['constructor', 'reconcile', 'publish']) {
+  test(`real Cordis fiber + JSON: ${phase} failure still closes the opened execution domain once`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'zhuma-run-init-close-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const closeState = { calls: 0, closed: false, errors: [] };
+    await assert.rejects(
+      open(root, {
+        closeState,
+        startupFailure: phase,
+        ...(phase === 'constructor'
+          ? {
+              prepareDomain: async (domain) => {
+                const legacy = records()[0];
+                const native = beginExecutionRun(
+                  legacy,
+                  command(legacy),
+                  [legacy],
+                  available,
+                ).record;
+                await domain.table('nodes').put(nodeRecordKey(native), native);
+              },
+            }
+          : {}),
+        ...(phase === 'publish'
+          ? {
+              beforePublish: () => {
+                throw Error('CONTRACT_PUBLISH_FAILURE');
+              },
+            }
+          : {}),
+      }),
+      phase === 'constructor'
+        ? { code: 'run-writer-unavailable' }
+        : new RegExp(`CONTRACT_${phase.toUpperCase()}_FAILURE`),
+    );
+    assert.equal(closeState.calls, 1);
+    assert.equal(closeState.closed, true);
+    assert.deepEqual(closeState.errors, []);
+  });
+}
 
 test('service startup rejects missing/future marker and malformed native rows before any write', async (t) => {
   const h = await hostFor(t);

@@ -260,9 +260,35 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   const projectSpaces =
     typeof config.projectSpaces?.spaceForProject === 'function' ? config.projectSpaces : undefined;
   const domain = await ctx.storageDomain.open(domainSpec);
-  ctx.effect(() => () => domain.close());
   const lifetime = new AbortController();
-  ctx.effect(() => () => lifetime.abort());
+  let mountedService: ExecutionService | undefined;
+  let unpublish: void | (() => void | Promise<void>);
+  let closing: Promise<void> | undefined;
+  // Cordis unload runs independent effects in parallel. Reserve one close job,
+  // even before service construction, so cleanup always precedes domain close.
+  ctx.effect(() => () => {
+    closing ??= Promise.resolve().then(async () => {
+      const failures: unknown[] = [];
+      const release = async (work: () => unknown) => {
+        try {
+          await work();
+        } catch (error) {
+          failures.push(error);
+        }
+      };
+      await release(() => {
+        lifetime.abort();
+        mountedService?.fenceRuns();
+      });
+      await release(() => unpublish?.());
+      await release(() => mountedService?.closeRuns());
+      await release(() => domain.close());
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1)
+        throw new AggregateError(failures, 'Execution shutdown did not finish cleanly.');
+    });
+    return closing;
+  });
   const nodes = domain.table('nodes');
   const plans = domain.table('plans');
   const storage: ExecutionStorage = {
@@ -281,17 +307,10 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     { readWorkbench: () => config.readWorkbench() },
     projectSpaces,
   );
+  mountedService = service;
   const reconciled = await service.reconcile();
   if (!reconciled.ok) throw new WorkbenchError(reconciled.error.code, reconciled.error.message);
-  const unpublish = config.publishRunService?.(service);
-  ctx.effect(() => async () => {
-    service.fenceRuns();
-    try {
-      await unpublish?.();
-    } finally {
-      await service.closeRuns();
-    }
-  });
+  unpublish = config.publishRunService?.(service);
   const stops = ENDPOINTS.map((endpoint) =>
     ctx.connection.fetch.register({
       path: `/api/zhuma-exec/${endpoint}`,
