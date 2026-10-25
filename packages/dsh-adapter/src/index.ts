@@ -132,6 +132,14 @@ export {
 } from './space-directory.js';
 export type * from './s1-integration.js';
 export {
+  requireNativeInboxRetention,
+  NativeInboxRetentionUnsupportedError,
+  type NativeInboxRetentionOptions,
+  type RetainedInboxAgentRegistry,
+  type RetainedInboxCreateOptions,
+  type RetainedInboxResumeOptions,
+} from './native-session-lifecycle.js';
+export {
   apply as applyExecution,
   executionEndpoints,
   inject as executionInject,
