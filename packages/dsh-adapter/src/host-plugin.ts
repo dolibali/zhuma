@@ -3,7 +3,8 @@ import { z } from 'zod';
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
 import { parseCredentialKey } from '@deepseek-ai/dsh-credentials';
 import { applyIdentity, identityInject, type IdentityImport } from './identity-session.js';
-import { configureDeploymentMode } from './member-session.js';
+import { configureDeploymentMode, type IdentityExecutionOptions } from './member-session.js';
+import { createHostDirectoryLifecycle } from './host-directory-lifecycle.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
 import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
@@ -17,6 +18,8 @@ import {
 } from './space-directory.js';
 export { spaceDirectoryFor } from './space-directory.js';
 export { workbenchDomainSpec } from './workbench-plugin.js';
+// Consumers of the distributed Host must use its installed identity module graph.
+export { openExecutionMemberLease } from './member-session.js';
 
 const bootstrapRecordKey = z.string().refine((key) => {
   try {
@@ -49,18 +52,22 @@ export type WorkbenchHostConfig = z.infer<typeof Config>;
 // The existing desktop owner composition need not provide an HTTP listener.
 // Required identity services belong to the child scope when identity is selected.
 export const inject = workbenchInject;
+interface IdentityMountConfig {
+  readonly bootstrapKey?: string | undefined;
+  readonly executionOptions?: IdentityExecutionOptions | undefined;
+}
 export const identityPlugin = {
   inject: [...identityInject],
-  async apply(ctx: Context, bootstrapKey?: string): Promise<void> {
+  async apply(ctx: Context, config: IdentityMountConfig = {}): Promise<void> {
     let imported: IdentityImport | undefined;
-    if (bootstrapKey !== undefined) {
-      const record = await ctx.credentials.readRecord(parseCredentialKey(bootstrapKey));
+    if (config.bootstrapKey !== undefined) {
+      const record = await ctx.credentials.readRecord(parseCredentialKey(config.bootstrapKey));
       if (record?.kind !== 'grant' || record.payload === undefined || record.payload === null)
         throw new Error('Identity bootstrap record is unavailable.');
       // B validates the opaque payload before it is ever used as import data.
       imported = record.payload as IdentityImport;
     }
-    await applyIdentity(ctx, imported);
+    await applyIdentity(ctx, imported, config.executionOptions);
   },
 };
 
@@ -106,26 +113,22 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   // Registers fail-closed streaming gates before the first asynchronous domain open.
   // The same clone-producing closure is shared with execution; no second workbench domain.
   let closed = false;
+  const directoryLifecycle = createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
   let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
   const beforeClose = async () => {
     closed = true;
+    directoryLifecycle.close();
     const member = await memberOpening;
     await member?.close();
   };
   const workbench = await openWorkbench(ctx, config, { beforeClose });
-  let ownedDirectory: OpenedSpaceDirectoryHandle | undefined;
   const identitySelected =
     config.deploymentMode === 'multi-member' || config.identityBootstrapKey !== undefined;
   if (identitySelected || config.spaceDirectoryBootstrapKey !== undefined) {
     try {
       await ctx.plugin(spaceDirectoryPlugin, {
         bootstrapKey: config.spaceDirectoryBootstrapKey,
-        publish(directory: OpenedSpaceDirectoryHandle) {
-          ownedDirectory = directory;
-          return () => {
-            if (ownedDirectory === directory) ownedDirectory = undefined;
-          };
-        },
+        publish: directoryLifecycle.publish,
       });
     } catch {
       ctx.logger.error('Zhuma space directory is unavailable; member space access remains closed.');
@@ -134,7 +137,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   if (closed) return;
   if (identitySelected) {
     try {
-      await ctx.plugin(identityPlugin, config.identityBootstrapKey);
+      await ctx.plugin(identityPlugin, {
+        bootstrapKey: config.identityBootstrapKey,
+        executionOptions: { currentDirectoryBinding: directoryLifecycle.currentDirectoryBinding },
+      });
     } catch {
       // The independent fence stays mounted; Cordis retains the identity child's FAILED status.
       ctx.logger.error(
@@ -162,8 +168,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         http = workbench.openMemberWorkbench(ctx, {
           directory: () => memberWorkbenchDirectoryFor(ctx),
           writer: () => {
-            const current = ownedDirectory;
-            if (!current || spaceDirectoryFor(ctx) !== current) return undefined;
+            const current = directoryLifecycle.currentDirectory();
+            if (!current) return undefined;
             return { assignProjectSpace: current.assignProjectSpace.bind(current) };
           },
           model: workbench.planningModel,
@@ -194,14 +200,12 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       readWorkbench: workbench.readWorkbench,
       projectSpaces: {
         async spaceForProject(projectId: string) {
-          const current = ownedDirectory;
-          if (!current || spaceDirectoryFor(ctx) !== current)
-            return { ok: false as const, reason: 'unavailable' as const };
-          const result = await current.spaceForProject(projectId);
+          const binding = directoryLifecycle.currentDirectoryBinding();
+          if (!binding) return { ok: false as const, reason: 'unavailable' as const };
+          const result = await binding.directory.spaceForProject(projectId);
           // Revocation/failed close removes the registration before the close awaits.
           // A lookup from a previous producer lifetime cannot authorize this request.
-          if (ownedDirectory !== current || spaceDirectoryFor(ctx) !== current)
-            return { ok: false as const, reason: 'unavailable' as const };
+          if (!binding.isCurrent()) return { ok: false as const, reason: 'unavailable' as const };
           return result;
         },
       },
