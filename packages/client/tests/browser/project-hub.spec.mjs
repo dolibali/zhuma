@@ -47,7 +47,7 @@ test('项目四入口同源展示，任务返回原项目位置，成果状态�
   await page.getByLabel('搜索项目工作').fill('导出');
   await expect(page.locator('.zm-project-work-list > button')).toHaveCount(1);
   await page.getByRole('button', { name: /^订单导出字段核对/ }).click();
-  await button(page, '← 项目').click();
+  await button(page, '项目').click();
   await expect(button(page.getByRole('navigation', { name: '项目导航' }), '工作')).toHaveAttribute(
     'aria-current',
     'page',
@@ -140,7 +140,7 @@ test('项目内任务继承默认值，换项目保留人工选择，显式重�
     participantIds: ['lin', 'frontend'],
     ownerId: null,
   });
-  await button(page, '← 项目').click();
+  await button(page, '项目').click();
   await expect(page.getByRole('heading', { name: '体验研究', exact: true })).toBeVisible();
   expect(commands(replay)).toHaveLength(1);
   expect(plans(replay)).toHaveLength(0);
@@ -157,14 +157,14 @@ test('项目内 AI 创建只用默认参与者，规划失败仍返回同一项�
   await button(page, '生成计划').click();
   await expect(page.getByRole('alert')).toContainText('规划服务暂不可用');
   expect(replay.state.tasks.at(-1).participantIds).toEqual(['chen', 'qa']);
-  await button(page, '← 项目').click();
-  await button(page, '← 全部项目').click();
+  await button(page, '项目').click();
+  await button(page, '全部项目').click();
   await button(page, '＋ 新建项目').click();
   await page.getByLabel('项目名称', { exact: true }).fill('供应商门户');
   await button(page.getByRole('dialog', { name: '新建项目', exact: true }), '保存').click();
   await expect(page.getByRole('heading', { name: '供应商门户', exact: true })).toBeVisible();
   await button(page, '＋ 创建任务').click();
-  await expect(button(page, '选择参与者')).toHaveText('选择参与者⌄');
+  await expect(button(page, '选择参与者')).toHaveText('选择参与者');
   await page.getByLabel('任务目标', { exact: true }).fill('确定门户入口');
   await button(page, '生成计划').click();
   await expect(

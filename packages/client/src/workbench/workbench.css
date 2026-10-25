@@ -1719,6 +1719,9 @@ html[data-platform='darwin'] .zm-shell-chrome {
   padding: 10px 24px 4px;
 }
 .zm-toolbar > button:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-left: -8px;
   padding: 5px 8px;
 }
@@ -2036,7 +2039,10 @@ html[data-platform='darwin'] .zm-shell-chrome {
   display: flex;
 }
 .zm-row-actions button {
+  display: grid;
+  place-items: center;
   min-width: 28px;
+  min-height: 28px;
   padding: 2px 6px;
   border: 0;
   background: transparent;

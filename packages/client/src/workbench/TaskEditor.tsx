@@ -735,7 +735,7 @@ export function TaskEditor({
                   if (parent) navigate(parent.id);
                 }}
               >
-                ↑ 上一级
+                <ControlIcon direction="up" /> 上一级
               </button>
             )}
             <span className="zm-spacer" />
@@ -889,14 +889,14 @@ export function TaskEditor({
                         disabled={locked || i === 0}
                         onClick={() => moveNode(n.id, -1)}
                       >
-                        ↑
+                        <ControlIcon direction="up" />
                       </button>
                       <button
                         aria-label={`下移 ${n.title}`}
                         disabled={locked || i === workflow.nodes.length - 1}
                         onClick={() => moveNode(n.id, 1)}
                       >
-                        ↓
+                        <ControlIcon direction="down" />
                       </button>
                     </div>
                   )}
