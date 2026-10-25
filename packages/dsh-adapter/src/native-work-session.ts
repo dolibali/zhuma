@@ -17,6 +17,8 @@ import {
   type NativeMigrationDrain,
   type NativeMigrationOriginRequest,
   type NativeMigrationOrigin,
+  type NativeScopeCleanupAuthority,
+  type NativeScopeCleanupResult,
 } from './native-work-session-contract.js';
 
 export const NATIVE_WORK_LIMITS = Object.freeze({
@@ -29,6 +31,7 @@ export const NATIVE_INPUT_READ_LIMITS = Object.freeze({
   bytes: 65_536,
   pageBytes: 24_576,
 });
+const MAX_OWNER_SCOPES = 4096;
 
 // Native persistence locking alone is not a same-process, cross-Host I/O
 // fence. Keep only an ephemeral owner/drain, never content or authority facts.
@@ -114,6 +117,14 @@ export class NativeWorkSessionService {
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly stopEpochs = new Map<string, number>();
   private readonly retiredScopes = new Set<string>();
+  // Owner-local admission observations, not permission facts or a second registry.
+  private readonly nativeAdmissions = new Set<string>();
+  private readonly cleanupLifetime = new AbortController();
+  private readonly cleanupFailures = new Set<string>();
+  private readonly cleanups = new Map<
+    string,
+    Promise<Extract<NativeScopeCleanupResult, { status: 'retired' }>>
+  >();
   private readonly unknownMigrations = new Set<string>();
   private readonly migrating = new Map<
     string,
@@ -137,6 +148,12 @@ export class NativeWorkSessionService {
     }
   >();
   private inputReadsSealed = false;
+  private observeNativeAdmission(scope: NativeWorkScope): void {
+    const address = nativeScopeKey(scope);
+    if (!this.nativeAdmissions.has(address) && this.nativeAdmissions.size >= MAX_OWNER_SCOPES)
+      throw new NativeWorkError('capacity');
+    this.nativeAdmissions.add(address);
+  }
   private readonly inputReadDrains = new Map<string, Promise<void>>();
   private readonly inputReadReservations = new WeakMap<
     NativeInputReadReservation,
@@ -182,12 +199,15 @@ export class NativeWorkSessionService {
   ): Promise<T> {
     check(grant, action);
     this.touchScope(grant.scope);
+    if (this.retiredScopes.has(nativeScopeKey(grant.scope)))
+      return Promise.reject(new NativeWorkError('scope-mismatch'));
     const key = nativeWorkSessionKey(grant.scope);
     const scope = structuredClone(grant.scope);
     const epoch = this.stopEpochs.get(key) ?? 0;
     const verify = () => {
       check(grant, action);
       if (!sameScope(scope, grant.scope)) throw new NativeWorkError('scope-mismatch');
+      if (this.retiredScopes.has(nativeScopeKey(scope))) throw new NativeWorkError('cancelled');
       if ((this.stopEpochs.get(key) ?? 0) !== epoch) throw new NativeWorkError('cancelled');
     };
     return this.trackScope(
@@ -337,8 +357,169 @@ export class NativeWorkSessionService {
 
   sealInputReads(): Promise<void> {
     this.inputReadsSealed = true;
+    this.cleanupLifetime.abort();
     for (const prepared of this.prepared.values()) prepared.controller.abort();
     return this.whenInputReadsIdle();
+  }
+
+  /** Host-only cleanup after D authorization, independent of an expired member lease.
+   * The wait signal controls only this caller's wait, never the owned physical work.
+   */
+  async retireForCleanup(
+    authority: NativeScopeCleanupAuthority,
+    waitSignal: AbortSignal,
+  ): Promise<NativeScopeCleanupResult> {
+    const parsed = nativeScopeSchema.safeParse(authority?.scope);
+    if (
+      !parsed.success ||
+      typeof authority?.assertCurrent !== 'function' ||
+      !(waitSignal instanceof AbortSignal)
+    )
+      throw new NativeWorkError('invalid-request');
+    const scope = parsed.data,
+      address = nativeScopeKey(scope),
+      method = authority.assertCurrent;
+    const verify = () => {
+      if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
+      if (authority.assertCurrent !== method || !sameScope(scope, authority.scope))
+        throw new NativeWorkError('scope-mismatch');
+      try {
+        const result: unknown = authority.assertCurrent();
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined);
+          throw new NativeWorkError('unavailable');
+        }
+      } catch {
+        throw new NativeWorkError('unavailable');
+      }
+    };
+    verify();
+    if (!this.retiredScopes.has(address) && this.retiredScopes.size >= MAX_OWNER_SCOPES)
+      throw new NativeWorkError('capacity');
+    this.retiredScopes.add(address);
+    let work = this.cleanups.get(address);
+    if (!work) {
+      if (this.cleanups.size >= 256) throw new NativeWorkError('capacity');
+      work = this.retireScope(scope);
+      this.cleanups.set(address, work);
+      const owned = work;
+      void owned.then(
+        () => {
+          this.cleanupFailures.delete(address);
+          if (this.cleanups.get(address) === owned) this.cleanups.delete(address);
+        },
+        () => {
+          this.cleanupFailures.add(address);
+          if (this.cleanups.get(address) === owned) this.cleanups.delete(address);
+        },
+      );
+    }
+    let interrupt!: () => void;
+    const pending = new Promise<{ readonly status: 'pending' }>((resolve) => {
+      interrupt = () => resolve({ status: 'pending' });
+      waitSignal.addEventListener('abort', interrupt, { once: true });
+    });
+    const timer = setTimeout(interrupt, 5_000);
+    try {
+      if (waitSignal.aborted) interrupt();
+      const result = await Promise.race([pending, work]);
+      verify();
+      if (result.status === 'retired') result.drain.assertCurrent();
+      return result;
+    } finally {
+      clearTimeout(timer);
+      waitSignal.removeEventListener('abort', interrupt);
+    }
+  }
+
+  /** Global close seals new admissions first, then waits for every owned retirement. */
+  async whenRetirementsIdle(): Promise<void> {
+    while (this.cleanups.size) await Promise.allSettled([...this.cleanups.values()]);
+    if (this.cleanupFailures.size) throw new NativeWorkError('unavailable');
+  }
+
+  private async retireScope(
+    scope: NativeWorkScope,
+  ): Promise<Extract<NativeScopeCleanupResult, { status: 'retired' }>> {
+    const key = nativeWorkSessionKey(scope),
+      address = nativeScopeKey(scope);
+    const find = () => {
+      const stored = this.storage.read(key);
+      return stored && bindingForScope(readNativeRecord(stored), scope);
+    };
+    // The owned runtime retirement itself keeps physical cleanup after a wait abort.
+    const control = new AbortController();
+    const before = find();
+    const retire = (binding: NativeSessionBinding) => {
+      try {
+        const ready = this.runtime.migrationDrain(binding.nativeSessionId);
+        ready.assertCurrent();
+        return Promise.resolve(ready);
+      } catch {
+        /* A cold/unprepared writer needs the actual retire barrier. */
+      }
+      return this.runtime.retire(
+        binding.nativeSessionId,
+        control.signal,
+        binding.receipts.length === 0,
+      );
+    };
+    const early = before && retire(before);
+    if (early) void early.catch(() => undefined);
+    await this.whenScopeIdle(scope);
+    const binding = find();
+    if (!binding) {
+      if (before || this.nativeAdmissions.has(address)) throw new NativeWorkError('unavailable');
+      const drain = Object.freeze({
+        signal: this.cleanupLifetime.signal,
+        basis: 'absent-unadmitted' as const,
+        assertCurrent: () => {
+          if (
+            this.cleanupLifetime.signal.aborted ||
+            this.scopeActivity.get(address)?.size ||
+            this.nativeAdmissions.has(address) ||
+            find()
+          )
+            throw new NativeWorkError('unavailable');
+        },
+      });
+      return { status: 'retired', binding: undefined, drain };
+    }
+    if (before && before.nativeSessionId !== binding.nativeSessionId)
+      throw new NativeWorkError('scope-mismatch');
+    while (activeInputReads.has(binding.nativeSessionId)) {
+      const active = activeInputReads.get(binding.nativeSessionId)!;
+      if (active.owner !== this.runtime) throw new NativeWorkError('input-read-busy');
+      await active.drain;
+    }
+    const native = await (early ?? retire(binding));
+    const digest = createHash('sha256').update(JSON.stringify(binding)).digest('hex');
+    const assertCurrent = () => {
+      const latest = find();
+      if (
+        this.cleanupLifetime.signal.aborted ||
+        this.scopeActivity.get(address)?.size ||
+        activeInputReads.has(binding.nativeSessionId) ||
+        !latest ||
+        createHash('sha256').update(JSON.stringify(latest)).digest('hex') !== digest
+      )
+        throw new NativeWorkError('unavailable');
+      native.assertCurrent();
+    };
+    return {
+      status: 'retired',
+      binding: {
+        scope: structuredClone(binding.scope),
+        nativeSessionId: binding.nativeSessionId,
+        nativeAgentId: binding.nativeAgentId,
+        selection: structuredClone(binding.selection),
+      },
+      drain: Object.freeze({
+        signal: AbortSignal.any([this.cleanupLifetime.signal, native.signal]),
+        basis: native.basis,
+        assertCurrent,
+      }),
+    };
   }
 
   /** Host-only observation after D authorizes the original member/current node.
@@ -734,6 +915,7 @@ export class NativeWorkSessionService {
         throw new NativeWorkError('idempotency-mismatch');
       if (!prior && binding.receipts.length >= NATIVE_WORK_LIMITS.receipts)
         throw new NativeWorkError('capacity');
+      this.observeNativeAdmission(binding.scope);
       await this.runtime.connect(binding, grant, binding.receipts.length === 0);
       verify();
       if (prior) {
@@ -815,6 +997,7 @@ export class NativeWorkSessionService {
     if (input.kind === 'edit') textInput(input.text);
     return this.serial(grant, 'queue', async (verify) => {
       const binding = this.required(grant, 'queue');
+      this.observeNativeAdmission(binding.scope);
       await this.runtime.connect(binding, grant, false);
       verify();
       if (input.kind === 'reorder') this.runtime.reorder(binding.nativeSessionId, input.messageIds);

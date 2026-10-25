@@ -3,7 +3,11 @@ import type {} from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { NativeWorkSessionService } from './native-work-session.js';
 import { DshNativeWorkRuntime, type NativeDshOptions } from './native-work-session-dsh.js';
-import type { NativeWorkSessionRecord, NativeWorkStorage } from './native-work-session-contract.js';
+import {
+  NativeWorkError,
+  type NativeWorkSessionRecord,
+  type NativeWorkStorage,
+} from './native-work-session-contract.js';
 
 import { nativeWorkSessionRecordSchema } from './native-work-session-record.js';
 export { nativeWorkSessionBindingSchema } from './native-work-session-record.js';
@@ -47,7 +51,14 @@ export async function openNativeWorkSessions(ctx: Context, options: NativeDshOpt
     (closed ??= (async () => {
       const drain = service.sealInputReads();
       try {
+        let retirementFailed = false;
+        try {
+          await service.whenRetirementsIdle();
+        } catch {
+          retirementFailed = true;
+        }
         await runtime.close();
+        if (retirementFailed) throw new NativeWorkError('unavailable');
       } finally {
         // Tool scope disposal retains the native persistence handle until the
         // actual source promise settles. Do not release metadata before it.

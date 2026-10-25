@@ -5,6 +5,7 @@ import { NativeWorkSessionService } from '../dist/native-work-session.js';
 import { nativeWorkSessionBindingSchema } from '../dist/native-work-session-storage.js';
 import {
   acceptedInputRef,
+  describeAcceptedInputTool,
   registerNativeAcceptedInputTool,
 } from '../dist/native-work-session-input-tool.js';
 import { grant, message, scope, selection } from './native-work-session-fixture.mjs';
@@ -40,6 +41,63 @@ const visible = {
   version: 1,
   name: 'First version',
 };
+
+test('contract: accepted-input metadata is pure JSON, immutable and matches the registered definition', async () => {
+  const first = describeAcceptedInputTool();
+  const second = describeAcceptedInputTool();
+  assert.deepEqual(Object.keys(first).sort(), [
+    'description',
+    'name',
+    'outputSchema',
+    'parameters',
+    'sourceVersion',
+  ]);
+  assert.equal(first.name, 'read_accepted_input');
+  assert.equal(first.sourceVersion, '1');
+  assert.deepEqual(JSON.parse(JSON.stringify(first)), first);
+  assert.notEqual(first.parameters, second.parameters);
+  assert.notEqual(first.outputSchema, second.outputSchema);
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(first.parameters.properties), true);
+  assert.equal(Object.isFrozen(first.outputSchema.oneOf), true);
+  assert.equal(Reflect.set(first.parameters.properties.inputRef, 'type', 'number'), false);
+  const edited = structuredClone(first);
+  edited.parameters.properties.inputRef.type = 'number';
+  const h = harness(),
+    current = grant();
+  await h.service.send(current, message('metadata-only', 'fixture'));
+  let registered;
+  const ports = {
+    catalog: { scope, inputs: [{ input: visible, required: false }] },
+    resolveCurrentCaller: () => assert.fail('metadata must not resolve a caller'),
+    reader: { upstreamContent: () => assert.fail('metadata must not read content') },
+  };
+  registerNativeAcceptedInputTool(
+    {
+      tools: {
+        register: (definition) => {
+          registered = definition;
+        },
+      },
+      effect: () => {},
+    },
+    h.service.open(current).binding,
+    current,
+    h.service,
+    ports,
+  );
+  assert.deepEqual(
+    {
+      name: registered.name,
+      description: registered.description,
+      parameters: registered.parameters,
+      outputSchema: registered.output.schema,
+      sourceVersion: first.sourceVersion,
+    },
+    second,
+  );
+  assert.equal(describeAcceptedInputTool().parameters.properties.inputRef.type, 'string');
+});
 
 test('contract: opaque handles pin full Run scope and exact version ID, not its display number', () => {
   const ref = acceptedInputRef(scope, visible);
