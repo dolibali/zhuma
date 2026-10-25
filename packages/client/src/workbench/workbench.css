@@ -5,6 +5,9 @@
   gap: 6px;
   width: 100%;
   min-width: 0;
+  height: auto;
+  overflow: visible;
+  background: transparent;
 }
 .zhuma.zm-account-settings .zm-account-footer {
   flex: 1 1 auto;
