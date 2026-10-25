@@ -6,6 +6,11 @@
   disabled: true
 - id: ui-settings-account
   disabled: true
+- id: ui-settings-models
+  config:
+    # Manual work stays available before a model is configured. The Models
+    # settings page and explicit credential setup remain available.
+    credentialOnboarding: false
 - insert:
     - id: zhuma-workbench
       name: './lib/zhuma-workbench/index.js'
