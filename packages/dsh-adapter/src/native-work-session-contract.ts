@@ -122,6 +122,7 @@ export class NativeWorkError extends Error {
       | 'idempotency-mismatch'
       | 'capacity'
       | 'delivery-unknown'
+      | 'read-timeout'
       | 'unavailable'
       | 'not-pending'
       | 'cancelled',

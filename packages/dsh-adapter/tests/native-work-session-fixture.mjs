@@ -87,7 +87,7 @@ export function response(text) {
   ];
 }
 
-export async function boot(root, adapter = new ScriptedAdapter(), compose) {
+export async function boot(root, adapter = new ScriptedAdapter(), compose, runtimeOptions = {}) {
   const ctx = new Context();
   try {
     await ctx.plugin(LlmRuntime);
@@ -103,6 +103,7 @@ export async function boot(root, adapter = new ScriptedAdapter(), compose) {
     await ctx.plugin(Domain, { backend: 'json' });
     ctx.llm.registerAdapter(['contract'], adapter);
     const work = await openNativeWorkSessions(ctx, {
+      ...runtimeOptions,
       compose:
         compose ??
         (() => ({
