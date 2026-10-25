@@ -85,6 +85,26 @@ export interface ExecutionInboxValue {
   readonly spaceId?: string | undefined;
   readonly items: readonly InboxItem[];
   readonly nodes: readonly ExecutionNodeWire[];
+  readonly places?: readonly InboxPlaceWire[];
+}
+/** Public #85 projection. Empty fields remain unknown; no client-side source reconstruction. */
+export interface InboxPlaceWire {
+  readonly itemId: string;
+  readonly taskPath: string;
+  readonly ownerName: string;
+}
+
+export function readInboxPlaces(value: unknown): readonly InboxPlaceWire[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) invalid('返回的来源位置不正确。');
+  return value.map((raw) => {
+    const item = record(raw, '来源位置');
+    return {
+      itemId: text(item.itemId, '工作项'),
+      taskPath: typeof item.taskPath === 'string' ? item.taskPath.trim() : '',
+      ownerName: typeof item.ownerName === 'string' ? item.ownerName.trim() : '',
+    };
+  });
 }
 
 export interface DeliveryDraft {
@@ -471,11 +491,13 @@ function readInbox(value: unknown): ExecutionInboxValue {
   if (value === null || typeof value !== 'object') invalid('返回的待办不正确。');
   const record = value as Record<string, unknown>;
   if (!Array.isArray(record.items) || !Array.isArray(record.nodes)) invalid('返回的待办不正确。');
+  const places = readInboxPlaces(record.places);
   return {
     actorId: text(record.actorId, '待办'),
     ...(record.spaceId === undefined ? {} : { spaceId: text(record.spaceId, '空间') }),
     items: record.items.map(readItem),
     nodes: record.nodes.map(readExecutionNode),
+    ...(places === undefined ? {} : { places }),
   };
 }
 

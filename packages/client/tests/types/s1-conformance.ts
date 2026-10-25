@@ -14,6 +14,7 @@ import {
   type SavedDeliveryDraftWire,
   type DeliveryDraftSave,
   type ExecutionInboxValue as ClientInboxValue,
+  type InboxPlaceWire,
   type ExecutionStartableValue as ClientStartableValue,
   type StartablePlanWire,
   type StartPlanDraft,
@@ -28,6 +29,7 @@ import type {
   ExecutionWorkspaceProps,
   IdentityImport,
   InboxPanelProps,
+  InboxPlace,
   ProjectSpaceDirectory,
   ReviewWorkspaceProps,
   S1Startup,
@@ -97,6 +99,11 @@ export type InboxScopeBoth = Assert<
     Pick<ClientInboxValue, 'actorId' | 'spaceId'>,
     Pick<ChannelInboxValue, 'actorId' | 'spaceId'>
   >
+>;
+export type InboxPlaceBoth = Assert<Both<InboxPlaceWire, InboxPlace>>;
+export type InboxPlaceKeysBoth = Assert<Both<keyof InboxPlaceWire, keyof InboxPlace>>;
+export type InboxPlacesBoth = Assert<
+  Both<Pick<ClientInboxValue, 'places'>, Pick<ChannelInboxValue, 'places'>>
 >;
 export type StartableScopeBoth = Assert<
   Both<

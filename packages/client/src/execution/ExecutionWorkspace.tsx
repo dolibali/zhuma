@@ -4,6 +4,7 @@ import {
   executionErrorMessage,
   type ExecutionApi,
   type ExecutionNodeWire,
+  type InboxPlaceWire,
 } from './ExecutionApi.js';
 import { DeliveryPanel } from './DeliveryPanel.js';
 import { InboxPanel } from './InboxPanel.js';
@@ -21,6 +22,7 @@ export function ExecutionWorkspace(props: Props) {
 function Workspace({ api, plan, refreshKey }: Props) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
   const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
+  const [places, setPlaces] = useState<readonly InboxPlaceWire[]>();
   const [error, setError] = useState('');
   const [pending, setPending] = useState(true);
   const [selected, setSelected] = useState<Selection | undefined>();
@@ -41,6 +43,7 @@ function Workspace({ api, plan, refreshKey }: Props) {
       if (!valid()) return;
       setItems(inbox.items);
       setNodes(inbox.nodes);
+      setPlaces(inbox.places);
     } catch (caught) {
       if (valid()) setError(executionErrorMessage(caught));
     } finally {
@@ -102,6 +105,7 @@ function Workspace({ api, plan, refreshKey }: Props) {
       <InboxPanel
         items={items}
         nodes={nodes}
+        {...(places === undefined ? {} : { places })}
         error={error}
         pending={pending}
         reload={() => void reload()}
