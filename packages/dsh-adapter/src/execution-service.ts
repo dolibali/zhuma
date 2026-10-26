@@ -161,6 +161,15 @@ import {
   describeNativeOutputFileTool,
   NATIVE_OUTPUT_FILE_TOOL,
 } from './native-work-session-output-file-tool.js';
+import { ExecutionWorkflowIntents, type WorkflowMember } from './execution-workflow-intent.js';
+import {
+  ExecutionWorkflowError,
+  type WorkflowExecutionClaim,
+  type WorkflowExecutionIntent,
+  type WorkflowExecutionView,
+  type WorkflowLocation,
+  type WorkflowStartTicket,
+} from './execution-workflow-contract.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -439,6 +448,7 @@ export interface PlanReceipt {
   readonly idempotencyKey: string;
   readonly fingerprint: string;
   readonly nodeIds: readonly string[];
+  readonly workflowExecution?: WorkflowExecutionIntent | undefined;
 }
 
 export interface ExecutionStorage {
@@ -937,6 +947,7 @@ export class ExecutionService {
   private runPreparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
+  private workflowIntents: ExecutionWorkflowIntents | undefined;
   private nativeResultIssuer: NativeResultPort | undefined;
   private nativeResultPublicationsIssuer: NativeResultPort | undefined;
   private readonly nativeResultOperations = new Set<Promise<unknown>>();
@@ -1016,6 +1027,176 @@ export class ExecutionService {
     this.runHost = host;
     this.runAuthorities = authorities;
     return authorities;
+  }
+
+  startWorkflowExecution(
+    request: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<WorkflowExecutionView>> {
+    return this.workflows().start(request, body);
+  }
+  readWorkflowExecution(
+    request: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<WorkflowExecutionView>> {
+    return this.workflows().read(request, body);
+  }
+  resumeWorkflowExecution(
+    request: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<WorkflowExecutionView>> {
+    return this.workflows().resume(request, body);
+  }
+  /** Fences admission and persists stopping. Host drains original Runs; read
+   * derives paused only once their original resource facts actually settle. */
+  stopWorkflowExecution(
+    request: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<WorkflowExecutionView>> {
+    return this.workflows().stop(request, body);
+  }
+  /** Only the original retained Host request can mint non-serializable tickets. */
+  claimWorkflowExecution(
+    request: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<WorkflowExecutionClaim>> {
+    return this.workflows().claim(request, body);
+  }
+
+  private workflows(): ExecutionWorkflowIntents {
+    const host = this.requireRunHost();
+    const migrationDrain = host.migrationDrain;
+    this.workflowIntents ??= new ExecutionWorkflowIntents({
+      signal: AbortSignal.any([host.signal, this.runLifetime.signal]),
+      enqueue: (work) => this.enqueue(work),
+      open: async (request, location) => {
+        const lease = await host.memberLease(request);
+        const signal = lease.signal,
+          assert = lease.assertCurrent,
+          release = lease.release;
+        const memberId = lease.memberId,
+          expiresAt = lease.expiresAt;
+        const facts: WorkflowMember['facts'] = (requireStarted) => {
+          if (
+            this.requireRunHost() !== host ||
+            lease.signal !== signal ||
+            !(signal instanceof AbortSignal) ||
+            signal.aborted ||
+            lease.assertCurrent !== assert ||
+            lease.release !== release ||
+            lease.memberId !== memberId ||
+            lease.expiresAt !== expiresAt ||
+            !Number.isSafeInteger(expiresAt) ||
+            expiresAt <= Date.now()
+          )
+            throw new ExecutionWorkflowError('workflow-authority-denied');
+          synchronousRunAssertion(assert.call(lease, location.spaceId));
+          const workbench = this.workbench.readWorkbench();
+          const task = workbench.tasks.find((item) => item.id === location.taskId);
+          if (
+            !task ||
+            task.ownerId !== memberId ||
+            !workbench.participants.some(
+              (item) => item.id === memberId && item.kind === 'human' && item.available,
+            ) ||
+            planMembership(workbench, location.taskId, memberId) !== 'allowed'
+          )
+            throw new ExecutionWorkflowError('workflow-authority-denied');
+          synchronousRunAssertion(host.assertProjectSpace(task.projectId, location.spaceId));
+          const applied = createExecutionHandoff(
+            {
+              taskId: location.taskId,
+              planId: location.planId,
+              revision: location.revision,
+            },
+            workbench,
+          );
+          const handoffs = createNodeHandoffs(applied);
+          if (!handoffs.length) throw new ExecutionWorkflowError('workflow-plan-incomplete');
+          const receipt = this.storage.readPlan(
+            planKey(location.taskId, location.planId, location.revision),
+          );
+          const nodes = handoffs.flatMap(({ nodeId }) => {
+            const node = this.readRunNode({ ...location, nodeId });
+            return node ? [node] : [];
+          });
+          if (requireStarted && !receipt)
+            throw new ExecutionWorkflowError('workflow-plan-incomplete');
+          if (receipt) {
+            if (nodes.length !== handoffs.length)
+              throw new ExecutionWorkflowError('workflow-plan-incomplete');
+            this.assertRunNodeAccess(host, memberId, location.spaceId, nodes[0]!);
+          }
+          const availableExpertIds = applied.participants
+            .filter(
+              (expert) =>
+                expert.kind === 'expert' &&
+                expert.available &&
+                expert.instructions.trim() &&
+                !expert.origin?.missing.length &&
+                workbench.participants.some(
+                  (current) =>
+                    current.id === expert.id && current.kind === 'expert' && current.available,
+                ),
+            )
+            .map((expert) => expert.id);
+          return { receipt: receipt && structuredClone(receipt), nodes, availableExpertIds };
+        };
+        return {
+          memberId,
+          signal,
+          facts,
+          assertDrained: (node, run) => {
+            facts(true);
+            if (!migrationDrain || host.migrationDrain !== migrationDrain)
+              throw new ExecutionWorkflowError('workflow-recovery-required');
+            const proof = migrationDrain.call(host, executionRunScope(node, run));
+            if (
+              !proof ||
+              !(proof.signal instanceof AbortSignal) ||
+              proof.signal.aborted ||
+              typeof proof.assertCurrent !== 'function'
+            )
+              throw new ExecutionWorkflowError('workflow-recovery-required');
+            try {
+              synchronousRunAssertion(proof.assertCurrent());
+            } catch {
+              throw new ExecutionWorkflowError('workflow-recovery-required');
+            }
+          },
+          initialize: async (requestId) => {
+            facts(false);
+            const started = await this.startPlanNow(
+              { member: { ok: true, memberId, spaceIds: [location.spaceId] } },
+              {
+                ...location,
+                idempotencyKey: `workflow-plan-${createHash('sha256').update(requestId).digest('hex')}`,
+              },
+              () => {
+                facts(false);
+              },
+            );
+            if (!started.ok) throw new ExecutionWorkflowError(started.error.code);
+          },
+          release: () => release.call(lease),
+        };
+      },
+      write: async (location, receipt) => {
+        await this.storage.writePlan(
+          planKey(location.taskId, location.planId, location.revision),
+          receipt,
+        );
+      },
+      watch: (listener) => {
+        const stop = host.onChange(listener);
+        this.runChanges.add(listener);
+        return () => {
+          this.runChanges.delete(listener);
+          stop();
+        };
+      },
+    });
+    return this.workflowIntents;
   }
 
   /** Host-only current facts, copied so a consumer cannot mutate the domain's live row. */
@@ -1107,8 +1288,12 @@ export class ExecutionService {
   }
 
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
-  beginRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
-    return this.prepareRunBegin(request, body, false);
+  beginRun(
+    request: MemberRequest,
+    body: unknown,
+    ticket?: WorkflowStartTicket,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+    return this.prepareRunBegin(request, body, false, ticket);
   }
 
   /** A installs the original C owner once, after installing this service's Run Host. */
@@ -1707,14 +1892,19 @@ export class ExecutionService {
   }
 
   /** Normal explicit first start: authenticate all facts before the first global write. */
-  startRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
-    return this.prepareRunBegin(request, body, true);
+  startRun(
+    request: MemberRequest,
+    body: unknown,
+    ticket?: WorkflowStartTicket,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+    return this.prepareRunBegin(request, body, true, ticket);
   }
 
   private async prepareRunBegin(
     request: MemberRequest,
     body: unknown,
     enableWriter: boolean,
+    ticket?: WorkflowStartTicket,
   ): Promise<ExecutionResult<ExecutionRunDecision>> {
     // The snapshot's scope is data to compare against the real lease below,
     // not an actor assignment. All other command fields keep the old scan.
@@ -1727,8 +1917,26 @@ export class ExecutionService {
     const parsed = parseBody(beginRunSchema, body);
     if (!parsed.ok) return parsed;
     const input = parsed.value;
+    let workflowSignal: AbortSignal | undefined;
+    if (ticket !== undefined) {
+      try {
+        if (!this.workflowIntents)
+          throw new ExecutionWorkflowError('workflow-start-ticket-invalid');
+        workflowSignal = this.workflowIntents.preparing(request, input, ticket);
+      } catch (error) {
+        return fail(
+          error instanceof ExecutionWorkflowError ? error.code : 'workflow-authority-denied',
+        );
+      }
+    }
     if (input.composition.schemaVersion !== 2 || !input.composition.payload.resources)
-      return this.enqueue(() => this.beginRunNow(request, input, enableWriter));
+      return this.enqueue(() =>
+        this.beginRunNow(request, input, enableWriter, undefined, ticket),
+      ).then((result) => {
+        if (!result.ok && result.error.code === 'run-workspace-busy')
+          this.workflowIntents?.deferBusy(ticket);
+        return result;
+      });
     let host: ExecutionRunHostPorts;
     try {
       host = this.requireRunHost();
@@ -1738,24 +1946,42 @@ export class ExecutionService {
     }
     // Register the whole operation BEFORE invoking a potentially reentrant
     // provider. Its 145 reads need the original queue, not a second queue.
+    let workflowCleanupFailed = false;
     const operation = Promise.resolve().then(async () => {
       try {
         return await withExecutionRunResourceQualification(
-          { host, ownerSignal: this.runLifetime.signal, originalRequest: request, command: input },
+          {
+            host,
+            ownerSignal: workflowSignal
+              ? AbortSignal.any([this.runLifetime.signal, workflowSignal])
+              : this.runLifetime.signal,
+            originalRequest: request,
+            command: input,
+          },
           (qualification) =>
-            this.enqueue(() => this.beginRunNow(request, input, enableWriter, qualification)),
+            this.enqueue(() =>
+              this.beginRunNow(request, input, enableWriter, qualification, ticket),
+            ),
         );
       } catch (error) {
-        if (error instanceof ExecutionRunResourceQualificationCloseError)
+        if (error instanceof ExecutionRunResourceQualificationCloseError) {
+          workflowCleanupFailed = true;
           this.runPreparationFailure ??= error;
+        }
         if (error instanceof ExecutionRunError || error instanceof ExecutionRunCompositionError)
           return fail(error.code);
         throw error;
       }
     });
+    if (ticket)
+      this.workflowIntents!.trackPreparation(ticket, operation, () => workflowCleanupFailed);
     this.runPreparations.add(operation);
     void operation.finally(() => this.runPreparations.delete(operation)).catch(() => undefined);
-    return operation;
+    return operation.then((result) => {
+      if (!result.ok && result.error.code === 'run-workspace-busy')
+        this.workflowIntents?.deferBusy(ticket);
+      return result;
+    });
   }
 
   private async beginRunNow(
@@ -1763,12 +1989,30 @@ export class ExecutionService {
     input: BeginRunRequest,
     enableWriter: boolean,
     qualification?: ExecutionRunResourceVerification,
+    ticket?: WorkflowStartTicket,
   ): Promise<ExecutionResult<ExecutionRunDecision>> {
     return this.withRunMember(
       request,
       input,
       async (host, lease, initial) => {
         let node = initial;
+        const workflowCurrent = () => {
+          if (ticket !== undefined) this.workflows().assertBegin(input, lease.memberId, ticket);
+          const intent = this.storage.readPlan(
+            planKey(node.taskId, node.planId, node.revision),
+          )?.workflowExecution;
+          const reservation = intent?.starts.find(
+            (item) =>
+              item.requestId === input.requestId ||
+              item.newRunId === input.newRunId ||
+              item.newSegmentId === input.newSegmentId,
+          );
+          const replay = readExecutionRunState(node)?.receipts.some(
+            (item) => item.requestId === input.requestId,
+          );
+          if (reservation && !ticket && !replay)
+            throw new ExecutionWorkflowError('workflow-start-ticket-required');
+        };
         const verify = async () => {
           qualification?.assertCurrent();
           this.requireRunHost();
@@ -1781,6 +2025,7 @@ export class ExecutionService {
           const fresh = this.currentRunCompositionInputs(host, lease, input, visible);
           qualification?.assertCurrent();
           node = fresh.node;
+          workflowCurrent();
           const state = readExecutionRunState(node);
           const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
           const generation = prior
@@ -1876,7 +2121,7 @@ export class ExecutionService {
         );
         lease.assertCurrent(input.spaceId);
         qualification?.assertCurrent();
-        const committed = await this.commitRunDecision(decision);
+        const committed = await this.commitRunDecision(decision, workflowCurrent);
         qualification?.assertCurrent();
         return committed;
       },
@@ -1949,6 +2194,7 @@ export class ExecutionService {
     while (this.nativeResultOperations.size)
       await Promise.allSettled([...this.nativeResultOperations]);
     await this.writes;
+    await this.workflowIntents?.close();
     await this.runAuthorities?.close();
     if (this.runPreparationFailure) throw this.runPreparationFailure;
     if (this.nativeResultCleanupFailure) throw this.nativeResultCleanupFailure;
@@ -2065,6 +2311,7 @@ export class ExecutionService {
     } catch (error) {
       if (
         error instanceof ExecutionRunError ||
+        error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunProtocolError ||
         error instanceof ExecutionRunCompositionError
       )
@@ -2124,8 +2371,10 @@ export class ExecutionService {
 
   private async commitRunDecision(
     decision: ExecutionRunDecision,
+    beforeWrite?: () => void,
   ): Promise<ExecutionResult<ExecutionRunDecision>> {
     if (decision.disposition === 'applied') {
+      beforeWrite?.();
       const stored = await this.persist(() => this.writeNode(decision.record, true));
       if (!stored.ok) return stored;
     }
@@ -4366,6 +4615,7 @@ export class ExecutionService {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
       if (
         error instanceof ArtifactUploadError ||
+        error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionRunProtocolError ||
         error instanceof ExecutionRunCompositionError
@@ -4606,7 +4856,7 @@ export class ExecutionService {
     return { ok: true, value: false };
   }
 
-  private async startPlanNow(caller: ExecutionCaller, body: unknown) {
+  private async startPlanNow(caller: ExecutionCaller, body: unknown, beforeWrite?: () => void) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
     const parsed = parseBody(startSchema, body);
@@ -4677,6 +4927,7 @@ export class ExecutionService {
       if (this.storage.readNode(key) === record) continue;
       const stamped = withExecutionEvent(record, 'node-started', actor.value.actorId);
       if (!stamped) return fail('unavailable');
+      beforeWrite?.();
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
     }
@@ -4687,6 +4938,7 @@ export class ExecutionService {
       fingerprint,
       nodeIds: started.records.map((record) => record.nodeId),
     };
+    beforeWrite?.();
     const stored = await this.persist(() => this.storage.writePlan(key, receipt));
     if (!stored.ok) return stored;
     return {
