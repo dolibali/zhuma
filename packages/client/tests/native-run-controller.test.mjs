@@ -241,9 +241,11 @@ test('Run view contract: late failed send cannot clear uncertain Stop retry key 
 
 test('Run view contract: a fresh replacement Run survives late send and stop completions without another stale read', async () => {
   const sent = Promise.withResolvers(),
-    stopped = Promise.withResolvers();
+    stopped = Promise.withResolvers(),
+    nextStopped = Promise.withResolvers();
   let read = summary,
-    reads = 0;
+    reads = 0,
+    stops = 0;
   const h = setup({
     options: async () => runningOptions(read),
     read: async () => {
@@ -251,13 +253,23 @@ test('Run view contract: a fresh replacement Run survives late send and stop com
       return read;
     },
     send: async () => sent.promise,
-    stop: async () => stopped.promise,
+    stop: async () => {
+      stops++;
+      await (stops === 1 ? stopped.promise : nextStopped.promise);
+    },
   });
   await h.controller.refresh();
   const sending = h.controller.send('Old Run', 'followup').catch((error) => error);
   const stopping = h.controller.stop().catch((error) => error);
   read = { ...summary, runId: 'new-run', generation: 2, segmentId: 'new-segment' };
   await h.controller.refresh();
+  assert.equal(
+    h.controller.getSnapshot().busy,
+    undefined,
+    'old Stop does not block a verified replacement Run',
+  );
+  const nextStopping = h.controller.stop();
+  assert.equal(stops, 2);
   const before = reads;
   sent.reject(Error('Old send'));
   await sending;
@@ -265,8 +277,93 @@ test('Run view contract: a fresh replacement Run survives late send and stop com
   stopped.resolve();
   assert.equal((await stopping).name, 'AbortError');
   assert.equal(h.controller.getSnapshot().view.run.runId, 'new-run');
+  assert.equal(
+    h.controller.getSnapshot().busy,
+    'stop',
+    'old Stop finally cannot remove a new Stop ticket',
+  );
   assert.equal(h.controller.getSnapshot().error, undefined);
   assert.equal(reads, before, 'superseded command completions must not refresh over the new Run');
+  nextStopped.resolve();
+  await nextStopping;
+  h.controller.dispose();
+});
+
+test('Run view contract: a deferred begin replaced by a fresh admitted Run cannot block its actual Stop', async () => {
+  const begun = Promise.withResolvers(),
+    stopped = Promise.withResolvers();
+  let admitted = false,
+    stops = 0,
+    stoppedRun;
+  const h = setup({
+    options: async () => (admitted ? runningOptions() : options()),
+    read: async () => ({ ...summary, acknowledged: true }),
+    begin: async () => begun.promise,
+    stop: async (run) => {
+      stops++;
+      stoppedRun = run;
+      await stopped.promise;
+    },
+  });
+  await h.controller.refresh();
+  const starting = h.controller.start(selection).catch((error) => error);
+  assert.equal(h.controller.getSnapshot().busy, 'start');
+  await assert.rejects(
+    h.controller.stop(),
+    /Run view is not ready|Stop unavailable/,
+    'without a verified current Run Stop remains refused',
+  );
+  admitted = true;
+  await h.controller.refresh();
+  assert.equal(h.controller.getSnapshot().view.run.runId, summary.runId);
+  const stopping = h.controller.stop();
+  assert.equal(stops, 1, 'old begin response wait must not block a fresh actual Run Stop');
+  assert.equal(stoppedRun.generation, summary.generation);
+  assert.equal(stoppedRun.segmentId, summary.segmentId);
+  await assert.rejects(h.controller.stop());
+  begun.resolve();
+  assert.equal((await starting).name, 'AbortError');
+  assert.equal(h.controller.getSnapshot().busy, 'stop');
+  stopped.resolve();
+  await stopping;
+  h.controller.dispose();
+});
+
+test('Run view contract: stale same-kind send cannot block new Run sending or clear the new ticket/key', async () => {
+  const oldReply = Promise.withResolvers(),
+    nextReply = Promise.withResolvers();
+  let read = summary;
+  const requests = [];
+  const h = setup({
+    options: async () => runningOptions(read),
+    read: async () => read,
+    send: async (run, text, mode, key) => {
+      requests.push({ runId: run.runId, text, mode, key });
+      if (requests.length === 1) await oldReply.promise;
+      else if (requests.length === 2) await nextReply.promise;
+    },
+  });
+  await h.controller.refresh();
+  const oldSend = h.controller.send('Old input', 'followup').catch((error) => error);
+  read = { ...summary, runId: 'new-run', generation: 2, segmentId: 'new-segment' };
+  await h.controller.refresh();
+  const nextSend = h.controller.send('New input', 'followup').catch((error) => error);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].runId, 'new-run');
+  await assert.rejects(h.controller.send('Duplicate current send', 'followup'));
+  oldReply.resolve();
+  assert.equal((await oldSend).name, 'AbortError');
+  assert.equal(
+    h.controller.getSnapshot().busy,
+    'send',
+    'old finally must not clear the current same-kind ticket',
+  );
+  nextReply.reject(Error('Unknown new send response'));
+  await nextSend;
+  await h.controller.send('New input', 'followup');
+  assert.equal(requests.length, 3);
+  assert.equal(requests[1].key, requests[2].key);
+  assert.notEqual(requests[0].key, requests[1].key);
   h.controller.dispose();
 });
 

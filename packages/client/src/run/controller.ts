@@ -36,12 +36,13 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
   const active: Partial<Record<Command, ActiveCommand>> = {};
   const retries: Partial<Record<Command, Retry>> = {};
   const current = () => !lifetime.signal.aborted;
-  const writing = () => !!(active.start || active.send || active.stop);
+  const isActive = (kind: Command) => active[kind]?.epoch === epoch;
+  const writing = () => Object.values(active).some((command) => command.epoch === epoch);
   function publishBusy() {
     publish({
-      busy: active.stop
+      busy: isActive('stop')
         ? 'stop'
-        : active.start
+        : isActive('start')
           ? 'start'
           : active.send?.epoch === epoch
             ? 'send'
@@ -165,8 +166,10 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     lifetime.signal.throwIfAborted();
     if (
       state.view.kind !== 'ready' ||
-      active[kind] ||
-      (kind === 'stop' ? active.start : writing() || (stopFence && stopFence === runIdentity(run)))
+      isActive(kind) ||
+      (kind === 'stop'
+        ? isActive('start')
+        : writing() || (stopFence && stopFence === runIdentity(run)))
     )
       throw Error('Run view is not ready');
     if (kind === 'stop') {
@@ -175,8 +178,8 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       stopFence = runIdentity(run);
       // Cancel only the client wait. The admitted Host command retains its own
       // lifetime; stopping still goes through the independent real stop API.
-      active.send?.abort.abort();
     }
+    const supersededSend = kind === 'stop' ? active.send : undefined;
     const ticket = { epoch, abort: new AbortController() };
     active[kind] = ticket;
     const valid = () => current() && ticket.epoch === epoch;
@@ -185,6 +188,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     ready();
     publish({ error: undefined });
     publishBusy();
+    supersededSend?.abort.abort();
     try {
       await work(AbortSignal.any([lifetime.signal, ticket.abort.signal]));
       lifetime.signal.throwIfAborted();
