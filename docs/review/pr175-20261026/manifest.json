@@ -1,0 +1,51 @@
+{
+  "scope": "Real official compiled Web/Host GUI; synthetic members and project only.",
+  "viewport": [
+    1440,
+    900
+  ],
+  "historicalBefore": {
+    "source": "b9cae43a8a18ba493f7819babd9363c85516fb27",
+    "status": "workspace choice missing; never certified as a successful Run"
+  },
+  "after": {
+    "prHead": "9f1b0f3482f36f68af0cc7a9cebb5d241df99fbe",
+    "integrationSource": "41102336ad277adf7d49f8b6d76ad11c757ff3a8",
+    "tree": "1caa8c21038ba715e3fa7ae529ab00bff17a830e",
+    "model": "local scripted fixture; no real model",
+    "scope": "explicit read-only and explicit workspace-write in separate Runs"
+  },
+  "boundary": "The before image is a historical failed configuration, not a current-base successful Run. After screenshots show real scope selection/tools/Stop; they do not certify @2 business submission, reviews, all-Agent execution or installation.",
+  "images": {
+    "historical-b9-missing-workspace-dark.jpg": {
+      "blob": "69e12efb91c9a35eebf08fc5b979e5166965568b",
+      "sha256": "6b5737faa00e8e7da424ed9fe33f3ed85bd5d03cbef71b876af0f556e87d9cb7",
+      "bytes": 34193
+    },
+    "readonly-stopped-config-dark.jpg": {
+      "blob": "c43b6d57d61cbd0a14e4a16f28434699e7e4cf5c",
+      "sha256": "b7fcbdc47efa62c2f3d46bd359bd0e28f463abd6fa764791730ee87336a31975",
+      "bytes": 56779
+    },
+    "readonly-stopped-config-light.jpg": {
+      "blob": "22f7eecb74bb2165ad8dc7fcde53d3e7af5c018c",
+      "sha256": "f7271fb9c31dc7132c88c81a81447a46cdae56ac2c2b20d9569a220a930d1df2",
+      "bytes": 59379
+    },
+    "write-scope-open-light.jpg": {
+      "blob": "398f647300e16c73b164a3a565ecfecd62c21fa7",
+      "sha256": "2e2c65a0c5076648f16c68f3949684991a15d6ee92a10b71728fa567886fe4ca",
+      "bytes": 49860
+    },
+    "write-stopped-light.jpg": {
+      "blob": "f24953bad17bbc24e7a0a69f751c98db5a5cc9d1",
+      "sha256": "ca4177638878143e0b5d2fc9f164bfd6453ae1b88cd12df07c049e0185a19b3d",
+      "bytes": 56808
+    },
+    "write-stopped-dark.jpg": {
+      "blob": "fe0bd9abe818810145a5651f628fa8aaf6a613ae",
+      "sha256": "f6965c876e2412b5aad896775e639747dfedd5843990a010fcb3d24f55519ede",
+      "bytes": 53859
+    }
+  }
+}
