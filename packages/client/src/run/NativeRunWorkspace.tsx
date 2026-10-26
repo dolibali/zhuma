@@ -92,15 +92,26 @@ export function NativeRunLauncher({ api, target, label = '使用 Agent' }: Launc
 function Launcher({ api, target, label }: LauncherProps) {
   const [open, setOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const restoreFocus = useCallback(() => {
+    if (opener.current?.isConnected) opener.current.focus();
+  }, []);
   const changeDirty = useCallback((dirty: boolean) => setDirty(dirty), []);
   const leave = useLeaveConfirmation();
   const close = () => leave.request(() => setOpen(false), dirty);
   return (
     <>
       {leave.dialog}
-      <Button onClick={() => setOpen(true)}>{label}</Button>
+      <Button
+        onClick={(event) => {
+          opener.current = event.currentTarget;
+          setOpen(true);
+        }}
+      >
+        {label}
+      </Button>
       {open && (
-        <Modal title={target.title} variant="workspace" close={close}>
+        <Modal title={target.title} variant="workspace" close={close} restoreFocus={restoreFocus}>
           <div className="zm-run-workspace-dialog">
             <NativeRunWorkspace
               api={api}

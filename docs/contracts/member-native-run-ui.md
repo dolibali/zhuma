@@ -36,6 +36,8 @@ Stop 使用独立于 pending send 的命令通道，不等待发送回执或重�
 
 未发送输入只在面板本地；仅把 dirty 布尔值接入既有空间/导航守卫。关闭或 ESC 使用现有紧凑离开确认，取消保留原输入并恢复焦点，确认放弃才卸载本 scope。离开不停止 Run、不撤销已发送操作；真实账号/controller 撤销仍即时卸载，不将输入带给新账号。
 
+工作会话关闭时先关闭原生 dialog，再在卸载提交后回焦实际打开它的按钮；触发器已经随账号/空间/节点替换而断开时不回焦旧 scope。选择器里的 Esc 先关闭选择菜单并回焦选择器，后续 workspace cancel 才执行上述关闭与回焦；普通长表单弹窗行为不变。
+
 会话可见且资源 held 时每 2500ms 只读进度和历史，不重新发现模型、不连接或驱动 Agent。历史沿 SDK 正向 seq 游标读取并保留已加载消息；不把未知 payload JSON、system/developer 内容、工具参数或 reasoning 展开到消息区，也不把正向分页称为较早消息。原生正文流仅用于展示进度；任意旧页回看和自动采用输出为交付仍未接入。
 
 固定 SDK 将运行上下文也记录成 `user/message`，因此历史展示以其实际 `message.role` 与 `message.source.kind` 一起判别来源：只显示 `user/user` 和 `assistant/model` 的文字块，工具仅显示 `tool/call` 名称。`runtime-context`（含 snapshot sections 与清空快照）、指令、目录注入、来源缺失或未知的消息及原始工具结果均不作为聊天正文展示；不把来源对象、replayState 或内部配置复制到 UI。判断不依赖正文关键词，真实用户或 Agent 谈到运行上下文时仍正常显示。

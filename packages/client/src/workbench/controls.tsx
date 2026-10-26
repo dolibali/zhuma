@@ -41,6 +41,13 @@ export function Modal({
         dialog.close();
         restoreFocus?.();
       };
+    if (variant === 'workspace')
+      return () => {
+        dialog.close();
+        queueMicrotask(() => {
+          if (!dialog.open) restoreFocus?.();
+        });
+      };
   }, [initialFocusId, restoreFocus, variant]);
   return (
     <dialog

@@ -237,6 +237,74 @@ if (!domModule) {
       await current.close();
     }
   });
+  test('DOM keyboard contract: Escape closes the selector first; workspace cancellation closes before refocusing its opener', async () => {
+    const current = await mount(
+      api({
+        options: async () => ({
+          ...(await api().options()),
+          currentRunId: null,
+          selection: null,
+          start: available,
+        }),
+      }),
+    );
+    try {
+      const dialog = current.node.querySelector('.zm-dialog-workspace');
+      const selector = dialog.querySelector('[aria-label="选择模型"]');
+      await act(async () => {
+        selector.focus();
+        selector.click();
+      });
+      assert.ok(document.querySelector('[role="listbox"]'));
+      await act(async () =>
+        document.activeElement.dispatchEvent(
+          new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+        ),
+      );
+      assert.equal(selector.getAttribute('aria-expanded'), 'false', 'first Escape closes the menu');
+      assert.ok(dialog.isConnected && dialog.open);
+      assert.ok(document.activeElement === selector, 'first Escape refocuses the selector');
+      const opener = [...current.node.querySelectorAll('button')].find(
+        (button) => button.querySelector('.zm-button-label')?.textContent === '使用 Agent',
+      );
+      const order = [],
+        close = dialog.close.bind(dialog),
+        focus = opener.focus.bind(opener);
+      dialog.close = () => {
+        order.push('close');
+        close();
+      };
+      opener.focus = () => {
+        order.push('focus');
+        focus();
+      };
+      // Happy DOM does not implement the browser's Escape -> dialog cancel default.
+      // Dispatch its native cancel event; root verifies the actual second key in GUI.
+      await current.cancelDialog(dialog);
+      assert.equal(current.node.querySelector('.zm-dialog-workspace'), null);
+      assert.ok(order.indexOf('close') >= 0);
+      assert.ok(order.indexOf('focus') > order.indexOf('close'));
+      assert.ok(document.activeElement === opener, 'workspace close refocuses its opener');
+    } finally {
+      await current.close();
+    }
+  });
+  test('DOM focus contract: replacing the member API cannot refocus a disconnected previous-scope opener', async () => {
+    const current = await mount();
+    try {
+      const opener = [...current.node.querySelectorAll('button')].find(
+        (button) => button.querySelector('.zm-button-label')?.textContent === '使用 Agent',
+      );
+      let focused = 0;
+      opener.focus = () => focused++;
+      await current.render(api());
+      assert.equal(opener.isConnected, false);
+      assert.equal(focused, 0);
+      assert.equal(current.node.querySelector('.zm-dialog-workspace'), null);
+    } finally {
+      await current.close();
+    }
+  });
   test('DOM contract: real API/controller replacement immediately fences old draft and late send without transfer', async () => {
     const late = Promise.withResolvers();
     let nextSends = 0;
