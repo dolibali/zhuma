@@ -70,6 +70,9 @@ const verifiedHostExternals = new Set([
   '@deepseek-ai/dsh-tools',
   '@deepseek-ai/dsh-scope',
   '@deepseek-ai/dsh-system-prompt',
+  '@deepseek-ai/dsh-workspace',
+  '@deepseek-ai/dsh-tool-fs',
+  '@deepseek-ai/dsh-fs-observation-policy',
 ]);
 if (
   !hostSdkImports.includes('@deepseek-ai/dsh-client-connection') ||

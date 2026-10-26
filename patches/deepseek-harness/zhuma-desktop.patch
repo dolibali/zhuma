@@ -906,10 +906,18 @@ index 22dd77a4..bd2e4645 100644
  
    /** Toggle the sidebar panel (closed ⟷ contract default width). */
 diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
-index b466b32f..144cca14 100644
+index b466b32f..4a7ebdbf 100644
 --- a/packages/bundle/web-app/package.json
 +++ b/packages/bundle/web-app/package.json
-@@ -140,6 +140,7 @@
+@@ -55,6 +55,7 @@
+     }
+   },
+   "dependencies": {
++    "@deepseek-ai/dsh-fs-observation-policy": "workspace:*",
+     "@deepseek-ai/dsh-agent-instructions": "workspace:*",
+     "@deepseek-ai/dsh-agent-preset": "workspace:*",
+     "@deepseek-ai/dsh-agent-preset-registry": "workspace:*",
+@@ -140,6 +141,7 @@
      "@deepseek-ai/dsh-host-plugin-inventory": "workspace:*",
      "@deepseek-ai/dsh-host-webserver": "workspace:*",
      "@deepseek-ai/dsh-launch-environment": "workspace:*",
@@ -917,7 +925,7 @@ index b466b32f..144cca14 100644
      "@deepseek-ai/dsh-message-feedback": "workspace:*",
      "@deepseek-ai/dsh-office-to-pdf": "workspace:*",
      "@deepseek-ai/dsh-persona": "workspace:*",
-@@ -147,7 +148,14 @@
+@@ -147,7 +149,14 @@
      "@deepseek-ai/dsh-plugin-manager": "workspace:*",
      "@deepseek-ai/dsh-plugin-market": "workspace:*",
      "@deepseek-ai/dsh-schedule": "workspace:*",
@@ -932,7 +940,7 @@ index b466b32f..144cca14 100644
      "@deepseek-ai/dsh-session-reference": "workspace:*",
      "@deepseek-ai/dsh-session-stats": "workspace:*",
      "@deepseek-ai/dsh-session-turn-outline": "workspace:*",
-@@ -202,7 +210,6 @@
+@@ -202,7 +211,6 @@
      "@deepseek-ai/dsh-fs": "workspace:*",
      "@deepseek-ai/dsh-fs-local": "workspace:*",
      "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
@@ -941,10 +949,20 @@ index b466b32f..144cca14 100644
      "@deepseek-ai/dsh-shell-env": "workspace:*",
      "@deepseek-ai/dsh-typert-registry": "workspace:*",
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 5f38bae3..74d5f1f9 100644
+index 5f38bae3..0afda34e 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -2967,6 +2967,9 @@ importers:
+@@ -2688,6 +2688,9 @@ importers:
+ 
+   packages/bundle/web-app:
+     dependencies:
++      '@deepseek-ai/dsh-fs-observation-policy':
++        specifier: workspace:*
++        version: link:../../fs/fs-observation-policy
+       '@deepseek-ai/dsh-agent-instructions':
+         specifier: workspace:*
+         version: link:../../context/agent-instructions
+@@ -2967,6 +2970,9 @@ importers:
        '@deepseek-ai/dsh-launch-environment':
          specifier: workspace:*
          version: link:../../util/launch-environment
@@ -954,7 +972,7 @@ index 5f38bae3..74d5f1f9 100644
        '@deepseek-ai/dsh-message-feedback':
          specifier: workspace:*
          version: link:../../feedback/message-feedback
-@@ -2988,9 +2991,30 @@ importers:
+@@ -2988,9 +2994,30 @@ importers:
        '@deepseek-ai/dsh-schedule':
          specifier: workspace:*
          version: link:../../schedule/schedule
@@ -985,7 +1003,7 @@ index 5f38bae3..74d5f1f9 100644
        '@deepseek-ai/dsh-session-reference':
          specifier: workspace:*
          version: link:../../context/session-reference
-@@ -3112,9 +3136,6 @@ importers:
+@@ -3112,9 +3139,6 @@ importers:
        '@deepseek-ai/dsh-sandbox-policy':
          specifier: workspace:*
          version: link:../../sandbox/sandbox-policy

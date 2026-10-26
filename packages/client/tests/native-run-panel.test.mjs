@@ -152,6 +152,49 @@ test('SSR: first-run configuration is expanded and ready selection has one expli
   assert.ok(!empty.includes('准备就绪'));
 });
 
+test('SSR workspace: only supplied workspace names appear and an unavailable saved selection cannot start', () => {
+  const workspace = { id: 'unavailable', label: 'Project files', access: 'write', publish: true };
+  const html = render({
+    view: view({
+      workspaces: [workspace],
+      selection: { ...selection, workspace: { kind: 'unavailable' } },
+    }),
+  });
+  assert.match(html, /执行范围/);
+  assert.match(html, /工作区授权已失效/);
+  assert.match(html, /开始执行/);
+  assert.match(html, /disabled/);
+  assert.doesNotMatch(html, /type="file"/);
+  assert.doesNotMatch(html, /filesystem|grantId|deviceId/);
+});
+
+test('SSR review: a delivered completed run shows the authoritative waiting reason without a disabled restart action', () => {
+  const html = render({
+    view: view({
+      run: {
+        ...run,
+        status: 'completed',
+        resources: 'settled',
+        resultDelivery: {
+          kind: 'delivered',
+          artifactVersionId: 'artifact',
+          artifactVersion: 1,
+          roundId: 'round',
+          receipt: { idempotencyKey: 'saved', version: 1 },
+        },
+      },
+      actions: {
+        start: { kind: 'unavailable', message: '产物已提交，正在等待评审。' },
+        stop: unavailable,
+        send: { followup: unavailable, steer: unavailable, queue: unavailable },
+      },
+    }),
+  });
+  assert.match(html, /正在等待评审/);
+  assert.doesNotMatch(html, /开始新一轮/);
+  assert.doesNotMatch(html, /当前运行暂不支持此操作/);
+});
+
 test('SSR: active or held runs freeze both choices, including terminal runs awaiting resource cleanup', () => {
   for (const status of [
     'requested',

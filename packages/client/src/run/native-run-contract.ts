@@ -23,6 +23,16 @@ export type NativeRunExecutor =
 export interface NativeRunSelection {
   readonly model: NativeRunModel;
   readonly executor: NativeRunExecutor;
+  readonly workspace?:
+    | { readonly kind: 'text-only' }
+    | { readonly kind: 'local'; readonly id: string }
+    | { readonly kind: 'unavailable' };
+}
+export interface NativeRunWorkspaceChoice {
+  readonly id: string;
+  readonly label: string;
+  readonly access: 'read' | 'write';
+  readonly publish: boolean;
 }
 export interface NativeRunModelChoice {
   readonly id: string;
@@ -108,6 +118,7 @@ export type NativeRunPanelView =
       readonly models: NativeRunChoices<NativeRunModelChoice>;
       readonly experts: NativeRunChoices<NativeRunExpertChoice>;
       readonly resources: readonly NativeRunResource[];
+      readonly workspaces?: readonly NativeRunWorkspaceChoice[];
       readonly actions: {
         readonly start: NativeRunAction;
         readonly send: Readonly<Record<NativeRunSendMode, NativeRunAction>>;

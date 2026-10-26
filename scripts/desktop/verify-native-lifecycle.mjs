@@ -29,6 +29,7 @@ if (
     'host-run-cold',
     'host-resources',
     'host-results',
+    'host-local-workspace',
     'skill-loader',
     'mcp-close',
     'native-stream',
@@ -497,6 +498,10 @@ void publicContract;
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'),
   );
   copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-run-local-workspace.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-local-workspace.spec.ts'),
+  );
+  copyFileSync(
     join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-cold.spec.ts'),
   );
@@ -786,7 +791,19 @@ void publicContract;
         },
       );
   }
-  if (values.phase === 'host-resources')
+  if (values.phase === 'host-local-workspace')
+    verify(
+      'host-local-workspace',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-run-local-workspace.spec.ts',
+        '-t',
+        'actual Host local workspace:',
+      ],
+      5,
+      {},
+      14,
+    );
+  else if (values.phase === 'host-resources')
     verify(
       'host-resources',
       [
@@ -866,6 +883,12 @@ void publicContract;
         hostArtifactSha256: hash(join(root, '.build/workbench/index.js')),
         hostTestDataSha256: hash(hostTestData),
         hostRunSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts')),
+        hostLocalWorkspaceSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-run-local-workspace.spec.ts'),
+        ),
+        hostRunWorkspacesSha256: hash(
+          join(root, 'packages/dsh-adapter/src/host-run-workspaces.ts'),
+        ),
         hostColdSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts')),
         coldRecoveries,
         emittedHostUsesPinnedSourceSdkAliases: true,

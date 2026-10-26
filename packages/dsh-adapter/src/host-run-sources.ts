@@ -8,6 +8,7 @@ import type { createHostDirectoryLifecycle } from './host-directory-lifecycle.js
 import type { NativeWorkSessionService } from './native-work-session.js';
 import { NativeWorkError } from './native-work-session-contract.js';
 import type { createHostRunResourceSource } from './host-run-resource-source.js';
+import type { createHostRunWorkspaces } from './host-run-workspaces.js';
 
 export interface HostRunSources {
   readonly directory: Pick<
@@ -21,6 +22,7 @@ export interface HostRunSources {
     ReturnType<typeof createHostRunResourceSource>,
     'prepareResourceCatalog'
   >;
+  readonly workspaces?: Pick<ReturnType<typeof createHostRunWorkspaces>, 'onChange'>;
 }
 
 /** Combine original Host producers. This does not install a writer or drive native work. */
@@ -71,16 +73,23 @@ export function createHostRunSources(ctx: Context, sources: HostRunSources): Exe
         'domain/changed',
         (event) => {
           if (event.domain === 'zhuma_workbench' || event.domain === 'zhuma_spaces') recheck();
+          if (event.domain === 'workspace')
+            setImmediate(() => {
+              if (!sources.signal.aborted) recheck();
+            });
         },
         { global: true },
       );
       let stopModel: (() => unknown) | undefined;
+      let stopWorkspace: (() => void) | undefined;
       try {
+        stopWorkspace = sources.workspaces?.onChange(recheck);
         stopModel = ctx.on('llm/adapters-updated', recheck, { global: true });
         active();
       } catch (error) {
         stopDomain();
         stopModel?.();
+        stopWorkspace?.();
         throw error;
       }
       return () => {
@@ -88,6 +97,7 @@ export function createHostRunSources(ctx: Context, sources: HostRunSources): Exe
           stopDomain();
         } finally {
           stopModel?.();
+          stopWorkspace?.();
         }
       };
     },

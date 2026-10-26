@@ -53,6 +53,12 @@ import type { NativeResultSubmit } from './execution-native-result-delivery.js';
 import { registerNativeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { NativeWorkError, type NativeWorkScope } from './native-work-session-contract.js';
 import { nativeScopeKey } from './native-work-session-record.js';
+import { createHostRunWorkspaces, type HostLocalExecutionConfig } from './host-run-workspaces.js';
+import { adoptNativeRunLocalTools } from './native-run-local-tools.js';
+import {
+  createNativeOutputFileIssuer,
+  type NativeOutputFileIssuer,
+} from './native-work-session-output-file.js';
 import { resolveMember, type MemberRequest } from './member-session.js';
 
 const id = z.string().min(1).max(200);
@@ -117,6 +123,7 @@ export async function openHostRunOwner(
     readonly directory: Parameters<typeof createHostRunSources>[1]['directory'];
     readonly signal: AbortSignal;
     readonly skillPolicies: ReturnType<typeof createHostRunSkillPolicies>;
+    readonly localExecution?: HostLocalExecutionConfig | undefined;
     readWorkbench(): Workbench;
   },
 ) {
@@ -129,8 +136,16 @@ export async function openHostRunOwner(
   let beginning = 0;
   let authorities: ExecutionRunAuthorities;
   let results: NativeFixedResultIssuer | undefined;
+  let outputs: NativeOutputFileIssuer | undefined;
   let fenced = false;
   let closing: Promise<void> | undefined;
+  const workspaces = createHostRunWorkspaces(ctx, {
+    config: options.localExecution,
+    execution,
+    signal: lifetime.signal,
+    readWorkbench: options.readWorkbench,
+  });
+  if (workspaces.dependenciesPresent()) await workspaces.ready;
   const resources = createHostRunResourceSource({
     execution,
     policies: options.skillPolicies,
@@ -142,12 +157,14 @@ export async function openHostRunOwner(
     readWorkbench: options.readWorkbench,
     signal: lifetime.signal,
     resources,
+    workspaces,
   });
   const readOptions = createHostRunOptions(ctx, {
     execution,
     readWorkbench: options.readWorkbench,
     signal: lifetime.signal,
     resources,
+    workspaces,
   });
   const native = await openNativeWorkSessions(ctx, {
     workingDirectory(binding, grant) {
@@ -156,11 +173,20 @@ export async function openHostRunOwner(
       const run = node && currentExecutionRun(node);
       if (
         !run ||
-        canonicalPayload(executionRunScope(node!, run)) !== canonicalPayload(binding.scope) ||
-        run.workspace.kind !== 'text-only'
+        canonicalPayload(executionRunScope(node!, run)) !== canonicalPayload(binding.scope)
       )
         throw new ExecutionRunError('run-authority-denied');
-      return { kind: 'text-only' };
+      if (run.workspace.kind === 'text-only') return { kind: 'text-only' };
+      const local = workspaces.resolve(binding, grant);
+      return {
+        kind: 'local',
+        scope: grant.scope,
+        cwd: local.workspace.root,
+        signal: local.workspace.signal,
+        assertCurrent() {
+          return local.workspace.assertCurrent('read');
+        },
+      };
     },
     async compose(agentCtx, binding, grant) {
       authorities.assertGrant(grant, 'send');
@@ -174,7 +200,11 @@ export async function openHostRunOwner(
         throw new NativeWorkError('configuration-mismatch');
       configuration.assertModel(snapshot);
       let baseTools: readonly string[] = [];
-      if (snapshot.payload.tools.kind === 'accepted-input-reader') {
+      if (
+        snapshot.payload.tools.kind === 'accepted-input-reader' ||
+        (snapshot.payload.tools.kind === 'local-tools' &&
+          snapshot.payload.tools.acceptedInputReader)
+      ) {
         const registered = registerNativeAcceptedInputTool(
           agentCtx,
           binding,
@@ -200,6 +230,31 @@ export async function openHostRunOwner(
           },
         );
         baseTools = registered.toolAllowlist;
+      }
+      if (snapshot.payload.tools.kind === 'local-tools') {
+        const local = workspaces.resolve(binding, grant);
+        const adoptedLocal = await adoptNativeRunLocalTools(agentCtx, binding, grant, {
+          composition: snapshot,
+          producer: local.tools,
+          workspace: local.workspace,
+        });
+        if (
+          canonicalPayload(adoptedLocal.toolAllowlist) !==
+          canonicalPayload(snapshot.payload.toolAllowlist)
+        )
+          throw new NativeWorkError('configuration-mismatch');
+        baseTools = [...snapshot.payload.tools.definitions.map((tool) => tool.name), ...baseTools];
+      }
+      if (snapshot.schemaVersion === 2 && snapshot.payload.outputFilePublisherTool) {
+        outputs ??= createNativeOutputFileIssuer(
+          ctx,
+          native.service,
+          authorities,
+          execution,
+          workspaces.output,
+        );
+        const registered = outputs.registerNativeOutputFileTool(agentCtx, binding, grant);
+        baseTools = [...baseTools, ...registered.toolAllowlist];
       }
       if (snapshot.schemaVersion === 2 && snapshot.payload.resultIntentTool) {
         if (!results || snapshot.payload.handoff.assignee.kind !== 'expert')
@@ -246,9 +301,14 @@ export async function openHostRunOwner(
       // Use the stored composition exactly; registration must not append a second catalog.
       return { context: snapshot.payload.context, toolAllowlist: snapshot.payload.toolAllowlist };
     },
+  }).catch(async (error: unknown) => {
+    // No native handle was published, so no Run could have been admitted.
+    await workspaces.close();
+    throw error;
   });
   if (options.signal.aborted) {
     await native.close();
+    await workspaces.close();
     throw new DOMException('Host closed during native publication', 'AbortError');
   }
   try {
@@ -259,6 +319,7 @@ export async function openHostRunOwner(
         native: native.service,
         signal: lifetime.signal,
         resources,
+        workspaces,
       }),
     );
     results = createNativeFixedResultIssuer(
@@ -270,8 +331,10 @@ export async function openHostRunOwner(
     );
     execution.installNativeResultIssuer(results);
   } catch (error) {
+    await outputs?.close();
     await results?.close();
     await native.close();
+    await workspaces.close();
     throw error;
   }
   const stopResultReady = results.onReady((grant, ref) => {
@@ -908,6 +971,11 @@ export async function openHostRunOwner(
         const failures: unknown[] = [];
         let drained = false;
         try {
+          await outputs?.close();
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
           await results?.close();
         } catch (error) {
           failures.push(error);
@@ -932,6 +1000,7 @@ export async function openHostRunOwner(
           }
           release(state);
         }
+        if (drained && !failures.length) await workspaces.close();
         if (failures.length)
           throw new AggregateError(failures, 'Native Run cleanup remains unconfirmed.');
       })().then(resolveClose, rejectClose);

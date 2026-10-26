@@ -11,6 +11,7 @@ import type { ExecutionService } from './execution-service.js';
 import type { MemberRequest } from './member-session.js';
 import type { createHostRunResourceSource } from './host-run-resource-source.js';
 import { BASIC_TASK_EXECUTOR } from './execution-run-composition.js';
+import type { createHostRunWorkspaces, HostWorkspaceChoice } from './host-run-workspaces.js';
 import {
   ExecutionRunError,
   currentExecutionRun,
@@ -37,7 +38,12 @@ export interface HostRunOptionsView {
   readonly nodeVersion: number;
   readonly runVersion: number;
   readonly currentRunId: string | null;
-  readonly selection: { model: Model; executor: Executor } | null;
+  readonly selection: {
+    model: Model;
+    executor: Executor;
+    workspace?: { kind: 'local'; id: string } | { kind: 'unavailable' };
+  } | null;
+  readonly workspaces?: readonly HostWorkspaceChoice[];
   readonly models:
     | { kind: 'ready'; items: { id: string; label: string; value: Model }[] }
     | { kind: 'unavailable'; message: string };
@@ -63,6 +69,7 @@ export function createHostRunOptions(
     signal: AbortSignal;
     modelTimeoutMs?: number;
     readonly resources?: Pick<ReturnType<typeof createHostRunResourceSource>, 'catalog'>;
+    readonly workspaces?: ReturnType<typeof createHostRunWorkspaces>;
   },
 ) {
   const llm = ctx.llm;
@@ -167,6 +174,22 @@ export function createHostRunOptions(
     const saved = current
       ? options.execution.readRunComposition({ ...target, runId: current.attempt.id }).payload
       : undefined;
+    const workspaceChoices =
+      options.workspaces?.choices(inputs.actorId, target.spaceId, plan.task.projectId) ?? [];
+    const workspaceChoice =
+      current?.workspace.kind === 'local'
+        ? workspaceChoices.find(
+            (choice) =>
+              canonicalPayload(
+                options.workspaces!.select(
+                  inputs.actorId,
+                  target.spaceId,
+                  plan.task.projectId,
+                  choice.id,
+                ).workspace,
+              ) === canonicalPayload(current.workspace),
+          )
+        : undefined;
     const experts: HostRunOptionsView['experts'] = [];
     if (node.handoff.assignee.kind === 'human')
       experts.push({
@@ -224,24 +247,28 @@ export function createHostRunOptions(
     const start: HostRunOptionsView['start'] =
       current?.resources === 'held'
         ? { kind: 'unavailable', message: '当前运行仍占用资源，请先停止并等待确认。' }
-        : resources.some((resource) => resource.status !== 'fixed')
-          ? { kind: 'unavailable', message: '节点所需能力或上游产物尚未接通。' }
-          : !experts.length
-            ? { kind: 'unavailable', message: '固定计划中的执行者暂不可用。' }
-            : current &&
-                current.attempt.status !== 'failed' &&
-                current.attempt.status !== 'cancelled'
-              ? { kind: 'unavailable', message: '当前运行状态暂不支持重新开始。' }
-              : !current && !['ready', 'needs-revision'].includes(node.command.status)
-                ? { kind: 'unavailable', message: '当前节点尚未进入可处理状态。' }
-                : {
-                    kind: 'available',
-                    mode: !current
-                      ? 'begin'
-                      : current.attempt.status === 'failed'
-                        ? 'retry'
-                        : 'restart',
-                  };
+        : node.command.status === 'in-review'
+          ? { kind: 'unavailable', message: '产物已提交，正在等待评审。' }
+          : node.command.status === 'completed'
+            ? { kind: 'unavailable', message: '此工作节点已完成。' }
+            : resources.some((resource) => resource.status !== 'fixed')
+              ? { kind: 'unavailable', message: '节点所需能力或上游产物尚未接通。' }
+              : !experts.length
+                ? { kind: 'unavailable', message: '固定计划中的执行者暂不可用。' }
+                : current &&
+                    current.attempt.status !== 'failed' &&
+                    current.attempt.status !== 'cancelled'
+                  ? { kind: 'unavailable', message: '当前运行状态暂不支持重新开始。' }
+                  : !current && !['ready', 'needs-revision'].includes(node.command.status)
+                    ? { kind: 'unavailable', message: '当前节点尚未进入可处理状态。' }
+                    : {
+                        kind: 'available',
+                        mode: !current
+                          ? 'begin'
+                          : current.attempt.status === 'failed'
+                            ? 'retry'
+                            : 'restart',
+                      };
     const value: HostRunOptionsView = {
       target,
       nodeVersion: node.command.version,
@@ -254,6 +281,13 @@ export function createHostRunOptions(
               saved.executor.kind === 'builtin'
                 ? { kind: 'builtin' }
                 : { kind: 'plan-expert', ref: saved.executor.ref },
+            ...(current?.workspace.kind === 'local'
+              ? {
+                  workspace: workspaceChoice
+                    ? { kind: 'local' as const, id: workspaceChoice.id }
+                    : { kind: 'unavailable' as const },
+                }
+              : {}),
           }
         : null,
       models,
@@ -261,6 +295,9 @@ export function createHostRunOptions(
       resources,
       start,
       tools: inputs.items.length ? 'accepted-input-reader' : 'text-only',
+      ...(workspaceChoices.length || current?.workspace.kind === 'local'
+        ? { workspaces: workspaceChoices }
+        : {}),
     };
     active(signal);
     return { ok: true as const, value };
