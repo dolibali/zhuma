@@ -613,8 +613,6 @@ test(
     const agent = h.ctx.agents.get(h.run().attempt.sessionId);
     await agent.whenIdle();
     assert.equal(h.run().attempt.status, 'running');
-    const flush = h.ctx.sessions.flush.bind(h.ctx.sessions);
-    const flushResults = [];
     let disposed = 0;
     const stopDisposed = h.ctx.on(
       'agent/disposed',
@@ -623,11 +621,6 @@ test(
       },
       { global: true },
     );
-    h.ctx.sessions.flush = async (...args) => {
-      const result = await flush(...args);
-      flushResults.push(result);
-      return result;
-    };
     const loopFibers = [...(h.ctx.registry.get(Loop)?.fibers ?? [])];
     assert.equal(loopFibers.length, 1);
     try {
@@ -640,14 +633,13 @@ test(
             stopPhase: h.run().attempt.stopPhase,
             agents: h.ctx.agents.list().length,
             disposed,
-            flushResults,
           }),
         );
       });
     } finally {
-      h.ctx.sessions.flush = flush;
       stopDisposed();
     }
+    assert.equal(disposed, 1, 'The original SDK emitted the actual Agent disposal');
     assert.equal(h.run().attempt.status, 'failed');
     assert.equal(h.row().artifactVersions.length, 0);
     assert.equal(h.row().rounds.length, 0);
