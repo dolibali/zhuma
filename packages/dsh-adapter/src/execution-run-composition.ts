@@ -18,7 +18,6 @@ import {
   executionResourceToolNames,
   freezeExecutionRunResources,
   type ExecutionRunResourceCatalog,
-  type FrozenExecutionRunResources,
   EXECUTION_RESOURCE_SOURCE_VERSION,
 } from './execution-run-resource-snapshot.js';
 
@@ -92,6 +91,23 @@ export interface AcceptedInputToolDefinition {
   readonly outputSchema: unknown;
   readonly sourceVersion: string;
 }
+/** Only a ready Host port supplies C's exact registered descriptor; this is not a grant. */
+export interface AcceptedFileToolDefinition extends AcceptedInputToolDefinition {
+  readonly name: 'read_accepted_file';
+  readonly sourceVersion: 'zhuma-accepted-files@2';
+}
+const acceptedFileToolName = 'read_accepted_file';
+// C's SDK-supported v2 descriptor, canonical fields of source artifact SHA256
+// d2fa881375b612a32f2dcb554984145f00eb8e49f7fa2d3a4a15f5f6723b448b.
+// The SDK declaration is flat; C's strict parser enforces conditional file rules.
+const acceptedFileToolSchema = toolSchema
+  .extend({
+    name: z.literal(acceptedFileToolName),
+    sourceVersion: z.literal('zhuma-accepted-files@2'),
+  })
+  .refine(
+    (value) => hash(value) === '6e676da0e4023d3daf24872e7598f9f7f382978cdbec746c13613efb7bdd96f9',
+  );
 export type LocalFileToolName = 'read' | 'write' | 'edit';
 export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
   readonly name: LocalFileToolName;
@@ -192,8 +208,12 @@ const sourceSchema = z.strictObject({
   tools: toolsSchema,
   inputs: z.array(inputSchema).max(EXECUTION_COMPOSITION_LIMITS.inputs),
 });
-const resourceSourceSchema = sourceSchema.extend({ resources: executionRunResourcesSchema });
-type Source = z.infer<typeof sourceSchema> & { resources?: FrozenExecutionRunResources };
+const extendedFields = {
+  resources: executionRunResourcesSchema.optional(),
+  acceptedFileReader: acceptedFileToolSchema.optional(),
+};
+const extendedSourceSchema = sourceSchema.extend(extendedFields);
+type Source = z.infer<typeof extendedSourceSchema>;
 const messageSchema = z.strictObject({
   text: z.string().min(1).max(20_000),
   mode: z.literal('followup'),
@@ -210,8 +230,8 @@ const legacySnapshotSchema = z.strictObject({
   configurationId: id,
   payload: payloadSchema,
 });
-const resourcePayloadSchema = payloadSchema.extend({
-  resources: executionRunResourcesSchema,
+const extendedPayloadSchema = payloadSchema.extend({
+  ...extendedFields,
   toolAllowlist: z.array(z.string().min(1).max(64)).max(40),
 });
 const snapshotSchema = z.discriminatedUnion('schemaVersion', [
@@ -219,7 +239,7 @@ const snapshotSchema = z.discriminatedUnion('schemaVersion', [
   z.strictObject({
     schemaVersion: z.literal(2),
     configurationId: id,
-    payload: resourcePayloadSchema,
+    payload: extendedPayloadSchema,
   }),
 ]);
 export type FrozenExecutionRunComposition = z.infer<typeof snapshotSchema>;
@@ -241,6 +261,8 @@ export interface ExecutionRunCompositionInput {
     readonly items: readonly UpstreamInputView[];
   };
   readonly tools: ExecutionCompositionTools;
+  /** Explicit new-Run capability only, from C's ready authorized Host port. Never inferred from files. */
+  readonly acceptedFileReader?: AcceptedFileToolDefinition;
   /** Qualified metadata only; absence preserves legacy refusal and exact schema-1 replay. */
   readonly resourceCatalog?: ExecutionRunResourceCatalog;
 }
@@ -286,7 +308,7 @@ function bound(value: unknown, max: number): void {
   }
 }
 function derive(source: Source) {
-  const { scope, handoff, plan, executor, inputs, tools } = source;
+  const { scope, handoff, plan, executor, inputs, tools, acceptedFileReader } = source;
   if (
     plan.ref.taskId !== scope.taskId ||
     plan.ref.planId !== scope.planId ||
@@ -347,6 +369,7 @@ function derive(source: Source) {
       fail('composition-source-mismatch');
   }
   const pins = handoff.inputRefs;
+  if (acceptedFileReader && !inputs.length) fail('composition-input-unavailable');
   if (
     new Set(pins.map((pin) => pin.sourceNodeId)).size !== pins.length ||
     new Set(inputs.map((input) => input.sourceNodeId)).size !== inputs.length ||
@@ -406,6 +429,7 @@ function derive(source: Source) {
               ...(tools.shell ? (['bash'] as const) : []),
               ...(tools.acceptedInputReader ? ([ACCEPTED_INPUT_TOOL] as const) : []),
             ]),
+      ...(acceptedFileReader ? [acceptedFileToolName] : []),
       ...(resources ? executionResourceToolNames(resources) : []),
     ],
   };
@@ -423,7 +447,13 @@ export const executionRunCompositionSchema = z.preprocess(
   snapshotSchema.superRefine((value, context) => {
     try {
       bound(value, EXECUTION_COMPOSITION_LIMITS.snapshotBytes);
-      const schema = value.schemaVersion === 1 ? sourceSchema : resourceSourceSchema;
+      if (
+        value.schemaVersion === 2 &&
+        !value.payload.resources &&
+        !value.payload.acceptedFileReader
+      )
+        throw Error();
+      const schema = value.schemaVersion === 1 ? sourceSchema : extendedSourceSchema;
       const source = schema.parse(
         Object.fromEntries(
           Object.keys(schema.shape).map((key) => [
@@ -532,7 +562,8 @@ export function freezeExecutionRunComposition(
             input.resourceCatalog,
           )
         : undefined;
-    const source = checked(resources ? resourceSourceSchema : sourceSchema, {
+    const extended = resources !== undefined || input.acceptedFileReader !== undefined;
+    const source = checked(extended ? extendedSourceSchema : sourceSchema, {
       scope,
       plan: {
         ref: locator,
@@ -551,10 +582,13 @@ export function freezeExecutionRunComposition(
         ),
       ),
       ...(resources ? { resources } : {}),
+      ...(input.acceptedFileReader !== undefined
+        ? { acceptedFileReader: input.acceptedFileReader }
+        : {}),
     });
     const payload = derive(source);
     return readExecutionRunComposition({
-      schemaVersion: resources ? 2 : 1,
+      schemaVersion: extended ? 2 : 1,
       configurationId: `composition_${hash(payload)}`,
       payload,
     });
