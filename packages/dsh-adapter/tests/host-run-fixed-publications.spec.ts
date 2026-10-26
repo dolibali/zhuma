@@ -98,18 +98,6 @@ test(
     ]);
     h = await boot(t, { expert: true, review: true, localWorkspace, adapter });
     mark('hostReadyMs');
-    h.ctx.on(
-      'domain/changed',
-      (event) => {
-        if (event.domain !== 'zhuma_native_work_sessions') return;
-        const binding = [
-          ...h.ctx.storageDomain.get('zhuma_native_work_sessions').table('bindings').entries(),
-        ][0]?.[1];
-        if (binding?.resultIntent) mark('intentDeclaredMs');
-        if (binding?.resultIntent?.cut) mark('nativeCutSealedMs');
-      },
-      { global: true },
-    );
     await start(h);
     mark('runAcknowledgedMs');
     try {
