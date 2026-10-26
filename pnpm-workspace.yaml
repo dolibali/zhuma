@@ -5,3 +5,4 @@ packages:
 # Do not add upstream/** or distribution/** to these globs.
 allowBuilds:
   esbuild: false
+  koffi: false
