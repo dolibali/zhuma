@@ -1,3 +1,4 @@
+import { conversationLines, readConversationFrame, readNativeInbox } from './conversation.js';
 import { createIdentityApi } from '../identity/api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
@@ -12,6 +13,8 @@ import type {
   NativeRunSummary,
   NativeRunTarget,
   NativeRunMessage,
+  NativeRunInbox,
+  NativeConversationFrame,
 } from './native-run-contract.js';
 
 export type NativeRunLocator = Pick<NativeRunTarget, 'taskId' | 'planId' | 'revision' | 'nodeId'>;
@@ -44,6 +47,12 @@ export type NativeRunBegin = NativeRunLocator & {
   workspace: { kind: 'text-only' };
 };
 export interface NativeRunApi {
+  inbox?(run: NativeRunSummary, signal: AbortSignal): Promise<NativeRunInbox>;
+  observe?(
+    run: NativeRunSummary,
+    after: number,
+    signal: AbortSignal,
+  ): AsyncIterable<NativeConversationFrame>;
   options(target: NativeRunLocator, signal: AbortSignal): Promise<NativeRunOptions>;
   read(target: NativeRunLocator, runId: string, signal: AbortSignal): Promise<NativeRunRead>;
   history(
@@ -280,7 +289,17 @@ export function projectNativeRunMessages(events: readonly unknown[]): NativeRunM
         return block.type === 'text' && typeof block.text === 'string' ? [block.text] : [];
       })
       .join('\n');
-    return text ? [{ id: `event-${sequence}`, sequence, role, text: text.slice(0, 131_072) }] : [];
+    return text
+      ? [
+          {
+            id: `event-${sequence}`,
+            sequence,
+            role,
+            text: text.slice(0, 262_144),
+            ...(typeof message.id === 'string' ? { nativeId: message.id } : {}),
+          },
+        ]
+      : [];
   });
 }
 
@@ -296,8 +315,30 @@ export function createNativeRunApi(
     signal.throwIfAborted();
     if (scope.isCurrent?.() === false) throw new DOMException('View changed', 'AbortError');
   }
-  async function call(endpoint: string, payload: object, caller: AbortSignal): Promise<unknown> {
-    const signal = AbortSignal.any([caller, AbortSignal.timeout(10_000)]);
+  function report(error: unknown, signal: AbortSignal): never {
+    current(signal);
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    if (['unauthenticated', 'member-session-required', 'session-changed'].includes(String(code)))
+      onUnauthenticated();
+    else if (['scope-mismatch', 'space-unavailable'].includes(String(code))) scope.onUnavailable();
+    throw error;
+  }
+  function result(envelope: Record<string, unknown>, rpcId: string): unknown {
+    if (envelope.type !== 'server-response' || envelope.rpcId !== rpcId) invalid();
+    const value = object(envelope.result);
+    if (value.ok !== true)
+      throw new ExecutionError(
+        string(object(value.error).code),
+        '操作尚未确认，请刷新状态后重试。',
+      );
+    return value.value;
+  }
+  async function open(endpoint: string, payload: object, caller: AbortSignal) {
+    const connecting = new AbortController();
+    const timer = setTimeout(() => connecting.abort(), 10_000);
+    const signal = AbortSignal.any([caller, connecting.signal]);
+    let response: Response | undefined;
+    let delivered = false;
     try {
       current(signal);
       const session = await identity.session(signal);
@@ -307,7 +348,7 @@ export function createNativeRunApi(
       if (!session.spaces.some((space) => space.id === scope.spaceId))
         throw new ExecutionError('space-unavailable', '此空间已不可访问。');
       const rpcId = crypto.randomUUID();
-      const response = await fetcher(`/api/zhuma-run/${endpoint}`, {
+      response = await fetcher(`/api/zhuma-run/${endpoint}`, {
         method: 'POST',
         credentials: 'same-origin',
         cache: 'no-store',
@@ -326,25 +367,22 @@ export function createNativeRunApi(
         throw new ExecutionError('unauthenticated', '登录已失效，请重新登录。');
       if (!response.ok)
         throw new ExecutionError('unavailable', 'Agent 服务暂不可用，请刷新后重试。');
+      delivered = true;
+      return { response, rpcId };
+    } finally {
+      clearTimeout(timer);
+      if (!delivered) await response?.body?.cancel().catch(() => undefined);
+    }
+  }
+  async function call(endpoint: string, payload: object, caller: AbortSignal): Promise<unknown> {
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(10_000)]);
+    try {
+      const { response, rpcId } = await open(endpoint, payload, signal);
       const envelope = object(await response.json());
       current(signal);
-      if (envelope.type !== 'server-response' || envelope.rpcId !== rpcId) invalid();
-      const result = object(envelope.result);
-      if (result.ok !== true) {
-        const error = object(result.error);
-        const code = string(error.code);
-        // Do not render arbitrary provider errors, internal paths or response details.
-        throw new ExecutionError(code, '操作尚未确认，请刷新状态后重试。');
-      }
-      return result.value;
+      return result(envelope, rpcId);
     } catch (error) {
-      current(signal);
-      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-      if (['unauthenticated', 'member-session-required', 'session-changed'].includes(String(code)))
-        onUnauthenticated();
-      else if (['scope-mismatch', 'space-unavailable'].includes(String(code)))
-        scope.onUnavailable();
-      throw error;
+      return report(error, signal);
     }
   }
   const clean = (target: NativeRunLocator): NativeRunLocator => ({
@@ -355,6 +393,32 @@ export function createNativeRunApi(
   });
   const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
   return {
+    async inbox(run, signal) {
+      return readNativeInbox(await call('inbox', runLocator(run), signal), run, scope.spaceId);
+    },
+    async *observe(run, after, signal) {
+      try {
+        const { response, rpcId } = await open('observe', { ...runLocator(run), after }, signal);
+        const body = response.body;
+        if (!response.headers.get('content-type')?.startsWith('application/x-ndjson') || !body) {
+          result(object(await response.json()), rpcId);
+          invalid();
+        }
+        if (!body) return invalid();
+        for await (const raw of conversationLines(body, signal)) {
+          current(signal);
+          const envelope = object(raw);
+          if (envelope.type === 'server-response') {
+            result(envelope, rpcId);
+            invalid();
+          }
+          if (envelope.type !== 'server-frame' || envelope.rpcId !== rpcId) invalid();
+          yield readConversationFrame(envelope.frame, run, scope.spaceId);
+        }
+      } catch (error) {
+        report(error, signal);
+      }
+    },
     async options(target, signal) {
       return optionsView(
         await call('options', { ...clean(target), spaceId: scope.spaceId }, signal),

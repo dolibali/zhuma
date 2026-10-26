@@ -436,3 +436,13 @@
     animation: none;
   }
 }
+
+.zm-native-run__message-body {
+  min-width: 0;
+}
+.zm-native-run__delivery {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.7;
+}

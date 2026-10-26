@@ -906,6 +906,7 @@ index 22dd77a4..bd2e4645 100644
  
    /** Toggle the sidebar panel (closed ⟷ contract default width). */
 diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
+index b466b32f..144cca14 100644
 --- a/packages/bundle/web-app/package.json
 +++ b/packages/bundle/web-app/package.json
 @@ -140,6 +140,7 @@
@@ -916,17 +917,22 @@ diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/pack
      "@deepseek-ai/dsh-message-feedback": "workspace:*",
      "@deepseek-ai/dsh-office-to-pdf": "workspace:*",
      "@deepseek-ai/dsh-persona": "workspace:*",
-@@ -147,7 +148,9 @@
+@@ -147,7 +148,14 @@
      "@deepseek-ai/dsh-plugin-manager": "workspace:*",
      "@deepseek-ai/dsh-plugin-market": "workspace:*",
      "@deepseek-ai/dsh-schedule": "workspace:*",
++    "@deepseek-ai/dsh-skill": "workspace:*",
++    "@deepseek-ai/dsh-mcp-client": "workspace:*",
++    "@deepseek-ai/dsh-tools": "workspace:*",
++    "@deepseek-ai/dsh-scope": "workspace:*",
++    "@deepseek-ai/dsh-system-prompt": "workspace:*",
 +    "@deepseek-ai/dsh-session": "workspace:*",
      "@deepseek-ai/dsh-session-log-export": "workspace:*",
 +    "@deepseek-ai/dsh-session-persistence": "workspace:*",
      "@deepseek-ai/dsh-session-reference": "workspace:*",
      "@deepseek-ai/dsh-session-stats": "workspace:*",
      "@deepseek-ai/dsh-session-turn-outline": "workspace:*",
-@@ -202,7 +205,6 @@
+@@ -202,7 +210,6 @@
      "@deepseek-ai/dsh-fs": "workspace:*",
      "@deepseek-ai/dsh-fs-local": "workspace:*",
      "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
@@ -935,9 +941,10 @@ diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/pack
      "@deepseek-ai/dsh-shell-env": "workspace:*",
      "@deepseek-ai/dsh-typert-registry": "workspace:*",
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 5f38bae3..74d5f1f9 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -2967,6 +2967,9 @@
+@@ -2967,6 +2967,9 @@ importers:
        '@deepseek-ai/dsh-launch-environment':
          specifier: workspace:*
          version: link:../../util/launch-environment
@@ -947,10 +954,25 @@ diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
        '@deepseek-ai/dsh-message-feedback':
          specifier: workspace:*
          version: link:../../feedback/message-feedback
-@@ -2988,9 +2991,15 @@
+@@ -2988,9 +2991,30 @@ importers:
        '@deepseek-ai/dsh-schedule':
          specifier: workspace:*
          version: link:../../schedule/schedule
++      '@deepseek-ai/dsh-skill':
++        specifier: workspace:*
++        version: link:../../skill/skill
++      '@deepseek-ai/dsh-mcp-client':
++        specifier: workspace:*
++        version: link:../../mcp/mcp-client
++      '@deepseek-ai/dsh-tools':
++        specifier: workspace:*
++        version: link:../../core/tools
++      '@deepseek-ai/dsh-scope':
++        specifier: workspace:*
++        version: link:../../core/scope
++      '@deepseek-ai/dsh-system-prompt':
++        specifier: workspace:*
++        version: link:../../core/system-prompt
 +      '@deepseek-ai/dsh-session':
 +        specifier: workspace:*
 +        version: link:../../core/session
@@ -963,7 +985,7 @@ diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
        '@deepseek-ai/dsh-session-reference':
          specifier: workspace:*
          version: link:../../context/session-reference
-@@ -3112,9 +3121,6 @@
+@@ -3112,9 +3136,6 @@ importers:
        '@deepseek-ai/dsh-sandbox-policy':
          specifier: workspace:*
          version: link:../../sandbox/sandbox-policy
@@ -1001,19 +1023,83 @@ index ca939d4d..aaac1bcc 100644
     * Resolve the definition that MAY EXECUTE for a call, applying the mode
     * collapse at the operation boundary that owns it. The registry view
 diff --git a/packages/skill/tool-skill/src/index.ts b/packages/skill/tool-skill/src/index.ts
-index 243ef108..c344d08b 100644
+index 243ef108..71c6c795 100644
 --- a/packages/skill/tool-skill/src/index.ts
 +++ b/packages/skill/tool-skill/src/index.ts
-@@ -6,7 +6,7 @@
+@@ -6,7 +6,8 @@
  
  import type {} from '@deepseek-ai/dsh-working-directory'
  import { createHash } from 'node:crypto'
 -import type { Context } from '@deepseek-ai/cordis'
-+import { symbols, type Context } from '@deepseek-ai/cordis'
++import { Context, symbols } from '@deepseek-ai/cordis'
++import { scopeOf, type ScopeKey } from '@deepseek-ai/dsh-scope'
  import z from '@deepseek-ai/schemastery'
  import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
  import { defineTool } from '@deepseek-ai/dsh-tools'
-@@ -79,6 +79,40 @@ export function apply(ctx: Context, config: Config = {}): void {
+@@ -18,6 +19,7 @@ import {
+   isSkillName,
+   isUserInvocable,
+   renderSkillContent,
++  SkillRegistry,
+   type SkillInvocationSource,
+   type SkillSummary,
+ } from '@deepseek-ai/dsh-skill'
+@@ -25,6 +27,54 @@ import {
+ export const name = 'tool-skill'
+ export const inject = ['agents', 'tools', 'skills', 'workingDirectory']
+ 
++interface RegistryOwner {
++  readonly context: Context
++  readonly registry: SkillRegistry
++  assertCurrent(caller: Context): void
++}
++const registryOwners = new WeakMap<ScopeKey, RegistryOwner>()
++const originalService = (value: object | undefined) => value === undefined ? undefined : Reflect.get(value, symbols.original) ?? value
++
++/** Bind an Agent's authoritative Skill domain without registering a loader tool.
++ * This is service ownership, not execution permission. An invalid binding remains
++ * a closed-domain marker until the Agent scope ends; it never restores a parent.
++ */
++export function bindSkillRegistry(agentCtx: Context, actualRegistry: SkillRegistry): undefined {
++  const scope = scopeOf(agentCtx)
++  if (scope === undefined || Reflect.get(scope, 'ctx') !== agentCtx) throw new Error('skill registry requires its current Agent scope')
++  agentCtx.fiber.assertActive()
++  const registry = originalService(actualRegistry)
++  if (!(registry instanceof SkillRegistry)) throw new Error('skill registry is unavailable')
++  const existing = registryOwners.get(scope)
++  if (existing !== undefined) {
++    existing.assertCurrent(agentCtx)
++    if (existing.registry !== registry || existing.context !== agentCtx) throw new Error('skill registry is already bound')
++    return undefined
++  }
++  // Unwrap before reading Cordis' provider context: tracing proxies expose the
++  // calling context as .ctx, while the original holds the actual provider.
++  const provider = Reflect.get(registry, 'ctx')
++  if (!Context.is(provider)) throw new Error('skill registry is unavailable')
++  const methods = { get: registry.get, list: registry.list, snapshot: registry.snapshot }
++  const owner: RegistryOwner = {
++    context: agentCtx,
++    registry,
++    assertCurrent(caller) {
++      agentCtx.fiber.assertActive()
++      provider.fiber.assertActive()
++      if (caller !== agentCtx || scopeOf(agentCtx) !== scope || Reflect.get(scope, 'ctx') !== agentCtx
++        || Reflect.get(registry, 'ctx') !== provider
++        || originalService(provider.get('skills')) !== registry
++        || registry.get !== methods.get || registry.list !== methods.list || registry.snapshot !== methods.snapshot) {
++        throw new Error('skill registry is no longer available')
++      }
++    },
++  }
++  owner.assertCurrent(agentCtx)
++  registryOwners.set(scope, Object.freeze(owner))
++  return undefined
++}
++
+ const DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH = 500
+ /**
+  * Durable provider and item records for one published session skill catalog. The catalog is a
+@@ -79,6 +129,45 @@ export function apply(ctx: Context, config: Config = {}): void {
    const catalogDescriptionMaxLength = config.catalogDescriptionMaxLength ?? DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH
    assertPositiveInteger('catalogDescriptionMaxLength', catalogDescriptionMaxLength, 3)
  
@@ -1029,6 +1115,9 @@ index 243ef108..c344d08b 100644
 +    ctx.fiber.assertActive()
 +    const caller = agent === undefined ? ctx : agent.ctx
 +    caller.fiber.assertActive()
++    const registryOwner = agent === undefined ? undefined : registryOwners.get(agent)
++    if (registryOwner !== undefined && registryOwner.registry !== original(boundSkills)) return undefined
++    registryOwner?.assertCurrent(caller)
 +    const tools = caller.get('tools')
 +    if (tools === undefined || original(tools) !== original(boundTools)
 +      || tools.getRegistered(skillTool.name, agent) !== skillTool) return undefined
@@ -1038,7 +1127,9 @@ index 243ef108..c344d08b 100644
 +      signal.throwIfAborted()
 +      ctx.fiber.assertActive()
 +      caller.fiber.assertActive()
++      registryOwner?.assertCurrent(caller)
 +      if ((agent !== undefined && agent.ctx !== caller)
++        || (agent !== undefined && registryOwners.get(agent) !== registryOwner)
 +        || original(caller.get('tools')) !== original(tools)
 +        || original(caller.get('workingDirectory')) !== original(directory)
 +        || original(ctx.get('skills')) !== original(boundSkills)
@@ -1054,7 +1145,7 @@ index 243ef108..c344d08b 100644
    const skillTool = defineTool({
      name: 'skill',
      description: 'Load the full instructions for a skill. Call it before acting on a task that names or clearly matches a skill in the session skill catalog.',
-@@ -129,18 +163,26 @@ export function apply(ctx: Context, config: Config = {}): void {
+@@ -129,18 +218,26 @@ export function apply(ctx: Context, config: Config = {}): void {
        if (!isSkillName(args.name)) {
          throw new Error(`invalid skill name "${args.name}"`)
        }
@@ -1086,7 +1177,7 @@ index 243ef108..c344d08b 100644
        if (!skill) {
          throw new Error(`skill "${args.name}" is unknown or no longer available`)
        }
-@@ -182,14 +224,16 @@ export function apply(ctx: Context, config: Config = {}): void {
+@@ -182,14 +279,16 @@ export function apply(ctx: Context, config: Config = {}): void {
    ): Promise<PreStepDecision> => {
      const decision = await next()
      if (decision.kind === 'reject') return decision
@@ -1107,7 +1198,7 @@ index 243ef108..c344d08b 100644
        // Unknown names and user-disabled skills stay plain prose: the
        // gesture was never a claim this boundary recognizes. The check sits
        // on the loaded definition — the single lookup that produces what is
-@@ -218,12 +262,16 @@ export function apply(ctx: Context, config: Config = {}): void {
+@@ -218,12 +317,16 @@ export function apply(ctx: Context, config: Config = {}): void {
    ): Promise<PreStepDecision> => {
      const decision = await next()
      if (decision.kind === 'reject') return decision

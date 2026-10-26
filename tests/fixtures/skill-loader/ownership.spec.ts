@@ -43,7 +43,7 @@ function candidate(name: string) {
     invocation: { modelInvocable: true, userInvocable: true },
   };
 }
-async function fixture(order: 'parent-first' | 'local-first', empty = false) {
+async function fixture(order: 'parent-first' | 'local-first', empty = false, noLoader = false) {
   const ctx = new Context();
   provideWorkingDirectoryFixture(ctx, '/workspace');
   await ctx.plugin(SystemPrompt);
@@ -56,12 +56,25 @@ async function fixture(order: 'parent-first' | 'local-first', empty = false) {
     content: 'PRIVATE_BODY',
     source: 'runtime',
   });
+  let parentReads = 0;
+  ctx.skills.registerProvider(() => ({
+    name: 'async-provider',
+    list: async () => [candidate('private-counted')],
+    get: async (entry) => {
+      parentReads++;
+      return { ...entry, content: 'COUNTED_PRIVATE_BODY' };
+    },
+  }));
   if (order === 'parent-first') await ctx.plugin(ToolSkill);
   const caller = agent(ctx, 'local-agent');
   const scope = createScope(ctx, caller);
   Object.defineProperty(caller, 'ctx', { value: scope.ctx, configurable: true });
   const isolated = scope.ctx.isolate('skills');
-  await isolated.plugin(Skills);
+  const registry = await isolated.plugin(Skills);
+  if (process.env.ZHUMA_SKILL_BIND_NEGATIVE_SOURCE !== '1') {
+    expect(typeof ToolSkill.bindSkillRegistry).toBe('function');
+    expect(ToolSkill.bindSkillRegistry(scope.ctx, isolated.get('skills')!)).toBeUndefined();
+  }
   if (!empty) {
     isolated.get('skills')!.register({
       name: 'selected-skill',
@@ -84,7 +97,7 @@ async function fixture(order: 'parent-first' | 'local-first', empty = false) {
       invocation: { modelInvocable: true, userInvocable: false },
     });
   }
-  const loader = await isolated.plugin(ToolSkill);
+  const loader = noLoader ? undefined : await isolated.plugin(ToolSkill);
   if (order === 'local-first') await ctx.plugin(ToolSkill);
   const step = async (text: string) => {
     const messages = [
@@ -104,11 +117,36 @@ async function fixture(order: 'parent-first' | 'local-first', empty = false) {
       callId: ToolCallId(name),
       signal: new AbortController().signal,
     });
-  return { ctx, caller, scope, isolated, loader, step, execute };
+  return {
+    ctx,
+    caller,
+    scope,
+    isolated,
+    registry,
+    loader,
+    step,
+    execute,
+    parentReads: () => parentReads,
+  };
 }
 
 describe('Zhuma scoped skill loader ownership', () => {
   for (const order of ['parent-first', 'local-first'] as const) {
+    it(`keeps an empty bound registry closed without a loader with ${order}`, async () => {
+      const f = await fixture(order, true, true);
+      try {
+        f.scope.ctx.get('tools')!.restrict({ allow: [] });
+        expect(f.ctx.tools.schemas(f.caller)).toEqual([]);
+        const decision = await f.step('/private-secret /private-counted');
+        expect(f.parentReads()).toBe(0);
+        expect(JSON.stringify(decision)).not.toContain('PRIVATE_BODY');
+        expect(JSON.stringify(decision)).not.toContain('PRIVATE_DESCRIPTION');
+        expect(f.ctx.tools.schemas(f.caller)).toEqual([]);
+      } finally {
+        await f.scope.dispose();
+        await f.ctx.fiber.dispose();
+      }
+    });
     it(`does not load parent private body with ${order}`, async () => {
       const f = await fixture(order);
       try {
@@ -152,6 +190,51 @@ describe('Zhuma scoped skill loader ownership', () => {
       }
     });
   }
+  it('binds the actual registry idempotently and rejects a live different or lookalike registry', async () => {
+    const f = await fixture('parent-first', true, true);
+    const other = f.scope.ctx.isolate('skills');
+    const otherRegistry = await other.plugin(Skills);
+    try {
+      expect(ToolSkill.bindSkillRegistry(f.scope.ctx, f.isolated.get('skills')!)).toBeUndefined();
+      expect(ToolSkill.bindSkillRegistry(f.scope.ctx, f.isolated.get('skills')!)).toBeUndefined();
+      expect(() => ToolSkill.bindSkillRegistry(f.scope.ctx, other.get('skills')!)).toThrow();
+      const lookalike = Object.create(Object.getPrototypeOf(f.isolated.get('skills')));
+      Object.defineProperty(lookalike, 'name', { value: 'skills' });
+      expect(() => ToolSkill.bindSkillRegistry(f.scope.ctx, lookalike)).toThrow();
+      expect(() => ToolSkill.bindSkillRegistry(f.ctx, f.isolated.get('skills')!)).toThrow();
+    } finally {
+      await otherRegistry.dispose();
+      await f.scope.dispose();
+      await f.ctx.fiber.dispose();
+    }
+  });
+  it('retains a closed-domain marker after its provider stops without suppressing an ordinary Agent', async () => {
+    const f = await fixture('parent-first', true, true);
+    const bound = f.isolated.get('skills')!;
+    try {
+      await f.registry.dispose();
+      expect(() => ToolSkill.bindSkillRegistry(f.scope.ctx, bound)).toThrow();
+      expect(JSON.stringify(await f.step('/private-counted'))).not.toContain('PRIVATE_BODY');
+      expect(f.parentReads()).toBe(0);
+      const ordinary = agent(f.ctx, 'ordinary');
+      const messages = [
+        createUserMessage({
+          source: { kind: 'user' },
+          content: [{ type: 'text', text: '/private-counted' }],
+        }),
+      ];
+      const decision = await agentEvents(f.ctx, ordinary).waterfall(
+        'agent/pre-step',
+        { messages, turn: 1, step: 1, signal: new AbortController().signal },
+        () => Promise.resolve({ kind: 'enter' as const, messages }),
+      );
+      expect(JSON.stringify(decision)).toContain('COUNTED_PRIVATE_BODY');
+      expect(f.parentReads()).toBe(1);
+    } finally {
+      await f.scope.dispose();
+      await f.ctx.fiber.dispose();
+    }
+  });
   it('separates registration identity from inherited tool restriction', async () => {
     const f = await fixture('parent-first');
     const key = {};
@@ -174,7 +257,7 @@ describe('Zhuma scoped skill loader ownership', () => {
   it('leaves decisions unchanged when a different same-name tool owns the scope', async () => {
     const f = await fixture('parent-first');
     try {
-      await f.loader.dispose();
+      await f.loader!.dispose();
       f.scope.ctx.get('tools')!.register(
         defineContentToolFixture({
           name: 'skill',
@@ -216,7 +299,7 @@ describe('Zhuma scoped skill loader ownership', () => {
     try {
       const pending = f.execute('late-skill');
       await started;
-      await f.loader.dispose();
+      await f.loader!.dispose();
       release();
       const result = await pending;
       expect(result.isError).toBe(true);
