@@ -66,6 +66,12 @@ import {
   type FrozenExecutionRunComposition,
 } from './execution-run-composition.js';
 import {
+  withExecutionRunResourceQualification,
+  ExecutionRunResourceQualificationCloseError,
+  type ExecutionRunResourceCatalogHost,
+  type ExecutionRunResourceVerification,
+} from './execution-run-resource-qualification.js';
+import {
   ExecutionRunAuthorities,
   type ExecutionMemberLease,
   type ExecutionRunAuthoritySource,
@@ -256,10 +262,13 @@ export type ExecutionNodeLocator = z.infer<typeof draftReadSchema>;
 export type ExecutionRunCompositionInputs = ExecutionRunCompositionInput['inputs'];
 
 /** Host-only real producers. Omission refuses Run admission; no DTO is a capability. */
-export interface ExecutionRunHostPorts extends Pick<
-  ExecutionRunAuthoritySource,
-  'memberLease' | 'onChange' | 'signal' | 'migrationOrigin' | 'migrationDrain'
-> {
+export interface ExecutionRunHostPorts
+  extends
+    Pick<
+      ExecutionRunAuthoritySource,
+      'memberLease' | 'onChange' | 'signal' | 'migrationOrigin' | 'migrationDrain'
+    >,
+    ExecutionRunResourceCatalogHost {
   /** Current authoritative mapping (and its source lifetime), not a browser-selected space. */
   assertProjectSpace(projectId: string, spaceId: string): undefined;
   /** Verify the exact frozen expert/input/model/tool composition and executor readiness. */
@@ -855,6 +864,8 @@ export class ExecutionService {
   private writes: Promise<unknown> = Promise.resolve();
   private readonly runLifetime = new AbortController();
   private readonly runChanges = new Set<() => void>();
+  private readonly runPreparations = new Set<Promise<ExecutionResult<ExecutionRunDecision>>>();
+  private runPreparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private readonly uploadLifetime = new AbortController();
@@ -1023,15 +1034,15 @@ export class ExecutionService {
 
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
   beginRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
-    return this.enqueue(() => this.beginRunNow(request, body, false));
+    return this.prepareRunBegin(request, body, false);
   }
 
   /** Normal explicit first start: authenticate all facts before the first global write. */
   startRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
-    return this.enqueue(() => this.beginRunNow(request, body, true));
+    return this.prepareRunBegin(request, body, true);
   }
 
-  private async beginRunNow(
+  private async prepareRunBegin(
     request: MemberRequest,
     body: unknown,
     enableWriter: boolean,
@@ -1047,12 +1058,50 @@ export class ExecutionService {
     const parsed = parseBody(beginRunSchema, body);
     if (!parsed.ok) return parsed;
     const input = parsed.value;
+    if (input.composition.schemaVersion !== 2 || !input.composition.payload.resources)
+      return this.enqueue(() => this.beginRunNow(request, input, enableWriter));
+    let host: ExecutionRunHostPorts;
+    try {
+      host = this.requireRunHost();
+    } catch (error) {
+      if (error instanceof ExecutionRunError) return fail(error.code);
+      throw error;
+    }
+    // Register the whole operation BEFORE invoking a potentially reentrant
+    // provider. Its 145 reads need the original queue, not a second queue.
+    const operation = Promise.resolve().then(async () => {
+      try {
+        return await withExecutionRunResourceQualification(
+          { host, ownerSignal: this.runLifetime.signal, originalRequest: request, command: input },
+          (qualification) =>
+            this.enqueue(() => this.beginRunNow(request, input, enableWriter, qualification)),
+        );
+      } catch (error) {
+        if (error instanceof ExecutionRunResourceQualificationCloseError)
+          this.runPreparationFailure ??= error;
+        if (error instanceof ExecutionRunError || error instanceof ExecutionRunCompositionError)
+          return fail(error.code);
+        throw error;
+      }
+    });
+    this.runPreparations.add(operation);
+    void operation.finally(() => this.runPreparations.delete(operation)).catch(() => undefined);
+    return operation;
+  }
+
+  private async beginRunNow(
+    request: MemberRequest,
+    input: BeginRunRequest,
+    enableWriter: boolean,
+    qualification?: ExecutionRunResourceVerification,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
     return this.withRunMember(
       request,
       input,
       async (host, lease, initial) => {
         let node = initial;
         const verify = async () => {
+          qualification?.assertCurrent();
           this.requireRunHost();
           lease.assertCurrent(input.spaceId);
           const visible = await this.readableRecords(
@@ -1061,6 +1110,7 @@ export class ExecutionService {
             input.spaceId,
           );
           const fresh = this.currentRunCompositionInputs(host, lease, input, visible);
+          qualification?.assertCurrent();
           node = fresh.node;
           const state = readExecutionRunState(node);
           const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
@@ -1091,6 +1141,7 @@ export class ExecutionService {
                   ? { kind: 'builtin' }
                   : { kind: 'plan-expert', ref: executor.ref },
               tools: input.composition.payload.tools,
+              ...(qualification ? { resourceCatalog: qualification.catalog } : {}),
               ...('acceptedFileReader' in input.composition.payload &&
               input.composition.payload.acceptedFileReader !== undefined
                 ? { acceptedFileReader: input.composition.payload.acceptedFileReader }
@@ -1128,6 +1179,7 @@ export class ExecutionService {
               executorConnected: true,
             },
           );
+          qualification?.assertCurrent();
         };
         await verify();
         if (enableWriter) {
@@ -1146,7 +1198,10 @@ export class ExecutionService {
           { expertEnabled: true, executorConnected: true, writerState: this.readRunGlobal() },
         );
         lease.assertCurrent(input.spaceId);
-        return this.commitRunDecision(decision);
+        qualification?.assertCurrent();
+        const committed = await this.commitRunDecision(decision);
+        qualification?.assertCurrent();
+        return committed;
       },
       !enableWriter,
     );
@@ -1213,8 +1268,10 @@ export class ExecutionService {
   /** Call only after the native owner drained and its cleanup facts committed. */
   async closeRuns(): Promise<void> {
     this.fenceRuns();
+    while (this.runPreparations.size) await Promise.allSettled([...this.runPreparations]);
     await this.writes;
     await this.runAuthorities?.close();
+    if (this.runPreparationFailure) throw this.runPreparationFailure;
   }
 
   private requireRunHost(): ExecutionRunHostPorts {
