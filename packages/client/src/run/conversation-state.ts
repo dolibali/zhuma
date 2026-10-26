@@ -47,7 +47,7 @@ export function createConversationState() {
         partial = undefined;
         return true;
       }
-      if (value.type === 'status') return false;
+      if (value.type === 'status' || value.type === 'ready') return false;
       if (value.type === 'message') {
         if (value.role === 'assistant' && partial && value.seq > partial.after)
           partial.messageSeen = true;

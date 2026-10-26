@@ -42,7 +42,7 @@ Stop 使用独立于 pending send 的命令通道，不等待发送回执或重�
 
 `POST /api/zhuma-run/inbox` 返回同一 cut 的 pending 用户文字及 receipt 状态；`received` 显示“已收到 · 待处理”。原生 `claimed` 仅表示进入会话记录，不表示模型已采用。已保存用户消息与 pending 使用真实 message id 合并，避免显示两次。
 
-`POST /api/zhuma-run/observe` 沿同一个原始 MemberRequest 打开真正只读 grant，并在整个观察期保有。每帧核对准确 scope/nativeSessionId，公开投影只保留 message、assistant-stream、status 和 gap 的白名单字段。运输为带 rpcId 的 NDJSON，每次按消费者需求写一帧，上限 512 KiB；读取取消、成员撤权与 Host 关闭中止读流并排空，不停止模型或补发消息。原有桌面 cookie 桥只增加这两个准确路径。
+`POST /api/zhuma-run/observe` 沿同一个原始 MemberRequest 打开真正只读 grant，并在整个观察期保有。原生观察先建立，再发送只读 ready 帧，让空闲会话也能及时返回响应头；该帧不表示模型采用或执行成功。每帧核对准确 scope/nativeSessionId，公开投影只保留 message、assistant-stream、status 和 gap 的白名单字段。运输为带 rpcId 的 NDJSON，每次按消费者需求写一帧，上限 512 KiB；读取取消、成员撤权与 Host 关闭中止读流并排空，不停止模型或补发消息。原有桌面 cookie 桥只增加这两个准确路径。
 
 Client 每次建立读流仍核对真实成员账号/空间，逐帧验证 Run、generation、segment、session 和 messageKey。推理及工具参数被原生投影过滤，因此可见 index 允许跳号，只要求单调增加。临时正文只留在内存，终态按原生 seq/messageKey 合并为一个持久消息；abandoned/assistant-attempt 不捏造为已提交回复。断流保留已保存记录，gap 使用本界面已经扫描的持久游标重新读历史，不跳到 gap.after。关闭、切换账号/空间或节点卸载观察，迟到帧不能写回新视图。
 

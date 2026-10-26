@@ -19,15 +19,9 @@ type Command = 'start' | 'send' | 'stop';
 type Retry = { fingerprint: string; requestId: string; newRunId: string; newSegmentId: string };
 type ActiveCommand = { epoch: number; abort: AbortController };
 const runIdentity = (run: NativeRunRead | null) =>
-  run
-    ? JSON.stringify([
-        run.runId,
-        run.generation,
-        run.segmentId,
-        run.native?.sessionId,
-        run.native?.agentId,
-      ])
-    : undefined;
+  run ? JSON.stringify([run.runId, run.generation, run.segmentId]) : undefined;
+const conversationIdentity = (run: NativeRunRead | null) =>
+  run ? JSON.stringify([runIdentity(run), run.native?.sessionId, run.native?.agentId]) : undefined;
 
 /** Ephemeral view state only. No persistence, authority, native handle or execution facts. */
 export function createNativeRunController(api: NativeRunApi, target: NativeRunTarget) {
@@ -115,11 +109,14 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
   function observe() {
     if (!api.observe || !run?.native || observing || !current()) return;
     const fixed = run;
-    const ticket = { abort: new AbortController(), identity: runIdentity(fixed) };
+    const ticket = { abort: new AbortController(), identity: conversationIdentity(fixed) };
     observing = ticket;
     const signal = AbortSignal.any([ticket.abort.signal, lifetime.signal]);
     const valid = () =>
-      current() && observing === ticket && !signal.aborted && runIdentity(run) === ticket.identity;
+      current() &&
+      observing === ticket &&
+      !signal.aborted &&
+      conversationIdentity(run) === ticket.identity;
     void (async () => {
       let gap = false;
       try {

@@ -97,6 +97,7 @@ export function readConversationFrame(
   spaceId: string,
 ): NativeConversationFrame {
   const value = envelope(raw, run, spaceId);
+  if (value.type === 'ready') return { type: 'ready' };
   if (value.type === 'message') {
     const seq = number(value.seq);
     return {

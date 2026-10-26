@@ -221,7 +221,8 @@ test('Host Run conversation contract: inbox and frames expose only the exact gra
     frames.push(frame),
   );
   assert.equal(inbox.value.items[0].status, 'received');
-  assert.equal(frames[0].target.runId, f.locator.runId);
+  assert.equal(frames[0].type, 'ready');
+  assert.equal(frames[1].target.runId, f.locator.runId);
   assert.equal('actorId' in frames[0].target, false);
   assert.equal(JSON.stringify([inbox, frames]).includes('PRIVATE'), false);
   assert.equal(f.counters.disposed, 2);
@@ -240,7 +241,9 @@ test('Host Run conversation contract: wrong scope or revocation rejects frames a
   };
   let emitted = 0;
   await assert.rejects(
-    f.reader.observe(f.request, f.locator, async () => emitted++),
+    f.reader.observe(f.request, f.locator, async (frame) => {
+      if (frame.type !== 'ready') emitted++;
+    }),
     { code: 'scope-mismatch' },
   );
   f.native.observe = async function* () {
@@ -248,7 +251,9 @@ test('Host Run conversation contract: wrong scope or revocation rejects frames a
     yield { scope: f.scope, nativeSessionId: 'native', type: 'status', status: 'idle' };
   };
   await assert.rejects(
-    f.reader.observe(f.request, f.locator, async () => emitted++),
+    f.reader.observe(f.request, f.locator, async (frame) => {
+      if (frame.type !== 'ready') emitted++;
+    }),
     { name: 'AbortError' },
   );
   assert.equal(emitted, 0);

@@ -58,7 +58,7 @@ export type HostRunConversationTarget = ExecutionRunLocator & {
   readonly generation: number;
   readonly segmentId: string;
 };
-export type HostRunConversationFrame = NativeConversationFrame & {
+export type HostRunConversationFrame = (NativeConversationFrame | { readonly type: 'ready' }) & {
   readonly target: HostRunConversationTarget;
   readonly sessionId: string;
 };
@@ -237,12 +237,39 @@ export function createHostRunReader(
       if (!parsed.success) throw new ExecutionRunError('run-validation');
       const { after, ...locator } = parsed.data;
       const opened = await authorities.open(request, locator, 'read');
-      const signal = wait ? AbortSignal.any([wait, opened.grant.signal]) : opened.grant.signal;
+      const watching = new AbortController();
+      const signal = AbortSignal.any([
+        watching.signal,
+        opened.grant.signal,
+        ...(wait ? [wait] : []),
+      ]);
+      let stop: (() => Promise<unknown>) | undefined;
       try {
         signal.throwIfAborted();
         const current = native.open(opened.grant);
         if (!current) throw new NativeWorkError('not-started');
-        for await (const frame of native.observe(opened.grant, after, signal)) {
+        const source = native.observe(opened.grant, after, signal);
+        let next = source.next();
+        void next.catch(() => undefined);
+        stop = async () => {
+          watching.abort();
+          await source.return(undefined);
+        };
+        // Flush a read-only handshake even when the live inbox is quiet. Starting
+        // the native iterator first installs its history/live observation path.
+        opened.grant.assertCurrent('follow');
+        await sink(
+          {
+            type: 'ready',
+            target: conversationTarget(opened.grant.scope),
+            sessionId: current.binding.nativeSessionId,
+          },
+          signal,
+        );
+        for (;;) {
+          const item = await next;
+          if (item.done) break;
+          const frame = item.value;
           signal.throwIfAborted();
           opened.grant.assertCurrent('follow');
           if (
@@ -260,9 +287,14 @@ export function createHostRunReader(
           );
           signal.throwIfAborted();
           opened.grant.assertCurrent('follow');
+          next = source.next();
         }
       } finally {
-        opened.dispose();
+        try {
+          await stop?.();
+        } finally {
+          opened.dispose();
+        }
       }
     },
     async read(request, payload, wait) {

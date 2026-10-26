@@ -148,6 +148,7 @@ export interface NativeRunInbox {
   }[];
 }
 export type NativeConversationFrame =
+  | { readonly type: 'ready' }
   | {
       readonly type: 'message';
       readonly seq: number;

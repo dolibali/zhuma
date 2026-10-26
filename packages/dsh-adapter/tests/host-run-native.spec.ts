@@ -577,7 +577,7 @@ test(
             assert.equal(envelope.type, 'server-frame');
             const frame = envelope.frame;
             frames.push(frame);
-            if (frame.type === 'status') subscribed.resolve();
+            if (frame.type === 'ready') subscribed.resolve();
             if (frame.type === 'assistant-stream' && frame.frame.text === 'early body')
               partial.resolve();
             if (frame.type === 'assistant-stream' && frame.frame.type === 'end') return;
