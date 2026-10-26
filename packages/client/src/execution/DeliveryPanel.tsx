@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
@@ -6,6 +6,8 @@ import type { ExecutionApi, ExecutionNodeWire } from './ExecutionApi.js';
 import { nodeIdentity, useFormKey } from './interaction.js';
 import { UpstreamInputsPanel } from './UpstreamInputsPanel.js';
 import { useDeliveryEditor } from './useDeliveryEditor.js';
+import { FileUploads } from './FileUploads.js';
+import { FileReferences } from './FileReferences.js';
 
 type Props = {
   api: ExecutionApi;
@@ -25,7 +27,9 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
       ? node.status === 'needs-revision'
       : ['ready', 'needs-revision'].includes(node.status);
   const editor = useDeliveryEditor(api, node, available, onSubmitted);
-  useUnsavedChanges(editor.dirty || !!editor.pending);
+  const [uploadPresence, setUploadPresence] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  useUnsavedChanges(editor.dirty || !!editor.pending || uploadPresence);
   const upstreamBlocked = node.inputs?.some((input) => input.blocking) === true;
   const locked = editor.pending === 'save' || editor.pending === 'submit' || editor.submitted;
   const status = editor.submitted
@@ -80,7 +84,10 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
               ))}
               {editor.candidate.files.map((file, i) => (
                 <p key={i}>
-                  {file.id} · {file.mediaType} · {file.byteSize} 字节 · 未上传
+                  {editor.candidate?.fileDetails?.find((item) => item.id === file.id)?.name ||
+                    file.id}{' '}
+                  · {file.mediaType} · {file.byteSize} 字节 ·{' '}
+                  {file.uploadComplete ? '已上传' : '引用未完成'}
                 </p>
               ))}
             </div>
@@ -102,7 +109,7 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
           </div>
         </section>
       )}
-      <Field label="产物正文">
+      <Field label={api.files ? '补充说明（选填）' : '产物正文'}>
         <textarea
           rows={7}
           maxLength={100000}
@@ -119,36 +126,45 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
           onChange={(e) => editor.edit('link', e.target.value)}
         />
       </Field>
-      {!!editor.values.files.length && (
-        <section className="zm-draft-files" aria-label="未完成的文件引用">
-          <h3>未完成的文件引用</h3>
-          <p className="zm-muted">保存草稿会保留引用。移除引用后可提交文字或链接。</p>
-          <ul>
-            {editor.values.files.map((file, i) => (
-              <li key={i}>
-                <div>
-                  <strong>{file.id}</strong>
-                  <p>
-                    {file.mediaType} · {file.byteSize} 字节 · 未上传
-                  </p>
-                </div>
-                <Button
-                  variant="quiet"
-                  disabled={!!editor.pending || editor.submitted || !editor.saved}
-                  aria-label={`移除文件引用 ${file.id}`}
-                  onClick={() => editor.removeFile(i)}
-                >
-                  移除引用
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {api.files && (
+        <FileUploads
+          key={JSON.stringify([nodeIdentity(node), node.version, node.status, node.currentRoundId])}
+          api={api}
+          target={node}
+          count={editor.values.files.length}
+          disabled={!editor.canWrite}
+          onUploaded={editor.addFile}
+          onPresence={setUploadPresence}
+          onBusy={setUploadBusy}
+        />
+      )}
+      <FileReferences
+        api={api}
+        target={{
+          taskId: node.taskId,
+          planId: node.planId,
+          revision: node.revision,
+          nodeId: node.nodeId,
+          purpose: 'draft',
+        }}
+        scopeKey={JSON.stringify([node.version, node.status, node.currentRoundId])}
+        files={editor.values.files}
+        names={editor.values.names}
+        disabled={!!editor.pending || editor.submitted || !editor.saved}
+        remove={editor.removeFile}
+      />
+      {uploadPresence && !uploadBusy && (
+        <p className="zm-muted" role="status">
+          请重试或移除未完成的上传。
+        </p>
+      )}
+      {editor.incompleteFiles && (
+        <p className="zm-muted">移除未完成的引用后可提交；正文和其他附件会保留。</p>
       )}
       <div className="zm-actions">
         <Button
           variant="secondary"
-          disabled={!editor.canWrite || !editor.dirty}
+          disabled={!editor.canWrite || !editor.dirty || uploadPresence}
           busy={editor.pending === 'save'}
           busyLabel="正在保存…"
           onClick={() => void editor.save()}
@@ -157,14 +173,14 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
         </Button>
         <Button
           variant="quiet"
-          disabled={!!editor.pending || editor.submitted || !available}
+          disabled={!!editor.pending || editor.submitted || !available || uploadPresence}
           onClick={() => void editor.read()}
         >
           {editor.saved ? '查看已存草稿' : '重试读取草稿'}
         </Button>
         <Button
           variant="primary"
-          disabled={!editor.canWrite || upstreamBlocked || !!editor.values.files.length}
+          disabled={!editor.canWrite || upstreamBlocked || editor.incompleteFiles || uploadPresence}
           busy={editor.pending === 'submit'}
           busyLabel="正在提交…"
           onClick={() => void editor.submit()}

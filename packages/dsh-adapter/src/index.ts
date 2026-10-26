@@ -147,6 +147,11 @@ export type {
   ExecutionUnadmittedCleanupAuthority,
 } from './execution-run-authority.js';
 export type {
+  ExecutionFileAuthoritySource,
+  FileContentRequest,
+  FileContentInfo,
+} from './execution-service.js';
+export type {
   NativeSessionLineage,
   NativeWorkSessionRecord,
   NativeRunMigrationGrant,
