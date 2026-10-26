@@ -63,6 +63,13 @@ import {
   nativeMigrationOrigin,
 } from './native-work-session-migration.js';
 import { NativeConversationProjection } from './native-work-session-view.js';
+import {
+  nativeResultIntentSchema,
+  nativeResultCutSchema,
+  type NativeResultIntent,
+  type NativeResultCut,
+  type NativeResultSnapshot,
+} from './native-work-session-result-contract.js';
 
 const originRequestSchema = nativeMigrationDataSchema.omit({ previousScope: true });
 
@@ -244,6 +251,7 @@ export class NativeWorkSessionService {
     return this.serial(grant, 'send', async (verify) => {
       if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
       const binding = this.required(grant, 'send');
+      if (binding.resultIntent) throw new NativeWorkError('completion-pending');
       assertNativeInputReadOwner(binding.nativeSessionId, this.runtime);
       const key = nativeWorkSessionKey(grant.scope);
       const budget = binding.inputReadBudget ?? { attempts: 0, chargedBytes: 0 };
@@ -860,6 +868,91 @@ export class NativeWorkSessionService {
         };
   }
 
+  /** Host-only same-owner check; never accepts a serialized runtime identity. */
+  ownsResultRuntime(runtime: NativeWorkRuntime): boolean {
+    return runtime === this.runtime;
+  }
+
+  readResultSnapshot(grant: NativeWorkGrant, signal: AbortSignal): Promise<NativeResultSnapshot> {
+    const binding = this.required(grant, 'history');
+    if (!this.runtime.readResultSnapshot) throw new NativeWorkError('unavailable');
+    const verify = () => {
+      const fresh = this.required(grant, 'history');
+      if (
+        !sameScope(fresh.scope, binding.scope) ||
+        !sameSelection(fresh.selection, binding.selection) ||
+        fresh.nativeSessionId !== binding.nativeSessionId ||
+        fresh.nativeAgentId !== binding.nativeAgentId
+      )
+        throw new NativeWorkError('scope-mismatch');
+    };
+    return this.runtime.readResultSnapshot(
+      binding,
+      AbortSignal.any([signal, grant.signal]),
+      verify,
+    );
+  }
+
+  /** Queued with sends: accepted input cannot race behind a completion declaration. */
+  declareResultIntent(
+    grant: NativeWorkGrant,
+    raw: NativeResultIntent,
+    validate: (snapshot: NativeResultSnapshot) => undefined,
+  ): Promise<NativeSessionBinding> {
+    const intent = nativeResultIntentSchema.parse(raw);
+    if (intent.cut) throw new NativeWorkError('invalid-request');
+    return this.serial(grant, 'send', async (verify) => {
+      const binding = this.required(grant, 'send');
+      if (binding.resultIntent) throw new NativeWorkError('completion-pending');
+      const snapshot = await this.readResultSnapshot(grant, grant.signal);
+      verify();
+      if (snapshot.hasPending) throw new NativeWorkError('input-pending');
+      if (validate(snapshot) !== undefined) throw new NativeWorkError('invalid-request');
+      snapshot.check();
+      const next = { ...binding, resultIntent: intent };
+      await this.writeBinding(grant, 'send', next);
+      verify();
+      snapshot.check();
+      return structuredClone(next);
+    });
+  }
+
+  sealResultIntent(
+    grant: NativeWorkGrant,
+    intentId: string,
+    raw: NativeResultCut,
+    assertSource: () => undefined,
+  ): Promise<NativeSessionBinding> {
+    const cut = nativeResultCutSchema.parse(raw);
+    return this.serial(grant, 'send', async (verify) => {
+      const binding = this.required(grant, 'send');
+      if (binding.resultIntent?.intentId !== intentId) throw new NativeWorkError('scope-mismatch');
+      if (
+        binding.resultIntent.cut &&
+        JSON.stringify(binding.resultIntent.cut) !== JSON.stringify(cut)
+      )
+        throw new NativeWorkError('idempotency-mismatch');
+      if (assertSource() !== undefined) throw new NativeWorkError('invalid-request');
+      const next = { ...binding, resultIntent: { ...binding.resultIntent, cut } };
+      await this.writeBinding(grant, 'send', next);
+      verify();
+      if (assertSource() !== undefined) throw new NativeWorkError('invalid-request');
+      return structuredClone(next);
+    });
+  }
+
+  clearResultIntent(grant: NativeWorkGrant, intentId: string): Promise<void> {
+    return this.serial(grant, 'send', async (verify) => {
+      const binding = this.required(grant, 'send');
+      if (!binding.resultIntent) return;
+      if (binding.resultIntent.intentId !== intentId || binding.resultIntent.cut)
+        throw new NativeWorkError('scope-mismatch');
+      const { resultIntent: _intent, ...next } = binding;
+      await this.writeBinding(grant, 'send', next);
+      verify();
+    });
+  }
+
   /** Explicit first start or subsequent turn. The same locator always uses the same native id. */
   send(
     grant: NativeWorkGrant,
@@ -914,6 +1007,29 @@ export class NativeWorkSessionService {
       const prior = binding.receipts.find((receipt) => receipt.requestId === input.requestId);
       if (prior && prior.fingerprint !== fingerprint)
         throw new NativeWorkError('idempotency-mismatch');
+      if (binding.resultIntent) {
+        if (!prior) throw new NativeWorkError('completion-pending');
+        // An acknowledged retry remains readable and never wakes the sealed writer.
+        const snapshot = await this.readResultSnapshot(grant, grant.signal);
+        verify();
+        snapshot.check();
+        const claimed = snapshot.events.some(
+          (event) =>
+            event.type === 'user/message' &&
+            event.data !== null &&
+            typeof event.data === 'object' &&
+            'id' in event.data &&
+            event.data.id === prior.messageId,
+        );
+        return {
+          ...prior,
+          status: snapshot.pendingMessageIds.includes(prior.messageId)
+            ? 'received'
+            : claimed
+              ? 'claimed'
+              : 'unknown',
+        };
+      }
       if (!prior && binding.receipts.length >= NATIVE_WORK_LIMITS.receipts)
         throw new NativeWorkError('capacity');
       this.observeNativeAdmission(binding.scope);
@@ -998,6 +1114,7 @@ export class NativeWorkSessionService {
     if (input.kind === 'edit') textInput(input.text);
     return this.serial(grant, 'queue', async (verify) => {
       const binding = this.required(grant, 'queue');
+      if (binding.resultIntent) throw new NativeWorkError('completion-pending');
       this.observeNativeAdmission(binding.scope);
       await this.runtime.connect(binding, grant, false);
       verify();

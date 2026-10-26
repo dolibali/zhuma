@@ -1,0 +1,161 @@
+{
+  "record": {
+    "taskId": "task",
+    "planId": "task-v1",
+    "revision": 1,
+    "nodeId": "produce",
+    "ownerId": "chen",
+    "handoff": {
+      "nodeId": "produce",
+      "taskId": "task",
+      "workflowVersionId": "task-v1",
+      "revision": 1,
+      "goal": "设计登录接口",
+      "dependencyNodeIds": [],
+      "reviewRequired": true,
+      "reviewerIds": ["outside"],
+      "inputRefs": [],
+      "skillRefs": [
+        {
+          "id": "api-skill",
+          "version": "task-v1"
+        }
+      ],
+      "mcpRefs": [],
+      "inputNote": "需求文档",
+      "expectedOutput": "接口定义",
+      "assignee": {
+        "id": "chen",
+        "kind": "human"
+      }
+    },
+    "command": {
+      "status": "ready",
+      "version": 1,
+      "upstreamAffected": false,
+      "stored": [
+        {
+          "idempotencyKey": "start:task:task-v1:1:produce",
+          "payloadFingerprint": "{\"dependenciesSatisfied\":true,\"type\":\"plan-started\"}",
+          "actorId": "chen",
+          "objectId": "produce",
+          "version": 1,
+          "result": {
+            "from": "draft",
+            "to": "ready",
+            "changed": true,
+            "effects": ["become-actionable"],
+            "upstreamAffected": false
+          }
+        }
+      ],
+      "entryStatus": "ready"
+    },
+    "rounds": [],
+    "artifactVersions": [],
+    "comments": [],
+    "receipts": [],
+    "nativeExecution": {
+      "schemaVersion": 1,
+      "version": 1,
+      "currentRunId": "run-1",
+      "runs": [
+        {
+          "attempt": {
+            "id": "run-1",
+            "nodeId": "produce",
+            "workflowVersionId": "task-v1",
+            "planRevision": 1,
+            "attempt": 1,
+            "generation": 1,
+            "executor": "dsh",
+            "status": "requested",
+            "contextRefs": [],
+            "lastEventSequence": 0,
+            "idempotencyKey": "begin-1",
+            "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "simulated": false,
+            "acknowledged": false,
+            "expertVersionId": "expert-1",
+            "configSnapshotId": "configuration-1",
+            "stopPhase": "none",
+            "entryNodeStatus": "ready"
+          },
+          "actorId": "chen",
+          "spaceId": "north",
+          "segmentId": "segment-1",
+          "selection": {
+            "provider": "contract",
+            "model": "contract-model",
+            "maxTokens": 1000,
+            "configurationId": "configuration-1"
+          },
+          "workspace": {
+            "kind": "text-only"
+          },
+          "dispatch": "reserved",
+          "resources": "held"
+        }
+      ],
+      "receipts": [
+        {
+          "requestId": "begin-1",
+          "actorId": "chen",
+          "fingerprint": "db025c9444d79ff578eb216662fd79eddde5f5f42d3c4dbc4508ebb80fab6ef1",
+          "runId": "run-1"
+        }
+      ]
+    }
+  },
+  "state": {
+    "schemaVersion": 1,
+    "version": 1,
+    "currentRunId": "run-1",
+    "runs": [
+      {
+        "attempt": {
+          "id": "run-1",
+          "nodeId": "produce",
+          "workflowVersionId": "task-v1",
+          "planRevision": 1,
+          "attempt": 1,
+          "generation": 1,
+          "executor": "dsh",
+          "status": "requested",
+          "contextRefs": [],
+          "lastEventSequence": 0,
+          "idempotencyKey": "begin-1",
+          "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "simulated": false,
+          "acknowledged": false,
+          "expertVersionId": "expert-1",
+          "configSnapshotId": "configuration-1",
+          "stopPhase": "none",
+          "entryNodeStatus": "ready"
+        },
+        "actorId": "chen",
+        "spaceId": "north",
+        "segmentId": "segment-1",
+        "selection": {
+          "provider": "contract",
+          "model": "contract-model",
+          "maxTokens": 1000,
+          "configurationId": "configuration-1"
+        },
+        "workspace": {
+          "kind": "text-only"
+        },
+        "dispatch": "reserved",
+        "resources": "held"
+      }
+    ],
+    "receipts": [
+      {
+        "requestId": "begin-1",
+        "actorId": "chen",
+        "fingerprint": "db025c9444d79ff578eb216662fd79eddde5f5f42d3c4dbc4508ebb80fab6ef1",
+        "runId": "run-1"
+      }
+    ]
+  }
+}
