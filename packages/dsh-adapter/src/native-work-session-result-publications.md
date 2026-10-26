@@ -110,3 +110,34 @@ Service submission and real zero-byte publication semantics. Fresh-owner
 reopening in this component spec is in one OS process. It does not certify
 normal Host/Client wiring, a new OS process, real provider reasoning, packaging
 or GUI behavior; those integrations require their own actual evidence.
+
+## Process exit after the native cut, before business submission
+
+The separate `native-work-session-result-process.spec.ts` and its private
+`native-work-session-result-process-driver.mjs` exercise two actual OS processes.
+The driver takes an isolated original SDK checkout, its source-alias test config
+with the original `thread-safe` project, and its Vitest CLI as three explicit
+arguments. It does not alter the SDK or add a product Host entry.
+
+The producer uses original member login, Run issuance, native tools, JSONL and
+upload/attachment storage. After the completed native cut is durable and a fixed
+lease has been checked, the driver kills the producer's dedicated process group
+with `SIGKILL`, without normal shutdown or business submission, and deletes the
+original output source. The atomic evidence marker and exit signal prove this
+boundary; the killed producer is not reported as a successful CLI test.
+
+The second process logs in fresh members, obtains genuine history-only metadata
+authority and the original drive authority required by the fixed-result protocol,
+and reconstructs the same source, cut, content, files, full manifest and digests.
+It verifies the original attachment bytes without a model call, Agent creation,
+workspace-file stat/read, republishing or business artifact. A wrong actual member
+is refused without any additional fact write. Binding, Run, file and workbench
+JSON bytes and mtimes, JSONL events, attachment bytes and the file set are checked.
+
+Requalifying an already identical sealed cut keeps the original source and
+authority checks but skips the redundant binding write. The SDK's genuine
+exclusive retirement barrier still touches its existing empty lock file; the
+test records that operational lock activity separately. Fresh member login's
+identity-session write is likewise recorded before the recovery baseline. Neither
+is presented as a business fact or event write. This component proof does not
+certify a normal compiled Host/Client, real provider, review/downstream or package.

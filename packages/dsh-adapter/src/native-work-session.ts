@@ -936,7 +936,8 @@ export class NativeWorkSessionService {
         throw new NativeWorkError('idempotency-mismatch');
       if (assertSource() !== undefined) throw new NativeWorkError('invalid-request');
       const next = { ...binding, resultIntent: { ...binding.resultIntent, cut } };
-      await this.writeBinding(grant, 'send', next);
+      // Recovery requalifies the original cut; identical facts need no durable rewrite.
+      if (!binding.resultIntent.cut) await this.writeBinding(grant, 'send', next);
       verify();
       if (assertSource() !== undefined) throw new NativeWorkError('invalid-request');
       return structuredClone(next);
