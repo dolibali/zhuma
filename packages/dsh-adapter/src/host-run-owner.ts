@@ -3,7 +3,11 @@ import { canonicalPayload, isTerminalRunStatus, type Workbench } from '@zhuma/ag
 import { z } from 'zod';
 import { createHostRunConfiguration } from './host-run-configuration.js';
 import { createHostRunSources } from './host-run-sources.js';
-import { assertHostAbsentRetry, type HostAbsentRetirement } from './host-run-recovery.js';
+import {
+  assertHostAbsentRetry,
+  retireHostUnadmittedScope,
+  type HostAbsentRetirement,
+} from './host-run-recovery.js';
 import {
   createHostRunReader,
   type HostRunModeCapability,
@@ -399,7 +403,32 @@ export async function openHostRunOwner(
     previousScope?: NativeWorkScope,
   ): Promise<'received' | 'unknown'> {
     try {
-      const absent = previousScope && absentRetirements.get(nativeScopeKey(previousScope));
+      let absent = previousScope && absentRetirements.get(nativeScopeKey(previousScope));
+      const opened = await authorities.open(state.request, locatorFor(state.scope), 'drive');
+      state.opened = opened;
+      const revoked = () => {
+        if (!fenced) void retire(state).catch(() => undefined);
+      };
+      opened.grant.signal.addEventListener('abort', revoked, { once: true });
+      state.stopRevocation = () => opened.grant.signal.removeEventListener('abort', revoked);
+      if (opened.grant.signal.aborted) throw new ExecutionRunError('run-authority-denied');
+      if (previousScope && !absent) {
+        const snapshot = execution.readRunComposition(locatorFor(state.scope));
+        const first = executionRunCompositionRequest(snapshot);
+        absent = await retireHostUnadmittedScope(
+          native.service,
+          authorities,
+          lifetime.signal,
+          opened.grant,
+          previousScope,
+          {
+            scope: state.scope,
+            requestId: current(state).run.attempt.idempotencyKey,
+            inputFingerprint: first.inputFingerprint,
+            selection: first.selection,
+          },
+        );
+      }
       if (previousScope && !absent) {
         const migration = await authorities.openMigration(state.request, locatorFor(state.scope));
         try {
@@ -413,14 +442,6 @@ export async function openHostRunOwner(
           migration.dispose();
         }
       }
-      const opened = await authorities.open(state.request, locatorFor(state.scope), 'drive');
-      state.opened = opened;
-      const revoked = () => {
-        if (!fenced) void retire(state).catch(() => undefined);
-      };
-      opened.grant.signal.addEventListener('abort', revoked, { once: true });
-      state.stopRevocation = () => opened.grant.signal.removeEventListener('abort', revoked);
-      if (opened.grant.signal.aborted) throw new ExecutionRunError('run-authority-denied');
       if (previousScope && absent) {
         authorities.assertGrant(opened.grant, 'send');
         const node = execution.readRunNode(previousScope);

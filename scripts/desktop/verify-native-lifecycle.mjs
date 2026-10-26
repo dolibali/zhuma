@@ -22,7 +22,7 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({
   options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
 });
-if (!['all', 'host-run'].includes(values.phase))
+if (!['all', 'host-run', 'host-run-cold'].includes(values.phase))
   throw new Error('Unknown native verification phase.');
 // Always build the actual artifact before copying it into the isolated SDK.
 // The Host test imports these emitted bytes, not a fixture source re-bundle.
@@ -195,6 +195,10 @@ copyFileSync(
   join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts'),
   join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'),
 );
+copyFileSync(
+  join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts'),
+  join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-cold.spec.ts'),
+);
 const nativeBundle = join(stage, 'packages/core/agent-loop/tests/zhuma-native-work-bundle.ts');
 const executionRunBundle = join(
   stage,
@@ -329,6 +333,9 @@ function verify(name, files, expectedTests, extraEnv = {}) {
     'ZHUMA_NATIVE_WORK_RETENTION_MODE',
     'ZHUMA_RUN_RECOVERY_ROOT',
     'ZHUMA_RUN_RECOVERY_MODE',
+    'ZHUMA_HOST_COLD_ROOT',
+    'ZHUMA_HOST_COLD_MODE',
+    'ZHUMA_HOST_COLD_VARIANT',
   ])
     delete env[variable];
   Object.assign(env, extraEnv);
@@ -458,6 +465,29 @@ if (values.phase === 'all') {
     );
 }
 verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 5);
+const coldRecoveries = [];
+if (values.phase === 'all' || values.phase === 'host-run-cold') {
+  for (const variant of ['unadmitted', 'unknown', 'bound', 'revoked']) {
+    const data = join(evidence, `host-cold-${variant}`);
+    mkdirSync(data, { mode: 0o700 });
+    for (const mode of ['write', 'read'])
+      verify(
+        `host-cold-${variant}-${mode}`,
+        ['packages/core/agent-loop/tests/zhuma-host-run-cold.spec.ts'],
+        1,
+        {
+          ZHUMA_HOST_COLD_ROOT: data,
+          ZHUMA_HOST_COLD_MODE: mode,
+          ZHUMA_HOST_COLD_VARIANT: variant,
+        },
+      );
+    const writer = JSON.parse(readFileSync(join(data, 'write-report.json'), 'utf8'));
+    const reader = JSON.parse(readFileSync(join(data, 'read-report.json'), 'utf8'));
+    if (!Number.isSafeInteger(writer.pid) || writer.pid === reader.pid)
+      throw new Error('Cold recovery requires distinct actual OS processes.');
+    coldRecoveries.push({ variant, writer, reader });
+  }
+}
 writeFileSync(
   join(evidence, 'proof.json'),
   `${JSON.stringify(
@@ -486,6 +516,8 @@ writeFileSync(
       hostArtifactSha256: hash(join(root, '.build/workbench/index.js')),
       hostTestDataSha256: hash(hostTestData),
       hostRunSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts')),
+      hostColdSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts')),
+      coldRecoveries,
       emittedHostUsesPinnedSourceSdkAliases: true,
       sdkTypecheck: true,
       layoutTypecheck: true,
