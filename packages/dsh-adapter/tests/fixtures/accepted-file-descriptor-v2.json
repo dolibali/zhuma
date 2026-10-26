@@ -1,0 +1,294 @@
+{
+  "name": "read_accepted_file",
+  "description": "List files of an explicitly frozen accepted input, then read a selected UTF-8 byte range. Metadata is not proof of reading. Never fetches links, renders PDF/images, or opens a caller path.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["inputRef", "part"],
+    "properties": {
+      "inputRef": {
+        "type": "string"
+      },
+      "part": {
+        "type": "string",
+        "enum": ["files", "file"]
+      },
+      "fileId": {
+        "type": "string",
+        "description": "Required only for part=file; use the catalog fileId."
+      },
+      "offset": {
+        "type": "integer",
+        "default": 0,
+        "description": "Only for part=file. Nonnegative safe byte offset; defaults to 0."
+      },
+      "length": {
+        "type": "integer",
+        "default": 4096,
+        "description": "Only for part=file. Byte length from 1 to 8192; defaults to 4096."
+      }
+    }
+  },
+  "outputSchema": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "invalid-arguments",
+              "input-unavailable",
+              "cancelled",
+              "read-timeout",
+              "input-read-busy",
+              "input-read-budget-exceeded",
+              "output-too-large",
+              "unsupported-encoding"
+            ]
+          }
+        },
+        "required": ["ok", "code"]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "part": {
+            "type": "string",
+            "const": "files"
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "scope": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "actorId": {
+                    "type": "string"
+                  },
+                  "spaceId": {
+                    "type": "string"
+                  },
+                  "taskId": {
+                    "type": "string"
+                  },
+                  "planId": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "nodeId": {
+                    "type": "string"
+                  },
+                  "runId": {
+                    "type": "string"
+                  },
+                  "generation": {
+                    "type": "integer"
+                  },
+                  "segmentId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "actorId",
+                  "spaceId",
+                  "taskId",
+                  "planId",
+                  "revision",
+                  "nodeId",
+                  "runId",
+                  "generation",
+                  "segmentId"
+                ]
+              },
+              "inputRef": {
+                "type": "string"
+              },
+              "sourceNodeId": {
+                "type": "string"
+              },
+              "artifactVersionId": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": ["scope", "inputRef", "sourceNodeId", "artifactVersionId", "version"]
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "fileId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "mediaType": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "sha256": {
+                  "type": "string"
+                }
+              },
+              "required": ["fileId", "name", "mediaType", "bytes", "sha256"]
+            }
+          }
+        },
+        "required": ["ok", "part", "source", "files"]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "part": {
+            "type": "string",
+            "const": "file"
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "scope": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "actorId": {
+                    "type": "string"
+                  },
+                  "spaceId": {
+                    "type": "string"
+                  },
+                  "taskId": {
+                    "type": "string"
+                  },
+                  "planId": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "nodeId": {
+                    "type": "string"
+                  },
+                  "runId": {
+                    "type": "string"
+                  },
+                  "generation": {
+                    "type": "integer"
+                  },
+                  "segmentId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "actorId",
+                  "spaceId",
+                  "taskId",
+                  "planId",
+                  "revision",
+                  "nodeId",
+                  "runId",
+                  "generation",
+                  "segmentId"
+                ]
+              },
+              "inputRef": {
+                "type": "string"
+              },
+              "sourceNodeId": {
+                "type": "string"
+              },
+              "artifactVersionId": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer"
+              },
+              "file": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "fileId": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "mediaType": {
+                    "type": "string"
+                  },
+                  "bytes": {
+                    "type": "integer"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": ["fileId", "name", "mediaType", "bytes", "sha256"]
+              }
+            },
+            "required": [
+              "scope",
+              "inputRef",
+              "sourceNodeId",
+              "artifactVersionId",
+              "version",
+              "file"
+            ]
+          },
+          "range": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "offset": {
+                "type": "integer"
+              },
+              "length": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              }
+            },
+            "required": ["offset", "length", "total"]
+          },
+          "encoding": {
+            "type": "string",
+            "const": "utf-8"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": ["ok", "part", "source", "range", "encoding", "text"]
+      }
+    ]
+  },
+  "sourceVersion": "zhuma-accepted-files@2"
+}
