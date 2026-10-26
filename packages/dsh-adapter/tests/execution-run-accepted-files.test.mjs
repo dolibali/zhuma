@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { canonicalPayload } from '@zhuma/agent-core';
+import { assertObjectJsonSchema, assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools';
 import {
   freezeExecutionRunComposition,
   readExecutionRunComposition,
@@ -17,7 +18,7 @@ import {
 import { compositionFacts, reader } from './execution-run-composition-fixture.mjs';
 
 const fileReader = JSON.parse(
-  readFileSync(new URL('./fixtures/accepted-file-descriptor-v1.json', import.meta.url), 'utf8'),
+  readFileSync(new URL('./fixtures/accepted-file-descriptor-v2.json', import.meta.url), 'utf8'),
 );
 // Saved by the unmodified PR146 composition, before this independent increment.
 const legacy = JSON.parse(
@@ -30,7 +31,7 @@ function facts() {
     acceptedFileReader: structuredClone(fileReader),
   };
 }
-test('accepted-file composition contract: exact C oneOf descriptor is a separate frozen schema2 capability', () => {
+test('accepted-file composition contract: exact C SDK-supported v2 descriptor is a separate frozen capability', () => {
   const input = facts(),
     saved = freezeExecutionRunComposition(input);
   assert.equal(saved.schemaVersion, 2);
@@ -40,19 +41,31 @@ test('accepted-file composition contract: exact C oneOf descriptor is a separate
   assert.deepEqual(saved.payload.acceptedFileReader, fileReader);
   assert.equal(
     hash(fileReader),
-    '4532b28ad0a0efa69ba27a2b997b8d39f4e7b154ba1829aa94c3584381345ca6',
+    '6e676da0e4023d3daf24872e7598f9f7f382978cdbec746c13613efb7bdd96f9',
   );
   assert.equal(saved.payload.acceptedFileReader.parameters.type, 'object');
   assert.equal(saved.payload.acceptedFileReader.parameters.anyOf, undefined);
-  const file = saved.payload.acceptedFileReader.parameters.oneOf[1];
-  assert(!file.required.includes('offset') && !file.required.includes('length'));
-  assert.equal(file.properties.offset.default, 0);
-  assert.equal(file.properties.length.default, 4096);
-  assert.equal(file.properties.length.maximum, 8192);
-  assert(Object.isFrozen(file.properties));
+  const parameters = saved.payload.acceptedFileReader.parameters;
+  assert.equal(parameters.oneOf, undefined);
+  assert.deepEqual(parameters.required, ['inputRef', 'part']);
+  assert.deepEqual(parameters.properties.part.enum, ['files', 'file']);
+  assert.equal(parameters.properties.offset.default, 0);
+  assert.equal(parameters.properties.length.default, 4096);
+  assert(parameters.properties.fileId.description.includes('Required only for part=file'));
+  assert(parameters.properties.length.description.includes('8192'));
+  assert(Object.isFrozen(parameters.properties));
   assert(!saved.payload.context.includes(fileReader.description));
   assert(!JSON.stringify(saved).includes('PRIVATE_SOURCE_BODY_NOT_IN_PROMPT'));
   assert.deepEqual(readExecutionRunComposition(JSON.parse(JSON.stringify(saved))), saved);
+});
+
+test('accepted-file declaration: official rc2 JSON validators accept the exact v2 input and output', () => {
+  assert.doesNotThrow(() => assertObjectJsonSchema(fileReader.parameters));
+  assert.doesNotThrow(() => assertSupportedJsonSchema(fileReader.outputSchema));
+  assert.equal(fileReader.parameters.$schema, undefined);
+  assert.equal(fileReader.outputSchema.anyOf, undefined);
+  assert.equal(fileReader.outputSchema.$schema, undefined);
+  assert.equal(fileReader.outputSchema.oneOf.length, 3);
 });
 
 test('accepted-file composition contract: local/shell, text reader and selected Skill/MCP retain independent slots', () => {
@@ -134,38 +147,37 @@ for (const [name, change] of [
   [
     'unknown source',
     (d) => {
-      d.sourceVersion = 'zhuma-accepted-files@2';
+      d.sourceVersion = 'zhuma-accepted-files@1';
     },
   ],
   [
-    'anyOf replacement',
+    'unsupported parameter combinator',
     (d) => {
-      d.parameters.anyOf = d.parameters.oneOf;
-      delete d.parameters.oneOf;
+      d.parameters.oneOf = [{ type: 'object' }];
     },
   ],
   [
     'forced required offset',
     (d) => {
-      d.parameters.oneOf[1].required.push('offset');
+      d.parameters.required.push('offset');
     },
   ],
   [
     'changed default',
     (d) => {
-      d.parameters.oneOf[1].properties.length.default = 8192;
+      d.parameters.properties.length.default = 8192;
     },
   ],
   [
     'expanded byte range',
     (d) => {
-      d.parameters.oneOf[1].properties.length.maximum = 16384;
+      d.parameters.properties.length.description = 'Byte length from 1 to 16384';
     },
   ],
   [
     'expanded output',
     (d) => {
-      d.outputSchema.anyOf[2].properties.encoding.const = 'utf-16';
+      d.outputSchema.oneOf[2].properties.encoding.const = 'utf-16';
     },
   ],
   [
@@ -175,7 +187,7 @@ for (const [name, change] of [
     },
   ],
 ])
-  test(`accepted-file composition contract: ${name} cannot masquerade as C v1`, () => {
+  test(`accepted-file composition contract: ${name} cannot masquerade as C v2`, () => {
     const input = facts();
     change(input.acceptedFileReader);
     assert.throws(() => freezeExecutionRunComposition(input), { code: 'composition-invalid' });
@@ -229,7 +241,10 @@ test('accepted-file composition contract: schema downgrade, empty schema2 and re
       s.payload.toolAllowlist = ['read_accepted_input'];
     },
     (s) => {
-      s.payload.acceptedFileReader.parameters.oneOf[1].properties.length.maximum = 65536;
+      s.payload.acceptedFileReader.parameters.properties.length.default = 65536;
+    },
+    (s) => {
+      s.payload.acceptedFileReader.sourceVersion = 'zhuma-accepted-files@1';
     },
   ]) {
     const copy = structuredClone(saved);

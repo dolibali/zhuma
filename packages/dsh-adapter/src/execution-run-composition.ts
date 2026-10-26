@@ -94,19 +94,19 @@ export interface AcceptedInputToolDefinition {
 /** Only a ready Host port supplies C's exact registered descriptor; this is not a grant. */
 export interface AcceptedFileToolDefinition extends AcceptedInputToolDefinition {
   readonly name: 'read_accepted_file';
-  readonly sourceVersion: 'zhuma-accepted-files@1';
+  readonly sourceVersion: 'zhuma-accepted-files@2';
 }
 const acceptedFileToolName = 'read_accepted_file';
-// C's qualified v1 descriptor, canonical fields of source artifact SHA256
-// ecca93908e40ff02a407da784eeb1f0f3acc52b3f36d53f5a267d9230738ba1b.
-// Parameters retain top-level object + oneOf and optional offset/length defaults.
+// C's SDK-supported v2 descriptor, canonical fields of source artifact SHA256
+// d2fa881375b612a32f2dcb554984145f00eb8e49f7fa2d3a4a15f5f6723b448b.
+// The SDK declaration is flat; C's strict parser enforces conditional file rules.
 const acceptedFileToolSchema = toolSchema
   .extend({
     name: z.literal(acceptedFileToolName),
-    sourceVersion: z.literal('zhuma-accepted-files@1'),
+    sourceVersion: z.literal('zhuma-accepted-files@2'),
   })
   .refine(
-    (value) => hash(value) === '4532b28ad0a0efa69ba27a2b997b8d39f4e7b154ba1829aa94c3584381345ca6',
+    (value) => hash(value) === '6e676da0e4023d3daf24872e7598f9f7f382978cdbec746c13613efb7bdd96f9',
   );
 export type LocalFileToolName = 'read' | 'write' | 'edit';
 export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
