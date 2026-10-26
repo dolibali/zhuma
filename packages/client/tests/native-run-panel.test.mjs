@@ -472,6 +472,68 @@ if (domModule) {
     }
   });
 
+  test('DOM: requesting stop blocks new start/send handlers while preserving an editable draft', async () => {
+    const release = pending();
+    let starts = 0,
+      sends = 0,
+      stops = 0;
+    const current = running({
+      run: { ...run, status: 'completed', resources: 'settled' },
+      actions: {
+        start: available,
+        stop: available,
+        send: { followup: available, steer: unavailable, queue: unavailable },
+      },
+    });
+    const h = await mount({
+      view: current,
+      onStart: async () => {
+        starts++;
+      },
+      onSend: async () => {
+        sends++;
+      },
+      onStop: async () => {
+        stops++;
+        await release.promise;
+      },
+    });
+    try {
+      await type(h, '停止前的内容');
+      // Invoke both paths in the same React batch; then submit the form
+      // directly again, bypassing the disabled submit button entirely.
+      await act(async () => {
+        h.button('停止运行').click();
+        h.button('开始新一轮').click();
+        h.node
+          .querySelector('form')
+          .dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      });
+      await submit(h);
+      assert.equal(stops, 1);
+      assert.equal(starts, 0);
+      assert.equal(sends, 0);
+      assert.equal(h.button('发送').disabled, true);
+      assert.equal(h.button('开始新一轮').disabled, true);
+      await type(h, '等待停止时补写的草稿');
+      await h.update({ view: { ...current, run: { ...current.run, stopPhase: 'requested' } } });
+      await act(async () => release.resolve());
+      await submit(h);
+      assert.equal(sends, 0, 'an accepted stop request still fences sending');
+      assert.equal(h.node.querySelector('textarea').value, '等待停止时补写的草稿');
+      await h.update({ view: { ...current, run: { ...current.run, stopPhase: 'confirmed' } } });
+      await submit(h);
+      assert.equal(
+        sends,
+        1,
+        'only a current available action after stop confirmation re-enables sending',
+      );
+    } finally {
+      release.resolve();
+      await h.close();
+    }
+  });
+
   test('DOM: loss of mode capability retains editable text and prevents even explicit form submission', async () => {
     let sends = 0;
     const h = await mount({

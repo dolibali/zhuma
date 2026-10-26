@@ -128,7 +128,7 @@
   cursor: pointer;
   padding: 4px 0;
 }
-.zm-native-run .zm-native-run__resources summary > span {
+.zm-native-run .zm-native-run__resource-count {
   margin-inline-start: 4px;
   font-variant-numeric: tabular-nums;
 }
@@ -204,6 +204,33 @@
 }
 .zm-native-run .zm-native-run__message summary {
   cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.zm-native-run .zm-native-run__disclosure > summary {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+}
+.zm-native-run .zm-native-run__disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.zm-native-run .zm-native-run__disclosure > summary::marker {
+  content: '';
+}
+.zm-native-run .zm-native-run__disclosure-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.zm-native-run .zm-native-run__disclosure[open] > summary > .zm-native-run__disclosure-icon {
+  transform: rotate(90deg);
+}
+.zm-native-run .zm-native-run__disclosure-label {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 .zm-native-run .zm-native-run__message pre {

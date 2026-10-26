@@ -115,8 +115,13 @@ function Message({ message }: { message: NativeRunMessage }) {
   if (message.role === 'tool')
     return (
       <li className="zm-native-run__message" data-role="tool">
-        <details>
-          <summary>{title}</summary>
+        <details className="zm-native-run__disclosure">
+          <summary>
+            <span className="zm-native-run__disclosure-icon">
+              <ControlIcon direction="right" />
+            </span>
+            <span className="zm-native-run__disclosure-label">{title}</span>
+          </summary>
           <pre>{message.text}</pre>
         </details>
       </li>
@@ -289,6 +294,13 @@ function RunPanel(props: NativeRunPanelProps) {
     if (busy === operation || active.current.has(operation)) return;
     if (
       ['start', 'send'].includes(operation) &&
+      (busy === 'stop' ||
+        active.current.has('stop') ||
+        (view.kind === 'ready' && view.run?.stopPhase === 'requested'))
+    )
+      return;
+    if (
+      ['start', 'send'].includes(operation) &&
       (active.current.has('start') || active.current.has('send'))
     )
       return;
@@ -314,6 +326,7 @@ function RunPanel(props: NativeRunPanelProps) {
       ready.run.revision === target.revision &&
       ready.run.nodeId === target.nodeId);
   const run = matching ? (ready?.run ?? null) : null;
+  const stopping = running('stop') || run?.stopPhase === 'requested';
   const held = activeRun(run);
   const availableModes =
     ready && matching ? modes.filter((mode) => ready.actions.send[mode].kind === 'available') : [];
@@ -354,7 +367,8 @@ function RunPanel(props: NativeRunPanelProps) {
       !draft.trim() ||
       draft.length > TEXT_LIMIT ||
       running('send') ||
-      running('start')
+      running('start') ||
+      stopping
     )
       return;
     const version = editVersion.current,
@@ -410,9 +424,13 @@ function RunPanel(props: NativeRunPanelProps) {
             onChange={props.onSelectionChange}
           />
           {!!view.resources.length && (
-            <details className="zm-native-run__resources">
+            <details className="zm-native-run__resources zm-native-run__disclosure">
               <summary>
-                本轮资源 <span>{view.resources.length}</span>
+                <span className="zm-native-run__disclosure-icon">
+                  <ControlIcon direction="right" />
+                </span>
+                <span className="zm-native-run__disclosure-label">本轮资源</span>
+                <span className="zm-native-run__resource-count">{view.resources.length}</span>
               </summary>
               <ul>
                 {view.resources.map((resource) => (
@@ -514,7 +532,7 @@ function RunPanel(props: NativeRunPanelProps) {
                     variant="primary"
                     busy={running('send')}
                     busyLabel="发送中…"
-                    disabled={!mode || !draft.trim() || running('start')}
+                    disabled={!mode || !draft.trim() || running('start') || stopping}
                   >
                     <RunIcon kind="send" />
                     {mode === 'queue' ? '排入下一轮' : '发送'}
@@ -546,7 +564,7 @@ function RunPanel(props: NativeRunPanelProps) {
                     variant={hasRun && mode ? 'secondary' : 'primary'}
                     busy={running('start')}
                     busyLabel="正在启动…"
-                    disabled={!canStart || running('send')}
+                    disabled={!canStart || running('send') || stopping}
                     onClick={() => {
                       if (canStart && view.selection)
                         void command('start', () => props.onStart(view.selection!));
