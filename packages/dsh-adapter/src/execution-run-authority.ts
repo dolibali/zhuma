@@ -7,6 +7,7 @@ import type {
   NativeWorkGrant,
   NativeWorkScope,
   NativeSessionSelection,
+  NativeScopeCleanupAuthority,
 } from './native-work-session-contract.js';
 import {
   ExecutionRunError,
@@ -123,9 +124,27 @@ export interface OpenedExecutionRunAuthority {
   readonly cleanup?: ExecutionRunCleanupAuthority;
   dispose(): void;
 }
+/** Borrowed from a genuine current drive grant. Only C may consume this for old-scope cleanup. */
+export interface ExecutionUnadmittedCleanupAuthority extends NativeScopeCleanupAuthority {
+  readonly signal: AbortSignal;
+}
 
 function denied(): never {
   throw new ExecutionRunError('run-authority-denied');
+}
+function synchronousValue<T>(value: T): T {
+  if (
+    value &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof Reflect.get(value, 'then') === 'function'
+  ) {
+    void Promise.resolve(value).catch(() => undefined);
+    return denied();
+  }
+  return value;
+}
+function synchronousAssertion(value: unknown): void {
+  if (synchronousValue(value) !== undefined) return denied();
 }
 function fingerprint(run: ExecutionRun): string {
   return canonicalPayload({
@@ -164,6 +183,7 @@ export class ExecutionRunAuthorities {
   private disposed = false;
   private closing: Promise<void> | undefined;
   private releaseFailed = false;
+  private readonly ownerSignal: AbortSignal;
 
   constructor(private readonly source: ExecutionRunAuthoritySource) {
     if (
@@ -179,6 +199,7 @@ export class ExecutionRunAuthorities {
       !(source.signal instanceof AbortSignal)
     )
       throw new ExecutionRunError('run-authority-unavailable');
+    this.ownerSignal = source.signal;
     this.unsubscribe = source.onChange(() => this.recheck());
     source.signal.addEventListener('abort', this.onSourceAbort, { once: true });
     if (source.signal.aborted) this.fence();
@@ -196,8 +217,8 @@ export class ExecutionRunAuthorities {
   } {
     let node: ExecutionNodeRecord | undefined;
     try {
-      if (requireWriter) requireExecutionRunWriter(this.source.writerState());
-      node = this.source.readNode(locator);
+      if (requireWriter) requireExecutionRunWriter(synchronousValue(this.source.writerState()));
+      node = synchronousValue(this.source.readNode(locator));
     } catch {
       return denied();
     }
@@ -289,13 +310,17 @@ export class ExecutionRunAuthorities {
         if (!['open', 'send', 'queue', 'stop', 'history', 'follow'].includes(action))
           return denied();
         if (purpose === 'read' && ['send', 'queue', 'stop'].includes(action)) return denied();
-        lease.assertCurrent(scope.spaceId);
+        synchronousAssertion(lease.assertCurrent(scope.spaceId));
         const latest = this.current(locator);
         if (fingerprint(latest.run) !== bound) return denied();
-        this.source.assertNodeAccess(lease.memberId, scope.spaceId, latest.node, action);
+        synchronousAssertion(
+          this.source.assertNodeAccess(lease.memberId, scope.spaceId, latest.node, action),
+        );
         if (purpose === 'drive') {
           // This port checks controller/task permissions, not the Run's stop phase.
-          this.source.assertNodeAccess(lease.memberId, scope.spaceId, latest.node, 'send');
+          synchronousAssertion(
+            this.source.assertNodeAccess(lease.memberId, scope.spaceId, latest.node, 'send'),
+          );
           if (
             !latest.current ||
             latest.run.actorId !== lease.memberId ||
@@ -306,14 +331,16 @@ export class ExecutionRunAuthorities {
           if (['send', 'queue'].includes(action) && latest.run.attempt.stopPhase !== 'none')
             return denied();
         }
-        this.source.assertWorkspace(
-          lease.memberId,
-          scope.spaceId,
-          latest.run.workspace,
-          purpose === 'drive' && latest.run.workspace.kind === 'local'
-            ? latest.run.workspace.access
-            : 'read',
-          latest.run.selection.configurationId,
+        synchronousAssertion(
+          this.source.assertWorkspace(
+            lease.memberId,
+            scope.spaceId,
+            latest.run.workspace,
+            purpose === 'drive' && latest.run.workspace.kind === 'local'
+              ? latest.run.workspace.access
+              : 'read',
+            latest.run.selection.configurationId,
+          ),
         );
       };
       const grant: NativeWorkGrant = Object.freeze({
@@ -369,6 +396,105 @@ export class ExecutionRunAuthorities {
       else release();
       return denied();
     }
+  }
+  /** Eligibility for first-binding recovery only. Neither this nor a persisted
+   * settled flag is physical absence evidence; A must obtain C's real drain.
+   */
+  unadmittedCleanup(currentDriveGrant: NativeWorkGrant): ExecutionUnadmittedCleanupAuthority {
+    const source = this.source,
+      ownerSignal = this.ownerSignal;
+    const ports = {
+      writerState: source.writerState,
+      memberLease: source.memberLease,
+      readNode: source.readNode,
+      assertNodeAccess: source.assertNodeAccess,
+      assertWorkspace: source.assertWorkspace,
+      onChange: source.onChange,
+    };
+    const pair = () => {
+      if (
+        source.signal !== ownerSignal ||
+        ownerSignal.aborted ||
+        typeof this.unsubscribe !== 'function' ||
+        Object.entries(ports).some(([name, method]) => Reflect.get(source, name) !== method)
+      )
+        return denied();
+      this.assertGrant(currentDriveGrant, 'send');
+      const current = this.current(currentDriveGrant.scope);
+      const { run, node, state } = current;
+      const scope = executionRunScope(node, run);
+      const noAdmission = (item: ExecutionRun) =>
+        !item.attempt.acknowledged &&
+        item.attempt.sessionId === undefined &&
+        item.attempt.executorRunId === undefined &&
+        item.attempt.sessionDiscarded === undefined &&
+        item.attempt.modelLabel === undefined &&
+        item.dispatch === 'reserved' &&
+        item.attempt.stopPhase === 'none';
+      if (
+        !current.current ||
+        canonicalPayload(scope) !== canonicalPayload(currentDriveGrant.scope) ||
+        run.attempt.status !== 'requested' ||
+        run.resources !== 'held' ||
+        !noAdmission(run) ||
+        state.runs.length < 2 ||
+        state.runs.some(
+          (item) =>
+            item.actorId !== scope.actorId ||
+            item.spaceId !== scope.spaceId ||
+            state.receipts.filter((receipt) => receipt.requestId === item.attempt.idempotencyKey)
+              .length !== 1 ||
+            !state.receipts.some(
+              (receipt) =>
+                receipt.requestId === item.attempt.idempotencyKey &&
+                receipt.actorId === scope.actorId &&
+                receipt.runId === item.attempt.id,
+            ),
+        ) ||
+        state.runs
+          .slice(0, -1)
+          .some(
+            (item) =>
+              item.attempt.status !== 'failed' ||
+              item.resources !== 'settled' ||
+              !noAdmission(item),
+          )
+      )
+        return denied();
+      const previous = state.runs.at(-2);
+      if (
+        !previous ||
+        previous.attempt.generation + 1 !== scope.generation ||
+        previous.segmentId === scope.segmentId
+      )
+        return denied();
+      return { node, scope: executionRunScope(node, previous) };
+    };
+    let initial: ReturnType<typeof pair>;
+    try {
+      initial = pair();
+    } catch {
+      return denied();
+    }
+    const bound = canonicalPayload(initial.node),
+      scope = Object.freeze({ ...initial.scope });
+    return Object.freeze({
+      scope,
+      signal: currentDriveGrant.signal,
+      assertCurrent: (): undefined => {
+        try {
+          const current = pair();
+          if (
+            canonicalPayload(current.node) !== bound ||
+            canonicalPayload(current.scope) !== canonicalPayload(scope)
+          )
+            return denied();
+          return undefined;
+        } catch {
+          return denied();
+        }
+      },
+    });
   }
   private migrationCurrent(locator: ExecutionRunLocator) {
     const current = this.current(locator);
