@@ -339,6 +339,7 @@
 }
 .zm-native-run .zm-native-run__composer:focus-within {
   border-color: var(--zm-focus);
+  box-shadow: 0 0 0 1px var(--zm-focus);
 }
 .zm-native-run .zm-native-run__composer textarea {
   display: block;
@@ -355,8 +356,7 @@
   font: inherit;
 }
 .zm-native-run .zm-native-run__composer textarea:focus-visible {
-  outline: 2px solid var(--zm-focus);
-  outline-offset: 4px;
+  outline: none;
 }
 .zm-native-run .zm-native-run__composer-actions {
   width: 100%;

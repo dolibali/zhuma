@@ -440,6 +440,15 @@ function RunPanel(props: NativeRunPanelProps) {
   }
 
   const showComposer = hasRun && (availableModes.length > 0 || draft.length > 0);
+  const stopped =
+    run?.status === 'cancelled' && run.stopPhase === 'confirmed' && run.resources === 'settled';
+  const inactiveHint = !ready
+    ? ''
+    : !hasRun
+      ? reason(ready.actions.start) || '配置完成后开始。'
+      : stopped
+        ? reason(ready.actions.start)
+        : sendUnavailable || '本轮暂不能发送。';
   const startAction = ready && !held && (
     <Button
       variant={showComposer ? 'secondary' : 'primary'}
@@ -588,7 +597,7 @@ function RunPanel(props: NativeRunPanelProps) {
                     </span>
                   )}
                   <span className="zm-native-run__counter">
-                    {draft.length}/{TEXT_LIMIT}
+                    {draft.length >= TEXT_LIMIT * 0.8 ? `${draft.length}/${TEXT_LIMIT}` : ''}
                   </span>
                   {startAction}
                   <Button
@@ -608,11 +617,11 @@ function RunPanel(props: NativeRunPanelProps) {
               </form>
             ) : (
               <div className="zm-native-run__run-actions">
-                <span className="zm-native-run__hint" role="status">
-                  {hasRun
-                    ? sendUnavailable || '本轮暂不能发送。'
-                    : reason(view.actions.start) || '配置完成后开始。'}
-                </span>
+                {inactiveHint && (
+                  <span className="zm-native-run__hint" role="status">
+                    {inactiveHint}
+                  </span>
+                )}
                 {startAction}
               </div>
             )}

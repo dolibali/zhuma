@@ -199,6 +199,18 @@ test('SSR: a settled non-sendable Run has a compact explicit restart instead of 
   assert.ok(!html.includes('<textarea'));
   assert.ok(!html.includes('<footer'));
   assert.ok(html.includes('aria-label="Agent"'));
+  assert.ok(!html.includes('当前能力不可用'));
+  const rejected = render({
+    view: view({
+      run: { ...run, status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' },
+      actions: {
+        start: { kind: 'unavailable', message: '当前账号不能重新开始' },
+        stop: unavailable,
+        send: { followup: unavailable, steer: unavailable, queue: unavailable },
+      },
+    }),
+  });
+  assert.ok(rejected.includes('当前账号不能重新开始'), 'a real restart refusal stays visible');
 });
 
 test('SSR: loading, unavailable and mismatched Run projections expose no stale history or actions', () => {
