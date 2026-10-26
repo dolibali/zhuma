@@ -24,6 +24,7 @@ let closeWorkbench, workbenchClosing;
 const domainCloseOrder = [];
 let modelCalls = 0;
 let observeUpload = false;
+let fileUploadCalls = 0;
 let uploadSpaceDomain;
 const forks = [];
 const opened = [];
@@ -142,6 +143,7 @@ async function boot(options) {
   if (observeUpload) {
     const save = ctx.attachments.saveFileStream.bind(ctx.attachments);
     ctx.attachments.saveFileStream = (input) => {
+      fileUploadCalls++;
       const iterator = input.data[Symbol.asyncIterator]();
       let reads = 0;
       const data = {
@@ -242,6 +244,12 @@ async function inspect() {
     opened,
     files,
     modelCalls,
+    ...(observeUpload
+      ? {
+          fileUploadCalls,
+          fileProjectSpace: hostPlugin.spaceDirectoryFor(ctx)?.spaceForProjectNow('portal'),
+        }
+      : {}),
     domainCloseOrder,
     credentialMode: (await stat(join(home, '.credentials.yaml'))).mode & 0o777,
     directoryStates: [...(ctx.registry.get(hostPlugin.spaceDirectoryPlugin)?.fibers ?? [])].map(
