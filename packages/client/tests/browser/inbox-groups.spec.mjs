@@ -13,12 +13,15 @@ test('inbox normal entry groups loaded work items, preserves unsupported obligat
   page,
 }) => {
   await open(page);
-  for (const label of ['待我交付', '退回修改', '待我评审', '补充与确认', '其他工作项'])
+  for (const label of ['待我交付', '退回修改', '待我评审', '补充与确认', '处理中'])
     await expect(group(page, label)).toBeVisible();
   await expect(group(page, '补充与确认').getByRole('article')).toHaveCount(2);
   await expect(group(page, '补充与确认').getByRole('button')).toHaveCount(0);
-  await expect(group(page, '其他工作项')).toContainText('正在生成帮助文案');
-  await expect(group(page, '其他工作项').getByRole('button')).toHaveCount(0);
+  await expect(group(page, '处理中')).toContainText('正在生成帮助文案');
+  await expect(
+    group(page, '处理中').getByRole('button', { name: '打开 Agent 会话', exact: true }),
+  ).toBeDisabled();
+  await expect(group(page, '处理中')).toContainText('Agent 会话暂不可用');
   await expect(page.getByText('只有节点状态的等待事项', { exact: true })).toHaveCount(0);
   await expect(page.getByText('请核对发票范围后确认交付。', { exact: true })).toBeVisible();
   await expect(page.locator('.zm-inbox-path')).toHaveText(
@@ -27,6 +30,19 @@ test('inbox normal entry groups loaded work items, preserves unsupported obligat
   await expect(row(page, '编写订单状态帮助文案')).toContainText('任务负责人：林夏');
   const endpoints = await page.evaluate(() => window.inboxGroupsProbe.calls.map((c) => c.endpoint));
   expect(endpoints.every((endpoint) => endpoint.endsWith('/inbox'))).toBe(true);
+  // A future reason stays in the readonly fallback instead of acquiring Agent actions.
+  await page.evaluate(() => {
+    window.inboxGroupsProbe.data.items.at(-1).reason = 'future-agent-handling';
+  });
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect(group(page, '其他工作项')).toContainText('正在生成帮助文案');
+  await expect(group(page, '其他工作项').getByRole('button')).toHaveCount(0);
+  await expect(group(page, '处理中')).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      window.inboxGroupsProbe.calls.every((c) => c.endpoint.endsWith('/inbox')),
+    ),
+  ).toBe(true);
 });
 
 for (const [title, action, detail] of [

@@ -172,9 +172,12 @@ test('draft file metadata is preserved on save, blocks submission, and can be ex
   page,
 }) => {
   await open(page, 'draft-direct&draft-files');
-  const files = page.getByRole('region', { name: '未完成的文件引用' });
-  await expect(files).toContainText('contract.md');
-  await expect(files).toContainText('未上传');
+  const files = page.getByRole('list', { name: '附件', exact: true });
+  await expect(files.getByRole('listitem')).toHaveCount(1);
+  await expect(files).toContainText('42 B · text/markdown');
+  await expect(files).toContainText('引用未完成');
+  // An unverified reference ID is not a trusted display filename.
+  await expect(files).not.toContainText('contract.md');
   await expect(files.locator('a, iframe, input[type=file]')).toHaveCount(0);
   await expect(button(page, '提交产物')).toBeDisabled();
   await input(page).fill('只修改文字，文件元信息不变');
@@ -192,7 +195,7 @@ test('draft file metadata is preserved on save, blocks submission, and can be ex
     accessPolicyId: 'fixture-policy',
     uploadComplete: false,
   });
-  await page.getByRole('button', { name: '移除文件引用 contract.md' }).click();
+  await files.getByRole('button', { name: '移除文件 文件', exact: true }).click();
   await expect(button(page, '提交产物')).toBeEnabled();
   await button(page, '保存草稿').click();
   await expect(status(page)).toHaveText('已保存 · 草稿版本 9');
@@ -352,9 +355,26 @@ test('draft cancel after discovering remote file references cannot silently subm
   await expect(input(page)).toHaveValue('订单交付草稿');
   await button(page, '查看已存草稿').click();
   await button(page, '保留当前输入').click();
-  await expect(page.getByRole('region', { name: '未完成的文件引用' })).toContainText(
-    'remote-file.md',
-  );
+  const files = page.getByRole('list', { name: '附件', exact: true });
+  await expect(files.getByRole('listitem')).toHaveCount(1);
+  await expect(files).toContainText('20 B · text/markdown');
+  await expect(files).toContainText('引用未完成');
+  await input(page).fill('订单交付草稿，保留远端文件引用');
+  await button(page, '保存草稿').click();
+  expect(
+    await page.evaluate(
+      () => window.deliveryDraftProbe.calls.findLast((c) => c.kind === 'save').payload.files,
+    ),
+  ).toEqual([
+    {
+      id: 'remote-file.md',
+      mediaType: 'text/markdown',
+      byteSize: 20,
+      checksum: 'remote-checksum',
+      accessPolicyId: 'remote-policy',
+      uploadComplete: false,
+    },
+  ]);
   await expect(button(page, '提交产物')).toBeDisabled();
   expect(await count(page, 'submit')).toBe(0);
 });
@@ -363,7 +383,7 @@ test('draft keeping local edits during conflict preserves newly returned file me
   page,
 }) => {
   await open(page, 'draft-direct&draft-files');
-  await page.getByRole('button', { name: '移除文件引用 contract.md' }).click();
+  await page.getByRole('button', { name: '移除文件 文件', exact: true }).click();
   await page.evaluate(() => {
     const c = window.deliveryDraftProbe;
     c.holdSave = true;
@@ -380,15 +400,17 @@ test('draft keeping local edits during conflict preserves newly returned file me
   await finish(page, 'save', 'conflict');
   await button(page, '查看已存草稿').click();
   await button(page, '保留当前输入').click();
-  const files = page.getByRole('region', { name: '未完成的文件引用' });
-  await expect(files).toContainText('new-reference.md');
-  await expect(files).not.toContainText('contract.md');
+  const files = page.getByRole('list', { name: '附件', exact: true });
+  await expect(files.getByRole('listitem')).toHaveCount(1);
+  await expect(files).toContainText('80 B · text/markdown');
+  await expect(files).not.toContainText('42 B');
   await button(page, '保存草稿').click();
   const saved = await page.evaluate(
     () => window.deliveryDraftProbe.calls.findLast((c) => c.kind === 'save').payload,
   );
   expect(saved.expectedVersion).toBe(10);
   expect(saved.files).toHaveLength(1);
+  expect(saved.files[0].id).toBe('new-reference.md');
   expect(saved.files[0].checksum).toBe('new-checksum');
   await finish(page, 'save');
   await expect(status(page)).toHaveText('已保存 · 草稿版本 11');

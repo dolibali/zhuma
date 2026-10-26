@@ -165,6 +165,7 @@ function Selection({
   onChange(selection: NativeRunSelection): void;
 }) {
   const selected = view.selection;
+  const [expanded, setExpanded] = useState(!view.run);
   const [partialModel, setPartialModel] = useState<NativeRunSelection['model']>();
   const [partialExecutor, setPartialExecutor] = useState<NativeRunSelection['executor']>();
   const chosenModel = selected?.model ?? partialModel;
@@ -182,7 +183,11 @@ function Selection({
         )
       : undefined;
   return (
-    <details className="zm-native-run__config">
+    <details
+      className="zm-native-run__config"
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
       <summary>
         <span className="zm-native-run__config-values">
           {model?.label ?? '未选模型'}
@@ -459,7 +464,7 @@ function RunPanel(props: NativeRunPanelProps) {
   const inactiveHint = !ready
     ? ''
     : !hasRun
-      ? reason(ready.actions.start) || '配置完成后开始。'
+      ? reason(ready.actions.start)
       : stopped
         ? reason(ready.actions.start)
         : sendUnavailable || '本轮暂不能发送。';
@@ -572,8 +577,9 @@ function RunPanel(props: NativeRunPanelProps) {
             ) : (
               <div className="zm-native-run__empty">
                 <RunIcon kind="agent" />
-                <strong>{hasRun ? '等待会话消息' : '准备好后，开始执行此节点'}</strong>
-                {!hasRun && <p>选择模型和执行者，然后开始。</p>}
+                <strong>
+                  {hasRun ? '等待会话消息' : selectionReady ? '准备就绪' : '配置此次执行'}
+                </strong>
               </div>
             )}
           </div>

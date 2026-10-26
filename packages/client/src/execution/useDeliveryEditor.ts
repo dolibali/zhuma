@@ -7,10 +7,16 @@ import {
   type SavedDeliveryDraftWire,
 } from './ExecutionApi.js';
 import { nodeIdentity } from './interaction.js';
+import type { FileUploadReceipt } from './files.js';
 
-type Values = { text: string; link: string; files: readonly ArtifactFileRef[] };
+type Values = {
+  text: string;
+  link: string;
+  files: readonly ArtifactFileRef[];
+  names: readonly { readonly id: string; readonly name: string }[];
+};
 type Operation = { context: string; abort: AbortController; kind: 'read' | 'save' | 'submit' };
-const empty = (): Values => ({ text: '', link: '', files: [] });
+const empty = (): Values => ({ text: '', link: '', files: [], names: [] });
 export const deliveryLinks = (link: string) =>
   link
     .split('\n')
@@ -75,8 +81,12 @@ export function useDeliveryEditor(
     if (!saved || active.current?.context === context || submitted) return;
     touched.current.files = true;
     const removed = form.current.files[index];
-    if (removed) removedFiles.current.add(JSON.stringify(removed));
-    update({ ...form.current, files: form.current.files.filter((_, i) => i !== index) });
+    if (removed) removedFiles.current.add(removed.id);
+    update({
+      ...form.current,
+      files: form.current.files.filter((_, i) => i !== index),
+      names: form.current.names.filter((item) => item.id !== removed?.id),
+    });
   }
   const current = (op: Operation) =>
     mounted.current &&
@@ -138,7 +148,8 @@ export function useDeliveryEditor(
         update({
           text: touched.current.text ? form.current.text : value.text,
           link: touched.current.link ? form.current.link : value.links.join('\n'),
-          files: value.files.filter((file) => !removedFiles.current.has(JSON.stringify(file))),
+          files: value.files.filter((file) => !removedFiles.current.has(file.id)),
+          names: value.fileDetails ?? [],
         });
         if (
           (touched.current.text || touched.current.link || touched.current.files) &&
@@ -168,7 +179,12 @@ export function useDeliveryEditor(
       if (choice === 'restore') {
         removedFiles.current.clear();
         touched.current = { text: true, link: true, files: true };
-        update({ text: candidate.text, link: candidate.links.join('\n'), files: candidate.files });
+        update({
+          text: candidate.text,
+          link: candidate.links.join('\n'),
+          files: candidate.files,
+          names: candidate.fileDetails ?? [],
+        });
       } else {
         const textEdited = saved ? form.current.text !== saved.text : touched.current.text;
         const linksEdited = saved
@@ -177,7 +193,21 @@ export function useDeliveryEditor(
         update({
           text: textEdited ? form.current.text : candidate.text,
           link: linksEdited ? form.current.link : candidate.links.join('\n'),
-          files: candidate.files.filter((file) => !removedFiles.current.has(JSON.stringify(file))),
+          files: [
+            ...new Map(
+              [...(touched.current.files ? form.current.files : []), ...candidate.files].map(
+                (file) => [file.id, file],
+              ),
+            ).values(),
+          ].filter((file) => !removedFiles.current.has(file.id)),
+          names: [
+            ...new Map(
+              [...form.current.names, ...(candidate.fileDetails ?? [])].map((item) => [
+                item.id,
+                item,
+              ]),
+            ).values(),
+          ],
         });
       }
       setStored({ context, value: candidate });
@@ -188,8 +218,14 @@ export function useDeliveryEditor(
   function validate(submit: boolean) {
     const payload = content(form.current);
     let message = '';
-    if (submit && !payload.text.trim() && !payload.links.length)
-      message = '请填写产物正文或添加链接。';
+    if (
+      submit &&
+      !payload.text.trim() &&
+      !payload.links.length &&
+      !payload.files.some((file) => file.uploadComplete && file.byteSize > 0)
+    )
+      message = '请填写产物正文、添加链接或上传非空文件。';
+    else if (payload.files.length > 20) message = '一次交付最多添加 20 个文件，请先移除多余文件。';
     else if (payload.links.length > 20) message = '最多添加 20 个链接，每行一个。';
     else if (
       submit &&
@@ -215,12 +251,29 @@ export function useDeliveryEditor(
     return payload;
   }
   const canWrite = available && !submitted && !!saved && !pending && !candidate && !conflict;
+  function addFile(receipt: FileUploadReceipt): boolean {
+    if (
+      !mounted.current ||
+      scope.current !== lifetime ||
+      !canWrite ||
+      !receipt.reference.uploadComplete
+    )
+      return false;
+    if (form.current.files.some((file) => file.id === receipt.uploadId)) return true;
+    if (form.current.files.length >= 20) return false;
+    touched.current.files = true;
+    removedFiles.current.delete(receipt.uploadId);
+    update({
+      ...form.current,
+      files: [...form.current.files, receipt.reference],
+      names: [...form.current.names, { id: receipt.uploadId, name: receipt.name }],
+    });
+    return true;
+  }
+  const incompleteFiles = values.files.some((file) => !file.uploadComplete);
   async function write(kind: 'save' | 'submit') {
     if (!canWrite || !saved || active.current?.context === context) return;
-    if (
-      kind === 'submit' &&
-      (node.inputs?.some((input) => input.blocking) || form.current.files.length)
-    )
+    if (kind === 'submit' && (node.inputs?.some((input) => input.blocking) || incompleteFiles))
       return;
     const payload = validate(kind === 'submit');
     if (!payload) return;
@@ -265,6 +318,8 @@ export function useDeliveryEditor(
     values,
     edit,
     removeFile,
+    addFile,
+    incompleteFiles,
     saved,
     candidate,
     resolve,

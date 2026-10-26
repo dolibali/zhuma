@@ -21,9 +21,14 @@ try {
     process.platform === 'win32' ? 'junction' : 'dir',
   );
   const temporaryProof = join(runtime, 'proof.json');
+  const clientFileProof = join(runtime, 'client-files-proof.json');
   const child = spawn(
     process.execPath,
-    ['--test', 'packages/dsh-adapter/tests/s1a-host.test.mjs'],
+    [
+      '--test',
+      'packages/dsh-adapter/tests/s1a-host.test.mjs',
+      'packages/dsh-adapter/tests/member-file-client-host.test.mjs',
+    ],
     {
       cwd: root,
       stdio: 'inherit',
@@ -31,6 +36,7 @@ try {
         ...process.env,
         S1A_HOST_MODULE: join(runtime, 'index.js'),
         S1A_PROOF_FILE: temporaryProof,
+        S1A_CLIENT_FILE_PROOF_FILE: clientFileProof,
       },
     },
   );
@@ -67,8 +73,21 @@ try {
         names.map(async (name) => [name, sha(await readFile(join(runtime, name)))]),
       ),
     );
+    const fileClient = JSON.parse(await readFile(clientFileProof, 'utf8'));
+    if (
+      !fileClient.passed ||
+      fileClient.hostSha256 !== proof.artifact['index.js'] ||
+      fileClient.sourceHead !== proof.sourceHead
+    )
+      throw Error('Incomplete or crossed Client file Host proof');
+    proof.clientFiles = {
+      ...fileClient,
+      fixtureSha256: sha(
+        await readFile(join(root, 'packages/dsh-adapter/tests/member-file-client-host.test.mjs')),
+      ),
+    };
     proof.scope =
-      'Exact emitted bundle; nine real-service subprocess cases; a private temporary SDK package link; no installed-desktop or model-quality claim.';
+      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream; a private temporary SDK package link; no installed-desktop or model-quality claim.';
     if (process.env.S1A_PROOF_FILE) {
       const target = resolve(process.env.S1A_PROOF_FILE);
       await mkdir(dirname(target), { recursive: true });
@@ -80,6 +99,7 @@ try {
         hostSha256: proof.artifact['index.js'],
         clientSha256: proof.artifact['client.js'],
         realServiceCases: proof.cases.length,
+        clientFileHostCase: proof.clientFiles.passed,
       }),
     );
   }

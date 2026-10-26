@@ -1,10 +1,24 @@
+import { FileReferences } from './FileReferences.js';
 import { useId, useRef, useState } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
-import type { RevisionContentWire, RevisionViewWire } from './ExecutionApi.js';
+import type {
+  ExecutionApi,
+  RevisionQuery,
+  RevisionContentWire,
+  RevisionViewWire,
+} from './ExecutionApi.js';
 
-function Content({ content }: { content: RevisionContentWire }) {
+function Content({
+  content,
+  api,
+  target,
+}: {
+  content: RevisionContentWire;
+  api?: ExecutionApi | undefined;
+  target?: RevisionQuery | undefined;
+}) {
   return (
     <>
       <div className="zm-execution-text">{content.text || '无文字正文'}</div>
@@ -32,21 +46,29 @@ function Content({ content }: { content: RevisionContentWire }) {
           })}
         </ul>
       )}
-      {!!content.files.length && (
-        <div className="zm-revision-files">
-          <h4>文件信息</h4>
-          <ul>
-            {content.files.map((file, index) => (
-              <li key={`${file.id}-${index}`}>
-                <strong>{file.id}</strong>
-                <span>
-                  {file.mediaType} · {file.byteSize.toLocaleString()} 字节
-                </span>
-              </li>
-            ))}
-          </ul>
-          <p className="zm-muted">本次查询未提供文件预览。</p>
-        </div>
+      {api && target ? (
+        <FileReferences
+          api={api}
+          files={content.files}
+          target={{ ...target, purpose: 'artifact', artifactVersionId: content.id }}
+        />
+      ) : (
+        !!content.files.length && (
+          <div className="zm-revision-files">
+            <h4>文件信息</h4>
+            <ul>
+              {content.files.map((file, index) => (
+                <li key={`${file.id}-${index}`}>
+                  <strong>{file.id}</strong>
+                  <span>
+                    {file.mediaType} · {file.byteSize.toLocaleString()} 字节
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="zm-muted">本次查询未提供文件预览。</p>
+          </div>
+        )
       )}
     </>
   );
@@ -58,7 +80,11 @@ export function RevisionPanel({
   pending = false,
   error = '',
   reload,
+  api,
+  target,
 }: {
+  api?: ExecutionApi | undefined;
+  target?: RevisionQuery | undefined;
   view?: RevisionViewWire | undefined;
   pending?: boolean;
   error?: string;
@@ -125,7 +151,7 @@ export function RevisionPanel({
                     : '被退回的版本暂不可用'}
                 </h3>
                 {content ? (
-                  <Content content={content} />
+                  <Content content={content} api={api} target={target} />
                 ) : (
                   <p className="zm-muted">未返回该版本正文，可刷新意见重试。</p>
                 )}

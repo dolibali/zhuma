@@ -134,6 +134,24 @@ test('SSR: rendering and target changes never start, send, refresh or choose def
   }
 });
 
+test('SSR: first-run configuration is expanded and ready selection has one explicit start action', () => {
+  const ready = render();
+  assert.match(ready, /<details class="zm-native-run__config" open=""/);
+  assert.ok(ready.includes('准备就绪'));
+  assert.equal((ready.match(/开始执行/g) ?? []).length, 1);
+  for (const duplicate of [
+    '配置完成后开始',
+    '准备好后，开始执行此节点',
+    '选择模型和执行者，然后开始',
+  ])
+    assert.ok(!ready.includes(duplicate));
+  const empty = render({ view: view({ selection: null }) });
+  assert.ok(empty.includes('配置此次执行'));
+  assert.ok(empty.includes('未选模型'));
+  assert.ok(empty.includes('未选执行者'));
+  assert.ok(!empty.includes('准备就绪'));
+});
+
 test('SSR: active or held runs freeze both choices, including terminal runs awaiting resource cleanup', () => {
   for (const status of [
     'requested',
