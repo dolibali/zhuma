@@ -4,7 +4,7 @@
 
 ## 首批上传接入与边界
 
-- `ExecutionService.uploadFile(caller, options, lease)` 的第三参是 Host 用原始成员请求经 `openExecutionMemberLease` 签发的 `ExecutionMemberLease`。不接收浏览器声明的成员／lease，不依赖 NativeRun 开关；请求、当前成员会话、空间目录和插件生命周期共同约束上传。
+- `ExecutionService.uploadFile(caller, options, authority)` 的第三参是 Host 用原始成员请求经 `openExecutionMemberLease` 签发的真实成员 lease 加同步 `assertProjectSpace(projectId, spaceId)`。后者读取同一当前已发布目录的 `spaceForProjectNow`，每个读取边界、EOS 和写前都重新核对实际项目归属；映射事件撤销该请求的资源信号，旧异步查询结果不能授权发布。不接收浏览器声明的成员／lease，不依赖 NativeRun 开关；请求、当前成员会话、空间目录和插件生命周期共同约束上传。
 - 所有持久字段在读取字节前按同一记录 schema 校验。初发和重放都校验真实字节，并在向附件 SDK 返回 EOS 前核对摘要和长度；错误声明不能先发布 CAS 再拒绝登记。SDK 包装错误后仍保留 `digest-mismatch`、`file-too-large`、`upload-timeout`、`cancelled` 等业务码。
 - 幂等指纹包含成员、空间、任务／计划／版本／节点、文件名、媒体类型、长度和摘要。在途同键同体返回 `conflict` 且 `details.reason=upload-in-progress`，调用方保留同键重试；在途同键异体返回 `idempotency-mismatch`，不读取第二份字节。完成后的同键重放仍校验本次真实字节并返回原 UUID。
 - 只有短准入／资源预留和最终新鲜授权、配额与回执写入进入既有业务队列；真实字节 I/O 不阻塞其他节点的停止或查询。每空间最多 8 个实际在途上传；进程内预留仅控制资源和并发，可信事实仍只写 `zhuma_files.files` 一行。60 秒时限同时覆盖初发与重放等待 `next()`／附件服务；逻辑取消不伪装物理清理已完成，关闭插件会等待实际资源收敛。

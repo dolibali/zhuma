@@ -24,6 +24,7 @@ let closeWorkbench, workbenchClosing;
 const domainCloseOrder = [];
 let modelCalls = 0;
 let observeUpload = false;
+let uploadSpaceDomain;
 const forks = [];
 const opened = [];
 const notify = (phase, value = {}) => process.send?.({ phase, ...value });
@@ -56,6 +57,7 @@ async function boot(options) {
   ctx.storageDomain.open = async (spec) => {
     opened.push(spec.name);
     const domain = await originalOpen(spec);
+    if (spec.name === 'zhuma_spaces') uploadSpaceDomain = domain;
     const close = domain.close.bind(domain);
     domain.close = async () => {
       domainCloseOrder.push(spec.name);
@@ -275,6 +277,16 @@ async function waitIdentityState(expected) {
 }
 
 async function act(action) {
+  if (action === 'migrateFileProject') {
+    if (!observeUpload || !uploadSpaceDomain) throw Error('File observation is disabled');
+    // Fault injection into the actual published JSON domain, not a new product
+    // migration API: assignProjectSpace intentionally refuses existing mappings.
+    await uploadSpaceDomain.table('project_spaces').put('portal', {
+      projectId: 'portal',
+      spaceId: 'team-empty',
+    });
+    return {};
+  }
   if (action === 'revokeFileAssigneeMembership') {
     if (!observeUpload) throw Error('File observation is disabled');
     await hostPlugin.spaceDirectoryFor(ctx).revokeMembership('team-north', 'chen');

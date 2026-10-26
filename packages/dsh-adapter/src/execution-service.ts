@@ -100,6 +100,13 @@ export interface ExecutionCaller {
   readonly member?: MemberResolution;
 }
 
+/** Minted from the original request and current published directory, never JSON. */
+export interface ExecutionFileAuthority {
+  readonly lease: ExecutionMemberLease;
+  assertProjectSpace(projectId: string, spaceId: string): void;
+}
+export type ExecutionFileAuthoritySource = () => Promise<ExecutionFileAuthority>;
+
 const id = z.string().min(1);
 const TEXT_LIMIT = 100_000;
 const boundedText = z.string().max(TEXT_LIMIT);
@@ -1803,7 +1810,7 @@ export class ExecutionService {
       readonly data: AsyncIterable<Uint8Array>;
       readonly signal?: AbortSignal;
     },
-    lease: ExecutionMemberLease,
+    authority: ExecutionFileAuthority,
   ): Promise<ExecutionResult<FileUploadReceipt>> {
     const operation = (async (): Promise<ExecutionResult<FileUploadReceipt>> => {
       const actor = this.actor(caller, options);
@@ -1826,12 +1833,14 @@ export class ExecutionService {
         return fail('file-too-large');
       // This is the original request's Host lease, never a MemberResolution
       // snapshot or a client-provided field. Upload does not require NativeRun.
+      const lease = authority?.lease;
       if (
         !lease ||
         lease.memberId !== actor.value.actorId ||
         !(lease.signal instanceof AbortSignal) ||
         typeof lease.assertCurrent !== 'function' ||
-        !Number.isFinite(lease.expiresAt)
+        !Number.isFinite(lease.expiresAt) ||
+        typeof authority.assertProjectSpace !== 'function'
       )
         return fail('unauthenticated');
       const signal = AbortSignal.any([
@@ -1864,6 +1873,15 @@ export class ExecutionService {
           planMembership(workbench, request.taskId, actor.value.actorId) !== 'allowed'
         )
           throw new ArtifactUploadError('not-found');
+        try {
+          const asserted: unknown = authority.assertProjectSpace(task.projectId, request.spaceId);
+          if (asserted !== undefined) {
+            void Promise.resolve(asserted).catch(() => undefined);
+            throw new Error('invalid project assertion');
+          }
+        } catch {
+          throw new ArtifactUploadError('not-found');
+        }
         let node: ExecutionNodeRecord | undefined;
         try {
           node = this.readRunNode(request);
@@ -1903,8 +1921,9 @@ export class ExecutionService {
         };
         // The only business queue admits/reserves briefly, then stays free
         // while real byte I/O waits. Same-key concurrent bodies cannot publish twice.
+        await gate();
         const admission = await this.enqueue<UploadFileRecord | undefined>(async () => {
-          await gate();
+          assertCurrent();
           const pending = this.pendingUploads.get(request.idempotencyKey);
           if (pending)
             return fail(
@@ -1964,8 +1983,8 @@ export class ExecutionService {
           for await (const _chunk of stream) {
             /* Bounded actual replay bytes. */
           }
+          await stream.wait(gate());
           return await this.enqueue(async () => {
-            await gate();
             stream!.check();
             const current = fileStore.get(prior.uploadId);
             if (
@@ -1993,8 +2012,8 @@ export class ExecutionService {
           ref.name !== request.declare.name
         )
           return fail('digest-mismatch');
+        await stream.wait(gate());
         return await this.enqueue(async () => {
-          await gate();
           stream!.check();
           if (
             fileStore.countInSpace(request.spaceId) >= ARTIFACT_FILE_LIMITS.maxFilesPerSpace ||

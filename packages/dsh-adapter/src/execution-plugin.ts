@@ -5,9 +5,15 @@ import type {} from '@deepseek-ai/dsh-storage-domain';
 import type { Workbench } from '@zhuma/agent-core';
 import { WorkbenchError, type ExecutionNodeRecord } from '@zhuma/agent-core';
 import { z } from 'zod';
-import { ExecutionService, type ExecutionStorage, type PlanReceipt } from './execution-service.js';
-import { openExecutionMemberLease, resolveMember } from './member-session.js';
+import {
+  ExecutionService,
+  type ExecutionStorage,
+  type PlanReceipt,
+  type ExecutionFileAuthority,
+} from './execution-service.js';
+import { openExecutionMemberLease, resolveMember, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
+import { spaceDirectoryFor } from './space-directory.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import { executionRunGlobalSchema } from './execution-run-protocol.js';
@@ -117,6 +123,72 @@ function fetchHeaders(request: Request): IncomingHttpHeaders {
     else headers[key] = [prior, value];
   });
   return headers;
+}
+
+/** One request scope over the existing lease and the SAME live directory. */
+async function openFileAuthority(
+  ctx: Context,
+  request: MemberRequest,
+  signal: AbortSignal,
+): Promise<ExecutionFileAuthority> {
+  const original = await openExecutionMemberLease(ctx, request);
+  const directory = spaceDirectoryFor(ctx);
+  if (!directory || directory.signal.aborted) {
+    original.release();
+    throw new Error('Current file directory is unavailable.');
+  }
+  const changed = new AbortController();
+  let bound: { projectId: string; spaceId: string } | undefined;
+  let released = false;
+  const assertProjectSpace = (projectId: string, spaceId: string) => {
+    if (
+      released ||
+      changed.signal.aborted ||
+      directory.signal.aborted ||
+      spaceDirectoryFor(ctx) !== directory
+    )
+      throw new Error('Current file directory changed.');
+    const current = directory.spaceForProjectNow(projectId);
+    if (!current.ok || current.spaceId !== spaceId)
+      throw new Error('Current file project changed.');
+    if (bound && (bound.projectId !== projectId || bound.spaceId !== spaceId))
+      throw new Error('A file request cannot change its project binding.');
+    bound = { projectId, spaceId };
+  };
+  let stop: () => void;
+  try {
+    stop = ctx.on(
+      'domain/changed',
+      (event) => {
+        if (event.domain !== 'zhuma_spaces' || event.table !== 'project_spaces' || !bound) return;
+        try {
+          assertProjectSpace(bound.projectId, bound.spaceId);
+        } catch {
+          changed.abort();
+        }
+      },
+      { global: true },
+    );
+  } catch (error) {
+    original.release();
+    throw error;
+  }
+  return {
+    lease: {
+      memberId: original.memberId,
+      expiresAt: original.expiresAt,
+      signal: AbortSignal.any([signal, original.signal, directory.signal, changed.signal]),
+      assertCurrent: (spaceId) => original.assertCurrent(spaceId),
+      release() {
+        if (released) return;
+        released = true;
+        stop();
+        original.release();
+        changed.abort();
+      },
+    },
+    assertProjectSpace,
+  };
 }
 
 /**
@@ -489,7 +561,8 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
         }
         const body = request.body;
         if (body === null) return new Response(null, { status: 400 });
-        lease = await openExecutionMemberLease(ctx, original);
+        const authority = await openFileAuthority(ctx, original, signal);
+        lease = authority.lease;
         signal = AbortSignal.any([signal, lease.signal]);
         data = streamBytes(body);
         const result = await service.uploadFile(
@@ -510,7 +583,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
             data,
             signal,
           },
-          lease,
+          authority,
         );
         return Response.json({
           ok: result.ok,

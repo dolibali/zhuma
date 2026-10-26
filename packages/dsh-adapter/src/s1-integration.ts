@@ -18,7 +18,8 @@ import type { ProjectSpaceDirectory } from './project-space.js';
 import type { OpenedSpaceDirectoryHandle, SpaceDirectoryImport } from './space-directory.js';
 import type { RevisionView } from './revision-view.js';
 import type { ExecutionPluginConfig } from './execution-plugin.js';
-import type { ExecutionMemberLease } from './execution-run-authority.js';
+import type { ExecutionFileAuthority } from './execution-service.js';
+export type { ExecutionFileAuthority, ExecutionFileAuthoritySource } from './execution-service.js';
 export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 export type {
   AuthorizedSpace,
@@ -450,7 +451,7 @@ export interface ExecutionServiceMethods {
   uploadFile(
     caller: ExecutionCaller,
     options: UploadFileOptions,
-    lease: ExecutionMemberLease,
+    authority: ExecutionFileAuthority,
   ): Promise<ExecutionChannelResult<FileUploadReceiptValue>>;
   draft(
     caller: ExecutionCaller,
