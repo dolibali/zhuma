@@ -15,6 +15,10 @@ import {
   type NativeResultSnapshot,
 } from './native-work-session-result-contract.js';
 import {
+  publicNativeResultEvent,
+  NativePublicResultProjection,
+} from './native-work-session-public-result.js';
+import {
   requireNativeInboxRetention,
   type RetainedInboxCreateOptions,
   type RetainedInboxResumeOptions,
@@ -690,9 +694,10 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       () => [],
       async (handle, bounded) => {
         const result = await handle.read(after + 1, limit, { signal: bounded });
-        if (Buffer.byteLength(JSON.stringify(result.events)) > MAX_FRAME_BYTES)
+        const events = result.events.map(publicNativeResultEvent);
+        if (Buffer.byteLength(JSON.stringify(events)) > MAX_FRAME_BYTES)
           throw new NativeWorkError('capacity');
-        return result.events;
+        return events;
       },
     );
   }
@@ -996,6 +1001,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal.throwIfAborted();
     if (this.observers >= MAX_OBSERVERS) throw new NativeWorkError('capacity');
     const queue: { readonly value: NativeWorkFrame; readonly bytes: number }[] = [];
+    const projection = new NativePublicResultProjection();
     let bufferedBytes = 0;
     let overflow = false;
     let failure: unknown;
@@ -1040,7 +1046,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       wake?.();
       wake = undefined;
     };
-    const push = (value: NativeWorkFrame) => {
+    const push = (original: NativeWorkFrame) => {
       if (overflow || failure || signal.aborted) return;
       try {
         checkSource();
@@ -1050,6 +1056,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         notify();
         return;
       }
+      const value = projection.frame(original);
       const bytes = Buffer.byteLength(JSON.stringify(value));
       if (
         bytes > MAX_FRAME_BYTES ||
