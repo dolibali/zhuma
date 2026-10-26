@@ -147,6 +147,8 @@ export type {
   ExecutionUnadmittedCleanupAuthority,
 } from './execution-run-authority.js';
 export type {
+  NativeConversationFrame,
+  NativeInboxSnapshot,
   NativeSessionLineage,
   NativeWorkSessionRecord,
   NativeRunMigrationGrant,
