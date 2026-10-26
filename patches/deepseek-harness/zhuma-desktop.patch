@@ -1441,3 +1441,193 @@ index e3362cda..e1fa4bff 100644
    }
  
    it('injects a user-invocable skill named by a leading /token, after every other injection', async () => {
+diff --git a/packages/mcp/mcp-client/src/connection.ts b/packages/mcp/mcp-client/src/connection.ts
+index 9a4ec912..47d930ff 100644
+--- a/packages/mcp/mcp-client/src/connection.ts
++++ b/packages/mcp/mcp-client/src/connection.ts
+@@ -99,6 +99,16 @@ export interface ConnectionOutcome {
+   error?: unknown
+ }
+ 
++/** A caller must not treat an unconfirmed transport close as a completed drain. */
++export class McpClientCloseError extends Error {
++  constructor(readonly code: 'mcp-close-unconfirmed' | 'mcp-close-unavailable') {
++    super(code === 'mcp-close-unconfirmed'
++      ? 'MCP transport closure was not confirmed; the resource owner must remain undrained.'
++      : 'No original MCP client close owner is registered on this plugin context.')
++    this.name = 'McpClientCloseError'
++  }
++}
++
+ /** Handle for one plugin instance's supervised connection. */
+ export interface ConnectionHandle extends ServerContext {
+   /**
+@@ -111,6 +121,7 @@ export interface ConnectionHandle extends ServerContext {
+    * Stop reconnection, close the negotiating transport or live client, wait
+    * for the in-flight attempt and queued tool syncs to quiesce, then
+    * unregister every tool this server still owns.
++   * Rejects with McpClientCloseError when transport closure remains unconfirmed.
+    */
+   dispose(): Promise<void>
+ }
+@@ -146,6 +157,8 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+   let client: Client | undefined
+   /** Transport-aware close operation paired with {@link client}. */
+   let closeClient: (() => Promise<boolean>) | undefined
++  /** A failed generation's unconfirmed close must survive losing current ownership. */
++  let unconfirmedClose = false
+   /** Live tool registrations owned by this server; only {@link enqueueSync} and dispose swap it. */
+   let disposers: ToolDisposers = new Map()
+   let reconnectTimer: NodeJS.Timeout | undefined
+@@ -188,6 +201,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+   function settleFailedGeneration(generation: Client, quiesced: boolean): void {
+     if (!isCurrent(generation)) return
+     if (!quiesced) {
++      unconfirmedClose = true
+       client = undefined
+       closeClient = undefined
+       ctx.logger.error(`${label}: failed generation could not confirm transport closure — reconnect stopped to avoid overlapping server processes; reload the plugin or restart the Host to retry`)
+@@ -395,15 +409,14 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+       const close = closeClient
+       client = undefined
+       closeClient = undefined
+-      if (close !== undefined && !await close()) {
+-        ctx.logger.error(incompleteDisposalMessage)
+-      }
++      const confirmed = close === undefined || await close()
+       // Quiesce, don't just request it: the in-flight attempt enqueues its
+       // sync before settling, so awaiting both leaves `disposers` final.
+       await settling
+       await syncChain
+       for (const dispose of disposers.values()) dispose()
+       disposers = new Map()
++      if (!confirmed || unconfirmedClose) throw new McpClientCloseError('mcp-close-unconfirmed')
+     },
+   }
+ }
+diff --git a/packages/mcp/mcp-client/src/index.ts b/packages/mcp/mcp-client/src/index.ts
+index 3f89532b..25ecd381 100644
+--- a/packages/mcp/mcp-client/src/index.ts
++++ b/packages/mcp/mcp-client/src/index.ts
+@@ -19,11 +19,40 @@ import { scopeOf } from '@deepseek-ai/dsh-scope'
+ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+ import { DEFAULT_MAX_INSTRUCTION_BYTES, RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from './connection.ts'
+ import type { ReconnectConfig } from './connection.ts'
++import { McpClientCloseError } from './connection.ts'
+ import { registerServerContext } from './server-context.ts'
+ // Side-effect type import: declaration-merges `ctx.tools` onto Context.
+ import type {} from '@deepseek-ai/dsh-tools'
+ 
+ export { createMcpToolDefinition } from './tools.ts'
++export { McpClientCloseError } from './connection.ts'
++
++/** Close confirmation belonging to exactly one original plugin supervisor.
++ * Capture it before fiber disposal: Cordis contains finalizer errors.
++ * A failed close remains rejected; no later or inherited connection is substituted.
++ */
++export interface McpClientCloseHandle {
++  /** Stop this original supervisor and require confirmed transport teardown. */
++  close(): Promise<void>
++}
++const closeOwner = Symbol('mcp-client.close-owner')
++interface OwnedClose {
++  readonly context: Context
++  readonly handle: McpClientCloseHandle
++}
++/**
++ * Capture the original close owner from the actual MCP plugin fiber's ctx.
++ * There is no namespace/JSON lookup and no parent/sibling fallback. The owner
++ * is registered before readiness is published; absence is refusal, never proof of drain.
++ * A captured handle remains bound to this supervisor activation across unload or reload.
++ * @param context - the original MCP plugin context, not its parent Agent context.
++ * @returns this supervisor's explicit, idempotent await-close capability.
++ */
++export function captureMcpClientClose(context: Context): McpClientCloseHandle {
++  const owner: OwnedClose | undefined = Object.getOwnPropertyDescriptor(context, closeOwner)?.value
++  if (!owner || owner.context !== context) throw new McpClientCloseError('mcp-close-unavailable')
++  return owner.handle
++}
+ export type { McpResult, McpToolDefinitionOptions } from './tools.ts'
+ export type { ReconnectConfig, ResolvedReconnectPolicy } from './connection.ts'
+ 
+@@ -182,6 +211,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
+   registerServerContext(ctx, config.serverName, connection)
+   let stopping: Promise<void> | undefined
+   const dispose = (): Promise<void> => stopping ??= connection.dispose()
++  // This is instance-owned state, not an inheritable registry or a global map.
++  // Retain the old capability after unload so late observers join its exact
++  // result. HMR replaces this owner without rebinding captured old handles.
++  Object.defineProperty(ctx, closeOwner, {
++    value: Object.freeze<OwnedClose>({ context: ctx, handle: Object.freeze({ close: dispose }) }),
++    configurable: true,
++  })
+   // Cordis announces unload before awaiting an unfinished apply(). Closing
+   // the transport here releases startup requests that are still awaiting a reply.
+   // oxlint-disable-next-line typescript/no-misused-promises -- Cordis contains observer failures; the effect also awaits this promise.
+diff --git a/packages/mcp/mcp-client/tests/reconnect.spec.ts b/packages/mcp/mcp-client/tests/reconnect.spec.ts
+index f4167017..d0444937 100644
+--- a/packages/mcp/mcp-client/tests/reconnect.spec.ts
++++ b/packages/mcp/mcp-client/tests/reconnect.spec.ts
+@@ -55,7 +55,7 @@ vi.mock('@modelcontextprotocol/client/stdio', () => ({
+ 
+ // vi.mock is hoisted above static imports, so the modules under test see the
+ // mocked SDK even through a static import.
+-import { apply } from '@deepseek-ai/dsh-mcp-client/src/index.ts'
++import { apply, captureMcpClientClose } from '@deepseek-ai/dsh-mcp-client/src/index.ts'
+ import { RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from '@deepseek-ai/dsh-mcp-client/src/connection.ts'
+ 
+ // ---- Helpers ----
+@@ -344,10 +344,10 @@ describe('reconnect supervisor', () => {
+     }
+   })
+ 
+-  it.each(['connect', 'discovery'] as const)('bounds disposal during %s when the transport never reports closure', async (phase) => {
++  it.each(['connect', 'discovery'] as const)('rejects bounded disposal during %s when the transport never reports closure', async (phase) => {
+     vi.useFakeTimers()
+     try {
+-      const { errors } = captureLogs(ctx)
++      captureLogs(ctx)
+       const gate: PromiseWithResolvers<void> = Promise.withResolvers()
+       if (phase === 'connect') mockConnect.mockImplementation(() => gate.promise)
+       else mockListTools.mockImplementation(() => gate.promise.then(() => listing('late')))
+@@ -356,19 +356,38 @@ describe('reconnect supervisor', () => {
+       await vi.advanceTimersByTimeAsync(0)
+ 
+       const disposing = handle.dispose()
++      const rejected = expect(disposing).rejects.toMatchObject({ code: 'mcp-close-unconfirmed' })
+       await vi.advanceTimersByTimeAsync(5_000)
+       gate.resolve()
+       await vi.advanceTimersByTimeAsync(5_000)
+-      await disposing
++      await rejected
+ 
+       expect(mockListTools).toHaveBeenCalledTimes(phase === 'connect' ? 0 : 1)
+       expect(ctx.tools.get('mcp__srv__late')).toBeUndefined()
+-      expect(errors.some(line => line.includes('server shutdown may be incomplete'))).toBe(true)
+     } finally {
+       vi.useRealTimers()
+     }
+   })
+ 
++  it('captures only the original plugin close owner and shares its awaited result across unload', async () => {
++    const fiber = ctx.plugin({ name: 'mcp-client', inject: ['tools'], apply }, stdioConfig())
++    await fiber
++    const owner = captureMcpClientClose(fiber.ctx)
++    for (const foreign of [ctx, ctx.extend(), Object.create(fiber.ctx)]) {
++      expect(() => captureMcpClientClose(foreign)).toThrowError(
++        expect.objectContaining({ code: 'mcp-close-unavailable' }),
++      )
++    }
++    const first = owner.close()
++    expect(owner.close()).toBe(first)
++    await first
++    await fiber.dispose()
++    expect(captureMcpClientClose(fiber.ctx)).toBe(owner)
++    await owner.close()
++    expect(mockClose).toHaveBeenCalledTimes(1)
++    expect(ctx.tools.get('mcp__srv__remote')).toBeUndefined()
++  })
++
+   it('closes a transport that attaches after disposal starts', async () => {
+     const gate: PromiseWithResolvers<void> = Promise.withResolvers()
+     mockConnect.mockImplementation(function (this: { transport: object | undefined }) {
