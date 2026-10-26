@@ -385,12 +385,22 @@ test('Run view contract: disposed account/controller cannot publish late reads o
 test('Run transcript contract: known text/tool names only; no hidden system, unknown payload, path/argument dumps', () => {
   const messages = projectNativeRunMessages([
     { seq: 0, type: 'system/message', data: { private: 'SYSTEM_SECRET' } },
-    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'Do work' }] } },
+    {
+      seq: 1,
+      type: 'user/message',
+      data: {
+        role: 'user',
+        source: { kind: 'user' },
+        content: [{ type: 'text', text: 'Do work' }],
+      },
+    },
     {
       seq: 2,
       type: 'assistant/message',
       data: {
         message: {
+          role: 'assistant',
+          source: { kind: 'model', provider: 'contract', model: 'model' },
           content: [
             { type: 'reasoning', text: 'PRIVATE_REASONING' },
             { type: 'text', text: 'Result' },
@@ -406,6 +416,59 @@ test('Run transcript contract: known text/tool names only; no hidden system, unk
     ['Do work', 'Result', 'read'],
   );
   assert.equal(JSON.stringify(messages).includes('PRIVATE'), false);
+});
+
+test('Run transcript contract: SDK source provenance hides injected user-role context without filtering human wording', () => {
+  const text = 'Current runtime context: explain how this setting works.';
+  const user = (seq, source, role = 'user') => ({
+    seq,
+    type: 'user/message',
+    surfaceOp: 'append',
+    data: { role, source, content: [{ type: 'text', text }] },
+  });
+  const events = [
+    user(0, {
+      kind: 'runtime-context',
+      form: 'snapshot',
+      sections: [{ name: 'execution', text: 'PRIVATE_EXECUTION_CONFIGURATION' }],
+    }),
+    user(1, { kind: 'runtime-context' }),
+    user(2, { kind: 'instructions', form: 'instructions' }),
+    user(3, { kind: 'catalog', form: 'catalog' }),
+    user(4, { kind: 'future-producer' }),
+    user(5, undefined),
+    user(6, { kind: 'user' }, 'developer'),
+    user(7, { kind: 'model' }),
+    user(8, { kind: 'user' }),
+    {
+      seq: 9,
+      type: 'assistant/message',
+      data: {
+        message: {
+          role: 'assistant',
+          source: { kind: 'model', provider: 'contract', model: 'model' },
+          content: [{ type: 'text', text }],
+        },
+        replayState: { internal: 'PRIVATE_REPLAY_STATE' },
+      },
+    },
+    {
+      seq: 10,
+      type: 'tool/result',
+      data: { content: [{ type: 'text', text: 'PRIVATE_TOOL_RESULT' }] },
+    },
+    {
+      seq: 11,
+      type: 'tool/call',
+      data: { name: 'read_file', arguments: { path: 'PRIVATE_TOOL_PATH' } },
+    },
+    { ...user(12, { kind: 'user' }), surfaceOp: 'replace' },
+  ];
+  assert.deepEqual(projectNativeRunMessages(events), [
+    { id: 'event-8', sequence: 8, role: 'user', text },
+    { id: 'event-9', sequence: 9, role: 'assistant', text },
+    { id: 'event-11', sequence: 11, role: 'tool', label: '工具调用', text: 'read_file' },
+  ]);
 });
 
 const session = (accountId = 'chen') => ({

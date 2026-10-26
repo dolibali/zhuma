@@ -763,33 +763,18 @@ body[data-ds-dark-theme] {
 .zm-dialog * {
   box-sizing: border-box;
 }
-.zm-run-node-entry {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 16px;
-  border: 1px solid var(--zm-line);
-  border-radius: 10px;
-  min-width: 0;
-}
-.zm-run-node-entry > strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.zm-run-node-entry > button {
-  flex-shrink: 0;
-}
-.zm-dialog:has(.zm-run-workspace-dialog) {
+.zm-dialog.zm-dialog-workspace {
   width: min(960px, calc(100vw - 32px));
+  height: min(840px, calc(100dvh - 40px));
+  background: var(--zm-paper);
 }
 .zm-run-workspace-dialog {
+  display: flex;
+  flex: 1;
+  min-height: 0;
   min-width: 0;
-  padding: 16px;
+  padding: 0;
+  overflow: hidden;
 }
 
 .zhuma {

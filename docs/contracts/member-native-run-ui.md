@@ -4,7 +4,7 @@
 
 ## 入口与归属
 
-人工 submit/revise 待办旁提供“使用 Agent”；文字交付仍保留原表单。已确认工作流可对具体叶节点打开同一工作区，包含不出现在人工待办的专家节点。入口使用已确认 AppliedPlan 的完整 task/plan/revision/node 定位，不把未保存草稿或工作流容器当作可运行节点。计划的显式开始仍由原 start-plan 操作负责，打开工作区不自动开始计划或节点。
+人工 submit/revise 待办打开交付表单后，在表单标题操作区提供“使用 Agent”；文字交付仍保留原表单，不再增加重复节点标题的中间横栏。已确认工作流可对具体叶节点打开同一工作区，包含不出现在人工待办的专家节点。入口使用已确认 AppliedPlan 的完整 task/plan/revision/node 定位，不把未保存草稿或工作流容器当作可运行节点。计划的显式开始仍由原 start-plan 操作负责，打开工作区不自动开始计划或节点。
 
 A 的 `NativeRunWorkspace` 连接 C 的受控 `NativeRunPanel`，经 `/api/zhuma-run/*` 调用同一 Host。Client 不导入 Host 或原生 SDK、不调用旧 owner RPC、不保存第二份会话和执行记录。公共 UI 出口是 `@zhuma/client/workbench/ui`，主题由原插件一次注册。
 
@@ -20,6 +20,10 @@ A 的 `NativeRunWorkspace` 连接 C 的受控 `NativeRunPanel`，经 `/api/zhuma
 
 ## 交互与恢复边界
 
+工作区沿现有中性浅深主题和系统字体，以节点目标为唯一可见主标题，状态、停止、刷新和关闭同栏。配置默认是模型与执行者的一行摘要，选择器和资源按需展开；显示固定计划参与者时使用已授权 AppliedPlan 的参与者快照，不因当前目录缺条目误标为未分配。已有指派但信息缺失明确显示“执行者信息未提供”。已确认工作流的 Agent 入口置于原工具栏，不额外铺节点标题栏。
+
+消息和输入区共享居中的 740px 可读列，随窗口收缩。用户消息靠右限宽，Agent 正文左对齐，以位置、图标和无障碍名称辨角色，不逐条铺厚重角色标题。消息区独立滚动，输入区占满内容列并保持文字在上、发送方式和动作在下；停止在顶栏独立可达。`workspace` 弹窗复用原 Modal 与取消守卫，仅让会话自身提供标题/关闭；会话底部使用独立块而非匹配公共 `footer` 样式，不改变普通表单弹窗的底栏布局。停止后无可发送能力且无未发送草稿时，展示紧凑状态和显式“开始新一轮”；仍有草稿则保留编辑区与原脏输入守卫，不因能力变化丢文字。
+
 打开、刷新和历史只读。模型和执行者必须显式选择；已有运行显示其保存的配置，held/active 时冻结。begin/send/stop 只由明确动作触发，未知结果重试相同内容沿用请求 id；不会在刷新或重挂载时自动重发。停止使用同一次 read 返回的 Run generation/segment/版本，真实回执保持 pending/stopped 区别。
 
 会话/空间 controller 实例替换、账号 epoch、空间 epoch、页面 epoch、API 或完整 target 变化会使表单重新挂载。旧 controller 主动中止等待读取；迟到读取不能发布或接续读，旧动作不能经新 API 发送。客户端提示不作为权限。
@@ -31,6 +35,8 @@ Stop 使用独立于 pending send 的命令通道，不等待发送回执或重�
 未发送输入只在面板本地；仅把 dirty 布尔值接入既有空间/导航守卫。关闭或 ESC 使用现有紧凑离开确认，取消保留原输入并恢复焦点，确认放弃才卸载本 scope。离开不停止 Run、不撤销已发送操作；真实账号/controller 撤销仍即时卸载，不将输入带给新账号。
 
 会话可见且资源 held 时每 2500ms 只读进度和历史，不重新发现模型、不连接或驱动 Agent。历史沿 SDK 正向 seq 游标读取并保留已加载消息；不把未知 payload JSON、system/developer 内容、工具参数或 reasoning 展开到消息区，也不把正向分页称为较早消息。现批没有流中 token 推送、任意旧页回看或自动采用输出为交付；这些边界继续保留。
+
+固定 SDK 将运行上下文也记录成 `user/message`，因此历史展示以其实际 `message.role` 与 `message.source.kind` 一起判别来源：只显示 `user/user` 和 `assistant/model` 的文字块，工具仅显示 `tool/call` 名称。`runtime-context`（含 snapshot sections 与清空快照）、指令、目录注入、来源缺失或未知的消息及原始工具结果均不作为聊天正文展示；不把来源对象、replayState 或内部配置复制到 UI。判断不依赖正文关键词，真实用户或 Agent 谈到运行上下文时仍正常显示。
 
 ## 验证口径
 

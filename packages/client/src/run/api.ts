@@ -244,16 +244,11 @@ function readView(value: unknown, expected: NativeRunLocator, runId: string): Na
 
 /** Project only known public transcript fields; never stringify unknown event payloads. */
 export function projectNativeRunMessages(events: readonly unknown[]): NativeRunMessage[] {
-  return events.flatMap((raw) => {
+  return events.flatMap<NativeRunMessage>((raw) => {
     const event = object(raw);
     const sequence = integer(event.seq);
     if (event.surfaceOp !== undefined && event.surfaceOp !== 'append') return [];
-    if (
-      !['user/message', 'assistant/message', 'tool/result', 'tool/call'].includes(
-        String(event.type),
-      )
-    )
-      return [];
+    if (!['user/message', 'assistant/message', 'tool/call'].includes(String(event.type))) return [];
     const data = object(event.data);
     if (event.type === 'tool/call')
       return [
@@ -266,12 +261,19 @@ export function projectNativeRunMessages(events: readonly unknown[]): NativeRunM
         },
       ];
     const message = event.type === 'user/message' ? data : object(data.message);
-    const role =
-      event.type === 'user/message'
-        ? ('user' as const)
-        : event.type === 'assistant/message'
-          ? ('assistant' as const)
-          : ('tool' as const);
+    const role = event.type === 'user/message' ? ('user' as const) : ('assistant' as const);
+    const source = message.source;
+    // SDK 0.2.1-rc.2 also persists runtime-context/instruction/catalog injection
+    // as user/message. Role/text alone cannot identify a human conversation.
+    if (
+      message.role !== role ||
+      !source ||
+      typeof source !== 'object' ||
+      Array.isArray(source) ||
+      !('kind' in source) ||
+      source.kind !== (role === 'user' ? 'user' : 'model')
+    )
+      return [];
     const text = array(message.content, 1000)
       .flatMap((raw) => {
         const block = object(raw);

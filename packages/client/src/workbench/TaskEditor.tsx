@@ -227,7 +227,9 @@ export function TaskEditor({
   }, [workTree, workflowId, selectedId]);
   const gaps = templateBindingGaps(task);
   const hasGaps = !!(gaps.participants.length + gaps.assets.length);
-  const actualMembers = state.participants.filter((m) => task.participantIds.includes(m.id));
+  const participantSource =
+    task.status === 'ready' && applied ? applied.participants : state.participants;
+  const actualMembers = participantSource.filter((m) => task.participantIds.includes(m.id));
   const members = [
     ...actualMembers,
     ...gaps.participants.map((p) => ({
@@ -841,6 +843,24 @@ export function TaskEditor({
                 ＋ 节点
               </button>
             )}
+            {nativeRun &&
+              task.status === 'ready' &&
+              !dirty &&
+              applied &&
+              fixedNode &&
+              !applied.task.workflows.some((flow) => flow.parentNodeId === fixedNode.id) && (
+                <NativeRunLauncher
+                  api={nativeRun.api}
+                  target={{
+                    spaceId: nativeRun.spaceId,
+                    taskId: task.id,
+                    planId: applied.id,
+                    revision: applied.revision,
+                    nodeId: fixedNode.id,
+                    title: fixedNode.title,
+                  }}
+                />
+              )}
             <button
               className="zm-quiet"
               aria-pressed={inspectorOpen && panel === 'config'}
@@ -898,27 +918,6 @@ export function TaskEditor({
               <span className="zm-tree-path-key">当前位置与上级路径</span>
             </div>
           )}
-          {nativeRun &&
-            task.status === 'ready' &&
-            !dirty &&
-            applied &&
-            fixedNode &&
-            !applied.task.workflows.some((flow) => flow.parentNodeId === fixedNode.id) && (
-              <div className="zm-run-node-entry">
-                <strong>{fixedNode.title}</strong>
-                <NativeRunLauncher
-                  api={nativeRun.api}
-                  target={{
-                    spaceId: nativeRun.spaceId,
-                    taskId: task.id,
-                    planId: applied.id,
-                    revision: applied.revision,
-                    nodeId: fixedNode.id,
-                    title: fixedNode.title,
-                  }}
-                />
-              </div>
-            )}
           {view === 'workflow' && (workflow.nodes.length > 0 || tree) ? (
             <WorkflowCanvas
               key={tree ? 'tree' : workflow.id}
@@ -961,7 +960,8 @@ export function TaskEditor({
                   <button className="zm-node-main" onClick={() => selectNode(n.id)}>
                     <strong>{n.title}</strong>
                     <span>
-                      {members.find((m) => m.id === n.assigneeId)?.name ?? '未分配'}
+                      {members.find((m) => m.id === n.assigneeId)?.name ??
+                        (n.assigneeId ? '执行者信息未提供' : '未分配')}
                       <i>·</i>
                       {n.dependsOn.length ? `依赖 ${n.dependsOn.length} 个节点` : '无前置依赖'}
                       {displayTask.workflows.some((w) => w.parentNodeId === n.id) &&

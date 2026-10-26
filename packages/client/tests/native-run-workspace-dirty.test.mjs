@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 const domModule = process.env.ZHUMA_NATIVE_PANEL_DOM_MODULE;
 if (!domModule) {
@@ -46,6 +47,7 @@ if (!domModule) {
   const { createElement: h, act } = await import('react');
   const { createRoot } = await import('react-dom/client');
   const { NativeRunLauncher } = await import('../dist/run/NativeRunWorkspace.js');
+  const { ExecutionWorkspace } = await import('../dist/execution/ExecutionWorkspace.js');
   const { UnsavedChangesBoundary } = await import('../dist/workbench/UnsavedChanges.js');
   const target = {
     spaceId: 'north',
@@ -262,6 +264,139 @@ if (!domModule) {
     } finally {
       late.resolve();
       await current.close();
+    }
+  });
+
+  test('DOM contract: human submission and revision launch Agent from the delivery heading while preserving the form', async () => {
+    for (const action of ['submit', 'revise']) {
+      const node = document.createElement('div');
+      document.body.append(node);
+      const root = createRoot(node);
+      let drafts = 0,
+        options = 0;
+      const execution = {
+        nodeId: 'node',
+        taskId: 'task',
+        planId: 'plan',
+        revision: 1,
+        version: 1,
+        status: action === 'submit' ? 'ready' : 'needs-revision',
+        goal: 'Prepare the release notes',
+        assigneeId: 'chen',
+        reviewerIds: [],
+        artifacts: [],
+        rounds: [],
+        comments: [],
+      };
+      const item = {
+        id: 'item',
+        kind: 'deliver',
+        actorId: 'chen',
+        nodeId: 'node',
+        taskId: 'task',
+        reason: action === 'submit' ? 'assignee-delivery' : 'revision-delivery',
+        action,
+      };
+      const executionApi = {
+        inbox: async () => ({ items: [item], nodes: [execution] }),
+        readDeliveryDraft: async () => {
+          drafts++;
+          return { version: 0, text: '', links: [], files: [] };
+        },
+        revision: async () => ({ notes: [], reviewed: undefined }),
+      };
+      const nativeApi = api({
+        options: async () => {
+          options++;
+          return api().options();
+        },
+      });
+      try {
+        await act(async () =>
+          root.render(
+            h(ExecutionWorkspace, {
+              api: executionApi,
+              nativeRun: { api: nativeApi, spaceId: 'north' },
+            }),
+          ),
+        );
+        const open = node.querySelector('.zm-directory-actions button');
+        assert.ok(open);
+        await act(async () => open.click());
+        const form = node.querySelector('textarea')?.closest('.zm-execution-detail');
+        assert.ok(form);
+        assert.equal(drafts, 1);
+        assert.equal(options, 0, 'opening a human delivery does not discover models');
+        assert.equal(
+          node.querySelector('.zm-run-node-entry'),
+          null,
+          'no intermediate duplicate title',
+        );
+        const heading = form.querySelector('.zm-page-heading');
+        assert.equal(heading.querySelector('h2').textContent, execution.goal);
+        const launch = heading.querySelector('button');
+        assert.equal(launch.querySelector('.zm-button-label').textContent, '使用 Agent');
+        const input = form.querySelector('textarea');
+        await act(async () => launch.click());
+        assert.ok(node.querySelector('.zm-run-workspace-dialog'));
+        assert.equal(options, 1);
+        assert.ok(input.isConnected && form.contains(input), 'launching preserves the manual form');
+      } finally {
+        await act(async () => root.unmount());
+        node.remove();
+      }
+    }
+  });
+
+  test('DOM/style contract: conversation keeps one title and a full-width vertical composer without changing ordinary modal footers', async () => {
+    const style = document.createElement('style');
+    style.textContent = (
+      await Promise.all([
+        readFile(new URL('../src/workbench/workbench.css', import.meta.url), 'utf8'),
+        readFile(new URL('../src/run/NativeRunPanel.css', import.meta.url), 'utf8'),
+      ])
+    ).join('\n');
+    document.head.append(style);
+    const current = await mount(
+      api({
+        history: async () => ({
+          nextAfter: 2,
+          messages: [
+            { id: 'human', sequence: 1, role: 'user', text: '请先核对发布范围。' },
+            {
+              id: 'agent',
+              sequence: 2,
+              role: 'assistant',
+              text: '已整理范围。\n我会继续检查兼容性、文档和回归结果。',
+            },
+          ],
+        }),
+      }),
+    );
+    const ordinary = document.createElement('dialog');
+    ordinary.className = 'zm-dialog';
+    ordinary.innerHTML = '<footer><button>保存</button></footer>';
+    document.body.append(ordinary);
+    try {
+      const dialog = current.node.querySelector('dialog');
+      assert.equal(dialog.getAttribute('aria-label'), target.title);
+      assert.equal(dialog.querySelectorAll('h2').length, 1);
+      assert.equal(dialog.querySelector('footer'), null);
+      const footer = dialog.querySelector('.zm-native-run__footer');
+      const composer = footer.querySelector('form');
+      assert.equal(getComputedStyle(footer).flexDirection, 'column');
+      assert.equal(getComputedStyle(composer).width, '100%');
+      assert.equal(getComputedStyle(composer).flexDirection, 'column');
+      const user = dialog.querySelector('[data-role="user"]');
+      assert.equal(user.getAttribute('aria-label'), '用户');
+      assert.equal(getComputedStyle(user).justifySelf, 'end');
+      assert.equal(getComputedStyle(user).maxWidth, '85%');
+      assert.equal(dialog.querySelector('.zm-native-run__config').open, false);
+      assert.equal(getComputedStyle(ordinary.querySelector('footer')).justifyContent, 'flex-end');
+    } finally {
+      await current.close();
+      ordinary.remove();
+      style.remove();
     }
   });
 }

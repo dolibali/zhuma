@@ -45,7 +45,7 @@ const runKey = (view: NativeRunPanelView) =>
     : view.kind;
 const reason = (action: NativeRunAction) => (action.kind === 'available' ? '' : action.message);
 
-function RunIcon({ kind }: { kind: 'refresh' | 'send' | 'stop' | 'agent' }) {
+function RunIcon({ kind }: { kind: 'refresh' | 'send' | 'stop' | 'agent' | 'close' }) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       {kind === 'refresh' ? (
@@ -54,6 +54,8 @@ function RunIcon({ kind }: { kind: 'refresh' | 'send' | 'stop' | 'agent' }) {
         <path d="M8 13V3m-4 4 4-4 4 4" />
       ) : kind === 'stop' ? (
         <rect x="4" y="4" width="8" height="8" rx="1" />
+      ) : kind === 'close' ? (
+        <path d="m4 4 8 8m0-8-8 8" />
       ) : (
         <path d="M5 3h6l2 3v6H3V6l2-3Zm1 4v2m4-2v2M8 1v2M6 12v2m4-2v2" />
       )}
@@ -69,7 +71,7 @@ function RunState({ run }: { run: NativeRunSummary | null }) {
     'waiting-for-input': '等待补充',
     completed: '本轮已结束',
     failed: '运行失败',
-    cancelled: '运行已取消',
+    cancelled: run.stopPhase === 'confirmed' ? '已停止' : '运行已取消',
   }[run.status];
   return (
     <span className="zm-native-run__status" data-state={run.status}>
@@ -128,8 +130,12 @@ function Message({ message }: { message: NativeRunMessage }) {
       </li>
     );
   return (
-    <li className="zm-native-run__message" data-role={message.role}>
-      <div className="zm-native-run__message-label">{title}</div>
+    <li className="zm-native-run__message" data-role={message.role} aria-label={title}>
+      {message.role === 'assistant' && (
+        <span className="zm-native-run__message-mark" aria-hidden="true">
+          <RunIcon kind="agent" />
+        </span>
+      )}
       <div className="zm-native-run__message-text">{message.text}</div>
     </li>
   );
@@ -162,88 +168,123 @@ function Selection({
         )
       : undefined;
   return (
-    <div className="zm-native-run__selection" aria-label={disabled ? '本轮固定配置' : '运行配置'}>
-      <div className="zm-native-run__choice">
-        <span>模型</span>
-        {disabled ? (
-          <strong>{model?.label ?? selected?.model.model ?? '未提供'}</strong>
-        ) : (
-          <SingleSelect
-            label="选择模型"
-            value={model?.id ?? ''}
-            disabled={view.models.kind !== 'ready' || !view.models.items.length}
-            triggerContent={
-              <>
-                <span>
-                  {model?.label ?? (view.models.kind === 'loading' ? '加载中…' : '选择模型')}
-                </span>
-                <ControlIcon direction="down" />
-              </>
-            }
-            options={
-              view.models.kind === 'ready'
-                ? view.models.items.map(({ id, label }) => ({ value: id, label }))
-                : []
-            }
-            onValueChange={(id) => {
-              if (view.models.kind !== 'ready') return;
-              const choice = view.models.items.find((item) => item.id === id);
-              if (!choice) return;
-              setPartialModel(choice.value);
-              if (expert) onChange({ model: choice.value, executor: expert.value });
-            }}
-          />
-        )}
-        {!disabled && view.models.kind !== 'ready' && <small>{view.models.message}</small>}
-        {!disabled && view.models.kind === 'ready' && !view.models.items.length && (
-          <small>暂无可用模型</small>
-        )}
+    <details className="zm-native-run__config">
+      <summary>
+        <span className="zm-native-run__config-values">
+          {model?.label ?? '未选模型'}
+          <span aria-hidden="true"> · </span>
+          {expert?.label ?? '未选执行者'}
+        </span>
+        <span className="zm-native-run__config-action">
+          {disabled ? '配置与资源' : '配置'}
+          <ControlIcon direction="down" />
+        </span>
+      </summary>
+      <div className="zm-native-run__selection" aria-label={disabled ? '本轮固定配置' : '运行配置'}>
+        <div className="zm-native-run__choice">
+          <span>模型</span>
+          {disabled ? (
+            <strong>{model?.label ?? selected?.model.model ?? '未提供'}</strong>
+          ) : (
+            <SingleSelect
+              label="选择模型"
+              value={model?.id ?? ''}
+              disabled={view.models.kind !== 'ready' || !view.models.items.length}
+              triggerContent={
+                <>
+                  <span>
+                    {model?.label ?? (view.models.kind === 'loading' ? '加载中…' : '选择模型')}
+                  </span>
+                  <ControlIcon direction="down" />
+                </>
+              }
+              options={
+                view.models.kind === 'ready'
+                  ? view.models.items.map(({ id, label }) => ({ value: id, label }))
+                  : []
+              }
+              onValueChange={(id) => {
+                if (view.models.kind !== 'ready') return;
+                const choice = view.models.items.find((item) => item.id === id);
+                if (!choice) return;
+                setPartialModel(choice.value);
+                if (expert) onChange({ model: choice.value, executor: expert.value });
+              }}
+            />
+          )}
+          {!disabled && view.models.kind !== 'ready' && <small>{view.models.message}</small>}
+          {!disabled && view.models.kind === 'ready' && !view.models.items.length && (
+            <small>暂无可用模型</small>
+          )}
+        </div>
+        <div className="zm-native-run__choice">
+          <span>执行者</span>
+          {disabled ? (
+            <strong>
+              {expert?.label ??
+                (selected?.executor.kind === 'builtin'
+                  ? '内置 Agent'
+                  : selected
+                    ? '计划专家'
+                    : '未提供')}
+            </strong>
+          ) : (
+            <SingleSelect
+              label="选择执行者"
+              value={expert?.id ?? ''}
+              disabled={view.experts.kind !== 'ready' || !view.experts.items.length}
+              triggerContent={
+                <>
+                  <span>
+                    {expert?.label ?? (view.experts.kind === 'loading' ? '加载中…' : '选择执行者')}
+                  </span>
+                  <ControlIcon direction="down" />
+                </>
+              }
+              options={
+                view.experts.kind === 'ready'
+                  ? view.experts.items.map(({ id, label }) => ({ value: id, label }))
+                  : []
+              }
+              onValueChange={(id) => {
+                if (view.experts.kind !== 'ready') return;
+                const choice = view.experts.items.find((item) => item.id === id);
+                if (!choice) return;
+                setPartialExecutor(choice.value);
+                if (model) onChange({ model: model.value, executor: choice.value });
+              }}
+            />
+          )}
+          {!disabled && view.experts.kind !== 'ready' && <small>{view.experts.message}</small>}
+          {!disabled && view.experts.kind === 'ready' && !view.experts.items.length && (
+            <small>暂无可用执行者</small>
+          )}
+        </div>
+        {disabled && <span className="zm-native-run__fixed">本轮配置已固定</span>}
       </div>
-      <div className="zm-native-run__choice">
-        <span>执行者</span>
-        {disabled ? (
-          <strong>
-            {expert?.label ??
-              (selected?.executor.kind === 'builtin'
-                ? '内置 Agent'
-                : selected
-                  ? '计划专家'
-                  : '未提供')}
-          </strong>
-        ) : (
-          <SingleSelect
-            label="选择执行者"
-            value={expert?.id ?? ''}
-            disabled={view.experts.kind !== 'ready' || !view.experts.items.length}
-            triggerContent={
-              <>
+      {!!view.resources.length && (
+        <details className="zm-native-run__resources zm-native-run__disclosure">
+          <summary>
+            <span className="zm-native-run__disclosure-icon">
+              <ControlIcon direction="right" />
+            </span>
+            <span className="zm-native-run__disclosure-label">本轮资源</span>
+            <span className="zm-native-run__resource-count">{view.resources.length}</span>
+          </summary>
+          <ul>
+            {view.resources.map((resource) => (
+              <li key={resource.id}>
+                <span>{{ skill: 'Skill', mcp: 'MCP', input: '输入材料' }[resource.kind]}</span>
+                <strong>{resource.name}</strong>
                 <span>
-                  {expert?.label ?? (view.experts.kind === 'loading' ? '加载中…' : '选择执行者')}
+                  {{ fixed: '已固定', unavailable: '不可用', unknown: '待核实' }[resource.status]}
                 </span>
-                <ControlIcon direction="down" />
-              </>
-            }
-            options={
-              view.experts.kind === 'ready'
-                ? view.experts.items.map(({ id, label }) => ({ value: id, label }))
-                : []
-            }
-            onValueChange={(id) => {
-              if (view.experts.kind !== 'ready') return;
-              const choice = view.experts.items.find((item) => item.id === id);
-              if (!choice) return;
-              setPartialExecutor(choice.value);
-              if (model) onChange({ model: model.value, executor: choice.value });
-            }}
-          />
-        )}
-        {!disabled && view.experts.kind !== 'ready' && <small>{view.experts.message}</small>}
-        {!disabled && view.experts.kind === 'ready' && !view.experts.items.length && (
-          <small>暂无可用执行者</small>
-        )}
-      </div>
-      {disabled && <span className="zm-native-run__fixed">本轮配置已固定</span>}
-    </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </details>
   );
 }
 
@@ -398,6 +439,22 @@ function RunPanel(props: NativeRunPanelProps) {
     );
   }
 
+  const showComposer = hasRun && (availableModes.length > 0 || draft.length > 0);
+  const startAction = ready && !held && (
+    <Button
+      variant={showComposer ? 'secondary' : 'primary'}
+      busy={running('start')}
+      busyLabel="正在启动…"
+      disabled={!canStart || running('send') || stopping}
+      onClick={() => {
+        if (canStart && ready.selection)
+          void command('start', () => props.onStart(ready.selection!));
+      }}
+    >
+      {hasRun ? '开始新一轮' : '开始执行'}
+    </Button>
+  );
+
   return (
     <section className="zm-native-run" aria-labelledby={`${id}-title`}>
       <header className="zm-native-run__header">
@@ -407,6 +464,20 @@ function RunPanel(props: NativeRunPanelProps) {
         </div>
         <div className="zm-native-run__header-actions">
           {ready && matching && <RunState run={run} />}
+          {ready && matching && hasRun && (held || ready.actions.stop.kind === 'available') && (
+            <Button
+              variant="quiet"
+              disabled={ready.actions.stop.kind !== 'available'}
+              busy={running('stop')}
+              busyLabel="请求停止…"
+              onClick={() => {
+                if (ready.actions.stop.kind === 'available') void command('stop', props.onStop);
+              }}
+            >
+              <RunIcon kind="stop" />
+              停止运行
+            </Button>
+          )}
           <Button
             variant="quiet"
             busy={running('refresh')}
@@ -417,6 +488,11 @@ function RunPanel(props: NativeRunPanelProps) {
             <RunIcon kind="refresh" />
             刷新
           </Button>
+          {props.onClose && (
+            <Button variant="quiet" aria-label="关闭" onClick={props.onClose}>
+              <RunIcon kind="close" />
+            </Button>
+          )}
         </div>
       </header>
       {view.kind === 'loading' ? (
@@ -436,32 +512,6 @@ function RunPanel(props: NativeRunPanelProps) {
             disabled={held || running('start')}
             onChange={props.onSelectionChange}
           />
-          {!!view.resources.length && (
-            <details className="zm-native-run__resources zm-native-run__disclosure">
-              <summary>
-                <span className="zm-native-run__disclosure-icon">
-                  <ControlIcon direction="right" />
-                </span>
-                <span className="zm-native-run__disclosure-label">本轮资源</span>
-                <span className="zm-native-run__resource-count">{view.resources.length}</span>
-              </summary>
-              <ul>
-                {view.resources.map((resource) => (
-                  <li key={resource.id}>
-                    <span>{{ skill: 'Skill', mcp: 'MCP', input: '输入材料' }[resource.kind]}</span>
-                    <strong>{resource.name}</strong>
-                    <span>
-                      {
-                        { fixed: '已固定', unavailable: '不可用', unknown: '待核实' }[
-                          resource.status
-                        ]
-                      }
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
           <Receipt run={run} />
           <div
             className="zm-native-run__timeline"
@@ -504,8 +554,8 @@ function RunPanel(props: NativeRunPanelProps) {
               </div>
             )}
           </div>
-          <footer className="zm-native-run__footer">
-            {hasRun && (
+          <div className="zm-native-run__footer">
+            {showComposer ? (
               <form onSubmit={send} className="zm-native-run__composer">
                 <label className="zm-native-run__sr-only" htmlFor={`${id}-message`}>
                   发送给 Agent 的消息
@@ -514,7 +564,7 @@ function RunPanel(props: NativeRunPanelProps) {
                   id={`${id}-message`}
                   value={draft}
                   maxLength={TEXT_LIMIT}
-                  rows={3}
+                  rows={2}
                   placeholder={
                     mode === 'queue' ? '留给下一轮处理的内容…' : '补充要求，或继续这项工作…'
                   }
@@ -540,6 +590,7 @@ function RunPanel(props: NativeRunPanelProps) {
                   <span className="zm-native-run__counter">
                     {draft.length}/{TEXT_LIMIT}
                   </span>
+                  {startAction}
                   <Button
                     type="submit"
                     variant="primary"
@@ -555,43 +606,23 @@ function RunPanel(props: NativeRunPanelProps) {
                   {sendHint}
                 </p>
               </form>
+            ) : (
+              <div className="zm-native-run__run-actions">
+                <span className="zm-native-run__hint" role="status">
+                  {hasRun
+                    ? sendUnavailable || '本轮暂不能发送。'
+                    : reason(view.actions.start) || '配置完成后开始。'}
+                </span>
+                {startAction}
+              </div>
             )}
-            <div className="zm-native-run__run-actions">
-              {hasRun && (held || view.actions.stop.kind === 'available') && (
-                <Button
-                  disabled={view.actions.stop.kind !== 'available'}
-                  busy={running('stop')}
-                  busyLabel="请求停止…"
-                  onClick={() => {
-                    if (view.actions.stop.kind === 'available') void command('stop', props.onStop);
-                  }}
-                >
-                  <RunIcon kind="stop" />
-                  停止运行
-                </Button>
-              )}
-              {!held && (
-                <>
-                  <span className="zm-native-run__hint">{reason(view.actions.start)}</span>
-                  <Button
-                    variant={hasRun && mode ? 'secondary' : 'primary'}
-                    busy={running('start')}
-                    busyLabel="正在启动…"
-                    disabled={!canStart || running('send') || stopping}
-                    onClick={() => {
-                      if (canStart && view.selection)
-                        void command('start', () => props.onStart(view.selection!));
-                    }}
-                  >
-                    {hasRun ? '开始新一轮' : '开始执行'}
-                  </Button>
-                </>
-              )}
-              {held && view.actions.stop.kind !== 'available' && (
-                <span className="zm-native-run__hint">{reason(view.actions.stop)}</span>
-              )}
-            </div>
-          </footer>
+            {showComposer && !held && reason(view.actions.start) && (
+              <p className="zm-native-run__hint">{reason(view.actions.start)}</p>
+            )}
+            {held && view.actions.stop.kind !== 'available' && (
+              <p className="zm-native-run__hint">{reason(view.actions.stop)}</p>
+            )}
+          </div>
         </>
       )}
       {(props.error || error) && (

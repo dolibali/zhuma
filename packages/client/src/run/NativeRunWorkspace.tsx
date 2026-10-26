@@ -11,6 +11,7 @@ type Props = {
   api: NativeRunApi;
   target: NativeRunTarget;
   onDirtyChange?: ((dirty: boolean) => void) | undefined;
+  onClose?: (() => void) | undefined;
 };
 const empty = { view: { kind: 'loading' as const }, busy: undefined, error: undefined };
 const subscribeNone = () => () => {};
@@ -24,7 +25,7 @@ export function NativeRunWorkspace(props: Props) {
     scope.current = { api: props.api, identity, epoch: scope.current.epoch + 1 };
   return <Workspace key={scope.current.epoch} {...props} />;
 }
-function Workspace({ api, target, onDirtyChange }: Props) {
+function Workspace({ api, target, onDirtyChange, onClose }: Props) {
   const fixedTarget = useRef(target).current;
   const [controller, setController] = useState<ReturnType<typeof createNativeRunController>>();
   useEffect(() => {
@@ -54,6 +55,7 @@ function Workspace({ api, target, onDirtyChange }: Props) {
       busy={state.busy}
       error={state.error}
       onDirtyChange={onDirtyChange}
+      onClose={onClose}
       onSelectionChange={(selection) => controller?.select(selection)}
       onStart={async (selection) => {
         if (!controller) throw Error('Loading');
@@ -91,14 +93,20 @@ function Launcher({ api, target }: Props) {
   const [dirty, setDirty] = useState(false);
   const changeDirty = useCallback((dirty: boolean) => setDirty(dirty), []);
   const leave = useLeaveConfirmation();
+  const close = () => leave.request(() => setOpen(false), dirty);
   return (
     <>
       {leave.dialog}
       <Button onClick={() => setOpen(true)}>使用 Agent</Button>
       {open && (
-        <Modal title="Agent 工作区" close={() => leave.request(() => setOpen(false), dirty)}>
+        <Modal title={target.title} variant="workspace" close={close}>
           <div className="zm-run-workspace-dialog">
-            <NativeRunWorkspace api={api} target={target} onDirtyChange={changeDirty} />
+            <NativeRunWorkspace
+              api={api}
+              target={target}
+              onDirtyChange={changeDirty}
+              onClose={close}
+            />
           </div>
         </Modal>
       )}

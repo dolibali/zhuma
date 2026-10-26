@@ -186,6 +186,21 @@ test('SSR: queue-only capability is explicit and unavailable modes are not offer
   assert.ok(!html.includes('补充当前运行'));
 });
 
+test('SSR: a settled non-sendable Run has a compact explicit restart instead of an empty disabled composer', () => {
+  const html = render({
+    view: view({
+      run: { ...run, status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' },
+      messages: [{ id: 'result', sequence: 1, role: 'assistant', text: '已保存当前结论。' }],
+    }),
+  });
+  assert.ok(html.includes('已停止'));
+  assert.ok(html.includes('开始新一轮'));
+  assert.ok(html.includes('已保存当前结论。'));
+  assert.ok(!html.includes('<textarea'));
+  assert.ok(!html.includes('<footer'));
+  assert.ok(html.includes('aria-label="Agent"'));
+});
+
 test('SSR: loading, unavailable and mismatched Run projections expose no stale history or actions', () => {
   for (const value of [
     { kind: 'loading' },
@@ -303,6 +318,11 @@ if (domModule) {
   }
 
   async function choose(h, label) {
+    const config = h.node.querySelector('.zm-native-run__config');
+    if (config && !config.open)
+      await act(async () => {
+        config.open = true;
+      });
     await act(async () => h.button(label).click());
     const option = document.querySelector('[role="option"]');
     assert.ok(option, `missing option for ${label}`);

@@ -106,6 +106,20 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
     setSelected(undefined);
     void reload();
   }
+  const nativeAction =
+    selected && node && nativeRun && ['submit', 'revise'].includes(selected.item.action) ? (
+      <NativeRunLauncher
+        api={nativeRun.api}
+        target={{
+          spaceId: nativeRun.spaceId,
+          taskId: node.taskId,
+          planId: node.planId,
+          revision: node.revision,
+          nodeId: node.nodeId,
+          title: node.goal.split('\n')[0]!.slice(0, 160),
+        }}
+      />
+    ) : undefined;
   return (
     <div className="zm-execution-workspace">
       {plan && <StartPlanPanel api={api} plan={plan} onStarted={() => void reload()} />}
@@ -119,22 +133,6 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
         open={open}
       />
       {selected && !node && <p className="zm-empty">这项工作的版本已变化，请重新选择待办。</p>}
-      {selected && node && nativeRun && ['submit', 'revise'].includes(selected.item.action) && (
-        <div className="zm-run-node-entry">
-          <strong>{node.goal}</strong>
-          <NativeRunLauncher
-            api={nativeRun.api}
-            target={{
-              spaceId: nativeRun.spaceId,
-              taskId: node.taskId,
-              planId: node.planId,
-              revision: node.revision,
-              nodeId: node.nodeId,
-              title: node.goal.split('\n')[0]!.slice(0, 160),
-            }}
-          />
-        </div>
-      )}
       {selected && node && selected.item.action === 'review' && (
         <ReviewWorkspace
           api={api}
@@ -143,12 +141,18 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
         />
       )}
       {selected && node && selected.item.action === 'submit' && (
-        <DeliveryPanel api={api} node={node} onSubmitted={(next) => submitted(next, selected)} />
+        <DeliveryPanel
+          api={api}
+          node={node}
+          headerAction={nativeAction}
+          onSubmitted={(next) => submitted(next, selected)}
+        />
       )}
       {selected && node && selected.item.action === 'revise' && (
         <RevisionWorkspace
           api={api}
           node={node}
+          headerAction={nativeAction}
           onSubmitted={(next) => submitted(next, selected)}
         />
       )}
