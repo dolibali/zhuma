@@ -943,6 +943,7 @@ test(
             ).result.ok,
             true,
           );
+          const executionBeforeUpload = await executionText(directory);
           if (mode === 'stale-lookup') await host.act('holdProjectLookup');
           const bytes = Buffer.from('actual mapping fence bytes, with final bytes withheld');
           let writer;
@@ -955,22 +956,27 @@ test(
                   },
                 })
               : bytes;
-          const upload = host.upload(
-            {
-              name: `${mode}.md`,
-              mediaType: 'text/markdown',
-              byteSize: bytes.length,
-              sha256: createHash('sha256').update(bytes).digest('hex'),
-            },
-            {
-              ...planRef(plan),
-              nodeId: 'design',
-              spaceId: 'team-north',
-              idempotencyKey: `mapping-${mode}`,
-            },
-            data,
-            chen,
-          );
+          const upload = host
+            .upload(
+              {
+                name: `${mode}.md`,
+                mediaType: 'text/markdown',
+                byteSize: bytes.length,
+                sha256: createHash('sha256').update(bytes).digest('hex'),
+              },
+              {
+                ...planRef(plan),
+                nodeId: 'design',
+                spaceId: 'team-north',
+                idempotencyKey: `mapping-${mode}`,
+              },
+              data,
+              chen,
+            )
+            .then(
+              (value) => ({ kind: 'response', value }),
+              (error) => ({ kind: 'transport-error', error }),
+            );
           await host.wait(mode === 'paused-eos' ? 'file-upload-read-2' : 'lookup-pending');
           await host.act('migrateFileProject');
           // The same real member still belongs to both spaces; only the actual
@@ -983,10 +989,46 @@ test(
               assert.equal(error.code, 'ERR_INVALID_STATE');
             }
           } else await host.act('releaseProjectLookup');
-          const result = await upload;
-          assert.equal(result.json?.ok, false, JSON.stringify(result.json));
+          const outcome = await upload;
+          if (outcome.kind === 'response') {
+            assert.equal(outcome.value.json?.ok, false, JSON.stringify(outcome.value.json));
+            assert.equal(['cancelled', 'not-found'].includes(outcome.value.json.error?.code), true);
+          } else {
+            // Linux may observe the server's deliberate early close while the
+            // client finishes its withheld chunk. No other fetch failure is accepted.
+            assert.equal(mode, 'paused-eos');
+            assert.equal(outcome.error instanceof TypeError, true);
+            assert.equal(outcome.error.message, 'fetch failed');
+            assert.equal(outcome.error.cause?.code, 'EPIPE');
+            assert.equal(outcome.error.cause?.syscall, 'write');
+          }
+          if (mode === 'paused-eos') await host.wait('file-upload-settled');
           const inspected = await host.act('inspect');
           assert.equal(inspected.modelCalls, 0);
+          assert.deepEqual(inspected.fileProjectSpace, { ok: true, spaceId: 'team-empty' });
+          assert.equal(inspected.fileUploadCalls, mode === 'paused-eos' ? 1 : 0);
+          // A separate, empty-body request must receive an explicit business
+          // refusal from the live Host without starting the attachment SDK.
+          const retry = await host.upload(
+            {
+              name: 'recheck.md',
+              mediaType: 'text/markdown',
+              byteSize: 0,
+              sha256: createHash('sha256').update(new Uint8Array()).digest('hex'),
+            },
+            {
+              ...planRef(plan),
+              nodeId: 'design',
+              spaceId: 'team-north',
+              idempotencyKey: `recheck-${mode}`,
+            },
+            new Uint8Array(),
+            chen,
+          );
+          assert.equal(retry.json?.ok, false, JSON.stringify(retry.json));
+          assert.equal(retry.json.error.code, 'not-found');
+          assert.equal((await host.act('inspect')).fileUploadCalls, inspected.fileUploadCalls);
+          assert.equal(await executionText(directory), executionBeforeUpload);
           await host.close();
           const artifacts = await storedAttachmentFiles(directory);
           assert.deepEqual(
