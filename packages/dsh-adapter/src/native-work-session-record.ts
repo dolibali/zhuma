@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { nativeResultIntentSchema } from './native-work-session-result-contract.js';
+import { nativeWorkResultIntentSchema } from './native-work-session-result-intent.js';
 import {
   NativeWorkError,
   type NativeWorkScope,
@@ -56,7 +56,7 @@ export const nativeWorkSessionBindingSchema = z.strictObject({
       chargedBytes: z.number().int().min(0).max(65_536),
     })
     .optional(),
-  resultIntent: nativeResultIntentSchema.optional(),
+  resultIntent: nativeWorkResultIntentSchema.optional(),
 });
 
 export function nativeWorkSessionKey(scope: NativeWorkScope): string {

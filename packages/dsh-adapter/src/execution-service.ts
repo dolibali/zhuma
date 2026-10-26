@@ -2726,6 +2726,88 @@ export class ExecutionService {
       return job;
     };
     return {
+      readCompleted: async (grant, request, caller) => {
+        issuer.assertGrant(grant, 'history');
+        const parsed = z
+          .strictObject({
+            source: nativeOutputFileSourceSchema,
+            publicationId: WorkTaskSchema.shape.id,
+          })
+          .safeParse(request);
+        if (!parsed.success || !(caller instanceof AbortSignal))
+          throw new ArtifactUploadError('invalid-request');
+        const { source, publicationId } = parsed.data;
+        const scope = source.scope;
+        const scopeKey = canonicalPayload(scope);
+        const signal = AbortSignal.any([
+          caller,
+          grant.signal,
+          host.signal,
+          sourceSignal,
+          this.fileLifetime.signal,
+          this.runLifetime.signal,
+        ]);
+        const initial = files.get(publicationId);
+        if (!initial) throw new ArtifactUploadError('not-found');
+        const projection = { source: structuredClone(source), record: structuredClone(initial) };
+        const fingerprint = canonicalPayload(projection);
+        const check = (): undefined => {
+          issuer.assertGrant(grant, 'history');
+          if (signal.aborted) throw new ArtifactUploadError('cancelled');
+          if (
+            issuer !== this.runAuthorities ||
+            host !== this.requireRunHost() ||
+            attachments !== this.attachments ||
+            files !== this.fileStore ||
+            resources.signal !== sourceSignal ||
+            resources.assertCurrent !== assertResource
+          )
+            throw new ArtifactUploadError('unavailable');
+          const checked: unknown = assertResource.call(resources, attachments);
+          if (checked !== undefined) {
+            void Promise.resolve(checked).catch(() => undefined);
+            throw new ArtifactUploadError('unavailable');
+          }
+          if (
+            canonicalPayload(grant.scope) !== scopeKey ||
+            canonicalPayload(projection) !== fingerprint
+          )
+            throw new ArtifactUploadError('not-found');
+          const node = this.currentFileNode(scope);
+          this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
+          const run = readExecutionRunState(node)?.runs.find(
+            (item) => item.attempt.id === scope.runId,
+          );
+          const composition = this.readRunComposition(scope);
+          const publisher = Reflect.get(composition.payload, 'outputFilePublisherTool');
+          const current = files.get(publicationId);
+          if (
+            !run ||
+            canonicalPayload(executionRunScope(node, run)) !== scopeKey ||
+            run.selection.configurationId !== source.configurationId ||
+            run.attempt.expertVersionId !== source.expertVersionId ||
+            (run.attempt.sessionId !== undefined &&
+              run.attempt.sessionId !== source.nativeSessionId) ||
+            (run.attempt.executorRunId !== undefined &&
+              run.attempt.executorRunId !== source.nativeAgentId) ||
+            !publisher ||
+            canonicalPayload(publisher) !== canonicalPayload(describeNativeOutputFileTool()) ||
+            !(composition.payload.toolAllowlist as readonly string[]).includes(
+              NATIVE_OUTPUT_FILE_TOOL,
+            ) ||
+            !current ||
+            current.state !== 'completed' ||
+            !current.producer ||
+            canonicalPayload(current.producer.source) !== canonicalPayload(source) ||
+            current.uploadedBy !== scope.actorId ||
+            canonicalPayload(current) !== canonicalPayload(projection.record)
+          )
+            throw new ArtifactUploadError('not-found');
+          return undefined;
+        };
+        check();
+        return Object.freeze({ ...projection, signal, check });
+      },
       reserve: (grant, request, caller) =>
         track(
           (async () => {

@@ -31,12 +31,21 @@ class OutputFS extends LocalFS {
   }
   async stat(...args) {
     this.stats++;
+    await this.beforeStat?.(...args);
     return super.stat(...args);
   }
 }
 export async function bootOutputFiles(
   root,
-  { first = true, publisher = true, activate = true } = {},
+  {
+    first = true,
+    publisher = true,
+    activate = true,
+    resultIntentTool,
+    configureResults,
+    composeResults,
+    extraExpertNode = false,
+  } = {},
 ) {
   const workspaceRoot = join(root, 'work');
   if (first) {
@@ -106,6 +115,8 @@ export async function bootOutputFiles(
     first,
     runWorkspace,
     parallelHumanNode: true,
+    extraExpertNode,
+    ...(resultIntentTool === undefined ? {} : { resultIntentTool }),
     ...(publisher ? { outputFilePublisherTool: describeNativeOutputFileTool() } : {}),
     workingDirectory(binding, grant) {
       return {
@@ -120,8 +131,14 @@ export async function bootOutputFiles(
       };
     },
     composeExtra(ctx, binding, grant) {
-      if (publisher) return outputIssuer.registerNativeOutputFileTool(ctx, binding, grant);
-      return { context: '', toolAllowlist: [] };
+      const file = publisher
+        ? outputIssuer.registerNativeOutputFileTool(ctx, binding, grant)
+        : { context: '', toolAllowlist: [] };
+      const result = composeResults?.(ctx, binding, grant) ?? { context: '', toolAllowlist: [] };
+      return {
+        context: [file.context, result.context].filter(Boolean).join('\n'),
+        toolAllowlist: [...file.toolAllowlist, ...result.toolAllowlist],
+      };
     },
   });
   for (const [plugin, config] of [
@@ -150,6 +167,7 @@ export async function bootOutputFiles(
       host.execution,
       producer,
     );
+  await configureResults?.({ ...host, native, opened, outputIssuer });
   if (activate) {
     host.adapter.script.push('Ordinary work in progress, no completed artifact.');
     await native.service.send(opened.grant, {
