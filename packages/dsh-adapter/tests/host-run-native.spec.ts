@@ -89,6 +89,9 @@ async function boot(
     [RemoteAccess],
   ])
     await ctx.plugin(plugin, config);
+  adapter.listModels = async (provider) => [
+    { provider, id: 'contract-model', name: 'Contract model' },
+  ];
   ctx.llm.registerAdapter(['contract'], adapter);
   const originalOpen = ctx.storageDomain.open.bind(ctx.storageDomain);
   ctx.storageDomain.open = async (spec) => {
@@ -249,6 +252,16 @@ test(
     const h = await boot(t);
     assert.deepEqual(h.ctx.storageDomain.get('zhuma_execution').global.get(), { schemaVersion: 1 });
     assert.equal(h.ctx.agents.list().length, 0);
+    const beforeOptions = JSON.stringify(h.row());
+    const choices = checked(await h.rpc('run', 'options', { ...h.locator, spaceId: 'north' }));
+    assert.equal(choices.currentRunId, null);
+    assert.equal(choices.selection, null);
+    assert.equal(choices.models.items[0].value.model, 'contract-model');
+    assert.equal(choices.start.mode, 'begin');
+    assert.equal(JSON.stringify(h.row()), beforeOptions);
+    assert.equal(h.adapter.requests.length, 0);
+    assert.equal(h.ctx.agents.list().length, 0);
+    assert.deepEqual(h.ctx.storageDomain.get('zhuma_execution').global.get(), { schemaVersion: 1 });
     const first = checked(await h.rpc('run', 'begin', h.begin));
     assert.equal(first.dispatch, 'received');
     await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
@@ -256,6 +269,11 @@ test(
     const view = checked(await h.rpc('run', 'read', target));
     const agent = h.ctx.agents.get(view.native.sessionId);
     await agent.whenIdle();
+    assert.equal(h.adapter.requests.length, 1);
+    const savedChoices = checked(await h.rpc('run', 'options', { ...h.locator, spaceId: 'north' }));
+    assert.equal(savedChoices.currentRunId, 'run-1');
+    assert.deepEqual(savedChoices.selection, { model: h.begin.model, executor: h.begin.executor });
+    assert.equal(savedChoices.start.kind, 'unavailable');
     assert.equal(h.adapter.requests.length, 1);
     assert.equal(view.status, 'running');
     assert.equal(h.run().attempt.status, 'running', 'native idle is not product completion');
@@ -321,6 +339,11 @@ test(
     assert.equal(denied.result.ok, false);
     assert.equal(h.run(), undefined);
     assert.deepEqual(h.ctx.storageDomain.get('zhuma_execution').global.get(), { schemaVersion: 1 });
+    const choices = checked(await h.rpc('run', 'options', { ...h.locator, spaceId: 'north' }));
+    assert.deepEqual(
+      choices.experts.map((expert) => expert.value),
+      [h.begin.executor],
+    );
     checked(await h.rpc('run', 'begin', h.begin));
     await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
     const agent = h.ctx.agents.get(h.run().attempt.sessionId);
@@ -338,6 +361,15 @@ test(
     const h = await boot(t);
     const ownerOnly = await h.rpc('run', 'begin', h.begin, h.owner);
     assert.equal(ownerOnly.status, 401);
+    assert.equal(
+      (await h.rpc('run', 'options', { ...h.locator, spaceId: 'north' }, h.owner)).status,
+      401,
+    );
+    assert.equal(
+      (await h.rpc('run', 'options', { ...h.locator, spaceId: 'north' }, await h.login('outside')))
+        .result.ok,
+      false,
+    );
     const foreign = await h.rpc('run', 'begin', h.begin, await h.login('outside'));
     assert.equal(foreign.result.ok, false);
     for (const patch of [

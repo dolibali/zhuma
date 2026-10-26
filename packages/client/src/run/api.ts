@@ -1,0 +1,449 @@
+import { createIdentityApi } from '../identity/api.js';
+import { ExecutionError } from '../execution/ExecutionApi.js';
+import type { MemberExecutionScope } from '../execution/http.js';
+import type {
+  NativeRunAction,
+  NativeRunExpertChoice,
+  NativeRunModelChoice,
+  NativeRunPanelView,
+  NativeRunResource,
+  NativeRunSelection,
+  NativeRunSendMode,
+  NativeRunSummary,
+  NativeRunTarget,
+  NativeRunMessage,
+} from './native-run-contract.js';
+
+export type NativeRunLocator = Pick<NativeRunTarget, 'taskId' | 'planId' | 'revision' | 'nodeId'>;
+export type NativeRunOptions = {
+  target: NativeRunLocator & { spaceId: string };
+  nodeVersion: number;
+  runVersion: number;
+  currentRunId: string | null;
+  selection: NativeRunSelection | null;
+  models: Extract<NativeRunPanelView, { kind: 'ready' }>['models'];
+  experts: readonly NativeRunExpertChoice[];
+  resources: readonly NativeRunResource[];
+  start: NativeRunAction & { mode?: 'begin' | 'retry' | 'restart' };
+  tools: 'text-only' | 'accepted-input-reader';
+};
+export type NativeRunRead = NativeRunSummary & {
+  sendCapabilities: Readonly<Record<NativeRunSendMode, NativeRunAction>>;
+};
+export type NativeRunBegin = NativeRunLocator & {
+  spaceId: string;
+  requestId: string;
+  newRunId: string;
+  newSegmentId: string;
+  expectedNodeVersion: number;
+  expectedRunVersion: number;
+  mode: 'begin' | 'retry' | 'restart';
+  model: NativeRunSelection['model'];
+  executor: NativeRunSelection['executor'];
+  tools: 'text-only' | 'accepted-input-reader';
+  workspace: { kind: 'text-only' };
+};
+export interface NativeRunApi {
+  options(target: NativeRunLocator, signal: AbortSignal): Promise<NativeRunOptions>;
+  read(target: NativeRunLocator, runId: string, signal: AbortSignal): Promise<NativeRunRead>;
+  history(
+    target: NativeRunLocator,
+    runId: string,
+    after: number,
+    signal: AbortSignal,
+  ): Promise<{
+    messages: readonly NativeRunMessage[];
+    nextAfter: number;
+  }>;
+  begin(input: NativeRunBegin, signal: AbortSignal): Promise<void>;
+  send(
+    run: NativeRunSummary,
+    text: string,
+    mode: NativeRunSendMode,
+    requestId: string,
+    signal: AbortSignal,
+  ): Promise<void>;
+  stop(run: NativeRunSummary, requestId: string, signal: AbortSignal): Promise<void>;
+}
+const invalid = (): never => {
+  throw new ExecutionError('validation', 'Agent 服务返回的数据不完整，请刷新。');
+};
+function object(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : invalid();
+}
+function string(value: unknown, max = 200): string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max ? value : invalid();
+}
+function integer(value: unknown, min = 0): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= min
+    ? value
+    : invalid();
+}
+function boolean(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : invalid();
+}
+function oneOf<T extends string>(value: unknown, values: readonly T[]): T {
+  return typeof value === 'string' && values.includes(value as T) ? (value as T) : invalid();
+}
+function array(value: unknown, max = 256): unknown[] {
+  return Array.isArray(value) && value.length <= max ? value : invalid();
+}
+function model(value: unknown): NativeRunSelection['model'] {
+  const row = object(value);
+  const maxTokens = integer(row.maxTokens, 1);
+  if (maxTokens > 65_536) invalid();
+  return {
+    provider: string(row.provider),
+    model: string(row.model),
+    maxTokens,
+    ...(row.reasoningEffort === undefined ? {} : { reasoningEffort: string(row.reasoningEffort) }),
+  };
+}
+function executor(value: unknown): NativeRunSelection['executor'] {
+  const row = object(value);
+  if (row.kind === 'builtin') return { kind: 'builtin' };
+  if (row.kind !== 'plan-expert') invalid();
+  const ref = object(row.ref);
+  return { kind: 'plan-expert', ref: { id: string(ref.id), version: string(ref.version) } };
+}
+function selection(value: unknown): NativeRunSelection {
+  const row = object(value);
+  return { model: model(row.model), executor: executor(row.executor) };
+}
+function locator(value: unknown, expected: NativeRunLocator): NativeRunLocator {
+  const row = object(value);
+  const result = {
+    taskId: string(row.taskId),
+    planId: string(row.planId),
+    revision: integer(row.revision, 1),
+    nodeId: string(row.nodeId),
+  };
+  if (
+    result.taskId !== expected.taskId ||
+    result.planId !== expected.planId ||
+    result.revision !== expected.revision ||
+    result.nodeId !== expected.nodeId
+  )
+    invalid();
+  return result;
+}
+function optionsView(
+  value: unknown,
+  expected: NativeRunLocator,
+  spaceId: string,
+): NativeRunOptions {
+  const row = object(value);
+  const target = { ...locator(row.target, expected), spaceId: string(object(row.target).spaceId) };
+  if (target.spaceId !== spaceId) invalid();
+  const choices = object(row.models);
+  const models: NativeRunOptions['models'] =
+    choices.kind === 'ready'
+      ? {
+          kind: 'ready',
+          items: array(choices.items).map((raw): NativeRunModelChoice => {
+            const item = object(raw);
+            return {
+              id: string(item.id, 500),
+              label: string(item.label, 300),
+              value: model(item.value),
+            };
+          }),
+        }
+      : choices.kind === 'unavailable'
+        ? { kind: 'unavailable', message: string(choices.message, 500) }
+        : invalid();
+  const start = object(row.start);
+  return {
+    target,
+    nodeVersion: integer(row.nodeVersion),
+    runVersion: integer(row.runVersion),
+    currentRunId: row.currentRunId === null ? null : string(row.currentRunId),
+    selection: row.selection === null ? null : selection(row.selection),
+    models,
+    experts: array(row.experts, 100).map((raw) => {
+      const item = object(raw);
+      return {
+        id: string(item.id, 500),
+        label: string(item.label),
+        description:
+          typeof item.description === 'string' && item.description.length <= 2000
+            ? item.description
+            : invalid(),
+        value: executor(item.value),
+      };
+    }),
+    resources: array(row.resources, 300).map((raw) => {
+      const item = object(raw);
+      return {
+        id: string(item.id),
+        name: string(item.name),
+        kind: oneOf(item.kind, ['skill', 'mcp', 'input']),
+        status: oneOf(item.status, ['fixed', 'unavailable', 'unknown']),
+      };
+    }),
+    start:
+      start.kind === 'available'
+        ? { kind: 'available', mode: oneOf(start.mode, ['begin', 'retry', 'restart']) }
+        : start.kind === 'unavailable'
+          ? { kind: 'unavailable', message: string(start.message, 500) }
+          : invalid(),
+    tools: oneOf(row.tools, ['text-only', 'accepted-input-reader']),
+  };
+}
+const unavailable: NativeRunAction = { kind: 'unavailable', message: '当前运行暂不支持此操作。' };
+function capability(value: unknown): NativeRunAction {
+  const row = object(value);
+  return row.kind === 'available'
+    ? { kind: 'available' }
+    : row.kind === 'unavailable'
+      ? unavailable
+      : row.kind === 'unknown'
+        ? { kind: 'unknown', message: '暂时无法确认操作权限，请刷新。' }
+        : invalid();
+}
+function readView(value: unknown, expected: NativeRunLocator, runId: string): NativeRunRead {
+  const row = object(value);
+  if (row.runId !== runId) invalid();
+  const native = row.native === null ? null : object(row.native);
+  const caps = row.sendCapabilities === undefined ? undefined : object(row.sendCapabilities);
+  return {
+    ...locator(row, expected),
+    runId,
+    generation: integer(row.generation, 1),
+    segmentId: string(row.segmentId),
+    nodeVersion: integer(row.nodeVersion),
+    runVersion: integer(row.runVersion, 1),
+    status: oneOf(row.status, [
+      'requested',
+      'running',
+      'waiting-for-input',
+      'completed',
+      'failed',
+      'cancelled',
+    ]),
+    dispatch: oneOf(row.dispatch, ['reserved', 'received', 'unknown']),
+    resources: oneOf(row.resources, ['held', 'settled']),
+    acknowledged: boolean(row.acknowledged),
+    stopPhase: oneOf(row.stopPhase, ['none', 'requested', 'confirmed', 'receipt-rejected']),
+    native: native
+      ? {
+          sessionId: string(native.sessionId),
+          agentId: string(native.agentId),
+          status: oneOf(native.status, ['idle', 'running', 'detached']),
+        }
+      : null,
+    sendCapabilities: {
+      followup: caps ? capability(caps.followup) : unavailable,
+      steer: caps ? capability(caps.steer) : unavailable,
+      queue: caps ? capability(caps.queue) : unavailable,
+    },
+  };
+}
+
+/** Project only known public transcript fields; never stringify unknown event payloads. */
+export function projectNativeRunMessages(events: readonly unknown[]): NativeRunMessage[] {
+  return events.flatMap((raw) => {
+    const event = object(raw);
+    const sequence = integer(event.seq);
+    if (event.surfaceOp !== undefined && event.surfaceOp !== 'append') return [];
+    if (
+      !['user/message', 'assistant/message', 'tool/result', 'tool/call'].includes(
+        String(event.type),
+      )
+    )
+      return [];
+    const data = object(event.data);
+    if (event.type === 'tool/call')
+      return [
+        {
+          id: `event-${sequence}`,
+          sequence,
+          role: 'tool' as const,
+          label: '工具调用',
+          text: string(data.name),
+        },
+      ];
+    const message = event.type === 'user/message' ? data : object(data.message);
+    const role =
+      event.type === 'user/message'
+        ? ('user' as const)
+        : event.type === 'assistant/message'
+          ? ('assistant' as const)
+          : ('tool' as const);
+    const text = array(message.content, 1000)
+      .flatMap((raw) => {
+        const block = object(raw);
+        return block.type === 'text' && typeof block.text === 'string' ? [block.text] : [];
+      })
+      .join('\n');
+    return text ? [{ id: `event-${sequence}`, sequence, role, text: text.slice(0, 131_072) }] : [];
+  });
+}
+
+/** Exact same-origin member routes only. Account and view hints never grant Host authority. */
+export function createNativeRunApi(
+  fetcher: typeof fetch,
+  accountId: string,
+  scope: MemberExecutionScope,
+  onUnauthenticated: () => void,
+): NativeRunApi {
+  const identity = createIdentityApi(fetcher);
+  function current(signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (scope.isCurrent?.() === false) throw new DOMException('View changed', 'AbortError');
+  }
+  async function call(endpoint: string, payload: object, caller: AbortSignal): Promise<unknown> {
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(10_000)]);
+    try {
+      current(signal);
+      const session = await identity.session(signal);
+      current(signal);
+      if (session.accountId !== accountId)
+        throw new ExecutionError('unauthenticated', '账号已变化，请重新登录。');
+      if (!session.spaces.some((space) => space.id === scope.spaceId))
+        throw new ExecutionError('space-unavailable', '此空间已不可访问。');
+      const rpcId = crypto.randomUUID();
+      const response = await fetcher(`/api/zhuma-run/${endpoint}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        redirect: 'error',
+        headers: { 'content-type': 'application/json' },
+        signal,
+        body: JSON.stringify({
+          type: 'client-request',
+          rpcId,
+          method: `zhuma-run/${endpoint}`,
+          payload,
+        }),
+      });
+      current(signal);
+      if (response.status === 401)
+        throw new ExecutionError('unauthenticated', '登录已失效，请重新登录。');
+      if (!response.ok)
+        throw new ExecutionError('unavailable', 'Agent 服务暂不可用，请刷新后重试。');
+      const envelope = object(await response.json());
+      current(signal);
+      if (envelope.type !== 'server-response' || envelope.rpcId !== rpcId) invalid();
+      const result = object(envelope.result);
+      if (result.ok !== true) {
+        const error = object(result.error);
+        const code = string(error.code);
+        // Do not render arbitrary provider errors, internal paths or response details.
+        throw new ExecutionError(code, '操作尚未确认，请刷新状态后重试。');
+      }
+      return result.value;
+    } catch (error) {
+      current(signal);
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+      if (['unauthenticated', 'member-session-required', 'session-changed'].includes(String(code)))
+        onUnauthenticated();
+      else if (['scope-mismatch', 'space-unavailable'].includes(String(code)))
+        scope.onUnavailable();
+      throw error;
+    }
+  }
+  const clean = (target: NativeRunLocator): NativeRunLocator => ({
+    taskId: target.taskId,
+    planId: target.planId,
+    revision: target.revision,
+    nodeId: target.nodeId,
+  });
+  const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
+  return {
+    async options(target, signal) {
+      return optionsView(
+        await call('options', { ...clean(target), spaceId: scope.spaceId }, signal),
+        target,
+        scope.spaceId,
+      );
+    },
+    async read(target, runId, signal) {
+      return readView(await call('read', { ...clean(target), runId }, signal), target, runId);
+    },
+    async history(target, runId, after, signal) {
+      const value = object(
+        await call('history', { ...clean(target), runId, after, limit: 100 }, signal),
+      );
+      locator(value, target);
+      if (value.runId !== runId) invalid();
+      const events = array(value.events, 100);
+      let previous = after;
+      for (const event of events) {
+        const seq = integer(object(event).seq);
+        if (seq <= previous) invalid();
+        previous = seq;
+      }
+      const nextAfter = integer(value.nextAfter, -1);
+      if (nextAfter !== previous) invalid();
+      return { messages: projectNativeRunMessages(events), nextAfter };
+    },
+    async begin(input, signal) {
+      if (input.spaceId !== scope.spaceId) invalid();
+      const value = object(
+        await call(
+          'begin',
+          {
+            ...clean(input),
+            spaceId: scope.spaceId,
+            requestId: input.requestId,
+            newRunId: input.newRunId,
+            newSegmentId: input.newSegmentId,
+            expectedNodeVersion: input.expectedNodeVersion,
+            expectedRunVersion: input.expectedRunVersion,
+            mode: input.mode,
+            model: model(input.model),
+            executor: executor(input.executor),
+            tools: input.tools,
+            workspace: { kind: 'text-only' },
+          },
+          signal,
+        ),
+      );
+      locator(value, input);
+      if (value.runId !== input.newRunId || value.segmentId !== input.newSegmentId) invalid();
+    },
+    async send(run, text, mode, requestId, signal) {
+      const value = object(
+        await call(
+          'send',
+          {
+            ...runLocator(run),
+            generation: run.generation,
+            segmentId: run.segmentId,
+            requestId,
+            text,
+            mode,
+          },
+          signal,
+        ),
+      );
+      locator(value, run);
+      if (value.runId !== run.runId || value.requestId !== requestId || value.mode !== mode)
+        invalid();
+      oneOf(value.status, ['received', 'claimed']);
+    },
+    async stop(run, requestId, signal) {
+      const value = object(
+        await call(
+          'stop',
+          {
+            ...runLocator(run),
+            spaceId: scope.spaceId,
+            generation: run.generation,
+            segmentId: run.segmentId,
+            requestId,
+            expectedNodeVersion: run.nodeVersion,
+            expectedRunVersion: run.runVersion,
+          },
+          signal,
+        ),
+      );
+      locator(value, run);
+      if (value.runId !== run.runId) invalid();
+      oneOf(value.status, ['pending', 'stopped']);
+    },
+  };
+}

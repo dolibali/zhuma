@@ -19,6 +19,7 @@ import { WorkbenchPage } from '../workbench/WorkbenchPage.js';
 import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { createMemberWorkbenchAdapter } from '../workbench/member-adapter.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
+import { createNativeRunApi } from '../run/api.js';
 
 function MemberWork({
   fetcher,
@@ -101,6 +102,21 @@ function MemberWork({
     [fetcher, accountId, spaceId, view],
   );
   const [refreshKey, setRefreshKey] = useState(0);
+  const nativeApi = useMemo(
+    () =>
+      createNativeRunApi(
+        fetcher,
+        accountId,
+        {
+          spaceId,
+          isCurrent: () => alive.current && currentLifetime.current.isCurrent(),
+          onUnavailable: () => currentSpaceUnavailable.current(),
+        },
+        () => currentLifetime.current.onUnauthenticated(),
+      ),
+    [fetcher, accountId, spaceId, view],
+  );
+  const nativeRun = useMemo(() => ({ api: nativeApi, spaceId }), [nativeApi, spaceId]);
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
   return (
     <div className="zm-member-work">
@@ -111,6 +127,7 @@ function MemberWork({
             api={workbench}
             initialSection="tasks"
             appearance={appearance}
+            nativeRun={nativeRun}
             {...(openWork ? { openWork } : {})}
           />
         </div>
@@ -119,7 +136,7 @@ function MemberWork({
           <h1>我的工作</h1>
           <div className="zm-execution-workspace">
             <StartablePlansPanel api={api} onStarted={started} />
-            <ExecutionWorkspace api={api} refreshKey={refreshKey} />
+            <ExecutionWorkspace api={api} refreshKey={refreshKey} nativeRun={nativeRun} />
           </div>
         </main>
       )}
@@ -163,8 +180,33 @@ export function MemberExecutionPage({
     [shell, epoch],
   );
   const identity = useMemo(() => shell?.api ?? createIdentityApi(fetcher), [fetcher, shell]);
+  // Two replacement controllers can share the same account, space and numeric
+  // epoch. Their forms and captured handlers must still have separate lifetimes.
+  const controllers = useRef({
+    identity,
+    session: shell?.session,
+    space: shell?.space,
+    generation: 0,
+  });
+  if (
+    controllers.current.identity !== identity ||
+    controllers.current.session !== shell?.session ||
+    controllers.current.space !== shell?.space
+  ) {
+    controllers.current = {
+      identity,
+      session: shell?.session,
+      space: shell?.space,
+      generation: controllers.current.generation + 1,
+    };
+  }
   return (
-    <MemberSessionBoundary api={identity} controller={shell?.session} showAccountHeader={!shell}>
+    <MemberSessionBoundary
+      key={controllers.current.generation}
+      api={identity}
+      controller={shell?.session}
+      showAccountHeader={!shell}
+    >
       {(session, invalidate, isSessionCurrent) =>
         shell && !shell.space ? (
           <div role="status">正在确认工作空间…</div>

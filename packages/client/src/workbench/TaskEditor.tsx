@@ -29,6 +29,8 @@ import { PlanningChanges } from './PlanningChanges.js';
 import { ControlIcon } from './ControlIcon.js';
 import { useUnsavedChanges } from './UnsavedChanges.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
+import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
+import type { NativeRunApi } from '../run/api.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -65,6 +67,7 @@ export function TaskEditor({
   initialPlanning,
   backLabel = '任务清单',
   openWork,
+  nativeRun,
 }: {
   original: WorkTask;
   state: Workbench;
@@ -76,6 +79,7 @@ export function TaskEditor({
   initialPlanning?: InitialPlanning;
   backLabel?: string;
   openWork?: () => void;
+  nativeRun?: { api: NativeRunApi; spaceId: string };
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
@@ -150,6 +154,10 @@ export function TaskEditor({
     task: WorkTask;
   } | null>(null);
   const dirty = JSON.stringify(task) !== baseline;
+  const applied = state.appliedPlans.filter((plan) => plan.taskId === task.id).at(-1);
+  const fixedNode = applied?.task.workflows
+    .flatMap((flow) => flow.nodes)
+    .find((node) => node.id === selectedId);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -890,6 +898,27 @@ export function TaskEditor({
               <span className="zm-tree-path-key">当前位置与上级路径</span>
             </div>
           )}
+          {nativeRun &&
+            task.status === 'ready' &&
+            !dirty &&
+            applied &&
+            fixedNode &&
+            !applied.task.workflows.some((flow) => flow.parentNodeId === fixedNode.id) && (
+              <div className="zm-run-node-entry">
+                <strong>{fixedNode.title}</strong>
+                <NativeRunLauncher
+                  api={nativeRun.api}
+                  target={{
+                    spaceId: nativeRun.spaceId,
+                    taskId: task.id,
+                    planId: applied.id,
+                    revision: applied.revision,
+                    nodeId: fixedNode.id,
+                    title: fixedNode.title,
+                  }}
+                />
+              </div>
+            )}
           {view === 'workflow' && (workflow.nodes.length > 0 || tree) ? (
             <WorkflowCanvas
               key={tree ? 'tree' : workflow.id}

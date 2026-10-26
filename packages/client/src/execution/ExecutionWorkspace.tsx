@@ -12,14 +12,21 @@ import { ReviewWorkspace } from './ReviewWorkspace.js';
 import { RevisionWorkspace } from './RevisionWorkspace.js';
 import { StartPlanPanel, type ExecutionPlan } from './StartPlanPanel.js';
 import { nodeIdentity, reviewIdentity, useFormKey } from './interaction.js';
+import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
+import type { NativeRunApi } from '../run/api.js';
 
-type Props = { api: ExecutionApi; plan?: ExecutionPlan; refreshKey?: number };
+type Props = {
+  api: ExecutionApi;
+  plan?: ExecutionPlan;
+  refreshKey?: number;
+  nativeRun?: { api: NativeRunApi; spaceId: string };
+};
 type Selection = { item: InboxItem; identity: string; token: object };
 export function ExecutionWorkspace(props: Props) {
   const key = useFormKey(props.api, 'workspace');
   return <Workspace key={key} {...props} />;
 }
-function Workspace({ api, plan, refreshKey }: Props) {
+function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
   const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
   const [places, setPlaces] = useState<readonly InboxPlaceWire[]>();
@@ -112,6 +119,22 @@ function Workspace({ api, plan, refreshKey }: Props) {
         open={open}
       />
       {selected && !node && <p className="zm-empty">这项工作的版本已变化，请重新选择待办。</p>}
+      {selected && node && nativeRun && ['submit', 'revise'].includes(selected.item.action) && (
+        <div className="zm-run-node-entry">
+          <strong>{node.goal}</strong>
+          <NativeRunLauncher
+            api={nativeRun.api}
+            target={{
+              spaceId: nativeRun.spaceId,
+              taskId: node.taskId,
+              planId: node.planId,
+              revision: node.revision,
+              nodeId: node.nodeId,
+              title: node.goal.split('\n')[0]!.slice(0, 160),
+            }}
+          />
+        </div>
+      )}
       {selected && node && selected.item.action === 'review' && (
         <ReviewWorkspace
           api={api}

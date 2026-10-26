@@ -30,9 +30,9 @@ A/B/C/D 使用 GitHub 插件或 `gh` 读写 Issue／PR，不打开或自动化�
 四方按文件归属并行，不在共享 develop 上争写；各自保留独立 worktree/topic 分支，通过 PR 集成：
 
 - A 单写全部 Client、公共 UI／主题／导航、Host 装配与运输、公开 `index`／package exports、脚本／发行补丁／CI 及共同设计文档。
-- B 单写既有身份／会话授权／空间目录、执行服务与插件、草稿／提交／评审／文件业务；C 的原生工作会话和 D 的成员编排接缝不再要求 B 独自实现。
-- C 单写新增 `native-work-session*` 模块及对应测试，承接 [#35](https://github.com/dolibali/zhuma/issues/35) 的本地 Zhuma 原生会话、流、停止和恢复；复用官方运行与记录，不另造聊天库或替换默认 Agent factory。
-- D 单写新增 `member-workbench*` 服务／HTTP／DTO／测试，以及 `workbench-service.ts` 的成员相关必要有界方法，承接 [#104](https://github.com/dolibali/zhuma/issues/104) 的可信成员项目、任务与规划接缝；保留旧单人语义，不另建工作台事实库。
+- B 暂停开发，原分支与证据保留，不覆盖未交付修改。剩余业务按 #25 最新交接由 A/C/D 接续；既有身份／会话授权／空间目录不另造一套。
+- C 单写 `native-work-session*` 模块及对应测试，承接 [#35](https://github.com/dolibali/zhuma/issues/35) 的本地 Zhuma 原生会话、流、停止和恢复；复用官方运行与记录，不另造聊天库或替换默认 Agent factory。接续 [#33](https://github.com/dolibali/zhuma/issues/33) 文件后端（上传、文件表、固定提交、授权预览下载），后续 #42/#43 按原阶段推进；正常文件客户端仍由 A 单写。
+- D 单写 `member-workbench*` 服务／HTTP／DTO／测试，以及 `workbench-service.ts` 的成员相关必要有界方法，承接 [#104](https://github.com/dolibali/zhuma/issues/104) 的可信成员项目、任务与规划接缝；保留旧单人语义，不另建工作台事实库。继续 Run／本地工具与持续授权，接续 #30 人工交付评审领域后端及后续 #40/#41；与 C 共享执行服务的方法先由协调明确写者。A 接续后续 #44 部署与恢复，当前不启动生产操作。
 
 公共模型或其他既有文件需要跨域修改时，先向协调列出具体文件与最小变更，由协调明确写者；不得因负责某能力就并改 A 的公共装配或其他人的业务模块。B/C/D 逐口交付实际接口、实现 SHA、注册／导出需求和证据，A 按就绪顺序接入，不等待整个 Issue 关闭，也不猜 DTO。
 
