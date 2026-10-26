@@ -63,6 +63,10 @@ export async function bootRunFiles(
     resultIntentTool,
     composeExtra,
     configureNative,
+    runWorkspace = { kind: 'text-only' },
+    workingDirectory = () => ({ kind: 'text-only' }),
+    outputFilePublisherTool,
+    parallelHumanNode = false,
   } = {},
 ) {
   const ctx = new Context();
@@ -161,6 +165,19 @@ export async function bootRunFiles(
                   dependsOn: ['source'],
                   skillIds: [],
                 },
+                ...(parallelHumanNode
+                  ? [
+                      {
+                        ...data.node,
+                        id: 'parallel',
+                        assigneeId: 'chen',
+                        reviewerIds: [],
+                        reviewRequired: false,
+                        dependsOn: [],
+                        skillIds: [],
+                      },
+                    ]
+                  : []),
               ],
             },
           ],
@@ -230,8 +247,8 @@ export async function bootRunFiles(
       assertWorkspace(member, space, workspace, access, configurationId) {
         assert.equal(member, 'chen');
         assert.equal(space, 'north');
-        assert.deepEqual(workspace, { kind: 'text-only' });
-        assert.equal(access, 'read');
+        assert.deepEqual(workspace, runWorkspace);
+        assert.equal(access, runWorkspace.kind === 'local' ? runWorkspace.access : 'read');
         assert.equal(configurationId, selected.configurationId);
         return undefined;
       },
@@ -251,7 +268,7 @@ export async function bootRunFiles(
     const nativeSession = async () => {
       if (native) return native;
       native = await openNativeWorkSessions(ctx, {
-        workingDirectory: () => ({ kind: 'text-only' }),
+        workingDirectory,
         compose(agentCtx, binding, grant) {
           issuer.assertGrant(grant, 'send');
           const snapshot = execution.readRunComposition(binding.scope);
@@ -404,6 +421,7 @@ export async function bootRunFiles(
         tools: toolChoice,
         ...(acceptedFiles ? { acceptedFileReader: describeNativeAcceptedFileTool() } : {}),
         ...(resultIntentTool === undefined ? {} : { resultIntentTool }),
+        ...(outputFilePublisherTool ? { outputFilePublisherTool } : {}),
       });
       const projected = executionRunCompositionRequest(selected);
       checked(
@@ -416,7 +434,7 @@ export async function bootRunFiles(
           expectedRunVersion: 0,
           newRunId: 'file-run',
           newSegmentId: 'file-segment',
-          workspace: { kind: 'text-only' },
+          workspace: runWorkspace,
           selection: projected.selection,
           contextRefs: projected.contextRefs,
           inputFingerprint: projected.inputFingerprint,

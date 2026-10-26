@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -129,11 +129,21 @@ import {
   matchesArtifactFileReference,
   readVerifiedArtifactFile,
   artifactFileLeaf,
+  nativeOutputFileSourceSchema,
   type ArtifactFileStore,
   type ArtifactFileUploadDeclare,
   type FileUploadReceipt,
   type UploadFileRecord,
 } from './artifact-files.js';
+import type {
+  NativeRunOutputFiles,
+  NativeOutputFileResourceSource,
+  NativeOutputFileReservation,
+} from './native-work-session-output-file-contract.js';
+import {
+  describeNativeOutputFileTool,
+  NATIVE_OUTPUT_FILE_TOOL,
+} from './native-work-session-output-file-tool.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
@@ -927,6 +937,7 @@ export class ExecutionService {
       readonly nodeKey: string;
       readonly bytes: number;
       readonly newFile: boolean;
+      readonly nativeRunKey?: string;
     }
   >();
 
@@ -1610,6 +1621,10 @@ export class ExecutionService {
               ...('resultIntentTool' in input.composition.payload &&
               input.composition.payload.resultIntentTool !== undefined
                 ? { resultIntentTool: input.composition.payload.resultIntentTool }
+                : {}),
+              ...('outputFilePublisherTool' in input.composition.payload &&
+              input.composition.payload.outputFilePublisherTool !== undefined
+                ? { outputFilePublisherTool: input.composition.payload.outputFilePublisherTool }
                 : {}),
               inputs: {
                 actorId: lease.memberId,
@@ -2675,6 +2690,370 @@ export class ExecutionService {
           }
         }),
     } satisfies NativeRunAcceptedFiles);
+  }
+
+  /** Host-only publication, sharing the existing human-upload queue, slots and drain. */
+  createRunOutputFiles(
+    issuer: ExecutionRunAuthorities,
+    resources: NativeOutputFileResourceSource,
+  ): NativeRunOutputFiles {
+    const host = this.requireRunHost();
+    const attachments = this.attachments,
+      files = this.fileStore;
+    if (
+      issuer !== this.runAuthorities ||
+      !attachments ||
+      !files ||
+      !(resources?.signal instanceof AbortSignal) ||
+      typeof resources.assertCurrent !== 'function' ||
+      typeof resources.assertPublication !== 'function'
+    )
+      throw new ArtifactUploadError('unavailable');
+    const sourceSignal = resources.signal;
+    const assertResource = resources.assertCurrent;
+    const assertPublication = resources.assertPublication;
+    const queue = async <T>(work: () => Promise<T>): Promise<T> => {
+      const result = await this.enqueue<T>(async () => ({ ok: true, value: await work() }));
+      if (!result.ok) throw new ArtifactUploadError(result.error.code);
+      return result.value;
+    };
+    const track = <T>(job: Promise<T>): Promise<T> => {
+      this.uploadOperations.add(job);
+      void job.then(
+        () => this.uploadOperations.delete(job),
+        () => this.uploadOperations.delete(job),
+      );
+      return job;
+    };
+    return {
+      reserve: (grant, request, caller) =>
+        track(
+          (async () => {
+            issuer.assertGrant(grant, 'send');
+            const fields = {
+              source: nativeOutputFileSourceSchema,
+              selectorFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+              name: z.string().min(1).max(255),
+            };
+            const parsed = z
+              .discriminatedUnion('mode', [
+                z.strictObject({ ...fields, mode: z.literal('lookup') }),
+                z.strictObject({
+                  ...fields,
+                  mode: z.literal('reserve'),
+                  maximumBytes: z
+                    .number()
+                    .int()
+                    .nonnegative()
+                    .max(ARTIFACT_FILE_LIMITS.maxFileBytes)
+                    .refine(Number.isSafeInteger),
+                }),
+              ])
+              .safeParse(request);
+            if (!parsed.success || !(caller instanceof AbortSignal))
+              throw new ArtifactUploadError('invalid-request');
+            const input = parsed.data;
+            artifactFileLeaf(input.name);
+            const deadline = new AbortController();
+            let timedOut = false;
+            const timer = setTimeout(() => {
+              timedOut = true;
+              deadline.abort();
+            }, ARTIFACT_FILE_LIMITS.uploadTimeoutMs);
+            const signal = AbortSignal.any([
+              caller,
+              grant.signal,
+              host.signal,
+              resources.signal,
+              this.uploadLifetime.signal,
+              this.runLifetime.signal,
+              deadline.signal,
+            ]);
+            const source = input.source,
+              scope = source.scope;
+            const runKey = canonicalPayload(scope);
+            const key = `native-output_${createHash('sha256').update(canonicalPayload(source)).digest('hex')}`;
+            const fingerprint = canonicalPayload({
+              source,
+              name: input.name,
+              selectorFingerprint: input.selectorFingerprint,
+            });
+            let permitActive = true;
+            const check = (): undefined => {
+              if (!permitActive) throw new ArtifactUploadError('cancelled');
+              if (
+                issuer !== this.runAuthorities ||
+                host !== this.requireRunHost() ||
+                attachments !== this.attachments ||
+                files !== this.fileStore ||
+                resources.signal !== sourceSignal ||
+                resources.assertCurrent !== assertResource ||
+                resources.assertPublication !== assertPublication
+              )
+                throw new ArtifactUploadError('unavailable');
+              issuer.assertGrant(grant, 'send');
+              if (signal.aborted)
+                throw new ArtifactUploadError(timedOut ? 'upload-timeout' : 'cancelled');
+              const checked: unknown = resources.assertCurrent(attachments);
+              if (checked !== undefined) {
+                void Promise.resolve(checked).catch(() => undefined);
+                throw new ArtifactUploadError('unavailable');
+              }
+              const publication: unknown = resources.assertPublication(
+                grant,
+                source,
+                input.selectorFingerprint,
+              );
+              if (publication !== undefined) {
+                void Promise.resolve(publication).catch(() => undefined);
+                throw new ArtifactUploadError('publication-denied');
+              }
+              if (canonicalPayload(grant.scope) !== runKey)
+                throw new ArtifactUploadError('not-found');
+              const node = this.currentFileNode(scope);
+              this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
+              const state = readExecutionRunState(node);
+              const run = state?.runs.find((r) => r.attempt.id === scope.runId);
+              const composition = this.readRunComposition(scope);
+              const publisher = Reflect.get(composition.payload, 'outputFilePublisherTool');
+              if (
+                !run ||
+                state?.currentRunId !== scope.runId ||
+                canonicalPayload(executionRunScope(node, run)) !== runKey ||
+                run.selection.configurationId !== source.configurationId ||
+                run.workspace.kind !== 'local' ||
+                !publisher ||
+                canonicalPayload(publisher) !== canonicalPayload(describeNativeOutputFileTool()) ||
+                !(composition.payload.toolAllowlist as readonly string[]).includes(
+                  NATIVE_OUTPUT_FILE_TOOL,
+                ) ||
+                run.attempt.expertVersionId !== source.expertVersionId ||
+                (run.attempt.sessionId !== undefined &&
+                  run.attempt.sessionId !== source.nativeSessionId) ||
+                (run.attempt.executorRunId !== undefined &&
+                  run.attempt.executorRunId !== source.nativeAgentId)
+              )
+                throw new ArtifactUploadError('not-found');
+              return undefined;
+            };
+            let admitted = false;
+            try {
+              check();
+              const completed = await queue(async () => {
+                check();
+                const pending = this.pendingUploads.get(key);
+                if (pending)
+                  throw new ArtifactUploadError(
+                    pending.fingerprint === fingerprint ? 'conflict' : 'idempotency-mismatch',
+                  );
+                const prior = files.findNativePublication(source);
+                if (!prior && files.findByIdempotencyKey(key))
+                  throw new ArtifactUploadError('idempotency-mismatch');
+                if (
+                  prior &&
+                  (prior.state !== 'completed' ||
+                    prior.name !== input.name ||
+                    prior.producer?.selectorFingerprint !== input.selectorFingerprint)
+                )
+                  throw new ArtifactUploadError('idempotency-mismatch');
+                if (input.mode === 'lookup') {
+                  if (!prior) throw new ArtifactUploadError('not-found');
+                  return prior;
+                }
+                if (prior) return prior;
+                const peers = [...this.pendingUploads.values()].filter(
+                  (p) => p.spaceId === scope.spaceId,
+                );
+                if (peers.length >= ARTIFACT_FILE_LIMITS.maxConcurrentUploadsPerSpace)
+                  throw new ArtifactUploadError('quota-exceeded');
+                if (
+                  !prior &&
+                  (files.countInSpace(scope.spaceId) + peers.filter((p) => p.newFile).length >=
+                    ARTIFACT_FILE_LIMITS.maxFilesPerSpace ||
+                    files.countNativePublications(scope) +
+                      peers.filter((p) => p.nativeRunKey === runKey && p.newFile).length >=
+                      ARTIFACT_FILE_LIMITS.maxFilesPerSubmission ||
+                    files.bytesForNode(scope.taskId, scope.planId, scope.revision, scope.nodeId) +
+                      peers
+                        .filter((p) => p.nodeKey === nodeRecordKey(scope))
+                        .reduce((sum, p) => sum + p.bytes, 0) +
+                      input.maximumBytes >
+                      ARTIFACT_FILE_LIMITS.maxNodeBytes)
+                )
+                  throw new ArtifactUploadError('quota-exceeded');
+                this.pendingUploads.set(key, {
+                  fingerprint,
+                  spaceId: scope.spaceId,
+                  nodeKey: nodeRecordKey(scope),
+                  bytes: prior ? 0 : input.maximumBytes,
+                  newFile: !prior,
+                  nativeRunKey: runKey,
+                });
+                admitted = true;
+                return prior;
+              });
+              if (completed) {
+                clearTimeout(timer);
+                let active = true;
+                return {
+                  signal,
+                  drain: Promise.resolve(),
+                  completed: structuredClone(completed),
+                  check: () => {
+                    if (!active) throw new ArtifactUploadError('cancelled');
+                    return check();
+                  },
+                  publish: async () => {
+                    throw new ArtifactUploadError('conflict');
+                  },
+                  releaseAfter: () => {
+                    active = false;
+                    permitActive = false;
+                  },
+                } satisfies NativeOutputFileReservation;
+              }
+              if (input.mode !== 'reserve') throw new ArtifactUploadError('not-found');
+              let resolveExternal!: () => void;
+              const external = new Promise<void>((resolve) => {
+                resolveExternal = resolve;
+              });
+              let released = false,
+                publishing = false;
+              let sdkDrain: Promise<void> = Promise.resolve();
+              let publishSettled: Promise<void> = Promise.resolve();
+              const retained = external
+                .then(async () => {
+                  await publishSettled;
+                  await sdkDrain;
+                })
+                .then(() => {
+                  this.pendingUploads.delete(key);
+                  clearTimeout(timer);
+                });
+              this.uploadDrains.add(retained);
+              void retained.then(() => this.uploadDrains.delete(retained));
+              const permit: NativeOutputFileReservation = {
+                signal,
+                drain: retained,
+                check,
+                ...(completed ? { completed: structuredClone(completed) } : {}),
+                releaseAfter: (drain) => {
+                  if (released) return;
+                  released = true;
+                  permitActive = false;
+                  clearTimeout(timer);
+                  void Promise.resolve(drain).then(resolveExternal, resolveExternal);
+                },
+                publish: (body) => {
+                  const job = (async () => {
+                    check();
+                    if (released || publishing || completed)
+                      throw new ArtifactUploadError('conflict');
+                    publishing = true;
+                    const declaration = z
+                      .strictObject({
+                        mediaType: z.string().min(1).max(200),
+                        byteSize: z
+                          .number()
+                          .int()
+                          .nonnegative()
+                          .max(input.maximumBytes)
+                          .refine(Number.isSafeInteger),
+                        sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+                      })
+                      .safeParse({
+                        mediaType: body.mediaType,
+                        byteSize: body.byteSize,
+                        sha256: body.sha256,
+                      });
+                    if (
+                      !declaration.success ||
+                      !body.data ||
+                      typeof body.data[Symbol.asyncIterator] !== 'function'
+                    )
+                      throw new ArtifactUploadError('validation');
+                    const declare = { ...declaration.data, name: input.name };
+                    const stream = new ArtifactUploadStream(body.data, declare, signal, check);
+                    try {
+                      const ref = await stream.wait(
+                        attachments.saveFileStream({
+                          name: input.name,
+                          data: stream,
+                          signal: stream.signal,
+                        }),
+                      );
+                      stream.check();
+                      if (
+                        !stream.verified ||
+                        ref.attachmentId !== `sha256:${declare.sha256}` ||
+                        ref.bytes !== declare.byteSize ||
+                        ref.name !== input.name
+                      )
+                        throw new ArtifactUploadError('digest-mismatch');
+                      return await queue(async () => {
+                        stream.check();
+                        if (
+                          files.findNativePublication(source) ||
+                          files.countInSpace(scope.spaceId) >=
+                            ARTIFACT_FILE_LIMITS.maxFilesPerSpace ||
+                          files.bytesForNode(
+                            scope.taskId,
+                            scope.planId,
+                            scope.revision,
+                            scope.nodeId,
+                          ) +
+                            ref.bytes >
+                            ARTIFACT_FILE_LIMITS.maxNodeBytes
+                        )
+                          throw new ArtifactUploadError('quota-exceeded');
+                        const record: UploadFileRecord = {
+                          uploadId: randomUUID(),
+                          attachmentId: ref.attachmentId,
+                          name: input.name,
+                          mediaType: declare.mediaType,
+                          byteSize: ref.bytes,
+                          sha256: declare.sha256,
+                          spaceId: scope.spaceId,
+                          taskId: scope.taskId,
+                          planId: scope.planId,
+                          revision: scope.revision,
+                          nodeId: scope.nodeId,
+                          uploadedBy: scope.actorId,
+                          idempotencyKey: key,
+                          state: 'completed',
+                          uploadedAt: new Date().toISOString(),
+                          producer: {
+                            kind: 'native-run-output',
+                            version: 1,
+                            source,
+                            selectorFingerprint: input.selectorFingerprint,
+                          },
+                        };
+                        await files.putNativePublication(record);
+                        stream.check();
+                        return structuredClone(record);
+                      });
+                    } finally {
+                      stream.finish();
+                      sdkDrain = stream.drain();
+                    }
+                  })();
+                  publishSettled = job.then(
+                    () => undefined,
+                    () => undefined,
+                  );
+                  return track(job);
+                },
+              };
+              return permit;
+            } catch (error) {
+              clearTimeout(timer);
+              if (admitted) this.pendingUploads.delete(key);
+              throw error;
+            }
+          })(),
+        ),
+    };
   }
 
   /** Current authoritative fixed objects; no human-assignee or caller impersonation. */
