@@ -13,6 +13,14 @@ import {
 import { ACCEPTED_INPUT_TOOL, acceptedInputRef } from './native-work-session-input-tool.js';
 import type { NativeSessionSelection, NativeWorkScope } from './native-work-session-contract.js';
 import type { UpstreamInputView } from './upstream-inputs.js';
+import {
+  executionRunResourcesSchema,
+  executionResourceToolNames,
+  freezeExecutionRunResources,
+  type ExecutionRunResourceCatalog,
+  type FrozenExecutionRunResources,
+  EXECUTION_RESOURCE_SOURCE_VERSION,
+} from './execution-run-resource-snapshot.js';
 
 export const EXECUTION_COMPOSITION_LIMITS = Object.freeze({
   snapshotBytes: 65_536,
@@ -184,7 +192,8 @@ const sourceSchema = z.strictObject({
   tools: toolsSchema,
   inputs: z.array(inputSchema).max(EXECUTION_COMPOSITION_LIMITS.inputs),
 });
-type Source = z.infer<typeof sourceSchema>;
+const resourceSourceSchema = sourceSchema.extend({ resources: executionRunResourcesSchema });
+type Source = z.infer<typeof sourceSchema> & { resources?: FrozenExecutionRunResources };
 const messageSchema = z.strictObject({
   text: z.string().min(1).max(20_000),
   mode: z.literal('followup'),
@@ -196,11 +205,23 @@ const payloadSchema = sourceSchema.extend({
   firstMessage: messageSchema,
   toolAllowlist: z.array(z.enum([ACCEPTED_INPUT_TOOL, 'read', 'write', 'edit', 'bash'])).max(5),
 });
-const snapshotSchema = z.strictObject({
+const legacySnapshotSchema = z.strictObject({
   schemaVersion: z.literal(1),
   configurationId: id,
   payload: payloadSchema,
 });
+const resourcePayloadSchema = payloadSchema.extend({
+  resources: executionRunResourcesSchema,
+  toolAllowlist: z.array(z.string().min(1).max(64)).max(40),
+});
+const snapshotSchema = z.discriminatedUnion('schemaVersion', [
+  legacySnapshotSchema,
+  z.strictObject({
+    schemaVersion: z.literal(2),
+    configurationId: id,
+    payload: resourcePayloadSchema,
+  }),
+]);
 export type FrozenExecutionRunComposition = z.infer<typeof snapshotSchema>;
 export interface ExecutionRunCompositionInput {
   readonly workbench: Workbench;
@@ -220,6 +241,8 @@ export interface ExecutionRunCompositionInput {
     readonly items: readonly UpstreamInputView[];
   };
   readonly tools: ExecutionCompositionTools;
+  /** Qualified metadata only; absence preserves legacy refusal and exact schema-1 replay. */
+  readonly resourceCatalog?: ExecutionRunResourceCatalog;
 }
 export class ExecutionRunCompositionError extends Error {
   constructor(
@@ -262,7 +285,7 @@ function bound(value: unknown, max: number): void {
     fail('composition-invalid');
   }
 }
-function derive(source: Source): z.infer<typeof payloadSchema> {
+function derive(source: Source) {
   const { scope, handoff, plan, executor, inputs, tools } = source;
   if (
     plan.ref.taskId !== scope.taskId ||
@@ -274,7 +297,19 @@ function derive(source: Source): z.infer<typeof payloadSchema> {
     handoff.revision !== scope.revision
   )
     fail('composition-source-mismatch');
-  if (handoff.skillRefs.length || handoff.mcpRefs.length) fail('composition-resource-unsupported');
+  const resources = source.resources;
+  if (!resources && (handoff.skillRefs.length || handoff.mcpRefs.length))
+    fail('composition-resource-unsupported');
+  if (
+    resources &&
+    ((!resources.skills.length && !resources.mcp.length) ||
+      canonicalPayload(resources.skills.map((item) => item.ref)) !==
+        canonicalPayload(handoff.skillRefs) ||
+      canonicalPayload(resources.mcp.map((item) => item.ref)) !==
+        canonicalPayload(handoff.mcpRefs) ||
+      [...handoff.skillRefs, ...handoff.mcpRefs].some((item) => item.version !== scope.planId))
+  )
+    fail('composition-source-mismatch');
   if (executor.digest !== hash(executor.definition)) fail('composition-invalid');
   if (executor.kind === 'builtin') {
     if (
@@ -295,10 +330,21 @@ function derive(source: Source): z.infer<typeof payloadSchema> {
     )
       fail('composition-expert-unavailable');
     if (
-      executor.definition.resourceBindings?.skillIds.length ||
-      executor.definition.resourceBindings?.mcpIds.length
+      !resources &&
+      (executor.definition.resourceBindings?.skillIds.length ||
+        executor.definition.resourceBindings?.mcpIds.length)
     )
       fail('composition-resource-unsupported');
+    if (
+      resources &&
+      (executor.definition.resourceBindings?.skillIds.some(
+        (id) => !handoff.skillRefs.some((item) => item.id === id),
+      ) ||
+        executor.definition.resourceBindings?.mcpIds.some(
+          (id) => !handoff.mcpRefs.some((item) => item.id === id),
+        ))
+    )
+      fail('composition-source-mismatch');
   }
   const pins = handoff.inputRefs;
   if (
@@ -350,8 +396,8 @@ function derive(source: Source): z.infer<typeof payloadSchema> {
         .update(JSON.stringify(['followup', text]))
         .digest('hex'),
     },
-    toolAllowlist:
-      tools.kind === 'text-only'
+    toolAllowlist: [
+      ...(tools.kind === 'text-only'
         ? []
         : tools.kind === 'accepted-input-reader'
           ? [ACCEPTED_INPUT_TOOL]
@@ -359,7 +405,9 @@ function derive(source: Source): z.infer<typeof payloadSchema> {
               ...tools.definitions.map((tool) => tool.name),
               ...(tools.shell ? (['bash'] as const) : []),
               ...(tools.acceptedInputReader ? ([ACCEPTED_INPUT_TOOL] as const) : []),
-            ],
+            ]),
+      ...(resources ? executionResourceToolNames(resources) : []),
+    ],
   };
 }
 /** Strict serializable format for the existing Run wrapper, not a separate configuration store. */
@@ -375,9 +423,13 @@ export const executionRunCompositionSchema = z.preprocess(
   snapshotSchema.superRefine((value, context) => {
     try {
       bound(value, EXECUTION_COMPOSITION_LIMITS.snapshotBytes);
-      const source = sourceSchema.parse(
+      const schema = value.schemaVersion === 1 ? sourceSchema : resourceSourceSchema;
+      const source = schema.parse(
         Object.fromEntries(
-          Object.keys(sourceSchema.shape).map((key) => [key, value.payload[key as keyof Source]]),
+          Object.keys(schema.shape).map((key) => [
+            key,
+            value.payload[key as keyof typeof value.payload],
+          ]),
         ),
       );
       const derived = derive(source);
@@ -460,7 +512,27 @@ export function freezeExecutionRunComposition(
         fail('composition-expert-unavailable');
       executor = { kind: 'plan-expert', ref: reference, definition: expert, digest: hash(expert) };
     }
-    const source = checked(sourceSchema, {
+    const selectedResources = node.handoff.skillRefs.length || node.handoff.mcpRefs.length;
+    if (
+      input.resourceCatalog &&
+      input.resourceCatalog.sourceVersion !== EXECUTION_RESOURCE_SOURCE_VERSION
+    )
+      fail('composition-resource-unsupported');
+    if (
+      !selectedResources &&
+      (input.resourceCatalog?.mcp.length || input.resourceCatalog?.skills?.length)
+    )
+      fail('composition-source-mismatch');
+    const resources =
+      selectedResources && input.resourceCatalog
+        ? freezeExecutionRunResources(
+            applied,
+            node.handoff,
+            executor.kind === 'plan-expert' ? executor.definition : undefined,
+            input.resourceCatalog,
+          )
+        : undefined;
+    const source = checked(resources ? resourceSourceSchema : sourceSchema, {
       scope,
       plan: {
         ref: locator,
@@ -478,10 +550,11 @@ export function freezeExecutionRunComposition(
           'sourceNodeId' in b ? b.sourceNodeId : '',
         ),
       ),
+      ...(resources ? { resources } : {}),
     });
     const payload = derive(source);
     return readExecutionRunComposition({
-      schemaVersion: 1,
+      schemaVersion: resources ? 2 : 1,
       configurationId: `composition_${hash(payload)}`,
       payload,
     });

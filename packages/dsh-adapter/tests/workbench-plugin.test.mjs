@@ -80,7 +80,7 @@ async function mount(mode = 'legacy-single-user') {
     },
   };
   if (mode !== null) configureDeploymentMode(ctx, mode);
-  const { readWorkbench } = await openWorkbench(ctx);
+  const { readWorkbench, createRunSkillPolicies } = await openWorkbench(ctx);
   async function request(endpoint, payload, method = `zhuma/${endpoint}`) {
     return routes.get(`/api/zhuma/${endpoint}`).fetch(
       new Request(`http://localhost/api/zhuma/${endpoint}`, {
@@ -90,7 +90,7 @@ async function mount(mode = 'legacy-single-user') {
       }),
     );
   }
-  return { routes, request, effects, opened, readWorkbench };
+  return { routes, request, effects, opened, readWorkbench, createRunSkillPolicies };
 }
 
 test('Host mode contract: absent/invalid explicit config rejects before service access; public config cannot carry account verifiers', async () => {
@@ -199,4 +199,32 @@ test('Host import route contract: preview is read-only; source queries return ju
   ).json();
   assert.equal(missing.result.error.code, 'not-found');
   for (const dispose of effects) await dispose();
+});
+
+test('Host policy seam contract: original package domain stays private and producer expires with its owner', async () => {
+  const h = await mount('multi-member');
+  const request = { headers: {} };
+  let authorizations = 0;
+  const producer = h.createRunSkillPolicies({
+    readRunNode: () => {
+      throw new Error('unauthorized node read');
+    },
+    async readRunCompositionInputs(original) {
+      assert.equal(original, request);
+      authorizations++;
+      return { ok: false, error: { code: 'not-found' } };
+    },
+  });
+  const locator = { taskId: 'task', planId: 'plan', revision: 1, nodeId: 'node', spaceId: 'space' };
+  await assert.rejects(producer.read(request, locator), { code: 'run-authority-unavailable' });
+  assert.equal(authorizations, 1);
+  assert.equal(
+    [...h.routes.keys()].some((path) => /policy|asset-package/u.test(path)),
+    false,
+  );
+  assert.deepEqual(h.opened, ['zhuma_workbench', 'zhuma_asset_packages']);
+  for (const dispose of h.effects) await dispose();
+  await assert.rejects(producer.read(request, locator), { code: 'run-authority-unavailable' });
+  assert.equal(authorizations, 1);
+  assert.throws(() => h.createRunSkillPolicies({}), /已关闭/u);
 });
