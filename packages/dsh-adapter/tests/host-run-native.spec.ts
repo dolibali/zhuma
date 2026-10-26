@@ -80,6 +80,7 @@ export async function boot(
     parentSkill = false,
     review = false,
     localWorkspace = undefined,
+    failFileLedger = false,
     adapter = new ScriptedAdapter(['FIRST', 'SECOND']),
   } = {},
 ) {
@@ -152,6 +153,8 @@ export async function boot(
   ctx.llm.registerAdapter(['contract'], adapter);
   const originalOpen = ctx.storageDomain.open.bind(ctx.storageDomain);
   ctx.storageDomain.open = async (spec) => {
+    if (failFileLedger && spec.name === 'zhuma_files')
+      throw Error('Injected original file ledger initialization failure');
     const domain = await originalOpen(spec);
     const key =
       spec.name === 'zhuma_execution'

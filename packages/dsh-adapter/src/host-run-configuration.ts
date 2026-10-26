@@ -12,7 +12,6 @@ import {
   executionRunCompositionRequest,
   freezeExecutionRunComposition,
   type FrozenExecutionRunComposition,
-  type ResultIntentToolDefinition,
   type OutputFilePublisherToolDefinition,
 } from './execution-run-composition.js';
 import {
@@ -22,11 +21,7 @@ import {
 } from './execution-run-state.js';
 import type { MemberRequest } from './member-session.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
-import { describeNativeResultTool } from './native-work-session-result-tool.js';
-import {
-  NATIVE_RESULT_TOOL,
-  NATIVE_RESULT_TOOL_VERSION,
-} from './native-work-session-result-contract.js';
+import { hostResultTool } from './host-run-result-protocol.js';
 import { NATIVE_WORK_LIMITS } from './native-work-session.js';
 import type { createHostRunWorkspaces } from './host-run-workspaces.js';
 import { describeNativeOutputFileTool } from './native-work-session-output-file-tool.js';
@@ -48,16 +43,6 @@ function declaredOutputTool(): OutputFilePublisherToolDefinition {
   };
 }
 import type { createHostRunResourceSource } from './host-run-resource-source.js';
-
-function declaredResultTool(): ResultIntentToolDefinition {
-  const definition = describeNativeResultTool();
-  if (
-    definition.name !== NATIVE_RESULT_TOOL ||
-    definition.sourceVersion !== NATIVE_RESULT_TOOL_VERSION
-  )
-    throw new ExecutionRunError('run-authority-unavailable');
-  return { ...definition, name: NATIVE_RESULT_TOOL, sourceVersion: NATIVE_RESULT_TOOL_VERSION };
-}
 
 const id = z.string().trim().min(1).max(200);
 const nonnegative = z.number().int().nonnegative().refine(Number.isSafeInteger);
@@ -103,6 +88,8 @@ export function createHostRunConfiguration(
       ReturnType<typeof createHostRunResourceSource>,
       'catalog' | 'prepareResourceCatalog'
     >;
+    /** Host readiness only; never a Client-selected protocol or an old-Run upgrade. */
+    readonly resultProtocol?: () => 1 | 2;
   },
 ) {
   const llm = ctx.llm;
@@ -277,7 +264,7 @@ export function createHostRunConfiguration(
           inputs,
           ...(resourceCatalog ? { resourceCatalog } : {}),
           ...(node.handoff.assignee.kind === 'expert'
-            ? { resultIntentTool: declaredResultTool() }
+            ? { resultIntentTool: hostResultTool(options.resultProtocol?.() ?? 1) }
             : {}),
           tools: local
             ? {

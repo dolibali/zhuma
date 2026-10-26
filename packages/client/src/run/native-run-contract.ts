@@ -57,13 +57,16 @@ export type NativeRunResultDelivery =
       readonly kind: 'pending';
       readonly phase: 'draining' | 'not-durable' | 'delivery-unconfirmed';
     }
-  | {
+  | ({
       readonly kind: 'delivered';
       readonly artifactVersionId: string;
       readonly artifactVersion: number;
       readonly roundId?: string;
       readonly receipt: { readonly idempotencyKey: string; readonly version: number };
-    };
+    } & (
+      | { readonly protocolVersion?: never; readonly manifestDigest?: never }
+      | { readonly protocolVersion: 2; readonly manifestDigest: string }
+    ));
 
 /** Exact read projection from the member Run transport, never a raw SDK Agent handle. */
 export interface NativeRunSummary {

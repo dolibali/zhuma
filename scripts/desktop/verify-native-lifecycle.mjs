@@ -31,6 +31,7 @@ if (
     'host-results',
     'host-local-workspace',
     'host-local-policy',
+    'host-fixed-publications',
     'skill-loader',
     'mcp-close',
     'native-stream',
@@ -507,6 +508,10 @@ void publicContract;
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-local-policy.spec.ts'),
   );
   copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-run-fixed-publications.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-fixed-publications.spec.ts'),
+  );
+  copyFileSync(
     join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-cold.spec.ts'),
   );
@@ -649,6 +654,8 @@ void publicContract;
       'ZHUMA_HOST_COLD_ROOT',
       'ZHUMA_HOST_COLD_MODE',
       'ZHUMA_HOST_COLD_VARIANT',
+      'ZHUMA_HOST_COLD_ATTACHMENTS',
+      'ZHUMA_HOST_FIXED_PUBLICATION_TIMINGS',
     ])
       delete env[variable];
     Object.assign(env, extraEnv);
@@ -796,7 +803,24 @@ void publicContract;
         },
       );
   }
-  if (values.phase === 'host-local-policy')
+  if (values.phase === 'host-fixed-publications')
+    verify(
+      'host-fixed-publications',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-run-fixed-publications.spec.ts',
+        '-t',
+        'actual Host fixed publications:',
+      ],
+      5,
+      {
+        ZHUMA_HOST_FIXED_PUBLICATION_TIMINGS: join(
+          evidence,
+          'host-fixed-publications-timings.json',
+        ),
+      },
+      14,
+    );
+  else if (values.phase === 'host-local-policy')
     verify(
       'host-local-policy',
       [
@@ -846,11 +870,10 @@ void publicContract;
     );
   else verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 14);
   const coldRecoveries = [];
-  if (['all', 'host-run-cold', 'host-results'].includes(values.phase)) {
-    const variants =
-      values.phase === 'host-results'
-        ? ['result']
-        : ['unadmitted', 'unknown', 'bound', 'revoked', 'result'];
+  if (['all', 'host-run-cold', 'host-results', 'host-fixed-publications'].includes(values.phase)) {
+    const variants = ['host-results', 'host-fixed-publications'].includes(values.phase)
+      ? ['result']
+      : ['unadmitted', 'unknown', 'bound', 'revoked', 'result'];
     for (const variant of variants) {
       const data = join(evidence, `host-cold-${variant}`);
       mkdirSync(data, { mode: 0o700 });
@@ -863,6 +886,9 @@ void publicContract;
             ZHUMA_HOST_COLD_ROOT: data,
             ZHUMA_HOST_COLD_MODE: mode,
             ZHUMA_HOST_COLD_VARIANT: variant,
+            ...(values.phase === 'host-fixed-publications'
+              ? { ZHUMA_HOST_COLD_ATTACHMENTS: 'reader' }
+              : {}),
           },
         );
       const writer = JSON.parse(readFileSync(join(data, 'write-report.json'), 'utf8'));
@@ -897,6 +923,13 @@ void publicContract;
         patchSha256: hash(patch),
         verifierSha256: hash(fileURLToPath(import.meta.url)),
         phase: values.phase,
+        ...(values.phase === 'host-fixed-publications'
+          ? {
+              hostFixedPublicationTimings: JSON.parse(
+                readFileSync(join(evidence, 'host-fixed-publications-timings.json'), 'utf8'),
+              ),
+            }
+          : {}),
         hostArtifactSha256: hash(join(root, '.build/workbench/index.js')),
         hostTestDataSha256: hash(hostTestData),
         hostRunSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts')),
@@ -905,6 +938,9 @@ void publicContract;
         ),
         hostLocalPolicySpecSha256: hash(
           join(root, 'packages/dsh-adapter/tests/host-run-local-policy.spec.ts'),
+        ),
+        hostFixedPublicationsSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-run-fixed-publications.spec.ts'),
         ),
         hostRunWorkspacesSha256: hash(
           join(root, 'packages/dsh-adapter/src/host-run-workspaces.ts'),

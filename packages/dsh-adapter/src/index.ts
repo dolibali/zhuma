@@ -188,6 +188,18 @@ export {
 } from './native-work-session-output-file-source.js';
 export { describeNativeOutputFileTool } from './native-work-session-output-file-tool.js';
 export {
+  createNativeFixedResultPublicationsIssuer,
+  type NativeFixedResultIssuer,
+  type NativeFixedResultPublicationsIssuer,
+} from './native-work-session-result.js';
+export { describeNativeResultPublicationsTool } from './native-work-session-result-publications-tool.js';
+export {
+  NATIVE_RESULT_PUBLICATIONS_TOOL_VERSION,
+  type NativeFixedResultPublicationsLease,
+  type NativeFixedResultPublicationsSource,
+  type NativePublicationManifestEntry,
+} from './native-work-session-result-publications-contract.js';
+export {
   NATIVE_OUTPUT_FILE_TOOL,
   NATIVE_OUTPUT_FILE_VERSION,
   type NativeOutputPublicationAuthority,

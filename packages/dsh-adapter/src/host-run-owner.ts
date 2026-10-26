@@ -1,4 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis';
+import { symbols, type Context } from '@deepseek-ai/cordis';
 import { createHash } from 'node:crypto';
 import { canonicalPayload, isTerminalRunStatus, type Workbench } from '@zhuma/agent-core';
 import { z } from 'zod';
@@ -45,9 +45,11 @@ import {
 import { openNativeWorkSessions } from './native-work-session-storage.js';
 import {
   createNativeFixedResultIssuer,
+  createNativeFixedResultPublicationsIssuer,
   type NativeFixedResultIssuer,
+  type NativeFixedResultPublicationsIssuer,
 } from './native-work-session-result.js';
-import { describeNativeResultTool } from './native-work-session-result-tool.js';
+import { frozenHostResultProtocol } from './host-run-result-protocol.js';
 import type { NativeFixedResultRef } from './native-work-session-result-contract.js';
 import type { NativeResultSubmit } from './execution-native-result-delivery.js';
 import { registerNativeAcceptedInputTool } from './native-work-session-input-tool.js';
@@ -136,9 +138,39 @@ export async function openHostRunOwner(
   let beginning = 0;
   let authorities: ExecutionRunAuthorities;
   let results: NativeFixedResultIssuer | undefined;
+  let publications: NativeFixedResultPublicationsIssuer | undefined;
   let outputs: NativeOutputFileIssuer | undefined;
   let fenced = false;
   let closing: Promise<void> | undefined;
+  // This owner chooses once. An absent legacy backend is distinct from a
+  // present backend whose initialization or later lifecycle has failed.
+  const original = (value: unknown): unknown =>
+    value && typeof value === 'object' ? (Reflect.get(value, symbols.original) ?? value) : value;
+  const attachmentBackend = original(ctx.get('attachments'));
+  const backendOwner =
+    attachmentBackend === undefined
+      ? undefined
+      : ctx.plugin({
+          name: 'zhuma-native-result-file-backend',
+          inject: ['attachments'],
+          apply(backend: Context) {
+            if (original(backend.get('attachments')) !== attachmentBackend)
+              throw new ExecutionRunError('run-authority-unavailable');
+            backend.effect(() => () => {
+              execution.fenceRuns();
+              lifetime.abort();
+            });
+          },
+        });
+  await backendOwner;
+  const resultProtocol = (): 1 | 2 => {
+    if (
+      lifetime.signal.aborted ||
+      (attachmentBackend !== undefined && original(ctx.get('attachments')) !== attachmentBackend)
+    )
+      throw new ExecutionRunError('run-authority-unavailable');
+    return attachmentBackend === undefined ? 1 : 2;
+  };
   const workspaces = createHostRunWorkspaces(ctx, {
     config: options.localExecution,
     execution,
@@ -158,6 +190,7 @@ export async function openHostRunOwner(
     signal: lifetime.signal,
     resources,
     workspaces,
+    resultProtocol,
   });
   const readOptions = createHostRunOptions(ctx, {
     execution,
@@ -239,18 +272,19 @@ export async function openHostRunOwner(
         baseTools = [...snapshot.payload.tools.definitions.map((tool) => tool.name), ...baseTools];
       }
       if (snapshot.schemaVersion === 2 && snapshot.payload.outputFilePublisherTool) {
-        outputs ??= createNativeOutputFileIssuer(
-          ctx,
-          native.service,
-          authorities,
-          execution,
-          workspaces.output,
-        );
+        resultProtocol();
+        if (!outputs) throw new NativeWorkError('configuration-mismatch');
         const registered = outputs.registerNativeOutputFileTool(agentCtx, binding, grant);
         baseTools = [...baseTools, ...registered.toolAllowlist];
       }
       if (snapshot.schemaVersion === 2 && snapshot.payload.resultIntentTool) {
-        if (!results || snapshot.payload.handoff.assignee.kind !== 'expert')
+        const protocol = frozenHostResultProtocol(snapshot);
+        if (
+          !results ||
+          !protocol ||
+          (protocol === 2 && !publications) ||
+          snapshot.payload.handoff.assignee.kind !== 'expert'
+        )
           throw new NativeWorkError('configuration-mismatch');
         const registered = results.registerNativeResultTool(agentCtx, binding, grant);
         baseTools = [...baseTools, ...registered.toolAllowlist];
@@ -297,11 +331,13 @@ export async function openHostRunOwner(
   }).catch(async (error: unknown) => {
     // No native handle was published, so no Run could have been admitted.
     await workspaces.close();
+    await backendOwner?.dispose();
     throw error;
   });
   if (options.signal.aborted) {
     await native.close();
     await workspaces.close();
+    await backendOwner?.dispose();
     throw new DOMException('Host closed during native publication', 'AbortError');
   }
   try {
@@ -315,19 +351,39 @@ export async function openHostRunOwner(
         workspaces,
       }),
     );
-    results = createNativeFixedResultIssuer(
-      ctx,
-      native.service,
-      native.runtime,
-      authorities,
-      execution,
-    );
-    execution.installNativeResultIssuer(results);
+    if (resultProtocol() === 2) {
+      outputs = createNativeOutputFileIssuer(
+        ctx,
+        native.service,
+        authorities,
+        execution,
+        workspaces.output,
+      );
+      publications = createNativeFixedResultPublicationsIssuer(
+        ctx,
+        native.service,
+        native.runtime,
+        authorities,
+        execution,
+        outputs,
+      );
+      results = publications.v1Issuer;
+    } else {
+      results = createNativeFixedResultIssuer(
+        ctx,
+        native.service,
+        native.runtime,
+        authorities,
+        execution,
+      );
+    }
+    execution.installNativeResultIssuer(results, publications);
   } catch (error) {
     await outputs?.close();
     await results?.close();
     await native.close();
     await workspaces.close();
+    await backendOwner?.dispose();
     throw error;
   }
   const stopResultReady = results.onReady((grant, ref) => {
@@ -453,9 +509,9 @@ export async function openHostRunOwner(
           !grant ||
           !intent ||
           node.handoff.assignee.kind !== 'expert' ||
-          snapshot?.schemaVersion !== 2 ||
-          canonicalPayload(snapshot.payload.resultIntentTool) !==
-            canonicalPayload(describeNativeResultTool())
+          !snapshot ||
+          !frozenHostResultProtocol(snapshot) ||
+          intent.protocolVersion !== frozenHostResultProtocol(snapshot)
         ) {
           await retire(state);
           return;
@@ -542,6 +598,9 @@ export async function openHostRunOwner(
         intentId: delivered.source.intentId,
         digest: delivered.digest,
         provenanceFingerprint: delivered.provenanceFingerprint,
+        ...(delivered.protocolVersion === 2
+          ? { protocolVersion: 2, manifestDigest: delivered.manifestDigest }
+          : {}),
       },
       lifetime.signal,
     );
@@ -994,6 +1053,7 @@ export async function openHostRunOwner(
           release(state);
         }
         if (drained && !failures.length) await workspaces.close();
+        if (drained && !failures.length) await backendOwner?.dispose();
         if (failures.length)
           throw new AggregateError(failures, 'Native Run cleanup remains unconfirmed.');
       })().then(resolveClose, rejectClose);

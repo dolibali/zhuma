@@ -50,6 +50,14 @@ Host 显式关闭在原生运行和 I/O 清理确认后销毁元数据插件及�
 
 `host-run-workspaces.test.mjs` 是使用真实 Cordis、SDK 注册表、FS 与临时 JSON 的授权契约测试，成员／Run 事实是显式 doubles。`desktop:verify:native-lifecycle --phase host-local-workspace --upstream <固定 SDK>` 使用真实发射 Host、Cookie、Run、JSON／JSONL、磁盘与附件字节；模型响应为本地脚本，并且 SDK 使用源码别名图。证明文件同时记录源码版本、dirty 状态、补丁、Host 字节与新测试摘要。
 
-这些证据不认证正式编译后模块图、真实供应商、正常 GUI、安装包或普通安装入口初始化。当前 `complete_work@1` 的文本交付与文件发布仍分离；固定文件提交和下游消费须在 C／D 的 `@2` 接缝就绪后单独接入验证。正式安装当前仍为 `legacy-single-user`，不会因私有配置正例被视为默认成员入口已交付。
+这些证据不认证正式编译后模块图、真实供应商、正常 GUI、安装包或普通安装入口初始化。正式安装当前仍为 `legacy-single-user`，不会因私有配置正例被视为默认成员入口已交付。
 
 修复的增量入口是 `--phase host-local-policy`：真正默认 read-only、隔离操作方明确选择 workspace-write 的文件发布正例，以及同一真实 session 变严后的撤权／持有流排空；模型仍是本地脚本、SDK 仍是源码别名图。原 #170 compiled GUI 缺失工作区的失败由协调保留；完整编译与正常界面须在修复 head 另验，旧 source-SDK 5/5 不替代它。
+
+## Host 固定文件提交
+
+有原附件后端时，Host 创建同一个原 `createNativeFixedResultPublicationsIssuer` 与输出发布器，通过其 `v1Issuer`／v2 视图一次装配到原 ExecutionService。新专家 Run 冻结 `complete_work@2`，原 `onReady` 链将核实、封存后的文件选择交给 Service 核验附件字节并提交。发布文件、声明完成、固定结果、业务提交、评审通过与下游解锁仍是不同事实；人工负责的节点继续手动提交。
+
+既有 Run 按持久化 descriptor 选择协议，不能由新后端或 Client 标记升级。Host 读取、冷确认与 Client DTO 成对保留 @2 的 `protocolVersion: 2`、`manifestDigest`；旧 @1 回执保持原字段。每个 native owner 只选择一次结果 owner：明确无附件的旧文本 Host 使用一份原 @1 owner，真实后端存在却初始化失败时不降级；后端卸载后原运行撤权并排空，恢复需关闭后重开 owner。旧 @2 的配置不改为 @1，未接回文件后端不能继续采用 @2 文件结果。
+
+新增 `--phase host-fixed-publications` 仅验证此次 Host 接入：真实发布后删除原源文件、纯文件固定提交、回执被动读取、无附件旧文本兼容、原文件台账初始化失败、注销／附件卸载撤权，以及旧 @1 写进程到双协议 Host 读进程的冷确认。使用原 SDK factory、真实 Cookie／Run／JSON／JSONL／附件和本地脚本模型，仍是源码别名模块图，不能代替正式编译包、GUI、评审／下游或供应商验收。文件业务提交按自身有界事件预算等待，不以原生声明成功推断业务成功。

@@ -566,12 +566,22 @@ test('Run transport contract: fixed delivery reads are bounded and reject malfor
     delivered,
   );
   assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-run/read']);
+  const v2 = { ...delivered, protocolVersion: 2, manifestDigest: 'a'.repeat(64) };
+  const v2Transport = transport((request) => reply(request, { ...read, resultDelivery: v2 }));
+  assert.deepEqual(
+    (await v2Transport.api.read(target, 'run', new AbortController().signal)).resultDelivery,
+    v2,
+  );
   for (const invalid of [
     { ...read, status: 'running' },
     { ...read, resources: 'held' },
     { ...read, resultDelivery: null },
     { ...read, resultDelivery: { ...delivered, artifactVersion: 0 } },
     { ...read, resultDelivery: { ...delivered, receipt: null } },
+    { ...read, resultDelivery: { ...v2, protocolVersion: 1 } },
+    { ...read, resultDelivery: { ...v2, manifestDigest: undefined } },
+    { ...read, resultDelivery: { ...v2, protocolVersion: undefined } },
+    { ...read, resultDelivery: { ...v2, manifestDigest: 'untrusted' } },
     { ...summary, resultDelivery: { kind: 'pending', phase: 'invented' } },
     { ...read, resultDelivery: { kind: 'pending', phase: 'draining' } },
   ]) {

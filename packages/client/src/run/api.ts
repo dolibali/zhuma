@@ -253,6 +253,14 @@ function resultDelivery(value: unknown): NativeRunResultDelivery {
   if (kind === 'pending')
     return { kind, phase: oneOf(row.phase, ['draining', 'not-durable', 'delivery-unconfirmed']) };
   const receipt = object(row.receipt);
+  const protocol =
+    row.protocolVersion === undefined && row.manifestDigest === undefined
+      ? {}
+      : row.protocolVersion === 2 &&
+          typeof row.manifestDigest === 'string' &&
+          /^[a-f0-9]{64}$/u.test(row.manifestDigest)
+        ? { protocolVersion: 2 as const, manifestDigest: row.manifestDigest }
+        : invalid();
   return {
     kind,
     artifactVersionId: string(row.artifactVersionId),
@@ -262,6 +270,7 @@ function resultDelivery(value: unknown): NativeRunResultDelivery {
       idempotencyKey: string(receipt.idempotencyKey),
       version: integer(receipt.version, 1),
     },
+    ...protocol,
   };
 }
 function readView(value: unknown, expected: NativeRunLocator, runId: string): NativeRunRead {
