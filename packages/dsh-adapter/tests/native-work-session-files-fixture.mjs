@@ -55,7 +55,15 @@ export function checked(result) {
 }
 export async function bootRunFiles(
   root,
-  { first = true, script = [], tools, acceptedFiles = false, configureNative } = {},
+  {
+    first = true,
+    script = [],
+    tools,
+    acceptedFiles = false,
+    resultIntentTool,
+    composeExtra,
+    configureNative,
+  } = {},
 ) {
   const ctx = new Context();
   const adapter = new ScriptedAdapter(script);
@@ -283,6 +291,8 @@ export async function bootRunFiles(
             );
             allowlist.push(...registered.toolAllowlist);
           }
+          if (composeExtra)
+            allowlist.push(...composeExtra(agentCtx, binding, grant, native).toolAllowlist);
           assert.deepEqual(allowlist, snapshot.payload.toolAllowlist);
           configureNative?.(agentCtx, binding, grant);
           return { context: snapshot.payload.context, toolAllowlist: allowlist };
@@ -393,6 +403,7 @@ export async function bootRunFiles(
         inputs: input,
         tools: toolChoice,
         ...(acceptedFiles ? { acceptedFileReader: describeNativeAcceptedFileTool() } : {}),
+        ...(resultIntentTool === undefined ? {} : { resultIntentTool }),
       });
       const projected = executionRunCompositionRequest(selected);
       checked(
