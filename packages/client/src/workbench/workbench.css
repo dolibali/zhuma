@@ -763,6 +763,20 @@ body[data-ds-dark-theme] {
 .zm-dialog * {
   box-sizing: border-box;
 }
+.zm-dialog.zm-dialog-workspace {
+  width: min(960px, calc(100vw - 32px));
+  height: min(840px, calc(100dvh - 40px));
+  background: var(--zm-paper);
+}
+.zm-run-workspace-dialog {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 .zhuma {
   height: 100%;
   overflow: auto;

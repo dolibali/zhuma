@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { DeliveryPanel } from './DeliveryPanel.js';
 import { RevisionPanel } from './RevisionPanel.js';
 import {
@@ -13,6 +13,7 @@ import { nodeIdentity, useFormKey } from './interaction.js';
 type Props = {
   api: ExecutionApi;
   node: ExecutionNodeWire;
+  headerAction?: ReactNode;
   onSubmitted(node: ExecutionNodeWire): void;
 };
 type Reading =
@@ -63,7 +64,7 @@ function RevisionRead({ api, node }: Pick<Props, 'api' | 'node'>) {
   );
 }
 
-export function RevisionWorkspace({ api, node, onSubmitted }: Props) {
+export function RevisionWorkspace({ api, node, onSubmitted, headerAction }: Props) {
   const round = node.rounds.find((item) => item.id === node.currentRoundId);
   const key = useFormKey(
     api,
@@ -82,7 +83,13 @@ export function RevisionWorkspace({ api, node, onSubmitted }: Props) {
       ) : (
         <p role="status">节点状态已更新，请重新选择待办。</p>
       )}
-      <DeliveryPanel api={api} node={node} mode="revise" onSubmitted={onSubmitted} />
+      <DeliveryPanel
+        api={api}
+        node={node}
+        mode="revise"
+        onSubmitted={onSubmitted}
+        headerAction={headerAction}
+      />
     </div>
   );
 }
