@@ -152,6 +152,8 @@ export type {
   FileContentInfo,
 } from './execution-service.js';
 export type {
+  NativeConversationFrame,
+  NativeInboxSnapshot,
   NativeSessionLineage,
   NativeWorkSessionRecord,
   NativeRunMigrationGrant,

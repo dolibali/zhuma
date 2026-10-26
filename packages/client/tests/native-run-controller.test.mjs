@@ -554,3 +554,164 @@ test('Run transport contract: stop carries actual generation/segment/versions an
   });
   await h.api.stop(summary, 'stop-key', new AbortController().signal);
 });
+
+test('Run stream controller contract: partial body is visible before completion and durable history merges into one record', async () => {
+  const release = Promise.withResolvers(),
+    partial = Promise.withResolvers();
+  let observedSignal;
+  const h = setup({
+    options: async () => runningOptions(),
+    history: async () => ({ messages: [], nextAfter: 4 }),
+    async *observe(_run, after, signal) {
+      assert.equal(after, 4);
+      observedSignal = signal;
+      yield {
+        type: 'assistant-stream',
+        frame: { type: 'start', attemptId: 'attempt', revision: 0 },
+      };
+      yield {
+        type: 'assistant-stream',
+        frame: { type: 'chunk', attemptId: 'attempt', revision: 3, index: 2, text: 'early' },
+      };
+      partial.resolve();
+      await release.promise;
+      yield { type: 'message', seq: 8, id: 'message', role: 'assistant', text: 'complete' };
+      yield {
+        type: 'assistant-stream',
+        frame: {
+          type: 'end',
+          attemptId: 'attempt',
+          revision: 4,
+          index: 3,
+          outcome: {
+            kind: 'committed',
+            eventType: 'assistant/message',
+            seq: 8,
+            messageKey: 'native:seq:8',
+          },
+        },
+      };
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    },
+  });
+  try {
+    await h.controller.refresh();
+    await partial.promise;
+    assert.equal(h.controller.getSnapshot().view.messages[0].text, 'early');
+    await h.controller.refresh(false);
+    assert.equal(h.controller.getSnapshot().view.messages[0].text, 'early');
+    release.resolve();
+    await new Promise(setImmediate);
+    const messages = h.controller.getSnapshot().view.messages;
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].text, 'complete');
+    assert.equal(
+      h.calls.some((call) => Array.isArray(call) && ['begin', 'send', 'stop'].includes(call[0])),
+      false,
+    );
+  } finally {
+    release.resolve();
+    h.controller.dispose();
+  }
+  assert.equal(observedSignal.aborted, true);
+});
+
+test('Run stream controller contract: pending inputs are visible, gap retains the actual durable cursor and disposal rejects late frames', async () => {
+  const afters = [],
+    gate = Promise.withResolvers(),
+    ended = Promise.withResolvers();
+  let reads = 0,
+    signal;
+  const h = setup({
+    options: async () => runningOptions(),
+    history: async (_target, _run, after) => {
+      afters.push(after);
+      return { messages: [], nextAfter: 5 };
+    },
+    inbox: async () => ({
+      asOfSeq: 5,
+      receipts: [],
+      items: [
+        {
+          id: 'pending',
+          text: 'received body',
+          target: 'next-turn',
+          requestId: 'request',
+          mode: 'queue',
+          status: 'received',
+        },
+      ],
+    }),
+    async *observe(_run, _after, current) {
+      signal = current;
+      if (reads++ === 0) {
+        yield { type: 'gap', after: 999 };
+        return;
+      }
+      await gate.promise;
+      yield {
+        type: 'message',
+        seq: 1000,
+        id: 'late',
+        role: 'assistant',
+        text: 'late private body',
+      };
+      ended.resolve();
+    },
+  });
+  await h.controller.refresh();
+  await new Promise(setImmediate);
+  assert.equal(h.controller.getSnapshot().view.messages[0].delivery, 'received');
+  await h.controller.refresh(false);
+  assert.deepEqual(afters, [-1, 5]);
+  const before = h.controller.getSnapshot();
+  h.controller.dispose();
+  gate.resolve();
+  await new Promise(setImmediate);
+  assert.equal(signal.aborted, true);
+  assert.equal(h.controller.getSnapshot(), before);
+  assert.equal(JSON.stringify(before).includes('late private body'), false);
+});
+
+test('Run stream transport contract: exact same-origin member endpoint validates RPC and Run generation and cancels crossed body', async () => {
+  let cancelled = 0;
+  const h = transport((request) => {
+    assert.deepEqual(request.payload, {
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      runId: 'run',
+      after: 4,
+    });
+    const frame = {
+      target: { ...target, runId: 'run', generation: 2, segmentId: 'segment' },
+      sessionId: 'native',
+      type: 'status',
+      status: 'idle',
+    };
+    return new Response(
+      new ReadableStream({
+        start(c) {
+          c.enqueue(
+            new TextEncoder().encode(
+              JSON.stringify({ type: 'server-frame', rpcId: request.rpcId, frame }) + '\n',
+            ),
+          );
+        },
+        cancel() {
+          cancelled++;
+        },
+      }),
+      { headers: { 'content-type': 'application/x-ndjson' } },
+    );
+  });
+  await assert.rejects(
+    async () => {
+      for await (const frame of h.api.observe(summary, 4, new AbortController().signal)) void frame;
+    },
+    { code: 'validation' },
+  );
+  assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-run/observe']);
+  assert.equal(cancelled, 1);
+});

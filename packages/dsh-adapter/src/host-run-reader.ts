@@ -12,7 +12,12 @@ import {
 } from './execution-run-state.js';
 import type { MemberRequest } from './member-session.js';
 import { NATIVE_WORK_LIMITS, type NativeWorkSessionService } from './native-work-session.js';
-import { NativeWorkError, type NativeHistoryEvent } from './native-work-session-contract.js';
+import {
+  NativeWorkError,
+  type NativeHistoryEvent,
+  type NativeConversationFrame,
+} from './native-work-session-contract.js';
+import { canonicalPayload } from '@zhuma/agent-core';
 
 export type HostRunModeCapability =
   | { readonly kind: 'available' }
@@ -48,7 +53,50 @@ export interface HostRunHistoryPage extends ExecutionRunLocator {
   readonly events: readonly NativeHistoryEvent[];
   readonly nextAfter: number;
 }
+export type HostRunConversationTarget = ExecutionRunLocator & {
+  readonly spaceId: string;
+  readonly generation: number;
+  readonly segmentId: string;
+};
+export type HostRunConversationFrame = (NativeConversationFrame | { readonly type: 'ready' }) & {
+  readonly target: HostRunConversationTarget;
+  readonly sessionId: string;
+};
+export interface HostRunInboxView {
+  readonly target: HostRunConversationTarget;
+  readonly sessionId: string;
+  readonly asOfSeq: number;
+  readonly receipts: readonly {
+    readonly requestId: string;
+    readonly messageId: string;
+    readonly mode: 'followup' | 'steer' | 'queue';
+    readonly status: 'received' | 'claimed' | 'unknown';
+  }[];
+  readonly items: readonly {
+    readonly id: string;
+    readonly text: string;
+    readonly target: 'next-turn' | 'next-step';
+    readonly requestId: string;
+    readonly mode: 'followup' | 'steer' | 'queue';
+    readonly status: 'received';
+  }[];
+}
+export type HostRunFrameSink = (
+  frame: HostRunConversationFrame,
+  signal: AbortSignal,
+) => Promise<void>;
 export interface HostRunReader {
+  inbox(
+    request: MemberRequest,
+    payload: unknown,
+    wait?: AbortSignal,
+  ): Promise<ExecutionResult<HostRunInboxView>>;
+  observe(
+    request: MemberRequest,
+    payload: unknown,
+    sink: HostRunFrameSink,
+    wait?: AbortSignal,
+  ): Promise<void>;
   read(
     request: MemberRequest,
     payload: unknown,
@@ -72,6 +120,68 @@ const historyRequest = z.strictObject({
   limit: z.number().int().min(1).max(NATIVE_WORK_LIMITS.historyEvents).default(50),
 });
 
+const inboxRequest = historyRequest.omit({ after: true, limit: true });
+const observeRequest = historyRequest.omit({ limit: true });
+function conversationTarget(
+  scope: import('./native-work-session-contract.js').NativeWorkScope,
+): HostRunConversationTarget {
+  const { spaceId, taskId, planId, revision, nodeId, runId, generation, segmentId } = scope;
+  return { spaceId, taskId, planId, revision, nodeId, runId, generation, segmentId };
+}
+/** Project exact known fields, even if a future native version adds private fields. */
+function publicFrame(value: NativeConversationFrame): NativeConversationFrame {
+  switch (value.type) {
+    case 'message':
+      return {
+        type: value.type,
+        seq: value.seq,
+        time: value.time,
+        messageKey: value.messageKey,
+        role: value.role,
+        id: value.id,
+        text: value.text,
+        ...(value.interrupted ? { interrupted: true } : {}),
+      };
+    case 'status':
+      return { type: value.type, status: value.status };
+    case 'gap':
+      return { type: value.type, after: value.after };
+    case 'assistant-stream': {
+      const frame = value.frame;
+      const common = { type: frame.type, attemptId: frame.attemptId, revision: frame.revision };
+      if (frame.type === 'start') return { type: value.type, frame: { ...common, type: 'start' } };
+      if (frame.type === 'chunk')
+        return {
+          type: value.type,
+          frame: {
+            ...common,
+            type: 'chunk',
+            index: frame.index,
+            ...(frame.text === undefined ? {} : { text: frame.text }),
+            ...(frame.toolName === undefined ? {} : { toolName: frame.toolName }),
+          },
+        };
+      return {
+        type: value.type,
+        frame: {
+          ...common,
+          type: 'end',
+          index: frame.index,
+          outcome:
+            frame.outcome.kind === 'abandoned'
+              ? { kind: 'abandoned' }
+              : {
+                  kind: 'committed',
+                  eventType: frame.outcome.eventType,
+                  seq: frame.outcome.seq,
+                  messageKey: frame.outcome.messageKey,
+                },
+        },
+      };
+    }
+  }
+}
+
 /** Reads use a fresh read grant; they never connect, resume, send, or enable a writer. */
 export function createHostRunReader(
   execution: ExecutionService,
@@ -84,6 +194,109 @@ export function createHostRunReader(
   ) => Promise<HostRunSendCapabilities>,
 ): HostRunReader {
   return {
+    async inbox(request, payload, wait) {
+      wait?.throwIfAborted();
+      const parsed = inboxRequest.safeParse(payload);
+      if (!parsed.success) throw new ExecutionRunError('run-validation');
+      const opened = await authorities.open(request, parsed.data, 'read');
+      try {
+        const page = await native.readInbox(opened.grant, wait);
+        wait?.throwIfAborted();
+        opened.grant.assertCurrent('history');
+        if (canonicalPayload(page.binding.scope) !== canonicalPayload(opened.grant.scope))
+          throw new NativeWorkError('scope-mismatch');
+        return {
+          ok: true,
+          value: {
+            target: conversationTarget(opened.grant.scope),
+            sessionId: page.binding.nativeSessionId,
+            asOfSeq: page.asOfSeq,
+            receipts: page.receipts.map(({ requestId, messageId, mode, status }) => ({
+              requestId,
+              messageId,
+              mode,
+              status,
+            })),
+            items: page.items.map(({ id, text, target, requestId, mode, status }) => ({
+              id,
+              text,
+              target,
+              requestId,
+              mode,
+              status,
+            })),
+          },
+        };
+      } finally {
+        opened.dispose();
+      }
+    },
+    async observe(request, payload, sink, wait) {
+      wait?.throwIfAborted();
+      const parsed = observeRequest.safeParse(payload);
+      if (!parsed.success) throw new ExecutionRunError('run-validation');
+      const { after, ...locator } = parsed.data;
+      const opened = await authorities.open(request, locator, 'read');
+      const watching = new AbortController();
+      const signal = AbortSignal.any([
+        watching.signal,
+        opened.grant.signal,
+        ...(wait ? [wait] : []),
+      ]);
+      let stop: (() => Promise<unknown>) | undefined;
+      try {
+        signal.throwIfAborted();
+        const current = native.open(opened.grant);
+        if (!current) throw new NativeWorkError('not-started');
+        const source = native.observe(opened.grant, after, signal);
+        let next = source.next();
+        void next.catch(() => undefined);
+        stop = async () => {
+          watching.abort();
+          await source.return(undefined);
+        };
+        // Flush a read-only handshake even when the live inbox is quiet. Starting
+        // the native iterator first installs its history/live observation path.
+        opened.grant.assertCurrent('follow');
+        await sink(
+          {
+            type: 'ready',
+            target: conversationTarget(opened.grant.scope),
+            sessionId: current.binding.nativeSessionId,
+          },
+          signal,
+        );
+        for (;;) {
+          const item = await next;
+          if (item.done) break;
+          const frame = item.value;
+          signal.throwIfAborted();
+          opened.grant.assertCurrent('follow');
+          if (
+            canonicalPayload(frame.scope) !== canonicalPayload(opened.grant.scope) ||
+            frame.nativeSessionId !== current.binding.nativeSessionId
+          )
+            throw new NativeWorkError('scope-mismatch');
+          await sink(
+            {
+              target: conversationTarget(opened.grant.scope),
+              sessionId: frame.nativeSessionId,
+              ...publicFrame(frame),
+            },
+            signal,
+          );
+          signal.throwIfAborted();
+          opened.grant.assertCurrent('follow');
+          next = source.next();
+        }
+      } finally {
+        try {
+          await stop?.();
+        } finally {
+          opened.dispose();
+        }
+      }
+    },
     async read(request, payload, wait) {
       wait?.throwIfAborted();
       const opened = await authorities.open(request, payload, 'read');
