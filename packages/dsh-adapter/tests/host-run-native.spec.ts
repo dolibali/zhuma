@@ -503,3 +503,144 @@ test(
     assert.equal(h.ctx.agents.list().length, 0);
   },
 );
+
+test(
+  'actual emitted Host: normal member HTTP streams partial text, preserves a single final key and exposes queued inbox without another model call',
+  { timeout: 20000 },
+  async (t) => {
+    const release = deferred(),
+      entered = deferred();
+    t.onTestFinished(() => release.resolve());
+    const h = await boot(t, {
+      adapter: new ScriptedAdapter([
+        'seed',
+        async function* () {
+          yield { type: 'block-start', index: 0, blockType: 'reasoning' };
+          yield { type: 'reasoning-delta', index: 0, text: 'PRIVATE_STREAM_REASONING' };
+          yield {
+            type: 'block-end',
+            index: 0,
+            block: { type: 'reasoning', text: 'PRIVATE_STREAM_REASONING' },
+          };
+          yield { type: 'block-start', index: 1, blockType: 'text' };
+          yield { type: 'text-delta', index: 1, text: 'early body' };
+          entered.resolve();
+          await release.promise;
+          yield { type: 'text-delta', index: 1, text: ' complete' };
+          yield {
+            type: 'block-end',
+            index: 1,
+            block: { type: 'text', text: 'early body complete' },
+          };
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        },
+      ]),
+    });
+    checked(await h.rpc('run', 'begin', h.begin));
+    await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
+    const target = { ...h.locator, runId: 'run-1' };
+    const agent = h.ctx.agents.get(h.run().attempt.sessionId);
+    await agent.whenIdle();
+    const history = checked(await h.rpc('run', 'history', target));
+    const ui = new AbortController(),
+      partial = deferred(),
+      subscribed = deferred();
+    t.onTestFinished(() => ui.abort());
+    const response = await fetch(h.base + '/api/zhuma-run/observe', {
+      method: 'POST',
+      headers: { cookie: h.cookie, 'content-type': 'application/json' },
+      signal: ui.signal,
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'stream',
+        method: 'zhuma-run/observe',
+        payload: { ...target, after: history.nextAfter },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'application/x-ndjson; charset=utf-8');
+    const frames = [];
+    const reading = (async () => {
+      const reader = response.body.getReader();
+      let buffer = '';
+      const decoder = new TextDecoder();
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          buffer += decoder.decode(next.value, { stream: true });
+          let end;
+          while ((end = buffer.indexOf('\n')) !== -1) {
+            const envelope = JSON.parse(buffer.slice(0, end));
+            buffer = buffer.slice(end + 1);
+            assert.equal(envelope.rpcId, 'stream');
+            assert.equal(envelope.type, 'server-frame');
+            const frame = envelope.frame;
+            frames.push(frame);
+            if (frame.type === 'ready') subscribed.resolve();
+            if (frame.type === 'assistant-stream' && frame.frame.text === 'early body')
+              partial.resolve();
+            if (frame.type === 'assistant-stream' && frame.frame.type === 'end') return;
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => undefined);
+      }
+    })();
+    try {
+      await subscribed.promise;
+      checked(
+        await h.rpc('run', 'send', {
+          ...target,
+          generation: 1,
+          segmentId: 'segment-1',
+          requestId: 'live',
+          text: 'explicit followup',
+          mode: 'followup',
+        }),
+      );
+      await entered.promise;
+      await partial.promise;
+      assert.equal(agent.status, 'running');
+      assert.equal(
+        frames.some((frame) => frame.type === 'message' && frame.role === 'assistant'),
+        false,
+      );
+      release.resolve();
+      await agent.whenIdle();
+      await reading;
+      const saved = frames.filter(
+        (frame) => frame.type === 'message' && frame.role === 'assistant',
+      );
+      const end = frames.find(
+        (frame) => frame.type === 'assistant-stream' && frame.frame.type === 'end',
+      );
+      assert.equal(saved.length, 1);
+      assert.equal(saved[0].text, 'early body complete');
+      assert.equal(saved[0].messageKey, end.frame.outcome.messageKey);
+      assert.equal(JSON.stringify(frames).includes('PRIVATE_STREAM_REASONING'), false);
+      assert.equal(JSON.stringify(frames).includes('configurationId'), false);
+      assert.equal(h.adapter.requests.length, 2);
+      checked(
+        await h.rpc('run', 'send', {
+          ...target,
+          generation: 1,
+          segmentId: 'segment-1',
+          requestId: 'park',
+          text: 'parked input',
+          mode: 'queue',
+        }),
+      );
+      const inbox = checked(await h.rpc('run', 'inbox', target));
+      assert.equal(inbox.items[0].text, 'parked input');
+      assert.equal(inbox.items[0].status, 'received');
+      assert.equal(h.adapter.requests.length, 2, 'read and queue never wake an idle Agent');
+      const denied = await h.rpc('run', 'inbox', target, await h.login('outside'));
+      assert.equal(denied.result.ok, false);
+    } finally {
+      release.resolve();
+      ui.abort();
+      await reading.catch(() => undefined);
+    }
+  },
+);

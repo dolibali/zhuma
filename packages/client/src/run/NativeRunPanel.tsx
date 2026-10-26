@@ -136,7 +136,21 @@ function Message({ message }: { message: NativeRunMessage }) {
           <RunIcon kind="agent" />
         </span>
       )}
-      <div className="zm-native-run__message-text">{message.text}</div>
+      <div className="zm-native-run__message-body">
+        <div className="zm-native-run__message-text">{message.text}</div>
+        {message.delivery && (
+          <small className="zm-native-run__delivery">
+            {
+              {
+                received: '已收到 · 待处理',
+                recorded: '已进入会话记录',
+                streaming: '正在输出…',
+                syncing: '正在同步完整消息…',
+              }[message.delivery]
+            }
+          </small>
+        )}
+      </div>
     </li>
   );
 }
