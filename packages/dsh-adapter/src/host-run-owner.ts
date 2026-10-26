@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { canonicalPayload, isTerminalRunStatus, type Workbench } from '@zhuma/agent-core';
 import { z } from 'zod';
 import { createHostRunConfiguration } from './host-run-configuration.js';
+import { createHostRunOptions } from './host-run-options.js';
 import { createHostRunSources } from './host-run-sources.js';
 import {
   assertHostAbsentRetry,
@@ -106,6 +107,11 @@ export async function openHostRunOwner(
   let fenced = false;
   let closing: Promise<void> | undefined;
   const configuration = createHostRunConfiguration(ctx, {
+    execution,
+    readWorkbench: options.readWorkbench,
+    signal: lifetime.signal,
+  });
+  const readOptions = createHostRunOptions(ctx, {
     execution,
     readWorkbench: options.readWorkbench,
     signal: lifetime.signal,
@@ -500,6 +506,9 @@ export async function openHostRunOwner(
     return track(Promise.resolve().then(operation), commands);
   }
   const operations: HostRunOperations = {
+    options(request, payload, wait) {
+      return command(() => readOptions(request, payload, wait));
+    },
     begin(request, payload, wait) {
       return command(async () => {
         wait?.throwIfAborted();

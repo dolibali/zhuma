@@ -15,6 +15,7 @@ import { createMemberShell } from '../identity/shell.js';
 import { SidebarAccountSettingsLauncher } from '../identity/SidebarAccountSettingsLauncher.js';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
+import nativeRunStyles from '../run/NativeRunPanel.css';
 
 export const inject = ['slots', 'layout', 'connection', 'theme'];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
@@ -79,7 +80,7 @@ export function apply(ctx: Context): void {
   };
   ctx.effect(() => {
     const style = document.createElement('style');
-    style.textContent = `${flowStyles}\n${workbenchStyles}`;
+    style.textContent = `${flowStyles}\n${workbenchStyles}\n${nativeRunStyles}`;
     document.head.append(style);
     return () => style.remove();
   });

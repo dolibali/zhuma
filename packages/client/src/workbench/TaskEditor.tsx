@@ -29,6 +29,8 @@ import { PlanningChanges } from './PlanningChanges.js';
 import { ControlIcon } from './ControlIcon.js';
 import { useUnsavedChanges } from './UnsavedChanges.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
+import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
+import type { NativeRunApi } from '../run/api.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -65,6 +67,7 @@ export function TaskEditor({
   initialPlanning,
   backLabel = '任务清单',
   openWork,
+  nativeRun,
 }: {
   original: WorkTask;
   state: Workbench;
@@ -76,6 +79,7 @@ export function TaskEditor({
   initialPlanning?: InitialPlanning;
   backLabel?: string;
   openWork?: () => void;
+  nativeRun?: { api: NativeRunApi; spaceId: string };
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
@@ -150,6 +154,10 @@ export function TaskEditor({
     task: WorkTask;
   } | null>(null);
   const dirty = JSON.stringify(task) !== baseline;
+  const applied = state.appliedPlans.filter((plan) => plan.taskId === task.id).at(-1);
+  const fixedNode = applied?.task.workflows
+    .flatMap((flow) => flow.nodes)
+    .find((node) => node.id === selectedId);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -219,7 +227,9 @@ export function TaskEditor({
   }, [workTree, workflowId, selectedId]);
   const gaps = templateBindingGaps(task);
   const hasGaps = !!(gaps.participants.length + gaps.assets.length);
-  const actualMembers = state.participants.filter((m) => task.participantIds.includes(m.id));
+  const participantSource =
+    task.status === 'ready' && applied ? applied.participants : state.participants;
+  const actualMembers = participantSource.filter((m) => task.participantIds.includes(m.id));
   const members = [
     ...actualMembers,
     ...gaps.participants.map((p) => ({
@@ -833,6 +843,24 @@ export function TaskEditor({
                 ＋ 节点
               </button>
             )}
+            {nativeRun &&
+              task.status === 'ready' &&
+              !dirty &&
+              applied &&
+              fixedNode &&
+              !applied.task.workflows.some((flow) => flow.parentNodeId === fixedNode.id) && (
+                <NativeRunLauncher
+                  api={nativeRun.api}
+                  target={{
+                    spaceId: nativeRun.spaceId,
+                    taskId: task.id,
+                    planId: applied.id,
+                    revision: applied.revision,
+                    nodeId: fixedNode.id,
+                    title: fixedNode.title,
+                  }}
+                />
+              )}
             <button
               className="zm-quiet"
               aria-pressed={inspectorOpen && panel === 'config'}
@@ -932,7 +960,8 @@ export function TaskEditor({
                   <button className="zm-node-main" onClick={() => selectNode(n.id)}>
                     <strong>{n.title}</strong>
                     <span>
-                      {members.find((m) => m.id === n.assigneeId)?.name ?? '未分配'}
+                      {members.find((m) => m.id === n.assigneeId)?.name ??
+                        (n.assigneeId ? '执行者信息未提供' : '未分配')}
                       <i>·</i>
                       {n.dependsOn.length ? `依赖 ${n.dependsOn.length} 个节点` : '无前置依赖'}
                       {displayTask.workflows.some((w) => w.parentNodeId === n.id) &&

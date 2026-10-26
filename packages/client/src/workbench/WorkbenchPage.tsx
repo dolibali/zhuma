@@ -22,6 +22,7 @@ import { TemplateDefinitionEditor } from './TemplateDefinitionEditor.js';
 import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
+import type { NativeRunApi } from '../run/api.js';
 import { ControlIcon } from './ControlIcon.js';
 import {
   ProjectHub,
@@ -60,12 +61,14 @@ export function WorkbenchPage({
   appearance,
   expertLibrary = false,
   openWork,
+  nativeRun,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
   appearance: AppearanceStore;
   expertLibrary?: boolean;
   openWork?: () => void;
+  nativeRun?: { api: NativeRunApi; spaceId: string };
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
@@ -577,6 +580,7 @@ export function WorkbenchPage({
           backLabel={activeProject ? '项目' : '任务清单'}
           {...(initialPlanning ? { initialPlanning } : {})}
           {...(openWork ? { openWork } : {})}
+          {...(nativeRun ? { nativeRun } : {})}
         />
       </div>
     );

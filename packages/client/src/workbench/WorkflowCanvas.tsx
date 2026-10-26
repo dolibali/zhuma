@@ -84,9 +84,17 @@ export function WorkflowCanvas({
                   {member?.kind === 'expert' ? 'AI' : (member?.name.slice(0, 1) ?? '—')}
                 </span>
                 <span>
-                  {member?.name ?? '未分配'}
+                  {member?.name ?? (n.assigneeId ? '执行者信息未提供' : '未分配')}
                   <small>
-                    {roleMode ? '模板角色' : member?.kind === 'expert' ? 'Agent 专家' : '团队成员'}
+                    {roleMode
+                      ? '模板角色'
+                      : member?.kind === 'expert'
+                        ? 'Agent 专家'
+                        : member
+                          ? '团队成员'
+                          : n.assigneeId
+                            ? '身份待核实'
+                            : '待分配'}
                   </small>
                 </span>
               </div>

@@ -634,7 +634,7 @@ index ca4532af..898d0b5d 100644
  
  /** Concrete agent factory and driver service. */
  export class AgentLoop extends Service implements AgentFactory {
-+  readonly lifecycleCapabilities = Object.freeze({ retainPendingInboxOnDispose: true })
++  readonly lifecycleCapabilities: { readonly retainPendingInboxOnDispose: true } = Object.freeze({ retainPendingInboxOnDispose: true })
    static inject = ['agents', 'sessions', 'llm', 'tools', 'systemPrompt', 'sessionProjections']
  
    /** Runtime schema for declarative agents. */
