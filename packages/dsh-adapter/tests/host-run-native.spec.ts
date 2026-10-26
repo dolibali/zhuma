@@ -20,6 +20,8 @@ import FsLocal from '@deepseek-ai/dsh-fs-local';
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace';
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs';
 import { LocalAttachmentStore } from '@deepseek-ai/dsh-attachment-local';
+import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
+import FsSandbox from '@deepseek-ai/dsh-fs-sandbox';
 import Agents from '@deepseek-ai/dsh-agent';
 import Loop from '@deepseek-ai/dsh-agent-loop';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -97,7 +99,18 @@ export async function boot(
     [Projections],
     [Prompt],
     [Tools],
-    [FsLocal, { cwd: root }],
+    ...(localWorkspace
+      ? [
+          [
+            SandboxPolicy,
+            {
+              workspaceRoot: join(root, 'project-files'),
+              ...(localWorkspace.policyMode ? { mode: localWorkspace.policyMode } : {}),
+            },
+          ],
+        ]
+      : []),
+    [localWorkspace?.sandboxed ? FsSandbox : FsLocal, { cwd: root }],
     [WorkingDirectory, { defaultDirectory: root }],
     [Agents],
     [Persistence, { root: join(root, 'sessions'), compression: 'none' }],

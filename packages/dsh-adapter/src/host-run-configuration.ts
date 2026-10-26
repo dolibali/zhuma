@@ -15,7 +15,11 @@ import {
   type ResultIntentToolDefinition,
   type OutputFilePublisherToolDefinition,
 } from './execution-run-composition.js';
-import { ExecutionRunError, readExecutionRunState } from './execution-run-state.js';
+import {
+  ExecutionRunError,
+  readExecutionRunState,
+  type ExecutionWorkspace,
+} from './execution-run-state.js';
 import type { MemberRequest } from './member-session.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { describeNativeResultTool } from './native-work-session-result-tool.js';
@@ -222,15 +226,15 @@ export function createHostRunConfiguration(
               input.workspace.id,
             )
           : undefined;
-      const workspace = local?.workspace ?? { kind: 'text-only' as const };
+      let workspace: ExecutionWorkspace = local?.workspace ?? { kind: 'text-only' };
       const state = readExecutionRunState(node);
       const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
-      if (
-        prior &&
-        canonicalPayload(state!.runs.find((run) => run.attempt.id === prior.runId)?.workspace) !==
-          canonicalPayload(workspace)
-      )
-        throw new ExecutionRunError('run-idempotency-mismatch');
+      if (prior) {
+        const previous = state!.runs.find((run) => run.attempt.id === prior.runId)?.workspace;
+        if (previous && options.workspaces?.sameGrant(previous, workspace)) workspace = previous;
+        else if (canonicalPayload(previous) !== canonicalPayload(workspace))
+          throw new ExecutionRunError('run-idempotency-mismatch');
+      }
       let composition: FrozenExecutionRunComposition;
       if (prior) {
         // Cold or same-process retry keeps the original content. It never
@@ -279,7 +283,7 @@ export function createHostRunConfiguration(
             ? {
                 kind: 'local-tools',
                 definitions: local.tools.describe(
-                  local.policy.access === 'write' ? ['read', 'write', 'edit'] : ['read'],
+                  local.workspace.access === 'write' ? ['read', 'write', 'edit'] : ['read'],
                 ),
                 ...(inputs.items.length
                   ? { acceptedInputReader: describeAcceptedInputTool() }

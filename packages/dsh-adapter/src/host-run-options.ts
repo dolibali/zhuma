@@ -178,16 +178,16 @@ export function createHostRunOptions(
       options.workspaces?.choices(inputs.actorId, target.spaceId, plan.task.projectId) ?? [];
     const workspaceChoice =
       current?.workspace.kind === 'local'
-        ? workspaceChoices.find(
-            (choice) =>
-              canonicalPayload(
-                options.workspaces!.select(
-                  inputs.actorId,
-                  target.spaceId,
-                  plan.task.projectId,
-                  choice.id,
-                ).workspace,
-              ) === canonicalPayload(current.workspace),
+        ? workspaceChoices.find((choice) =>
+            options.workspaces!.sameGrant(
+              options.workspaces!.select(
+                inputs.actorId,
+                target.spaceId,
+                plan.task.projectId,
+                choice.id,
+              ).workspace,
+              current.workspace,
+            ),
           )
         : undefined;
     const experts: HostRunOptionsView['experts'] = [];

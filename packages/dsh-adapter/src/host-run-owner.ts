@@ -167,7 +167,7 @@ export async function openHostRunOwner(
     workspaces,
   });
   const native = await openNativeWorkSessions(ctx, {
-    workingDirectory(binding, grant) {
+    async workingDirectory(binding, grant) {
       authorities.assertGrant(grant, 'send');
       const node = execution.readRunNode(grant.scope);
       const run = node && currentExecutionRun(node);
@@ -177,16 +177,7 @@ export async function openHostRunOwner(
       )
         throw new ExecutionRunError('run-authority-denied');
       if (run.workspace.kind === 'text-only') return { kind: 'text-only' };
-      const local = workspaces.resolve(binding, grant);
-      return {
-        kind: 'local',
-        scope: grant.scope,
-        cwd: local.workspace.root,
-        signal: local.workspace.signal,
-        assertCurrent() {
-          return local.workspace.assertCurrent('read');
-        },
-      };
+      return workspaces.directory(binding, grant);
     },
     async compose(agentCtx, binding, grant) {
       authorities.assertGrant(grant, 'send');
@@ -198,6 +189,8 @@ export async function openHostRunOwner(
       assertExecutionRunCompositionBinding(snapshot, binding.scope, projected);
       if (canonicalPayload(binding.selection) !== canonicalPayload(projected.selection))
         throw new NativeWorkError('configuration-mismatch');
+      if (snapshot.payload.tools.kind === 'local-tools')
+        workspaces.bindSession(agentCtx, binding, grant);
       configuration.assertModel(snapshot);
       let baseTools: readonly string[] = [];
       if (

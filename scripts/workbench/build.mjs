@@ -73,6 +73,8 @@ const verifiedHostExternals = new Set([
   '@deepseek-ai/dsh-workspace',
   '@deepseek-ai/dsh-tool-fs',
   '@deepseek-ai/dsh-fs-observation-policy',
+  '@deepseek-ai/dsh-fs-local',
+  '@deepseek-ai/dsh-sandbox-policy',
 ]);
 if (
   !hostSdkImports.includes('@deepseek-ai/dsh-client-connection') ||

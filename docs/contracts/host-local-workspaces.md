@@ -32,6 +32,10 @@ localExecution:
 
 Host 使用真实 SDK Tools／ToolFs 的受限配置读取工具声明。元数据注册放在独立的原 SDK Tools／SystemPrompt 服务中，保持全局工具和提示不变，不创建 Agent 或会话。实际执行由原 factory 创建的 Agent、原 scope 与 D 的受控 FS facade 采用；冻结和执行两侧必须精确匹配声明，不能放宽比较来通过启动。
 
+正式 Web 的全局 FS 是原 `SandboxedFileSystem`，D 的 local producer 明确拒绝它；不能把最初使用裸 FsLocal 的源码测试视为正式 Web 已接入。Host 在同一私有元数据 scope 装配官方 FsLocal，仅作为元数据及 D bounded facade 的后端，不替换全局 sandbox／preset，也不改变 D 的比较或权限检查。绑定原 `SandboxPolicyService`、原 resolve 方法与其生命周期；缺少或替换该来源时拒绝本地能力。
+
+工作区新配置的权限上限是操作方授权与 SDK 真实部署默认的交集；SDK 默认 read-only 时只冻结 read，界面返回只读。策略放宽不会升级既有 frozen read，也不因当前上限变宽而把它误判未知或改写原幂等回执。创建前只准备目录资格及实际 canonical root；原 factory 的 compose 再从其真实、尚可能未发布的 Agent scope 绑定实际 session，沿原 scope 生命周期释放，没有伪 Session 或另建会话库。每次 I/O 与原 Run 资格复核调用 `resolve({session})`，绝不传显式 mode；write 还须满足原 SDK 非只读策略及真实 session immutable cwd 与已授权 canonical root 的覆盖。danger 模式也不扩大 Host 根。原 sandbox/mode 事件仅触发重新资格校验，实际执行与排空继续归原 Run／native owner。
+
 有已接受的上游输入时继续装配原 `read_accepted_input`。有独立发布权限时才装配 C 的 `publish_output_file`，将实际读取、核验的字节写入原附件存储与 `zhuma_files` 台账，记录原 Run 来源。它不等同于提交产物、通过评审或解锁下游。
 
 ## 撤权与恢复
@@ -47,3 +51,5 @@ Host 显式关闭在原生运行和 I/O 清理确认后销毁元数据插件及�
 `host-run-workspaces.test.mjs` 是使用真实 Cordis、SDK 注册表、FS 与临时 JSON 的授权契约测试，成员／Run 事实是显式 doubles。`desktop:verify:native-lifecycle --phase host-local-workspace --upstream <固定 SDK>` 使用真实发射 Host、Cookie、Run、JSON／JSONL、磁盘与附件字节；模型响应为本地脚本，并且 SDK 使用源码别名图。证明文件同时记录源码版本、dirty 状态、补丁、Host 字节与新测试摘要。
 
 这些证据不认证正式编译后模块图、真实供应商、正常 GUI、安装包或普通安装入口初始化。当前 `complete_work@1` 的文本交付与文件发布仍分离；固定文件提交和下游消费须在 C／D 的 `@2` 接缝就绪后单独接入验证。正式安装当前仍为 `legacy-single-user`，不会因私有配置正例被视为默认成员入口已交付。
+
+修复的增量入口是 `--phase host-local-policy`：真正默认 read-only、隔离操作方明确选择 workspace-write 的文件发布正例，以及同一真实 session 变严后的撤权／持有流排空；模型仍是本地脚本、SDK 仍是源码别名图。原 #170 compiled GUI 缺失工作区的失败由协调保留；完整编译与正常界面须在修复 head 另验，旧 source-SDK 5/5 不替代它。

@@ -47,7 +47,10 @@ test(
       tool('publish_output_file', { path: 'note.txt' }),
       'Done',
     ]);
-    const h = await boot(t, { localWorkspace: { access: 'write' }, adapter });
+    const h = await boot(t, {
+      localWorkspace: { access: 'write', policyMode: 'workspace-write' },
+      adapter,
+    });
     const sentinel = 'OWNED-TEST-OUTSIDE-WORKSPACE';
     await writeFile(join(h.root, 'outside-sentinel.txt'), sentinel);
     const options = checked(await h.rpc('run', 'options', { ...h.locator, spaceId: 'north' }));
@@ -83,7 +86,7 @@ test(
   'actual Host local workspace: original scopes reject foreign actors, unknown selectors and caller paths before model startup',
   { timeout: 20000 },
   async (t) => {
-    const h = await boot(t, { localWorkspace: { access: 'write' } });
+    const h = await boot(t, { localWorkspace: { access: 'write', policyMode: 'workspace-write' } });
     for (const workspace of [
       { kind: 'local', id: 'foreign' },
       { kind: 'local', id: 'project-files', path: h.root },
@@ -110,7 +113,10 @@ test(
       tool('publish_output_file', { path: 'forbidden.txt' }),
       'Done',
     ]);
-    const h = await boot(t, { localWorkspace: { access: 'read' }, adapter });
+    const h = await boot(t, {
+      localWorkspace: { access: 'read', policyMode: 'workspace-write' },
+      adapter,
+    });
     await start(h);
     assert.deepEqual(
       adapter.requests[0].tools.map((tool) => tool.name),
@@ -133,7 +139,11 @@ test(
       'Published for manual submission',
     ]);
     const h = await boot(t, {
-      localWorkspace: { access: 'write', publish: [{ kind: 'file', path: 'result.txt' }] },
+      localWorkspace: {
+        access: 'write',
+        policyMode: 'workspace-write',
+        publish: [{ kind: 'file', path: 'result.txt' }],
+      },
       adapter,
     });
     await start(h);
@@ -164,7 +174,7 @@ test(
   { timeout: 20000 },
   async (t) => {
     const h = await boot(t, {
-      localWorkspace: { access: 'write' },
+      localWorkspace: { access: 'write', policyMode: 'workspace-write' },
       adapter: new ScriptedAdapter(['Ready']),
     });
     await start(h);

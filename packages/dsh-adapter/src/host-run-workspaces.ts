@@ -2,6 +2,11 @@ import { isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { symbols, type Context } from '@deepseek-ai/cordis';
 import { WorkspaceId, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace';
+import FsLocal from '@deepseek-ai/dsh-fs-local';
+import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy';
+import { SessionId, type Session } from '@deepseek-ai/dsh-session';
+import type { Agent } from '@deepseek-ai/dsh-agent';
+import { scopeOf } from '@deepseek-ai/dsh-scope';
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs';
 import Tools from '@deepseek-ai/dsh-tools';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
@@ -72,6 +77,12 @@ export type HostWorkspaceChoice = {
   readonly publish: boolean;
 };
 type Execution = Pick<ExecutionService, 'readRunNode' | 'readRunComposition'>;
+type BoundSession = { context: Context; agent: Agent; session: Session; published: boolean };
+type RememberedWorkspace = {
+  snapshot: FrozenExecutionRunComposition;
+  workspace: ExecutionWorkspace;
+  session?: BoundSession;
+};
 const original = (value: unknown): unknown =>
   value && typeof value === 'object' ? (Reflect.get(value, symbols.original) ?? value) : value;
 function denied(): never {
@@ -121,7 +132,7 @@ export function createHostRunWorkspaces(
   const localOwner = config?.bindings.length
     ? ctx.plugin({
         name: 'zhuma-local-workspace-owner',
-        inject: ['workspaceRegistry', 'fs', 'tools'],
+        inject: ['workspaceRegistry', 'fs', 'tools', 'sandboxPolicy', 'sessions'],
         async apply(owner: Context) {
           if (localSignal.aborted) return;
           owner.effect(() => () => {
@@ -131,12 +142,21 @@ export function createHostRunWorkspaces(
           // A private original SDK Tools service owns real registrations with
           // the SAME bounded config as runtime adoption. No Agent/session is
           // created here, and Agents never inherit this metadata-only context.
-          const definitions = owner.isolate('tools').isolate('systemPrompt');
+          const definitions = owner.isolate('tools').isolate('systemPrompt').isolate('fs');
+          await definitions.plugin(FsLocal);
           await definitions.plugin(SystemPrompt);
           await definitions.plugin(Tools, { mode: 'native' });
           await definitions.plugin(ToolFs, NATIVE_RUN_LOCAL_TOOL_CONFIG);
           metadataContext = definitions;
           localReady = true;
+          owner.on(
+            'session/event',
+            (_session, event) => {
+              if (event.type === 'sandbox/mode') changed();
+            },
+            { global: true },
+          );
+          owner.on('session/disposed', () => changed(), { global: true });
         },
       })
     : undefined;
@@ -148,13 +168,15 @@ export function createHostRunWorkspaces(
         },
       )
     : Promise.resolve();
-  const remembered = new Map<
-    string,
-    { snapshot: FrozenExecutionRunComposition; workspace: ExecutionWorkspace }
-  >();
+  const remembered = new Map<string, RememberedWorkspace>();
   let registry: WorkspaceRegistry | undefined;
+  let sandbox: SandboxPolicyService | undefined;
+  let resolvePolicy: SandboxPolicyService['resolve'] | undefined;
   let producer: NativeRunLocalToolProducer | undefined;
-  const roots = new Map<string, { identity: unknown; path: string; createdAt: string }>();
+  const roots = new Map<
+    string,
+    { identity: unknown; path: string; createdAt: string; canonical?: string }
+  >();
   function active() {
     ctx.fiber.assertActive();
     if (
@@ -188,6 +210,37 @@ export function createHostRunWorkspaces(
     }
     registry ??= identity;
     return current;
+  }
+  function sdkPolicy(session?: Session) {
+    active();
+    const current = ctx.get('sandboxPolicy');
+    const identity = original(current);
+    if (
+      !current ||
+      !(identity instanceof SandboxPolicyService) ||
+      identity.resolve !== SandboxPolicyService.prototype.resolve ||
+      (sandbox && identity !== sandbox) ||
+      (resolvePolicy && identity.resolve !== resolvePolicy)
+    ) {
+      localLifetime.abort();
+      denied();
+    }
+    sandbox ??= identity;
+    resolvePolicy ??= identity.resolve;
+    // No explicit mode: only the original deployment and real session projection apply.
+    const policy = current.resolve(session ? { session } : {});
+    if (
+      !['read-only', 'workspace-write', 'danger-full-access'].includes(policy.mode) ||
+      !isAbsolute(policy.workspaceRoot)
+    )
+      denied();
+    return policy;
+  }
+  function sameGrant(left: ExecutionWorkspace, right: ExecutionWorkspace) {
+    if (left.kind !== 'local' || right.kind !== 'local') return false;
+    const { access: _leftAccess, ...a } = left;
+    const { access: _rightAccess, ...b } = right;
+    return canonicalPayload(a) === canonicalPayload(b);
   }
   function actualProducer() {
     active();
@@ -249,9 +302,11 @@ export function createHostRunWorkspaces(
       changed();
       denied();
     }
-    roots.set(policy.id, { identity, path: source.path, createdAt: source.createdAt });
+    roots.set(policy.id, prior ?? { identity, path: source.path, createdAt: source.createdAt });
+    const access: 'read' | 'write' =
+      policy.access === 'write' && sdkPolicy().mode !== 'read-only' ? 'write' : 'read';
     const tools = actualProducer();
-    tools.describe(policy.access === 'write' ? ['read', 'write', 'edit'] : ['read']);
+    tools.describe(access === 'write' ? ['read', 'write', 'edit'] : ['read']);
     const grantId = `workspace_${createHash('sha256')
       .update(
         canonicalPayload({
@@ -273,11 +328,11 @@ export function createHostRunWorkspaces(
         rootId: policy.workspaceId,
         grantId,
         generation: policy.generation,
-        access: policy.access,
+        access,
       },
     };
   }
-  function frozen(configurationId: string) {
+  function frozen(configurationId: string): RememberedWorkspace {
     active();
     const known = remembered.get(configurationId);
     if (known) return known;
@@ -311,7 +366,14 @@ export function createHostRunWorkspaces(
   function remember(snapshot: FrozenExecutionRunComposition, workspace: ExecutionWorkspace) {
     active();
     const known = remembered.get(snapshot.configurationId);
-    if (known && canonicalPayload(known) !== canonicalPayload({ snapshot, workspace })) denied();
+    if (known) {
+      if (
+        canonicalPayload({ snapshot: known.snapshot, workspace: known.workspace }) !==
+        canonicalPayload({ snapshot, workspace })
+      )
+        denied();
+      return;
+    }
     if (remembered.size >= 256 && !known) remembered.delete(remembered.keys().next().value!);
     remembered.set(snapshot.configurationId, {
       snapshot: structuredClone(snapshot),
@@ -342,10 +404,17 @@ export function createHostRunWorkspaces(
       workspace,
     );
     if (
-      canonicalPayload(current.workspace) !== canonicalPayload(workspace) ||
-      (access === 'write' && current.policy.access !== 'write')
+      !sameGrant(current.workspace, workspace) ||
+      (workspace.access === 'write' && current.policy.access !== 'write') ||
+      (access === 'write' && workspace.access !== 'write')
     )
       denied();
+    const node = readNode.call(execution, scope);
+    const run = node && currentExecutionRun(node);
+    const sessionId = run?.attempt.id === scope.runId ? run.attempt.sessionId : undefined;
+    const session =
+      stored.session?.session ?? (sessionId ? ctx.sessions.get(SessionId(sessionId)) : undefined);
+    if (access === 'write' && sdkPolicy(session).mode === 'read-only') denied();
     return undefined;
   }
   function byWorkspace(
@@ -359,7 +428,7 @@ export function createHostRunWorkspaces(
         continue;
       try {
         const current = selected(actorId, spaceId, projectId, row.id);
-        if (canonicalPayload(current.workspace) === canonicalPayload(workspace)) return current;
+        if (sameGrant(current.workspace, workspace)) return current;
       } catch (error) {
         // An independently revoked binding must not shadow another valid grant.
         if (!(error instanceof ExecutionRunError) || error.code !== 'run-authority-denied')
@@ -368,7 +437,7 @@ export function createHostRunWorkspaces(
     }
     denied();
   }
-  function resolve(binding: NativeSessionBinding, grant: NativeWorkGrant) {
+  function located(binding: NativeSessionBinding, grant: NativeWorkGrant) {
     active();
     grant.assertCurrent('send');
     const node = readNode.call(execution, grant.scope);
@@ -395,6 +464,90 @@ export function createHostRunWorkspaces(
       snapshot.payload.plan.projectId,
       run.workspace,
     );
+    return { ...current, snapshot, frozenWorkspace: run.workspace };
+  }
+  async function directory(binding: NativeSessionBinding, grant: NativeWorkGrant) {
+    const current = located(binding, grant);
+    const filesystem = current.tools.filesystem;
+    const signal = AbortSignal.any([current.signal, grant.signal]);
+    const target = await filesystem.resolve(current.source.path, { signal });
+    const info = await filesystem.stat(target, signal);
+    grant.assertCurrent('send');
+    const canonical = filesystem.processPath(target);
+    // Registry.create accepts only real canonical directories. Re-prove that identity
+    // on explicit start, before the original runtime creates the session cwd.
+    if (info?.type !== 'directory' || canonical !== current.source.path) denied();
+    const root = roots.get(current.policy.id);
+    if (!root || (root.canonical && root.canonical !== canonical)) denied();
+    root.canonical = canonical;
+    const check = () => {
+      grant.assertCurrent('send');
+      return assertWorkspace(
+        grant.scope.actorId,
+        grant.scope.spaceId,
+        current.frozenWorkspace,
+        current.frozenWorkspace.access,
+        current.snapshot.configurationId,
+      );
+    };
+    check();
+    return {
+      kind: 'local' as const,
+      scope: grant.scope,
+      cwd: canonical,
+      signal,
+      assertCurrent: check,
+    };
+  }
+  function bindSession(
+    agentContext: Context,
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+  ) {
+    const current = located(binding, grant);
+    const agent = scopeOf(agentContext) as Partial<Agent> | undefined;
+    if (
+      !agent ||
+      agent.id !== binding.nativeAgentId ||
+      agent.ctx !== agentContext ||
+      !agent.session ||
+      agent.session.id !== binding.nativeSessionId ||
+      scopeOf(agent.ctx) !== agent
+    )
+      denied();
+    const canonical = roots.get(current.policy.id)?.canonical;
+    if (!canonical || agent.session.header.cwd !== canonical) denied();
+    const stored = frozen(current.snapshot.configurationId);
+    if (stored.session && stored.session.agent !== agent) denied();
+    if (stored.session) return;
+    const session = agent.session;
+    const bound = {
+      context: agentContext,
+      agent: agent as Agent,
+      session,
+      published: !!ctx.sessions.get(SessionId(session.id)),
+    };
+    stored.session = bound;
+    agentContext.effect(() => () => {
+      if (stored.session === bound) delete stored.session;
+      changed();
+    });
+  }
+  function resolve(binding: NativeSessionBinding, grant: NativeWorkGrant) {
+    const current = located(binding, grant);
+    const snapshot = current.snapshot;
+    const canonical = roots.get(current.policy.id)?.canonical;
+    const bound = frozen(snapshot.configurationId).session;
+    const session = bound?.session;
+    if (
+      !canonical ||
+      !bound ||
+      !session ||
+      session.id !== binding.nativeSessionId ||
+      session.header.cwd !== canonical
+    )
+      denied();
+    const sessionIdentity = original(session);
     const check = (action: 'read' | 'write'): undefined => {
       active();
       grant.assertCurrent('send');
@@ -406,18 +559,33 @@ export function createHostRunWorkspaces(
         latestRun.selection.configurationId !== snapshot.configurationId
       )
         denied();
-      return assertWorkspace(
+      assertWorkspace(
         grant.scope.actorId,
         grant.scope.spaceId,
         latestRun.workspace,
         action,
         snapshot.configurationId,
       );
+      bound.context.fiber.assertActive();
+      const published = ctx.sessions.get(SessionId(binding.nativeSessionId));
+      if (published) bound.published = true;
+      if (
+        (published && original(published) !== sessionIdentity) ||
+        (!published && bound.published) ||
+        scopeOf(bound.context) !== bound.agent ||
+        bound.agent.session !== session ||
+        session.header.cwd !== canonical
+      )
+        denied();
+      const policy = sdkPolicy(session);
+      if (action === 'write' && (policy.mode === 'read-only' || policy.workspaceRoot !== canonical))
+        denied();
+      return undefined;
     };
     const workspace: NativeRunWorkspaceCapability = Object.freeze({
       scope: structuredClone(grant.scope),
-      root: current.source.path,
-      permissions: Object.freeze({ read: true, write: current.policy.access === 'write' }),
+      root: canonical,
+      permissions: Object.freeze({ read: true, write: current.frozenWorkspace.access === 'write' }),
       signal: AbortSignal.any([current.signal, grant.signal]),
       assertCurrent: check,
     });
@@ -440,7 +608,11 @@ export function createHostRunWorkspaces(
       })());
     },
     dependenciesPresent: () =>
-      !!ctx.get('workspaceRegistry') && !!ctx.get('fs') && !!ctx.get('tools'),
+      !!ctx.get('workspaceRegistry') &&
+      !!ctx.get('fs') &&
+      !!ctx.get('tools') &&
+      !!ctx.get('sandboxPolicy') &&
+      !!ctx.get('sessions'),
     onChange(callback: () => void) {
       listeners.add(callback);
       return () => {
@@ -448,6 +620,7 @@ export function createHostRunWorkspaces(
       };
     },
     remember,
+    sameGrant,
     assertWorkspace,
     assertComposition(snapshot: FrozenExecutionRunComposition): undefined {
       const stored = frozen(snapshot.configurationId);
@@ -473,7 +646,7 @@ export function createHostRunWorkspaces(
       const tools = {
         kind: 'local-tools',
         definitions: local.tools.describe(
-          local.policy.access === 'write' ? ['read', 'write', 'edit'] : ['read'],
+          stored.workspace.access === 'write' ? ['read', 'write', 'edit'] : ['read'],
         ),
         ...(snapshot.payload.inputs.length
           ? { acceptedInputReader: describeAcceptedInputTool() }
@@ -502,7 +675,7 @@ export function createHostRunWorkspaces(
               {
                 id: row.id,
                 label: current.source.title,
-                access: row.access,
+                access: current.workspace.access,
                 publish: row.publish.length > 0,
               },
             ];
@@ -512,6 +685,8 @@ export function createHostRunWorkspaces(
         });
     },
     select: selected,
+    directory,
+    bindSession,
     resolve,
     output(binding: NativeSessionBinding, grant: NativeWorkGrant) {
       const current = resolve(binding, grant);
