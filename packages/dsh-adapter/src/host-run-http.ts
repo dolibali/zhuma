@@ -12,7 +12,19 @@ import {
   type WorkbenchHttpLimits,
 } from './workbench-http.js';
 
-export const hostRunEndpoints = ['begin', 'send', 'stop', 'read', 'history', 'options'] as const;
+import type { HostRunFrameSink } from './host-run-reader.js';
+import { hostRunStream } from './host-run-stream.js';
+
+export const hostRunEndpoints = [
+  'begin',
+  'send',
+  'stop',
+  'read',
+  'history',
+  'options',
+  'inbox',
+  'observe',
+] as const;
 // A maximum-size 16,384-unit message, fully JSON-escaped IDs and the RPC
 // envelope fit here. Archive/upload budgets must not widen these operations.
 export const HOST_RUN_BODY_BYTES = 128 * 1024;
@@ -20,6 +32,17 @@ export type HostRunEndpoint = (typeof hostRunEndpoints)[number];
 
 /** Host-owned operations return public projections, never grants or native handles. */
 export interface HostRunOperations {
+  inbox(
+    request: MemberRequest,
+    payload: unknown,
+    wait?: AbortSignal,
+  ): Promise<ExecutionResult<unknown>>;
+  observe(
+    request: MemberRequest,
+    payload: unknown,
+    sink: HostRunFrameSink,
+    wait?: AbortSignal,
+  ): Promise<void>;
   options(
     request: MemberRequest,
     payload: unknown,
@@ -70,7 +93,7 @@ export function openHostRunHttp(
     ...options.limits,
     bodyBytes: Math.min(options.limits.bodyBytes, HOST_RUN_BODY_BYTES),
   };
-  const active = new Set<Promise<Response>>();
+  const active = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
   const stops = hostRunEndpoints.map((endpoint) =>
     ctx.connection.fetch.register({
@@ -105,6 +128,22 @@ export function openHostRunHttp(
       signal.throwIfAborted();
       const owner = options.current();
       if (!owner) return reply(failure('run-authority-unavailable'), 503);
+      if (endpoint === 'observe') {
+        const observed = hostRunStream({
+          rpcId,
+          signal,
+          observe: (sink, wait) => owner.observe(original, body.data.payload, sink, wait),
+          failure: (error) =>
+            failure(
+              error instanceof ExecutionRunError || error instanceof NativeWorkError
+                ? error.code
+                : 'unavailable',
+            ),
+        });
+        active.add(observed.drained);
+        void observed.drained.finally(() => active.delete(observed.drained)).catch(() => undefined);
+        return observed.response;
+      }
       // UI cancellation does not enter a Run's lifetime. The owner tracks and
       // drains admitted operations; a lost reply retries the same request key.
       return reply(await owner[endpoint](original, body.data.payload, signal));
@@ -140,7 +179,10 @@ export function openHostRunHttp(
       if (closing) return closing;
       lifetime.abort();
       for (const stop of stops) stop();
-      return (closing = Promise.allSettled([...active]).then(() => undefined));
+      return (closing = (async () => {
+        // A request admitted before close may still publish its read-drain promise.
+        while (active.size) await Promise.allSettled([...active]);
+      })());
     },
   };
 }

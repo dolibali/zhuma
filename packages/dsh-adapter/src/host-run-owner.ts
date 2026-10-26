@@ -685,6 +685,25 @@ export async function openHostRunOwner(
     read(request, payload, wait) {
       return command(() => reader.read(request, payload, wait));
     },
+    inbox(request, payload, wait) {
+      return command(() =>
+        reader.inbox(
+          request,
+          payload,
+          wait ? AbortSignal.any([wait, lifetime.signal]) : lifetime.signal,
+        ),
+      );
+    },
+    observe(request, payload, sink, wait) {
+      return command(() =>
+        reader.observe(
+          request,
+          payload,
+          sink,
+          wait ? AbortSignal.any([wait, lifetime.signal]) : lifetime.signal,
+        ),
+      );
+    },
     history(request, payload, wait) {
       return command(() => reader.history(request, payload, wait));
     },
