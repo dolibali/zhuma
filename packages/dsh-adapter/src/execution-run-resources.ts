@@ -96,11 +96,13 @@ export async function registerExecutionRunResources(
   snapshot = readExecutionRunComposition(snapshot);
   const scope = scopeOf(context),
     tools = context.get('tools'),
-    registeredLookup: unknown = tools && Reflect.get(tools, 'getRegistered');
+    registeredLookup: unknown = tools && Reflect.get(tools, 'getRegistered'),
+    bindSkillRegistry: unknown = Reflect.get(ToolSkill, 'bindSkillRegistry');
   if (
     !scope ||
     !tools ||
     typeof registeredLookup !== 'function' ||
+    typeof bindSkillRegistry !== 'function' ||
     ![1, 2].includes(snapshot.schemaVersion) ||
     !producer ||
     producer.sourceVersion !== EXECUTION_RESOURCE_SOURCE_VERSION ||
@@ -205,6 +207,7 @@ export async function registerExecutionRunResources(
         !context.get('tools') ||
         serviceIdentity(context.get('tools')!) !== toolIdentity ||
         Reflect.get(toolIdentity, 'getRegistered') !== registeredIdentity ||
+        Reflect.get(ToolSkill, 'bindSkillRegistry') !== bindSkillRegistry ||
         isolatedServices.some((item) => {
           const service = item.context.get(item.name);
           return !service || serviceIdentity(service) !== item.identity;
@@ -246,15 +249,26 @@ export async function registerExecutionRunResources(
       const registry = isolated.plugin(SkillRegistry);
       fibers.push(registry);
       await registry;
+      const actualRegistry = isolated.get('skills')!;
       isolatedServices.push({
         context: isolated,
         name: 'skills',
-        identity: serviceIdentity(isolated.get('skills')!),
+        identity: serviceIdentity(actualRegistry),
       });
+      current();
+      // Bind even an empty real registry to the actual Agent scope before any
+      // loader/step. The SDK owns identity, lifetime and no-fallback tombstones.
+      const bound: unknown = bindSkillRegistry.call(ToolSkill, context, actualRegistry);
+      if (bound !== undefined) {
+        // A malformed asynchronous API never authorizes, but its real end is
+        // still owned by this registration's failure/drain path.
+        void own(Promise.resolve(bound)).catch(() => undefined);
+        fail('resources-unavailable');
+      }
       current();
       for (const selected of resources.skills)
         unregister.push(
-          isolated.get('skills')!.register({
+          actualRegistry.register({
             name: selected.name,
             description: selected.description,
             content: selected.definition.content,

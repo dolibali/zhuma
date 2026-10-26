@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import { Context } from '@deepseek-ai/cordis';
 import Prompt from '@deepseek-ai/dsh-system-prompt';
 import Tools from '@deepseek-ai/dsh-tools';
@@ -331,6 +331,64 @@ async function setup(
     },
   };
 }
+test('actual resources SDK: a non-undefined public binding result refuses before Agent execution', async (t) => {
+  const fault = vi
+    .spyOn(
+      ToolSkill as unknown as { bindSkillRegistry(...args: unknown[]): unknown },
+      'bindSkillRegistry',
+    )
+    .mockReturnValue(false);
+  try {
+    const f = await setup(t, { mcp: false, empty: true });
+    await assert.rejects(f.start);
+    assert.equal(f.adopted, undefined);
+    assert.equal(f.h.adapter.requests.length, 0);
+  } finally {
+    fault.mockRestore();
+  }
+});
+
+test('actual resources SDK: an asynchronous public binding result refuses and drains its true completion', async (t) => {
+  const entered = Promise.withResolvers<void>(),
+    finished = Promise.withResolvers<void>();
+  const fault = vi
+    .spyOn(
+      ToolSkill as unknown as { bindSkillRegistry(...args: unknown[]): unknown },
+      'bindSkillRegistry',
+    )
+    .mockImplementation(() => {
+      entered.resolve();
+      return finished.promise;
+    });
+  let starting;
+  try {
+    const f = await setup(t, { mcp: false, empty: true });
+    starting = f.start();
+    void starting.catch(() => undefined);
+    await entered.promise;
+    assert.equal(f.h.adapter.requests.length, 0);
+    let settled = false;
+    void starting.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    finished.resolve();
+    await assert.rejects(starting);
+    assert.equal(f.adopted, undefined);
+    assert.equal(f.h.adapter.requests.length, 0);
+  } finally {
+    finished.resolve();
+    await starting?.catch(() => undefined);
+    fault.mockRestore();
+  }
+});
+
 test('actual resources SDK: isolated official skill catalog and loader expose exactly one of two plan skills', async (t) => {
   const f = await setup(t, { mcp: false }),
     agent = await f.start();
