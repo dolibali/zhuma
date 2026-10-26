@@ -973,3 +973,380 @@ diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
        '@deepseek-ai/dsh-session-projection':
          specifier: workspace:*
          version: link:../../session/session-projection
+diff --git a/packages/core/tools/src/index.ts b/packages/core/tools/src/index.ts
+index ca939d4d..aaac1bcc 100644
+--- a/packages/core/tools/src/index.ts
++++ b/packages/core/tools/src/index.ts
+@@ -1239,6 +1239,22 @@ export class ToolRuntime extends Service {
+     return this.view(scope).visible.get(name)
+   }
+ 
++  /**
++   * Resolve registration identity through the scope chain, ignoring visibility.
++   * This is an ownership query only: it does not authorize execution or expose a
++   * schema. Callers must continue using get/execute for those operations.
++   * @param name - registered name to inspect.
++   * @param scope - viewing scope; nearest same-name registration wins.
++   * @returns the registered definition, or undefined when absent.
++   */
++  getRegistered(name: string, scope?: ScopeKey): ToolDefinition | undefined {
++    let definition = this.layers.global.tools.get(name)
++    for (const layer of this.layers.chainLayers(scope)) {
++      definition = layer.tools.get(name) ?? definition
++    }
++    return definition
++  }
++
+   /**
+    * Resolve the definition that MAY EXECUTE for a call, applying the mode
+    * collapse at the operation boundary that owns it. The registry view
+diff --git a/packages/skill/tool-skill/src/index.ts b/packages/skill/tool-skill/src/index.ts
+index 243ef108..c344d08b 100644
+--- a/packages/skill/tool-skill/src/index.ts
++++ b/packages/skill/tool-skill/src/index.ts
+@@ -6,7 +6,7 @@
+ 
+ import type {} from '@deepseek-ai/dsh-working-directory'
+ import { createHash } from 'node:crypto'
+-import type { Context } from '@deepseek-ai/cordis'
++import { symbols, type Context } from '@deepseek-ai/cordis'
+ import z from '@deepseek-ai/schemastery'
+ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+ import { defineTool } from '@deepseek-ai/dsh-tools'
+@@ -79,6 +79,40 @@ export function apply(ctx: Context, config: Config = {}): void {
+   const catalogDescriptionMaxLength = config.catalogDescriptionMaxLength ?? DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH
+   assertPositiveInteger('catalogDescriptionMaxLength', catalogDescriptionMaxLength, 3)
+ 
++  // Skills are bound to the registering context: isolate('skills') returns a
++  // child context, while the real Agent.ctx may still be its original scope.
++  // The calling Agent's actual tool registration decides which binding owns
++  // all three load paths. A non-owner never reads skills or rewrites a catalog.
++  const boundSkills = ctx.skills
++  const boundTools = ctx.tools
++  const original = (service: object | undefined) => service === undefined ? undefined : Reflect.get(service, symbols.original) ?? service
++  function ownedLookup(agent: Agent | undefined, signal: AbortSignal) {
++    signal.throwIfAborted()
++    ctx.fiber.assertActive()
++    const caller = agent === undefined ? ctx : agent.ctx
++    caller.fiber.assertActive()
++    const tools = caller.get('tools')
++    if (tools === undefined || original(tools) !== original(boundTools)
++      || tools.getRegistered(skillTool.name, agent) !== skillTool) return undefined
++    const directory = caller.get('workingDirectory')
++    if (directory === undefined) throw new Error('skill loader is no longer available')
++    const assertCurrent = () => {
++      signal.throwIfAborted()
++      ctx.fiber.assertActive()
++      caller.fiber.assertActive()
++      if ((agent !== undefined && agent.ctx !== caller)
++        || original(caller.get('tools')) !== original(tools)
++        || original(caller.get('workingDirectory')) !== original(directory)
++        || original(ctx.get('skills')) !== original(boundSkills)
++        || original(ctx.get('tools')) !== original(boundTools)
++        || tools.getRegistered(skillTool.name, agent) !== skillTool) {
++        throw new Error('skill loader is no longer available')
++      }
++    }
++    assertCurrent()
++    return { tools, directory, assertCurrent }
++  }
++
+   const skillTool = defineTool({
+     name: 'skill',
+     description: 'Load the full instructions for a skill. Call it before acting on a task that names or clearly matches a skill in the session skill catalog.',
+@@ -129,18 +163,26 @@ export function apply(ctx: Context, config: Config = {}): void {
+       if (!isSkillName(args.name)) {
+         throw new Error(`invalid skill name "${args.name}"`)
+       }
+-      // The agent is its own scope key, so the lookup resolves the layered
+-      // registry exactly as this agent's composition sees it.
+-      const cwd = exec.agent === undefined ? undefined : await ctx.workingDirectory.ensure(exec.agent, exec.signal)
++      const owner = ownedLookup(exec.agent, exec.signal)
++      if (owner === undefined) throw new Error('skill loader is no longer available')
++      const assertModelCurrent = () => {
++        owner.assertCurrent()
++        if (owner.tools.get(skillTool.name, exec.agent) !== skillTool) throw new Error('skill loader is no longer available')
++      }
++      assertModelCurrent()
++      const cwd = exec.agent === undefined ? undefined : await owner.directory.ensure(exec.agent, exec.signal)
++      assertModelCurrent()
+       const lookup = { cwd, signal: exec.signal, scope: exec.agent }
+-      const summary = (await ctx.skills.list(lookup)).find(skill => skill.name === args.name)
++      const summary = (await boundSkills.list(lookup)).find(skill => skill.name === args.name)
++      assertModelCurrent()
+       if (!summary) {
+         throw new Error(`skill "${args.name}" is unknown or no longer available`)
+       }
+       if (!isModelInvocable(summary)) {
+         throw new Error(`skill "${args.name}" is not available for model invocation`)
+       }
+-      const skill = await ctx.skills.get(args.name, lookup)
++      const skill = await boundSkills.get(args.name, lookup)
++      assertModelCurrent()
+       if (!skill) {
+         throw new Error(`skill "${args.name}" is unknown or no longer available`)
+       }
+@@ -182,14 +224,16 @@ export function apply(ctx: Context, config: Config = {}): void {
+   ): Promise<PreStepDecision> => {
+     const decision = await next()
+     if (decision.kind === 'reject') return decision
++    const owner = ownedLookup(agent, signal)
++    if (owner === undefined) return decision
+     const names = invokedSkillNames(messages)
+     if (names.length === 0) return decision
+-    signal.throwIfAborted()
+-    const lookup = { cwd: await ctx.workingDirectory.ensure(agent, signal), signal, scope: agent }
++    const lookup = { cwd: await owner.directory.ensure(agent, signal), signal, scope: agent }
++    owner.assertCurrent()
+     const injections: UserMessage[] = []
+     for (const name of names) {
+-      const skill = await ctx.skills.get(name, lookup)
+-      signal.throwIfAborted()
++      const skill = await boundSkills.get(name, lookup)
++      owner.assertCurrent()
+       // Unknown names and user-disabled skills stay plain prose: the
+       // gesture was never a claim this boundary recognizes. The check sits
+       // on the loaded definition — the single lookup that produces what is
+@@ -218,12 +262,16 @@ export function apply(ctx: Context, config: Config = {}): void {
+   ): Promise<PreStepDecision> => {
+     const decision = await next()
+     if (decision.kind === 'reject') return decision
+-    signal.throwIfAborted()
+-    const toolVisible = ctx.tools.get(skillTool.name, agent) === skillTool
++    const owner = ownedLookup(agent, signal)
++    if (owner === undefined) return decision
++    const toolVisible = owner.tools.get(skillTool.name, agent) === skillTool
++    const cwd = toolVisible ? await owner.directory.ensure(agent, signal) : undefined
++    owner.assertCurrent()
+     const snapshot = toolVisible
+-      ? await ctx.skills.snapshot({ cwd: await ctx.workingDirectory.ensure(agent, signal), signal, scope: agent })
++      ? await boundSkills.snapshot({ cwd, signal, scope: agent })
+       : { skills: [], complete: true }
+-    signal.throwIfAborted()
++    owner.assertCurrent()
++    if (toolVisible && owner.tools.get(skillTool.name, agent) !== skillTool) throw new Error('skill loader is no longer available')
+     if (!snapshot.complete) return decision
+     const skills = snapshot.skills.filter(isModelInvocable)
+     const entries = catalogSourceEntries(skills, catalogDescriptionMaxLength)
+diff --git a/packages/skill/tool-skill/tests/tool-skill.spec.ts b/packages/skill/tool-skill/tests/tool-skill.spec.ts
+index e3362cda..e1fa4bff 100644
+--- a/packages/skill/tool-skill/tests/tool-skill.spec.ts
++++ b/packages/skill/tool-skill/tests/tool-skill.spec.ts
+@@ -63,13 +63,13 @@ async function setup(home: string, config: toolSkill.Config = {}): Promise<Conte
+   return ctx
+ }
+ 
+-function agentForCwd(cwd: string): Agent {
++function agentForCwd(ctx: Context, cwd: string): Agent {
+   const id = SessionId(`tool-skill-${cwd}`)
+   const session = Session.create(id, [], {
+     version: SESSION_FORMAT_VERSION, id, createdAt: 0, cwd, isSeeded: false,
+   })
+   return {
+-    ctx: new Context(),
++    ctx,
+     id,
+     options: {},
+     session,
+@@ -85,14 +85,14 @@ function agentForCwd(cwd: string): Agent {
+   }
+ }
+ 
+-function sessionAgent(session: Session, id = 'tool-skill-agent'): Agent {
++function sessionAgent(ctx: Context, session: Session, id = 'tool-skill-agent'): Agent {
+   const agent: Agent = {
+     id: SessionId(id),
+     options: {},
+     session,
+     inbox: unsupportedInbox(),
+     status: 'running',
+-    ctx: new Context(),
++    ctx,
+     send: () => {},
+     followup: () => {},
+     steer: () => {},
+@@ -160,7 +160,7 @@ function catalogContent(entries: string[]): Message['content'] {
+ }
+ 
+ async function composePrefix(ctx: Context, cwd: string, signal = new AbortController().signal): Promise<Message[]> {
+-  return await composePrefixForAgent(ctx, agentForCwd(cwd), signal)
++  return await composePrefixForAgent(ctx, agentForCwd(ctx, cwd), signal)
+ }
+ 
+ async function composePrefixForAgent(ctx: Context, agent: Agent, signal = new AbortController().signal): Promise<Message[]> {
+@@ -178,11 +178,12 @@ async function composePrefixForAgent(ctx: Context, agent: Agent, signal = new Ab
+ }
+ 
+ async function mintAgentScope(ctx: Context, subject: string | Agent): Promise<{ agent: Agent; scope: Scope }> {
+-  const agent = typeof subject === 'string' ? agentForCwd(subject) : subject
++  const agent = typeof subject === 'string' ? agentForCwd(ctx, subject) : subject
+   let scope!: Scope
+   await ctx.plugin(Object.assign((inner: Context) => { scope = createScope(inner, agent) }, {
+     inject: ['tools'],
+   }))
++  Object.defineProperty(agent, 'ctx', { value: scope.ctx, configurable: true })
+   return { agent, scope }
+ }
+ 
+@@ -330,7 +331,7 @@ describe('dsh-tool-skill', () => {
+     expect(rendered).not.toContain('/secret/path')
+     expect(rendered).not.toContain('Secret body')
+     expect(rendered).not.toContain('user-only-skill')
+-    expect(renderPrompt(await ctx.systemPrompt.assemble({ agent: agentForCwd('/workspace') }))).not.toContain('<available_skills>')
++    expect(renderPrompt(await ctx.systemPrompt.assemble({ agent: agentForCwd(ctx, '/workspace') }))).not.toContain('<available_skills>')
+   })
+ 
+   it('does not inject a catalog when no model-invocable skills are available', async () => {
+@@ -344,7 +345,7 @@ describe('dsh-tool-skill', () => {
+       content: 'User-only body.',
+     })
+ 
+-    const agent = agentForCwd('/workspace')
++    const agent = agentForCwd(ctx, '/workspace')
+     expect(await composePrefixForAgent(ctx, agent)).toEqual([])
+     expect(await composePrefixForAgent(ctx, agent)).toEqual([])
+   })
+@@ -369,7 +370,7 @@ describe('dsh-tool-skill', () => {
+       return provider
+     })
+     const session = Session.create(SessionId('incomplete-prefix'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     await composePrefixForAgent(ctx, agent)
+@@ -385,7 +386,7 @@ describe('dsh-tool-skill', () => {
+     const home = await tempDir('tool-empty-step')
+     const ctx = await setup(home)
+     const session = Session.create(SessionId('empty-step'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     await fireStep(ctx, agent, 1, 1)
+@@ -404,7 +405,7 @@ describe('dsh-tool-skill', () => {
+       content: 'First body.',
+     })
+     const session = Session.create(SessionId('proposed-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     await fireStep(ctx, agent, 1, 1)
+     const initial = catalogMessages(session)[0]?.data
+@@ -451,7 +452,7 @@ describe('dsh-tool-skill', () => {
+       },
+     })
+ 
+-    const decision = await proposeStep(ctx, sessionAgent(session), [malformed, stale])
++    const decision = await proposeStep(ctx, sessionAgent(ctx, session), [malformed, stale])
+ 
+     expect(decision).toEqual({ kind: 'enter', messages: [malformed] })
+   })
+@@ -475,7 +476,7 @@ describe('dsh-tool-skill', () => {
+       },
+     })
+ 
+-    const decision = await proposeStep(ctx, sessionAgent(session), [proposed])
++    const decision = await proposeStep(ctx, sessionAgent(ctx, session), [proposed])
+ 
+     expect(decision).toEqual({ kind: 'enter', messages: [proposed] })
+   })
+@@ -490,7 +491,7 @@ describe('dsh-tool-skill', () => {
+       content: 'First body.',
+     })
+     const session = Session.create(SessionId('dynamic-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('first-skill')
+@@ -539,7 +540,7 @@ describe('dsh-tool-skill', () => {
+       content: 'Resumed body.',
+     })
+     const session = Session.create(SessionId('catalog-resume'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     session.append('user/message', createUserMessage({
+       content: [{ type: 'text', text: 'prose a reader cannot rely on' }],
+@@ -589,7 +590,7 @@ describe('dsh-tool-skill', () => {
+       content: 'Live body.',
+     })
+     const session = Session.create(SessionId('catalog-malformed'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     for (const source of [
+       { kind: 'skill-catalog', form: 'catalog' },
+@@ -620,7 +621,7 @@ describe('dsh-tool-skill', () => {
+     const home = await tempDir('tool-catalog-missing-event')
+     const ctx = await setup(home)
+     const session = Session.create(SessionId('catalog-missing-event'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     Object.defineProperty(session, 'eventAt', { value: () => undefined })
+ 
+@@ -638,7 +639,7 @@ describe('dsh-tool-skill', () => {
+       content: 'First body.',
+     })
+     const session = Session.create(SessionId('catalog-compaction'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('first-skill')
+     const initial = catalogMessages(session)[0]
+@@ -663,7 +664,7 @@ describe('dsh-tool-skill', () => {
+     await writeSkill(root, 'body-skill', 'Stable description', 'First body.')
+     const ctx = await setup(home)
+     const session = Session.create(SessionId('body-refresh'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('Stable description')
+@@ -714,7 +715,7 @@ describe('dsh-tool-skill', () => {
+       callId: ToolCallId('foreign-load'),
+       name: 'skill',
+       arguments: { name: 'preset-only-skill' },
+-      agent: agentForCwd('/workspace/other'),
++      agent: agentForCwd(ctx, '/workspace/other'),
+     })
+     expect(foreign.isError).toBe(true)
+     await scope.dispose()
+@@ -730,7 +731,7 @@ describe('dsh-tool-skill', () => {
+       content: 'Stable body.',
+     })
+     const session = Session.create(SessionId('incomplete-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('stable-skill')
+ 
+@@ -754,7 +755,7 @@ describe('dsh-tool-skill', () => {
+     const ctx = await setup(home)
+     ctx.skills.register({ name: 'listed-skill', description: 'Listed', source: 'runtime', content: 'body' })
+     const session = Session.create(SessionId('restricted-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     const { scope } = await mintAgentScope(ctx, agent)
+     scope.ctx.tools.restrict({ deny: ['skill'] })
+@@ -813,7 +814,7 @@ describe('dsh-tool-skill', () => {
+       callId: ToolCallId('c1'),
+       name: 'skill',
+       arguments: { name: 'project-skill' },
+-      agent: { session: { header: { cwd: project } } } as never,
++      agent: agentForCwd(ctx, project),
+     })
+ 
+     expect(result.isError).toBe(false)
+@@ -1016,7 +1017,7 @@ describe('user-explicit invocation injection', () => {
+     await writePolicySkill(skillsRoot, 'shared-skill', 'Ordinary skill', '', 'Shared instructions.')
+     await writePolicySkill(skillsRoot, 'model-only-skill', 'Model only', 'user-invocable: false', 'Model-only instructions.')
+     const ctx = await setup(home)
+-    return { ctx, agent: agentForCwd(home) }
++    return { ctx, agent: agentForCwd(ctx, home) }
+   }
+ 
+   it('injects a user-invocable skill named by a leading /token, after every other injection', async () => {
