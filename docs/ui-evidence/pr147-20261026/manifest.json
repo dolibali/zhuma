@@ -1,0 +1,90 @@
+{
+  "scope": "PR147 actual official Web/Host with synthetic members and local scripted model; not real provider or installed desktop",
+  "beforeHead": "a93532547a90444b48b3fd8f645d33f0e3a8ae16",
+  "afterPRHead": "7428bc7314e3a1d0fb1b0a0528405516c1a3ab96",
+  "baseHead": "a93532547a90444b48b3fd8f645d33f0e3a8ae16",
+  "afterTree": "ab61b6b379186c7fbaab2f9d9ec505532731bd5a",
+  "sdkPin": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "patchSHA256": "b63fb203f217bda93bf3236b55d6f34a1692b06f9fa803434514dd5b684475ad",
+  "format": "original CUA JPEG bytes; filenames corrected without image transformation",
+  "items": [
+    {
+      "kind": "before",
+      "file": "before-dark-stopped.jpg",
+      "bytes": 52650,
+      "sha256": "d295715b4edbc55bea4be0aa0b5bcd5474b109ebb1e99854cc3ba7f5afd4104c",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg"
+    },
+    {
+      "kind": "after",
+      "file": "after-dark-stopped.jpg",
+      "bytes": 52650,
+      "sha256": "d295715b4edbc55bea4be0aa0b5bcd5474b109ebb1e99854cc3ba7f5afd4104c",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg"
+    },
+    {
+      "kind": "before",
+      "file": "before-light-stopped.jpg",
+      "bytes": 56862,
+      "sha256": "06d1fa6d875dbad9915371d6a8c93d6865ba93606ff54c895275431547c00d00",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg"
+    },
+    {
+      "kind": "after",
+      "file": "after-light-stopped.jpg",
+      "bytes": 56862,
+      "sha256": "06d1fa6d875dbad9915371d6a8c93d6865ba93606ff54c895275431547c00d00",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg"
+    },
+    {
+      "kind": "after",
+      "file": "after-dark-two-rounds.jpg",
+      "bytes": 69711,
+      "sha256": "4171f19aec7f5ddf085666b56f177788ac6766c8db054e193b1294af7a38e8a4",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg",
+      "state": "two completed local-scripted rounds; visible refresh in progress, not an incremental frame"
+    },
+    {
+      "kind": "after",
+      "file": "after-dark-steer.jpg",
+      "bytes": 85562,
+      "sha256": "afc0142f6717426e851b40f73502d6be19fdeee72e7f63074af6f2887e7162dd",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg",
+      "state": "incremental fourth response after current-Run supplement; receipt is not proof of model adoption"
+    },
+    {
+      "kind": "after",
+      "file": "after-dark-queue-processed.jpg",
+      "bytes": 78582,
+      "sha256": "3e5e063857f91e51bd3fcc914070ce551fe7eca5c0f7baccb173f4a08c9bdfb1",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg",
+      "state": "fifth local-scripted response after queued next-round input was processed; not the pending-queue frame"
+    },
+    {
+      "kind": "after",
+      "file": "after-light-model-menu.jpg",
+      "bytes": 92407,
+      "sha256": "09e33c07971c4996fb997c64cdef932ac69c8617bd490683b5b8144b81403c44",
+      "width": 1440,
+      "height": 900,
+      "mime": "image/jpeg",
+      "state": "actual expanded model selector after stopping; same synthetic local-scripted session"
+    }
+  ],
+  "comparison": "first four stopped-state images use exact same persisted one-round conversation; stable-state before/after bytes match because this PR changes streaming behavior, not this layout",
+  "privacyReview": "coordinator personally inspected synthetic UI; no user attachment, real credential, private path or internal material"
+}
