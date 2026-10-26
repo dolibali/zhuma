@@ -10,6 +10,9 @@ import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
 import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
 import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
+import { openHostRunHttp } from './host-run-http.js';
+import { openHostRunOwner } from './host-run-owner.js';
+import { nativeWorkSessionInject } from './native-work-session-storage.js';
 import {
   applySpaceDirectory,
   spaceDirectoryFor,
@@ -73,6 +76,15 @@ export const identityPlugin = {
 
 export const executionPlugin = { inject: [...executionInject], apply: applyExecution };
 
+// Native services are an independent child: their absence must not prevent
+// manual member work, and can never silently select a different executor.
+export const nativeRunPlugin = {
+  inject: [...nativeWorkSessionInject, 'llm'],
+  apply(ctx: Context, config: { open(ctx: Context): Promise<void> }) {
+    return config.open(ctx);
+  },
+};
+
 interface DirectoryMountConfig {
   bootstrapKey?: string | undefined;
   publish(directory: OpenedSpaceDirectoryHandle): () => void;
@@ -115,11 +127,52 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let closed = false;
   const directoryLifecycle = createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
   let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
+  let runOwner: Awaited<ReturnType<typeof openHostRunOwner>> | undefined;
+  let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
+  let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
+  let runClosing: Promise<void> | undefined;
+  const runLifetime = new AbortController();
+  let runsClosed = false;
+  function closeRunBridge(): Promise<void> {
+    if (runClosing) return runClosing;
+    runsClosed = true;
+    runLifetime.abort();
+    const owner = runOwner;
+    runOwner = undefined;
+    // Start physical cleanup before awaiting HTTP commands that may be waiting
+    // on native reads/sends. Both paths retain the same actual close promise.
+    const nativeClose =
+      owner?.close() ??
+      runOpening?.then(
+        (opened) => opened.close(),
+        (error: unknown) => {
+          // The opener only reports this after its actual native close succeeds.
+          if (error instanceof DOMException && error.name === 'AbortError') return;
+          throw error;
+        },
+      );
+    const httpClose = runHttp?.close();
+    return (runClosing = Promise.allSettled([nativeClose, httpClose]).then((results) => {
+      const failed = results.filter((item) => item.status === 'rejected');
+      if (failed.length)
+        throw new AggregateError(
+          failed.map((item) => item.reason),
+          'Run bridge close failed.',
+        );
+    }));
+  }
   const beforeClose = async () => {
     closed = true;
+    const runs = closeRunBridge();
     directoryLifecycle.close();
-    const member = await memberOpening;
-    await member?.close();
+    try {
+      const member = await memberOpening;
+      await member?.close();
+    } finally {
+      // Keep the shared Workbench facts available until native cleanup has
+      // committed through the original execution owner.
+      await runs;
+    }
   };
   const workbench = await openWorkbench(ctx, config, { beforeClose });
   const identitySelected =
@@ -150,6 +203,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   if (closed) return;
   if (config.deploymentMode === 'multi-member') {
+    runHttp = openHostRunHttp(ctx, {
+      current: () => runOwner?.operations,
+      limits: { bodyBytes: config.bodyBytes, bodyTimeoutMs: config.bodyTimeoutMs },
+    });
     // Member commands share the opened workbench. Only their durable intent
     // journal is separate; failure to open it leaves a read-only projection.
     memberOpening = (async () => {
@@ -198,6 +255,35 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     // identity or directory facts; they never fall back to the owner principal.
     await ctx.plugin(executionPlugin, {
       readWorkbench: workbench.readWorkbench,
+      publishRunService(service) {
+        const mount = ctx.plugin(nativeRunPlugin, {
+          async open(nativeCtx: Context) {
+            if (closed || runsClosed) return;
+            runOpening = openHostRunOwner(nativeCtx, {
+              execution: service,
+              directory: directoryLifecycle,
+              signal: runLifetime.signal,
+              readWorkbench: workbench.readWorkbench,
+            });
+            const opened = await runOpening;
+            if (closed || runsClosed) {
+              await opened.close();
+              return;
+            }
+            runOwner = opened;
+            nativeCtx.effect(() => () => {
+              if (runOwner === opened) runOwner = undefined;
+              return opened.close();
+            });
+          },
+        });
+        void Promise.resolve(mount).catch(() => {
+          ctx.logger.error(
+            'Zhuma native Run services are unavailable; manual work remains available.',
+          );
+        });
+        return closeRunBridge;
+      },
       projectSpaces: {
         async spaceForProject(projectId: string) {
           const binding = directoryLifecycle.currentDirectoryBinding();
