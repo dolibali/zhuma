@@ -13,6 +13,7 @@ import {
   AssetImportError,
 } from '@zhuma/agent-core';
 import { WorkbenchService, type PlanningModel } from './workbench-service.js';
+import { createHostRunSkillPolicies } from './host-run-skill-policy.js';
 import {
   openMemberWorkbenchHttp,
   type MemberWorkbenchHttpHandle,
@@ -99,6 +100,9 @@ function planningModel(ctx: Context): PlanningModel | undefined {
 }
 
 export interface OpenedWorkbench {
+  createRunSkillPolicies(
+    execution: Parameters<typeof createHostRunSkillPolicies>[0]['execution'],
+  ): ReturnType<typeof createHostRunSkillPolicies>;
   readWorkbench(): ReturnType<WorkbenchService['snapshot']>;
   planningModel(): PlanningModel | undefined;
   openMemberWorkbench(
@@ -249,6 +253,19 @@ export async function openWorkbench(
   );
 
   return {
+    createRunSkillPolicies(execution) {
+      if (lifetime.signal.aborted || !service)
+        throw new WorkbenchError('unavailable', '工作台已关闭。');
+      const current = service;
+      return createHostRunSkillPolicies({
+        execution,
+        signal: lifetime.signal,
+        readWorkbench: () => current.snapshot(),
+        // Host-only immutable table. The producer checks the original member
+        // request and exact confirmed origin before reaching this closure.
+        readPackage: (versionId) => packageDomain.table('versions').get(versionId),
+      });
+    },
     planningModel: () => {
       if (lifetime.signal.aborted) return undefined;
       return planningModel(ctx);

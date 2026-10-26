@@ -13,3 +13,7 @@
 确需改动时，以固定版本生成最小补丁，记录目的、上游提交、修改文件、验证与退出条件。按明确顺序应用到 `.build/` 临时工作树，应用失败立即停止，不静默跳过。
 
 新增功能优先使用仓外插件；不把普通工作流、上下文和界面业务直接写进上游 Agent Loop。
+
+Skill loader 的隔离补丁仅增加 `ToolRegistry.getRegistered(name, scope)` 的只读注册身份查询，并在官方 `ToolSkill` 的工具调用、目录和用户显式调用三条路径中核对实际调用 Agent 的 loader 所有权。该查询忽略模型可见性以识别 owner，不授予工具执行权限；原 `get`／schema／execute 的限制语义保持不变。Skills 保留注册时隔离域的绑定，Tools 和工作目录来自调用 Agent 的实际上下文，异步结果返回后重新核对服务及注册身份。非 owner 不读取内容、不改写其他 loader 的目录，模型可见性与用户显式调用策略分别沿用官方判断。
+
+固定源码 SDK 的回归命令：`pnpm desktop:verify:native-lifecycle --phase skill-loader --upstream <已安装测试依赖的固定SDK>`。验证器在自己的临时检出应用完整发行补丁，执行 ToolSkill／Tools 原套件与隔离探针，再将这两个生产文件还原为固定上游版本，要求同一正文泄漏探针确实失败。仅证明 SDK 组件契约，不认证 Host 资源接入、真实模型、GUI 或安装；每个受控 Run（包括空资源和仅 MCP）仍须由 Host 装配独立空／选定 SkillRegistry 和唯一 loader。
