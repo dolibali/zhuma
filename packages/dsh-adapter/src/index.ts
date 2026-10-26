@@ -115,6 +115,12 @@ export {
   type ExecutionResult as ExecutionCommandResult,
   type ExecutionStorage,
   type PlanReceipt,
+  type BeginRunRequest,
+  type StopRunRequest,
+  type ExecutionNodeLocator,
+  type ExecutionRunHostPorts,
+  type RunEventAuthority,
+  type ExecutionRunCompositionInputs,
 } from './execution-service.js';
 export {
   applySpaceDirectory,
@@ -146,7 +152,28 @@ export type {
   NativeMigrationDrain,
   NativeBindingReference,
   NativeRunMigrationResult,
+  NativeScopeCleanupAuthority,
+  NativeScopeCleanupResult,
 } from './native-work-session-contract.js';
+export type { NativeDshWorkingDirectory } from './native-work-session-dsh.js';
+export {
+  describeAcceptedInputTool,
+  type NativeAcceptedInputToolDefinition,
+} from './native-work-session-input-tool.js';
+export {
+  BASIC_TASK_EXECUTOR,
+  EXECUTION_COMPOSITION_LIMITS,
+  ExecutionRunCompositionError,
+  assertExecutionRunComposition,
+  assertExecutionRunCompositionBinding,
+  executionRunCompositionRequest,
+  executionRunCompositionSchema,
+  freezeExecutionRunComposition,
+  readExecutionRunComposition,
+  type ExecutionCompositionTools,
+  type ExecutionRunCompositionInput,
+  type FrozenExecutionRunComposition,
+} from './execution-run-composition.js';
 export {
   requireNativeInboxRetention,
   NativeInboxRetentionUnsupportedError,

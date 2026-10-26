@@ -16,9 +16,21 @@ import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { build } from 'esbuild';
+import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const { values } = parseArgs({ options: { upstream: { type: 'string' } } });
+const { values } = parseArgs({
+  options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
+});
+if (!['all', 'host-run'].includes(values.phase))
+  throw new Error('Unknown native verification phase.');
+// Always build the actual artifact before copying it into the isolated SDK.
+// The Host test imports these emitted bytes, not a fixture source re-bundle.
+const emitted = spawnSync(process.execPath, [join(root, 'scripts/workbench/build.mjs')], {
+  cwd: root,
+  stdio: 'inherit',
+});
+if (emitted.error || emitted.status !== 0) throw new Error('Current Host artifact build failed.');
 const upstream = resolve(values.upstream ?? join(root, 'upstream/deepseek-harness'));
 const pin = JSON.parse(readFileSync(join(root, 'runtime.lock.json'), 'utf8')).upstreams
   .deepseekHarness.commit;
@@ -85,13 +97,27 @@ for (const pkg of readdirSync(join(upstream, 'vendor'), { withFileTypes: true })
       'dir',
     );
 }
+// The upstream paths plugin deliberately ignores emitted .js. Explicitly map
+// its own exact SDK paths for both JS artifacts and TS fixture providers, so
+// this source-SDK component probe uses one module graph. This is not a claim
+// about Web/profile package resolution, which is verified separately.
+const sdkPaths = ts.readConfigFile(join(stage, 'tsconfig.base.json'), (file) =>
+  readFileSync(file, 'utf8'),
+);
+if (sdkPaths.error) throw new Error('Cannot read the pinned SDK resolution paths.');
+const sdkAliases = Object.entries(sdkPaths.config.compilerOptions.paths)
+  .filter(([name]) => name.startsWith('@deepseek-ai/') && !name.includes('*'))
+  .sort(([left], [right]) => right.length - left.length)
+  .map(([find, paths]) => ({ find, replacement: resolve(stage, paths[0]) }));
 writeFileSync(
   join(stage, '.zhuma-native-lifecycle.config.ts'),
   `
 import config from './vitest.config.ts'
-export default { ...config, cacheDir: './.zhuma-test-cache/root', test: {
+const sdkAliases = ${JSON.stringify(sdkAliases)}
+const aliases = (current) => [...sdkAliases, ...(Array.isArray(current) ? current : Object.entries(current ?? {}).map(([find, replacement]) => ({find, replacement})))]
+export default { ...config, resolve: {...config.resolve, alias: aliases(config.resolve?.alias)}, cacheDir: './.zhuma-test-cache/root', test: {
   ...config.test, projects: config.test.projects.map((project) => ({
-    ...project, cacheDir: './.zhuma-test-cache/' + project.test.name,
+    ...project, resolve: {...project.resolve, alias: aliases(project.resolve?.alias)}, cacheDir: './.zhuma-test-cache/' + project.test.name,
   })),
 } }
 `,
@@ -153,6 +179,7 @@ const nativeSpecs = [
   'native-work-session-input-tool',
   'native-work-session-migration',
   'native-work-session-origin',
+  'native-work-session-working-directory',
 ];
 const executionRunSpecs = ['execution-run-native-migration', 'execution-run-native-recovery'];
 for (const name of [...nativeSpecs, ...executionRunSpecs])
@@ -160,6 +187,14 @@ for (const name of [...nativeSpecs, ...executionRunSpecs])
     join(root, `packages/dsh-adapter/tests/${name}.spec.ts`),
     join(stage, `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
   );
+copyFileSync(
+  join(root, '.build/workbench/index.js'),
+  join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-plugin.js'),
+);
+copyFileSync(
+  join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts'),
+  join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'),
+);
 const nativeBundle = join(stage, 'packages/core/agent-loop/tests/zhuma-native-work-bundle.ts');
 const executionRunBundle = join(
   stage,
@@ -233,6 +268,12 @@ const nativeBuild = await build({
   ...nativeBuildOptions,
   entryPoints: [nativeMigrationFixture],
   outfile: nativeBundle,
+});
+const hostTestData = join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-test-data.js');
+await build({
+  ...nativeBuildOptions,
+  entryPoints: [join(root, 'packages/dsh-adapter/tests/host-run-test-data.mjs')],
+  outfile: hostTestData,
 });
 for (const name of [...productionModules, 'agent-core', 'workbench-fixture-core'])
   if (!mappedProductionSources.has(name))
@@ -359,69 +400,93 @@ writeFileSync(
     stage,
   ),
 );
-verify(
-  'panel-navigation',
-  [
-    'packages/client/ui-layout/tests/service.client.spec.ts',
-    'packages/client/ui-layout/tests/zhuma-panel-navigation.spec.ts',
-  ],
-  13,
-);
-verify(
-  'lifecycle',
-  [
-    'packages/core/agent-loop/tests/zhuma-retained-inbox.spec.ts',
-    'packages/core/agent-loop/tests/resource-lifecycle.spec.ts',
-    'packages/core/agent-loop/tests/cancel.spec.ts',
-  ],
-  58,
-);
-const data = join(evidence, 'session-data');
-mkdirSync(data, { mode: 0o700 });
-for (const mode of ['write', 'read'])
-  verify(`process-${mode}`, ['packages/core/agent-loop/tests/zhuma-cross-process.spec.ts'], 1, {
-    ZHUMA_RETENTION_TEST_ROOT: data,
-    ZHUMA_RETENTION_TEST_MODE: mode,
-  });
-verify(
-  'native-work-session',
-  nativeSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
-  52,
-);
-const nativeData = join(evidence, 'native-work-session-data');
-mkdirSync(nativeData, { mode: 0o700 });
-for (const mode of ['write', 'read'])
+if (values.phase === 'all') {
   verify(
-    `native-work-process-${mode}`,
-    ['packages/core/agent-loop/tests/zhuma-native-work-session-retention.spec.ts'],
-    1,
-    {
-      ZHUMA_NATIVE_WORK_RETENTION_ROOT: nativeData,
-      ZHUMA_NATIVE_WORK_RETENTION_MODE: mode,
-    },
+    'panel-navigation',
+    [
+      'packages/client/ui-layout/tests/service.client.spec.ts',
+      'packages/client/ui-layout/tests/zhuma-panel-navigation.spec.ts',
+    ],
+    13,
   );
-verify(
-  'execution-run-native',
-  executionRunSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
-  7,
-);
-const executionRunData = join(evidence, 'execution-run-data');
-mkdirSync(executionRunData, { mode: 0o700 });
-for (const mode of ['write', 'read'])
   verify(
-    `execution-run-process-${mode}`,
-    ['packages/core/agent-loop/tests/zhuma-execution-run-native-recovery.spec.ts'],
-    1,
-    { ZHUMA_RUN_RECOVERY_ROOT: executionRunData, ZHUMA_RUN_RECOVERY_MODE: mode },
+    'lifecycle',
+    [
+      'packages/core/agent-loop/tests/zhuma-retained-inbox.spec.ts',
+      'packages/core/agent-loop/tests/resource-lifecycle.spec.ts',
+      'packages/core/agent-loop/tests/cancel.spec.ts',
+    ],
+    58,
   );
+  const data = join(evidence, 'session-data');
+  mkdirSync(data, { mode: 0o700 });
+  for (const mode of ['write', 'read'])
+    verify(`process-${mode}`, ['packages/core/agent-loop/tests/zhuma-cross-process.spec.ts'], 1, {
+      ZHUMA_RETENTION_TEST_ROOT: data,
+      ZHUMA_RETENTION_TEST_MODE: mode,
+    });
+  verify(
+    'native-work-session',
+    nativeSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
+    61,
+  );
+  const nativeData = join(evidence, 'native-work-session-data');
+  mkdirSync(nativeData, { mode: 0o700 });
+  for (const mode of ['write', 'read'])
+    verify(
+      `native-work-process-${mode}`,
+      ['packages/core/agent-loop/tests/zhuma-native-work-session-retention.spec.ts'],
+      1,
+      {
+        ZHUMA_NATIVE_WORK_RETENTION_ROOT: nativeData,
+        ZHUMA_NATIVE_WORK_RETENTION_MODE: mode,
+      },
+    );
+  verify(
+    'execution-run-native',
+    executionRunSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
+    7,
+  );
+  const executionRunData = join(evidence, 'execution-run-data');
+  mkdirSync(executionRunData, { mode: 0o700 });
+  for (const mode of ['write', 'read'])
+    verify(
+      `execution-run-process-${mode}`,
+      ['packages/core/agent-loop/tests/zhuma-execution-run-native-recovery.spec.ts'],
+      1,
+      { ZHUMA_RUN_RECOVERY_ROOT: executionRunData, ZHUMA_RUN_RECOVERY_MODE: mode },
+    );
+}
+verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 5);
 writeFileSync(
   join(evidence, 'proof.json'),
   `${JSON.stringify(
     {
       upstreamCommit: pin,
       sourceCommit: command('git', ['rev-parse', 'HEAD'], root),
+      sourceClean:
+        command(
+          'git',
+          [
+            'status',
+            '--porcelain',
+            '--',
+            'packages',
+            'scripts',
+            'patches',
+            'package.json',
+            'pnpm-lock.yaml',
+            'pnpm-workspace.yaml',
+          ],
+          root,
+        ) === '',
       patchSha256: hash(patch),
       verifierSha256: hash(fileURLToPath(import.meta.url)),
+      phase: values.phase,
+      hostArtifactSha256: hash(join(root, '.build/workbench/index.js')),
+      hostTestDataSha256: hash(hostTestData),
+      hostRunSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts')),
+      emittedHostUsesPinnedSourceSdkAliases: true,
       sdkTypecheck: true,
       layoutTypecheck: true,
       nativeBundleSha256,
@@ -450,6 +515,7 @@ writeFileSync(
       phases,
       model: 'local scripted adapter only',
       realProductGrantVerified: false,
+      emittedHostMemberRunGrantVerified: true,
     },
     null,
     2,
