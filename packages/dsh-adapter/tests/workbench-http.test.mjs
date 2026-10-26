@@ -44,3 +44,23 @@ test('HTTP body admission rejects declared overflow before reader acquisition an
   for (const bytes of [new Uint8Array([0xff]), new TextEncoder().encode('{')])
     await assert.rejects(readWorkbenchBody(request([bytes]), limits), { status: 400 });
 });
+
+test('HTTP body ownership: Host shutdown interrupts an unfinished read without cancelling the incoming socket stream', async () => {
+  const lifetime = new AbortController();
+  let cancelled = false;
+  const stream = new ReadableStream({
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const input = new Request('http://localhost/api/zhuma-run/begin', {
+    method: 'POST',
+    body: stream,
+    duplex: 'half',
+  });
+  const reading = readWorkbenchBody(input, limits, lifetime.signal);
+  lifetime.abort();
+  await assert.rejects(reading, { status: 408 });
+  assert.equal(stream.locked, false);
+  assert.equal(cancelled, false);
+});
