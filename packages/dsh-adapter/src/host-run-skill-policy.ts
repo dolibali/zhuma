@@ -32,6 +32,11 @@ export interface HostQualifiedSkillPolicy {
         readonly entryPath: string;
       };
 }
+/** Metadata lifetime only; a genuine Run grant remains independently required. */
+export interface HostRunSkillPolicyQualification {
+  readonly policies: readonly HostQualifiedSkillPolicy[];
+  assertCurrent(): undefined;
+}
 function unavailable(): never {
   // No package body, parser diagnostics, local paths or metadata escape this boundary.
   throw new ExecutionRunError('run-authority-unavailable');
@@ -140,105 +145,170 @@ export function createHostRunSkillPolicies(options: {
   readPackage(versionId: string): unknown;
   readonly signal: AbortSignal;
 }) {
+  const { execution, readWorkbench, readPackage, signal } = options;
+  const readInputs = execution.readRunCompositionInputs;
+  const readNode = execution.readRunNode;
   const active = () => {
-    if (options.signal.aborted) unavailable();
+    if (
+      signal.aborted ||
+      options.signal !== signal ||
+      options.execution !== execution ||
+      options.readWorkbench !== readWorkbench ||
+      options.readPackage !== readPackage ||
+      execution.readRunCompositionInputs !== readInputs ||
+      execution.readRunNode !== readNode
+    )
+      unavailable();
   };
+  async function qualify(
+    request: MemberRequest,
+    locator: Locator,
+  ): Promise<HostRunSkillPolicyQualification> {
+    try {
+      active();
+      locator = Object.freeze({ ...locator });
+      const authorize = async () => {
+        active();
+        const response = await readInputs.call(execution, request, locator);
+        active();
+        if (!response.ok) unavailable();
+        const echo = response.value;
+        if (
+          !echo.actorId ||
+          echo.spaceId !== locator.spaceId ||
+          echo.taskId !== locator.taskId ||
+          echo.planId !== locator.planId ||
+          echo.revision !== locator.revision ||
+          echo.nodeId !== locator.nodeId ||
+          !Array.isArray(echo.items) ||
+          echo.items.some((item) => item.access !== 'visible' || item.blocking)
+        )
+          unavailable();
+        return echo.actorId;
+      };
+      const actorId = await authorize();
+      const node = readNode.call(execution, locator);
+      if (!node) unavailable();
+      const state = readWorkbench.call(options);
+      if (
+        state.appliedPlans.filter(
+          (plan) =>
+            plan.id === locator.planId &&
+            plan.taskId === locator.taskId &&
+            plan.revision === locator.revision,
+        ).length !== 1
+      )
+        unavailable();
+      const applied = AppliedPlanSchema.parse(createExecutionHandoff(locator, state));
+      const handoff = createNodeHandoffs(applied).find((item) => item.nodeId === locator.nodeId);
+      if (
+        !handoff ||
+        node.taskId !== locator.taskId ||
+        node.planId !== locator.planId ||
+        node.revision !== locator.revision ||
+        node.nodeId !== locator.nodeId ||
+        canonicalPayload({ ...handoff, inputRefs: node.handoff.inputRefs }) !==
+          canonicalPayload(node.handoff) ||
+        new Set(handoff.skillRefs.map((ref) => ref.id)).size !== handoff.skillRefs.length
+      )
+        unavailable();
+      const nodeVersion = node.command.version;
+      const handoffFingerprint = canonicalPayload(node.handoff);
+      const originals = new Map<string, { raw: unknown; fingerprint: string }>();
+      const policies = handoff.skillRefs.map((ref) => {
+        if (ref.version !== applied.id) unavailable();
+        const matches = applied.assets.filter((asset) => asset.id === ref.id);
+        if (matches.length !== 1) unavailable();
+        const definition = AssetSchema.parse(matches[0]);
+        if (definition.kind !== 'skill' || !definition.available) unavailable();
+        active();
+        let policy: Pick<HostQualifiedSkillPolicy, 'invocation' | 'policySource'>;
+        if (definition.origin) {
+          const version = definition.origin.versionId;
+          let original = originals.get(version);
+          if (!original) {
+            const raw = readPackage.call(options, version);
+            original = { raw, fingerprint: digest(canonicalPayload(raw)) };
+            originals.set(version, original);
+          }
+          policy = importedPolicy(definition, original.raw);
+        } else
+          policy = {
+            invocation: { modelInvocable: true, userInvocable: true },
+            policySource: { kind: 'manual-default' as const },
+          };
+        active();
+        return {
+          ref: { ...ref },
+          definitionDigest: digest(canonicalPayload(definition)),
+          ...policy,
+        };
+      });
+      // Permission may be revoked while reading inputs. Recheck the original
+      // MemberRequest, not a caller-supplied actor/space echo, before publishing.
+      if ((await authorize()) !== actorId) unavailable();
+      const current = readNode.call(execution, locator);
+      if (
+        !current ||
+        current.command.version !== nodeVersion ||
+        canonicalPayload(current.handoff) !== handoffFingerprint
+      )
+        unavailable();
+      active();
+      for (const policy of policies) {
+        Object.freeze(policy.ref);
+        Object.freeze(policy.invocation);
+        Object.freeze(policy.policySource);
+        Object.freeze(policy);
+      }
+      const fingerprint = canonicalPayload(applied);
+      const packageFingerprints = new Map(
+        [...originals].map(([version, original]) => [version, original.fingerprint]),
+      );
+      originals.clear();
+      const assertCurrent = (): undefined => {
+        try {
+          active();
+          const current = readNode.call(execution, locator);
+          const state = readWorkbench.call(options);
+          if (
+            !current ||
+            canonicalPayload(current.handoff) !== handoffFingerprint ||
+            state.appliedPlans.filter(
+              (plan) =>
+                plan.id === locator.planId &&
+                plan.taskId === locator.taskId &&
+                plan.revision === locator.revision,
+            ).length !== 1 ||
+            canonicalPayload(AppliedPlanSchema.parse(createExecutionHandoff(locator, state))) !==
+              fingerprint
+          )
+            unavailable();
+          // Parse invocation metadata once. Rehash each distinct original record
+          // to detect replacement/corruption without reparsing YAML per step.
+          for (const [version, fingerprint] of packageFingerprints) {
+            const current = readPackage.call(options, version);
+            active();
+            if (digest(canonicalPayload(current)) !== fingerprint) unavailable();
+          }
+          active();
+          return undefined;
+        } catch {
+          return unavailable();
+        }
+      };
+      return Object.freeze({ policies: Object.freeze(policies), assertCurrent });
+    } catch {
+      return unavailable();
+    }
+  }
   return {
+    qualify,
     async read(
       request: MemberRequest,
       locator: Locator,
     ): Promise<readonly HostQualifiedSkillPolicy[]> {
-      try {
-        active();
-        locator = Object.freeze({ ...locator });
-        const authorize = async () => {
-          active();
-          const response = await options.execution.readRunCompositionInputs(request, locator);
-          active();
-          if (!response.ok) unavailable();
-          const echo = response.value;
-          if (
-            !echo.actorId ||
-            echo.spaceId !== locator.spaceId ||
-            echo.taskId !== locator.taskId ||
-            echo.planId !== locator.planId ||
-            echo.revision !== locator.revision ||
-            echo.nodeId !== locator.nodeId ||
-            !Array.isArray(echo.items) ||
-            echo.items.some((item) => item.access !== 'visible' || item.blocking)
-          )
-            unavailable();
-          return echo.actorId;
-        };
-        const actorId = await authorize();
-        const node = options.execution.readRunNode(locator);
-        if (!node) unavailable();
-        const state = options.readWorkbench();
-        if (
-          state.appliedPlans.filter(
-            (plan) =>
-              plan.id === locator.planId &&
-              plan.taskId === locator.taskId &&
-              plan.revision === locator.revision,
-          ).length !== 1
-        )
-          unavailable();
-        const applied = AppliedPlanSchema.parse(createExecutionHandoff(locator, state));
-        const handoff = createNodeHandoffs(applied).find((item) => item.nodeId === locator.nodeId);
-        if (
-          !handoff ||
-          node.taskId !== locator.taskId ||
-          node.planId !== locator.planId ||
-          node.revision !== locator.revision ||
-          node.nodeId !== locator.nodeId ||
-          canonicalPayload({ ...handoff, inputRefs: node.handoff.inputRefs }) !==
-            canonicalPayload(node.handoff) ||
-          new Set(handoff.skillRefs.map((ref) => ref.id)).size !== handoff.skillRefs.length
-        )
-          unavailable();
-        const nodeVersion = node.command.version;
-        const handoffFingerprint = canonicalPayload(node.handoff);
-        const policies = handoff.skillRefs.map((ref) => {
-          if (ref.version !== applied.id) unavailable();
-          const matches = applied.assets.filter((asset) => asset.id === ref.id);
-          if (matches.length !== 1) unavailable();
-          const definition = AssetSchema.parse(matches[0]);
-          if (definition.kind !== 'skill' || !definition.available) unavailable();
-          active();
-          const policy = definition.origin
-            ? importedPolicy(definition, options.readPackage(definition.origin.versionId))
-            : {
-                invocation: { modelInvocable: true, userInvocable: true },
-                policySource: { kind: 'manual-default' as const },
-              };
-          active();
-          return {
-            ref: { ...ref },
-            definitionDigest: digest(canonicalPayload(definition)),
-            ...policy,
-          };
-        });
-        // Permission may be revoked while reading inputs. Recheck the original
-        // MemberRequest, not a caller-supplied actor/space echo, before publishing.
-        if ((await authorize()) !== actorId) unavailable();
-        const current = options.execution.readRunNode(locator);
-        if (
-          !current ||
-          current.command.version !== nodeVersion ||
-          canonicalPayload(current.handoff) !== handoffFingerprint
-        )
-          unavailable();
-        active();
-        for (const policy of policies) {
-          Object.freeze(policy.ref);
-          Object.freeze(policy.invocation);
-          Object.freeze(policy.policySource);
-          Object.freeze(policy);
-        }
-        return Object.freeze(policies);
-      } catch {
-        return unavailable();
-      }
+      return (await qualify(request, locator)).policies;
     },
   };
 }

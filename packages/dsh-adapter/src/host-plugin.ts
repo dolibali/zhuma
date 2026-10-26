@@ -79,7 +79,7 @@ export const executionPlugin = { inject: [...executionInject], apply: applyExecu
 // Native services are an independent child: their absence must not prevent
 // manual member work, and can never silently select a different executor.
 export const nativeRunPlugin = {
-  inject: [...nativeWorkSessionInject, 'llm'],
+  inject: [...nativeWorkSessionInject, 'llm', 'workingDirectory'],
   apply(ctx: Context, config: { open(ctx: Context): Promise<void> }) {
     return config.open(ctx);
   },
@@ -264,6 +264,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
               directory: directoryLifecycle,
               signal: runLifetime.signal,
               readWorkbench: workbench.readWorkbench,
+              skillPolicies: workbench.createRunSkillPolicies(service),
             });
             const opened = await runOpening;
             if (closed || runsClosed) {
