@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
@@ -165,7 +165,7 @@ async function fixture(t, { resource = 'skill', provider = true } = {}) {
       : {}),
   };
   h.service.installRunHost(host);
-  const begin = () => {
+  const begin = (compositionOptions = {}) => {
     const row = h.read();
     const { actorId, ...raw } = command(row);
     const prior = row.nativeExecution?.receipts.find((item) => item.requestId === raw.requestId);
@@ -187,6 +187,7 @@ async function fixture(t, { resource = 'skill', provider = true } = {}) {
       tools: { kind: 'text-only' },
       inputs: { ...h.locate(), actorId, spaceId: raw.spaceId, items: [] },
       ...(resource ? { resourceCatalog: catalog } : {}),
+      ...compositionOptions,
     });
     const { firstMessage: _message, ...projection } = executionRunCompositionRequest(composition);
     return { ...h.locate(), ...raw, ...projection, composition };
@@ -327,5 +328,36 @@ test('resource service contract: the legacy no-resource route does not request a
   checked(await h.service.startRun(h.request, input));
   assert.equal(h.counts.prepared, 0);
   assert.equal(h.counts.privateReads, 0);
+  assert.deepEqual(h.counters, { global: 1, nodes: 1, plans: 0 });
+});
+
+for (const resource of [false, 'skill'])
+  test(`result-intent service contract: original ${resource || 'no-resource'} admission preserves the explicit descriptor`, async (t) => {
+    const h = await fixture(t, { resource });
+    const resultIntentTool = JSON.parse(
+      await readFile(
+        new URL('./fixtures/result-intent-descriptor-v1.json', import.meta.url),
+        'utf8',
+      ),
+    );
+    const input = h.begin({ resultIntentTool });
+    checked(await h.service.startRun(h.request, input));
+    checked(await h.service.startRun(h.request, input));
+    assert.deepEqual(h.service.readRunComposition(h.runLocator()), input.composition);
+    assert.deepEqual(h.counters, { global: 1, nodes: 1, plans: 0 });
+    assert.equal(h.counts.prepared, resource ? 2 : 0);
+    assert.equal(h.counts.released, resource ? 2 : 0);
+  });
+
+test('result-intent service contract: a new Host capability cannot overwrite an old same-key Run', async (t) => {
+  const h = await fixture(t, { resource: false });
+  const prior = h.begin();
+  checked(await h.service.startRun(h.request, prior));
+  const resultIntentTool = JSON.parse(
+    await readFile(new URL('./fixtures/result-intent-descriptor-v1.json', import.meta.url), 'utf8'),
+  );
+  const changed = h.begin({ resultIntentTool });
+  refused(await h.service.startRun(h.request, changed), 'run-idempotency-mismatch');
+  assert.deepEqual(h.service.readRunComposition(h.runLocator()), prior.composition);
   assert.deepEqual(h.counters, { global: 1, nodes: 1, plans: 0 });
 });
