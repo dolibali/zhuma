@@ -251,6 +251,7 @@ export {
   startAppliedPlan,
   submitDelivery,
   submitExpertDelivery,
+  submitExpertManifestDelivery,
   castBallot,
   settleReview,
   unlockDownstream,
