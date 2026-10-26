@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { nativeResultIntentSchema } from './native-work-session-result-contract.js';
 import {
   NativeWorkError,
   type NativeWorkScope,
@@ -31,7 +32,7 @@ export const nativeSelectionSchema = z.strictObject({
   maxTokens: positive.max(65_536),
   configurationId: id,
 });
-/** Unchanged strict flat-v1 shape: also the actual downgrade-refusal test schema. */
+/** Legacy bytes remain unchanged without the optional versioned result metadata. */
 export const nativeWorkSessionBindingSchema = z.strictObject({
   schemaVersion: z.literal(1),
   scope: nativeScopeSchema,
@@ -55,6 +56,7 @@ export const nativeWorkSessionBindingSchema = z.strictObject({
       chargedBytes: z.number().int().min(0).max(65_536),
     })
     .optional(),
+  resultIntent: nativeResultIntentSchema.optional(),
 });
 
 export function nativeWorkSessionKey(scope: NativeWorkScope): string {
