@@ -62,6 +62,30 @@ lease immediately before its own durable submission. The fingerprint covers
 the complete source and digest, so a new reference after restart identifies the
 same fixed content without treating the old object as live authority.
 
+The C preparation/read path does not enter an ExecutionService mutation queue:
+the fifth parameter reads its frozen composition synchronously. Preparation
+uses the native send queue only for binding metadata, and waits for native
+input cleanup outside that queue. D should obtain the prepared reference and
+lease before entering its own submission queue, then recheck both inside its
+original authorized submission path. C's original `send` grant is not an expert
+submission grant. Review acceptance and downstream release remain D's facts.
+
+```ts
+const prepared = await results.prepareFixedResult(originalRunGrant, signal);
+if (prepared.status === 'ready') {
+  const lease = await results.readFixedResult(originalRunGrant, prepared.ref, signal);
+  try {
+    results.assertFixedResult(originalRunGrant, prepared.ref);
+    lease.check();
+    // Pass the original ref/lease to D's existing authorized submission path.
+    // Inside its queue, recheck both and the original submit authority before
+    // committing lease.content and its full source/fingerprint idempotently.
+  } finally {
+    lease.release();
+  }
+}
+```
+
 ## Persistence, bounds and recovery
 
 Only optional versioned `resultIntent` metadata and its sealed cut are added to
