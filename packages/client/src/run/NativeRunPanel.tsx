@@ -180,6 +180,8 @@ function Selection({
   const [expanded, setExpanded] = useState(!view.run);
   const [partialModel, setPartialModel] = useState<NativeRunSelection['model']>();
   const [partialExecutor, setPartialExecutor] = useState<NativeRunSelection['executor']>();
+  const [partialWorkspace, setPartialWorkspace] = useState<NativeRunSelection['workspace']>();
+  const chosenWorkspace = selected?.workspace ?? partialWorkspace;
   const chosenModel = selected?.model ?? partialModel;
   const chosenExecutor = selected?.executor ?? partialExecutor;
   const model =
@@ -239,7 +241,12 @@ function Selection({
                 const choice = view.models.items.find((item) => item.id === id);
                 if (!choice) return;
                 setPartialModel(choice.value);
-                if (expert) onChange({ model: choice.value, executor: expert.value });
+                if (expert)
+                  onChange({
+                    model: choice.value,
+                    executor: expert.value,
+                    ...(chosenWorkspace ? { workspace: chosenWorkspace } : {}),
+                  });
               }}
             />
           )}
@@ -282,7 +289,12 @@ function Selection({
                 const choice = view.experts.items.find((item) => item.id === id);
                 if (!choice) return;
                 setPartialExecutor(choice.value);
-                if (model) onChange({ model: model.value, executor: choice.value });
+                if (model)
+                  onChange({
+                    model: model.value,
+                    executor: choice.value,
+                    ...(chosenWorkspace ? { workspace: chosenWorkspace } : {}),
+                  });
               }}
             />
           )}
@@ -291,6 +303,54 @@ function Selection({
             <small>暂无可用执行者</small>
           )}
         </div>
+        {(view.workspaces?.length || (chosenWorkspace && chosenWorkspace.kind !== 'text-only')) && (
+          <div className="zm-native-run__choice">
+            <span>执行范围</span>
+            {disabled ? (
+              <strong>
+                {chosenWorkspace?.kind === 'unavailable'
+                  ? '工作区授权已失效'
+                  : chosenWorkspace?.kind === 'local'
+                    ? (view.workspaces?.find((item) => item.id === chosenWorkspace.id)?.label ??
+                      '工作区授权已失效')
+                    : '仅使用任务材料'}
+              </strong>
+            ) : (
+              <SingleSelect
+                label="执行范围"
+                value={
+                  chosenWorkspace?.kind === 'unavailable'
+                    ? 'unavailable'
+                    : chosenWorkspace?.kind === 'local'
+                      ? `workspace:${chosenWorkspace.id}`
+                      : 'text-only'
+                }
+                options={[
+                  ...(chosenWorkspace?.kind === 'unavailable'
+                    ? [{ value: 'unavailable', label: '工作区授权已失效', disabled: true }]
+                    : []),
+                  { value: 'text-only', label: '仅使用任务材料' },
+                  ...(view.workspaces ?? []).map((item) => ({
+                    value: `workspace:${item.id}`,
+                    label: `${item.label} · ${item.access === 'write' ? '可编辑' : '只读'}${item.publish ? ' · 可发布文件' : ''}`,
+                  })),
+                ]}
+                onValueChange={(value) => {
+                  const choice =
+                    value === 'text-only'
+                      ? { kind: 'text-only' as const }
+                      : view.workspaces?.some((item) => `workspace:${item.id}` === value)
+                        ? { kind: 'local' as const, id: value.slice('workspace:'.length) }
+                        : undefined;
+                  if (!choice) return;
+                  setPartialWorkspace(choice);
+                  if (model && expert)
+                    onChange({ model: model.value, executor: expert.value, workspace: choice });
+                }}
+              />
+            )}
+          </div>
+        )}
         {disabled && <span className="zm-native-run__fixed">本轮配置已固定</span>}
       </div>
       {!!view.resources.length && (
@@ -416,8 +476,12 @@ function RunPanel(props: NativeRunPanelProps) {
   const availableModes =
     ready && matching ? modes.filter((mode) => ready.actions.send[mode].kind === 'available') : [];
   const mode = availableModes.includes(selectedMode) ? selectedMode : availableModes[0];
+  const selectedWorkspace = ready?.selection?.workspace;
   const selectionReady =
     !!ready?.selection &&
+    selectedWorkspace?.kind !== 'unavailable' &&
+    (selectedWorkspace?.kind !== 'local' ||
+      !!ready.workspaces?.some((item) => item.id === selectedWorkspace.id)) &&
     ready.models.kind === 'ready' &&
     ready.experts.kind === 'ready' &&
     ready.models.items.some((item) => modelKey(item.value) === modelKey(ready.selection!.model)) &&
@@ -477,23 +541,27 @@ function RunPanel(props: NativeRunPanelProps) {
     ? ''
     : !hasRun
       ? reason(ready.actions.start)
-      : stopped
+      : run?.status === 'completed' && !held
         ? reason(ready.actions.start)
-        : sendUnavailable || '本轮暂不能发送。';
-  const startAction = ready && !held && (
-    <Button
-      variant={showComposer ? 'secondary' : 'primary'}
-      busy={running('start')}
-      busyLabel="正在启动…"
-      disabled={!canStart || running('send') || stopping}
-      onClick={() => {
-        if (canStart && ready.selection)
-          void command('start', () => props.onStart(ready.selection!));
-      }}
-    >
-      {hasRun ? '开始新一轮' : '开始执行'}
-    </Button>
-  );
+        : stopped
+          ? reason(ready.actions.start)
+          : sendUnavailable || '本轮暂不能发送。';
+  const startAction = ready &&
+    !held &&
+    !(run?.status === 'completed' && ready.actions.start.kind !== 'available') && (
+      <Button
+        variant={showComposer ? 'secondary' : 'primary'}
+        busy={running('start')}
+        busyLabel="正在启动…"
+        disabled={!canStart || running('send') || stopping}
+        onClick={() => {
+          if (canStart && ready.selection)
+            void command('start', () => props.onStart(ready.selection!));
+        }}
+      >
+        {hasRun ? '开始新一轮' : '开始执行'}
+      </Button>
+    );
 
   return (
     <section className="zm-native-run" aria-labelledby={`${id}-title`}>

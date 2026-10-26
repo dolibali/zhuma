@@ -167,6 +167,37 @@ export type {
 } from './native-work-session-contract.js';
 export type { NativeDshWorkingDirectory } from './native-work-session-dsh.js';
 export {
+  NativeRunLocalToolProducer,
+  NativeRunLocalToolError,
+  NATIVE_RUN_LOCAL_TOOL_SOURCE_VERSION,
+  NATIVE_RUN_LOCAL_TOOL_CONFIG,
+  NATIVE_RUN_LOCAL_IO_LIMITS,
+  describeNativeRunLocalTools,
+  adoptNativeRunLocalTools,
+  type NativeRunWorkspaceCapability,
+  type NativeRunLocalProducerSource,
+  type NativeRunLocalToolsAdoption,
+} from './native-run-local-tools.js';
+export {
+  createNativeOutputFileIssuer,
+  type NativeOutputFileIssuer,
+} from './native-work-session-output-file.js';
+export {
+  NativeOutputFileByteProducer,
+  type NativeOutputFileRead,
+} from './native-work-session-output-file-source.js';
+export { describeNativeOutputFileTool } from './native-work-session-output-file-tool.js';
+export {
+  NATIVE_OUTPUT_FILE_TOOL,
+  NATIVE_OUTPUT_FILE_VERSION,
+  type NativeOutputPublicationAuthority,
+  type NativeOutputFileResourceSource,
+  type NativeOutputFileReservation,
+  type NativeRunOutputFiles,
+  type NativePublishedFileRef,
+  type NativePublishedFileLease,
+} from './native-work-session-output-file-contract.js';
+export {
   describeAcceptedInputTool,
   type NativeAcceptedInputToolDefinition,
 } from './native-work-session-input-tool.js';

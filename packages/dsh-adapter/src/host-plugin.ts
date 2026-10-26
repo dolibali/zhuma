@@ -12,6 +12,7 @@ import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import { openHostRunHttp } from './host-run-http.js';
 import { openHostRunOwner } from './host-run-owner.js';
+import { hostLocalExecutionSchema } from './host-run-workspaces.js';
 import { nativeWorkSessionInject } from './native-work-session-storage.js';
 import {
   applySpaceDirectory,
@@ -38,6 +39,7 @@ export const Config = z.strictObject({
   // Only private DSH credential record addresses, never inline seed/account data.
   identityBootstrapKey: bootstrapRecordKey.optional(),
   spaceDirectoryBootstrapKey: bootstrapRecordKey.optional(),
+  localExecution: hostLocalExecutionSchema.optional(),
   bodyBytes: z
     .number()
     .int()
@@ -265,6 +267,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
               signal: runLifetime.signal,
               readWorkbench: workbench.readWorkbench,
               skillPolicies: workbench.createRunSkillPolicies(service),
+              localExecution: config.localExecution,
             });
             const opened = await runOpening;
             if (closed || runsClosed) {

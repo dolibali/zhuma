@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'vitest';
@@ -17,6 +17,11 @@ import SkillRegistry from '@deepseek-ai/dsh-skill';
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill';
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
 import FsLocal from '@deepseek-ai/dsh-fs-local';
+import WorkspaceRegistry from '@deepseek-ai/dsh-workspace';
+import * as ToolFs from '@deepseek-ai/dsh-tool-fs';
+import { LocalAttachmentStore } from '@deepseek-ai/dsh-attachment-local';
+import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
+import FsSandbox from '@deepseek-ai/dsh-fs-sandbox';
 import Agents from '@deepseek-ai/dsh-agent';
 import Loop from '@deepseek-ai/dsh-agent-loop';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -38,11 +43,11 @@ import {
 import { ScriptedAdapter } from './zhuma-native-work-bundle.ts';
 
 const deferred = () => Promise.withResolvers();
-function checked(response) {
+export function checked(response) {
   assert.equal(response.result.ok, true, response.result.ok ? '' : response.result.error.code);
   return response.result.value;
 }
-function waitFor(ctx, predicate) {
+export function waitFor(ctx, predicate) {
   if (predicate()) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const stop = ctx.on(
@@ -66,7 +71,7 @@ function waitFor(ctx, predicate) {
     }
   });
 }
-async function boot(
+export async function boot(
   t,
   {
     expert = false,
@@ -74,6 +79,7 @@ async function boot(
     userOnly = false,
     parentSkill = false,
     review = false,
+    localWorkspace = undefined,
     adapter = new ScriptedAdapter(['FIRST', 'SECOND']),
   } = {},
 ) {
@@ -93,7 +99,18 @@ async function boot(
     [Projections],
     [Prompt],
     [Tools],
-    [FsLocal, { cwd: root }],
+    ...(localWorkspace
+      ? [
+          [
+            SandboxPolicy,
+            {
+              workspaceRoot: join(root, 'project-files'),
+              ...(localWorkspace.policyMode ? { mode: localWorkspace.policyMode } : {}),
+            },
+          ],
+        ]
+      : []),
+    [localWorkspace?.sandboxed ? FsSandbox : FsLocal, { cwd: root }],
     [WorkingDirectory, { defaultDirectory: root }],
     [Agents],
     [Persistence, { root: join(root, 'sessions'), compression: 'none' }],
@@ -107,6 +124,15 @@ async function boot(
     [RemoteAccess],
   ])
     await ctx.plugin(plugin, config);
+  let workspace, workspaceFiber;
+  const workspaceRoot = join(root, 'project-files');
+  if (localWorkspace) {
+    await mkdir(workspaceRoot);
+    workspaceFiber = await ctx.plugin(WorkspaceRegistry);
+    workspace = await ctx.workspaceRegistry.create(workspaceRoot, 'Local contract project');
+    await ctx.plugin(ToolFs, { readImage: false });
+    await ctx.plugin(LocalAttachmentStore, { dshHome: root });
+  }
   if (parentSkill) {
     await ctx.plugin(SkillRegistry);
     ctx.get('skills').register({
@@ -201,6 +227,25 @@ async function boot(
     deploymentMode: 'multi-member',
     identityBootstrapKey: 'zhuma-identity/bootstrap',
     spaceDirectoryBootstrapKey: 'zhuma-spaces/bootstrap',
+    ...(workspace
+      ? {
+          localExecution: {
+            deviceId: 'local-contract-device',
+            bindings: [
+              {
+                id: 'project-files',
+                generation: 1,
+                actorId: 'chen',
+                spaceId: 'north',
+                projectId: 'project',
+                workspaceId: workspace.id,
+                access: localWorkspace.access ?? 'write',
+                publish: localWorkspace.publish ?? [],
+              },
+            ],
+          },
+        }
+      : {}),
   });
   await host;
   if (imported)
@@ -279,6 +324,8 @@ async function boot(
     table,
     locator,
     begin,
+    workspaceRoot,
+    workspaceFiber,
   };
 }
 
