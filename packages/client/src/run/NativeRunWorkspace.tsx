@@ -80,15 +80,16 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
   );
 }
 
-export function NativeRunLauncher({ api, target }: Props) {
+type LauncherProps = Props & { label?: string | undefined };
+export function NativeRunLauncher({ api, target, label = '使用 Agent' }: LauncherProps) {
   const identity = JSON.stringify(target);
   const generation = useRef({ api, identity, epoch: 0 });
   if (generation.current.api !== api || generation.current.identity !== identity) {
     generation.current = { api, identity, epoch: generation.current.epoch + 1 };
   }
-  return <Launcher key={generation.current.epoch} api={api} target={target} />;
+  return <Launcher key={generation.current.epoch} api={api} target={target} label={label} />;
 }
-function Launcher({ api, target }: Props) {
+function Launcher({ api, target, label }: LauncherProps) {
   const [open, setOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const changeDirty = useCallback((dirty: boolean) => setDirty(dirty), []);
@@ -97,7 +98,7 @@ function Launcher({ api, target }: Props) {
   return (
     <>
       {leave.dialog}
-      <Button onClick={() => setOpen(true)}>使用 Agent</Button>
+      <Button onClick={() => setOpen(true)}>{label}</Button>
       {open && (
         <Modal title={target.title} variant="workspace" close={close}>
           <div className="zm-run-workspace-dialog">

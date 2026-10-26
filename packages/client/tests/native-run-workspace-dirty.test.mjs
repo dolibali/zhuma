@@ -348,6 +348,90 @@ if (!domModule) {
     }
   });
 
+  test('DOM contract: a service continuation item reopens the same persisted Run from My Work without beginning or submitting', async () => {
+    const execution = {
+      ...target,
+      version: 2,
+      status: 'running',
+      goal: target.title,
+      assigneeId: 'chen',
+      reviewerIds: [],
+      artifacts: [],
+      rounds: [],
+      comments: [],
+    };
+    const item = {
+      id: 'continuation',
+      kind: 'deliver',
+      actorId: 'chen',
+      nodeId: target.nodeId,
+      taskId: target.taskId,
+      reason: 'agent-assisted-delivery',
+      action: 'continue-handling',
+    };
+    const reads = [],
+      histories = [];
+    let options = 0,
+      begins = 0,
+      submissions = 0;
+    const executionApi = {
+      inbox: async () => ({ items: [item], nodes: [execution] }),
+      submit: async () => submissions++,
+    };
+    const nativeApi = api({
+      options: async (current) => {
+        assert.deepEqual(current, target);
+        options++;
+        return api().options();
+      },
+      read: async (current, runId) => {
+        reads.push({ current, runId });
+        return run;
+      },
+      history: async (current, runId) => {
+        histories.push({ current, runId });
+        return {
+          messages: [{ id: 'saved', sequence: 1, role: 'assistant', text: 'Persisted result' }],
+          nextAfter: 1,
+        };
+      },
+      begin: async () => begins++,
+    });
+    // Two fresh React roots model leaving/re-entering the Client. Host cold-start
+    // proof remains separate; neither render may replace or start the saved Run.
+    for (let round = 0; round < 2; round++) {
+      const node = document.createElement('div');
+      document.body.append(node);
+      const root = createRoot(node);
+      try {
+        await act(async () =>
+          root.render(
+            h(ExecutionWorkspace, {
+              api: executionApi,
+              nativeRun: { api: nativeApi, spaceId: target.spaceId },
+            }),
+          ),
+        );
+        assert.equal(options, round, 'inbox render performs no native discovery or command');
+        const open = node.querySelector('.zm-directory-actions button');
+        assert.equal(open.querySelector('.zm-button-label').textContent, '打开 Agent 会话');
+        assert.equal(open.disabled, false);
+        await act(async () => open.click());
+        assert.equal(options, round + 1);
+        assert.ok(node.querySelector('.zm-run-workspace-dialog'));
+        assert.ok(node.textContent.includes('Persisted result'));
+        assert.equal(node.querySelector('.zm-execution-detail'), null, 'no fake manual delivery');
+        assert.deepEqual(reads.at(-1), { current: target, runId: run.runId });
+        assert.deepEqual(histories.at(-1), { current: target, runId: run.runId });
+        assert.equal(begins, 0);
+        assert.equal(submissions, 0);
+      } finally {
+        await act(async () => root.unmount());
+        node.remove();
+      }
+    }
+  });
+
   test('DOM/style contract: conversation keeps one title and a full-width vertical composer without changing ordinary modal footers', async () => {
     const style = document.createElement('style');
     style.textContent = (
