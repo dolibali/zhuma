@@ -30,6 +30,9 @@ import {
   executionRunCompositionRequest,
   EXECUTION_RESOURCE_SOURCE_VERSION,
   executionResourceDigest,
+  describeAcceptedInputTool,
+  acceptedFileDescriptor,
+  resultIntentDescriptor,
 } from './zhuma-run-resources-bundle.js';
 
 async function setup(
@@ -43,6 +46,7 @@ async function setup(
     parentGlobal = true,
     empty = false,
     invocation,
+    surface,
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-run-resources-'));
@@ -78,8 +82,22 @@ async function setup(
     assert(qualifier.tools.get('mcp__docs__hidden'), 'the peer really has an unselected tool');
   }
   await qualifier.fiber.dispose();
-  const facts = compositionFacts(),
+  const facts = compositionFacts({ upstream: surface === 'reader' || surface?.includes('file') }),
     plan = facts.workbench.appliedPlans[0];
+  const independentDescriptors = [];
+  if (surface === 'reader' || surface?.includes('file')) {
+    const definition = describeAcceptedInputTool();
+    facts.tools = { kind: 'accepted-input-reader', definition };
+    independentDescriptors.push(definition);
+  }
+  if (surface?.includes('file')) {
+    facts.acceptedFileReader = acceptedFileDescriptor;
+    independentDescriptors.push(acceptedFileDescriptor);
+  }
+  if (surface?.includes('result')) {
+    facts.resultIntentTool = resultIntentDescriptor;
+    independentDescriptors.push(resultIntentDescriptor);
+  }
   const node = plan.task.workflows[0].nodes.find((item) => item.id === facts.node.nodeId);
   plan.assets = [
     {
@@ -207,10 +225,28 @@ async function setup(
         formations.push(decision.messages ?? []);
         return decision;
       });
+      // Surface-only contracts for independent C tools: real SDK registrations
+      // use their exact declarations, but do not claim file IO/result authority.
+      for (const definition of independentDescriptors)
+        ctx.tools.register({
+          name: definition.name,
+          description: definition.description,
+          parameters: definition.parameters,
+          output: { schema: definition.outputSchema, render: () => [] },
+          async execute() {
+            assert.fail('surface-only contract must not execute an independent C tool');
+          },
+        });
       adopted = await registerExecutionRunResources(ctx, snapshot, binding, current, producer);
+      assert.deepEqual(
+        [...adopted.toolAllowlist].sort(),
+        snapshot.payload.toolAllowlist
+          .filter((name) => name === 'skill' || name.startsWith('mcp__'))
+          .sort(),
+      );
       return {
         context: snapshot.payload.context,
-        toolAllowlist: [...new Set([...snapshot.payload.toolAllowlist, ...adopted.toolAllowlist])],
+        toolAllowlist: snapshot.payload.toolAllowlist,
       };
     },
   );
@@ -244,6 +280,17 @@ async function setup(
     const agent = h.ctx.agents.get(binding.nativeSessionId);
     assert(agent);
     await agent.whenIdle();
+    assert.deepEqual(
+      h.ctx.tools
+        .schemas(agent)
+        .map((tool) => tool.name)
+        .sort(),
+      [...snapshot.payload.toolAllowlist].sort(),
+    );
+    assert.deepEqual(
+      (h.adapter.requests[0].tools ?? []).map((tool) => tool.name).sort(),
+      [...snapshot.payload.toolAllowlist].sort(),
+    );
     return agent;
   };
   let callId = 0;
@@ -520,7 +567,46 @@ for (const mcp of [false, true])
       assert.equal(result.isError, false);
       assert.deepEqual(f.fixture.calls, ['ping']);
     }
+    await f.h.service.send(f.authority, {
+      requestId: 'empty-explicit',
+      text: '/parent-private-skill\nAn unselected parent method must not load.',
+      mode: 'followup',
+      selection: executionRunCompositionRequest(f.snapshot).selection,
+    });
+    await agent.whenIdle();
+    assert(!JSON.stringify(f.h.adapter.requests).includes('PARENT_PRIVATE_BODY'));
   });
+for (const surface of ['legacy', 'reader', 'file', 'result', 'file-result'])
+  for (const parentGlobal of [true, false])
+    test(`actual resources SDK: exact frozen ${surface} surface with ${parentGlobal ? 'existing' : 'late'} global loader`, async (t) => {
+      const f = await setup(t, { mcp: false, empty: true, surface, parentGlobal }),
+        agent = await f.start();
+      assert.deepEqual(f.adopted.toolAllowlist, []);
+      assert(!f.snapshot.payload.toolAllowlist.includes('skill'));
+      assert.equal(f.opened, 0);
+      if (!parentGlobal) await f.h.ctx.plugin(ToolSkill);
+      for (const name of ['parent-private-skill', 'sibling-skill']) {
+        const denied = await f.call(agent, 'skill', { name });
+        assert.equal(denied.isError, true);
+      }
+      await f.h.service.send(f.authority, {
+        requestId: 'surface-explicit',
+        text: '/parent-private-skill\nNo resource was selected for this Run.',
+        mode: 'followup',
+        selection: executionRunCompositionRequest(f.snapshot).selection,
+      });
+      await agent.whenIdle();
+      assert.equal(f.h.adapter.requests.length, 2);
+      assert(!JSON.stringify(f.h.adapter.requests).includes('PARENT_PRIVATE_BODY'));
+      assert.deepEqual(
+        f.h.ctx.tools
+          .schemas(agent)
+          .map((tool) => tool.name)
+          .sort(),
+        [...f.snapshot.payload.toolAllowlist].sort(),
+      );
+      assert(!f.formations.flat().some((message) => message.source?.kind === 'skill-invocation'));
+    });
 for (const [name, modelInvocable, userInvocable] of [
   ['user-only', false, true],
   ['model-only', true, false],

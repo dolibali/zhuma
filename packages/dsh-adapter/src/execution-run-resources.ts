@@ -267,12 +267,14 @@ export async function registerExecutionRunResources(
             invocation: selected.invocation,
           }),
         );
-      const loader = isolated.plugin(ToolSkill);
-      fibers.push(loader);
-      await loader;
-      const definition = tools.get('skill', scope);
-      if (!definition || definition === parentLoader) fail('resources-unavailable');
-      definitions.set('skill', definition);
+      if (resources.skills.length || resources.mcp.length) {
+        const loader = isolated.plugin(ToolSkill);
+        fibers.push(loader);
+        await loader;
+        const definition = tools.get('skill', scope);
+        if (!definition || definition === parentLoader) fail('resources-unavailable');
+        definitions.set('skill', definition);
+      }
     }
     const descriptors: ExecutionResourceTool[] = [];
     for (const selected of resources.mcp) {
@@ -400,6 +402,10 @@ export async function registerExecutionRunResources(
     }
     current();
     tools.guard((exec) => {
+      // Empty Run domains must not execute an inherited same-name loader.
+      // The SDK's separate explicit-invocation hook needs its owner gate too.
+      if (exec.name === 'skill' && !definitions.has('skill'))
+        return 'execution-resource-not-authorized';
       if (!definitions.has(exec.name)) return undefined;
       try {
         current();
