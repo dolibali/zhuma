@@ -22,6 +22,7 @@ import type {
   NativePublishedFileRef,
   NativePublishedFileLease,
   NativeRunOutputFiles,
+  NativeCompletedPublicationLease,
 } from './native-work-session-output-file-contract.js';
 import {
   NativeOutputFileByteProducer,
@@ -87,6 +88,12 @@ export interface NativeOutputFileIssuer {
   /** Publication capability only. A later completion still verifies the original durable SDK ACK. */
   publishedFile(grant: NativeWorkGrant, publicationId: string): NativePublishedFileRef;
   readPublishedFile(grant: NativeWorkGrant, ref: NativePublishedFileRef): NativePublishedFileLease;
+  /** Immutable ledger facts only; a completion must separately qualify its SDK ACK cut. */
+  readCompletedPublication(
+    grant: NativeWorkGrant,
+    request: { readonly source: NativeOutputFileSource; readonly publicationId: string },
+    signal: AbortSignal,
+  ): Promise<NativeCompletedPublicationLease>;
   close(): Promise<void>;
 }
 /** Host-only: same original sessions/Run owner and original qualified FS, never Client factories. */
@@ -102,6 +109,17 @@ export function createNativeOutputFileIssuer(
   owners.set(sessions, owner);
   ctx.effect(() => () => owner.close());
   return owner;
+}
+/** Same original Run manager and sessions; a structural copy is not a publisher owner. */
+export function assertNativeOutputFileIssuer(
+  sessions: NativeWorkSessionService,
+  authority: Pick<ExecutionRunAuthorities, 'assertGrant'>,
+  issuer: NativeOutputFileIssuer,
+): undefined {
+  const owner = owners.get(sessions);
+  if (owner !== issuer || !(owner instanceof OutputFileOwner))
+    throw new ArtifactUploadError('publication-unavailable');
+  return owner.assertOriginalAuthority(authority);
 }
 class OutputFileOwner implements NativeOutputFileIssuer {
   private readonly lifetime = new AbortController();
@@ -151,8 +169,20 @@ class OutputFileOwner implements NativeOutputFileIssuer {
       },
     });
   }
-  private binding(grant: NativeWorkGrant): NativeSessionBinding {
-    this.authority.assertGrant(grant, 'send');
+  assertOriginalAuthority(authority: Pick<ExecutionRunAuthorities, 'assertGrant'>): undefined {
+    if (
+      this.authority !== authority ||
+      this.lifetime.signal.aborted ||
+      owners.get(this.sessions) !== this
+    )
+      throw new ArtifactUploadError('publication-unavailable');
+    return undefined;
+  }
+  private binding(
+    grant: NativeWorkGrant,
+    access: 'send' | 'history' = 'send',
+  ): NativeSessionBinding {
+    this.authority.assertGrant(grant, access);
     if (this.lifetime.signal.aborted || owners.get(this.sessions) !== this)
       throw new ArtifactUploadError('cancelled');
     const binding = this.sessions.open(grant)?.binding;
@@ -411,6 +441,37 @@ class OutputFileOwner implements NativeOutputFileIssuer {
       ...projection,
       signal: AbortSignal.any([grant.signal, this.lifetime.signal]),
       check,
+    });
+  }
+  async readCompletedPublication(
+    grant: NativeWorkGrant,
+    request: { readonly source: NativeOutputFileSource; readonly publicationId: string },
+    signal: AbortSignal,
+  ): Promise<NativeCompletedPublicationLease> {
+    const source = structuredClone(request.source);
+    const verify = (): undefined => {
+      const binding = this.binding(grant, 'history');
+      if (
+        canonicalPayload(binding.scope) !== canonicalPayload(source.scope) ||
+        binding.nativeSessionId !== source.nativeSessionId ||
+        binding.nativeAgentId !== source.nativeAgentId ||
+        binding.selection.configurationId !== source.configurationId
+      )
+        throw new ArtifactUploadError('publication-denied');
+      return undefined;
+    };
+    verify();
+    const lease = await this.files.readCompleted(grant, { ...request, source }, signal);
+    verify();
+    lease.check();
+    return Object.freeze({
+      source: lease.source,
+      record: lease.record,
+      signal: lease.signal,
+      check: () => {
+        verify();
+        return lease.check();
+      },
     });
   }
   async close(): Promise<void> {

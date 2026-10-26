@@ -1,7 +1,5 @@
-import type {
-  NativeResultIntent,
-  NativeResultSnapshot,
-} from './native-work-session-result-contract.js';
+import type { NativeResultSnapshot } from './native-work-session-result-contract.js';
+import type { NativeWorkResultIntent } from './native-work-session-result-intent.js';
 
 /** Host-internal seam. Never deserialize a grant from a Client or model request. */
 export interface NativeWorkScope {
@@ -61,7 +59,7 @@ export interface NativeSessionBinding {
   readonly inputReadBudget?:
     { readonly attempts: number; readonly chargedBytes: number } | undefined;
   /** Versioned metadata only. Result content remains exclusively in the native log. */
-  readonly resultIntent?: NativeResultIntent | undefined;
+  readonly resultIntent?: NativeWorkResultIntent | undefined;
 }
 
 /** One atomic mapping row; prior bindings are metadata, never transcript copies. */

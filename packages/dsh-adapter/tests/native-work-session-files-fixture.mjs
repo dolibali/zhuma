@@ -67,6 +67,7 @@ export async function bootRunFiles(
     workingDirectory = () => ({ kind: 'text-only' }),
     outputFilePublisherTool,
     parallelHumanNode = false,
+    extraExpertNode = false,
   } = {},
 ) {
   const ctx = new Context();
@@ -165,6 +166,19 @@ export async function bootRunFiles(
                   dependsOn: ['source'],
                   skillIds: [],
                 },
+                ...(extraExpertNode
+                  ? [
+                      {
+                        ...data.node,
+                        id: 'expert-other',
+                        assigneeId: 'qa',
+                        reviewerIds: [],
+                        reviewRequired: false,
+                        dependsOn: ['source'],
+                        skillIds: [],
+                      },
+                    ]
+                  : []),
                 ...(parallelHumanNode
                   ? [
                       {
@@ -232,6 +246,7 @@ export async function bootRunFiles(
       return undefined;
     };
     let selected;
+    const configured = new Map();
     const issuer = execution.installRunHost({
       signal: lifetime.signal,
       memberLease: (request) => openExecutionMemberLease(ctx, request),
@@ -239,7 +254,14 @@ export async function bootRunFiles(
       assertConfiguration(member, space, _node, request) {
         assert.equal(member, 'chen');
         assert.equal(space, 'north');
-        assert.equal(canonicalPayload(request.composition), canonicalPayload(selected));
+        const expected = extraExpertNode
+          ? configured.get(request.composition.configurationId)
+          : selected;
+        assert.ok(expected);
+        assert.equal(canonicalPayload(request.composition), canonicalPayload(expected));
+        if (extraExpertNode)
+          for (const key of ['taskId', 'planId', 'revision', 'nodeId'])
+            assert.equal(expected.payload.scope[key], _node[key]);
         assert.equal(request.selection.provider, 'contract');
         assert.equal(request.selection.model, 'contract-model');
         return undefined;
@@ -249,7 +271,8 @@ export async function bootRunFiles(
         assert.equal(space, 'north');
         assert.deepEqual(workspace, runWorkspace);
         assert.equal(access, runWorkspace.kind === 'local' ? runWorkspace.access : 'read');
-        assert.equal(configurationId, selected.configurationId);
+        if (extraExpertNode) assert.ok(configured.has(configurationId));
+        else assert.equal(configurationId, selected.configurationId);
         return undefined;
       },
       onChange(recheck) {
@@ -397,43 +420,49 @@ export async function bootRunFiles(
         kind: 'accepted-input-reader',
         definition: describeAcceptedInputTool(),
       },
+      options = {},
     ) => {
+      const nodeId = options.nodeId ?? 'expert',
+        runId = options.runId ?? 'file-run',
+        segmentId = options.segmentId ?? 'file-segment';
+      const intentTool = options.resultIntentTool ?? resultIntentTool;
       const input = checked(
         await execution.readRunCompositionInputs(requests.chen, {
-          ...locate('expert'),
+          ...locate(nodeId),
           spaceId: 'north',
         }),
       );
       selected = freezeExecutionRunComposition({
         workbench: workbench.readWorkbench(),
-        node: row('expert'),
+        node: row(nodeId),
         scope: {
           actorId: 'chen',
           spaceId: 'north',
-          ...locate('expert'),
-          runId: 'file-run',
+          ...locate(nodeId),
+          runId,
           generation: 1,
-          segmentId: 'file-segment',
+          segmentId,
         },
         model: { provider: 'contract', model: 'contract-model', maxTokens: 1000 },
         executor: { kind: 'plan-expert', ref: { id: 'qa', version: plan.id } },
         inputs: input,
         tools: toolChoice,
         ...(acceptedFiles ? { acceptedFileReader: describeNativeAcceptedFileTool() } : {}),
-        ...(resultIntentTool === undefined ? {} : { resultIntentTool }),
+        ...(intentTool === undefined ? {} : { resultIntentTool: intentTool }),
         ...(outputFilePublisherTool ? { outputFilePublisherTool } : {}),
       });
+      configured.set(selected.configurationId, selected);
       const projected = executionRunCompositionRequest(selected);
       checked(
         await execution.startRun(requests.chen, {
-          ...locate('expert'),
+          ...locate(nodeId),
           spaceId: 'north',
-          requestId: 'file-run-start',
+          requestId: `${runId}-start`,
           mode: 'begin',
-          expectedNodeVersion: row('expert').command.version,
+          expectedNodeVersion: row(nodeId).command.version,
           expectedRunVersion: 0,
-          newRunId: 'file-run',
-          newSegmentId: 'file-segment',
+          newRunId: runId,
+          newSegmentId: segmentId,
           workspace: runWorkspace,
           selection: projected.selection,
           contextRefs: projected.contextRefs,
@@ -442,7 +471,7 @@ export async function bootRunFiles(
           composition: selected,
         }),
       );
-      return issuer.open(requests.chen, { ...locate('expert'), runId: 'file-run' }, 'drive');
+      return issuer.open(requests.chen, { ...locate(nodeId), runId }, 'drive');
     };
     ctx.effect(() => () => lifetime.abort());
     return {
@@ -468,14 +497,15 @@ export async function bootRunFiles(
           ...locate('expert'),
           runId: row('expert').nativeExecution.currentRunId,
         });
+        configured.set(selected.configurationId, selected);
         return issuer.open(
           requests.chen,
           { ...locate('expert'), runId: selected.payload.scope.runId },
           'drive',
         );
       },
-      firstMessage() {
-        const projected = executionRunCompositionRequest(selected);
+      firstMessage(snapshot = selected) {
+        const projected = executionRunCompositionRequest(snapshot);
         return {
           requestId: 'file-run-start',
           text: projected.firstMessage.text,

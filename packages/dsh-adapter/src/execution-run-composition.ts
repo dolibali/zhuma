@@ -111,19 +111,26 @@ const acceptedFileToolSchema = toolSchema
 /** Explicit new-Run completion intent only; its descriptor is not submission authority. */
 export interface ResultIntentToolDefinition extends AcceptedInputToolDefinition {
   readonly name: 'complete_work';
-  readonly sourceVersion: 'zhuma-native-result-intent@1';
+  readonly sourceVersion: 'zhuma-native-result-intent@1' | 'zhuma-native-result-intent@2';
 }
 const resultIntentToolName = 'complete_work';
 // C's SDK-registered declaration candidate. Full invocation/cut qualification
 // remains separate. Source artifact SHA256:
 // 241bae9b4e21db3acbf9f4a4743d10e0934e1abc473ef1c259304f6518215931.
+// Explicit v2 getter at 716aa7c3, pretty JSON+LF SHA256:
+// 75ab5c8344b6100d3702ad9eba227fe73b7828a24f853f551c4465e526052a9d.
+// A descriptor fixes the selected protocol, never completion or file authority.
 const resultIntentToolSchema = toolSchema
   .extend({
     name: z.literal(resultIntentToolName),
-    sourceVersion: z.literal('zhuma-native-result-intent@1'),
+    sourceVersion: z.enum(['zhuma-native-result-intent@1', 'zhuma-native-result-intent@2']),
   })
   .refine(
-    (value) => hash(value) === 'fe37b46ba16dc45e7dc24060a69d339e856efd982522df1efb1420e91798b386',
+    (value) =>
+      hash(value) ===
+      (value.sourceVersion === 'zhuma-native-result-intent@1'
+        ? 'fe37b46ba16dc45e7dc24060a69d339e856efd982522df1efb1420e91798b386'
+        : '4ca1e6f1bdd146b16456d93b19ebff653950bdea19d39f68ad9da3386ace0eae'),
   );
 /** C's exact publisher description only; workspace and publication grants remain separate. */
 export interface OutputFilePublisherToolDefinition extends AcceptedInputToolDefinition {

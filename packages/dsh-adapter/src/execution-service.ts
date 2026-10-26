@@ -14,6 +14,8 @@ import {
   startAppliedPlan,
   submitDelivery,
   submitExpertDelivery,
+  submitExpertManifestDelivery,
+  type ArtifactDraft,
   toNodeExecutionReport,
   unlockDownstream,
   unlockKey,
@@ -48,15 +50,30 @@ import {
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
 import type { NativeWorkGrant } from './native-work-session-contract.js';
-import type { NativeFixedResultIssuer } from './native-work-session-result.js';
+import type {
+  NativeFixedResultIssuer,
+  NativeFixedResultPublicationsIssuer,
+} from './native-work-session-result.js';
+import type {
+  NativeFixedResultPublicationsLease,
+  NativePublicationManifestEntry,
+} from './native-work-session-result-publications-contract.js';
+import { NATIVE_RESULT_PUBLICATIONS_TOOL_VERSION } from './native-work-session-result-publications-contract.js';
 import {
   NativeResultError,
   nativeResultContentSchema,
   type NativeFixedResultRef,
+  type NativeFixedResultLease,
 } from './native-work-session-result-contract.js';
 import { nativeResultDigest } from './native-work-session-result-source.js';
 import {
   executionNativeResultDeliverySchema,
+  executionNativeResultDeliveryV1Schema,
+  nativeResultPublicationsProofSchema,
+  nativeManifestContentSchema,
+  nativeManifestResultDigest,
+  readNativeResultManifest,
+  nativeResultManifestRecords,
   nativeResultSubmitSchema,
   nativeResultConfirmSchema,
   nativeResultArtifactIds,
@@ -312,9 +329,13 @@ export interface ExecutionRunHostPorts
 }
 
 type NativeResultPort = {
-  readonly issuer: NativeFixedResultIssuer;
+  readonly issuer: NativeFixedResultIssuer | NativeFixedResultPublicationsIssuer;
   readonly prepare: NativeFixedResultIssuer['prepareFixedResult'];
-  readonly read: NativeFixedResultIssuer['readFixedResult'];
+  readonly read: (
+    grant: NativeWorkGrant,
+    ref: NativeFixedResultRef,
+    signal: AbortSignal,
+  ) => Promise<NativeFixedResultLease | NativeFixedResultPublicationsLease>;
   readonly assert: NativeFixedResultIssuer['assertFixedResult'];
 };
 type NativeResultOperation = {
@@ -323,7 +344,7 @@ type NativeResultOperation = {
   assert(callback: () => unknown): void;
   release(callback: () => unknown): void;
 };
-const fixedResultProofSchema = executionNativeResultDeliverySchema.pick({
+const fixedResultProofSchema = executionNativeResultDeliveryV1Schema.pick({
   source: true,
   digest: true,
   provenanceFingerprint: true,
@@ -917,6 +938,7 @@ export class ExecutionService {
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private nativeResultIssuer: NativeResultPort | undefined;
+  private nativeResultPublicationsIssuer: NativeResultPort | undefined;
   private readonly nativeResultOperations = new Set<Promise<unknown>>();
   private nativeResultCleanupFailure: NativeResultDeliveryError | undefined;
   private readonly uploadLifetime = new AbortController();
@@ -1090,7 +1112,10 @@ export class ExecutionService {
   }
 
   /** A installs the original C owner once, after installing this service's Run Host. */
-  installNativeResultIssuer(issuer: NativeFixedResultIssuer): void {
+  installNativeResultIssuer(
+    issuer: NativeFixedResultIssuer,
+    publications?: NativeFixedResultPublicationsIssuer,
+  ): void {
     this.requireRunHost();
     if (
       !this.runAuthorities ||
@@ -1098,7 +1123,18 @@ export class ExecutionService {
       !issuer ||
       typeof issuer.prepareFixedResult !== 'function' ||
       typeof issuer.readFixedResult !== 'function' ||
-      typeof issuer.assertFixedResult !== 'function'
+      typeof issuer.assertFixedResult !== 'function' ||
+      (publications !== undefined &&
+        (!publications ||
+          publications.v1Issuer !== issuer ||
+          typeof publications.readFixedResult !== 'function' ||
+          [
+            'registerNativeResultTool',
+            'prepareFixedResult',
+            'assertFixedResult',
+            'onReady',
+            'close',
+          ].some((key) => Reflect.get(publications, key) !== Reflect.get(issuer, key))))
     )
       throw new NativeResultDeliveryError('native-result-unavailable');
     this.nativeResultIssuer = Object.freeze({
@@ -1107,6 +1143,13 @@ export class ExecutionService {
       read: issuer.readFixedResult,
       assert: issuer.assertFixedResult,
     });
+    if (publications)
+      this.nativeResultPublicationsIssuer = Object.freeze({
+        issuer: publications,
+        prepare: publications.prepareFixedResult,
+        read: publications.readFixedResult,
+        assert: publications.assertFixedResult,
+      });
   }
 
   /** Host-only: real objects never arrive through an HTTP/JSON command. */
@@ -1123,7 +1166,6 @@ export class ExecutionService {
     if (!parsed.ok) return Promise.resolve(parsed);
     const input = parsed.value;
     return this.nativeResultOperation(signal, async (operation) => {
-      const port = this.nativeResultPort();
       const manager = this.runAuthorities!;
       // Hold this original request's member lease throughout preparation/write.
       // A borrowed drive grant alone does not authenticate this request.
@@ -1171,10 +1213,23 @@ export class ExecutionService {
         this.assertRunNodeAccess(host, member.memberId, run.spaceId, node);
         if (run.resultDelivery) return fail('native-result-confirmation-required');
         this.assertNativeResultWriter(input, node, run, state.version, grant, member.memberId);
-        return { ok: true, value: undefined };
+        const version =
+          run.composition?.schemaVersion === 2
+            ? run.composition.payload.resultIntentTool?.sourceVersion
+            : undefined;
+        if (
+          version !== 'zhuma-native-result-intent@1' &&
+          version !== NATIVE_RESULT_PUBLICATIONS_TOOL_VERSION
+        )
+          return fail('native-result-delivery-invalid');
+        return {
+          ok: true,
+          value: version === NATIVE_RESULT_PUBLICATIONS_TOOL_VERSION ? (2 as const) : (1 as const),
+        };
       });
       if (!preflight.ok) return preflight;
-      this.nativeResultPort();
+      const protocolVersion = preflight.value;
+      const port = this.nativeResultPort(protocolVersion);
       const prepared = await port.prepare.call(port.issuer, grant, operation.signal);
       readCurrent();
       if (prepared.status !== 'ready')
@@ -1187,46 +1242,157 @@ export class ExecutionService {
           throw new NativeResultDeliveryError('native-result-cleanup-failed');
         return release.call(lease);
       });
-      const proof = fixedResultProofSchema.safeParse({
-        source: lease?.source,
-        digest: lease?.digest,
-        provenanceFingerprint: lease?.provenanceFingerprint,
-      });
-      const content = nativeResultContentSchema.safeParse(lease?.content);
+      const fixed = (() => {
+        const rawProof = {
+          source: lease?.source,
+          digest: lease?.digest,
+          provenanceFingerprint: lease?.provenanceFingerprint,
+        };
+        if (protocolVersion === 1) {
+          const proof = fixedResultProofSchema.safeParse(rawProof);
+          const content = nativeResultContentSchema.safeParse(lease?.content);
+          if (
+            !proof.success ||
+            !content.success ||
+            nativeResultDigest(content.data) !== proof.data.digest
+          )
+            throw new NativeResultDeliveryError();
+          return { protocolVersion: 1 as const, ...proof.data, content: content.data };
+        }
+        const proof = nativeResultPublicationsProofSchema.safeParse({
+          ...rawProof,
+          manifestDigest: 'manifestDigest' in lease ? lease.manifestDigest : undefined,
+        });
+        const content = nativeManifestContentSchema.safeParse(lease?.content);
+        if (
+          !proof.success ||
+          !content.success ||
+          proof.data.manifestDigest !== proof.data.source.manifestDigest
+        )
+          throw new NativeResultDeliveryError();
+        return {
+          protocolVersion: 2 as const,
+          ...proof.data,
+          content: content.data,
+          manifest: 'manifest' in lease ? lease.manifest : undefined,
+        };
+      })();
       if (
-        !proof.success ||
-        !content.success ||
         typeof lease.check !== 'function' ||
         !(lease.signal instanceof AbortSignal) ||
-        nativeResultDigest(content.data) !== proof.data.digest ||
-        nativeResultProvenance(proof.data.source, proof.data.digest) !==
-          proof.data.provenanceFingerprint ||
-        canonicalPayload(content.data) !== canonicalPayload(lease.content)
+        nativeResultProvenance(fixed.source, fixed.digest) !== fixed.provenanceFingerprint ||
+        canonicalPayload(fixed.content) !== canonicalPayload(lease.content)
       )
         return fail('native-result-delivery-invalid');
-      const source = proof.data;
       const check = lease.check;
       const leaseSignal = lease.signal;
-      const fingerprint = canonicalPayload({ ...source, content: content.data });
+      const leaseFacts = () => ({
+        source: lease.source,
+        digest: lease.digest,
+        provenanceFingerprint: lease.provenanceFingerprint,
+        content: lease.content,
+        ...(protocolVersion === 2
+          ? {
+              manifest: 'manifest' in lease ? lease.manifest : undefined,
+              manifestDigest: 'manifestDigest' in lease ? lease.manifestDigest : undefined,
+            }
+          : {}),
+      });
+      const fingerprint = canonicalPayload(leaseFacts());
+      const confirmation = () => ({
+        ...input,
+        intentId: fixed.source.intentId,
+        digest: fixed.digest,
+        provenanceFingerprint: fixed.provenanceFingerprint,
+        ...(fixed.protocolVersion === 2
+          ? { protocolVersion: 2 as const, manifestDigest: fixed.manifestDigest }
+          : {}),
+      });
       const fixedCurrent = () => {
         readCurrent();
-        this.nativeResultPort();
+        this.nativeResultPort(protocolVersion);
         if (
           lease.signal !== leaseSignal ||
           leaseSignal.aborted ||
           lease.check !== check ||
           lease.release !== release ||
-          canonicalPayload({
-            source: lease.source,
-            digest: lease.digest,
-            provenanceFingerprint: lease.provenanceFingerprint,
-            content: lease.content,
-          }) !== fingerprint
+          canonicalPayload(leaseFacts()) !== fingerprint
         )
           throw new NativeResultDeliveryError('native-result-authority-denied');
         operation.assert(() => port.assert.call(port.issuer, grant, ref));
         operation.assert(() => check.call(lease));
       };
+      let manifest: readonly NativePublicationManifestEntry[] = [];
+      if (fixed.protocolVersion === 2) {
+        type Stage =
+          | { kind: 'manifest'; entries: readonly NativePublicationManifestEntry[] }
+          | { kind: 'confirmed'; receipt: NativeResultDeliveryReceipt };
+        const stage = await this.enqueue<Stage>(async () => {
+          readCurrent();
+          const { node, run, state } = this.nativeResultFacts(input);
+          this.assertRunNodeAccess(host, member.memberId, run.spaceId, node);
+          if (run.resultDelivery) {
+            const result = this.confirmNativeResultNow(confirmation());
+            return result.ok
+              ? { ok: true, value: { kind: 'confirmed', receipt: result.value } }
+              : result;
+          }
+          fixedCurrent();
+          this.assertNativeResultWriter(input, node, run, state.version, grant, member.memberId);
+          const entries = readNativeResultManifest(
+            fixed.source,
+            fixed.manifest,
+            fixed.manifestDigest,
+            fixed.content,
+            (id) => this.fileStore?.get(id),
+          );
+          if (
+            nativeManifestResultDigest(
+              fixed.content,
+              fixed.manifestDigest,
+              entries.map((entry) => entry.evidence),
+            ) !== fixed.digest
+          )
+            throw new NativeResultDeliveryError();
+          return { ok: true, value: { kind: 'manifest', entries } };
+        });
+        if (!stage.ok) return stage;
+        if (stage.value.kind === 'confirmed') return { ok: true, value: stage.value.receipt };
+        manifest = stage.value.entries;
+        try {
+          for (const entry of manifest) {
+            fixedCurrent();
+            const verified = await this.verifyOwnedFileBytes(
+              entry.record,
+              AbortSignal.any([
+                operation.signal,
+                leaseSignal,
+                memberSignal,
+                this.fileLifetime.signal,
+              ]),
+              fixedCurrent,
+              false,
+              true,
+            );
+            operation.release(() => verified.release());
+            await verified.drain;
+            fixedCurrent();
+          }
+        } catch (error) {
+          // Another exact request may have committed while this reader drained.
+          // Confirm only with the held history right; never revive its send grant.
+          const existing = await this.enqueue<NativeResultDeliveryReceipt | undefined>(async () => {
+            readCurrent();
+            const { run } = this.nativeResultFacts(input);
+            return run.resultDelivery
+              ? this.confirmNativeResultNow(confirmation())
+              : { ok: true as const, value: undefined };
+          });
+          if (!existing.ok) return existing;
+          if (existing.value) return { ok: true, value: existing.value };
+          throw error;
+        }
+      }
       return this.enqueue(async () => {
         readCurrent();
         const { node, run, state } = this.nativeResultFacts(input);
@@ -1234,23 +1400,26 @@ export class ExecutionService {
         // Concurrent exact requests may have prepared while the first was live.
         // After its put, this branch only confirms facts with held read authority;
         // it does not reuse the now-revoked send grant to write or read C again.
-        if (run.resultDelivery)
-          return this.confirmNativeResultNow({
-            ...input,
-            intentId: source.source.intentId,
-            digest: source.digest,
-            provenanceFingerprint: source.provenanceFingerprint,
-          });
+        if (run.resultDelivery) return this.confirmNativeResultNow(confirmation());
         fixedCurrent();
         this.assertNativeResultWriter(input, node, run, state.version, grant, member.memberId);
         if (
-          canonicalPayload(source.source.scope) !==
-            canonicalPayload(executionRunScope(node, run)) ||
-          source.source.configurationId !== input.configurationId ||
-          source.source.nativeSessionId !== run.attempt.sessionId ||
-          source.source.nativeAgentId !== run.attempt.executorRunId
+          canonicalPayload(fixed.source.scope) !== canonicalPayload(executionRunScope(node, run)) ||
+          fixed.source.configurationId !== input.configurationId ||
+          fixed.source.nativeSessionId !== run.attempt.sessionId ||
+          fixed.source.nativeAgentId !== run.attempt.executorRunId ||
+          (fixed.protocolVersion === 2 &&
+            fixed.source.expertVersionId !== run.attempt.expertVersionId)
         )
           return fail('native-result-delivery-invalid');
+        if (fixed.protocolVersion === 2)
+          readNativeResultManifest(
+            fixed.source,
+            fixed.manifest,
+            fixed.manifestDigest,
+            fixed.content,
+            (id) => this.fileStore?.get(id),
+          );
         const terminal = recordExecutionRunEvent(node, {
           kind: 'completed',
           runId: run.attempt.id,
@@ -1262,23 +1431,34 @@ export class ExecutionService {
           resourcesSettled: true,
         });
         const ids = nativeResultArtifactIds(input);
-        const delivered = submitExpertDelivery({
+        const command = {
           record: terminal.record,
           expertId: node.handoff.assignee.id,
           producerRunId: run.attempt.id,
-          provenanceFingerprint: source.provenanceFingerprint,
+          provenanceFingerprint: fixed.provenanceFingerprint,
           idempotencyKey: input.idempotencyKey,
           expectedVersion: terminal.record.command.version,
-          draft: { ...content.data, files: [] },
           ...ids,
-        });
+        };
+        const delivered =
+          fixed.protocolVersion === 1
+            ? submitExpertDelivery({ ...command, draft: { ...fixed.content, files: [] } })
+            : submitExpertManifestDelivery({ ...command, draft: fixed.content });
         if (!delivered.ok) return fail(delivered.code);
         if (terminal.disposition !== 'applied' || delivered.disposition !== 'applied')
           return fail('native-result-delivery-conflict');
         const ended = readExecutionRunState(terminal.record)!;
         const resultDelivery = executionNativeResultDeliverySchema.parse({
-          protocolVersion: 1,
-          ...source,
+          protocolVersion: fixed.protocolVersion,
+          source: fixed.source,
+          digest: fixed.digest,
+          provenanceFingerprint: fixed.provenanceFingerprint,
+          ...(fixed.protocolVersion === 2
+            ? {
+                manifestDigest: fixed.manifestDigest,
+                publications: manifest.map((entry) => entry.evidence),
+              }
+            : {}),
           receiptKey: input.idempotencyKey,
           artifactVersionId: ids.artifactId,
           ...(node.handoff.reviewRequired ? { roundId: ids.roundId } : {}),
@@ -1354,14 +1534,20 @@ export class ExecutionService {
     });
   }
 
-  private nativeResultPort(): NativeResultPort {
+  private nativeResultPort(protocolVersion: 1 | 2 = 1): NativeResultPort {
     this.requireRunHost();
-    const port = this.nativeResultIssuer;
+    const port =
+      protocolVersion === 1 ? this.nativeResultIssuer : this.nativeResultPublicationsIssuer;
     if (
       !port ||
       port.issuer.prepareFixedResult !== port.prepare ||
       port.issuer.readFixedResult !== port.read ||
-      port.issuer.assertFixedResult !== port.assert
+      port.issuer.assertFixedResult !== port.assert ||
+      (protocolVersion === 2 &&
+        (!('v1Issuer' in port.issuer) ||
+          port.issuer.v1Issuer !== this.nativeResultIssuer?.issuer ||
+          port.prepare !== this.nativeResultIssuer.prepare ||
+          port.assert !== this.nativeResultIssuer.assert))
     )
       throw new NativeResultDeliveryError('native-result-unavailable');
     return port;
@@ -1433,6 +1619,17 @@ export class ExecutionService {
       value.provenanceFingerprint !== input.provenanceFingerprint
     )
       return fail('native-result-delivery-conflict');
+    if (value.protocolVersion === 2) {
+      if (
+        !('protocolVersion' in input) ||
+        input.protocolVersion !== 2 ||
+        input.manifestDigest !== value.manifestDigest
+      )
+        return fail('native-result-delivery-conflict');
+      nativeResultManifestRecords(value.source, value.publications, value.manifestDigest, (id) =>
+        this.fileStore?.get(id),
+      );
+    } else if ('protocolVersion' in input) return fail('native-result-delivery-conflict');
     return { ok: true, value: nativeResultDeliveryReceipt(node, run, 'confirmed') };
   }
 
@@ -2500,7 +2697,7 @@ export class ExecutionService {
     assertCurrent: () => unknown,
     collect: boolean,
     drainBeforeReject = false,
-  ): Promise<{ bytes: Uint8Array | undefined; release(): void }> {
+  ): Promise<{ bytes: Uint8Array | undefined; readonly drain: Promise<void>; release(): void }> {
     if (!this.attachments) throw new ArtifactUploadError('unavailable');
     if (
       [...this.fileReadResources].filter((item) => item.spaceId === record.spaceId).length >=
@@ -2535,7 +2732,7 @@ export class ExecutionService {
       this.fileReadResources.delete(resource);
     });
     try {
-      return { bytes: await read.result, release };
+      return { bytes: await read.result, release, drain: resource.drain };
     } catch (error) {
       release();
       if (drainBeforeReject) await resource.drain;
@@ -2726,6 +2923,88 @@ export class ExecutionService {
       return job;
     };
     return {
+      readCompleted: async (grant, request, caller) => {
+        issuer.assertGrant(grant, 'history');
+        const parsed = z
+          .strictObject({
+            source: nativeOutputFileSourceSchema,
+            publicationId: WorkTaskSchema.shape.id,
+          })
+          .safeParse(request);
+        if (!parsed.success || !(caller instanceof AbortSignal))
+          throw new ArtifactUploadError('invalid-request');
+        const { source, publicationId } = parsed.data;
+        const scope = source.scope;
+        const scopeKey = canonicalPayload(scope);
+        const signal = AbortSignal.any([
+          caller,
+          grant.signal,
+          host.signal,
+          sourceSignal,
+          this.fileLifetime.signal,
+          this.runLifetime.signal,
+        ]);
+        const initial = files.get(publicationId);
+        if (!initial) throw new ArtifactUploadError('not-found');
+        const projection = { source: structuredClone(source), record: structuredClone(initial) };
+        const fingerprint = canonicalPayload(projection);
+        const check = (): undefined => {
+          issuer.assertGrant(grant, 'history');
+          if (signal.aborted) throw new ArtifactUploadError('cancelled');
+          if (
+            issuer !== this.runAuthorities ||
+            host !== this.requireRunHost() ||
+            attachments !== this.attachments ||
+            files !== this.fileStore ||
+            resources.signal !== sourceSignal ||
+            resources.assertCurrent !== assertResource
+          )
+            throw new ArtifactUploadError('unavailable');
+          const checked: unknown = assertResource.call(resources, attachments);
+          if (checked !== undefined) {
+            void Promise.resolve(checked).catch(() => undefined);
+            throw new ArtifactUploadError('unavailable');
+          }
+          if (
+            canonicalPayload(grant.scope) !== scopeKey ||
+            canonicalPayload(projection) !== fingerprint
+          )
+            throw new ArtifactUploadError('not-found');
+          const node = this.currentFileNode(scope);
+          this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
+          const run = readExecutionRunState(node)?.runs.find(
+            (item) => item.attempt.id === scope.runId,
+          );
+          const composition = this.readRunComposition(scope);
+          const publisher = Reflect.get(composition.payload, 'outputFilePublisherTool');
+          const current = files.get(publicationId);
+          if (
+            !run ||
+            canonicalPayload(executionRunScope(node, run)) !== scopeKey ||
+            run.selection.configurationId !== source.configurationId ||
+            run.attempt.expertVersionId !== source.expertVersionId ||
+            (run.attempt.sessionId !== undefined &&
+              run.attempt.sessionId !== source.nativeSessionId) ||
+            (run.attempt.executorRunId !== undefined &&
+              run.attempt.executorRunId !== source.nativeAgentId) ||
+            !publisher ||
+            canonicalPayload(publisher) !== canonicalPayload(describeNativeOutputFileTool()) ||
+            !(composition.payload.toolAllowlist as readonly string[]).includes(
+              NATIVE_OUTPUT_FILE_TOOL,
+            ) ||
+            !current ||
+            current.state !== 'completed' ||
+            !current.producer ||
+            canonicalPayload(current.producer.source) !== canonicalPayload(source) ||
+            current.uploadedBy !== scope.actorId ||
+            canonicalPayload(current) !== canonicalPayload(projection.record)
+          )
+            throw new ArtifactUploadError('not-found');
+          return undefined;
+        };
+        check();
+        return Object.freeze({ ...projection, signal, check });
+      },
       reserve: (grant, request, caller) =>
         track(
           (async () => {

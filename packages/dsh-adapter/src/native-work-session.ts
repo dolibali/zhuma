@@ -64,12 +64,14 @@ import {
 } from './native-work-session-migration.js';
 import { NativeConversationProjection } from './native-work-session-view.js';
 import {
-  nativeResultIntentSchema,
   nativeResultCutSchema,
-  type NativeResultIntent,
   type NativeResultCut,
   type NativeResultSnapshot,
 } from './native-work-session-result-contract.js';
+import {
+  nativeWorkResultIntentSchema,
+  type NativeWorkResultIntent,
+} from './native-work-session-result-intent.js';
 
 const originRequestSchema = nativeMigrationDataSchema.omit({ previousScope: true });
 
@@ -896,10 +898,10 @@ export class NativeWorkSessionService {
   /** Queued with sends: accepted input cannot race behind a completion declaration. */
   declareResultIntent(
     grant: NativeWorkGrant,
-    raw: NativeResultIntent,
+    raw: NativeWorkResultIntent,
     validate: (snapshot: NativeResultSnapshot) => undefined,
   ): Promise<NativeSessionBinding> {
-    const intent = nativeResultIntentSchema.parse(raw);
+    const intent = nativeWorkResultIntentSchema.parse(raw);
     if (intent.cut) throw new NativeWorkError('invalid-request');
     return this.serial(grant, 'send', async (verify) => {
       const binding = this.required(grant, 'send');
