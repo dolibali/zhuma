@@ -1631,3 +1631,15 @@ index f4167017..d0444937 100644
    it('closes a transport that attaches after disposal starts', async () => {
      const gate: PromiseWithResolvers<void> = Promise.withResolvers()
      mockConnect.mockImplementation(function (this: { transport: object | undefined }) {
+diff --git a/packages/skill/tool-skill/package.json b/packages/skill/tool-skill/package.json
+index 3e44feab..0e3850b3 100644
+--- a/packages/skill/tool-skill/package.json
++++ b/packages/skill/tool-skill/package.json
+@@ -31,6 +31,7 @@
+   "peerDependencies": {
+     "@deepseek-ai/dsh-agent": "workspace:*",
+     "@deepseek-ai/dsh-llm": "workspace:*",
++    "@deepseek-ai/dsh-scope": "workspace:*",
+     "@deepseek-ai/dsh-skill": "workspace:*",
+     "@deepseek-ai/dsh-tools": "workspace:*",
+     "@deepseek-ai/cordis": "workspace:~",
