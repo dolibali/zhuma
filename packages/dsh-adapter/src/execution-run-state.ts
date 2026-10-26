@@ -23,6 +23,10 @@ import {
   executionRunCompositionSchema,
   assertExecutionRunCompositionBinding,
 } from './execution-run-composition.js';
+import {
+  executionNativeResultDeliverySchema,
+  assertNativeResultDelivery,
+} from './execution-native-result-delivery.js';
 
 // Host-internal facts only. This module neither authenticates a request nor writes storage.
 const id = z.string().min(1).max(200);
@@ -94,6 +98,7 @@ const attemptSchema = z
 const wrapperSchema = z.strictObject({
   attempt: attemptSchema,
   composition: executionRunCompositionSchema.optional(),
+  resultDelivery: executionNativeResultDeliverySchema.optional(),
   actorId: id,
   spaceId: id,
   segmentId: id,
@@ -208,6 +213,13 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
           contextRefs: a.contextRefs,
           inputFingerprint: a.payloadHash,
         });
+      } catch {
+        refuse('run-state-invalid');
+      }
+    }
+    if (Object.hasOwn(run, 'resultDelivery')) {
+      try {
+        assertNativeResultDelivery(record, run);
       } catch {
         refuse('run-state-invalid');
       }
