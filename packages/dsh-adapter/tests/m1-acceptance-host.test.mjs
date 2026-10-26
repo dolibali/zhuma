@@ -915,6 +915,102 @@ async function storedAttachmentFiles(directory) {
 }
 
 test(
+  'M1 real HTTP: current project mapping fences paused EOS and a held stale lookup before publication',
+  { timeout: 30000 },
+  async (t) => {
+    for (const mode of ['paused-eos', 'stale-lookup'])
+      await t.test(mode, async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'zhuma-file-mapping-'));
+        let host;
+        try {
+          host = await startAcceptanceHost(directory, {
+            deploymentMode: 'multi-member',
+            identityImport,
+            spaceDirectoryImport,
+            workbenchSeed,
+            observeUpload: true,
+          });
+          const chen = await host.login('chen', PASSWORDS.chen);
+          const plans = await host.exec('startable', {}, chen);
+          const plan = plans.result.value.plans.find((item) => item.taskId === 'portal-task');
+          assert.equal(
+            (
+              await host.exec(
+                'start-plan',
+                { ...planRef(plan), idempotencyKey: 'mapping-start' },
+                chen,
+              )
+            ).result.ok,
+            true,
+          );
+          if (mode === 'stale-lookup') await host.act('holdProjectLookup');
+          const bytes = Buffer.from('actual mapping fence bytes, with final bytes withheld');
+          let writer;
+          const data =
+            mode === 'paused-eos'
+              ? new ReadableStream({
+                  start(controller) {
+                    writer = controller;
+                    controller.enqueue(bytes.subarray(0, 12));
+                  },
+                })
+              : bytes;
+          const upload = host.upload(
+            {
+              name: `${mode}.md`,
+              mediaType: 'text/markdown',
+              byteSize: bytes.length,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+            },
+            {
+              ...planRef(plan),
+              nodeId: 'design',
+              spaceId: 'team-north',
+              idempotencyKey: `mapping-${mode}`,
+            },
+            data,
+            chen,
+          );
+          await host.wait(mode === 'paused-eos' ? 'file-upload-read-2' : 'lookup-pending');
+          await host.act('migrateFileProject');
+          // The same real member still belongs to both spaces; only the actual
+          // authoritative mapping changes. No DTO or task.projectId is replaced.
+          if (mode === 'paused-eos') {
+            try {
+              writer.enqueue(bytes.subarray(12));
+              writer.close();
+            } catch (error) {
+              assert.equal(error.code, 'ERR_INVALID_STATE');
+            }
+          } else await host.act('releaseProjectLookup');
+          const result = await upload;
+          assert.equal(result.json?.ok, false, JSON.stringify(result.json));
+          const inspected = await host.act('inspect');
+          assert.equal(inspected.modelCalls, 0);
+          await host.close();
+          const artifacts = await storedAttachmentFiles(directory);
+          assert.deepEqual(
+            artifacts,
+            [],
+            `A refused stale mapping cannot publish CAS/alias/tmp: ${artifacts.length}`,
+          );
+          const ledger = await readFile(
+            join(directory, 'storages', 'zhuma_files.json'),
+            'utf8',
+          ).catch((error) => {
+            if (error.code === 'ENOENT') return null;
+            throw error;
+          });
+          if (ledger) assert.deepEqual(JSON.parse(ledger).tables.files, {});
+        } finally {
+          await host?.close();
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+  },
+);
+
+test(
   'M1 real HTTP: four accounts and two actual team tasks keep distinct receipts for identical bytes',
   { timeout: 15000 },
   async () => {

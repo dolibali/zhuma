@@ -170,7 +170,10 @@ function contractLease(caller) {
   };
 }
 function uploadFile(service, caller, options) {
-  return service.uploadFile(caller, options, contractLease(caller));
+  return service.uploadFile(caller, options, {
+    lease: contractLease(caller),
+    assertProjectSpace() {},
+  });
 }
 
 async function* bytesOf(text) {
@@ -749,4 +752,33 @@ test('only eight real streams in a space can reserve resources, with no ninth bo
   }
   assert.deepEqual(await attachmentFiles(f.root), []);
   assert.equal(f.files.countInSpace('north'), 0);
+});
+
+test('project assertions must decide synchronously with undefined before any SDK body read', async (t) => {
+  for (const [name, value] of [
+    ['async', Promise.resolve()],
+    ['false', false],
+  ])
+    await t.test(name, async (t) => {
+      const f = await realFiles(t);
+      let reads = 0;
+      const request = f.options('x', {
+        data: {
+          async *[Symbol.asyncIterator]() {
+            reads++;
+            yield Buffer.from('x');
+          },
+        },
+      });
+      const result = await f.service.uploadFile(session('chen'), request, {
+        lease: contractLease(session('chen')),
+        assertProjectSpace() {
+          return value;
+        },
+      });
+      assert.equal(result.error.code, 'not-found');
+      assert.equal(reads, 0);
+      assert.equal(f.files.countInSpace('north'), 0);
+      assert.deepEqual(await attachmentFiles(f.root), []);
+    });
 });
