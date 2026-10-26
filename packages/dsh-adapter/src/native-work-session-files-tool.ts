@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import type { JsonSchemaNode, ToolDefinition, ToolExecution } from '@deepseek-ai/dsh-tools';
+import { assertObjectJsonSchema, assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools';
 import { z } from 'zod';
 import { canonicalPayload } from '@zhuma/agent-core';
 import { scopeOf } from '@deepseek-ai/dsh-scope';
@@ -21,7 +22,7 @@ import { NATIVE_INPUT_READ_LIMITS, type NativeWorkSessionService } from './nativ
 import type { NativeDshComposition } from './native-work-session-dsh.js';
 
 export { NATIVE_ACCEPTED_FILE_TOOL } from './native-work-session-files-contract.js';
-export const NATIVE_ACCEPTED_FILE_TOOL_VERSION = 'zhuma-accepted-files@1';
+export const NATIVE_ACCEPTED_FILE_TOOL_VERSION = 'zhuma-accepted-files@2';
 const id = z.string().min(1).max(200);
 const natural = z.number().int().nonnegative().refine(Number.isSafeInteger);
 const inputRef = z.string().regex(/^input_[a-f0-9]{64}$/u);
@@ -93,17 +94,93 @@ const failure = (code: ErrorCode): Output => ({ ok: false, code });
 const outputBytes = (value: Output) => Buffer.byteLength(JSON.stringify(value));
 const digest = (value: Output) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const blocks = (value: Output): ContentBlock[] => [{ type: 'text', text: JSON.stringify(value) }];
+const object = (
+  properties: Record<string, JsonSchemaNode>,
+  required = Object.keys(properties),
+): JsonSchemaNode => ({ type: 'object', additionalProperties: false, properties, required });
+const text: JsonSchemaNode = { type: 'string' };
+const integer: JsonSchemaNode = { type: 'integer' };
+const yes: JsonSchemaNode = { type: 'boolean', const: true };
+const scopeDescription = object({
+  actorId: text,
+  spaceId: text,
+  taskId: text,
+  planId: text,
+  revision: integer,
+  nodeId: text,
+  runId: text,
+  generation: integer,
+  segmentId: text,
+});
+const sourceDescription = {
+  scope: scopeDescription,
+  inputRef: text,
+  sourceNodeId: text,
+  artifactVersionId: text,
+  version: integer,
+};
+const fileDescription = object({
+  fileId: text,
+  name: text,
+  mediaType: text,
+  bytes: integer,
+  sha256: text,
+});
+// The SDK enforces a deliberate JSON-schema subset. Zod still enforces byte,
+// string, numeric and identifier bounds before I/O and before publication.
 const definition = {
   name: NATIVE_ACCEPTED_FILE_TOOL,
   description:
     'List files of an explicitly frozen accepted input, then read a selected UTF-8 byte range. Metadata is not proof of reading. Never fetches links, renders PDF/images, or opens a caller path.',
   parameters: {
-    ...z.toJSONSchema(argumentsSchema, { io: 'input' }),
     type: 'object',
+    additionalProperties: false,
+    required: ['inputRef', 'part'],
+    properties: {
+      inputRef: text,
+      part: { type: 'string', enum: ['files', 'file'] },
+      fileId: {
+        type: 'string',
+        description: 'Required only for part=file; use the catalog fileId.',
+      },
+      offset: {
+        type: 'integer',
+        default: 0,
+        description: 'Only for part=file. Nonnegative safe byte offset; defaults to 0.',
+      },
+      length: {
+        type: 'integer',
+        default: 4096,
+        description: 'Only for part=file. Byte length from 1 to 8192; defaults to 4096.',
+      },
+    },
   } as ToolDefinition['parameters'],
-  outputSchema: z.toJSONSchema(outputSchema) as JsonSchemaNode,
+  outputSchema: {
+    oneOf: [
+      object({
+        ok: { type: 'boolean', const: false },
+        code: { type: 'string', enum: [...errorCode.options] },
+      }),
+      object({
+        ok: yes,
+        part: { type: 'string', const: 'files' },
+        source: object(sourceDescription),
+        files: { type: 'array', items: fileDescription },
+      }),
+      object({
+        ok: yes,
+        part: { type: 'string', const: 'file' },
+        source: object({ ...sourceDescription, file: fileDescription }),
+        range: object({ offset: integer, length: integer, total: integer }),
+        encoding: { type: 'string', const: 'utf-8' },
+        text,
+      }),
+    ],
+  } satisfies JsonSchemaNode,
   sourceVersion: NATIVE_ACCEPTED_FILE_TOOL_VERSION,
 };
+assertObjectJsonSchema(definition.parameters);
+assertSupportedJsonSchema(definition.outputSchema);
 export function describeNativeAcceptedFileTool() {
   return structuredClone(definition);
 }
@@ -211,7 +288,7 @@ export function registerNativeAcceptedFileTool(
           if (page.encoding !== 'utf-8') return failure('unsupported-encoding');
           let text: string;
           try {
-            text = new TextDecoder('utf-8', { fatal: true }).decode(page.bytes);
+            text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(page.bytes);
           } catch {
             return failure('unsupported-encoding');
           }

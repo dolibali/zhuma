@@ -46,12 +46,17 @@ import { openNativeWorkSessions } from '../dist/native-work-session-storage.js';
 import { ScriptedAdapter } from './native-work-session-fixture.mjs';
 
 export { ScriptedAdapter, describeNativeAcceptedFileTool };
+export { allHistory } from './native-work-session-fixture.mjs';
+export { toolResponse } from './native-work-session-input-fixture.mjs';
 const original = (value) => value && (Reflect.get(value, symbols.original) ?? value);
 export function checked(result) {
   assert.equal(result.ok, true, JSON.stringify(result));
   return result.value;
 }
-export async function bootRunFiles(root, { first = true, script = [], tools } = {}) {
+export async function bootRunFiles(
+  root,
+  { first = true, script = [], tools, acceptedFiles = false, configureNative } = {},
+) {
   const ctx = new Context();
   const adapter = new ScriptedAdapter(script);
   const password = 'synthetic-run-file-fixture-password';
@@ -234,6 +239,57 @@ export async function bootRunFiles(root, { first = true, script = [], tools } = 
         return undefined;
       },
     });
+    let native;
+    const nativeSession = async () => {
+      if (native) return native;
+      native = await openNativeWorkSessions(ctx, {
+        workingDirectory: () => ({ kind: 'text-only' }),
+        compose(agentCtx, binding, grant) {
+          issuer.assertGrant(grant, 'send');
+          const snapshot = execution.readRunComposition(binding.scope);
+          assert.equal(canonicalPayload(binding.scope), canonicalPayload(snapshot.payload.scope));
+          const allowlist = [];
+          if (snapshot.payload.toolAllowlist.includes('read_accepted_input')) {
+            const registered = registerNativeAcceptedInputTool(
+              agentCtx,
+              binding,
+              grant,
+              native.service,
+              {
+                catalog: {
+                  scope: grant.scope,
+                  inputs: snapshot.payload.inputs.map((input) => ({ input, required: true })),
+                },
+                async resolveCurrentCaller(signal) {
+                  signal.throwIfAborted();
+                  issuer.assertGrant(grant, 'send');
+                  const result = await caller('chen');
+                  issuer.assertGrant(grant, 'send');
+                  return result;
+                },
+                reader: execution,
+              },
+            );
+            allowlist.push(...registered.toolAllowlist);
+          }
+          if (snapshot.payload.toolAllowlist.includes('read_accepted_file')) {
+            const registered = registerNativeAcceptedFileTool(
+              agentCtx,
+              binding,
+              grant,
+              native.service,
+              issuer,
+              reader,
+            );
+            allowlist.push(...registered.toolAllowlist);
+          }
+          assert.deepEqual(allowlist, snapshot.payload.toolAllowlist);
+          configureNative?.(agentCtx, binding, grant);
+          return { context: snapshot.payload.context, toolAllowlist: allowlist };
+        },
+      });
+      return native;
+    };
     const plan = workbench.readWorkbench().appliedPlans.at(-1);
     const locate = (nodeId) => ({
       taskId: 'task',
@@ -336,6 +392,7 @@ export async function bootRunFiles(root, { first = true, script = [], tools } = 
         executor: { kind: 'plan-expert', ref: { id: 'qa', version: plan.id } },
         inputs: input,
         tools: toolChoice,
+        ...(acceptedFiles ? { acceptedFileReader: describeNativeAcceptedFileTool() } : {}),
       });
       const projected = executionRunCompositionRequest(selected);
       checked(
@@ -368,6 +425,7 @@ export async function bootRunFiles(root, { first = true, script = [], tools } = 
       execution,
       issuer,
       reader,
+      nativeSession,
       requests,
       caller,
       locate,
@@ -376,6 +434,49 @@ export async function bootRunFiles(root, { first = true, script = [], tools } = 
       submit,
       ballot,
       begin,
+      openExisting() {
+        selected = execution.readRunComposition({
+          ...locate('expert'),
+          runId: row('expert').nativeExecution.currentRunId,
+        });
+        return issuer.open(
+          requests.chen,
+          { ...locate('expert'), runId: selected.payload.scope.runId },
+          'drive',
+        );
+      },
+      firstMessage() {
+        const projected = executionRunCompositionRequest(selected);
+        return {
+          requestId: 'file-run-start',
+          text: projected.firstMessage.text,
+          mode: projected.firstMessage.mode,
+          selection: projected.selection,
+        };
+      },
+      async stop() {
+        const node = row('expert');
+        return checked(
+          await execution.stopRun(requests.chen, {
+            ...locate('expert'),
+            spaceId: 'north',
+            requestId: randomUUID(),
+            expectedNodeVersion: node.command.version,
+            expectedRunVersion: node.nativeExecution.version,
+            runId: selected.payload.scope.runId,
+            generation: selected.payload.scope.generation,
+            segmentId: selected.payload.scope.segmentId,
+          }),
+        );
+      },
+      async revoke() {
+        const response = await fetch(base + '/zhuma-id/logout', {
+          method: 'POST',
+          headers: { ...requests.chen.headers, 'content-type': 'application/json' },
+          body: '{}',
+        });
+        assert.equal(response.status, 200);
+      },
       get snapshot() {
         return selected;
       },

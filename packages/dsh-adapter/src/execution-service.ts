@@ -1091,6 +1091,10 @@ export class ExecutionService {
                   ? { kind: 'builtin' }
                   : { kind: 'plan-expert', ref: executor.ref },
               tools: input.composition.payload.tools,
+              ...('acceptedFileReader' in input.composition.payload &&
+              input.composition.payload.acceptedFileReader !== undefined
+                ? { acceptedFileReader: input.composition.payload.acceptedFileReader }
+                : {}),
               inputs: {
                 actorId: lease.memberId,
                 spaceId: input.spaceId,
