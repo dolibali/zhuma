@@ -102,8 +102,16 @@ export async function startAcceptanceHost(directory, config) {
     child.send({ id, action, ...extra });
     return response;
   };
-  const { identityImport, spaceDirectoryImport, workbenchSeed, observeUpload, ...publicConfig } =
-    config;
+  const {
+    identityImport,
+    spaceDirectoryImport,
+    workbenchSeed,
+    observeUpload,
+    webServerCompression,
+    ...publicConfig
+  } = config;
+  if (webServerCompression !== undefined && !['none', 'gzip'].includes(webServerCompression))
+    throw Error('Unsupported test WebServer compression');
   child.send({
     type: 'boot',
     options: {
@@ -120,6 +128,7 @@ export async function startAcceptanceHost(directory, config) {
       },
       identityImport,
       ...(observeUpload === undefined ? {} : { observeUpload }),
+      ...(webServerCompression === undefined ? {} : { webServerCompression }),
       ...(spaceDirectoryImport === undefined ? {} : { spaceDirectoryImport }),
       ...(workbenchSeed === undefined ? {} : { workbenchSeed }),
     },

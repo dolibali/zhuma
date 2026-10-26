@@ -377,10 +377,16 @@ export function createExecutionFilesApi(
             return fail();
           }
           echo(context, expected);
+          // Fetch exposes decoded bytes. Content-Length describes HTTP framing
+          // and may be omitted by streaming/native carriers or describe gzip.
+          const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+          const length = response.headers.get('content-length');
           if (
             response.headers.get('x-zhuma-file-upload-id') !== metadata.uploadId ||
             response.headers.get('x-zhuma-file-sha256') !== metadata.sha256 ||
-            response.headers.get('content-length') !== String(metadata.bytes)
+            ((!encoding || encoding === 'identity') &&
+              length !== null &&
+              length !== String(metadata.bytes))
           )
             fail();
           const data = await consume(response, metadata.bytes, signal);

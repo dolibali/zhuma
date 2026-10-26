@@ -41,6 +41,7 @@ export const INBOX_GROUPS = [
   { id: 'deliver', label: '待我交付' },
   { id: 'revise', label: '退回修改' },
   { id: 'review', label: '待我评审' },
+  { id: 'active', label: '处理中' },
   { id: 'attention', label: '补充与确认' },
   { id: 'other', label: '其他工作项' },
 ] as const;
@@ -54,6 +55,12 @@ export function inboxItemGroup(item: InboxItem): InboxGroup {
     return 'revise';
   if (item.kind === 'review' && item.action === 'review' && item.reason === 'review-assigned')
     return 'review';
+  if (
+    item.kind === 'deliver' &&
+    item.action === 'continue-handling' &&
+    item.reason === 'agent-assisted-delivery'
+  )
+    return 'active';
   if (
     (item.kind === 'confirm' &&
       item.action === 'confirm' &&
