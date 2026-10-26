@@ -42,11 +42,12 @@ const adapter = pathToFileURL(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js'),
 ).href;
 
-function wait(file, label) {
+// Only test IPC paths use this helper; production lock records are asserted immediately.
+function wait(file, label, expected) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const timer = setInterval(() => {
-      if (existsSync(file)) {
+      if (existsSync(file) && (expected === undefined || readFileSync(file, 'utf8') === expected)) {
         clearInterval(timer);
         resolve();
         return;
@@ -59,6 +60,18 @@ function wait(file, label) {
   });
 }
 
+function ipcPublisherSource() {
+  return `
+    import { renameSync as publishIpcRename, writeFileSync as publishIpcWrite } from 'node:fs';
+    function publishIpc(file, body, beforePublish) {
+      const staged = file + '.ipc-' + process.pid + '.tmp';
+      publishIpcWrite(staged, body);
+      beforePublish?.(staged);
+      publishIpcRename(staged, file);
+    }
+  `;
+}
+
 function spawnJournal(source, env, preload) {
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
@@ -66,7 +79,7 @@ function spawnJournal(source, env, preload) {
   }
   Object.assign(childEnv, env);
   const args = preload === undefined ? [] : ['--import', preload];
-  args.push('--input-type=module', '-e', source);
+  args.push('--input-type=module', '-e', ipcPublisherSource() + source);
   const child = spawn(process.execPath, args, {
     env: childEnv,
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -78,6 +91,47 @@ function spawnJournal(source, env, preload) {
   const exited = once(child, 'exit').then(([code, signal]) => ({ code, signal, stderr }));
   return { child, exited };
 }
+
+test('测试 IPC：旧存在握手会读到空文件，完整发布和定值握手均等待内容就绪', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhuma-lock-ipc-publication-'));
+  const legacy = path.join(directory, 'legacy-ready');
+  const published = path.join(directory, 'published-ready');
+  const staged = path.join(directory, 'staged');
+  const release = path.join(directory, 'release');
+  const child = spawnJournal(
+    `
+    import { existsSync, writeFileSync } from 'node:fs';
+    ${pauseSource()}
+    writeFileSync(${JSON.stringify(legacy)}, '');
+    publishIpc(${JSON.stringify(published)}, 'ready', () => {
+      publishIpc(${JSON.stringify(staged)}, 'staged');
+      pause(${JSON.stringify(release)});
+      publishIpc(${JSON.stringify(legacy)}, 'ready');
+    });
+  `,
+    {},
+  );
+  try {
+    await wait(staged, '子进程没有建立空内容屏障', 'staged');
+    let completed = false;
+    const handshake = wait(legacy, '没有收到完整 IPC', 'ready').then(() => {
+      completed = true;
+    });
+    await wait(legacy, '旧存在握手没有被触发');
+    assert.equal(readFileSync(legacy, 'utf8'), '');
+    assert.equal(completed, false);
+    assert.equal(readFileSync(published + '.ipc-' + child.child.pid + '.tmp', 'utf8'), 'ready');
+    assert.equal(existsSync(published), false, '完整写入之前不发布新的 IPC 路径');
+    writeFileSync(release, 'go');
+    await handshake;
+    await wait(published, '没有收到原子发布的 IPC');
+    assert.equal(readFileSync(published, 'utf8'), 'ready');
+    const outcome = await child.exited;
+    assert.equal(outcome.code, 0, outcome.stderr);
+  } finally {
+    if (!existsSync(release)) writeFileSync(release, 'go');
+  }
+});
 
 async function deadPid() {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -137,7 +191,7 @@ test('契约：两个进程同时回收同一把过期锁时只有一个能写',
     const journal = createFileJournal(file);
     if (process.env.ZHUMA_LOCK_SIGNAL) {
       const token = journal.writable === true ? JSON.parse(readFileSync(lockPath, 'utf8')).token : '';
-      writeFileSync(process.env.ZHUMA_LOCK_SIGNAL, token);
+      publishIpc(process.env.ZHUMA_LOCK_SIGNAL, token);
       pause(process.env.ZHUMA_LOCK_FOLLOWER_DONE);
     }
     let code = '';
@@ -149,9 +203,9 @@ test('契约：两个进程同时回收同一把过期锁时只有一个能写',
       code = error && error.code ? String(error.code) : 'throw';
     }
     if (process.env.ZHUMA_LOCK_FOLLOWER_DONE && role === 'follower') {
-      writeFileSync(process.env.ZHUMA_LOCK_FOLLOWER_DONE, 'done');
+      publishIpc(process.env.ZHUMA_LOCK_FOLLOWER_DONE, 'done');
     }
-    writeFileSync(process.env.ZHUMA_LOCK_RESULT, JSON.stringify({
+    publishIpc(process.env.ZHUMA_LOCK_RESULT, JSON.stringify({
       writable: journal.writable === true,
       saved,
       code,
@@ -214,7 +268,7 @@ test('契约：旧持有者退出不会删掉新持有者的写锁', async () =>
       const journal = createFileJournal(${JSON.stringify(file)});
       if (journal.writable !== true) process.exit(2);
       journal.save({ held: true });
-      writeFileSync(${JSON.stringify(ready)}, 'held');
+      publishIpc(${JSON.stringify(ready)}, 'held');
       const exitFile = process.env.ZHUMA_LOCK_EXIT_FILE;
       if (exitFile) {
         const started = Date.now();
@@ -260,7 +314,7 @@ test('契约：写锁被接过后再次保存得到 ELOCKED 并变成只读', as
     const file = ${JSON.stringify(file)};
     const journal = createFileJournal(file);
     journal.save({ first: 1 });
-    writeFileSync(${JSON.stringify(ready)}, 'ready');
+    publishIpc(${JSON.stringify(ready)}, 'ready');
     pause(${JSON.stringify(go)});
     const codes = [];
     for (const body of [{ stolen: true }, { again: true }]) {
@@ -271,7 +325,7 @@ test('契约：写锁被接过后再次保存得到 ELOCKED 并变成只读', as
         codes.push(error && error.code ? String(error.code) : 'throw');
       }
     }
-    writeFileSync(${JSON.stringify(result)}, JSON.stringify({
+    publishIpc(${JSON.stringify(result)}, JSON.stringify({
       codes,
       writable: journal.writable === true,
       body: readFileSync(file, 'utf8'),
@@ -323,7 +377,7 @@ test('契约：过期观察碰上活锁时，空隙中的第三人不能和持�
     let token = '';
     if (process.env.ZHUMA_LOCK_SIGNAL && journal.writable === true) {
       token = JSON.parse(readFileSync(lockPath, 'utf8')).token;
-      writeFileSync(process.env.ZHUMA_LOCK_SIGNAL, token);
+      publishIpc(process.env.ZHUMA_LOCK_SIGNAL, token);
       pause(process.env.ZHUMA_LOCK_SAVE_WAIT);
     }
     let code = '';
@@ -334,7 +388,7 @@ test('契约：过期观察碰上活锁时，空隙中的第三人不能和持�
     } catch (error) {
       code = error && error.code ? String(error.code) : 'throw';
     }
-    writeFileSync(process.env.ZHUMA_LOCK_RESULT, JSON.stringify({
+    publishIpc(process.env.ZHUMA_LOCK_RESULT, JSON.stringify({
       role,
       token,
       writable: journal.writable === true,
@@ -416,9 +470,9 @@ test('契约：非持有者释放时新锁不会被删掉或覆盖', async () =>
     const journal = createFileJournal(${JSON.stringify(file)});
     if (journal.writable !== true) process.exit(2);
     journal.save({ role: 'A' });
-    writeFileSync(${JSON.stringify(ready)}, 'held');
+    publishIpc(${JSON.stringify(ready)}, 'held');
     pause(${JSON.stringify(releaseGo)});
-    writeFileSync(${JSON.stringify(holderResult)}, JSON.stringify({ saved: true }));
+    publishIpc(${JSON.stringify(holderResult)}, JSON.stringify({ saved: true }));
     process.exit(0);
   `;
   const arriverSource = `
@@ -433,7 +487,7 @@ test('契约：非持有者释放时新锁不会被删掉或覆盖', async () =>
     } catch (error) {
       code = error && error.code ? String(error.code) : 'throw';
     }
-    writeFileSync(${JSON.stringify(arriverResult)}, JSON.stringify({
+    publishIpc(${JSON.stringify(arriverResult)}, JSON.stringify({
       writable: journal.writable === true,
       saved,
       code,
@@ -502,7 +556,7 @@ test('契约：死进程留下的回收互斥保持只读并指出要删除的�
       code = error && error.code ? String(error.code) : 'throw';
       message = error && error.message ? String(error.message) : '';
     }
-    writeFileSync(${JSON.stringify(result)}, JSON.stringify({
+    publishIpc(${JSON.stringify(result)}, JSON.stringify({
       writable: journal.writable === true,
       refusal: journal.refusal || '',
       saved,
@@ -541,7 +595,7 @@ test('契约：锁文件不在时保存得到 ELOCKED 并变成只读', async ()
     const file = ${JSON.stringify(file)};
     const journal = createFileJournal(file);
     journal.save({ first: 1 });
-    writeFileSync(${JSON.stringify(ready)}, 'ready');
+    publishIpc(${JSON.stringify(ready)}, 'ready');
     pause(${JSON.stringify(go)});
     let code = '';
     let saved = false;
@@ -551,7 +605,7 @@ test('契约：锁文件不在时保存得到 ELOCKED 并变成只读', async ()
     } catch (error) {
       code = error && error.code ? String(error.code) : 'throw';
     }
-    writeFileSync(${JSON.stringify(result)}, JSON.stringify({
+    publishIpc(${JSON.stringify(result)}, JSON.stringify({
       writable: journal.writable === true,
       saved,
       code,
@@ -621,7 +675,7 @@ test('契约：写锁路径在内容发布前不存在，发布后一次就是�
     const journal = createFileJournal(file);
     if (journal.writable !== true) process.exit(2);
     journal.save({ held: true });
-    writeFileSync(${JSON.stringify(ready)}, readFileSync(${JSON.stringify(lockPath)}, 'utf8'));
+    publishIpc(${JSON.stringify(ready)}, readFileSync(${JSON.stringify(lockPath)}, 'utf8'));
     pause(${JSON.stringify(release)});
   `;
   const child = spawnJournal(source, {
@@ -629,7 +683,7 @@ test('契约：写锁路径在内容发布前不存在，发布后一次就是�
     ZHUMA_LOCK_PUBLISH_WAIT: waitFile,
   });
   try {
-    await wait(arrived, '子进程没有停在锁内容发布前');
+    await wait(arrived, '子进程没有停在锁内容发布前', String(child.child.pid));
     assert.equal(existsSync(lockPath), false, '锁路径在内容发布前就已经出现');
     assert.equal(observations.length, 0);
     const temps = readdirSync(directory).filter(
@@ -675,7 +729,7 @@ function reclaimSource(file, ready, release) {
     import { createFileJournal } from ${JSON.stringify(adapter)};
     ${pauseSource()}
     const journal = createFileJournal(${JSON.stringify(file)});
-    writeFileSync(${JSON.stringify(ready)}, journal.writable === true ? '1' : '0');
+    publishIpc(${JSON.stringify(ready)}, journal.writable === true ? '1' : '0');
     pause(${JSON.stringify(release)});
   `;
 }
@@ -822,7 +876,7 @@ test('契约：回收新锁遇到权限错误时把路径抛出来', async () =>
     } catch (error) {
       text = 'throw:' + (error && error.message ? error.message : String(error));
     }
-    writeFileSync(${JSON.stringify(report)}, text);
+    publishIpc(${JSON.stringify(report)}, text);
   `;
   const child = spawnJournal(
     source,
@@ -891,7 +945,7 @@ test('契约：回收新锁遇到不带路径的错误时，抛出的消息仍�
     } catch (error) {
       text = 'throw:' + (error && error.message ? error.message : String(error));
     }
-    writeFileSync(${JSON.stringify(report)}, text);
+    publishIpc(${JSON.stringify(report)}, text);
   `;
   const child = spawnJournal(
     source,
@@ -959,7 +1013,7 @@ test('契约：回收互斥在读到之前消失时继续抢锁，不要求删�
     } catch (error) {
       code = error && error.code ? String(error.code) : 'throw';
     }
-    writeFileSync(${JSON.stringify(ready)}, JSON.stringify({
+    publishIpc(${JSON.stringify(ready)}, JSON.stringify({
       writable: journal.writable === true,
       refusal: journal.refusal ?? '',
       saved,
