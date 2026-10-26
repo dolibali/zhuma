@@ -500,6 +500,41 @@ function transport(handler, hooks = {}) {
 }
 const reply = (request, value) =>
   Response.json({ type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } });
+test('Run transport contract: fixed delivery reads are bounded and reject malformed or contradictory receipts', async () => {
+  const delivered = {
+    kind: 'delivered',
+    artifactVersionId: 'artifact-1',
+    artifactVersion: 1,
+    roundId: 'round-1',
+    receipt: { idempotencyKey: 'result-key', version: 4 },
+  };
+  const read = { ...summary, status: 'completed', resources: 'settled', resultDelivery: delivered };
+  const h = transport((request) =>
+    reply(request, {
+      ...read,
+      resultDelivery: { ...delivered, privateText: 'BODY_MUST_NOT_ENTER_RUN_PROJECTION' },
+    }),
+  );
+  assert.deepEqual(
+    (await h.api.read(target, 'run', new AbortController().signal)).resultDelivery,
+    delivered,
+  );
+  assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-run/read']);
+  for (const invalid of [
+    { ...read, status: 'running' },
+    { ...read, resources: 'held' },
+    { ...read, resultDelivery: null },
+    { ...read, resultDelivery: { ...delivered, artifactVersion: 0 } },
+    { ...read, resultDelivery: { ...delivered, receipt: null } },
+    { ...summary, resultDelivery: { kind: 'pending', phase: 'invented' } },
+    { ...read, resultDelivery: { kind: 'pending', phase: 'draining' } },
+  ]) {
+    const crossed = transport((request) => reply(request, invalid));
+    await assert.rejects(crossed.api.read(target, 'run', new AbortController().signal), {
+      code: 'validation',
+    });
+  }
+});
 test('Run transport contract: options is the only initial endpoint and rejects crossed locator projections', async () => {
   const h = transport((request) => reply(request, options()));
   const read = await h.api.options(target, new AbortController().signal);

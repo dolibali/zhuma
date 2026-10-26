@@ -7,10 +7,44 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import type { Domain } from '@deepseek-ai/dsh-storage-domain';
-import { WorkbenchError, WorkTaskSchema, type ArtifactFileRef } from '@zhuma/agent-core';
+import {
+  WorkbenchError,
+  WorkTaskSchema,
+  canonicalPayload,
+  type ArtifactFileRef,
+} from '@zhuma/agent-core';
 import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
 
 const id = WorkTaskSchema.shape.id;
+const nativeId = z.string().min(1).max(200);
+
+/** Host-only provenance. A digest or serialized copy is never publication authority. */
+export const nativeOutputFileSourceSchema = z.strictObject({
+  scope: z.strictObject({
+    actorId: id,
+    spaceId: id,
+    taskId: id,
+    planId: id,
+    revision: z.number().int().positive().refine(Number.isSafeInteger),
+    nodeId: id,
+    runId: nativeId,
+    generation: z.number().int().positive().refine(Number.isSafeInteger),
+    segmentId: nativeId,
+  }),
+  nativeSessionId: nativeId,
+  nativeAgentId: nativeId,
+  configurationId: nativeId,
+  expertVersionId: nativeId,
+  toolVersion: z.literal('zhuma-native-output-file@1'),
+  callId: nativeId,
+});
+export type NativeOutputFileSource = z.infer<typeof nativeOutputFileSourceSchema>;
+const nativeProducerSchema = z.strictObject({
+  kind: z.literal('native-run-output'),
+  version: z.literal(1),
+  source: nativeOutputFileSourceSchema,
+  selectorFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+});
 
 /** Upload receipt states. Bytes publish first; the receipt completes after metadata lands. */
 export type UploadState = 'completed' | 'abandoned';
@@ -34,6 +68,7 @@ const FileRecordSchema = z.strictObject({
   idempotencyKey: id,
   state: z.enum(['completed', 'abandoned']),
   uploadedAt: z.string(),
+  producer: nativeProducerSchema.optional(),
 });
 
 /** The durable field bounds also apply before a stream or provider is opened. */
@@ -339,6 +374,9 @@ export interface ArtifactFileStore {
   findByIdempotencyKey(idempotencyKey: string): UploadFileRecord | undefined;
   /** Persist a completed receipt; a conflict on the id rejects. */
   put(record: UploadFileRecord): Promise<void>;
+  findNativePublication(source: NativeOutputFileSource): UploadFileRecord | undefined;
+  putNativePublication(record: UploadFileRecord): Promise<void>;
+  countNativePublications(scope: NativeOutputFileSource['scope']): number;
   /** Count completed uploads in one space (quota). */
   countInSpace(spaceId: string): number;
   /** Bytes pinned by delivery facts of one node (node quota). */
@@ -361,6 +399,50 @@ class OpenedArtifactFileStore implements ArtifactFileStore {
   }
 
   async put(record: UploadFileRecord): Promise<void> {
+    if (record.producer !== undefined) throw new ArtifactUploadError('validation');
+    await this.write(record);
+  }
+
+  findNativePublication(source: NativeOutputFileSource): UploadFileRecord | undefined {
+    const parsed = nativeOutputFileSourceSchema.parse(source);
+    for (const [, record] of this.domain.table('files').entries())
+      if (record.producer && canonicalPayload(record.producer.source) === canonicalPayload(parsed))
+        return record;
+    return undefined;
+  }
+
+  countNativePublications(scope: NativeOutputFileSource['scope']): number {
+    let count = 0;
+    for (const [, record] of this.domain.table('files').entries())
+      if (
+        record.state === 'completed' &&
+        record.producer &&
+        canonicalPayload(record.producer.source.scope) === canonicalPayload(scope)
+      )
+        count++;
+    return count;
+  }
+
+  async putNativePublication(record: UploadFileRecord): Promise<void> {
+    const parsed = FileRecordSchema.safeParse(record);
+    if (!parsed.success || !parsed.data.producer) throw new ArtifactUploadError('validation');
+    const scope = parsed.data.producer.source.scope;
+    if (
+      record.state !== 'completed' ||
+      record.byteSize > ARTIFACT_FILE_LIMITS.maxFileBytes ||
+      record.attachmentId !== `sha256:${record.sha256}` ||
+      record.uploadedBy !== scope.actorId ||
+      ['spaceId', 'taskId', 'planId', 'revision', 'nodeId'].some(
+        (key) => Reflect.get(record, key) !== Reflect.get(scope, key),
+      ) ||
+      this.findNativePublication(parsed.data.producer.source) ||
+      this.findByIdempotencyKey(record.idempotencyKey)
+    )
+      throw new ArtifactUploadError('conflict');
+    await this.write(parsed.data);
+  }
+
+  private async write(record: UploadFileRecord): Promise<void> {
     // The record must parse before any write; an invalid record can never
     // poison the domain.
     const parsed = FileRecordSchema.safeParse(record);

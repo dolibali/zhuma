@@ -277,6 +277,25 @@ async function boot(
 }
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
+const fixedText = '冷'.repeat(100000);
+function* fixedResponse() {
+  const args = JSON.stringify({ text: fixedText, links: [] });
+  yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+  yield {
+    type: 'tool-call-delta',
+    index: 0,
+    id: 'cold-result',
+    name: 'complete_work',
+    argumentsDelta: args,
+  };
+  yield {
+    type: 'block-end',
+    index: 0,
+    block: { type: 'tool-call', id: 'cold-result', name: 'complete_work', arguments: args },
+  };
+  yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } };
+  yield { type: 'finish', reason: { kind: 'tool-calls' } };
+}
 const optionalBytes = (path) =>
   readFile(path).catch((error) => {
     if (error.code === 'ENOENT') return undefined;
@@ -314,16 +333,100 @@ test(
     const variant = process.env.ZHUMA_HOST_COLD_VARIANT;
     const root = process.env.ZHUMA_HOST_COLD_ROOT;
     assert(root && ['write', 'read'].includes(mode));
-    assert(['unadmitted', 'unknown', 'bound', 'revoked'].includes(variant));
+    assert(['unadmitted', 'unknown', 'bound', 'revoked', 'result'].includes(variant));
     const replies =
-      variant === 'bound' || (variant === 'unadmitted' && mode === 'read')
-        ? ['LOCAL_SCRIPTED_ONLY']
-        : [];
+      variant === 'result' && mode === 'write'
+        ? [fixedResponse]
+        : variant === 'bound' || (variant === 'unadmitted' && mode === 'read')
+          ? ['LOCAL_SCRIPTED_ONLY']
+          : [];
     const h = await boot(t, {
       sharedRoot: root,
       seed: mode === 'write',
+      expert: variant === 'result',
       adapter: new ScriptedAdapter(replies),
     });
+    if (variant === 'result') {
+      const target = { ...h.locator, runId: 'run-1' };
+      if (mode === 'write') {
+        const put = h.table.put.bind(h.table);
+        let lostReply = false;
+        h.table.put = async (key, value) => {
+          await put(key, value);
+          if (!lostReply && value.nativeExecution?.runs.at(-1)?.resultDelivery) {
+            lostReply = true;
+            throw Error('Injected lost durable delivery response');
+          }
+        };
+        try {
+          checked(await h.rpc('run', 'begin', h.begin));
+          await waitFor(h.ctx, () => h.row().artifactVersions.length === 1);
+          assert.equal(
+            checked(await h.rpc('run', 'read', target)).resultDelivery.kind,
+            'delivered',
+          );
+          assert.equal(lostReply, true);
+        } finally {
+          h.table.put = put;
+        }
+        assert.equal(h.row().artifactVersions[0].text, fixedText);
+        assert.equal(h.ctx.agents.list().length, 0);
+        await writeFile(
+          join(root, 'expected.json'),
+          JSON.stringify({
+            pid: process.pid,
+            cookieDigest: digest(h.cookie),
+            row: h.row(),
+            businessDigests: await businessBytes(root),
+          }),
+        );
+        await writeFile(
+          join(root, 'write-report.json'),
+          JSON.stringify({
+            pid: process.pid,
+            variant,
+            lostReply,
+            modelRequests: h.adapter.requests.length,
+            artifacts: h.row().artifactVersions.length,
+          }),
+        );
+      } else {
+        const expected = JSON.parse(await readFile(join(root, 'expected.json'), 'utf8'));
+        assert.notEqual(process.pid, expected.pid);
+        assert.notEqual(digest(h.cookie), expected.cookieDigest);
+        for (let i = 0; i < 2; i++) {
+          const view = checked(await h.rpc('run', 'read', target));
+          assert.equal(view.resultDelivery.kind, 'delivered');
+          assert.equal(view.resultDelivery.artifactVersionId, expected.row.artifactVersions[0].id);
+          assert.ok(Buffer.byteLength(JSON.stringify(view)) < 8192);
+          const page = checked(await h.rpc('run', 'history', target));
+          assert.equal(JSON.stringify(page).includes('冷'.repeat(100)), false);
+        }
+        assert.equal(
+          (await h.rpc('run', 'read', target, await h.login('outside'))).result.ok,
+          false,
+        );
+        assert.deepEqual(h.row(), expected.row);
+        assert.deepEqual(await businessBytes(root), expected.businessDigests);
+        assert.equal(h.adapter.requests.length, 0);
+        assert.equal(h.ctx.agents.list().length, 0);
+        assert.equal(h.nativeReads.migrationOrigin, 0);
+        await writeFile(
+          join(root, 'read-report.json'),
+          JSON.stringify({
+            pid: process.pid,
+            variant,
+            distinctProcess: true,
+            freshMemberCookie: true,
+            oldRunUnchanged: true,
+            modelRequests: 0,
+            artifacts: 1,
+            bytesUnchanged: true,
+          }),
+        );
+      }
+      return;
+    }
     if (mode === 'write') {
       if (variant === 'unknown') {
         const table = h.ctx.storageDomain.get('zhuma_native_work_sessions').table('bindings');

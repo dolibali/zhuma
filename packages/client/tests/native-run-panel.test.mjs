@@ -184,6 +184,39 @@ test('SSR: idle and received do not advertise adoption, task completion or a sto
   assert.ok(uncertain.includes('停止回执未确认'));
 });
 
+test('SSR: fixed results distinguish pending physical drain, submitted review and task completion', () => {
+  const pending = render({
+    view: running({
+      run: {
+        ...run,
+        resultDelivery: { kind: 'pending', phase: 'draining' },
+      },
+    }),
+  });
+  assert.ok(pending.includes('正在结束运行并固定产物'));
+  assert.ok(pending.includes('停止'));
+  const delivered = render({
+    view: running({
+      run: {
+        ...run,
+        status: 'completed',
+        resources: 'settled',
+        native: { sessionId: 'native', agentId: 'native', status: 'detached' },
+        resultDelivery: {
+          kind: 'delivered',
+          artifactVersionId: 'artifact',
+          artifactVersion: 1,
+          roundId: 'round',
+          receipt: { idempotencyKey: 'key', version: 4 },
+        },
+      },
+    }),
+  });
+  assert.ok(delivered.includes('已提交评审'));
+  assert.ok(!delivered.includes('会话连接已断开'));
+  assert.ok(!delivered.includes('任务已完成'));
+});
+
 test('SSR: queue-only capability is explicit and unavailable modes are not offered', () => {
   const html = render({
     view: running({

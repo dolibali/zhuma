@@ -69,7 +69,12 @@ function RunState({ run }: { run: NativeRunSummary | null }) {
     requested: '正在启动',
     running: '运行中',
     'waiting-for-input': '等待补充',
-    completed: '本轮已结束',
+    completed:
+      run.resultDelivery?.kind === 'delivered'
+        ? run.resultDelivery.roundId
+          ? '已提交评审'
+          : '产物已提交'
+        : '本轮已结束',
     failed: '运行失败',
     cancelled: run.stopPhase === 'confirmed' ? '已停止' : '运行已取消',
   }[run.status];
@@ -84,6 +89,13 @@ function RunState({ run }: { run: NativeRunSummary | null }) {
 function Receipt({ run }: { run: NativeRunSummary | null }) {
   if (!run) return null;
   const notices = [
+    run.resultDelivery?.kind === 'pending'
+      ? run.resultDelivery.phase === 'delivery-unconfirmed'
+        ? '交付结果待核实，请刷新'
+        : run.resultDelivery.phase === 'draining'
+          ? '正在结束运行并固定产物'
+          : '正在确认产物已保存'
+      : '',
     run.dispatch === 'reserved'
       ? '等待运行端接收'
       : run.dispatch === 'unknown'
@@ -98,7 +110,7 @@ function Receipt({ run }: { run: NativeRunSummary | null }) {
         : run.stopPhase === 'confirmed'
           ? '已确认停止'
           : '',
-    run.native?.status === 'detached' ? '会话连接已断开' : '',
+    run.native?.status === 'detached' && !run.resultDelivery ? '会话连接已断开' : '',
     run.resources === 'held' && !['requested', 'running', 'waiting-for-input'].includes(run.status)
       ? '资源仍占用，暂不能重新开始'
       : '',

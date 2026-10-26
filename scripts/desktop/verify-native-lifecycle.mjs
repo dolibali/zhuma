@@ -23,9 +23,16 @@ const { values } = parseArgs({
   options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
 });
 if (
-  !['all', 'host-run', 'host-run-cold', 'host-resources', 'skill-loader', 'native-stream'].includes(
-    values.phase,
-  )
+  ![
+    'all',
+    'host-run',
+    'host-run-cold',
+    'host-resources',
+    'host-results',
+    'skill-loader',
+    'mcp-close',
+    'native-stream',
+  ].includes(values.phase)
 )
   throw new Error('Unknown native verification phase.');
 // Always build the actual artifact before copying it into the isolated SDK.
@@ -126,6 +133,14 @@ async function verifyInStage() {
       })),
     );
   }
+  if (values.phase === 'mcp-close') {
+    sdkAliases.unshift(
+      ...['index', 'connection'].map((name) => ({
+        find: `@deepseek-ai/dsh-mcp-client/src/${name}.ts`,
+        replacement: join(stage, `packages/mcp/mcp-client/src/${name}.ts`),
+      })),
+    );
+  }
   writeFileSync(
     join(stage, '.zhuma-native-lifecycle.config.ts'),
     `
@@ -139,6 +154,137 @@ export default { ...config, resolve: {...config.resolve, alias: aliases(config.r
 } }
 `,
   );
+  if (values.phase === 'mcp-close') {
+    const fixture = join(root, 'tests/fixtures/mcp-close/confirmation.spec.ts');
+    const target = 'packages/mcp/mcp-client/tests/zhuma-close-confirmation.spec.ts';
+    const publicApiFixture = 'packages/mcp/mcp-client/src/zhuma-close-api.typecheck.ts';
+    copyFileSync(fixture, join(stage, target));
+    // Compile the public consumer with the package's original project references;
+    // do not recheck vendor sources under a different root compiler policy.
+    writeFileSync(
+      join(stage, publicApiFixture),
+      `import type { Context } from '@deepseek-ai/cordis';
+import { captureMcpClientClose, McpClientCloseError, type McpClientCloseHandle } from '@deepseek-ai/dsh-mcp-client';
+function publicContract(context: Context) {
+  const capture: (context: Context) => McpClientCloseHandle = captureMcpClientClose;
+  const handle = capture(context);
+  const closed: Promise<void> = handle.close();
+  const error = new McpClientCloseError('mcp-close-unconfirmed');
+  const code: 'mcp-close-unavailable' | 'mcp-close-unconfirmed' = error.code;
+  return { closed, code };
+}
+void publicContract;
+`,
+    );
+    writeFileSync(
+      join(evidence, 'sdk-typecheck.log'),
+      command(
+        process.execPath,
+        [
+          join(upstream, 'node_modules/typescript/bin/tsc'),
+          '-b',
+          'packages/mcp/mcp-client',
+          '--pretty',
+          'false',
+        ],
+        stage,
+      ),
+    );
+    const run = (name, files, expected) => {
+      const report = join(evidence, `${name}.json`);
+      const result = spawnSync(
+        process.execPath,
+        [
+          vitest,
+          'run',
+          '--config=.zhuma-native-lifecycle.config.ts',
+          '--project',
+          'thread-safe',
+          ...files,
+          '--reporter=json',
+          `--outputFile=${report}`,
+        ],
+        {
+          cwd: stage,
+          encoding: 'utf8',
+          maxBuffer: 16 * 1024 * 1024,
+          env: {
+            ...process.env,
+            ZHUMA_MCP_CLOSE_OBSERVATIONS: join(evidence, 'http-observations.json'),
+          },
+        },
+      );
+      writeFileSync(join(evidence, `${name}.log`), `${result.stdout ?? ''}${result.stderr ?? ''}`);
+      if (result.error || !existsSync(report))
+        throw new Error(`${name} did not produce evidence: ${evidence}`);
+      const summary = JSON.parse(readFileSync(report, 'utf8'));
+      if (
+        result.status !== 0 ||
+        !summary.success ||
+        summary.numFailedTests ||
+        summary.numPassedTests !== expected
+      )
+        throw new Error(`${name} failed; evidence: ${evidence}`);
+      return { name, passed: summary.numPassedTests, omittedByFilter: summary.numPendingTests };
+    };
+    const contract = run(
+      'mcp-close-contract',
+      [
+        'packages/mcp/mcp-client/tests/reconnect.spec.ts',
+        '-t',
+        'captures only the original plugin close owner|rejects bounded disposal',
+      ],
+      3,
+    );
+    const http = run('mcp-close-http', [target], 3);
+    const observations = JSON.parse(readFileSync(join(evidence, 'http-observations.json'), 'utf8'));
+    const refused = observations.find((item) => item.case === 'close-confirmation-timeout');
+    if (
+      !refused?.explicitCloseRejected ||
+      !refused.cordisFiberDisposeResolved ||
+      refused.clientCallSettled ||
+      refused.httpHeld !== 1 ||
+      refused.clientCloseObserved !== 0 ||
+      refused.afterExplicitRealClose?.httpHeld !== 0
+    )
+      throw new Error(
+        `The real false-close counterexample did not retain its physical assertions: ${evidence}`,
+      );
+    writeFileSync(
+      join(evidence, 'proof.json'),
+      `${JSON.stringify(
+        {
+          upstreamCommit: pin,
+          sourceCommit: command('git', ['rev-parse', 'HEAD'], root),
+          sourceClean:
+            command(
+              'git',
+              ['status', '--porcelain', '--', 'packages', 'scripts', 'patches', 'tests', 'docs'],
+              root,
+            ) === '',
+          patchSha256: hash(patch),
+          fixtureSha256: hash(fixture),
+          verifierSha256: hash(fileURLToPath(import.meta.url)),
+          sdkTypecheck: true,
+          publicApiTypecheck: true,
+          publicApiFixtureSha256: hash(join(stage, publicApiFixture)),
+          phases: [contract, http],
+          mcpSource: ['src/index.ts', 'src/connection.ts', 'tests/reconnect.spec.ts'].map(
+            (path) => ({ path, sha256: hash(join(stage, 'packages/mcp/mcp-client', path)) }),
+          ),
+          observations,
+          boundary:
+            'fixed source SDK MCP scope and physical HTTP close only; no model, credentials, Run adoption, stdio process, compiled Web, GUI or installer qualification',
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    console.log(
+      `MCP close qualification: ${contract.passed} focused SDK contracts and ${http.passed} actual HTTP cases passed; evidence: ${evidence}/proof.json`,
+    );
+    return;
+  }
   // A dedicated qualification uses the same fixed-pin staging and one SDK graph.
   // It never opens a profile, native session or model connection.
   if (values.phase === 'skill-loader') {
@@ -650,12 +796,28 @@ export default { ...config, resolve: {...config.resolve, alias: aliases(config.r
       ],
       2,
       {},
-      6,
+      12,
     );
-  else verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 8);
+  else if (values.phase === 'host-results')
+    verify(
+      'host-results',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts',
+        '-t',
+        'actual emitted Host fixed result:',
+      ],
+      6,
+      {},
+      8,
+    );
+  else verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 14);
   const coldRecoveries = [];
-  if (values.phase === 'all' || values.phase === 'host-run-cold') {
-    for (const variant of ['unadmitted', 'unknown', 'bound', 'revoked']) {
+  if (['all', 'host-run-cold', 'host-results'].includes(values.phase)) {
+    const variants =
+      values.phase === 'host-results'
+        ? ['result']
+        : ['unadmitted', 'unknown', 'bound', 'revoked', 'result'];
+    for (const variant of variants) {
       const data = join(evidence, `host-cold-${variant}`);
       mkdirSync(data, { mode: 0o700 });
       for (const mode of ['write', 'read'])

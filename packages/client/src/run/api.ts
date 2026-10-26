@@ -14,6 +14,7 @@ import type {
   NativeRunTarget,
   NativeRunMessage,
   NativeRunInbox,
+  NativeRunResultDelivery,
   NativeConversationFrame,
 } from './native-run-contract.js';
 
@@ -212,11 +213,37 @@ function capability(value: unknown): NativeRunAction {
         ? { kind: 'unknown', message: '暂时无法确认操作权限，请刷新。' }
         : invalid();
 }
+function resultDelivery(value: unknown): NativeRunResultDelivery {
+  const row = object(value);
+  const kind = oneOf(row.kind, ['pending', 'delivered']);
+  if (kind === 'pending')
+    return { kind, phase: oneOf(row.phase, ['draining', 'not-durable', 'delivery-unconfirmed']) };
+  const receipt = object(row.receipt);
+  return {
+    kind,
+    artifactVersionId: string(row.artifactVersionId),
+    artifactVersion: integer(row.artifactVersion, 1),
+    ...(row.roundId === undefined ? {} : { roundId: string(row.roundId) }),
+    receipt: {
+      idempotencyKey: string(receipt.idempotencyKey),
+      version: integer(receipt.version, 1),
+    },
+  };
+}
 function readView(value: unknown, expected: NativeRunLocator, runId: string): NativeRunRead {
   const row = object(value);
   if (row.runId !== runId) invalid();
   const native = row.native === null ? null : object(row.native);
   const caps = row.sendCapabilities === undefined ? undefined : object(row.sendCapabilities);
+  const delivery =
+    row.resultDelivery === undefined ? undefined : resultDelivery(row.resultDelivery);
+  if (
+    delivery &&
+    (delivery.kind === 'delivered'
+      ? row.status !== 'completed' || row.resources !== 'settled' || row.stopPhase !== 'none'
+      : row.resources !== 'held' || row.stopPhase !== 'none')
+  )
+    invalid();
   return {
     ...locator(row, expected),
     runId,
@@ -236,6 +263,7 @@ function readView(value: unknown, expected: NativeRunLocator, runId: string): Na
     resources: oneOf(row.resources, ['held', 'settled']),
     acknowledged: boolean(row.acknowledged),
     stopPhase: oneOf(row.stopPhase, ['none', 'requested', 'confirmed', 'receipt-rejected']),
+    ...(delivery ? { resultDelivery: delivery } : {}),
     native: native
       ? {
           sessionId: string(native.sessionId),

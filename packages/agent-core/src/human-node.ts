@@ -366,6 +366,51 @@ export function submitExpertDelivery(input: {
   return commitDelivery(input, input.expertId, fingerprint, input.producerRunId);
 }
 
+/**
+ * Commit an expert result with an adapter-verified fixed file manifest. This
+ * pure function does not authenticate file receipts, bytes or native completion;
+ * the trusted adapter must do so before calling it and bind the complete
+ * manifest and Run provenance in provenanceFingerprint. The text-only entry
+ * above retains its original rejection of all file claims.
+ */
+export function submitExpertManifestDelivery(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly expertId: string;
+  readonly producerRunId: string;
+  readonly provenanceFingerprint: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly draft: ArtifactDraft;
+  readonly artifactId: string;
+  readonly roundId: string;
+}): NodeCommandResult {
+  if (
+    input.record.handoff.assignee.kind !== 'expert' ||
+    input.record.handoff.assignee.id !== input.expertId
+  )
+    return reject(input.record, 'not-assignee');
+  if (
+    typeof input.producerRunId !== 'string' ||
+    !input.producerRunId.trim() ||
+    input.producerRunId.length > 200 ||
+    typeof input.provenanceFingerprint !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(input.provenanceFingerprint)
+  )
+    return reject(input.record, 'invalid-provenance');
+  if (!Array.isArray(input.draft.files)) return reject(input.record, 'invalid-file');
+  const fingerprint = canonicalPayload({
+    kind: 'expert-manifest-submit',
+    expertId: input.expertId,
+    nodeId: input.record.nodeId,
+    producerRunId: input.producerRunId,
+    provenanceFingerprint: input.provenanceFingerprint,
+    text: input.draft.text ?? null,
+    files: input.draft.files,
+    links: input.draft.links,
+  });
+  return commitDelivery(input, input.expertId, fingerprint, input.producerRunId);
+}
+
 /** Shared artifact / round / receipt landing; caller-specific gates stay above. */
 function commitDelivery(
   input: {

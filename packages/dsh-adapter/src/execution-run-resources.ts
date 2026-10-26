@@ -117,6 +117,9 @@ export async function registerExecutionRunResources(
       ? snapshot.payload.resources
       : { sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION, skills: [], mcp: [] },
   );
+  const captureMcpClientClose: unknown = Reflect.get(McpClient, 'captureMcpClientClose');
+  if (resources.mcp.length && typeof captureMcpClientClose !== 'function')
+    fail('resources-unavailable');
   if (
     snapshot.schemaVersion === 1 &&
     (snapshot.payload.handoff.skillRefs.length || snapshot.payload.handoff.mcpRefs.length)
@@ -138,6 +141,7 @@ export async function registerExecutionRunResources(
   const fibers: { dispose(): Promise<void> }[] = [],
     unregister: (() => unknown)[] = [],
     leases: ExecutionMcpConnectionLease[] = [];
+  const retainedLeases = new Set<ExecutionMcpConnectionLease>();
   const pending = new Set<Promise<unknown>>();
   const definitions = new Map<string, ToolDefinition>();
   const serviceIdentity = (service: object): object =>
@@ -177,7 +181,10 @@ export async function registerExecutionRunResources(
           failures.push(error);
         }
       while (pending.size) await Promise.allSettled([...pending]);
-      for (const lease of leases.reverse())
+      for (const lease of leases.reverse()) {
+        // A failed original close remains owned, even if Cordis contains its
+        // finalizer error. Other connections still finish their own cleanup.
+        if (retainedLeases.has(lease)) continue;
         try {
           const result: unknown = lease.release();
           if (result !== undefined) {
@@ -187,6 +194,7 @@ export async function registerExecutionRunResources(
         } catch (error) {
           failures.push(error);
         }
+      }
       signal.removeEventListener('abort', onAbort);
       if (failures.length) fail('resources-unavailable');
     })().then(resolve, reject);
@@ -208,6 +216,8 @@ export async function registerExecutionRunResources(
         serviceIdentity(context.get('tools')!) !== toolIdentity ||
         Reflect.get(toolIdentity, 'getRegistered') !== registeredIdentity ||
         Reflect.get(ToolSkill, 'bindSkillRegistry') !== bindSkillRegistry ||
+        (resources.mcp.length > 0 &&
+          Reflect.get(McpClient, 'captureMcpClientClose') !== captureMcpClientClose) ||
         isolatedServices.some((item) => {
           const service = item.context.get(item.name);
           return !service || serviceIdentity(service) !== item.identity;
@@ -353,8 +363,37 @@ export async function registerExecutionRunResources(
           toolCallTimeoutMs: RESOURCE_IO_LIMITS.callMs,
           maxInstructionBytes: 8192,
         });
-        fibers.push(connection);
+        let confirmedClose: (() => Promise<void>) | undefined;
+        const captureClose = (): (() => Promise<void>) => {
+          if (typeof captureMcpClientClose !== 'function') fail('resources-unavailable');
+          const owner: unknown = captureMcpClientClose.call(McpClient, connection.ctx);
+          const close: unknown = owner && typeof owner === 'object' && Reflect.get(owner, 'close');
+          if (typeof close !== 'function') fail('resources-unavailable');
+          return async () => {
+            const result: unknown = close.call(owner);
+            if (!(result instanceof Promise)) fail('resources-unavailable');
+            assertion(await result);
+          };
+        };
+        // Cordis starts apply asynchronously. Capture after readiness, or from
+        // this same original context during an unpublished startup's cleanup.
+        fibers.push({
+          async dispose() {
+            try {
+              await (confirmedClose ?? captureClose())();
+              await connection.dispose();
+            } catch (error) {
+              retainedLeases.add(lease);
+              // Best-effort cancellation cannot certify a failed explicit close.
+              try {
+                await connection.dispose();
+              } catch {}
+              throw error;
+            }
+          },
+        });
         await connection;
+        confirmedClose = captureClose();
       } finally {
         clearTimeout(timer);
       }
