@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -777,3 +777,355 @@ test('an explicit missing or non-host S1A_HOST_MODULE fails and does not use ano
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  'M1 acceptance: a real file uploads to durable storage with a server-computed receipt, surviving restart',
+  { timeout: 60000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-m1-upload-'));
+    let host;
+    try {
+      host = await startAcceptanceHost(directory, {
+        deploymentMode: 'multi-member',
+        identityImport,
+        spaceDirectoryImport,
+        workbenchSeed,
+      });
+      const chen = await host.login('chen', PASSWORDS.chen);
+      const outside = await host.login('outside', PASSWORDS.outside);
+
+      const startable = await host.exec('startable', {}, chen);
+      const plan = startable.result.value.plans.find((entry) => entry.taskId === 'portal-task');
+      assert.ok(plan);
+      const started = await host.exec(
+        'start-plan',
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          idempotencyKey: 'start-upload',
+        },
+        chen,
+      );
+      assert.equal(started.result.ok, true);
+
+      // A real file uploads: the server computes the digest and length.
+      const bytes = new TextEncoder().encode('# 接口说明\n\n真实文件内容。\n');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const uploaded = await host.upload(
+        { name: '接口说明🙂.md', mediaType: 'text/markdown', byteSize: bytes.byteLength, sha256 },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-spec-1',
+        },
+        bytes,
+        chen,
+      );
+      assert.equal(uploaded.json?.ok, true, JSON.stringify(uploaded.json));
+      assert.equal(uploaded.json.value.sha256, sha256);
+      assert.equal(uploaded.json.value.bytes, bytes.byteLength);
+      assert.equal(uploaded.json.value.name, '接口说明🙂.md');
+      assert.ok(uploaded.json.value.uploadId.length > 0);
+
+      // A forged declaration fails closed and writes nothing.
+      const forged = await host.upload(
+        {
+          name: 'fake.md',
+          mediaType: 'text/markdown',
+          byteSize: bytes.byteLength,
+          sha256: '0'.repeat(64),
+        },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-forged',
+        },
+        bytes,
+        chen,
+      );
+      assert.equal(forged.json?.ok, false);
+      assert.equal(forged.json?.error?.code, 'digest-mismatch');
+
+      // An unauthorized member cannot upload.
+      const denied = await host.upload(
+        { name: '接口说明🙂.md', mediaType: 'text/markdown', byteSize: bytes.byteLength, sha256 },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-outside',
+        },
+        bytes,
+        outside,
+      );
+      assert.equal(denied.json?.ok, false);
+
+      // A real restart keeps the receipt metadata.
+      await host.close();
+      host = await startAcceptanceHost(directory, {
+        deploymentMode: 'multi-member',
+        identityImport,
+        spaceDirectoryImport,
+      });
+      const chenAgain = await host.login('chen', PASSWORDS.chen);
+      // Same idempotency key replays the same receipt after the restart.
+      const replayed = await host.upload(
+        { name: '接口说明🙂.md', mediaType: 'text/markdown', byteSize: bytes.byteLength, sha256 },
+        {
+          taskId: plan.taskId,
+          planId: plan.planId,
+          revision: plan.revision,
+          nodeId: 'design',
+          spaceId: 'team-north',
+          idempotencyKey: 'upload-spec-1',
+        },
+        bytes,
+        chenAgain,
+      );
+      assert.equal(replayed.json?.ok, true);
+      assert.equal(replayed.json?.value?.uploadId, uploaded.json.value.uploadId);
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+async function storedAttachmentFiles(directory) {
+  const entries = await readdir(join(directory, 'attachments'), {
+    recursive: true,
+    withFileTypes: true,
+  }).catch((error) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name))
+    .sort();
+}
+
+test(
+  'M1 real HTTP: four accounts and two actual team tasks keep distinct receipts for identical bytes',
+  { timeout: 15000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-file-two-teams-'));
+    let host;
+    try {
+      const secondTask = structuredClone(workbenchSeed.at(-1).task);
+      Object.assign(secondTask, {
+        id: 'support-task',
+        projectId: 'support',
+        ownerId: 'zhao',
+        participantIds: ['zhao', 'lin'],
+      });
+      for (const workflow of secondTask.workflows)
+        for (const node of workflow.nodes) {
+          node.assigneeId = 'zhao';
+          node.reviewerIds = node.reviewRequired ? ['lin'] : [];
+        }
+      host = await startAcceptanceHost(directory, {
+        deploymentMode: 'multi-member',
+        identityImport,
+        spaceDirectoryImport: {
+          spaces: [
+            ...spaceDirectoryImport.spaces,
+            { id: 'team-south', kind: 'team', name: '南队' },
+          ],
+          memberships: [
+            ...spaceDirectoryImport.memberships,
+            { spaceId: 'team-south', accountId: 'zhao' },
+            { spaceId: 'team-south', accountId: 'lin' },
+          ],
+          projectSpaces: [
+            ...spaceDirectoryImport.projectSpaces,
+            { projectId: 'support', spaceId: 'team-south' },
+          ],
+        },
+        workbenchSeed: [
+          ...workbenchSeed,
+          { type: 'save-project', project: { id: 'support', name: '支持服务', description: '' } },
+          { type: 'save-task', task: secondTask },
+        ],
+      });
+      const cookies = {};
+      for (const account of Object.keys(PASSWORDS))
+        cookies[account] = await host.login(account, PASSWORDS[account]);
+      const bytes = Buffer.from('identical real bytes in independently authorized tasks');
+      const declare = {
+        name: '共享字节.md',
+        mediaType: 'text/markdown',
+        byteSize: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+      const receipts = [];
+      for (const [member, taskId, spaceId] of [
+        ['chen', 'portal-task', 'team-north'],
+        ['zhao', 'support-task', 'team-south'],
+      ]) {
+        const startable = await host.exec('startable', { spaceId }, cookies[member]);
+        const plan = startable.result.value.plans.find((entry) => entry.taskId === taskId);
+        assert.ok(plan);
+        assert.equal(
+          (
+            await host.exec(
+              'start-plan',
+              { ...planRef(plan), idempotencyKey: `start-${taskId}` },
+              cookies[member],
+            )
+          ).result.ok,
+          true,
+        );
+        const options = {
+          ...planRef(plan),
+          nodeId: 'design',
+          spaceId,
+          idempotencyKey: `file-${taskId}`,
+        };
+        const uploaded = await host.upload(declare, options, bytes, cookies[member]);
+        assert.equal(uploaded.json?.ok, true, JSON.stringify(uploaded.json));
+        receipts.push(uploaded.json.value);
+        for (const forbidden of ['lin', 'outside']) {
+          const denied = await host.upload(
+            declare,
+            { ...options, idempotencyKey: `deny-${forbidden}-${taskId}` },
+            bytes,
+            cookies[forbidden],
+          );
+          assert.equal(denied.json?.ok, false);
+        }
+      }
+      assert.equal(
+        receipts[0].attachmentId,
+        receipts[1].attachmentId,
+        'The SDK can deduplicate bytes',
+      );
+      assert.notEqual(
+        receipts[0].uploadId,
+        receipts[1].uploadId,
+        'A digest cannot share a product authorization fact',
+      );
+      await host.close();
+      const ledger = JSON.parse(
+        await readFile(join(directory, 'storages', 'zhuma_files.json'), 'utf8'),
+      );
+      const rows = Object.values(ledger.tables.files);
+      assert.equal(rows.length, 2);
+      assert.deepEqual(rows.map((row) => [row.uploadedBy, row.spaceId, row.taskId]).sort(), [
+        ['chen', 'team-north', 'portal-task'],
+        ['zhao', 'team-south', 'support-task'],
+      ]);
+    } finally {
+      await host?.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'M1 real HTTP: an opened paused reader cancels on disconnect, live membership revoke and deadline',
+  { timeout: 30000 },
+  async (t) => {
+    for (const mode of ['disconnect', 'revoke', 'deadline']) {
+      await t.test(mode, async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'zhuma-file-http-lifetime-'));
+        let host;
+        const controller = new AbortController();
+        try {
+          host = await startAcceptanceHost(directory, {
+            deploymentMode: 'multi-member',
+            identityImport,
+            spaceDirectoryImport,
+            workbenchSeed,
+            observeUpload: true,
+          });
+          const chen = await host.login('chen', PASSWORDS.chen);
+          const startable = await host.exec('startable', {}, chen);
+          const plan = startable.result.value.plans.find((entry) => entry.taskId === 'portal-task');
+          assert.equal(
+            (
+              await host.exec(
+                'start-plan',
+                { ...planRef(plan), idempotencyKey: `start-${mode}` },
+                chen,
+              )
+            ).result.ok,
+            true,
+          );
+          const before = await executionText(directory);
+          if (mode === 'deadline') await host.act('enableFileUploadClock');
+          const bytes = Buffer.from('first chunk plus a withheld final chunk');
+          const body = new ReadableStream({
+            start(stream) {
+              stream.enqueue(bytes.subarray(0, 11));
+            },
+          });
+          const upload = host.upload(
+            {
+              name: `held-${mode}.md`,
+              mediaType: 'text/markdown',
+              byteSize: bytes.length,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+            },
+            {
+              ...planRef(plan),
+              nodeId: 'design',
+              spaceId: 'team-north',
+              idempotencyKey: `held-${mode}`,
+            },
+            body,
+            chen,
+            controller.signal,
+          );
+          // The real SDK has asked for a second chunk after opening and consuming
+          // the first raw HTTP read. No EOS or final bytes are supplied.
+          await host.wait('file-upload-read-2');
+          const inbox = await host.exec('inbox', { spaceId: 'team-north' }, chen);
+          assert.equal(inbox.result.ok, true, 'The upload cannot occupy the global writes queue');
+          if (mode === 'disconnect') {
+            controller.abort();
+            await assert.rejects(upload, { name: 'AbortError' });
+          } else {
+            await host.act(
+              mode === 'revoke' ? 'revokeFileAssigneeMembership' : 'advanceFileUploadClock',
+            );
+            const result = await upload;
+            assert.equal(result.json?.ok, false, JSON.stringify(result.json));
+            assert.equal(
+              result.json.error.code,
+              mode === 'revoke' ? 'cancelled' : 'upload-timeout',
+            );
+          }
+          await host.wait('file-upload-settled');
+          // An IPC round trip also proves the real carrier did not die with
+          // Node's queued onData/controller-closed exception.
+          assert.equal((await host.act('inspect')).modelCalls, 0);
+          assert.equal(await executionText(directory), before);
+          await host.close();
+          assert.deepEqual(await storedAttachmentFiles(directory), []);
+          const ledger = await readFile(
+            join(directory, 'storages', 'zhuma_files.json'),
+            'utf8',
+          ).catch((error) => {
+            if (error.code === 'ENOENT') return null;
+            throw error;
+          });
+          if (ledger) assert.deepEqual(JSON.parse(ledger).tables.files, {});
+        } finally {
+          controller.abort();
+          await host?.close();
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  },
+);

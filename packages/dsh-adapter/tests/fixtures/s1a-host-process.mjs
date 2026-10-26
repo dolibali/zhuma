@@ -13,6 +13,7 @@ import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
+import { mock } from 'node:test';
 
 let ctx, host, hostPlugin, home, pendingIdentity, releaseIdentity;
 let originalModify, remoteAccessFiber, releaseProjectLookup;
@@ -22,6 +23,7 @@ let executionLease, executionLeaseSpace;
 let closeWorkbench, workbenchClosing;
 const domainCloseOrder = [];
 let modelCalls = 0;
+let observeUpload = false;
 const forks = [];
 const opened = [];
 const notify = (phase, value = {}) => process.send?.({ phase, ...value });
@@ -129,6 +131,34 @@ async function boot(options) {
     await domain.global.set(state);
     await domain.close();
     notify('workbench-seeded', { domain: spec.name });
+  }
+  // The attachment store mounts for the acceptance fixture so the upload
+  // service can reach `ctx.attachments`; the product Host wiring stays with A.
+  const attachmentLocal = await import('@deepseek-ai/dsh-attachment-local');
+  await load(attachmentLocal.LocalAttachmentStore, { dshHome: home });
+  observeUpload = options.observeUpload === true;
+  if (observeUpload) {
+    const save = ctx.attachments.saveFileStream.bind(ctx.attachments);
+    ctx.attachments.saveFileStream = (input) => {
+      const iterator = input.data[Symbol.asyncIterator]();
+      let reads = 0;
+      const data = {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        next() {
+          notify(`file-upload-read-${++reads}`);
+          return iterator.next();
+        },
+        return: () => iterator.return?.() ?? Promise.resolve({ done: true }),
+      };
+      const actual = save({ ...input, data });
+      void actual.then(
+        () => notify('file-upload-settled'),
+        () => notify('file-upload-settled'),
+      );
+      return actual;
+    };
   }
   await load(WebServer, { host: '127.0.0.1', port: 0 });
   await load(Connection);
@@ -245,6 +275,21 @@ async function waitIdentityState(expected) {
 }
 
 async function act(action) {
+  if (action === 'revokeFileAssigneeMembership') {
+    if (!observeUpload) throw Error('File observation is disabled');
+    await hostPlugin.spaceDirectoryFor(ctx).revokeMembership('team-north', 'chen');
+    return {};
+  }
+  if (action === 'enableFileUploadClock') {
+    if (!observeUpload) throw Error('File observation is disabled');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    return {};
+  }
+  if (action === 'advanceFileUploadClock') {
+    if (!observeUpload) throw Error('File observation is disabled');
+    mock.timers.tick(60_001);
+    return {};
+  }
   if (action === 'beginWorkbenchClose') {
     if (!closeWorkbench) throw Error('Workbench close effect is unavailable');
     workbenchClosing = Promise.resolve(closeWorkbench());
@@ -403,6 +448,7 @@ async function act(action) {
     executionLease?.release();
     releaseDirectoryClose?.();
     releaseWorkbenchWrite?.();
+    mock.timers.reset();
     for (const fiber of forks.reverse()) await fiber.dispose();
     return {};
   }

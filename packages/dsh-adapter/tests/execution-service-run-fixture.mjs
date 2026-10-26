@@ -112,6 +112,7 @@ export async function open(
         await apply(
           {
             root: ctx.root,
+            fiber: fiberCtx.fiber,
             effect: (callback) =>
               fiberCtx.effect(() => {
                 const stop = callback();
@@ -127,6 +128,7 @@ export async function open(
             connection: { fetch: { register: () => () => {} } },
             storageDomain: {
               async open(spec) {
+                if (spec.name === 'zhuma_files') return ctx.storageDomain.open(spec);
                 domain = await ctx.storageDomain.open(spec);
                 await prepareDomain?.(domain);
                 let nodeLists = 0;
