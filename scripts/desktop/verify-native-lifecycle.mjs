@@ -153,8 +153,11 @@ if (values.phase === 'skill-loader') {
       stage,
     ),
   );
-  const run = (name, args) => {
+  const run = (name, args, beforeBinding = false) => {
     const report = join(evidence, `${name}.json`);
+    const env = { ...process.env };
+    delete env.ZHUMA_SKILL_BIND_NEGATIVE_SOURCE;
+    if (beforeBinding) env.ZHUMA_SKILL_BIND_NEGATIVE_SOURCE = '1';
     const result = spawnSync(
       process.execPath,
       [
@@ -167,7 +170,7 @@ if (values.phase === 'skill-loader') {
         '--reporter=json',
         `--outputFile=${report}`,
       ],
-      { cwd: stage, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+      { cwd: stage, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, env },
     );
     writeFileSync(join(evidence, `${name}.log`), `${result.stdout ?? ''}${result.stderr ?? ''}`);
     if (result.error || !existsSync(report))
@@ -192,14 +195,19 @@ if (values.phase === 'skill-loader') {
   const paths = ['packages/core/tools/src/index.ts', 'packages/skill/tool-skill/src/index.ts'];
   const patched = paths.map((path) => readFileSync(join(stage, path)));
   let negative;
+  let negativeEmpty;
   try {
     for (const path of paths)
       writeFileSync(join(stage, path), command('git', ['show', `${pin}:${path}`], stage));
-    negative = run('skill-loader-before', [
-      'packages/skill/tool-skill/tests/zhuma-ownership.spec.ts',
-      '-t',
-      'does not load parent private body',
-    ]);
+    negative = run(
+      'skill-loader-before',
+      [
+        'packages/skill/tool-skill/tests/zhuma-ownership.spec.ts',
+        '-t',
+        'does not load parent private body',
+      ],
+      true,
+    );
     if (
       negative.status === 0 ||
       negative.summary.numFailedTests !== 2 ||
@@ -211,6 +219,25 @@ if (values.phase === 'skill-loader') {
     ) {
       throw new Error(`Old SDK did not reproduce both leakage regressions; evidence: ${evidence}`);
     }
+    negativeEmpty = run(
+      'skill-empty-before',
+      [
+        'packages/skill/tool-skill/tests/zhuma-ownership.spec.ts',
+        '-t',
+        'empty bound registry closed without a loader',
+      ],
+      true,
+    );
+    if (
+      negativeEmpty.status === 0 ||
+      negativeEmpty.summary.numFailedTests !== 2 ||
+      negativeEmpty.summary.numPassedTests !== 0 ||
+      negativeEmpty.summary.testResults
+        .flatMap((suite) => suite.assertionResults)
+        .filter((test) => test.status === 'failed')
+        .some((test) => !test.failureMessages.join(' ').includes('expected 1 to be'))
+    )
+      throw new Error(`Old SDK did not reproduce empty-domain parent reads; evidence: ${evidence}`);
   } finally {
     paths.forEach((path, index) => writeFileSync(join(stage, path), patched[index]));
   }
@@ -224,6 +251,7 @@ if (values.phase === 'skill-loader') {
         fixtureSha256: hash(fixture),
         passed: positive.summary.numPassedTests,
         negativeFailed: negative.summary.numFailedTests,
+        negativeEmptyParentReads: negativeEmpty.summary.numFailedTests,
         boundary: 'fixed source SDK ToolSkill/Tools contracts; no model, GUI or resource adoption',
       },
       null,

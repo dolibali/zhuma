@@ -250,6 +250,7 @@ export {
   downstreamRecords,
   startAppliedPlan,
   submitDelivery,
+  submitExpertDelivery,
   castBallot,
   settleReview,
   unlockDownstream,
