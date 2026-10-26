@@ -160,6 +160,60 @@ export type NativeWorkFrame =
   | { readonly type: 'status'; readonly status: 'idle' | 'running' }
   | { readonly type: 'gap'; readonly after: number };
 
+/** Read-only cut of the official inbox; received never means adopted by the model. */
+export interface NativeInboxSnapshot {
+  readonly asOfSeq: number;
+  /** Exact native user/message facts at this same cut; not proof of model adoption. */
+  readonly claimedMessageIds: readonly string[];
+  readonly items: readonly {
+    readonly id: string;
+    readonly text: string;
+    readonly target: 'next-turn' | 'next-step';
+  }[];
+}
+
+/** Whitelisted presentation only. No raw events, reasoning, tool arguments or replay data. */
+export type NativeConversationFrame =
+  | {
+      readonly type: 'message';
+      readonly seq: number;
+      readonly time: number;
+      readonly messageKey: string;
+      readonly role: 'user' | 'assistant';
+      readonly id: string;
+      readonly text: string;
+      readonly interrupted?: true;
+    }
+  | {
+      readonly type: 'assistant-stream';
+      readonly frame:
+        | { readonly type: 'start'; readonly attemptId: string; readonly revision: number }
+        | {
+            readonly type: 'chunk';
+            readonly attemptId: string;
+            readonly revision: number;
+            readonly index: number;
+            readonly text?: string;
+            readonly toolName?: string;
+          }
+        | {
+            readonly type: 'end';
+            readonly attemptId: string;
+            readonly revision: number;
+            readonly index: number;
+            readonly outcome:
+              | {
+                  readonly kind: 'committed';
+                  readonly eventType: 'assistant/message' | 'assistant/attempt';
+                  readonly seq: number;
+                  readonly messageKey: string;
+                }
+              | { readonly kind: 'abandoned' };
+          };
+    }
+  | { readonly type: 'status'; readonly status: 'idle' | 'running' }
+  | { readonly type: 'gap'; readonly after: number };
+
 /** The only driver is the public DSH AgentRegistry/Agent implementation. */
 export interface NativeWorkRuntime {
   connect(
@@ -174,6 +228,12 @@ export interface NativeWorkRuntime {
     readonly text: string;
     readonly target: 'next-turn' | 'next-step';
   }[];
+  readInbox(
+    sessionId: string,
+    signal: AbortSignal,
+    allowAbsent: boolean,
+    assertCurrent: () => void,
+  ): Promise<NativeInboxSnapshot>;
   messageStatus(
     sessionId: string,
     messageId: string,
@@ -197,6 +257,7 @@ export interface NativeWorkRuntime {
     after: number,
     signal: AbortSignal,
     allowAbsent?: boolean,
+    assertCurrent?: () => void,
   ): AsyncIterable<NativeWorkFrame>;
   disconnect(sessionId: string): Promise<void>;
   /** Independent cleanup authority is checked by the service, not an expired old drive grant.

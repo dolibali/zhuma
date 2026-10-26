@@ -2,7 +2,8 @@ import { Service, type Context } from '@deepseek-ai/cordis';
 import { isAbsolute } from 'node:path';
 import type { Agent, AgentHandle, AgentSetup } from '@deepseek-ai/dsh-agent';
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
-import { SessionId, type UserMessage } from '@deepseek-ai/dsh-session';
+import { SessionId, SessionLogOffset, type UserMessage } from '@deepseek-ai/dsh-session';
+import type { ProjectionCheckpoint } from '@deepseek-ai/dsh-session-projection';
 import {
   SessionPersistenceNotFoundError,
   type SessionHandle,
@@ -25,11 +26,14 @@ import {
   type NativeWorkRuntime,
   type NativeMigrationDrain,
   type NativeWorkScope,
+  type NativeInboxSnapshot,
 } from './native-work-session-contract.js';
 
 const MAX_FRAME_BYTES = 262_144;
 const MAX_BUFFER_BYTES = 524_288;
 const MAX_BUFFER_FRAMES = 128;
+const MAX_READERS = 8;
+const MAX_OBSERVERS = 16;
 const STOP_MS = 5_000;
 const READ_MS = 15_000;
 interface ResourceEpoch {
@@ -195,6 +199,8 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     { readonly promise: Promise<void>; readonly abort: AbortController }
   >();
   private readonly lifetime = new AbortController();
+  private readonly readers = new Set<Promise<unknown>>();
+  private observers = 0;
   private readonly readTimeoutMs: number;
 
   private touch(sessionId: string): ResourceEpoch {
@@ -673,6 +679,30 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal: AbortSignal,
     allowAbsent = false,
   ): Promise<readonly NativeHistoryEvent[]> {
+    return this.readSession<readonly NativeHistoryEvent[]>(
+      sessionId,
+      signal,
+      allowAbsent,
+      () => [],
+      async (handle, bounded) => {
+        const result = await handle.read(after + 1, limit, { signal: bounded });
+        if (Buffer.byteLength(JSON.stringify(result.events)) > MAX_FRAME_BYTES)
+          throw new NativeWorkError('capacity');
+        return result.events;
+      },
+    );
+  }
+
+  /** Own actual native I/O and handle close after a caller's bounded wait has ended. */
+  private readSession<T>(
+    sessionId: string,
+    signal: AbortSignal,
+    allowAbsent: boolean,
+    absent: () => T,
+    read: (handle: SessionHandle, bounded: AbortSignal, verify: () => void) => Promise<T>,
+    assertCurrent: () => void = () => {},
+  ): Promise<T> {
+    if (this.readers.size >= MAX_READERS) return Promise.reject(new NativeWorkError('capacity'));
     const bounded = AbortSignal.any([
       signal,
       this.lifetime.signal,
@@ -682,33 +712,132 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       new NativeWorkError(
         signal.aborted || this.lifetime.signal.aborted ? 'cancelled' : 'read-timeout',
       );
-    await waitForRead(() => this.flush(sessionId), bounded, interrupted);
-    let handle: SessionHandle;
-    try {
-      handle = await waitForRead(
-        () => this.ctx.sessionPersistence.open(SessionId(sessionId), 'read', { signal: bounded }),
-        bounded,
-        interrupted,
-        (late) => this.closeReadHandle(late),
-      );
-    } catch (error) {
-      if (allowAbsent && error instanceof SessionPersistenceNotFoundError) return [];
-      throw error;
-    }
-    try {
-      const result = await waitForRead(
-        () => handle.read(after + 1, limit, { signal: bounded }),
-        bounded,
-        interrupted,
-      );
-      if (Buffer.byteLength(JSON.stringify(result.events)) > MAX_FRAME_BYTES)
+    const source = this.ctx.sessionPersistence;
+    const identity = source.identity;
+    const guard = () => {
+      if (bounded.aborted) throw interrupted();
+      assertCurrent();
+      if (this.ctx.sessionPersistence.identity !== identity)
+        throw new NativeWorkError('unavailable');
+    };
+    const physical = (async () => {
+      guard();
+      await this.flush(sessionId);
+      guard();
+      let handle: SessionHandle;
+      try {
+        handle = await source.open(SessionId(sessionId), 'read', { signal: bounded });
+      } catch (error) {
+        guard();
+        if (allowAbsent && error instanceof SessionPersistenceNotFoundError) return absent();
+        throw error;
+      }
+      try {
+        guard();
+        if (handle.id !== sessionId) throw new NativeWorkError('unavailable');
+        const value = await read(handle, bounded, guard);
+        guard();
+        return value;
+      } finally {
+        await this.closeReadHandle(handle);
+      }
+    })();
+    this.readers.add(physical);
+    void physical.then(
+      () => this.readers.delete(physical),
+      () => this.readers.delete(physical),
+    );
+    return waitForRead(() => physical, bounded, interrupted);
+  }
+
+  readInbox(
+    sessionId: string,
+    signal: AbortSignal,
+    allowAbsent: boolean,
+    assertCurrent: () => void,
+  ): Promise<NativeInboxSnapshot> {
+    return this.readSession<NativeInboxSnapshot>(
+      sessionId,
+      signal,
+      allowAbsent,
+      () => ({ asOfSeq: -1, claimedMessageIds: [], items: [] }),
+      async (handle, bounded, verify) => {
+        const projections = this.ctx.sessionProjections;
+        const projectionIdentity: unknown = Reflect.get(projections, Service.tracker);
+        const check = () => {
+          verify();
+          assertNativeInputReadOwner(sessionId, this);
+          if (
+            !projectionIdentity ||
+            Reflect.get(this.ctx.sessionProjections, Service.tracker) !== projectionIdentity
+          )
+            throw new NativeWorkError('unavailable');
+        };
+        let checkpoint: ProjectionCheckpoint = {};
+        let offset = 0;
+        let bytes = 0;
+        const claimed = new Set<string>();
+        for (let page = 0; page < 100; page++) {
+          check();
+          const result = await handle.read(offset, 100, { signal: bounded });
+          check();
+          bytes += Buffer.byteLength(JSON.stringify(result.events));
+          if (bytes > 8 * 1024 * 1024) throw new NativeWorkError('capacity');
+          for (const event of result.events)
+            if (event.type === 'user/message' && event.data.source.kind === 'user')
+              claimed.add(event.data.id);
+          const restored = projections.restore(
+            checkpoint,
+            result.events,
+            SessionLogOffset(offset),
+            handle.header,
+            handle.inheritedEventCount,
+          );
+          checkpoint = restored.checkpoint;
+          if (result.events.length === 100) {
+            offset += result.events.length;
+            continue;
+          }
+          const inbox = restored.snapshot.values.inbox;
+          if (!inbox) throw new NativeWorkError('unavailable');
+          const items: NativeInboxSnapshot['items'][number][] = [];
+          for (const target of ['next-turn', 'next-step'] as const)
+            for (const value of inbox[target]) {
+              if (value === null || typeof value !== 'object' || Array.isArray(value))
+                throw new NativeWorkError('unavailable');
+              // Product sends are textual user input. Internal/runtime inbox work
+              // stays in the native log and never enters the public projection.
+              if (
+                value.role !== 'user' ||
+                value.source === null ||
+                typeof value.source !== 'object' ||
+                Array.isArray(value.source) ||
+                value.source.kind !== 'user'
+              )
+                continue;
+              if (typeof value.id !== 'string' || !Array.isArray(value.content))
+                throw new NativeWorkError('unavailable');
+              const text = value.content
+                .flatMap((block) =>
+                  block !== null &&
+                  typeof block === 'object' &&
+                  !Array.isArray(block) &&
+                  block.type === 'text' &&
+                  typeof block.text === 'string'
+                    ? [block.text]
+                    : [],
+                )
+                .join('\n');
+              items.push({ id: value.id, text, target });
+            }
+          if (Buffer.byteLength(JSON.stringify(items)) > MAX_FRAME_BYTES)
+            throw new NativeWorkError('capacity');
+          return { asOfSeq: restored.snapshot.asOfSeq, claimedMessageIds: [...claimed], items };
+        }
         throw new NativeWorkError('capacity');
-      return result.events;
-    } finally {
-      // Start close even after abort, without making a cancelled UI wait for it.
-      const closing = this.closeReadHandle(handle);
-      await waitForRead(() => closing, bounded, interrupted);
-    }
+      },
+      assertCurrent,
+    );
   }
 
   private closeReadHandle(handle: SessionHandle): Promise<void> {
@@ -770,19 +899,66 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     after: number,
     callerSignal: AbortSignal,
     allowAbsent = false,
+    assertCurrent: () => void = () => {},
   ): AsyncIterable<NativeWorkFrame> {
     const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
     signal.throwIfAborted();
+    if (this.observers >= MAX_OBSERVERS) throw new NativeWorkError('capacity');
     const queue: { readonly value: NativeWorkFrame; readonly bytes: number }[] = [];
     let bufferedBytes = 0;
     let overflow = false;
+    let failure: unknown;
+    const source = this.live.get(sessionId)?.handle.agent;
+    const persistence = this.ctx.sessionPersistence.identity;
+    const registry = registryIdentity(this.ctx);
+    const stops: (() => void)[] = [];
+    let cleaned = false;
+    this.observers++;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      this.observers--;
+      for (const stop of stops.reverse()) stop();
+      stops.length = 0;
+      queue.length = 0;
+      bufferedBytes = 0;
+    };
+    const subscribe = (register: () => () => void) => {
+      try {
+        stops.push(register());
+      } catch (error) {
+        cleanup();
+        throw error;
+      }
+    };
+    const checkSource = () => {
+      assertCurrent();
+      if (
+        this.ctx.sessionPersistence.identity !== persistence ||
+        registryIdentity(this.ctx) !== registry ||
+        this.live.get(sessionId)?.handle.agent !== source
+      )
+        throw new NativeWorkError('unavailable');
+      // Observation uses its fresh read grant, not the old drive grant that
+      // may have ended with the Run. Source identity must still be exact.
+      if (source && this.ctx.agents.get(SessionId(sessionId)) !== source)
+        throw new NativeWorkError('unavailable');
+    };
     let wake: (() => void) | undefined;
     const notify = () => {
       wake?.();
       wake = undefined;
     };
     const push = (value: NativeWorkFrame) => {
-      if (overflow || signal.aborted) return;
+      if (overflow || failure || signal.aborted) return;
+      try {
+        checkSource();
+      } catch (error) {
+        failure = error;
+        cleanup();
+        notify();
+        return;
+      }
       const bytes = Buffer.byteLength(JSON.stringify(value));
       if (
         bytes > MAX_FRAME_BYTES ||
@@ -799,34 +975,44 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       bufferedBytes += bytes;
       notify();
     };
-    const stopEvent = this.ctx.on(
-      'session/event',
-      (session, event) => {
-        if (session.id === sessionId) push({ type: 'event', event });
-      },
-      { global: true },
+    subscribe(() =>
+      this.ctx.on(
+        'session/event',
+        (session, event) => {
+          if (source && session === source.session) push({ type: 'event', event });
+        },
+        { global: true },
+      ),
     );
-    const stopStream = this.ctx.on(
-      'agent/assistant-stream',
-      ({ agent, frame }) => {
-        if (agent.id === sessionId) push({ type: 'assistant-stream', frame });
-      },
-      { global: true },
+    subscribe(() =>
+      this.ctx.on(
+        'agent/assistant-stream',
+        ({ agent, frame }) => {
+          if (agent === source) push({ type: 'assistant-stream', frame });
+        },
+        { global: true },
+      ),
     );
-    const stopStatus = this.ctx.on(
-      'agent/status',
-      ({ agent, status }) => {
-        if (agent.id === sessionId) push({ type: 'status', status });
-      },
-      { global: true },
+    subscribe(() =>
+      this.ctx.on(
+        'agent/status',
+        ({ agent, status }) => {
+          if (agent === source) push({ type: 'status', status });
+        },
+        { global: true },
+      ),
     );
-    const onAbort = () => notify();
+    const onAbort = () => {
+      cleanup();
+      notify();
+    };
     signal.addEventListener('abort', onAbort, { once: true });
     let cursor = after;
     try {
       // Subscribe first, then native durable history. The seq cursor drops overlap.
       for (;;) {
         const events = await this.history(sessionId, cursor, 100, signal, allowAbsent);
+        checkSource();
         for (const event of events) {
           if (signal.aborted) return;
           cursor = event.seq;
@@ -835,6 +1021,8 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         if (events.length < 100) break;
       }
       while (!signal.aborted) {
+        if (failure) throw failure;
+        checkSource();
         if (overflow) {
           yield { type: 'gap', after: cursor };
           return;
@@ -856,10 +1044,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       }
     } finally {
       signal.removeEventListener('abort', onAbort);
-      stopStatus();
-      stopStream();
-      stopEvent();
-      queue.length = 0;
+      cleanup();
     }
   }
 
@@ -989,6 +1174,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       }),
       ...[...this.live.keys()].map((id) => this.disconnect(id)),
     ]);
+    while (this.readers.size) await Promise.allSettled([...this.readers]);
     if (outcomes.some((outcome) => outcome.status === 'rejected'))
       throw new NativeWorkError('unavailable');
     for (const [id, epoch] of resourceEpochs) if (epoch.owner === this) resourceEpochs.delete(id);
