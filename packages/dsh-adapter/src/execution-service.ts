@@ -1146,6 +1146,10 @@ export class ExecutionService {
               input.composition.payload.acceptedFileReader !== undefined
                 ? { acceptedFileReader: input.composition.payload.acceptedFileReader }
                 : {}),
+              ...('resultIntentTool' in input.composition.payload &&
+              input.composition.payload.resultIntentTool !== undefined
+                ? { resultIntentTool: input.composition.payload.resultIntentTool }
+                : {}),
               inputs: {
                 actorId: lease.memberId,
                 spaceId: input.spaceId,

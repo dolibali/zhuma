@@ -18,7 +18,7 @@
 
 新 Run 显式提供该槽时使用 schema 2，将完整描述纳入原 composition 配置指纹及 `toolAllowlist`。不复用或替换 `read_accepted_input`；固定输入仍须满足原正文 / 链接 reader 和准确可见 inputRefs 的要求，文件工具不能补齐缺失的上游授权。
 
-schema 2 支持 resources 或 acceptedFileReader，至少一项；二者可以并存。无 resources 的文件 schema 2 仍由资源桥绑定实际空 Skill 域，不继承全局正文。工具注册 / 调用权限继续由各原 issuer 校验，allowlist 本身不授予读取权。
+schema 2 支持 resources / acceptedFileReader / 独立 resultIntentTool，至少一项；三者可以并存。无 resources 的文件 schema 2 仍由资源桥绑定实际空 Skill 域，不继承全局正文。工具注册 / 调用权限继续由各原 issuer 校验，allowlist 本身不授予读取权。完成意图槽的候选资格与边界见 execution-run-result-intent.md。
 
 schema 1 与原资源 schema 2 的保存 JSON / 配置 ID 保持原值，不回填 descriptor、重读最新包或因新增 Host 端口扩权。给旧配置显式加入新槽会产生新指纹；恢复必须沿旧保存配置，不能把当前能力反写旧 Run。
 

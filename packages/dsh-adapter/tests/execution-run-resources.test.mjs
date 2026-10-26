@@ -8,6 +8,8 @@ import {
 import {
   EXECUTION_RESOURCE_SOURCE_VERSION,
   executionResourceDigest,
+  executionResourceToolNames,
+  readExecutionRunResources,
 } from '../dist/execution-run-resources.js';
 import { compositionFacts } from './execution-run-composition-fixture.mjs';
 
@@ -60,6 +62,17 @@ function facts({ mcp = false, expert = false } = {}) {
   }
   return input;
 }
+test('resources contract: an empty isolated registry contributes no tool to a legacy frozen surface', () => {
+  const empty = readExecutionRunResources({
+    sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
+    skills: [],
+    mcp: [],
+  });
+  assert.deepEqual(executionResourceToolNames(empty), []);
+  const original = freezeExecutionRunComposition(compositionFacts());
+  assert.deepEqual(original.payload.toolAllowlist, []);
+  assert.equal(original.schemaVersion, 1);
+});
 test('resources contract: nonempty selected resources get explicit schema2; legacy schema1 replays unchanged', () => {
   const old = freezeExecutionRunComposition(compositionFacts());
   assert.equal(old.schemaVersion, 1);

@@ -1,0 +1,151 @@
+{
+  "name": "complete_work",
+  "description": "Declare the current work result explicitly. Text is at most 100000 characters; at most 20 safe HTTP(S) links without userinfo. No files or paths. A declaration ends this native turn; the Host separately verifies durable facts and drains resources before any task submission. Do not request more work or tools after this declaration.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["links"],
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Optional result text, at most 100000 characters."
+      },
+      "links": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "At most 20 absolute HTTP(S) URLs without userinfo. Use [] when delivering text only."
+      }
+    }
+  },
+  "outputSchema": {
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "invalid-arguments",
+              "completion-pending",
+              "input-pending",
+              "result-rejected",
+              "result-unavailable",
+              "cancelled",
+              "capacity"
+            ]
+          }
+        },
+        "required": ["ok", "code"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "phase": {
+            "type": "string",
+            "const": "declared"
+          },
+          "protocolVersion": {
+            "type": "integer",
+            "const": 1
+          },
+          "toolVersion": {
+            "type": "string",
+            "const": "zhuma-native-result-intent@1"
+          },
+          "intentId": {
+            "type": "string"
+          },
+          "callId": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "object",
+                "properties": {
+                  "actorId": {
+                    "type": "string"
+                  },
+                  "spaceId": {
+                    "type": "string"
+                  },
+                  "taskId": {
+                    "type": "string"
+                  },
+                  "planId": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "nodeId": {
+                    "type": "string"
+                  },
+                  "runId": {
+                    "type": "string"
+                  },
+                  "generation": {
+                    "type": "integer"
+                  },
+                  "segmentId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "actorId",
+                  "spaceId",
+                  "taskId",
+                  "planId",
+                  "revision",
+                  "nodeId",
+                  "runId",
+                  "generation",
+                  "segmentId"
+                ],
+                "additionalProperties": false
+              },
+              "nativeSessionId": {
+                "type": "string"
+              },
+              "nativeAgentId": {
+                "type": "string"
+              },
+              "configurationId": {
+                "type": "string"
+              }
+            },
+            "required": ["scope", "nativeSessionId", "nativeAgentId", "configurationId"],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "ok",
+          "phase",
+          "protocolVersion",
+          "toolVersion",
+          "intentId",
+          "callId",
+          "digest",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "sourceVersion": "zhuma-native-result-intent@1"
+}
