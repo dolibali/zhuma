@@ -1267,3 +1267,462 @@ test(
     }
   },
 );
+
+async function fixedFileScenario(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'zhuma-fixed-file-host-'));
+  const seed = structuredClone(workbenchSeed);
+  seed.at(-1).task.workflows[0].nodes.find((node) => node.id === 'publish').assigneeId = 'zhao';
+  const spaces = {
+    ...spaceDirectoryImport,
+    memberships: [
+      ...spaceDirectoryImport.memberships,
+      { spaceId: 'team-north', accountId: 'outside' },
+    ],
+  };
+  let host;
+  const cookies = {};
+  let uploadNumber = 0;
+  const boot = async (first) => {
+    host = await startAcceptanceHost(directory, {
+      deploymentMode: 'multi-member',
+      identityImport,
+      spaceDirectoryImport: spaces,
+      ...(first ? { workbenchSeed: seed } : {}),
+      observeUpload: true,
+    });
+    for (const member of Object.keys(PASSWORDS))
+      cookies[member] = await host.login(member, PASSWORDS[member]);
+  };
+  await boot(true);
+  t.after(async () => {
+    await host?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const available = await host.exec('startable', {}, cookies.chen);
+  const plan = available.result.value.plans.find((item) => item.taskId === 'portal-task');
+  const started = await host.exec(
+    'start-plan',
+    { ...planRef(plan), idempotencyKey: 'fixed-start' },
+    cookies.chen,
+  );
+  assert.equal(started.result.ok, true);
+  const upload = async (text, name = '产物.md', mediaType = 'text/markdown') => {
+    const bytes = Buffer.from(text);
+    const result = await host.upload(
+      {
+        name,
+        mediaType,
+        byteSize: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      },
+      {
+        ...planRef(plan),
+        nodeId: 'design',
+        spaceId: 'team-north',
+        idempotencyKey: `file-${++uploadNumber}`,
+      },
+      bytes,
+      cookies.chen,
+    );
+    assert.equal(result.json?.ok, true, JSON.stringify(result.json));
+    return { receipt: result.json.value, bytes };
+  };
+  const read = (file, extra = {}) => ({
+    ...planRef(plan),
+    nodeId: 'design',
+    spaceId: 'team-north',
+    uploadId: file.receipt.uploadId,
+    purpose: 'draft',
+    mode: 'download',
+    ...extra,
+  });
+  return {
+    directory,
+    plan,
+    cookies,
+    upload,
+    read,
+    get host() {
+      return host;
+    },
+    async restart() {
+      await host.close();
+      await boot(false);
+    },
+  };
+}
+
+test(
+  'M1 real files: draft restart, return, resubmit, two reviewers and another downstream assignee read exact versions',
+  { timeout: 30000 },
+  async (t) => {
+    const f = await fixedFileScenario(t);
+    const first = await f.upload('第一版固定的文件内容。', '初稿🙂.md');
+    const beforeMetadata = (await f.host.act('inspect')).fileReadCalls;
+    const metadata = await f.host.file(f.read(first, { mode: 'metadata' }), f.cookies.chen);
+    assert.equal(metadata.status, 200, JSON.stringify(metadata.json));
+    assert.equal(metadata.json.value.name, '初稿🙂.md');
+    assert.deepEqual(metadata.json.value.reference, first.receipt.reference);
+    assert.deepEqual(metadata.json.value.request, f.read(first, { mode: 'metadata' }));
+    assert.equal((await f.host.act('inspect')).fileReadCalls, beforeMetadata);
+    const saved = await f.host.exec(
+      'draft',
+      {
+        ...locate(f.plan, 'design'),
+        expectedVersion: 0,
+        idempotencyKey: 'save-real-file',
+        files: [first.receipt.reference],
+      },
+      f.cookies.chen,
+    );
+    assert.equal(saved.result.ok, true, JSON.stringify(saved.result));
+    assert.equal(saved.result.value.files[0].uploadComplete, true);
+    assert.equal(saved.result.value.fileDetails[0].name, '初稿🙂.md');
+    await f.restart();
+    const restored = await f.host.exec('draft', locate(f.plan, 'design'), f.cookies.chen);
+    assert.equal(restored.result.ok, true, JSON.stringify(restored.result));
+    assert.equal(restored.result.value.files[0].uploadComplete, true);
+    assert.equal(restored.result.value.fileDetails[0].name, '初稿🙂.md');
+    const facts0 = executionFacts(await executionText(f.directory));
+    assert.equal(
+      facts0.nodes.design.artifactVersions.length,
+      0,
+      'A draft is not a fixed submission',
+    );
+    const submitted = await f.host.exec(
+      'submit',
+      {
+        ...locate(f.plan, 'design'),
+        expectedVersion: facts0.nodes.design.command.version,
+        idempotencyKey: 'fixed-v1',
+        files: [first.receipt.reference],
+      },
+      f.cookies.chen,
+    );
+    assert.equal(submitted.result.ok, true, JSON.stringify(submitted.result));
+    const node1 = submitted.result.value.node,
+      artifact1 = node1.artifacts.at(-1),
+      round1 = node1.currentRoundId;
+    const review1 = f.read(first, {
+      purpose: 'review',
+      artifactVersionId: artifact1.id,
+      roundId: round1,
+    });
+    const content1 = await f.host.file(review1, f.cookies.lin);
+    assert.equal(content1.status, 200, JSON.stringify(content1.json));
+    assert.deepEqual(content1.bytes, new Uint8Array(first.bytes));
+    const beforeDenied = (await f.host.act('inspect')).fileReadCalls;
+    for (const [member, request] of [
+      ['outside', review1],
+      ['lin', { ...review1, roundId: 'foreign-round' }],
+      ['chen', { ...f.read(first), spaceId: 'team-empty' }],
+      [
+        'zhao',
+        f.read(first, {
+          purpose: 'upstream',
+          nodeId: 'publish',
+          sourceNodeId: 'design',
+          artifactVersionId: artifact1.id,
+        }),
+      ],
+    ]) {
+      const denied = await f.host.file(request, f.cookies[member]);
+      assert.equal(denied.status, 404);
+      assert.equal(denied.json?.error.code, 'not-found');
+    }
+    assert.equal(
+      (await f.host.act('inspect')).fileReadCalls,
+      beforeDenied,
+      'Denied objects cannot trigger SDK reads',
+    );
+    const returned = await f.host.exec(
+      'ballot',
+      {
+        ...locate(f.plan, 'design'),
+        expectedVersion: node1.version,
+        idempotencyKey: 'return-file-v1',
+        roundId: round1,
+        artifactVersionId: artifact1.id,
+        action: 'request-changes',
+        comment: '补充缺失的接口说明。',
+      },
+      f.cookies.lin,
+    );
+    assert.equal(returned.result.ok, true, JSON.stringify(returned.result));
+    const revision = await f.host.exec('revision', locate(f.plan, 'design'), f.cookies.chen);
+    assert.equal(revision.result.ok, true);
+    assert.equal(revision.result.value.view.notes[0].body, '补充缺失的接口说明。');
+    const second = await f.upload('第二版：已经补齐接口说明。', '修订版.md');
+    const resubmitted = await f.host.exec(
+      'submit',
+      {
+        ...locate(f.plan, 'design'),
+        expectedVersion: returned.result.value.node.version,
+        idempotencyKey: 'fixed-v2',
+        files: [second.receipt.reference],
+      },
+      f.cookies.chen,
+    );
+    assert.equal(resubmitted.result.ok, true, JSON.stringify(resubmitted.result));
+    const node2 = resubmitted.result.value.node,
+      artifact2 = node2.artifacts.at(-1),
+      round2 = node2.currentRoundId;
+    const old = await f.host.file(review1, f.cookies.lin);
+    assert.deepEqual(
+      old.bytes,
+      new Uint8Array(first.bytes),
+      'An explicit historical round never reads latest bytes',
+    );
+    const approved1 = await f.host.exec(
+      'ballot',
+      {
+        ...locate(f.plan, 'design'),
+        expectedVersion: node2.version,
+        idempotencyKey: 'approve-lin-v2',
+        roundId: round2,
+        artifactVersionId: artifact2.id,
+        action: 'approve',
+      },
+      f.cookies.lin,
+    );
+    assert.equal(approved1.result.ok, true);
+    const upstream = f.read(second, {
+      nodeId: 'publish',
+      purpose: 'upstream',
+      sourceNodeId: 'design',
+      artifactVersionId: artifact2.id,
+    });
+    assert.equal(
+      (await f.host.file(upstream, f.cookies.zhao)).status,
+      404,
+      'One approval cannot unlock downstream files',
+    );
+    const approved2 = await f.host.exec(
+      'ballot',
+      {
+        ...locate(f.plan, 'design'),
+        expectedVersion: approved1.result.value.node.version,
+        idempotencyKey: 'approve-zhao-v2',
+        roundId: round2,
+        artifactVersionId: artifact2.id,
+        action: 'approve',
+      },
+      f.cookies.zhao,
+    );
+    assert.equal(approved2.result.ok, true, JSON.stringify(approved2.result));
+    const downstream = await f.host.file(upstream, f.cookies.zhao);
+    assert.equal(downstream.status, 200, JSON.stringify(downstream.json));
+    assert.deepEqual(downstream.bytes, new Uint8Array(second.bytes));
+    assert.deepEqual(
+      JSON.parse(decodeURIComponent(downstream.headers.get('x-zhuma-file-context'))),
+      upstream,
+    );
+    assert.equal(
+      (
+        await f.host.file(
+          { ...upstream, uploadId: first.receipt.uploadId, artifactVersionId: artifact1.id },
+          f.cookies.zhao,
+        )
+      ).status,
+      404,
+    );
+    await f.restart();
+    assert.deepEqual(
+      (await f.host.file(upstream, f.cookies.zhao)).bytes,
+      new Uint8Array(second.bytes),
+    );
+    assert.deepEqual(
+      (await f.host.file(review1, f.cookies.lin)).bytes,
+      new Uint8Array(first.bytes),
+    );
+  },
+);
+
+test(
+  'M1 real file responses: safe text previews and active or unsupported content downloads exact original bytes',
+  { timeout: 15000 },
+  async (t) => {
+    const f = await fixedFileScenario(t);
+    for (const [name, media, text, disposition] of [
+      ['说明.md', 'text/markdown', '# 安全的纯文本说明\n内容。', 'inline'],
+      ['pretend.txt', 'text/plain', '<script>globalThis.bad = true</script>', 'attachment'],
+      ['pretend.png', 'image/png', '<svg onload="fetch(\'/bad\')"/>', 'attachment'],
+      ['example.pdf', 'application/pdf', '%PDF-1.7\nfixture bytes', 'attachment'],
+    ]) {
+      const file = await f.upload(text, name, media);
+      const response = await f.host.file(f.read(file, { mode: 'preview' }), f.cookies.chen);
+      assert.equal(response.status, 200, JSON.stringify(response.json));
+      assert.deepEqual(response.bytes, new Uint8Array(file.bytes));
+      assert.equal(response.headers.get('content-disposition').startsWith(disposition), true);
+      assert.equal(
+        response.headers.get('content-type'),
+        disposition === 'inline' ? 'text/plain; charset=utf-8' : 'application/octet-stream',
+      );
+      assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+      assert.equal(response.headers.get('content-security-policy'), "default-src 'none'; sandbox");
+      assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    }
+  },
+);
+
+test(
+  'M1 real file reads: revocation or cancellation during a held SDK read exposes no original bytes or facts',
+  { timeout: 20000 },
+  async (t) => {
+    for (const mode of ['revoke', 'cancel', 'deadline'])
+      await t.test(mode, async (t) => {
+        const f = await fixedFileScenario(t);
+        const file = await f.upload('这些字节必须在完整校验和当前授权之后才返回。');
+        const facts = executionFacts(await executionText(f.directory));
+        const submitted = await f.host.exec(
+          'submit',
+          {
+            ...locate(f.plan, 'design'),
+            expectedVersion: facts.nodes.design.command.version,
+            idempotencyKey: `held-read-${mode}`,
+            files: [file.receipt.reference],
+          },
+          f.cookies.chen,
+        );
+        assert.equal(submitted.result.ok, true);
+        const node = submitted.result.value.node;
+        const query = f.read(file, {
+          purpose: 'review',
+          artifactVersionId: node.artifacts.at(-1).id,
+          roundId: node.currentRoundId,
+        });
+        const before = await executionText(f.directory);
+        await f.host.act('holdFileRead');
+        if (mode === 'deadline') await f.host.act('enableFileUploadClock');
+        const controller = new AbortController();
+        const reading = f.host.file(query, f.cookies.lin, controller.signal).then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        try {
+          await f.host.wait('file-read-pending');
+          if (mode === 'revoke') await f.host.act('revokeFileReviewerMembership');
+          else if (mode === 'deadline') await f.host.act('advanceFileUploadClock');
+          else controller.abort();
+          const outcome = await reading;
+          if (mode === 'cancel') {
+            assert.equal(outcome.error?.name, 'AbortError');
+          } else {
+            assert.equal(outcome.value?.status, 409);
+            assert.equal(
+              outcome.value.json?.error.code,
+              mode === 'deadline' ? 'file-timeout' : 'cancelled',
+            );
+            assert.notDeepEqual(outcome.value.bytes, new Uint8Array(file.bytes));
+          }
+          assert.equal((await f.host.act('inspect')).modelCalls, 0);
+          assert.equal(await executionText(f.directory), before);
+        } finally {
+          await f.host.act('releaseFileRead');
+          controller.abort();
+        }
+      });
+  },
+);
+
+test(
+  'M1 real file submit: the final guard refuses live revocation, changed round or binding after upstream awaits',
+  { timeout: 30000 },
+  async (t) => {
+    for (const fault of [
+      'revokeFileAssigneeMembership',
+      'changeFileSubmitRound',
+      'changeFileSubmitRoster',
+      'changeFileSubmitBinding',
+    ])
+      await t.test(fault, async (t) => {
+        const f = await fixedFileScenario(t);
+        const file = await f.upload('真正读取并校验后仍必须重新核准写入。');
+        const facts = executionFacts(await executionText(f.directory));
+        await f.host.act('holdFileSubmitGuard');
+        const submitting = f.host.exec(
+          'submit',
+          {
+            ...locate(f.plan, 'design'),
+            expectedVersion: facts.nodes.design.command.version,
+            idempotencyKey: `guard-${fault}`,
+            files: [file.receipt.reference],
+          },
+          f.cookies.chen,
+        );
+        await f.host.wait('file-commit-guard-pending');
+        assert.ok(
+          (await f.host.act('inspect')).fileReadCalls > 0,
+          'Actual SDK byte verification already ran',
+        );
+        await f.host.act(fault);
+        const before = await executionText(f.directory);
+        await f.host.act('releaseProjectLookup');
+        const result = await submitting;
+        assert.equal(result.result.ok, false, JSON.stringify(result.result));
+        assert.equal(
+          ['cancelled', 'conflict', 'not-found'].includes(result.result.error.code),
+          true,
+        );
+        assert.equal(
+          await executionText(f.directory),
+          before,
+          'No artifact, receipt, event or draft write may follow the refused guard',
+        );
+      });
+  },
+);
+
+test(
+  'M1 real file downloads: missing or equal-length damaged bytes never produce a successful body',
+  { timeout: 15000 },
+  async (t) => {
+    for (const fault of ['corruptFirstFileBytes', 'deleteFirstFileBytes'])
+      await t.test(fault, async (t) => {
+        const f = await fixedFileScenario(t);
+        const file = await f.upload('未经完整校验不能暴露任何原始字节。');
+        const before = await executionText(f.directory);
+        await f.host.act(fault);
+        const result = await f.host.file(f.read(file), f.cookies.chen);
+        assert.equal(result.status, 409);
+        assert.equal(result.json?.ok, false);
+        assert.equal(result.json.error.code, 'unavailable');
+        assert.equal(result.headers.get('content-type').startsWith('application/json'), true);
+        assert.notDeepEqual(result.bytes, new Uint8Array(file.bytes));
+        assert.equal(await executionText(f.directory), before);
+      });
+  },
+);
+
+test(
+  'M1 real file shutdown waits for a held SDK read after refusing its response',
+  { timeout: 15000 },
+  async (t) => {
+    const f = await fixedFileScenario(t);
+    const file = await f.upload('关闭不能把仍在等待的读取伪装成已经释放。');
+    const before = await executionText(f.directory);
+    await f.host.act('holdFileRead');
+    const reading = f.host.file(f.read(file), f.cookies.chen).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await f.host.wait('file-read-pending');
+    let closed = false;
+    const closing = f.host.act('unmountWorkbench').then(() => {
+      closed = true;
+    });
+    try {
+      const refused = await reading;
+      assert.equal(refused.value?.json?.ok, false, JSON.stringify(refused));
+      assert.equal(refused.value.json.error.code, 'cancelled');
+      await f.host.act('inspect');
+      assert.equal(closed, false, 'The original closer still owns the physical read drain');
+      assert.equal(await executionText(f.directory), before);
+    } finally {
+      await f.host.act('releaseFileRead');
+      await closing;
+    }
+    assert.equal(closed, true);
+    assert.equal(await executionText(f.directory), before);
+  },
+);

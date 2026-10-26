@@ -142,7 +142,10 @@ export {
   type ExecutionMemberDirectoryBinding,
   type IdentityExecutionOptions,
 } from './member-session.js';
-export type { ExecutionMemberLease } from './execution-run-authority.js';
+export type {
+  ExecutionMemberLease,
+  ExecutionUnadmittedCleanupAuthority,
+} from './execution-run-authority.js';
 export type {
   NativeSessionLineage,
   NativeWorkSessionRecord,

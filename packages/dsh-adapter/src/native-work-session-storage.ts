@@ -27,6 +27,7 @@ export const nativeWorkSessionInject = [
   'agents',
   'sessions',
   'sessionPersistence',
+  'sessionProjections',
   'tools',
   'systemPrompt',
 ] as const;

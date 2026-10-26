@@ -10,6 +10,8 @@ import {
   type ExecutionStorage,
   type PlanReceipt,
   type ExecutionFileAuthority,
+  type ExecutionFileAuthoritySource,
+  type AuthorizedFileContent,
 } from './execution-service.js';
 import { openExecutionMemberLease, resolveMember, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
@@ -17,7 +19,11 @@ import { spaceDirectoryFor } from './space-directory.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import { executionRunGlobalSchema } from './execution-run-protocol.js';
-import { openArtifactFileStore, type ArtifactFileStore } from './artifact-files.js';
+import {
+  ArtifactUploadError,
+  openArtifactFileStore,
+  type ArtifactFileStore,
+} from './artifact-files.js';
 
 const ENDPOINTS = [
   'start-plan',
@@ -332,11 +338,120 @@ function unavailable(aborted: boolean) {
   };
 }
 
+const FILE_RESPONSE_HEADERS = {
+  'cache-control': 'private, no-store',
+  'x-content-type-options': 'nosniff',
+  'content-security-policy': "default-src 'none'; sandbox",
+  'cross-origin-resource-policy': 'same-origin',
+};
+
+function safeTextPreview(name: string, mediaType: string, bytes: Uint8Array): boolean {
+  const type = mediaType.split(';')[0]?.trim().toLowerCase();
+  if (
+    ![
+      'text/plain',
+      'text/markdown',
+      'application/json',
+      'text/csv',
+      'text/yaml',
+      'application/yaml',
+    ].includes(type ?? '') ||
+    /\.(?:html?|svg|xml|m?js|cjs|pdf)$/iu.test(name) ||
+    bytes.includes(0) ||
+    bytes.includes(60)
+  )
+    return false;
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    for (let offset = 0; offset < bytes.length; offset += 65536)
+      decoder.decode(bytes.subarray(offset, offset + 65536), { stream: true });
+    decoder.decode();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Integrity was checked completely before this body exists; hold its slot through backpressure. */
+function fileResponse(content: AuthorizedFileContent): Response {
+  content.check();
+  if (content.info.request.mode === 'metadata') {
+    try {
+      return Response.json({ ok: true, value: content.info }, { headers: FILE_RESPONSE_HEADERS });
+    } finally {
+      content.release();
+    }
+  }
+  const bytes = content.bytes;
+  if (!bytes) {
+    content.release();
+    throw new Error('Verified file bytes are absent.');
+  }
+  const preview =
+    content.info.request.mode === 'preview' &&
+    safeTextPreview(content.info.name, content.info.mediaType, bytes);
+  let offset = 0;
+  let finished = false;
+  let cancel: () => void = () => {};
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    content.signal.removeEventListener('abort', cancel);
+    content.release();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      cancel = () => {
+        controller.error(new DOMException('aborted', 'AbortError'));
+        finish();
+      };
+      content.signal.addEventListener('abort', cancel, { once: true });
+      if (content.signal.aborted) cancel();
+    },
+    pull(controller) {
+      try {
+        content.check();
+        if (offset >= bytes.length) {
+          controller.close();
+          finish();
+          return;
+        }
+        const next = Math.min(offset + 65536, bytes.length);
+        // A queued socket tail must not retain the complete verified buffer.
+        controller.enqueue(bytes.slice(offset, next));
+        offset = next;
+      } catch (error) {
+        controller.error(error);
+        finish();
+      }
+    },
+    cancel() {
+      finish();
+    },
+  });
+  const name = encodeURIComponent(content.info.name).replace(
+    /['()*]/gu,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return new Response(body, {
+    headers: {
+      ...FILE_RESPONSE_HEADERS,
+      'content-type': preview ? 'text/plain; charset=utf-8' : 'application/octet-stream',
+      'content-disposition': `${preview ? 'inline' : 'attachment'}; filename="file"; filename*=UTF-8''${name}`,
+      'content-length': String(bytes.length),
+      'x-zhuma-file-context': encodeURIComponent(JSON.stringify(content.info.request)),
+      'x-zhuma-file-sha256': content.info.sha256,
+      'x-zhuma-file-upload-id': content.info.uploadId,
+    },
+  });
+}
+
 function run(
   service: ExecutionService,
   endpoint: Endpoint,
   member: Awaited<ReturnType<typeof resolveMember>>,
   payload: unknown,
+  fileAuthority?: ExecutionFileAuthoritySource,
 ) {
   const caller = { member };
   switch (endpoint) {
@@ -347,7 +462,7 @@ function run(
     case 'startable':
       return service.startable(caller, payload);
     case 'submit':
-      return service.submit(caller, payload);
+      return service.submit(caller, payload, fileAuthority);
     case 'ballot':
       return service.ballot(caller, payload);
     case 'settle':
@@ -359,7 +474,7 @@ function run(
     case 'upstream-content':
       return service.upstreamContent(caller, payload);
     case 'draft':
-      return service.draft(caller, payload);
+      return service.draft(caller, payload, fileAuthority);
     case 'inbox-counts':
       return service.inboxCounts(caller, payload);
     case 'events':
@@ -402,10 +517,12 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
         lifetime.abort();
         mountedService?.fenceRuns();
         mountedService?.sealUploads();
+        mountedService?.sealFileReads();
       });
       await release(() => unpublish?.());
       await release(() => mountedService?.closeRuns());
       await release(() => mountedService?.closeUploads());
+      await release(() => mountedService?.closeFileReads());
       await release(async () => {
         while (bodyDrains.size) await Promise.allSettled([...bodyDrains]);
       });
@@ -460,7 +577,8 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
         let rpcId = '';
         try {
           if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-          const member = await resolveMember(ctx, { headers: fetchHeaders(request) });
+          const original = { headers: fetchHeaders(request) };
+          const member = await resolveMember(ctx, original);
           if (!member.ok) {
             return Response.json(
               { ok: false, error: { code: member.code } },
@@ -477,7 +595,9 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
           }
           rpcId = envelope.data.rpcId;
           if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-          const result = await run(service, endpoint, member, envelope.data.payload);
+          const result = await run(service, endpoint, member, envelope.data.payload, () =>
+            openFileAuthority(ctx, original, signal),
+          );
           return Response.json({ type: 'server-response', rpcId, result });
         } catch (error) {
           if (error instanceof BodyRejected) {
@@ -618,6 +738,69 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     },
   });
   stops.push(uploadStop);
+
+  stops.push(
+    ctx.connection.fetch.register({
+      path: '/api/zhuma-exec/file',
+      methods: ['GET'],
+      requestBody: 'buffered',
+      fetch: async (request) => {
+        const signal = AbortSignal.any([request.signal, lifetime.signal]);
+        let opened: AuthorizedFileContent | undefined;
+        let transferred = false;
+        try {
+          const original = { headers: fetchHeaders(request) };
+          const member = await resolveMember(ctx, original);
+          if (!member.ok)
+            return Response.json(
+              { ok: false, error: { code: member.code } },
+              { status: member.status, headers: FILE_RESPONSE_HEADERS },
+            );
+          const query: Record<string, unknown> = Object.create(null);
+          for (const [key, value] of new URL(request.url).searchParams) {
+            if (Object.hasOwn(query, key))
+              return Response.json(
+                { ok: false, error: { code: 'validation' } },
+                { status: 400, headers: FILE_RESPONSE_HEADERS },
+              );
+            query[key] = key === 'revision' ? Number(value) : value;
+          }
+          const result = await service.fileContent({ member }, query, () =>
+            openFileAuthority(ctx, original, signal),
+          );
+          if (!result.ok)
+            return Response.json(result, {
+              status:
+                result.error.code === 'not-found'
+                  ? 404
+                  : ['validation', 'unknown-field'].includes(result.error.code)
+                    ? 400
+                    : result.error.code === 'unauthenticated'
+                      ? 401
+                      : 409,
+              headers: FILE_RESPONSE_HEADERS,
+            });
+          opened = result.value;
+          const response = fileResponse(opened);
+          transferred = true;
+          return response;
+        } catch (error) {
+          const code =
+            error instanceof ArtifactUploadError
+              ? error.code
+              : signal.aborted
+                ? 'cancelled'
+                : 'unavailable';
+          return Response.json(
+            { ok: false, error: { code } },
+            { status: code === 'not-found' ? 404 : 409, headers: FILE_RESPONSE_HEADERS },
+          );
+        } finally {
+          if (!transferred) opened?.release();
+        }
+      },
+    }),
+  );
 
   ctx.effect(() => () => {
     for (const stop of stops) void stop();

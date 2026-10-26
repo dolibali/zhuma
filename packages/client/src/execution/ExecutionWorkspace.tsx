@@ -12,14 +12,21 @@ import { ReviewWorkspace } from './ReviewWorkspace.js';
 import { RevisionWorkspace } from './RevisionWorkspace.js';
 import { StartPlanPanel, type ExecutionPlan } from './StartPlanPanel.js';
 import { nodeIdentity, reviewIdentity, useFormKey } from './interaction.js';
+import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
+import type { NativeRunApi } from '../run/api.js';
 
-type Props = { api: ExecutionApi; plan?: ExecutionPlan; refreshKey?: number };
+type Props = {
+  api: ExecutionApi;
+  plan?: ExecutionPlan;
+  refreshKey?: number;
+  nativeRun?: { api: NativeRunApi; spaceId: string };
+};
 type Selection = { item: InboxItem; identity: string; token: object };
 export function ExecutionWorkspace(props: Props) {
   const key = useFormKey(props.api, 'workspace');
   return <Workspace key={key} {...props} />;
 }
-function Workspace({ api, plan, refreshKey }: Props) {
+function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
   const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
   const [places, setPlaces] = useState<readonly InboxPlaceWire[]>();
@@ -99,6 +106,20 @@ function Workspace({ api, plan, refreshKey }: Props) {
     setSelected(undefined);
     void reload();
   }
+  const nativeAction =
+    selected && node && nativeRun && ['submit', 'revise'].includes(selected.item.action) ? (
+      <NativeRunLauncher
+        api={nativeRun.api}
+        target={{
+          spaceId: nativeRun.spaceId,
+          taskId: node.taskId,
+          planId: node.planId,
+          revision: node.revision,
+          nodeId: node.nodeId,
+          title: node.goal.split('\n')[0]!.slice(0, 160),
+        }}
+      />
+    ) : undefined;
   return (
     <div className="zm-execution-workspace">
       {plan && <StartPlanPanel api={api} plan={plan} onStarted={() => void reload()} />}
@@ -120,12 +141,18 @@ function Workspace({ api, plan, refreshKey }: Props) {
         />
       )}
       {selected && node && selected.item.action === 'submit' && (
-        <DeliveryPanel api={api} node={node} onSubmitted={(next) => submitted(next, selected)} />
+        <DeliveryPanel
+          api={api}
+          node={node}
+          headerAction={nativeAction}
+          onSubmitted={(next) => submitted(next, selected)}
+        />
       )}
       {selected && node && selected.item.action === 'revise' && (
         <RevisionWorkspace
           api={api}
           node={node}
+          headerAction={nativeAction}
           onSubmitted={(next) => submitted(next, selected)}
         />
       )}

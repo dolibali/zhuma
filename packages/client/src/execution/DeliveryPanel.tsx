@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
@@ -11,13 +11,14 @@ type Props = {
   api: ExecutionApi;
   node: ExecutionNodeWire;
   mode?: 'submit' | 'revise';
+  headerAction?: ReactNode;
   onSubmitted(node: ExecutionNodeWire): void;
 };
 export function DeliveryPanel(props: Props) {
   const key = useFormKey(props.api, nodeIdentity(props.node));
   return <DeliveryForm key={key} {...props} />;
 }
-function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
+function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }: Props) {
   const titleId = useId();
   const available =
     mode === 'revise'
@@ -49,6 +50,7 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted }: Props) {
           <p className="zm-eyebrow">{mode === 'revise' ? '修改后重新提交' : '提交产物'}</p>
           <h2 id={titleId}>{node.goal}</h2>
         </div>
+        {headerAction}
       </div>
       {node.expectedOutput && <p className="zm-execution-hint">交付内容：{node.expectedOutput}</p>}
       <UpstreamInputsPanel inputs={node.inputs} api={api} node={node} />

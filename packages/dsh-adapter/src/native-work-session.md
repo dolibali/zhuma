@@ -1,5 +1,32 @@
 # Native work session seam v1
 
+## Read-only inbox and public conversation observation
+
+The following C-owned APIs are Host-internal and need A's normal authorized transport/UI integration. They do not replace the native transcript or add a chat database.
+
+```ts
+service.readInbox(grant, signal?) // history permission, no native admission
+// { binding, asOfSeq,
+//   receipts: [{ requestId, messageId, mode, status: 'received' | 'claimed' | 'unknown' }],
+//   items: [{ id, text, target: 'next-turn' | 'next-step', requestId, mode, status: 'received' }] }
+service.observe(grant, after = -1, signal?) // follow permission
+// AsyncIterable<{ scope, nativeSessionId } & NativeConversationFrame>
+```
+
+`readInbox` opens the official persistence handle with `read` access, then uses the official `sessionProjections.restore` and its registered inbox unit at a single contiguous cut. Each page rechecks current scope, permission, persistence instance and projection source. It neither creates/resumes an Agent nor appends an event or a product binding. A live session may flush its already-committed native events before reading; this is not a send/wake. Cold/terminal reads use the same persisted inbox. A missing projection is `unavailable`, not an empty success. An unmaterialized binding with no receipts can return the explicit empty cut `asOfSeq: -1`.
+
+Only textual user-origin items whose native IDs match this binding's request receipts enter `items`; runtime/system/foreign inbox work remains private. `received` means present in the official pending inbox. `claimed` requires the exact native `user/message` fact at this same cut; it is **not** proof that the model obeyed or adopted the message. Absence alone is `unknown`, never claimed/discarded. The existing queue command path remains the explicit edit/remove/reorder mechanism. Readers must not clear a received item solely because a separate, earlier history page omitted it: catch history up to `asOfSeq`, reconcile by message ID, and keep unknown delivery explicit. Sending another followup after a queued next-turn item can legitimately cause two native turns, one per input; a read/refresh causes none.
+
+`observe` is the presentation whitelist over the existing native observer. It emits only user/model textual messages, necessary tool names, native idle/running, and validated assistant start/chunk/end frames. No raw event, reasoning block, tool arguments/results, provider replay, system/runtime context or credential structure enters this API. Existing raw `history/follow` remain Host-internal diagnostic/source interfaces and must not be forwarded as public conversation data.
+
+Frames carry the complete authorized scope and native session ID. The runtime accepts live publications from the exact attached Agent/session object and unchanged registry/persistence source, not another object reusing its ID. Each read/listener publication and delivered frame checks the original current grant; it does not retarget an observer to a replacement Agent. Native attempt ID, monotone revision and dense original index gate live frames. Filtered native chunks still advance the original index; public indices may therefore have gaps. A missing start/index or another attempt produces `gap` at the last durable cursor, not a fabricated prefix. Live prefixes are ephemeral; reconnect reads committed native history and does not pretend to replay an unfinished prefix.
+
+`messageKey = nativeSessionId + ':seq:' + seq` joins a committed end to the one durable message. The durable event commits before the official end frame; consumers replace the transient attempt using that key rather than appending a second message. `assistant/attempt` settlement explicitly indicates there is no surface message; an interrupted `assistant/message` preserves `interrupted: true`. Neither terminal model output nor this read API submits a product artifact or unlocks a node.
+
+At most eight actual native readers and sixteen observers are admitted per runtime; cancelled readers retain their slots until native close settles, and observer abort releases its slot immediately. Inbox replay is bounded to 100 pages of 100 native events, 8 MiB scanned JSON, the configured 10–15,000 ms read deadline, and 262,144 bytes of pending items. Exceeding a bound fails explicitly; no truncated empty inbox is returned and no read checkpoint is written back. Observation retains the existing 128-frame/524,288-byte queue and 262,144-byte frame bound, plus at most 128 distinct tool names per attempt. Overflow returns a durable cursor gap. Abort/close removes listeners immediately even if a consumer is paused on a yielded frame. Caller cancellation/deadline ends the wait, while actual open/read/close work stays owned until the original native resource settles; runtime shutdown drains it before releasing the domain.
+
+`native-work-session-view.test.mjs` is synthetic projection-contract coverage. `native-work-session-stream.spec.ts` runs the actual full patched SDK with a local ScriptedAdapter and contract Run grants: pending/claimed/Stop/cold reads, visible partial text before completion, keyed final history, source-object isolation, old generation/revocation, missing projection and held-reader shutdown. Its separate write/read process modes prove durable inbox restoration without an Agent or model request. A must register this new spec and its two process modes in the native verifier; a temporary runner can exercise the exact current production bundle with one official SDK alias before that registration lands. These tests do not certify real member issuance, HTTP/UI, a real model or the complete #35 scope.
+
 Scope: #35's first Host-internal native session slice. `openNativeWorkSessions(ctx, options)` opens one `zhuma_native_work_sessions` storage-domain and composes the public DSH 0.2.1-rc.2 AgentRegistry, Agent, session persistence and event services. It does not mount RPC routes, establish a member identity, create an Execution Run, submit an artifact, or replace the Agent factory. The normal member transport and shared exports belong to A; Run state and authorization belong to D/B; fixed submission belongs to B.
 
 ## Authority and composition

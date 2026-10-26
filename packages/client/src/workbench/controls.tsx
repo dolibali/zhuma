@@ -24,7 +24,7 @@ export function Modal({
   title: string;
   children: ReactNode;
   close(): void;
-  variant?: 'default' | 'confirmation';
+  variant?: 'default' | 'confirmation' | 'workspace';
   initialFocusId?: string;
   descriptionId?: string;
   restoreFocus?: (() => void) | undefined;
@@ -44,29 +44,32 @@ export function Modal({
   }, [initialFocusId, restoreFocus, variant]);
   return (
     <dialog
-      className={`zm-dialog${variant === 'confirmation' ? ' zm-dialog-confirmation' : ''}`}
+      className={`zm-dialog${variant === 'confirmation' ? ' zm-dialog-confirmation' : variant === 'workspace' ? ' zm-dialog-workspace' : ''}`}
       ref={ref}
       onCancel={(event) => {
         event.preventDefault();
         event.stopPropagation();
         close();
       }}
-      aria-labelledby={titleId}
+      aria-labelledby={variant === 'workspace' ? undefined : titleId}
+      aria-label={variant === 'workspace' ? title : undefined}
       aria-describedby={descriptionId}
     >
-      <header>
-        <h2 id={titleId}>{title}</h2>
-        <button type="button" className="zm-dialog-close" aria-label="关闭" onClick={close}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path
-              d="m4 4 8 8m0-8-8 8"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
-        </button>
-      </header>
+      {variant !== 'workspace' && (
+        <header>
+          <h2 id={titleId}>{title}</h2>
+          <button type="button" className="zm-dialog-close" aria-label="关闭" onClick={close}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="m4 4 8 8m0-8-8 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </header>
+      )}
       {children}
     </dialog>
   );

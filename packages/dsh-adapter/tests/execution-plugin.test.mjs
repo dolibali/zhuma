@@ -207,11 +207,16 @@ test('the execution channel is an exact fetch route and hides storage failures',
     [
       ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
       '/api/zhuma-exec/upload-file',
+      '/api/zhuma-exec/file',
     ],
   );
   assert.equal(executionEndpoints.includes('bind-owner'), false);
   assert.equal(
-    host.routes.every((route) => route.requestBody === 'streaming'),
+    host.routes.every((route) =>
+      route.path.endsWith('/file')
+        ? route.requestBody === 'buffered' && route.methods[0] === 'GET'
+        : route.requestBody === 'streaming',
+    ),
     true,
   );
   const anonymous = await host.call('inbox', {}, { cookie: undefined });

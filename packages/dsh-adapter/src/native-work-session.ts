@@ -62,6 +62,7 @@ import {
   appendNativeMigration,
   nativeMigrationOrigin,
 } from './native-work-session-migration.js';
+import { NativeConversationProjection } from './native-work-session-view.js';
 
 const originRequestSchema = nativeMigrationDataSchema.omit({ previousScope: true });
 
@@ -1068,6 +1069,78 @@ export class NativeWorkSessionService {
     return { binding, events: structuredClone(events) };
   }
 
+  /** Reads the official durable inbox without creating, resuming or waking an Agent. */
+  async readInbox(grant: NativeWorkGrant, signal: AbortSignal = grant.signal) {
+    const binding = this.required(grant, 'history');
+    const combined = AbortSignal.any([grant.signal, signal]);
+    const verify = () => {
+      combined.throwIfAborted();
+      const fresh = this.required(grant, 'history');
+      if (
+        fresh.nativeSessionId !== binding.nativeSessionId ||
+        fresh.nativeAgentId !== binding.nativeAgentId ||
+        !sameScope(fresh.scope, binding.scope) ||
+        !sameSelection(fresh.selection, binding.selection)
+      )
+        throw new NativeWorkError('scope-mismatch');
+      return fresh;
+    };
+    const snapshot = await this.runtime.readInbox(
+      binding.nativeSessionId,
+      combined,
+      binding.receipts.length === 0,
+      verify,
+    );
+    const fresh = verify();
+    const claimed = new Set(snapshot.claimedMessageIds);
+    const pending = new Set(snapshot.items.map((item) => item.id));
+    return {
+      binding: fresh,
+      asOfSeq: snapshot.asOfSeq,
+      receipts: fresh.receipts.map((receipt) => ({
+        requestId: receipt.requestId,
+        messageId: receipt.messageId,
+        mode: receipt.mode,
+        status: pending.has(receipt.messageId)
+          ? ('received' as const)
+          : claimed.has(receipt.messageId)
+            ? ('claimed' as const)
+            : ('unknown' as const),
+      })),
+      items: snapshot.items.flatMap((item) => {
+        const receipt = fresh.receipts.find((entry) => entry.messageId === item.id);
+        return receipt
+          ? [
+              {
+                ...item,
+                requestId: receipt.requestId,
+                mode: receipt.mode,
+                status: 'received' as const,
+              },
+            ]
+          : [];
+      }),
+    };
+  }
+
+  /** Public presentation whitelist; raw native history/follow remain Host-internal. */
+  async *observe(grant: NativeWorkGrant, after = -1, signal: AbortSignal = grant.signal) {
+    const binding = this.required(grant, 'follow');
+    const projection = new NativeConversationProjection(binding.nativeSessionId, after);
+    for await (const item of this.follow(grant, after, signal)) {
+      check(grant, 'follow');
+      const frame = projection.push(item);
+      if (!frame) continue;
+      check(grant, 'follow');
+      yield {
+        scope: structuredClone(binding.scope),
+        nativeSessionId: binding.nativeSessionId,
+        ...frame,
+      };
+      if (frame.type === 'gap') return;
+    }
+  }
+
   async *follow(grant: NativeWorkGrant, after = -1, signal: AbortSignal = grant.signal) {
     const binding = this.required(grant, 'follow');
     if (!Number.isSafeInteger(after) || after < -1) throw new NativeWorkError('invalid-request');
@@ -1077,6 +1150,7 @@ export class NativeWorkSessionService {
       after,
       combined,
       binding.receipts.length === 0,
+      () => check(grant, 'follow'),
     )) {
       if (combined.aborted) return;
       check(grant, 'follow');

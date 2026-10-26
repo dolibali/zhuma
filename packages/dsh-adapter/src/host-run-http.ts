@@ -12,7 +12,7 @@ import {
   type WorkbenchHttpLimits,
 } from './workbench-http.js';
 
-export const hostRunEndpoints = ['begin', 'send', 'stop', 'read', 'history'] as const;
+export const hostRunEndpoints = ['begin', 'send', 'stop', 'read', 'history', 'options'] as const;
 // A maximum-size 16,384-unit message, fully JSON-escaped IDs and the RPC
 // envelope fit here. Archive/upload budgets must not widen these operations.
 export const HOST_RUN_BODY_BYTES = 128 * 1024;
@@ -20,6 +20,11 @@ export type HostRunEndpoint = (typeof hostRunEndpoints)[number];
 
 /** Host-owned operations return public projections, never grants or native handles. */
 export interface HostRunOperations {
+  options(
+    request: MemberRequest,
+    payload: unknown,
+    wait?: AbortSignal,
+  ): Promise<ExecutionResult<unknown>>;
   begin(
     request: MemberRequest,
     payload: unknown,

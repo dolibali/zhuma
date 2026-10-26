@@ -18,8 +18,17 @@ import type { ProjectSpaceDirectory } from './project-space.js';
 import type { OpenedSpaceDirectoryHandle, SpaceDirectoryImport } from './space-directory.js';
 import type { RevisionView } from './revision-view.js';
 import type { ExecutionPluginConfig } from './execution-plugin.js';
-import type { ExecutionFileAuthority } from './execution-service.js';
+import type {
+  ExecutionFileAuthority,
+  ExecutionFileAuthoritySource,
+  AuthorizedFileContent,
+} from './execution-service.js';
 export type { ExecutionFileAuthority, ExecutionFileAuthoritySource } from './execution-service.js';
+export type {
+  FileContentInfo,
+  FileContentRequest,
+  AuthorizedFileContent,
+} from './execution-service.js';
 export type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 export type {
   AuthorizedSpace,
@@ -212,6 +221,7 @@ export type ExecutionMessageCode =
   | 'quota-exceeded'
   | 'digest-mismatch'
   | 'upload-timeout'
+  | 'file-timeout'
   | 'empty-delivery'
   | 'conflict'
   | 'idempotency-mismatch'
@@ -381,6 +391,7 @@ export interface FileUploadReceiptValue {
   readonly mediaType: string;
   readonly bytes: number;
   readonly sha256: string;
+  readonly reference: ArtifactFileRef;
 }
 
 export interface ChannelInboxValue {
@@ -418,6 +429,11 @@ export interface ExecutionCaller {
   readonly member?: MemberResolution;
 }
 export interface ExecutionServiceMethods {
+  fileContent(
+    caller: ExecutionCaller,
+    body: unknown,
+    fileAuthority?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionChannelResult<AuthorizedFileContent>>;
   startPlan(
     caller: ExecutionCaller,
     body: unknown,
@@ -432,6 +448,7 @@ export interface ExecutionServiceMethods {
   submit(
     caller: ExecutionCaller,
     body: unknown,
+    fileAuthority?: ExecutionFileAuthoritySource,
   ): Promise<ExecutionChannelResult<ExecutionCommandValue>>;
   ballot(
     caller: ExecutionCaller,
@@ -456,6 +473,7 @@ export interface ExecutionServiceMethods {
   draft(
     caller: ExecutionCaller,
     body: unknown,
+    fileAuthority?: ExecutionFileAuthoritySource,
   ): Promise<ExecutionChannelResult<SavedDeliveryDraft>>;
   reconcile(): Promise<ExecutionChannelResult<ReconcileValue>>;
 }
@@ -484,6 +502,7 @@ export interface SavedDeliveryDraft {
   readonly text: string;
   readonly links: readonly string[];
   readonly files: readonly ArtifactFileRef[];
+  readonly fileDetails?: readonly { readonly id: string; readonly name: string }[];
 }
 export interface DeliveryDraftWrite {
   readonly taskId: string;
