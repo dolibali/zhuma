@@ -22,7 +22,11 @@ Host 用 `readRunCompositionInputs(originalRequest, locator)` 取得原执行 ow
 
 重复开始返回原有 durable Run 事实，不再次调用 native send/resume。后续 send 取得新鲜成员授权，沿用保存的模型/配置及同一活跃会话；发送正文保留原始空白。未核实的首次投递或已 detached 会话拒绝隐式接管。重试/重启的旧绑定迁移使用原 manager 的 migration grant 和 C 的真实 prepare/migrate，不用 drive grant 冒充迁移权限。
 
-若同一 C owner 曾实际返回 retired、无 binding 且 drain 为 absent-unadmitted，Host 可在进程内有界保留这一物理观察。仅旧 Run 已 failed/settled、无 ack/原生 ID、精确原 scope 及 drain 仍有效，并且新 Run 已持久化并取得新真 drive grant 时，才交 C 规范 send 创建首绑定；不制造旧绑定或改写迁移结果。冷重开丢失旧物理观察时不提供这条捷径，不能只凭 not-started 或资源标签认证恢复。
+若同一 C owner 曾实际返回 retired、无 binding 且 drain 为 absent-unadmitted，Host 可在进程内有界保留这一物理观察。仅旧 Run 已 failed/settled、无 ack/原生 ID、精确原 scope 及 drain 仍有效，并且新 Run 已持久化并取得新真 drive grant 时，才交 C 规范 send 创建首绑定；不制造旧绑定或改写迁移结果。
+
+冷重开丢失旧观察时，正式 dispatch 先打开当前新 Run 的真实 drive grant，以持久 requestId、inputFingerprint、scope、selection 查询同一个 C owner 的 migrationOrigin。只有实际 NativeWorkError/not-started（整个 locator 记录缺失）才向 D 的 unadmittedCleanup 派生旧 scope 限定能力，沿原 retireForCleanup 取得新的物理 drain；pending、旧 binding、非 absent-unadmitted、撤权或失效均拒绝。该观察不持久化为证书，仍须原 assertHostAbsentRetry 和 canonical send 检查后才可首次绑定。已有记录继续原 prepare/migrate；普通 read/history 和同键重放没有 dispatch 效果，不能触发这条清理。D 原型与未修 Host 的两进程失败保留在 #139 的独立证据中，不能认证本次正式接入。
+
+`verify-native-lifecycle --phase host-run-cold` 在同一固定补丁 SDK 检查原 Host 场景，并对未受理、unknown 历史、已有 binding 和重试持久化后登出分别启动独立 writer/reader OS 进程。夹具使用原 emitted Host、成员 Cookie、JSON/JSONL；仅控制真实存储 put 故障/等待，不注入恢复实现、伪造 binding 或 drain。撤权场景在新 Run 持久化后、驱动授权打开前登出；清理 await 中撤权另由明确的契约测试覆盖，不能混称为真实进程时序证明。模型始终为本地 scripted adapter，GUI/安装及真实供应商仍分别验收。
 
 ## 读取、停止与关停
 

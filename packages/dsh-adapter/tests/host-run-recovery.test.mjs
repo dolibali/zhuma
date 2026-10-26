@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertHostAbsentRetry } from '../dist/host-run-recovery.js';
+import { assertHostAbsentRetry, retireHostUnadmittedScope } from '../dist/host-run-recovery.js';
+import { NativeWorkError } from '../dist/native-work-session-contract.js';
 import { executionRunScope } from '../dist/execution-run-state.js';
 import { applyEvent, begin } from './execution-run-fixture.mjs';
 
@@ -98,5 +99,117 @@ test('Host recovery contract: acknowledged native identity or unsettled prior re
     else h.node.nativeExecution.runs[0].resources = 'held';
     assert.throws(h.connect, { code: 'run-recovery-unavailable' });
     assert.equal(h.connects(), 0);
+  }
+});
+
+function coldFixture(overrides = {}) {
+  const h = fixture();
+  const calls = [];
+  const cleanup = {
+    scope: h.scope,
+    signal: h.grant.signal,
+    assertCurrent() {
+      h.grant.assertCurrent('send');
+    },
+  };
+  const owner = {
+    migrationOrigin() {
+      calls.push('origin');
+      throw new NativeWorkError('not-started');
+    },
+    async retireForCleanup(value, signal) {
+      calls.push('retire');
+      assert.equal(value, cleanup);
+      assert.equal(signal, h.grant.signal);
+      return h.proof.result;
+    },
+    ...overrides,
+  };
+  const authorities = {
+    assertGrant(value, action) {
+      assert.equal(value, h.grant);
+      value.assertCurrent(action);
+    },
+    unadmittedCleanup(value) {
+      assert.equal(value, h.grant);
+      calls.push('derive');
+      return cleanup;
+    },
+  };
+  const query = {
+    scope: h.grant.scope,
+    requestId: 'retry',
+    inputFingerprint: 'hash',
+    selection: {},
+  };
+  return {
+    ...h,
+    calls,
+    cleanup,
+    owner,
+    query,
+    authorities,
+    recover: () =>
+      retireHostUnadmittedScope(owner, authorities, h.lifetime.signal, h.grant, h.scope, query),
+  };
+}
+test('Host cold retry contract: only actual not-started permits deriving and consuming a same-owner drain', async () => {
+  const h = coldFixture();
+  const result = await h.recover();
+  assert.equal(result.owner, h.owner);
+  assert.equal(result.result, h.proof.result);
+  assert.deepEqual(result.scope, h.scope);
+  assert.deepEqual(h.calls, ['origin', 'derive', 'retire']);
+  assertHostAbsentRetry(result, h.owner, h.lifetime.signal, h.scope, h.node, h.grant);
+});
+test('Host cold retry contract: an existing locator keeps normal migration; other failures cannot claim absence', async () => {
+  const existing = coldFixture({ migrationOrigin: () => ({ scope: 'existing' }) });
+  assert.equal(await existing.recover(), undefined);
+  assert.deepEqual(existing.calls, []);
+  for (const error of [
+    new NativeWorkError('binding-state-invalid'),
+    new NativeWorkError('migration-unknown'),
+    { code: 'not-started' },
+    Error('not-started'),
+  ]) {
+    const h = coldFixture({
+      migrationOrigin() {
+        throw error;
+      },
+    });
+    await assert.rejects(h.recover());
+    assert.deepEqual(h.calls, []);
+  }
+});
+test('Host cold retry contract: pending, existing binding, wrong basis and stale drain never permit a send', async () => {
+  for (const variant of ['pending', 'binding', 'basis', 'stale']) {
+    const h = coldFixture();
+    if (variant === 'pending') h.owner.retireForCleanup = async () => ({ status: 'pending' });
+    if (variant === 'binding') h.proof.result.binding = {};
+    if (variant === 'basis') h.proof.result.drain.basis = 'flushed-and-closed';
+    if (variant === 'stale') h.physical.abort();
+    await assert.rejects(h.recover());
+    assert.equal(h.connects(), 0);
+  }
+});
+test('Host cold retry contract: a crossed cleanup scope or query is rejected', async () => {
+  for (const variant of ['cleanup', 'query']) {
+    const h = coldFixture();
+    if (variant === 'cleanup') h.cleanup.scope = { ...h.scope, runId: 'another' };
+    else h.query.scope = { ...h.grant.scope, nodeId: 'another' };
+    await assert.rejects(h.recover());
+    assert.equal(h.calls.includes('retire'), false);
+  }
+});
+test('Host cold retry contract: revocation or owner closure during actual cleanup await cannot publish a proof', async () => {
+  for (const variant of ['member', 'owner']) {
+    const h = coldFixture(),
+      release = Promise.withResolvers();
+    h.owner.retireForCleanup = async () => release.promise;
+    const operation = h.recover();
+    if (variant === 'member') h.permission.abort();
+    else h.lifetime.abort();
+    release.resolve(h.proof.result);
+    await assert.rejects(operation);
   }
 });

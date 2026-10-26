@@ -5,16 +5,59 @@ import {
   readExecutionRunState,
 } from './execution-run-state.js';
 import type {
+  NativeMigrationOriginRequest,
   NativeScopeCleanupResult,
   NativeWorkGrant,
   NativeWorkScope,
 } from './native-work-session-contract.js';
+import { NativeWorkError } from './native-work-session-contract.js';
+import type { NativeWorkSessionService } from './native-work-session.js';
+import type { ExecutionRunAuthorities } from './execution-run-authority.js';
 
 /** A retained observation from this one C owner, never persisted or accepted from a client. */
 export interface HostAbsentRetirement {
   readonly owner: object;
   readonly scope: NativeWorkScope;
   readonly result: Extract<NativeScopeCleanupResult, { readonly status: 'retired' }>;
+}
+
+/** A missing locator is only eligibility to ask the same C owner for a real
+ * absence drain. Neither the lookup nor D's derived authority proves absence.
+ */
+export async function retireHostUnadmittedScope(
+  owner: Pick<NativeWorkSessionService, 'migrationOrigin' | 'retireForCleanup'>,
+  authorities: Pick<ExecutionRunAuthorities, 'assertGrant' | 'unadmittedCleanup'>,
+  ownerSignal: AbortSignal,
+  grant: NativeWorkGrant,
+  previousScope: NativeWorkScope,
+  query: NativeMigrationOriginRequest,
+): Promise<HostAbsentRetirement | undefined> {
+  ownerSignal.throwIfAborted();
+  authorities.assertGrant(grant, 'send');
+  if (canonicalPayload(query.scope) !== canonicalPayload(grant.scope))
+    throw new ExecutionRunError('run-recovery-unavailable');
+  try {
+    owner.migrationOrigin(query);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof NativeWorkError) || error.code !== 'not-started') throw error;
+  }
+  const cleanup = authorities.unadmittedCleanup(grant);
+  cleanup.assertCurrent();
+  if (canonicalPayload(cleanup.scope) !== canonicalPayload(previousScope))
+    throw new ExecutionRunError('run-recovery-unavailable');
+  const result = await owner.retireForCleanup(cleanup, cleanup.signal);
+  ownerSignal.throwIfAborted();
+  cleanup.assertCurrent();
+  authorities.assertGrant(grant, 'send');
+  if (
+    result.status !== 'retired' ||
+    result.binding !== undefined ||
+    result.drain.basis !== 'absent-unadmitted'
+  )
+    throw new ExecutionRunError('run-recovery-unavailable');
+  result.drain.assertCurrent();
+  return { owner, scope: cleanup.scope, result };
 }
 
 /** Content/physical-observation gate only. The caller must also check the new
