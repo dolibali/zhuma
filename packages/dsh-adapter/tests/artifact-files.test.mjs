@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
@@ -434,6 +434,7 @@ async function realFiles(t) {
   });
   t.after(async () => {
     await service.closeUploads();
+    await service.closeFileReads();
     await files.close();
     for (const fiber of fibers.reverse()) await fiber.dispose();
     await rm(root, { recursive: true, force: true });
@@ -471,6 +472,184 @@ test('actual SDK: wrong digest/length leave no CAS, alias, temp or ledger', asyn
       assert.equal(f.files.countInSpace('north'), 0);
     });
   }
+});
+
+function fileAuthority(caller = session('chen')) {
+  return async () => ({ lease: contractLease(caller), assertProjectSpace() {} });
+}
+
+test('fixed file submission trusts the receipt, supports files only and replays one immutable version', async (t) => {
+  const f = await realFiles(t);
+  const uploaded = await uploadFile(f.service, session('chen'), f.options('fixed artifact bytes'));
+  assert.equal(uploaded.ok, true);
+  const reference = uploaded.value.reference;
+  assert.equal(reference.id, uploaded.value.uploadId);
+  const request = {
+    taskId: f.plan.taskId,
+    planId: f.plan.id,
+    revision: f.plan.revision,
+    nodeId: 'design',
+    expectedVersion: f.store.node('design').command.version,
+    idempotencyKey: 'submit-file-only',
+    files: [{ ...reference, uploadComplete: false }],
+  };
+  const result = await f.service.submit(session('chen'), request, fileAuthority());
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const artifact = f.store.node('design').artifactVersions.at(-1);
+  assert.equal(artifact.files[0].uploadComplete, true);
+  assert.equal(artifact.files[0].checksum, uploaded.value.sha256);
+  assert.equal(artifact.files[0].id, uploaded.value.uploadId);
+  const replay = await f.service.submit(session('chen'), request, fileAuthority());
+  assert.equal(replay.ok, true, JSON.stringify(replay));
+  assert.equal(replay.value.disposition, 'replayed');
+  assert.equal(f.store.node('design').artifactVersions.length, 1);
+});
+
+test('forged file metadata and UUIDs never create a fixed artifact', async (t) => {
+  const f = await realFiles(t);
+  const uploaded = await uploadFile(f.service, session('chen'), f.options());
+  const before = f.store.snapshot();
+  const base = {
+    taskId: f.plan.taskId,
+    planId: f.plan.id,
+    revision: f.plan.revision,
+    nodeId: 'design',
+    expectedVersion: f.store.node('design').command.version,
+    idempotencyKey: 'forged-ref',
+    files: [uploaded.value.reference],
+  };
+  for (const changed of [
+    { id: randomUUID() },
+    { checksum: '0'.repeat(64) },
+    { mediaType: 'text/plain' },
+    { byteSize: 0 },
+    { accessPolicyId: 'owner' },
+  ]) {
+    const result = await f.service.submit(
+      session('chen'),
+      { ...base, files: [{ ...base.files[0], ...changed, uploadComplete: true }] },
+      fileAuthority(),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'not-found');
+    assert.equal(f.store.snapshot(), before);
+  }
+  const denied = await f.service.submit(session('chen'), base);
+  assert.equal(denied.error.code, 'unauthenticated');
+  assert.equal(f.store.snapshot(), before);
+});
+
+test('equal-length corrupted SDK bytes fail before a fixed artifact or event is written', async (t) => {
+  const f = await realFiles(t);
+  const bytes = Buffer.from('the immutable version must preserve every byte');
+  const uploaded = await uploadFile(f.service, session('chen'), f.options(bytes.toString()));
+  const path = f.attachments.fileHostPath({
+    attachmentId: uploaded.value.attachmentId,
+    name: uploaded.value.name,
+    bytes: uploaded.value.bytes,
+  });
+  const damaged = Buffer.from(bytes);
+  damaged[damaged.length - 1] ^= 1;
+  await chmod(path, 0o600);
+  await writeFile(path, damaged);
+  const before = f.store.snapshot();
+  const result = await f.service.submit(
+    session('chen'),
+    {
+      taskId: f.plan.taskId,
+      planId: f.plan.id,
+      revision: f.plan.revision,
+      nodeId: 'design',
+      expectedVersion: f.store.node('design').command.version,
+      idempotencyKey: 'corrupt-fixed',
+      files: [uploaded.value.reference],
+    },
+    fileAuthority(),
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'unavailable');
+  assert.equal(f.store.snapshot(), before);
+});
+
+test('verified read responses retain their eight slots until consumed or released', async (t) => {
+  const f = await realFiles(t);
+  const file = await uploadFile(f.service, session('chen'), f.options('owned response bytes'));
+  const query = {
+    taskId: f.plan.taskId,
+    planId: f.plan.id,
+    revision: f.plan.revision,
+    nodeId: 'design',
+    spaceId: 'north',
+    uploadId: file.value.uploadId,
+    purpose: 'draft',
+    mode: 'download',
+  };
+  const responses = [];
+  try {
+    for (let i = 0; i < 8; i++) {
+      const response = await f.service.fileContent(session('chen'), query, fileAuthority());
+      assert.equal(response.ok, true, JSON.stringify(response));
+      responses.push(response.value);
+    }
+    const ninth = await f.service.fileContent(session('chen'), query, fileAuthority());
+    assert.equal(ninth.error.code, 'quota-exceeded');
+    responses.shift().release();
+    await new Promise(setImmediate);
+    const retry = await f.service.fileContent(session('chen'), query, fileAuthority());
+    assert.equal(retry.ok, true, JSON.stringify(retry));
+    assert.equal(Buffer.from(retry.value.bytes).toString(), 'owned response bytes');
+    retry.value.release();
+  } finally {
+    for (const response of responses) response.release();
+  }
+});
+
+test('authorized metadata and completed draft projections never alias durable upload or draft facts', async (t) => {
+  const f = await realFiles(t);
+  const file = await uploadFile(f.service, session('chen'), f.options());
+  const query = {
+    taskId: f.plan.taskId,
+    planId: f.plan.id,
+    revision: f.plan.revision,
+    nodeId: 'design',
+  };
+  const saved = await f.service.draft(
+    session('chen'),
+    {
+      ...query,
+      expectedVersion: 0,
+      idempotencyKey: 'owned-draft',
+      text: '原始正文',
+      links: ['https://example.test/reference'],
+      files: [file.value.reference],
+    },
+    fileAuthority(),
+  );
+  assert.equal(saved.ok, true, JSON.stringify(saved));
+  saved.value.links.push('https://example.test/forged');
+  saved.value.files[0].checksum = '0'.repeat(64);
+  saved.value.fileDetails[0].name = 'forged';
+  const read = await f.service.fileContent(
+    session('chen'),
+    {
+      ...query,
+      spaceId: 'north',
+      uploadId: file.value.uploadId,
+      purpose: 'draft',
+      mode: 'metadata',
+    },
+    fileAuthority(),
+  );
+  assert.equal(read.ok, true);
+  read.value.info.reference.checksum = '0'.repeat(64);
+  read.value.info.request.nodeId = 'foreign';
+  read.value.release();
+  const restored = await f.service.draft(session('chen'), query, fileAuthority());
+  assert.equal(restored.ok, true);
+  assert.deepEqual(restored.value.links, ['https://example.test/reference']);
+  assert.equal(restored.value.files[0].checksum, file.value.sha256);
+  assert.equal(restored.value.fileDetails[0].name, file.value.name);
+  assert.equal(f.files.get(file.value.uploadId).sha256, file.value.sha256);
 });
 
 test('actual SDK: all durable fields are rejected before reading, and media type binds replay', async (t) => {

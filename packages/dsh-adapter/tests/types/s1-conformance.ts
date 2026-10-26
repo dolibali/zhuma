@@ -131,6 +131,7 @@ export type MessageExtendsError = Assert<
   Both<ExecutionMessageCode, ExecutionErrorCode & ExecutionMessageCode>
 >;
 type ServiceMethodName =
+  | 'fileContent'
   | 'startPlan'
   | 'inbox'
   | 'startable'
@@ -177,6 +178,9 @@ export type UpstreamContentMethodBoth = Assert<
 >;
 export type UploadFileMethodBoth = Assert<
   Both<ExecutionService['uploadFile'], ExecutionServiceMethods['uploadFile']>
+>;
+export type FileContentMethodBoth = Assert<
+  Both<ExecutionService['fileContent'], ExecutionServiceMethods['fileContent']>
 >;
 export type DraftMethodBoth = Assert<
   Both<ExecutionService['draft'], ExecutionServiceMethods['draft']>

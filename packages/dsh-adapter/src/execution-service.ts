@@ -89,6 +89,10 @@ import {
   artifactUploadOptionsSchema,
   ArtifactUploadError,
   ArtifactUploadStream,
+  artifactFileReference,
+  matchesArtifactFileReference,
+  readVerifiedArtifactFile,
+  artifactFileLeaf,
   type ArtifactFileStore,
   type ArtifactFileUploadDeclare,
   type FileUploadReceipt,
@@ -106,6 +110,55 @@ export interface ExecutionFileAuthority {
   assertProjectSpace(projectId: string, spaceId: string): void;
 }
 export type ExecutionFileAuthoritySource = () => Promise<ExecutionFileAuthority>;
+
+const fileReadLocation = {
+  taskId: WorkTaskSchema.shape.id,
+  planId: WorkTaskSchema.shape.id,
+  revision: z.number().int().positive(),
+  nodeId: WorkTaskSchema.shape.id,
+  spaceId: WorkTaskSchema.shape.id,
+  uploadId: WorkTaskSchema.shape.id,
+  mode: z.enum(['metadata', 'preview', 'download']).default('metadata'),
+};
+const artifactId = z.string().min(1).max(1000);
+const fileReadSchema = z.discriminatedUnion('purpose', [
+  z.strictObject({ ...fileReadLocation, purpose: z.literal('draft') }),
+  z.strictObject({
+    ...fileReadLocation,
+    purpose: z.literal('artifact'),
+    artifactVersionId: artifactId,
+  }),
+  z.strictObject({
+    ...fileReadLocation,
+    purpose: z.literal('review'),
+    artifactVersionId: artifactId,
+    roundId: artifactId,
+  }),
+  z.strictObject({
+    ...fileReadLocation,
+    purpose: z.literal('upstream'),
+    sourceNodeId: WorkTaskSchema.shape.id,
+    artifactVersionId: artifactId,
+  }),
+]);
+export type FileContentRequest = z.infer<typeof fileReadSchema>;
+export interface FileContentInfo {
+  readonly request: FileContentRequest;
+  readonly uploadId: string;
+  readonly name: string;
+  readonly mediaType: string;
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly reference: ArtifactFileRef;
+}
+/** Host-only owned response. Raw HTTP strips control functions from metadata JSON. */
+export interface AuthorizedFileContent {
+  readonly info: FileContentInfo;
+  readonly bytes?: Uint8Array;
+  readonly signal: AbortSignal;
+  check(): void;
+  release(): void;
+}
 
 const id = z.string().min(1);
 const TEXT_LIMIT = 100_000;
@@ -358,6 +411,7 @@ const MESSAGES = {
   'quota-exceeded': '文件数量或总量已达上限。',
   'digest-mismatch': '文件内容与声明的摘要不一致。',
   'upload-timeout': '文件上传超时，请重试。',
+  'file-timeout': '文件读取超时，请重试。',
   'files-not-accepted': '文件还不能随这次提交完成。请只提交文字或链接。',
   'empty-delivery': '请填写交付说明，或附上已上传完成的文件。',
   conflict: '内容已变化，请刷新后再试。',
@@ -518,14 +572,7 @@ export function toNodeView(record: ExecutionNodeRecord): ExecutionNodeView {
   };
 }
 
-function receiptOf(record: {
-  readonly uploadId: string;
-  readonly attachmentId: string;
-  readonly name: string;
-  readonly mediaType: string;
-  readonly byteSize: number;
-  readonly sha256: string;
-}): FileUploadReceipt {
+function receiptOf(record: UploadFileRecord): FileUploadReceipt {
   return {
     uploadId: record.uploadId,
     attachmentId: record.attachmentId,
@@ -533,6 +580,7 @@ function receiptOf(record: {
     mediaType: record.mediaType,
     bytes: record.byteSize,
     sha256: record.sha256,
+    reference: artifactFileReference(record),
   };
 }
 
@@ -798,6 +846,12 @@ export class ExecutionService {
   private readonly uploadLifetime = new AbortController();
   private readonly uploadDrains = new Set<Promise<void>>();
   private readonly uploadOperations = new Set<Promise<unknown>>();
+  private readonly fileLifetime = new AbortController();
+  private readonly fileOperations = new Set<Promise<unknown>>();
+  private readonly fileReadResources = new Set<{
+    readonly spaceId: string;
+    readonly drain: Promise<void>;
+  }>();
   /** Ephemeral resource reservations; durable file facts still have one queued writer. */
   private readonly pendingUploads = new Map<
     string,
@@ -1537,7 +1591,16 @@ export class ExecutionService {
     });
   }
 
-  submit(caller: ExecutionCaller, body: unknown) {
+  submit(caller: ExecutionCaller, body: unknown, fileAuthority?: ExecutionFileAuthoritySource) {
+    if (
+      this.attachments &&
+      this.fileStore &&
+      body &&
+      typeof body === 'object' &&
+      Array.isArray((body as { files?: unknown }).files) &&
+      (body as { files: unknown[] }).files.length
+    )
+      return this.submitFiles(caller, body, fileAuthority);
     return this.enqueue(() =>
       this.command(
         caller,
@@ -1574,6 +1637,346 @@ export class ExecutionService {
         true,
       ),
     );
+  }
+
+  private submitFiles(
+    caller: ExecutionCaller,
+    body: unknown,
+    source: ExecutionFileAuthoritySource | undefined,
+  ) {
+    const actorField = this.actorField(body);
+    if (actorField) return Promise.resolve(actorField);
+    const parsed = parseBody(submitSchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    const input = parsed.value;
+    const keyed = draftKeyLimit(input.idempotencyKey);
+    if (keyed) return Promise.resolve(keyed);
+    return this.withFileAuthority(caller, body, source, async (actor, authority) => {
+      const submit = (record: ExecutionNodeRecord, files: ArtifactFileRef[]) =>
+        submitDelivery({
+          record,
+          actorId: actor.actorId,
+          idempotencyKey: input.idempotencyKey,
+          expectedVersion: input.expectedVersion,
+          draft: {
+            files,
+            links: input.links ?? [],
+            ...(input.text === undefined ? {} : { text: input.text }),
+          },
+          artifactId: `artifact:${input.idempotencyKey}`,
+          roundId: `round:${input.idempotencyKey}`,
+        });
+      const space = await this.gateSpace(input.taskId, actor.spaceIds);
+      if (space === 'missing' || !space.ok)
+        return fail(space === 'missing' ? 'not-found' : space.error.code);
+      const task = this.workbench.readWorkbench().tasks.find((item) => item.id === input.taskId);
+      if (!task) return fail('not-found');
+      const admission = await this.enqueue(async () => {
+        const node = this.assertFileNode(
+          authority,
+          actor.actorId,
+          input,
+          task.projectId,
+          space.value,
+        );
+        assertExecutionRunQuiescent(node);
+        const bound = this.boundFileReferences(input.files ?? [], node, space.value, actor.actorId);
+        const proposal = submit(node, bound.files);
+        if (!proposal.ok) return fail(proposal.code);
+        return {
+          ok: true,
+          value: {
+            nodeSnapshot: canonicalPayload(node),
+            projectId: task.projectId,
+            spaceId: space.value,
+            ...bound,
+          },
+        };
+      });
+      if (!admission.ok) return admission;
+      const state = admission.value;
+      let commitSnapshot: string | undefined;
+      const guard = (current: ExecutionNodeRecord) => {
+        const fresh = this.assertFileNode(
+          authority,
+          actor.actorId,
+          input,
+          state.projectId,
+          state.spaceId,
+        );
+        const freshSnapshot = canonicalPayload(fresh);
+        if (
+          freshSnapshot !== canonicalPayload(current) ||
+          (commitSnapshot !== undefined && freshSnapshot !== commitSnapshot)
+        )
+          throw new ArtifactUploadError('conflict');
+        if (freshSnapshot !== state.nodeSnapshot) {
+          const replay = submit(fresh, state.files);
+          if (!replay.ok || replay.disposition !== 'replayed')
+            throw new ArtifactUploadError('conflict');
+        }
+        commitSnapshot ??= freshSnapshot;
+        const bound = this.boundFileReferences(
+          input.files ?? [],
+          fresh,
+          state.spaceId,
+          actor.actorId,
+        );
+        if (canonicalPayload(bound.records) !== canonicalPayload(state.records))
+          throw new ArtifactUploadError('not-found');
+      };
+      // SDK byte verification is outside the only command queue. The resulting
+      // preparation is never a grant: every final write rechecks its live source.
+      for (const record of state.records)
+        await this.verifyFileBytes(
+          record,
+          authority,
+          () =>
+            this.assertFileNode(authority, actor.actorId, input, state.projectId, state.spaceId),
+          false,
+        );
+      return this.enqueue(() =>
+        this.command(
+          caller,
+          { ...input, files: state.files },
+          submitSchema,
+          (_actor, request, record) => ({
+            result: submit(record, request.files ?? []),
+            settle: false,
+          }),
+          'delivery-submitted',
+          true,
+          guard,
+        ),
+      );
+    });
+  }
+
+  private withFileAuthority<T>(
+    caller: ExecutionCaller,
+    body: unknown,
+    source: ExecutionFileAuthoritySource | undefined,
+    work: (
+      actor: { actorId: string; spaceIds: readonly string[] },
+      authority: ExecutionFileAuthority,
+    ) => Promise<ExecutionResult<T>>,
+    retainLeaseOnSuccess = false,
+  ): Promise<ExecutionResult<T>> {
+    const operation = (async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      if (typeof source !== 'function') return fail('unauthenticated');
+      let authority: ExecutionFileAuthority | undefined;
+      let transferred = false;
+      try {
+        if (this.fileLifetime.signal.aborted) return fail('cancelled');
+        authority = await source();
+        if (
+          !authority ||
+          authority.lease?.memberId !== actor.value.actorId ||
+          !(authority.lease.signal instanceof AbortSignal) ||
+          typeof authority.assertProjectSpace !== 'function'
+        )
+          return fail('unauthenticated');
+        const result = await work(actor.value, authority);
+        transferred = retainLeaseOnSuccess && result.ok;
+        return result;
+      } catch (error) {
+        return fail(
+          error instanceof ArtifactUploadError || error instanceof WorkbenchError
+            ? error.code
+            : 'unavailable',
+        );
+      } finally {
+        if (!transferred) authority?.lease.release();
+      }
+    })();
+    this.fileOperations.add(operation);
+    void operation.then(
+      () => this.fileOperations.delete(operation),
+      () => this.fileOperations.delete(operation),
+    );
+    return operation;
+  }
+
+  private assertFileAuthority(
+    authority: ExecutionFileAuthority,
+    actorId: string,
+    projectId: string,
+    spaceId: string,
+  ): void {
+    const lease = authority.lease;
+    if (this.fileLifetime.signal.aborted || lease.signal.aborted)
+      throw new ArtifactUploadError('cancelled');
+    if (
+      lease.memberId !== actorId ||
+      !Number.isFinite(lease.expiresAt) ||
+      Date.now() >= lease.expiresAt
+    )
+      throw new ArtifactUploadError('unauthenticated');
+    try {
+      for (const result of [
+        lease.assertCurrent(spaceId),
+        authority.assertProjectSpace(projectId, spaceId),
+      ]) {
+        const checked: unknown = result;
+        if (checked !== undefined) {
+          void Promise.resolve(checked).catch(() => undefined);
+          throw new Error('A current file authority must decide synchronously.');
+        }
+      }
+    } catch {
+      throw new ArtifactUploadError('not-found');
+    }
+  }
+
+  private assertFileRecord(
+    authority: ExecutionFileAuthority,
+    actorId: string,
+    locator: { taskId: string; planId: string; revision: number; nodeId: string },
+    projectId: string,
+    spaceId: string,
+  ): ExecutionNodeRecord {
+    this.assertFileAuthority(authority, actorId, projectId, spaceId);
+    const workbench = this.workbench.readWorkbench();
+    const task = workbench.tasks.find((item) => item.id === locator.taskId);
+    if (
+      !task ||
+      task.projectId !== projectId ||
+      !this.directory().includes(actorId) ||
+      planMembership(workbench, locator.taskId, actorId) !== 'allowed'
+    )
+      throw new ArtifactUploadError('not-found');
+    return this.currentFileNode(locator);
+  }
+
+  /** Read the exact current node without cloning its whole artifact history per byte chunk. */
+  private currentFileNode(locator: {
+    taskId: string;
+    planId: string;
+    revision: number;
+    nodeId: string;
+  }): ExecutionNodeRecord {
+    const node = this.storage.readNode(nodeRecordKey(locator));
+    if (
+      !node ||
+      !intactNode(node) ||
+      !samePlan(node, locator.taskId, locator.planId, locator.revision) ||
+      node.nodeId !== locator.nodeId ||
+      !recordedPlan(this.storage, node)
+    )
+      throw new ArtifactUploadError('not-found');
+    try {
+      readExecutionRunState(node);
+    } catch {
+      throw new ArtifactUploadError('not-found');
+    }
+    return node;
+  }
+
+  private assertFileNode(
+    authority: ExecutionFileAuthority,
+    actorId: string,
+    locator: { taskId: string; planId: string; revision: number; nodeId: string },
+    projectId: string,
+    spaceId: string,
+  ): ExecutionNodeRecord {
+    const node = this.assertFileRecord(authority, actorId, locator, projectId, spaceId);
+    if (node.handoff.assignee.kind !== 'human' || node.handoff.assignee.id !== actorId)
+      throw new ArtifactUploadError('not-assignee');
+    return node;
+  }
+
+  private boundFileReferences(
+    files: readonly ArtifactFileRef[],
+    node: ExecutionNodeRecord,
+    spaceId: string,
+    memberId: string,
+  ): { records: UploadFileRecord[]; files: ArtifactFileRef[] } {
+    if (!this.fileStore || !this.attachments) throw new ArtifactUploadError('files-not-accepted');
+    if (
+      files.length > ARTIFACT_FILE_LIMITS.maxFilesPerSubmission ||
+      new Set(files.map((file) => file.id)).size !== files.length
+    )
+      throw new ArtifactUploadError('validation');
+    const records = files.map((file) => {
+      const record = this.fileStore!.get(file.id);
+      if (
+        !record ||
+        record.uploadedBy !== memberId ||
+        record.spaceId !== spaceId ||
+        record.taskId !== node.taskId ||
+        record.planId !== node.planId ||
+        record.revision !== node.revision ||
+        record.nodeId !== node.nodeId ||
+        !matchesArtifactFileReference(file, record)
+      )
+        throw new ArtifactUploadError('not-found');
+      return { ...record };
+    });
+    if (
+      records.reduce((sum, record) => sum + record.byteSize, 0) > ARTIFACT_FILE_LIMITS.maxNodeBytes
+    )
+      throw new ArtifactUploadError('quota-exceeded');
+    return { records, files: records.map(artifactFileReference) };
+  }
+
+  private async verifyFileBytes(
+    record: UploadFileRecord,
+    authority: ExecutionFileAuthority,
+    assertCurrent: () => unknown,
+    collect: boolean,
+  ): Promise<{ bytes: Uint8Array | undefined; release(): void }> {
+    if (!this.attachments) throw new ArtifactUploadError('unavailable');
+    if (
+      [...this.fileReadResources].filter((item) => item.spaceId === record.spaceId).length >=
+      ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace
+    )
+      throw new ArtifactUploadError('quota-exceeded');
+    const signal = AbortSignal.any([authority.lease.signal, this.fileLifetime.signal]);
+    const read = readVerifiedArtifactFile({
+      attachments: this.attachments,
+      record,
+      signal,
+      assertCurrent: () => {
+        assertCurrent();
+      },
+      collect,
+    });
+    let resolveRelease!: () => void;
+    const released = new Promise<void>((resolve) => {
+      resolveRelease = resolve;
+    });
+    const release = () => {
+      resolveRelease();
+    };
+    const resource = {
+      spaceId: record.spaceId,
+      drain: Promise.all([read.drain, released]).then(() => undefined),
+    };
+    this.fileReadResources.add(resource);
+    signal.addEventListener('abort', release, { once: true });
+    if (!collect || signal.aborted) release();
+    void resource.drain.then(() => {
+      signal.removeEventListener('abort', release);
+      this.fileReadResources.delete(resource);
+    });
+    try {
+      return { bytes: await read.result, release };
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  sealFileReads(): void {
+    this.fileLifetime.abort();
+  }
+  async closeFileReads(): Promise<void> {
+    this.sealFileReads();
+    while (this.fileOperations.size) await Promise.allSettled([...this.fileOperations]);
+    while (this.fileReadResources.size)
+      await Promise.all([...this.fileReadResources].map((item) => item.drain));
   }
 
   ballot(caller: ExecutionCaller, body: unknown) {
@@ -1707,7 +2110,16 @@ export class ExecutionService {
   }
 
   /** Read or save the assignee's delivery draft. The draft itself is unchanged by a read. */
-  draft(caller: ExecutionCaller, body: unknown): Promise<ExecutionResult<DeliveryDraftView>> {
+  draft(
+    caller: ExecutionCaller,
+    body: unknown,
+    fileAuthority?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionResult<DeliveryDraftView>> {
+    if (this.attachments && this.fileStore) {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return Promise.resolve(actor);
+      if (this.isFileDraft(body)) return this.fileDraft(caller, body, fileAuthority);
+    }
     return this.enqueue(async () => {
       const actor = this.actor(caller, body);
       if (!actor.ok) return actor;
@@ -1784,6 +2196,125 @@ export class ExecutionService {
         if (!stored.ok) return stored;
       }
       return { ok: true, value: deliveryDraftView(applied.draft) };
+    });
+  }
+
+  private isFileDraft(body: unknown): boolean {
+    const writing = body !== null && typeof body === 'object' && 'idempotencyKey' in body;
+    const parsed = (writing ? draftWriteSchema : draftReadSchema).safeParse(body);
+    if (!parsed.success) return false;
+    const supplied = (parsed.data as { files?: unknown }).files;
+    if (Array.isArray(supplied) && supplied.length > 0) return true;
+    try {
+      return (
+        (this.storage.readNode(nodeRecordKey(parsed.data))?.deliveryDraft?.files.length ?? 0) > 0
+      );
+    } catch {
+      return true;
+    }
+  }
+
+  private fileDraft(
+    caller: ExecutionCaller,
+    body: unknown,
+    source: ExecutionFileAuthoritySource | undefined,
+  ): Promise<ExecutionResult<DeliveryDraftView>> {
+    const writing = body !== null && typeof body === 'object' && 'idempotencyKey' in body;
+    let input: z.infer<typeof draftWriteSchema> | undefined;
+    let query: z.infer<typeof draftReadSchema>;
+    if (writing) {
+      const parsed = parseBody(draftWriteSchema, body);
+      if (!parsed.ok) return Promise.resolve(parsed);
+      input = parsed.value;
+      query = parsed.value;
+    } else {
+      const parsed = parseBody(draftReadSchema, body);
+      if (!parsed.ok) return Promise.resolve(parsed);
+      query = parsed.value;
+    }
+    const write = input;
+    return this.withFileAuthority(caller, body, source, async (actor, authority) => {
+      const space = await this.gateSpace(query.taskId, actor.spaceIds);
+      if (space === 'missing' || !space.ok)
+        return fail(space === 'missing' ? 'not-found' : space.error.code);
+      const task = this.workbench.readWorkbench().tasks.find((item) => item.id === query.taskId);
+      if (!task) return fail('not-found');
+      return this.enqueue(async () => {
+        const current = this.assertFileNode(
+          authority,
+          actor.actorId,
+          query,
+          task.projectId,
+          space.value,
+        );
+        if (current.command.status !== 'ready' && current.command.status !== 'needs-revision')
+          return fail('not-deliverable');
+        const view = (draft: ExecutionNodeRecord['deliveryDraft']): DeliveryDraftView => {
+          const verified: ArtifactFileRef[] = [],
+            details: { id: string; name: string }[] = [];
+          for (const file of draft?.files ?? []) {
+            try {
+              const bound = this.boundFileReferences([file], current, space.value, actor.actorId);
+              verified.push(...bound.files);
+              details.push({ id: file.id, name: artifactFileLeaf(bound.records[0]!.name) });
+            } catch {
+              verified.push(...draftFiles([file]));
+            }
+          }
+          return { ...deliveryDraftView(draft, verified), fileDetails: details };
+        };
+        if (!write) return { ok: true, value: view(current.deliveryDraft) };
+        assertExecutionRunQuiescent(current);
+        const text = write.text ?? '',
+          links = write.links ?? [];
+        const limited =
+          draftLinkLimit(links) ??
+          draftFileLimit(text, links, write.files ?? []) ??
+          draftKeyLimit(write.idempotencyKey);
+        if (limited) return limited;
+        const bound = this.boundFileReferences(
+          write.files ?? [],
+          current,
+          space.value,
+          actor.actorId,
+        );
+        const files = draftFiles(bound.files);
+        const applied = applyDeliveryDraft({
+          current: current.deliveryDraft,
+          expectedVersion: write.expectedVersion,
+          idempotencyKey: write.idempotencyKey,
+          fingerprint: canonicalPayload({
+            kind: 'delivery-draft',
+            actorId: actor.actorId,
+            nodeId: current.nodeId,
+            text,
+            links,
+            files,
+          }),
+          text,
+          links,
+          files,
+        });
+        if (!applied.ok)
+          return fail(
+            applied.code,
+            applied.code === 'conflict'
+              ? {
+                  currentVersion: applied.currentVersion,
+                  expectedVersion: write.expectedVersion,
+                }
+              : {},
+          );
+        if (applied.disposition === 'applied') {
+          this.assertFileNode(authority, actor.actorId, query, task.projectId, space.value);
+          const stored = await this.persist(() =>
+            this.writeNode({ ...current, deliveryDraft: applied.draft }),
+          );
+          if (!stored.ok) return stored;
+        }
+        this.assertFileAuthority(authority, actor.actorId, task.projectId, space.value);
+        return { ok: true, value: view(applied.draft) };
+      });
     });
   }
 
@@ -2096,6 +2627,161 @@ export class ExecutionService {
    * No hidden source leaks; pending or replaced refs stay a hint, not content.
    * A read writes nothing.
    */
+  fileContent(
+    caller: ExecutionCaller,
+    body: unknown,
+    source?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionResult<AuthorizedFileContent>> {
+    const parsed = parseBody(fileReadSchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    const query = parsed.value;
+    return this.withFileAuthority(
+      caller,
+      body,
+      source,
+      async (actor, authority) => {
+        if (!this.attachments || !this.fileStore) return fail('unavailable');
+        const space = await this.gateSpaceScoped(query.taskId, actor.spaceIds, query.spaceId);
+        if (space === 'missing' || !space.ok)
+          return fail(space === 'missing' ? 'not-found' : space.error.code);
+        const task = this.workbench.readWorkbench().tasks.find((item) => item.id === query.taskId);
+        if (!task) return fail('not-found');
+        const assertAccess = () =>
+          this.readableFileRecord(authority, actor.actorId, query, task.projectId);
+        const record = assertAccess();
+        const check = () => {
+          const fresh = assertAccess();
+          if (canonicalPayload(fresh) !== canonicalPayload(record))
+            throw new ArtifactUploadError('not-found');
+        };
+        const info: FileContentInfo = {
+          request: { ...query },
+          uploadId: record.uploadId,
+          name: artifactFileLeaf(record.name),
+          mediaType: record.mediaType,
+          bytes: record.byteSize,
+          sha256: record.sha256,
+          reference: artifactFileReference(record),
+        };
+        const signal = AbortSignal.any([authority.lease.signal, this.fileLifetime.signal]);
+        let read: { bytes: Uint8Array | undefined; release(): void } | undefined;
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          signal.removeEventListener('abort', release);
+          read?.release();
+          authority.lease.release();
+        };
+        signal.addEventListener('abort', release, { once: true });
+        try {
+          if (query.mode !== 'metadata')
+            read = await this.verifyFileBytes(record, authority, check, true);
+          if (signal.aborted) throw new ArtifactUploadError('cancelled');
+          const fresh = assertAccess();
+          if (canonicalPayload(fresh) !== canonicalPayload(record))
+            throw new ArtifactUploadError('not-found');
+          return {
+            ok: true,
+            value: {
+              info,
+              ...(read?.bytes === undefined ? {} : { bytes: read.bytes }),
+              signal,
+              check: () => {
+                if (released) throw new ArtifactUploadError('cancelled');
+                check();
+              },
+              release,
+            },
+          };
+        } catch (error) {
+          release();
+          throw error;
+        }
+      },
+      true,
+    );
+  }
+
+  private readableFileRecord(
+    authority: ExecutionFileAuthority,
+    actorId: string,
+    query: FileContentRequest,
+    projectId: string,
+  ): UploadFileRecord {
+    if (!this.fileStore) throw new ArtifactUploadError('not-found');
+    const target = this.assertFileRecord(authority, actorId, query, projectId, query.spaceId);
+    let source = target;
+    let file: ArtifactFileRef | undefined;
+    if (query.purpose === 'draft') {
+      if (
+        target.handoff.assignee.kind !== 'human' ||
+        target.handoff.assignee.id !== actorId ||
+        (target.command.status !== 'ready' && target.command.status !== 'needs-revision')
+      )
+        throw new ArtifactUploadError('not-found');
+    } else {
+      if (query.purpose === 'upstream') {
+        if (
+          target.handoff.assignee.kind !== 'human' ||
+          target.handoff.assignee.id !== actorId ||
+          !(target.handoff.inputRefs ?? []).some(
+            (ref) =>
+              ref.sourceNodeId === query.sourceNodeId &&
+              ref.artifactVersionId === query.artifactVersionId,
+          )
+        )
+          throw new ArtifactUploadError('not-found');
+        try {
+          source = this.currentFileNode({ ...query, nodeId: query.sourceNodeId });
+        } catch {
+          throw new ArtifactUploadError('not-found');
+        }
+        if (
+          !source ||
+          !recordedPlan(this.storage, source) ||
+          source.acceptedArtifactVersionId !== query.artifactVersionId
+        )
+          throw new ArtifactUploadError('not-found');
+      }
+      const artifact = source.artifactVersions.find((item) => item.id === query.artifactVersionId);
+      if (!artifact) throw new ArtifactUploadError('not-found');
+      if (query.purpose === 'review') {
+        const round = source.rounds.find(
+          (item) => item.id === query.roundId && item.artifactVersionId === artifact.id,
+        );
+        if (
+          !round ||
+          round.status === 'voided' ||
+          !round.reviewerIds.includes(actorId) ||
+          !source.handoff.reviewerIds.includes(actorId)
+        )
+          throw new ArtifactUploadError('not-found');
+      } else if (
+        query.purpose === 'artifact' &&
+        (source.handoff.assignee.kind !== 'human' || source.handoff.assignee.id !== actorId)
+      )
+        throw new ArtifactUploadError('not-found');
+      file = artifact.files.find((item) => item.id === query.uploadId);
+      if (!file) throw new ArtifactUploadError('not-found');
+    }
+    const record = this.fileStore.get(query.uploadId);
+    if (
+      !record ||
+      record.state !== 'completed' ||
+      record.spaceId !== query.spaceId ||
+      record.taskId !== source.taskId ||
+      record.planId !== source.planId ||
+      record.revision !== source.revision ||
+      record.nodeId !== source.nodeId ||
+      (query.purpose === 'draft'
+        ? record.uploadedBy !== actorId
+        : !file || !matchesArtifactFileReference(file, record))
+    )
+      throw new ArtifactUploadError('not-found');
+    return { ...record };
+  }
+
   upstreamContent(
     caller: ExecutionCaller,
     body: unknown,
@@ -2245,6 +2931,7 @@ export class ExecutionService {
   private enqueue<T>(work: () => Promise<ExecutionResult<T>>): Promise<ExecutionResult<T>> {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
       if (
+        error instanceof ArtifactUploadError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionRunProtocolError ||
         error instanceof ExecutionRunCompositionError
@@ -2596,6 +3283,7 @@ export class ExecutionService {
     ) => { result: ReturnType<typeof submitDelivery>; settle: boolean },
     eventType: string,
     guardUpstream = false,
+    beforeFileWrite?: (current: ExecutionNodeRecord) => void,
   ) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -2617,6 +3305,7 @@ export class ExecutionService {
     if (membership === 'not-participant') return fail('not-participant');
     if (!recordedPlan(this.storage, current)) return fail('plan-incomplete');
     assertExecutionRunQuiescent(current);
+    beforeFileWrite?.(current);
     const executed = run(actor.value.actorId, parsed.value, current);
     if (!executed.result.ok) {
       return fail(
@@ -2654,6 +3343,7 @@ export class ExecutionService {
         if (blocked) return blocked;
         record = withoutDeliveryDraft(record);
       }
+      beforeFileWrite?.(current);
       if (executed.result.disposition === 'applied') {
         const stamped = withExecutionEvent(record, eventType, actor.value.actorId);
         if (!stamped) return fail('unavailable');

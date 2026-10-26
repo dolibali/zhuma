@@ -9,7 +9,7 @@ import * as JsonStorage from '@deepseek-ai/dsh-storage-json';
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain';
 import * as Connection from '@deepseek-ai/dsh-client-connection';
 import RemoteAccess from '@deepseek-ai/dsh-api-remote-access';
-import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
@@ -26,6 +26,9 @@ let modelCalls = 0;
 let observeUpload = false;
 let fileUploadCalls = 0;
 let uploadSpaceDomain;
+let fileReadCalls = 0;
+let fileReadGate, releaseFileRead;
+let fileExecutionDomain, fileLedgerDomain;
 const forks = [];
 const opened = [];
 const notify = (phase, value = {}) => process.send?.({ phase, ...value });
@@ -59,6 +62,8 @@ async function boot(options) {
     opened.push(spec.name);
     const domain = await originalOpen(spec);
     if (spec.name === 'zhuma_spaces') uploadSpaceDomain = domain;
+    if (spec.name === 'zhuma_execution') fileExecutionDomain = domain;
+    if (spec.name === 'zhuma_files') fileLedgerDomain = domain;
     const close = domain.close.bind(domain);
     domain.close = async () => {
       domainCloseOrder.push(spec.name);
@@ -141,6 +146,25 @@ async function boot(options) {
   await load(attachmentLocal.LocalAttachmentStore, { dshHome: home });
   observeUpload = options.observeUpload === true;
   if (observeUpload) {
+    const read = ctx.attachments.readFileStream.bind(ctx.attachments);
+    ctx.attachments.readFileStream = (ref, signal) => {
+      const iterator = read(ref, signal)[Symbol.asyncIterator]();
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        async next() {
+          fileReadCalls++;
+          const value = await iterator.next();
+          if (!value.done && fileReadGate) {
+            notify('file-read-pending');
+            await fileReadGate;
+          }
+          return value;
+        },
+        return: () => iterator.return?.() ?? Promise.resolve({ done: true }),
+      };
+    };
     const save = ctx.attachments.saveFileStream.bind(ctx.attachments);
     ctx.attachments.saveFileStream = (input) => {
       fileUploadCalls++;
@@ -247,6 +271,7 @@ async function inspect() {
     ...(observeUpload
       ? {
           fileUploadCalls,
+          fileReadCalls,
           fileProjectSpace: hostPlugin.spaceDirectoryFor(ctx)?.spaceForProjectNow('portal'),
         }
       : {}),
@@ -285,6 +310,79 @@ async function waitIdentityState(expected) {
 }
 
 async function act(action) {
+  if (action === 'corruptFirstFileBytes' || action === 'deleteFirstFileBytes') {
+    if (!observeUpload || !fileLedgerDomain) throw Error('File observation is disabled');
+    const [, file] = [...fileLedgerDomain.table('files').entries()][0];
+    const path = ctx.attachments.fileHostPath({
+      attachmentId: file.attachmentId,
+      name: file.name,
+      bytes: file.byteSize,
+    });
+    if (action === 'deleteFirstFileBytes') await unlink(path);
+    else {
+      const bytes = await readFile(path);
+      bytes[bytes.length - 1] ^= 1;
+      await chmod(path, 0o600);
+      await writeFile(path, bytes);
+    }
+    return {};
+  }
+  if (action === 'holdFileSubmitGuard') {
+    if (!observeUpload) throw Error('File observation is disabled');
+    const directory = hostPlugin.spaceDirectoryFor(ctx);
+    const lookup = directory.spaceForProject.bind(directory);
+    let calls = 0;
+    const gate = new Promise((resolve) => {
+      releaseProjectLookup = resolve;
+    });
+    directory.spaceForProject = async (projectId) => {
+      const result = await lookup(projectId);
+      if (++calls === 3) {
+        notify('file-commit-guard-pending');
+        await gate;
+      }
+      return result;
+    };
+    return {};
+  }
+  if (action === 'changeFileSubmitRound') {
+    if (!observeUpload || !fileExecutionDomain) throw Error('File observation is disabled');
+    const table = fileExecutionDomain.table('nodes');
+    const [key, node] = [...table.entries()].find(([, value]) => value.nodeId === 'design');
+    await table.put(key, { ...node, currentRoundId: 'changed-during-upstream-check' });
+    return {};
+  }
+  if (action === 'changeFileSubmitRoster') {
+    if (!observeUpload || !fileExecutionDomain) throw Error('File observation is disabled');
+    const table = fileExecutionDomain.table('nodes');
+    const [key, node] = [...table.entries()].find(([, value]) => value.nodeId === 'design');
+    await table.put(key, { ...node, handoff: { ...node.handoff, reviewerIds: ['lin'] } });
+    return {};
+  }
+  if (action === 'changeFileSubmitBinding') {
+    if (!observeUpload || !fileLedgerDomain) throw Error('File observation is disabled');
+    const table = fileLedgerDomain.table('files');
+    const [key, file] = [...table.entries()][0];
+    await table.put(key, { ...file, nodeId: 'publish' });
+    return {};
+  }
+  if (action === 'holdFileRead') {
+    if (!observeUpload) throw Error('File observation is disabled');
+    fileReadGate = new Promise((resolve) => {
+      releaseFileRead = resolve;
+    });
+    return {};
+  }
+  if (action === 'releaseFileRead') {
+    releaseFileRead?.();
+    fileReadGate = undefined;
+    return {};
+  }
+  if (action === 'revokeFileReviewerMembership') {
+    if (!observeUpload) throw Error('File observation is disabled');
+    await hostPlugin.spaceDirectoryFor(ctx).revokeMembership('team-north', 'lin');
+    return {};
+  }
   if (action === 'migrateFileProject') {
     if (!observeUpload || !uploadSpaceDomain) throw Error('File observation is disabled');
     // Fault injection into the actual published JSON domain, not a new product
@@ -468,6 +566,7 @@ async function act(action) {
     executionLease?.release();
     releaseDirectoryClose?.();
     releaseWorkbenchWrite?.();
+    releaseFileRead?.();
     mock.timers.reset();
     for (const fiber of forks.reverse()) await fiber.dispose();
     return {};
