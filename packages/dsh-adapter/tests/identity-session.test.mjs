@@ -339,7 +339,8 @@ async function mount(shared = {}) {
   const identityFiber = ctx.plugin(
     {
       inject: [...identityInject],
-      apply: (ctx, imported) => applyIdentity(ctx, imported, shared.executionOptions?.(ctx)),
+      apply: (ctx, imported) =>
+        applyIdentity(ctx, imported, shared.executionOptions?.(ctx), shared.initialization),
     },
     shared.imported === undefined ? fixtureImport() : shared.imported,
   );
@@ -2305,14 +2306,14 @@ test('a notes put failure resumes the same import', async () => {
 test('a completion marker failure resumes the same import', async () => {
   await resumeSameImport(
     {
-      global(name) {
-        if (name !== 'zhuma_identity') return undefined;
+      global(name, value) {
+        if (name !== 'zhuma_identity' || !value.importComplete) return undefined;
         return new Error('injected identity write failure');
       },
     },
     (media) => {
       const medium = media.get('zhuma_identity');
-      assert.equal(medium.global, null);
+      assert.equal(medium.global.initialization.phase, 'writing');
       assert.deepEqual([...medium.tables.get('notes').keys()].sort(), ['north-note', 'south-note']);
     },
   );
@@ -2350,6 +2351,186 @@ test('a completed import is left untouched by a different import', async () => {
   assert.equal(refused.status, 401);
   assert.equal(refused.json.error.code, 'invalid-login');
   await second.dispose();
+});
+
+async function unconfiguredIdentity(shared = {}) {
+  let initialization;
+  const host = await mount({
+    ...shared,
+    imported: null,
+    initialization: {
+      publish(handle) {
+        initialization = handle;
+        return () => {};
+      },
+    },
+  });
+  assert.ok(initialization);
+  return { ...host, initialization };
+}
+
+test('identity initialization contract: passive status uses the open domain, then explicit initialization still requires normal member login', async () => {
+  const host = await unconfiguredIdentity();
+  try {
+    const before = identityRows(host.media);
+    assert.deepEqual(host.initialization.status(), { kind: 'unconfigured' });
+    assert.deepEqual(host.initialization.status(), { kind: 'unconfigured' });
+    assert.deepEqual(identityRows(host.media), before);
+    assert.deepEqual(
+      await host.initialization.initialize({ requestId: 'local-setup', imported: fixtureImport() }),
+      { kind: 'initialized', requestId: 'local-setup' },
+    );
+    assert.deepEqual(host.initialization.status(), { kind: 'configured' });
+    const owner = await call(host.web, {
+      method: 'GET',
+      path: '/zhuma-id/session',
+      cookie: ownerCookie(host.connection),
+    });
+    assert.equal(owner.status, 401);
+    assert.ok(await login(host.web, 'lin'));
+    assert.deepEqual(Object.keys(host.initialization.status()), ['kind']);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('identity initialization contract: concurrent same-key requests have one receipt and changed bodies cannot replace completed accounts', async () => {
+  const host = await unconfiguredIdentity();
+  const imported = fixtureImport();
+  try {
+    const input = { requestId: 'same-request', imported };
+    assert.deepEqual(
+      await Promise.all([
+        host.initialization.initialize(input),
+        host.initialization.initialize(input),
+      ]),
+      [
+        { kind: 'initialized', requestId: input.requestId },
+        { kind: 'initialized', requestId: input.requestId },
+      ],
+    );
+    const saved = identityRows(host.media);
+    const changed = fixtureImport();
+    await assert.rejects(host.initialization.initialize({ ...input, imported: changed }), {
+      code: 'conflict',
+    });
+    assert.deepEqual(
+      await host.initialization.initialize({ requestId: 'another-request', imported: changed }),
+      { kind: 'already-configured' },
+    );
+    assert.deepEqual(identityRows(host.media), saved);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('identity initialization contract: a durable partial blocks login and only the same key and seed can resume after closing the original domain', async () => {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  const first = await unconfiguredIdentity({
+    media,
+    credentials,
+    faults: failNthPut('accounts', 2),
+  });
+  await assert.rejects(first.initialization.initialize({ requestId: 'recover', imported }), {
+    code: 'unavailable',
+  });
+  assert.deepEqual(first.initialization.status(), { kind: 'pending', requestId: 'recover' });
+  const loginWhilePartial = await call(first.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    body: { accountId: 'lin', password: passwords.lin },
+  });
+  assert.equal(loginWhilePartial.status, 503);
+  const partial = identityRows(media);
+  await first.dispose();
+  assert.equal(first.initialization.signal.aborted, true);
+  assert.throws(() => first.initialization.status(), { code: 'unavailable' });
+  const recovered = await unconfiguredIdentity({ media, credentials });
+  try {
+    assert.deepEqual(identityRows(media), partial);
+    await assert.rejects(recovered.initialization.initialize({ requestId: 'other', imported }), {
+      code: 'conflict',
+    });
+    await assert.rejects(
+      recovered.initialization.initialize({ requestId: 'recover', imported: fixtureImport() }),
+      { code: 'conflict' },
+    );
+    assert.deepEqual(identityRows(media), partial);
+    assert.deepEqual(
+      await recovered.initialization.initialize({ requestId: 'recover', imported }),
+      { kind: 'initialized', requestId: 'recover' },
+    );
+    await expectFixtureMembers(recovered);
+  } finally {
+    await recovered.dispose();
+  }
+});
+
+test('identity initialization contract: old unmarked partial rows are never inferred or overwritten', async () => {
+  const imported = fixtureImport();
+  const media = new Map([
+    [
+      'zhuma_identity',
+      {
+        global: { ownerAccountId: '', importComplete: false },
+        tables: new Map([['accounts', new Map([['lin', imported.accounts[0]]])]]),
+      },
+    ],
+  ]);
+  const host = await unconfiguredIdentity({ media });
+  try {
+    const before = identityRows(media);
+    assert.deepEqual(host.initialization.status(), { kind: 'recovery-required' });
+    await assert.rejects(host.initialization.initialize({ requestId: 'cannot-guess', imported }), {
+      code: 'recovery-required',
+    });
+    assert.deepEqual(identityRows(media), before);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('identity initialization contract: closing fences the handle and waits for an admitted original storage write', async () => {
+  const entered = Promise.withResolvers();
+  const released = Promise.withResolvers();
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  const host = await unconfiguredIdentity({
+    media,
+    credentials,
+    faults: {
+      async global(name, value) {
+        if (name === 'zhuma_identity' && value.importComplete) {
+          entered.resolve();
+          await released.promise;
+        }
+      },
+    },
+  });
+  const command = host.initialization.initialize({ requestId: 'closing', imported });
+  const rejected = assert.rejects(command, { code: 'unavailable' });
+  await entered.promise;
+  let closed = false;
+  const closing = host.dispose().then(() => {
+    closed = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(host.initialization.signal.aborted, true);
+  assert.equal(closed, false);
+  released.resolve();
+  await Promise.all([closing, rejected]);
+  const reopened = await unconfiguredIdentity({ media, credentials });
+  try {
+    assert.deepEqual(await reopened.initialization.initialize({ requestId: 'closing', imported }), {
+      kind: 'initialized',
+      requestId: 'closing',
+    });
+  } finally {
+    await reopened.dispose();
+  }
 });
 
 test('a successful login clears earlier failures from that address', async () => {
