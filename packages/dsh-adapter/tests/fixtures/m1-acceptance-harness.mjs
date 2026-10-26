@@ -60,6 +60,7 @@ export async function startAcceptanceHost(directory, config) {
   const waits = new Map();
   const actions = new Map();
   let diagnostics = '';
+  let closed = false;
   child.stderr.on('data', (chunk) => {
     diagnostics += chunk.toString();
   });
@@ -88,7 +89,10 @@ export async function startAcceptanceHost(directory, config) {
   const act = (action, extra = {}) => {
     const id = randomUUID();
     const response = new Promise((resolveAction, reject) => {
-      const timer = setTimeout(() => reject(Error(`Host action timed out: ${action}`)), 10000);
+      const timer = setTimeout(
+        () => reject(Error(`Host action timed out: ${action}; ${diagnostics.slice(-2000)}`)),
+        10000,
+      );
       actions.set(id, (message) => {
         clearTimeout(timer);
         actions.delete(id);
@@ -98,7 +102,8 @@ export async function startAcceptanceHost(directory, config) {
     child.send({ id, action, ...extra });
     return response;
   };
-  const { identityImport, spaceDirectoryImport, workbenchSeed, ...publicConfig } = config;
+  const { identityImport, spaceDirectoryImport, workbenchSeed, observeUpload, ...publicConfig } =
+    config;
   child.send({
     type: 'boot',
     options: {
@@ -114,6 +119,7 @@ export async function startAcceptanceHost(directory, config) {
           : { spaceDirectoryBootstrapKey: 'zhuma-spaces/bootstrap' }),
       },
       identityImport,
+      ...(observeUpload === undefined ? {} : { observeUpload }),
       ...(spaceDirectoryImport === undefined ? {} : { spaceDirectoryImport }),
       ...(workbenchSeed === undefined ? {} : { workbenchSeed }),
     },
@@ -202,6 +208,39 @@ export async function startAcceptanceHost(directory, config) {
     return { status: response.status, json, headers: response.headers };
   }
 
+  async function upload(declare, options, bytes, memberCookie, signal) {
+    const combined = memberCookie ? `${ownerCookie}; ${memberCookie}` : ownerCookie;
+    const response = await fetch(`${listener.baseURL}/api/zhuma-exec/upload-file`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        host: authority,
+        origin: listener.baseURL,
+        cookie: combined,
+        'x-zhuma-file-name': encodeURIComponent(declare.name),
+        'x-zhuma-file-type': declare.mediaType,
+        'x-zhuma-file-size': String(declare.byteSize),
+        'x-zhuma-file-sha256': declare.sha256,
+        'x-zhuma-space': options.spaceId,
+        'x-zhuma-task': options.taskId,
+        'x-zhuma-plan': options.planId,
+        'x-zhuma-revision': String(options.revision),
+        'x-zhuma-node': options.nodeId,
+        'x-zhuma-idempotency-key': options.idempotencyKey,
+      },
+      body: bytes,
+      duplex: 'half',
+      ...(signal ? { signal } : {}),
+      redirect: 'manual',
+    });
+    const text = await response.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status: response.status, json };
+  }
+
   async function exec(endpoint, payload, memberCookie) {
     // Member execution routes sit behind the owner transport cookie plus the
     // member cookie, the same combination a member session carries.
@@ -223,6 +262,7 @@ export async function startAcceptanceHost(directory, config) {
     child,
     post,
     exec,
+    upload,
     async login(memberId, password) {
       const response = await post('/zhuma-id/login', { accountId: memberId, password }, undefined);
       assert.equal(response.status, 200, `login ${memberId}: ${response.status}`);
@@ -231,6 +271,8 @@ export async function startAcceptanceHost(directory, config) {
       return cookie;
     },
     async close() {
+      if (closed) return;
+      closed = true;
       try {
         await act('stop');
       } finally {
