@@ -19,6 +19,7 @@ import { spaceDirectoryFor } from './space-directory.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import { executionRunGlobalSchema } from './execution-run-protocol.js';
+import { executionPlanReceiptSchema } from './execution-workflow-contract.js';
 import {
   ArtifactUploadError,
   openArtifactFileStore,
@@ -85,11 +86,7 @@ const nodeSchema = z.custom<ExecutionNodeRecord>((value) => {
     return false;
   }
 });
-const planSchema = z.strictObject({
-  idempotencyKey: z.string().min(1),
-  fingerprint: z.string().min(1),
-  nodeIds: z.array(z.string().min(1)),
-});
+const planSchema = executionPlanReceiptSchema;
 const domainSpec = {
   name: 'zhuma_execution',
   version: 1,
