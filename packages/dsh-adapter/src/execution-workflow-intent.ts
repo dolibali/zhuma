@@ -333,11 +333,7 @@ export class ExecutionWorkflowIntents {
     if (prior.fingerprint !== fingerprint) return fail('workflow-idempotency-mismatch');
     return true;
   }
-  private async write(
-    location: WorkflowLocation,
-    facts: WorkflowFacts,
-    intent: WorkflowExecutionIntent,
-  ) {
+  private prepareWrite(facts: WorkflowFacts, intent: WorkflowExecutionIntent): PlanReceipt {
     if (!facts.receipt) return fail('workflow-plan-incomplete');
     if (
       intent.starts.length >
@@ -347,7 +343,14 @@ export class ExecutionWorkflowIntents {
       return fail('workflow-capacity');
     const checked = workflowExecutionIntentSchema.safeParse(intent);
     if (!checked.success) return fail('workflow-capacity');
-    await this.source.write(location, { ...facts.receipt, workflowExecution: checked.data });
+    return { ...facts.receipt, workflowExecution: checked.data };
+  }
+  private async write(
+    location: WorkflowLocation,
+    facts: WorkflowFacts,
+    intent: WorkflowExecutionIntent,
+  ) {
+    await this.source.write(location, this.prepareWrite(facts, intent));
   }
   private receipt(
     intent: WorkflowExecutionIntent,
@@ -486,10 +489,6 @@ export class ExecutionWorkflowIntents {
           )
         )
           return fail('workflow-recovery-required');
-        if (old) {
-          this.fence(old);
-          this.rememberCancelled(current, bound);
-        }
         const next = {
           ...current,
           generation: current.generation + 1,
@@ -497,7 +496,12 @@ export class ExecutionWorkflowIntents {
           status: 'running' as const,
         };
         next.commandReceipts = this.receipt(next, 'resume', input.requestId, fingerprint);
+        this.prepareWrite(facts, next);
         member.facts(true);
+        if (old) {
+          this.fence(old);
+          this.rememberCancelled(current, bound);
+        }
         await this.write(location, facts, next);
         try {
           this.arm(request, member, location, next);
@@ -511,10 +515,19 @@ export class ExecutionWorkflowIntents {
   stop(request: MemberRequest, raw: unknown) {
     return this.operate(request, raw, workflowControlSchema, async (input, member) => {
       const location = locationOf(input);
-      const before = this.intent(member.facts(true));
+      const beforeFacts = member.facts(true);
+      const before = this.intent(beforeFacts);
       if (!before || before.intentId !== input.intentId) return fail('workflow-not-found');
       this.owner(location, member, before);
       if (before.generation !== input.generation) return fail('workflow-stale-generation');
+      const fingerprint = hash({ kind: 'stop', memberId: member.memberId, ...input });
+      // Refusals knowable now must not revoke an unrelated live capability.
+      // A valid Stop still fences before waiting for the original queue below.
+      if (!this.replay(before, input.requestId, fingerprint) && before.status === 'running') {
+        const next = { ...before, status: 'stopping' as const, version: before.version + 1 };
+        next.commandReceipts = this.receipt(next, 'stop', input.requestId, fingerprint);
+        this.prepareWrite(beforeFacts, next);
+      }
       const arm = this.arms.get(keyOf(location));
       if (arm && arm.generation === input.generation) this.fence(arm);
       return this.source.enqueue(async () => {
@@ -523,7 +536,6 @@ export class ExecutionWorkflowIntents {
         if (!current || current.intentId !== input.intentId) return fail('workflow-not-found');
         this.owner(location, member, current);
         if (current.generation !== input.generation) return fail('workflow-stale-generation');
-        const fingerprint = hash({ kind: 'stop', memberId: member.memberId, ...input });
         if (this.replay(current, input.requestId, fingerprint))
           return ok(this.view(location, member, 'replayed'));
         if (current.status !== 'running') return ok(this.view(location, member));

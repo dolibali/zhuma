@@ -580,6 +580,85 @@ test('workflow contract: explicit Stop/Resume preserves command history and reje
   );
 });
 
+for (const conflictingKind of ['start', 'resume'])
+  test(`workflow contract: a Stop conflicting with ${conflictingKind} keeps the original live claim and ticket`, async (t) => {
+    const h = await host(t);
+    let view = await h.start();
+    if (conflictingKind === 'resume') {
+      const stopped = checked(
+        await h.service.stopWorkflowExecution(h.request, h.control(view, 'prepare-stop')),
+      );
+      view = checked(
+        await h.service.resumeWorkflowExecution(h.request, {
+          ...h.control(stopped, 'resume-workflow'),
+          expectedVersion: stopped.intent.version,
+        }),
+      );
+    }
+    const claim = checked(await h.claim(view)),
+      ticket = claim.tickets[0];
+    const before = await businessHashes(h.root);
+    h.resetCounts();
+    refused(
+      await h.service.stopWorkflowExecution(
+        h.request,
+        h.control(view, `${conflictingKind}-workflow`),
+      ),
+      'workflow-idempotency-mismatch',
+    );
+    assert.deepEqual(await businessHashes(h.root), before);
+    assert.deepEqual(h.counters, { nodes: 0, plans: 0, global: 0 });
+    assert.equal(claim.signal.aborted, false);
+    assert.equal(ticket.signal.aborted, false);
+    assert.equal(claim.check(), undefined);
+    assert.equal(ticket.check(), undefined);
+    assert.equal(
+      checked(await h.service.readWorkflowExecution(h.request, h.location)).requiresResume,
+      false,
+    );
+    checked(await h.service.startRun(h.request, h.beginBody(ticket), ticket));
+  });
+
+test('workflow contract: capacity-rejected Resume preserves the existing live claim and ticket', async (t) => {
+  const h = await host(t),
+    view = await h.start();
+  const key = `${h.location.taskId}:${h.location.planId}:${h.location.revision}`;
+  const receipt = h.service.storage.readPlan(key);
+  const commandReceipts = [
+    view.intent.commandReceipts[0],
+    ...Array.from({ length: 126 }, (_, i) => ({
+      ...view.intent.commandReceipts[0],
+      requestId: `prior-resume-${i}`,
+    })),
+  ];
+  await h.service.storage.writePlan(key, {
+    ...receipt,
+    workflowExecution: { ...view.intent, commandReceipts },
+  });
+  const claim = checked(await h.claim(view)),
+    ticket = claim.tickets[0];
+  const before = await businessHashes(h.root);
+  h.resetCounts();
+  refused(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...h.control(claim.view, 'over-capacity-live-resume'),
+      expectedVersion: claim.view.intent.version,
+    }),
+    'workflow-capacity',
+  );
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.deepEqual(h.counters, { nodes: 0, plans: 0, global: 0 });
+  assert.equal(claim.signal.aborted, false);
+  assert.equal(ticket.signal.aborted, false);
+  assert.equal(claim.check(), undefined);
+  assert.equal(ticket.check(), undefined);
+  assert.equal(
+    checked(await h.service.readWorkflowExecution(h.request, h.location)).requiresResume,
+    false,
+  );
+  checked(await h.service.startRun(h.request, h.beginBody(ticket), ticket));
+});
+
 for (const action of ['stop', 'revoke'])
   test(`workflow contract: ${action} after prepare but before the original node put rejects the late genuine ticket`, async (t) => {
     const h = await host(t),
