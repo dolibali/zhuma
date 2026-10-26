@@ -111,7 +111,7 @@ export async function registerExecutionRunResources(
   )
     fail('resources-unavailable');
   const resources = readExecutionRunResources(
-    snapshot.schemaVersion === 2
+    snapshot.schemaVersion === 2 && snapshot.payload.resources
       ? snapshot.payload.resources
       : { sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION, skills: [], mcp: [] },
   );

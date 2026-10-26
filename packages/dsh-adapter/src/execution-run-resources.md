@@ -4,7 +4,7 @@
 
 ## 数据与兼容
 
-`freezeExecutionRunComposition(input)` 接受可选 `resourceCatalog`。旧空资源继续生成并严格读取 schema 1；非空资源显式生成 schema 2，resources 与配置摘要一起存入原 Run composition。重放读取旧保存值，不引用最新资产。
+`freezeExecutionRunComposition(input)` 接受可选 `resourceCatalog`。旧空资源继续生成并严格读取 schema 1；非空资源显式生成 schema 2，resources 与配置摘要一起存入原 Run composition。独立[固定文件 reader 槽](execution-run-accepted-files.md)也可显式生成没有 resources 的 schema 2，此时运行桥仍绑定实际空 Skill 域。重放读取旧保存值，不引用最新资产。
 
 纯 schema / freeze / read 位于 `execution-run-resource-snapshot.ts`；composition 只依赖该纯模块。官方 Skill / MCP 服务仅由 `execution-run-resources.ts` 的实际采用入口加载，读取旧快照不会隐式加载新增 SDK 服务。
 
