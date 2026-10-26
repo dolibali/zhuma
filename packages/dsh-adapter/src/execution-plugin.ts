@@ -5,11 +5,19 @@ import type {} from '@deepseek-ai/dsh-storage-domain';
 import type { Workbench } from '@zhuma/agent-core';
 import { WorkbenchError, type ExecutionNodeRecord } from '@zhuma/agent-core';
 import { z } from 'zod';
-import { ExecutionService, type ExecutionStorage, type PlanReceipt } from './execution-service.js';
-import { resolveMember } from './member-session.js';
+import {
+  ExecutionService,
+  type ExecutionStorage,
+  type PlanReceipt,
+  type ExecutionFileAuthority,
+} from './execution-service.js';
+import { openExecutionMemberLease, resolveMember, type MemberRequest } from './member-session.js';
+import type { ExecutionMemberLease } from './execution-run-authority.js';
+import { spaceDirectoryFor } from './space-directory.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import { executionRunGlobalSchema } from './execution-run-protocol.js';
+import { openArtifactFileStore, type ArtifactFileStore } from './artifact-files.js';
 
 const ENDPOINTS = [
   'start-plan',
@@ -117,6 +125,72 @@ function fetchHeaders(request: Request): IncomingHttpHeaders {
   return headers;
 }
 
+/** One request scope over the existing lease and the SAME live directory. */
+async function openFileAuthority(
+  ctx: Context,
+  request: MemberRequest,
+  signal: AbortSignal,
+): Promise<ExecutionFileAuthority> {
+  const original = await openExecutionMemberLease(ctx, request);
+  const directory = spaceDirectoryFor(ctx);
+  if (!directory || directory.signal.aborted) {
+    original.release();
+    throw new Error('Current file directory is unavailable.');
+  }
+  const changed = new AbortController();
+  let bound: { projectId: string; spaceId: string } | undefined;
+  let released = false;
+  const assertProjectSpace = (projectId: string, spaceId: string) => {
+    if (
+      released ||
+      changed.signal.aborted ||
+      directory.signal.aborted ||
+      spaceDirectoryFor(ctx) !== directory
+    )
+      throw new Error('Current file directory changed.');
+    const current = directory.spaceForProjectNow(projectId);
+    if (!current.ok || current.spaceId !== spaceId)
+      throw new Error('Current file project changed.');
+    if (bound && (bound.projectId !== projectId || bound.spaceId !== spaceId))
+      throw new Error('A file request cannot change its project binding.');
+    bound = { projectId, spaceId };
+  };
+  let stop: () => void;
+  try {
+    stop = ctx.on(
+      'domain/changed',
+      (event) => {
+        if (event.domain !== 'zhuma_spaces' || event.table !== 'project_spaces' || !bound) return;
+        try {
+          assertProjectSpace(bound.projectId, bound.spaceId);
+        } catch {
+          changed.abort();
+        }
+      },
+      { global: true },
+    );
+  } catch (error) {
+    original.release();
+    throw error;
+  }
+  return {
+    lease: {
+      memberId: original.memberId,
+      expiresAt: original.expiresAt,
+      signal: AbortSignal.any([signal, original.signal, directory.signal, changed.signal]),
+      assertCurrent: (spaceId) => original.assertCurrent(spaceId),
+      release() {
+        if (released) return;
+        released = true;
+        stop();
+        original.release();
+        changed.abort();
+      },
+    },
+    assertProjectSpace,
+  };
+}
+
 /**
  * Transport cap for `/api/zhuma-exec`. It sits above the service contract so a
  * legal body is not refused here.
@@ -150,7 +224,53 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Reads at most `EXECUTION_BODY_BYTE_LIMIT`, and only for 5s. A declared length above the cap is not pulled. */
+/** return() cancels a pending read immediately, rather than queuing behind it. */
+function streamBytes(body: ReadableStream<Uint8Array>): AsyncIterableIterator<Uint8Array> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let ended = false;
+  let pending = 0;
+  let released = false;
+  let cancelled: Promise<IteratorResult<Uint8Array>> | undefined;
+  const release = () => {
+    if (ended && pending === 0 && !released) {
+      released = true;
+      reader?.releaseLock();
+    }
+  };
+  return {
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    async next() {
+      if (ended) return { done: true, value: undefined };
+      reader ??= body.getReader();
+      pending++;
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) ended = true;
+        return chunk.done ? { done: true, value: undefined } : { done: false, value: chunk.value };
+      } finally {
+        pending--;
+        release();
+      }
+    },
+    return() {
+      cancelled ??= (async () => {
+        if (ended) return { done: true as const, value: undefined };
+        ended = true;
+        try {
+          await reader?.cancel();
+        } finally {
+          release();
+        }
+        return { done: true as const, value: undefined };
+      })();
+      return cancelled;
+    },
+  };
+}
+
+/** Reads at most the transport limit for 5s; a declared oversize body is not pulled. */
 async function readLimitedJson(request: Request, signal: AbortSignal): Promise<unknown> {
   const declared = request.headers.get('content-length');
   if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > MAX_BODY_BYTES)) {
@@ -264,6 +384,8 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   let mountedService: ExecutionService | undefined;
   let unpublish: void | (() => void | Promise<void>);
   let closing: Promise<void> | undefined;
+  let fileOpening: Promise<ArtifactFileStore> | undefined;
+  const bodyDrains = new Set<Promise<unknown>>();
   // Cordis unload runs independent effects in parallel. Reserve one close job,
   // even before service construction, so cleanup always precedes domain close.
   ctx.effect(() => () => {
@@ -279,9 +401,15 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
       await release(() => {
         lifetime.abort();
         mountedService?.fenceRuns();
+        mountedService?.sealUploads();
       });
       await release(() => unpublish?.());
       await release(() => mountedService?.closeRuns());
+      await release(() => mountedService?.closeUploads());
+      await release(async () => {
+        while (bodyDrains.size) await Promise.allSettled([...bodyDrains]);
+      });
+      await release(async () => (await fileOpening)?.close());
       await release(() => domain.close());
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1)
@@ -302,13 +430,24 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     readGlobal: () => domain.global.get(),
     writeGlobal: (next) => domain.global.set(next),
   };
+  // The attachment service is mounted by the Host (A 装配); the metadata
+  // ledger opens on this storage domain. Without either, uploads fail closed.
+  const attachments = ctx.get?.('attachments') as
+    import('@deepseek-ai/dsh-attachment').AttachmentStore | undefined;
+  fileOpening = openArtifactFileStore(ctx);
+  const fileStore = await fileOpening;
+  ctx.fiber.assertActive();
+  if (lifetime.signal.aborted) throw new Error('Execution plugin disposed during startup.');
   const service = new ExecutionService(
     storage,
     { readWorkbench: () => config.readWorkbench() },
     projectSpaces,
+    attachments,
+    fileStore,
   );
   mountedService = service;
   const reconciled = await service.reconcile();
+  ctx.fiber.assertActive();
   if (!reconciled.ok) throw new WorkbenchError(reconciled.error.code, reconciled.error.message);
   unpublish = config.publishRunService?.(service);
   const stops = ENDPOINTS.map((endpoint) =>
@@ -364,6 +503,122 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
       },
     }),
   );
+  // Raw byte upload rides the same member gate but never enters the JSON
+  // envelope: declarations ride headers, the body is the byte stream.
+  const uploadStop = ctx.connection.fetch.register({
+    path: '/api/zhuma-exec/upload-file',
+    methods: ['POST'],
+    requestBody: 'streaming',
+    fetch: async (request) => {
+      let lease: ExecutionMemberLease | undefined;
+      let data: AsyncIterableIterator<Uint8Array> | undefined;
+      let signal = AbortSignal.any([request.signal, lifetime.signal]);
+      try {
+        if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+        const original = { headers: fetchHeaders(request) };
+        const member = await resolveMember(ctx, original);
+        if (!member.ok) {
+          return Response.json(
+            { ok: false, error: { code: member.code } },
+            { status: member.status },
+          );
+        }
+        if (request.headers.get('content-type')?.split(';')[0] !== 'application/octet-stream') {
+          return new Response(null, { status: 415 });
+        }
+        const headers = request.headers;
+        const declaredBytes = Number(headers.get('x-zhuma-file-size') ?? '');
+        const revision = Number(headers.get('x-zhuma-revision') ?? '');
+        if (
+          !Number.isSafeInteger(declaredBytes) ||
+          declaredBytes < 0 ||
+          !Number.isSafeInteger(revision) ||
+          revision <= 0
+        ) {
+          return Response.json({ ok: false, error: { code: 'validation' } }, { status: 400 });
+        }
+        // The name header is ASCII-safe: clients percent-encode UTF-8, the
+        // service strictly decodes. A bad encoding refuses, never garbles.
+        const rawName = headers.get('x-zhuma-file-name') ?? '';
+        let decodedName = '';
+        try {
+          decodedName = decodeURIComponent(rawName);
+        } catch {
+          return Response.json({ ok: false, error: { code: 'validation' } }, { status: 400 });
+        }
+        const required = {
+          name: decodedName,
+          mediaType: headers.get('x-zhuma-file-type') ?? '',
+          sha256: headers.get('x-zhuma-file-sha256') ?? '',
+          spaceId: headers.get('x-zhuma-space') ?? '',
+          taskId: headers.get('x-zhuma-task') ?? '',
+          planId: headers.get('x-zhuma-plan') ?? '',
+          nodeId: headers.get('x-zhuma-node') ?? '',
+          idempotencyKey: headers.get('x-zhuma-idempotency-key') ?? '',
+        };
+        if (Object.values(required).some((value) => value.trim() === '')) {
+          return Response.json({ ok: false, error: { code: 'validation' } }, { status: 400 });
+        }
+        const body = request.body;
+        if (body === null) return new Response(null, { status: 400 });
+        const authority = await openFileAuthority(ctx, original, signal);
+        lease = authority.lease;
+        signal = AbortSignal.any([signal, lease.signal]);
+        data = streamBytes(body);
+        const result = await service.uploadFile(
+          { member },
+          {
+            declare: {
+              name: required.name,
+              mediaType: required.mediaType,
+              byteSize: declaredBytes,
+              sha256: required.sha256,
+            },
+            taskId: required.taskId,
+            planId: required.planId,
+            revision,
+            nodeId: required.nodeId,
+            spaceId: required.spaceId,
+            idempotencyKey: required.idempotencyKey,
+            data,
+            signal,
+          },
+          authority,
+        );
+        return Response.json({
+          ok: result.ok,
+          ...(result.ok ? { value: result.value } : { error: result.error }),
+        });
+      } catch (error) {
+        if (error instanceof BodyRejected) {
+          return Response.json(
+            { ok: false, error: { code: error.code } },
+            { status: error.status },
+          );
+        }
+        if (signal.aborted) {
+          return Response.json({ ok: false, error: { code: 'cancelled' } });
+        }
+        return Response.json({ ok: false, error: { code: 'unavailable' } });
+      } finally {
+        lease?.release();
+        // An unread request remains owned by the official HTTP bridge, which
+        // closes its carrier after sending this refusal. Only cancel a reader
+        // this route actually opened; cancelling an unopened toWeb bridge can
+        // race its scheduled IncomingMessage data event on Node 24.
+        const cleanup = data?.return?.();
+        if (cleanup) {
+          bodyDrains.add(cleanup);
+          void cleanup.then(
+            () => bodyDrains.delete(cleanup),
+            () => bodyDrains.delete(cleanup),
+          );
+        }
+      }
+    },
+  });
+  stops.push(uploadStop);
+
   ctx.effect(() => () => {
     for (const stop of stops) void stop();
   });

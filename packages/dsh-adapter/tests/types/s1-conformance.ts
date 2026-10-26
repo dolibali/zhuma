@@ -140,6 +140,7 @@ type ServiceMethodName =
   | 'report'
   | 'revision'
   | 'upstreamContent'
+  | 'uploadFile'
   | 'draft'
   | 'inboxCounts'
   | 'events'
@@ -173,6 +174,9 @@ export type RevisionMethodBoth = Assert<
 >;
 export type UpstreamContentMethodBoth = Assert<
   Both<ExecutionService['upstreamContent'], ExecutionServiceMethods['upstreamContent']>
+>;
+export type UploadFileMethodBoth = Assert<
+  Both<ExecutionService['uploadFile'], ExecutionServiceMethods['uploadFile']>
 >;
 export type DraftMethodBoth = Assert<
   Both<ExecutionService['draft'], ExecutionServiceMethods['draft']>

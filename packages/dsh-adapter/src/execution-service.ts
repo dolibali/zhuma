@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -82,11 +83,29 @@ import {
   ExecutionRunProtocolError,
   requireExecutionRunWriter,
 } from './execution-run-protocol.js';
+import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
+import {
+  ARTIFACT_FILE_LIMITS,
+  artifactUploadOptionsSchema,
+  ArtifactUploadError,
+  ArtifactUploadStream,
+  type ArtifactFileStore,
+  type ArtifactFileUploadDeclare,
+  type FileUploadReceipt,
+  type UploadFileRecord,
+} from './artifact-files.js';
 
 /** The actor is only `member`, the result of identity's `resolveMember`. */
 export interface ExecutionCaller {
   readonly member?: MemberResolution;
 }
+
+/** Minted from the original request and current published directory, never JSON. */
+export interface ExecutionFileAuthority {
+  readonly lease: ExecutionMemberLease;
+  assertProjectSpace(projectId: string, spaceId: string): void;
+}
+export type ExecutionFileAuthoritySource = () => Promise<ExecutionFileAuthority>;
 
 const id = z.string().min(1);
 const TEXT_LIMIT = 100_000;
@@ -335,6 +354,10 @@ const MESSAGES = {
   'not-assigned-reviewer': '你不是这一轮的评审人。',
   'actor-mismatch': '不能代替其他评审人投票。',
   'upload-incomplete': '文件还没有上传完成，不能提交。',
+  'file-too-large': '文件超过大小上限。',
+  'quota-exceeded': '文件数量或总量已达上限。',
+  'digest-mismatch': '文件内容与声明的摘要不一致。',
+  'upload-timeout': '文件上传超时，请重试。',
   'files-not-accepted': '文件还不能随这次提交完成。请只提交文字或链接。',
   'empty-delivery': '请填写交付说明，或附上已上传完成的文件。',
   conflict: '内容已变化，请刷新后再试。',
@@ -492,6 +515,24 @@ export function toNodeView(record: ExecutionNodeRecord): ExecutionNodeView {
       : {}),
     ...(report.reviewOutcome !== undefined ? { reviewOutcome: report.reviewOutcome } : {}),
     ...(report.blockReason !== undefined ? { blockReason: report.blockReason } : {}),
+  };
+}
+
+function receiptOf(record: {
+  readonly uploadId: string;
+  readonly attachmentId: string;
+  readonly name: string;
+  readonly mediaType: string;
+  readonly byteSize: number;
+  readonly sha256: string;
+}): FileUploadReceipt {
+  return {
+    uploadId: record.uploadId,
+    attachmentId: record.attachmentId,
+    name: record.name,
+    mediaType: record.mediaType,
+    bytes: record.byteSize,
+    sha256: record.sha256,
   };
 }
 
@@ -754,11 +795,27 @@ export class ExecutionService {
   private readonly runChanges = new Set<() => void>();
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
+  private readonly uploadLifetime = new AbortController();
+  private readonly uploadDrains = new Set<Promise<void>>();
+  private readonly uploadOperations = new Set<Promise<unknown>>();
+  /** Ephemeral resource reservations; durable file facts still have one queued writer. */
+  private readonly pendingUploads = new Map<
+    string,
+    {
+      readonly fingerprint: string;
+      readonly spaceId: string;
+      readonly nodeKey: string;
+      readonly bytes: number;
+      readonly newFile: boolean;
+    }
+  >();
 
   constructor(
     private readonly storage: ExecutionStorage,
     private readonly workbench: { readWorkbench(): Workbench },
     private readonly projectSpaces: ProjectSpaceDirectory | undefined,
+    private readonly attachments?: AttachmentStore,
+    private readonly fileStore?: ArtifactFileStore,
   ) {
     this.assertRunStoreCompatibility();
   }
@@ -1731,6 +1788,306 @@ export class ExecutionService {
   }
 
   /** Return notes and the two newest relevant versions. The revision record itself is unchanged. */
+  /**
+   * Upload one file's exact bytes for a node this member currently executes.
+   * The server computes the digest and length from the streamed bytes; a
+   * declared size/digest mismatch fails. The trusted receipt is a server-issued
+   * uploadId plus the content-addressed attachment reference; the client cannot
+   * prove completion itself. Bytes publish through the upstream store; metadata
+   * lands in `zhuma_files`. A missing provider, budget, or attachment service
+   * fails closed.
+   */
+  uploadFile(
+    caller: ExecutionCaller,
+    options: {
+      readonly declare: ArtifactFileUploadDeclare;
+      readonly taskId: string;
+      readonly planId: string;
+      readonly revision: number;
+      readonly nodeId: string;
+      readonly spaceId: string;
+      readonly idempotencyKey: string;
+      readonly data: AsyncIterable<Uint8Array>;
+      readonly signal?: AbortSignal;
+    },
+    authority: ExecutionFileAuthority,
+  ): Promise<ExecutionResult<FileUploadReceipt>> {
+    const operation = (async (): Promise<ExecutionResult<FileUploadReceipt>> => {
+      const actor = this.actor(caller, options);
+      if (!actor.ok) return actor;
+      const attachments = this.attachments;
+      const fileStore = this.fileStore;
+      if (!attachments || !fileStore) return fail('unavailable');
+      const located = artifactUploadOptionsSchema.safeParse({
+        declare: options.declare,
+        taskId: options.taskId,
+        planId: options.planId,
+        revision: options.revision,
+        nodeId: options.nodeId,
+        spaceId: options.spaceId,
+        idempotencyKey: options.idempotencyKey,
+      });
+      if (!located.success) return fail('validation');
+      const request = { ...located.data, data: options.data, signal: options.signal };
+      if (request.declare.byteSize > ARTIFACT_FILE_LIMITS.maxFileBytes)
+        return fail('file-too-large');
+      // This is the original request's Host lease, never a MemberResolution
+      // snapshot or a client-provided field. Upload does not require NativeRun.
+      const lease = authority?.lease;
+      if (
+        !lease ||
+        lease.memberId !== actor.value.actorId ||
+        !(lease.signal instanceof AbortSignal) ||
+        typeof lease.assertCurrent !== 'function' ||
+        !Number.isFinite(lease.expiresAt) ||
+        typeof authority.assertProjectSpace !== 'function'
+      )
+        return fail('unauthenticated');
+      const signal = AbortSignal.any([
+        lease.signal,
+        this.uploadLifetime.signal,
+        ...(request.signal ? [request.signal] : []),
+      ]);
+      const initialTask = this.workbench.readWorkbench().tasks.find((t) => t.id === request.taskId);
+      const assertCurrent = () => {
+        if (signal.aborted) throw new ArtifactUploadError('cancelled');
+        if (Date.now() >= lease.expiresAt) throw new ArtifactUploadError('unauthenticated');
+        try {
+          // Reject an accidentally async assertion: permission must be decided
+          // synchronously at the publication/write boundary.
+          const asserted: unknown = lease.assertCurrent(request.spaceId);
+          if (asserted !== undefined) {
+            void Promise.resolve(asserted).catch(() => undefined);
+            throw new Error('invalid lease assertion');
+          }
+        } catch {
+          throw new ArtifactUploadError('not-found');
+        }
+        const workbench = this.workbench.readWorkbench();
+        const task = workbench.tasks.find((t) => t.id === request.taskId);
+        if (
+          !initialTask ||
+          !task ||
+          task.projectId !== initialTask.projectId ||
+          !this.directory().includes(actor.value.actorId) ||
+          planMembership(workbench, request.taskId, actor.value.actorId) !== 'allowed'
+        )
+          throw new ArtifactUploadError('not-found');
+        try {
+          const asserted: unknown = authority.assertProjectSpace(task.projectId, request.spaceId);
+          if (asserted !== undefined) {
+            void Promise.resolve(asserted).catch(() => undefined);
+            throw new Error('invalid project assertion');
+          }
+        } catch {
+          throw new ArtifactUploadError('not-found');
+        }
+        let node: ExecutionNodeRecord | undefined;
+        try {
+          node = this.readRunNode(request);
+        } catch {
+          throw new ArtifactUploadError('not-found');
+        }
+        if (!node) throw new ArtifactUploadError('not-found');
+        if (!recordedPlan(this.storage, node)) throw new ArtifactUploadError('plan-incomplete');
+        if (
+          node.handoff.assignee.kind !== 'human' ||
+          node.handoff.assignee.id !== actor.value.actorId
+        )
+          throw new ArtifactUploadError('not-assignee');
+        if (node.command.status !== 'ready' && node.command.status !== 'needs-revision')
+          throw new ArtifactUploadError('not-deliverable');
+      };
+      let stream: ArtifactUploadStream | undefined;
+      const reservation = {
+        fingerprint: canonicalPayload({ ...located.data, uploadedBy: actor.value.actorId }),
+        spaceId: request.spaceId,
+        nodeKey: nodeRecordKey(request),
+        bytes: request.declare.byteSize,
+        newFile: true,
+      };
+      let reserved = false;
+      try {
+        assertCurrent();
+        const gate = async () => {
+          const space = await this.gateSpaceScoped(
+            request.taskId,
+            actor.value.spaceIds,
+            request.spaceId,
+          );
+          assertCurrent();
+          if (space === 'missing' || !space.ok)
+            throw new ArtifactUploadError(space === 'missing' ? 'not-found' : space.error.code);
+        };
+        // The only business queue admits/reserves briefly, then stays free
+        // while real byte I/O waits. Same-key concurrent bodies cannot publish twice.
+        await gate();
+        const admission = await this.enqueue<UploadFileRecord | undefined>(async () => {
+          assertCurrent();
+          const pending = this.pendingUploads.get(request.idempotencyKey);
+          if (pending)
+            return fail(
+              pending.fingerprint === reservation.fingerprint ? 'conflict' : 'idempotency-mismatch',
+              { reason: 'upload-in-progress' },
+            );
+          const prior = fileStore.findByIdempotencyKey(request.idempotencyKey);
+          if (
+            prior &&
+            (prior.uploadedBy !== actor.value.actorId ||
+              prior.spaceId !== request.spaceId ||
+              prior.taskId !== request.taskId ||
+              prior.planId !== request.planId ||
+              prior.revision !== request.revision ||
+              prior.nodeId !== request.nodeId ||
+              prior.name !== request.declare.name ||
+              prior.mediaType !== request.declare.mediaType ||
+              prior.byteSize !== request.declare.byteSize ||
+              prior.sha256 !== request.declare.sha256)
+          )
+            return fail('idempotency-mismatch');
+          const peers = [...this.pendingUploads.values()].filter(
+            (item) => item.spaceId === request.spaceId,
+          );
+          if (peers.length >= ARTIFACT_FILE_LIMITS.maxConcurrentUploadsPerSpace)
+            return fail('quota-exceeded');
+          if (!prior) {
+            if (
+              fileStore.countInSpace(request.spaceId) +
+                peers.filter((item) => item.newFile).length >=
+                ARTIFACT_FILE_LIMITS.maxFilesPerSpace ||
+              fileStore.bytesForNode(
+                request.taskId,
+                request.planId,
+                request.revision,
+                request.nodeId,
+              ) +
+                peers
+                  .filter((item) => item.nodeKey === reservation.nodeKey)
+                  .reduce((sum, item) => sum + item.bytes, 0) +
+                request.declare.byteSize >
+                ARTIFACT_FILE_LIMITS.maxNodeBytes
+            )
+              return fail('quota-exceeded');
+          }
+          this.pendingUploads.set(
+            request.idempotencyKey,
+            prior ? { ...reservation, bytes: 0, newFile: false } : reservation,
+          );
+          reserved = true;
+          return { ok: true, value: prior };
+        });
+        if (!admission.ok) return admission;
+        const prior = admission.value;
+        stream = new ArtifactUploadStream(request.data, request.declare, signal, assertCurrent);
+        if (prior) {
+          for await (const _chunk of stream) {
+            /* Bounded actual replay bytes. */
+          }
+          await stream.wait(gate());
+          return await this.enqueue(async () => {
+            stream!.check();
+            const current = fileStore.get(prior.uploadId);
+            if (
+              !current ||
+              current.state !== 'completed' ||
+              current.idempotencyKey !== request.idempotencyKey
+            )
+              return fail('not-found');
+            return { ok: true, value: receiptOf(current) };
+          });
+        }
+        const ref: FileAttachmentRef = await stream.wait(
+          attachments.saveFileStream({
+            name: request.declare.name,
+            data: stream,
+            signal: stream.signal,
+          }),
+        );
+        // Actual SDK must have observed our verified EOS; an early or malformed
+        // provider response cannot mint a trusted receipt.
+        if (
+          !stream.verified ||
+          ref.attachmentId !== `sha256:${request.declare.sha256}` ||
+          ref.bytes !== request.declare.byteSize ||
+          ref.name !== request.declare.name
+        )
+          return fail('digest-mismatch');
+        await stream.wait(gate());
+        return await this.enqueue(async () => {
+          stream!.check();
+          if (
+            fileStore.countInSpace(request.spaceId) >= ARTIFACT_FILE_LIMITS.maxFilesPerSpace ||
+            fileStore.bytesForNode(
+              request.taskId,
+              request.planId,
+              request.revision,
+              request.nodeId,
+            ) +
+              request.declare.byteSize >
+              ARTIFACT_FILE_LIMITS.maxNodeBytes
+          )
+            return fail('quota-exceeded');
+          const record = {
+            uploadId: randomUUID(),
+            attachmentId: ref.attachmentId,
+            name: ref.name,
+            mediaType: request.declare.mediaType,
+            byteSize: ref.bytes,
+            sha256: request.declare.sha256,
+            spaceId: request.spaceId,
+            taskId: request.taskId,
+            planId: request.planId,
+            revision: request.revision,
+            nodeId: request.nodeId,
+            uploadedBy: actor.value.actorId,
+            idempotencyKey: request.idempotencyKey,
+            state: 'completed' as const,
+            uploadedAt: new Date().toISOString(),
+          };
+          // Keep the actual durable write owned by the existing command queue;
+          // cancellation must not release that queue while a put is still writing.
+          await fileStore.put(record);
+          stream!.check();
+          return { ok: true, value: receiptOf(record) };
+        });
+      } catch (error) {
+        const failure = stream?.failure;
+        if (failure) return fail(failure.code);
+        if (error instanceof ArtifactUploadError || error instanceof WorkbenchError)
+          return fail(error.code);
+        return fail(signal.aborted ? 'cancelled' : 'unavailable');
+      } finally {
+        const releaseReservation = () => {
+          if (reserved) this.pendingUploads.delete(request.idempotencyKey);
+        };
+        if (stream) {
+          stream.finish();
+          const drain = stream.drain().then(releaseReservation);
+          this.uploadDrains.add(drain);
+          void drain.then(() => this.uploadDrains.delete(drain));
+        } else releaseReservation();
+      }
+    })();
+    this.uploadOperations.add(operation);
+    void operation.then(
+      () => this.uploadOperations.delete(operation),
+      () => this.uploadOperations.delete(operation),
+    );
+    return operation;
+  }
+
+  /** Seal before draining the existing command queue or closing either domain. */
+  sealUploads(): void {
+    this.uploadLifetime.abort();
+  }
+
+  async closeUploads(): Promise<void> {
+    this.sealUploads();
+    while (this.uploadOperations.size) await Promise.allSettled([...this.uploadOperations]);
+    await this.writes;
+    while (this.uploadDrains.size) await Promise.all([...this.uploadDrains]);
+  }
+
   /**
    * Read the content of the accepted version a downstream node froze as its
    * input. Bounded, on demand, read-only: the member must be a participant of

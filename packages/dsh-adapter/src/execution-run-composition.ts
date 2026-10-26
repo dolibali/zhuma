@@ -84,12 +84,51 @@ export interface AcceptedInputToolDefinition {
   readonly outputSchema: unknown;
   readonly sourceVersion: string;
 }
+export type LocalFileToolName = 'read' | 'write' | 'edit';
+export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
+  readonly name: LocalFileToolName;
+}
+export interface ForegroundShellToolDefinition extends AcceptedInputToolDefinition {
+  readonly name: 'bash';
+  readonly budget: {
+    readonly defaultTimeoutMs: number;
+    readonly maxTimeoutMs: number;
+    readonly maxAttempts: number;
+  };
+}
 export type ExecutionCompositionTools =
   | { readonly kind: 'text-only' }
-  | { readonly kind: 'accepted-input-reader'; readonly definition: AcceptedInputToolDefinition };
+  | { readonly kind: 'accepted-input-reader'; readonly definition: AcceptedInputToolDefinition }
+  | {
+      readonly kind: 'local-tools';
+      readonly definitions: readonly LocalFileToolDefinition[];
+      readonly shell?: ForegroundShellToolDefinition | undefined;
+      readonly acceptedInputReader?: AcceptedInputToolDefinition | undefined;
+    };
+const localFileToolSchema = toolSchema.omit({ name: true }).extend({
+  name: z.enum(['read', 'write', 'edit']),
+});
 const toolsSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('text-only') }),
   z.strictObject({ kind: z.literal('accepted-input-reader'), definition: toolSchema }),
+  z.strictObject({
+    kind: z.literal('local-tools'),
+    definitions: z.array(localFileToolSchema).min(1).max(3),
+    shell: toolSchema
+      .omit({ name: true })
+      .extend({
+        name: z.literal('bash'),
+        budget: z
+          .strictObject({
+            defaultTimeoutMs: positive.max(600_000),
+            maxTimeoutMs: positive.max(600_000),
+            maxAttempts: positive.max(32),
+          })
+          .refine((budget) => budget.defaultTimeoutMs <= budget.maxTimeoutMs),
+      })
+      .optional(),
+    acceptedInputReader: toolSchema.optional(),
+  }),
 ]);
 const inputRefSchema = z.strictObject({
   sourceNodeId: id,
@@ -155,7 +194,7 @@ const payloadSchema = sourceSchema.extend({
   context: z.string().max(20_000),
   contextRefs: z.array(id).max(100),
   firstMessage: messageSchema,
-  toolAllowlist: z.array(z.literal(ACCEPTED_INPUT_TOOL)).max(1),
+  toolAllowlist: z.array(z.enum([ACCEPTED_INPUT_TOOL, 'read', 'write', 'edit', 'bash'])).max(5),
 });
 const snapshotSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -281,6 +320,13 @@ function derive(source: Source): z.infer<typeof payloadSchema> {
       fail('composition-input-unavailable');
   if (inputs.length && tools.kind === 'text-only') fail('composition-input-reader-required');
   if (!inputs.length && tools.kind === 'accepted-input-reader') fail('composition-invalid');
+  if (tools.kind === 'local-tools') {
+    const names = tools.definitions.map((tool) => tool.name);
+    if (new Set(names).size !== names.length || !names.includes('read'))
+      fail('composition-invalid');
+    if (inputs.length && !tools.acceptedInputReader) fail('composition-input-reader-required');
+    if (!inputs.length && tools.acceptedInputReader) fail('composition-invalid');
+  }
   const catalog = inputs.map((input) => ({
     ...input,
     required: true,
@@ -304,7 +350,16 @@ function derive(source: Source): z.infer<typeof payloadSchema> {
         .update(JSON.stringify(['followup', text]))
         .digest('hex'),
     },
-    toolAllowlist: tools.kind === 'text-only' ? [] : [ACCEPTED_INPUT_TOOL],
+    toolAllowlist:
+      tools.kind === 'text-only'
+        ? []
+        : tools.kind === 'accepted-input-reader'
+          ? [ACCEPTED_INPUT_TOOL]
+          : [
+              ...tools.definitions.map((tool) => tool.name),
+              ...(tools.shell ? (['bash'] as const) : []),
+              ...(tools.acceptedInputReader ? ([ACCEPTED_INPUT_TOOL] as const) : []),
+            ],
   };
 }
 /** Strict serializable format for the existing Run wrapper, not a separate configuration store. */
