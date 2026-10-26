@@ -272,6 +272,9 @@ importers:
       '@zhuma/context':
         specifier: workspace:*
         version: link:../context
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
       yauzl:
         specifier: 3.4.0
         version: 3.4.0
