@@ -110,6 +110,17 @@ export function createNativeOutputFileIssuer(
   ctx.effect(() => () => owner.close());
   return owner;
 }
+/** Same original Run manager and sessions; a structural copy is not a publisher owner. */
+export function assertNativeOutputFileIssuer(
+  sessions: NativeWorkSessionService,
+  authority: Pick<ExecutionRunAuthorities, 'assertGrant'>,
+  issuer: NativeOutputFileIssuer,
+): undefined {
+  const owner = owners.get(sessions);
+  if (owner !== issuer || !(owner instanceof OutputFileOwner))
+    throw new ArtifactUploadError('publication-unavailable');
+  return owner.assertOriginalAuthority(authority);
+}
 class OutputFileOwner implements NativeOutputFileIssuer {
   private readonly lifetime = new AbortController();
   private readonly sources = new Set<NativeOutputFileByteProducer>();
@@ -157,6 +168,15 @@ class OutputFileOwner implements NativeOutputFileIssuer {
         return job.producer.authorize(grant, source.configurationId, job.path);
       },
     });
+  }
+  assertOriginalAuthority(authority: Pick<ExecutionRunAuthorities, 'assertGrant'>): undefined {
+    if (
+      this.authority !== authority ||
+      this.lifetime.signal.aborted ||
+      owners.get(this.sessions) !== this
+    )
+      throw new ArtifactUploadError('publication-unavailable');
+    return undefined;
   }
   private binding(
     grant: NativeWorkGrant,

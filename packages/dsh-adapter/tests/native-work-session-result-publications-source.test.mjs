@@ -1,8 +1,19 @@
 /** SDK-event shape contracts only; these synthetic events grant no ledger/file authority. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { qualifyNativePublicationEvidence } from '../dist/native-work-session-result-publications-source.js';
-import { nativeResultPublicationsContentSchema } from '../dist/native-work-session-result-publications-contract.js';
+import {
+  qualifyNativePublicationEvidence,
+  qualifyNativeFixedPublicationsResult,
+  nativeResultPublicationsAck,
+  nativeResultPublicationsDigest,
+  assertNativeResultPublicationsDeclaration,
+} from '../dist/native-work-session-result-publications-source.js';
+import {
+  nativeResultPublicationsContentSchema,
+  nativeResultPublicationsIntentSchema,
+} from '../dist/native-work-session-result-publications-contract.js';
+import { nativeResultIntentSchema } from '../dist/native-work-session-result-contract.js';
+import { nativeWorkResultIntentSchema } from '../dist/native-work-session-result-intent.js';
 
 const binding = {
   scope: {
@@ -245,5 +256,130 @@ test('publication evidence contract: changed model arguments and malformed succe
         },
       }),
     /revoked snapshot/,
+  );
+});
+
+function completed() {
+  const content = nativeResultPublicationsContentSchema.parse({
+    links: [],
+    publications: [{ publicationId: 'publication' }],
+  });
+  const intent = nativeResultPublicationsIntentSchema.parse({
+    protocolVersion: 2,
+    toolVersion: 'zhuma-native-result-intent@2',
+    intentId: 'intent',
+    callId: 'complete',
+    manifestDigest: 'b'.repeat(64),
+    digest: nativeResultPublicationsDigest(content, 'b'.repeat(64)),
+  });
+  const ack = nativeResultPublicationsAck(binding, intent);
+  const events = [
+    ...pair('publication'),
+    {
+      type: 'tool/call',
+      seq: 2,
+      data: {
+        turn: 1,
+        step: 2,
+        callId: intent.callId,
+        name: 'complete_work',
+        arguments: JSON.stringify(content),
+      },
+    },
+    {
+      type: 'tool/result',
+      seq: 3,
+      sourceEventSeqs: [2],
+      data: {
+        turn: 1,
+        step: 2,
+        message: {
+          toolCallId: intent.callId,
+          isError: false,
+          content: [{ type: 'text', text: JSON.stringify(ack) }],
+        },
+      },
+    },
+    { type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'completed' } } },
+  ];
+  return { intent, snapshot: { ...snapshot(events), asOfSeq: 4 } };
+}
+const fixed = (s, i) => qualifyNativeFixedPublicationsResult(s, binding, i, 'expert-v1');
+
+test('completion cut contract v2: one linked completed turn and selected publication evidence are required', () => {
+  const { intent, snapshot: s } = completed();
+  const qualified = fixed(s, intent);
+  assert.deepEqual(qualified.cut, { callSeq: 2, resultSeq: 3, turnEndSeq: 4, asOfSeq: 4 });
+  assert.deepEqual(
+    qualified.evidence.map((e) => e.publicationId),
+    ['publication'],
+  );
+  const declaring = { ...s, events: s.events.slice(0, 3), asOfSeq: 2 };
+  assert.equal(assertNativeResultPublicationsDeclaration(declaring, intent), undefined);
+  assert.throws(() => assertNativeResultPublicationsDeclaration(s, intent), {
+    code: 'result-rejected',
+  });
+  assert.equal(fixed({ ...s, events: s.events.slice(0, 4) }, intent), undefined);
+});
+
+test('completion cut contract v2: forged ACK/digest/manifest, cancelled turns and later work cannot qualify', () => {
+  const { intent, snapshot: s } = completed();
+  for (const mutate of [
+    (events) => {
+      events[3].sourceEventSeqs.push(0);
+    },
+    (events) => {
+      events[3].data.message.isError = true;
+    },
+    (events) => {
+      events[3].data.step = 3;
+    },
+    (events) => {
+      const ack = JSON.parse(events[3].data.message.content[0].text);
+      ack.manifestDigest = 'c'.repeat(64);
+      events[3].data.message.content[0].text = JSON.stringify(ack);
+    },
+    (events) => {
+      events[4].data.reason.kind = 'cancelled';
+    },
+    (events) => {
+      events.push({ type: 'tool/call', seq: 5, data: {} });
+    },
+    (events) => {
+      events.push({ type: 'assistant/message', seq: 5, data: {} });
+    },
+  ]) {
+    const events = structuredClone(s.events);
+    mutate(events);
+    assert.throws(() => fixed({ ...s, events }, intent), { code: 'result-rejected' });
+  }
+  assert.throws(() => fixed(s, { ...intent, digest: 'c'.repeat(64) }), { code: 'result-rejected' });
+  assert.throws(
+    () => fixed(s, { ...intent, cut: { callSeq: 2, resultSeq: 3, turnEndSeq: 4, asOfSeq: 5 } }),
+    { code: 'result-rejected' },
+  );
+  assert.throws(() => fixed({ ...s, hasPending: true }, intent), { code: 'input-pending' });
+  assert.throws(
+    () =>
+      fixed({ ...s, events: [...s.events, { type: 'user/message', seq: 5, data: {} }] }, intent),
+    { code: 'input-pending' },
+  );
+});
+
+test('intent metadata contract: the explicit union preserves v1 shape and the strict v1 parser refuses v2', () => {
+  const v1 = {
+    protocolVersion: 1,
+    toolVersion: 'zhuma-native-result-intent@1',
+    intentId: 'intent',
+    callId: 'call',
+    digest: 'a'.repeat(64),
+  };
+  assert.deepEqual(nativeWorkResultIntentSchema.parse(v1), v1);
+  const { intent } = completed();
+  assert.deepEqual(nativeWorkResultIntentSchema.parse(intent), intent);
+  assert.equal(nativeResultIntentSchema.safeParse(intent).success, false);
+  assert.equal(
+    nativeWorkResultIntentSchema.safeParse({ ...v1, manifestDigest: 'b'.repeat(64) }).success,
+    false,
   );
 });
