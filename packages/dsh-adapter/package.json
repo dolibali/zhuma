@@ -25,6 +25,7 @@
     "@deepseek-ai/dsh-credentials": "0.2.1-rc.2",
     "@zhuma/agent-core": "workspace:*",
     "@zhuma/context": "workspace:*",
+    "yaml": "2.9.1",
     "yauzl": "3.4.0",
     "zod": "4.4.3"
   },
