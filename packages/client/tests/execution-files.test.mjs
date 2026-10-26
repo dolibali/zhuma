@@ -78,6 +78,81 @@ function responseInfo(request) {
   };
 }
 
+const binary = Uint8Array.from({ length: 4096 }, (_, index) => index % 256);
+const binaryHash = createHash('sha256').update(binary).digest('hex');
+function decodedFile({ encoding, length, body = binary }) {
+  return setup((url) => {
+    const request = Object.fromEntries(new URL(url, 'http://localhost').searchParams);
+    request.revision = Number(request.revision);
+    if (request.mode === 'metadata')
+      return Response.json({
+        ok: true,
+        value: {
+          ...responseInfo(request),
+          name: 'data.bin',
+          mediaType: 'application/octet-stream',
+          bytes: binary.length,
+          sha256: binaryHash,
+          reference: {
+            ...reference,
+            mediaType: 'application/octet-stream',
+            byteSize: binary.length,
+            checksum: binaryHash,
+          },
+        },
+      });
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(body);
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-zhuma-file-context': encodeURIComponent(JSON.stringify(request)),
+          'x-zhuma-file-upload-id': 'upload',
+          'x-zhuma-file-sha256': binaryHash,
+          ...(encoding === undefined ? {} : { 'content-encoding': encoding }),
+          ...(length === undefined ? {} : { 'content-length': String(length) }),
+        },
+      },
+    );
+  });
+}
+
+for (const [name, framing] of [
+  ['gzip with wire length', { encoding: 'gzip', length: 315 }],
+  ['gzip without wire length', { encoding: 'gzip' }],
+  ['chunked identity', { encoding: 'identity' }],
+  ['native unframed response', {}],
+  ['identity with exact length', { encoding: 'identity', length: binary.length }],
+])
+  test(`decoded file contract: ${name} validates canonical binary bytes`, async () => {
+    // Response bodies model Fetch-decoded bytes here. Real gzip/native forwarding
+    // is verified separately against the official HTTP/desktop implementations.
+    const h = decodedFile(framing);
+    const value = await h.api.read(query('review'), 'download', new AbortController().signal);
+    assert.deepEqual(value.bytes, binary);
+    assert.equal(value.info.sha256, binaryHash);
+    assert.equal(h.checks, 2);
+  });
+
+for (const [name, framing, code] of [
+  ['wrong identity length', { encoding: 'identity', length: 12 }, 'validation'],
+  ['wrong unencoded length', { length: 12 }, 'validation'],
+  ['oversized decoded gzip', { encoding: 'gzip', body: new Uint8Array(4097) }, 'validation'],
+  ['truncated decoded gzip', { encoding: 'gzip', body: binary.slice(0, -1) }, 'digest-mismatch'],
+  ['wrong decoded hash', { encoding: 'gzip', body: new Uint8Array(4096) }, 'digest-mismatch'],
+])
+  test(`decoded file contract: ${name} is rejected`, async () => {
+    const h = decodedFile(framing);
+    await assert.rejects(h.api.read(query('review'), 'download', new AbortController().signal), {
+      code,
+    });
+  });
+
 test('files wire contract: upload hashes actual immutable bytes, uses the exact byte route and validates canonical receipt', async () => {
   const phases = [];
   const h = setup(async (url, init) => {
