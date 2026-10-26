@@ -1,0 +1,259 @@
+{
+  "schema1": {
+    "schemaVersion": 1,
+    "configurationId": "composition_a9bd15844bd72b3b257aba9a3e63c42e305efc9ce36407069a3bf44464b407a4",
+    "payload": {
+      "scope": {
+        "actorId": "chen",
+        "spaceId": "north",
+        "taskId": "task",
+        "planId": "task-v1",
+        "revision": 1,
+        "nodeId": "consume",
+        "runId": "run-1",
+        "generation": 1,
+        "segmentId": "segment-1"
+      },
+      "plan": {
+        "ref": {
+          "taskId": "task",
+          "planId": "task-v1",
+          "revision": 1
+        },
+        "sourceWorkbenchRevision": 0,
+        "projectId": "project",
+        "title": "账号登录",
+        "goal": "设计登录流程"
+      },
+      "handoff": {
+        "nodeId": "consume",
+        "taskId": "task",
+        "workflowVersionId": "task-v1",
+        "revision": 1,
+        "goal": "设计登录接口",
+        "assignee": {
+          "id": "chen",
+          "kind": "human"
+        },
+        "dependencyNodeIds": ["produce"],
+        "reviewRequired": false,
+        "reviewerIds": [],
+        "inputRefs": [
+          {
+            "sourceNodeId": "produce",
+            "artifactVersionId": "artifact-1"
+          }
+        ],
+        "skillRefs": [],
+        "mcpRefs": [],
+        "inputNote": "需求文档",
+        "expectedOutput": "接口定义"
+      },
+      "executor": {
+        "kind": "builtin",
+        "definition": {
+          "id": "zhuma-basic-task-executor",
+          "version": "1.0.0",
+          "name": "Zhuma基础任务执行者",
+          "instructions": "只处理当前节点指定的工作，遵守固定计划和明确的工具权限。按需读取清单中已接受的固定输入；引用不代表正文已读取，输入缺失时停止并说明。返回可核对的产物草稿与必要说明，不把会话结束、工具成功或自己的判断当作提交、评审通过或下游已完成。"
+        },
+        "digest": "fec96734a104ede767fcac30805eed84f625e5484160dceb59a4e6cb0a618d49"
+      },
+      "model": {
+        "provider": "contract",
+        "model": "contract-model",
+        "maxTokens": 1000
+      },
+      "tools": {
+        "kind": "accepted-input-reader",
+        "definition": {
+          "name": "read_accepted_input",
+          "description": "Contract input reader definition",
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "contractOnly": {
+                "type": "string"
+              }
+            }
+          },
+          "outputSchema": {
+            "type": "object",
+            "properties": {
+              "contractResult": {
+                "type": "string"
+              }
+            }
+          },
+          "sourceVersion": "contract-1"
+        }
+      },
+      "inputs": [
+        {
+          "access": "visible",
+          "blocking": false,
+          "sourceNodeId": "produce",
+          "artifactVersionId": "artifact-1",
+          "version": 1,
+          "name": "第 1 版",
+          "sourceGoal": "设计登录接口"
+        }
+      ],
+      "context": "按固定配置处理当前工作；清单是来源引用，不代表已经读取正文。工具和提交权限由平台另行校验。\n{\"task\":{\"ref\":{\"taskId\":\"task\",\"planId\":\"task-v1\",\"revision\":1},\"sourceWorkbenchRevision\":0,\"projectId\":\"project\",\"title\":\"账号登录\",\"goal\":\"设计登录流程\"},\"node\":{\"nodeId\":\"consume\",\"taskId\":\"task\",\"workflowVersionId\":\"task-v1\",\"revision\":1,\"goal\":\"设计登录接口\",\"assignee\":{\"id\":\"chen\",\"kind\":\"human\"},\"dependencyNodeIds\":[\"produce\"],\"reviewRequired\":false,\"reviewerIds\":[],\"inputRefs\":[{\"sourceNodeId\":\"produce\",\"artifactVersionId\":\"artifact-1\"}],\"skillRefs\":[],\"mcpRefs\":[],\"inputNote\":\"需求文档\",\"expectedOutput\":\"接口定义\"},\"executor\":{\"kind\":\"builtin\",\"definition\":{\"id\":\"zhuma-basic-task-executor\",\"version\":\"1.0.0\",\"name\":\"Zhuma基础任务执行者\",\"instructions\":\"只处理当前节点指定的工作，遵守固定计划和明确的工具权限。按需读取清单中已接受的固定输入；引用不代表正文已读取，输入缺失时停止并说明。返回可核对的产物草稿与必要说明，不把会话结束、工具成功或自己的判断当作提交、评审通过或下游已完成。\"},\"digest\":\"fec96734a104ede767fcac30805eed84f625e5484160dceb59a4e6cb0a618d49\"},\"inputs\":[{\"access\":\"visible\",\"blocking\":false,\"sourceNodeId\":\"produce\",\"artifactVersionId\":\"artifact-1\",\"version\":1,\"name\":\"第 1 版\",\"sourceGoal\":\"设计登录接口\",\"required\":true,\"inputRef\":\"input_6bf29efbb4a965cf619d672912ee0e4a824fe9c3a74f5070486a3a8fd96a0e73\"}]}",
+      "contextRefs": ["input_6bf29efbb4a965cf619d672912ee0e4a824fe9c3a74f5070486a3a8fd96a0e73"],
+      "firstMessage": {
+        "text": "执行当前节点：设计登录接口\n预期产物：接口定义\n节点输入说明：需求文档\n按固定输入清单处理，返回产物草稿与必要说明。",
+        "mode": "followup",
+        "inputFingerprint": "faba49eae78742d786031bccc33dbed2c4e9ad10f4d268c18a2e872bca7c2c04"
+      },
+      "toolAllowlist": ["read_accepted_input"]
+    }
+  },
+  "schema2": {
+    "schemaVersion": 2,
+    "configurationId": "composition_6d3352d7eb692200cdca94f1caeabb97bb1db0cd2f85201b1dc48bf735ee880a",
+    "payload": {
+      "scope": {
+        "actorId": "chen",
+        "spaceId": "north",
+        "taskId": "task",
+        "planId": "task-v1",
+        "revision": 1,
+        "nodeId": "consume",
+        "runId": "run-1",
+        "generation": 1,
+        "segmentId": "segment-1"
+      },
+      "plan": {
+        "ref": {
+          "taskId": "task",
+          "planId": "task-v1",
+          "revision": 1
+        },
+        "sourceWorkbenchRevision": 0,
+        "projectId": "project",
+        "title": "账号登录",
+        "goal": "设计登录流程"
+      },
+      "handoff": {
+        "nodeId": "consume",
+        "taskId": "task",
+        "workflowVersionId": "task-v1",
+        "revision": 1,
+        "goal": "设计登录接口",
+        "assignee": {
+          "id": "chen",
+          "kind": "human"
+        },
+        "dependencyNodeIds": ["produce"],
+        "reviewRequired": false,
+        "reviewerIds": [],
+        "inputRefs": [
+          {
+            "sourceNodeId": "produce",
+            "artifactVersionId": "artifact-1"
+          }
+        ],
+        "skillRefs": [
+          {
+            "id": "golden-skill",
+            "version": "task-v1"
+          }
+        ],
+        "mcpRefs": [],
+        "inputNote": "需求文档",
+        "expectedOutput": "接口定义"
+      },
+      "executor": {
+        "kind": "builtin",
+        "definition": {
+          "id": "zhuma-basic-task-executor",
+          "version": "1.0.0",
+          "name": "Zhuma基础任务执行者",
+          "instructions": "只处理当前节点指定的工作，遵守固定计划和明确的工具权限。按需读取清单中已接受的固定输入；引用不代表正文已读取，输入缺失时停止并说明。返回可核对的产物草稿与必要说明，不把会话结束、工具成功或自己的判断当作提交、评审通过或下游已完成。"
+        },
+        "digest": "fec96734a104ede767fcac30805eed84f625e5484160dceb59a4e6cb0a618d49"
+      },
+      "model": {
+        "provider": "contract",
+        "model": "contract-model",
+        "maxTokens": 1000
+      },
+      "tools": {
+        "kind": "accepted-input-reader",
+        "definition": {
+          "name": "read_accepted_input",
+          "description": "Contract input reader definition",
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "contractOnly": {
+                "type": "string"
+              }
+            }
+          },
+          "outputSchema": {
+            "type": "object",
+            "properties": {
+              "contractResult": {
+                "type": "string"
+              }
+            }
+          },
+          "sourceVersion": "contract-1"
+        }
+      },
+      "inputs": [
+        {
+          "access": "visible",
+          "blocking": false,
+          "sourceNodeId": "produce",
+          "artifactVersionId": "artifact-1",
+          "version": 1,
+          "name": "第 1 版",
+          "sourceGoal": "设计登录接口"
+        }
+      ],
+      "context": "按固定配置处理当前工作；清单是来源引用，不代表已经读取正文。工具和提交权限由平台另行校验。\n{\"task\":{\"ref\":{\"taskId\":\"task\",\"planId\":\"task-v1\",\"revision\":1},\"sourceWorkbenchRevision\":0,\"projectId\":\"project\",\"title\":\"账号登录\",\"goal\":\"设计登录流程\"},\"node\":{\"nodeId\":\"consume\",\"taskId\":\"task\",\"workflowVersionId\":\"task-v1\",\"revision\":1,\"goal\":\"设计登录接口\",\"assignee\":{\"id\":\"chen\",\"kind\":\"human\"},\"dependencyNodeIds\":[\"produce\"],\"reviewRequired\":false,\"reviewerIds\":[],\"inputRefs\":[{\"sourceNodeId\":\"produce\",\"artifactVersionId\":\"artifact-1\"}],\"skillRefs\":[{\"id\":\"golden-skill\",\"version\":\"task-v1\"}],\"mcpRefs\":[],\"inputNote\":\"需求文档\",\"expectedOutput\":\"接口定义\"},\"executor\":{\"kind\":\"builtin\",\"definition\":{\"id\":\"zhuma-basic-task-executor\",\"version\":\"1.0.0\",\"name\":\"Zhuma基础任务执行者\",\"instructions\":\"只处理当前节点指定的工作，遵守固定计划和明确的工具权限。按需读取清单中已接受的固定输入；引用不代表正文已读取，输入缺失时停止并说明。返回可核对的产物草稿与必要说明，不把会话结束、工具成功或自己的判断当作提交、评审通过或下游已完成。\"},\"digest\":\"fec96734a104ede767fcac30805eed84f625e5484160dceb59a4e6cb0a618d49\"},\"inputs\":[{\"access\":\"visible\",\"blocking\":false,\"sourceNodeId\":\"produce\",\"artifactVersionId\":\"artifact-1\",\"version\":1,\"name\":\"第 1 版\",\"sourceGoal\":\"设计登录接口\",\"required\":true,\"inputRef\":\"input_6bf29efbb4a965cf619d672912ee0e4a824fe9c3a74f5070486a3a8fd96a0e73\"}]}",
+      "contextRefs": ["input_6bf29efbb4a965cf619d672912ee0e4a824fe9c3a74f5070486a3a8fd96a0e73"],
+      "firstMessage": {
+        "text": "执行当前节点：设计登录接口\n预期产物：接口定义\n节点输入说明：需求文档\n按固定输入清单处理，返回产物草稿与必要说明。",
+        "mode": "followup",
+        "inputFingerprint": "faba49eae78742d786031bccc33dbed2c4e9ad10f4d268c18a2e872bca7c2c04"
+      },
+      "toolAllowlist": ["read_accepted_input", "skill"],
+      "resources": {
+        "sourceVersion": "zhuma-run-resources@1/dsh@0.2.1-rc.2",
+        "skills": [
+          {
+            "ref": {
+              "id": "golden-skill",
+              "version": "task-v1"
+            },
+            "name": "golden-skill",
+            "description": "Golden：Legacy resource snapshot compatibility",
+            "definition": {
+              "id": "golden-skill",
+              "name": "Golden",
+              "kind": "skill",
+              "description": "Legacy resource snapshot compatibility",
+              "content": "GOLDEN_SKILL_BODY",
+              "available": true
+            },
+            "definitionDigest": "d167d9614e077429a0c0a1e98c6fe69c25b0a766b04245df61908c8c9e06f184",
+            "invocation": {
+              "modelInvocable": true,
+              "userInvocable": true
+            },
+            "policySource": {
+              "kind": "manual-default"
+            }
+          }
+        ],
+        "mcp": []
+      }
+    }
+  }
+}
