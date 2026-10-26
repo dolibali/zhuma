@@ -12,6 +12,8 @@ import Sessions from '@deepseek-ai/dsh-session';
 import Projections from '@deepseek-ai/dsh-session-projection';
 import Prompt from '@deepseek-ai/dsh-system-prompt';
 import Tools from '@deepseek-ai/dsh-tools';
+import FsLocal from '@deepseek-ai/dsh-fs-local';
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
 import Agents from '@deepseek-ai/dsh-agent';
 import Loop from '@deepseek-ai/dsh-agent-loop';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -83,6 +85,8 @@ async function boot(
     [Projections],
     [Prompt],
     [Tools],
+    [FsLocal, { cwd: root }],
+    [WorkingDirectory, { defaultDirectory: root }],
     [Agents],
     [Persistence, { root: join(root, 'sessions'), compression: 'none' }],
     [Loop, { agents: [] }],
