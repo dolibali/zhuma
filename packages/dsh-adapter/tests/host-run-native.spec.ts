@@ -73,6 +73,7 @@ async function boot(
     skill = false,
     userOnly = false,
     parentSkill = false,
+    review = false,
     adapter = new ScriptedAdapter(['FIRST', 'SECOND']),
   } = {},
 ) {
@@ -172,8 +173,8 @@ async function boot(
             {
               ...data.node,
               assigneeId: expert ? 'qa' : 'chen',
-              reviewerIds: [],
-              reviewRequired: false,
+              reviewerIds: review ? ['chen'] : [],
+              reviewRequired: review,
               skillIds: skill ? ['api-skill'] : [],
               mcpIds: [],
             },
@@ -359,6 +360,293 @@ for (const selected of [false, true])
       assert.equal(JSON.stringify(h.run().composition), frozen);
     },
   );
+
+function completionResponse(text, links) {
+  return function* () {
+    const args = JSON.stringify({ text, links });
+    yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+    yield {
+      type: 'tool-call-delta',
+      index: 0,
+      id: 'explicit-host-result',
+      name: 'complete_work',
+      argumentsDelta: args,
+    };
+    yield {
+      type: 'block-end',
+      index: 0,
+      block: {
+        type: 'tool-call',
+        id: 'explicit-host-result',
+        name: 'complete_work',
+        arguments: args,
+      },
+    };
+    yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } };
+    yield { type: 'finish', reason: { kind: 'tool-calls' } };
+  };
+}
+
+for (const text of ['Original Host fixed result.', '中'.repeat(100000)])
+  test(
+    `actual emitted Host fixed result: explicit expert result saves the exact reviewed artifact (${text.length} characters)`,
+    { timeout: 20000 },
+    async (t) => {
+      const links = ['https://example.com/host-result'];
+      const h = await boot(t, {
+        expert: true,
+        review: true,
+        adapter: new ScriptedAdapter([completionResponse(text, links)]),
+      });
+      const first = checked(await h.rpc('run', 'begin', h.begin));
+      assert.equal(first.dispatch, 'received');
+      await waitFor(h.ctx, () => h.row().artifactVersions.length === 1);
+      const run = h.run();
+      assert.equal(run.attempt.status, 'completed');
+      assert.equal(run.resources, 'settled');
+      assert.equal(h.ctx.agents.list().length, 0);
+      assert.equal(h.row().command.status, 'in-review');
+      assert.equal(h.row().rounds.length, 1);
+      const artifact = h.row().artifactVersions[0];
+      assert.equal(artifact.text, text);
+      assert.deepEqual(artifact.links, links);
+      assert.equal(artifact.producerRunId, 'run-1');
+      assert.equal(artifact.submittedBy, 'qa');
+      assert.equal(run.resultDelivery.artifactVersionId, artifact.id);
+      assert.equal(run.resultDelivery.roundId, h.row().rounds[0].id);
+      assert.deepEqual(
+        h.adapter.requests[0].tools.map((tool) => tool.name),
+        ['complete_work'],
+      );
+      const target = { ...h.locator, runId: 'run-1' };
+      const saved = JSON.stringify(h.row());
+      for (let i = 0; i < 2; i++) {
+        const view = checked(await h.rpc('run', 'read', target));
+        assert.equal(view.status, 'completed');
+        assert.equal(view.resultDelivery.kind, 'delivered');
+        assert.equal(view.resultDelivery.artifactVersionId, artifact.id);
+        assert.equal(view.resultDelivery.roundId, h.row().rounds[0].id);
+        assert.ok(Buffer.byteLength(JSON.stringify(view)) < 8192);
+        const page = checked(await h.rpc('run', 'history', target));
+        assert.ok(Buffer.byteLength(JSON.stringify(page)) < 262144);
+        assert.equal(JSON.stringify(page).includes(text), false);
+      }
+      assert.equal(JSON.stringify(h.row()), saved);
+      assert.equal(h.adapter.requests.length, 1);
+    },
+  );
+
+test(
+  'actual emitted Host fixed result: a human assignee using a plan expert keeps manual submission',
+  { timeout: 15000 },
+  async (t) => {
+    const h = await boot(t);
+    checked(
+      await h.rpc('run', 'begin', {
+        ...h.begin,
+        executor: { kind: 'plan-expert', ref: { id: 'qa', version: h.begin.planId } },
+      }),
+    );
+    await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
+    await h.ctx.agents.get(h.run().attempt.sessionId).whenIdle();
+    assert.equal(h.run().composition.payload.resultIntentTool, undefined);
+    assert.deepEqual(h.adapter.requests[0].tools ?? [], []);
+    assert.equal(h.run().attempt.status, 'running', 'native idle never submits a result');
+    assert.equal(h.row().artifactVersions.length, 0);
+    assert.equal(h.row().rounds.length, 0);
+    assert.equal(
+      checked(await h.rpc('run', 'read', { ...h.locator, runId: 'run-1' })).resultDelivery,
+      undefined,
+    );
+  },
+);
+
+test(
+  'actual emitted Host fixed result: stopping the expert before declaration cannot produce an artifact',
+  { timeout: 15000 },
+  async (t) => {
+    const entered = deferred();
+    const h = await boot(t, {
+      expert: true,
+      adapter: new ScriptedAdapter([
+        async function* (options) {
+          entered.resolve();
+          if (!options.signal.aborted)
+            await new Promise((resolve) =>
+              options.signal.addEventListener('abort', resolve, { once: true }),
+            );
+          options.signal.throwIfAborted();
+          yield* completionResponse('Must not be delivered.', [])();
+        },
+      ]),
+    });
+    checked(await h.rpc('run', 'begin', h.begin));
+    await entered.promise;
+    await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
+    const target = { ...h.locator, runId: 'run-1' };
+    const view = checked(await h.rpc('run', 'read', target));
+    checked(
+      await h.rpc('run', 'stop', {
+        ...target,
+        spaceId: 'north',
+        generation: 1,
+        segmentId: 'segment-1',
+        requestId: 'stop-before-result',
+        expectedNodeVersion: view.nodeVersion,
+        expectedRunVersion: view.runVersion,
+      }),
+    );
+    assert.equal(h.run().attempt.status, 'cancelled');
+    assert.equal(h.run().resources, 'settled');
+    assert.equal(h.row().artifactVersions.length, 0);
+    assert.equal(h.row().rounds.length, 0);
+    assert.equal(h.run().resultDelivery, undefined);
+    assert.equal(h.ctx.agents.list().length, 0);
+    assert.equal(h.adapter.requests.length, 1);
+  },
+);
+
+test(
+  'actual emitted Host fixed result: the real HTTP observer stays bounded during a 100000-character completion',
+  { timeout: 20000 },
+  async (t) => {
+    const text = '中'.repeat(100000);
+    const release = deferred();
+    t.onTestFinished(() => release.resolve());
+    const h = await boot(t, {
+      expert: true,
+      adapter: new ScriptedAdapter([
+        'Earlier ordinary turn.',
+        async function* () {
+          await release.promise;
+          yield* completionResponse(text, [])();
+        },
+      ]),
+    });
+    checked(await h.rpc('run', 'begin', h.begin));
+    await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
+    const agent = h.ctx.agents.get(h.run().attempt.sessionId);
+    await agent.whenIdle();
+    const target = { ...h.locator, runId: 'run-1' };
+    const history = checked(await h.rpc('run', 'history', target));
+    const ui = new AbortController(),
+      subscribed = deferred();
+    const response = await fetch(h.base + '/api/zhuma-run/observe', {
+      method: 'POST',
+      headers: { cookie: h.cookie, 'content-type': 'application/json' },
+      signal: ui.signal,
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'result-stream',
+        method: 'zhuma-run/observe',
+        payload: { ...target, after: history.nextAfter },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const frames = [];
+    const reading = (async () => {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        for (;;) {
+          const item = await reader.read();
+          if (item.done) break;
+          buffer += decoder.decode(item.value, { stream: true });
+          let end;
+          while ((end = buffer.indexOf('\n')) !== -1) {
+            const envelope = JSON.parse(buffer.slice(0, end));
+            buffer = buffer.slice(end + 1);
+            assert.equal(envelope.type, 'server-frame');
+            assert.equal(envelope.rpcId, 'result-stream');
+            assert.ok(Buffer.byteLength(JSON.stringify(envelope.frame)) < 262144);
+            frames.push(envelope.frame);
+            if (envelope.frame.type === 'ready') subscribed.resolve();
+            if (envelope.frame.type === 'assistant-stream' && envelope.frame.frame.type === 'end')
+              return;
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => undefined);
+      }
+    })();
+    void reading.catch(() => undefined);
+    try {
+      await subscribed.promise;
+      checked(
+        await h.rpc('run', 'send', {
+          ...target,
+          generation: 1,
+          segmentId: 'segment-1',
+          requestId: 'finish-with-large-result',
+          mode: 'followup',
+          text: 'Submit the finished work.',
+        }),
+      );
+      release.resolve();
+      await reading;
+      await waitFor(h.ctx, () => h.row().artifactVersions.length === 1);
+      assert.ok(
+        frames.some(
+          (frame) => frame.type === 'assistant-stream' && frame.frame.toolName === 'complete_work',
+        ),
+      );
+      assert.equal(JSON.stringify(frames).includes('中'.repeat(100)), false);
+      assert.equal(h.row().artifactVersions[0].text, text);
+      assert.equal(h.run().attempt.status, 'completed');
+      assert.equal(h.adapter.requests.length, 2);
+    } finally {
+      ui.abort();
+      release.resolve();
+      await reading.catch(() => undefined);
+    }
+  },
+);
+
+test(
+  'actual emitted Host fixed result: unexpected native provider disposal without intent fails instead of submitting',
+  { timeout: 15000 },
+  async (t) => {
+    const h = await boot(t, { expert: true });
+    checked(await h.rpc('run', 'begin', h.begin));
+    await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
+    const agent = h.ctx.agents.get(h.run().attempt.sessionId);
+    await agent.whenIdle();
+    assert.equal(h.run().attempt.status, 'running');
+    let disposed = 0;
+    const stopDisposed = h.ctx.on(
+      'agent/disposed',
+      ({ agent: actual }) => {
+        if (actual === agent) disposed++;
+      },
+      { global: true },
+    );
+    const loopFibers = [...(h.ctx.registry.get(Loop)?.fibers ?? [])];
+    assert.equal(loopFibers.length, 1);
+    try {
+      await loopFibers[0].dispose();
+      await waitFor(h.ctx, () => h.run()?.resources === 'settled').catch(() => {
+        assert.fail(
+          JSON.stringify({
+            status: h.run().attempt.status,
+            resources: h.run().resources,
+            stopPhase: h.run().attempt.stopPhase,
+            agents: h.ctx.agents.list().length,
+            disposed,
+          }),
+        );
+      });
+    } finally {
+      stopDisposed();
+    }
+    assert.equal(disposed, 1, 'The original SDK emitted the actual Agent disposal');
+    assert.equal(h.run().attempt.status, 'failed');
+    assert.equal(h.row().artifactVersions.length, 0);
+    assert.equal(h.row().rounds.length, 0);
+    assert.equal(h.run().resultDelivery, undefined);
+    assert.equal(h.ctx.agents.list().length, 0);
+  },
+);
 
 test(
   'actual emitted Host: durable first start, early message adoption and multi-turn use one native Run; replay/read do not run it again',

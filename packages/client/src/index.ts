@@ -15,6 +15,7 @@ export type {
   NativeRunAction,
   NativeRunSendMode,
   NativeRunSummary,
+  NativeRunResultDelivery,
   NativeRunMessage,
   NativeRunResource,
   NativeRunPanelView,

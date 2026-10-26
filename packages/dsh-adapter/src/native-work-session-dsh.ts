@@ -1187,11 +1187,14 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           connecting.abort.abort();
           await connecting.promise.catch(() => undefined);
         }
+        // Join the original handle's memoized teardown: it drains the scope
+        // and writer even when its provider already detached the session.
+        // SessionStore.flush cannot address that detached session. The exclusive
+        // persistence barrier below still independently verifies durable closure.
         const live = this.live.get(sessionId);
         if (live) {
           live.handle.agent.cancel({ kind: 'user' }, { keepInbox: true });
           await live.handle.agent.whenIdle();
-          await this.flush(sessionId);
           await this.disconnect(sessionId);
         }
         const disposing = this.disconnecting.get(sessionId);
