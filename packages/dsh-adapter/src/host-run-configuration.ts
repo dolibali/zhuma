@@ -12,12 +12,28 @@ import {
   executionRunCompositionRequest,
   freezeExecutionRunComposition,
   type FrozenExecutionRunComposition,
+  type ResultIntentToolDefinition,
 } from './execution-run-composition.js';
 import { ExecutionRunError, readExecutionRunState } from './execution-run-state.js';
 import type { MemberRequest } from './member-session.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
+import { describeNativeResultTool } from './native-work-session-result-tool.js';
+import {
+  NATIVE_RESULT_TOOL,
+  NATIVE_RESULT_TOOL_VERSION,
+} from './native-work-session-result-contract.js';
 import { NATIVE_WORK_LIMITS } from './native-work-session.js';
 import type { createHostRunResourceSource } from './host-run-resource-source.js';
+
+function declaredResultTool(): ResultIntentToolDefinition {
+  const definition = describeNativeResultTool();
+  if (
+    definition.name !== NATIVE_RESULT_TOOL ||
+    definition.sourceVersion !== NATIVE_RESULT_TOOL_VERSION
+  )
+    throw new ExecutionRunError('run-authority-unavailable');
+  return { ...definition, name: NATIVE_RESULT_TOOL, sourceVersion: NATIVE_RESULT_TOOL_VERSION };
+}
 
 const id = z.string().trim().min(1).max(200);
 const nonnegative = z.number().int().nonnegative().refine(Number.isSafeInteger);
@@ -192,6 +208,9 @@ export function createHostRunConfiguration(
           executor: input.executor,
           inputs,
           ...(resourceCatalog ? { resourceCatalog } : {}),
+          ...(node.handoff.assignee.kind === 'expert'
+            ? { resultIntentTool: declaredResultTool() }
+            : {}),
           tools:
             input.tools === 'text-only'
               ? { kind: 'text-only' }

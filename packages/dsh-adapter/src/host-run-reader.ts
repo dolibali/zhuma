@@ -24,12 +24,27 @@ export type HostRunModeCapability =
   | {
       readonly kind: 'unavailable';
       readonly code:
-        'not-permitted' | 'stopping' | 'detached' | 'dispatch-unconfirmed' | 'not-running';
+        | 'not-permitted'
+        | 'stopping'
+        | 'detached'
+        | 'dispatch-unconfirmed'
+        | 'not-running'
+        | 'completion-pending';
     }
   | { readonly kind: 'unknown'; readonly code: 'unavailable' };
 export type HostRunSendCapabilities = Readonly<
   Record<'followup' | 'steer' | 'queue', HostRunModeCapability>
 >;
+export type HostRunResultPending = 'draining' | 'not-durable' | 'delivery-unconfirmed';
+export type HostRunResultDelivery =
+  | { readonly kind: 'pending'; readonly phase: HostRunResultPending }
+  | {
+      readonly kind: 'delivered';
+      readonly artifactVersionId: string;
+      readonly artifactVersion: number;
+      readonly roundId?: string;
+      readonly receipt: { readonly idempotencyKey: string; readonly version: number };
+    };
 export interface HostRunReadView extends ExecutionNodeLocator {
   readonly runId: string;
   readonly generation: number;
@@ -47,6 +62,7 @@ export interface HostRunReadView extends ExecutionNodeLocator {
     readonly status: 'idle' | 'running' | 'detached';
   } | null;
   readonly sendCapabilities?: HostRunSendCapabilities;
+  readonly resultDelivery?: HostRunResultDelivery;
 }
 export interface HostRunHistoryPage extends ExecutionRunLocator {
   readonly sessionId: string;
@@ -192,6 +208,9 @@ export function createHostRunReader(
     locator: ExecutionRunLocator,
     wait?: AbortSignal,
   ) => Promise<HostRunSendCapabilities>,
+  pendingResult?: (
+    scope: import('./native-work-session-contract.js').NativeWorkScope,
+  ) => HostRunResultPending | undefined,
 ): HostRunReader {
   return {
     async inbox(request, payload, wait) {
@@ -324,6 +343,48 @@ export function createHostRunReader(
           },
           wait,
         );
+        let resultDelivery: HostRunResultDelivery | undefined;
+        if (run.resultDelivery) {
+          const delivered = run.resultDelivery;
+          // A fresh original member/history check confirms the persisted business
+          // receipt, including after restart. Never reopen a writer or mint a C ref.
+          const confirmed = await execution.confirmNativeResultDelivery(
+            request,
+            {
+              taskId: scope.taskId,
+              planId: scope.planId,
+              revision: scope.revision,
+              nodeId: scope.nodeId,
+              runId: scope.runId,
+              generation: scope.generation,
+              segmentId: scope.segmentId,
+              configurationId: run.selection.configurationId,
+              idempotencyKey: delivered.receiptKey,
+              intentId: delivered.source.intentId,
+              digest: delivered.digest,
+              provenanceFingerprint: delivered.provenanceFingerprint,
+            },
+            wait,
+          );
+          if (!confirmed.ok) return confirmed;
+          const receipt = confirmed.value;
+          resultDelivery = {
+            kind: 'delivered',
+            artifactVersionId: receipt.artifactVersionId,
+            artifactVersion: receipt.artifactVersion,
+            ...(receipt.roundId === undefined ? {} : { roundId: receipt.roundId }),
+            receipt: {
+              idempotencyKey: receipt.receipt.idempotencyKey,
+              version: receipt.receipt.version,
+            },
+          };
+        } else if (
+          current?.binding.resultIntent &&
+          run.resources === 'held' &&
+          run.attempt.stopPhase === 'none'
+        ) {
+          resultDelivery = { kind: 'pending', phase: pendingResult?.(scope) ?? 'not-durable' };
+        }
         opened.grant.assertCurrent('open');
         return {
           ok: true,
@@ -343,6 +404,7 @@ export function createHostRunReader(
             acknowledged: run.attempt.acknowledged,
             stopPhase: run.attempt.stopPhase,
             ...(sendCapabilities ? { sendCapabilities } : {}),
+            ...(resultDelivery ? { resultDelivery } : {}),
             native: current
               ? {
                   sessionId: current.binding.nativeSessionId,

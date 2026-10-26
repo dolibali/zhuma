@@ -42,6 +42,18 @@ export type NativeRunAction =
   | { readonly kind: 'available' }
   | { readonly kind: 'unknown' | 'unavailable'; readonly message: string };
 export type NativeRunSendMode = 'followup' | 'steer' | 'queue';
+export type NativeRunResultDelivery =
+  | {
+      readonly kind: 'pending';
+      readonly phase: 'draining' | 'not-durable' | 'delivery-unconfirmed';
+    }
+  | {
+      readonly kind: 'delivered';
+      readonly artifactVersionId: string;
+      readonly artifactVersion: number;
+      readonly roundId?: string;
+      readonly receipt: { readonly idempotencyKey: string; readonly version: number };
+    };
 
 /** Exact read projection from the member Run transport, never a raw SDK Agent handle. */
 export interface NativeRunSummary {
@@ -60,6 +72,7 @@ export interface NativeRunSummary {
   readonly resources: 'held' | 'settled';
   readonly acknowledged: boolean;
   readonly stopPhase: 'none' | 'requested' | 'confirmed' | 'receipt-rejected';
+  readonly resultDelivery?: NativeRunResultDelivery;
   readonly native: {
     readonly sessionId: string;
     readonly agentId: string;

@@ -23,9 +23,15 @@ const { values } = parseArgs({
   options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
 });
 if (
-  !['all', 'host-run', 'host-run-cold', 'host-resources', 'skill-loader', 'native-stream'].includes(
-    values.phase,
-  )
+  ![
+    'all',
+    'host-run',
+    'host-run-cold',
+    'host-resources',
+    'host-results',
+    'skill-loader',
+    'native-stream',
+  ].includes(values.phase)
 )
   throw new Error('Unknown native verification phase.');
 // Always build the actual artifact before copying it into the isolated SDK.
@@ -650,12 +656,28 @@ export default { ...config, resolve: {...config.resolve, alias: aliases(config.r
       ],
       2,
       {},
-      6,
+      12,
     );
-  else verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 8);
+  else if (values.phase === 'host-results')
+    verify(
+      'host-results',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts',
+        '-t',
+        'actual emitted Host fixed result:',
+      ],
+      6,
+      {},
+      8,
+    );
+  else verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 14);
   const coldRecoveries = [];
-  if (values.phase === 'all' || values.phase === 'host-run-cold') {
-    for (const variant of ['unadmitted', 'unknown', 'bound', 'revoked']) {
+  if (['all', 'host-run-cold', 'host-results'].includes(values.phase)) {
+    const variants =
+      values.phase === 'host-results'
+        ? ['result']
+        : ['unadmitted', 'unknown', 'bound', 'revoked', 'result'];
+    for (const variant of variants) {
       const data = join(evidence, `host-cold-${variant}`);
       mkdirSync(data, { mode: 0o700 });
       for (const mode of ['write', 'read'])

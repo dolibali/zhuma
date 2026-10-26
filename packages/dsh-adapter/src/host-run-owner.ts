@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
+import { createHash } from 'node:crypto';
 import { canonicalPayload, isTerminalRunStatus, type Workbench } from '@zhuma/agent-core';
 import { z } from 'zod';
 import { createHostRunConfiguration } from './host-run-configuration.js';
@@ -42,6 +43,13 @@ import {
   executionRunCompositionRequest,
 } from './execution-run-composition.js';
 import { openNativeWorkSessions } from './native-work-session-storage.js';
+import {
+  createNativeFixedResultIssuer,
+  type NativeFixedResultIssuer,
+} from './native-work-session-result.js';
+import { describeNativeResultTool } from './native-work-session-result-tool.js';
+import type { NativeFixedResultRef } from './native-work-session-result-contract.js';
+import type { NativeResultSubmit } from './execution-native-result-delivery.js';
 import { registerNativeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { NativeWorkError, type NativeWorkScope } from './native-work-session-contract.js';
 import { nativeScopeKey } from './native-work-session-record.js';
@@ -92,6 +100,13 @@ interface OwnedRun {
   nativeAgentId?: string;
   accepting?: Promise<void>;
   retirement?: Promise<'pending' | 'retired'>;
+  dispatching?: Promise<'received' | 'unknown'>;
+  resultWork?: Promise<void>;
+  resultAgain?: boolean;
+  resultRef?: NativeFixedResultRef;
+  resultCommand?: NativeResultSubmit;
+  resultPending?: 'draining' | 'not-durable' | 'delivery-unconfirmed';
+  resultFailure?: unknown;
 }
 
 /** One native owner consuming the already opened D execution owner. No new Run store/queue. */
@@ -113,6 +128,7 @@ export async function openHostRunOwner(
   const events = new Set<Promise<unknown>>();
   let beginning = 0;
   let authorities: ExecutionRunAuthorities;
+  let results: NativeFixedResultIssuer | undefined;
   let fenced = false;
   let closing: Promise<void> | undefined;
   const resources = createHostRunResourceSource({
@@ -185,6 +201,12 @@ export async function openHostRunOwner(
         );
         baseTools = registered.toolAllowlist;
       }
+      if (snapshot.schemaVersion === 2 && snapshot.payload.resultIntentTool) {
+        if (!results || snapshot.payload.handoff.assignee.kind !== 'expert')
+          throw new NativeWorkError('configuration-mismatch');
+        const registered = results.registerNativeResultTool(agentCtx, binding, grant);
+        baseTools = [...baseTools, ...registered.toolAllowlist];
+      }
       state.stopResources?.();
       await state.resourceAdoption?.dispose();
       const producer = await resources.producer(
@@ -209,7 +231,7 @@ export async function openHostRunOwner(
       )
         throw new NativeWorkError('configuration-mismatch');
       const revokeResources = () => {
-        if (!fenced) void retire(state).catch(() => undefined);
+        if (!fenced) scheduleResultOrRetirement(state);
       };
       adopted.signal.addEventListener('abort', revokeResources, { once: true });
       state.stopResources = () => adopted.signal.removeEventListener('abort', revokeResources);
@@ -219,7 +241,7 @@ export async function openHostRunOwner(
         void accept(state, claim).catch(() => undefined);
       });
       state.stopFault = state.observation.onFault(() => {
-        if (!fenced) void retire(state).catch(() => undefined);
+        if (!fenced) scheduleResultOrRetirement(state);
       });
       // Use the stored composition exactly; registration must not append a second catalog.
       return { context: snapshot.payload.context, toolAllowlist: snapshot.payload.toolAllowlist };
@@ -239,11 +261,30 @@ export async function openHostRunOwner(
         resources,
       }),
     );
+    results = createNativeFixedResultIssuer(
+      ctx,
+      native.service,
+      native.runtime,
+      authorities,
+      execution,
+    );
+    execution.installNativeResultIssuer(results);
   } catch (error) {
+    await results?.close();
     await native.close();
     throw error;
   }
-  const reader = createHostRunReader(execution, authorities, native.service, readSendCapabilities);
+  const stopResultReady = results.onReady((grant, ref) => {
+    const state = owned.get(nativeScopeKey(grant.scope));
+    if (!fenced && state?.opened?.grant === grant) scheduleResultOrRetirement(state, ref);
+  });
+  const reader = createHostRunReader(
+    execution,
+    authorities,
+    native.service,
+    readSendCapabilities,
+    (scope) => owned.get(nativeScopeKey(scope))?.resultPending,
+  );
 
   async function readSendCapabilities(
     request: MemberRequest,
@@ -266,6 +307,8 @@ export async function openHostRunOwner(
         return all({ kind: 'unavailable', code: 'stopping' });
       configuration.assertModel(execution.readRunComposition(locator));
       const view = native.service.open(opened.grant);
+      if (view?.binding.resultIntent)
+        return all({ kind: 'unavailable', code: 'completion-pending' });
       if (!view || view.status === 'detached')
         return all({ kind: 'unavailable', code: 'detached' });
       const receipt = view.binding.receipts.find(
@@ -324,6 +367,130 @@ export async function openHostRunOwner(
     state.observation?.close();
     state.opened?.dispose();
     owned.delete(nativeScopeKey(state.scope));
+  }
+  function scheduleResultOrRetirement(state: OwnedRun, ref?: NativeFixedResultRef): void {
+    if (fenced || owned.get(nativeScopeKey(state.scope)) !== state) return;
+    if (ref) state.resultRef = ref;
+    state.resultAgain = true;
+    if (state.resultWork) return;
+    // Never wait on the C drain from an Agent disposal/resource callback stack.
+    const work = (async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      do {
+        state.resultAgain = false;
+        await state.dispatching;
+        await state.accepting;
+        if (fenced || owned.get(nativeScopeKey(state.scope)) !== state) return;
+        const grant = state.opened?.grant;
+        const { node, run } = current(state);
+        if (run.resultDelivery) {
+          await confirmResult(state);
+          release(state);
+          return;
+        }
+        const binding =
+          grant && !grant.signal.aborted ? native.service.open(grant)?.binding : undefined;
+        const snapshot = run.composition;
+        const intent = binding?.resultIntent;
+        if (
+          !results ||
+          !grant ||
+          !intent ||
+          node.handoff.assignee.kind !== 'expert' ||
+          snapshot?.schemaVersion !== 2 ||
+          canonicalPayload(snapshot.payload.resultIntentTool) !==
+            canonicalPayload(describeNativeResultTool())
+        ) {
+          await retire(state);
+          return;
+        }
+        const prepared = state.resultRef
+          ? { status: 'ready' as const, ref: state.resultRef }
+          : await results.prepareFixedResult(grant, lifetime.signal);
+        if (prepared.status === 'pending') {
+          // No completion is inferred. The original onReady owns any late fact;
+          // Stop remains the bounded escape while the original drain is pending.
+          state.resultPending = prepared.reason === 'draining' ? 'draining' : 'not-durable';
+          continue;
+        }
+        state.resultRef = prepared.ref;
+        await state.resourceAdoption?.drain();
+        const fresh = current(state);
+        const key = `native-result:${createHash('sha256')
+          .update(
+            canonicalPayload({
+              scope: state.scope,
+              configurationId: binding.selection.configurationId,
+              intentId: intent.intentId,
+            }),
+          )
+          .digest('hex')}`;
+        if (!state.resultCommand || state.resultCommand.idempotencyKey !== key)
+          state.resultCommand = Object.freeze({
+            ...locatorFor(state.scope),
+            generation: state.scope.generation,
+            segmentId: state.scope.segmentId,
+            configurationId: binding.selection.configurationId,
+            expectedNodeVersion: fresh.node.command.version,
+            expectedRunVersion: readExecutionRunState(fresh.node)!.version,
+            idempotencyKey: key,
+          });
+        // Host lifetime outlives a successful terminal put's revoked drive grant.
+        const submitted = await execution.submitNativeFixedResult(
+          state.request,
+          state.resultCommand,
+          grant,
+          prepared.ref,
+          lifetime.signal,
+        );
+        if (submitted.ok || current(state).run.resultDelivery) {
+          if (!submitted.ok) await confirmResult(state);
+          release(state);
+          return;
+        }
+        state.resultPending = 'delivery-unconfirmed';
+      } while (state.resultAgain);
+    })();
+    const guarded = work
+      .catch(async () => {
+        if (!fenced && owned.get(nativeScopeKey(state.scope)) === state) {
+          if (current(state).run.resultDelivery) {
+            await confirmResult(state);
+            release(state);
+          } else await retire(state);
+        }
+      })
+      .finally(() => {
+        delete state.resultWork;
+        if (state.resultAgain && !fenced) scheduleResultOrRetirement(state);
+      });
+    state.resultWork = guarded;
+    track(guarded, commands);
+    void guarded.catch((error) => {
+      state.resultPending = 'delivery-unconfirmed';
+      state.resultFailure = error;
+    });
+  }
+  async function confirmResult(state: OwnedRun) {
+    const { run } = current(state);
+    const delivered = run.resultDelivery;
+    if (!delivered) throw new ExecutionRunError('run-state-invalid');
+    const result = await execution.confirmNativeResultDelivery(
+      state.request,
+      {
+        ...locatorFor(state.scope),
+        generation: run.attempt.generation,
+        segmentId: run.segmentId,
+        configurationId: run.selection.configurationId,
+        idempotencyKey: delivered.receiptKey,
+        intentId: delivered.source.intentId,
+        digest: delivered.digest,
+        provenanceFingerprint: delivered.provenanceFingerprint,
+      },
+      lifetime.signal,
+    );
+    if (!result.ok) throw new ExecutionRunError('run-authority-denied');
+    return result.value;
   }
   function retain(decision: ExecutionRunDecision, request: MemberRequest): OwnedRun {
     const scope = executionRunScope(decision.record, decision.run);
@@ -458,7 +625,10 @@ export async function openHostRunOwner(
       const opened = await authorities.open(state.request, locatorFor(state.scope), 'drive');
       state.opened = opened;
       const revoked = () => {
-        if (!fenced) void retire(state).catch(() => undefined);
+        if (!fenced) {
+          if (current(state).run.resultDelivery) release(state);
+          else scheduleResultOrRetirement(state);
+        }
       };
       opened.grant.signal.addEventListener('abort', revoked, { once: true });
       state.stopRevocation = () => opened.grant.signal.removeEventListener('abort', revoked);
@@ -568,7 +738,10 @@ export async function openHostRunOwner(
           const decision = committed.value;
           if (decision.effect?.kind === 'dispatch') {
             const state = retain(decision, request);
-            const dispatchStatus = await dispatch(state, decision.effect.previousScope);
+            const dispatching = dispatch(state, decision.effect.previousScope);
+            state.dispatching = dispatching;
+            const dispatchStatus = await dispatching;
+            delete state.dispatching;
             return {
               ok: true,
               value: {
@@ -683,7 +856,13 @@ export async function openHostRunOwner(
       });
     },
     read(request, payload, wait) {
-      return command(() => reader.read(request, payload, wait));
+      return command(() =>
+        reader.read(
+          request,
+          payload,
+          wait ? AbortSignal.any([wait, lifetime.signal]) : lifetime.signal,
+        ),
+      );
     },
     inbox(request, payload, wait) {
       return command(() =>
@@ -721,12 +900,18 @@ export async function openHostRunOwner(
       });
       closing = closed;
       fenced = true;
+      stopResultReady();
       absentRetirements.clear();
       execution.fenceRuns();
       lifetime.abort();
       void (async () => {
         const failures: unknown[] = [];
         let drained = false;
+        try {
+          await results?.close();
+        } catch (error) {
+          failures.push(error);
+        }
         try {
           await native.close();
           drained = true;
@@ -737,6 +922,7 @@ export async function openHostRunOwner(
         // before cleanup, with D's original domain and cleanup capabilities still open.
         while (commands.size || events.size) await Promise.allSettled([...commands, ...events]);
         for (const state of [...owned.values()]) {
+          if (state.resultFailure) failures.push(state.resultFailure);
           try {
             if (drained) {
               await settle(state);
