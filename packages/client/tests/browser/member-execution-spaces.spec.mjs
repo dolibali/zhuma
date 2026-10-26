@@ -26,7 +26,7 @@ async function delivery(page) {
     .getByRole('button')
     .click();
   await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
-  return page.getByLabel('产物正文', { exact: true });
+  return page.getByLabel('补充说明（选填）', { exact: true });
 }
 async function review(page) {
   await page
@@ -173,7 +173,7 @@ test('formal spaces: revoked session membership closes dirty content before anot
   });
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('此空间已不可访问');
-  await expect(page.getByLabel('产物正文')).toHaveCount(0);
+  await expect(page.getByLabel('补充说明（选填）')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(await calls(page, 'inbox')).toHaveLength(before);
   await page.getByRole('button', { name: '重新连接' }).click();
