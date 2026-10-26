@@ -140,6 +140,136 @@ test('Run view contract: saved selection and mode capabilities stay frozen; prog
   h.controller.dispose();
 });
 
+function runningOptions(current = summary) {
+  return {
+    ...options(),
+    currentRunId: current.runId,
+    selection,
+    start: { kind: 'unavailable', message: 'Held' },
+  };
+}
+test('Run view contract: a deferred send cannot block independent Stop or clear its busy/identity on late success', async () => {
+  const sent = Promise.withResolvers(),
+    stopped = Promise.withResolvers();
+  let read = summary,
+    stops = 0,
+    sendSignal,
+    stopRun;
+  const h = setup({
+    options: async () => runningOptions(read),
+    read: async () => read,
+    send: async (_run, _text, _mode, _key, signal) => {
+      sendSignal = signal;
+      await sent.promise;
+    },
+    stop: async (run) => {
+      stops++;
+      stopRun = run;
+      await stopped.promise;
+    },
+  });
+  await h.controller.refresh();
+  const sending = h.controller
+    .send('Keep this unconfirmed input', 'followup')
+    .catch((error) => error);
+  assert.equal(h.controller.getSnapshot().busy, 'send');
+  const stopping = h.controller.stop();
+  assert.equal(stops, 1);
+  assert.equal(sendSignal.aborted, true, 'only the client send wait is cancelled');
+  assert.equal(stopRun.generation, summary.generation);
+  assert.equal(stopRun.segmentId, summary.segmentId);
+  assert.equal(stopRun.nodeVersion, summary.nodeVersion);
+  assert.equal(stopRun.runVersion, summary.runVersion);
+  await assert.rejects(h.controller.stop());
+  await assert.rejects(h.controller.start(selection));
+  await assert.rejects(h.controller.send('No second concurrent send', 'followup'));
+  sent.resolve();
+  assert.equal(
+    (await sending).name,
+    'AbortError',
+    'late accepted send must not clear the UI draft',
+  );
+  assert.equal(h.controller.getSnapshot().busy, 'stop');
+  assert.equal(h.controller.getSnapshot().view.actions.send.followup.kind, 'unavailable');
+  read = { ...summary, stopPhase: 'requested' };
+  stopped.resolve();
+  await stopping;
+  assert.equal(h.controller.getSnapshot().view.run.stopPhase, 'requested');
+  assert.equal(
+    h.controller.getSnapshot().view.run.resources,
+    'held',
+    'no fabricated stop settlement',
+  );
+  assert.equal(h.controller.getSnapshot().view.actions.send.followup.kind, 'unavailable');
+  h.controller.dispose();
+});
+
+test('Run view contract: late failed send cannot clear uncertain Stop retry key or restore sending', async () => {
+  const sent = Promise.withResolvers(),
+    stopped = Promise.withResolvers();
+  const keys = [];
+  const h = setup({
+    options: async () => runningOptions(),
+    send: async () => sent.promise,
+    stop: async (_run, key) => {
+      keys.push(key);
+      if (keys.length === 1) await stopped.promise;
+      else throw Error('Unknown stop again');
+    },
+  });
+  await h.controller.refresh();
+  const sending = h.controller.send('Unconfirmed', 'queue').catch((error) => error);
+  const stopping = h.controller.stop().catch((error) => error);
+  stopped.reject(Error('Lost stop response'));
+  await stopping;
+  const before = h.controller.getSnapshot();
+  sent.reject(Error('Late send response'));
+  await sending;
+  assert.equal(h.controller.getSnapshot().error, before.error);
+  await h.controller.refresh();
+  assert.equal(
+    h.controller.getSnapshot().view.actions.send.queue.kind,
+    'unavailable',
+    'running read does not revoke an uncertain stop',
+  );
+  await assert.rejects(h.controller.send('Must wait', 'followup'));
+  await assert.rejects(h.controller.stop());
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1], 'send and stop retain separate idempotency slots');
+  h.controller.dispose();
+});
+
+test('Run view contract: a fresh replacement Run survives late send and stop completions without another stale read', async () => {
+  const sent = Promise.withResolvers(),
+    stopped = Promise.withResolvers();
+  let read = summary,
+    reads = 0;
+  const h = setup({
+    options: async () => runningOptions(read),
+    read: async () => {
+      reads++;
+      return read;
+    },
+    send: async () => sent.promise,
+    stop: async () => stopped.promise,
+  });
+  await h.controller.refresh();
+  const sending = h.controller.send('Old Run', 'followup').catch((error) => error);
+  const stopping = h.controller.stop().catch((error) => error);
+  read = { ...summary, runId: 'new-run', generation: 2, segmentId: 'new-segment' };
+  await h.controller.refresh();
+  const before = reads;
+  sent.reject(Error('Old send'));
+  await sending;
+  assert.equal(h.controller.getSnapshot().busy, 'stop');
+  stopped.resolve();
+  assert.equal((await stopping).name, 'AbortError');
+  assert.equal(h.controller.getSnapshot().view.run.runId, 'new-run');
+  assert.equal(h.controller.getSnapshot().error, undefined);
+  assert.equal(reads, before, 'superseded command completions must not refresh over the new Run');
+  h.controller.dispose();
+});
+
 test('Run view contract: disposed account/controller cannot publish late reads or call a new API through stale handlers', async () => {
   const pending = Promise.withResolvers();
   const old = setup({ options: () => pending.promise });

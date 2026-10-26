@@ -14,6 +14,11 @@ type Snapshot = {
   error: string | undefined;
 };
 const unavailable = { kind: 'unavailable' as const, message: '当前没有可操作的运行。' };
+type Command = 'start' | 'send' | 'stop';
+type Retry = { fingerprint: string; requestId: string; newRunId: string; newSegmentId: string };
+type ActiveCommand = { epoch: number; abort: AbortController };
+const runIdentity = (run: NativeRunRead | null) =>
+  run ? JSON.stringify([run.runId, run.generation, run.segmentId]) : undefined;
 
 /** Ephemeral view state only. No persistence, authority, native handle or execution facts. */
 export function createNativeRunController(api: NativeRunApi, target: NativeRunTarget) {
@@ -26,10 +31,25 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
   let messages: Extract<NativeRunPanelView, { kind: 'ready' }>['messages'] = [];
   let cursor = -1;
   let reading: AbortController | undefined;
-  let writing = false;
-  let retry:
-    { fingerprint: string; requestId: string; newRunId: string; newSegmentId: string } | undefined;
+  let epoch = 0;
+  let stopFence: string | undefined;
+  const active: Partial<Record<Command, ActiveCommand>> = {};
+  const retries: Partial<Record<Command, Retry>> = {};
   const current = () => !lifetime.signal.aborted;
+  const writing = () => !!(active.start || active.send || active.stop);
+  function publishBusy() {
+    publish({
+      busy: active.stop
+        ? 'stop'
+        : active.start
+          ? 'start'
+          : active.send?.epoch === epoch
+            ? 'send'
+            : reading && !reading.signal.aborted
+              ? 'refresh'
+              : undefined,
+    });
+  }
   function publish(change: Partial<Snapshot>) {
     if (!current()) return;
     state = { ...state, ...change };
@@ -41,6 +61,11 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       run &&
       (run.resources === 'held' ||
         ['requested', 'running', 'waiting-for-input'].includes(run.status));
+    const stopping = stopFence !== undefined && stopFence === runIdentity(run);
+    const stopPending = {
+      kind: 'unavailable' as const,
+      message: '停止结果尚待确认，请刷新或重试停止。',
+    };
     publish({
       view: {
         kind: 'ready',
@@ -52,12 +77,14 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         experts: { kind: 'ready', items: options.experts },
         resources: options.resources,
         actions: {
-          start: options.start,
-          send: run?.sendCapabilities ?? {
-            followup: unavailable,
-            steer: unavailable,
-            queue: unavailable,
-          },
+          start: stopping ? stopPending : options.start,
+          send: stopping
+            ? { followup: stopPending, steer: stopPending, queue: stopPending }
+            : (run?.sendCapabilities ?? {
+                followup: unavailable,
+                steer: unavailable,
+                queue: unavailable,
+              }),
           stop:
             run?.resources === 'held' && run.stopPhase !== 'confirmed'
               ? { kind: 'available' }
@@ -68,13 +95,14 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
   }
   async function refresh(catalog = true) {
     lifetime.signal.throwIfAborted();
-    if (!catalog && writing) return;
+    if (!catalog && Object.values(active).some((command) => command.epoch === epoch)) return;
     reading?.abort();
     const request = new AbortController();
     reading = request;
     const signal = AbortSignal.any([request.signal, lifetime.signal]);
     const valid = () => current() && reading === request && !signal.aborted;
-    publish({ busy: writing ? state.busy : 'refresh', error: undefined });
+    publish({ error: undefined });
+    publishBusy();
     try {
       const next = !catalog && options ? options : await api.options(target, signal);
       if (!valid()) return;
@@ -96,6 +124,15 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       }
       options = next;
       run = nextRun;
+      if (changed) epoch++;
+      // An uncertain stop is not undone by a still-running read or a late send.
+      // Only fresh physical settlement or a different Run releases this UI fence.
+      if (
+        stopFence &&
+        (stopFence !== runIdentity(run) ||
+          (run?.resources === 'settled' && run.stopPhase === 'confirmed'))
+      )
+        stopFence = undefined;
       if (next.selection) selection = next.selection;
       else if (changed) selection = null;
       messages = nextMessages;
@@ -108,40 +145,59 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         });
       throw error;
     } finally {
-      if (valid() && !writing) publish({ busy: undefined });
+      if (reading === request) {
+        reading = undefined;
+        publishBusy();
+      }
     }
   }
-  function key(fingerprint: string) {
-    if (retry?.fingerprint !== fingerprint)
-      retry = {
+  function key(kind: Command, fingerprint: string) {
+    if (retries[kind]?.fingerprint !== fingerprint)
+      retries[kind] = {
         fingerprint,
         requestId: crypto.randomUUID(),
         newRunId: crypto.randomUUID(),
         newSegmentId: crypto.randomUUID(),
       };
-    return retry;
+    return retries[kind]!;
   }
-  async function command(
-    kind: 'start' | 'send' | 'stop',
-    work: (signal: AbortSignal) => Promise<void>,
-  ) {
+  async function command(kind: Command, work: (signal: AbortSignal) => Promise<void>) {
     lifetime.signal.throwIfAborted();
-    if (writing || state.view.kind !== 'ready') throw Error('Run view is not ready');
-    writing = true;
+    if (
+      state.view.kind !== 'ready' ||
+      active[kind] ||
+      (kind === 'stop' ? active.start : writing() || (stopFence && stopFence === runIdentity(run)))
+    )
+      throw Error('Run view is not ready');
+    if (kind === 'stop') {
+      if (!run || run.resources !== 'held') throw Error('Stop unavailable');
+      epoch++;
+      stopFence = runIdentity(run);
+      // Cancel only the client wait. The admitted Host command retains its own
+      // lifetime; stopping still goes through the independent real stop API.
+      active.send?.abort.abort();
+    }
+    const ticket = { epoch, abort: new AbortController() };
+    active[kind] = ticket;
+    const valid = () => current() && ticket.epoch === epoch;
     reading?.abort();
-    publish({ busy: kind, error: undefined });
+    reading = undefined;
+    ready();
+    publish({ error: undefined });
+    publishBusy();
     try {
-      await work(lifetime.signal);
+      await work(AbortSignal.any([lifetime.signal, ticket.abort.signal]));
       lifetime.signal.throwIfAborted();
-      retry = undefined;
+      if (!valid()) throw new DOMException('Command superseded', 'AbortError');
+      delete retries[kind];
       // A successful receipt remains successful even when the later read fails.
       await refresh().catch(() => undefined);
     } catch (error) {
-      publish({ error: '操作结果尚未确认，请刷新状态。重试相同内容会沿用原请求。' });
+      if (valid()) publish({ error: '操作结果尚未确认，请刷新状态。重试相同内容会沿用原请求。' });
       throw error;
     } finally {
-      writing = false;
-      publish({ busy: undefined });
+      if (active[kind] === ticket) delete active[kind];
+      publishBusy();
     }
   }
   return {
@@ -152,7 +208,8 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     getSnapshot: () => state,
     refresh,
     select(next: NativeRunSelection) {
-      if (!current() || writing || state.view.kind !== 'ready' || run?.resources === 'held') return;
+      if (!current() || writing() || state.view.kind !== 'ready' || run?.resources === 'held')
+        return;
       selection = next;
       ready();
     },
@@ -182,7 +239,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
           tools: options.tools,
           workspace: { kind: 'text-only' as const },
         };
-        const saved = key(JSON.stringify(['begin', content]));
+        const saved = key('start', JSON.stringify(['begin', content]));
         const input: NativeRunBegin = {
           ...content,
           requestId: saved.requestId,
@@ -202,6 +259,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         )
           throw Error('Send unavailable');
         const saved = key(
+          'send',
           JSON.stringify(['send', run.runId, run.generation, run.segmentId, text, mode]),
         );
         await api.send(run, text, mode, saved.requestId, signal);
@@ -210,12 +268,16 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     stop() {
       return command('stop', async (signal) => {
         if (!run || run.resources !== 'held') throw Error('Stop unavailable');
-        const saved = key(JSON.stringify(['stop', run.runId, run.generation, run.segmentId]));
+        const saved = key(
+          'stop',
+          JSON.stringify(['stop', run.runId, run.generation, run.segmentId]),
+        );
         await api.stop(run, saved.requestId, signal);
       });
     },
     dispose() {
       lifetime.abort();
+      for (const command of Object.values(active)) command.abort.abort();
       reading?.abort();
       listeners.clear();
     },

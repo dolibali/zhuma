@@ -110,6 +110,8 @@ export interface NativeRunPanelProps {
   readonly view: NativeRunPanelView;
   readonly busy?: 'start' | 'send' | 'stop' | 'refresh' | 'history' | undefined;
   readonly error?: string | undefined;
+  /** Ephemeral unsent-input presence only. No draft text or persistence crosses this seam. */
+  onDirtyChange?: ((dirty: boolean) => void) | undefined;
   onSelectionChange(selection: NativeRunSelection): void;
   onStart(selection: NativeRunSelection): Promise<void>;
   onSend(text: string, mode: NativeRunSendMode): Promise<void>;

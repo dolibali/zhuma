@@ -24,6 +24,10 @@ A 的 `NativeRunWorkspace` 连接 C 的受控 `NativeRunPanel`，经 `/api/zhuma
 
 会话/空间 controller 实例替换、账号 epoch、空间 epoch、页面 epoch、API 或完整 target 变化会使表单重新挂载。旧 controller 主动中止等待读取；迟到读取不能发布或接续读，旧动作不能经新 API 发送。客户端提示不作为权限。
 
+Stop 使用独立于 pending send 的命令通道，不等待发送回执或重启 Agent。每种命令保留自己的幂等键；Stop 优先显示忙碌状态并隔离旧 send 的迟到成功/失败。未确认停止的同一 Run 保持发送禁用，只有重新读取的真实 settled/confirmed 或不同 Run 才解除界面停止栅栏，不伪造业务停止事实。
+
+未发送输入只在面板本地；仅把 dirty 布尔值接入既有空间/导航守卫。关闭或 ESC 使用现有紧凑离开确认，取消保留原输入并恢复焦点，确认放弃才卸载本 scope。离开不停止 Run、不撤销已发送操作；真实账号/controller 撤销仍即时卸载，不将输入带给新账号。
+
 会话可见且资源 held 时每 2500ms 只读进度和历史，不重新发现模型、不连接或驱动 Agent。历史沿 SDK 正向 seq 游标读取并保留已加载消息；不把未知 payload JSON、system/developer 内容、工具参数或 reasoning 展开到消息区，也不把正向分页称为较早消息。现批没有流中 token 推送、任意旧页回看或自动采用输出为交付；这些边界继续保留。
 
 ## 验证口径

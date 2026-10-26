@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { Button } from '../workbench/Button.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { ControlIcon } from '../workbench/ControlIcon.js';
+import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type {
   NativeRunAction,
   NativeRunMessage,
@@ -267,6 +268,18 @@ function RunPanel(props: NativeRunPanelProps) {
   const { target, view, busy } = props;
   const id = useId();
   const [draft, setDraft] = useState('');
+  useUnsavedChanges(draft.length > 0);
+  const dirtyCallback = useRef(props.onDirtyChange);
+  dirtyCallback.current = props.onDirtyChange;
+  useEffect(() => {
+    props.onDirtyChange?.(draft.length > 0);
+  }, [draft, props.onDirtyChange]);
+  useEffect(
+    () => () => {
+      dirtyCallback.current?.(false);
+    },
+    [],
+  );
   const [selectedMode, setMode] = useState<NativeRunSendMode>('followup');
   const [pending, setPending] = useState<ReadonlySet<Operation>>(new Set());
   const [error, setError] = useState('');

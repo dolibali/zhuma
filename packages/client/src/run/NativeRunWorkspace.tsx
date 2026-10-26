@@ -1,12 +1,17 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Modal } from '../workbench/controls.js';
+import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { NativeRunPanel } from './NativeRunPanel.js';
 import { createNativeRunController } from './controller.js';
 import type { NativeRunApi } from './api.js';
 import type { NativeRunTarget } from './native-run-contract.js';
 
-type Props = { api: NativeRunApi; target: NativeRunTarget };
+type Props = {
+  api: NativeRunApi;
+  target: NativeRunTarget;
+  onDirtyChange?: ((dirty: boolean) => void) | undefined;
+};
 const empty = { view: { kind: 'loading' as const }, busy: undefined, error: undefined };
 const subscribeNone = () => () => {};
 const getEmpty = () => empty;
@@ -19,7 +24,7 @@ export function NativeRunWorkspace(props: Props) {
     scope.current = { api: props.api, identity, epoch: scope.current.epoch + 1 };
   return <Workspace key={scope.current.epoch} {...props} />;
 }
-function Workspace({ api, target }: Props) {
+function Workspace({ api, target, onDirtyChange }: Props) {
   const fixedTarget = useRef(target).current;
   const [controller, setController] = useState<ReturnType<typeof createNativeRunController>>();
   useEffect(() => {
@@ -48,6 +53,7 @@ function Workspace({ api, target }: Props) {
       view={state.view}
       busy={state.busy}
       error={state.error}
+      onDirtyChange={onDirtyChange}
       onSelectionChange={(selection) => controller?.select(selection)}
       onStart={async (selection) => {
         if (!controller) throw Error('Loading');
@@ -73,20 +79,26 @@ function Workspace({ api, target }: Props) {
 }
 
 export function NativeRunLauncher({ api, target }: Props) {
-  const [open, setOpen] = useState(false);
   const identity = JSON.stringify(target);
-  const generation = useRef({ api, identity });
+  const generation = useRef({ api, identity, epoch: 0 });
   if (generation.current.api !== api || generation.current.identity !== identity) {
-    generation.current = { api, identity };
-    if (open) setOpen(false);
+    generation.current = { api, identity, epoch: generation.current.epoch + 1 };
   }
+  return <Launcher key={generation.current.epoch} api={api} target={target} />;
+}
+function Launcher({ api, target }: Props) {
+  const [open, setOpen] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const changeDirty = useCallback((dirty: boolean) => setDirty(dirty), []);
+  const leave = useLeaveConfirmation();
   return (
     <>
+      {leave.dialog}
       <Button onClick={() => setOpen(true)}>使用 Agent</Button>
       {open && (
-        <Modal title="Agent 工作区" close={() => setOpen(false)}>
+        <Modal title="Agent 工作区" close={() => leave.request(() => setOpen(false), dirty)}>
           <div className="zm-run-workspace-dialog">
-            <NativeRunWorkspace api={api} target={target} />
+            <NativeRunWorkspace api={api} target={target} onDirtyChange={changeDirty} />
           </div>
         </Modal>
       )}
