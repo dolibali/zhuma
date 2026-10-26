@@ -81,6 +81,8 @@ export async function boot(
     review = false,
     localWorkspace = undefined,
     failFileLedger = false,
+    attachmentInitialization = undefined,
+    allowNativeUnavailable = false,
     adapter = new ScriptedAdapter(['FIRST', 'SECOND']),
   } = {},
 ) {
@@ -90,6 +92,7 @@ export async function boot(
   const counts = { executionOpened: 0, nativeOpened: 0, executionClosed: 0, nativeClosed: 0 };
   let host;
   t.onTestFinished(async () => {
+    attachmentInitialization?.resolve();
     await host?.dispose();
     await ctx.fiber.dispose();
     await rm(root, { recursive: true, force: true });
@@ -125,14 +128,26 @@ export async function boot(
     [RemoteAccess],
   ])
     await ctx.plugin(plugin, config);
-  let workspace, workspaceFiber;
+  let workspace, workspaceFiber, attachmentFiber;
   const workspaceRoot = join(root, 'project-files');
   if (localWorkspace) {
     await mkdir(workspaceRoot);
     workspaceFiber = await ctx.plugin(WorkspaceRegistry);
     workspace = await ctx.workspaceRegistry.create(workspaceRoot, 'Local contract project');
     await ctx.plugin(ToolFs, { readImage: false });
-    await ctx.plugin(LocalAttachmentStore, { dshHome: root });
+    if (!attachmentInitialization) await ctx.plugin(LocalAttachmentStore, { dshHome: root });
+  }
+  if (attachmentInitialization) {
+    const registered = deferred();
+    attachmentFiber = ctx.plugin({
+      name: 'delayed-original-attachment-provider',
+      async apply(provider) {
+        new LocalAttachmentStore(provider, { dshHome: root });
+        registered.resolve();
+        await attachmentInitialization.promise;
+      },
+    });
+    await registered.promise;
   }
   if (parentSkill) {
     await ctx.plugin(SkillRegistry);
@@ -258,7 +273,11 @@ export async function boot(
       .put(imported.record.versionId, imported.record);
   const nativeFibers = [...(ctx.registry.get(Host.nativeRunPlugin)?.fibers ?? [])];
   assert.equal(nativeFibers.length, 1);
-  await Promise.all(nativeFibers.map((fiber) => fiber.await()));
+  const nativeReadiness = await Promise.allSettled(nativeFibers.map((fiber) => fiber.await()));
+  if (!allowNativeUnavailable) {
+    const failed = nativeReadiness.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+  }
   async function login(accountId = 'chen') {
     const response = await fetch(base + '/zhuma-id/login', {
       method: 'POST',
@@ -329,6 +348,14 @@ export async function boot(
     begin,
     workspaceRoot,
     workspaceFiber,
+    attachmentFiber,
+    nativeReadiness,
+    async remountHost() {
+      await host.restart();
+      const fibers = [...(ctx.registry.get(Host.nativeRunPlugin)?.fibers ?? [])];
+      assert.equal(fibers.length, 1);
+      await Promise.all(fibers.map((fiber) => fiber.await()));
+    },
   };
 }
 

@@ -146,7 +146,12 @@ export async function openHostRunOwner(
   // present backend whose initialization or later lifecycle has failed.
   const original = (value: unknown): unknown =>
     value && typeof value === 'object' ? (Reflect.get(value, symbols.original) ?? value) : value;
-  const attachmentBackend = original(ctx.get('attachments'));
+  // Strict lookup hides registered providers while their fiber is initializing.
+  // Only actual absence permits v1; an unready provider fails before any native
+  // owner or Run authority is installed and requires an explicit remount.
+  const attachmentBackend = original(ctx.get('attachments', false));
+  if (attachmentBackend !== undefined && original(ctx.get('attachments')) !== attachmentBackend)
+    throw new ExecutionRunError('run-authority-unavailable');
   const backendOwner =
     attachmentBackend === undefined
       ? undefined

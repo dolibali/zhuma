@@ -37,6 +37,79 @@ const localWorkspace = {
   policyMode: 'workspace-write',
   publish: [{ kind: 'file', path: 'deliverable.txt' }],
 };
+for (const outcome of ['ready', 'failed'])
+  test(
+    `actual Host backend readiness: a registered initializing original provider cannot admit legacy v1, including when it later becomes ${outcome}`,
+    { timeout: 20000 },
+    async (t) => {
+      const initialization = Promise.withResolvers();
+      const h = await boot(t, {
+        expert: true,
+        attachmentInitialization: initialization,
+        allowNativeUnavailable: true,
+        adapter: new ScriptedAdapter([
+          tool('complete_work', { text: 'Ready original v2 owner', links: [], publications: [] }),
+        ]),
+      });
+      try {
+        assert.ok(h.ctx.get('attachments', false) instanceof LocalAttachmentStore);
+        assert.equal(h.ctx.get('attachments'), undefined);
+        const pending = await h.rpc('run', 'begin', h.begin);
+        assert.equal(
+          pending.result.ok,
+          false,
+          'Initializing attachments must not select legacy v1',
+        );
+        assert.equal(pending.status, 503);
+        assert.equal(pending.result.error.code, 'run-authority-unavailable');
+        assert.equal(h.run(), undefined);
+        assert.equal(h.adapter.requests.length, 0);
+        assert.equal(h.ctx.agents.list().length, 0);
+        assert.equal(h.row().artifactVersions.length, 0);
+        assert.equal(h.nativeReadiness[0].status, 'rejected');
+        assert.equal(h.nativeReadiness[0].reason.code, 'run-authority-unavailable');
+        if (outcome === 'ready') {
+          initialization.resolve();
+          await h.attachmentFiber;
+          assert.ok(h.ctx.get('attachments') instanceof LocalAttachmentStore);
+        } else {
+          initialization.reject(Error('Original attachment provider initialization failed'));
+          await assert.rejects(h.attachmentFiber.await());
+          assert.equal(h.ctx.get('attachments'), undefined);
+        }
+        // Fail-closed startup does not hot-upgrade an old owner or admit a Run.
+        const settled = await h.rpc('run', 'begin', h.begin);
+        assert.equal(settled.status, 503);
+        assert.equal(settled.result.ok, false);
+        assert.equal(settled.result.error.code, 'run-authority-unavailable');
+        assert.equal(h.run(), undefined);
+        assert.equal(h.adapter.requests.length, 0);
+        assert.equal(h.row().artifactVersions.length, 0);
+        if (outcome === 'ready') {
+          // Explicitly remount the original Host; provider readiness alone is
+          // not a retry signal for the independently failed native child.
+          await h.remountHost();
+          const table = h.ctx.storageDomain.get('zhuma_execution').table('nodes');
+          const row = () => [...table.entries()][0][1];
+          const credential = await h.login();
+          checked(await h.rpc('run', 'begin', h.begin, credential));
+          await waitFor(h.ctx, () => row().artifactVersions.length === 1);
+          const runs = row().nativeExecution.runs;
+          assert.equal(runs.length, 1);
+          assert.equal(
+            runs[0].composition.payload.resultIntentTool.sourceVersion,
+            'zhuma-native-result-intent@2',
+          );
+          assert.equal(runs[0].resultDelivery.protocolVersion, 2);
+          assert.equal(row().artifactVersions[0].text, 'Ready original v2 owner');
+          assert.equal(h.adapter.requests.length, 1);
+        }
+      } finally {
+        initialization.resolve();
+        await h.attachmentFiber.await().catch(() => {});
+      }
+    },
+  );
 async function start(h) {
   checked(
     await h.rpc('run', 'begin', {

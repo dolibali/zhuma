@@ -32,6 +32,7 @@ if (
     'host-local-workspace',
     'host-local-policy',
     'host-fixed-publications',
+    'host-backend-readiness',
     'skill-loader',
     'mcp-close',
     'native-stream',
@@ -803,7 +804,19 @@ void publicContract;
         },
       );
   }
-  if (values.phase === 'host-fixed-publications')
+  if (values.phase === 'host-backend-readiness')
+    verify(
+      'host-backend-readiness',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-run-fixed-publications.spec.ts',
+        '-t',
+        'actual Host backend readiness:|explicit legacy Host|backend-unload cancels',
+      ],
+      4,
+      {},
+      17,
+    );
+  else if (values.phase === 'host-fixed-publications')
     verify(
       'host-fixed-publications',
       [
@@ -818,7 +831,7 @@ void publicContract;
           'host-fixed-publications-timings.json',
         ),
       },
-      14,
+      16,
     );
   else if (values.phase === 'host-local-policy')
     verify(
