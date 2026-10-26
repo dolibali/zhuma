@@ -1,3 +1,8 @@
+import type {
+  NativeResultIntent,
+  NativeResultSnapshot,
+} from './native-work-session-result-contract.js';
+
 /** Host-internal seam. Never deserialize a grant from a Client or model request. */
 export interface NativeWorkScope {
   readonly actorId: string;
@@ -55,6 +60,8 @@ export interface NativeSessionBinding {
   /** Aggregate reservation counters only; tool content/provenance stays in DSH. */
   readonly inputReadBudget?:
     { readonly attempts: number; readonly chargedBytes: number } | undefined;
+  /** Versioned metadata only. Result content remains exclusively in the native log. */
+  readonly resultIntent?: NativeResultIntent | undefined;
 }
 
 /** One atomic mapping row; prior bindings are metadata, never transcript copies. */
@@ -216,6 +223,11 @@ export type NativeConversationFrame =
 
 /** The only driver is the public DSH AgentRegistry/Agent implementation. */
 export interface NativeWorkRuntime {
+  readResultSnapshot?(
+    binding: NativeSessionBinding,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<NativeResultSnapshot>;
   connect(
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
@@ -289,6 +301,8 @@ export class NativeWorkError extends Error {
       | 'input-read-budget-exceeded'
       | 'input-context-unavailable'
       | 'input-required-unavailable'
+      | 'completion-pending'
+      | 'input-pending'
       | 'binding-state-invalid'
       | 'migration-conflict'
       | 'migration-not-ready'
