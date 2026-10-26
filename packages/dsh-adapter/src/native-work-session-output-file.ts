@@ -22,6 +22,7 @@ import type {
   NativePublishedFileRef,
   NativePublishedFileLease,
   NativeRunOutputFiles,
+  NativeCompletedPublicationLease,
 } from './native-work-session-output-file-contract.js';
 import {
   NativeOutputFileByteProducer,
@@ -87,6 +88,12 @@ export interface NativeOutputFileIssuer {
   /** Publication capability only. A later completion still verifies the original durable SDK ACK. */
   publishedFile(grant: NativeWorkGrant, publicationId: string): NativePublishedFileRef;
   readPublishedFile(grant: NativeWorkGrant, ref: NativePublishedFileRef): NativePublishedFileLease;
+  /** Immutable ledger facts only; a completion must separately qualify its SDK ACK cut. */
+  readCompletedPublication(
+    grant: NativeWorkGrant,
+    request: { readonly source: NativeOutputFileSource; readonly publicationId: string },
+    signal: AbortSignal,
+  ): Promise<NativeCompletedPublicationLease>;
   close(): Promise<void>;
 }
 /** Host-only: same original sessions/Run owner and original qualified FS, never Client factories. */
@@ -151,8 +158,11 @@ class OutputFileOwner implements NativeOutputFileIssuer {
       },
     });
   }
-  private binding(grant: NativeWorkGrant): NativeSessionBinding {
-    this.authority.assertGrant(grant, 'send');
+  private binding(
+    grant: NativeWorkGrant,
+    access: 'send' | 'history' = 'send',
+  ): NativeSessionBinding {
+    this.authority.assertGrant(grant, access);
     if (this.lifetime.signal.aborted || owners.get(this.sessions) !== this)
       throw new ArtifactUploadError('cancelled');
     const binding = this.sessions.open(grant)?.binding;
@@ -411,6 +421,37 @@ class OutputFileOwner implements NativeOutputFileIssuer {
       ...projection,
       signal: AbortSignal.any([grant.signal, this.lifetime.signal]),
       check,
+    });
+  }
+  async readCompletedPublication(
+    grant: NativeWorkGrant,
+    request: { readonly source: NativeOutputFileSource; readonly publicationId: string },
+    signal: AbortSignal,
+  ): Promise<NativeCompletedPublicationLease> {
+    const source = structuredClone(request.source);
+    const verify = (): undefined => {
+      const binding = this.binding(grant, 'history');
+      if (
+        canonicalPayload(binding.scope) !== canonicalPayload(source.scope) ||
+        binding.nativeSessionId !== source.nativeSessionId ||
+        binding.nativeAgentId !== source.nativeAgentId ||
+        binding.selection.configurationId !== source.configurationId
+      )
+        throw new ArtifactUploadError('publication-denied');
+      return undefined;
+    };
+    verify();
+    const lease = await this.files.readCompleted(grant, { ...request, source }, signal);
+    verify();
+    lease.check();
+    return Object.freeze({
+      source: lease.source,
+      record: lease.record,
+      signal: lease.signal,
+      check: () => {
+        verify();
+        return lease.check();
+      },
     });
   }
   async close(): Promise<void> {

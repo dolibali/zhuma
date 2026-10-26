@@ -41,6 +41,12 @@ export interface NativeOutputFileReservation {
   releaseAfter(drain: Promise<void>): void;
 }
 export interface NativeRunOutputFiles {
+  /** Original history/open grant only; no new publication, FS access or reservation. */
+  readCompleted(
+    grant: NativeWorkGrant,
+    request: { readonly source: NativeOutputFileSource; readonly publicationId: string },
+    signal: AbortSignal,
+  ): Promise<NativeCompletedPublicationLease>;
   reserve(
     grant: NativeWorkGrant,
     request: {
@@ -50,6 +56,12 @@ export interface NativeRunOutputFiles {
     } & ({ readonly mode: 'lookup' } | { readonly mode: 'reserve'; readonly maximumBytes: number }),
     signal: AbortSignal,
   ): Promise<NativeOutputFileReservation>;
+}
+export interface NativeCompletedPublicationLease {
+  readonly source: NativeOutputFileSource;
+  readonly record: UploadFileRecord;
+  readonly signal: AbortSignal;
+  check(): undefined;
 }
 declare const publishedFileBrand: unique symbol;
 export interface NativePublishedFileRef {
