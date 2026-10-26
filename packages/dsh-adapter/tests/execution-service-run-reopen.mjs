@@ -5,6 +5,7 @@ try {
     JSON.stringify({
       global: host.service.readRunGlobal(),
       node: host.read(),
+      composition: host.service.readRunComposition(host.runLocator()),
       writes: host.counters,
     }),
   );

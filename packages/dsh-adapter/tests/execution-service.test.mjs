@@ -2840,12 +2840,15 @@ function scopedNode(fields) {
 async function storeExecution(store, record) {
   await store.storage.writeNode(nodeRecordKey(record), record);
   const key = `${record.taskId}:${record.planId}:${record.revision}`;
-  if (store.storage.readPlan(key) === undefined) {
+  const prior = store.storage.readPlan(key);
+  if (prior === undefined) {
     await store.storage.writePlan(key, {
       idempotencyKey: `kept-${record.taskId}`,
       fingerprint: `${record.planId}:${record.revision}`,
       nodeIds: [record.nodeId],
     });
+  } else if (!prior.nodeIds.includes(record.nodeId)) {
+    await store.storage.writePlan(key, { ...prior, nodeIds: [...prior.nodeIds, record.nodeId] });
   }
 }
 

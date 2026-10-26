@@ -19,6 +19,10 @@ import {
 } from '@zhuma/agent-core';
 import type { NativeSessionSelection, NativeWorkScope } from './native-work-session-contract.js';
 import { requireExecutionRunWriter } from './execution-run-protocol.js';
+import {
+  executionRunCompositionSchema,
+  assertExecutionRunCompositionBinding,
+} from './execution-run-composition.js';
 
 // Host-internal facts only. This module neither authenticates a request nor writes storage.
 const id = z.string().min(1).max(200);
@@ -89,6 +93,7 @@ const attemptSchema = z
   });
 const wrapperSchema = z.strictObject({
   attempt: attemptSchema,
+  composition: executionRunCompositionSchema.optional(),
   actorId: id,
   spaceId: id,
   segmentId: id,
@@ -195,6 +200,18 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
     )
       refuse('run-state-invalid');
     ids.add(a.id);
+    if (run.composition) {
+      try {
+        assertExecutionRunCompositionBinding(run.composition, executionRunScope(record, run), {
+          selection: run.selection,
+          expertVersionId: a.expertVersionId,
+          contextRefs: a.contextRefs,
+          inputFingerprint: a.payloadHash,
+        });
+      } catch {
+        refuse('run-state-invalid');
+      }
+    }
     segments.add(run.segmentId);
     if (a.sessionId !== undefined) nativeSessions.add(a.sessionId);
   }
@@ -285,6 +302,7 @@ export const beginExecutionRunSchema = z.strictObject({
   expertVersionId: id,
   contextRefs: z.array(id).max(256),
   workspace: executionWorkspaceSchema,
+  composition: executionRunCompositionSchema.optional(),
 });
 export type BeginExecutionRun = z.infer<typeof beginExecutionRunSchema>;
 type InputEffect<K extends 'dispatch' | 'reconcile'> = {
@@ -337,6 +355,29 @@ export function beginExecutionRun(
   },
 ): ExecutionRunDecision {
   requireExecutionRunWriter(availability.writerState);
+  return decideExecutionRunBegin(record, input, peers, availability);
+}
+
+/** All pure begin constraints, with no write, effect or permission result. The
+ * explicit first-start path uses this before changing the compatibility barrier;
+ * actual admission still requires beginExecutionRun's durable writer check.
+ */
+export function validateExecutionRunBegin(
+  record: ExecutionNodeRecord,
+  input: unknown,
+  peers: readonly ExecutionNodeRecord[],
+  availability: { readonly expertEnabled: boolean; readonly executorConnected: boolean },
+): undefined {
+  decideExecutionRunBegin(record, input, peers, availability);
+  return undefined;
+}
+
+function decideExecutionRunBegin(
+  record: ExecutionNodeRecord,
+  input: unknown,
+  peers: readonly ExecutionNodeRecord[],
+  availability: { readonly expertEnabled: boolean; readonly executorConnected: boolean },
+): ExecutionRunDecision {
   const request = parsed(beginExecutionRunSchema, input);
   if (!canDrive(record, request.actorId)) refuse('run-not-controller');
   const state = readExecutionRunState(record);
@@ -450,6 +491,7 @@ export function beginExecutionRun(
     workspace: request.workspace,
     dispatch: 'reserved',
     resources: 'held',
+    ...(request.composition ? { composition: request.composition } : {}),
   };
   const next = withState(base, {
     schemaVersion: 1,
