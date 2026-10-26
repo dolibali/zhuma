@@ -318,15 +318,35 @@ test('real foreground shell: existing pre-execution policy still refuses the act
   assert.equal(h.runtime.handles.length, 0);
 });
 
-test('real foreground shell: requested shorter deadline kills actual child and settles its range', async (t) => {
-  const h = await host(t);
-  await h.adopt();
-  const began = Date.now();
-  await h.call('sleep 30', { timeoutMs: 30 });
-  assert(Date.now() - began < 4000);
-  assert.equal(h.runtime.handles.length, 1);
-  assert.equal(await h.runtime.handles[0].waitForExit(AbortSignal.timeout(1000)), true);
-});
+test(
+  'real foreground shell: requested shorter deadline kills an admitted actual child and settles its range',
+  { timeout: 5000 },
+  async (t) => {
+    const h = await host(t);
+    const adopted = await h.adopt();
+    const arrival = Promise.withResolvers();
+    h.runtime.afterSpawn = () => arrival.resolve();
+    // Pre-spawn cwd/source checks legitimately consume the requested deadline.
+    // Advance it only after a real handle exists, so host load cannot turn this
+    // admitted-child cleanup test into a pre-spawn timeout test.
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+    const call = h.call('sleep 30', { timeoutMs: 30 });
+    try {
+      await Promise.race([
+        arrival.promise,
+        call.then(() => assert.fail('command ended before real spawn')),
+      ]);
+      assert.equal(h.runtime.handles.length, 1);
+      t.mock.timers.tick(31);
+      denied(await call);
+      assert.equal(await h.runtime.handles[0].waitForExit(AbortSignal.timeout(1000)), true);
+      await adopted.dispose();
+    } finally {
+      t.mock.timers.reset();
+      await call.catch(() => undefined);
+    }
+  },
+);
 
 for (const kind of ['source', 'permission', 'run'])
   test(`real foreground shell: ${kind} revocation kills an admitted real process before disposal resolves`, async (t) => {

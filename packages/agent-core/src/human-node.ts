@@ -317,14 +317,84 @@ export function submitDelivery(input: {
     files: input.draft.files,
     links: input.draft.links,
   });
+  return commitDelivery(input, input.actorId, fingerprint);
+}
+
+/**
+ * Pure expert-node commit only. A trusted adapter must separately validate the
+ * actual persisted result, current Run/generation/segment and submission right.
+ * The adapter supplies a digest of that full provenance; it is NOT a grant or a native
+ * completion signal. Human-assisted work continues through submitDelivery.
+ */
+export function submitExpertDelivery(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly expertId: string;
+  readonly producerRunId: string;
+  readonly provenanceFingerprint: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly draft: ArtifactDraft & { readonly files: readonly [] };
+  readonly artifactId: string;
+  readonly roundId: string;
+}): NodeCommandResult {
+  if (
+    input.record.handoff.assignee.kind !== 'expert' ||
+    input.record.handoff.assignee.id !== input.expertId
+  )
+    return reject(input.record, 'not-assignee');
+  if (
+    typeof input.producerRunId !== 'string' ||
+    !input.producerRunId.trim() ||
+    input.producerRunId.length > 200 ||
+    typeof input.provenanceFingerprint !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(input.provenanceFingerprint)
+  )
+    return reject(input.record, 'invalid-provenance');
+  // This first domain slice accepts text and safe links, never file claims.
+  if (!Array.isArray(input.draft.files) || input.draft.files.length)
+    return reject(input.record, 'files-not-accepted');
+  const fingerprint = canonicalPayload({
+    kind: 'expert-submit',
+    expertId: input.expertId,
+    nodeId: input.record.nodeId,
+    producerRunId: input.producerRunId,
+    provenanceFingerprint: input.provenanceFingerprint,
+    text: input.draft.text ?? null,
+    files: input.draft.files,
+    links: input.draft.links,
+  });
+  return commitDelivery(input, input.expertId, fingerprint, input.producerRunId);
+}
+
+/** Shared artifact / round / receipt landing; caller-specific gates stay above. */
+function commitDelivery(
+  input: {
+    readonly record: ExecutionNodeRecord;
+    readonly idempotencyKey: string;
+    readonly expectedVersion: number;
+    readonly draft: ArtifactDraft;
+    readonly artifactId: string;
+    readonly roundId: string;
+  },
+  submittedBy: string,
+  fingerprint: string,
+  producerRunId?: string,
+): NodeCommandResult {
   const replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
   if (replay) return replay;
+  if (
+    producerRunId !== undefined &&
+    input.record.command.status !== 'ready' &&
+    input.record.command.status !== 'needs-revision'
+  )
+    return reject(input.record, 'node-not-ready-for-delivery');
   const content = createArtifactVersion({
     id: input.artifactId,
     nodeId: input.record.nodeId,
-    submittedBy: input.actorId,
+    submittedBy,
     draft: input.draft,
     previous: input.record.artifactVersions,
+    ...(producerRunId === undefined ? {} : { producerRunId }),
   });
   if (!content.ok) return reject(input.record, content.code);
   if (
@@ -346,7 +416,7 @@ export function submitDelivery(input: {
   }
   const outcome = applyNodeTransitionCommand(input.record.command, {
     idempotencyKey: input.idempotencyKey,
-    actorId: input.actorId,
+    actorId: submittedBy,
     objectId: input.record.nodeId,
     expectedVersion: input.expectedVersion,
     payload: { type: 'submit-artifact', reviewRequired: input.record.handoff.reviewRequired },

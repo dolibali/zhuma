@@ -48,6 +48,16 @@ import {
 import type { MemberRequest } from './member-session.js';
 import type { NativeWorkGrant } from './native-work-session-contract.js';
 import {
+  runFileListSchema,
+  runFileReadSchema,
+  runFileEncoding,
+  NATIVE_ACCEPTED_FILE_TOOL,
+  type NativeRunAcceptedFiles,
+  type NativeRunFileResourceSource,
+  type NativeRunFileInfo,
+  type NativeRunFileSource,
+} from './native-work-session-files-contract.js';
+import {
   executionRunCompositionSchema,
   readExecutionRunComposition,
   assertExecutionRunComposition,
@@ -55,6 +65,12 @@ import {
   type ExecutionRunCompositionInput,
   type FrozenExecutionRunComposition,
 } from './execution-run-composition.js';
+import {
+  withExecutionRunResourceQualification,
+  ExecutionRunResourceQualificationCloseError,
+  type ExecutionRunResourceCatalogHost,
+  type ExecutionRunResourceVerification,
+} from './execution-run-resource-qualification.js';
 import {
   ExecutionRunAuthorities,
   type ExecutionMemberLease,
@@ -246,10 +262,13 @@ export type ExecutionNodeLocator = z.infer<typeof draftReadSchema>;
 export type ExecutionRunCompositionInputs = ExecutionRunCompositionInput['inputs'];
 
 /** Host-only real producers. Omission refuses Run admission; no DTO is a capability. */
-export interface ExecutionRunHostPorts extends Pick<
-  ExecutionRunAuthoritySource,
-  'memberLease' | 'onChange' | 'signal' | 'migrationOrigin' | 'migrationDrain'
-> {
+export interface ExecutionRunHostPorts
+  extends
+    Pick<
+      ExecutionRunAuthoritySource,
+      'memberLease' | 'onChange' | 'signal' | 'migrationOrigin' | 'migrationDrain'
+    >,
+    ExecutionRunResourceCatalogHost {
   /** Current authoritative mapping (and its source lifetime), not a browser-selected space. */
   assertProjectSpace(projectId: string, spaceId: string): undefined;
   /** Verify the exact frozen expert/input/model/tool composition and executor readiness. */
@@ -845,6 +864,8 @@ export class ExecutionService {
   private writes: Promise<unknown> = Promise.resolve();
   private readonly runLifetime = new AbortController();
   private readonly runChanges = new Set<() => void>();
+  private readonly runPreparations = new Set<Promise<ExecutionResult<ExecutionRunDecision>>>();
+  private runPreparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private readonly uploadLifetime = new AbortController();
@@ -1013,15 +1034,15 @@ export class ExecutionService {
 
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
   beginRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
-    return this.enqueue(() => this.beginRunNow(request, body, false));
+    return this.prepareRunBegin(request, body, false);
   }
 
   /** Normal explicit first start: authenticate all facts before the first global write. */
   startRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
-    return this.enqueue(() => this.beginRunNow(request, body, true));
+    return this.prepareRunBegin(request, body, true);
   }
 
-  private async beginRunNow(
+  private async prepareRunBegin(
     request: MemberRequest,
     body: unknown,
     enableWriter: boolean,
@@ -1037,12 +1058,50 @@ export class ExecutionService {
     const parsed = parseBody(beginRunSchema, body);
     if (!parsed.ok) return parsed;
     const input = parsed.value;
+    if (input.composition.schemaVersion !== 2 || !input.composition.payload.resources)
+      return this.enqueue(() => this.beginRunNow(request, input, enableWriter));
+    let host: ExecutionRunHostPorts;
+    try {
+      host = this.requireRunHost();
+    } catch (error) {
+      if (error instanceof ExecutionRunError) return fail(error.code);
+      throw error;
+    }
+    // Register the whole operation BEFORE invoking a potentially reentrant
+    // provider. Its 145 reads need the original queue, not a second queue.
+    const operation = Promise.resolve().then(async () => {
+      try {
+        return await withExecutionRunResourceQualification(
+          { host, ownerSignal: this.runLifetime.signal, originalRequest: request, command: input },
+          (qualification) =>
+            this.enqueue(() => this.beginRunNow(request, input, enableWriter, qualification)),
+        );
+      } catch (error) {
+        if (error instanceof ExecutionRunResourceQualificationCloseError)
+          this.runPreparationFailure ??= error;
+        if (error instanceof ExecutionRunError || error instanceof ExecutionRunCompositionError)
+          return fail(error.code);
+        throw error;
+      }
+    });
+    this.runPreparations.add(operation);
+    void operation.finally(() => this.runPreparations.delete(operation)).catch(() => undefined);
+    return operation;
+  }
+
+  private async beginRunNow(
+    request: MemberRequest,
+    input: BeginRunRequest,
+    enableWriter: boolean,
+    qualification?: ExecutionRunResourceVerification,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
     return this.withRunMember(
       request,
       input,
       async (host, lease, initial) => {
         let node = initial;
         const verify = async () => {
+          qualification?.assertCurrent();
           this.requireRunHost();
           lease.assertCurrent(input.spaceId);
           const visible = await this.readableRecords(
@@ -1051,6 +1110,7 @@ export class ExecutionService {
             input.spaceId,
           );
           const fresh = this.currentRunCompositionInputs(host, lease, input, visible);
+          qualification?.assertCurrent();
           node = fresh.node;
           const state = readExecutionRunState(node);
           const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
@@ -1081,6 +1141,15 @@ export class ExecutionService {
                   ? { kind: 'builtin' }
                   : { kind: 'plan-expert', ref: executor.ref },
               tools: input.composition.payload.tools,
+              ...(qualification ? { resourceCatalog: qualification.catalog } : {}),
+              ...('acceptedFileReader' in input.composition.payload &&
+              input.composition.payload.acceptedFileReader !== undefined
+                ? { acceptedFileReader: input.composition.payload.acceptedFileReader }
+                : {}),
+              ...('resultIntentTool' in input.composition.payload &&
+              input.composition.payload.resultIntentTool !== undefined
+                ? { resultIntentTool: input.composition.payload.resultIntentTool }
+                : {}),
               inputs: {
                 actorId: lease.memberId,
                 spaceId: input.spaceId,
@@ -1114,6 +1183,7 @@ export class ExecutionService {
               executorConnected: true,
             },
           );
+          qualification?.assertCurrent();
         };
         await verify();
         if (enableWriter) {
@@ -1132,7 +1202,10 @@ export class ExecutionService {
           { expertEnabled: true, executorConnected: true, writerState: this.readRunGlobal() },
         );
         lease.assertCurrent(input.spaceId);
-        return this.commitRunDecision(decision);
+        qualification?.assertCurrent();
+        const committed = await this.commitRunDecision(decision);
+        qualification?.assertCurrent();
+        return committed;
       },
       !enableWriter,
     );
@@ -1199,8 +1272,10 @@ export class ExecutionService {
   /** Call only after the native owner drained and its cleanup facts committed. */
   async closeRuns(): Promise<void> {
     this.fenceRuns();
+    while (this.runPreparations.size) await Promise.allSettled([...this.runPreparations]);
     await this.writes;
     await this.runAuthorities?.close();
+    if (this.runPreparationFailure) throw this.runPreparationFailure;
   }
 
   private requireRunHost(): ExecutionRunHostPorts {
@@ -1931,13 +2006,28 @@ export class ExecutionService {
     assertCurrent: () => unknown,
     collect: boolean,
   ): Promise<{ bytes: Uint8Array | undefined; release(): void }> {
+    return this.verifyOwnedFileBytes(
+      record,
+      AbortSignal.any([authority.lease.signal, this.fileLifetime.signal]),
+      assertCurrent,
+      collect,
+    );
+  }
+
+  /** Same physical quota/drain for human reads and the Host-only Run consumer. */
+  private async verifyOwnedFileBytes(
+    record: UploadFileRecord,
+    signal: AbortSignal,
+    assertCurrent: () => unknown,
+    collect: boolean,
+    drainBeforeReject = false,
+  ): Promise<{ bytes: Uint8Array | undefined; release(): void }> {
     if (!this.attachments) throw new ArtifactUploadError('unavailable');
     if (
       [...this.fileReadResources].filter((item) => item.spaceId === record.spaceId).length >=
       ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace
     )
       throw new ArtifactUploadError('quota-exceeded');
-    const signal = AbortSignal.any([authority.lease.signal, this.fileLifetime.signal]);
     const read = readVerifiedArtifactFile({
       attachments: this.attachments,
       record,
@@ -1969,6 +2059,7 @@ export class ExecutionService {
       return { bytes: await read.result, release };
     } catch (error) {
       release();
+      if (drainBeforeReject) await resource.drain;
       throw error;
     }
   }
@@ -1981,6 +2072,223 @@ export class ExecutionService {
     while (this.fileOperations.size) await Promise.allSettled([...this.fileOperations]);
     while (this.fileReadResources.size)
       await Promise.all([...this.fileReadResources].map((item) => item.drain));
+  }
+
+  /** Host-only factory: the original installed issuer, not a structural grant, authorizes. */
+  createRunAcceptedFiles(
+    issuer: ExecutionRunAuthorities,
+    resources: NativeRunFileResourceSource,
+  ): NativeRunAcceptedFiles {
+    const host = this.requireRunHost();
+    const attachments = this.attachments;
+    const files = this.fileStore;
+    if (
+      issuer !== this.runAuthorities ||
+      !attachments ||
+      !files ||
+      !(resources?.signal instanceof AbortSignal) ||
+      typeof resources.assertCurrent !== 'function'
+    )
+      throw new ArtifactUploadError('unavailable');
+    const assertCurrent = (grant: NativeWorkGrant, signal: AbortSignal) => {
+      if (issuer !== this.runAuthorities || host !== this.requireRunHost())
+        throw new ArtifactUploadError('unavailable');
+      issuer.assertGrant(grant, 'send');
+      if (signal.aborted || resources.signal.aborted || this.fileLifetime.signal.aborted)
+        throw new ArtifactUploadError('cancelled');
+      if (attachments !== this.attachments || files !== this.fileStore)
+        throw new ArtifactUploadError('unavailable');
+      const result: unknown = resources.assertCurrent(attachments);
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new ArtifactUploadError('unavailable');
+      }
+    };
+    const operation = <T>(work: () => Promise<T>): Promise<T> => {
+      const pending = Promise.resolve()
+        .then(work)
+        .catch((error: unknown) => {
+          if (error instanceof ArtifactUploadError || error instanceof ExecutionRunError)
+            throw error;
+          throw new ArtifactUploadError('unavailable');
+        });
+      this.fileOperations.add(pending);
+      void pending.then(
+        () => this.fileOperations.delete(pending),
+        () => this.fileOperations.delete(pending),
+      );
+      return pending;
+    };
+    const begin = (grant: NativeWorkGrant, caller: AbortSignal) => {
+      // Check issuer identity before inspecting any claimed scope/signal.
+      issuer.assertGrant(grant, 'send');
+      if (!(caller instanceof AbortSignal)) throw new ArtifactUploadError('invalid-request');
+      const signal = AbortSignal.any([
+        caller,
+        grant.signal,
+        resources.signal,
+        host.signal,
+        this.fileLifetime.signal,
+        this.runLifetime.signal,
+      ]);
+      assertCurrent(grant, signal);
+      return signal;
+    };
+    const capture = (grant: NativeWorkGrant, inputRef: string, signal: AbortSignal) => {
+      assertCurrent(grant, signal);
+      const initial = this.currentRunFileInput(grant, inputRef, host);
+      const fingerprint = canonicalPayload(initial);
+      const check = () => {
+        assertCurrent(grant, signal);
+        if (canonicalPayload(this.currentRunFileInput(grant, inputRef, host)) !== fingerprint)
+          throw new ArtifactUploadError('not-found');
+        assertCurrent(grant, signal);
+      };
+      return { ...initial, check };
+    };
+    return Object.freeze({
+      list: (grant, raw, caller) =>
+        operation(async () => {
+          const signal = begin(grant, caller);
+          const query = runFileListSchema.safeParse(raw);
+          if (!query.success) throw new ArtifactUploadError('invalid-request');
+          const state = capture(grant, query.data.inputRef, signal);
+          const value = {
+            ...structuredClone(state.source),
+            files: state.infos.map((file) => ({ ...file })),
+          };
+          if (Buffer.byteLength(JSON.stringify(value)) > 24_576)
+            throw new ArtifactUploadError('output-too-large');
+          state.check();
+          return { ...value, check: state.check };
+        }),
+      read: (grant, raw, caller) =>
+        operation(async () => {
+          const signal = begin(grant, caller);
+          const query = runFileReadSchema.safeParse(raw);
+          if (!query.success) throw new ArtifactUploadError('invalid-request');
+          const { inputRef, fileId, offset, length } = query.data;
+          const state = capture(grant, inputRef, signal);
+          const index = state.records.findIndex((record) => record.uploadId === fileId);
+          const record = state.records[index];
+          const info = state.infos[index];
+          if (!record || !info) throw new ArtifactUploadError('not-found');
+          if (offset > record.byteSize) throw new ArtifactUploadError('invalid-request');
+          let owned: { bytes: Uint8Array | undefined; release(): void } | undefined;
+          let released = false;
+          const release = () => {
+            if (released) return;
+            released = true;
+            signal.removeEventListener('abort', release);
+            owned?.release();
+            owned = undefined;
+          };
+          signal.addEventListener('abort', release, { once: true });
+          try {
+            owned = await this.verifyOwnedFileBytes(record, signal, state.check, true, true);
+            state.check();
+            if (released || !owned.bytes) throw new ArtifactUploadError('cancelled');
+            const bytes = owned.bytes.slice(offset, Math.min(offset + length, record.byteSize));
+            const encoding = runFileEncoding(info, owned.bytes);
+            state.check();
+            return {
+              source: { ...structuredClone(state.source), file: { ...info } },
+              range: { offset, length: bytes.length, total: record.byteSize },
+              bytes,
+              encoding,
+              signal,
+              check() {
+                if (released) throw new ArtifactUploadError('cancelled');
+                state.check();
+              },
+              release,
+            };
+          } catch (error) {
+            // An abort may have happened before the pending read returned its handle.
+            owned?.release();
+            release();
+            throw error;
+          }
+        }),
+    } satisfies NativeRunAcceptedFiles);
+  }
+
+  /** Current authoritative fixed objects; no human-assignee or caller impersonation. */
+  private currentRunFileInput(
+    grant: NativeWorkGrant,
+    inputRef: string,
+    host: ExecutionRunHostPorts,
+  ): { source: NativeRunFileSource; infos: NativeRunFileInfo[]; records: UploadFileRecord[] } {
+    if (!this.fileStore) throw new ArtifactUploadError('unavailable');
+    const scope = grant.scope;
+    const node = this.currentFileNode(scope);
+    this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
+    const snapshot = this.readRunComposition(scope);
+    const saved = snapshot.payload;
+    const allowed: readonly string[] = saved.toolAllowlist;
+    if (
+      !allowed.includes(NATIVE_ACCEPTED_FILE_TOOL) ||
+      canonicalPayload(saved.scope) !== canonicalPayload(scope) ||
+      canonicalPayload(saved.handoff) !== canonicalPayload(node.handoff) ||
+      saved.contextRefs.length !== saved.inputs.length ||
+      saved.contextRefs.filter((ref) => ref === inputRef).length !== 1
+    )
+      throw new ArtifactUploadError('not-found');
+    const input = saved.inputs[saved.contextRefs.indexOf(inputRef)];
+    if (
+      !input ||
+      !(node.handoff.inputRefs ?? []).some(
+        (ref) =>
+          ref.sourceNodeId === input.sourceNodeId &&
+          ref.artifactVersionId === input.artifactVersionId,
+      )
+    )
+      throw new ArtifactUploadError('not-found');
+    const upstream = this.currentFileNode({ ...scope, nodeId: input.sourceNodeId });
+    this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, upstream);
+    const artifact = upstream.artifactVersions.find(
+      (version) => version.id === input.artifactVersionId,
+    );
+    if (
+      upstream.acceptedArtifactVersionId !== input.artifactVersionId ||
+      !artifact ||
+      artifact.version !== input.version ||
+      artifact.files.length > ARTIFACT_FILE_LIMITS.maxFilesPerSubmission ||
+      new Set(artifact.files.map((file) => file.id)).size !== artifact.files.length
+    )
+      throw new ArtifactUploadError('not-found');
+    const records = artifact.files.map((file) => {
+      const record = this.fileStore!.get(file.id);
+      if (
+        !record ||
+        record.spaceId !== scope.spaceId ||
+        record.taskId !== scope.taskId ||
+        record.planId !== scope.planId ||
+        record.revision !== scope.revision ||
+        record.nodeId !== upstream.nodeId ||
+        !matchesArtifactFileReference(file, record)
+      )
+        throw new ArtifactUploadError('not-found');
+      return { ...record };
+    });
+    const infos = records.map((record) => ({
+      fileId: record.uploadId,
+      name: artifactFileLeaf(record.name),
+      mediaType: record.mediaType,
+      bytes: record.byteSize,
+      sha256: record.sha256,
+    }));
+    return {
+      source: {
+        scope: structuredClone(scope),
+        inputRef,
+        sourceNodeId: upstream.nodeId,
+        artifactVersionId: artifact.id,
+        version: artifact.version,
+      },
+      infos,
+      records,
+    };
   }
 
   ballot(caller: ExecutionCaller, body: unknown) {

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import { Context } from '@deepseek-ai/cordis';
 import Prompt from '@deepseek-ai/dsh-system-prompt';
 import Tools from '@deepseek-ai/dsh-tools';
@@ -30,6 +30,9 @@ import {
   executionRunCompositionRequest,
   EXECUTION_RESOURCE_SOURCE_VERSION,
   executionResourceDigest,
+  describeAcceptedInputTool,
+  acceptedFileDescriptor,
+  resultIntentDescriptor,
 } from './zhuma-run-resources-bundle.js';
 
 async function setup(
@@ -43,6 +46,7 @@ async function setup(
     parentGlobal = true,
     empty = false,
     invocation,
+    surface,
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-run-resources-'));
@@ -78,8 +82,22 @@ async function setup(
     assert(qualifier.tools.get('mcp__docs__hidden'), 'the peer really has an unselected tool');
   }
   await qualifier.fiber.dispose();
-  const facts = compositionFacts(),
+  const facts = compositionFacts({ upstream: surface === 'reader' || surface?.includes('file') }),
     plan = facts.workbench.appliedPlans[0];
+  const independentDescriptors = [];
+  if (surface === 'reader' || surface?.includes('file')) {
+    const definition = describeAcceptedInputTool();
+    facts.tools = { kind: 'accepted-input-reader', definition };
+    independentDescriptors.push(definition);
+  }
+  if (surface?.includes('file')) {
+    facts.acceptedFileReader = acceptedFileDescriptor;
+    independentDescriptors.push(acceptedFileDescriptor);
+  }
+  if (surface?.includes('result')) {
+    facts.resultIntentTool = resultIntentDescriptor;
+    independentDescriptors.push(resultIntentDescriptor);
+  }
   const node = plan.task.workflows[0].nodes.find((item) => item.id === facts.node.nodeId);
   plan.assets = [
     {
@@ -207,10 +225,28 @@ async function setup(
         formations.push(decision.messages ?? []);
         return decision;
       });
+      // Surface-only contracts for independent C tools: real SDK registrations
+      // use their exact declarations, but do not claim file IO/result authority.
+      for (const definition of independentDescriptors)
+        ctx.tools.register({
+          name: definition.name,
+          description: definition.description,
+          parameters: definition.parameters,
+          output: { schema: definition.outputSchema, render: () => [] },
+          async execute() {
+            assert.fail('surface-only contract must not execute an independent C tool');
+          },
+        });
       adopted = await registerExecutionRunResources(ctx, snapshot, binding, current, producer);
+      assert.deepEqual(
+        [...adopted.toolAllowlist].sort(),
+        snapshot.payload.toolAllowlist
+          .filter((name) => name === 'skill' || name.startsWith('mcp__'))
+          .sort(),
+      );
       return {
         context: snapshot.payload.context,
-        toolAllowlist: [...new Set([...snapshot.payload.toolAllowlist, ...adopted.toolAllowlist])],
+        toolAllowlist: snapshot.payload.toolAllowlist,
       };
     },
   );
@@ -244,6 +280,17 @@ async function setup(
     const agent = h.ctx.agents.get(binding.nativeSessionId);
     assert(agent);
     await agent.whenIdle();
+    assert.deepEqual(
+      h.ctx.tools
+        .schemas(agent)
+        .map((tool) => tool.name)
+        .sort(),
+      [...snapshot.payload.toolAllowlist].sort(),
+    );
+    assert.deepEqual(
+      (h.adapter.requests[0].tools ?? []).map((tool) => tool.name).sort(),
+      [...snapshot.payload.toolAllowlist].sort(),
+    );
     return agent;
   };
   let callId = 0;
@@ -284,6 +331,64 @@ async function setup(
     },
   };
 }
+test('actual resources SDK: a non-undefined public binding result refuses before Agent execution', async (t) => {
+  const fault = vi
+    .spyOn(
+      ToolSkill as unknown as { bindSkillRegistry(...args: unknown[]): unknown },
+      'bindSkillRegistry',
+    )
+    .mockReturnValue(false);
+  try {
+    const f = await setup(t, { mcp: false, empty: true });
+    await assert.rejects(f.start);
+    assert.equal(f.adopted, undefined);
+    assert.equal(f.h.adapter.requests.length, 0);
+  } finally {
+    fault.mockRestore();
+  }
+});
+
+test('actual resources SDK: an asynchronous public binding result refuses and drains its true completion', async (t) => {
+  const entered = Promise.withResolvers<void>(),
+    finished = Promise.withResolvers<void>();
+  const fault = vi
+    .spyOn(
+      ToolSkill as unknown as { bindSkillRegistry(...args: unknown[]): unknown },
+      'bindSkillRegistry',
+    )
+    .mockImplementation(() => {
+      entered.resolve();
+      return finished.promise;
+    });
+  let starting;
+  try {
+    const f = await setup(t, { mcp: false, empty: true });
+    starting = f.start();
+    void starting.catch(() => undefined);
+    await entered.promise;
+    assert.equal(f.h.adapter.requests.length, 0);
+    let settled = false;
+    void starting.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    finished.resolve();
+    await assert.rejects(starting);
+    assert.equal(f.adopted, undefined);
+    assert.equal(f.h.adapter.requests.length, 0);
+  } finally {
+    finished.resolve();
+    await starting?.catch(() => undefined);
+    fault.mockRestore();
+  }
+});
+
 test('actual resources SDK: isolated official skill catalog and loader expose exactly one of two plan skills', async (t) => {
   const f = await setup(t, { mcp: false }),
     agent = await f.start();
@@ -520,7 +625,46 @@ for (const mcp of [false, true])
       assert.equal(result.isError, false);
       assert.deepEqual(f.fixture.calls, ['ping']);
     }
+    await f.h.service.send(f.authority, {
+      requestId: 'empty-explicit',
+      text: '/parent-private-skill\nAn unselected parent method must not load.',
+      mode: 'followup',
+      selection: executionRunCompositionRequest(f.snapshot).selection,
+    });
+    await agent.whenIdle();
+    assert(!JSON.stringify(f.h.adapter.requests).includes('PARENT_PRIVATE_BODY'));
   });
+for (const surface of ['legacy', 'reader', 'file', 'result', 'file-result'])
+  for (const parentGlobal of [true, false])
+    test(`actual resources SDK: exact frozen ${surface} surface with ${parentGlobal ? 'existing' : 'late'} global loader`, async (t) => {
+      const f = await setup(t, { mcp: false, empty: true, surface, parentGlobal }),
+        agent = await f.start();
+      assert.deepEqual(f.adopted.toolAllowlist, []);
+      assert(!f.snapshot.payload.toolAllowlist.includes('skill'));
+      assert.equal(f.opened, 0);
+      if (!parentGlobal) await f.h.ctx.plugin(ToolSkill);
+      for (const name of ['parent-private-skill', 'sibling-skill']) {
+        const denied = await f.call(agent, 'skill', { name });
+        assert.equal(denied.isError, true);
+      }
+      await f.h.service.send(f.authority, {
+        requestId: 'surface-explicit',
+        text: '/parent-private-skill\nNo resource was selected for this Run.',
+        mode: 'followup',
+        selection: executionRunCompositionRequest(f.snapshot).selection,
+      });
+      await agent.whenIdle();
+      assert.equal(f.h.adapter.requests.length, 2);
+      assert(!JSON.stringify(f.h.adapter.requests).includes('PARENT_PRIVATE_BODY'));
+      assert.deepEqual(
+        f.h.ctx.tools
+          .schemas(agent)
+          .map((tool) => tool.name)
+          .sort(),
+        [...f.snapshot.payload.toolAllowlist].sort(),
+      );
+      assert(!f.formations.flat().some((message) => message.source?.kind === 'skill-invocation'));
+    });
 for (const [name, modelInvocable, userInvocable] of [
   ['user-only', false, true],
   ['model-only', true, false],
