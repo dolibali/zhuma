@@ -71,16 +71,6 @@
       "caption": "Historical failed normal binary Download: old Client rejected gzip without Content-Length; not a current pass."
     },
     {
-      "file": "reviewer-b-binary-download-fixed.jpg",
-      "sourceCommit": "def08e4b4e254929611b928e4ec67cfdca26486d",
-      "theme": "light",
-      "width": 1440,
-      "height": 900,
-      "bytes": 46047,
-      "sha256": "ff54f1ed7d594cabac83b857c1adade6e4eb322dc67b6bcceb17b6d3efcc525f",
-      "caption": "Same fixed first version, actual Download now produces exact4096 bytes and original SHA; comment-only note is also present."
-    },
-    {
       "file": "reviewer-c-v2-preview-and-vote.jpg",
       "sourceCommit": "def08e4b4e254929611b928e4ec67cfdca26486d",
       "theme": "light",
@@ -129,6 +119,12 @@
       "bytes": 51013,
       "sha256": "a4cf583b136479c5b1a16c3be678887068cd4f7ab7673a44f7a90ca2371daf58",
       "caption": "Separate lifecycle state after explicit Stop; not a before/after design comparison."
+    }
+  ],
+  "rejectedImages": [
+    {
+      "file": "reviewer-b-binary-download-fixed.jpg",
+      "reason": "Scroll transition reduced text clarity; excluded from accepted visual evidence. Real download byte/hash proof is retained separately and reproduced in the downstream scene."
     }
   ]
 }
