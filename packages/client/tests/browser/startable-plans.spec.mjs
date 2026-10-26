@@ -47,7 +47,7 @@ test('normal member entry discovers and selects without executing; explicit star
   await setup(page, true);
   await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
   await button(page, '提交产物').click();
-  await page.getByLabel('产物正文', { exact: true }).fill('正在处理的交付草稿');
+  await page.getByLabel('补充说明（选填）', { exact: true }).fill('正在处理的交付草稿');
   await choose(page, base);
   await button(page, '刷新计划').click();
   await expect(picker(page)).toBeEnabled();
@@ -67,7 +67,9 @@ test('normal member entry discovers and selects without executing; explicit star
   await finish(page, 'start-plan');
   await expect(button(page, '开始执行')).toHaveCount(0);
   await expect(page.getByText('执行 订单筛选方案', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('产物正文', { exact: true })).toHaveValue('正在处理的交付草稿');
+  await expect(page.getByLabel('补充说明（选填）', { exact: true })).toHaveValue(
+    '正在处理的交付草稿',
+  );
   await expect.poll(async () => (await calls(page, 'inbox')).length).toBe(beforeInbox + 1);
   await picker(page).click();
   await expect(page.getByRole('option', { name: base, exact: true })).toHaveCount(0);

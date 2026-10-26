@@ -35,8 +35,12 @@ test('revision normal inbox entry reads the fixed returned version, history, cit
   await expect(page.locator('.zm-revision-notes')).toContainText('林夏');
   await expect(page.locator('.zm-revision-notes')).toContainText('质量专家');
   await expect(page.locator('.zm-revision-notes')).toContainText('comment-auth');
-  await expect(source(page)).toContainText('file-contract-v2');
-  await expect(source(page)).toContainText('本次查询未提供文件预览');
+  const files = source(page).getByRole('list', { name: '附件', exact: true });
+  await expect(files.getByRole('listitem')).toHaveCount(1);
+  await expect(files).toContainText('2.3 KiB · text/markdown');
+  await expect(files).toContainText('文件读取尚未接入');
+  await expect(files).not.toContainText('file-contract-v2');
+  await expect(files.getByRole('button')).toHaveCount(0);
   expect(
     await page
       .locator('.zm-revision a[download], .zm-revision iframe, .zm-revision a[href^="#comment"]')
@@ -66,9 +70,13 @@ test('revision version picker and named history button show the referenced versi
   await page.getByRole('option', { name: '上一版 · 第 1 版', exact: true }).click();
   await expect(source(page)).toContainText('接口初稿：GET /orders。');
   await expect(source(page)).not.toContainText('增加 status 筛选');
+  await expect(source(page).getByRole('list', { name: '附件', exact: true })).toHaveCount(0);
   const currentNote = page.locator('.zm-revision-note').filter({ hasText: '林夏' });
   await currentNote.getByRole('button', { name: '查看引用版本', exact: true }).click();
   await expect(source(page)).toContainText('增加 status 筛选');
+  await expect(source(page).getByRole('list', { name: '附件', exact: true })).toContainText(
+    '2.3 KiB · text/markdown',
+  );
   await expect(source(page).locator('article')).toBeFocused();
 });
 
