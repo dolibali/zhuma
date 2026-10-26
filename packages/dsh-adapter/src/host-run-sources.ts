@@ -7,6 +7,7 @@ import { openExecutionMemberLease } from './member-session.js';
 import type { createHostDirectoryLifecycle } from './host-directory-lifecycle.js';
 import type { NativeWorkSessionService } from './native-work-session.js';
 import { NativeWorkError } from './native-work-session-contract.js';
+import type { createHostRunResourceSource } from './host-run-resource-source.js';
 
 export interface HostRunSources {
   readonly directory: Pick<
@@ -16,6 +17,10 @@ export interface HostRunSources {
   readonly configuration: Pick<ExecutionRunHostPorts, 'assertConfiguration' | 'assertWorkspace'>;
   readonly native: Pick<NativeWorkSessionService, 'migrationOrigin' | 'migrationDrain'>;
   readonly signal: AbortSignal;
+  readonly resources?: Pick<
+    ReturnType<typeof createHostRunResourceSource>,
+    'prepareResourceCatalog'
+  >;
 }
 
 /** Combine original Host producers. This does not install a writer or drive native work. */
@@ -25,6 +30,12 @@ export function createHostRunSources(ctx: Context, sources: HostRunSources): Exe
   };
   return {
     signal: sources.signal,
+    prepareResourceCatalog(request, command) {
+      active();
+      if (!sources.resources) throw new ExecutionRunError('run-authority-unavailable');
+      // D owns the whole promise, including release of a late qualification.
+      return sources.resources.prepareResourceCatalog(request, command);
+    },
     memberLease(request) {
       active();
       return openExecutionMemberLease(ctx, request);
