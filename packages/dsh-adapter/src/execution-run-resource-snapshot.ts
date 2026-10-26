@@ -249,8 +249,9 @@ export function freezeExecutionRunResources(
   });
 }
 export function executionResourceToolNames(resources: FrozenExecutionRunResources): string[] {
+  if (!resources.skills.length && !resources.mcp.length) return [];
   return [
-    // Generic loader owns even an empty selected domain; it grants no body.
+    // Nonempty frozen resources retain the original generic loader capability.
     'skill',
     ...resources.mcp.flatMap((item) => item.tools.map((tool) => tool.name)),
   ];

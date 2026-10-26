@@ -38,7 +38,7 @@ producer = {
 
 `ExecutionRunResourceAdoption` 返回 `signal`、真实工具全名、描述、`ready`、幂等 `drain()` / `dispose()`。异步注册仅在 SDK 真正激活后返回，ready 不代表 Agent 或业务 Run 已接受。drain 与 dispose 是同一个关闭并排空操作；不把中断等待或 CLI 退出当成清理证明。
 
-所有受控 Run 均须调用采用入口：schema 1 的零资源 Run 和 MCP-only Run 也安装独立空 SkillRegistry 与官方 loader，任意名称都不能退回父目录。其返回的 `toolAllowlist` 包含通用 `skill`；A 可将其与已保存的基础 allowlist 合并用于工具注册 / 发现，但不改写旧 schema 1 的 JSON、配置 ID 或已有执行标志。通用 schema 可见不表示有选定 Skill，更不授予正文权限。
+所有受控 Run 均须调用采用入口并安装独立 SkillRegistry。没有 resources 的 schema 1、文件 / 完成意图独立槽不注册通用 loader，资源贡献的 `toolAllowlist` 必须为 `[]`；空域 guard 拒绝执行继承的同名 loader。真正已冻结的非空 resources schema 2 保留原官方 loader 和选中 Skill / MCP 行为，MCP-only 的 Skill registry 仍为空。A / C 必须采用原冻结 allowlist，且实际 schema keys 完全相等，不得 union / append 额外能力或改写旧 JSON / 配置 ID。显式用户调用的全局钩子仍需下面的准确 SDK 所有权资格，单凭空 registry 或执行 guard 不足以阻止该独立路径。
 
 | 操作                    | 顺序与拒绝                                                                         | 取消、幂等与敏感信息                                                                      |
 | ----------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
@@ -53,7 +53,11 @@ producer = {
 
 ## SDK 采用
 
-Skill 使用公开 `Context.isolate('skills')` 和该域独立的官方 `SkillRegistry`，虚拟注册本 Run 冻结定义，再安装官方 `ToolSkill`。目录保留 `skill-catalog` 来源；显式调用保留 `skill-invocation`，不复刻 loader 或另造聊天库。
+同图官方 ToolSkill 必须提供同步公共 `bindSkillRegistry(agentCtx, actualRegistry): undefined`。桥在 await 实际隔离 SkillRegistry 激活后，以同一真实服务调用一次，先于局部 ToolSkill 安装和任何 Agent step；空域也调用。SDK 按真实 Agent scope 绑定 registry 原身份与 owner 生命周期，保留失效墓碑直到实际 scope 关闭；不比较可能不同 child context 的 caller.skills，不允许父级 registry 回退。相同 original 的合法 Cordis proxy 绑定幂等，其他 original / 同名假体或 active 重绑拒绝，未绑定普通 Agent 保持原语义，这些由 A SDK 实现和资格化。
+
+桥通过官方 namespace 的显式反射兼容根 npm 声明，缺 API 或不是函数即拒绝；非 undefined / 异步返回也在 Agent 执行前拒绝，异常异步工作的真实结束纳入原 pending / drain。持续检查 namespace 方法身份与真实 registry 原 identity，不用配置数据、工具名、私有 SDK 函数或本地 slash 解析替代该栅栏。D 组件证明采用 A [PR #155](https://github.com/dolibali/zhuma/pull/155) 准确 head `a99279ff9c1265afca93f03bedb7257071e4537f` 的完整补丁 SHA256 `c6b3c03c3b29b8cf36ad91e7d8a4c402229b4ec818fd7d134705dc771b68fcd1`，在 pin `687f282e8625c6b8d11ff58211a90524be2e4317` 的独立新 SDK 树资格化；ToolSkill 源 SHA256 `0bd2bc2e83778e401a8338b7366b41c792b255687f38a1ff3a0b64f36251d794`，CoreTools 保持 `3711a1cb28bd787ec75c461168b8a8dd1c7c92f7824907ce4fc84c9310d54d83`。该准确输入的组件证明不替代正式 Host / 发行集成；旧 #144 只有 getRegistered 的版本在进入模型前明确拒绝。
+
+Skill 使用公开 `Context.isolate('skills')` 和该域独立的官方 `SkillRegistry`，虚拟注册本 Run 冻结定义；只有非空 resources 才安装官方 `ToolSkill`。目录保留 `skill-catalog` 来源；显式调用保留 `skill-invocation`，不复刻 loader 或另造聊天库。
 
 MCP 的完整发现目录放在公开隔离的官方 ToolRuntime。其构造器也会注册 prompt tools provider，因此构造阶段连 SystemPrompt 一起隔离；仅隔离 tools 曾实测泄漏未选工具。连接通过公开相同 tools label 加入该 registry，并保留官方、限定此 Agent 的 server instructions；只把实际选中且已核对的原 ToolDefinition 注册到正常 Agent 的工具层。禁止复制未选 schema 或把另一个 SDK 图打进 Host。
 
@@ -67,6 +71,8 @@ MCP 的完整发现目录放在公开隔离的官方 ToolRuntime。其构造器�
 
 已用该精确 SDK 的实际 Agent / 官方 loader 在 global-first 与 local-first 顺序验证只读当前 Run 所选定义；机械还原两个 SDK 生产文件后，同一两项探针均因父级私有正文进入实际模型请求而失败。该组件证据后才移除先前拒绝所有祖先 loader 的临时限制。桥仍持续核同一 Tools service / 查询方法和注册 identity；资源失效或 dispose 后，拒绝 guard 保留到真正 Agent scope 关闭，避免继承工具或全局显式钩子成为后备权限。
 
+新增空域精确工具集验证修正了早先夹具中的 union：原实现对旧 `[]` 配置实际贡献 `['skill']`，真实默认 factory 的精确断言失败。去掉空域 loader 后，在仍使用 #144 的固定 SDK 上，已有及迟到全局 loader 两种顺序的 legacy / accepted-input / file / result / file+result 十项场景虽通过初始精确 schema keys 检查，第二轮显式 `/parent-private-skill` 却均因父级私有正文进入模型请求而失败。#144 原十九项通过只说明当时断言范围，不能认证这条新路径；这些失败按原源码和报告保留，不转换成通过。随后在上述准确新补丁与独立新缓存下，31 项真实 SDK 场景全部通过，包括原十项精确空域、选中 user-only / MCP、普通未绑定 Agent，以及非 undefined 拒绝、异步返回拒绝并等待真正结束。只从生成 bundle 删除 D 的一次公共绑定调用后，同一 legacy 探针再次因父级私有正文进入实际模型请求而失败；生成 bundle 已恢复准确摘要，生产 / SDK 源未改。缺新 API 的旧 #144 另由默认 factory 探针证明执行前拒绝、模型请求为零。
+
 这不是正常 Host、GUI 或安装包采用证明。A 仍须在正式 Host 装配并资格化同一 SDK 模块图、已授权资源 producer 和所有受控 Run 的空 / 选定域；不能只增加包依赖或一个 allowlist 字符串便关闭 #35 / #37。
 
 ## 验证与交接
@@ -75,8 +81,12 @@ MCP 的完整发现目录放在公开隔离的官方 ToolRuntime。其构造器�
 
 SDK 资格环境使用固定补丁 upstream、单一源码模块图和现有 `native-work-session-fixture.mjs` 的实际 boot。A 的验证入口需把本 spec 放入 SDK agent-loop 测试目录，并供应：
 
-1. `zhuma-run-resources-bundle.js`：从公开 agent-core / context 构建入口组合 resources、composition、`compositionFacts` 以及 native fixture 的 boot / grant / ScriptedAdapter；所有 live `@deepseek-ai/*` 保持外部并统一指向该固定 SDK。
+1. `zhuma-run-resources-bundle.js`：从公开 agent-core / context 构建入口组合 resources、composition、`compositionFacts` 以及 native fixture 的 boot / grant / ScriptedAdapter，另导出 C 的 `describeAcceptedInputTool` 与准确 JSON fixtures `acceptedFileDescriptor / resultIntentDescriptor`；所有 live `@deepseek-ai/*` 保持外部并统一指向该固定 SDK。
 2. `zhuma-run-resource-http.js`：SDK 官方 `mcp-client/tests/http-fixture.ts` 的本地 HTTP server，增加一个未选工具、明确 server instructions 和可暂停一次 initialize 的测试 gate。没有模型凭据、假 binding 或假 absence。
+
+新增独立工具集合测试只在实际 SDK 注册 C 同一描述，独立文件 / 结果工具处理器为禁止执行的 surface-only contract；不重复或代替 C 的真实文件 IO、complete_work 调用、cut 或提交资格。所有场景都使用默认 factory、冻结 allowlist 与实际 schemas / 模型请求精确比较。
+
+新增 public binding API 非 undefined 与异步返回用实际同图 namespace 的受控故障验证，前者不发布 Agent，后者在 gate 真正结束前不报告排空；不以故障替身认证正常 SDK 行为。
 
 覆盖二选一 Skill catalog / load、两种 global / local 安装顺序、父和 sibling scope、正确 user 来源显式调用、user-only / model-only / both-false、空域 / MCP-only、实际 MCP list / call 与 server instructions、未选工具、错描述 / 版本、源撤销、同名 loader 替换、其他普通 Agent、断连、启动中取消，以及 final close 等待晚到 Host 租约。原全局 ToolSkill 失败、旧版本临时祖先拒绝，以及精确 SDK 修复后的正常 profile 通过分列，不把旧验证认证后续源码。
 
