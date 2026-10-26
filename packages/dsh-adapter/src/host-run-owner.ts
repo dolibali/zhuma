@@ -4,6 +4,12 @@ import { z } from 'zod';
 import { createHostRunConfiguration } from './host-run-configuration.js';
 import { createHostRunOptions } from './host-run-options.js';
 import { createHostRunSources } from './host-run-sources.js';
+import { createHostRunResourceSource } from './host-run-resource-source.js';
+import type { createHostRunSkillPolicies } from './host-run-skill-policy.js';
+import {
+  registerExecutionRunResources,
+  type ExecutionRunResourceAdoption,
+} from './execution-run-resources.js';
 import {
   assertHostAbsentRetry,
   retireHostUnadmittedScope,
@@ -79,6 +85,8 @@ interface OwnedRun {
   stopObservation?: () => void;
   stopFault?: () => void;
   stopRevocation?: () => void;
+  resourceAdoption?: ExecutionRunResourceAdoption;
+  stopResources?: () => void;
   firstMessageId?: string;
   nativeSessionId?: string;
   nativeAgentId?: string;
@@ -93,6 +101,7 @@ export async function openHostRunOwner(
     readonly execution: ExecutionService;
     readonly directory: Parameters<typeof createHostRunSources>[1]['directory'];
     readonly signal: AbortSignal;
+    readonly skillPolicies: ReturnType<typeof createHostRunSkillPolicies>;
     readWorkbench(): Workbench;
   },
 ) {
@@ -106,15 +115,23 @@ export async function openHostRunOwner(
   let authorities: ExecutionRunAuthorities;
   let fenced = false;
   let closing: Promise<void> | undefined;
+  const resources = createHostRunResourceSource({
+    execution,
+    policies: options.skillPolicies,
+    readWorkbench: options.readWorkbench,
+    signal: lifetime.signal,
+  });
   const configuration = createHostRunConfiguration(ctx, {
     execution,
     readWorkbench: options.readWorkbench,
     signal: lifetime.signal,
+    resources,
   });
   const readOptions = createHostRunOptions(ctx, {
     execution,
     readWorkbench: options.readWorkbench,
     signal: lifetime.signal,
+    resources,
   });
   const native = await openNativeWorkSessions(ctx, {
     workingDirectory(binding, grant) {
@@ -140,6 +157,7 @@ export async function openHostRunOwner(
       if (canonicalPayload(binding.selection) !== canonicalPayload(projected.selection))
         throw new NativeWorkError('configuration-mismatch');
       configuration.assertModel(snapshot);
+      let baseTools: readonly string[] = [];
       if (snapshot.payload.tools.kind === 'accepted-input-reader') {
         const registered = registerNativeAcceptedInputTool(
           agentCtx,
@@ -165,12 +183,36 @@ export async function openHostRunOwner(
             reader: execution,
           },
         );
-        if (
-          canonicalPayload(registered.toolAllowlist) !==
-          canonicalPayload(snapshot.payload.toolAllowlist)
-        )
-          throw new NativeWorkError('configuration-mismatch');
+        baseTools = registered.toolAllowlist;
       }
+      state.stopResources?.();
+      await state.resourceAdoption?.dispose();
+      const producer = await resources.producer(
+        state.request,
+        snapshot,
+        binding,
+        grant,
+        authorities,
+      );
+      const adopted = await registerExecutionRunResources(
+        agentCtx,
+        snapshot,
+        binding,
+        grant,
+        producer,
+      );
+      state.resourceAdoption = adopted;
+      await adopted.ready;
+      if (
+        canonicalPayload([...baseTools, ...adopted.toolAllowlist]) !==
+        canonicalPayload(snapshot.payload.toolAllowlist)
+      )
+        throw new NativeWorkError('configuration-mismatch');
+      const revokeResources = () => {
+        if (!fenced) void retire(state).catch(() => undefined);
+      };
+      adopted.signal.addEventListener('abort', revokeResources, { once: true });
+      state.stopResources = () => adopted.signal.removeEventListener('abort', revokeResources);
       state.observation?.close();
       state.observation = observeHostNativeRun(agentCtx, binding, grant);
       state.stopObservation = state.observation.onClaim((claim) => {
@@ -194,6 +236,7 @@ export async function openHostRunOwner(
         configuration,
         native: native.service,
         signal: lifetime.signal,
+        resources,
       }),
     );
   } catch (error) {
@@ -274,6 +317,7 @@ export async function openHostRunOwner(
     return { node, run };
   }
   function release(state: OwnedRun) {
+    state.stopResources?.();
     state.stopRevocation?.();
     state.stopObservation?.();
     state.stopFault?.();
@@ -345,6 +389,7 @@ export async function openHostRunOwner(
     }
   }
   async function settle(state: OwnedRun): Promise<void> {
+    await state.resourceAdoption?.drain();
     const { run } = current(state);
     if (run.resources === 'settled') return;
     const authority = { cleanup: state.cleanup };
@@ -673,12 +718,12 @@ export async function openHostRunOwner(
         // before cleanup, with D's original domain and cleanup capabilities still open.
         while (commands.size || events.size) await Promise.allSettled([...commands, ...events]);
         for (const state of [...owned.values()]) {
-          if (drained) {
-            try {
+          try {
+            if (drained) {
               await settle(state);
-            } catch (error) {
-              failures.push(error);
-            }
+            } else await state.resourceAdoption?.drain();
+          } catch (error) {
+            failures.push(error);
           }
           release(state);
         }

@@ -264,6 +264,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
               directory: directoryLifecycle,
               signal: runLifetime.signal,
               readWorkbench: workbench.readWorkbench,
+              skillPolicies: workbench.createRunSkillPolicies(service),
             });
             const opened = await runOpening;
             if (closed || runsClosed) {

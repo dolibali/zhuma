@@ -90,7 +90,7 @@ async function setup(flags = '', { manual = false, raw } = {}) {
   };
   h.signal = new AbortController();
   h.authorize = async () => ({ ok: true, value: { ...h.locator, actorId: 'chen', items: [] } });
-  h.producer = createHostRunSkillPolicies({
+  h.options = {
     execution: {
       readRunNode: () => h.node,
       async readRunCompositionInputs(request, locator) {
@@ -106,8 +106,10 @@ async function setup(flags = '', { manual = false, raw } = {}) {
       return h.packages.get(id);
     },
     signal: h.signal.signal,
-  });
+  };
+  h.producer = createHostRunSkillPolicies(h.options);
   h.read = () => h.producer.read(h.request, h.locator);
+  h.qualify = () => h.producer.qualify(h.request, h.locator);
   return h;
 }
 const denied = (promise) => assert.rejects(promise, { code: 'run-authority-unavailable' });
@@ -153,6 +155,39 @@ test('Host policy contract: defaults apply only to a manual definition without o
   assert.deepEqual(policy.policySource, { kind: 'manual-default' });
   assert.deepEqual(policy.invocation, { modelInvocable: true, userInvocable: true });
   assert.deepEqual(h.packageReads, []);
+});
+
+test('Host policy qualification: normal command revisions and latest assets do not replace or invalidate fixed origins', async () => {
+  const h = await setup();
+  const qualified = await h.qualify();
+  h.node.command.version++;
+  h.state.assets[0].content = 'Latest content is not the saved definition';
+  assert.equal(qualified.assertCurrent(), undefined);
+  assert.equal(Object.isFrozen(qualified.policies), true);
+  assert.equal(h.authorizations, 2, 'synchronous source checks never reenter the write queue');
+});
+
+test('Host policy qualification: lost original bytes, changed getters, changed fixed plans and close invalidate issued metadata', async () => {
+  for (const change of [
+    (h) => h.packages.delete(version),
+    (h) => {
+      h.packages.get(version).files[0].data = Buffer.from(
+        original('user-invocable: false'),
+      ).toString('base64');
+    },
+    (h) => {
+      h.options.readPackage = () => h.packages.get(version);
+    },
+    (h) => {
+      h.plan.assets[0].content = 'changed frozen definition';
+    },
+    (h) => h.signal.abort(),
+  ]) {
+    const h = await setup();
+    const qualified = await h.qualify();
+    change(h);
+    assert.throws(qualified.assertCurrent, { code: 'run-authority-unavailable' });
+  }
 });
 
 test('Host policy contract: latest global definitions and packages cannot replace the selected frozen origin', async () => {

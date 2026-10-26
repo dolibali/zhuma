@@ -17,6 +17,7 @@ import { ExecutionRunError, readExecutionRunState } from './execution-run-state.
 import type { MemberRequest } from './member-session.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { NATIVE_WORK_LIMITS } from './native-work-session.js';
+import type { createHostRunResourceSource } from './host-run-resource-source.js';
 
 const id = z.string().trim().min(1).max(200);
 const nonnegative = z.number().int().nonnegative().refine(Number.isSafeInteger);
@@ -54,6 +55,10 @@ export function createHostRunConfiguration(
     readonly execution: ExecutionService;
     readWorkbench(): Workbench;
     readonly signal: AbortSignal;
+    readonly resources?: Pick<
+      ReturnType<typeof createHostRunResourceSource>,
+      'catalog' | 'prepareResourceCatalog'
+    >;
   },
 ) {
   const llm = ctx.llm;
@@ -167,6 +172,8 @@ export function createHostRunConfiguration(
         )
           throw new ExecutionRunError('run-idempotency-mismatch');
       } else {
+        const resourceCatalog = await options.resources?.catalog(request, input);
+        active();
         composition = freezeExecutionRunComposition({
           workbench: options.readWorkbench(),
           node,
@@ -184,6 +191,7 @@ export function createHostRunConfiguration(
           model: input.model,
           executor: input.executor,
           inputs,
+          ...(resourceCatalog ? { resourceCatalog } : {}),
           tools:
             input.tools === 'text-only'
               ? { kind: 'text-only' }
@@ -193,7 +201,17 @@ export function createHostRunConfiguration(
       assertModel(composition);
       const { model: _model, executor: _executor, tools: _tools, ...command } = input;
       const { firstMessage: _message, ...projection } = executionRunCompositionRequest(composition);
-      return { ...command, ...projection, composition };
+      const prepared = { ...command, ...projection, composition };
+      if (prior && options.resources) {
+        const qualified = await options.resources.prepareResourceCatalog(request, prepared);
+        try {
+          qualified.assertCurrent();
+          active();
+        } finally {
+          qualified.release();
+        }
+      }
+      return prepared;
     },
   };
 }

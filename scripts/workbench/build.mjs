@@ -64,6 +64,12 @@ const verifiedHostExternals = new Set([
   '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-session',
   '@deepseek-ai/dsh-session-persistence',
+  '@deepseek-ai/dsh-skill',
+  '@deepseek-ai/dsh-tool-skill',
+  '@deepseek-ai/dsh-mcp-client',
+  '@deepseek-ai/dsh-tools',
+  '@deepseek-ai/dsh-scope',
+  '@deepseek-ai/dsh-system-prompt',
 ]);
 if (
   !hostSdkImports.includes('@deepseek-ai/dsh-client-connection') ||
