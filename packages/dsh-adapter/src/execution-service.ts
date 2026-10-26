@@ -1917,6 +1917,18 @@ export class ExecutionService {
     const parsed = parseBody(beginRunSchema, body);
     if (!parsed.ok) return parsed;
     const input = parsed.value;
+    let workflowSignal: AbortSignal | undefined;
+    if (ticket !== undefined) {
+      try {
+        if (!this.workflowIntents)
+          throw new ExecutionWorkflowError('workflow-start-ticket-invalid');
+        workflowSignal = this.workflowIntents.preparing(request, input, ticket);
+      } catch (error) {
+        return fail(
+          error instanceof ExecutionWorkflowError ? error.code : 'workflow-authority-denied',
+        );
+      }
+    }
     if (input.composition.schemaVersion !== 2 || !input.composition.payload.resources)
       return this.enqueue(() =>
         this.beginRunNow(request, input, enableWriter, undefined, ticket),
@@ -1934,23 +1946,35 @@ export class ExecutionService {
     }
     // Register the whole operation BEFORE invoking a potentially reentrant
     // provider. Its 145 reads need the original queue, not a second queue.
+    let workflowCleanupFailed = false;
     const operation = Promise.resolve().then(async () => {
       try {
         return await withExecutionRunResourceQualification(
-          { host, ownerSignal: this.runLifetime.signal, originalRequest: request, command: input },
+          {
+            host,
+            ownerSignal: workflowSignal
+              ? AbortSignal.any([this.runLifetime.signal, workflowSignal])
+              : this.runLifetime.signal,
+            originalRequest: request,
+            command: input,
+          },
           (qualification) =>
             this.enqueue(() =>
               this.beginRunNow(request, input, enableWriter, qualification, ticket),
             ),
         );
       } catch (error) {
-        if (error instanceof ExecutionRunResourceQualificationCloseError)
+        if (error instanceof ExecutionRunResourceQualificationCloseError) {
+          workflowCleanupFailed = true;
           this.runPreparationFailure ??= error;
+        }
         if (error instanceof ExecutionRunError || error instanceof ExecutionRunCompositionError)
           return fail(error.code);
         throw error;
       }
     });
+    if (ticket)
+      this.workflowIntents!.trackPreparation(ticket, operation, () => workflowCleanupFailed);
     this.runPreparations.add(operation);
     void operation.finally(() => this.runPreparations.delete(operation)).catch(() => undefined);
     return operation.then((result) => {

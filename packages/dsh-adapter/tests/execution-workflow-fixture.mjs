@@ -12,8 +12,9 @@ import { describeNativeResultTool } from '../dist/native-work-session-result-too
 import { nativeResultDigest } from '../dist/native-work-session-result-source.js';
 import { nativeResultProvenance } from '../dist/execution-native-result-delivery.js';
 import { executionRunScope } from '../dist/execution-run-state.js';
+import { EXECUTION_RESOURCE_SOURCE_VERSION } from '../dist/execution-run-resource-snapshot.js';
 
-export async function openWorkflowContract(root, { workbench } = {}) {
+export async function openWorkflowContract(root, { workbench, resources = false } = {}) {
   const h = await open(root, { seed: !workbench, expertNode: 'produce' });
   if (!workbench) {
     const current = h.readWorkbench(),
@@ -32,6 +33,7 @@ export async function openWorkflowContract(root, { workbench } = {}) {
               {
                 ...base,
                 id: 'first',
+                skillIds: resources ? ['api-skill'] : base.skillIds,
                 assigneeId: 'qa',
                 reviewerIds: ['outside', 'chen'],
                 reviewRequired: true,
@@ -138,6 +140,9 @@ export async function openWorkflowContract(root, { workbench } = {}) {
         model: ticket.defaults.model,
         executor: { kind: 'plan-expert', ref: node.handoff.expertRef },
         tools: { kind: ticket.defaults.tools },
+        ...(resources
+          ? { resourceCatalog: { sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION, mcp: [] } }
+          : {}),
         resultIntentTool: describeNativeResultTool(),
         inputs: { ...locate(node.nodeId), actorId, spaceId: 'north', items: [] },
       });

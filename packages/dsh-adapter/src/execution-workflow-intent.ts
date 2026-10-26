@@ -98,6 +98,7 @@ export class ExecutionWorkflowIntents {
   /** Same-Host fence + original queue barrier proves these reservations never
    * acquired a Run. This evidence intentionally does not survive a cold start. */
   private readonly cancelled = new Set<string>();
+  private readonly preparations = new Map<string, { active: number; failed: boolean }>();
   private cleanupFailed = false;
   constructor(private readonly source: WorkflowIntentSource) {}
 
@@ -137,6 +138,8 @@ export class ExecutionWorkflowIntents {
       intent.status !== 'running'
     )
       return fail('workflow-not-running');
+    if (intent.starts.some((item) => this.preparations.get(item.requestId)?.failed))
+      return fail('workflow-recovery-required');
     for (const { reservation, node, run } of this.bound(facts, intent))
       if (reservation.generation < intent.generation) arm.member.assertDrained(node, run);
     return { facts, intent };
@@ -277,7 +280,8 @@ export class ExecutionWorkflowIntents {
     }
     const bound = intent ? this.bound(facts, intent) : [];
     const active = bound.filter(({ run }) => run.resources === 'held');
-    let drained = active.length === 0;
+    let drained =
+      active.length === 0 && !intent?.starts.some((item) => this.preparations.has(item.requestId));
     if (drained)
       for (const { node, run } of bound) {
         try {
@@ -467,6 +471,8 @@ export class ExecutionWorkflowIntents {
         if (current.status === 'completed') return fail('workflow-completed');
         const bound = this.bound(facts, current);
         if (bound.some(({ run }) => run.resources !== 'settled'))
+          return fail('workflow-recovery-required');
+        if (current.starts.some((item) => this.preparations.has(item.requestId)))
           return fail('workflow-recovery-required');
         for (const { node, run } of bound) member.assertDrained(node, run);
         const old = this.arms.get(keyOf(location));
@@ -730,6 +736,38 @@ export class ExecutionWorkflowIntents {
     if (!prior && node.command.version !== reservation.expectedNodeVersion)
       return fail('workflow-conflict');
     return undefined;
+  }
+  /** Internal Service seam: validate BEFORE any private resource provider. */
+  preparing(
+    request: MemberRequest,
+    input: BeginRunRequest,
+    ticket: WorkflowStartTicket,
+  ): AbortSignal {
+    const state = this.tickets.get(ticket);
+    if (!state || state.arm.request !== request) return fail('workflow-start-ticket-invalid');
+    this.assertBegin(input, state.arm.member.memberId, ticket);
+    return ticket.signal;
+  }
+  /** Own the original qualification's real end, including late metadata release.
+   * A close failure stays unresolved; its settled Promise is not drain proof. */
+  trackPreparation(
+    ticket: WorkflowStartTicket,
+    operation: Promise<unknown>,
+    cleanupFailed: () => boolean,
+  ) {
+    const state = this.tickets.get(ticket);
+    if (!state) return fail('workflow-start-ticket-invalid');
+    const id = state.reservation.requestId;
+    const entry = this.preparations.get(id) ?? { active: 0, failed: false };
+    entry.active++;
+    this.preparations.set(id, entry);
+    const ended = () => {
+      entry.active--;
+      entry.failed ||= cleanupFailed();
+      if (entry.failed) this.fence(state.arm);
+      if (!entry.active && !entry.failed) this.preparations.delete(id);
+    };
+    void operation.then(ended, ended);
   }
   deferBusy(ticket: WorkflowStartTicket | undefined) {
     if (ticket && this.tickets.has(ticket)) ticket.deferBusy();

@@ -13,10 +13,11 @@ import {
   executionPlanReceiptSchema,
   workflowExecutionIntentSchema,
 } from '../dist/execution-workflow-contract.js';
+import { EXECUTION_RESOURCE_SOURCE_VERSION } from '../dist/execution-run-resource-snapshot.js';
 
-async function host(t) {
+async function host(t, options) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-workflow-contract-'));
-  const h = await openWorkflowContract(root);
+  const h = await openWorkflowContract(root, options);
   t.after(async () => {
     await h.close();
     await rm(root, { recursive: true, force: true });
@@ -44,6 +45,84 @@ test('workflow contract: explicit start initializes the original plan; same-key 
   assert.deepEqual(await businessHashes(h.root), before);
   assert.deepEqual(h.counters, { nodes: 0, plans: 0, global: 0 });
 });
+
+for (const closeFailure of [false, true])
+  test(`workflow resource contract: Stop owns late preparation drain${closeFailure ? ' and retains failed cleanup' : ''}`, async (t) => {
+    const h = await host(t, { resources: true });
+    const entered = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    t.after(() => release.resolve());
+    let preparations = 0,
+      released = 0;
+    h.service.runHost.prepareResourceCatalog = async (request, input) => {
+      preparations++;
+      checked(
+        await h.service.readRunCompositionInputs(request, {
+          ...h.locate(input.nodeId),
+          spaceId: 'north',
+        }),
+      );
+      entered.resolve();
+      await release.promise;
+      const life = new AbortController();
+      return {
+        catalog: { sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION, mcp: [] },
+        signal: life.signal,
+        assertCurrent() {
+          life.signal.throwIfAborted();
+        },
+        release() {
+          released++;
+          life.abort();
+          if (closeFailure) throw Error('CONTRACT_QUALIFICATION_CLOSE_FAILED');
+        },
+      };
+    };
+    const view = await h.start(),
+      ticket = checked(await h.claim(view)).tickets[0],
+      body = h.beginBody(ticket);
+    assert.ok(body.composition.payload.resources);
+    refused(
+      await h.service.startRun(h.request, body, { ...ticket }),
+      'workflow-start-ticket-invalid',
+    );
+    assert.equal(preparations, 0, 'a clone cannot enter the private provider');
+    const pending = h.service.startRun(h.request, body, ticket);
+    await Promise.race([
+      entered.promise,
+      pending.then((value) => assert.fail(JSON.stringify(value))),
+    ]);
+    const stopped = checked(
+      await h.service.stopWorkflowExecution(h.request, h.control(view, 'stop-preparing')),
+    );
+    assert.equal(ticket.signal.aborted, true);
+    assert.equal(stopped.activeRunIds.length, 0);
+    assert.equal(stopped.state, 'stopping', 'no durable Run is not physical drain proof');
+    refused(
+      await h.service.resumeWorkflowExecution(h.request, {
+        ...h.control(stopped, 'resume-preparing'),
+        expectedVersion: stopped.intent.version,
+      }),
+      'workflow-recovery-required',
+    );
+    release.resolve();
+    refused(await pending, 'run-authority-unavailable');
+    assert.equal(released, 1);
+    const after = checked(await h.service.readWorkflowExecution(h.request, h.location));
+    assert.equal(after.state, closeFailure ? 'stopping' : 'paused');
+    assert.equal(h.row('first').nativeExecution, undefined);
+    if (closeFailure) {
+      refused(
+        await h.service.resumeWorkflowExecution(h.request, {
+          ...h.control(after, 'resume-failed-close'),
+          expectedVersion: after.intent.version,
+        }),
+        'workflow-recovery-required',
+      );
+      await assert.rejects(h.service.closeRuns(), (error) => error.cleanupFailed === true);
+      await h.disposeExecution();
+    }
+  });
 
 test('workflow contract: actual two-slot admission mints fixed tickets for two ready experts, never the human or join', async (t) => {
   const h = await host(t),
