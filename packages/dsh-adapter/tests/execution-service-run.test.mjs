@@ -92,7 +92,7 @@ test('real JSON service: same-key concurrent begins write once; effect wait does
   assert.equal(h.counters.nodes, 1);
   refused(
     await h.service.beginRun(h.request, { ...input, inputFingerprint: 'b'.repeat(64) }),
-    'run-idempotency-mismatch',
+    'composition-mismatch',
   );
   assert.equal(h.counters.nodes, 1);
   let release;
@@ -510,6 +510,11 @@ test('real JSON service: same-disk new process reopens read-only without enable,
   ]);
   const reopened = JSON.parse(result.stdout.trim().split('\n').at(-1));
   assert.deepEqual(reopened.node, saved);
+  assert.deepEqual(reopened.composition, saved.nativeExecution.runs[0].composition);
+  assert.equal(
+    reopened.composition.configurationId,
+    saved.nativeExecution.runs[0].selection.configurationId,
+  );
   assert.deepEqual(reopened.global, { schemaVersion: 1, nativeExecutionWriter: 1 });
   assert.deepEqual(reopened.writes, { global: 0, nodes: 0, plans: 0 });
   assert.deepEqual(await bytes(h.root), before);

@@ -3,6 +3,7 @@ import {
   canonicalPayload,
   completionSource,
   createExecutionHandoff,
+  createNodeHandoffs,
   downstreamRecords,
   eventsAfter,
   executionInbox,
@@ -46,10 +47,19 @@ import {
 import type { MemberRequest } from './member-session.js';
 import type { NativeWorkGrant } from './native-work-session-contract.js';
 import {
+  executionRunCompositionSchema,
+  readExecutionRunComposition,
+  assertExecutionRunComposition,
+  ExecutionRunCompositionError,
+  type ExecutionRunCompositionInput,
+  type FrozenExecutionRunComposition,
+} from './execution-run-composition.js';
+import {
   ExecutionRunAuthorities,
   type ExecutionMemberLease,
   type ExecutionRunAuthoritySource,
   type ExecutionRunCleanupAuthority,
+  type ExecutionRunLocator,
 } from './execution-run-authority.js';
 import {
   assertExecutionRunQuiescent,
@@ -61,6 +71,7 @@ import {
   readExecutionRunState,
   recordExecutionRunEvent,
   requestExecutionRunStop,
+  validateExecutionRunBegin,
   stopExecutionRunSchema,
   type ExecutionRunDecision,
   type ExecutionRunEvent,
@@ -150,13 +161,17 @@ const draftLocate = {
   nodeId: id,
 };
 const draftReadSchema = z.strictObject(draftLocate);
-const beginRunSchema = beginExecutionRunSchema.omit({ actorId: true }).extend(draftLocate);
+const runCompositionInputsSchema = draftReadSchema.extend({ spaceId: id });
+const beginRunSchema = beginExecutionRunSchema
+  .omit({ actorId: true })
+  .extend({ ...draftLocate, composition: executionRunCompositionSchema });
 const stopRunSchema = stopExecutionRunSchema
   .omit({ actorId: true })
   .extend({ ...draftLocate, spaceId: id });
 export type BeginRunRequest = z.infer<typeof beginRunSchema>;
 export type StopRunRequest = z.infer<typeof stopRunSchema>;
 export type ExecutionNodeLocator = z.infer<typeof draftReadSchema>;
+export type ExecutionRunCompositionInputs = ExecutionRunCompositionInput['inputs'];
 
 /** Host-only real producers. Omission refuses Run admission; no DTO is a capability. */
 export interface ExecutionRunHostPorts extends Pick<
@@ -662,7 +677,19 @@ function settlementLanded(record: ExecutionNodeRecord, roundId: string): boolean
 }
 
 function recordedPlan(storage: ExecutionStorage, record: ExecutionNodeRecord): boolean {
-  return storage.readPlan(planKey(record.taskId, record.planId, record.revision)) !== undefined;
+  const receipt = storage.readPlan(planKey(record.taskId, record.planId, record.revision));
+  if (
+    !receipt ||
+    typeof receipt.idempotencyKey !== 'string' ||
+    receipt.idempotencyKey.length === 0 ||
+    typeof receipt.fingerprint !== 'string' ||
+    receipt.fingerprint.length === 0 ||
+    !Array.isArray(receipt.nodeIds) ||
+    !receipt.nodeIds.every((nodeId) => typeof nodeId === 'string' && nodeId.length > 0)
+  )
+    return false;
+  const nodes = new Set(receipt.nodeIds);
+  return nodes.size === receipt.nodeIds.length && nodes.has(record.nodeId);
 }
 
 /** A stored value that cannot be read as a node is skipped, not fatal. */
@@ -808,6 +835,53 @@ export class ExecutionService {
     return structuredClone(this.storage.readGlobal());
   }
 
+  readRunComposition(locator: ExecutionRunLocator): FrozenExecutionRunComposition {
+    const node = this.readRunNode(locator);
+    const run =
+      node && readExecutionRunState(node)?.runs.find((item) => item.attempt.id === locator.runId);
+    if (!run?.composition) throw new ExecutionRunCompositionError('composition-invalid');
+    return readExecutionRunComposition(run.composition);
+  }
+
+  /** Host-only preparation for this node's current controller, independent of human inbox items. */
+  readRunCompositionInputs(
+    request: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionRunCompositionInputs>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(runCompositionInputsSchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      return this.withRunMember(
+        request,
+        input,
+        async (host, lease) => {
+          const visible = await this.readableRecords(
+            [input.spaceId],
+            lease.memberId,
+            input.spaceId,
+          );
+          const { node, items } = this.currentRunCompositionInputs(host, lease, input, visible);
+          return {
+            ok: true,
+            value: structuredClone({
+              actorId: lease.memberId,
+              spaceId: input.spaceId,
+              taskId: node.taskId,
+              planId: node.planId,
+              revision: node.revision,
+              nodeId: node.nodeId,
+              items,
+            }),
+          };
+        },
+        false,
+      );
+    });
+  }
+
   /** Explicit opt-in only, after guards are installed. Reads and startup never enable it. */
   enableRunWriter(): Promise<ExecutionResult<void>> {
     return this.enqueue(async () => {
@@ -824,25 +898,118 @@ export class ExecutionService {
 
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
   beginRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
-    return this.enqueue(async () => {
-      const actorField = this.actorField(body);
-      if (actorField) return actorField;
-      const parsed = parseBody(beginRunSchema, body);
-      if (!parsed.ok) return parsed;
-      const input = parsed.value;
-      return this.withRunMember(request, input, async (host, lease, node) => {
-        synchronousRunAssertion(
-          host.assertConfiguration(lease.memberId, input.spaceId, node, input),
-        );
-        synchronousRunAssertion(
-          host.assertWorkspace(
+    return this.enqueue(() => this.beginRunNow(request, body, false));
+  }
+
+  /** Normal explicit first start: authenticate all facts before the first global write. */
+  startRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
+    return this.enqueue(() => this.beginRunNow(request, body, true));
+  }
+
+  private async beginRunNow(
+    request: MemberRequest,
+    body: unknown,
+    enableWriter: boolean,
+  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+    // The snapshot's scope is data to compare against the real lease below,
+    // not an actor assignment. All other command fields keep the old scan.
+    const commandFields =
+      body && typeof body === 'object' && !Array.isArray(body)
+        ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'composition'))
+        : body;
+    const actorField = this.actorField(commandFields);
+    if (actorField) return actorField;
+    const parsed = parseBody(beginRunSchema, body);
+    if (!parsed.ok) return parsed;
+    const input = parsed.value;
+    return this.withRunMember(
+      request,
+      input,
+      async (host, lease, initial) => {
+        let node = initial;
+        const verify = async () => {
+          this.requireRunHost();
+          lease.assertCurrent(input.spaceId);
+          const visible = await this.readableRecords(
+            [input.spaceId],
             lease.memberId,
             input.spaceId,
-            input.workspace,
-            input.workspace.kind === 'local' ? input.workspace.access : 'read',
-            input.selection.configurationId,
-          ),
-        );
+          );
+          const fresh = this.currentRunCompositionInputs(host, lease, input, visible);
+          node = fresh.node;
+          const state = readExecutionRunState(node);
+          const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
+          const generation = prior
+            ? state!.runs.find((run) => run.attempt.id === prior.runId)!.attempt.generation
+            : (state?.runs.length ?? 0) + 1;
+          const { configurationId: _configuration, ...model } = input.selection;
+          const executor = input.composition.payload.executor;
+          assertExecutionRunComposition(
+            input.composition,
+            {
+              workbench: this.workbench.readWorkbench(),
+              node,
+              scope: {
+                actorId: lease.memberId,
+                spaceId: input.spaceId,
+                taskId: node.taskId,
+                planId: node.planId,
+                revision: node.revision,
+                nodeId: node.nodeId,
+                runId: input.newRunId,
+                generation,
+                segmentId: input.newSegmentId,
+              },
+              model,
+              executor:
+                executor.kind === 'builtin'
+                  ? { kind: 'builtin' }
+                  : { kind: 'plan-expert', ref: executor.ref },
+              tools: input.composition.payload.tools,
+              inputs: {
+                actorId: lease.memberId,
+                spaceId: input.spaceId,
+                taskId: node.taskId,
+                planId: node.planId,
+                revision: node.revision,
+                nodeId: node.nodeId,
+                items: fresh.items,
+              },
+            },
+            input,
+          );
+          synchronousRunAssertion(
+            host.assertConfiguration(lease.memberId, input.spaceId, node, input),
+          );
+          synchronousRunAssertion(
+            host.assertWorkspace(
+              lease.memberId,
+              input.spaceId,
+              input.workspace,
+              input.workspace.kind === 'local' ? input.workspace.access : 'read',
+              input.selection.configurationId,
+            ),
+          );
+          validateExecutionRunBegin(
+            node,
+            this.runInput(input, lease.memberId),
+            this.storage.listNodes(),
+            {
+              expertEnabled: true,
+              executorConnected: true,
+            },
+          );
+        };
+        await verify();
+        if (enableWriter) {
+          if (!this.storage.writeGlobal) throw new ExecutionRunError('run-authority-unavailable');
+          await enableExecutionRunWriter(
+            () => this.readRunGlobal(),
+            (next) => this.storage.writeGlobal!(next),
+            this.storage.listNodes(),
+          );
+          await verify();
+        }
         const decision = beginExecutionRun(
           node,
           this.runInput(input, lease.memberId),
@@ -851,8 +1018,9 @@ export class ExecutionService {
         );
         lease.assertCurrent(input.spaceId);
         return this.commitRunDecision(decision);
-      });
-    });
+      },
+      !enableWriter,
+    );
   }
 
   stopRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
@@ -945,6 +1113,42 @@ export class ExecutionService {
     )
       throw new ExecutionRunError('run-authority-denied');
     synchronousRunAssertion(host.assertProjectSpace(task.projectId, spaceId));
+    this.assertRunRecordedPlan(workbench, node);
+  }
+
+  /** A receipt must certify the exact complete plan, not just exist at its storage key. */
+  private assertRunRecordedPlan(workbench: Workbench, node: ExecutionNodeRecord): void {
+    let expected: string[];
+    try {
+      expected = createNodeHandoffs(createExecutionHandoff(node, workbench)).map(
+        (handoff) => handoff.nodeId,
+      );
+    } catch {
+      throw new ExecutionRunError('run-authority-denied');
+    }
+    const receipt = this.storage.readPlan(planKey(node.taskId, node.planId, node.revision));
+    const nodes = new Set(receipt?.nodeIds);
+    if (
+      receipt?.fingerprint !==
+        canonicalPayload({ taskId: node.taskId, planId: node.planId, revision: node.revision }) ||
+      expected.length === 0 ||
+      nodes.size !== expected.length ||
+      !expected.every((nodeId) => {
+        if (!nodes.has(nodeId)) return false;
+        const record = this.storage.readNode(nodeRecordKey({ ...node, nodeId }));
+        return (
+          record !== undefined &&
+          intactNode(record) &&
+          samePlan(record, node.taskId, node.planId, node.revision) &&
+          record.nodeId === nodeId &&
+          record.handoff.nodeId === nodeId &&
+          record.handoff.taskId === node.taskId &&
+          record.handoff.workflowVersionId === node.planId &&
+          record.handoff.revision === node.revision
+        );
+      })
+    )
+      throw new ExecutionRunError('run-authority-denied');
   }
 
   private assertRunController(memberId: string, node: ExecutionNodeRecord): void {
@@ -958,17 +1162,19 @@ export class ExecutionService {
     if (controller !== memberId) throw new ExecutionRunError('run-not-controller');
   }
 
-  private async withRunMember(
+  private async withRunMember<T>(
     request: MemberRequest,
     input: ExecutionNodeLocator & { spaceId: string },
     work: (
       host: ExecutionRunHostPorts,
       lease: ExecutionMemberLease,
       node: ExecutionNodeRecord,
-    ) => Promise<ExecutionResult<ExecutionRunDecision>>,
-  ): Promise<ExecutionResult<ExecutionRunDecision>> {
+    ) => Promise<ExecutionResult<T>>,
+    requireWriter = true,
+  ): Promise<ExecutionResult<T>> {
     const host = this.requireRunHost();
-    requireExecutionRunWriter(this.readRunGlobal());
+    if (requireWriter) requireExecutionRunWriter(this.readRunGlobal());
+    else this.assertRunStoreCompatibility();
     let lease: ExecutionMemberLease;
     try {
       lease = await host.memberLease(request);
@@ -991,7 +1197,11 @@ export class ExecutionService {
       this.assertRunController(lease.memberId, node);
       return await work(host, lease, node);
     } catch (error) {
-      if (error instanceof ExecutionRunError || error instanceof ExecutionRunProtocolError)
+      if (
+        error instanceof ExecutionRunError ||
+        error instanceof ExecutionRunProtocolError ||
+        error instanceof ExecutionRunCompositionError
+      )
         throw error;
       throw new ExecutionRunError('run-authority-denied');
     } finally {
@@ -1002,6 +1212,43 @@ export class ExecutionService {
         this.fenceRuns();
       }
     }
+  }
+
+  private currentRunCompositionInputs(
+    host: ExecutionRunHostPorts,
+    lease: ExecutionMemberLease,
+    input: ExecutionNodeLocator & { spaceId: string },
+    visible: ExecutionNodeRecord[] | ExecutionResult<never>,
+  ): { node: ExecutionNodeRecord; items: UpstreamInputView[] } {
+    if (!Array.isArray(visible)) throw new ExecutionRunError('run-authority-unavailable');
+    this.requireRunHost();
+    lease.assertCurrent(input.spaceId);
+    const node = this.readRunNode(input);
+    if (!node) throw new ExecutionRunError('run-authority-denied');
+    this.assertRunNodeAccess(host, lease.memberId, input.spaceId, node);
+    this.assertRunController(lease.memberId, node);
+    if (
+      !visible.some(
+        (record) =>
+          samePlan(record, node.taskId, node.planId, node.revision) &&
+          record.nodeId === node.nodeId,
+      )
+    )
+      throw new ExecutionRunError('run-authority-denied');
+
+    // A directory lookup awaited later in the scan may outlive an earlier source row.
+    // Re-read only same-plan refs synchronously, after the final task/space/controller gate.
+    const refs = new Set(node.handoff.inputRefs.map((ref) => ref.sourceNodeId.trim()));
+    const sources = visible
+      .filter(
+        (record) =>
+          samePlan(record, node.taskId, node.planId, node.revision) && refs.has(record.nodeId),
+      )
+      .flatMap((record) => {
+        const current = this.readRunNode(record);
+        return current ? [current] : [];
+      });
+    return { node, items: upstreamInputsFor(node, sources) };
   }
 
   private runInput<T extends ExecutionNodeLocator>(input: T, actorId: string) {
@@ -1640,7 +1887,11 @@ export class ExecutionService {
 
   private enqueue<T>(work: () => Promise<ExecutionResult<T>>): Promise<ExecutionResult<T>> {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
-      if (error instanceof ExecutionRunError || error instanceof ExecutionRunProtocolError)
+      if (
+        error instanceof ExecutionRunError ||
+        error instanceof ExecutionRunProtocolError ||
+        error instanceof ExecutionRunCompositionError
+      )
         return fail(error.code);
       throw error;
     });
