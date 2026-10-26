@@ -13,14 +13,18 @@ is DSH `0.2.1-rc.2` (source `687f282e8625c6b8d11ff58211a90524be2e4317`).
    check the actual producer generation, providers, policy eligibility and lifetime;
    the version string is not authorization.
 2. `describeNativeRunShellTool(producer)` copies the actual registered Bash JSON
-   description, parameters and output schema with sourceVersion. It performs no file
+   description, parameters and output schema with sourceVersion and the fixed
+   `{defaultTimeoutMs: 120000, maxTimeoutMs: 600000, maxAttempts: 32}` budget. The
+   implementation version is `zhuma-foreground@2`; the earlier unreleased 5-second
+   profile must not be relabeled or silently reused as this profile. It performs no file
    read, model call, executable lookup or process launch. Include this descriptor in
    `local-tools.shell` before freezing the complete Run composition. Omission retains
    the previous file/reader derivation byte-for-byte; a descriptor adds only `bash` to
    that saved allowlist.
 3. After durable Run admission, inside C's unpublished compose/setup, first adopt the
-   saved file/reader tools, then call `adoptNativeRunShellTool(agentCtx, binding, grant,
-{composition, producer, capability})`. Exact full scope, model/configurationId and
+   saved file/reader tools, then call
+   `adoptNativeRunShellTool(agentCtx, binding, grant, options)` with
+   `{composition, producer, capability}`. Exact full scope, model/configurationId and
    actual descriptor JSON must match. The final C tool validation still checks the
    complete actual set before publishing the native Agent.
 4. The result contains the saved readonly `toolAllowlist` and an awaited `dispose()`.
@@ -29,13 +33,24 @@ is DSH `0.2.1-rc.2` (source `687f282e8625c6b8d11ff58211a90524be2e4317`).
 
 `NativeRunShellCapability` is a Host-only live capability with
 `authority: 'local-host-process'`, exact full `NativeWorkScope`, the real authorized
-`root`, a signal and synchronous `assertCurrent('execute'): undefined`. The issuer
+`root`, a signal, synchronous `assertCurrent('execute'): undefined`, and synchronous
+`deadlines(): {memberExpiresAt: number; runDeadlineAt?: number}`. The issuer
 must derive it from real workspace authorization and the user's explicit frozen Run
 selection of Shell. File read/write grants, browser fields, cwd, hashes and booleans
 cannot create it. No actual issuer means not connected. This capability authorizes
 local process execution, which may access host files and network: root is a cwd
 boundary, not an OS read/network isolation guarantee. A source unable to establish
 this exact authority must refuse.
+
+`memberExpiresAt` comes from the original actual `ExecutionMemberLease.expiresAt`;
+`runDeadlineAt` is supplied only when the Host actually has that Run deadline. Return
+finite safe-integer timestamps, never a Promise. Missing, malformed or expired member
+facts and malformed/expired supplied Run facts refuse before process launch. An absent
+Run deadline stays absent. The existing Run/Host currently has no whole-Run time/cost
+budget fact: this component does not invent it from ctx, configuration names or
+`Date.now() + config`, create a parallel budget store, or certify a cumulative Run
+budget across restores. The 32-attempt limit remains local to this adoption. A must
+link the capability signal and assertion to actual expiry/revocation/budget changes.
 
 ## Scope and compatibility
 
@@ -60,8 +75,16 @@ external processes rewriting filesystem ancestors.
 
 ## Bounds, cancellation and drain
 
-The fixed limits are 32 admitted command attempts per adoption, one concurrent call,
-16 KiB UTF-8 command text, 5 seconds per call and 64 KiB retained stdout/stderr each.
+The fixed profile permits 32 admitted command attempts per adoption, one concurrent
+call, 16 KiB UTF-8 command text and 64 KiB retained stdout/stderr each. Normal commands
+default to 120 seconds with a 600-second maximum. Each dispatch first calls the actual
+original Shell provider's pure `resolve()` and takes the minimum of the profile,
+request, resolved provider bound and genuine remaining member/available Run deadline.
+An original provider's shorter default/maximum and stop/deadline signal remain
+effective. Its `execute()` is not used to bypass the controlled subprocess runtime.
+The admitted command cutoff is pinned before asynchronous cwd resolution, can only
+shorten at subsequent checks, and is never restarted after awaits. Root/setup I/O
+retains a separate 5-second limit.
 There are no spill files. Truncation remains explicit in the official output. Provider
 shorter deadlines are preserved along with the outer cancellation signal. SIGTERM
 escalation grace is 250 ms. Credential-shaped explicit environment names are removed
@@ -87,3 +110,9 @@ issuers and session-bearing test callers are contract fixtures; actual public Co
 official tools, local process handles and file bytes are tested separately. Those
 tests do not certify real member authorization, native Agent publication, model
 behavior, sandbox operation, normal UI, Windows or installation.
+
+Verification separates numeric dispatch assembly (observed 120000/600000 policy and
+resolved effective timeout) from actual process behavior: commands longer than five
+seconds, stop/revoke after that point, shorter provider/request/Host/member expiry,
+cwd delay without deadline renewal, descendants/output and unknown drain. It does not
+wait 120/600 seconds or claim a missing whole-Run time/cost owner was implemented.

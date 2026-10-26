@@ -90,6 +90,11 @@ export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
 }
 export interface ForegroundShellToolDefinition extends AcceptedInputToolDefinition {
   readonly name: 'bash';
+  readonly budget: {
+    readonly defaultTimeoutMs: number;
+    readonly maxTimeoutMs: number;
+    readonly maxAttempts: number;
+  };
 }
 export type ExecutionCompositionTools =
   | { readonly kind: 'text-only' }
@@ -111,7 +116,16 @@ const toolsSchema = z.discriminatedUnion('kind', [
     definitions: z.array(localFileToolSchema).min(1).max(3),
     shell: toolSchema
       .omit({ name: true })
-      .extend({ name: z.literal('bash') })
+      .extend({
+        name: z.literal('bash'),
+        budget: z
+          .strictObject({
+            defaultTimeoutMs: positive.max(600_000),
+            maxTimeoutMs: positive.max(600_000),
+            maxAttempts: positive.max(32),
+          })
+          .refine((budget) => budget.defaultTimeoutMs <= budget.maxTimeoutMs),
+      })
       .optional(),
     acceptedInputReader: toolSchema.optional(),
   }),

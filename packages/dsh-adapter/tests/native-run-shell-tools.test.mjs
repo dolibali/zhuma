@@ -50,7 +50,7 @@ class ObservedSubprocess extends LocalSubprocess {
     return handle;
   }
 }
-async function host(t) {
+async function host(t, { provider = {} } = {}) {
   const home = await realpath(await mkdtemp(join(tmpdir(), 'zhuma-shell-')));
   const root = join(home, 'work'),
     sibling = join(home, 'outside');
@@ -66,7 +66,7 @@ async function host(t) {
     [FileSystem, { cwd: root }],
     [WorkingDirectory, { defaultDirectory: root }],
     [ObservedSubprocess],
-    [LocalBash, { cwd: root }],
+    [LocalBash, { cwd: root, ...provider }],
     [ShellEnv, { dshHome: join(home, 'harness') }],
     [ToolFs, NATIVE_RUN_LOCAL_TOOL_CONFIG],
     [ToolBash, NATIVE_RUN_SHELL_CONFIG],
@@ -120,6 +120,7 @@ async function host(t) {
       assert(!run.signal.aborted);
     },
   };
+  const deadlineFacts = { memberExpiresAt: Date.now() + 3_600_000 };
   const capability = {
     authority: 'local-host-process',
     scope: structuredClone(facts.scope),
@@ -128,6 +129,9 @@ async function host(t) {
     assertCurrent(action) {
       assert.equal(action, 'execute');
       assert(!permission.signal.aborted);
+    },
+    deadlines() {
+      return { ...deadlineFacts };
     },
   };
   const fileAdoption = await adoptNativeRunLocalTools(scope.ctx, binding, grant, {
@@ -152,6 +156,7 @@ async function host(t) {
     binding,
     grant,
     capability,
+    deadlineFacts,
     producer,
     source,
     permission,
@@ -160,6 +165,8 @@ async function host(t) {
     sibling,
     home,
     runtime: ctx.get('subprocess')[symbols.original],
+    originalShell: ctx.get('shell')[symbols.original],
+    originalFilesystem: ctx.get('fs')[symbols.original],
     expectDrainFailure() {
       expectedDrainFailure = true;
     },
@@ -450,14 +457,133 @@ test('real foreground shell: an unconfirmed range cannot report successful tool 
   assert.equal(await actualWait(AbortSignal.timeout(1000)), true);
 });
 
-test('real foreground shell: the default full-call deadline kills the actual command and confirms its range', async (t) => {
+test('real foreground shell: a true Host Run deadline bounds a default command and confirms its range', async (t) => {
+  const h = await host(t);
+  await h.adopt();
+  h.deadlineFacts.runDeadlineAt = Date.now() + 150;
+  const began = Date.now();
+  denied(await h.call('sleep 30'));
+  assert(Date.now() - began < 3000);
+  assert.equal(await h.runtime.handles[0].waitForExit(AbortSignal.timeout(1000)), true);
+});
+
+test('real foreground shell: actual dispatch assembles 120s default and 600s maximum without waiting those durations', async (t) => {
+  const h = await host(t);
+  await h.adopt();
+  assert.deepEqual(h.composition.payload.tools.shell.budget, {
+    defaultTimeoutMs: 120_000,
+    maxTimeoutMs: 600_000,
+    maxAttempts: 32,
+  });
+  const normal = await h.call('printf normal');
+  okay(normal);
+  assert(normal.value.timeoutMs > 119_000 && normal.value.timeoutMs <= 120_000);
+  const requested = await h.call('printf requested', { timeoutMs: 50_000 });
+  okay(requested);
+  assert(requested.value.timeoutMs > 49_000 && requested.value.timeoutMs <= 50_000);
+  const capped = await h.call('printf maximum', { timeoutMs: 9_000_000 });
+  okay(capped);
+  assert(capped.value.timeoutMs > 599_000 && capped.value.timeoutMs <= 600_000);
+  assert.equal(h.deadlineFacts.runDeadlineAt, undefined);
+});
+
+test('real foreground shell: an actual command longer than five seconds completes under the normal default', async (t) => {
   const h = await host(t);
   await h.adopt();
   const began = Date.now();
-  denied(await h.call('sleep 30'));
-  assert(Date.now() - began >= 4500);
+  okay(await h.call('sleep 5.2; printf long > long.txt'));
+  assert(Date.now() - began >= 5000);
+  assert.equal(await readFile(join(h.root, 'long.txt'), 'utf8'), 'long');
   assert.equal(await h.runtime.handles[0].waitForExit(AbortSignal.timeout(1000)), true);
 });
+
+test('real foreground shell: original real provider default and maximum remain tighter than the Run profile', async (t) => {
+  const h = await host(t, { provider: { timeoutMs: 60, maxTimeoutMs: 60 } });
+  await h.adopt();
+  for (const patch of [{}, { timeoutMs: 600_000 }]) {
+    const began = Date.now();
+    denied(await h.call('sleep 0.3', patch));
+    assert(Date.now() - began < 3000);
+  }
+  for (const handle of h.runtime.handles)
+    assert.equal(await handle.waitForExit(AbortSignal.timeout(1000)), true);
+});
+
+test('real foreground shell: the original provider stop signal is retained across later budget resolution', async (t) => {
+  const h = await host(t);
+  await h.adopt();
+  const stopping = new AbortController();
+  const originalResolve = h.originalShell.resolve.bind(h.originalShell);
+  h.originalShell.resolve = (request) => ({ ...originalResolve(request), signal: stopping.signal });
+  const timer = setTimeout(() => stopping.abort(), 100);
+  try {
+    denied(await h.call('sleep 0.3'));
+    assert.equal(await h.runtime.handles[0].waitForExit(AbortSignal.timeout(1000)), true);
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test('real foreground shell: original member expiry shortens a running command even with no whole-Run budget', async (t) => {
+  const h = await host(t);
+  await h.adopt();
+  h.deadlineFacts.memberExpiresAt = Date.now() + 150;
+  denied(await h.call('sleep 30', { timeoutMs: 600_000 }));
+  assert.equal(await h.runtime.handles[0].waitForExit(AbortSignal.timeout(1000)), true);
+});
+
+test('real foreground shell: missing, invalid or asynchronous true deadline facts refuse before spawn', async (t) => {
+  const h = await host(t);
+  for (const deadlines of [
+    undefined,
+    () => ({}),
+    () => ({ memberExpiresAt: Infinity }),
+    () => ({ memberExpiresAt: NaN }),
+    () => ({ memberExpiresAt: Number.MAX_SAFE_INTEGER + 1 }),
+    () => ({ memberExpiresAt: Date.now() - 1 }),
+    () => ({ memberExpiresAt: Date.now() + 60_000, runDeadlineAt: Date.now() - 1 }),
+    async () => ({ memberExpiresAt: Date.now() + 60_000 }),
+  ])
+    await assert.rejects(h.adopt({ capability: { ...h.capability, deadlines } }));
+  assert.equal(h.runtime.handles.length, 0);
+});
+
+test('real foreground shell: elapsed cwd resolution cannot buy a new deadline window', async (t) => {
+  const h = await host(t);
+  await h.adopt();
+  okay(await h.call('printf warmed'));
+  const original = h.originalFilesystem.resolve.bind(h.originalFilesystem);
+  let held = false;
+  h.originalFilesystem.resolve = async (...args) => {
+    const target = await original(...args);
+    if (!held) {
+      held = true;
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    return target;
+  };
+  denied(await h.call('sleep 0.15; printf late > extended.txt', { timeoutMs: 200 }));
+  await assert.rejects(readFile(join(h.root, 'extended.txt')));
+  for (const handle of h.runtime.handles)
+    assert.equal(await handle.waitForExit(AbortSignal.timeout(1000)), true);
+});
+
+for (const action of ['stop', 'revoke'])
+  test(`real foreground shell: ${action} after five seconds drains the actual long-running process`, async (t) => {
+    const h = await host(t);
+    const adopted = await h.adopt();
+    const call = h.call('sleep 5.2; printf READY; sleep 30; printf late > late-long.txt');
+    const until = Date.now() + 12_000;
+    while (!h.runtime.handles[0]?.collected.stdout.readFrom(0).text.includes('READY')) {
+      assert(Date.now() < until, 'actual command did not reach its READY output');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (action === 'revoke') h.permission.abort();
+    await adopted.dispose();
+    denied(await call);
+    assert.equal(await h.runtime.handles[0].waitForExit(AbortSignal.timeout(1000)), true);
+    await assert.rejects(readFile(join(h.root, 'late-long.txt')));
+  });
 
 test('real foreground shell: a replaced root refuses before real process launch', async (t) => {
   const h = await host(t);

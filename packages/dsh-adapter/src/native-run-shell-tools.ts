@@ -26,13 +26,15 @@ import type {
   NativeWorkScope,
 } from './native-work-session-contract.js';
 
-export const NATIVE_RUN_SHELL_SOURCE_VERSION = 'dsh-tool-bash@0.2.1-rc.2/zhuma-foreground@1';
+export const NATIVE_RUN_SHELL_SOURCE_VERSION = 'dsh-tool-bash@0.2.1-rc.2/zhuma-foreground@2';
 export const NATIVE_RUN_SHELL_CONFIG = Object.freeze({
   enableRunInBackground: false,
   promoteOnTimeout: false,
 });
 export const NATIVE_RUN_SHELL_LIMITS = Object.freeze({
-  callMs: 5000,
+  defaultTimeoutMs: 120_000,
+  maxTimeoutMs: 600_000,
+  setupMs: 5000,
   commands: 32,
   commandBytes: 16_384,
   outputBytes: 65_536,
@@ -47,6 +49,8 @@ export interface NativeRunShellCapability {
   readonly root: string;
   readonly signal: AbortSignal;
   assertCurrent(action: 'execute'): undefined;
+  /** Actual original member lease expiry and optional existing Run deadline, never manufactured from config. */
+  deadlines(): { readonly memberExpiresAt: number; readonly runDeadlineAt?: number | undefined };
 }
 export interface NativeRunShellProducerSource {
   readonly sourceVersion: typeof NATIVE_RUN_SHELL_SOURCE_VERSION;
@@ -101,6 +105,11 @@ function descriptor(tool: ToolDefinition): ForegroundShellToolDefinition {
     parameters: tool.parameters,
     outputSchema: tool.output.schema,
     sourceVersion: NATIVE_RUN_SHELL_SOURCE_VERSION,
+    budget: {
+      defaultTimeoutMs: NATIVE_RUN_SHELL_LIMITS.defaultTimeoutMs,
+      maxTimeoutMs: NATIVE_RUN_SHELL_LIMITS.maxTimeoutMs,
+      maxAttempts: NATIVE_RUN_SHELL_LIMITS.commands,
+    },
   });
 }
 function inside(root: string, candidate: string): boolean {
@@ -136,6 +145,7 @@ export class NativeRunShellProducer {
   readonly subprocess: SubprocessRuntime;
   private readonly services: readonly (readonly [string, unknown])[];
   private readonly definition: ToolDefinition;
+  private readonly executor: ShellExecutor;
   private readonly sourceScope: ReturnType<typeof scopeOf>;
   constructor(
     readonly context: Context,
@@ -161,6 +171,7 @@ export class NativeRunShellProducer {
     this.filesystem = fs;
     this.subprocess = subprocess;
     this.definition = definition;
+    this.executor = shell;
     this.services = ['fs', 'subprocess', 'shell', 'shellEnv', 'tools'].map((name) => [
       name,
       original(context.get(name)),
@@ -189,6 +200,26 @@ export class NativeRunShellProducer {
   describe(): ForegroundShellToolDefinition {
     this.assertCurrent();
     return descriptor(this.definition);
+  }
+  /** Resolve only the actual original provider's timeout/signal; never launch through it. */
+  resolveBudget(request: ShellExecRequest): Pick<ShellExecSpec, 'timeoutMs' | 'signal'> {
+    this.assertCurrent();
+    try {
+      const resolved = this.executor.resolve(request);
+      this.assertCurrent();
+      if (
+        !Number.isFinite(resolved.timeoutMs) ||
+        resolved.timeoutMs <= 0 ||
+        resolved.onExpiry !== 'kill' ||
+        resolved.sandboxPolicy !== undefined ||
+        (resolved.signal !== undefined && !(resolved.signal instanceof AbortSignal))
+      )
+        fail('local-shell-unavailable');
+      return { timeoutMs: resolved.timeoutMs, signal: resolved.signal };
+    } catch (error) {
+      if (error instanceof NativeRunShellError) throw error;
+      fail('local-shell-unavailable');
+    }
   }
 }
 export function describeNativeRunShellTool(
@@ -225,6 +256,7 @@ export async function adoptNativeRunShellTool(
     capability.authority !== 'local-host-process' ||
     !(capability.signal instanceof AbortSignal) ||
     typeof capability.assertCurrent !== 'function' ||
+    typeof capability.deadlines !== 'function' ||
     !isAbsolute(capability.root) ||
     !sameScope(saved.payload.scope, binding.scope) ||
     !sameScope(grant.scope, binding.scope) ||
@@ -244,12 +276,65 @@ export async function adoptNativeRunShellTool(
     root = '',
     commands = 0;
   let active: AbortSignal | undefined, activeCwd: string | undefined;
+  let activeRequest: ShellExecRequest | undefined,
+    activeStartedAt = 0,
+    activeUntil = Infinity;
+  let activeDeadline: AbortController | undefined,
+    activeTimer: ReturnType<typeof setTimeout> | undefined;
   let closing: Promise<void> | undefined,
     failedDrain = false;
   let localFiber: ReturnType<Context['plugin']> | undefined,
     toolFiber: ReturnType<Context['plugin']> | undefined;
   let unprovideRuntime: (() => void) | undefined, unprovideShell: (() => void) | undefined;
   let mounted: (() => boolean) | undefined;
+  const hostDeadline = () => {
+    try {
+      const value = capability.deadlines();
+      if (value && typeof Reflect.get(value, 'then') === 'function') {
+        void Promise.resolve(value).catch(() => undefined);
+        fail('local-shell-unavailable');
+      }
+      if (
+        !value ||
+        !Number.isSafeInteger(value.memberExpiresAt) ||
+        (value.runDeadlineAt !== undefined && !Number.isSafeInteger(value.runDeadlineAt))
+      )
+        fail('local-shell-unavailable');
+      if (value.memberExpiresAt <= Date.now()) fail('local-shell-denied');
+      if (value.runDeadlineAt !== undefined && value.runDeadlineAt <= Date.now())
+        fail('local-shell-budget');
+      return Math.min(value.memberExpiresAt, value.runDeadlineAt ?? Infinity);
+    } catch (error) {
+      if (error instanceof NativeRunShellError) throw error;
+      fail('local-shell-unavailable');
+    }
+  };
+  // A command's cutoff can only shrink. Awaiting cwd or re-resolving a provider
+  // never buys a fresh timeout window or extends the original member lease.
+  const shorten = (until: number) => {
+    if (!activeDeadline || until >= activeUntil) return;
+    activeUntil = until;
+    clearTimeout(activeTimer);
+    const deadline = activeDeadline;
+    const remaining = until - Date.now();
+    if (remaining <= 0) deadline.abort();
+    else activeTimer = setTimeout(() => deadline.abort(), remaining);
+  };
+  const providerBudget = (request: ShellExecRequest) => {
+    const budget = producer.resolveBudget(request);
+    shorten(
+      Math.min(
+        activeStartedAt +
+          Math.min(
+            request.timeoutMs ?? NATIVE_RUN_SHELL_LIMITS.defaultTimeoutMs,
+            NATIVE_RUN_SHELL_LIMITS.maxTimeoutMs,
+            budget.timeoutMs,
+          ),
+        hostDeadline(),
+      ),
+    );
+    if (budget.signal && active) active = AbortSignal.any([active, budget.signal]);
+  };
   const check = () => {
     try {
       if (failedDrain) fail('local-shell-unavailable');
@@ -267,6 +352,7 @@ export async function adoptNativeRunShellTool(
       producer.assertCurrent();
       synchronous(grant.assertCurrent('send'));
       synchronous(capability.assertCurrent('execute'));
+      shorten(hostDeadline());
     } catch (error) {
       if (error instanceof NativeRunShellError) throw error;
       fail('local-shell-denied');
@@ -342,7 +428,7 @@ export async function adoptNativeRunShellTool(
       capability.signal,
       grant.signal,
       producer.signal,
-      AbortSignal.timeout(NATIVE_RUN_SHELL_LIMITS.callMs),
+      AbortSignal.timeout(NATIVE_RUN_SHELL_LIMITS.setupMs),
     ]);
     if (fs.processPathFromHostPath(capability.root) === undefined) fail('local-shell-unavailable');
     rootTarget = await fs.resolve(capability.root, { cwd: capability.root, signal: initSignal });
@@ -392,8 +478,8 @@ export async function adoptNativeRunShellTool(
     unprovideRuntime = local.provide('subprocess', runtime);
     localFiber = local.plugin(LocalBash, {
       cwd: root,
-      timeoutMs: NATIVE_RUN_SHELL_LIMITS.callMs,
-      maxTimeoutMs: NATIVE_RUN_SHELL_LIMITS.callMs,
+      timeoutMs: NATIVE_RUN_SHELL_LIMITS.defaultTimeoutMs,
+      maxTimeoutMs: NATIVE_RUN_SHELL_LIMITS.maxTimeoutMs,
       maxOutputBytes: NATIVE_RUN_SHELL_LIMITS.outputBytes,
       maxSpillBytes: NATIVE_RUN_SHELL_LIMITS.outputBytes,
       graceMs: NATIVE_RUN_SHELL_LIMITS.graceMs,
@@ -412,14 +498,13 @@ export async function adoptNativeRunShellTool(
           Buffer.byteLength(request.command, 'utf8') > NATIVE_RUN_SHELL_LIMITS.commandBytes
         )
           fail('local-shell-denied');
+        providerBudget(request);
+        active?.throwIfAborted();
         return shell.resolve({
           ...request,
           onExpiry: 'kill',
           signal: active,
-          timeoutMs: Math.min(
-            request.timeoutMs ?? NATIVE_RUN_SHELL_LIMITS.callMs,
-            NATIVE_RUN_SHELL_LIMITS.callMs,
-          ),
+          timeoutMs: Math.max(1, activeUntil - Date.now()),
           stdoutMaxBytes: NATIVE_RUN_SHELL_LIMITS.outputBytes,
         });
       },
@@ -429,12 +514,14 @@ export async function adoptNativeRunShellTool(
           fail('local-shell-denied');
         activeCwd = await cwd(spec.workdir, active);
         check();
+        if (!activeRequest) fail('local-shell-denied');
+        providerBudget(activeRequest);
         active.throwIfAborted();
         return shell.execute({
           ...spec,
           workdir: activeCwd,
           signal: active,
-          timeoutMs: Math.min(spec.timeoutMs, NATIVE_RUN_SHELL_LIMITS.callMs),
+          timeoutMs: Math.min(spec.timeoutMs, Math.max(1, activeUntil - Date.now())),
           stdoutMaxBytes: NATIVE_RUN_SHELL_LIMITS.outputBytes,
         });
       },
@@ -478,8 +565,37 @@ export async function adoptNativeRunShellTool(
       if (active) fail('local-shell-denied');
       if (commands >= NATIVE_RUN_SHELL_LIMITS.commands) fail('local-shell-budget');
       commands += 1;
+      const args = exec.arguments;
+      if (!args || typeof args !== 'object' || typeof Reflect.get(args, 'command') !== 'string')
+        fail('local-shell-denied');
+      const timeoutMs: unknown = Reflect.get(args, 'timeoutMs');
+      if (
+        timeoutMs !== undefined &&
+        (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      )
+        fail('local-shell-denied');
+      const request: ShellExecRequest = {
+        command: Reflect.get(args, 'command'),
+        signal: exec.signal,
+        onExpiry: 'kill',
+        ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+      };
+      const startedAt = Date.now();
+      const originalBudget = producer.resolveBudget(request);
+      const until = Math.min(
+        startedAt +
+          Math.min(
+            request.timeoutMs ?? NATIVE_RUN_SHELL_LIMITS.defaultTimeoutMs,
+            NATIVE_RUN_SHELL_LIMITS.maxTimeoutMs,
+            originalBudget.timeoutMs,
+          ),
+        hostDeadline(),
+      );
       const deadline = new AbortController();
-      const timer = setTimeout(() => deadline.abort(), NATIVE_RUN_SHELL_LIMITS.callMs);
+      activeStartedAt = startedAt;
+      activeUntil = Infinity;
+      activeDeadline = deadline;
+      activeRequest = request;
       active = AbortSignal.any([
         lifetime.signal,
         grant.signal,
@@ -487,7 +603,9 @@ export async function adoptNativeRunShellTool(
         producer.signal,
         exec.signal,
         deadline.signal,
+        ...(originalBudget.signal ? [originalBudget.signal] : []),
       ]);
+      shorten(until);
       let finish!: () => void;
       const done = new Promise<void>((resolve) => {
         finish = resolve;
@@ -510,10 +628,14 @@ export async function adoptNativeRunShellTool(
         try {
           await drain();
         } finally {
-          clearTimeout(timer);
+          clearTimeout(activeTimer);
           exec.signal = prior;
           active = undefined;
           activeCwd = undefined;
+          activeRequest = undefined;
+          activeDeadline = undefined;
+          activeTimer = undefined;
+          activeUntil = Infinity;
           pending.delete(done);
           finish();
         }
