@@ -13,6 +13,7 @@ import {
   settleReview,
   startAppliedPlan,
   submitDelivery,
+  submitExpertDelivery,
   toNodeExecutionReport,
   unlockDownstream,
   unlockKey,
@@ -47,6 +48,25 @@ import {
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
 import type { NativeWorkGrant } from './native-work-session-contract.js';
+import type { NativeFixedResultIssuer } from './native-work-session-result.js';
+import {
+  NativeResultError,
+  nativeResultContentSchema,
+  type NativeFixedResultRef,
+} from './native-work-session-result-contract.js';
+import { nativeResultDigest } from './native-work-session-result-source.js';
+import {
+  executionNativeResultDeliverySchema,
+  nativeResultSubmitSchema,
+  nativeResultConfirmSchema,
+  nativeResultArtifactIds,
+  nativeResultProvenance,
+  nativeResultDeliveryReceipt,
+  NativeResultDeliveryError,
+  type NativeResultSubmit,
+  type NativeResultConfirm,
+  type NativeResultDeliveryReceipt,
+} from './execution-native-result-delivery.js';
 import {
   runFileListSchema,
   runFileReadSchema,
@@ -280,6 +300,24 @@ export interface ExecutionRunHostPorts
   ): undefined;
   assertWorkspace(...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>): undefined;
 }
+
+type NativeResultPort = {
+  readonly issuer: NativeFixedResultIssuer;
+  readonly prepare: NativeFixedResultIssuer['prepareFixedResult'];
+  readonly read: NativeFixedResultIssuer['readFixedResult'];
+  readonly assert: NativeFixedResultIssuer['assertFixedResult'];
+};
+type NativeResultOperation = {
+  readonly signal: AbortSignal;
+  check(): void;
+  assert(callback: () => unknown): void;
+  release(callback: () => unknown): void;
+};
+const fixedResultProofSchema = executionNativeResultDeliverySchema.pick({
+  source: true,
+  digest: true,
+  provenanceFingerprint: true,
+});
 
 /** `void` accepts async callbacks in TypeScript. Recheck runtime JS producers too:
  * only synchronous undefined means the assertion completed. Observe a rejected
@@ -868,6 +906,9 @@ export class ExecutionService {
   private runPreparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
+  private nativeResultIssuer: NativeResultPort | undefined;
+  private readonly nativeResultOperations = new Set<Promise<unknown>>();
+  private nativeResultCleanupFailure: NativeResultDeliveryError | undefined;
   private readonly uploadLifetime = new AbortController();
   private readonly uploadDrains = new Set<Promise<void>>();
   private readonly uploadOperations = new Set<Promise<unknown>>();
@@ -1035,6 +1076,426 @@ export class ExecutionService {
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
   beginRun(request: MemberRequest, body: unknown): Promise<ExecutionResult<ExecutionRunDecision>> {
     return this.prepareRunBegin(request, body, false);
+  }
+
+  /** A installs the original C owner once, after installing this service's Run Host. */
+  installNativeResultIssuer(issuer: NativeFixedResultIssuer): void {
+    this.requireRunHost();
+    if (
+      !this.runAuthorities ||
+      this.nativeResultIssuer ||
+      !issuer ||
+      typeof issuer.prepareFixedResult !== 'function' ||
+      typeof issuer.readFixedResult !== 'function' ||
+      typeof issuer.assertFixedResult !== 'function'
+    )
+      throw new NativeResultDeliveryError('native-result-unavailable');
+    this.nativeResultIssuer = Object.freeze({
+      issuer,
+      prepare: issuer.prepareFixedResult,
+      read: issuer.readFixedResult,
+      assert: issuer.assertFixedResult,
+    });
+  }
+
+  /** Host-only: real objects never arrive through an HTTP/JSON command. */
+  submitNativeFixedResult(
+    request: MemberRequest,
+    body: unknown,
+    grant: NativeWorkGrant,
+    ref: NativeFixedResultRef,
+    signal: AbortSignal = this.runLifetime.signal,
+  ): Promise<ExecutionResult<NativeResultDeliveryReceipt>> {
+    const actor = this.actorField(body);
+    if (actor) return Promise.resolve(actor);
+    const parsed = parseBody(nativeResultSubmitSchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    const input = parsed.value;
+    return this.nativeResultOperation(signal, async (operation) => {
+      const port = this.nativeResultPort();
+      const manager = this.runAuthorities!;
+      // Hold this original request's member lease throughout preparation/write.
+      // A borrowed drive grant alone does not authenticate this request.
+      const host = this.requireRunHost();
+      const member = await host.memberLease(request);
+      const memberRelease = member.release;
+      operation.release(() => memberRelease.call(member));
+      const memberSignal = member.signal;
+      const memberCheck = member.assertCurrent;
+      const memberExpiry = member.expiresAt;
+      const memberCurrent = () => {
+        operation.check();
+        if (
+          !(memberSignal instanceof AbortSignal) ||
+          member.signal !== memberSignal ||
+          member.assertCurrent !== memberCheck ||
+          member.release !== memberRelease ||
+          member.expiresAt !== memberExpiry ||
+          memberSignal.aborted ||
+          !Number.isSafeInteger(member.expiresAt) ||
+          member.expiresAt <= Date.now()
+        )
+          throw new NativeResultDeliveryError('native-result-authority-denied');
+        operation.assert(() => memberCheck.call(member, grant.scope.spaceId));
+      };
+      const reading = await manager.open(
+        request,
+        {
+          taskId: input.taskId,
+          planId: input.planId,
+          revision: input.revision,
+          nodeId: input.nodeId,
+          runId: input.runId,
+        },
+        'read',
+      );
+      operation.release(() => reading.dispose());
+      const readCurrent = () => {
+        memberCurrent();
+        manager.assertGrant(reading.grant, 'history');
+      };
+      const preflight = await this.enqueue(async () => {
+        readCurrent();
+        const { node, run, state } = this.nativeResultFacts(input);
+        this.assertRunNodeAccess(host, member.memberId, run.spaceId, node);
+        if (run.resultDelivery) return fail('native-result-confirmation-required');
+        this.assertNativeResultWriter(input, node, run, state.version, grant, member.memberId);
+        return { ok: true, value: undefined };
+      });
+      if (!preflight.ok) return preflight;
+      this.nativeResultPort();
+      const prepared = await port.prepare.call(port.issuer, grant, operation.signal);
+      readCurrent();
+      if (prepared.status !== 'ready')
+        return fail('native-result-pending', { reason: prepared.reason });
+      if (prepared.ref !== ref) return fail('native-result-reference-mismatch');
+      const lease = await port.read.call(port.issuer, grant, ref, operation.signal);
+      const release = lease?.release;
+      operation.release(() => {
+        if (typeof release !== 'function')
+          throw new NativeResultDeliveryError('native-result-cleanup-failed');
+        return release.call(lease);
+      });
+      const proof = fixedResultProofSchema.safeParse({
+        source: lease?.source,
+        digest: lease?.digest,
+        provenanceFingerprint: lease?.provenanceFingerprint,
+      });
+      const content = nativeResultContentSchema.safeParse(lease?.content);
+      if (
+        !proof.success ||
+        !content.success ||
+        typeof lease.check !== 'function' ||
+        !(lease.signal instanceof AbortSignal) ||
+        nativeResultDigest(content.data) !== proof.data.digest ||
+        nativeResultProvenance(proof.data.source, proof.data.digest) !==
+          proof.data.provenanceFingerprint ||
+        canonicalPayload(content.data) !== canonicalPayload(lease.content)
+      )
+        return fail('native-result-delivery-invalid');
+      const source = proof.data;
+      const check = lease.check;
+      const leaseSignal = lease.signal;
+      const fingerprint = canonicalPayload({ ...source, content: content.data });
+      const fixedCurrent = () => {
+        readCurrent();
+        this.nativeResultPort();
+        if (
+          lease.signal !== leaseSignal ||
+          leaseSignal.aborted ||
+          lease.check !== check ||
+          lease.release !== release ||
+          canonicalPayload({
+            source: lease.source,
+            digest: lease.digest,
+            provenanceFingerprint: lease.provenanceFingerprint,
+            content: lease.content,
+          }) !== fingerprint
+        )
+          throw new NativeResultDeliveryError('native-result-authority-denied');
+        operation.assert(() => port.assert.call(port.issuer, grant, ref));
+        operation.assert(() => check.call(lease));
+      };
+      return this.enqueue(async () => {
+        readCurrent();
+        const { node, run, state } = this.nativeResultFacts(input);
+        this.assertRunNodeAccess(host, member.memberId, run.spaceId, node);
+        // Concurrent exact requests may have prepared while the first was live.
+        // After its put, this branch only confirms facts with held read authority;
+        // it does not reuse the now-revoked send grant to write or read C again.
+        if (run.resultDelivery)
+          return this.confirmNativeResultNow({
+            ...input,
+            intentId: source.source.intentId,
+            digest: source.digest,
+            provenanceFingerprint: source.provenanceFingerprint,
+          });
+        fixedCurrent();
+        this.assertNativeResultWriter(input, node, run, state.version, grant, member.memberId);
+        if (
+          canonicalPayload(source.source.scope) !==
+            canonicalPayload(executionRunScope(node, run)) ||
+          source.source.configurationId !== input.configurationId ||
+          source.source.nativeSessionId !== run.attempt.sessionId ||
+          source.source.nativeAgentId !== run.attempt.executorRunId
+        )
+          return fail('native-result-delivery-invalid');
+        const terminal = recordExecutionRunEvent(node, {
+          kind: 'completed',
+          runId: run.attempt.id,
+          generation: run.attempt.generation,
+          segmentId: run.segmentId,
+          sequence: run.attempt.lastEventSequence + 1,
+          idle: true,
+          flushed: true,
+          resourcesSettled: true,
+        });
+        const ids = nativeResultArtifactIds(input);
+        const delivered = submitExpertDelivery({
+          record: terminal.record,
+          expertId: node.handoff.assignee.id,
+          producerRunId: run.attempt.id,
+          provenanceFingerprint: source.provenanceFingerprint,
+          idempotencyKey: input.idempotencyKey,
+          expectedVersion: terminal.record.command.version,
+          draft: { ...content.data, files: [] },
+          ...ids,
+        });
+        if (!delivered.ok) return fail(delivered.code);
+        if (terminal.disposition !== 'applied' || delivered.disposition !== 'applied')
+          return fail('native-result-delivery-conflict');
+        const ended = readExecutionRunState(terminal.record)!;
+        const resultDelivery = executionNativeResultDeliverySchema.parse({
+          protocolVersion: 1,
+          ...source,
+          receiptKey: input.idempotencyKey,
+          artifactVersionId: ids.artifactId,
+          ...(node.handoff.reviewRequired ? { roundId: ids.roundId } : {}),
+        });
+        const combined = {
+          ...delivered.record,
+          nativeExecution: {
+            ...ended,
+            runs: ended.runs.map((item) =>
+              item.attempt.id === run.attempt.id ? { ...item, resultDelivery } : item,
+            ),
+          },
+        };
+        const stamped = withExecutionEvent(
+          combined,
+          'delivery-submitted',
+          node.handoff.assignee.id,
+        );
+        if (!stamped) return fail('unavailable');
+        const finalRun = readExecutionRunState(stamped)!.runs.find(
+          (item) => item.attempt.id === run.attempt.id,
+        )!;
+        const receipt = nativeResultDeliveryReceipt(stamped, finalRun, 'applied');
+        fixedCurrent();
+        const stored = await this.persist(() => this.writeNode(stamped, true));
+        if (!stored.ok) return stored;
+        // The durable terminal state intentionally revokes driving. No send-
+        // based C assertion may run after this point, including in cleanup.
+        if (stamped.command.status === 'completed') {
+          try {
+            const unlocked = await this.unlockFrom(stamped);
+            if (!unlocked.ok) return { ok: true, value: { ...receipt, downstream: 'pending' } };
+          } catch {
+            return { ok: true, value: { ...receipt, downstream: 'pending' } };
+          }
+        }
+        return { ok: true, value: receipt };
+      });
+    });
+  }
+
+  /** Independent readonly recovery: no C owner/ref, new submit right or repair. */
+  confirmNativeResultDelivery(
+    request: MemberRequest,
+    body: unknown,
+    signal: AbortSignal = this.runLifetime.signal,
+  ): Promise<ExecutionResult<NativeResultDeliveryReceipt>> {
+    const actor = this.actorField(body);
+    if (actor) return Promise.resolve(actor);
+    const parsed = parseBody(nativeResultConfirmSchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    return this.nativeResultOperation(signal, async (operation) => {
+      const manager = this.runAuthorities;
+      if (!manager) return fail('native-result-unavailable');
+      const input = parsed.value;
+      const opened = await manager.open(
+        request,
+        {
+          taskId: input.taskId,
+          planId: input.planId,
+          revision: input.revision,
+          nodeId: input.nodeId,
+          runId: input.runId,
+        },
+        'read',
+      );
+      operation.release(() => opened.dispose());
+      return this.enqueue(async () => {
+        operation.check();
+        manager.assertGrant(opened.grant, 'history');
+        return this.confirmNativeResultNow(parsed.value);
+      });
+    });
+  }
+
+  private nativeResultPort(): NativeResultPort {
+    this.requireRunHost();
+    const port = this.nativeResultIssuer;
+    if (
+      !port ||
+      port.issuer.prepareFixedResult !== port.prepare ||
+      port.issuer.readFixedResult !== port.read ||
+      port.issuer.assertFixedResult !== port.assert
+    )
+      throw new NativeResultDeliveryError('native-result-unavailable');
+    return port;
+  }
+
+  private nativeResultFacts(input: NativeResultSubmit | NativeResultConfirm) {
+    const node = this.readRunNode(input);
+    if (!node) throw new NativeResultDeliveryError('native-result-authority-denied');
+    const state = readExecutionRunState(node);
+    const run = state?.runs.find((item) => item.attempt.id === input.runId);
+    if (
+      !state ||
+      !run ||
+      run.attempt.generation !== input.generation ||
+      run.segmentId !== input.segmentId ||
+      run.selection.configurationId !== input.configurationId
+    )
+      throw new NativeResultDeliveryError('native-result-delivery-conflict');
+    return { node, run, state };
+  }
+
+  private assertNativeResultWriter(
+    input: NativeResultSubmit,
+    node: ExecutionNodeRecord,
+    run: ReturnType<ExecutionService['nativeResultFacts']>['run'],
+    runVersion: number,
+    grant: NativeWorkGrant,
+    memberId: string,
+  ): void {
+    if (
+      readExecutionRunState(node)?.currentRunId !== run.attempt.id ||
+      ['completed', 'failed', 'cancelled'].includes(run.attempt.status)
+    )
+      throw new NativeResultDeliveryError('native-result-terminal-no-receipt');
+    this.runAuthorities!.assertGrant(grant, 'send');
+    this.assertRunController(memberId, node);
+    const executor = run.composition?.payload.executor;
+    if (
+      node.handoff.assignee.kind !== 'expert' ||
+      executor?.kind !== 'plan-expert' ||
+      run.composition?.schemaVersion !== 2 ||
+      !run.composition.payload.resultIntentTool ||
+      executor.ref.id !== node.handoff.assignee.id ||
+      executor.ref.version !== node.planId
+    )
+      throw new NativeResultDeliveryError('native-result-not-expert');
+    if (
+      memberId !== run.actorId ||
+      canonicalPayload(grant.scope) !== canonicalPayload(executionRunScope(node, run))
+    )
+      throw new NativeResultDeliveryError('native-result-authority-denied');
+    if (
+      node.command.version !== input.expectedNodeVersion ||
+      runVersion !== input.expectedRunVersion
+    )
+      throw new NativeResultDeliveryError('native-result-delivery-conflict');
+  }
+
+  private confirmNativeResultNow(
+    input: NativeResultConfirm,
+  ): ExecutionResult<NativeResultDeliveryReceipt> {
+    const { node, run } = this.nativeResultFacts(input);
+    const value = run.resultDelivery;
+    if (!value) return fail('native-result-terminal-no-receipt');
+    if (
+      value.receiptKey !== input.idempotencyKey ||
+      value.source.intentId !== input.intentId ||
+      value.digest !== input.digest ||
+      value.provenanceFingerprint !== input.provenanceFingerprint
+    )
+      return fail('native-result-delivery-conflict');
+    return { ok: true, value: nativeResultDeliveryReceipt(node, run, 'confirmed') };
+  }
+
+  private nativeResultOperation(
+    signal: AbortSignal,
+    work: (
+      operation: NativeResultOperation,
+    ) => Promise<ExecutionResult<NativeResultDeliveryReceipt>>,
+  ): Promise<ExecutionResult<NativeResultDeliveryReceipt>> {
+    if (!(signal instanceof AbortSignal)) return Promise.resolve(fail('validation'));
+    if (this.nativeResultOperations.size >= 8)
+      return Promise.resolve(fail('native-result-capacity'));
+    const combined = AbortSignal.any([this.runLifetime.signal, signal]);
+    const releases: (() => unknown)[] = [];
+    const check = () => {
+      this.requireRunHost();
+      if (combined.aborted) throw new NativeResultDeliveryError('native-result-cancelled');
+    };
+    const operation = Promise.resolve().then(async () => {
+      let result: ExecutionResult<NativeResultDeliveryReceipt>;
+      try {
+        check();
+        result = await work({
+          signal: combined,
+          check,
+          release: (fn) => releases.push(fn),
+          assert(callback) {
+            const value = callback();
+            if (value !== undefined) {
+              // Never await an invalid async assertion as permission or inside
+              // the original queue. Still own its physical completion on close.
+              const ended = Promise.resolve(value);
+              void ended.catch(() => undefined);
+              releases.push(() => ended);
+              throw new NativeResultDeliveryError('native-result-authority-denied');
+            }
+          },
+        });
+      } catch (error) {
+        result = fail(
+          error instanceof NativeResultDeliveryError ||
+            error instanceof NativeResultError ||
+            error instanceof ExecutionRunError ||
+            error instanceof ExecutionRunCompositionError
+            ? error.code
+            : 'native-result-unavailable',
+        );
+      }
+      let cleanupFailed = false;
+      for (const release of releases.reverse()) {
+        try {
+          const value = release();
+          if (value !== undefined) {
+            await Promise.resolve(value);
+            cleanupFailed = true;
+          }
+        } catch {
+          cleanupFailed = true;
+        }
+      }
+      if (cleanupFailed) {
+        this.nativeResultCleanupFailure ??= new NativeResultDeliveryError(
+          'native-result-cleanup-failed',
+        );
+        if (result.ok)
+          return { ok: true as const, value: { ...result.value, cleanup: 'failed' as const } };
+      }
+      return result;
+    });
+    this.nativeResultOperations.add(operation);
+    void operation
+      .finally(() => this.nativeResultOperations.delete(operation))
+      .catch(() => undefined);
+    return operation;
   }
 
   /** Normal explicit first start: authenticate all facts before the first global write. */
@@ -1273,9 +1734,12 @@ export class ExecutionService {
   async closeRuns(): Promise<void> {
     this.fenceRuns();
     while (this.runPreparations.size) await Promise.allSettled([...this.runPreparations]);
+    while (this.nativeResultOperations.size)
+      await Promise.allSettled([...this.nativeResultOperations]);
     await this.writes;
     await this.runAuthorities?.close();
     if (this.runPreparationFailure) throw this.runPreparationFailure;
+    if (this.nativeResultCleanupFailure) throw this.nativeResultCleanupFailure;
   }
 
   private requireRunHost(): ExecutionRunHostPorts {

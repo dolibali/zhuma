@@ -11,6 +11,14 @@ import {
 import type {} from '@deepseek-ai/dsh-tools';
 import { assertNativeInputReadOwner } from './native-work-session.js';
 import {
+  NATIVE_RESULT_LIMITS,
+  type NativeResultSnapshot,
+} from './native-work-session-result-contract.js';
+import {
+  publicNativeResultEvent,
+  NativePublicResultProjection,
+} from './native-work-session-public-result.js';
+import {
   requireNativeInboxRetention,
   type RetainedInboxCreateOptions,
   type RetainedInboxResumeOptions,
@@ -686,9 +694,10 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       () => [],
       async (handle, bounded) => {
         const result = await handle.read(after + 1, limit, { signal: bounded });
-        if (Buffer.byteLength(JSON.stringify(result.events)) > MAX_FRAME_BYTES)
+        const events = result.events.map(publicNativeResultEvent);
+        if (Buffer.byteLength(JSON.stringify(events)) > MAX_FRAME_BYTES)
           throw new NativeWorkError('capacity');
-        return result.events;
+        return events;
       },
     );
   }
@@ -840,6 +849,93 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     );
   }
 
+  /** Host-only complete cut: includes internal inbox occupancy, never a public chat frame. */
+  readResultSnapshot(
+    binding: NativeSessionBinding,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<NativeResultSnapshot> {
+    const sessionId = binding.nativeSessionId;
+    return this.readSession(
+      sessionId,
+      signal,
+      false,
+      () => {
+        throw new NativeWorkError('unavailable');
+      },
+      async (handle, bounded, verifyRead) => {
+        const source = this.live.get(sessionId)?.handle.agent;
+        const sequence = source?.session.seq;
+        const persistence = this.ctx.sessionPersistence.identity;
+        const projection: unknown = Reflect.get(this.ctx.sessionProjections, Service.tracker);
+        const check = () => {
+          signal.throwIfAborted();
+          assertCurrent();
+          assertNativeInputReadOwner(sessionId, this);
+          if (
+            this.lifetime.signal.aborted ||
+            !projection ||
+            this.ctx.sessionPersistence.identity !== persistence ||
+            Reflect.get(this.ctx.sessionProjections, Service.tracker) !== projection ||
+            this.live.get(sessionId)?.handle.agent !== source ||
+            this.ctx.agents.get(SessionId(sessionId)) !== source ||
+            (source && source.session.seq !== sequence)
+          )
+            throw new NativeWorkError('unavailable');
+        };
+        let offset = 0;
+        let bytes = 0;
+        let checkpoint: ProjectionCheckpoint = {};
+        const events: NativeHistoryEvent[] = [];
+        for (let page = 0; page < 100; page++) {
+          verifyRead();
+          check();
+          const result = await handle.read(offset, 100, { signal: bounded });
+          verifyRead();
+          check();
+          bytes += Buffer.byteLength(JSON.stringify(result.events));
+          if (bytes > NATIVE_RESULT_LIMITS.scanBytes) throw new NativeWorkError('capacity');
+          events.push(...result.events);
+          const restored = this.ctx.sessionProjections.restore(
+            checkpoint,
+            result.events,
+            SessionLogOffset(offset),
+            handle.header,
+            handle.inheritedEventCount,
+          );
+          checkpoint = restored.checkpoint;
+          if (result.events.length === 100) {
+            offset += 100;
+            continue;
+          }
+          const inbox = restored.snapshot.values.inbox;
+          if (!inbox || !Array.isArray(inbox['next-step']) || !Array.isArray(inbox['next-turn']))
+            throw new NativeWorkError('unavailable');
+          if (sequence !== undefined && sequence !== restored.snapshot.asOfSeq + 1)
+            throw new NativeWorkError('unavailable');
+          check();
+          return {
+            asOfSeq: restored.snapshot.asOfSeq,
+            inheritedEventCount: handle.inheritedEventCount,
+            hasPending: inbox['next-step'].length > 0 || inbox['next-turn'].length > 0,
+            pendingMessageIds: [...inbox['next-step'], ...inbox['next-turn']].flatMap((value) =>
+              value &&
+              typeof value === 'object' &&
+              value.role === 'user' &&
+              typeof value.id === 'string'
+                ? [value.id]
+                : [],
+            ),
+            events: structuredClone(events),
+            check,
+          };
+        }
+        throw new NativeWorkError('capacity');
+      },
+      assertCurrent,
+    );
+  }
+
   private closeReadHandle(handle: SessionHandle): Promise<void> {
     const closing = Promise.resolve().then(() => handle.close());
     void closing.catch(() => {
@@ -905,6 +1001,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal.throwIfAborted();
     if (this.observers >= MAX_OBSERVERS) throw new NativeWorkError('capacity');
     const queue: { readonly value: NativeWorkFrame; readonly bytes: number }[] = [];
+    const projection = new NativePublicResultProjection();
     let bufferedBytes = 0;
     let overflow = false;
     let failure: unknown;
@@ -949,7 +1046,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       wake?.();
       wake = undefined;
     };
-    const push = (value: NativeWorkFrame) => {
+    const push = (original: NativeWorkFrame) => {
       if (overflow || failure || signal.aborted) return;
       try {
         checkSource();
@@ -959,6 +1056,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         notify();
         return;
       }
+      const value = projection.frame(original);
       const bytes = Buffer.byteLength(JSON.stringify(value));
       if (
         bytes > MAX_FRAME_BYTES ||

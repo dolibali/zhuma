@@ -19,7 +19,7 @@ async function delivery(page) {
     .getByRole('article', { name: '编写订单状态帮助文案', exact: true })
     .getByRole('button')
     .click();
-  return page.getByLabel('产物正文', { exact: true });
+  return page.getByLabel('补充说明（选填）', { exact: true });
 }
 
 test('space switcher: one-click menu exposes current space and keyboard switching shares footer state', async ({
@@ -118,7 +118,7 @@ test('space switcher: top entry uses the same cancelable dirty guard as the acco
   await confirm.getByRole('button', { name: '放弃修改并切换' }).click();
   await expect(picker(page)).toContainText('运营支持');
   await expect(account(page)).toContainText('团队 · 运营支持');
-  await expect(page.getByLabel('产物正文', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('补充说明（选填）', { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole('article', { name: '评审导出字段脱敏方案', exact: true }),
   ).toBeVisible();

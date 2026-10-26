@@ -1,4 +1,5 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
+import type { ExecutionFilesApi } from './files.js';
 import {
   INBOX_ACTIONS,
   INBOX_KINDS,
@@ -18,6 +19,7 @@ export interface ExecutionArtifactWire {
   readonly version: number;
   readonly text?: string;
   readonly links?: readonly string[];
+  readonly files?: readonly ArtifactFileRef[];
 }
 
 export interface ExecutionBallotWire {
@@ -186,6 +188,7 @@ export interface SavedDeliveryDraftWire {
   readonly text: string;
   readonly links: readonly string[];
   readonly files: readonly ArtifactFileRef[];
+  readonly fileDetails?: readonly { readonly id: string; readonly name: string }[];
 }
 export interface DeliveryDraftSave extends RevisionQuery {
   readonly expectedVersion: number;
@@ -234,6 +237,8 @@ export function executionErrorMessage(error: unknown): string {
 }
 
 export interface ExecutionApi {
+  /** Only the member HTTP transport exposes the authorized byte routes. */
+  readonly files?: ExecutionFilesApi;
   startable(signal?: AbortSignal): Promise<ExecutionStartableValue>;
   startPlan(draft: StartPlanDraft, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
@@ -298,6 +303,7 @@ function readArtifact(value: unknown): ExecutionArtifactWire {
     ...(Array.isArray(record.links)
       ? { links: record.links.map((link) => text(link, '链接')) }
       : {}),
+    ...(record.files === undefined ? {} : { files: readFileReferences(record.files) }),
   };
 }
 
@@ -449,19 +455,44 @@ export function readSavedDeliveryDraft(value: unknown): SavedDeliveryDraftWire {
     version: integer(draft.version, 0, '草稿版本'),
     text: draft.text,
     links: draft.links.map((link) => text(link, '草稿链接')),
-    files: draft.files.map((raw) => {
-      const file = record(raw, '草稿文件引用');
-      if (file.uploadComplete !== false) invalid('草稿文件尚未上传，返回状态不正确。');
-      return {
-        id: text(file.id, '文件引用'),
-        mediaType: text(file.mediaType, '文件类型'),
-        byteSize: integer(file.byteSize, 0, '文件大小'),
-        checksum: text(file.checksum, '文件校验'),
-        accessPolicyId: text(file.accessPolicyId, '文件访问策略'),
-        uploadComplete: false,
-      };
-    }),
+    files: readFileReferences(draft.files),
+    ...(draft.fileDetails === undefined
+      ? {}
+      : { fileDetails: readFileDetails(draft.fileDetails, draft.files) }),
   };
+}
+
+export function readArtifactFileReference(raw: unknown): ArtifactFileRef {
+  const file = record(raw, '文件引用');
+  if (typeof file.uploadComplete !== 'boolean') invalid('文件完成状态不正确。');
+  const checksum = text(file.checksum, '文件校验');
+  if (file.uploadComplete && !/^[a-f0-9]{64}$/.test(checksum)) invalid('文件校验不正确。');
+  return {
+    id: text(file.id, '文件引用'),
+    mediaType: text(file.mediaType, '文件类型'),
+    byteSize: integer(file.byteSize, 0, '文件大小'),
+    checksum,
+    accessPolicyId: text(file.accessPolicyId, '文件访问策略'),
+    uploadComplete: file.uploadComplete,
+  };
+}
+function readFileReferences(value: unknown): ArtifactFileRef[] {
+  if (!Array.isArray(value) || value.length > 20) invalid('文件列表不正确。');
+  const files = value.map(readArtifactFileReference);
+  unique(files, (file) => file.id, '文件');
+  return files;
+}
+function readFileDetails(value: unknown, references: unknown[]): { id: string; name: string }[] {
+  if (!Array.isArray(value) || value.length > 20) invalid('文件名称不正确。');
+  const ids = new Set(references.map((raw) => readArtifactFileReference(raw).id));
+  const details = value.map((raw) => {
+    const item = record(raw, '文件名称');
+    const id = text(item.id, '文件引用');
+    if (!ids.has(id)) invalid('文件名称与引用不一致。');
+    return { id, name: text(item.name, '文件名称') };
+  });
+  unique(details, (item) => item.id, '文件名称');
+  return details;
 }
 function draftQuery(query: RevisionQuery): RevisionQuery {
   return {

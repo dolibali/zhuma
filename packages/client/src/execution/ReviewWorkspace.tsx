@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import { FileReferences } from './FileReferences.js';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
@@ -83,6 +84,22 @@ function ReviewForm({ api, node, onSubmitted }: Props) {
             <p key={index}>{link}</p>
           );
         })}
+        {artifact && round && (
+          <FileReferences
+            api={api}
+            files={artifact.files ?? []}
+            target={{
+              taskId: node.taskId,
+              planId: node.planId,
+              revision: node.revision,
+              nodeId: node.nodeId,
+              purpose: 'review',
+              artifactVersionId: artifact.id,
+              roundId: round.id,
+            }}
+            scopeKey={reviewIdentity(node)}
+          />
+        )}
       </article>
       {!!round?.ballots.length && (
         <div className="zm-execution-ballots" aria-label="本轮意见">

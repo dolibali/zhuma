@@ -1,3 +1,5 @@
+import { FileReferences } from './FileReferences.js';
+import type { FileTarget } from './files.js';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '../workbench/Button.js';
 import { ControlIcon } from '../workbench/ControlIcon.js';
@@ -109,12 +111,32 @@ function ContentRead({ api, node, input }: Props) {
       </Button>
     </div>
   ) : (
-    <UpstreamContentBody content={reading.value.content} />
+    <UpstreamContentBody
+      content={reading.value.content}
+      api={api}
+      target={{
+        taskId: node.taskId,
+        planId: node.planId,
+        revision: node.revision,
+        nodeId: node.nodeId,
+        purpose: 'upstream',
+        sourceNodeId: input.sourceNodeId,
+        artifactVersionId: input.artifactVersionId,
+      }}
+    />
   );
 }
 
 /** Plain text only; never execute uploaded content or manufacture a file URL. */
-export function UpstreamContentBody({ content }: { content: UpstreamContentWire['content'] }) {
+export function UpstreamContentBody({
+  content,
+  api,
+  target,
+}: {
+  content: UpstreamContentWire['content'];
+  api?: ExecutionApi | undefined;
+  target?: FileTarget | undefined;
+}) {
   const heading = useId();
   return (
     <section className="zm-upstream-content" aria-labelledby={heading}>
@@ -151,21 +173,25 @@ export function UpstreamContentBody({ content }: { content: UpstreamContentWire[
           })}
         </ul>
       )}
-      {!!content.files.length && (
-        <div className="zm-upstream-files">
-          <h4>文件信息</h4>
-          <ul>
-            {content.files.map((file) => (
-              <li key={file.id}>
-                <strong>{file.id}</strong>
-                <span>
-                  {file.mediaType} · {file.byteSize.toLocaleString()} 字节
-                </span>
-              </li>
-            ))}
-          </ul>
-          <p className="zm-muted">文件内容暂不可查看。</p>
-        </div>
+      {api && target ? (
+        <FileReferences api={api} files={content.files} target={target} />
+      ) : (
+        !!content.files.length && (
+          <div className="zm-upstream-files">
+            <h4>文件信息</h4>
+            <ul>
+              {content.files.map((file) => (
+                <li key={file.id}>
+                  <strong>{file.id}</strong>
+                  <span>
+                    {file.mediaType} · {file.byteSize.toLocaleString()} 字节
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="zm-muted">文件内容暂不可查看。</p>
+          </div>
+        )
       )}
     </section>
   );

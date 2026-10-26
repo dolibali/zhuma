@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import type { InboxItem, NodeStatus } from '@zhuma/agent-core';
 import {
   INBOX_GROUPS,
@@ -15,6 +15,7 @@ function statusLabel(status: string): string {
 function readyFor(item: InboxItem, node: ExecutionNodeWire): boolean {
   if (item.action === 'submit') return node.status === 'ready';
   if (item.action === 'revise') return node.status === 'needs-revision';
+  if (item.action === 'continue-handling') return node.status === 'running';
   if (item.action === 'review')
     return (
       node.status === 'in-review' &&
@@ -41,6 +42,7 @@ export function InboxPanel({
   pending = false,
   reload,
   open,
+  renderAgentAction,
 }: {
   items: readonly InboxItem[];
   nodes: readonly ExecutionNodeWire[];
@@ -49,6 +51,7 @@ export function InboxPanel({
   pending?: boolean;
   reload(): void;
   open(item: InboxItem): void;
+  renderAgentAction?: ((node: ExecutionNodeWire) => ReactNode) | undefined;
 }) {
   const heading = useId();
   const nodeKey = (value: { taskId: string; nodeId: string }) =>
@@ -102,8 +105,10 @@ export function InboxPanel({
             </h3>
             <div className="zm-directory zm-execution-inbox">
               {grouped.map(({ item, index, node, place, view }) => {
-                const supported = ['deliver', 'revise', 'review'].includes(group.id);
-                const enabled = supported && !!node && readyFor(item, node);
+                const agent = group.id === 'active';
+                const supported = agent || ['deliver', 'revise', 'review'].includes(group.id);
+                const current = supported && !!node && readyFor(item, node);
+                const enabled = current && (!agent || !!renderAgentAction);
                 return (
                   <article
                     className="zm-directory-row"
@@ -130,14 +135,19 @@ export function InboxPanel({
                       {view.detail && <p className="zm-inbox-detail">{view.detail}</p>}
                       {node?.blockReason && <small>{node.blockReason}</small>}
                       {!node && <small>工作版本尚未确定，请刷新待办。</small>}
-                      {supported && node && !enabled && (
+                      {supported && node && !current && (
                         <small>工作状态或当前轮次已变化，请刷新待办。</small>
+                      )}
+                      {agent && current && !renderAgentAction && (
+                        <small>Agent 会话暂不可用，请刷新后重试。</small>
                       )}
                     </div>
                     <div className="zm-directory-actions">
-                      {supported ? (
+                      {agent && enabled ? (
+                        renderAgentAction!(node!)
+                      ) : supported ? (
                         <Button disabled={!enabled} onClick={() => open(item)}>
-                          {view.actionLabel}
+                          {agent ? '打开 Agent 会话' : view.actionLabel}
                         </Button>
                       ) : (
                         <span className="zm-muted zm-inbox-unavailable">

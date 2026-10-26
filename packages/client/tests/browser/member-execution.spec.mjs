@@ -106,11 +106,11 @@ test('execution HTTP401 unmounts old input; another member never sees the previo
   await page.goto('/?member-execution&strict');
   await page.getByRole('button', { name: '提交产物', exact: true }).click();
   await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
-  await page.getByLabel('产物正文', { exact: true }).fill('previous-member-private-draft');
+  await page.getByLabel('补充说明（选填）', { exact: true }).fill('previous-member-private-draft');
   state.expired = true;
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await expect(page.getByRole('heading', { name: '登录工作台', exact: true })).toBeVisible();
-  await expect(page.getByLabel('产物正文', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('补充说明（选填）', { exact: true })).toHaveCount(0);
   await page.getByLabel('账号', { exact: true }).fill('lin');
   await page.getByLabel('密码', { exact: true }).fill('fixture-only');
   await page.getByRole('button', { name: '登录', exact: true }).click();

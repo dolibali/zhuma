@@ -18,7 +18,7 @@ async function delivery(page) {
     .getByRole('article', { name: '编写订单状态帮助文案', exact: true })
     .getByRole('button')
     .click();
-  return page.getByLabel('产物正文', { exact: true });
+  return page.getByLabel('补充说明（选填）', { exact: true });
 }
 const inspect = (page, fn, arg) => page.evaluate(fn, arg);
 
@@ -87,7 +87,7 @@ test('account component contract: footer switching honors the active page discar
     page.getByRole('article', { name: '评审导出字段脱敏方案', exact: true }),
   ).toBeVisible();
   await expect(account(page)).toContainText('团队 · 运营支持');
-  await expect(page.getByLabel('产物正文')).toHaveCount(0);
+  await expect(page.getByLabel('补充说明（选填）')).toHaveCount(0);
 });
 
 test('account component contract: an unmounted page does not destroy global login or current space', async ({
@@ -145,7 +145,7 @@ test('account component contract: logout clears main and footer together; next a
   await expect(page.getByRole('heading', { name: '登录工作台', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '登录账号', exact: true })).toBeVisible();
   await expect(page.getByLabel('账号', { exact: true })).toBeFocused();
-  await expect(page.getByLabel('产物正文')).toHaveCount(0);
+  await expect(page.getByLabel('补充说明（选填）')).toHaveCount(0);
   await page.getByLabel('账号', { exact: true }).fill('lin');
   await page.getByLabel('密码', { exact: true }).fill('fixture-only');
   await page.getByRole('button', { name: '登录', exact: true }).click();

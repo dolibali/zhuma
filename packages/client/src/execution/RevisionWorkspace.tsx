@@ -56,6 +56,13 @@ function RevisionRead({ api, node }: Pick<Props, 'api' | 'node'>) {
   }, [load]);
   return (
     <RevisionPanel
+      api={api}
+      target={{
+        taskId: node.taskId,
+        planId: node.planId,
+        revision: node.revision,
+        nodeId: node.nodeId,
+      }}
       view={reading.kind === 'ready' ? reading.view : undefined}
       pending={reading.kind === 'loading'}
       error={reading.kind === 'error' ? reading.message : ''}
