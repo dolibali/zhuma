@@ -5,6 +5,8 @@ export interface DeliveryDraftView {
   readonly text: string;
   readonly links: readonly string[];
   readonly files: readonly ArtifactFileRef[];
+  /** Names come only from authorized original upload receipts, never local paths. */
+  readonly fileDetails?: readonly { readonly id: string; readonly name: string }[];
 }
 
 type StoredDeliveryDraft = NonNullable<ExecutionNodeRecord['deliveryDraft']>;
@@ -14,13 +16,16 @@ export function draftFiles(files: readonly ArtifactFileRef[]): ArtifactFileRef[]
   return files.map((file) => ({ ...file, uploadComplete: false }));
 }
 
-export function deliveryDraftView(draft: StoredDeliveryDraft | undefined): DeliveryDraftView {
+export function deliveryDraftView(
+  draft: StoredDeliveryDraft | undefined,
+  verifiedFiles?: readonly ArtifactFileRef[],
+): DeliveryDraftView {
   if (draft === undefined) return { version: 0, text: '', links: [], files: [] };
   return {
     version: draft.version,
     text: draft.text,
-    links: draft.links,
-    files: draftFiles(draft.files),
+    links: [...draft.links],
+    files: verifiedFiles ? verifiedFiles.map((file) => ({ ...file })) : draftFiles(draft.files),
   };
 }
 

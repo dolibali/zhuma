@@ -263,6 +263,25 @@ export async function startAcceptanceHost(directory, config) {
     post,
     exec,
     upload,
+    async file(query, memberCookie, signal) {
+      const params = new URLSearchParams(
+        Object.entries(query).map(([key, value]) => [key, String(value)]),
+      );
+      const response = await fetch(`${listener.baseURL}/api/zhuma-exec/file?${params}`, {
+        headers: {
+          host: authority,
+          origin: listener.baseURL,
+          cookie: memberCookie ? `${ownerCookie}; ${memberCookie}` : ownerCookie,
+        },
+        ...(signal ? { signal } : {}),
+        redirect: 'manual',
+      });
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const json = response.headers.get('content-type')?.startsWith('application/json')
+        ? JSON.parse(Buffer.from(bytes).toString())
+        : undefined;
+      return { status: response.status, bytes, json, headers: response.headers };
+    },
     async login(memberId, password) {
       const response = await post('/zhuma-id/login', { accountId: memberId, password }, undefined);
       assert.equal(response.status, 200, `login ${memberId}: ${response.status}`);

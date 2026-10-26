@@ -7,7 +7,8 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import type { Domain } from '@deepseek-ai/dsh-storage-domain';
-import { WorkbenchError, WorkTaskSchema } from '@zhuma/agent-core';
+import { WorkbenchError, WorkTaskSchema, type ArtifactFileRef } from '@zhuma/agent-core';
+import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
 
 const id = WorkTaskSchema.shape.id;
 
@@ -72,6 +73,7 @@ export const ARTIFACT_FILE_LIMITS = {
   uploadTimeoutMs: 60_000,
   maxFilesPerSpace: 1000,
   maxConcurrentUploadsPerSpace: 8,
+  maxConcurrentReadsPerSpace: 8,
 } as const;
 
 export interface ArtifactFileUploadDeclare {
@@ -225,6 +227,105 @@ export interface FileUploadReceipt {
   readonly mediaType: string;
   readonly bytes: number;
   readonly sha256: string;
+  /** Canonical input for draft/submit; its completion is still reverified by the Host. */
+  readonly reference: ArtifactFileRef;
+}
+
+/** A policy label is metadata, never an authorization capability. */
+export function artifactFileReference(record: UploadFileRecord): ArtifactFileRef {
+  return {
+    id: record.uploadId,
+    mediaType: record.mediaType,
+    byteSize: record.byteSize,
+    checksum: record.sha256,
+    accessPolicyId: `space:${record.spaceId}`,
+    uploadComplete: record.state === 'completed',
+  };
+}
+
+/** A caller flag is ignored; every other claimed fact must match the durable receipt. */
+export function matchesArtifactFileReference(
+  file: ArtifactFileRef,
+  record: UploadFileRecord,
+): boolean {
+  const trusted = artifactFileReference(record);
+  return (
+    record.state === 'completed' &&
+    file.id === trusted.id &&
+    file.mediaType === trusted.mediaType &&
+    file.byteSize === trusted.byteSize &&
+    file.checksum === trusted.checksum &&
+    file.accessPolicyId === trusted.accessPolicyId
+  );
+}
+
+/** Only a display leaf from the original upload may enter response headers. */
+export function artifactFileLeaf(name: string): string {
+  if (!name || name === '.' || name === '..' || /[\\/\u0000-\u001f\u007f]/u.test(name))
+    throw new ArtifactUploadError('unavailable');
+  return name;
+}
+
+/**
+ * SDK reads yield before their final integrity check. Never expose those chunks
+ * directly: consume the complete bounded object, then return verified bytes.
+ * drain stays owned after a logical abort, including a late pending next().
+ */
+export function readVerifiedArtifactFile(input: {
+  readonly attachments: AttachmentStore;
+  readonly record: UploadFileRecord;
+  readonly signal: AbortSignal;
+  readonly assertCurrent: () => void;
+  readonly collect: boolean;
+}): { readonly result: Promise<Uint8Array | undefined>; readonly drain: Promise<void> } {
+  const { record, signal, assertCurrent } = input;
+  if (
+    record.state !== 'completed' ||
+    record.byteSize > ARTIFACT_FILE_LIMITS.maxFileBytes ||
+    record.attachmentId !== `sha256:${record.sha256}`
+  )
+    throw new ArtifactUploadError('unavailable');
+  const name = artifactFileLeaf(record.name);
+  const source = input.attachments.readFileStream(
+    {
+      attachmentId: record.attachmentId as FileAttachmentRef['attachmentId'],
+      name,
+      bytes: record.byteSize,
+    },
+    signal,
+  );
+  const stream = new ArtifactUploadStream(source, record, signal, assertCurrent);
+  let resolveDrain!: () => void;
+  const drain = new Promise<void>((resolve) => {
+    resolveDrain = resolve;
+  });
+  const result = (async () => {
+    try {
+      const bytes = input.collect ? new Uint8Array(record.byteSize) : undefined;
+      let offset = 0;
+      for await (const chunk of stream) {
+        if (offset + chunk.byteLength > record.byteSize)
+          throw new ArtifactUploadError('unavailable');
+        bytes?.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      stream.check();
+      return bytes;
+    } catch (error) {
+      const code = error instanceof ArtifactUploadError ? error.code : 'unavailable';
+      throw new ArtifactUploadError(
+        code === 'upload-timeout'
+          ? 'file-timeout'
+          : code === 'digest-mismatch' || code === 'file-too-large'
+            ? 'unavailable'
+            : code,
+      );
+    } finally {
+      stream.finish();
+      void stream.drain().then(resolveDrain);
+    }
+  })();
+  return { result, drain };
 }
 
 export interface ArtifactFileStore {
