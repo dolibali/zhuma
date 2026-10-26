@@ -13,6 +13,10 @@ import Sessions from '@deepseek-ai/dsh-session';
 import Projections from '@deepseek-ai/dsh-session-projection';
 import Prompt from '@deepseek-ai/dsh-system-prompt';
 import Tools from '@deepseek-ai/dsh-tools';
+import SkillRegistry from '@deepseek-ai/dsh-skill';
+import * as ToolSkill from '@deepseek-ai/dsh-tool-skill';
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
+import FsLocal from '@deepseek-ai/dsh-fs-local';
 import Agents from '@deepseek-ai/dsh-agent';
 import Loop from '@deepseek-ai/dsh-agent-loop';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -25,7 +29,12 @@ import WebServer from '@deepseek-ai/dsh-host-webserver';
 import * as Connection from '@deepseek-ai/dsh-client-connection';
 import RemoteAccess from '@deepseek-ai/dsh-api-remote-access';
 import * as Host from './zhuma-host-run-plugin.js';
-import { applyWorkbenchCommand, hashPassword, fixture } from './zhuma-host-run-test-data.js';
+import {
+  applyWorkbenchCommand,
+  hashPassword,
+  fixture,
+  importedSkillSeed,
+} from './zhuma-host-run-test-data.js';
 import { ScriptedAdapter } from './zhuma-native-work-bundle.ts';
 
 const deferred = () => Promise.withResolvers();
@@ -59,7 +68,13 @@ function waitFor(ctx, predicate) {
 }
 async function boot(
   t,
-  { expert = false, adapter = new ScriptedAdapter(['FIRST', 'SECOND']) } = {},
+  {
+    expert = false,
+    skill = false,
+    userOnly = false,
+    parentSkill = false,
+    adapter = new ScriptedAdapter(['FIRST', 'SECOND']),
+  } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-host-run-'));
   const ctx = new Context();
@@ -77,6 +92,8 @@ async function boot(
     [Projections],
     [Prompt],
     [Tools],
+    [FsLocal, { cwd: root }],
+    [WorkingDirectory, { defaultDirectory: root }],
     [Agents],
     [Persistence, { root: join(root, 'sessions'), compression: 'none' }],
     [Loop, { agents: [] }],
@@ -89,6 +106,19 @@ async function boot(
     [RemoteAccess],
   ])
     await ctx.plugin(plugin, config);
+  if (parentSkill) {
+    await ctx.plugin(SkillRegistry);
+    ctx.get('skills').register({
+      name: 'parent-private-skill',
+      description: 'Private parent definition',
+      content: 'PARENT_PRIVATE_BODY',
+      source: 'contract-seed',
+      provider: 'contract-seed',
+      resourceBase: { kind: 'opaque', description: 'No filesystem authority' },
+      invocation: { modelInvocable: true, userInvocable: true },
+    });
+    await ctx.plugin(ToolSkill);
+  }
   adapter.listModels = async (provider) => [
     { provider, id: 'contract-model', name: 'Contract model' },
   ];
@@ -127,9 +157,10 @@ async function boot(
     },
   }));
   const data = fixture();
+  const imported = skill ? await importedSkillSeed(data.state, userOnly) : undefined;
   data.state.participants.find((item) => item.id === 'qa').instructions =
     'EXACT_PLAN_EXPERT_METHOD';
-  const state = applyWorkbenchCommand(data.state, {
+  const state = applyWorkbenchCommand(imported?.state ?? data.state, {
     type: 'save-task',
     task: {
       ...data.task,
@@ -143,7 +174,7 @@ async function boot(
               assigneeId: expert ? 'qa' : 'chen',
               reviewerIds: [],
               reviewRequired: false,
-              skillIds: [],
+              skillIds: skill ? ['api-skill'] : [],
               mcpIds: [],
             },
           ],
@@ -171,6 +202,11 @@ async function boot(
     spaceDirectoryBootstrapKey: 'zhuma-spaces/bootstrap',
   });
   await host;
+  if (imported)
+    await ctx.storageDomain
+      .get('zhuma_asset_packages')
+      .table('versions')
+      .put(imported.record.versionId, imported.record);
   const nativeFibers = [...(ctx.registry.get(Host.nativeRunPlugin)?.fibers ?? [])];
   assert.equal(nativeFibers.length, 1);
   await Promise.all(nativeFibers.map((fiber) => fiber.await()));
@@ -244,6 +280,85 @@ async function boot(
     begin,
   };
 }
+
+for (const selected of [false, true])
+  test(
+    `actual emitted Host resources: ${selected ? 'selected original user-only Skill' : 'empty domain'} uses original member and Run without parent private reads`,
+    { timeout: 20000 },
+    async (t) => {
+      const h = await boot(t, { skill: selected, userOnly: true, parentSkill: true });
+      const parent = h.ctx.get('skills');
+      const get = parent.get;
+      let parentReads = 0;
+      parent.get = function (...args) {
+        parentReads++;
+        return get.apply(this, args);
+      };
+      t.onTestFinished(() => {
+        parent.get = get;
+      });
+      const first = checked(await h.rpc('run', 'begin', h.begin));
+      assert.equal(first.dispatch, 'received');
+      await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
+      const target = { ...h.locator, runId: 'run-1' };
+      const view = checked(await h.rpc('run', 'read', target));
+      const agent = h.ctx.agents.get(view.native.sessionId);
+      await agent.whenIdle();
+      const frozen = JSON.stringify(h.run().composition);
+      const expected = selected ? ['skill'] : [];
+      assert.deepEqual(h.run().composition.payload.toolAllowlist, expected);
+      assert.deepEqual(
+        (h.adapter.requests[0].tools ?? []).map((tool) => tool.name),
+        expected,
+      );
+      assert.equal(
+        JSON.stringify(h.adapter.requests[0]).includes('SELECTED_ORIGINAL_SKILL_BODY'),
+        false,
+      );
+      assert.equal(h.adapter.requests.length, 1);
+      const outside = await h.login('outside');
+      const rejected = await h.rpc(
+        'run',
+        'send',
+        {
+          ...target,
+          generation: 1,
+          segmentId: 'segment-1',
+          requestId: 'outsider',
+          text: '/demo',
+          mode: 'followup',
+        },
+        outside,
+      );
+      assert.equal(rejected.result.ok, false);
+      assert.equal(h.adapter.requests.length, 1);
+      checked(
+        await h.rpc('run', 'send', {
+          ...target,
+          generation: 1,
+          segmentId: 'segment-1',
+          requestId: 'explicit',
+          text: selected
+            ? `/${h.run().composition.payload.resources.skills[0].name}`
+            : '/parent-private-skill',
+          mode: 'followup',
+        }),
+      );
+      await agent.whenIdle();
+      assert.equal(h.adapter.requests.length, 2);
+      assert.equal(parentReads, 0);
+      assert.equal(JSON.stringify(h.adapter.requests[1]).includes('PARENT_PRIVATE_BODY'), false);
+      assert.equal(
+        JSON.stringify(h.adapter.requests[1]).includes('SELECTED_ORIGINAL_SKILL_BODY'),
+        selected,
+      );
+      assert.deepEqual(
+        (h.adapter.requests[1].tools ?? []).map((tool) => tool.name),
+        expected,
+      );
+      assert.equal(JSON.stringify(h.run().composition), frozen);
+    },
+  );
 
 test(
   'actual emitted Host: durable first start, early message adoption and multi-turn use one native Run; replay/read do not run it again',

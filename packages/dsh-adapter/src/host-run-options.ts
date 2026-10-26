@@ -9,6 +9,7 @@ import {
 import { z } from 'zod';
 import type { ExecutionService } from './execution-service.js';
 import type { MemberRequest } from './member-session.js';
+import type { createHostRunResourceSource } from './host-run-resource-source.js';
 import { BASIC_TASK_EXECUTOR } from './execution-run-composition.js';
 import {
   ExecutionRunError,
@@ -61,6 +62,7 @@ export function createHostRunOptions(
     readWorkbench(): Workbench;
     signal: AbortSignal;
     modelTimeoutMs?: number;
+    readonly resources?: Pick<ReturnType<typeof createHostRunResourceSource>, 'catalog'>;
   },
 ) {
   const llm = ctx.llm;
@@ -133,6 +135,15 @@ export function createHostRunOptions(
     }
     // Metadata discovery may await network IO. Revalidate member, directory,
     // controller, full locator and inputs, then synchronously read current facts.
+    let resourceReady = false;
+    if (options.resources) {
+      try {
+        await options.resources.catalog(request, target);
+        resourceReady = true;
+      } catch {
+        active(signal);
+      }
+    }
     const inputs = await authorize();
     const node = options.execution.readRunNode(target);
     if (!node) throw new ExecutionRunError('run-authority-denied');
@@ -172,8 +183,12 @@ export function createHostRunOptions(
         expert.origin?.missing.length ||
         !plan.task.participantIds.includes(expert.id) ||
         (node.handoff.expertRef && node.handoff.expertRef.id !== expert.id) ||
-        expert.resourceBindings?.skillIds.length ||
-        expert.resourceBindings?.mcpIds.length
+        expert.resourceBindings?.skillIds.some(
+          (id) => !resourceReady || !node.handoff.skillRefs.some((ref) => ref.id === id),
+        ) ||
+        expert.resourceBindings?.mcpIds.some(
+          (id) => !resourceReady || !node.handoff.mcpRefs.some((ref) => ref.id === id),
+        )
       )
         continue;
       experts.push({
@@ -188,13 +203,13 @@ export function createHostRunOptions(
         id: ref.id,
         kind: 'skill' as const,
         name: plan.assets.find((asset) => asset.id === ref.id)?.name ?? ref.id,
-        status: 'unavailable' as const,
+        status: resourceReady ? ('fixed' as const) : ('unavailable' as const),
       })),
       ...node.handoff.mcpRefs.map((ref) => ({
         id: ref.id,
         kind: 'mcp' as const,
         name: plan.assets.find((asset) => asset.id === ref.id)?.name ?? ref.id,
-        status: 'unavailable' as const,
+        status: resourceReady ? ('fixed' as const) : ('unavailable' as const),
       })),
       ...inputs.items.map((input, index) => ({
         id: input.access === 'visible' ? input.artifactVersionId : `unavailable-input-${index}`,

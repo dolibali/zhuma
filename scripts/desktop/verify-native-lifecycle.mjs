@@ -22,7 +22,11 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({
   options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
 });
-if (!['all', 'host-run', 'host-run-cold', 'skill-loader', 'native-stream'].includes(values.phase))
+if (
+  !['all', 'host-run', 'host-run-cold', 'host-resources', 'skill-loader', 'native-stream'].includes(
+    values.phase,
+  )
+)
   throw new Error('Unknown native verification phase.');
 // Always build the actual artifact before copying it into the isolated SDK.
 // The Host test imports these emitted bytes, not a fixture source re-bundle.
@@ -474,7 +478,7 @@ export default { ...config, resolve: {...config.resolve, alias: aliases(config.r
   const executionRunSourceSha256 = sourceSha256(executionRunSourcePaths);
 
   const phases = [];
-  function verify(name, files, expectedTests, extraEnv = {}) {
+  function verify(name, files, expectedTests, extraEnv = {}, omittedByNameFilter = 0) {
     const report = join(evidence, `${name}.json`);
     const env = { ...process.env };
     for (const variable of [
@@ -521,11 +525,15 @@ export default { ...config, resolve: {...config.resolve, alias: aliases(config.r
       !summary.success ||
       summary.numFailedTests ||
       summary.numPassedTests !== expectedTests ||
-      summary.numTotalTests !== expectedTests ||
-      summary.numPendingTests
+      summary.numTotalTests !== expectedTests + omittedByNameFilter ||
+      summary.numPendingTests !== omittedByNameFilter
     )
       throw new Error(`${name} did not complete all required tests; see ${report}`);
-    phases.push({ name, passed: summary.numPassedTests });
+    phases.push({
+      name,
+      passed: summary.numPassedTests,
+      ...(omittedByNameFilter ? { omittedByNameFilter } : {}),
+    });
     console.log(`${name}: ${summary.numPassedTests} passed`);
   }
   console.log(`Verifying fixed upstream ${pin}; evidence: ${evidence}`);
@@ -632,7 +640,19 @@ export default { ...config, resolve: {...config.resolve, alias: aliases(config.r
         },
       );
   }
-  verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 6);
+  if (values.phase === 'host-resources')
+    verify(
+      'host-resources',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts',
+        '-t',
+        'actual emitted Host resources:',
+      ],
+      2,
+      {},
+      6,
+    );
+  else verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 8);
   const coldRecoveries = [];
   if (values.phase === 'all' || values.phase === 'host-run-cold') {
     for (const variant of ['unadmitted', 'unknown', 'bound', 'revoked']) {
