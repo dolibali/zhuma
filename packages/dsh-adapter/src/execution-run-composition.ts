@@ -125,6 +125,23 @@ const resultIntentToolSchema = toolSchema
   .refine(
     (value) => hash(value) === 'fe37b46ba16dc45e7dc24060a69d339e856efd982522df1efb1420e91798b386',
   );
+/** C's exact publisher description only; workspace and publication grants remain separate. */
+export interface OutputFilePublisherToolDefinition extends AcceptedInputToolDefinition {
+  readonly name: 'publish_output_file';
+  readonly sourceVersion: 'zhuma-native-output-file@1';
+}
+const outputFilePublisherToolName = 'publish_output_file';
+// Original C getter at 4ffe66c6; pretty JSON+LF source artifact SHA256
+// 05b8afb17725bffd3a5d778fe449d453bfd085dc3ef308f041ee9cb58c28e63b.
+// Freeze the complete descriptor without importing the SDK or copying its JSON.
+const outputFilePublisherToolSchema = toolSchema
+  .extend({
+    name: z.literal(outputFilePublisherToolName),
+    sourceVersion: z.literal('zhuma-native-output-file@1'),
+  })
+  .refine(
+    (value) => hash(value) === '9396477fb52178087d78975767bf745c6d57d9061f2b3bc7aeaf8ea5d25a9edd',
+  );
 export type LocalFileToolName = 'read' | 'write' | 'edit';
 export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
   readonly name: LocalFileToolName;
@@ -229,6 +246,7 @@ const extendedFields = {
   resources: executionRunResourcesSchema.optional(),
   acceptedFileReader: acceptedFileToolSchema.optional(),
   resultIntentTool: resultIntentToolSchema.optional(),
+  outputFilePublisherTool: outputFilePublisherToolSchema.optional(),
 };
 const extendedSourceSchema = sourceSchema.extend(extendedFields);
 type Source = z.infer<typeof extendedSourceSchema>;
@@ -283,6 +301,8 @@ export interface ExecutionRunCompositionInput {
   readonly acceptedFileReader?: AcceptedFileToolDefinition;
   /** C's exact ready tool description, explicitly selected for this new Run. Never backfilled. */
   readonly resultIntentTool?: ResultIntentToolDefinition;
+  /** Explicit new-Run metadata from C's getter. This is not filesystem/publication authority. */
+  readonly outputFilePublisherTool?: OutputFilePublisherToolDefinition;
   /** Qualified metadata only; absence preserves legacy refusal and exact schema-1 replay. */
   readonly resourceCatalog?: ExecutionRunResourceCatalog;
 }
@@ -328,8 +348,17 @@ function bound(value: unknown, max: number): void {
   }
 }
 function derive(source: Source) {
-  const { scope, handoff, plan, executor, inputs, tools, acceptedFileReader, resultIntentTool } =
-    source;
+  const {
+    scope,
+    handoff,
+    plan,
+    executor,
+    inputs,
+    tools,
+    acceptedFileReader,
+    resultIntentTool,
+    outputFilePublisherTool,
+  } = source;
   if (
     plan.ref.taskId !== scope.taskId ||
     plan.ref.planId !== scope.planId ||
@@ -451,6 +480,7 @@ function derive(source: Source) {
               ...(tools.acceptedInputReader ? ([ACCEPTED_INPUT_TOOL] as const) : []),
             ]),
       ...(acceptedFileReader ? [acceptedFileToolName] : []),
+      ...(outputFilePublisherTool ? [outputFilePublisherToolName] : []),
       ...(resultIntentTool ? [resultIntentToolName] : []),
       ...(resources ? executionResourceToolNames(resources) : []),
     ],
@@ -473,7 +503,8 @@ export const executionRunCompositionSchema = z.preprocess(
         value.schemaVersion === 2 &&
         !value.payload.resources &&
         !value.payload.acceptedFileReader &&
-        !value.payload.resultIntentTool
+        !value.payload.resultIntentTool &&
+        !value.payload.outputFilePublisherTool
       )
         throw Error();
       const schema = value.schemaVersion === 1 ? sourceSchema : extendedSourceSchema;
@@ -588,7 +619,8 @@ export function freezeExecutionRunComposition(
     const extended =
       resources !== undefined ||
       input.acceptedFileReader !== undefined ||
-      input.resultIntentTool !== undefined;
+      input.resultIntentTool !== undefined ||
+      input.outputFilePublisherTool !== undefined;
     const source = checked(extended ? extendedSourceSchema : sourceSchema, {
       scope,
       plan: {
@@ -612,6 +644,9 @@ export function freezeExecutionRunComposition(
         ? { acceptedFileReader: input.acceptedFileReader }
         : {}),
       ...(input.resultIntentTool !== undefined ? { resultIntentTool: input.resultIntentTool } : {}),
+      ...(input.outputFilePublisherTool !== undefined
+        ? { outputFilePublisherTool: input.outputFilePublisherTool }
+        : {}),
     });
     const payload = derive(source);
     return readExecutionRunComposition({
