@@ -88,12 +88,16 @@ export type LocalFileToolName = 'read' | 'write' | 'edit';
 export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
   readonly name: LocalFileToolName;
 }
+export interface ForegroundShellToolDefinition extends AcceptedInputToolDefinition {
+  readonly name: 'bash';
+}
 export type ExecutionCompositionTools =
   | { readonly kind: 'text-only' }
   | { readonly kind: 'accepted-input-reader'; readonly definition: AcceptedInputToolDefinition }
   | {
       readonly kind: 'local-tools';
       readonly definitions: readonly LocalFileToolDefinition[];
+      readonly shell?: ForegroundShellToolDefinition | undefined;
       readonly acceptedInputReader?: AcceptedInputToolDefinition | undefined;
     };
 const localFileToolSchema = toolSchema.omit({ name: true }).extend({
@@ -105,6 +109,10 @@ const toolsSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('local-tools'),
     definitions: z.array(localFileToolSchema).min(1).max(3),
+    shell: toolSchema
+      .omit({ name: true })
+      .extend({ name: z.literal('bash') })
+      .optional(),
     acceptedInputReader: toolSchema.optional(),
   }),
 ]);
@@ -172,7 +180,7 @@ const payloadSchema = sourceSchema.extend({
   context: z.string().max(20_000),
   contextRefs: z.array(id).max(100),
   firstMessage: messageSchema,
-  toolAllowlist: z.array(z.enum([ACCEPTED_INPUT_TOOL, 'read', 'write', 'edit'])).max(4),
+  toolAllowlist: z.array(z.enum([ACCEPTED_INPUT_TOOL, 'read', 'write', 'edit', 'bash'])).max(5),
 });
 const snapshotSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -335,6 +343,7 @@ function derive(source: Source): z.infer<typeof payloadSchema> {
           ? [ACCEPTED_INPUT_TOOL]
           : [
               ...tools.definitions.map((tool) => tool.name),
+              ...(tools.shell ? (['bash'] as const) : []),
               ...(tools.acceptedInputReader ? ([ACCEPTED_INPUT_TOOL] as const) : []),
             ],
   };
