@@ -905,3 +905,71 @@ index 22dd77a4..bd2e4645 100644
    }
  
    /** Toggle the sidebar panel (closed ⟷ contract default width). */
+diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
+--- a/packages/bundle/web-app/package.json
++++ b/packages/bundle/web-app/package.json
+@@ -140,6 +140,7 @@
+     "@deepseek-ai/dsh-host-plugin-inventory": "workspace:*",
+     "@deepseek-ai/dsh-host-webserver": "workspace:*",
+     "@deepseek-ai/dsh-launch-environment": "workspace:*",
++    "@deepseek-ai/dsh-llm": "workspace:*",
+     "@deepseek-ai/dsh-message-feedback": "workspace:*",
+     "@deepseek-ai/dsh-office-to-pdf": "workspace:*",
+     "@deepseek-ai/dsh-persona": "workspace:*",
+@@ -147,7 +148,9 @@
+     "@deepseek-ai/dsh-plugin-manager": "workspace:*",
+     "@deepseek-ai/dsh-plugin-market": "workspace:*",
+     "@deepseek-ai/dsh-schedule": "workspace:*",
++    "@deepseek-ai/dsh-session": "workspace:*",
+     "@deepseek-ai/dsh-session-log-export": "workspace:*",
++    "@deepseek-ai/dsh-session-persistence": "workspace:*",
+     "@deepseek-ai/dsh-session-reference": "workspace:*",
+     "@deepseek-ai/dsh-session-stats": "workspace:*",
+     "@deepseek-ai/dsh-session-turn-outline": "workspace:*",
+@@ -202,7 +205,6 @@
+     "@deepseek-ai/dsh-fs": "workspace:*",
+     "@deepseek-ai/dsh-fs-local": "workspace:*",
+     "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
+-    "@deepseek-ai/dsh-session": "workspace:*",
+     "@deepseek-ai/dsh-session-projection": "workspace:*",
+     "@deepseek-ai/dsh-shell-env": "workspace:*",
+     "@deepseek-ai/dsh-typert-registry": "workspace:*",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -2967,6 +2967,9 @@
+       '@deepseek-ai/dsh-launch-environment':
+         specifier: workspace:*
+         version: link:../../util/launch-environment
++      '@deepseek-ai/dsh-llm':
++        specifier: workspace:*
++        version: link:../../llm/llm
+       '@deepseek-ai/dsh-message-feedback':
+         specifier: workspace:*
+         version: link:../../feedback/message-feedback
+@@ -2988,9 +2991,15 @@
+       '@deepseek-ai/dsh-schedule':
+         specifier: workspace:*
+         version: link:../../schedule/schedule
++      '@deepseek-ai/dsh-session':
++        specifier: workspace:*
++        version: link:../../core/session
+       '@deepseek-ai/dsh-session-log-export':
+         specifier: workspace:*
+         version: link:../../session-query/session-log-export
++      '@deepseek-ai/dsh-session-persistence':
++        specifier: workspace:*
++        version: link:../../session/session-persistence
+       '@deepseek-ai/dsh-session-reference':
+         specifier: workspace:*
+         version: link:../../context/session-reference
+@@ -3112,9 +3121,6 @@
+       '@deepseek-ai/dsh-sandbox-policy':
+         specifier: workspace:*
+         version: link:../../sandbox/sandbox-policy
+-      '@deepseek-ai/dsh-session':
+-        specifier: workspace:*
+-        version: link:../../core/session
+       '@deepseek-ai/dsh-session-projection':
+         specifier: workspace:*
+         version: link:../../session/session-projection
