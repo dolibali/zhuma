@@ -61,7 +61,20 @@ function fixture() {
     },
   };
   const reader = createHostRunReader(execution, authorities, native);
-  return { reader, node, run, request, locator, counters, authorities, native, checks, revoked };
+  return {
+    reader,
+    node,
+    run,
+    request,
+    locator,
+    counters,
+    authorities,
+    native,
+    checks,
+    revoked,
+    grant,
+    scope,
+  };
 }
 
 test('Host Run reader contract: every read opens and releases fresh authority and never creates native work', async () => {
@@ -152,5 +165,92 @@ test('Host Run reader contract: cancellation and late authorization failure rele
     return { binding: { nativeSessionId: 'native' }, events: [] };
   };
   await assert.rejects(f.reader.history(f.request, f.locator), { name: 'AbortError' });
+  assert.equal(f.counters.disposed, 2);
+});
+
+test('Host Run conversation contract: inbox and frames expose only the exact granted scope and known presentation fields', async () => {
+  const f = fixture();
+  const binding = { scope: f.scope, nativeSessionId: 'native', privateCanary: 'PRIVATE' };
+  f.native.readInbox = async (grant) => {
+    assert.equal(grant, f.grant);
+    return {
+      binding,
+      asOfSeq: 9,
+      receipts: [
+        {
+          requestId: 'request',
+          messageId: 'message',
+          mode: 'queue',
+          status: 'received',
+          privateCanary: 'PRIVATE',
+        },
+      ],
+      items: [
+        {
+          id: 'message',
+          text: 'pending',
+          target: 'next-turn',
+          requestId: 'request',
+          mode: 'queue',
+          status: 'received',
+          privateCanary: 'PRIVATE',
+        },
+      ],
+    };
+  };
+  f.native.open = () => ({ binding });
+  f.native.observe = async function* (grant, after) {
+    assert.equal(grant, f.grant);
+    assert.equal(after, 4);
+    yield {
+      scope: f.scope,
+      nativeSessionId: 'native',
+      type: 'message',
+      seq: 5,
+      time: 1,
+      messageKey: 'native:seq:5',
+      role: 'user',
+      id: 'message',
+      text: 'body',
+      reasoning: 'PRIVATE',
+    };
+  };
+  const inbox = await f.reader.inbox(f.request, f.locator);
+  const frames = [];
+  await f.reader.observe(f.request, { ...f.locator, after: 4 }, async (frame) =>
+    frames.push(frame),
+  );
+  assert.equal(inbox.value.items[0].status, 'received');
+  assert.equal(frames[0].target.runId, f.locator.runId);
+  assert.equal('actorId' in frames[0].target, false);
+  assert.equal(JSON.stringify([inbox, frames]).includes('PRIVATE'), false);
+  assert.equal(f.counters.disposed, 2);
+});
+
+test('Host Run conversation contract: wrong scope or revocation rejects frames and releases the read lease', async () => {
+  const f = fixture();
+  f.native.open = () => ({ binding: { nativeSessionId: 'native' } });
+  f.native.observe = async function* () {
+    yield {
+      scope: { ...f.scope, generation: 99 },
+      nativeSessionId: 'native',
+      type: 'status',
+      status: 'idle',
+    };
+  };
+  let emitted = 0;
+  await assert.rejects(
+    f.reader.observe(f.request, f.locator, async () => emitted++),
+    { code: 'scope-mismatch' },
+  );
+  f.native.observe = async function* () {
+    f.revoked.abort();
+    yield { scope: f.scope, nativeSessionId: 'native', type: 'status', status: 'idle' };
+  };
+  await assert.rejects(
+    f.reader.observe(f.request, f.locator, async () => emitted++),
+    { name: 'AbortError' },
+  );
+  assert.equal(emitted, 0);
   assert.equal(f.counters.disposed, 2);
 });

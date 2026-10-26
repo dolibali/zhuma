@@ -34,9 +34,19 @@ Stop 使用独立于 pending send 的命令通道，不等待发送回执或重�
 
 未发送输入只在面板本地；仅把 dirty 布尔值接入既有空间/导航守卫。关闭或 ESC 使用现有紧凑离开确认，取消保留原输入并恢复焦点，确认放弃才卸载本 scope。离开不停止 Run、不撤销已发送操作；真实账号/controller 撤销仍即时卸载，不将输入带给新账号。
 
-会话可见且资源 held 时每 2500ms 只读进度和历史，不重新发现模型、不连接或驱动 Agent。历史沿 SDK 正向 seq 游标读取并保留已加载消息；不把未知 payload JSON、system/developer 内容、工具参数或 reasoning 展开到消息区，也不把正向分页称为较早消息。现批没有流中 token 推送、任意旧页回看或自动采用输出为交付；这些边界继续保留。
+会话可见且资源 held 时每 2500ms 只读进度和历史，不重新发现模型、不连接或驱动 Agent。历史沿 SDK 正向 seq 游标读取并保留已加载消息；不把未知 payload JSON、system/developer 内容、工具参数或 reasoning 展开到消息区，也不把正向分页称为较早消息。原生正文流仅用于展示进度；任意旧页回看和自动采用输出为交付仍未接入。
 
 固定 SDK 将运行上下文也记录成 `user/message`，因此历史展示以其实际 `message.role` 与 `message.source.kind` 一起判别来源：只显示 `user/user` 和 `assistant/model` 的文字块，工具仅显示 `tool/call` 名称。`runtime-context`（含 snapshot sections 与清空快照）、指令、目录注入、来源缺失或未知的消息及原始工具结果均不作为聊天正文展示；不把来源对象、replayState 或内部配置复制到 UI。判断不依赖正文关键词，真实用户或 Agent 谈到运行上下文时仍正常显示。
+
+## 原生 inbox 与正文流
+
+`POST /api/zhuma-run/inbox` 返回同一 cut 的 pending 用户文字及 receipt 状态；`received` 显示“已收到 · 待处理”。原生 `claimed` 仅表示进入会话记录，不表示模型已采用。已保存用户消息与 pending 使用真实 message id 合并，避免显示两次。
+
+`POST /api/zhuma-run/observe` 沿同一个原始 MemberRequest 打开真正只读 grant，并在整个观察期保有。每帧核对准确 scope/nativeSessionId，公开投影只保留 message、assistant-stream、status 和 gap 的白名单字段。运输为带 rpcId 的 NDJSON，每次按消费者需求写一帧，上限 512 KiB；读取取消、成员撤权与 Host 关闭中止读流并排空，不停止模型或补发消息。原有桌面 cookie 桥只增加这两个准确路径。
+
+Client 每次建立读流仍核对真实成员账号/空间，逐帧验证 Run、generation、segment、session 和 messageKey。推理及工具参数被原生投影过滤，因此可见 index 允许跳号，只要求单调增加。临时正文只留在内存，终态按原生 seq/messageKey 合并为一个持久消息；abandoned/assistant-attempt 不捏造为已提交回复。断流保留已保存记录，gap 使用本界面已经扫描的持久游标重新读历史，不跳到 gap.after。关闭、切换账号/空间或节点卸载观察，迟到帧不能写回新视图。
+
+正式 `desktop:verify:native-lifecycle --phase native-stream` 注册 C 的完整 73 项原生会话场景及独立 inbox write/read 两个进程模式，并运行 emitted Host 的正常成员运输场景；`host-run-cold` 保留原冷恢复场景。临时 SDK checkout 在 finally 中移除，报告仍保留。原始 SDK loader 466 项资格化属于独立 phase，不因本批再次执行。
 
 ## 验证口径
 

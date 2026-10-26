@@ -1,4 +1,5 @@
 import type { NativeRunApi, NativeRunBegin, NativeRunOptions, NativeRunRead } from './api.js';
+import { createConversationState } from './conversation-state.js';
 import { canonicalPayload } from '@zhuma/agent-core';
 import type {
   NativeRunPanelProps,
@@ -18,7 +19,15 @@ type Command = 'start' | 'send' | 'stop';
 type Retry = { fingerprint: string; requestId: string; newRunId: string; newSegmentId: string };
 type ActiveCommand = { epoch: number; abort: AbortController };
 const runIdentity = (run: NativeRunRead | null) =>
-  run ? JSON.stringify([run.runId, run.generation, run.segmentId]) : undefined;
+  run
+    ? JSON.stringify([
+        run.runId,
+        run.generation,
+        run.segmentId,
+        run.native?.sessionId,
+        run.native?.agentId,
+      ])
+    : undefined;
 
 /** Ephemeral view state only. No persistence, authority, native handle or execution facts. */
 export function createNativeRunController(api: NativeRunApi, target: NativeRunTarget) {
@@ -28,7 +37,9 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
   let options: NativeRunOptions | undefined;
   let run: NativeRunRead | null = null;
   let selection: NativeRunSelection | null = null;
-  let messages: Extract<NativeRunPanelView, { kind: 'ready' }>['messages'] = [];
+  const transcript = createConversationState();
+  let observing: { abort: AbortController; identity: string | undefined } | undefined;
+  let resync: ReturnType<typeof setTimeout> | undefined;
   let cursor = -1;
   let reading: AbortController | undefined;
   let epoch = 0;
@@ -71,7 +82,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       view: {
         kind: 'ready',
         run,
-        messages,
+        messages: transcript.messages(),
         hasEarlier: false,
         selection: held ? options.selection : selection,
         models: options.models,
@@ -94,8 +105,53 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       },
     });
   }
+  function stopObserving() {
+    observing?.abort.abort();
+    observing = undefined;
+    clearTimeout(resync);
+    resync = undefined;
+    transcript.disconnect();
+  }
+  function observe() {
+    if (!api.observe || !run?.native || observing || !current()) return;
+    const fixed = run;
+    const ticket = { abort: new AbortController(), identity: runIdentity(fixed) };
+    observing = ticket;
+    const signal = AbortSignal.any([ticket.abort.signal, lifetime.signal]);
+    const valid = () =>
+      current() && observing === ticket && !signal.aborted && runIdentity(run) === ticket.identity;
+    void (async () => {
+      let gap = false;
+      try {
+        for await (const frame of api.observe!(fixed, cursor, signal)) {
+          if (!valid()) return;
+          gap = transcript.frame(frame);
+          ready();
+          if (gap) break;
+        }
+      } catch {
+        if (valid()) publish({ error: '实时连接已断开，正在同步已保存的消息。' });
+      } finally {
+        if (observing === ticket) {
+          observing = undefined;
+          transcript.disconnect();
+          ready();
+          // Never adopt gap.after as a local cursor: it can include frames this
+          // view did not receive. The normal history read fills from cursor.
+          if (gap && current())
+            resync = setTimeout(() => {
+              resync = undefined;
+              void refresh(false).catch(() => undefined);
+            }, 2500);
+        }
+        ticket.abort.abort();
+      }
+    })();
+  }
   async function refresh(catalog = true) {
     lifetime.signal.throwIfAborted();
+    clearTimeout(resync);
+    resync = undefined;
     if (!catalog && Object.values(active).some((command) => command.epoch === epoch)) return;
     reading?.abort();
     const request = new AbortController();
@@ -113,15 +169,20 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         run?.runId !== nextRun?.runId ||
         run?.generation !== nextRun?.generation ||
         run?.segmentId !== nextRun?.segmentId;
-      let nextMessages = changed ? [] : messages;
+      if (changed) stopObserving();
+      let page: Awaited<ReturnType<NativeRunApi['history']>> | undefined;
+      let inbox: Awaited<ReturnType<NonNullable<NativeRunApi['inbox']>>> | undefined;
       let nextCursor = changed ? -1 : cursor;
       // Forward-only SDK history: retain the transcript and advance the real seq
       // cursor. Never call this "older messages" or infer missing events.
       if (nextRun?.native) {
-        const page = await api.history(target, nextRun.runId, nextCursor, signal);
+        page = await api.history(target, nextRun.runId, nextCursor, signal);
         if (!valid()) return;
-        nextMessages = [...nextMessages, ...page.messages];
         nextCursor = page.nextAfter;
+        if (api.inbox) {
+          inbox = await api.inbox(nextRun, signal);
+          if (!valid()) return;
+        }
       }
       options = next;
       run = nextRun;
@@ -136,10 +197,14 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         stopFence = undefined;
       if (next.selection) selection = next.selection;
       else if (changed) selection = null;
-      messages = nextMessages;
+      if (changed) transcript.clear();
+      if (page) transcript.history(page.messages, page.nextAfter);
+      if (inbox) transcript.inbox(inbox);
       cursor = nextCursor;
       ready();
+      observe();
     } catch (error) {
+      if (valid()) stopObserving();
       if (valid())
         publish({
           view: { kind: 'unavailable', message: '暂时无法读取这个工作节点，请刷新或重新进入。' },
@@ -281,6 +346,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     },
     dispose() {
       lifetime.abort();
+      stopObserving();
       for (const command of Object.values(active)) command.abort.abort();
       reading?.abort();
       listeners.clear();

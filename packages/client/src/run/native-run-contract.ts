@@ -74,6 +74,8 @@ export interface NativeRunMessage {
   readonly role: 'user' | 'assistant' | 'tool' | 'system';
   readonly text: string;
   readonly label?: string | undefined;
+  readonly nativeId?: string | undefined;
+  readonly delivery?: 'received' | 'recorded' | 'streaming' | 'syncing' | undefined;
 }
 export interface NativeRunResource {
   readonly id: string;
@@ -121,3 +123,66 @@ export interface NativeRunPanelProps {
   onRefresh(): Promise<void>;
   onLoadEarlier(): Promise<void>;
 }
+
+/** Read-only native presentation. A transport frame is never an execution command. */
+export type NativeConversationTarget = Pick<
+  NativeRunTarget,
+  'spaceId' | 'taskId' | 'planId' | 'revision' | 'nodeId'
+> &
+  Pick<NativeRunSummary, 'runId' | 'generation' | 'segmentId'>;
+export interface NativeRunInbox {
+  readonly asOfSeq: number;
+  readonly receipts: readonly {
+    readonly requestId: string;
+    readonly messageId: string;
+    readonly mode: NativeRunSendMode;
+    readonly status: 'received' | 'claimed' | 'unknown';
+  }[];
+  readonly items: readonly {
+    readonly id: string;
+    readonly text: string;
+    readonly target: 'next-turn' | 'next-step';
+    readonly requestId: string;
+    readonly mode: NativeRunSendMode;
+    readonly status: 'received';
+  }[];
+}
+export type NativeConversationFrame =
+  | {
+      readonly type: 'message';
+      readonly seq: number;
+      readonly messageKey: string;
+      readonly id: string;
+      readonly role: 'user' | 'assistant';
+      readonly text: string;
+      readonly interrupted?: true;
+    }
+  | { readonly type: 'status'; readonly status: 'idle' | 'running' }
+  | { readonly type: 'gap'; readonly after: number }
+  | {
+      readonly type: 'assistant-stream';
+      readonly frame:
+        | { readonly type: 'start'; readonly attemptId: string; readonly revision: number }
+        | {
+            readonly type: 'chunk';
+            readonly attemptId: string;
+            readonly revision: number;
+            readonly index: number;
+            readonly text?: string;
+            readonly toolName?: string;
+          }
+        | {
+            readonly type: 'end';
+            readonly attemptId: string;
+            readonly revision: number;
+            readonly index: number;
+            readonly outcome:
+              | { readonly kind: 'abandoned' }
+              | {
+                  readonly kind: 'committed';
+                  readonly eventType: 'assistant/message' | 'assistant/attempt';
+                  readonly seq: number;
+                  readonly messageKey: string;
+                };
+          };
+    };

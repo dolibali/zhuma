@@ -2,6 +2,9 @@ import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export * from './identity/index.js';
 export type {
+  NativeConversationTarget,
+  NativeConversationFrame,
+  NativeRunInbox,
   NativeRunTarget,
   NativeRunModel,
   NativeRunExecutor,
