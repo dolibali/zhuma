@@ -3,6 +3,7 @@ import {
   canonicalPayload,
   completionSource,
   createExecutionHandoff,
+  createNodeHandoffs,
   downstreamRecords,
   eventsAfter,
   executionInbox,
@@ -676,7 +677,19 @@ function settlementLanded(record: ExecutionNodeRecord, roundId: string): boolean
 }
 
 function recordedPlan(storage: ExecutionStorage, record: ExecutionNodeRecord): boolean {
-  return storage.readPlan(planKey(record.taskId, record.planId, record.revision)) !== undefined;
+  const receipt = storage.readPlan(planKey(record.taskId, record.planId, record.revision));
+  if (
+    !receipt ||
+    typeof receipt.idempotencyKey !== 'string' ||
+    receipt.idempotencyKey.length === 0 ||
+    typeof receipt.fingerprint !== 'string' ||
+    receipt.fingerprint.length === 0 ||
+    !Array.isArray(receipt.nodeIds) ||
+    !receipt.nodeIds.every((nodeId) => typeof nodeId === 'string' && nodeId.length > 0)
+  )
+    return false;
+  const nodes = new Set(receipt.nodeIds);
+  return nodes.size === receipt.nodeIds.length && nodes.has(record.nodeId);
 }
 
 /** A stored value that cannot be read as a node is skipped, not fatal. */
@@ -1100,6 +1113,42 @@ export class ExecutionService {
     )
       throw new ExecutionRunError('run-authority-denied');
     synchronousRunAssertion(host.assertProjectSpace(task.projectId, spaceId));
+    this.assertRunRecordedPlan(workbench, node);
+  }
+
+  /** A receipt must certify the exact complete plan, not just exist at its storage key. */
+  private assertRunRecordedPlan(workbench: Workbench, node: ExecutionNodeRecord): void {
+    let expected: string[];
+    try {
+      expected = createNodeHandoffs(createExecutionHandoff(node, workbench)).map(
+        (handoff) => handoff.nodeId,
+      );
+    } catch {
+      throw new ExecutionRunError('run-authority-denied');
+    }
+    const receipt = this.storage.readPlan(planKey(node.taskId, node.planId, node.revision));
+    const nodes = new Set(receipt?.nodeIds);
+    if (
+      receipt?.fingerprint !==
+        canonicalPayload({ taskId: node.taskId, planId: node.planId, revision: node.revision }) ||
+      expected.length === 0 ||
+      nodes.size !== expected.length ||
+      !expected.every((nodeId) => {
+        if (!nodes.has(nodeId)) return false;
+        const record = this.storage.readNode(nodeRecordKey({ ...node, nodeId }));
+        return (
+          record !== undefined &&
+          intactNode(record) &&
+          samePlan(record, node.taskId, node.planId, node.revision) &&
+          record.nodeId === nodeId &&
+          record.handoff.nodeId === nodeId &&
+          record.handoff.taskId === node.taskId &&
+          record.handoff.workflowVersionId === node.planId &&
+          record.handoff.revision === node.revision
+        );
+      })
+    )
+      throw new ExecutionRunError('run-authority-denied');
   }
 
   private assertRunController(memberId: string, node: ExecutionNodeRecord): void {

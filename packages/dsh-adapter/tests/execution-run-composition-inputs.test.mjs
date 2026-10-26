@@ -36,6 +36,7 @@ async function bytes(directory) {
 
 const locate = (h, nodeId = 'produce') => ({ ...h.locate(nodeId), spaceId: 'north' });
 const read = (h, nodeId) => h.service.readRunCompositionInputs(h.request, locate(h, nodeId));
+const planKey = (node) => `${node.taskId}:${node.planId}:${node.revision}`;
 function zeroWrites(h) {
   assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
   assert.deepEqual(h.service.readRunGlobal(), { schemaVersion: 1 });
@@ -214,6 +215,101 @@ test('real JSON composition inputs: a missing recorded plan is refused even whil
   refused(await read(h), 'run-authority-denied');
   zeroWrites(h);
   assert.deepEqual(await bytes(h.root), before);
+});
+
+for (const operation of ['read', 'start'])
+  for (const fault of [
+    'omit-current',
+    'empty',
+    'omit-sibling',
+    'duplicate',
+    'extra-node',
+    'foreign-fingerprint',
+    'missing-row',
+  ])
+    test(`real JSON composition receipt: ${operation} refuses ${fault} before marker or node writes`, async (t) => {
+      const h = await host(t);
+      const input = h.begin();
+      const node = h.read();
+      const key = planKey(node);
+      const receipt = structuredClone(h.domain.table('plans').get(key));
+      if (fault === 'omit-current')
+        receipt.nodeIds = receipt.nodeIds.filter((id) => id !== node.nodeId);
+      if (fault === 'empty') receipt.nodeIds = [];
+      if (fault === 'omit-sibling')
+        receipt.nodeIds = receipt.nodeIds.filter((id) => id !== 'parallel');
+      if (fault === 'duplicate') receipt.nodeIds.push(node.nodeId);
+      if (fault === 'extra-node') receipt.nodeIds.push('not-in-applied-plan');
+      if (fault === 'foreign-fingerprint') receipt.fingerprint = 'another-plan';
+      if (fault === 'missing-row')
+        await h.domain.table('nodes').delete(nodeRecordKey(h.read('parallel')));
+      else await h.domain.table('plans').put(key, receipt);
+      const before = await bytes(h.root);
+      const result =
+        operation === 'read' ? await read(h) : await h.service.startRun(h.request, input);
+      refused(result, 'run-authority-denied');
+      zeroWrites(h);
+      assert.deepEqual(await bytes(h.root), before);
+    });
+
+test('real JSON composition receipt: human draft and submit keep plan-incomplete semantics when the receipt excludes their node', async (t) => {
+  const h = await host(t);
+  const key = planKey(h.read());
+  const receipt = structuredClone(h.domain.table('plans').get(key));
+  receipt.nodeIds = receipt.nodeIds.filter((id) => id !== 'produce');
+  await h.domain.table('plans').put(key, receipt);
+  const before = await bytes(h.root);
+  refused(
+    await h.service.draft(caller(), {
+      ...h.locate(),
+      expectedVersion: 0,
+      idempotencyKey: 'draft',
+      text: 'draft',
+    }),
+    'plan-incomplete',
+  );
+  refused(
+    await h.service.submit(caller(), { ...h.human('produce', 'submit'), text: 'submit' }),
+    'plan-incomplete',
+  );
+  zeroWrites(h);
+  assert.deepEqual(await bytes(h.root), before);
+});
+
+test('real JSON composition receipt: membership removed while the directory scan awaits is checked again', async (t) => {
+  let afterLookup;
+  const h = await host(t, {
+    projectSpaces: {
+      async spaceForProject() {
+        const action = afterLookup;
+        afterLookup = undefined;
+        await action?.();
+        return { ok: true, spaceId: 'north' };
+      },
+    },
+  });
+  afterLookup = async () => {
+    const key = planKey(h.read());
+    const receipt = structuredClone(h.domain.table('plans').get(key));
+    receipt.nodeIds = receipt.nodeIds.filter((id) => id !== 'produce');
+    await h.domain.table('plans').put(key, receipt);
+  };
+  refused(await read(h), 'run-authority-denied');
+  zeroWrites(h);
+});
+
+test('real JSON composition receipt: a receipt changed after a valid marker cannot commit the Run', async (t) => {
+  const h = await host(t);
+  const input = h.begin();
+  h.faults.afterGlobalWrite = async () => {
+    const key = planKey(h.read());
+    const receipt = structuredClone(h.domain.table('plans').get(key));
+    receipt.nodeIds = receipt.nodeIds.filter((id) => id !== 'produce');
+    await h.domain.table('plans').put(key, receipt);
+  };
+  refused(await h.service.startRun(h.request, input), 'run-authority-denied');
+  assert.deepEqual(h.counters, { global: 1, nodes: 0, plans: 0 });
+  assert.equal(h.read().nativeExecution, undefined);
 });
 
 test('real JSON composition inputs: a successful preparation read never grants a later start access to a replaced source', async (t) => {

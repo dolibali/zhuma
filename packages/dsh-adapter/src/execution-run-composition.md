@@ -67,6 +67,13 @@ It uses the real current member lease, node/controller, recorded plan and space 
 then the normal `readableRecords` / `upstreamInputsFor` projection. After asynchronous
 directory reads it rechecks publication, member, task, plan, controller and current
 directory, and synchronously copies current same-plan source rows before projecting.
+Receipt presence alone is insufficient. The shared recorded-plan check requires a
+well-formed receipt with unique node IDs including this node. Run access additionally
+compares its fingerprint and complete node set against the exact AppliedPlan mapping,
+and requires every mapped node row with that same full plan/node identity to exist.
+Missing current/sibling IDs, duplicates, extra nodes, a foreign fingerprint or a missing
+mapped row refuse admission. These checks run again after awaited directory reads and
+after the first writer marker. They do not repair a receipt or create missing nodes.
 Both expert-assigned and human-assigned nodes are covered even when absent from human
 inbox items. Hidden/pending/replaced rows remain explicit; they never become a successful
 empty catalog. The copied result contains metadata only, is not an execution grant, and

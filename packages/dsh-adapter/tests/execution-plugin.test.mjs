@@ -384,10 +384,12 @@ async function upstreamHttp(records, extra = {}) {
   for (const item of extra.tasks ?? []) state.tasks.push(item);
   const plans = new Map();
   for (const item of records) {
-    plans.set(`${item.taskId}:${item.planId}:${item.revision}`, {
+    const key = `${item.taskId}:${item.planId}:${item.revision}`;
+    const prior = plans.get(key);
+    plans.set(key, {
       idempotencyKey: item.taskId,
       fingerprint: item.planId,
-      nodeIds: [item.nodeId],
+      nodeIds: [...new Set([...(prior?.nodeIds ?? []), item.nodeId])],
     });
   }
   const opened = await mount({
