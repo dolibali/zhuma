@@ -188,7 +188,18 @@ async function boot(options) {
       return actual;
     };
   }
-  await load(WebServer, { host: '127.0.0.1', port: 0 });
+  if (
+    options.webServerCompression !== undefined &&
+    !['none', 'gzip'].includes(options.webServerCompression)
+  )
+    throw Error('Unsupported test WebServer compression');
+  await load(WebServer, {
+    host: '127.0.0.1',
+    port: 0,
+    ...(options.webServerCompression === undefined
+      ? {}
+      : { compression: options.webServerCompression }),
+  });
   await load(Connection);
   if (!options.skipRemoteAccess) remoteAccessFiber = await load(RemoteAccess);
   ctx.webServer.register({

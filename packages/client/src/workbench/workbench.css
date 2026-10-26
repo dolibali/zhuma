@@ -4216,3 +4216,85 @@ html[data-platform='darwin'] .zm-shell-chrome {
     border-top: 1px solid var(--zm-line);
   }
 }
+
+/* Member file carriers and immutable file references. */
+.zhuma .zm-file-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+}
+.zhuma .zm-file-entry {
+  min-width: 0;
+  border: 1px solid var(--zm-line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.zhuma .zm-file-row,
+.zhuma .zm-file-actions,
+.zhuma .zm-file-drop {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.zhuma .zm-file-name {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.zhuma .zm-file-name strong,
+.zhuma .zm-file-name small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-file-name small {
+  color: var(--zm-muted);
+  margin-top: 4px;
+  font-size: 12px;
+}
+.zhuma .zm-file-row progress {
+  width: 64px;
+  height: 5px;
+  accent-color: var(--zm-accent);
+}
+.zhuma .zm-file-drop {
+  position: relative;
+  border: 1px dashed var(--zm-line);
+  border-radius: 8px;
+  padding: 16px;
+}
+.zhuma .zm-file-drop[data-over='true'],
+.zhuma .zm-file-drop:focus-within {
+  outline: 2px solid var(--zm-accent);
+  outline-offset: 2px;
+}
+.zhuma .zm-file-drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.zhuma .zm-file-drop label {
+  padding: 7px 12px;
+  border: 1px solid var(--zm-line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.zhuma .zm-file-drop label[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: default;
+}
+.zhuma .zm-file-preview {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border: 1px solid var(--zm-line);
+  border-radius: 6px;
+  background: var(--zm-bg);
+  font-size: 12px;
+  line-height: 1.6;
+}

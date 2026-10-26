@@ -1,6 +1,7 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
 import { createIdentityApi, IdentityApiError, type MemberSession } from '../identity/api.js';
 import { createExecutionApi, ExecutionError, type ExecutionApi } from './ExecutionApi.js';
+import { createExecutionFilesApi, FILE_LIMITS } from './files.js';
 
 export interface MemberExecutionScope {
   readonly spaceId: string;
@@ -88,9 +89,17 @@ export function createExecutionHttpApi(
   }
   const rpc: ClientConnectionRpc = {
     async call(channel, endpoint, payload, callerSignal) {
+      const fileSubmit =
+        endpoint === 'zhuma-exec/submit' &&
+        payload &&
+        typeof payload === 'object' &&
+        'files' in payload &&
+        Array.isArray(payload.files) &&
+        payload.files.length > 0;
+      const timeout = fileSubmit ? FILE_LIMITS.operationMs : 10_000;
       const signal = callerSignal
-        ? AbortSignal.any([callerSignal, AbortSignal.timeout(10_000)])
-        : AbortSignal.timeout(10_000);
+        ? AbortSignal.any([callerSignal, AbortSignal.timeout(timeout)])
+        : AbortSignal.timeout(timeout);
       requireCurrent(signal);
       if (scope) await verifySpace(signal, callerSignal);
       requireCurrent(signal);
@@ -204,6 +213,19 @@ export function createExecutionHttpApi(
     );
   }
   return {
+    ...(scope && expectedActorId
+      ? {
+          files: createExecutionFilesApi(fetcher, scope.spaceId, {
+            async authorize(signal, caller) {
+              requireCurrent(signal);
+              await verifySpace(signal, caller);
+              requireCurrent(signal);
+            },
+            current: requireCurrent,
+            observed: (request, signal) => observed(request, signal),
+          }),
+        }
+      : {}),
     startable: (signal) => memberRead(api.startable(signal), signal),
     startPlan: (draft, signal) => observed(api.startPlan(draft, signal), signal),
     inbox: (signal) => memberRead(api.inbox(signal), signal),

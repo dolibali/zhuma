@@ -106,10 +106,11 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
     setSelected(undefined);
     void reload();
   }
-  const nativeAction =
-    selected && node && nativeRun && ['submit', 'revise'].includes(selected.item.action) ? (
+  const agentAction = (node: ExecutionNodeWire, label?: string) =>
+    nativeRun ? (
       <NativeRunLauncher
         api={nativeRun.api}
+        label={label}
         target={{
           spaceId: nativeRun.spaceId,
           taskId: node.taskId,
@@ -120,6 +121,10 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
         }}
       />
     ) : undefined;
+  const nativeAction =
+    selected && node && ['submit', 'revise'].includes(selected.item.action)
+      ? agentAction(node)
+      : undefined;
   return (
     <div className="zm-execution-workspace">
       {plan && <StartPlanPanel api={api} plan={plan} onStarted={() => void reload()} />}
@@ -131,6 +136,7 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
         pending={pending}
         reload={() => void reload()}
         open={open}
+        renderAgentAction={nativeRun ? (node) => agentAction(node, '打开 Agent 会话') : undefined}
       />
       {selected && !node && <p className="zm-empty">这项工作的版本已变化，请重新选择待办。</p>}
       {selected && node && selected.item.action === 'review' && (

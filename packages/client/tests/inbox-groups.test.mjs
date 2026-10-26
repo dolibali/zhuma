@@ -22,7 +22,7 @@ for (const [index, group] of [
   'review',
   'attention',
   'attention',
-  'other',
+  'active',
 ].entries())
   test(`inbox groups: service item ${index} belongs to ${group} without deriving items from node status`, () => {
     assert.equal(inboxItemGroup(groupedInbox().items[index]), group);
@@ -38,15 +38,43 @@ test('inbox groups: unknown kind/action/reason combinations stay visible without
   assert.equal((html.match(/<button/g) ?? []).length, 1); // refresh only
 });
 
-test('inbox SSR: four human groups, read-only other items and work-item counts are distinct from tasks', () => {
+test('inbox SSR: service work groups and work-item counts remain distinct from tasks', () => {
   const html = render();
-  for (const group of INBOX_GROUPS) assert.ok(html.includes(group.label));
+  for (const group of INBOX_GROUPS.filter((group) => group.id !== 'other'))
+    assert.ok(html.includes(group.label));
   assert.ok(html.includes('已载入 6 个工作项'));
   assert.ok(!html.includes('6 个任务'));
   assert.equal((html.match(/<article/g) ?? []).length, 6);
   assert.ok(!html.includes('只有节点状态的等待事项'));
-  assert.equal((html.match(/<button/g) ?? []).length, 4); // refresh and the three real actions
+  assert.equal((html.match(/<button/g) ?? []).length, 5); // refresh, three manual actions, unavailable Agent entry
   assert.ok(html.includes('请核对发票范围后确认交付。'));
+});
+
+test('inbox SSR: only the exact current service continuation item can render an Agent entry', () => {
+  const data = groupedInbox(),
+    item = data.items[5],
+    node = data.nodes[5];
+  let rendered = 0;
+  const renderAgentAction = (current) => {
+    rendered++;
+    assert.equal(current, node);
+    return createElement('button', {}, 'Open existing conversation');
+  };
+  assert.ok(
+    render({ items: [item], nodes: [node], renderAgentAction }).includes(
+      'Open existing conversation',
+    ),
+  );
+  assert.equal(rendered, 1);
+  for (const changed of [
+    { items: [{ ...item, reason: 'unknown-future-reason' }], nodes: [node] },
+    { items: [item], nodes: [{ ...node, status: 'completed' }] },
+    { items: [item, item], nodes: [node] },
+    { items: [item], nodes: [node, { ...node, revision: node.revision + 1 }] },
+    { items: [], nodes: [node] },
+  ])
+    assert.ok(!render({ ...changed, renderAgentAction }).includes('Open existing conversation'));
+  assert.equal(rendered, 1, 'status, duplicates and unknown reasons never invent an Agent action');
 });
 
 test('inbox SSR: only service-provided path and task owner names render, with no fabricated navigation', () => {
