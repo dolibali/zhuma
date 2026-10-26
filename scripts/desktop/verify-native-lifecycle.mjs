@@ -22,7 +22,7 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({
   options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
 });
-if (!['all', 'host-run', 'host-run-cold'].includes(values.phase))
+if (!['all', 'host-run', 'host-run-cold', 'skill-loader'].includes(values.phase))
   throw new Error('Unknown native verification phase.');
 // Always build the actual artifact before copying it into the isolated SDK.
 // The Host test imports these emitted bytes, not a fixture source re-bundle.
@@ -109,6 +109,16 @@ const sdkAliases = Object.entries(sdkPaths.config.compilerOptions.paths)
   .filter(([name]) => name.startsWith('@deepseek-ai/') && !name.includes('*'))
   .sort(([left], [right]) => right.length - left.length)
   .map(([find, paths]) => ({ find, replacement: resolve(stage, paths[0]) }));
+if (values.phase === 'skill-loader') {
+  // These original SDK suites import documented source subpaths. Keep them in
+  // the same staged graph, ahead of the exact package-entry alias.
+  sdkAliases.unshift(
+    ...['ts-types', 'py-types', 'json-schema'].map((name) => ({
+      find: `@deepseek-ai/dsh-tools/src/${name}.ts`,
+      replacement: join(stage, `packages/core/tools/src/${name}.ts`),
+    })),
+  );
+}
 writeFileSync(
   join(stage, '.zhuma-native-lifecycle.config.ts'),
   `
@@ -122,6 +132,110 @@ export default { ...config, resolve: {...config.resolve, alias: aliases(config.r
 } }
 `,
 );
+// A dedicated qualification uses the same fixed-pin staging and one SDK graph.
+// It never opens a profile, native session or model connection.
+if (values.phase === 'skill-loader') {
+  const fixture = join(root, 'tests/fixtures/skill-loader/ownership.spec.ts');
+  const destination = join(stage, 'packages/skill/tool-skill/tests/zhuma-ownership.spec.ts');
+  copyFileSync(fixture, destination);
+  writeFileSync(
+    join(evidence, 'sdk-typecheck.log'),
+    command(
+      process.execPath,
+      [
+        join(upstream, 'node_modules/typescript/bin/tsc'),
+        '-b',
+        'packages/core/tools',
+        'packages/skill/tool-skill',
+        '--pretty',
+        'false',
+      ],
+      stage,
+    ),
+  );
+  const run = (name, args) => {
+    const report = join(evidence, `${name}.json`);
+    const result = spawnSync(
+      process.execPath,
+      [
+        vitest,
+        'run',
+        '--config=.zhuma-native-lifecycle.config.ts',
+        '--project',
+        'thread-safe',
+        ...args,
+        '--reporter=json',
+        `--outputFile=${report}`,
+      ],
+      { cwd: stage, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+    );
+    writeFileSync(join(evidence, `${name}.log`), `${result.stdout ?? ''}${result.stderr ?? ''}`);
+    if (result.error || !existsSync(report))
+      throw new Error(`${name} did not produce evidence: ${evidence}`);
+    return { status: result.status, summary: JSON.parse(readFileSync(report, 'utf8')) };
+  };
+  const positive = run('skill-loader', [
+    'packages/core/tools/tests',
+    'packages/skill/tool-skill/tests',
+  ]);
+  if (
+    positive.status !== 0 ||
+    !positive.summary.success ||
+    positive.summary.numFailedTests ||
+    !positive.summary.numPassedTests ||
+    positive.summary.numPendingTests
+  ) {
+    throw new Error(`Skill loader qualification failed; evidence: ${evidence}`);
+  }
+  // Mechanical falsification: the same body-leak probes must fail on both
+  // original production files, with the same repaired real-context fixtures.
+  const paths = ['packages/core/tools/src/index.ts', 'packages/skill/tool-skill/src/index.ts'];
+  const patched = paths.map((path) => readFileSync(join(stage, path)));
+  let negative;
+  try {
+    for (const path of paths)
+      writeFileSync(join(stage, path), command('git', ['show', `${pin}:${path}`], stage));
+    negative = run('skill-loader-before', [
+      'packages/skill/tool-skill/tests/zhuma-ownership.spec.ts',
+      '-t',
+      'does not load parent private body',
+    ]);
+    if (
+      negative.status === 0 ||
+      negative.summary.numFailedTests !== 2 ||
+      negative.summary.numPassedTests !== 0 ||
+      negative.summary.testResults
+        .flatMap((suite) => suite.assertionResults)
+        .filter((test) => test.status === 'failed')
+        .some((test) => !test.failureMessages.join(' ').includes('PRIVATE_BODY'))
+    ) {
+      throw new Error(`Old SDK did not reproduce both leakage regressions; evidence: ${evidence}`);
+    }
+  } finally {
+    paths.forEach((path, index) => writeFileSync(join(stage, path), patched[index]));
+  }
+  writeFileSync(
+    join(evidence, 'proof.json'),
+    JSON.stringify(
+      {
+        upstreamCommit: pin,
+        sourceCommit: command('git', ['rev-parse', 'HEAD'], root),
+        patchSha256: hash(patch),
+        fixtureSha256: hash(fixture),
+        passed: positive.summary.numPassedTests,
+        negativeFailed: negative.summary.numFailedTests,
+        boundary: 'fixed source SDK ToolSkill/Tools contracts; no model, GUI or resource adoption',
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(
+    `Skill loader qualification: ${positive.summary.numPassedTests} passed, old body-leak probes ${negative.summary.numFailedTests} failed as required; evidence: ${evidence}`,
+  );
+  process.exit(0);
+}
+
 writeFileSync(
   join(stage, '.zhuma-panel-navigation.typecheck.json'),
   JSON.stringify({
