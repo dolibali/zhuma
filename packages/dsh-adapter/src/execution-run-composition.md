@@ -121,3 +121,65 @@ These checks do not certify actual Host capability issuance, native model/tool e
 file bytes, normal UI or installation. C's real nativeAgentId can identify the same Run's
 executor instance only after actual execution acknowledgement; binding/received alone is
 not accepted, and idle is not product completion.
+
+## Local file tool adoption
+
+`local-tools` adds 1–3 actual `read` / `write` / `edit` descriptors; `read` is required,
+names must be unique, and the existing complete snapshot byte budget still applies.
+Each descriptor includes the actual JSON parameters, output schema and implementation
+sourceVersion. Names or sourceVersion do not grant permission. With accepted inputs,
+the variant also requires `acceptedInputReader`; without inputs it must be absent.
+The real C reader must already be registered before local adoption succeeds. Old
+text-only / reader snapshots retain their original derivation and read-back format.
+Skills/MCP selection remains an explicit unsupported result in this first file slice;
+their later core integration and foreground Shell are not removed from scope.
+
+The Host constructs `NativeRunLocalToolProducer(context, source)` only from its
+qualified, already registered official tool-fs/FileSystem services. `source` supplies
+the implementation version, a live signal and synchronous `assertCurrent(): undefined`.
+`describeNativeRunLocalTools(producer, selected)` copies actual JSON definitions and
+does no file I/O, tool invocation, connection or model operation. It checks the public
+Cordis `symbols.original` service identity and the actual registered definition objects;
+different trace proxies are not treated as replacement services. This first producer
+supports an explicitly qualified same-host local provider without sandbox-mode escalation.
+An absent provider or an unsupported provider refuses; no default/global fallback is made.
+
+After Run durability, A calls `adoptNativeRunLocalTools(agentCtx, binding, grant,
+{composition, producer, workspace})` inside C's compose/setup before native publication.
+`workspace` is a Host capability with exact full scope, root, `{read,write}` permissions,
+signal and synchronous `assertCurrent('read'|'write'): undefined`. Only read-only or
+read+write are supported, including after admission; write-only is refused. The caller
+must obtain that capability from the real authorized workspace owner, never from the
+snapshot, path, hash or Client fields. Matching saved scope/configuration/model and
+actual descriptor JSON is mandatory. Setup returns the saved exact tool allowlist and
+an awaited `dispose()`; it does not submit a product artifact or advance a workflow.
+
+The leaf re-applies official tool-fs with the exported fixed config over an isolated
+Run FileSystem facade and official observation policy. It does not copy global execute
+closures. The underlying provider retains version guards, real target identity and
+atomic write/edit. Cordis tracing reads method descriptors: the facade exposes its
+controlled methods as own descriptors so it cannot recover raw prototype I/O methods.
+Every operation checks the live Run grant, Host capability, source services and exact
+scope before/after awaits. Paths are resolved by the actual provider; canonical root,
+public processPath and provider containment are checked at each I/O boundary. Lexical
+parent/sibling escape, symlink escape, root drift and changed new-file ancestors refuse.
+Unsupported FileSystem operations refuse rather than passing through unguarded.
+
+Whole handlers and provider operations use a 5-second cancellation deadline. Writes,
+edits and complete source streams are capped at 1 MiB; output reads keep the official
+64 KiB window and 200-line limit. Edit preflight also bounds the complete replacement
+using conservative CRLF storage bytes and retains the provider's atomic version guard;
+it may refuse a near-limit LF edit rather than admit an oversized result.
+Revocation/cancellation closes streams and propagates
+to actual provider operations. Disposal aborts admission and waits for all admitted I/O
+and iterator returns, even if a faulting provider delays cancellation; it never reports
+drain while such work remains. A write authorized before cancellation may already have
+committed; cancellation is not rollback. Closed scope guards fence inherited fallback
+tools until the Agent context is disposed. Restore uses a new context and saved config.
+
+This is an application boundary over the real local provider, not an OS/kernel sandbox
+or isolation from hostile processes that can concurrently rewrite filesystem ancestors.
+The Host must qualify the actual local root, producer, lifetime and filesystem behavior.
+Tests distinguish real Cordis/public tools/local bytes from contract member/Run/workspace
+issuers and a session-bearing caller; they do not certify native Agent publication,
+real member authorization, models, GUI, cross-platform runners or installation.
