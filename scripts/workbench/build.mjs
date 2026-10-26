@@ -5,6 +5,9 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+const adapterManifest = JSON.parse(
+  await readFile(resolve(root, 'packages/dsh-adapter/package.json'), 'utf8'),
+);
 const compile = spawnSync(
   process.execPath,
   [resolve(root, 'node_modules/typescript/bin/tsc'), '-b'],
@@ -56,6 +59,11 @@ const verifiedHostExternals = new Set([
   '@deepseek-ai/dsh-client-connection',
   '@deepseek-ai/cordis',
   '@deepseek-ai/schemastery',
+  // The official Web overlay declares these exact SDK peers and lock entries.
+  // They remain the Host's live modules, including persistence error identity.
+  '@deepseek-ai/dsh-llm',
+  '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-session-persistence',
 ]);
 if (
   !hostSdkImports.includes('@deepseek-ai/dsh-client-connection') ||
@@ -98,6 +106,16 @@ await writeFile(
       type: 'module',
       main: './index.js',
       exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' },
+      peerDependencies: Object.fromEntries(
+        [...new Set(hostSdkImports)].sort().map((name) => {
+          // Every external is already pinned in the owning package manifest.
+          const version =
+            adapterManifest.dependencies?.[name] ?? adapterManifest.devDependencies?.[name];
+          if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/u.test(version))
+            throw new Error(`Missing exact Host SDK peer version: ${name}`);
+          return [name, version];
+        }),
+      ),
       dsh: {
         client: {
           platform: 'web',
