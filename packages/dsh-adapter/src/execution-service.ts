@@ -558,7 +558,11 @@ export function toNodeView(record: ExecutionNodeRecord): ExecutionNodeView {
     reviewerIds: record.handoff.reviewerIds,
     ownerId: record.ownerId,
     rounds: record.rounds,
-    artifacts: record.artifactVersions,
+    artifacts: record.artifactVersions.map((artifact) => ({
+      ...artifact,
+      links: [...artifact.links],
+      files: artifact.files.map((file) => ({ ...file })),
+    })),
     comments: record.comments,
     ...(record.command.entryStatus !== undefined
       ? { entryStatus: record.command.entryStatus }

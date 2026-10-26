@@ -503,6 +503,17 @@ test('fixed file submission trusts the receipt, supports files only and replays 
   assert.equal(replay.ok, true, JSON.stringify(replay));
   assert.equal(replay.value.disposition, 'replayed');
   assert.equal(f.store.node('design').artifactVersions.length, 1);
+  const fixedFacts = f.store.snapshot();
+  const publicArtifact = replay.value.node.artifacts.at(-1);
+  publicArtifact.id = 'caller-edited';
+  publicArtifact.files[0].checksum = '0'.repeat(64);
+  publicArtifact.files.push({ ...reference });
+  publicArtifact.links.push('https://example.test/caller-edited');
+  assert.equal(
+    f.store.snapshot(),
+    fixedFacts,
+    'A returned artifact DTO cannot rewrite fixed facts',
+  );
 });
 
 test('forged file metadata and UUIDs never create a fixed artifact', async (t) => {
