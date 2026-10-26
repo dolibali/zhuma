@@ -1,6 +1,22 @@
 import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export * from './identity/index.js';
+export type {
+  NativeRunTarget,
+  NativeRunModel,
+  NativeRunExecutor,
+  NativeRunSelection,
+  NativeRunModelChoice,
+  NativeRunExpertChoice,
+  NativeRunChoices,
+  NativeRunAction,
+  NativeRunSendMode,
+  NativeRunSummary,
+  NativeRunMessage,
+  NativeRunResource,
+  NativeRunPanelView,
+  NativeRunPanelProps,
+} from './run/native-run-contract.js';
 
 export type { InboxItemView, NodeExecutionView, InboxGroup } from './execution-view.js';
 export type {
