@@ -285,6 +285,11 @@ export {
 } from './member-workbench-http.js';
 export { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
 export {
+  hostTeamCatalogManifest,
+  hostTeamCatalogPin,
+  type HostTeamCatalogGrants,
+} from './host-team-catalog.js';
+export {
   MemberWorkbenchOperations,
   openMemberWorkbenchOperations,
 } from './member-workbench-operation.js';

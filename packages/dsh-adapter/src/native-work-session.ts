@@ -3,6 +3,7 @@ import {
   NativeSessionPurpose,
   assertNativePurposeOwner,
   assertNativeScopePurposeOwner,
+  invokeNativeWorkGrantAssertion,
 } from './native-work-session-purpose.js';
 import {
   NativeReviewError,
@@ -123,7 +124,7 @@ function check(grant: NativeWorkGrant, action: NativeWorkAction): void {
     s.generation < 1
   )
     throw new NativeWorkError('invalid-request');
-  grant.assertCurrent(action);
+  invokeNativeWorkGrantAssertion(grant, action);
 }
 
 function textInput(value: string): void {

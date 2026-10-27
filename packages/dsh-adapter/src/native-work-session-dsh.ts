@@ -10,7 +10,11 @@ import {
 } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
 import { assertNativeInputReadOwner } from './native-work-session.js';
-import { NativeSessionPurpose, assertNativePurposeOwner } from './native-work-session-purpose.js';
+import {
+  NativeSessionPurpose,
+  assertNativePurposeOwner,
+  invokeNativeWorkGrantAssertion,
+} from './native-work-session-purpose.js';
 import {
   NATIVE_REVIEW_TOOL,
   NATIVE_REVIEW_READ_TOOL,
@@ -185,7 +189,7 @@ function waitForRead<T>(
 
 function current(grant: NativeWorkGrant): void {
   if (grant.signal.aborted) throw new NativeWorkError('cancelled');
-  grant.assertCurrent('open');
+  invokeNativeWorkGrantAssertion(grant, 'open');
 }
 
 function identified(message: NativeSessionMessage): UserMessage {

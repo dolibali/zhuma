@@ -10,6 +10,8 @@
 - 先按原入口创建一次结果 owner，再调用 `nativeFixedReviewIssuer(service, runtime)` 取得其评审视图。它不创建新 owner。实际方法为 `registerNativeReviewTools`、`prepareFixedReview`、`assertFixedReview`、`readFixedReview`。
 - 两个评审工具只在独立评审 Run 的原 Agent scope 注册；作者不提供 `complete_review/read_review_target`，评审不提供作者提交工具 `complete_work`。
 
+评审投影能力要求精确原对象接收 assertion。作者回退前同时拒绝借用已知评审 scope、投影 signal 或 assertion 的未知对象；同步 assertion 调用也保留当前接收对象来源，bound/forwarding 方法不能替另一个对象资格检查。角色观察仍只存 WeakMap/WeakSet，不从 JSON 授予 purpose。投影 signal 独立派生并跟随原撤权，原 Host 共享 signal 不被标为评审，保持旧作者来源兼容。复制拒绝发生在 binding 写入、原 factory 和模型请求之前。
+
 D 的 `ExecutionReviewReadGrant` 只授权固定目标读取。须经过原 Service 的 issuer 鉴别；不能拿它授权 Native 启动/send/落票。真实 Drive/冻结 model、Skills、MCP 资格仍由 D/A/Host 原链路接续，组合不完整时保持拒绝。配置元信息不是资源已实际采用的证据。
 
 ## 纯清理与冷进程

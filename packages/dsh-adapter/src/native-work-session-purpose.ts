@@ -27,6 +27,24 @@ import {
 const grantOwners = new WeakMap<NativeWorkGrant, NativeSessionPurpose>();
 const scopeOwners = new WeakMap<NativeWorkScope, NativeSessionPurpose>();
 const cleanupOwners = new WeakMap<object, NativeSessionPurpose>();
+const reviewAssertions = new WeakSet<NativeWorkGrant['assertCurrent']>();
+const reviewSignals = new WeakSet<AbortSignal>();
+let checkingGrant: NativeWorkGrant | undefined;
+
+/** Synchronous receiver provenance. A bound/forwarding method must not use the
+ * original review capability to qualify another object through author routing. */
+export function invokeNativeWorkGrantAssertion(
+  grant: NativeWorkGrant,
+  action: NativeWorkAction,
+): void {
+  const previous = checkingGrant;
+  checkingGrant = grant;
+  try {
+    grant.assertCurrent(action);
+  } finally {
+    checkingGrant = previous;
+  }
+}
 export function assertNativeScopePurposeOwner(
   scope: NativeWorkScope,
   purpose?: NativeSessionPurpose,
@@ -41,6 +59,15 @@ export function assertNativePurposeOwner(
 ): void {
   const owner = grantOwners.get(grant);
   if (owner && owner !== purpose) throw new NativeReviewError('review-authority-denied');
+  // Unknown objects are not allowed to erase a known review role by copying
+  // only its scope, signal or assertion. These observations grant no authority.
+  if (
+    !owner &&
+    (scopeOwners.has(grant.scope) ||
+      reviewSignals.has(grant.signal) ||
+      reviewAssertions.has(grant.assertCurrent))
+  )
+    throw new NativeReviewError('review-authority-denied');
 }
 
 /** C Host port, not a D DTO or grant issuer. Production must adapt the real D
@@ -137,11 +164,15 @@ export class NativeSessionPurpose {
     const selection = nativeSelectionSchema.parse(current.selection);
     const identity = canonicalPayload({ context, selection });
     const scope = this.bindScope(Object.freeze({ ...context.scope }), context);
+    const purpose = this,
+      signal = AbortSignal.any([current.signal]);
     const grant: NativeWorkGrant = Object.freeze({
       scope,
-      signal: current.signal,
-      assertCurrent: (action: NativeWorkAction) => {
-        const fresh = this.resolve(original, action);
+      signal,
+      assertCurrent(this: NativeWorkGrant, action: NativeWorkAction) {
+        if (this !== grant || (checkingGrant !== undefined && checkingGrant !== grant))
+          throw new NativeReviewError('review-authority-denied');
+        const fresh = purpose.resolve(original, action);
         if (
           fresh.signal !== current.signal ||
           canonicalPayload({
@@ -155,6 +186,8 @@ export class NativeSessionPurpose {
     this.grants.set(original, grant);
     this.originals.set(grant, original);
     grantOwners.set(grant, this);
+    reviewAssertions.add(grant.assertCurrent);
+    reviewSignals.add(signal);
     return grant;
   }
   private resolve(original: object, action: NativeWorkAction) {

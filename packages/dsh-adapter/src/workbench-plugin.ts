@@ -14,6 +14,7 @@ import {
 } from '@zhuma/agent-core';
 import { WorkbenchService, type PlanningModel } from './workbench-service.js';
 import { createHostRunSkillPolicies } from './host-run-skill-policy.js';
+import { openHostTeamCatalog } from './host-team-catalog.js';
 import {
   openMemberWorkbenchHttp,
   type MemberWorkbenchHttpHandle,
@@ -100,6 +101,9 @@ function planningModel(ctx: Context): PlanningModel | undefined {
 }
 
 export interface OpenedWorkbench {
+  openTeamCatalog(
+    options: Pick<Parameters<typeof openHostTeamCatalog>[0], 'grants' | 'directory'>,
+  ): ReturnType<typeof openHostTeamCatalog>;
   createRunSkillPolicies(
     execution: Parameters<typeof createHostRunSkillPolicies>[0]['execution'],
   ): ReturnType<typeof createHostRunSkillPolicies>;
@@ -253,6 +257,18 @@ export async function openWorkbench(
   );
 
   return {
+    openTeamCatalog(options) {
+      if (lifetime.signal.aborted || !service)
+        throw new WorkbenchError('unavailable', '工作台已关闭。');
+      const current = service;
+      return openHostTeamCatalog({
+        ...options,
+        signal: lifetime.signal,
+        readWorkbench: () => current.snapshot(),
+        readPackage: (versionId) => packageDomain.table('versions').get(versionId),
+        importPackage: (request) => current.command(request, lifetime.signal),
+      });
+    },
     createRunSkillPolicies(execution) {
       if (lifetime.signal.aborted || !service)
         throw new WorkbenchError('unavailable', '工作台已关闭。');

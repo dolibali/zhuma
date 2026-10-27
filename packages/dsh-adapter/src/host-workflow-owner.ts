@@ -301,7 +301,9 @@ export function createHostWorkflowOwner(
         active(wait);
         resumed = await execution.resumeWorkflowExecution(original, input);
       }
-      active(wait);
+      // A persisted resume, like start, survives the caller's disconnected wait.
+      // Only the actual Host lifetime may prevent arming its accepted generation.
+      active();
       if (!resumed.ok) return resumed;
       await bridge.attach(original, resumed.value);
       return current(original, resumed.value.location);

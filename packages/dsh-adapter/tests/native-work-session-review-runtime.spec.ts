@@ -46,6 +46,100 @@ function completionErrors(events) {
     });
 }
 
+for (const destination of ['author-only', 'other-review-owner'])
+  test(`original SDK capability: copied review grants cannot fall back to author routing in ${destination}`, async (t) => {
+    const source = await setup(t),
+      reviewer = source.reviewer('nontransferable-reviewer'),
+      root = await mkdtemp(join(tmpdir(), 'zhuma-review-copy-destination-'));
+    const target =
+      destination === 'author-only'
+        ? await boot(root, new ScriptedAdapter())
+        : await bootNativeReviews(root);
+    t.onTestFinished(async () => {
+      await target.close();
+      await rm(root, { recursive: true, force: true });
+    });
+    const input = {
+      requestId: 'reject-copy',
+      text: 'A copied review capability must never execute as an author.',
+      mode: 'followup',
+      selection: reviewer.selection,
+    };
+    await assert.rejects(async () => target.service.send(reviewer.grant, input), {
+      code: 'review-authority-denied',
+    });
+    const freshSignal = () => new AbortController().signal;
+    const freshScope = () => structuredClone(reviewer.grant.scope);
+    const variants = [
+      ['shallow', { ...reviewer.grant }],
+      ['deep-scope', { ...reviewer.grant, scope: freshScope() }],
+      ['scope-only', { scope: reviewer.grant.scope, signal: freshSignal(), assertCurrent() {} }],
+      ['signal-only', { scope: freshScope(), signal: reviewer.grant.signal, assertCurrent() {} }],
+      [
+        'method-only',
+        { scope: freshScope(), signal: freshSignal(), assertCurrent: reviewer.grant.assertCurrent },
+      ],
+      [
+        'bound-method',
+        {
+          scope: freshScope(),
+          signal: freshSignal(),
+          assertCurrent: reviewer.grant.assertCurrent.bind(reviewer.grant),
+        },
+      ],
+      [
+        'forwarded-method',
+        {
+          scope: freshScope(),
+          signal: freshSignal(),
+          assertCurrent(action) {
+            reviewer.grant.assertCurrent(action);
+          },
+        },
+      ],
+    ] as const;
+    for (const [name, copied] of variants) {
+      target.adapter.script.push('This copied review grant must never reach a model.');
+      let refused;
+      try {
+        await target.service.send(copied, { ...input, requestId: name });
+        const binding = target.service.open(copied)?.binding;
+        await target.ctx.agents.get(binding?.nativeAgentId)?.whenIdle();
+      } catch (error) {
+        refused = error;
+      }
+      assert.equal(
+        refused?.code,
+        'review-authority-denied',
+        `${name}: model calls=${target.adapter.requests.length}`,
+      );
+      assert.equal(target.adapter.requests.length, 0);
+      assert.deepEqual(
+        [...target.ctx.storageDomain.get('zhuma_native_work_sessions').table('bindings').entries()],
+        [],
+      );
+    }
+    // A normal original author still follows the unchanged author contract.
+    target.adapter.script.splice(
+      0,
+      target.adapter.script.length,
+      'A normal author remains usable.',
+    );
+    await target.service.send(source.author, source.authorMessage);
+    const author = target.service.open(source.author).binding;
+    await target.ctx.agents.get(author.nativeAgentId).whenIdle();
+    assert.equal(target.adapter.requests.length, 1);
+    assert.deepEqual(target.adapter.requests[0].tools ?? [], []);
+    source.adapter.script.push('The original reviewer remains usable.');
+    await source.start(reviewer);
+    await reviewer.actor().whenIdle();
+    assert.equal(source.adapter.requests.length, 1);
+    assert.deepEqual(source.adapter.requests[0].tools.map((tool) => tool.name).sort(), [
+      'complete_review',
+      'read_review_target',
+    ]);
+  });
+
 for (const ending of ['stop', 'revoke'])
   test(`original SDK cleanup: warm routed review after ${ending} retains its original role and physically retires`, async (t) => {
     const h = await setup(t),
