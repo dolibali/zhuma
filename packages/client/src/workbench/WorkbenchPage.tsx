@@ -864,11 +864,20 @@ export function WorkbenchPage({
                     {state.participants
                       .filter((p) => t.participantIds.includes(p.id))
                       .slice(0, 3)
-                      .map((p) => (
-                        <span title={p.name} className={`zm-avatar ${p.kind}`} key={p.id}>
-                          {p.kind === 'expert' ? 'AI' : p.name[0]}
-                        </span>
-                      ))}
+                      .map((p) => {
+                        const avatarLabel = `${p.name} · ${p.kind === 'expert' ? 'Agent 专家' : '团队成员'}（参与者）`;
+                        return (
+                          <span
+                            role="img"
+                            title={avatarLabel}
+                            aria-label={avatarLabel}
+                            className={`zm-avatar ${p.kind}`}
+                            key={p.id}
+                          >
+                            {p.kind === 'expert' ? 'AI' : p.name[0]}
+                          </span>
+                        );
+                      })}
                     {t.participantIds.length > 3 && (
                       <span
                         className="zm-avatar zm-avatar-overflow"
