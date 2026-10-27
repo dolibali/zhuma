@@ -1,5 +1,6 @@
 import { conversationLines, readConversationFrame, readNativeInbox } from './conversation.js';
 import { createIdentityApi } from '../identity/api.js';
+import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
 import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
@@ -59,6 +60,7 @@ export type NativeRunBegin = NativeRunLocator & {
 export interface NativeRunApi {
   readonly workflow?: WorkflowApi;
   readonly workspaceApprovals?: WorkspaceApprovalApi;
+  readonly openModelSettings?: (() => void) | undefined;
   inbox?(run: NativeRunSummary, signal: AbortSignal): Promise<NativeRunInbox>;
   observe?(
     run: NativeRunSummary,
@@ -401,8 +403,19 @@ export function createNativeRunApi(
   scope: MemberExecutionScope,
   onUnauthenticated: () => void,
   registerDirectory?: RegisterWorkspaceDirectory,
+  openModelSettings?: () => void,
 ): NativeRunApi {
   const identity = createIdentityApi(fetcher);
+  const directory = createMemberWorkbenchApi(
+    {
+      actorId: accountId,
+      spaceId: scope.spaceId,
+      isCurrent: () => scope.isCurrent?.() !== false,
+      onUnauthenticated,
+      onUnavailable: () => scope.onUnavailable(),
+    },
+    fetcher,
+  );
   function current(signal: AbortSignal) {
     signal.throwIfAborted();
     if (scope.isCurrent?.() === false) throw new DOMException('View changed', 'AbortError');
@@ -497,31 +510,50 @@ export function createNativeRunApi(
   });
   const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
   return {
-    workspaceApprovals: createWorkspaceApprovalApi(
-      (endpoint, payload, signal) => call(endpoint, payload, signal, 'workspaces'),
-      scope.spaceId,
-      registerDirectory
-        ? async (signal) => {
-            const authorize = async () => {
-              current(signal);
-              const session = await identity.session(signal);
-              current(signal);
-              if (session.accountId !== accountId)
-                throw new ExecutionError('unauthenticated', '账号已变化，请重新登录。');
-              if (!session.spaces.some((item) => item.id === scope.spaceId))
-                throw new ExecutionError('space-unavailable', '此空间已不可访问。');
-            };
-            try {
-              await authorize();
-              const value = await registerDirectory(signal, authorize);
-              await authorize();
-              return value;
-            } catch (error) {
-              return report(error, signal);
+    ...(openModelSettings
+      ? {
+          openModelSettings: () => {
+            if (scope.isCurrent?.() === false) throw new DOMException('View changed', 'AbortError');
+            openModelSettings();
+          },
+        }
+      : {}),
+    workspaceApprovals: {
+      ...createWorkspaceApprovalApi(
+        (endpoint, payload, signal) => call(endpoint, payload, signal, 'workspaces'),
+        scope.spaceId,
+        registerDirectory
+          ? async (signal) => {
+              const authorize = async () => {
+                current(signal);
+                const session = await identity.session(signal);
+                current(signal);
+                if (session.accountId !== accountId)
+                  throw new ExecutionError('unauthenticated', '账号已变化，请重新登录。');
+                if (!session.spaces.some((item) => item.id === scope.spaceId))
+                  throw new ExecutionError('space-unavailable', '此空间已不可访问。');
+              };
+              try {
+                await authorize();
+                const value = await registerDirectory(signal, authorize);
+                await authorize();
+                return value;
+              } catch (error) {
+                return report(error, signal);
+              }
             }
-          }
-        : undefined,
-    ),
+          : undefined,
+      ),
+      async context(location, signal) {
+        if (location.spaceId !== scope.spaceId) invalid();
+        current(signal);
+        const snapshot = await directory.snapshot(signal);
+        current(signal);
+        const project = snapshot.state.projects.find((item) => item.id === location.projectId);
+        if (!project) throw new ExecutionError('not-found', '当前项目已不可用，请返回工作台刷新。');
+        return { accountName: snapshot.actorId, projectName: project.name };
+      },
+    },
     workflow: createWorkflowApi(
       (endpoint, payload, signal) => call(endpoint, payload, signal, 'workflow'),
       scope.spaceId,

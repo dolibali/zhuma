@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field, Modal } from '../workbench/controls.js';
-import { executionErrorMessage } from '../execution/ExecutionApi.js';
+import { ExecutionError, executionErrorMessage } from '../execution/ExecutionApi.js';
 import { useExecutionCommand, useFormKey } from '../execution/interaction.js';
 import {
   workspacePublishRanges,
@@ -16,15 +16,20 @@ type Props = {
   location: WorkspaceApprovalLocation;
   close(): void;
   changed(): void | Promise<void>;
+  returnLabel?: string | undefined;
 };
 /** Remount on the actual API/member generation, even when project ids repeat. */
 export function WorkspaceApprovalDialog(props: Props) {
   const key = useFormKey(props.api, JSON.stringify(props.location));
   return <Dialog key={key} {...props} />;
 }
-function Dialog({ api, location, close, changed }: Props) {
+function Dialog({ api, location, close, changed, returnLabel = '关闭' }: Props) {
   const fixed = useRef(location).current;
   const [view, setView] = useState<WorkspaceApprovalView>();
+  const [context, setContext] = useState<{
+    readonly accountName: string;
+    readonly projectName: string;
+  }>();
   const [selected, select] = useState('');
   const [access, setAccess] = useState<'read' | 'write'>('read');
   const [publish, setPublish] = useState<WorkspacePublishRange[]>([]);
@@ -46,9 +51,18 @@ function Dialog({ api, location, close, changed }: Props) {
       const current = () => alive.current && reader.current === request && !request.signal.aborted;
       setLoading(true);
       setError('');
+      setContext(undefined);
       try {
-        const value = await api.options(fixed, request.signal);
+        if (!api.context)
+          throw new ExecutionError('unavailable', '暂时无法确认授权范围，请刷新后重试。');
+        const [value, scope] = await Promise.all([
+          api.options(fixed, request.signal),
+          api.context(fixed, request.signal),
+        ]);
         if (!current()) return;
+        if (!scope.accountName.trim() || !scope.projectName.trim())
+          throw new ExecutionError('validation', '授权范围不完整，请刷新后重试。');
+        setContext(scope);
         setView(value);
         if (workspaceId) select(workspaceId);
       } catch (caught) {
@@ -74,7 +88,7 @@ function Dialog({ api, location, close, changed }: Props) {
     command.setError('');
   }, [selected, approval?.generation]);
   async function pick() {
-    if (!api.pickDirectory || busy) return;
+    if (!api.pickDirectory || busy || !context) return;
     const request = new AbortController();
     picker.current = request;
     setPicking(true);
@@ -98,7 +112,7 @@ function Dialog({ api, location, close, changed }: Props) {
     }
   };
   function approve() {
-    if (!directory || !view?.available || busy) return;
+    if (!directory || !view?.available || !context || busy) return;
     let ranges: WorkspacePublishRange[];
     try {
       ranges = workspacePublishRanges(publish);
@@ -123,7 +137,7 @@ function Dialog({ api, location, close, changed }: Props) {
     );
   }
   function revoke(id: string, generation: number) {
-    if (busy) return;
+    if (busy || !context) return;
     const input = { ...fixed, approvalId: id, expectedGeneration: generation };
     void command.run(
       input,
@@ -134,8 +148,23 @@ function Dialog({ api, location, close, changed }: Props) {
   return (
     <Modal title="工作目录授权" close={close}>
       <div className="zm-workspace-approval">
+        {context ? (
+          <dl className="zm-workspace-scope" aria-label="授权范围">
+            <div>
+              <dt>项目</dt>
+              <dd>{context.projectName}</dd>
+            </div>
+            <div>
+              <dt>账号</dt>
+              <dd>{context.accountName}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="zm-muted" role="status">
+            {loading ? '正在核对项目与账号…' : '暂时无法确认授权范围。'}
+          </p>
+        )}
         <div className="zm-workspace-approval-toolbar">
-          <span className="zm-muted">授权适用于当前项目及当前账号。</span>
           <div>
             <Button variant="quiet" disabled={busy} onClick={() => void refresh()}>
               刷新
@@ -143,7 +172,7 @@ function Dialog({ api, location, close, changed }: Props) {
             {api.pickDirectory && (
               <Button
                 busy={picking}
-                disabled={loading || command.pending}
+                disabled={loading || command.pending || !context}
                 onClick={() => void pick()}
               >
                 选择本机目录
@@ -162,7 +191,7 @@ function Dialog({ api, location, close, changed }: Props) {
             <Field label="目录">
               <select
                 value={selected}
-                disabled={busy || !view.available}
+                disabled={busy || !view.available || !context}
                 onChange={(event) => select(event.target.value)}
               >
                 <option value="">选择已登记目录</option>
@@ -257,6 +286,7 @@ function Dialog({ api, location, close, changed }: Props) {
                   disabled={
                     loading ||
                     picking ||
+                    !context ||
                     !view.available ||
                     (access === 'write' && directory.access !== 'write')
                   }
@@ -289,7 +319,7 @@ function Dialog({ api, location, close, changed }: Props) {
                     </span>
                     <Button
                       variant="danger"
-                      disabled={busy}
+                      disabled={busy || !context}
                       onClick={() => revoke(item.id, item.generation)}
                     >
                       撤销
@@ -306,7 +336,7 @@ function Dialog({ api, location, close, changed }: Props) {
         )}
       </div>
       <footer>
-        <Button onClick={close}>关闭</Button>
+        <Button onClick={close}>{returnLabel}</Button>
       </footer>
     </Modal>
   );

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Button } from '../workbench/Button.js';
 import { Modal } from '../workbench/controls.js';
 import { executionErrorMessage } from '../execution/ExecutionApi.js';
@@ -14,6 +15,7 @@ type Props = {
   api: WorkflowApi;
   target: WorkflowTarget;
   onViewChange?: ((view: WorkflowView) => void) | undefined;
+  openModelSettings?: (() => void) | undefined;
   workspaceApprovals?:
     { api: WorkspaceApprovalApi; location: WorkspaceApprovalLocation } | undefined;
 };
@@ -33,7 +35,12 @@ export function WorkflowControls(props: Props) {
     lifetime.current = { api: props.api, identity, epoch: lifetime.current.epoch + 1 };
   return <Controls key={lifetime.current.epoch} {...props} />;
 }
-function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
+function Controls({ api, target, onViewChange, workspaceApprovals, openModelSettings }: Props) {
+  const directoryId = useId(),
+    manageId = useId(),
+    runTriggerId = useId();
+  const returnToDirectory = useRef(false);
+  const returnToRun = useRef(false);
   const fixedTarget = useRef(target).current;
   const changed = useRef(onViewChange);
   changed.current = onViewChange;
@@ -41,6 +48,12 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open && returnToRun.current) {
+      returnToRun.current = false;
+      document.getElementById(runTriggerId)?.focus();
+    }
+  }, [open, runTriggerId]);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [choices, setChoices] = useState<WorkflowOptions>();
   const [modelId, setModelId] = useState('');
@@ -98,10 +111,13 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
   }, [view?.state, refresh, open, command.pending]);
   function prepare() {
     setOpen(true);
-    setChoices(undefined);
-    setModelId('');
-    setWorkspaceId('');
-    setConcurrent(1);
+    returnToRun.current = false;
+    returnToDirectory.current = false;
+    if (!choices) {
+      setModelId('');
+      setWorkspaceId('');
+      setConcurrent(1);
+    }
     command.setError('');
     void refresh(true);
   }
@@ -193,7 +209,12 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
         </span>
       )}
       {(canStart || canResume) && (
-        <Button variant="primary" disabled={loading || command.pending} onClick={prepare}>
+        <Button
+          id={runTriggerId}
+          variant="primary"
+          disabled={loading || command.pending}
+          onClick={prepare}
+        >
           {canResume ? '继续工作流' : '运行工作流'}
         </Button>
       )}
@@ -215,11 +236,15 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
           {error || command.error}
         </span>
       )}
-      {open && (
+      {open && !workspaceOpen && (
         <Modal
           title={view?.intent ? '继续工作流' : '运行工作流'}
+          {...(returnToDirectory.current ? { initialFocusId: manageId } : {})}
           close={() => {
-            if (!command.pending) setOpen(false);
+            if (!command.pending) {
+              returnToRun.current = true;
+              setOpen(false);
+            }
           }}
         >
           <form
@@ -261,11 +286,20 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
                       <label className="zm-field">
                         模型
                         <select
+                          aria-label="模型"
                           value={modelId}
-                          disabled={command.pending || choices.models.kind !== 'ready'}
+                          disabled={
+                            command.pending ||
+                            choices.models.kind !== 'ready' ||
+                            !choices.models.items.length
+                          }
                           onChange={(event) => setModelId(event.target.value)}
                         >
-                          <option value="">选择模型</option>
+                          <option value="">
+                            {choices.models.kind === 'ready' && !choices.models.items.length
+                              ? '暂无可用模型'
+                              : '选择模型'}
+                          </option>
                           {choices.models.kind === 'ready' &&
                             choices.models.items.map((item) => (
                               <option key={item.id} value={item.id}>
@@ -277,9 +311,47 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
                       {choices.models.kind === 'unavailable' && (
                         <p className="zm-error">{choices.models.message}</p>
                       )}
-                      <label className="zm-field">
-                        工作区
+                      {(choices.models.kind === 'unavailable' || !choices.models.items.length) && (
+                        <div className="zm-workflow-model-empty" role="status">
+                          <span>先在设置中配置模型，再刷新选项。</span>
+                          {openModelSettings && (
+                            <Button
+                              variant="quiet"
+                              onClick={() => {
+                                try {
+                                  flushSync(() => setOpen(false));
+                                  openModelSettings();
+                                } catch (caught) {
+                                  setOpen(true);
+                                  setError(executionErrorMessage(caught));
+                                }
+                              }}
+                            >
+                              打开设置
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                      <div className="zm-field">
+                        <div className="zm-workflow-field-heading">
+                          <label htmlFor={directoryId}>工作目录</label>
+                          {workspaceApprovals && (
+                            <Button
+                              id={manageId}
+                              variant="quiet"
+                              disabled={command.pending || loading}
+                              onClick={() => {
+                                returnToDirectory.current = true;
+                                setWorkspaceOpen(true);
+                              }}
+                            >
+                              管理授权
+                            </Button>
+                          )}
+                        </div>
                         <select
+                          id={directoryId}
+                          aria-label="工作目录"
                           value={workspaceId}
                           disabled={command.pending}
                           onChange={(event) => setWorkspaceId(event.target.value)}
@@ -292,19 +364,11 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
                             </option>
                           ))}
                         </select>
-                      </label>
-                      {workspaceApprovals && (
-                        <Button
-                          variant="quiet"
-                          disabled={command.pending || loading}
-                          onClick={() => setWorkspaceOpen(true)}
-                        >
-                          管理目录授权
-                        </Button>
-                      )}
+                      </div>
                       <label className="zm-field">
                         同时运行的 Agent
                         <select
+                          aria-label="同时运行的 Agent"
                           value={concurrent}
                           disabled={command.pending}
                           onChange={(event) => setConcurrent(Number(event.target.value))}
@@ -355,6 +419,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
           api={workspaceApprovals.api}
           location={workspaceApprovals.location}
           close={() => setWorkspaceOpen(false)}
+          returnLabel="返回运行设置"
           changed={() => refresh(true)}
         />
       )}

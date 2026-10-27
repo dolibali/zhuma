@@ -33,6 +33,7 @@ function MemberWork({
   openWork,
   registerLeaveGuard,
   registerWorkspaceDirectory,
+  openModelSettings,
 }: {
   fetcher: typeof fetch;
   accountId: string;
@@ -41,6 +42,7 @@ function MemberWork({
   lifetime: MemberSpaceLifetime;
   appearance?: AppearanceStore;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
+  openModelSettings?: (() => void) | undefined;
   view: 'catalog' | 'work';
   openWork?: (() => void) | undefined;
   registerLeaveGuard?:
@@ -117,8 +119,9 @@ function MemberWork({
         },
         () => currentLifetime.current.onUnauthenticated(),
         registerWorkspaceDirectory,
+        openModelSettings,
       ),
-    [fetcher, accountId, spaceId, view, registerWorkspaceDirectory],
+    [fetcher, accountId, spaceId, view, registerWorkspaceDirectory, openModelSettings],
   );
   const nativeRun = useMemo(() => ({ api: nativeApi, spaceId }), [nativeApi, spaceId]);
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
@@ -158,6 +161,7 @@ export function MemberExecutionPage({
   view,
   openWork,
   registerWorkspaceDirectory,
+  openModelSettings,
 }: {
   fetcher?: typeof fetch;
   shell?: MemberShell;
@@ -165,6 +169,7 @@ export function MemberExecutionPage({
   view?: 'catalog' | 'work';
   openWork?: () => void;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
+  openModelSettings?: (() => void) | undefined;
 }) {
   const snapshot = useSyncExternalStore(
     shell?.subscribe ?? noSubscription,
@@ -239,6 +244,7 @@ export function MemberExecutionPage({
                 openWork={openWork}
                 registerLeaveGuard={shell ? registerLeaveGuard : undefined}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
+                openModelSettings={openModelSettings}
                 {...(workbenchAppearance ? { appearance: workbenchAppearance } : {})}
               />
             )}

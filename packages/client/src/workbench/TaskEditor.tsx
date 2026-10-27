@@ -761,6 +761,7 @@ export function TaskEditor({
             api={nativeRun.api.workflow}
             target={{ taskId: task.id, planId: applied.id, revision: applied.revision }}
             onViewChange={setWorkflowView}
+            openModelSettings={nativeRun.api.openModelSettings}
             workspaceApprovals={
               nativeRun.api.workspaceApprovals
                 ? {
