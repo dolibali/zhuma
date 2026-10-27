@@ -91,7 +91,9 @@ export async function adoptHostReviewResources(
     return Object.freeze({
       scope: snapshot.payload.scope,
       configurationId: snapshot.configurationId,
-      signal: adopted.signal,
+      // Normal SDK retirement disposes the registration. Persistent authority
+      // is separate; live assertions still reject an unready/disposed resource.
+      signal: producer.signal,
       context: '',
       toolAllowlist: adopted.toolAllowlist,
       descriptors: Object.freeze(descriptors),
