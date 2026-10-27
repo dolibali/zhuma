@@ -8,6 +8,7 @@ import { UpstreamInputsPanel } from './UpstreamInputsPanel.js';
 import { useDeliveryEditor } from './useDeliveryEditor.js';
 import { FileUploads } from './FileUploads.js';
 import { FileReferences } from './FileReferences.js';
+import { createExecutionGoalView } from '../execution-view.js';
 
 type Props = {
   api: ExecutionApi;
@@ -22,6 +23,7 @@ export function DeliveryPanel(props: Props) {
 }
 function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }: Props) {
   const titleId = useId();
+  const goal = createExecutionGoalView(node.goal);
   const available =
     mode === 'revise'
       ? node.status === 'needs-revision'
@@ -52,10 +54,11 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
       <div className="zm-page-heading">
         <div>
           <p className="zm-eyebrow">{mode === 'revise' ? '修改后重新提交' : '提交产物'}</p>
-          <h2 id={titleId}>{node.goal}</h2>
+          <h2 id={titleId}>{goal.title}</h2>
         </div>
         {headerAction}
       </div>
+      {goal.description !== undefined && <p className="zm-execution-text">{goal.description}</p>}
       {node.expectedOutput && <p className="zm-execution-hint">交付内容：{node.expectedOutput}</p>}
       <UpstreamInputsPanel inputs={node.inputs} api={api} node={node} />
       {upstreamBlocked && <p role="status">上游输入不可用，暂不能提交；仍可保存草稿。</p>}
