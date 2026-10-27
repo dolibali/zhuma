@@ -49,6 +49,15 @@ import {
   type UpstreamInputView,
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
+import {
+  taskProgressQuerySchema,
+  type TaskProgressValue,
+} from './execution-task-progress-contract.js';
+import {
+  selectTaskProgress,
+  taskProgressProjects,
+  taskProgressProjection,
+} from './execution-task-progress.js';
 import type {
   NativeWorkGrant,
   NativeWorkAction,
@@ -5506,6 +5515,76 @@ export class ExecutionService {
         return { ok: true, value };
       }),
     );
+  }
+
+  /** Current confirmed-plan metadata only. Reuses the original request's member
+   * and project authority, never the repairing report/inbox or another fact store. */
+  taskProgress(
+    caller: ExecutionCaller,
+    body: unknown,
+    source?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionResult<TaskProgressValue>> {
+    const parsed = parseBody(taskProgressQuerySchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    const query = parsed.value;
+    return this.withFileAuthority(caller, body, source, async (actor, authority) => {
+      const lease = authority.lease;
+      const { memberId, expiresAt, signal, assertCurrent, release } = lease;
+      const assertProjectSpace = authority.assertProjectSpace;
+      const live = () => {
+        if (
+          authority.lease !== lease ||
+          lease.memberId !== memberId ||
+          lease.expiresAt !== expiresAt ||
+          lease.signal !== signal ||
+          lease.assertCurrent !== assertCurrent ||
+          lease.release !== release ||
+          authority.assertProjectSpace !== assertProjectSpace ||
+          !Number.isSafeInteger(expiresAt) ||
+          expiresAt <= Date.now()
+        )
+          throw new ArtifactUploadError('unauthenticated');
+        if (this.fileLifetime.signal.aborted || signal.aborted)
+          throw new ArtifactUploadError('cancelled');
+        if (!actor.spaceIds.includes(query.spaceId)) throw new ArtifactUploadError('not-found');
+      };
+      return this.enqueue(async () => {
+        live();
+        const currentSelection = () => {
+          live();
+          const projects = taskProgressProjects(
+            this.workbench.readWorkbench(),
+            actor.actorId,
+            query,
+          );
+          for (const projectId of projects) {
+            this.assertFileAuthority(authority, actor.actorId, projectId, query.spaceId);
+            live(); // A synchronous source callback may invalidate or replace its lease.
+          }
+          const state = this.workbench.readWorkbench();
+          if (
+            canonicalPayload(taskProgressProjects(state, actor.actorId, query)) !==
+            canonicalPayload(projects)
+          )
+            throw new ArtifactUploadError('not-found');
+          return selectTaskProgress(state, actor.actorId, query);
+        };
+        const selection = currentSelection();
+        const check = () => {
+          const current = currentSelection();
+          if (current.fingerprint !== selection.fingerprint)
+            throw new WorkbenchError('conflict', '当前计划已变化，请刷新。');
+        };
+        const value = taskProgressProjection(selection, {
+          global: this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
+          readPlan: (target) =>
+            this.storage.readPlan(planKey(target.taskId, target.planId, target.revision)),
+          readNode: (target) => this.storage.readNode(nodeRecordKey(target)),
+        });
+        check();
+        return { ok: true, value };
+      });
+    });
   }
 
   report(
