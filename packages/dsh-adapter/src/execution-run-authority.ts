@@ -790,6 +790,7 @@ export class ExecutionRunAuthorities {
   private makeCleanup(
     locator: ExecutionRunLocator,
     run: ExecutionRun,
+    settledOnly = false,
   ): ExecutionRunCleanupAuthority {
     const initial = this.current(locator);
     const scope = executionRunScope(initial.node, run);
@@ -799,8 +800,14 @@ export class ExecutionRunAuthorities {
       assertCurrent: (kind: 'failed' | 'stop-pending' | 'stopped' | 'cleanup') => {
         if (this.disposed || !['failed', 'stop-pending', 'stopped', 'cleanup'].includes(kind))
           return denied();
+        if (settledOnly && kind !== 'cleanup') return denied();
         const latest = this.current(locator, false);
         if (!latest.current || fingerprint(latest.run) !== bound) return denied();
+        if (
+          settledOnly &&
+          (latest.run.resources !== 'settled' || !isTerminalRunStatus(latest.run.attempt.status))
+        )
+          return denied();
       },
     });
     this.cleanups.add(authority);
@@ -817,6 +824,24 @@ export class ExecutionRunAuthorities {
     const current = this.current(parsed.data);
     if (!current.current || current.run.resources !== 'held') return denied();
     return this.makeCleanup(parsed.data, current.run);
+  }
+  /** Host-only recovery after fresh member and exact workflow authorization.
+   * The persisted terminal/settled facts permit rechecking physical cleanup;
+   * they are not a native drain certificate. This cannot record failure/stop,
+   * drive a session or submit a product. The old held-Run hook stays separate.
+   */
+  cleanupAfterSettlement(rawLocator: unknown): ExecutionRunCleanupAuthority {
+    if (this.disposed || this.fenced || this.source.signal.aborted) return denied();
+    const parsed = locatorSchema.safeParse(rawLocator);
+    if (!parsed.success) return denied();
+    const current = this.current(parsed.data);
+    if (
+      !current.current ||
+      current.run.resources !== 'settled' ||
+      !isTerminalRunStatus(current.run.attempt.status)
+    )
+      return denied();
+    return this.makeCleanup(parsed.data, current.run, true);
   }
   /** B checks object identity as well as the closure before accepting an internal event. */
   assertGrant(grant: NativeWorkGrant, action: NativeWorkAction): void {
