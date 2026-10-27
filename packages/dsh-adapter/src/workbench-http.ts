@@ -17,13 +17,18 @@ export class WorkbenchBodyError extends Error {
 export async function readWorkbenchBody(
   request: Request,
   limits: WorkbenchHttpLimits,
+  lifetime?: AbortSignal,
 ): Promise<unknown> {
   const declared = request.headers.get('content-length');
   if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > limits.bodyBytes))
     throw new WorkbenchBodyError(413);
   if (!request.body) throw new WorkbenchBodyError(400);
   const reader = request.body.getReader();
-  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(limits.bodyTimeoutMs)]);
+  const signal = AbortSignal.any([
+    request.signal,
+    ...(lifetime ? [lifetime] : []),
+    AbortSignal.timeout(limits.bodyTimeoutMs),
+  ]);
   let rejectAbort: () => void;
   const interrupted = new Promise<never>((_, reject) => {
     rejectAbort = () => reject(new WorkbenchBodyError(408));

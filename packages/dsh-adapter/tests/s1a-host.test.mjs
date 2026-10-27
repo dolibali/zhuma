@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { hashPassword } from '../dist/identity-session.js';
 import { LEGACY_OWNER_ROUTES } from '../dist/member-session.js';
 import { previewResourcePackage, parseWorkflowTemplate } from '@zhuma/agent-core';
+import { fixture as workbenchFixture } from '../../../tests/fixtures/workbench.mjs';
 import { packageFixture, importCommand } from '../../../tests/fixtures/asset-package.mjs';
 
 const children = new Set();
@@ -32,7 +33,11 @@ const imported = {
   ],
 };
 
-async function start(directory, config, { deferIdentity = false, skipRemoteAccess = false } = {}) {
+async function start(
+  directory,
+  config,
+  { deferIdentity = false, skipRemoteAccess = false, noModels = false } = {},
+) {
   const child = fork(
     fileURLToPath(new URL('./fixtures/s1a-host-process.mjs', import.meta.url)),
     [],
@@ -86,7 +91,7 @@ async function start(directory, config, { deferIdentity = false, skipRemoteAcces
     child.send({ id, action });
     return response;
   };
-  const { identityImport, ...publicConfig } = config;
+  const { identityImport, spaceDirectoryImport, ...publicConfig } = config;
   child.send({
     type: 'boot',
     options: {
@@ -96,10 +101,15 @@ async function start(directory, config, { deferIdentity = false, skipRemoteAcces
         ...(identityImport === undefined
           ? {}
           : { identityBootstrapKey: 'zhuma-identity/bootstrap' }),
+        ...(spaceDirectoryImport === undefined
+          ? {}
+          : { spaceDirectoryBootstrapKey: 'zhuma-spaces/bootstrap' }),
       },
       identityImport,
       deferIdentity,
       skipRemoteAccess,
+      noModels,
+      ...(spaceDirectoryImport === undefined ? {} : { spaceDirectoryImport }),
       ...(process.env.S1A_HOST_MODULE ? { modulePath: resolve(process.env.S1A_HOST_MODULE) } : {}),
     },
   });
@@ -132,6 +142,15 @@ async function start(directory, config, { deferIdentity = false, skipRemoteAcces
 
 function envelope(endpoint, payload) {
   return { type: 'client-request', rpcId: randomUUID(), method: `zhuma/${endpoint}`, payload };
+}
+async function assertClientBoot(host, deploymentMode) {
+  assert.deepEqual(await host.act('clientBoot'), [
+    {
+      kind: 'global',
+      name: '__ZHUMA_WORKBENCH_BOOT__',
+      value: { version: 1, deploymentMode },
+    },
+  ]);
 }
 async function post(host, path, payload, cookie = host.cookie) {
   return fetch(host.baseURL + path, {
@@ -212,6 +231,7 @@ test(
         { deferIdentity: true },
       );
       await host.wait('identity-pending');
+      await assertClientBoot(host, 'multi-member');
       for (const endpoint of LEGACY_OWNER_ROUTES) {
         const result = await earlyRequest(host, endpoint);
         assert.equal(result.status, 404);
@@ -278,6 +298,7 @@ test(
         const result = await host.act(lifecycle);
         if (lifecycle === 'failIdentity') assert.equal(result.loaded, false);
         if (lifecycle === 'remountIdentity') assert.equal(result.loaded, true);
+        await assertClientBoot(host, 'multi-member');
         for (const endpoint of LEGACY_OWNER_ROUTES)
           assert.equal((await earlyRequest(host, endpoint)).status, 404);
       }
@@ -296,6 +317,8 @@ test(
         models: 0,
         domains: final.opened,
       });
+      await host.act('unmountWorkbench');
+      assert.deepEqual(await host.act('clientBoot'), []);
     } finally {
       if (host) await host.close();
       await rm(directory, { recursive: true, force: true });
@@ -361,6 +384,7 @@ test(
         bodyTimeoutMs: 300,
       });
       await host.wait('ready');
+      await assertClientBoot(host, 'legacy-single-user');
       assert.equal((await earlyRequest(host, 'snapshot', { declared: true })).status, 413);
       assert.equal((await earlyRequest(host, 'snapshot')).status, 408);
       const tooLarge = await fetch(host.baseURL + '/api/zhuma/snapshot', {
@@ -540,6 +564,7 @@ test(
         { skipRemoteAccess: true },
       );
       await host.act('waitIdentityPending'); // Cordis PENDING: the real remoteAccess service is absent.
+      await assertClientBoot(host, 'multi-member');
       for (const endpoint of LEGACY_OWNER_ROUTES)
         assert.equal((await earlyRequest(host, endpoint)).status, 404);
       await host.act('mountRemoteAccess');
@@ -548,6 +573,7 @@ test(
       const member = await login(host);
       await host.act('unmountRemoteAccess');
       await host.act('waitIdentityPending');
+      await assertClientBoot(host, 'multi-member');
       for (const endpoint of LEGACY_OWNER_ROUTES)
         assert.equal((await earlyRequest(host, endpoint)).status, 404);
       await host.act('mountRemoteAccess');
@@ -564,6 +590,562 @@ test(
         passed: true,
         pendingAndRevokedFailClosed: true,
         reprovideRecoversPersistedSession: true,
+      });
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'S1b actual Host: trusted directory seed, persistence, member execution and fail-closed lifecycle',
+  { timeout: 45000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-s1b-composition-'));
+    let host;
+    try {
+      // Seed legitimate persisted task definitions through the legacy owner entry,
+      // then restart in member mode. This is test data, not a formal provider.
+      host = await start(directory, { deploymentMode: 'legacy-single-user' });
+      await host.wait('ready');
+      const { state, task, node } = workbenchFixture();
+      const member = { ...state.participants[0], id: 'member-a' };
+      const ready = {
+        ...task,
+        participantIds: [member.id],
+        ownerId: member.id,
+        status: 'ready',
+        workflows: [
+          {
+            ...task.workflows[0],
+            nodes: [
+              {
+                ...node,
+                assigneeId: member.id,
+                skillIds: [],
+                reviewerIds: [],
+                reviewRequired: false,
+              },
+            ],
+          },
+        ],
+      };
+      let revision = 0;
+      for (const command of [
+        { type: 'save-project', project: state.projects[0] },
+        { type: 'save-participant', participant: member },
+        { type: 'save-task', task: ready },
+      ]) {
+        const response = await post(
+          host,
+          '/api/zhuma/command',
+          envelope('command', { requestId: randomUUID(), expectedRevision: revision, command }),
+        );
+        assert.equal(response.status, 200);
+        const saved = (await response.json()).result;
+        assert.equal(saved.ok, true);
+        revision = saved.value.revision;
+      }
+      const snapshot = await (
+        await post(host, '/api/zhuma/snapshot', envelope('snapshot', {}))
+      ).json();
+      const plan = snapshot.result.value.state.appliedPlans.at(-1);
+      const startPlan = {
+        taskId: plan.taskId,
+        planId: plan.id,
+        revision: plan.revision,
+        idempotencyKey: 'formal-host-start',
+      };
+      await host.close();
+      host = null;
+      host = await start(directory, { deploymentMode: 'multi-member', identityImport: imported });
+      await host.wait('ready');
+      const exec = (target, endpoint, payload, cookie) =>
+        post(
+          target,
+          `/api/zhuma-exec/${endpoint}`,
+          {
+            type: 'client-request',
+            rpcId: randomUUID(),
+            method: `zhuma-exec/${endpoint}`,
+            payload,
+          },
+          cookie,
+        );
+      assert.equal((await exec(host, 'inbox', {}, host.cookie)).status, 401);
+      let memberCookie = `${host.cookie}; ${await login(host)}`;
+      const denied = await (await exec(host, 'start-plan', startPlan, memberCookie)).json();
+      assert.equal(denied.result.ok, false);
+      assert.equal(denied.result.error.code, 'not-found');
+      const counts = await host.act('inspect');
+      for (const name of [
+        'zhuma_workbench',
+        'zhuma_asset_packages',
+        'zhuma_execution',
+        'zhuma_spaces',
+      ])
+        assert.equal(counts.opened.filter((entry) => entry === name).length, 1);
+      await host.close();
+      host = null;
+      // A missing private record or invalid seed fails closed and leaves the
+      // producer child visibly failed. Neither can borrow note memberships.
+      for (const seedConfig of [
+        { spaceDirectoryBootstrapKey: 'zhuma-spaces/missing' },
+        { spaceDirectoryImport: { spaces: [{ id: 'invalid id', name: 'Invalid', kind: 'team' }] } },
+      ]) {
+        host = await start(directory, {
+          deploymentMode: 'multi-member',
+          identityImport: imported,
+          ...seedConfig,
+        });
+        await host.wait('ready');
+        memberCookie = `${host.cookie}; ${await login(host)}`;
+        const session = await (
+          await fetch(host.baseURL + '/zhuma-id/session', { headers: { cookie: memberCookie } })
+        ).json();
+        assert.deepEqual(session.spaces, []);
+        assert.ok((await host.act('inspect')).directoryStates.includes(3));
+        const refused = await (await exec(host, 'start-plan', startPlan, memberCookie)).json();
+        assert.equal(refused.result.ok, false);
+        await host.close();
+        host = null;
+      }
+      const spaceDirectoryImport = {
+        spaces: [
+          { id: 'personal-a', kind: 'personal', name: 'Notes space' },
+          { id: 'personal-empty', kind: 'personal', name: 'Empty personal' },
+          { id: 'team-empty', kind: 'team', name: 'Empty team' },
+          { id: 'space-collaboration', kind: 'team', name: 'Project team' },
+        ],
+        memberships: ['personal-a', 'personal-empty', 'team-empty', 'space-collaboration'].map(
+          (spaceId) => ({ spaceId, accountId: 'member-a' }),
+        ),
+        projectSpaces: [{ projectId: 'project', spaceId: 'space-collaboration' }],
+      };
+      host = await start(directory, {
+        deploymentMode: 'multi-member',
+        identityImport: imported,
+        spaceDirectoryImport,
+      });
+      await host.wait('ready');
+      memberCookie = `${host.cookie}; ${await login(host)}`;
+      const authorized = await (
+        await fetch(host.baseURL + '/zhuma-id/session', { headers: { cookie: memberCookie } })
+      ).json();
+      assert.deepEqual(
+        authorized.spaces.map((space) => space.id).sort(),
+        spaceDirectoryImport.spaces.map((space) => space.id).sort(),
+      );
+      for (const spaceId of ['personal-empty', 'team-empty']) {
+        const response = await fetch(`${host.baseURL}/zhuma-id/spaces/${spaceId}`, {
+          headers: { cookie: memberCookie },
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual((await response.json()).notes, []);
+      }
+      const started = await (await exec(host, 'start-plan', startPlan, memberCookie)).json();
+      assert.equal(started.result.ok, true);
+      const inbox = await (await exec(host, 'inbox', {}, memberCookie)).json();
+      assert.equal(inbox.result.ok, true);
+      assert.equal(inbox.result.value.items.length, 1);
+      const current = inbox.result.value.nodes[0];
+      const submitted = await (
+        await exec(
+          host,
+          'submit',
+          {
+            ...startPlan,
+            nodeId: current.nodeId,
+            expectedVersion: current.version,
+            idempotencyKey: 'formal-host-delivery',
+            text: 'Contract-only text delivery',
+          },
+          memberCookie,
+        )
+      ).json();
+      assert.equal(submitted.result.ok, true);
+      assert.equal(submitted.result.value.node.status, 'completed');
+      await host.act('revokeTestMemberships');
+      for (const method of ['GET', 'PUT']) {
+        const response = await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+          method,
+          headers: { cookie: memberCookie, 'content-type': 'application/json' },
+          ...(method === 'PUT' ? { body: JSON.stringify({ text: 'must-not-persist' }) } : {}),
+        });
+        assert.equal(response.status, 404);
+      }
+      const revokedReport = await (
+        await exec(
+          host,
+          'report',
+          { taskId: plan.taskId, planId: plan.id, revision: plan.revision },
+          memberCookie,
+        )
+      ).json();
+      assert.equal(revokedReport.result.ok, false);
+      await host.close();
+      host = null;
+      // No bootstrap source on reopen: consume the real persisted directory,
+      // preserving the revocation and the empty personal/team spaces.
+      host = await start(directory, { deploymentMode: 'multi-member', identityImport: imported });
+      await host.wait('ready');
+      memberCookie = `${host.cookie}; ${await login(host)}`;
+      const restored = await (
+        await fetch(host.baseURL + '/zhuma-id/session', { headers: { cookie: memberCookie } })
+      ).json();
+      assert.deepEqual(restored.spaces.map((space) => space.id).sort(), [
+        'personal-empty',
+        'team-empty',
+      ]);
+      assert.equal(
+        (
+          await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+            headers: { cookie: memberCookie },
+          })
+        ).status,
+        404,
+      );
+      await host.act('grantTestMemberships');
+      const note = await (
+        await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+          headers: { cookie: memberCookie },
+        })
+      ).json();
+      assert.equal(note.note.text, 'Synthetic private note');
+      await host.act('holdProjectLookup');
+      const pendingReport = exec(
+        host,
+        'report',
+        { taskId: plan.taskId, planId: plan.id, revision: plan.revision },
+        memberCookie,
+      );
+      await host.wait('lookup-pending');
+      assert.deepEqual(await host.act('unmountDirectoryWithCloseFailure'), { registered: false });
+      await host.act('releaseProjectLookup');
+      const stale = await (await pendingReport).json();
+      assert.equal(stale.result.ok, false);
+      assert.equal(stale.result.error.code, 'unavailable');
+      assert.equal(
+        (
+          await fetch(host.baseURL + '/zhuma-id/notes/private-note', {
+            headers: { cookie: memberCookie },
+          })
+        ).status,
+        404,
+      );
+      proof.cases.push({
+        name: 'member-execution-composition',
+        passed: true,
+        singleWorkbenchDomain: true,
+        ownerNeverMember: true,
+        absentDirectoryClosed: true,
+        trustedPersistentDirectoryConsumed: true,
+        privateSeedValidated: true,
+        emptySpacesAuthorized: true,
+        projectAndSpaceDiffer: true,
+        revocationSurvivesRestart: true,
+        failedCloseAndStaleLookupClosed: true,
+      });
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'normal member Host assembly: manual project/task save and confirmation work without any model service',
+  { timeout: 45000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-member-entry-'));
+    let host;
+    const config = {
+      deploymentMode: 'multi-member',
+      identityImport: imported,
+      spaceDirectoryImport: {
+        spaces: [{ id: 'space-collaboration', kind: 'team', name: '协作空间' }],
+        memberships: [{ spaceId: 'space-collaboration', accountId: 'member-a' }],
+      },
+    };
+    try {
+      host = await start(directory, config, { noModels: true });
+      await host.wait('ready');
+      let memberCookie = `${host.cookie}; ${await login(host)}`;
+      const spaceId = 'space-collaboration';
+      const rpc = async (
+        endpoint,
+        payload,
+        credential = memberCookie,
+        channel = 'zhuma-member',
+      ) => {
+        const response = await post(
+          host,
+          `/api/${channel}/${endpoint}`,
+          {
+            type: 'client-request',
+            rpcId: randomUUID(),
+            method: `${channel}/${endpoint}`,
+            payload,
+          },
+          credential,
+        );
+        assert.equal(response.status, 200);
+        return (await response.json()).result;
+      };
+      let result = await rpc('snapshot', { spaceId });
+      assert.equal(result.ok, true);
+      assert.equal(result.value.actorId, 'member-a');
+      assert.equal(result.value.model, null);
+      assert.equal(result.value.capabilities.planning, false);
+      assert.equal(result.value.capabilities.createProject, true);
+      assert.deepEqual(result.value.state.projects, []);
+      assert.deepEqual(
+        result.value.state.participants.map(({ id }) => id),
+        ['member-a'],
+      );
+      let revision = result.value.state.revision;
+      const save = async (command) => {
+        const input = { spaceId, expectedRevision: revision, requestId: randomUUID(), command };
+        const reply = await rpc('command', input);
+        assert.equal(reply.ok, true, JSON.stringify(reply));
+        // Lost acknowledgments retry the identical command instead of reclassifying create as update.
+        const retried = await rpc('command', input);
+        assert.deepEqual(retried, reply);
+        assert.deepEqual(reply.value.state.receipts, []);
+        revision = reply.value.state.revision;
+        return reply.value;
+      };
+      const project = {
+        id: 'new-member-project',
+        name: '报表导出',
+        description: '优化报表导出体验',
+      };
+      await save({ type: 'create-project', project });
+      await save({
+        type: 'update-project',
+        project: { ...project, description: '整理字段与导出格式' },
+      });
+      const task = {
+        id: 'new-member-task',
+        projectId: project.id,
+        title: '确认报表导出字段',
+        goal: '整理导出字段与展示格式',
+        participantIds: ['member-a'],
+        ownerId: 'member-a',
+        workflows: [
+          {
+            id: 'main',
+            name: '主工作流',
+            parentNodeId: null,
+            nodes: [
+              {
+                id: 'spec',
+                title: '整理导出字段',
+                description: '',
+                assigneeId: 'member-a',
+                reviewerIds: [],
+                reviewRequired: false,
+                dependsOn: [],
+                skillIds: [],
+                mcpIds: [],
+                input: '现有报表',
+                output: '导出字段说明',
+                rationale: '',
+                position: { x: 0, y: 0 },
+              },
+            ],
+          },
+        ],
+      };
+      await save({ type: 'create-task', task });
+      task.goal = '整理导出字段，时间统一使用北京时间';
+      const draft = await save({ type: 'update-task', task });
+      const failedPlan = await rpc('plan', {
+        spaceId,
+        taskId: task.id,
+        expectedRevision: revision,
+        requestId: randomUUID(),
+        instruction: '拆成两个步骤',
+      });
+      assert.equal(failedPlan.ok, false);
+      assert.equal(failedPlan.error.code, 'model-unavailable');
+      const afterFailure = await rpc('snapshot', { spaceId });
+      assert.deepEqual(afterFailure.value.state, draft.state);
+      const confirmed = await save({ type: 'confirm-task', taskId: task.id });
+      assert.equal(confirmed.state.tasks[0].status, 'ready');
+      const plan = confirmed.state.appliedPlans[0];
+      assert.equal(plan.taskId, task.id);
+      const startable = await rpc('startable', { spaceId }, memberCookie, 'zhuma-exec');
+      assert.equal(startable.ok, true);
+      assert.equal(startable.value.plans.length, 1);
+      assert.equal(startable.value.plans[0].planId, plan.id);
+      assert.equal((await rpc('snapshot', { spaceId: 'hidden-space' })).ok, false);
+      for (const endpoint of LEGACY_OWNER_ROUTES)
+        assert.equal(
+          (await post(host, `/api/zhuma/${endpoint}`, envelope(endpoint, {}), memberCookie)).status,
+          404,
+        );
+      const inspected = await host.act('inspect');
+      for (const name of ['zhuma_workbench', 'zhuma_asset_packages', 'zhuma_member_operations'])
+        assert.equal(inspected.opened.filter((entry) => entry === name).length, 1);
+      assert.equal(inspected.modelCalls, 0);
+      const lease = await (
+        await post(host, '/api/zhuma-test/execution-member-lease', { spaceId }, memberCookie)
+      ).json();
+      assert.equal(lease.ok, true);
+      assert.equal(lease.memberId, 'member-a');
+      assert.deepEqual(await host.act('executionLeaseStatus'), {
+        exists: true,
+        aborted: false,
+        allowed: true,
+      });
+      await host.act('holdWorkbenchWrite');
+      const held = rpc('command', {
+        spaceId,
+        expectedRevision: revision,
+        requestId: randomUUID(),
+        command: {
+          type: 'create-project',
+          project: { id: 'drained-project', name: '已接纳的写入', description: '' },
+        },
+      });
+      await host.wait('workbench-write-pending');
+      assert.deepEqual(await host.act('beginWorkbenchClose'), {
+        rawAborted: false,
+        identityActive: true,
+        leaseAborted: true,
+      });
+      let disposed = false;
+      const disposing = host.act('finishWorkbenchClose').then(() => {
+        disposed = true;
+      });
+      // The original SDK close effect waits for the held storage invocation.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(disposed, false);
+      assert.deepEqual(await host.act('executionLeaseStatus'), {
+        exists: true,
+        aborted: true,
+        allowed: false,
+      });
+      const duringClose = await host.act('inspect');
+      assert.equal(duringClose.domainCloseOrder.includes('zhuma_workbench'), false);
+      assert.equal(duringClose.domainCloseOrder.includes('zhuma_member_operations'), false);
+      await host.act('releaseWorkbenchWrite');
+      const cancelled = await held;
+      assert.equal(cancelled.ok, false);
+      assert.equal(cancelled.error.code, 'cancelled');
+      await disposing;
+      const afterClose = (await host.act('inspect')).domainCloseOrder;
+      assert.ok(afterClose.indexOf('zhuma_member_operations') >= 0);
+      assert.ok(
+        afterClose.indexOf('zhuma_workbench') > afterClose.indexOf('zhuma_member_operations'),
+      );
+      await host.act('unmountWorkbench');
+      await host.close();
+      host = null;
+      host = await start(directory, { deploymentMode: 'multi-member' }, { noModels: true });
+      await host.wait('ready');
+      memberCookie = `${host.cookie}; ${await login(host)}`;
+      result = await rpc('snapshot', { spaceId });
+      assert.equal(result.ok, true);
+      assert.equal(result.value.state.tasks[0].goal, task.goal);
+      assert.equal(result.value.state.appliedPlans[0].id, plan.id);
+      assert.equal(result.value.state.revision, revision + 1);
+      assert.ok(result.value.state.projects.some((project) => project.id === 'drained-project'));
+      proof.cases.push({
+        name: 'normal-member-create-save-confirm',
+        passed: true,
+        noModelService: true,
+        explicitPlanFailurePreservesDraft: true,
+        sameBodyRetry: true,
+        confirmedPlanDiscoverable: true,
+        sameDiskReopen: true,
+        drainsAcceptedWrites: true,
+        memberLeaseRevokedBeforeDrain: true,
+        publicationRevokedWithIdentityAndDirectoryStillActive: true,
+      });
+    } finally {
+      if (host) await host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'S1c actual Host: the mounted identity graph issues leases and revokes before raw directory drain',
+  { timeout: 45000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-host-member-lease-'));
+    let host;
+    try {
+      host = await start(
+        directory,
+        {
+          deploymentMode: 'multi-member',
+          identityImport: imported,
+          spaceDirectoryImport: {
+            spaces: [{ id: 'personal-a', kind: 'personal', name: 'Private test space' }],
+            memberships: [{ spaceId: 'personal-a', accountId: 'member-a' }],
+          },
+        },
+        { noModels: true },
+      );
+      await host.wait('ready');
+      const path = '/api/zhuma-test/execution-member-lease';
+      assert.deepEqual(await (await post(host, path, { spaceId: 'personal-a' })).json(), {
+        ok: false,
+      });
+      const member = await login(host);
+      const result = await (
+        await post(host, path, { spaceId: 'personal-a' }, `${host.cookie}; ${member}`)
+      ).json();
+      assert.equal(result.ok, true);
+      assert.equal(result.memberId, 'member-a');
+      assert.ok(Number.isSafeInteger(result.expiresAt) && result.expiresAt > Date.now());
+      const before = await host.act('inspect');
+      await host.act('holdDirectoryClose');
+      assert.deepEqual(await host.act('beginDirectoryClose'), {
+        rawAborted: true,
+        leaseAborted: true,
+      });
+      await host.wait('directory-close-pending');
+      assert.deepEqual(await host.act('executionLeaseStatus'), {
+        exists: true,
+        aborted: true,
+        allowed: false,
+      });
+      assert.deepEqual(
+        await (
+          await post(host, path, { spaceId: 'personal-a' }, `${host.cookie}; ${member}`)
+        ).json(),
+        { ok: false },
+      );
+      await host.act('releaseDirectoryClose');
+      const after = await host.act('inspect');
+      assert.deepEqual(after.files, before.files);
+      assert.equal(after.modelCalls, 0);
+      await host.close();
+      host = null;
+
+      // Reopen the real disk and original signed session in a new process.
+      // This issues a new lease; no old in-process lease is reused or revived.
+      host = await start(directory, { deploymentMode: 'multi-member' }, { noModels: true });
+      await host.wait('ready');
+      const reopened = await (
+        await post(host, path, { spaceId: 'personal-a' }, `${host.cookie}; ${member}`)
+      ).json();
+      assert.equal(reopened.ok, true);
+      assert.equal(reopened.memberId, 'member-a');
+      assert.equal((await host.act('inspect')).modelCalls, 0);
+      proof.cases.push({
+        name: 'execution-member-lease-source-lifecycle',
+        passed: true,
+        sameHostIdentityGraph: true,
+        rawCloseRevokesBeforeDrain: true,
+        leaseWritesNothing: true,
+        restartedSessionRevalidated: true,
+        models: 0,
       });
     } finally {
       if (host) await host.close();

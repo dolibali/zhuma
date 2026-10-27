@@ -21,9 +21,18 @@ try {
     process.platform === 'win32' ? 'junction' : 'dir',
   );
   const temporaryProof = join(runtime, 'proof.json');
+  const clientFileProof = join(runtime, 'client-files-proof.json');
+  const teamCatalogProof = join(runtime, 'team-catalog-proof.json');
+  const firstSetupProof = join(runtime, 'first-setup-proof.json');
   const child = spawn(
     process.execPath,
-    ['--test', 'packages/dsh-adapter/tests/s1a-host.test.mjs'],
+    [
+      '--test',
+      'packages/dsh-adapter/tests/s1a-host.test.mjs',
+      'packages/dsh-adapter/tests/member-file-client-host.test.mjs',
+      'packages/dsh-adapter/tests/host-team-catalog.test.mjs',
+      'packages/dsh-adapter/tests/host-first-setup.test.mjs',
+    ],
     {
       cwd: root,
       stdio: 'inherit',
@@ -31,6 +40,9 @@ try {
         ...process.env,
         S1A_HOST_MODULE: join(runtime, 'index.js'),
         S1A_PROOF_FILE: temporaryProof,
+        S1A_CLIENT_FILE_PROOF_FILE: clientFileProof,
+        S1A_TEAM_CATALOG_PROOF_FILE: teamCatalogProof,
+        S1A_FIRST_SETUP_PROOF_FILE: firstSetupProof,
       },
     },
   );
@@ -41,7 +53,7 @@ try {
   if (code !== 0) process.exitCode = code ?? 1;
   else {
     const proof = JSON.parse(await readFile(temporaryProof, 'utf8'));
-    if (proof.cases.length !== 6 || proof.cases.some((entry) => entry.passed !== true))
+    if (proof.cases.length !== 9 || proof.cases.some((entry) => entry.passed !== true))
       throw Error('Incomplete Host artifact proof');
     proof.sourceHead = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: root,
@@ -56,7 +68,10 @@ try {
           '--',
           'packages',
           'scripts/workbench',
+          'scripts/lib/team-starter-packages.mjs',
           'distribution/workbench',
+          'patches/deepseek-harness',
+          'resources/experts/starter-pack',
           'package.json',
           'pnpm-lock.yaml',
         ],
@@ -67,8 +82,45 @@ try {
         names.map(async (name) => [name, sha(await readFile(join(runtime, name)))]),
       ),
     );
+    const fileClient = JSON.parse(await readFile(clientFileProof, 'utf8'));
+    if (
+      !fileClient.passed ||
+      fileClient.hostSha256 !== proof.artifact['index.js'] ||
+      fileClient.sourceHead !== proof.sourceHead
+    )
+      throw Error('Incomplete or crossed Client file Host proof');
+    proof.clientFiles = {
+      ...fileClient,
+      fixtureSha256: sha(
+        await readFile(join(root, 'packages/dsh-adapter/tests/member-file-client-host.test.mjs')),
+      ),
+    };
+    const teamCatalog = JSON.parse(await readFile(teamCatalogProof, 'utf8'));
+    if (
+      !teamCatalog.passed ||
+      !teamCatalog.sameHostBytes ||
+      !teamCatalog.separateProcesses ||
+      teamCatalog.seededPlan ||
+      teamCatalog.modelCalls !== 0 ||
+      teamCatalog.hostSha256 !== proof.artifact['index.js'] ||
+      teamCatalog.sourceHead !== proof.sourceHead
+    )
+      throw Error('Incomplete or crossed team catalog Host proof');
+    proof.teamCatalog = teamCatalog;
+    const firstSetup = JSON.parse(await readFile(firstSetupProof, 'utf8'));
+    if (
+      firstSetup.cases.length !== 2 ||
+      firstSetup.cases.some(
+        (entry) =>
+          !entry.passed ||
+          entry.sourceHead !== proof.sourceHead ||
+          entry.hostSha256 !== proof.artifact['index.js'],
+      )
+    )
+      throw Error('Incomplete or crossed normal first-setup Host proof');
+    proof.firstSetup = firstSetup;
     proof.scope =
-      'Exact emitted bundle; six real-service subprocess cases; a private temporary SDK package link; no installed-desktop or model-quality claim.';
+      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream, public team catalog member creation/confirmation/cold reopen, and normal first setup/catalog-prefix crash with explicit same-context recovery; a private temporary SDK package link; no installed-desktop or model-quality claim.';
     if (process.env.S1A_PROOF_FILE) {
       const target = resolve(process.env.S1A_PROOF_FILE);
       await mkdir(dirname(target), { recursive: true });
@@ -80,6 +132,9 @@ try {
         hostSha256: proof.artifact['index.js'],
         clientSha256: proof.artifact['client.js'],
         realServiceCases: proof.cases.length,
+        clientFileHostCase: proof.clientFiles.passed,
+        teamCatalogHostCase: proof.teamCatalog.passed,
+        firstSetupHostCases: proof.firstSetup.cases.length,
       }),
     );
   }

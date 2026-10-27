@@ -22,6 +22,8 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 ## 本地优先，登录策略与数据隔离
 
+成员模式的原生HTTP登录运输使用壳内单槽载体，复用现有Host签发／校验与执行权限；所有Set-Cookie仍不回renderer。窗口重载可恢复同一Host会话，整App／Host换代需重新登录，业务数据仍由原持久存储恢复。格式、路径、来源、退出与迟到回执边界见[桌面成员运输契约](../../docs/contracts/desktop-member-cookie.md)；实现／契约测试不等于原生安装版验收。
+
 Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek 账号登录/欢迎界面。此修改发生在 Electron 壳的窗口选择逻辑，不伪造服务器账号状态、不修改模型服务身份验证、不自动填入或上传 API Key。用户如需调用在线模型，应在模型设置中自行配置有效的供应商凭据。
 
 使用 `Zhuma` 应用名称和独立的 App ID `dev.zhuma.app`、`zhuma://` URL 协议；`DSH_HOME` 默认隔离在 Zhuma userData 下，避免与另一个 DSH 桌面安装共用工作区。开发版使用上游开发器自己的隔离目录。升级、遥测、登录回调、CLI 命令安装均不应沿用上游官方发布基础设施而未经评审启用。
@@ -31,6 +33,16 @@ Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek �
 修改图标导出后，可以在桌面退出且临时工作树仍匹配源码补丁时执行 `pnpm desktop:prepare --refresh-assets`，仅刷新资源。源码补丁不匹配时先检查差异；确认临时树可丢弃后，再执行 `pnpm desktop:reset` 和 `pnpm desktop:prepare`。`desktop:reset` 仅清理专用临时工作树，不删安装版用户资料。上游版本升级必须更新 `runtime.lock.json`，重新校验并调整补丁，不能直接跟随浮动 `master`。
 
 保持 DSH 上游的版权与 MIT 许可声明；公开仓库中的独立 Zhuma 许可另行确定。当前四个自研包仍处于基础骨架阶段。
+
+## 持续会话的队列保留能力
+
+发行补丁为可信 Host 生命周期拥有者提供 `retainPendingInboxOnDispose`：在 `ctx.agents.lifecycleCapabilities.retainPendingInboxOnDispose === true` 时，方可在 `agents.create`／`resume` 顶层选项显式开启。A 的 `requireNativeInboxRetention` 提供公开兼容类型与能力检查；未补丁 npm SDK、缺失／不支持的 factory 关闭该能力，不能以接受未知字段判断支持。实际发行绑定固定上游、补丁 SHA-256 和准备配方摘要，不只判断同为 `0.2.1-rc.2`。
+
+默认仍销毁并取消队列；只有成功发布且 opt-in 的会话在销毁时保留未消费输入。销毁先封住该实例的新输入和唤醒，再取消、等待静止、关闭持久句柄；保留不代表自动重放。默认 child、配置与失败 setup 的清理不变，显式清空仍持久取消。该选项是 Host 策略，不是 Client／模型权限；真实成员 Run、撤权、工作区和工具授权仍由业务接缝验证。
+
+在已安装固定上游测试工具链后执行 `pnpm desktop:verify:native-lifecycle`，也可用 `--upstream /path/to/fixed-upstream` 指定精确检出。脚本仅在独立临时 Git worktree 应用完整发行补丁，运行既有取消／child 清理回归、新 opt-in 与挂起唤醒用例，并以两个独立 Node 进程验证同盘关闭／恢复没有自动模型请求。测试使用本地脚本 Adapter，输出补丁／夹具摘要及分层证据；它不认证真实模型、产品 Run 授权或已安装桌面。失败证据保留，不修改固定上游、gitlink 或用户应用数据。
+
+同一入口还定向检查配套布局守卫：编译当前 LayoutController（依赖按原项目引用边界构建），运行官方原用例与新增导航负例，核对一次确认、目标注销、New Session／工作区返回 Conversation、后续导航／卸载／异常抑制。该层是实际补丁布局对象测试，不驱动浏览器，也不替代真实窗口、取消回焦和慢业务回执验收。
 
 ## 原图一致性验收
 

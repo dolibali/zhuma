@@ -1,8 +1,20 @@
 # Host 身份组合：S1a
 
-组合基线：已合入身份 PR #18 `eb25d30eae5d7758588c409b5c166808d9bb3068` 的 develop `772b59c41f1812051931348289f576aeadc5ae8f`，保留 PR #46 的 opt-in 客户端准备切片。当前 Host 装配仍由独立 PR #23／#28 复核。本批只组合身份服务、显式部署模式和旧接口门禁；没有接入执行／待办／提交／评审页面。本次已验证源组合 `a4ea4d1983ac6553fefc4ffd73fa3fa3e5758fe1`，282 项检查与六项精确发行文件 SDK 测试见[分层证据](review/s1a-host/README.md)。
+组合基线：已合入身份 PR #18 `eb25d30eae5d7758588c409b5c166808d9bb3068` 的 develop `772b59c41f1812051931348289f576aeadc5ae8f`，保留 PR #46 的 opt-in 客户端准备切片。Host 装配已通过 [PR #23](https://github.com/dolibali/zhuma/pull/23) 合入 develop `5b542148917cb735cd85fea6a9fd83cb5d615a07`，再由 [PR #48](https://github.com/dolibali/zhuma/pull/48) 单独集成至 main `843661c39bf1ac229fcdf011bb4e39cac54bf988`；范围与退出条件见 [#28](https://github.com/dolibali/zhuma/issues/28)。本切片只组合身份服务、显式部署模式和旧接口门禁，没有接入执行／待办／提交／评审页面。
+
+原验证源组合 `a4ea4d1983ac6553fefc4ffd73fa3fa3e5758fe1` 的 282 项检查与六项精确发行文件 SDK 测试见[分层证据](review/s1a-host/README.md)。验证 SHA、发行摘要、合成账号／私有临时环境及历史原生桌面边界保持原记录，不据此认证后续 WP03、M1 或正式成员业务组合。
 
 ## 显式模式与服务生命周期
+
+### #31 的公开启动展示合同
+
+当前 `host-plugin` 在 `Config.parse`／`configureDeploymentMode` 之后，通过固定 SDK 的 `webserver/index-inject` 贡献唯一 global row：`__ZHUMA_WORKBENCH_BOOT__ = { version: 1, deploymentMode }`。值只投影 Host 已校验的显式模式，不包含初始化地址、账号、凭据、权限或业务数据，不增加必须提供的服务依赖。身份子作用域 pending、失败、卸载／重挂载均不改变该值；整个工作台插件卸载时贡献随其 Cordis 生命周期清理。
+
+官方 Web 的 index renderer 与桌面的 ready.injections 使用同一表；Client 在既有 boot-ready 后读取一次该展示 DTO。当前正式 Host 必须发布 version1 的两个字段；缺省 legacy 仅兼容没有此合同的旧版部署。非法版本／字段／模式令客户端插件拒绝装配，修正 Host 配置并重载可恢复，不能因401、404或身份失败静默选择 legacy。renderer 篡改只能改变展示提示，服务仍使用自己的模式及成员授权，不能开启旧 owner 接口。
+
+成员模式仅注册可用的“我的工作”入口，空落点或旧自有 owner 落点进入正式成员页，未登录展示真实登录、恢复后读取有权空间；不抢占已选的其它官方 panel。legacy 保留原工作台／专家导航与默认落点。隐藏成员模式中依赖已关闭 owner RPC 的两个旧入口不取消组织编排和个人／团队专家范围，后续按原授权接口依赖接入。打开、恢复和刷新只读，不开始计划或调用模型。
+
+`member-plugin-composition.test.mjs` 通过公开 SlotCore 与真实插件验证两模式、登录／恢复SSR、旧／其它落点、非法DTO、共享会话与零业务RPC；`s1a-host.test.mjs` 从实际公开 WebServer 的 collectIndexInjections 断言模式、身份生命周期稳定及卸载移除，原门禁／持久化用例保留。这些不是实际冷启动／重载的原生界面证明，后者由协调按实现SHA独立验收。
 
 发行入口为 `dsh-adapter/host-plugin`，配置必须明确指定 `deploymentMode`，缺失或非法配置拒绝加载，不根据 cookie、身份模块是否存在或账号数量猜测模式。发行补丁明确配置 `legacy-single-user`，用于既有本地单人工作台。
 

@@ -30,15 +30,20 @@ import {
 } from '@deepseek-ai/dsh-client-connection';
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, hashPassword, identityInject } from '../dist/identity-session.js';
+import { applySpaceDirectory, spaceDirectoryFor } from '../dist/space-directory.js';
 import {
   authorizeLegacyOwnerRoutes,
   configureDeploymentMode,
   deploymentMode,
   identityAccessMode,
   installMemberResolver,
+  memberCredential,
+  memberSessionId,
+  openExecutionMemberLease,
   LEGACY_OWNER_PACKAGE_COMMANDS,
   LEGACY_OWNER_ROUTES,
   resolveMember,
+  uninstallMemberResolver,
 } from '../dist/member-session.js';
 
 const AUTHORITY = '127.0.0.1:3080';
@@ -80,6 +85,27 @@ function fixtureImport() {
   };
 }
 
+/**
+ * The default trusted space facts mirror the note fixture: lin and zhao share
+ * team-north, chen owns team-south, and lin also belongs to the empty
+ * team-empty space that has no notes at all.
+ */
+function fixtureSpaces() {
+  return {
+    spaces: [
+      { id: 'team-north', kind: 'team', name: '北队' },
+      { id: 'team-south', kind: 'team', name: '南队' },
+      { id: 'team-empty', kind: 'team', name: '空团队' },
+    ],
+    memberships: [
+      { spaceId: 'team-north', accountId: 'lin' },
+      { spaceId: 'team-north', accountId: 'zhao' },
+      { spaceId: 'team-south', accountId: 'chen' },
+      { spaceId: 'team-empty', accountId: 'lin' },
+    ],
+  };
+}
+
 function memoryCredentials(records = new Map()) {
   return {
     records,
@@ -105,7 +131,7 @@ function memoryKv(media = new Map(), faults = {}) {
         async loadAll() {
           if (closed) throw new Error('closed');
           if (typeof faults.load === 'function') {
-            const error = await faults.load();
+            const error = await faults.load(descriptor.name);
             if (error !== undefined) throw error;
           }
           const tables = {};
@@ -131,7 +157,7 @@ function memoryKv(media = new Map(), faults = {}) {
         async setGlobal(value) {
           if (closed) throw new Error('closed');
           if (typeof faults.global === 'function') {
-            const error = await faults.global(value);
+            const error = await faults.global(descriptor.name, value);
             if (error !== undefined) throw error;
           }
           medium.global = structuredClone(value);
@@ -139,7 +165,7 @@ function memoryKv(media = new Map(), faults = {}) {
         async close() {
           closed = true;
           if (typeof faults.close === 'function') {
-            const error = await faults.close();
+            const error = await faults.close(descriptor.name);
             if (error !== undefined) throw error;
           }
         },
@@ -278,18 +304,59 @@ async function mount(shared = {}) {
       },
     },
   });
-  ctx.provide('storageDomain', new DomainFacility(ctx, { backend: 'memory', routes: {} }));
+  const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} });
+  ctx.provide(
+    'storageDomain',
+    shared.domains === undefined
+      ? facility
+      : {
+          async open(spec) {
+            const domain = await facility.open(spec);
+            shared.domains.set(spec.name, domain);
+            return domain;
+          },
+        },
+  );
   if (shared.hashProbe !== undefined) ctx.provide('zhumaIdentityHashProbe', shared.hashProbe);
   const connectionFiber = ctx.plugin({ inject: [...connectionInject], apply: applyConnection });
   await connectionFiber;
+  // The trusted space directory mounts before identity; shared.spaces === null
+  // leaves the host without a directory (members then hold no spaces).
+  const spaceFiber =
+    shared.spaces === null
+      ? undefined
+      : ctx.plugin(
+          {
+            inject: ['storageDomain'],
+            apply: (owner, imported) =>
+              applySpaceDirectory(owner, imported, shared.directoryOptions),
+          },
+          shared.emptyDirectory
+            ? undefined
+            : shared.spaces === undefined
+              ? fixtureSpaces()
+              : shared.spaces,
+        );
+  try {
+    await spaceFiber;
+  } catch (error) {
+    await spaceFiber?.dispose().catch(() => {});
+    await connectionFiber.dispose();
+    throw error;
+  }
   const identityFiber = ctx.plugin(
-    { inject: [...identityInject], apply: applyIdentity },
+    {
+      inject: [...identityInject],
+      apply: (ctx, imported) =>
+        applyIdentity(ctx, imported, shared.executionOptions?.(ctx), shared.initialization),
+    },
     shared.imported === undefined ? fixtureImport() : shared.imported,
   );
   try {
     await identityFiber;
   } catch (error) {
     await identityFiber.dispose().catch(() => {});
+    await spaceFiber?.dispose().catch(() => {});
     await connectionFiber.dispose();
     throw error;
   }
@@ -301,8 +368,10 @@ async function mount(shared = {}) {
     credentials,
     media: kv.media,
     identityFiber,
+    spaceFiber,
     dispose: async () => {
       await identityFiber.dispose();
+      await spaceFiber?.dispose();
       await connectionFiber.dispose();
     },
   };
@@ -1785,6 +1854,10 @@ test('a single-user owner mapping exists only when the import names that one acc
         },
       ],
     },
+    spaces: {
+      spaces: [{ id: 'solo-space', kind: 'personal', name: '个人空间' }],
+      memberships: [{ spaceId: 'solo-space', accountId: 'lin' }],
+    },
   });
   const owner = ownerCookie(named.connection);
   const session = await call(named.web, {
@@ -1827,6 +1900,22 @@ test('legacy owner routes include the asset import reads and the import-package 
     ['snapshot', 'command', 'plan', 'preview-import', 'resource-files'],
   );
   assert.deepEqual([...LEGACY_OWNER_PACKAGE_COMMANDS], ['import-package']);
+});
+
+test('a deployment mode that was never configured refuses startup and legacy owner routes', async () => {
+  const ctx = new Context();
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
+  assert.throws(
+    () => identityAccessMode(ctx),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  await assert.rejects(
+    () => mount({ ctx, deploymentMode: null }),
+    /identity startup refused: deployment mode is not configured/,
+  );
+  assert.equal(deploymentMode(ctx), undefined);
+  assert.deepEqual(authorizeLegacyOwnerRoutes(ctx), closedLegacy(401, 'deployment-mode-unset'));
 });
 
 test('an unset deployment mode refuses identity startup and legacy owner routes', async () => {
@@ -1910,7 +1999,10 @@ test('legacy owner routes stay denied while multi-member identity disposes and r
     ctx,
     deploymentMode: null,
     faults: {
-      close: () => {
+      close: (name) => {
+        // Only the identity domain participates in this dispose/remount
+        // choreography; the space directory's own close/load stay immediate.
+        if (name !== 'zhuma_identity') return undefined;
         closeCount += 1;
         if (closeCount > 1) return undefined;
         return new Promise((resolve) => {
@@ -1918,7 +2010,8 @@ test('legacy owner routes stay denied while multi-member identity disposes and r
           releaseClose = () => resolve(undefined);
         });
       },
-      load: () => {
+      load: (name) => {
+        if (name !== 'zhuma_identity') return undefined;
         opens += 1;
         if (opens === 1) return undefined;
         return new Promise((resolve) => {
@@ -2221,13 +2314,14 @@ test('a notes put failure resumes the same import', async () => {
 test('a completion marker failure resumes the same import', async () => {
   await resumeSameImport(
     {
-      global() {
+      global(name, value) {
+        if (name !== 'zhuma_identity' || !value.importComplete) return undefined;
         return new Error('injected identity write failure');
       },
     },
     (media) => {
       const medium = media.get('zhuma_identity');
-      assert.equal(medium.global, null);
+      assert.equal(medium.global.initialization.phase, 'writing');
       assert.deepEqual([...medium.tables.get('notes').keys()].sort(), ['north-note', 'south-note']);
     },
   );
@@ -2265,6 +2359,510 @@ test('a completed import is left untouched by a different import', async () => {
   assert.equal(refused.status, 401);
   assert.equal(refused.json.error.code, 'invalid-login');
   await second.dispose();
+});
+
+async function unconfiguredIdentity(shared = {}) {
+  let initialization;
+  const host = await mount({
+    ...shared,
+    imported: null,
+    initialization: {
+      ...shared.initialization,
+      publish(handle) {
+        initialization = handle;
+        return () => {};
+      },
+    },
+  });
+  assert.ok(initialization);
+  return { ...host, initialization };
+}
+
+function firstAccountInput() {
+  return {
+    requestId: 'first-configuration',
+    accountId: 'first-member',
+    password: 'isolated-first-configuration-password',
+    setupFingerprint: 'a'.repeat(64),
+    setupContext: {
+      schemaVersion: 1,
+      teamCatalog: [
+        { spaceId: 'first-team', packs: [{ id: 'zhuma-work-planning', version: '1.0.0' }] },
+      ],
+    },
+    directory: {
+      spaces: [
+        { id: 'personal-first', kind: 'personal', name: 'Personal' },
+        { id: 'first-team', kind: 'team', name: 'Team' },
+      ],
+      memberships: [
+        { spaceId: 'personal-first', accountId: 'first-member' },
+        { spaceId: 'first-team', accountId: 'first-member' },
+      ],
+    },
+  };
+}
+
+test('first account contract: a private stable verifier precedes the first account put and same plaintext recovers after cold remount', async () => {
+  const media = new Map(),
+    credentials = memoryCredentials(),
+    input = firstAccountInput();
+  let catalogCalls = 0;
+  const configuration = {
+    media,
+    credentials,
+    emptyDirectory: true,
+    directoryOptions: { allowPendingInitialization: true },
+    initialization: {
+      beforeComplete() {
+        catalogCalls++;
+        return undefined;
+      },
+    },
+  };
+  const first = await unconfiguredIdentity({ ...configuration, faults: failNthPut('accounts', 1) });
+  await assert.rejects(first.initialization.initializeAccount(input), { code: 'unavailable' });
+  const marker = media.get('zhuma_identity').global;
+  assert.equal(marker.initialization.phase, 'writing');
+  const verifier = marker.initialization.setup.passwordHash;
+  assert.match(verifier, /^scrypt\$/u);
+  assert.equal(media.get('zhuma_identity').tables.get('accounts')?.size ?? 0, 0);
+  assert.equal(JSON.stringify(identityRows(media)).includes(input.password), false);
+  assert.equal(catalogCalls, 0);
+  await first.dispose();
+  const second = await unconfiguredIdentity(configuration);
+  try {
+    const before = identityRows(media);
+    for (const changed of [
+      { ...input, password: 'incorrect-recovery-password' },
+      { ...input, requestId: 'other-request' },
+      { ...input, setupFingerprint: 'b'.repeat(64) },
+      { ...input, setupContext: { schemaVersion: 1, teamCatalog: [] } },
+      {
+        ...input,
+        directory: { ...input.directory, memberships: input.directory.memberships.slice(0, 1) },
+      },
+    ])
+      await assert.rejects(second.initialization.initializeAccount(changed), { code: 'conflict' });
+    assert.deepEqual(identityRows(media), before);
+    assert.deepEqual(await second.initialization.initializeAccount(input), {
+      kind: 'initialized',
+      requestId: input.requestId,
+    });
+    const saved = media.get('zhuma_identity');
+    assert.equal(saved.tables.get('accounts').get(input.accountId).passwordHash, verifier);
+    assert.equal(saved.global.initialization.setup.passwordHash, undefined);
+    assert.equal(spaceDirectoryFor(second.ctx).isMember('first-team', input.accountId), true);
+    assert.equal(catalogCalls, 1);
+    const login = await call(second.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      body: { accountId: input.accountId, password: input.password },
+    });
+    assert.equal(login.status, 200);
+    const owner = await call(second.web, {
+      method: 'GET',
+      path: '/zhuma-id/session',
+      cookie: ownerCookie(second.connection),
+    });
+    assert.equal(owner.status, 401);
+    assert.deepEqual(Object.keys(second.initialization.status()), ['kind']);
+    const snapshot = second.initialization.readSetup();
+    assert.deepEqual(Object.keys(snapshot).sort(), [
+      'requestId',
+      'setupContext',
+      'setupFingerprint',
+    ]);
+    assert.deepEqual(snapshot.setupContext, input.setupContext);
+    snapshot.setupContext.teamCatalog[0].packs[0].id = 'changed-detached-copy';
+    assert.deepEqual(second.initialization.readSetup().setupContext, input.setupContext);
+  } finally {
+    await second.dispose();
+  }
+});
+
+test('first account contract: directory completion and original catalog source precede the final identity marker', async () => {
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers(),
+    input = firstAccountInput();
+  let preparation;
+  const host = await unconfiguredIdentity({
+    emptyDirectory: true,
+    initialization: {
+      async beforeComplete(value) {
+        preparation = value;
+        entered.resolve();
+        await release.promise;
+        return undefined;
+      },
+    },
+  });
+  try {
+    const command = host.initialization.initializeAccount(input);
+    await entered.promise;
+    assert.equal(spaceDirectoryFor(host.ctx).isMember('first-team', input.accountId), true);
+    assert.equal(host.media.get('zhuma_identity').global.importComplete, false);
+    assert.equal(preparation.setupFingerprint, input.setupFingerprint);
+    assert.deepEqual(preparation.accountIds, [input.accountId]);
+    assert.equal(JSON.stringify(preparation).includes('scrypt$'), false);
+    const login = await call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      body: { accountId: input.accountId, password: input.password },
+    });
+    assert.equal(login.status, 503);
+    release.resolve();
+    await command;
+    assert.equal(host.media.get('zhuma_identity').global.importComplete, true);
+  } finally {
+    release.resolve();
+    await host.dispose();
+  }
+});
+
+test('first account contract: missing catalog source or directory cannot write an initializer or create an account', async () => {
+  for (const shared of [
+    { emptyDirectory: true },
+    { spaces: null, initialization: { beforeComplete() {} } },
+  ]) {
+    const host = await unconfiguredIdentity(shared);
+    try {
+      const before = identityRows(host.media);
+      await assert.rejects(host.initialization.initializeAccount(firstAccountInput()), {
+        code: 'unavailable',
+      });
+      assert.deepEqual(identityRows(host.media), before);
+    } finally {
+      await host.dispose();
+    }
+  }
+});
+
+test('first account contract: non-receipts and changed directory facts keep identity pending without restoring revoked membership', async () => {
+  for (const kind of ['false', 'revoke']) {
+    let host;
+    host = await unconfiguredIdentity({
+      emptyDirectory: true,
+      initialization: {
+        async beforeComplete() {
+          if (kind === 'false') return false;
+          await spaceDirectoryFor(host.ctx).revokeMembership('first-team', 'first-member');
+          return undefined;
+        },
+      },
+    });
+    try {
+      await assert.rejects(host.initialization.initializeAccount(firstAccountInput()));
+      assert.equal(host.initialization.status().kind, 'pending');
+      assert.equal(host.media.get('zhuma_identity').global.importComplete, false);
+      if (kind === 'revoke')
+        assert.equal(spaceDirectoryFor(host.ctx).isMember('first-team', 'first-member'), false);
+    } finally {
+      await host.dispose();
+    }
+  }
+});
+
+test('first account contract: normalized optional fields replay, while oversized setup and unknown account partials never write', async () => {
+  const host = await unconfiguredIdentity({
+    emptyDirectory: true,
+    initialization: {
+      beforeComplete() {
+        return undefined;
+      },
+    },
+  });
+  try {
+    const input = firstAccountInput();
+    input.directory.projectSpaces = undefined;
+    await host.initialization.initializeAccount(input);
+    const before = identityRows(host.media);
+    assert.deepEqual(await host.initialization.initializeAccount(firstAccountInput()), {
+      kind: 'initialized',
+      requestId: input.requestId,
+    });
+    assert.deepEqual(identityRows(host.media), before);
+  } finally {
+    await host.dispose();
+  }
+  const empty = await unconfiguredIdentity({
+    emptyDirectory: true,
+    initialization: {
+      beforeComplete() {
+        return undefined;
+      },
+    },
+  });
+  try {
+    const input = firstAccountInput(),
+      before = identityRows(empty.media);
+    input.directory = {
+      spaces: Array.from({ length: 100 }, (_, index) => ({
+        id: `space-${index}`.padEnd(100, 'x'),
+        kind: 'team',
+        name: '字'.repeat(200),
+      })),
+      memberships: [],
+    };
+    input.directory.memberships = input.directory.spaces.map((space) => ({
+      spaceId: space.id,
+      accountId: input.accountId,
+    }));
+    await assert.rejects(empty.initialization.initializeAccount(input), { code: 'invalid-input' });
+    assert.deepEqual(identityRows(empty.media), before);
+  } finally {
+    await empty.dispose();
+  }
+  const media = new Map([
+    [
+      'zhuma_identity',
+      {
+        global: { ownerAccountId: '', importComplete: false },
+        tables: new Map([
+          [
+            'accounts',
+            new Map([
+              [
+                'other',
+                { id: 'other', passwordHash: hashPassword('isolated-existing-account-password') },
+              ],
+            ]),
+          ],
+        ]),
+      },
+    ],
+  ]);
+  const partial = await unconfiguredIdentity({
+    media,
+    emptyDirectory: true,
+    initialization: {
+      beforeComplete() {
+        return undefined;
+      },
+    },
+  });
+  try {
+    const before = identityRows(media);
+    await assert.rejects(partial.initialization.initializeAccount(firstAccountInput()), {
+      code: 'recovery-required',
+    });
+    assert.deepEqual(identityRows(media), before);
+  } finally {
+    await partial.dispose();
+  }
+});
+
+test('first account context contract: strict v1, duplicates and the independent 16KiB limit reject before any private write', async () => {
+  const host = await unconfiguredIdentity({
+    emptyDirectory: true,
+    initialization: {
+      beforeComplete() {
+        return undefined;
+      },
+    },
+  });
+  try {
+    const input = firstAccountInput(),
+      before = identityRows(host.media),
+      grant = input.setupContext.teamCatalog[0];
+    const oversized = {
+      schemaVersion: 1,
+      teamCatalog: [
+        {
+          spaceId: 'first-team',
+          packs: Array.from({ length: 90 }, (_, index) => ({
+            id: `package-${index}`.padEnd(100, 'x'),
+            version: '1.0.0'.repeat(16),
+          })),
+        },
+      ],
+    };
+    assert.ok(Buffer.byteLength(JSON.stringify({ ...input, setupContext: oversized })) < 64 * 1024);
+    for (const context of [
+      { schemaVersion: 2, teamCatalog: [] },
+      { ...input.setupContext, model: 'not-allowed' },
+      { ...input.setupContext, credentials: { apiKey: 'only-a-fake-fixture' } },
+      { schemaVersion: 1, teamCatalog: [grant, grant] },
+      { schemaVersion: 1, teamCatalog: [{ ...grant, packs: [grant.packs[0], grant.packs[0]] }] },
+      {
+        schemaVersion: 1,
+        teamCatalog: [{ ...grant, packs: [{ id: 'package', version: 'bad version' }] }],
+      },
+      oversized,
+    ])
+      await assert.rejects(
+        host.initialization.initializeAccount({ ...input, setupContext: context }),
+        { code: 'invalid-input' },
+      );
+    assert.deepEqual(identityRows(host.media), before);
+    assert.equal(host.initialization.readSetup(), undefined);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('identity initialization contract: passive status uses the open domain, then explicit initialization still requires normal member login', async () => {
+  const host = await unconfiguredIdentity();
+  try {
+    const before = identityRows(host.media);
+    assert.deepEqual(host.initialization.status(), { kind: 'unconfigured' });
+    assert.deepEqual(host.initialization.status(), { kind: 'unconfigured' });
+    assert.deepEqual(identityRows(host.media), before);
+    assert.deepEqual(
+      await host.initialization.initialize({ requestId: 'local-setup', imported: fixtureImport() }),
+      { kind: 'initialized', requestId: 'local-setup' },
+    );
+    assert.deepEqual(host.initialization.status(), { kind: 'configured' });
+    const owner = await call(host.web, {
+      method: 'GET',
+      path: '/zhuma-id/session',
+      cookie: ownerCookie(host.connection),
+    });
+    assert.equal(owner.status, 401);
+    assert.ok(await login(host.web, 'lin'));
+    assert.deepEqual(Object.keys(host.initialization.status()), ['kind']);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('identity initialization contract: concurrent same-key requests have one receipt and changed bodies cannot replace completed accounts', async () => {
+  const host = await unconfiguredIdentity();
+  const imported = fixtureImport();
+  try {
+    const input = { requestId: 'same-request', imported };
+    assert.deepEqual(
+      await Promise.all([
+        host.initialization.initialize(input),
+        host.initialization.initialize(input),
+      ]),
+      [
+        { kind: 'initialized', requestId: input.requestId },
+        { kind: 'initialized', requestId: input.requestId },
+      ],
+    );
+    const saved = identityRows(host.media);
+    const changed = fixtureImport();
+    await assert.rejects(host.initialization.initialize({ ...input, imported: changed }), {
+      code: 'conflict',
+    });
+    assert.deepEqual(
+      await host.initialization.initialize({ requestId: 'another-request', imported: changed }),
+      { kind: 'already-configured' },
+    );
+    assert.deepEqual(identityRows(host.media), saved);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('identity initialization contract: a durable partial blocks login and only the same key and seed can resume after closing the original domain', async () => {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  const first = await unconfiguredIdentity({
+    media,
+    credentials,
+    faults: failNthPut('accounts', 2),
+  });
+  await assert.rejects(first.initialization.initialize({ requestId: 'recover', imported }), {
+    code: 'unavailable',
+  });
+  assert.deepEqual(first.initialization.status(), { kind: 'pending', requestId: 'recover' });
+  const loginWhilePartial = await call(first.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    body: { accountId: 'lin', password: passwords.lin },
+  });
+  assert.equal(loginWhilePartial.status, 503);
+  const partial = identityRows(media);
+  await first.dispose();
+  assert.equal(first.initialization.signal.aborted, true);
+  assert.throws(() => first.initialization.status(), { code: 'unavailable' });
+  const recovered = await unconfiguredIdentity({ media, credentials });
+  try {
+    assert.deepEqual(identityRows(media), partial);
+    await assert.rejects(recovered.initialization.initialize({ requestId: 'other', imported }), {
+      code: 'conflict',
+    });
+    await assert.rejects(
+      recovered.initialization.initialize({ requestId: 'recover', imported: fixtureImport() }),
+      { code: 'conflict' },
+    );
+    assert.deepEqual(identityRows(media), partial);
+    assert.deepEqual(
+      await recovered.initialization.initialize({ requestId: 'recover', imported }),
+      { kind: 'initialized', requestId: 'recover' },
+    );
+    await expectFixtureMembers(recovered);
+  } finally {
+    await recovered.dispose();
+  }
+});
+
+test('identity initialization contract: old unmarked partial rows are never inferred or overwritten', async () => {
+  const imported = fixtureImport();
+  const media = new Map([
+    [
+      'zhuma_identity',
+      {
+        global: { ownerAccountId: '', importComplete: false },
+        tables: new Map([['accounts', new Map([['lin', imported.accounts[0]]])]]),
+      },
+    ],
+  ]);
+  const host = await unconfiguredIdentity({ media });
+  try {
+    const before = identityRows(media);
+    assert.deepEqual(host.initialization.status(), { kind: 'recovery-required' });
+    await assert.rejects(host.initialization.initialize({ requestId: 'cannot-guess', imported }), {
+      code: 'recovery-required',
+    });
+    assert.deepEqual(identityRows(media), before);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('identity initialization contract: closing fences the handle and waits for an admitted original storage write', async () => {
+  const entered = Promise.withResolvers();
+  const released = Promise.withResolvers();
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const imported = fixtureImport();
+  const host = await unconfiguredIdentity({
+    media,
+    credentials,
+    faults: {
+      async global(name, value) {
+        if (name === 'zhuma_identity' && value.importComplete) {
+          entered.resolve();
+          await released.promise;
+        }
+      },
+    },
+  });
+  const command = host.initialization.initialize({ requestId: 'closing', imported });
+  const rejected = assert.rejects(command, { code: 'unavailable' });
+  await entered.promise;
+  let closed = false;
+  const closing = host.dispose().then(() => {
+    closed = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(host.initialization.signal.aborted, true);
+  assert.equal(closed, false);
+  released.resolve();
+  await Promise.all([closing, rejected]);
+  const reopened = await unconfiguredIdentity({ media, credentials });
+  try {
+    assert.deepEqual(await reopened.initialization.initialize({ requestId: 'closing', imported }), {
+      kind: 'initialized',
+      requestId: 'closing',
+    });
+  } finally {
+    await reopened.dispose();
+  }
 });
 
 test('a successful login clears earlier failures from that address', async () => {
@@ -2394,4 +2992,651 @@ test('a real http client stays logged out when only the DSH cookie remains', asy
     server.close();
     await host.dispose();
   }
+});
+
+test('the session enumerates authorized spaces, including ones with no notes', async () => {
+  const host = await mount();
+  const lin = await login(host.web, 'lin');
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: lin,
+  });
+  assert.equal(session.status, 200);
+  assert.deepEqual(
+    session.json.spaces.map((space) => space.id),
+    ['team-empty', 'team-north'],
+  );
+  assert.deepEqual(
+    session.json.spaces.find((space) => space.id === 'team-empty'),
+    {
+      id: 'team-empty',
+      kind: 'team',
+      name: '空团队',
+    },
+  );
+  // The empty space opens with an empty notes list instead of a 404.
+  const empty = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-empty',
+    cookie: lin,
+  });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.json.notes, []);
+  assert.deepEqual(empty.json.space, { id: 'team-empty', kind: 'team', name: '空团队' });
+  // A non-member gets the same not-found as a missing space.
+  const chen = await login(host.web, 'chen');
+  const denied = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-empty',
+    cookie: chen,
+  });
+  assert.equal(denied.status, 404);
+  assert.deepEqual(denied.json, { ok: false, error: { code: 'not-found' } });
+  await host.dispose();
+});
+
+test('a revoked membership disappears from session, resolver, space reads, and direct note access at once', async () => {
+  const host = await mount();
+  const zhao = await login(host.web, 'zhao');
+  const lin = await login(host.web, 'lin');
+  const before = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.deepEqual(
+    before.json.spaces.map((space) => space.id),
+    ['team-north'],
+  );
+  const beforeNote = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(beforeNote.status, 200);
+  assert.equal(beforeNote.json.note.text, 'north-initial');
+
+  const directory = spaceDirectoryFor(host.ctx);
+  assert.ok(directory);
+  await directory.revokeMembership('team-north', 'zhao');
+
+  const after = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.deepEqual(after.json.spaces, []);
+  const resolved = await resolveMember(host.ctx, {
+    headers: { host: AUTHORITY, cookie: zhao },
+  });
+  assert.equal(resolved.ok, true);
+  if (resolved.ok) assert.deepEqual([...resolved.spaceIds], []);
+  const space = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: zhao,
+  });
+  assert.equal(space.status, 404);
+  assert.deepEqual(space.json, { ok: false, error: { code: 'not-found' } });
+  // The note id is not a second door: teamMemberIds still names zhao, but
+  // the membership fact is gone, so GET and PUT both fail closed.
+  const noteGet = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(noteGet.status, 404);
+  assert.deepEqual(noteGet.json, { ok: false, error: { code: 'not-found' } });
+  const notePut = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+    body: { text: 'zhao-after-revoke' },
+  });
+  assert.equal(notePut.status, 404);
+  assert.deepEqual(notePut.json, { ok: false, error: { code: 'not-found' } });
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'zhao' },
+      action: 'zhuma-id/read-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'zhao' },
+      action: 'zhuma-id/write-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  const control = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: lin,
+  });
+  assert.equal(control.status, 200);
+  assert.equal(control.json.note.text, 'north-initial');
+  await host.dispose();
+});
+
+test('a current space member who is absent from the note ACL still cannot read or write it', async () => {
+  const host = await mount();
+  const directory = spaceDirectoryFor(host.ctx);
+  assert.ok(directory);
+  await directory.grantMembership('team-north', 'chen');
+  const chen = await login(host.web, 'chen');
+  const zhao = await login(host.web, 'zhao');
+  const space = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: chen,
+  });
+  assert.equal(space.status, 200);
+  assert.deepEqual(space.json.notes, []);
+  const read = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+  });
+  assert.equal(read.status, 404);
+  assert.deepEqual(read.json, { ok: false, error: { code: 'not-found' } });
+  const write = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: chen,
+    body: { text: 'chen-should-not-land' },
+  });
+  assert.equal(write.status, 404);
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'chen' },
+      action: 'zhuma-id/write-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  const kept = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(kept.status, 200);
+  assert.equal(kept.json.note.text, 'north-initial');
+  await host.dispose();
+});
+
+test('space facts survive a host restart on the same medium', async () => {
+  const media = new Map();
+  const credentials = memoryCredentials();
+  const first = await mount({ media, credentials });
+  const lin = await login(first.web, 'lin');
+  const before = await call(first.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: lin,
+  });
+  assert.deepEqual(
+    before.json.spaces.map((space) => space.id),
+    ['team-empty', 'team-north'],
+  );
+  await first.dispose();
+
+  const second = await mount({ media, credentials });
+  const relogin = await login(second.web, 'lin');
+  const after = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: relogin,
+  });
+  assert.deepEqual(
+    after.json.spaces.map((space) => space.id),
+    ['team-empty', 'team-north'],
+  );
+  const empty = await call(second.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-empty',
+    cookie: relogin,
+  });
+  assert.equal(empty.status, 200);
+  await second.dispose();
+});
+
+test('without a mounted directory members hold no spaces and cannot open a space or a note', async () => {
+  const host = await mount({ spaces: null });
+  const zhao = await login(host.web, 'zhao');
+  const session = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/session',
+    cookie: zhao,
+  });
+  assert.equal(session.status, 200);
+  assert.deepEqual(session.json.spaces, []);
+  const resolved = await resolveMember(host.ctx, {
+    headers: { host: AUTHORITY, cookie: zhao },
+  });
+  assert.equal(resolved.ok, true);
+  if (resolved.ok) assert.deepEqual([...resolved.spaceIds], []);
+  const space = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/spaces/team-north',
+    cookie: zhao,
+  });
+  assert.equal(space.status, 404);
+  assert.deepEqual(space.json, { ok: false, error: { code: 'not-found' } });
+  // teamMemberIds still names zhao. With no directory that is not enough.
+  const noteGet = await call(host.web, {
+    method: 'GET',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+  });
+  assert.equal(noteGet.status, 404);
+  assert.deepEqual(noteGet.json, { ok: false, error: { code: 'not-found' } });
+  const notePut = await call(host.web, {
+    method: 'PUT',
+    path: '/zhuma-id/notes/north-note',
+    cookie: zhao,
+    body: { text: 'no-dir-write' },
+  });
+  assert.equal(notePut.status, 404);
+  assert.deepEqual(notePut.json, { ok: false, error: { code: 'not-found' } });
+  assert.deepEqual(
+    host.access.decide({
+      principal: { kind: 'zhuma-member', memberId: 'zhao' },
+      action: 'zhuma-id/read-space',
+      resources: [{ kind: 'global' }],
+      args: { noteId: 'north-note' },
+    }),
+    { kind: 'deny', reason: 'not-a-member' },
+  );
+  assert.equal(
+    host.media.get('zhuma_identity').tables.get('notes').get('north-note').text,
+    'north-initial',
+  );
+  await host.dispose();
+});
+
+// Member leases use the real identity resolver, login route and DomainFacility.
+// The KV/credentials/HTTP transport and Host publication are contract fixtures.
+async function mountLease(options = {}) {
+  const domains = new Map();
+  let binding;
+  let publication;
+  const host = await mount({
+    ...options,
+    domains,
+    executionOptions(ctx) {
+      const directory = spaceDirectoryFor(ctx);
+      if (directory) {
+        publication = new AbortController();
+        binding = {
+          directory,
+          signal: publication.signal,
+          isCurrent: () => !publication.signal.aborted && spaceDirectoryFor(ctx) === directory,
+        };
+      }
+      return { currentDirectoryBinding: () => binding };
+    },
+  });
+  return {
+    ...host,
+    domains,
+    cookie: await login(host.web, 'lin'),
+    publication,
+    get binding() {
+      return binding;
+    },
+    setBinding(value) {
+      binding = value;
+    },
+  };
+}
+
+function leaseRequest(cookie, extra = {}) {
+  return { headers: { host: AUTHORITY, cookie, ...extra } };
+}
+
+function openLease(host, cookie = host.cookie) {
+  return openExecutionMemberLease(host.ctx, leaseRequest(cookie));
+}
+
+function fixtureSecret(host) {
+  // Only this test's generated, in-memory credential; never a user profile.
+  return Buffer.from(
+    host.credentials.records.get('zhuma-identity/member-session').payload.secret,
+    'base64url',
+  );
+}
+
+function replacementSource(host, observers = new Set()) {
+  const identity = host.domains.get('zhuma_identity');
+  return {
+    secret: fixtureSecret(host),
+    requestRejection: (headers) => host.connection.requestRejection({ headers }),
+    findSession: (id) => identity.table('sessions').get(id),
+    spaceIdsFor: (id) => host.binding.directory.spacesForMember(id).map((space) => space.id),
+    singleUserAccountId: () => 'lin',
+    admitOwner: () => true,
+    execution: {
+      currentDirectoryBinding: () => host.binding,
+      accountExists: (id) => identity.table('accounts').get(id) !== undefined,
+      onChange(recheck) {
+        observers.add(recheck);
+        return () => observers.delete(recheck);
+      },
+    },
+  };
+}
+
+test('member lease uses the real login session, synchronously checks spaces and keeps secrets private', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const request = leaseRequest(host.cookie);
+  const lease = await openExecutionMemberLease({ root: host.ctx.root }, request);
+  t.after(() => lease.release());
+  const row = host.domains
+    .get('zhuma_identity')
+    .table('sessions')
+    .get(memberSessionId(host.cookie));
+  assert.equal(lease.memberId, 'lin');
+  assert.equal(lease.expiresAt, row.expiresAt);
+  assert.equal(lease.signal.aborted, false);
+  assert.equal(lease.assertCurrent('team-north'), undefined);
+  assert.equal(lease.assertCurrent('team-empty'), undefined);
+  request.headers.cookie = 'invalid replacement';
+  assert.equal(lease.assertCurrent('team-north'), undefined);
+  assert.equal(Object.isFrozen(lease), true);
+  for (const text of [JSON.stringify(lease), String(lease)]) {
+    assert.equal(text.includes(host.cookie), false);
+    assert.equal(text.includes(fixtureSecret(host).toString('base64url')), false);
+  }
+  assert.throws(() => lease.assertCurrent('team-south'), /execution member lease unavailable/);
+  assert.equal(lease.signal.aborted, true);
+});
+
+test('member lease refuses owner fallback, forged or untrusted requests and missing execution source', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  for (const request of [
+    leaseRequest(undefined),
+    leaseRequest(ownerCookie(host.connection)),
+    leaseRequest(`${host.cookie}x`),
+    leaseRequest(host.cookie, { origin: 'https://untrusted.invalid' }),
+    leaseRequest(host.cookie, { host: 'untrusted.invalid' }),
+  ]) {
+    await assert.rejects(
+      openExecutionMemberLease(host.ctx, request),
+      /^Error: execution member lease unavailable$/,
+    );
+  }
+  const source = replacementSource(host);
+  delete source.execution;
+  installMemberResolver(host.ctx, source);
+  assert.equal((await resolveMember(host.ctx, leaseRequest(undefined))).ok, true);
+  await assert.rejects(openLease(host), /execution member lease unavailable/);
+  uninstallMemberResolver(host.ctx);
+  await assert.rejects(openLease(host), /execution member lease unavailable/);
+});
+
+test('ordinary identity mounts remain compatible but cannot issue an execution lease', async (t) => {
+  const host = await mount();
+  t.after(() => host.dispose());
+  const cookie = await login(host.web, 'lin');
+  assert.equal((await resolveMember(host.ctx, leaseRequest(cookie))).ok, true);
+  await assert.rejects(openExecutionMemberLease(host.ctx, leaseRequest(cookie)), /unavailable/);
+});
+
+test('logout revokes the original session without substituting a newer session of the same actor', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const oldLease = await openLease(host);
+  const newerCookie = await login(host.web, 'lin');
+  const newLease = await openLease(host, newerCookie);
+  t.after(() => newLease.release());
+  oldLease.assertCurrent('team-north');
+  newLease.assertCurrent('team-north');
+  const result = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/logout',
+    cookie: host.cookie,
+    body: {},
+  });
+  assert.equal(result.status, 200);
+  assert.equal(oldLease.signal.aborted, true);
+  assert.throws(() => oldLease.assertCurrent('team-north'), /unavailable/);
+  assert.equal(newLease.signal.aborted, false);
+  assert.equal(newLease.assertCurrent('team-north'), undefined);
+  await assert.rejects(openLease(host), /unavailable/);
+});
+
+test('membership changes recheck the same directory after durability and leave unrelated sessions active', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const lease = await openLease(host);
+  t.after(() => lease.release());
+  lease.assertCurrent('team-north');
+  await host.binding.directory.revokeMembership('team-empty', 'lin');
+  assert.equal(lease.signal.aborted, false);
+  await host.binding.directory.revokeMembership('team-north', 'zhao');
+  assert.equal(lease.signal.aborted, false);
+  await host.binding.directory.revokeMembership('team-north', 'lin');
+  assert.equal(lease.signal.aborted, true);
+  await host.binding.directory.grantMembership('team-north', 'lin');
+  assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+  const next = await openLease(host);
+  assert.equal(next.assertCurrent('team-north'), undefined);
+  next.release();
+});
+
+test('session actor, expiry and account changes revoke leases through the real domain event', async (t) => {
+  for (const mutation of ['actor', 'expiry', 'account']) {
+    await t.test(mutation, async (t) => {
+      const host = await mountLease();
+      t.after(() => host.dispose());
+      const lease = await openLease(host);
+      const domain = host.domains.get('zhuma_identity');
+      const id = memberSessionId(host.cookie);
+      if (mutation === 'account') await domain.table('accounts').delete('lin');
+      else
+        await domain.table('sessions').update(id, (row) => ({
+          ...row,
+          ...(mutation === 'actor' ? { accountId: 'zhao' } : { expiresAt: row.expiresAt + 1 }),
+        }));
+      assert.equal(lease.signal.aborted, true);
+      assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+    });
+  }
+});
+
+test('expiry aborts a waiting lease without polling or a subsequent request', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const id = memberSessionId(host.cookie);
+  const expiresAt = Date.now() + 500;
+  await host.domains
+    .get('zhuma_identity')
+    .table('sessions')
+    .update(id, (row) => ({ ...row, expiresAt }));
+  const cookie = `zhuma-member=${memberCredential(fixtureSecret(host), id, expiresAt)}`;
+  const lease = await openLease(host, cookie);
+  lease.assertCurrent('team-north');
+  await new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error('expiry did not abort')), 2_000);
+    lease.signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(deadline);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+  assert.equal(lease.signal.aborted, true);
+  assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+  await assert.rejects(openLease(host, cookie), /unavailable/);
+});
+
+test('source replacement and same-object remount revoke old leases; old disposers cannot remove a new generation', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const source = replacementSource(host);
+  const firstDispose = installMemberResolver(host.ctx, source);
+  const first = await openLease(host);
+  const secondDispose = installMemberResolver(host.ctx, source);
+  assert.equal(first.signal.aborted, true);
+  const second = await openLease(host);
+  firstDispose();
+  assert.equal(second.assertCurrent('team-north'), undefined);
+  const third = await openLease(host);
+  third.release();
+  secondDispose();
+  assert.equal(second.signal.aborted, true);
+  await assert.rejects(openLease(host), /unavailable/);
+});
+
+test('publication invalidation aborts immediately and a new publication never revives its predecessor', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const first = await openLease(host);
+  const previous = host.binding;
+  const nextController = new AbortController();
+  host.setBinding({
+    directory: previous.directory,
+    signal: nextController.signal,
+    isCurrent: () => !nextController.signal.aborted,
+  });
+  host.publication.abort();
+  assert.equal(first.signal.aborted, true);
+  const second = await openLease(host);
+  assert.equal(second.assertCurrent('team-north'), undefined);
+  host.setBinding(previous);
+  assert.throws(() => second.assertCurrent('team-north'), /unavailable/);
+  assert.equal(second.signal.aborted, true);
+});
+
+test('an absent directory or caller-shaped copy cannot replace the registered authoritative handle', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const binding = host.binding;
+  host.setBinding({
+    ...binding,
+    directory: { ...binding.directory, signal: binding.directory.signal },
+  });
+  await assert.rejects(openLease(host), /unavailable/);
+  host.setBinding(undefined);
+  await assert.rejects(openLease(host), /unavailable/);
+  host.setBinding(binding);
+  const lease = await openLease(host);
+  const closing = binding.directory.close();
+  assert.equal(lease.signal.aborted, true);
+  await closing;
+  await assert.rejects(openLease(host), /unavailable/);
+});
+
+test('lease release is idempotent, removes observers and recycles the bounded source capacity', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const observers = new Set();
+  installMemberResolver(host.ctx, replacementSource(host, observers));
+  const leases = await Promise.all(Array.from({ length: 256 }, () => openLease(host)));
+  assert.equal(observers.size, 256);
+  await assert.rejects(openLease(host), /unavailable/);
+  for (const lease of leases) {
+    lease.release();
+    lease.release();
+  }
+  assert.equal(observers.size, 0);
+  for (let i = 0; i < 512; i++) {
+    const lease = await openLease(host);
+    lease.release();
+    assert.equal(lease.signal.aborted, true);
+    assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+  }
+  assert.equal(observers.size, 0);
+  uninstallMemberResolver(host.ctx);
+});
+
+test('invalidation during observer registration refuses issuance and removes the observer', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const source = replacementSource(host);
+  let active = 0;
+  source.execution.onChange = () => {
+    active++;
+    host.publication.abort();
+    return () => active--;
+  };
+  installMemberResolver(host.ctx, source);
+  await assert.rejects(openLease(host), /unavailable/);
+  assert.equal(active, 0);
+  uninstallMemberResolver(host.ctx);
+});
+
+test('cold remount retains durable session facts but never retains an old lease', async (t) => {
+  const first = await mountLease();
+  const lease = await openLease(first);
+  const { cookie, media, credentials } = first;
+  await first.dispose();
+  assert.equal(lease.signal.aborted, true);
+  const second = await mountLease({ media, credentials });
+  t.after(() => second.dispose());
+  const current = await openLease(second, cookie);
+  assert.equal(current.assertCurrent('team-north'), undefined);
+  current.release();
+  assert.throws(() => lease.assertCurrent('team-north'), /unavailable/);
+});
+
+test('synchronous assertions recheck trust and time without waiting for an event or expiry callback', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const trust = await openLease(host);
+  const original = host.connection.requestRejection;
+  host.connection.requestRejection = () => 403;
+  try {
+    assert.throws(() => trust.assertCurrent('team-north'), /unavailable/);
+    assert.equal(trust.signal.aborted, true);
+  } finally {
+    host.connection.requestRejection = original;
+  }
+  const clock = await openLease(host);
+  const now = t.mock.method(Date, 'now', () => clock.expiresAt);
+  try {
+    assert.throws(() => clock.assertCurrent('team-north'), /unavailable/);
+    assert.equal(clock.signal.aborted, true);
+  } finally {
+    now.mock.restore();
+  }
+});
+
+test('directory unmount and real remount issue only from the new authoritative handle', async (t) => {
+  const host = await mountLease();
+  t.after(() => host.dispose());
+  const oldDirectory = host.binding.directory;
+  const previous = await openLease(host);
+  await host.spaceFiber.dispose();
+  assert.equal(previous.signal.aborted, true);
+  await assert.rejects(openLease(host), /unavailable/);
+  const freshFiber = host.ctx.plugin(
+    { inject: ['storageDomain'], apply: applySpaceDirectory },
+    fixtureSpaces(),
+  );
+  await freshFiber;
+  t.after(() => freshFiber.dispose());
+  const directory = spaceDirectoryFor(host.ctx);
+  assert.notEqual(directory, oldDirectory);
+  const publication = new AbortController();
+  host.setBinding({
+    directory,
+    signal: publication.signal,
+    isCurrent: () => !publication.signal.aborted && spaceDirectoryFor(host.ctx) === directory,
+  });
+  const fresh = await openLease(host);
+  assert.equal(fresh.assertCurrent('team-north'), undefined);
+  fresh.release();
+  assert.throws(() => previous.assertCurrent('team-north'), /unavailable/);
 });

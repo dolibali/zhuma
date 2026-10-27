@@ -549,3 +549,1164 @@ diff --git a/packages/client/ui-layout/src/client/AppFrame.module.css b/packages
  }
  
  :global([data-platform='darwin']) .centerCol {
+diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
+--- a/apps/desktop/src/web-document.ts
++++ b/apps/desktop/src/web-document.ts
+@@ -1,6 +1,9 @@
+ /** Local Web document and authenticated HTTP forwarding for the application window. */
+ import { readFile } from 'node:fs/promises'
+ import { extname, resolve, sep } from 'node:path'
++import { createDesktopMemberCookieBridge } from './zhuma-member-cookie.ts'
++
++const memberCookies = createDesktopMemberCookieBridge()
+ 
+ const MIME: Readonly<Record<string, string>> = {
+   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+@@ -41,6 +44,7 @@
+  * @returns Cookie header for requests forwarded to that Host.
+  */
+ export async function authenticateWebHost(url: string): Promise<string> {
++  memberCookies.clear()
+   const response = await fetch(url, { redirect: 'manual' })
+   const cookie = response.headers.get('set-cookie')
+   await response.body?.cancel()
+@@ -85,7 +89,13 @@
+   for (const name of ['host', 'origin', 'cookie', 'sec-fetch-site']) headers.delete(name)
+   headers.set('cookie', cookie)
+   const init = { method: request.method, headers, body: request.body, signal: request.signal, duplex: 'half', redirect: 'manual' as const }
+-  const response = await fetch(target, init)
++  const response = await memberCookies.forward(request, host, cookie, (credential) => {
++    headers.set('cookie', credential)
++    // The bridge has verified the original dsh-app Origin before dispatching.
++    // Preserve an explicit same-Host CSRF Origin only for this owner setup POST.
++    if (source.pathname === '/api/zhuma-local-setup/initialize' && request.method === 'POST') headers.set('origin', target.origin)
++    return fetch(target, init)
++  })
+   const outgoing = new Headers(response.headers)
+   for (const name of WITHHELD_RESPONSE_HEADERS) outgoing.delete(name)
+   if (PLUGIN_BUNDLE_PATH.test(source.pathname)) outgoing.set('cache-control', 'no-store')
+diff --git a/packages/core/agent-loop/src/agent.ts b/packages/core/agent-loop/src/agent.ts
+index adf2e33d..8543ca72 100644
+--- a/packages/core/agent-loop/src/agent.ts
++++ b/packages/core/agent-loop/src/agent.ts
+@@ -99,6 +99,7 @@ export class ReactLoopAgent implements Agent {
+   readonly inbox: ReactLoopInbox
+   private phase: Phase
+   private activityDone: Promise<void> = Promise.resolve()
++  private disposing = false
+ 
+   /** The agent-scoped registration boundary; the lifecycle owner unwinds it after the driver exits. */
+   readonly scope: Scope
+@@ -152,6 +153,7 @@ export class ReactLoopAgent implements Agent {
+   }
+ 
+   send(message: UserMessage, target: InboxTarget, wakeup: boolean): void {
++    if (this.disposing) throw new Error(`agent "${this.id}" lifecycle is disposed`)
+     // Waking input cannot join an aborted activity, so it starts the next turn.
+     // Captured before the insertion so a reentrant cancel from a splice observer cannot reclassify it.
+     const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
+@@ -180,7 +182,15 @@ export class ReactLoopAgent implements Agent {
+     if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
+   }
+ 
++  /** Seal input/wake admission before cancellation; retained work remains pending, never driven here. */
++  beginRetainedDisposal(): void {
++    this.disposing = true
++    if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
++    this.cancel({ kind: 'disposed' }, { keepInbox: true })
++  }
++
+   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {
++    if (this.disposing) throw new Error(`agent "${this.id}" lifecycle is disposed`)
+     if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}" already has active work`)
+     const done = Promise.withResolvers<void>()
+     const maintenance: Phase = {
+@@ -212,6 +222,7 @@ export class ReactLoopAgent implements Agent {
+    *   the inbox insertion so a reentrant cancel cannot reclassify it.
+    */
+   private wakeDriver(wakeAfterAbort = false): void {
++    if (this.disposing) return
+     if (this.phase.kind !== 'idle') {
+       // Maintenance and aborted drivers cannot deliver the wake: latch it for
+       // replay at convergence. Live drivers claim queued work themselves;
+diff --git a/packages/core/agent-loop/src/index.ts b/packages/core/agent-loop/src/index.ts
+index ca4532af..898d0b5d 100644
+--- a/packages/core/agent-loop/src/index.ts
++++ b/packages/core/agent-loop/src/index.ts
+@@ -339,6 +339,7 @@ function validateConfiguredAgents(agents: Config['agents']): void {
+ 
+ /** Concrete agent factory and driver service. */
+ export class AgentLoop extends Service implements AgentFactory {
++  readonly lifecycleCapabilities: { readonly retainPendingInboxOnDispose: true } = Object.freeze({ retainPendingInboxOnDispose: true })
+   static inject = ['agents', 'sessions', 'llm', 'tools', 'systemPrompt', 'sessionProjections']
+ 
+   /** Runtime schema for declarative agents. */
+@@ -502,6 +503,7 @@ export class AgentLoop extends Service implements AgentFactory {
+     callerSignal?: AbortSignal,
+     handle?: SessionHandle,
+     parentAgent?: Agent,
++    retainPendingInboxOnDispose = false,
+   ): PreparedAgent {
+     assertAgentOptions(options)
+     ownerCtx.fiber.assertActive()
+@@ -537,6 +539,7 @@ export class AgentLoop extends Service implements AgentFactory {
+     let detachAgent: (() => void) | undefined
+     let disposing: Promise<void> | undefined
+     let publication: ReturnType<typeof Promise.withResolvers<void>> | undefined
++    let published = false
+     const machineReady = Promise.withResolvers<void>()
+     // Reverse teardown, memoized so every racing owner awaits one quiescence:
+     // stop the machine, unwind the scope, drain and close the session's write
+@@ -561,7 +564,8 @@ export class AgentLoop extends Service implements AgentFactory {
+         if (machine === undefined) await machineReady.promise
+         /* v8 ignore next -- setup failure untracks this disposer before resolving without a machine. */
+         if (machine !== undefined) {
+-          machine.cancel({ kind: 'disposed' })
++          if (retainPendingInboxOnDispose && published) machine.beginRetainedDisposal()
++          else machine.cancel({ kind: 'disposed' })
+           await machine.whenIdle()
+         }
+       } catch (error: unknown) {
+@@ -659,6 +663,7 @@ export class AgentLoop extends Service implements AgentFactory {
+             assertLive()
+             await loopCtx.agents.announce(agent, source, abort.signal)
+             assertLive()
++            published = true
+             return { agent, dispose }
+           } finally {
+             publication.resolve()
+@@ -748,6 +753,7 @@ export class AgentLoop extends Service implements AgentFactory {
+    * @returns the published handle.
+    */
+   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
++    const retainPendingInboxOnDispose = options.retainPendingInboxOnDispose === true
+     const preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(options.sessionId, {
+       ...options.seed === undefined ? {} : { seed: options.seed },
+       ...options.meta === undefined ? {} : { meta: options.meta },
+@@ -780,6 +786,7 @@ export class AgentLoop extends Service implements AgentFactory {
+         'startup',
+         stored,
+         options.parentAgent,
++        retainPendingInboxOnDispose,
+       )
+     })()
+     this.ownership.trackWrapper(published)
+@@ -797,12 +804,13 @@ export class AgentLoop extends Service implements AgentFactory {
+     source: SessionStartSource,
+     stored?: StoredSession,
+     parentAgent?: Agent,
++    retainPendingInboxOnDispose = false,
+   ): Promise<AgentHandle> {
+     using ownedPreparation = preparation
+     const session = ownedPreparation.session
+     let prepared: PreparedAgent
+     try {
+-      prepared = this.prepare(ownerCtx, id, agentOptions, session, signal, stored?.handle, parentAgent)
++      prepared = this.prepare(ownerCtx, id, agentOptions, session, signal, stored?.handle, parentAgent, retainPendingInboxOnDispose)
+     } catch (error: unknown) {
+       await stored?.handle.close().catch(() => {})
+       throw error
+@@ -854,6 +862,7 @@ export class AgentLoop extends Service implements AgentFactory {
+     persistence: SessionPersistence,
+     options: ResumeAgentOptions,
+   ): Promise<AgentHandle> {
++    const retainPendingInboxOnDispose = options.retainPendingInboxOnDispose === true
+     const id = options.resumeSessionId
+     const published = (async () => {
+       // The open and read may outlive their owner: race them against caller
+@@ -915,6 +924,7 @@ export class AgentLoop extends Service implements AgentFactory {
+           'resume',
+           owned,
+           options.parentAgent,
++          retainPendingInboxOnDispose,
+         )
+       } finally {
+         preparation?.[Symbol.dispose]()
+diff --git a/packages/core/agent/src/index.ts b/packages/core/agent/src/index.ts
+index dd8d09e6..c8e29237 100644
+--- a/packages/core/agent/src/index.ts
++++ b/packages/core/agent/src/index.ts
+@@ -61,6 +61,8 @@ export type AgentSetup = (
+  * lineage); the factory creates the session and agent under that identity.
+  */
+ export interface CreateAgentOptions {
++  /** Trusted lifecycle owner opt-in; defaults to canceling pending input on disposal. */
++  readonly retainPendingInboxOnDispose?: boolean
+   /** The live agent/session identity. */
+   readonly sessionId: SessionId
+   /** Live parent Agent for runtime ownership; omit for a root Agent. */
+@@ -123,6 +125,8 @@ export interface CreateAgentOptions {
+  * ({@link AgentRegistry.resume}).
+  */
+ export interface ResumeAgentOptions {
++  /** Trusted lifecycle owner opt-in; never inferred from persisted input or model options. */
++  readonly retainPendingInboxOnDispose?: boolean
+   /** The persisted session id to load and use as the live agent/session identity. */
+   readonly resumeSessionId: SessionId
+   /** Live parent Agent for runtime ownership; omit for a root Agent. */
+@@ -169,6 +173,8 @@ export interface AgentHandle {
+  * depending on the concrete `dsh-agent-loop` package.
+  */
+ export interface AgentFactory {
++  /** Behavior negotiated by the active factory, not by accepting unknown option fields. */
++  readonly lifecycleCapabilities?: { readonly retainPendingInboxOnDispose?: boolean }
+   /**
+    * Create a new agent on a caller-supplied session id. Async because creation
+    * awaits unpublished setup, invokes its optional synchronous commit, inserts
+@@ -381,6 +387,20 @@ export class AgentRegistry extends Service {
+     return this.factory
+   }
+ 
++  /** Snapshot the current factory's lifecycle capabilities; old factories default to unsupported. */
++  get lifecycleCapabilities(): Readonly<{ retainPendingInboxOnDispose: boolean }> {
++    return Object.freeze({
++      retainPendingInboxOnDispose: this.requireFactory().target.lifecycleCapabilities?.retainPendingInboxOnDispose === true,
++    })
++  }
++
++  private assertLifecycleOptions(factory: AgentFactory, value: boolean | undefined): void {
++    if (value !== undefined && typeof value !== 'boolean') throw new TypeError('invalid retainPendingInboxOnDispose option')
++    if (value === true && factory.lifecycleCapabilities?.retainPendingInboxOnDispose !== true) {
++      throw new Error('agent factory does not support retainPendingInboxOnDispose')
++    }
++  }
++
+   /**
+    * Create and publish a new agent through the registered factory.
+    * Distinct from {@link register} (which records an already-constructed
+@@ -397,6 +417,7 @@ export class AgentRegistry extends Service {
+     // its effects to ownerCtx; plain factories receive ownerCtx as an explicit
+     // capability and need no Cordis tracker magic.
+     const { target } = this.requireFactory()
++    this.assertLifecycleOptions(target, options.retainPendingInboxOnDispose)
+     const receiver = getTraceable(ownerCtx, target)
+     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+     return Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
+@@ -412,6 +433,7 @@ export class AgentRegistry extends Service {
+   async resume(options: ResumeAgentOptions): Promise<AgentHandle> {
+     const ownerCtx = this.ctx
+     const { target } = this.requireFactory()
++    this.assertLifecycleOptions(target, options.retainPendingInboxOnDispose)
+     const receiver = getTraceable(ownerCtx, target)
+     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+     return Reflect.apply(target.resume, receiver, [ownerCtx, options])
+diff --git a/packages/client/ui-layout/src/client/index.ts b/packages/client/ui-layout/src/client/index.ts
+index 3948c198..545406eb 100644
+--- a/packages/client/ui-layout/src/client/index.ts
++++ b/packages/client/ui-layout/src/client/index.ts
+@@ -27,7 +27,7 @@ import { ThemePresenter } from './theme-presenter.ts'
+ // OwnerShare contracts below are the render-side halves registrants compose
+ // against; the frame components and the store factory are package-internal.
+ export { LayoutController } from './service.ts'
+-export type { ILayout, MainPanelId, PanelInfo } from './service.ts'
++export type { ILayout, MainPanelId, PanelInfo, PanelSelectionGuard } from './service.ts'
+ 
+ /** Selector hook over root-scoped panel selection. */
+ export type UsePanelInfo = SnapshotSelectorHook<PanelInfo>
+diff --git a/packages/client/ui-layout/src/client/service.ts b/packages/client/ui-layout/src/client/service.ts
+index 22dd77a4..bd2e4645 100644
+--- a/packages/client/ui-layout/src/client/service.ts
++++ b/packages/client/ui-layout/src/client/service.ts
+@@ -24,6 +24,13 @@ export interface PanelInfo {
+ /** The layout store's bound action set (framework-baked, draft params peeled). */
+ export type PanelActions = BoundActions<ReturnType<typeof createLayoutStore>>
+ 
++/** Presentation-only guard; proceed is valid once within this navigation's lifetime. */
++export type PanelSelectionGuard = (
++  target: MainPanelId | null,
++  proceed: () => void,
++  signal: AbortSignal,
++) => void
++
+ /** Panel navigation and geometry actions exposed through ctx.layout. */
+ export interface ILayout {
+   /** Selected central panel from the same root store used by `usePanelInfo`. */
+@@ -34,6 +41,12 @@ export interface ILayout {
+    * @throws if the selected main key is not registered; preserves the current selection.
+    */
+   selectPanel(panelId: MainPanelId | null): void
++  /**
++   * Defer a panel selection until the current view permits leaving.
++   * @param guard - receives the target, one-use continuation, and navigation lifetime.
++   * @returns disposer; removing a guard invalidates pending selections.
++   */
++  registerPanelGuard?(guard: PanelSelectionGuard): () => void
+   /**
+    * Start an asynchronous navigation, superseding any earlier pending navigation.
+    * @returns a signal aborted by the next navigation or layout disposal; check it before committing UI state.
+@@ -56,6 +69,8 @@ export interface ILayout {
+ /** Cross-plugin panel-action face (ctx.layout). */
+ export class LayoutController implements ILayout {
+   private navigation = new AbortController()
++  private readonly panelGuards = new Set<PanelSelectionGuard>()
++  private disposed = false
+ 
+   /**
+    * @param panels - actions of the instance shared with the root entry.
+@@ -73,12 +88,52 @@ export class LayoutController implements ILayout {
+     if (panelId !== null && !this.hasMainPanel(panelId)) {
+       throw new Error(`layout.selectPanel: main panel "${panelId}" is not registered`)
+     }
+-    this.navigation.abort()
+-    this.panels.selectPanel(panelId)
++    const signal = this.beginNavigation()
++    const guards = [...this.panelGuards]
++    const visit = (index: number): void => {
++      if (signal.aborted || this.disposed) return
++      const guard = guards[index]
++      if (guard === undefined) {
++        // A deferred target may have disappeared while its view asked the user.
++        if (panelId === null || this.hasMainPanel(panelId)) this.panels.selectPanel(panelId)
++        return
++      }
++      let invoking = true
++      let requested = false
++      const proceed = (): void => {
++        if (requested || signal.aborted || this.disposed) return
++        requested = true
++        if (!invoking) visit(index + 1)
++      }
++      try {
++        guard(panelId, proceed, signal)
++      } catch (_error: unknown) {
++        // A failed guard cannot discard the current view, even after requesting proceed.
++        this.navigation.abort()
++        return
++      }
++      invoking = false
++      if (requested) visit(index + 1)
++    }
++    visit(0)
++  }
++
++  /**
++   * Install one presentation guard in registration order.
++   * @param guard - decides whether and when to continue the selection.
++   * @returns idempotent disposer that invalidates outstanding continuations.
++   */
++  registerPanelGuard(guard: PanelSelectionGuard): () => void {
++    if (this.disposed) throw new Error('layout is disposed')
++    this.panelGuards.add(guard)
++    return () => {
++      if (this.panelGuards.delete(guard)) this.navigation.abort()
++    }
+   }
+ 
+   /** @returns the new pending navigation's cancellation signal. */
+   beginNavigation(): AbortSignal {
++    if (this.disposed) return this.navigation.signal
+     this.navigation.abort()
+     this.navigation = new AbortController()
+     return this.navigation.signal
+@@ -86,7 +141,9 @@ export class LayoutController implements ILayout {
+ 
+   /** Invalidate pending navigations when the layout owner is unloaded. */
+   dispose(): void {
++    this.disposed = true
+     this.navigation.abort()
++    this.panelGuards.clear()
+   }
+ 
+   /** Toggle the sidebar panel (closed ⟷ contract default width). */
+diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
+index b466b32f..2c47c0a0 100644
+--- a/packages/bundle/web-app/package.json
++++ b/packages/bundle/web-app/package.json
+@@ -55,6 +55,7 @@
+     }
+   },
+   "dependencies": {
++    "@deepseek-ai/dsh-fs-observation-policy": "workspace:*",
+     "@deepseek-ai/dsh-agent-instructions": "workspace:*",
+     "@deepseek-ai/dsh-agent-preset": "workspace:*",
+     "@deepseek-ai/dsh-agent-preset-registry": "workspace:*",
+@@ -140,6 +141,7 @@
+     "@deepseek-ai/dsh-host-plugin-inventory": "workspace:*",
+     "@deepseek-ai/dsh-host-webserver": "workspace:*",
+     "@deepseek-ai/dsh-launch-environment": "workspace:*",
++    "@deepseek-ai/dsh-llm": "workspace:*",
+     "@deepseek-ai/dsh-message-feedback": "workspace:*",
+     "@deepseek-ai/dsh-office-to-pdf": "workspace:*",
+     "@deepseek-ai/dsh-persona": "workspace:*",
+@@ -147,7 +149,14 @@
+     "@deepseek-ai/dsh-plugin-manager": "workspace:*",
+     "@deepseek-ai/dsh-plugin-market": "workspace:*",
+     "@deepseek-ai/dsh-schedule": "workspace:*",
++    "@deepseek-ai/dsh-skill": "workspace:*",
++    "@deepseek-ai/dsh-mcp-client": "workspace:*",
++    "@deepseek-ai/dsh-tools": "workspace:*",
++    "@deepseek-ai/dsh-scope": "workspace:*",
++    "@deepseek-ai/dsh-system-prompt": "workspace:*",
++    "@deepseek-ai/dsh-session": "workspace:*",
+     "@deepseek-ai/dsh-session-log-export": "workspace:*",
++    "@deepseek-ai/dsh-session-persistence": "workspace:*",
+     "@deepseek-ai/dsh-session-reference": "workspace:*",
+     "@deepseek-ai/dsh-session-stats": "workspace:*",
+     "@deepseek-ai/dsh-session-turn-outline": "workspace:*",
+@@ -188,7 +197,9 @@
+     "@deepseek-ai/dsh-client-product-analytics": "workspace:*",
+     "@deepseek-ai/dsh-host-product-telemetry-otel": "workspace:*",
+     "@deepseek-ai/dsh-client-ui-settings-session-log": "workspace:*",
+-    "@deepseek-ai/dsh-harness-dev-context": "workspace:*"
++    "@deepseek-ai/dsh-harness-dev-context": "workspace:*",
++    "@deepseek-ai/dsh-fs-local": "workspace:*",
++    "@deepseek-ai/dsh-sandbox-policy": "workspace:*"
+   },
+   "peerDependencies": {
+     "@deepseek-ai/cordis": "workspace:~",
+@@ -200,9 +211,6 @@
+     "@deepseek-ai/cordis-plugin-include": "workspace:~",
+     "@deepseek-ai/cordis-plugin-loader": "workspace:~",
+     "@deepseek-ai/dsh-fs": "workspace:*",
+-    "@deepseek-ai/dsh-fs-local": "workspace:*",
+-    "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
+-    "@deepseek-ai/dsh-session": "workspace:*",
+     "@deepseek-ai/dsh-session-projection": "workspace:*",
+     "@deepseek-ai/dsh-shell-env": "workspace:*",
+     "@deepseek-ai/dsh-typert-registry": "workspace:*",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 5f38bae3..1b6b3ef0 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -2688,6 +2688,15 @@ importers:
+ 
+   packages/bundle/web-app:
+     dependencies:
++      '@deepseek-ai/dsh-fs-local':
++        specifier: workspace:*
++        version: link:../../fs/fs-local
++      '@deepseek-ai/dsh-sandbox-policy':
++        specifier: workspace:*
++        version: link:../../sandbox/sandbox-policy
++      '@deepseek-ai/dsh-fs-observation-policy':
++        specifier: workspace:*
++        version: link:../../fs/fs-observation-policy
+       '@deepseek-ai/dsh-agent-instructions':
+         specifier: workspace:*
+         version: link:../../context/agent-instructions
+@@ -2967,6 +2976,9 @@ importers:
+       '@deepseek-ai/dsh-launch-environment':
+         specifier: workspace:*
+         version: link:../../util/launch-environment
++      '@deepseek-ai/dsh-llm':
++        specifier: workspace:*
++        version: link:../../llm/llm
+       '@deepseek-ai/dsh-message-feedback':
+         specifier: workspace:*
+         version: link:../../feedback/message-feedback
+@@ -2988,9 +3000,30 @@ importers:
+       '@deepseek-ai/dsh-schedule':
+         specifier: workspace:*
+         version: link:../../schedule/schedule
++      '@deepseek-ai/dsh-skill':
++        specifier: workspace:*
++        version: link:../../skill/skill
++      '@deepseek-ai/dsh-mcp-client':
++        specifier: workspace:*
++        version: link:../../mcp/mcp-client
++      '@deepseek-ai/dsh-tools':
++        specifier: workspace:*
++        version: link:../../core/tools
++      '@deepseek-ai/dsh-scope':
++        specifier: workspace:*
++        version: link:../../core/scope
++      '@deepseek-ai/dsh-system-prompt':
++        specifier: workspace:*
++        version: link:../../core/system-prompt
++      '@deepseek-ai/dsh-session':
++        specifier: workspace:*
++        version: link:../../core/session
+       '@deepseek-ai/dsh-session-log-export':
+         specifier: workspace:*
+         version: link:../../session-query/session-log-export
++      '@deepseek-ai/dsh-session-persistence':
++        specifier: workspace:*
++        version: link:../../session/session-persistence
+       '@deepseek-ai/dsh-session-reference':
+         specifier: workspace:*
+         version: link:../../context/session-reference
+@@ -3103,18 +3136,9 @@ importers:
+       '@deepseek-ai/dsh-fs':
+         specifier: workspace:*
+         version: link:../../fs/fs
+-      '@deepseek-ai/dsh-fs-local':
+-        specifier: workspace:*
+-        version: link:../../fs/fs-local
+       '@deepseek-ai/dsh-otel':
+         specifier: workspace:*
+         version: link:../../telemetry/otel
+-      '@deepseek-ai/dsh-sandbox-policy':
+-        specifier: workspace:*
+-        version: link:../../sandbox/sandbox-policy
+-      '@deepseek-ai/dsh-session':
+-        specifier: workspace:*
+-        version: link:../../core/session
+       '@deepseek-ai/dsh-session-projection':
+         specifier: workspace:*
+         version: link:../../session/session-projection
+diff --git a/packages/core/tools/src/index.ts b/packages/core/tools/src/index.ts
+index ca939d4d..aaac1bcc 100644
+--- a/packages/core/tools/src/index.ts
++++ b/packages/core/tools/src/index.ts
+@@ -1239,6 +1239,22 @@ export class ToolRuntime extends Service {
+     return this.view(scope).visible.get(name)
+   }
+ 
++  /**
++   * Resolve registration identity through the scope chain, ignoring visibility.
++   * This is an ownership query only: it does not authorize execution or expose a
++   * schema. Callers must continue using get/execute for those operations.
++   * @param name - registered name to inspect.
++   * @param scope - viewing scope; nearest same-name registration wins.
++   * @returns the registered definition, or undefined when absent.
++   */
++  getRegistered(name: string, scope?: ScopeKey): ToolDefinition | undefined {
++    let definition = this.layers.global.tools.get(name)
++    for (const layer of this.layers.chainLayers(scope)) {
++      definition = layer.tools.get(name) ?? definition
++    }
++    return definition
++  }
++
+   /**
+    * Resolve the definition that MAY EXECUTE for a call, applying the mode
+    * collapse at the operation boundary that owns it. The registry view
+diff --git a/packages/skill/tool-skill/src/index.ts b/packages/skill/tool-skill/src/index.ts
+index 243ef108..71c6c795 100644
+--- a/packages/skill/tool-skill/src/index.ts
++++ b/packages/skill/tool-skill/src/index.ts
+@@ -6,7 +6,8 @@
+ 
+ import type {} from '@deepseek-ai/dsh-working-directory'
+ import { createHash } from 'node:crypto'
+-import type { Context } from '@deepseek-ai/cordis'
++import { Context, symbols } from '@deepseek-ai/cordis'
++import { scopeOf, type ScopeKey } from '@deepseek-ai/dsh-scope'
+ import z from '@deepseek-ai/schemastery'
+ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+ import { defineTool } from '@deepseek-ai/dsh-tools'
+@@ -18,6 +19,7 @@ import {
+   isSkillName,
+   isUserInvocable,
+   renderSkillContent,
++  SkillRegistry,
+   type SkillInvocationSource,
+   type SkillSummary,
+ } from '@deepseek-ai/dsh-skill'
+@@ -25,6 +27,54 @@ import {
+ export const name = 'tool-skill'
+ export const inject = ['agents', 'tools', 'skills', 'workingDirectory']
+ 
++interface RegistryOwner {
++  readonly context: Context
++  readonly registry: SkillRegistry
++  assertCurrent(caller: Context): void
++}
++const registryOwners = new WeakMap<ScopeKey, RegistryOwner>()
++const originalService = (value: object | undefined) => value === undefined ? undefined : Reflect.get(value, symbols.original) ?? value
++
++/** Bind an Agent's authoritative Skill domain without registering a loader tool.
++ * This is service ownership, not execution permission. An invalid binding remains
++ * a closed-domain marker until the Agent scope ends; it never restores a parent.
++ */
++export function bindSkillRegistry(agentCtx: Context, actualRegistry: SkillRegistry): undefined {
++  const scope = scopeOf(agentCtx)
++  if (scope === undefined || Reflect.get(scope, 'ctx') !== agentCtx) throw new Error('skill registry requires its current Agent scope')
++  agentCtx.fiber.assertActive()
++  const registry = originalService(actualRegistry)
++  if (!(registry instanceof SkillRegistry)) throw new Error('skill registry is unavailable')
++  const existing = registryOwners.get(scope)
++  if (existing !== undefined) {
++    existing.assertCurrent(agentCtx)
++    if (existing.registry !== registry || existing.context !== agentCtx) throw new Error('skill registry is already bound')
++    return undefined
++  }
++  // Unwrap before reading Cordis' provider context: tracing proxies expose the
++  // calling context as .ctx, while the original holds the actual provider.
++  const provider = Reflect.get(registry, 'ctx')
++  if (!Context.is(provider)) throw new Error('skill registry is unavailable')
++  const methods = { get: registry.get, list: registry.list, snapshot: registry.snapshot }
++  const owner: RegistryOwner = {
++    context: agentCtx,
++    registry,
++    assertCurrent(caller) {
++      agentCtx.fiber.assertActive()
++      provider.fiber.assertActive()
++      if (caller !== agentCtx || scopeOf(agentCtx) !== scope || Reflect.get(scope, 'ctx') !== agentCtx
++        || Reflect.get(registry, 'ctx') !== provider
++        || originalService(provider.get('skills')) !== registry
++        || registry.get !== methods.get || registry.list !== methods.list || registry.snapshot !== methods.snapshot) {
++        throw new Error('skill registry is no longer available')
++      }
++    },
++  }
++  owner.assertCurrent(agentCtx)
++  registryOwners.set(scope, Object.freeze(owner))
++  return undefined
++}
++
+ const DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH = 500
+ /**
+  * Durable provider and item records for one published session skill catalog. The catalog is a
+@@ -79,6 +129,45 @@ export function apply(ctx: Context, config: Config = {}): void {
+   const catalogDescriptionMaxLength = config.catalogDescriptionMaxLength ?? DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH
+   assertPositiveInteger('catalogDescriptionMaxLength', catalogDescriptionMaxLength, 3)
+ 
++  // Skills are bound to the registering context: isolate('skills') returns a
++  // child context, while the real Agent.ctx may still be its original scope.
++  // The calling Agent's actual tool registration decides which binding owns
++  // all three load paths. A non-owner never reads skills or rewrites a catalog.
++  const boundSkills = ctx.skills
++  const boundTools = ctx.tools
++  const original = (service: object | undefined) => service === undefined ? undefined : Reflect.get(service, symbols.original) ?? service
++  function ownedLookup(agent: Agent | undefined, signal: AbortSignal) {
++    signal.throwIfAborted()
++    ctx.fiber.assertActive()
++    const caller = agent === undefined ? ctx : agent.ctx
++    caller.fiber.assertActive()
++    const registryOwner = agent === undefined ? undefined : registryOwners.get(agent)
++    if (registryOwner !== undefined && registryOwner.registry !== original(boundSkills)) return undefined
++    registryOwner?.assertCurrent(caller)
++    const tools = caller.get('tools')
++    if (tools === undefined || original(tools) !== original(boundTools)
++      || tools.getRegistered(skillTool.name, agent) !== skillTool) return undefined
++    const directory = caller.get('workingDirectory')
++    if (directory === undefined) throw new Error('skill loader is no longer available')
++    const assertCurrent = () => {
++      signal.throwIfAborted()
++      ctx.fiber.assertActive()
++      caller.fiber.assertActive()
++      registryOwner?.assertCurrent(caller)
++      if ((agent !== undefined && agent.ctx !== caller)
++        || (agent !== undefined && registryOwners.get(agent) !== registryOwner)
++        || original(caller.get('tools')) !== original(tools)
++        || original(caller.get('workingDirectory')) !== original(directory)
++        || original(ctx.get('skills')) !== original(boundSkills)
++        || original(ctx.get('tools')) !== original(boundTools)
++        || tools.getRegistered(skillTool.name, agent) !== skillTool) {
++        throw new Error('skill loader is no longer available')
++      }
++    }
++    assertCurrent()
++    return { tools, directory, assertCurrent }
++  }
++
+   const skillTool = defineTool({
+     name: 'skill',
+     description: 'Load the full instructions for a skill. Call it before acting on a task that names or clearly matches a skill in the session skill catalog.',
+@@ -129,18 +218,26 @@ export function apply(ctx: Context, config: Config = {}): void {
+       if (!isSkillName(args.name)) {
+         throw new Error(`invalid skill name "${args.name}"`)
+       }
+-      // The agent is its own scope key, so the lookup resolves the layered
+-      // registry exactly as this agent's composition sees it.
+-      const cwd = exec.agent === undefined ? undefined : await ctx.workingDirectory.ensure(exec.agent, exec.signal)
++      const owner = ownedLookup(exec.agent, exec.signal)
++      if (owner === undefined) throw new Error('skill loader is no longer available')
++      const assertModelCurrent = () => {
++        owner.assertCurrent()
++        if (owner.tools.get(skillTool.name, exec.agent) !== skillTool) throw new Error('skill loader is no longer available')
++      }
++      assertModelCurrent()
++      const cwd = exec.agent === undefined ? undefined : await owner.directory.ensure(exec.agent, exec.signal)
++      assertModelCurrent()
+       const lookup = { cwd, signal: exec.signal, scope: exec.agent }
+-      const summary = (await ctx.skills.list(lookup)).find(skill => skill.name === args.name)
++      const summary = (await boundSkills.list(lookup)).find(skill => skill.name === args.name)
++      assertModelCurrent()
+       if (!summary) {
+         throw new Error(`skill "${args.name}" is unknown or no longer available`)
+       }
+       if (!isModelInvocable(summary)) {
+         throw new Error(`skill "${args.name}" is not available for model invocation`)
+       }
+-      const skill = await ctx.skills.get(args.name, lookup)
++      const skill = await boundSkills.get(args.name, lookup)
++      assertModelCurrent()
+       if (!skill) {
+         throw new Error(`skill "${args.name}" is unknown or no longer available`)
+       }
+@@ -182,14 +279,16 @@ export function apply(ctx: Context, config: Config = {}): void {
+   ): Promise<PreStepDecision> => {
+     const decision = await next()
+     if (decision.kind === 'reject') return decision
++    const owner = ownedLookup(agent, signal)
++    if (owner === undefined) return decision
+     const names = invokedSkillNames(messages)
+     if (names.length === 0) return decision
+-    signal.throwIfAborted()
+-    const lookup = { cwd: await ctx.workingDirectory.ensure(agent, signal), signal, scope: agent }
++    const lookup = { cwd: await owner.directory.ensure(agent, signal), signal, scope: agent }
++    owner.assertCurrent()
+     const injections: UserMessage[] = []
+     for (const name of names) {
+-      const skill = await ctx.skills.get(name, lookup)
+-      signal.throwIfAborted()
++      const skill = await boundSkills.get(name, lookup)
++      owner.assertCurrent()
+       // Unknown names and user-disabled skills stay plain prose: the
+       // gesture was never a claim this boundary recognizes. The check sits
+       // on the loaded definition — the single lookup that produces what is
+@@ -218,12 +317,16 @@ export function apply(ctx: Context, config: Config = {}): void {
+   ): Promise<PreStepDecision> => {
+     const decision = await next()
+     if (decision.kind === 'reject') return decision
+-    signal.throwIfAborted()
+-    const toolVisible = ctx.tools.get(skillTool.name, agent) === skillTool
++    const owner = ownedLookup(agent, signal)
++    if (owner === undefined) return decision
++    const toolVisible = owner.tools.get(skillTool.name, agent) === skillTool
++    const cwd = toolVisible ? await owner.directory.ensure(agent, signal) : undefined
++    owner.assertCurrent()
+     const snapshot = toolVisible
+-      ? await ctx.skills.snapshot({ cwd: await ctx.workingDirectory.ensure(agent, signal), signal, scope: agent })
++      ? await boundSkills.snapshot({ cwd, signal, scope: agent })
+       : { skills: [], complete: true }
+-    signal.throwIfAborted()
++    owner.assertCurrent()
++    if (toolVisible && owner.tools.get(skillTool.name, agent) !== skillTool) throw new Error('skill loader is no longer available')
+     if (!snapshot.complete) return decision
+     const skills = snapshot.skills.filter(isModelInvocable)
+     const entries = catalogSourceEntries(skills, catalogDescriptionMaxLength)
+diff --git a/packages/skill/tool-skill/tests/tool-skill.spec.ts b/packages/skill/tool-skill/tests/tool-skill.spec.ts
+index e3362cda..e1fa4bff 100644
+--- a/packages/skill/tool-skill/tests/tool-skill.spec.ts
++++ b/packages/skill/tool-skill/tests/tool-skill.spec.ts
+@@ -63,13 +63,13 @@ async function setup(home: string, config: toolSkill.Config = {}): Promise<Conte
+   return ctx
+ }
+ 
+-function agentForCwd(cwd: string): Agent {
++function agentForCwd(ctx: Context, cwd: string): Agent {
+   const id = SessionId(`tool-skill-${cwd}`)
+   const session = Session.create(id, [], {
+     version: SESSION_FORMAT_VERSION, id, createdAt: 0, cwd, isSeeded: false,
+   })
+   return {
+-    ctx: new Context(),
++    ctx,
+     id,
+     options: {},
+     session,
+@@ -85,14 +85,14 @@ function agentForCwd(cwd: string): Agent {
+   }
+ }
+ 
+-function sessionAgent(session: Session, id = 'tool-skill-agent'): Agent {
++function sessionAgent(ctx: Context, session: Session, id = 'tool-skill-agent'): Agent {
+   const agent: Agent = {
+     id: SessionId(id),
+     options: {},
+     session,
+     inbox: unsupportedInbox(),
+     status: 'running',
+-    ctx: new Context(),
++    ctx,
+     send: () => {},
+     followup: () => {},
+     steer: () => {},
+@@ -160,7 +160,7 @@ function catalogContent(entries: string[]): Message['content'] {
+ }
+ 
+ async function composePrefix(ctx: Context, cwd: string, signal = new AbortController().signal): Promise<Message[]> {
+-  return await composePrefixForAgent(ctx, agentForCwd(cwd), signal)
++  return await composePrefixForAgent(ctx, agentForCwd(ctx, cwd), signal)
+ }
+ 
+ async function composePrefixForAgent(ctx: Context, agent: Agent, signal = new AbortController().signal): Promise<Message[]> {
+@@ -178,11 +178,12 @@ async function composePrefixForAgent(ctx: Context, agent: Agent, signal = new Ab
+ }
+ 
+ async function mintAgentScope(ctx: Context, subject: string | Agent): Promise<{ agent: Agent; scope: Scope }> {
+-  const agent = typeof subject === 'string' ? agentForCwd(subject) : subject
++  const agent = typeof subject === 'string' ? agentForCwd(ctx, subject) : subject
+   let scope!: Scope
+   await ctx.plugin(Object.assign((inner: Context) => { scope = createScope(inner, agent) }, {
+     inject: ['tools'],
+   }))
++  Object.defineProperty(agent, 'ctx', { value: scope.ctx, configurable: true })
+   return { agent, scope }
+ }
+ 
+@@ -330,7 +331,7 @@ describe('dsh-tool-skill', () => {
+     expect(rendered).not.toContain('/secret/path')
+     expect(rendered).not.toContain('Secret body')
+     expect(rendered).not.toContain('user-only-skill')
+-    expect(renderPrompt(await ctx.systemPrompt.assemble({ agent: agentForCwd('/workspace') }))).not.toContain('<available_skills>')
++    expect(renderPrompt(await ctx.systemPrompt.assemble({ agent: agentForCwd(ctx, '/workspace') }))).not.toContain('<available_skills>')
+   })
+ 
+   it('does not inject a catalog when no model-invocable skills are available', async () => {
+@@ -344,7 +345,7 @@ describe('dsh-tool-skill', () => {
+       content: 'User-only body.',
+     })
+ 
+-    const agent = agentForCwd('/workspace')
++    const agent = agentForCwd(ctx, '/workspace')
+     expect(await composePrefixForAgent(ctx, agent)).toEqual([])
+     expect(await composePrefixForAgent(ctx, agent)).toEqual([])
+   })
+@@ -369,7 +370,7 @@ describe('dsh-tool-skill', () => {
+       return provider
+     })
+     const session = Session.create(SessionId('incomplete-prefix'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     await composePrefixForAgent(ctx, agent)
+@@ -385,7 +386,7 @@ describe('dsh-tool-skill', () => {
+     const home = await tempDir('tool-empty-step')
+     const ctx = await setup(home)
+     const session = Session.create(SessionId('empty-step'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     await fireStep(ctx, agent, 1, 1)
+@@ -404,7 +405,7 @@ describe('dsh-tool-skill', () => {
+       content: 'First body.',
+     })
+     const session = Session.create(SessionId('proposed-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     await fireStep(ctx, agent, 1, 1)
+     const initial = catalogMessages(session)[0]?.data
+@@ -451,7 +452,7 @@ describe('dsh-tool-skill', () => {
+       },
+     })
+ 
+-    const decision = await proposeStep(ctx, sessionAgent(session), [malformed, stale])
++    const decision = await proposeStep(ctx, sessionAgent(ctx, session), [malformed, stale])
+ 
+     expect(decision).toEqual({ kind: 'enter', messages: [malformed] })
+   })
+@@ -475,7 +476,7 @@ describe('dsh-tool-skill', () => {
+       },
+     })
+ 
+-    const decision = await proposeStep(ctx, sessionAgent(session), [proposed])
++    const decision = await proposeStep(ctx, sessionAgent(ctx, session), [proposed])
+ 
+     expect(decision).toEqual({ kind: 'enter', messages: [proposed] })
+   })
+@@ -490,7 +491,7 @@ describe('dsh-tool-skill', () => {
+       content: 'First body.',
+     })
+     const session = Session.create(SessionId('dynamic-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('first-skill')
+@@ -539,7 +540,7 @@ describe('dsh-tool-skill', () => {
+       content: 'Resumed body.',
+     })
+     const session = Session.create(SessionId('catalog-resume'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     session.append('user/message', createUserMessage({
+       content: [{ type: 'text', text: 'prose a reader cannot rely on' }],
+@@ -589,7 +590,7 @@ describe('dsh-tool-skill', () => {
+       content: 'Live body.',
+     })
+     const session = Session.create(SessionId('catalog-malformed'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     for (const source of [
+       { kind: 'skill-catalog', form: 'catalog' },
+@@ -620,7 +621,7 @@ describe('dsh-tool-skill', () => {
+     const home = await tempDir('tool-catalog-missing-event')
+     const ctx = await setup(home)
+     const session = Session.create(SessionId('catalog-missing-event'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     Object.defineProperty(session, 'eventAt', { value: () => undefined })
+ 
+@@ -638,7 +639,7 @@ describe('dsh-tool-skill', () => {
+       content: 'First body.',
+     })
+     const session = Session.create(SessionId('catalog-compaction'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('first-skill')
+     const initial = catalogMessages(session)[0]
+@@ -663,7 +664,7 @@ describe('dsh-tool-skill', () => {
+     await writeSkill(root, 'body-skill', 'Stable description', 'First body.')
+     const ctx = await setup(home)
+     const session = Session.create(SessionId('body-refresh'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+ 
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('Stable description')
+@@ -714,7 +715,7 @@ describe('dsh-tool-skill', () => {
+       callId: ToolCallId('foreign-load'),
+       name: 'skill',
+       arguments: { name: 'preset-only-skill' },
+-      agent: agentForCwd('/workspace/other'),
++      agent: agentForCwd(ctx, '/workspace/other'),
+     })
+     expect(foreign.isError).toBe(true)
+     await scope.dispose()
+@@ -730,7 +731,7 @@ describe('dsh-tool-skill', () => {
+       content: 'Stable body.',
+     })
+     const session = Session.create(SessionId('incomplete-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     expect(JSON.stringify(await composePrefixForAgent(ctx, agent))).toContain('stable-skill')
+ 
+@@ -754,7 +755,7 @@ describe('dsh-tool-skill', () => {
+     const ctx = await setup(home)
+     ctx.skills.register({ name: 'listed-skill', description: 'Listed', source: 'runtime', content: 'body' })
+     const session = Session.create(SessionId('restricted-catalog'))
+-    const agent = sessionAgent(session)
++    const agent = sessionAgent(ctx, session)
+     openMessageTurn(session)
+     const { scope } = await mintAgentScope(ctx, agent)
+     scope.ctx.tools.restrict({ deny: ['skill'] })
+@@ -813,7 +814,7 @@ describe('dsh-tool-skill', () => {
+       callId: ToolCallId('c1'),
+       name: 'skill',
+       arguments: { name: 'project-skill' },
+-      agent: { session: { header: { cwd: project } } } as never,
++      agent: agentForCwd(ctx, project),
+     })
+ 
+     expect(result.isError).toBe(false)
+@@ -1016,7 +1017,7 @@ describe('user-explicit invocation injection', () => {
+     await writePolicySkill(skillsRoot, 'shared-skill', 'Ordinary skill', '', 'Shared instructions.')
+     await writePolicySkill(skillsRoot, 'model-only-skill', 'Model only', 'user-invocable: false', 'Model-only instructions.')
+     const ctx = await setup(home)
+-    return { ctx, agent: agentForCwd(home) }
++    return { ctx, agent: agentForCwd(ctx, home) }
+   }
+ 
+   it('injects a user-invocable skill named by a leading /token, after every other injection', async () => {
+diff --git a/packages/mcp/mcp-client/src/connection.ts b/packages/mcp/mcp-client/src/connection.ts
+index 9a4ec912..47d930ff 100644
+--- a/packages/mcp/mcp-client/src/connection.ts
++++ b/packages/mcp/mcp-client/src/connection.ts
+@@ -99,6 +99,16 @@ export interface ConnectionOutcome {
+   error?: unknown
+ }
+ 
++/** A caller must not treat an unconfirmed transport close as a completed drain. */
++export class McpClientCloseError extends Error {
++  constructor(readonly code: 'mcp-close-unconfirmed' | 'mcp-close-unavailable') {
++    super(code === 'mcp-close-unconfirmed'
++      ? 'MCP transport closure was not confirmed; the resource owner must remain undrained.'
++      : 'No original MCP client close owner is registered on this plugin context.')
++    this.name = 'McpClientCloseError'
++  }
++}
++
+ /** Handle for one plugin instance's supervised connection. */
+ export interface ConnectionHandle extends ServerContext {
+   /**
+@@ -111,6 +121,7 @@ export interface ConnectionHandle extends ServerContext {
+    * Stop reconnection, close the negotiating transport or live client, wait
+    * for the in-flight attempt and queued tool syncs to quiesce, then
+    * unregister every tool this server still owns.
++   * Rejects with McpClientCloseError when transport closure remains unconfirmed.
+    */
+   dispose(): Promise<void>
+ }
+@@ -146,6 +157,8 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+   let client: Client | undefined
+   /** Transport-aware close operation paired with {@link client}. */
+   let closeClient: (() => Promise<boolean>) | undefined
++  /** A failed generation's unconfirmed close must survive losing current ownership. */
++  let unconfirmedClose = false
+   /** Live tool registrations owned by this server; only {@link enqueueSync} and dispose swap it. */
+   let disposers: ToolDisposers = new Map()
+   let reconnectTimer: NodeJS.Timeout | undefined
+@@ -188,6 +201,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+   function settleFailedGeneration(generation: Client, quiesced: boolean): void {
+     if (!isCurrent(generation)) return
+     if (!quiesced) {
++      unconfirmedClose = true
+       client = undefined
+       closeClient = undefined
+       ctx.logger.error(`${label}: failed generation could not confirm transport closure — reconnect stopped to avoid overlapping server processes; reload the plugin or restart the Host to retry`)
+@@ -395,15 +409,14 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
+       const close = closeClient
+       client = undefined
+       closeClient = undefined
+-      if (close !== undefined && !await close()) {
+-        ctx.logger.error(incompleteDisposalMessage)
+-      }
++      const confirmed = close === undefined || await close()
+       // Quiesce, don't just request it: the in-flight attempt enqueues its
+       // sync before settling, so awaiting both leaves `disposers` final.
+       await settling
+       await syncChain
+       for (const dispose of disposers.values()) dispose()
+       disposers = new Map()
++      if (!confirmed || unconfirmedClose) throw new McpClientCloseError('mcp-close-unconfirmed')
+     },
+   }
+ }
+diff --git a/packages/mcp/mcp-client/src/index.ts b/packages/mcp/mcp-client/src/index.ts
+index 3f89532b..25ecd381 100644
+--- a/packages/mcp/mcp-client/src/index.ts
++++ b/packages/mcp/mcp-client/src/index.ts
+@@ -19,11 +19,40 @@ import { scopeOf } from '@deepseek-ai/dsh-scope'
+ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+ import { DEFAULT_MAX_INSTRUCTION_BYTES, RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from './connection.ts'
+ import type { ReconnectConfig } from './connection.ts'
++import { McpClientCloseError } from './connection.ts'
+ import { registerServerContext } from './server-context.ts'
+ // Side-effect type import: declaration-merges `ctx.tools` onto Context.
+ import type {} from '@deepseek-ai/dsh-tools'
+ 
+ export { createMcpToolDefinition } from './tools.ts'
++export { McpClientCloseError } from './connection.ts'
++
++/** Close confirmation belonging to exactly one original plugin supervisor.
++ * Capture it before fiber disposal: Cordis contains finalizer errors.
++ * A failed close remains rejected; no later or inherited connection is substituted.
++ */
++export interface McpClientCloseHandle {
++  /** Stop this original supervisor and require confirmed transport teardown. */
++  close(): Promise<void>
++}
++const closeOwner = Symbol('mcp-client.close-owner')
++interface OwnedClose {
++  readonly context: Context
++  readonly handle: McpClientCloseHandle
++}
++/**
++ * Capture the original close owner from the actual MCP plugin fiber's ctx.
++ * There is no namespace/JSON lookup and no parent/sibling fallback. The owner
++ * is registered before readiness is published; absence is refusal, never proof of drain.
++ * A captured handle remains bound to this supervisor activation across unload or reload.
++ * @param context - the original MCP plugin context, not its parent Agent context.
++ * @returns this supervisor's explicit, idempotent await-close capability.
++ */
++export function captureMcpClientClose(context: Context): McpClientCloseHandle {
++  const owner: OwnedClose | undefined = Object.getOwnPropertyDescriptor(context, closeOwner)?.value
++  if (!owner || owner.context !== context) throw new McpClientCloseError('mcp-close-unavailable')
++  return owner.handle
++}
+ export type { McpResult, McpToolDefinitionOptions } from './tools.ts'
+ export type { ReconnectConfig, ResolvedReconnectPolicy } from './connection.ts'
+ 
+@@ -182,6 +211,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
+   registerServerContext(ctx, config.serverName, connection)
+   let stopping: Promise<void> | undefined
+   const dispose = (): Promise<void> => stopping ??= connection.dispose()
++  // This is instance-owned state, not an inheritable registry or a global map.
++  // Retain the old capability after unload so late observers join its exact
++  // result. HMR replaces this owner without rebinding captured old handles.
++  Object.defineProperty(ctx, closeOwner, {
++    value: Object.freeze<OwnedClose>({ context: ctx, handle: Object.freeze({ close: dispose }) }),
++    configurable: true,
++  })
+   // Cordis announces unload before awaiting an unfinished apply(). Closing
+   // the transport here releases startup requests that are still awaiting a reply.
+   // oxlint-disable-next-line typescript/no-misused-promises -- Cordis contains observer failures; the effect also awaits this promise.
+diff --git a/packages/mcp/mcp-client/tests/reconnect.spec.ts b/packages/mcp/mcp-client/tests/reconnect.spec.ts
+index f4167017..d0444937 100644
+--- a/packages/mcp/mcp-client/tests/reconnect.spec.ts
++++ b/packages/mcp/mcp-client/tests/reconnect.spec.ts
+@@ -55,7 +55,7 @@ vi.mock('@modelcontextprotocol/client/stdio', () => ({
+ 
+ // vi.mock is hoisted above static imports, so the modules under test see the
+ // mocked SDK even through a static import.
+-import { apply } from '@deepseek-ai/dsh-mcp-client/src/index.ts'
++import { apply, captureMcpClientClose } from '@deepseek-ai/dsh-mcp-client/src/index.ts'
+ import { RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from '@deepseek-ai/dsh-mcp-client/src/connection.ts'
+ 
+ // ---- Helpers ----
+@@ -344,10 +344,10 @@ describe('reconnect supervisor', () => {
+     }
+   })
+ 
+-  it.each(['connect', 'discovery'] as const)('bounds disposal during %s when the transport never reports closure', async (phase) => {
++  it.each(['connect', 'discovery'] as const)('rejects bounded disposal during %s when the transport never reports closure', async (phase) => {
+     vi.useFakeTimers()
+     try {
+-      const { errors } = captureLogs(ctx)
++      captureLogs(ctx)
+       const gate: PromiseWithResolvers<void> = Promise.withResolvers()
+       if (phase === 'connect') mockConnect.mockImplementation(() => gate.promise)
+       else mockListTools.mockImplementation(() => gate.promise.then(() => listing('late')))
+@@ -356,19 +356,38 @@ describe('reconnect supervisor', () => {
+       await vi.advanceTimersByTimeAsync(0)
+ 
+       const disposing = handle.dispose()
++      const rejected = expect(disposing).rejects.toMatchObject({ code: 'mcp-close-unconfirmed' })
+       await vi.advanceTimersByTimeAsync(5_000)
+       gate.resolve()
+       await vi.advanceTimersByTimeAsync(5_000)
+-      await disposing
++      await rejected
+ 
+       expect(mockListTools).toHaveBeenCalledTimes(phase === 'connect' ? 0 : 1)
+       expect(ctx.tools.get('mcp__srv__late')).toBeUndefined()
+-      expect(errors.some(line => line.includes('server shutdown may be incomplete'))).toBe(true)
+     } finally {
+       vi.useRealTimers()
+     }
+   })
+ 
++  it('captures only the original plugin close owner and shares its awaited result across unload', async () => {
++    const fiber = ctx.plugin({ name: 'mcp-client', inject: ['tools'], apply }, stdioConfig())
++    await fiber
++    const owner = captureMcpClientClose(fiber.ctx)
++    for (const foreign of [ctx, ctx.extend(), Object.create(fiber.ctx)]) {
++      expect(() => captureMcpClientClose(foreign)).toThrowError(
++        expect.objectContaining({ code: 'mcp-close-unavailable' }),
++      )
++    }
++    const first = owner.close()
++    expect(owner.close()).toBe(first)
++    await first
++    await fiber.dispose()
++    expect(captureMcpClientClose(fiber.ctx)).toBe(owner)
++    await owner.close()
++    expect(mockClose).toHaveBeenCalledTimes(1)
++    expect(ctx.tools.get('mcp__srv__remote')).toBeUndefined()
++  })
++
+   it('closes a transport that attaches after disposal starts', async () => {
+     const gate: PromiseWithResolvers<void> = Promise.withResolvers()
+     mockConnect.mockImplementation(function (this: { transport: object | undefined }) {
+diff --git a/packages/skill/tool-skill/package.json b/packages/skill/tool-skill/package.json
+index 3e44feab..0e3850b3 100644
+--- a/packages/skill/tool-skill/package.json
++++ b/packages/skill/tool-skill/package.json
+@@ -31,6 +31,7 @@
+   "peerDependencies": {
+     "@deepseek-ai/dsh-agent": "workspace:*",
+     "@deepseek-ai/dsh-llm": "workspace:*",
++    "@deepseek-ai/dsh-scope": "workspace:*",
+     "@deepseek-ai/dsh-skill": "workspace:*",
+     "@deepseek-ai/dsh-tools": "workspace:*",
+     "@deepseek-ai/cordis": "workspace:~",
+diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
+--- a/apps/desktop/src/project-manager.ts
++++ b/apps/desktop/src/project-manager.ts
+@@ -172,5 +172,14 @@
+ 
+ /** Create the first external plugin profile without running a package manager. */
+ export function createPluginProfile(projectDir: string): void {
++  // Only the first profile creation selects member mode. Existing profile patches
++  // and legacy data keep their explicit/inherited mode until a separate migration.
++  const patch = join(projectDir, 'cordis.patch.yml')
++  if (!existsSync(join(projectDir, 'package.json')) && !existsSync(patch)) {
++    mkdirSync(projectDir, { recursive: true, mode: 0o700 })
++    // Write the selection before the manifest: a failed init can retry without
++    // falling back to an inherited legacy default or replacing an existing patch.
++    writeFileSync(patch, '# Zhuma first profile: explicit member setup.\n- id: zhuma-workbench\n  config:\n    deploymentMode: multi-member\n    localSetup: true\n', { flag: 'wx', mode: 0o600 })
++  }
+   initProfile(projectDir, WEB_PROFILE.bundles)
+ }

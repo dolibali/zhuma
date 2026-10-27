@@ -13,10 +13,24 @@ import {
   type PlanningAdjustment,
 } from '@zhuma/agent-core';
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
+import type { MemberWorkbenchSnapshot } from './member-api.js';
+
+export type WorkbenchWriteIntent =
+  'create-project' | 'update-project' | 'create-task' | 'update-task' | 'confirm-task';
+export interface WorkbenchMemberAccess {
+  readonly actorId: string;
+  capabilities(): MemberWorkbenchSnapshot['capabilities'] | undefined;
+}
 
 export interface WorkbenchApi {
+  readonly member?: WorkbenchMemberAccess;
   snapshot(signal?: AbortSignal): Promise<{ state: Workbench; model: string }>;
-  save(revision: number, command: WorkbenchCommand, requestId: string): Promise<Workbench>;
+  save(
+    revision: number,
+    command: WorkbenchCommand,
+    requestId: string,
+    intent?: WorkbenchWriteIntent,
+  ): Promise<Workbench>;
   previewImport(source: PackageUpload, signal: AbortSignal): Promise<ImportPackagePreview>;
   resourceFiles(
     kind: 'asset' | 'expert',

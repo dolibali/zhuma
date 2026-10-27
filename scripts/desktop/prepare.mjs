@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Prepare or explicitly refresh Zhuma's owned desktop worktree, leaving the pinned submodule intact. */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sha256, verifyIconAssets, installIconAssets } from './icon-assets.mjs';
@@ -10,6 +10,8 @@ const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const upstream = join(root, 'upstream/deepseek-harness');
 const stage = join(root, '.build/desktop/deepseek-harness');
 const patchPath = join(root, 'patches/deepseek-harness/zhuma-desktop.patch');
+const memberTransport = join(root, 'packages/dsh-adapter/src/desktop-member-cookie.ts');
+const stagedMemberTransport = join(stage, 'apps/desktop/src/zhuma-member-cookie.ts');
 const pinned = JSON.parse(readFileSync(join(root, 'runtime.lock.json'), 'utf8')).upstreams
   .deepseekHarness.commit;
 const stampPath = join(stage, '.zhuma-prepared.json');
@@ -33,6 +35,7 @@ const manifest = verifyIconAssets(root);
 const digest = sha256(
   Buffer.concat([
     readFileSync(patchPath),
+    readFileSync(memberTransport),
     readFileSync(join(root, 'branding/default/icon-manifest.json')),
     readFileSync(fileURLToPath(import.meta.url)),
     readFileSync(join(root, 'scripts/desktop/icon-assets.mjs')),
@@ -42,6 +45,13 @@ if (existsSync(stampPath)) {
   const stamp = JSON.parse(readFileSync(stampPath, 'utf8'));
   if (stamp.pinned !== pinned || output('git', ['rev-parse', 'HEAD'], stage) !== pinned)
     throw new Error('Prepared worktree revision differs');
+  if (
+    !existsSync(stagedMemberTransport) ||
+    sha256(readFileSync(stagedMemberTransport)) !== sha256(readFileSync(memberTransport))
+  )
+    throw new Error(
+      'Prepared member transport differs; inspect the owned build tree before resetting.',
+    );
   if (stamp.digest === digest && !refresh) {
     console.log(`Zhuma desktop already prepared: ${stage}`);
     process.exit(0);
@@ -58,6 +68,7 @@ if (existsSync(stampPath)) {
   run('git', ['-C', upstream, 'worktree', 'add', '--detach', stage, pinned]);
   run('git', ['-C', stage, 'apply', '--check', patchPath]);
   run('git', ['-C', stage, 'apply', patchPath]);
+  copyFileSync(memberTransport, stagedMemberTransport);
   writeFileSync(
     join(stage, 'scripts/install-lefthook.mjs'),
     '// Zhuma isolated build: do not change hooks in the upstream repository.\n',

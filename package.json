@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Plugin-first agent workbench built on DeepSeek Harness Desktop.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@12.4.2",
   "engines": {
@@ -32,6 +32,8 @@
     "desktop:verify:mac": "node scripts/desktop/verify.mjs",
     "brand:check": "node scripts/desktop/check-icons.mjs",
     "desktop:verify:icons": "node scripts/desktop/check-running-icons.mjs",
+    "desktop:verify:member": "node scripts/desktop/verify-member-transport.mjs",
+    "desktop:verify:native-lifecycle": "node scripts/desktop/verify-native-lifecycle.mjs",
     "workbench:build": "node scripts/workbench/build.mjs",
     "workbench:stage": "pnpm workbench:build && node scripts/workbench/install-stage.mjs",
     "test:ui": "pnpm workbench:build && pnpm test:ui:run",

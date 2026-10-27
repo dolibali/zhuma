@@ -1,0 +1,568 @@
+{
+  "sourceSha": "14ead7c61a2e4c4775d7e77644bcb4e10690dece",
+  "readTarget": {
+    "name": "read_review_target",
+    "sourceVersion": "zhuma-native-review-read@1",
+    "description": "Read actual fixed-target body bytes using one resource reference from the Host review catalog. The Host binds this review Run, round, artifact and configured reviewer; none is selected by these arguments. Request a nonnegative byte offset and 1–8192 bytes. At most 16 attempts and 65536 returned body bytes are allowed per Run. Only a successful UTF-8 body page can support a completion anchor/read reference; catalog, metadata, EOF, unsupported or failed reads are not body-read evidence. Partial pages prove only their actual ranges. Report unsupported required material rather than claim it was reviewed. No paths, URLs, identities, target IDs or permission claims.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resourceRef", "offset", "length"],
+      "properties": {
+        "resourceRef": {
+          "type": "string",
+          "description": "An exact entry from this Host-bound review resource catalog."
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Nonnegative byte offset, never a character index."
+        },
+        "length": {
+          "type": "integer",
+          "description": "1–8192 requested bytes. Only actual returned bytes are evidenced."
+        }
+      }
+    },
+    "outputSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": false
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "invalid-arguments",
+                "review-unavailable",
+                "review-authority-denied",
+                "review-target-changed",
+                "review-read-required",
+                "review-read-mismatch",
+                "review-range-invalid",
+                "review-unsupported-material",
+                "review-input-pending",
+                "review-result-rejected",
+                "review-capacity",
+                "review-read-budget-exceeded",
+                "read-timeout",
+                "output-too-large",
+                "cancelled"
+              ]
+            }
+          },
+          "required": ["ok", "code"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": true
+            },
+            "protocolVersion": {
+              "type": "integer",
+              "const": 1
+            },
+            "toolVersion": {
+              "type": "string",
+              "const": "zhuma-native-review-read@1"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "readRef": {
+              "type": "string"
+            },
+            "source": {
+              "type": "object",
+              "properties": {
+                "context": {
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "review"
+                    },
+                    "scope": {
+                      "type": "object",
+                      "properties": {
+                        "actorId": {
+                          "type": "string"
+                        },
+                        "spaceId": {
+                          "type": "string"
+                        },
+                        "taskId": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "type": "string"
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "nodeId": {
+                          "type": "string"
+                        },
+                        "runId": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "segmentId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "actorId",
+                        "spaceId",
+                        "taskId",
+                        "planId",
+                        "revision",
+                        "nodeId",
+                        "runId",
+                        "generation",
+                        "segmentId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "review": {
+                      "type": "object",
+                      "properties": {
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "spaceId": {
+                              "type": "string"
+                            },
+                            "taskId": {
+                              "type": "string"
+                            },
+                            "planId": {
+                              "type": "string"
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "nodeId": {
+                              "type": "string"
+                            },
+                            "roundId": {
+                              "type": "string"
+                            },
+                            "artifactVersionId": {
+                              "type": "string"
+                            },
+                            "artifactFingerprint": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "spaceId",
+                            "taskId",
+                            "planId",
+                            "revision",
+                            "nodeId",
+                            "roundId",
+                            "artifactVersionId",
+                            "artifactFingerprint"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "principal": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "expert"
+                            },
+                            "controllerMemberId": {
+                              "type": "string"
+                            },
+                            "reviewerRef": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "version": {
+                                  "type": "string"
+                                },
+                                "digest": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["id", "version", "digest"],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": ["kind", "controllerMemberId", "reviewerRef"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": ["target", "principal"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["schemaVersion", "role", "scope", "review"],
+                  "additionalProperties": false
+                },
+                "nativeSessionId": {
+                  "type": "string"
+                },
+                "nativeAgentId": {
+                  "type": "string"
+                },
+                "configurationId": {
+                  "type": "string"
+                },
+                "resourceRef": {
+                  "type": "string"
+                },
+                "resourceFingerprint": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "context",
+                "nativeSessionId",
+                "nativeAgentId",
+                "configurationId",
+                "resourceRef",
+                "resourceFingerprint"
+              ],
+              "additionalProperties": false
+            },
+            "range": {
+              "type": "object",
+              "properties": {
+                "offset": {
+                  "type": "integer"
+                },
+                "length": {
+                  "type": "integer"
+                },
+                "total": {
+                  "type": "integer"
+                }
+              },
+              "required": ["offset", "length", "total"],
+              "additionalProperties": false
+            },
+            "encoding": {
+              "type": "string",
+              "const": "utf-8"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "protocolVersion",
+            "toolVersion",
+            "callId",
+            "readRef",
+            "source",
+            "range",
+            "encoding",
+            "sha256",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "completeReview": {
+    "name": "complete_review",
+    "sourceVersion": "zhuma-native-review-intent@1",
+    "description": "Declare one independent review of the Host-bound fixed target. Submit approve, request-changes or comment with a nonempty rationale (at most 100000 characters), at most 50 byte-range anchors and 1–16 unique read references returned by successful read_review_target calls in this review Run. The entire argument JSON is limited to 120000 UTF-8 bytes, including syntax, escaping and whitespace. Its JSON arguments field plus a 16384-byte reserved envelope must fit the unchanged 262144-byte public frame. The Host rejects over-budget declarations before intent/ACK without truncation. Anchors must be within those actual returned ranges. Do not claim the whole target was read from a partial manifest. Unsupported required material prevents a decision; comment records an opinion and leaves the review obligation pending. Supply no actor, reviewer, round, target, permission or read-proof claim. This ends the native turn, not the review round: the Host separately authenticates reads, completion cut and original writer retirement before the original Service may record an idempotent ballot. Do not issue further work or tools after declaration.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conclusion", "rationale", "anchors", "evidenceRefs"],
+      "properties": {
+        "conclusion": {
+          "type": "string",
+          "enum": ["approve", "request-changes", "comment"]
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Nonempty review reasoning, at most 100000 characters and within the total 120000-byte UTF-8 JSON argument budget."
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "resourceRef": {
+                "type": "string"
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "length": {
+                "type": "integer"
+              }
+            },
+            "required": ["resourceRef", "offset", "length"],
+            "additionalProperties": false
+          },
+          "description": "At most 50 positive byte ranges within actual successful read pages, never character offsets."
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "1–16 unique Host read references from this same independent review Run."
+        }
+      }
+    },
+    "outputSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": false
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "invalid-arguments",
+                "review-unavailable",
+                "review-authority-denied",
+                "review-target-changed",
+                "review-read-required",
+                "review-read-mismatch",
+                "review-range-invalid",
+                "review-unsupported-material",
+                "review-input-pending",
+                "review-result-rejected",
+                "review-capacity",
+                "review-read-budget-exceeded",
+                "read-timeout",
+                "output-too-large",
+                "cancelled"
+              ]
+            }
+          },
+          "required": ["ok", "code"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": true
+            },
+            "phase": {
+              "type": "string",
+              "const": "declared"
+            },
+            "protocolVersion": {
+              "type": "integer",
+              "const": 1
+            },
+            "toolVersion": {
+              "type": "string",
+              "const": "zhuma-native-review-intent@1"
+            },
+            "intentId": {
+              "type": "string"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "readManifestDigest": {
+              "type": "string"
+            },
+            "source": {
+              "type": "object",
+              "properties": {
+                "context": {
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "role": {
+                      "type": "string",
+                      "const": "review"
+                    },
+                    "scope": {
+                      "type": "object",
+                      "properties": {
+                        "actorId": {
+                          "type": "string"
+                        },
+                        "spaceId": {
+                          "type": "string"
+                        },
+                        "taskId": {
+                          "type": "string"
+                        },
+                        "planId": {
+                          "type": "string"
+                        },
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "nodeId": {
+                          "type": "string"
+                        },
+                        "runId": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "segmentId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "actorId",
+                        "spaceId",
+                        "taskId",
+                        "planId",
+                        "revision",
+                        "nodeId",
+                        "runId",
+                        "generation",
+                        "segmentId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "review": {
+                      "type": "object",
+                      "properties": {
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "spaceId": {
+                              "type": "string"
+                            },
+                            "taskId": {
+                              "type": "string"
+                            },
+                            "planId": {
+                              "type": "string"
+                            },
+                            "revision": {
+                              "type": "integer"
+                            },
+                            "nodeId": {
+                              "type": "string"
+                            },
+                            "roundId": {
+                              "type": "string"
+                            },
+                            "artifactVersionId": {
+                              "type": "string"
+                            },
+                            "artifactFingerprint": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "spaceId",
+                            "taskId",
+                            "planId",
+                            "revision",
+                            "nodeId",
+                            "roundId",
+                            "artifactVersionId",
+                            "artifactFingerprint"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "principal": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "expert"
+                            },
+                            "controllerMemberId": {
+                              "type": "string"
+                            },
+                            "reviewerRef": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "version": {
+                                  "type": "string"
+                                },
+                                "digest": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["id", "version", "digest"],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": ["kind", "controllerMemberId", "reviewerRef"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": ["target", "principal"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["schemaVersion", "role", "scope", "review"],
+                  "additionalProperties": false
+                },
+                "nativeSessionId": {
+                  "type": "string"
+                },
+                "nativeAgentId": {
+                  "type": "string"
+                },
+                "configurationId": {
+                  "type": "string"
+                }
+              },
+              "required": ["context", "nativeSessionId", "nativeAgentId", "configurationId"],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "ok",
+            "phase",
+            "protocolVersion",
+            "toolVersion",
+            "intentId",
+            "callId",
+            "digest",
+            "readManifestDigest",
+            "source"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

@@ -4,6 +4,9 @@
     { "path": "./packages/agent-core" },
     { "path": "./packages/context" },
     { "path": "./packages/dsh-adapter" },
-    { "path": "./packages/client" }
+    { "path": "./packages/dsh-adapter/tsconfig.conformance.json" },
+    { "path": "./packages/dsh-adapter/tsconfig.identity.json" },
+    { "path": "./packages/client" },
+    { "path": "./packages/client/tsconfig.conformance.json" }
   ]
 }

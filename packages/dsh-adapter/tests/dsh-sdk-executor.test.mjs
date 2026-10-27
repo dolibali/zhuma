@@ -70,8 +70,14 @@ function executor(mode, extra = {}) {
   const engine = new DshChatExecutor(env, {
     bin: extra.bin ?? stub,
     mode,
-    initTimeoutMs: extra.initTimeoutMs ?? 2000,
-    promptTimeoutMs: extra.promptTimeoutMs ?? 2000,
+    // Content/permission positives use the real executor's normal budgets;
+    // only timing/fault fixtures need the shorter test-specific overrides.
+    ...(extra.runtimeDeadlines
+      ? {}
+      : {
+          initTimeoutMs: extra.initTimeoutMs ?? 2000,
+          promptTimeoutMs: extra.promptTimeoutMs ?? 2000,
+        }),
     onSpawn: (pid) => pids.push(pid),
   });
   return { engine, pids, env };
@@ -251,7 +257,7 @@ async function collect(mode, extra = {}) {
 }
 
 test('契约：未授权的技能和 MCP 进不了这次运行', async () => {
-  const { desk, pids, env } = open('ok');
+  const { desk, pids, env } = open('ok', { runtimeDeadlines: true });
   const image = desk.addAttachment({
     name: '图.png',
     mediaType: 'image/png',
@@ -285,6 +291,14 @@ test('契约：未授权的技能和 MCP 进不了这次运行', async () => {
   });
   assert.equal(sent.ok, true);
   await desk.flush();
+  assert.equal(
+    desk.snapshot().runs.find((run) => run.id === sent.runId)?.status,
+    'completed',
+    desk
+      .snapshot()
+      .faults.map((fault) => fault.reason)
+      .join('\n'),
+  );
   const home = homeOf(desk, env, sent.runId);
   const visible = JSON.parse(readFileSync(path.join(home, 'zhuma-visible.json'), 'utf8'));
   assert.deepEqual(visible.skills, [{ id: 'test-design', version: 'plan-skill-1' }]);
@@ -341,13 +355,21 @@ test('契约：未授权的技能和 MCP 进不了这次运行', async () => {
 });
 
 test('契约：空的上下文引用不会把上下文包放进提示', async () => {
-  const { engine, pids, env } = executor('ok');
+  const { engine, pids, env } = executor('ok', { runtimeDeadlines: true });
   const bare = seed();
   bare.handoff.inputRefs = [];
   const desk = ExecutionDesk.create(bare, { executors: [engine], newId: ids('empty-context') });
   desk.updateConfig({ executorId: 'dsh', skillIds: ['test-design'], mcpIds: ['api-docs'] });
   const sent = desk.send({ text: '没有上下文包', idempotencyKey: 'empty-context' });
   await desk.flush();
+  assert.equal(
+    desk.snapshot().runs.find((run) => run.id === sent.runId)?.status,
+    'completed',
+    desk
+      .snapshot()
+      .faults.map((fault) => fault.reason)
+      .join('\n'),
+  );
   const prompt = readFileSync(
     path.join(homeOf(desk, env, sent.runId), 'zhuma-prompt.json'),
     'utf8',

@@ -1,13 +1,86 @@
 import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export * from './identity/index.js';
+export type {
+  WorkflowApi,
+  WorkflowTarget,
+  WorkflowLocation,
+  WorkflowView,
+  WorkflowOptions,
+  WorkflowStart,
+  WorkflowControl,
+  WorkflowWorkspace,
+} from './workflow/api.js';
+export { WorkflowControls } from './workflow/WorkflowControls.js';
+export type {
+  NativeConversationTarget,
+  NativeConversationFrame,
+  NativeRunInbox,
+  NativeRunTarget,
+  NativeRunModel,
+  NativeRunExecutor,
+  NativeRunSelection,
+  NativeRunModelChoice,
+  NativeRunExpertChoice,
+  NativeRunChoices,
+  NativeRunAction,
+  NativeRunSendMode,
+  NativeRunSummary,
+  NativeRunResultDelivery,
+  NativeRunMessage,
+  NativeRunResource,
+  NativeRunPanelView,
+  NativeRunPanelProps,
+} from './run/native-run-contract.js';
 
-export type { InboxItemView, NodeExecutionView } from './execution-view.js';
+export type { InboxItemView, NodeExecutionView, InboxGroup } from './execution-view.js';
+export type {
+  StartablePlanWire,
+  ExecutionStartableValue,
+  StartPlanDraft,
+  StartPlanValue,
+  DeliveryDraft,
+  ExecutionApi,
+  ExecutionInboxValue,
+  InboxPlaceWire,
+  ExecutionNodeWire,
+  UpstreamInputWire,
+  UpstreamContentQuery,
+  UpstreamContentWire,
+  SavedDeliveryDraftWire,
+  DeliveryDraftSave,
+  ReviewDraft,
+  RevisionQuery,
+  RevisionContentWire,
+  RevisionViewWire,
+} from './execution/ExecutionApi.js';
+export {
+  ExecutionError,
+  executionErrorMessage,
+  createExecutionApi,
+  readExecutionNode,
+  readRevisionView,
+  readSavedDeliveryDraft,
+  readInboxPlaces,
+} from './execution/ExecutionApi.js';
+export { StartablePlansPanel } from './execution/StartablePlansPanel.js';
+export { StartPlanPanel, type ExecutionPlan } from './execution/StartPlanPanel.js';
+export { DeliveryPanel } from './execution/DeliveryPanel.js';
+export { UpstreamInputsPanel } from './execution/UpstreamInputsPanel.js';
+export { createExecutionHttpApi, type MemberExecutionScope } from './execution/http.js';
+export { MemberExecutionPage } from './execution/MemberExecutionPage.js';
+export { ExecutionWorkspace } from './execution/ExecutionWorkspace.js';
+export { InboxPanel } from './execution/InboxPanel.js';
+export { ReviewWorkspace } from './execution/ReviewWorkspace.js';
+export { RevisionPanel } from './execution/RevisionPanel.js';
+export { RevisionWorkspace } from './execution/RevisionWorkspace.js';
 export {
   INBOX_ACTION_LABELS,
   INBOX_KIND_LABELS,
   NODE_STATUS_LABELS,
   createInboxItemView,
+  INBOX_GROUPS,
+  inboxItemGroup,
   createNodeExecutionView,
 } from './execution-view.js';
 
@@ -50,3 +123,15 @@ export function createTaskView(task: TaskSnapshot, view: ViewMode): TaskViewMode
     planRevision: task.planRevision,
   };
 }
+
+export {
+  createMemberWorkbenchApi,
+  type MemberWorkbenchApi,
+  type MemberWorkbenchCommand,
+  type MemberWorkbenchCommandInput,
+  type MemberWorkbenchPlanValue,
+  type MemberWorkbenchScope,
+  type MemberWorkbenchSnapshot,
+  type MemberTaskInput,
+} from './workbench/member-api.js';
+export { createMemberWorkbenchAdapter } from './workbench/member-adapter.js';

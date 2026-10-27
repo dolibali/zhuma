@@ -3,8 +3,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { publicTeamStarterPackages } from '../lib/team-starter-packages.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+const adapterManifest = JSON.parse(
+  await readFile(resolve(root, 'packages/dsh-adapter/package.json'), 'utf8'),
+);
 const compile = spawnSync(
   process.execPath,
   [resolve(root, 'node_modules/typescript/bin/tsc'), '-b'],
@@ -32,6 +36,8 @@ const hostBuild = await build({
   metafile: true,
   target: 'node24',
   sourcemap: false,
+  // Derived from the original public source files; no runtime repo/profile path.
+  define: { ZHUMA_PUBLIC_TEAM_PACKAGES: JSON.stringify(await publicTeamStarterPackages()) },
   // Bundled ZIP dependencies are CommonJS and use Node built-ins. Keep their
   // require calls valid in the official Host's ESM plugin, without runtime installs.
   banner: {
@@ -56,6 +62,22 @@ const verifiedHostExternals = new Set([
   '@deepseek-ai/dsh-client-connection',
   '@deepseek-ai/cordis',
   '@deepseek-ai/schemastery',
+  // The official Web overlay declares these exact SDK peers and lock entries.
+  // They remain the Host's live modules, including persistence error identity.
+  '@deepseek-ai/dsh-llm',
+  '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-session-persistence',
+  '@deepseek-ai/dsh-skill',
+  '@deepseek-ai/dsh-tool-skill',
+  '@deepseek-ai/dsh-mcp-client',
+  '@deepseek-ai/dsh-tools',
+  '@deepseek-ai/dsh-scope',
+  '@deepseek-ai/dsh-system-prompt',
+  '@deepseek-ai/dsh-workspace',
+  '@deepseek-ai/dsh-tool-fs',
+  '@deepseek-ai/dsh-fs-observation-policy',
+  '@deepseek-ai/dsh-fs-local',
+  '@deepseek-ai/dsh-sandbox-policy',
 ]);
 if (
   !hostSdkImports.includes('@deepseek-ai/dsh-client-connection') ||
@@ -94,10 +116,20 @@ await writeFile(
       name: '@zhuma/workbench',
       version: '0.1.0',
       private: true,
-      license: 'UNLICENSED',
+      license: 'MIT',
       type: 'module',
       main: './index.js',
       exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' },
+      peerDependencies: Object.fromEntries(
+        [...new Set(hostSdkImports)].sort().map((name) => {
+          // Every external is already pinned in the owning package manifest.
+          const version =
+            adapterManifest.dependencies?.[name] ?? adapterManifest.devDependencies?.[name];
+          if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/u.test(version))
+            throw new Error(`Missing exact Host SDK peer version: ${name}`);
+          return [name, version];
+        }),
+      ),
       dsh: {
         client: {
           platform: 'web',
@@ -117,6 +149,7 @@ await writeFile(
 );
 console.log('Built Host/Client plugin in .build/workbench');
 
+await writeFile(resolve(out, 'LICENSE'), await readFile(resolve(root, 'LICENSE')));
 // Preserve the full license text for every bundled dependency, including transitive modules.
 const licenses = new Map();
 for (const input of [

@@ -3,10 +3,18 @@ export interface LoginCredentials {
   readonly password: string;
 }
 
+/** Directory facts returned by the member session, never inferred from project contents. */
+export interface MemberSpace {
+  readonly id: string;
+  readonly kind: 'personal' | 'team';
+  readonly name: string;
+}
+
 export interface MemberSession {
   readonly accountId: string;
   readonly principal: { readonly kind: 'zhuma-member'; readonly memberId: string };
   readonly peerId: string;
+  readonly spaces: readonly MemberSpace[];
 }
 
 export interface IdentityApi {
@@ -25,6 +33,7 @@ const failureMessages = {
   'member-session-required': '请使用成员账号登录。',
   'session-changed': '账号已发生变化，请重新登录。',
   'request-rejected': '登录请求未被接受，请重新输入。',
+  'space-unavailable': '此空间已不可访问，请选择其他空间。',
 } as const;
 export type IdentityFailure = keyof typeof failureMessages;
 
@@ -59,10 +68,25 @@ function sessionReply(value: unknown): MemberSession {
     !text(value.peerId)
   )
     throw new IdentityApiError('invalid-response');
+  if (!Array.isArray(value.spaces)) throw new IdentityApiError('invalid-response');
+  const ids = new Set<string>();
+  const spaces = value.spaces.map((space: unknown): MemberSpace => {
+    if (
+      !record(space) ||
+      !text(space.id) ||
+      !text(space.name) ||
+      (space.kind !== 'personal' && space.kind !== 'team') ||
+      ids.has(space.id)
+    )
+      throw new IdentityApiError('invalid-response');
+    ids.add(space.id);
+    return Object.freeze({ id: space.id, kind: space.kind, name: space.name });
+  });
   return Object.freeze({
     accountId,
     principal: Object.freeze({ kind: 'zhuma-member', memberId: accountId }),
     peerId: value.peerId,
+    spaces: Object.freeze(spaces),
   });
 }
 

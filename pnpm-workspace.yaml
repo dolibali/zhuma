@@ -4,4 +4,7 @@ packages:
 # The upstream checkout has its own workspace, lockfile and package manager.
 # Do not add upstream/** or distribution/** to these globs.
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': false
   esbuild: false
+  koffi: false
+  node-pty: false

@@ -1,7 +1,18 @@
 import { createRoot } from 'react-dom/client';
 import { StrictMode, useState } from 'react';
 import { SelectProbe } from './select-probe.jsx';
+import { StartableProbe } from './startable-probe.jsx';
+import { ExecutionProbe } from './execution-probe.jsx';
+import { RevisionProbe } from './revision-probe.jsx';
+import { UpstreamProbe } from './upstream-probe.jsx';
+import { DeliveryDraftProbe } from './delivery-draft-probe.jsx';
+import { InboxGroupsProbe } from './inbox-groups-probe.jsx';
+import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
+import { MemberWorkbenchProbe } from './member-workbench-probe.jsx';
 import { MemberLoginProbe } from './member-login-probe.jsx';
+import { MemberSpacesProbe } from './member-spaces-probe.jsx';
+import { MemberExecutionSpacesProbe } from './member-execution-spaces-probe.jsx';
+import { createMemberAccountProbe } from './member-account-probe.jsx';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
 import styles from '../../src/workbench/workbench.css';
@@ -56,7 +67,29 @@ function MountProbe() {
     </>
   );
 }
-const content = new URL(location.href).searchParams.has('member-login') ? (
+const content = new URL(location.href).searchParams.has('member-account') ? (
+  createMemberAccountProbe()
+) : new URL(location.href).searchParams.has('startable-plans') ? (
+  <StartableProbe />
+) : new URL(location.href).searchParams.has('member-execution-spaces') ? (
+  <MemberExecutionSpacesProbe />
+) : new URL(location.href).searchParams.has('member-spaces') ? (
+  <MemberSpacesProbe />
+) : new URL(location.href).searchParams.has('member-workbench') ? (
+  <MemberWorkbenchProbe appearance={appearance} />
+) : new URL(location.href).searchParams.has('member-execution') ? (
+  <MemberExecutionPage />
+) : new URL(location.href).searchParams.has('execution-client') ? (
+  <ExecutionProbe />
+) : new URL(location.href).searchParams.has('revision-client') ? (
+  <RevisionProbe />
+) : new URL(location.href).searchParams.has('upstream-client') ? (
+  <UpstreamProbe />
+) : new URL(location.href).searchParams.has('delivery-drafts') ? (
+  <DeliveryDraftProbe />
+) : new URL(location.href).searchParams.has('inbox-groups') ? (
+  <InboxGroupsProbe />
+) : new URL(location.href).searchParams.has('member-login') ? (
   <MemberLoginProbe />
 ) : new URL(location.href).searchParams.has('mount-probe') ? (
   <MountProbe />

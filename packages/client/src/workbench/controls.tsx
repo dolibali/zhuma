@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { Participant } from '@zhuma/agent-core';
+import { ControlIcon } from './ControlIcon.js';
 
 export type ParticipantChoice = Participant & { placeholder?: boolean };
 
@@ -15,33 +16,67 @@ export function Modal({
   title,
   children,
   close,
+  variant = 'default',
+  initialFocusId,
+  descriptionId,
+  restoreFocus,
 }: {
   title: string;
   children: ReactNode;
   close(): void;
+  variant?: 'default' | 'confirmation' | 'workspace';
+  initialFocusId?: string;
+  descriptionId?: string;
+  restoreFocus?: (() => void) | undefined;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
-    ref.current?.showModal();
-  }, []);
+    const dialog = ref.current;
+    if (!dialog) return;
+    dialog.showModal();
+    if (initialFocusId) document.getElementById(initialFocusId)?.focus();
+    if (variant === 'confirmation')
+      return () => {
+        dialog.close();
+        restoreFocus?.();
+      };
+    if (variant === 'workspace')
+      return () => {
+        dialog.close();
+        queueMicrotask(() => {
+          if (!dialog.open) restoreFocus?.();
+        });
+      };
+  }, [initialFocusId, restoreFocus, variant]);
   return (
     <dialog
-      className="zm-dialog"
+      className={`zm-dialog${variant === 'confirmation' ? ' zm-dialog-confirmation' : variant === 'workspace' ? ' zm-dialog-workspace' : ''}`}
       ref={ref}
       onCancel={(event) => {
         event.preventDefault();
         event.stopPropagation();
         close();
       }}
-      aria-labelledby={titleId}
+      aria-labelledby={variant === 'workspace' ? undefined : titleId}
+      aria-label={variant === 'workspace' ? title : undefined}
+      aria-describedby={descriptionId}
     >
-      <header>
-        <h2 id={titleId}>{title}</h2>
-        <button type="button" aria-label="关闭" onClick={close}>
-          ×
-        </button>
-      </header>
+      {variant !== 'workspace' && (
+        <header>
+          <h2 id={titleId}>{title}</h2>
+          <button type="button" className="zm-dialog-close" aria-label="关闭" onClick={close}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="m4 4 8 8m0-8-8 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </header>
+      )}
       {children}
     </dialog>
   );
@@ -234,7 +269,7 @@ export function ParticipantSelect({
             ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` +${names.length - 3}` : ''}`
             : `选择${label}`}
         </span>
-        <span aria-hidden>⌄</span>
+        <ControlIcon direction="right" />
       </button>
       {open && (
         <Modal title={`选择${label}`} close={() => setOpen(false)}>

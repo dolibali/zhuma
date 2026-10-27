@@ -37,6 +37,45 @@ export const INBOX_ACTION_LABELS: Record<InboxAction, string> = {
   confirm: '确认',
 };
 
+export const INBOX_GROUPS = [
+  { id: 'deliver', label: '待我交付' },
+  { id: 'revise', label: '退回修改' },
+  { id: 'review', label: '待我评审' },
+  { id: 'active', label: '处理中' },
+  { id: 'attention', label: '补充与确认' },
+  { id: 'other', label: '其他工作项' },
+] as const;
+export type InboxGroup = (typeof INBOX_GROUPS)[number]['id'];
+
+/** Groups only service-provided items. Node state alone never creates a human obligation. */
+export function inboxItemGroup(item: InboxItem): InboxGroup {
+  if (item.kind === 'deliver' && item.action === 'submit' && item.reason === 'assignee-delivery')
+    return 'deliver';
+  if (item.kind === 'deliver' && item.action === 'revise' && item.reason === 'revision-delivery')
+    return 'revise';
+  if (item.kind === 'review' && item.action === 'review' && item.reason === 'review-assigned')
+    return 'review';
+  if (
+    item.kind === 'deliver' &&
+    item.action === 'continue-handling' &&
+    item.reason === 'agent-assisted-delivery'
+  )
+    return 'active';
+  if (
+    (item.kind === 'confirm' &&
+      item.action === 'confirm' &&
+      ['parent-confirmation', 'explicit-confirmation'].includes(item.reason)) ||
+    (item.kind === 'deliver' &&
+      item.action === 'provide-input' &&
+      ['input-required', 'owner-input-required'].includes(item.reason)) ||
+    (item.kind === 'deliver' &&
+      item.action === 'retry-or-take-back' &&
+      ['retry-or-take-back', 'owner-take-back'].includes(item.reason))
+  )
+    return 'attention';
+  return 'other';
+}
+
 export interface NodeExecutionView {
   readonly nodeId: string;
   readonly taskId: string;
