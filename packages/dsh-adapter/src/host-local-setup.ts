@@ -191,7 +191,8 @@ export function openHostLocalSetup(options: {
         check.value.setupFingerprint !== input.setupFingerprint ||
         canonicalPayload(check.value.setupContext) !== canonicalPayload(input.setupContext) ||
         check.directoryFingerprint !== input.directoryFingerprint ||
-        !check.directory.isMember(check.grants[0]!.spaceId, input.accountIds[0]!)
+        !check.directory.isMember(check.grants[0]!.spaceId, input.accountIds[0]!) ||
+        localSetupPackIds.some((id) => input.accountIds.includes(id))
       )
         throw new HostLocalSetupError('conflict');
       await establish(original, owner, true);
@@ -212,6 +213,10 @@ export function openHostLocalSetup(options: {
     async initialize(raw: HostLocalSetupInput) {
       const input = hostLocalSetupInputSchema.parse(raw),
         owner = current();
+      // Human and expert participants share the original Workbench id namespace.
+      // Refuse this before any identity/directory write, rather than creating an unusable team.
+      if (localSetupPackIds.some((id) => id === input.accountId))
+        throw new HostLocalSetupError('invalid-input');
       const teamId = `team-${input.requestId}`;
       const directory = readSpaceDirectoryInitialization({
         spaces: [

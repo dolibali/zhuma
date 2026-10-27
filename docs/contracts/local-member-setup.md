@@ -13,7 +13,7 @@
 ## Owner HTTP
 
 - `GET /api/zhuma-local-setup/status`：只返回公开状态与四个基础包的显示信息；pending 带原 requestId。无 verifier、密码、账号正文或私有 setupContext。
-- `POST /api/zhuma-local-setup/initialize`：`{requestId:uuid, accountId, password, teamName, packIds}`，strict 字段，账号最多64、密码8–200、团队名称最多160，packIds 为公开四包的唯一非空子集。成功重新投影真实状态。
+- `POST /api/zhuma-local-setup/initialize`：`{requestId:uuid, accountId, password, teamName, packIds}`，strict 字段，账号最多64且不能与基础专家标识冲突、密码8–200、团队名称最多160，packIds 为公开四包的唯一非空子集。成功重新投影真实状态。
 
 使用原 Connection exact Fetch route、owner 准入及 Host／Origin 校验。POST 在读取内容前再次确认 owner，8KiB／10秒 streaming 预算，必须提供与已验证实际 Host 相同的 canonical HTTP(S) Origin；原 HTTP bridge 的 `Request.url` 是内部占位地址，不能当真实 Origin。GET 使用原 SDK buffered 模式，避免给 GET 构造 body。响应统一 no-store，不回显原异常或输入。
 

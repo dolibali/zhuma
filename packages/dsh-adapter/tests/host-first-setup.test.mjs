@@ -82,6 +82,7 @@ test(
         403,
       );
       assert.equal((await initialize(host, { ...value, ready: true })).status, 400);
+      assert.equal((await initialize(host, { ...value, accountId: value.packIds[0] })).status, 400);
       assert.deepEqual(
         await facts(home),
         before,

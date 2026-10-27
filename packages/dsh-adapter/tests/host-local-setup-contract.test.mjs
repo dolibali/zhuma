@@ -80,6 +80,16 @@ test('first setup Host contract: explicit Config/context conflict refuses cold a
       }),
       { code: 'conflict' },
     );
+    await assert.rejects(
+      control.operations.initialize({
+        requestId,
+        accountId: 'zhuma-work-planning',
+        password: 'synthetic-only',
+        teamName: 'Team',
+        packIds: ['zhuma-work-planning'],
+      }),
+      { code: 'invalid-input' },
+    );
     assert.equal(writes, 0);
     assert.equal(imports, 0);
   } finally {
