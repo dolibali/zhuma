@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Plugin-first agent workbench built on DeepSeek Harness Desktop.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@12.4.2",
   "engines": {
