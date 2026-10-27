@@ -203,13 +203,14 @@ export function ProjectHub({
               </small>
             </span>
             <span className="zm-task-state-cell">
-              <span className={`zm-badge ${task.status}`}>
-                {task.status === 'ready' ? '计划已确认' : '计划草稿'}
-              </span>
               <TaskProgressSummary
                 progress={taskProgress?.(task.id)}
                 confirmed={state.appliedPlans.some((plan) => plan.taskId === task.id)}
+                compact
               />
+              <span className={`zm-badge ${task.status}`}>
+                {task.status === 'ready' ? '计划已确认' : '计划草稿'}
+              </span>
             </span>
             <ControlIcon direction="right" />
           </button>

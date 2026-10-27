@@ -718,6 +718,11 @@ export function TaskEditor({
               : '计划草稿'}
           </span>
           <TaskProgressSummary progress={progress} confirmed={!!applied} />
+          {applied && refreshProgress && (
+            <Button variant="quiet" onClick={refreshProgress}>
+              刷新进度
+            </Button>
+          )}
           {locked ? (
             <span className="zm-task-owner-readonly">
               <span>负责人</span>

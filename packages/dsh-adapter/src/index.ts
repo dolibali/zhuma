@@ -149,6 +149,18 @@ export type {
 export type { HostLocalSetupInput, HostLocalSetupSnapshot } from './host-local-setup-http.js';
 export type * from './s1-integration.js';
 export {
+  describeNativeAcceptedFileTool,
+  registerNativeAcceptedFileTool,
+  NATIVE_ACCEPTED_FILE_TOOL,
+  NATIVE_ACCEPTED_FILE_TOOL_VERSION,
+} from './native-work-session-files-tool.js';
+export type {
+  NativeRunAcceptedFiles,
+  NativeRunFileResourceSource,
+  NativeRunFileList,
+  NativeRunFilePage,
+} from './native-work-session-files-contract.js';
+export {
   openExecutionMemberLease,
   type ExecutionMemberDirectoryBinding,
   type IdentityExecutionOptions,
