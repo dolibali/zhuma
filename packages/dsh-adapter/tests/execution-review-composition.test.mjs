@@ -78,7 +78,8 @@ test('review composition: missing frozen expert-only resources cannot be silentl
   facts.applied.assets = facts.applied.assets.filter((item) => item.id !== 'review-skill');
   facts.applied.task.workflows[0].nodes.splice(1);
   assert.throws(() => freezeExecutionReviewComposition(facts), {
-    code: 'review-composition-resource-unavailable',
+    // #187 rejects the incomplete frozen definition before catalog qualification.
+    code: 'review-composition-invalid',
   });
   const noSource = reviewCompositionFacts({ resources: true });
   delete noSource.resourceCatalog;

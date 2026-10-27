@@ -6,7 +6,12 @@ import {
 } from '@zhuma/agent-core';
 import type { BeginRunRequest, ExecutionService } from './execution-service.js';
 import type { MemberRequest } from './member-session.js';
-import type { createHostRunSkillPolicies } from './host-run-skill-policy.js';
+import type {
+  createHostRunSkillPolicies,
+  HostReviewPreparationRequest,
+  HostRunSkillPolicyQualification,
+} from './host-run-skill-policy.js';
+import type { ExecutionReviewPreparation } from './execution-review-composition.js';
 import type { ExecutionRunAuthorities } from './execution-run-authority.js';
 import type { NativeSessionBinding, NativeWorkGrant } from './native-work-session-contract.js';
 import type { ExecutionRunResourceProducer } from './execution-run-resources.js';
@@ -28,7 +33,8 @@ type Locator = Parameters<ExecutionService['readRunNode']>[0] & { readonly space
 type Execution = Pick<
   ExecutionService,
   'readRunNode' | 'readRunCompositionInputs' | 'readRunComposition'
->;
+> &
+  Partial<Pick<ExecutionService, 'readExpertReviewPreparation'>>;
 type Policies = ReturnType<typeof createHostRunSkillPolicies>;
 
 /** Structurally matches the frozen D private operation port. Not a Run grant. */
@@ -37,6 +43,9 @@ export interface HostRunResourceQualification {
   readonly signal: AbortSignal;
   assertCurrent(): undefined;
   release(): undefined;
+}
+export interface HostReviewResourceQualification extends HostRunResourceQualification {
+  readonly preparation: ExecutionReviewPreparation;
 }
 function unavailable(): never {
   throw new ExecutionRunResourceError('resources-unavailable');
@@ -70,6 +79,8 @@ export function createHostRunResourceSource(options: {
   const qualifyPolicies = policies.qualify;
   const readComposition = execution.readRunComposition;
   const readWorkbench = options.readWorkbench;
+  const reviewPolicies = policies.review;
+  const qualifyReview = policies.qualifyReview;
   function active() {
     if (
       signal.aborted ||
@@ -84,6 +95,50 @@ export function createHostRunResourceSource(options: {
       options.readWorkbench !== readWorkbench
     )
       unavailable();
+  }
+  function reviewSelection(
+    preparation: ExecutionReviewPreparation,
+    qualified?: HostRunSkillPolicyQualification,
+  ) {
+    active();
+    if (policies.review !== reviewPolicies || policies.qualifyReview !== qualifyReview)
+      unavailable();
+    const policy = qualified ?? reviewPolicies.call(policies, preparation);
+    const reviewer = preparation.applied.participants.find(
+      (item) => item.id === preparation.scope.review.principal.reviewerRef.id,
+    );
+    if (
+      !reviewer ||
+      reviewer.kind !== 'expert' ||
+      (reviewer.resourceBindings?.mcpIds.length ?? 0) > 0
+    )
+      unavailable();
+    const refs = {
+      skillRefs: (reviewer.resourceBindings?.skillIds ?? []).map((id) => ({
+        id,
+        version: preparation.applied.id,
+      })),
+      mcpRefs: [],
+    };
+    const catalog: ExecutionRunResourceCatalog = immutable({
+      sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
+      mcp: [],
+      skills: structuredClone(policy.policies),
+    });
+    const resources = freezeExecutionRunResources(preparation.applied, refs, reviewer, catalog);
+    const current = () => {
+      active();
+      if (policies.review !== reviewPolicies || policies.qualifyReview !== qualifyReview)
+        unavailable();
+      const result: unknown = policy.assertCurrent();
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => undefined);
+        unavailable();
+      }
+      return undefined;
+    };
+    current();
+    return { catalog, resources, assertCurrent: current };
   }
   async function selected(request: MemberRequest, locator: Locator) {
     active();
@@ -168,6 +223,52 @@ export function createHostRunResourceSource(options: {
   }
   return {
     signal,
+    /** Original frozen reviewer metadata for D's current-facts assertion; never send authority. */
+    reviewCatalog(preparation: ExecutionReviewPreparation): ExecutionRunResourceCatalog {
+      try {
+        return reviewSelection(preparation).catalog;
+      } catch {
+        return unavailable();
+      }
+    },
+    async prepareReviewResourceCatalog(
+      request: MemberRequest,
+      query: HostReviewPreparationRequest,
+      wait?: AbortSignal,
+    ): Promise<HostReviewResourceQualification> {
+      try {
+        active();
+        wait?.throwIfAborted();
+        if (policies.qualifyReview !== qualifyReview) unavailable();
+        const qualified = await qualifyReview.call(policies, request, query);
+        active();
+        wait?.throwIfAborted();
+        const preparation = immutable(structuredClone(qualified.preparation));
+        const selected = reviewSelection(preparation, qualified);
+        const operation = new AbortController();
+        const fingerprint = canonicalPayload(preparation);
+        const assertCurrent = () => {
+          operation.signal.throwIfAborted();
+          wait?.throwIfAborted();
+          selected.assertCurrent();
+          if (canonicalPayload(preparation) !== fingerprint) unavailable();
+          return undefined;
+        };
+        assertCurrent();
+        return Object.freeze({
+          catalog: selected.catalog,
+          preparation,
+          signal: AbortSignal.any([signal, operation.signal, ...(wait ? [wait] : [])]),
+          assertCurrent,
+          release() {
+            operation.abort();
+            return undefined;
+          },
+        });
+      } catch {
+        return unavailable();
+      }
+    },
     /** Called only in unpublished native compose, after durable Run admission. */
     async producer(
       request: MemberRequest,
