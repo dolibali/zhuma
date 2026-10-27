@@ -131,6 +131,10 @@ export function createExecutionHttpApi(
       }
       const envelope: unknown = await response.json();
       requireCurrent(signal);
+      if (endpoint === 'zhuma-exec/project-artifacts') {
+        await verifySpace(signal, callerSignal);
+        requireCurrent(signal);
+      }
       if (
         !envelope ||
         typeof envelope !== 'object' ||
@@ -173,6 +177,7 @@ export function createExecutionHttpApi(
     },
   };
   const api = createExecutionApi(rpc, scope?.spaceId);
+  const projectArtifacts = api.projectArtifacts;
   async function observed<T>(
     request: Promise<T>,
     signal?: AbortSignal,
@@ -213,6 +218,20 @@ export function createExecutionHttpApi(
     );
   }
   return {
+    ...(projectArtifacts
+      ? {
+          projectArtifacts: {
+            list: (
+              query: Parameters<NonNullable<ExecutionApi['projectArtifacts']>['list']>[0],
+              signal: AbortSignal,
+            ) => observed(projectArtifacts.list(query, signal), signal),
+            content: (
+              query: Parameters<NonNullable<ExecutionApi['projectArtifacts']>['content']>[0],
+              signal: AbortSignal,
+            ) => observed(projectArtifacts.content(query, signal), signal),
+          },
+        }
+      : {}),
     ...(scope && expectedActorId
       ? {
           files: createExecutionFilesApi(fetcher, scope.spaceId, {

@@ -19,6 +19,10 @@ import type { OpenedSpaceDirectoryHandle, SpaceDirectoryImport } from './space-d
 import type { RevisionView } from './revision-view.js';
 import type { ExecutionPluginConfig } from './execution-plugin.js';
 import type {
+  ProjectArtifactsRequest,
+  ProjectArtifactsValue,
+} from './execution-project-artifacts-contract.js';
+import type {
   ExecutionFileAuthority,
   ExecutionFileAuthoritySource,
   AuthorizedFileContent,
@@ -142,6 +146,7 @@ export type ExecutionEndpoints = readonly [
   'revision',
   'draft',
   'upstream-content',
+  'project-artifacts',
   'inbox-counts',
   'events',
 ];
@@ -464,6 +469,11 @@ export interface ExecutionServiceMethods {
     caller: ExecutionCaller,
     body: unknown,
   ): Promise<ExecutionChannelResult<UpstreamContentValue>>;
+  projectArtifacts(
+    caller: ExecutionCaller,
+    body: unknown,
+    fileAuthority?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionChannelResult<ProjectArtifactsValue>>;
   /** Raw byte upload rides headers + a byte stream, never the JSON envelope. */
   uploadFile(
     caller: ExecutionCaller,
@@ -491,6 +501,10 @@ export interface ExecutionRoutes {
   readonly 'upstream-content': {
     readonly body: UpstreamContentRequest;
     readonly value: UpstreamContentValue;
+  };
+  readonly 'project-artifacts': {
+    readonly body: ProjectArtifactsRequest;
+    readonly value: ProjectArtifactsValue;
   };
   readonly draft: {
     readonly body: RevisionRequest | DeliveryDraftWrite;

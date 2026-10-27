@@ -62,6 +62,7 @@ export function WorkbenchPage({
   expertLibrary = false,
   openWork,
   nativeRun,
+  projectExecution,
   legacyMode = false,
 }: {
   api: WorkbenchApi;
@@ -70,6 +71,15 @@ export function WorkbenchPage({
   expertLibrary?: boolean;
   openWork?: () => void;
   nativeRun?: { api: NativeRunApi; spaceId: string };
+  projectExecution?:
+    | {
+        readonly spaceId: string;
+        readonly api: Pick<
+          import('../execution/ExecutionApi.js').ExecutionApi,
+          'files' | 'projectArtifacts'
+        >;
+      }
+    | undefined;
   legacyMode?: boolean;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
@@ -780,6 +790,8 @@ export function WorkbenchPage({
             canCreateTask={!member || capabilities?.createTask === true}
             canEdit={!member || capabilities?.createProject === true}
             resourcesConnected={!member || capabilities?.resources === 'authorized'}
+            projectExecution={projectExecution?.api}
+            spaceId={projectExecution?.spaceId}
           />
         )}
         {section === 'projects' && !activeProject && !!projects.length && (

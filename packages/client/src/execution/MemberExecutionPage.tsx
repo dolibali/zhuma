@@ -105,6 +105,25 @@ function MemberWork({
     [fetcher, accountId, spaceId, view],
   );
   const [refreshKey, setRefreshKey] = useState(0);
+  const projectExecution = useMemo(
+    () =>
+      createExecutionHttpApi(
+        fetcher,
+        () => currentLifetime.current.onUnauthenticated(),
+        accountId,
+        {
+          spaceId,
+          isCurrent: () =>
+            alive.current && currentLifetime.current.isCurrent() && view === 'catalog',
+          onUnavailable: () => currentSpaceUnavailable.current(),
+        },
+      ),
+    [fetcher, accountId, spaceId, view],
+  );
+  const projectContext = useMemo(
+    () => ({ api: projectExecution, spaceId }),
+    [projectExecution, spaceId],
+  );
   const nativeApi = useMemo(
     () =>
       createNativeRunApi(
@@ -132,6 +151,7 @@ function MemberWork({
             initialSection="tasks"
             appearance={appearance}
             nativeRun={nativeRun}
+            projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}
           />
         </div>

@@ -3,6 +3,8 @@ import type { Project, Workbench, WorkTask } from '@zhuma/agent-core';
 import { Button } from './Button.js';
 import { Field, MultiSelect, ParticipantSelect } from './controls.js';
 import { ControlIcon } from './ControlIcon.js';
+import { ProjectArtifactsPanel } from './ProjectArtifactsPanel.js';
+import type { ExecutionApi } from '../execution/ExecutionApi.js';
 
 export type ProjectTab = 'overview' | 'work' | 'materials' | 'people';
 const tabs: Record<ProjectTab, string> = {
@@ -154,6 +156,8 @@ export function ProjectHub({
   canCreateTask = true,
   canEdit = true,
   resourcesConnected = true,
+  projectExecution,
+  spaceId,
 }: {
   project: Project;
   state: Workbench;
@@ -165,6 +169,8 @@ export function ProjectHub({
   canCreateTask?: boolean;
   canEdit?: boolean;
   resourcesConnected?: boolean;
+  projectExecution?: Pick<ExecutionApi, 'files' | 'projectArtifacts'> | undefined;
+  spaceId?: string | undefined;
 }) {
   const [search, setSearch] = useState('');
   const tasks = state.tasks
@@ -394,12 +400,22 @@ export function ProjectHub({
               </p>
             )}
           </section>
-          <section className="zm-project-panel">
-            <header>
-              <h2>已接受成果</h2>
-            </header>
-            <p className="zm-project-muted">成果查询尚未接通。</p>
-          </section>
+          {projectExecution?.projectArtifacts && spaceId ? (
+            <ProjectArtifactsPanel
+              spaceId={spaceId}
+              projectId={project.id}
+              api={projectExecution.projectArtifacts}
+              filesApi={projectExecution}
+              openTask={openTask}
+            />
+          ) : (
+            <section className="zm-project-panel">
+              <header>
+                <h2>已接受成果</h2>
+              </header>
+              <p className="zm-project-muted">成果查询尚未接通。</p>
+            </section>
+          )}
         </div>
       )}
       {tab === 'people' && (
