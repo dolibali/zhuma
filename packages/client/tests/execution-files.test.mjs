@@ -65,6 +65,7 @@ const query = (purpose = 'draft') => ({
   ...(purpose === 'draft' ? {} : { artifactVersionId: 'artifact' }),
   ...(purpose === 'review' ? { roundId: 'round' } : {}),
   ...(purpose === 'upstream' ? { sourceNodeId: 'source' } : {}),
+  ...(purpose === 'accepted' ? { projectId: 'project' } : {}),
 });
 function responseInfo(request) {
   return {
@@ -203,13 +204,14 @@ test('files wire contract: wrong digest, scope, receipt size or incomplete refer
   }
 });
 
-for (const purpose of ['draft', 'artifact', 'review', 'upstream'])
+for (const purpose of ['draft', 'artifact', 'review', 'upstream', 'accepted'])
   test(`files wire contract: ${purpose} uses exact purpose fields and independently verified metadata/content`, async () => {
     const h = setup((url) => {
       const request = Object.fromEntries(new URL(url, 'http://localhost').searchParams);
       request.revision = Number(request.revision);
       assert.equal(request.purpose, purpose);
       assert.equal(request.spaceId, 'north');
+      assert.equal(request.projectId, purpose === 'accepted' ? 'project' : undefined);
       if (request.mode === 'metadata')
         return Response.json({ ok: true, value: responseInfo(request) });
       return new Response(bytes, {
@@ -229,6 +231,26 @@ for (const purpose of ['draft', 'artifact', 'review', 'upstream'])
     assert.equal(h.calls.length, 2);
     assert.equal(h.checks, 2);
   });
+
+test('files wire contract: accepted project identity is required and an altered project echo fails closed', async () => {
+  const invalid = setup(() => {
+    throw Error('invalid project must not reach the file route');
+  });
+  await assert.rejects(
+    invalid.api.metadata({ ...query('accepted'), projectId: '' }, new AbortController().signal),
+    { code: 'validation' },
+  );
+  assert.equal(invalid.calls.length, 0);
+  const crossed = setup((url) => {
+    const request = Object.fromEntries(new URL(url, 'http://localhost').searchParams);
+    request.revision = Number(request.revision);
+    request.projectId = 'another-project';
+    return Response.json({ ok: true, value: responseInfo(request) });
+  });
+  await assert.rejects(crossed.api.metadata(query('accepted'), new AbortController().signal), {
+    code: 'validation',
+  });
+});
 
 test('files wire contract: crossed version, corrupted body and oversize response fail before preview', async () => {
   for (const bad of ['scope', 'digest', 'oversize']) {

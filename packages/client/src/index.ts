@@ -13,6 +13,26 @@ export type {
 } from './workflow/api.js';
 export { WorkflowControls } from './workflow/WorkflowControls.js';
 export type {
+  ProjectArtifactsApi,
+  ProjectArtifactRef,
+  ProjectArtifactCursor,
+  ProjectArtifactSummary,
+  ProjectArtifactsList,
+  ProjectArtifactContent,
+} from './workbench/project-artifacts-contract.js';
+export { ProjectArtifactsPanel } from './workbench/ProjectArtifactsPanel.js';
+export type { ProjectArtifactsPanelProps } from './workbench/ProjectArtifactsPanel.js';
+export type {
+  WorkspaceApprovalApi,
+  WorkspaceApprovalLocation,
+  WorkspaceApprovalInput,
+  WorkspaceRevokeInput,
+  WorkspaceApprovalView,
+  WorkspaceApprovalRow,
+  WorkspacePublishRange,
+  RegisterWorkspaceDirectory,
+} from './run/workspace-approvals.js';
+export type {
   NativeConversationTarget,
   NativeConversationFrame,
   NativeRunInbox,

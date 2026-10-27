@@ -74,6 +74,7 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/unknown',
     '/api/zhuma-exec/unknown',
     '/api/zhuma-exec/inbox/extra',
+    '/api/zhuma-exec/project-artifacts/extra',
     '/api/zhuma-run/unknown',
     '/api/zhuma-run/send/extra',
     '/api/zhuma-member/command/extra',

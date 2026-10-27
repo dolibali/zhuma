@@ -171,10 +171,12 @@ function Selection({
   view,
   disabled,
   onChange,
+  onManageWorkspaces,
 }: {
   view: ReadyView;
   disabled: boolean;
   onChange(selection: NativeRunSelection): void;
+  onManageWorkspaces?: (() => void) | undefined;
 }) {
   const selected = view.selection;
   const [expanded, setExpanded] = useState(!view.run);
@@ -303,7 +305,9 @@ function Selection({
             <small>暂无可用执行者</small>
           )}
         </div>
-        {(view.workspaces?.length || (chosenWorkspace && chosenWorkspace.kind !== 'text-only')) && (
+        {(view.workspaces !== undefined ||
+          onManageWorkspaces ||
+          (chosenWorkspace && chosenWorkspace.kind !== 'text-only')) && (
           <div className="zm-native-run__choice">
             <span>执行范围</span>
             {disabled ? (
@@ -348,6 +352,11 @@ function Selection({
                     onChange({ model: model.value, executor: expert.value, workspace: choice });
                 }}
               />
+            )}
+            {onManageWorkspaces && (
+              <Button variant="quiet" disabled={disabled} onClick={onManageWorkspaces}>
+                管理目录授权
+              </Button>
             )}
           </div>
         )}
@@ -624,6 +633,7 @@ function RunPanel(props: NativeRunPanelProps) {
             view={view}
             disabled={held || submittedReadOnly || running('start')}
             onChange={props.onSelectionChange}
+            onManageWorkspaces={props.onManageWorkspaces}
           />
           <Receipt run={run} />
           <div

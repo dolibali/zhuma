@@ -43,6 +43,7 @@ export interface HostRunOptionsView {
     workspace?: { kind: 'local'; id: string } | { kind: 'unavailable' };
   } | null;
   readonly workspaces?: readonly HostWorkspaceChoice[];
+  readonly workspaceApprovalScope?: { readonly spaceId: string; readonly projectId: string };
   readonly models: HostRunModels;
   readonly experts: { id: string; label: string; description: string; value: Executor }[];
   readonly resources: {
@@ -247,8 +248,11 @@ export function createHostRunOptions(
       resources,
       start,
       tools: inputs.items.length ? 'accepted-input-reader' : 'text-only',
-      ...(workspaceChoices.length || current?.workspace.kind === 'local'
-        ? { workspaces: workspaceChoices }
+      ...(options.workspaces
+        ? {
+            workspaces: workspaceChoices,
+            workspaceApprovalScope: { spaceId: target.spaceId, projectId: plan.task.projectId },
+          }
         : {}),
     };
     active(signal);

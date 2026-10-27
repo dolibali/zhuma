@@ -263,7 +263,7 @@ export async function boot(
     deploymentMode: 'multi-member',
     identityBootstrapKey: 'zhuma-identity/bootstrap',
     spaceDirectoryBootstrapKey: 'zhuma-spaces/bootstrap',
-    ...(workspace
+    ...(workspace && localWorkspace.configured !== false
       ? {
           localExecution: {
             deviceId: 'local-contract-device',
@@ -309,7 +309,11 @@ export async function boot(
   async function rpc(group, endpoint, payload, credential = cookie) {
     const response = await fetch(`${base}/api/zhuma-${group}/${endpoint}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie: credential },
+      headers: {
+        'content-type': 'application/json',
+        cookie: credential,
+        ...(group === 'workspaces' ? { origin: base } : {}),
+      },
       body: JSON.stringify({
         type: 'client-request',
         rpcId: randomUUID(),

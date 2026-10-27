@@ -6,6 +6,11 @@ export type FileTarget = RevisionQuery &
   (
     | { readonly purpose: 'draft' }
     | { readonly purpose: 'artifact'; readonly artifactVersionId: string }
+    | {
+        readonly purpose: 'accepted';
+        readonly projectId: string;
+        readonly artifactVersionId: string;
+      }
     | { readonly purpose: 'review'; readonly artifactVersionId: string; readonly roundId: string }
     | {
         readonly purpose: 'upstream';
@@ -110,6 +115,13 @@ function request(raw: FileQuery, spaceId: string, mode: FileRequest['mode']): Fi
       return { ...base, purpose: 'draft' };
     case 'artifact':
       return { ...base, purpose: 'artifact', artifactVersionId: text(raw.artifactVersionId) };
+    case 'accepted':
+      return {
+        ...base,
+        purpose: 'accepted',
+        projectId: text(raw.projectId, 200),
+        artifactVersionId: text(raw.artifactVersionId),
+      };
     case 'review':
       return {
         ...base,
