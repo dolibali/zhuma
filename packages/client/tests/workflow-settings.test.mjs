@@ -16,7 +16,12 @@ if (domModule) {
     'Element',
     'Document',
     'HTMLInputElement',
-    'HTMLSelectElement',
+    'HTMLButtonElement',
+    'KeyboardEvent',
+    'PointerEvent',
+    'FocusEvent',
+    'ResizeObserver',
+    'SVGElement',
     'HTMLDialogElement',
     'Node',
     'Event',
@@ -27,6 +32,9 @@ if (domModule) {
       configurable: true,
       value: name === 'window' ? window : window[name],
     });
+  globalThis.getComputedStyle = window.getComputedStyle.bind(window);
+  globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
+  globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 }
 const { createElement: el, act } = await import('react');
@@ -55,7 +63,7 @@ const view = {
 const options = {
   ...view,
   models: { kind: 'ready', items: [] },
-  workspaces: [{ id: 'workspace', title: 'Controlled directory', access: 'read' }],
+  workspaces: [{ id: 'workspace', label: 'Controlled directory', access: 'read' }],
 };
 const session = {
   ok: true,
@@ -175,12 +183,17 @@ async function click(item) {
     await tick();
   });
 }
-async function choose(item, value) {
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(item, value);
-    item.dispatchEvent(new Event('change', { bubbles: true }));
-    await tick();
-  });
+async function choose(item, label) {
+  assert.ok(item);
+  await click(item);
+  const popup = document.querySelector('.zm-select-popup[data-open]');
+  assert.ok(popup, 'a real choice must open the menu');
+  const option = [...popup.querySelectorAll('[role="option"]')].find(
+    (option) => option.textContent.trim() === label,
+  );
+  assert.ok(option, `missing visible option: ${label}`);
+  assert.notEqual(option.getAttribute('aria-disabled'), 'true');
+  await click(option);
 }
 test('workflow review entry wire: optional frozen expert review need is strict and preserves old assignment counts', async () => {
   let response = { ...view, expertNodeCount: 0, expertReviewRequired: true };
@@ -270,9 +283,11 @@ test(
       },
     });
     await click(button(h, '运行工作流'));
-    const selects = h.container.querySelectorAll('select');
-    await choose(selects[1], 'workspace');
-    await choose(selects[2], '2');
+    await choose(
+      h.container.querySelector('[aria-label="工作目录"]'),
+      'Controlled directory · 只读',
+    );
+    await choose(h.container.querySelector('[aria-label="同时运行的 Agent"]'), '2');
     await click(button(h, '管理授权'));
     assert.equal(h.container.querySelectorAll('dialog').length, 1);
     assert.equal(h.container.querySelector('h2').textContent, '工作目录授权');
@@ -280,8 +295,14 @@ test(
     assert.match(h.container.textContent, /chen/);
     await click(button(h, '返回运行设置'));
     assert.equal(h.container.querySelectorAll('dialog').length, 1);
-    assert.equal(h.container.querySelectorAll('select')[1].value, 'workspace');
-    assert.equal(h.container.querySelectorAll('select')[2].value, '2');
+    assert.match(
+      h.container.querySelector('[aria-label="工作目录"]').textContent,
+      /Controlled directory/,
+    );
+    assert.equal(
+      h.container.querySelector('[aria-label="同时运行的 Agent"]').textContent.trim(),
+      '2',
+    );
     assert.equal(document.activeElement, button(h, '管理授权'));
     await act(async () => {
       h.container.querySelector('dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
@@ -343,8 +364,8 @@ test(
         },
       });
       await click(button(h, '运行工作流'));
-      await choose(h.container.querySelector('[aria-label="模型"]'), 'model');
-      await choose(h.container.querySelector('[aria-label="工作目录"]'), 'workspace');
+      await choose(h.container.querySelector('[aria-label="模型"]'), 'Model');
+      await choose(h.container.querySelector('[aria-label="工作目录"]'), 'Project files · 只读');
       await choose(h.container.querySelector('[aria-label="同时运行的 Agent"]'), '2');
       assert.equal(button(h, '确认运行').disabled, false);
       await click(button(h, '管理授权'));
@@ -356,8 +377,7 @@ test(
         'a missing directory cannot look executable',
       );
       let directory = h.container.querySelector('[aria-label="工作目录"]');
-      assert.equal(directory.value, 'workspace');
-      assert.match(directory.selectedOptions[0].textContent, /失效|不可用/u);
+      assert.match(directory.textContent, /失效|不可用/u);
       assert.equal(directory.getAttribute('aria-invalid'), 'true');
       assert.match(h.container.textContent, /重新选择/u);
       await act(async () => {
@@ -375,11 +395,14 @@ test(
       });
       await click(button(h, '运行工作流'));
       directory = h.container.querySelector('[aria-label="工作目录"]');
-      assert.equal(directory.value, 'workspace');
+      assert.match(directory.textContent, /失效|不可用/u);
       assert.equal(button(h, '确认运行').disabled, true);
-      assert.equal(h.container.querySelector('[aria-label="模型"]').value, 'model');
-      assert.equal(h.container.querySelector('[aria-label="同时运行的 Agent"]').value, '2');
-      await choose(directory, recovery);
+      assert.equal(h.container.querySelector('[aria-label="模型"]').textContent.trim(), 'Model');
+      assert.equal(
+        h.container.querySelector('[aria-label="同时运行的 Agent"]').textContent.trim(),
+        '2',
+      );
+      await choose(directory, recovery ? 'Other files · 只读' : '仅处理任务资料');
       assert.equal(directory.getAttribute('aria-invalid'), null);
       assert.equal(button(h, '确认运行').disabled, false);
       await click(button(h, '确认运行'));
@@ -493,7 +516,7 @@ test(
         },
       });
       assert.equal(button(h, '管理目录授权').disabled, false);
-      assert.equal(h.container.querySelectorAll('select').length, 0);
+      assert.equal(h.container.querySelectorAll('.zm-single-select').length, 0);
       await click(button(h, '管理目录授权'));
       assert.equal(h.container.querySelectorAll('dialog').length, 1);
       await click(button(h, '撤销'));
@@ -501,7 +524,7 @@ test(
       assert.ok(reads >= 2, 'original workflow fact is refreshed after revocation');
       await click(button(h, '返回工作流'));
       assert.equal(document.activeElement, button(h, '管理目录授权'));
-      assert.equal(h.container.querySelectorAll('select').length, 0);
+      assert.equal(h.container.querySelectorAll('.zm-single-select').length, 0);
     }
   },
 );

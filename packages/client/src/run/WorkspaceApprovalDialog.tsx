@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../workbench/Button.js';
+import { SingleSelect } from '../workbench/SingleSelect.js';
 import { Field, Modal } from '../workbench/controls.js';
 import { ExecutionError, executionErrorMessage } from '../execution/ExecutionApi.js';
 import { useExecutionCommand, useFormKey } from '../execution/interaction.js';
@@ -189,18 +190,16 @@ function Dialog({ api, location, close, changed, returnLabel = '关闭' }: Props
               </p>
             )}
             <Field label="目录">
-              <select
+              <SingleSelect
+                label="目录"
                 value={selected}
                 disabled={busy || !view.available || !context}
-                onChange={(event) => select(event.target.value)}
-              >
-                <option value="">选择已登记目录</option>
-                {view.directories.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.title}
-                  </option>
-                ))}
-              </select>
+                onValueChange={select}
+                options={[
+                  { value: '', label: '选择已登记目录' },
+                  ...view.directories.map((item) => ({ value: item.id, label: item.title })),
+                ]}
+              />
             </Field>
             {directory && (
               <>
@@ -208,18 +207,16 @@ function Dialog({ api, location, close, changed, returnLabel = '关闭' }: Props
                   {directory.path}
                 </p>
                 <Field label="Agent 权限">
-                  <select
+                  <SingleSelect
+                    label="Agent 权限"
                     value={access}
                     disabled={busy}
-                    onChange={(event) =>
-                      setAccess(event.target.value === 'write' ? 'write' : 'read')
-                    }
-                  >
-                    <option value="read">只读</option>
-                    <option value="write" disabled={directory.access !== 'write'}>
-                      读写
-                    </option>
-                  </select>
+                    onValueChange={(value) => setAccess(value === 'write' ? 'write' : 'read')}
+                    options={[
+                      { value: 'read', label: '只读' },
+                      { value: 'write', label: '读写', disabled: directory.access !== 'write' },
+                    ]}
+                  />
                 </Field>
                 <section className="zm-workspace-publish" aria-label="文件交付范围">
                   <header>
@@ -235,26 +232,24 @@ function Dialog({ api, location, close, changed, returnLabel = '关闭' }: Props
                   {!publish.length && <p className="zm-muted">尚未允许把本机文件交付给团队。</p>}
                   {publish.map((range, index) => (
                     <div className="zm-workspace-publish-row" key={index}>
-                      <select
-                        aria-label={`范围类型 ${index + 1}`}
+                      <SingleSelect
+                        label={`范围类型 ${index + 1}`}
                         value={range.kind}
                         disabled={busy}
-                        onChange={(event) =>
+                        onValueChange={(value) =>
                           setPublish(
                             publish.map((item, at) =>
                               at === index
-                                ? {
-                                    ...item,
-                                    kind: event.target.value === 'file' ? 'file' : 'directory',
-                                  }
+                                ? { ...item, kind: value === 'file' ? 'file' : 'directory' }
                                 : item,
                             ),
                           )
                         }
-                      >
-                        <option value="directory">目录</option>
-                        <option value="file">文件</option>
-                      </select>
+                        options={[
+                          { value: 'directory', label: '目录' },
+                          { value: 'file', label: '文件' },
+                        ]}
+                      />
                       <input
                         aria-label={`相对路径 ${index + 1}`}
                         maxLength={512}

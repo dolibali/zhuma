@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Button } from '../workbench/Button.js';
+import { SingleSelect } from '../workbench/SingleSelect.js';
 import { Modal } from '../workbench/controls.js';
 import { executionErrorMessage } from '../execution/ExecutionApi.js';
 import { useExecutionCommand } from '../execution/interaction.js';
@@ -314,28 +315,31 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                     <>
                       <label className="zm-field">
                         模型
-                        <select
-                          aria-label="模型"
+                        <SingleSelect
+                          label="模型"
                           value={modelId}
                           disabled={
                             command.pending ||
                             choices.models.kind !== 'ready' ||
                             !choices.models.items.length
                           }
-                          onChange={(event) => setModelId(event.target.value)}
-                        >
-                          <option value="">
-                            {choices.models.kind === 'ready' && !choices.models.items.length
-                              ? '暂无可用模型'
-                              : '选择模型'}
-                          </option>
-                          {choices.models.kind === 'ready' &&
-                            choices.models.items.map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.label}
-                              </option>
-                            ))}
-                        </select>
+                          onValueChange={setModelId}
+                          options={[
+                            {
+                              value: '',
+                              label:
+                                choices.models.kind === 'ready' && !choices.models.items.length
+                                  ? '暂无可用模型'
+                                  : '选择模型',
+                            },
+                            ...(choices.models.kind === 'ready'
+                              ? choices.models.items.map((item) => ({
+                                  value: item.id,
+                                  label: item.label,
+                                }))
+                              : []),
+                          ]}
+                        />
                       </label>
                       {choices.models.kind === 'unavailable' && (
                         <p className="zm-error">{choices.models.message}</p>
@@ -378,31 +382,34 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                             </Button>
                           )}
                         </div>
-                        <select
+                        <SingleSelect
                           id={directoryId}
-                          aria-label="工作目录"
+                          label="工作目录"
                           aria-invalid={workspaceUnavailable || undefined}
                           aria-describedby={workspaceUnavailable ? workspaceErrorId : undefined}
                           value={workspaceId}
                           disabled={command.pending}
-                          onChange={(event) => {
-                            setWorkspaceId(event.target.value);
+                          onValueChange={(value) => {
+                            setWorkspaceId(value);
                             command.setError('');
                           }}
-                        >
-                          {workspaceUnavailable && (
-                            <option value={workspaceId} disabled>
-                              所选工作目录已失效
-                            </option>
-                          )}
-                          <option value="">仅处理任务资料</option>
-                          {choices.workspaces.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.label} · {item.access === 'write' ? '读写' : '只读'}
-                              {item.publish ? ' · 可发布文件' : ''}
-                            </option>
-                          ))}
-                        </select>
+                          options={[
+                            ...(workspaceUnavailable
+                              ? [
+                                  {
+                                    value: workspaceId,
+                                    label: '所选工作目录已失效',
+                                    disabled: true,
+                                  },
+                                ]
+                              : []),
+                            { value: '', label: '仅处理任务资料' },
+                            ...choices.workspaces.map((item) => ({
+                              value: item.id,
+                              label: `${item.label} · ${item.access === 'write' ? '读写' : '只读'}${item.publish ? ' · 可发布文件' : ''}`,
+                            })),
+                          ]}
+                        />
                         {workspaceUnavailable && (
                           <p id={workspaceErrorId} className="zm-error" role="alert">
                             {invalidWorkspaceMessage}
@@ -411,18 +418,16 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                       </div>
                       <label className="zm-field">
                         同时运行的 Agent
-                        <select
-                          aria-label="同时运行的 Agent"
-                          value={concurrent}
+                        <SingleSelect
+                          label="同时运行的 Agent"
+                          value={String(concurrent)}
                           disabled={command.pending}
-                          onChange={(event) => setConcurrent(Number(event.target.value))}
-                        >
-                          {[1, 2, 3, 4].map((value) => (
-                            <option key={value} value={value}>
-                              {value}
-                            </option>
-                          ))}
-                        </select>
+                          onValueChange={(value) => setConcurrent(Number(value))}
+                          options={[1, 2, 3, 4].map((value) => ({
+                            value: String(value),
+                            label: String(value),
+                          }))}
+                        />
                       </label>
                     </>
                   )}
