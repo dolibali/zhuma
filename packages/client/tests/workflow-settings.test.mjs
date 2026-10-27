@@ -242,6 +242,108 @@ test(
   },
 );
 test(
+  'workflow settings DOM: revoked selected directory remains explicitly invalid across reopen until a deliberate valid selection',
+  dom,
+  async (t) => {
+    for (const recovery of ['second', '']) {
+      let revoked = false;
+      const starts = [];
+      const model = { provider: 'contract', model: 'model', maxTokens: 4096 };
+      const h = await mount(t, WorkflowControls, {
+        target,
+        api: {
+          read: async () => view,
+          options: async () => ({
+            ...view,
+            models: { kind: 'ready', items: [{ id: 'model', label: 'Model', value: model }] },
+            workspaces: [
+              ...(!revoked ? [{ id: 'workspace', label: 'Project files', access: 'read' }] : []),
+              { id: 'second', label: 'Other files', access: 'read' },
+            ],
+          }),
+          start: async (input) => {
+            starts.push(input);
+            return { ...view, state: 'running', planStarted: true };
+          },
+        },
+        workspaceApprovals: {
+          location,
+          api: {
+            context: async () => ({ accountName: 'chen', projectName: '订单中心' }),
+            options: async () => ({
+              available: true,
+              directories: [],
+              approvals: revoked
+                ? []
+                : [
+                    {
+                      id: 'approval',
+                      workspaceId: 'workspace',
+                      generation: 1,
+                      status: 'approved',
+                      access: 'read',
+                      publish: [],
+                    },
+                  ],
+            }),
+            revoke: async () => {
+              revoked = true;
+            },
+          },
+        },
+      });
+      await click(button(h, '运行工作流'));
+      await choose(h.container.querySelector('[aria-label="模型"]'), 'model');
+      await choose(h.container.querySelector('[aria-label="工作目录"]'), 'workspace');
+      await choose(h.container.querySelector('[aria-label="同时运行的 Agent"]'), '2');
+      assert.equal(button(h, '确认运行').disabled, false);
+      await click(button(h, '管理授权'));
+      await click(button(h, '撤销'));
+      await click(button(h, '返回运行设置'));
+      assert.equal(
+        button(h, '确认运行').disabled,
+        true,
+        'a missing directory cannot look executable',
+      );
+      let directory = h.container.querySelector('[aria-label="工作目录"]');
+      assert.equal(directory.value, 'workspace');
+      assert.match(directory.selectedOptions[0].textContent, /失效|不可用/u);
+      assert.equal(directory.getAttribute('aria-invalid'), 'true');
+      assert.match(h.container.textContent, /重新选择/u);
+      await act(async () => {
+        h.container
+          .querySelector('form')
+          .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await tick();
+      });
+      assert.deepEqual(starts, [], 'form submission cannot silently fall back to text-only');
+      await act(async () => {
+        h.container
+          .querySelector('dialog')
+          .dispatchEvent(new Event('cancel', { cancelable: true }));
+        await tick();
+      });
+      await click(button(h, '运行工作流'));
+      directory = h.container.querySelector('[aria-label="工作目录"]');
+      assert.equal(directory.value, 'workspace');
+      assert.equal(button(h, '确认运行').disabled, true);
+      assert.equal(h.container.querySelector('[aria-label="模型"]').value, 'model');
+      assert.equal(h.container.querySelector('[aria-label="同时运行的 Agent"]').value, '2');
+      await choose(directory, recovery);
+      assert.equal(directory.getAttribute('aria-invalid'), null);
+      assert.equal(button(h, '确认运行').disabled, false);
+      await click(button(h, '确认运行'));
+      assert.equal(starts.length, 1);
+      assert.deepEqual(
+        starts[0].workspace,
+        recovery ? { kind: 'local', id: recovery } : { kind: 'text-only' },
+      );
+      assert.deepEqual(starts[0].model, model);
+      assert.equal(starts[0].concurrent, 2);
+    }
+  },
+);
+test(
   'workspace authorization DOM: a replaced member API cannot display late old scope labels or enable a picker',
   dom,
   async (t) => {
