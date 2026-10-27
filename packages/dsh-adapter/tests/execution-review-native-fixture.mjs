@@ -13,6 +13,32 @@ export async function nativeReviewHost(t, options = {}) {
     assertReviewConfiguration() {},
     ...options,
   });
+  const workflowLocation = { ...h.locate(), spaceId: 'north' };
+  delete workflowLocation.nodeId;
+  const workflowModel = { provider: 'contract', model: 'review-contract', maxTokens: 1000 };
+  const workflowView =
+    options.workflow &&
+    checked(
+      await h.service.startWorkflowExecution(h.request, {
+        ...workflowLocation,
+        requestId: 'start-review-workflow',
+        defaults: { model: workflowModel, tools: 'text-only', workspace: { kind: 'text-only' } },
+        budget: {
+          concurrent: options.workflow.concurrent ?? 1,
+          automaticAttemptsPerNode: 1,
+          automaticRevisions: 0,
+        },
+      }),
+    );
+  const workflowClaim =
+    workflowView &&
+    checked(
+      await h.service.claimWorkflowExecution(h.request, {
+        ...workflowLocation,
+        intentId: workflowView.intent.intentId,
+        generation: workflowView.intent.generation,
+      }),
+    );
   const target = checked(
     await h.service.readExpertReviewTarget(h.request, { ...h.locate(), spaceId: 'north' }),
   );
@@ -22,22 +48,38 @@ export async function nativeReviewHost(t, options = {}) {
     target,
     reviewerRef: { id: 'qa', version: target.planId },
   };
+  if (workflowClaim) Object.assign(query, workflowClaim.reviewCandidates[0]);
   const preparation = checked(await h.service.readExpertReviewPreparation(h.request, query));
   const composition = freezeExecutionReviewComposition({
     ...preparation,
-    model: { provider: 'contract', model: 'review-contract', maxTokens: 1000 },
+    model: options.model ?? workflowModel,
     tools: {
       readTarget: reviewDescriptors.readTarget,
       completeReview: reviewDescriptors.completeReview,
     },
   });
   const { attempt } = checked(
-    await h.service.prepareExpertReview(h.request, {
-      ...query,
-      configurationId: composition.configurationId,
-    }),
+    await h.service.prepareExpertReview(
+      h.request,
+      {
+        ...query,
+        configurationId: composition.configurationId,
+      },
+      workflowClaim,
+    ),
   );
   const locator = { ...h.locate(), spaceId: 'north', runId: attempt.scope.runId };
+  if (options.prepareOnly)
+    return {
+      ...h,
+      locator,
+      query,
+      attempt,
+      composition,
+      workflowClaim,
+      workflowView,
+      workflowLocation,
+    };
   checked(
     await h.service.admitExpertReview(h.request, {
       ...locator,
@@ -144,5 +186,19 @@ export async function nativeReviewHost(t, options = {}) {
   if (options.install !== false) h.service.installNativeReviewPorts(ports);
   h.resetCounts();
   const command = { ...locator, requestId: 'submit-fixed-review' };
-  return { ...h, locator, command, composition, drive, hooks, calls, ports, binding };
+  return {
+    ...h,
+    locator,
+    command,
+    composition,
+    drive,
+    hooks,
+    calls,
+    ports,
+    binding,
+    query,
+    workflowClaim,
+    workflowView,
+    workflowLocation,
+  };
 }

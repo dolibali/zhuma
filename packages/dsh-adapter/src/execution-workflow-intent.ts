@@ -6,6 +6,13 @@ import type { BeginRunRequest, ExecutionResult, PlanReceipt } from './execution-
 import { readExecutionRunState, type ExecutionRun } from './execution-run-state.js';
 import { effectiveWorkflowToolKind } from './execution-workflow-tools.js';
 import {
+  workflowReviewCandidates,
+  workflowReviewResources,
+  workflowReviewOccupied,
+  workflowReviewAttention,
+  type WorkflowReviewResource,
+} from './execution-workflow-reviews.js';
+import {
   ExecutionWorkflowError,
   WORKFLOW_EXECUTION_LIMITS,
   workflowClaimSchema,
@@ -35,6 +42,7 @@ export interface WorkflowMember {
   initialize(requestId: string): Promise<void>;
   /** Existing original C/Host scope-drain proof, never the persisted label alone. */
   assertDrained(node: ExecutionNodeRecord, run: ExecutionRun): void;
+  assertReviewDrained?(review: WorkflowReviewResource): void;
   release(): void;
 }
 export interface WorkflowIntentSource {
@@ -93,6 +101,7 @@ const freeze = <T>(value: T): T => {
 export class ExecutionWorkflowIntents {
   private readonly arms = new Map<string, Arm>();
   private readonly tickets = new WeakMap<object, TicketState>();
+  private readonly claims = new WeakMap<object, Arm>();
   private readonly operations = new Set<Promise<unknown>>();
   private readonly retained = new Set<WorkflowMember>();
   private readonly released = new WeakSet<WorkflowMember>();
@@ -281,12 +290,26 @@ export class ExecutionWorkflowIntents {
     }
     const bound = intent ? this.bound(facts, intent) : [];
     const active = bound.filter(({ run }) => run.resources === 'held');
+    const reviews = workflowReviewResources(facts.nodes);
+    const reviewAttention = workflowReviewAttention(facts.nodes);
     let drained =
-      active.length === 0 && !intent?.starts.some((item) => this.preparations.has(item.requestId));
+      active.length === 0 &&
+      !reviews.some((review) => review.resources === 'held') &&
+      !intent?.starts.some((item) => this.preparations.has(item.requestId));
     if (drained)
       for (const { node, run } of bound) {
         try {
           member.assertDrained(node, run);
+        } catch {
+          drained = false;
+          break;
+        }
+      }
+    if (drained)
+      for (const review of reviews) {
+        try {
+          if (!member.assertReviewDrained) throw new Error('Review drain unavailable.');
+          member.assertReviewDrained(review);
         } catch {
           drained = false;
           break;
@@ -326,6 +349,18 @@ export class ExecutionWorkflowIntents {
       state,
       requiresResume,
       activeRunIds: active.map(({ run }) => run.attempt.id),
+      ...(reviewAttention.length ? { reviewAttention } : {}),
+      ...(reviews.length
+        ? {
+            reviewResources: reviews.map(({ scope, version, status, resources, stopPhase }) => ({
+              scope,
+              version,
+              status,
+              resources,
+              stopPhase,
+            })),
+          }
+        : {}),
     });
   }
   private replay(intent: WorkflowExecutionIntent, requestId: string, fingerprint: string) {
@@ -474,11 +509,21 @@ export class ExecutionWorkflowIntents {
         if (current.version !== input.expectedVersion) return fail('workflow-conflict');
         if (current.status === 'completed') return fail('workflow-completed');
         const bound = this.bound(facts, current);
-        if (bound.some(({ run }) => run.resources !== 'settled'))
+        const reviews = workflowReviewResources(facts.nodes);
+        if (
+          bound.some(({ run }) => run.resources !== 'settled') ||
+          reviews.some((review) => review.resources !== 'settled')
+        )
           return fail('workflow-recovery-required');
         if (current.starts.some((item) => this.preparations.has(item.requestId)))
           return fail('workflow-recovery-required');
         for (const { node, run } of bound) member.assertDrained(node, run);
+        for (const review of reviews) {
+          if (!member.assertReviewDrained) return fail('workflow-recovery-required');
+          member.assertReviewDrained(review);
+        }
+        if (workflowReviewAttention(facts.nodes).length)
+          return fail('workflow-review-attention-required');
         const old = this.arms.get(keyOf(location));
         // No absence inference for an unbound reservation after an owner was lost.
         if (
@@ -570,6 +615,7 @@ export class ExecutionWorkflowIntents {
         let slots =
           intent.budget.concurrent -
           active.length -
+          workflowReviewOccupied(facts.nodes, intent) -
           [...arm.tickets].filter(
             (state) =>
               !bound.some(
@@ -646,27 +692,48 @@ export class ExecutionWorkflowIntents {
           ({ facts, intent } = this.current(arm));
         }
         const tickets = selected.map((reservation) => this.ticket(arm, reservation));
-        return ok(
-          Object.freeze({
-            view: this.view(location, member),
-            tickets: Object.freeze(tickets),
-            signal: arm.signal,
-            check: () => {
-              this.current(arm);
-              return undefined;
-            },
-            onChange: (listener: () => void) => {
-              this.current(arm);
-              arm.listeners.add(listener);
-              return () => {
-                arm.listeners.delete(listener);
-              };
-            },
-            fence: () => this.fence(arm),
-          }),
-        );
+        const claim: WorkflowExecutionClaim = Object.freeze({
+          view: this.view(location, member),
+          tickets: Object.freeze(tickets),
+          reviewCandidates: freeze(
+            workflowReviewCandidates(facts.nodes, intent, facts.availableExpertIds).slice(
+              0,
+              Math.max(0, slots),
+            ),
+          ),
+          signal: arm.signal,
+          check: () => {
+            this.current(arm);
+            return undefined;
+          },
+          onChange: (listener: () => void) => {
+            this.current(arm);
+            arm.listeners.add(listener);
+            return () => {
+              arm.listeners.delete(listener);
+            };
+          },
+          fence: () => this.fence(arm),
+        });
+        this.claims.set(claim, arm);
+        return ok(claim);
       }),
     );
+  }
+  /** Original claim identity plus retained request/arm, never caller .check(). */
+  assertClaim(request: MemberRequest, claim: WorkflowExecutionClaim) {
+    const arm = this.claims.get(claim);
+    if (!arm || arm.request !== request) return fail('workflow-authority-denied');
+    const current = this.current(arm);
+    const bound = this.bound(current.facts, current.intent);
+    const occupied =
+      bound.filter(({ run }) => run.resources === 'held').length +
+      workflowReviewOccupied(current.facts.nodes, current.intent) +
+      [...arm.tickets].filter(
+        ({ reservation }) =>
+          !bound.some(({ reservation: item }) => item.requestId === reservation.requestId),
+      ).length;
+    return { ...current, availableSlots: current.intent.budget.concurrent - occupied };
   }
   private ticket(arm: Arm, reservation: WorkflowStartReservation): WorkflowStartTicket {
     const controller = new AbortController();

@@ -10,7 +10,10 @@ import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { open, caller, checked } from './execution-service-run-fixture.mjs';
 
-export function workbench({ reviewerIds = ['qa', 'qa-two', 'outside'] } = {}) {
+export function workbench({
+  reviewerIds = ['qa', 'qa-two', 'outside'],
+  parallelExpert = false,
+} = {}) {
   const f = fixture();
   f.state.participants.find((p) => p.id === 'qa').instructions =
     'Review the fixed content independently.';
@@ -26,7 +29,14 @@ export function workbench({ reviewerIds = ['qa', 'qa-two', 'outside'] } = {}) {
           ...f.task.workflows[0],
           nodes: [
             { ...f.node, id: 'produce', skillIds: [], reviewerIds },
-            { ...f.node, id: 'parallel', skillIds: [], reviewerIds: [], reviewRequired: false },
+            {
+              ...f.node,
+              id: 'parallel',
+              skillIds: [],
+              reviewerIds: [],
+              reviewRequired: false,
+              ...(parallelExpert ? { assigneeId: 'qa-two' } : {}),
+            },
             {
               ...f.node,
               id: 'consume',
@@ -48,11 +58,12 @@ export async function host(
     links = [],
     assertReviewConfiguration,
     reviewerIds,
+    parallelExpert,
     text = 'POST /login requires a valid challenge.',
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-review-service-'));
-  const snapshot = workbench({ reviewerIds });
+  const snapshot = workbench({ reviewerIds, parallelExpert });
   let media, attachments;
   if (file) {
     const ctx = new Context();
