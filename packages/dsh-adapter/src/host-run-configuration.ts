@@ -22,6 +22,7 @@ import {
 } from './execution-run-state.js';
 import { resolveMember, type MemberRequest } from './member-session.js';
 import type { WorkflowStartTicket } from './execution-workflow-contract.js';
+import { effectiveWorkflowToolKind } from './execution-workflow-tools.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { hostResultTool } from './host-run-result-protocol.js';
 import { NATIVE_WORK_LIMITS } from './native-work-session.js';
@@ -338,6 +339,12 @@ export function createHostRunConfiguration(
             plan.revision === location.revision,
         );
       if (!applied) throw new ExecutionRunError('run-authority-denied');
+      const currentNode = options.execution.readRunNode({
+        ...location,
+        nodeId: reservation.nodeId,
+      });
+      if (!currentNode) throw new ExecutionRunError('run-authority-denied');
+      const tools = effectiveWorkflowToolKind(defaults.tools, currentNode.handoff.inputRefs);
       const selected =
         defaults.workspace.kind === 'local'
           ? options.workspaces?.selectFrozen(
@@ -365,7 +372,7 @@ export function createHostRunConfiguration(
             kind: 'plan-expert',
             ref: { id: reservation.expertId, version: reservation.expertVersionId },
           },
-          tools: defaults.tools,
+          tools,
           workspace: selected ? { kind: 'local', id: selected.policy.id } : { kind: 'text-only' },
         },
         defaults.workspace,
@@ -391,7 +398,8 @@ export function createHostRunConfiguration(
         executor.ref.id !== reservation.expertId ||
         executor.ref.version !== reservation.expertVersionId ||
         canonicalPayload(prepared.workspace) !== canonicalPayload(defaults.workspace) ||
-        prepared.composition.payload.tools.kind !== defaults.tools
+        prepared.composition.payload.tools.kind !==
+          effectiveWorkflowToolKind(defaults.tools, node.handoff.inputRefs)
       )
         throw new ExecutionRunError('run-authority-denied');
       return prepared;

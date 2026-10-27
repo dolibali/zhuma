@@ -3864,6 +3864,55 @@ html[data-platform='darwin'] .zm-shell-chrome {
 .zm-execution-start .zm-error {
   flex-basis: 100%;
 }
+.zm-workflow-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+  padding: 12px 0;
+}
+.zm-workflow-state {
+  margin-right: auto;
+  color: var(--zm-muted);
+  font-size: 13px;
+}
+.zm-editor > .zm-workflow-controls {
+  flex: none;
+  padding: 8px 24px 12px;
+}
+.zm-workflow-controls > .zm-error {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.zm-workflow-settings {
+  display: grid;
+  gap: 16px;
+  padding: 20px 24px;
+  min-width: 0;
+}
+.zm-workflow-settings > p {
+  margin: 0;
+}
+.zm-workflow-settings > footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.zm-workflow-frozen {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px 20px;
+  overflow-wrap: anywhere;
+}
+.zm-workflow-frozen > span {
+  color: var(--zm-muted);
+}
+.zm-workflow-frozen > .zm-error {
+  grid-column: 1 / -1;
+}
 .zm-execution-inbox .zm-directory-row {
   grid-template-columns: minmax(0, 1fr) auto;
 }

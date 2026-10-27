@@ -33,6 +33,9 @@ if (
     'host-local-policy',
     'host-fixed-publications',
     'host-backend-readiness',
+    'host-workflow',
+    'host-workflow-admission',
+    'host-workflow-file',
     'skill-loader',
     'mcp-close',
     'native-stream',
@@ -513,6 +516,10 @@ void publicContract;
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-fixed-publications.spec.ts'),
   );
   copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-workflow.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-workflow.spec.ts'),
+  );
+  copyFileSync(
     join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-cold.spec.ts'),
   );
@@ -804,7 +811,39 @@ void publicContract;
         },
       );
   }
-  if (values.phase === 'host-backend-readiness')
+  if (values.phase === 'host-workflow-file')
+    verify(
+      'host-workflow-file',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-run-fixed-publications.spec.ts',
+        '-t',
+        'actual Host fixed publications: file-only completion',
+      ],
+      1,
+      {},
+      20,
+    );
+  else if (values.phase === 'host-workflow-admission')
+    verify(
+      'host-workflow-admission',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-workflow.spec.ts',
+        '-t',
+        'actual Host workflow: (parallel|Stop|successful)',
+      ],
+      4,
+      {},
+      15,
+    );
+  else if (values.phase === 'host-workflow')
+    verify(
+      'host-workflow',
+      ['packages/core/agent-loop/tests/zhuma-host-workflow.spec.ts', '-t', 'actual Host workflow:'],
+      5,
+      {},
+      14,
+    );
+  else if (values.phase === 'host-backend-readiness')
     verify(
       'host-backend-readiness',
       [
@@ -954,6 +993,9 @@ void publicContract;
         ),
         hostFixedPublicationsSpecSha256: hash(
           join(root, 'packages/dsh-adapter/tests/host-run-fixed-publications.spec.ts'),
+        ),
+        hostWorkflowSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-workflow.spec.ts'),
         ),
         hostRunWorkspacesSha256: hash(
           join(root, 'packages/dsh-adapter/src/host-run-workspaces.ts'),

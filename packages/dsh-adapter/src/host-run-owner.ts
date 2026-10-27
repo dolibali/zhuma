@@ -4,7 +4,7 @@ import { canonicalPayload, isTerminalRunStatus, type Workbench } from '@zhuma/ag
 import { z } from 'zod';
 import { createHostRunConfiguration } from './host-run-configuration.js';
 import { createHostRunOptions } from './host-run-options.js';
-import { createHostRunSources } from './host-run-sources.js';
+import { createHostRunSources, createHostRunRetirements } from './host-run-sources.js';
 import { createHostRunResourceSource } from './host-run-resource-source.js';
 import type { createHostRunSkillPolicies } from './host-run-skill-policy.js';
 import {
@@ -150,6 +150,7 @@ export async function openHostRunOwner(
   let outputs: NativeOutputFileIssuer | undefined;
   let workflow: ReturnType<typeof createHostWorkflowOwner> | undefined;
   let fenced = false;
+  let retirementDrains: ReturnType<typeof createHostRunRetirements> | undefined;
   let closing: Promise<void> | undefined;
   // This owner chooses once. An absent legacy backend is distinct from a
   // present backend whose initialization or later lifecycle has failed.
@@ -358,6 +359,7 @@ export async function openHostRunOwner(
     throw new DOMException('Host closed during native publication', 'AbortError');
   }
   try {
+    retirementDrains = createHostRunRetirements(native.service, lifetime.signal);
     authorities = execution.installRunHost(
       createHostRunSources(ctx, {
         directory: options.directory,
@@ -366,6 +368,7 @@ export async function openHostRunOwner(
         signal: lifetime.signal,
         resources,
         workspaces,
+        retirementDrain: (scope) => retirementDrains?.read(scope),
       }),
     );
     if (resultProtocol() === 2) {
@@ -605,7 +608,9 @@ export async function openHostRunOwner(
         );
         if (submitted.ok || current(state).run.resultDelivery) {
           if (!submitted.ok) await confirmResult(state);
-          release(state);
+          // Business settlement is not itself a scope-drain certificate.
+          // Retain the original C cleanup proof before releasing this owner.
+          await retire(state);
           return;
         }
         state.resultPending = 'delivery-unconfirmed';
@@ -616,7 +621,7 @@ export async function openHostRunOwner(
         if (!fenced && owned.get(nativeScopeKey(state.scope)) === state) {
           if (current(state).run.resultDelivery) {
             await confirmResult(state);
-            release(state);
+            await retire(state);
           } else await retire(state);
         }
       })
@@ -753,6 +758,7 @@ export async function openHostRunOwner(
       if (result.status === 'pending') return 'pending' as const;
       result.drain.assertCurrent();
       await settle(state);
+      if (!fenced && !lifetime.signal.aborted) retirementDrains?.remember(state.scope, result);
       const latest = current(state).run;
       if (
         result.binding === undefined &&
@@ -1150,6 +1156,7 @@ export async function openHostRunOwner(
       fenced = true;
       stopResultReady();
       absentRetirements.clear();
+      retirementDrains?.clear();
       admissions.clear();
       execution.fenceRuns();
       lifetime.abort();

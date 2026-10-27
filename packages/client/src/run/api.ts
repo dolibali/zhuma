@@ -2,6 +2,7 @@ import { conversationLines, readConversationFrame, readNativeInbox } from './con
 import { createIdentityApi } from '../identity/api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
+import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
 import type {
   NativeRunAction,
   NativeRunExpertChoice,
@@ -50,6 +51,7 @@ export type NativeRunBegin = NativeRunLocator & {
   workspace: { kind: 'text-only' } | { kind: 'local'; id: string };
 };
 export interface NativeRunApi {
+  readonly workflow?: WorkflowApi;
   inbox?(run: NativeRunSummary, signal: AbortSignal): Promise<NativeRunInbox>;
   observe?(
     run: NativeRunSummary,
@@ -404,7 +406,12 @@ export function createNativeRunApi(
       );
     return value.value;
   }
-  async function open(endpoint: string, payload: object, caller: AbortSignal) {
+  async function open(
+    endpoint: string,
+    payload: object,
+    caller: AbortSignal,
+    group: 'run' | 'workflow' = 'run',
+  ) {
     const connecting = new AbortController();
     const timer = setTimeout(() => connecting.abort(), 10_000);
     const signal = AbortSignal.any([caller, connecting.signal]);
@@ -419,7 +426,7 @@ export function createNativeRunApi(
       if (!session.spaces.some((space) => space.id === scope.spaceId))
         throw new ExecutionError('space-unavailable', '此空间已不可访问。');
       const rpcId = crypto.randomUUID();
-      response = await fetcher(`/api/zhuma-run/${endpoint}`, {
+      response = await fetcher(`/api/zhuma-${group}/${endpoint}`, {
         method: 'POST',
         credentials: 'same-origin',
         cache: 'no-store',
@@ -429,7 +436,7 @@ export function createNativeRunApi(
         body: JSON.stringify({
           type: 'client-request',
           rpcId,
-          method: `zhuma-run/${endpoint}`,
+          method: `zhuma-${group}/${endpoint}`,
           payload,
         }),
       });
@@ -445,10 +452,15 @@ export function createNativeRunApi(
       if (!delivered) await response?.body?.cancel().catch(() => undefined);
     }
   }
-  async function call(endpoint: string, payload: object, caller: AbortSignal): Promise<unknown> {
+  async function call(
+    endpoint: string,
+    payload: object,
+    caller: AbortSignal,
+    group: 'run' | 'workflow' = 'run',
+  ): Promise<unknown> {
     const signal = AbortSignal.any([caller, AbortSignal.timeout(10_000)]);
     try {
-      const { response, rpcId } = await open(endpoint, payload, signal);
+      const { response, rpcId } = await open(endpoint, payload, signal, group);
       const envelope = object(await response.json());
       current(signal);
       return result(envelope, rpcId);
@@ -464,6 +476,10 @@ export function createNativeRunApi(
   });
   const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
   return {
+    workflow: createWorkflowApi(
+      (endpoint, payload, signal) => call(endpoint, payload, signal, 'workflow'),
+      scope.spaceId,
+    ),
     async inbox(run, signal) {
       return readNativeInbox(await call('inbox', runLocator(run), signal), run, scope.spaceId);
     },

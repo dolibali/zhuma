@@ -107,8 +107,47 @@ export function createHostWorkflowOwner(
     if (!member.ok) throw new ExecutionWorkflowError('workflow-authority-denied');
     const result = await execution.readWorkflowExecution(original, location);
     active(wait);
-    if (!result.ok) throw new ExecutionWorkflowError(result.error.code);
     const applied = createExecutionHandoff(location, options.readWorkbench());
+    if (!result.ok) {
+      if (result.error.code !== 'workflow-plan-incomplete')
+        throw new ExecutionWorkflowError(result.error.code);
+      // D's workflow read requires the original start receipt. A passive
+      // pre-start view must instead be confirmed by its existing startable
+      // catalog, with no partial node facts and no implicit initialization.
+      const startable = await execution.startable({ member }, { spaceId: location.spaceId });
+      active(wait);
+      const currentMember = await resolveMember(ctx, original);
+      active(wait);
+      if (
+        !currentMember.ok ||
+        currentMember.memberId !== member.memberId ||
+        !currentMember.spaceIds.includes(location.spaceId)
+      )
+        throw new ExecutionWorkflowError('workflow-authority-denied');
+      if (
+        !startable.ok ||
+        startable.value.actorId !== member.memberId ||
+        !startable.value.plans.some(
+          (plan) =>
+            plan.taskId === location.taskId &&
+            plan.planId === location.planId &&
+            plan.revision === location.revision,
+        ) ||
+        createNodeHandoffs(applied).some(
+          (node) => execution.readRunNode({ ...location, nodeId: node.nodeId }) !== undefined,
+        )
+      )
+        throw new ExecutionWorkflowError('workflow-plan-incomplete');
+      const view: WorkflowExecutionView = {
+        disposition: 'unchanged',
+        location,
+        intent: undefined,
+        requiresResume: false,
+        activeRunIds: [],
+        state: 'inactive',
+      };
+      return { member: currentMember, view, applied };
+    }
     return { member, view: result.value, applied };
   }
   type Facts = Awaited<ReturnType<typeof context>>;
