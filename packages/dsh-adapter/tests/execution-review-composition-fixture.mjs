@@ -17,7 +17,10 @@ import {
 export const reviewDescriptors = JSON.parse(
   readFileSync(new URL('./native-review-descriptors-14ead7c.json', import.meta.url), 'utf8'),
 );
-export function reviewCompositionFacts({ resources = false } = {}) {
+export function reviewCompositionFacts({
+  resources = false,
+  text = 'PRIVATE_FIXED_BODY_FETCH_USING_REVIEW_READER',
+} = {}) {
   const f = fixture();
   const reviewer = f.state.participants.find((p) => p.id === 'qa');
   reviewer.instructions = 'Read the fixed artifact independently and explain concrete issues.';
@@ -87,7 +90,7 @@ export function reviewCompositionFacts({ resources = false } = {}) {
     expectedVersion: ready.command.version,
     artifactId: 'fixed-review-artifact',
     roundId: 'fixed-review-round',
-    draft: { text: 'PRIVATE_FIXED_BODY_FETCH_USING_REVIEW_READER', files: [], links: [] },
+    draft: { text, files: [], links: [] },
   });
   if (!delivery.ok) throw Error(delivery.code);
   const node = delivery.record;

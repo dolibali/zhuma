@@ -1,17 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
 import { setImmediate } from 'node:timers/promises';
-import { Context } from '@deepseek-ai/cordis';
-import { LocalAttachmentStore } from '@deepseek-ai/dsh-attachment-local';
-import { applyWorkbenchCommand, nodeRecordKey } from '@zhuma/agent-core';
-import { fixture } from '../../../tests/fixtures/workbench.mjs';
+import { nodeRecordKey } from '@zhuma/agent-core';
 import { open, caller, checked, refused } from './execution-service-run-fixture.mjs';
 import { businessHashes } from './execution-native-result-service-fixture.mjs';
 import { command, available } from './execution-run-fixture.mjs';
@@ -34,123 +27,7 @@ import { recordExecutionReviewEvent } from '../dist/execution-review-lifecycle.j
 // Product Service/original DSH JSON and queue. Member/config/native inputs are
 // explicit contracts; no real login, native review or model is exercised. Only
 // explicit local-attachment cases below prove real fixed file bytes.
-function workbench() {
-  const f = fixture();
-  f.state.participants.find((p) => p.id === 'qa').instructions =
-    'Review the fixed content independently.';
-  f.state.participants.push({ ...f.state.participants.find((p) => p.id === 'qa'), id: 'qa-two' });
-  return applyWorkbenchCommand(f.state, {
-    type: 'save-task',
-    task: {
-      ...f.task,
-      status: 'ready',
-      participantIds: ['chen', 'qa', 'qa-two', 'outside'],
-      workflows: [
-        {
-          ...f.task.workflows[0],
-          nodes: [
-            { ...f.node, id: 'produce', skillIds: [], reviewerIds: ['qa', 'qa-two', 'outside'] },
-            { ...f.node, id: 'parallel', skillIds: [], reviewerIds: [], reviewRequired: false },
-            {
-              ...f.node,
-              id: 'consume',
-              skillIds: [],
-              dependsOn: ['produce'],
-              reviewerIds: [],
-              reviewRequired: false,
-            },
-          ],
-        },
-      ],
-    },
-  });
-}
-async function host(t, { file, links = [], assertReviewConfiguration } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'zhuma-review-service-'));
-  const snapshot = workbench();
-  let media, attachments;
-  if (file) {
-    const ctx = new Context();
-    media = ctx.plugin(LocalAttachmentStore, { dshHome: join(root, 'attachments') });
-    await media;
-    attachments = ctx.attachments;
-  }
-  const h = await open(root, { workbench: snapshot, attachments, assertReviewConfiguration });
-  t.after(async () => {
-    await h.close();
-    await media?.dispose();
-    await rm(root, { recursive: true, force: true });
-  });
-  const files = [];
-  if (file) {
-    const bytes = Buffer.from(file.text);
-    const upload = checked(
-      await h.service.uploadFile(
-        caller(),
-        {
-          ...h.locate(),
-          spaceId: 'north',
-          idempotencyKey: 'upload-fixed-review-file',
-          declare: {
-            name: file.name,
-            mediaType: file.mediaType,
-            byteSize: bytes.length,
-            sha256: createHash('sha256').update(bytes).digest('hex'),
-          },
-          data: (async function* () {
-            yield bytes;
-          })(),
-        },
-        {
-          lease: {
-            memberId: 'chen',
-            expiresAt: Date.now() + 60_000,
-            signal: new AbortController().signal,
-            assertCurrent(spaceId) {
-              assert.equal(spaceId, 'north');
-            },
-            release() {},
-          },
-          assertProjectSpace(projectId, spaceId) {
-            assert.equal(projectId, 'project');
-            assert.equal(spaceId, 'north');
-          },
-        },
-      ),
-    );
-    files.push(upload.reference);
-  }
-  checked(
-    await h.service.submit(
-      caller(),
-      {
-        ...h.human('produce', 'deliver'),
-        text: 'POST /login requires a valid challenge.',
-        files,
-        links,
-      },
-      file
-        ? async () => ({
-            lease: {
-              memberId: 'chen',
-              expiresAt: Date.now() + 60_000,
-              signal: new AbortController().signal,
-              assertCurrent(spaceId) {
-                assert.equal(spaceId, 'north');
-              },
-              release() {},
-            },
-            assertProjectSpace(projectId, spaceId) {
-              assert.equal(projectId, 'project');
-              assert.equal(spaceId, 'north');
-            },
-          })
-        : undefined,
-    ),
-  );
-  h.resetCounts();
-  return { ...h, root, snapshot, attachments };
-}
+import { host } from './execution-review-service-fixture.mjs';
 async function body(h, patch = {}) {
   const target = checked(
     await h.service.readExpertReviewTarget(h.request, { ...h.locate(), spaceId: 'north' }),
