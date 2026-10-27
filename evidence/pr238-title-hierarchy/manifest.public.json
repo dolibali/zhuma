@@ -1,0 +1,153 @@
+{
+  "purpose": "PR238 title hierarchy visual review",
+  "sources": {
+    "before": "0f7b80f10ada19feabe7fc57f92fa9ea3af44253",
+    "after": "24140c82c86ee6174601a2873d647b77dbc1625a"
+  },
+  "environment": "Actual browser response replay of original Client components with isolated synthetic data; no Host, identity, real file bytes, model or installation proof.",
+  "interaction": "Open the original inbox action, then End to reach the delivery or review form. Natural scrolling retained; no business submission performed.",
+  "viewport": [
+    1280,
+    800
+  ],
+  "capture": "Original JPEG bytes from browser; no resizing, cropping, recoloring or generated mockups.",
+  "review": "Coordinator personally inspected all twelve images for hierarchy, spacing, density, alignment, theme and action priority; complete multiline goal checked against fixture data. Review textbox and Tab sequence to pass, return and comment were exercised without submitting.",
+  "dataSHA256": "500315d1773bbf951bb3af53d4ba9c72e87216c0e1b4411f18e3d9477ebc91cd",
+  "fixtureScriptSHA256": "da300dea7df89298102ff6cd74e5513242e02215bd12a7bfd4e133df24cda38f",
+  "sharedInputsSHA256": "3ef44b55045971665946c6a82f1936f8696eb02015fa13acfd87d356097b4552",
+  "sharedCssSHA256": "cfdc21b8814ce0f9ef1f3da81a37811a2155cf12fb715b07fb35324253dc95b2",
+  "images": [
+    {
+      "file": "before-submit-light-1280-panel.jpg",
+      "phase": "before",
+      "scenario": "submit",
+      "theme": "light",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "a011f4b33f45c093520fafc22c5f03285a17e04681eb16f467c4c5bd446d2162",
+      "bytes": 91959
+    },
+    {
+      "file": "after-submit-light-1280-panel.jpg",
+      "phase": "after",
+      "scenario": "submit",
+      "theme": "light",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "aefa73e1a09d41b47b4955692e44b50d3a277f46ebf937dcb1fcc3cefb9705ee",
+      "bytes": 71516
+    },
+    {
+      "file": "before-submit-dark-1280-panel.jpg",
+      "phase": "before",
+      "scenario": "submit",
+      "theme": "dark",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "1bb201937a0c11234cbfb59aa9fb15e388f42817961f818283fa7eb1617e7a71",
+      "bytes": 90010
+    },
+    {
+      "file": "after-submit-dark-1280-panel.jpg",
+      "phase": "after",
+      "scenario": "submit",
+      "theme": "dark",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "0714cb2b7a3126edebffaee1fb47e70ff6bd602d5308881abbd0ba1f21ad5553",
+      "bytes": 70388
+    },
+    {
+      "file": "before-revise-light-1280-panel.jpg",
+      "phase": "before",
+      "scenario": "revise",
+      "theme": "light",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "21cad755a022fc0a9e4b4bcb7928522f0488b19d018c17514f983baa4509979e",
+      "bytes": 92965
+    },
+    {
+      "file": "after-revise-light-1280-panel.jpg",
+      "phase": "after",
+      "scenario": "revise",
+      "theme": "light",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "5000e6e5f07026b17897f2d19cceb570c2cf0633e79e26a58334318aa6f6a04e",
+      "bytes": 72528
+    },
+    {
+      "file": "before-revise-dark-1280-panel.jpg",
+      "phase": "before",
+      "scenario": "revise",
+      "theme": "dark",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "0b0d207e8be480f7321042e59a8b3f16761306070de917002af6ac44f6335c62",
+      "bytes": 90801
+    },
+    {
+      "file": "after-revise-dark-1280-panel.jpg",
+      "phase": "after",
+      "scenario": "revise",
+      "theme": "dark",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "37b071083e93ef1735b34abea852691868ca789985c36534bfbf0da044117cc3",
+      "bytes": 71250
+    },
+    {
+      "file": "before-review-light-1280-panel.jpg",
+      "phase": "before",
+      "scenario": "review",
+      "theme": "light",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "51ebb3f807d0309f057a00528ddd031fe9770b434d2d4ffce2b08c80b937afd3",
+      "bytes": 128497
+    },
+    {
+      "file": "after-review-light-1280-panel.jpg",
+      "phase": "after",
+      "scenario": "review",
+      "theme": "light",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "319cbc119e285061482d01263f93b63ea6c56f6e1fd96d2f7a07162effe64d85",
+      "bytes": 76722
+    },
+    {
+      "file": "before-review-dark-1280-panel.jpg",
+      "phase": "before",
+      "scenario": "review",
+      "theme": "dark",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "f79fff8ade23a9532fa2f8259537af3321736807c817d78e35ad2c6374999a15",
+      "bytes": 126634
+    },
+    {
+      "file": "after-review-dark-1280-panel.jpg",
+      "phase": "after",
+      "scenario": "review",
+      "theme": "dark",
+      "width": 1280,
+      "height": 800,
+      "mime": "image/jpeg",
+      "sha256": "ef727b73ae0a3b5c0fce6760eca00681cd3a802bf2516df70f1de9f7c67c58eb",
+      "bytes": 75433
+    }
+  ]
+}
