@@ -158,6 +158,13 @@ import {
   type ExecutionReviewReadLocator,
   type OpenedExecutionReviewRead,
 } from './execution-review-read-authority.js';
+import {
+  reviewTargetReadSchema,
+  reviewTargetResources,
+  reviewFileResourceRef,
+  type ExecutionReviewResource,
+  type ExecutionReviewTargetReadLease,
+} from './execution-review-target-reader.js';
 import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import {
   ARTIFACT_FILE_LIMITS,
@@ -1535,6 +1542,155 @@ export class ExecutionService {
   assertExpertReviewReadGrant(grant: ExecutionReviewReadGrant): void {
     if (!this.reviewReadAuthorities) throw new ExecutionReviewReadError('review-authority-denied');
     this.reviewReadAuthorities.assertGrant(grant);
+  }
+
+  /** Exact target catalog; metadata does not count as content-read evidence. */
+  listExpertReviewResources(grant: ExecutionReviewReadGrant): readonly ExecutionReviewResource[] {
+    this.assertExpertReviewReadGrant(grant);
+    const node = this.currentFileNode(grant.scope);
+    const artifact = node.artifactVersions.find(
+      (item) => item.id === grant.scope.review.target.artifactVersionId,
+    );
+    if (!artifact) throw new ExecutionReviewReadError('review-target-changed');
+    return reviewTargetResources(artifact);
+  }
+
+  /** Bounded fixed bytes under the genuine read grant. C alone binds actual SDK
+   * calls/results, native identity and completion cut; this lease is not a vote. */
+  readExpertReviewResource(
+    grant: ExecutionReviewReadGrant,
+    raw: unknown,
+    caller: AbortSignal,
+  ): Promise<ExecutionReviewTargetReadLease> {
+    const job = Promise.resolve().then(async (): Promise<ExecutionReviewTargetReadLease> => {
+      this.assertExpertReviewReadGrant(grant); // issuer before any claimed fields
+      const parsed = reviewTargetReadSchema.safeParse(raw);
+      if (!parsed.success || !(caller instanceof AbortSignal))
+        throw new ArtifactUploadError('invalid-request');
+      const signal = AbortSignal.any([
+        caller,
+        grant.signal,
+        this.fileLifetime.signal,
+        this.runLifetime.signal,
+      ]);
+      const query = parsed.data;
+      const resource = this.listExpertReviewResources(grant).find(
+        (item) => item.resourceRef === query.resourceRef,
+      );
+      if (!resource) throw new ArtifactUploadError('not-found');
+      if (resource.kind === 'external-reference')
+        throw new ArtifactUploadError('review-unsupported-material');
+      const expected = canonicalPayload(resource);
+      let released = false,
+        releaseOwned: (() => void) | undefined;
+      const release = () => {
+        if (released) return;
+        released = true;
+        signal.removeEventListener('abort', release);
+        releaseOwned?.();
+      };
+      const check = () => {
+        if (released || signal.aborted) throw new ArtifactUploadError('cancelled');
+        this.assertExpertReviewReadGrant(grant);
+        const current = this.listExpertReviewResources(grant).find(
+          (item) => item.resourceRef === query.resourceRef,
+        );
+        if (canonicalPayload(current ?? null) !== expected)
+          throw new ArtifactUploadError('not-found');
+      };
+      signal.addEventListener('abort', release, { once: true });
+      try {
+        check();
+        const node = this.currentFileNode(grant.scope);
+        const artifact = node.artifactVersions.find(
+          (item) => item.id === grant.scope.review.target.artifactVersionId,
+        )!;
+        let bytes: Uint8Array, encoding: 'utf-8' | 'binary';
+        if (resource.kind === 'text') {
+          if (
+            [...this.fileReadResources].filter((item) => item.spaceId === grant.scope.spaceId)
+              .length >= ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace
+          )
+            throw new ArtifactUploadError('quota-exceeded');
+          let free!: () => void;
+          const drain = new Promise<void>((resolve) => {
+            free = resolve;
+          });
+          const reservation = { spaceId: grant.scope.spaceId, drain };
+          this.fileReadResources.add(reservation);
+          releaseOwned = () => {
+            free();
+            this.fileReadResources.delete(reservation);
+          };
+          bytes = Buffer.from(artifact.text!, 'utf8');
+          encoding = 'utf-8';
+        } else {
+          const ref = artifact.files.find(
+            (file) => reviewFileResourceRef(file.id) === query.resourceRef,
+          );
+          const record = ref && this.fileStore?.get(ref.id);
+          if (
+            !ref ||
+            !record ||
+            !this.attachments ||
+            record.spaceId !== grant.scope.spaceId ||
+            record.taskId !== grant.scope.taskId ||
+            record.planId !== grant.scope.planId ||
+            record.revision !== grant.scope.revision ||
+            record.nodeId !== grant.scope.nodeId ||
+            !matchesArtifactFileReference(ref, record)
+          )
+            throw new ArtifactUploadError('not-found');
+          const recordFingerprint = canonicalPayload(record);
+          const fileCheck = () => {
+            check();
+            if (canonicalPayload(this.fileStore?.get(ref.id) ?? null) !== recordFingerprint)
+              throw new ArtifactUploadError('not-found');
+          };
+          const owned = await this.verifyOwnedFileBytes(record, signal, fileCheck, true, true);
+          releaseOwned = owned.release;
+          if (released) owned.release();
+          check();
+          fileCheck();
+          if (!owned.bytes) throw new ArtifactUploadError('unavailable');
+          bytes = owned.bytes;
+          encoding = runFileEncoding(
+            {
+              fileId: record.uploadId,
+              name: artifactFileLeaf(record.name),
+              mediaType: record.mediaType,
+              bytes: record.byteSize,
+              sha256: record.sha256,
+            },
+            bytes,
+          );
+        }
+        if (query.offset > bytes.length) throw new ArtifactUploadError('invalid-request');
+        const page = Uint8Array.from(
+          bytes.subarray(query.offset, Math.min(query.offset + query.length, bytes.length)),
+        );
+        check();
+        return {
+          scope: grant.scope,
+          resource: structuredClone(resource),
+          range: { offset: query.offset, length: page.length, total: bytes.length },
+          bytes: page,
+          encoding,
+          signal,
+          check,
+          release,
+        };
+      } catch (error) {
+        release();
+        throw error;
+      }
+    });
+    this.fileOperations.add(job);
+    void job.then(
+      () => this.fileOperations.delete(job),
+      () => this.fileOperations.delete(job),
+    );
+    return job;
   }
 
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */

@@ -6,6 +6,10 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
+import { Context } from '@deepseek-ai/cordis';
+import { LocalAttachmentStore } from '@deepseek-ai/dsh-attachment-local';
 import { applyWorkbenchCommand, nodeRecordKey } from '@zhuma/agent-core';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { open, caller, checked, refused } from './execution-service-run-fixture.mjs';
@@ -25,7 +29,8 @@ import {
 import { readExecutionReviewState } from '../dist/execution-review-state.js';
 
 // Product Service/original DSH JSON and queue. Member/config/native inputs are
-// explicit contracts; no real login, native review, file bytes, or model is exercised.
+// explicit contracts; no real login, native review or model is exercised. Only
+// explicit local-attachment cases below prove real fixed file bytes.
 function workbench() {
   const f = fixture();
   f.state.participants.find((p) => p.id === 'qa').instructions =
@@ -57,24 +62,91 @@ function workbench() {
     },
   });
 }
-async function host(t) {
+async function host(t, { file, links = [] } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-review-service-'));
   const snapshot = workbench();
-  const h = await open(root, { workbench: snapshot });
+  let media, attachments;
+  if (file) {
+    const ctx = new Context();
+    media = ctx.plugin(LocalAttachmentStore, { dshHome: join(root, 'attachments') });
+    await media;
+    attachments = ctx.attachments;
+  }
+  const h = await open(root, { workbench: snapshot, attachments });
   t.after(async () => {
     await h.close();
+    await media?.dispose();
     await rm(root, { recursive: true, force: true });
   });
+  const files = [];
+  if (file) {
+    const bytes = Buffer.from(file.text);
+    const upload = checked(
+      await h.service.uploadFile(
+        caller(),
+        {
+          ...h.locate(),
+          spaceId: 'north',
+          idempotencyKey: 'upload-fixed-review-file',
+          declare: {
+            name: file.name,
+            mediaType: file.mediaType,
+            byteSize: bytes.length,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+          },
+          data: (async function* () {
+            yield bytes;
+          })(),
+        },
+        {
+          lease: {
+            memberId: 'chen',
+            expiresAt: Date.now() + 60_000,
+            signal: new AbortController().signal,
+            assertCurrent(spaceId) {
+              assert.equal(spaceId, 'north');
+            },
+            release() {},
+          },
+          assertProjectSpace(projectId, spaceId) {
+            assert.equal(projectId, 'project');
+            assert.equal(spaceId, 'north');
+          },
+        },
+      ),
+    );
+    files.push(upload.reference);
+  }
   checked(
-    await h.service.submit(caller(), {
-      ...h.human('produce', 'deliver'),
-      text: 'POST /login requires a valid challenge.',
-      files: [],
-      links: [],
-    }),
+    await h.service.submit(
+      caller(),
+      {
+        ...h.human('produce', 'deliver'),
+        text: 'POST /login requires a valid challenge.',
+        files,
+        links,
+      },
+      file
+        ? async () => ({
+            lease: {
+              memberId: 'chen',
+              expiresAt: Date.now() + 60_000,
+              signal: new AbortController().signal,
+              assertCurrent(spaceId) {
+                assert.equal(spaceId, 'north');
+              },
+              release() {},
+            },
+            assertProjectSpace(projectId, spaceId) {
+              assert.equal(projectId, 'project');
+              assert.equal(spaceId, 'north');
+            },
+          })
+        : undefined,
+    ),
   );
   h.resetCounts();
-  return { ...h, root, snapshot };
+  return { ...h, root, snapshot, attachments };
 }
 async function body(h, patch = {}) {
   const target = checked(
@@ -529,4 +601,187 @@ test('review read authority: expiration and failed lease release fail closed wit
     'review-authority-denied',
   );
   assert.equal(next.grant.signal.aborted, true);
+});
+
+test('fixed review reader: exact bounded text bytes, genuine lease checks, EOF and metadata never write', async (t) => {
+  const h = await host(t),
+    owned = await readAuthority(h),
+    signal = new AbortController().signal;
+  t.after(() => owned.dispose());
+  const before = await businessHashes(h.root);
+  const catalog = h.service.listExpertReviewResources(owned.grant);
+  assert.equal(catalog[0].resourceRef, 'review_text');
+  const page = await h.service.readExpertReviewResource(
+    owned.grant,
+    { resourceRef: 'review_text', offset: 0, length: 8 },
+    signal,
+  );
+  assert.equal(Buffer.from(page.bytes).toString(), 'POST /lo');
+  assert.equal(page.bytes.buffer.byteLength, 8);
+  assert.deepEqual(page.range, {
+    offset: 0,
+    length: 8,
+    total: Buffer.byteLength('POST /login requires a valid challenge.'),
+  });
+  assert.equal(page.check(), undefined);
+  page.release();
+  page.release();
+  assert.throws(() => page.check(), { code: 'cancelled' });
+  const eof = await h.service.readExpertReviewResource(
+    owned.grant,
+    { resourceRef: 'review_text', offset: catalog[0].bytes, length: 4 },
+    signal,
+  );
+  assert.equal(eof.bytes.length, 0);
+  eof.release();
+  await assert.rejects(
+    h.service.readExpertReviewResource(
+      { ...owned.grant },
+      { resourceRef: 'review_text', offset: 0, length: 8 },
+      signal,
+    ),
+    { code: 'review-authority-denied' },
+  );
+  for (const query of [
+    { resourceRef: 'review_text', offset: -1, length: 8 },
+    { resourceRef: 'review_text', offset: 0, length: 8193 },
+    { resourceRef: 'review_text', offset: 0, length: 8, actorId: 'qa' },
+  ])
+    await assert.rejects(h.service.readExpertReviewResource(owned.grant, query, signal), {
+      code: 'invalid-request',
+    });
+  await assert.rejects(
+    h.service.readExpertReviewResource(
+      owned.grant,
+      { resourceRef: 'other-artifact', offset: 0, length: 8 },
+      signal,
+    ),
+    { code: 'not-found' },
+  );
+  assert.deepEqual(await businessHashes(h.root), before);
+});
+
+for (const file of [
+  {
+    name: 'spec.md',
+    mediaType: 'text/markdown',
+    text: 'FIXED review file bytes. 中文。',
+    encoding: 'utf-8',
+  },
+  {
+    name: 'spec.pdf',
+    mediaType: 'application/pdf',
+    text: '%PDF-1.7\nnot text evidence',
+    encoding: 'binary',
+  },
+])
+  test(`real local attachment: ${file.encoding} fixed target file is readable before acceptance under a review lease`, async (t) => {
+    const h = await host(t, { file }),
+      owned = await readAuthority(h);
+    t.after(() => owned.dispose());
+    assert.equal(h.read().acceptedArtifactVersionId, undefined);
+    const before = await businessHashes(h.root);
+    const resource = h.service
+      .listExpertReviewResources(owned.grant)
+      .find((r) => r.kind === 'file');
+    const page = await h.service.readExpertReviewResource(
+      owned.grant,
+      { resourceRef: resource.resourceRef, offset: 0, length: 8192 },
+      new AbortController().signal,
+    );
+    assert.equal(Buffer.from(page.bytes).toString(), file.text);
+    assert.equal(page.encoding, file.encoding);
+    assert.equal(page.check(), undefined);
+    page.release();
+    assert.deepEqual(await businessHashes(h.root), before);
+  });
+
+test('fixed review reader: links remain explicit unsupported material, never fetched or claimed as content', async (t) => {
+  const h = await host(t, { links: ['https://example.test/reference'] }),
+    owned = await readAuthority(h);
+  t.after(() => owned.dispose());
+  const resource = h.service
+    .listExpertReviewResources(owned.grant)
+    .find((r) => r.kind === 'external-reference');
+  assert.equal(resource.required, true);
+  await assert.rejects(
+    h.service.readExpertReviewResource(
+      owned.grant,
+      { resourceRef: resource.resourceRef, offset: 0, length: 8 },
+      new AbortController().signal,
+    ),
+    { code: 'review-unsupported-material' },
+  );
+});
+
+test('fixed review reader: text and actual file leases share the original eight slots', async (t) => {
+  const h = await host(t, { file: { name: 'a.txt', mediaType: 'text/plain', text: 'FILE' } }),
+    owned = await readAuthority(h);
+  t.after(() => owned.dispose());
+  const signal = new AbortController().signal,
+    leases = [];
+  const file = h.service.listExpertReviewResources(owned.grant).find((r) => r.kind === 'file');
+  leases.push(
+    await h.service.readExpertReviewResource(
+      owned.grant,
+      { resourceRef: file.resourceRef, offset: 0, length: 4 },
+      signal,
+    ),
+  );
+  for (let i = 0; i < 7; i++)
+    leases.push(
+      await h.service.readExpertReviewResource(
+        owned.grant,
+        { resourceRef: 'review_text', offset: 0, length: 4 },
+        signal,
+      ),
+    );
+  await assert.rejects(
+    h.service.readExpertReviewResource(
+      owned.grant,
+      { resourceRef: 'review_text', offset: 0, length: 4 },
+      signal,
+    ),
+    { code: 'quota-exceeded' },
+  );
+  leases.forEach((lease) => lease.release());
+});
+
+test('real local attachment: cancellation and close wait for the original physical read drain', async (t) => {
+  const h = await host(t, { file: { name: 'a.txt', mediaType: 'text/plain', text: 'FIXED file' } }),
+    owned = await readAuthority(h);
+  t.after(() => owned.dispose());
+  const entered = Promise.withResolvers(),
+    unblock = Promise.withResolvers();
+  t.after(() => unblock.resolve());
+  const original = h.attachments.readFileStream.bind(h.attachments);
+  h.attachments.readFileStream = async function* (...args) {
+    entered.resolve();
+    await unblock.promise;
+    yield* original(...args);
+  };
+  const file = h.service.listExpertReviewResources(owned.grant).find((r) => r.kind === 'file');
+  const pending = h.service.readExpertReviewResource(
+    owned.grant,
+    { resourceRef: file.resourceRef, offset: 0, length: 4 },
+    new AbortController().signal,
+  );
+  const rejected = assert.rejects(pending);
+  await entered.promise;
+  owned.dispose();
+  let closed = false;
+  const close = h.service.closeFileReads().then(() => {
+    closed = true;
+  });
+  await setImmediate();
+  assert.equal(closed, false);
+  assert.equal(
+    h.service.fileReadResources.size,
+    1,
+    'aborted physical read still holds the original slot',
+  );
+  unblock.resolve();
+  await rejected;
+  await close;
+  assert.equal(h.service.fileReadResources.size, 0);
 });

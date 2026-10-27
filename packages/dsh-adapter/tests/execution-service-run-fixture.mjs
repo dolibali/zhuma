@@ -73,6 +73,7 @@ export async function open(
     prepareDomain,
     startupFailure,
     workbench: suppliedWorkbench,
+    attachments,
     expertNode,
     projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
     closeState = { calls: 0, closed: false, errors: [] },
@@ -127,6 +128,7 @@ export async function open(
                 };
               }),
             connection: { fetch: { register: () => () => {} } },
+            get: (name) => (name === 'attachments' ? attachments : undefined),
             storageDomain: {
               async open(spec) {
                 if (spec.name === 'zhuma_files') return ctx.storageDomain.open(spec);
