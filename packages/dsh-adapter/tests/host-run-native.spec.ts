@@ -83,6 +83,8 @@ export async function boot(
     failFileLedger = false,
     attachmentInitialization = undefined,
     allowNativeUnavailable = false,
+    startPlan = true,
+    workflowNodes = undefined,
     adapter = new ScriptedAdapter(['FIRST', 'SECOND']),
   } = {},
 ) {
@@ -213,16 +215,18 @@ export async function boot(
       workflows: [
         {
           ...data.task.workflows[0],
-          nodes: [
-            {
-              ...data.node,
-              assigneeId: expert ? 'qa' : 'chen',
-              reviewerIds: review ? ['chen'] : [],
-              reviewRequired: review,
-              skillIds: skill ? ['api-skill'] : [],
-              mcpIds: [],
-            },
-          ],
+          nodes: workflowNodes
+            ? workflowNodes(data.node)
+            : [
+                {
+                  ...data.node,
+                  assigneeId: expert ? 'qa' : 'chen',
+                  reviewerIds: review ? ['chen'] : [],
+                  reviewRequired: review,
+                  skillIds: skill ? ['api-skill'] : [],
+                  mcpIds: [],
+                },
+              ],
         },
       ],
     },
@@ -301,24 +305,25 @@ export async function boot(
     });
     return { status: response.status, ...(await response.json()) };
   }
-  checked(
-    await rpc('exec', 'start-plan', {
-      taskId: 'task',
-      planId: plan.id,
-      revision: plan.revision,
-      idempotencyKey: 'start-plan',
-      spaceId: 'north',
-    }),
-  );
+  if (startPlan)
+    checked(
+      await rpc('exec', 'start-plan', {
+        taskId: 'task',
+        planId: plan.id,
+        revision: plan.revision,
+        idempotencyKey: 'start-plan',
+        spaceId: 'north',
+      }),
+    );
   const locator = { taskId: 'task', planId: plan.id, revision: plan.revision, nodeId: 'node-1' };
   const table = ctx.storageDomain.get('zhuma_execution').table('nodes');
-  const row = () => [...table.entries()][0][1];
+  const row = () => [...table.entries()][0]?.[1];
   const run = () => row().nativeExecution?.runs.at(-1);
   const begin = {
     ...locator,
     requestId: 'first-run',
     spaceId: 'north',
-    expectedNodeVersion: row().command.version,
+    expectedNodeVersion: row()?.command.version ?? 0,
     expectedRunVersion: 0,
     mode: 'begin',
     newRunId: 'run-1',
@@ -350,6 +355,12 @@ export async function boot(
     workspaceFiber,
     attachmentFiber,
     nativeReadiness,
+    workflowLocation: {
+      spaceId: 'north',
+      taskId: 'task',
+      planId: plan.id,
+      revision: plan.revision,
+    },
     async remountHost() {
       await host.restart();
       const fibers = [...(ctx.registry.get(Host.nativeRunPlugin)?.fibers ?? [])];

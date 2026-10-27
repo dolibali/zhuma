@@ -61,7 +61,13 @@ function waitFor(ctx, predicate) {
 }
 async function boot(
   t,
-  { expert = false, adapter = new ScriptedAdapter(['LOCAL_ONLY']), sharedRoot, seed = false } = {},
+  {
+    expert = false,
+    workflow = false,
+    adapter = new ScriptedAdapter(['LOCAL_ONLY']),
+    sharedRoot,
+    seed = false,
+  } = {},
 ) {
   const root = sharedRoot;
   assert(root, 'Explicit isolated test directory required');
@@ -107,6 +113,10 @@ async function boot(
     process.env.ZHUMA_HOST_COLD_MODE === 'read'
   )
     await ctx.plugin(LocalAttachmentStore, { dshHome: root });
+  if (workflow)
+    adapter.listModels = async (provider) => [
+      { provider, id: 'contract-model', name: 'Contract model' },
+    ];
   ctx.llm.registerAdapter(['contract'], adapter);
   const originalOpen = ctx.storageDomain.open.bind(ctx.storageDomain);
   ctx.storageDomain.open = async (spec) => {
@@ -171,16 +181,59 @@ async function boot(
       workflows: [
         {
           ...data.task.workflows[0],
-          nodes: [
-            {
-              ...data.node,
-              assigneeId: expert ? 'qa' : 'chen',
-              reviewerIds: [],
-              reviewRequired: false,
-              skillIds: [],
-              mcpIds: [],
-            },
-          ],
+          nodes: workflow
+            ? [
+                {
+                  ...data.node,
+                  id: 'reviewed',
+                  assigneeId: 'qa',
+                  reviewerIds: ['chen'],
+                  reviewRequired: true,
+                  dependsOn: [],
+                  skillIds: [],
+                  mcpIds: [],
+                },
+                {
+                  ...data.node,
+                  id: 'accepted',
+                  assigneeId: 'qa',
+                  reviewerIds: [],
+                  reviewRequired: false,
+                  dependsOn: [],
+                  skillIds: [],
+                  mcpIds: [],
+                },
+                {
+                  ...data.node,
+                  id: 'join',
+                  assigneeId: 'qa',
+                  reviewerIds: [],
+                  reviewRequired: false,
+                  dependsOn: ['reviewed', 'accepted'],
+                  skillIds: [],
+                  mcpIds: [],
+                },
+                {
+                  ...data.node,
+                  id: 'human',
+                  assigneeId: 'chen',
+                  reviewerIds: [],
+                  reviewRequired: false,
+                  dependsOn: ['join'],
+                  skillIds: [],
+                  mcpIds: [],
+                },
+              ]
+            : [
+                {
+                  ...data.node,
+                  assigneeId: expert ? 'qa' : 'chen',
+                  reviewerIds: [],
+                  reviewRequired: false,
+                  skillIds: [],
+                  mcpIds: [],
+                },
+              ],
         },
       ],
     },
@@ -281,6 +334,12 @@ async function boot(
     table,
     locator,
     begin,
+    workflowLocation: {
+      spaceId: 'north',
+      taskId: 'task',
+      planId: plan.id,
+      revision: plan.revision,
+    },
   };
 }
 
@@ -330,6 +389,208 @@ function unadmitted(h) {
   assert.equal(h.ctx.agents.list().length, 0);
   assert.equal(h.adapter.requests.length, 0);
 }
+
+const workflowNode = (h, id) =>
+  [...h.table.entries()].map(([, row]) => row).find((row) => row.nodeId === id);
+const workflowRows = (h) => [...h.table.entries()];
+function* workflowResponse() {
+  const args = JSON.stringify({ text: 'Fixed cold workflow result', links: [] });
+  yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+  yield {
+    type: 'tool-call-delta',
+    index: 0,
+    id: 'finish',
+    name: 'complete_work',
+    argumentsDelta: args,
+  };
+  yield {
+    type: 'block-end',
+    index: 0,
+    block: { type: 'tool-call', id: 'finish', name: 'complete_work', arguments: args },
+  };
+  yield { type: 'finish', reason: { kind: 'tool-calls' } };
+}
+test(
+  'formal Host workflow: explicit new-process resume cleans only original bound scopes and never reruns completed branches',
+  { timeout: 20000 },
+  async (t) => {
+    const mode = process.env.ZHUMA_HOST_COLD_MODE;
+    const root = process.env.ZHUMA_HOST_COLD_ROOT;
+    assert(root && ['write', 'read'].includes(mode));
+    const h = await boot(t, {
+      sharedRoot: root,
+      seed: mode === 'write',
+      workflow: true,
+      adapter: new ScriptedAdapter(
+        mode === 'write' ? [workflowResponse, workflowResponse] : [workflowResponse],
+      ),
+    });
+    if (mode === 'write') {
+      const started = checked(
+        await h.rpc('workflow', 'start', {
+          ...h.workflowLocation,
+          requestId: 'workflow-start',
+          model: { provider: 'contract', model: 'contract-model', maxTokens: 1000 },
+          workspace: { kind: 'text-only' },
+          concurrent: 2,
+        }),
+      );
+      await waitFor(
+        h.ctx,
+        () =>
+          workflowNode(h, 'reviewed').command.status === 'in-review' &&
+          workflowNode(h, 'accepted').command.status === 'completed',
+      );
+      assert.equal(h.adapter.requests.length, 2);
+      const rows = workflowRows(h);
+      assert.equal(workflowNode(h, 'join').command.status, 'blocked');
+      assert.equal(workflowNode(h, 'human').nativeExecution, undefined);
+      await h.host.dispose();
+      assert.equal(h.ctx.agents.list().length, 0);
+      await writeFile(
+        join(root, 'expected-workflow.json'),
+        JSON.stringify({
+          pid: process.pid,
+          cookieDigest: digest(h.cookie),
+          rows,
+          view: started,
+          businessDigests: await businessBytes(root),
+        }),
+      );
+      await writeFile(
+        join(root, 'write-report.json'),
+        JSON.stringify({
+          pid: process.pid,
+          variant: 'workflow',
+          modelRequests: 2,
+          originalHostClosed: true,
+          completedRuns: 2,
+        }),
+      );
+      return;
+    }
+    const expected = JSON.parse(await readFile(join(root, 'expected-workflow.json'), 'utf8'));
+    assert.notEqual(process.pid, expected.pid);
+    assert.notEqual(digest(h.cookie), expected.cookieDigest);
+    assert.deepEqual(workflowRows(h), expected.rows);
+    const before = await businessBytes(root);
+    let view;
+    for (let i = 0; i < 2; i++) {
+      view = checked(await h.rpc('workflow', 'read', h.workflowLocation));
+      assert.equal(view.requiresResume, true);
+      assert.equal(view.activeRunCount, 0);
+    }
+    assert.deepEqual(
+      await businessBytes(root),
+      before,
+      'Passive reads must not perform cleanup or change business facts',
+    );
+    assert.equal(h.nativeReads.retirement, 0);
+    assert.equal(h.ctx.agents.list().length, 0);
+    assert.equal(h.adapter.requests.length, 0);
+    const control = {
+      ...h.workflowLocation,
+      requestId: 'workflow-resume',
+      intentId: view.intent.intentId,
+      generation: view.intent.generation,
+      expectedVersion: view.intent.version,
+    };
+    assert.equal(
+      (await h.rpc('workflow', 'resume', control, await h.login('outside'))).result.ok,
+      false,
+    );
+    for (const invalid of [
+      { ...control, spaceId: 'foreign' },
+      { ...control, generation: control.generation + 1 },
+      { ...control, expectedVersion: control.expectedVersion + 1 },
+    ])
+      assert.equal((await h.rpc('workflow', 'resume', invalid)).result.ok, false);
+    const revoked = await h.login();
+    assert.equal(
+      (
+        await fetch(h.base + '/zhuma-id/logout', {
+          method: 'POST',
+          headers: { cookie: revoked, 'content-type': 'application/json' },
+          body: '{}',
+        })
+      ).status,
+      200,
+    );
+    assert.equal((await h.rpc('workflow', 'resume', control, revoked)).result.ok, false);
+    assert.equal(h.nativeReads.retirement, 0, 'An unrelated member must not initiate cleanup');
+    const resumed = checked(await h.rpc('workflow', 'resume', control));
+    assert.equal(resumed.state, 'running');
+    assert.equal(resumed.requiresResume, false);
+    const cleanupReads = h.nativeReads.retirement;
+    assert.equal(
+      checked(await h.rpc('workflow', 'resume', control)).intent.generation,
+      resumed.intent.generation,
+    );
+    assert.equal(
+      h.nativeReads.retirement,
+      cleanupReads,
+      'A replay must retain the original resume receipt',
+    );
+    assert.equal(
+      h.adapter.requests.length,
+      0,
+      'Resume must not rerun submitted or accepted branches',
+    );
+    for (const id of ['reviewed', 'accepted'])
+      assert.deepEqual(
+        workflowNode(h, id),
+        expected.rows.map(([, row]) => row).find((row) => row.nodeId === id),
+      );
+    const reviewed = workflowNode(h, 'reviewed'),
+      round = reviewed.rounds.at(-1);
+    checked(
+      await h.rpc('exec', 'ballot', {
+        ...h.locator,
+        nodeId: 'reviewed',
+        expectedVersion: reviewed.command.version,
+        idempotencyKey: 'review-after-cold',
+        roundId: round.id,
+        artifactVersionId: round.artifactVersionId,
+        action: 'approve',
+      }),
+    );
+    await waitFor(
+      h.ctx,
+      () =>
+        workflowNode(h, 'join').command.status === 'completed' &&
+        workflowNode(h, 'human').command.status === 'ready',
+    );
+    assert.equal(h.adapter.requests.length, 1);
+    assert.equal(workflowNode(h, 'join').handoff.inputRefs.length, 2);
+    assert.equal(workflowNode(h, 'human').command.status, 'ready');
+    for (const id of ['reviewed', 'accepted', 'join'])
+      assert.equal(workflowNode(h, id).nativeExecution.runs.length, 1);
+    checked(
+      await h.rpc('exec', 'submit', {
+        ...h.locator,
+        nodeId: 'human',
+        expectedVersion: workflowNode(h, 'human').command.version,
+        idempotencyKey: 'human-after-cold',
+        text: 'Final manual delivery',
+        links: [],
+      }),
+    );
+    assert.equal(checked(await h.rpc('workflow', 'read', h.workflowLocation)).state, 'completed');
+    await writeFile(
+      join(root, 'read-report.json'),
+      JSON.stringify({
+        pid: process.pid,
+        variant: 'workflow',
+        distinctProcess: true,
+        freshMemberCookie: true,
+        noImplicitCleanup: true,
+        completedBranchesNotRerun: true,
+        modelRequests: 1,
+        workflowCompleted: true,
+      }),
+    );
+  },
+);
 
 // The two invocations run in distinct OS processes with the same explicit
 // synthetic home. No emitted Host callback or production source is patched.

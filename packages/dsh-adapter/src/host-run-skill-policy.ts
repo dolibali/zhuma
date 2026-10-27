@@ -16,6 +16,24 @@ import {
 import type { ExecutionService } from './execution-service.js';
 import { ExecutionRunError } from './execution-run-state.js';
 import type { MemberRequest } from './member-session.js';
+import type { ExecutionReviewPreparation } from './execution-review-composition.js';
+import {
+  executionReviewScopeSchema,
+  type ExecutionReviewTarget,
+  type ExecutionReviewScope,
+} from './execution-review-contract.js';
+import { executionReviewTarget } from './execution-review-state.js';
+
+/** Exact input of D's passive preparation read. Content only, never review authority. */
+export interface HostReviewPreparationRequest {
+  readonly requestId: string;
+  readonly expectedReviewVersion: number;
+  readonly target: ExecutionReviewTarget;
+  readonly reviewerRef: Pick<
+    ExecutionReviewScope['review']['principal']['reviewerRef'],
+    'id' | 'version'
+  >;
+}
 
 type Locator = Parameters<ExecutionService['readRunNode']>[0] & { readonly spaceId: string };
 /** Host-private result. Never accepted from a browser or used as an authorization grant. */
@@ -36,6 +54,9 @@ export interface HostQualifiedSkillPolicy {
 export interface HostRunSkillPolicyQualification {
   readonly policies: readonly HostQualifiedSkillPolicy[];
   assertCurrent(): undefined;
+}
+export interface HostReviewSkillPolicyQualification extends HostRunSkillPolicyQualification {
+  readonly preparation: ExecutionReviewPreparation;
 }
 function unavailable(): never {
   // No package body, parser diagnostics, local paths or metadata escape this boundary.
@@ -140,7 +161,8 @@ function importedPolicy(
  * It must not be Workbench.resourceFiles, a current asset lookup or a public RPC.
  */
 export function createHostRunSkillPolicies(options: {
-  readonly execution: Pick<ExecutionService, 'readRunCompositionInputs' | 'readRunNode'>;
+  readonly execution: Pick<ExecutionService, 'readRunCompositionInputs' | 'readRunNode'> &
+    Partial<Pick<ExecutionService, 'readExpertReviewPreparation'>>;
   readWorkbench(): Workbench;
   readPackage(versionId: string): unknown;
   readonly signal: AbortSignal;
@@ -148,6 +170,7 @@ export function createHostRunSkillPolicies(options: {
   const { execution, readWorkbench, readPackage, signal } = options;
   const readInputs = execution.readRunCompositionInputs;
   const readNode = execution.readRunNode;
+  const readReview = execution.readExpertReviewPreparation;
   const active = () => {
     if (
       signal.aborted ||
@@ -160,6 +183,106 @@ export function createHostRunSkillPolicies(options: {
     )
       unavailable();
   };
+  function reviewPolicies(
+    preparation: ExecutionReviewPreparation,
+  ): HostRunSkillPolicyQualification {
+    try {
+      active();
+      if (!readReview || execution.readExpertReviewPreparation !== readReview) unavailable();
+      const scope = executionReviewScopeSchema.parse(preparation.scope);
+      const applied = AppliedPlanSchema.parse(
+        createExecutionHandoff(scope, readWorkbench.call(options)),
+      );
+      const fingerprint = canonicalPayload(applied);
+      const handoffFingerprint = canonicalPayload(preparation.node.handoff);
+      const reviewer = applied.participants.find(
+        (item) => item.id === scope.review.principal.reviewerRef.id,
+      );
+      if (
+        canonicalPayload(applied) !== canonicalPayload(preparation.applied) ||
+        !reviewer ||
+        reviewer.kind !== 'expert' ||
+        !reviewer.available ||
+        reviewer.origin?.missing.length ||
+        digest(canonicalPayload(reviewer)) !== scope.review.principal.reviewerRef.digest
+      )
+        unavailable();
+      const checkSource = () => {
+        active();
+        if (execution.readExpertReviewPreparation !== readReview) unavailable();
+        const current = readNode.call(execution, scope);
+        const round = current?.rounds.find((item) => item.id === scope.review.target.roundId);
+        if (
+          !current ||
+          current.ownerId !== scope.actorId ||
+          applied.task.ownerId !== scope.actorId ||
+          canonicalPayload(current.handoff) !== handoffFingerprint ||
+          canonicalPayload(executionReviewTarget(current, scope.spaceId)) !==
+            canonicalPayload(scope.review.target) ||
+          !round?.reviewerIds.includes(reviewer.id) ||
+          round.ballots.some(
+            (item) => item.reviewerId === reviewer.id && item.action !== 'comment',
+          ) ||
+          canonicalPayload(
+            AppliedPlanSchema.parse(createExecutionHandoff(scope, readWorkbench.call(options))),
+          ) !== fingerprint
+        )
+          unavailable();
+      };
+      checkSource();
+      const refs = reviewer.resourceBindings?.skillIds ?? [];
+      if (new Set(refs).size !== refs.length) unavailable();
+      const originals = new Map<string, { raw: unknown; fingerprint: string }>();
+      const policies = refs.map((id) => {
+        const matches = applied.assets.filter((asset) => asset.id === id);
+        if (matches.length !== 1) unavailable();
+        const definition = AssetSchema.parse(matches[0]);
+        if (definition.kind !== 'skill' || !definition.available) unavailable();
+        let policy: Pick<HostQualifiedSkillPolicy, 'invocation' | 'policySource'>;
+        if (definition.origin) {
+          const version = definition.origin.versionId;
+          let original = originals.get(version);
+          if (!original) {
+            const raw = readPackage.call(options, version);
+            original = { raw, fingerprint: digest(canonicalPayload(raw)) };
+            originals.set(version, original);
+          }
+          policy = importedPolicy(definition, original.raw);
+        } else
+          policy = {
+            invocation: { modelInvocable: true, userInvocable: true },
+            policySource: { kind: 'manual-default' },
+          };
+        return Object.freeze({
+          ref: Object.freeze({ id, version: applied.id }),
+          definitionDigest: digest(canonicalPayload(definition)),
+          invocation: Object.freeze(policy.invocation),
+          policySource: Object.freeze(policy.policySource),
+        });
+      });
+      const packages = new Map(
+        [...originals].map(([version, item]) => [version, item.fingerprint]),
+      );
+      originals.clear();
+      const assertCurrent = (): undefined => {
+        try {
+          checkSource();
+          for (const [version, fingerprint] of packages) {
+            if (digest(canonicalPayload(readPackage.call(options, version))) !== fingerprint)
+              unavailable();
+          }
+          active();
+          return undefined;
+        } catch {
+          return unavailable();
+        }
+      };
+      assertCurrent();
+      return Object.freeze({ policies: Object.freeze(policies), assertCurrent });
+    } catch {
+      return unavailable();
+    }
+  }
   async function qualify(
     request: MemberRequest,
     locator: Locator,
@@ -303,6 +426,35 @@ export function createHostRunSkillPolicies(options: {
     }
   }
   return {
+    /** Synchronous metadata re-derivation for D's current authorized facts, not a grant. */
+    review: reviewPolicies,
+    async qualifyReview(
+      request: MemberRequest,
+      input: HostReviewPreparationRequest,
+    ): Promise<HostReviewSkillPolicyQualification> {
+      try {
+        active();
+        if (!readReview || execution.readExpertReviewPreparation !== readReview) unavailable();
+        const query = Object.freeze(structuredClone(input));
+        const first = await readReview.call(execution, request, query);
+        active();
+        if (!first.ok) unavailable();
+        const policy = reviewPolicies(first.value);
+        const second = await readReview.call(execution, request, query);
+        active();
+        if (
+          !second.ok ||
+          canonicalPayload(first.value.scope) !== canonicalPayload(second.value.scope) ||
+          canonicalPayload(first.value.applied) !== canonicalPayload(second.value.applied) ||
+          execution.readExpertReviewPreparation !== readReview
+        )
+          unavailable();
+        policy.assertCurrent();
+        return Object.freeze({ preparation: second.value, ...policy });
+      } catch {
+        return unavailable();
+      }
+    },
     qualify,
     async read(
       request: MemberRequest,

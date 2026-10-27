@@ -537,6 +537,11 @@ function RunPanel(props: NativeRunPanelProps) {
   const showComposer = hasRun && (availableModes.length > 0 || draft.length > 0);
   const stopped =
     run?.status === 'cancelled' && run.stopPhase === 'confirmed' && run.resources === 'settled';
+  const submittedReadOnly =
+    run?.status === 'completed' &&
+    run.resources === 'settled' &&
+    run.resultDelivery?.kind === 'delivered' &&
+    ready?.actions.start.kind !== 'available';
   const inactiveHint = !ready
     ? ''
     : !hasRun
@@ -617,7 +622,7 @@ function RunPanel(props: NativeRunPanelProps) {
           <Selection
             key={runKey(view)}
             view={view}
-            disabled={held || running('start')}
+            disabled={held || submittedReadOnly || running('start')}
             onChange={props.onSelectionChange}
           />
           <Receipt run={run} />

@@ -6,7 +6,12 @@ import { ExecutionRunError } from './execution-run-state.js';
 import { openExecutionMemberLease } from './member-session.js';
 import type { createHostDirectoryLifecycle } from './host-directory-lifecycle.js';
 import type { NativeWorkSessionService } from './native-work-session.js';
-import { NativeWorkError } from './native-work-session-contract.js';
+import {
+  NativeWorkError,
+  type NativeScopeCleanupResult,
+  type NativeWorkScope,
+} from './native-work-session-contract.js';
+import { nativeScopeKey } from './native-work-session-record.js';
 import type { createHostRunResourceSource } from './host-run-resource-source.js';
 import type { createHostRunWorkspaces } from './host-run-workspaces.js';
 
@@ -15,7 +20,10 @@ export interface HostRunSources {
     ReturnType<typeof createHostDirectoryLifecycle>,
     'currentDirectoryBinding' | 'currentDirectory'
   >;
-  readonly configuration: Pick<ExecutionRunHostPorts, 'assertConfiguration' | 'assertWorkspace'>;
+  readonly configuration: Pick<
+    ExecutionRunHostPorts,
+    'assertConfiguration' | 'assertWorkspace' | 'assertReviewConfiguration'
+  >;
   readonly native: Pick<NativeWorkSessionService, 'migrationOrigin' | 'migrationDrain'>;
   readonly signal: AbortSignal;
   readonly resources?: Pick<
@@ -23,6 +31,85 @@ export interface HostRunSources {
     'prepareResourceCatalog'
   >;
   readonly workspaces?: Pick<ReturnType<typeof createHostRunWorkspaces>, 'onChange'>;
+  readonly retirementDrain?: NonNullable<ExecutionRunHostPorts['migrationDrain']>;
+}
+
+type Retired = Extract<NativeScopeCleanupResult, { status: 'retired' }>;
+/** Ephemeral references to original C cleanup certificates, never persisted proof labels. */
+export function createHostRunRetirements(owner: NativeWorkSessionService, signal: AbortSignal) {
+  const entries = new Map<
+    string,
+    {
+      owner: NativeWorkSessionService;
+      scope: NativeWorkScope;
+      result: Retired;
+      drain: Retired['drain'];
+      signal: AbortSignal;
+      assertCurrent: Retired['drain']['assertCurrent'];
+    }
+  >();
+  const active = () => {
+    if (signal.aborted) throw new ExecutionRunError('run-authority-unavailable');
+  };
+  const verify = (entry: {
+    result: Retired;
+    drain: Retired['drain'];
+    signal: AbortSignal;
+    assertCurrent: Retired['drain']['assertCurrent'];
+  }) => {
+    active();
+    const drain = entry.drain;
+    if (
+      entry.result.drain !== drain ||
+      !(entry.signal instanceof AbortSignal) ||
+      entry.signal.aborted ||
+      drain.signal !== entry.signal ||
+      typeof entry.assertCurrent !== 'function' ||
+      drain.assertCurrent !== entry.assertCurrent
+    )
+      throw new ExecutionRunError('run-authority-unavailable');
+    const result: unknown = entry.assertCurrent.call(drain);
+    if (result !== undefined) {
+      void Promise.resolve(result).catch(() => undefined);
+      throw new ExecutionRunError('run-authority-unavailable');
+    }
+    active();
+  };
+  return {
+    remember(scope: NativeWorkScope, result: NativeScopeCleanupResult) {
+      active();
+      if (result.status !== 'retired') return;
+      const key = nativeScopeKey(scope);
+      if (result.binding && nativeScopeKey(result.binding.scope) !== key)
+        throw new ExecutionRunError('run-scope-mismatch');
+      const entry = {
+        owner,
+        scope: Object.freeze(structuredClone(scope)),
+        result,
+        drain: result.drain,
+        signal: result.drain.signal,
+        assertCurrent: result.drain.assertCurrent,
+      };
+      verify(entry);
+      // Same bound as the original native owner's scope ledger. Do not evict a
+      // still-current certificate or invent one if either owner is at capacity.
+      if (entries.has(key) || entries.size < 4096) entries.set(key, entry);
+    },
+    read(scope: NativeWorkScope) {
+      active();
+      const key = nativeScopeKey(scope),
+        entry = entries.get(key);
+      if (!entry) return undefined;
+      if (entry.owner !== owner || nativeScopeKey(entry.scope) !== key)
+        throw new ExecutionRunError('run-scope-mismatch');
+      verify(entry);
+      if (entries.get(key) !== entry) throw new ExecutionRunError('run-authority-unavailable');
+      return entry.drain;
+    },
+    clear() {
+      entries.clear();
+    },
+  };
 }
 
 /** Combine original Host producers. This does not install a writer or drive native work. */
@@ -61,6 +148,18 @@ export function createHostRunSources(ctx: Context, sources: HostRunSources): Exe
       active();
       return result;
     },
+    ...(sources.configuration.assertReviewConfiguration
+      ? {
+          assertReviewConfiguration(
+            ...args: Parameters<NonNullable<ExecutionRunHostPorts['assertReviewConfiguration']>>
+          ) {
+            active();
+            const result = sources.configuration.assertReviewConfiguration!(...args);
+            active();
+            return result;
+          },
+        }
+      : {}),
     assertWorkspace(...args) {
       active();
       const result = sources.configuration.assertWorkspace(...args);
@@ -115,6 +214,14 @@ export function createHostRunSources(ctx: Context, sources: HostRunSources): Exe
         return result;
       } catch (error) {
         active();
+        if (
+          error instanceof NativeWorkError &&
+          ['migration-not-ready', 'not-started'].includes(error.code)
+        ) {
+          const retired = sources.retirementDrain?.(scope);
+          active();
+          if (retired) return retired;
+        }
         if (error instanceof NativeWorkError && error.code === 'migration-not-ready')
           return undefined;
         throw error;

@@ -2,6 +2,17 @@ import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export * from './identity/index.js';
 export type {
+  WorkflowApi,
+  WorkflowTarget,
+  WorkflowLocation,
+  WorkflowView,
+  WorkflowOptions,
+  WorkflowStart,
+  WorkflowControl,
+  WorkflowWorkspace,
+} from './workflow/api.js';
+export { WorkflowControls } from './workflow/WorkflowControls.js';
+export type {
   NativeConversationTarget,
   NativeConversationFrame,
   NativeRunInbox,

@@ -1,6 +1,7 @@
 import { symbols, type Context } from '@deepseek-ai/cordis';
+import { createHash } from 'node:crypto';
 import type {} from '@deepseek-ai/dsh-llm';
-import { canonicalPayload, type Workbench } from '@zhuma/agent-core';
+import { canonicalPayload, createExecutionHandoff, type Workbench } from '@zhuma/agent-core';
 import { z } from 'zod';
 import type {
   BeginRunRequest,
@@ -19,12 +20,25 @@ import {
   readExecutionRunState,
   type ExecutionWorkspace,
 } from './execution-run-state.js';
-import type { MemberRequest } from './member-session.js';
+import { resolveMember, type MemberRequest } from './member-session.js';
+import type { WorkflowStartTicket } from './execution-workflow-contract.js';
+import { effectiveWorkflowToolKind } from './execution-workflow-tools.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { hostResultTool } from './host-run-result-protocol.js';
 import { NATIVE_WORK_LIMITS } from './native-work-session.js';
 import type { createHostRunWorkspaces } from './host-run-workspaces.js';
 import { describeNativeOutputFileTool } from './native-work-session-output-file-tool.js';
+import { describeNativeReviewTool } from './native-work-session-review-tool.js';
+import { describeNativeReviewReadTool } from './native-work-session-review-read.js';
+import {
+  assertExecutionReviewComposition,
+  freezeExecutionReviewComposition,
+  readExecutionReviewComposition,
+  type ExecutionReviewPreparation,
+  type FrozenExecutionReviewComposition,
+} from './execution-review-composition.js';
+import { executionReviewTargetSchema } from './execution-review-contract.js';
+import { readHostRunModels } from './host-run-models.js';
 import {
   NATIVE_OUTPUT_FILE_TOOL,
   NATIVE_OUTPUT_FILE_VERSION,
@@ -75,6 +89,17 @@ const beginRequest = z.strictObject({
     z.strictObject({ kind: z.literal('local'), id }),
   ]),
 });
+const reviewRequest = z.strictObject({
+  requestId: id,
+  expectedReviewVersion: nonnegative,
+  target: executionReviewTargetSchema,
+  reviewerRef: z.strictObject({ id, version: id }),
+  model: beginRequest.shape.model,
+});
+const reviewTools = () => ({
+  readTarget: describeNativeReviewReadTool(),
+  completeReview: describeNativeReviewTool(),
+});
 
 /** Host content assembly only. D still checks fresh authority/inputs in its original queue. */
 export function createHostRunConfiguration(
@@ -86,7 +111,7 @@ export function createHostRunConfiguration(
     readonly workspaces?: ReturnType<typeof createHostRunWorkspaces>;
     readonly resources?: Pick<
       ReturnType<typeof createHostRunResourceSource>,
-      'catalog' | 'prepareResourceCatalog'
+      'catalog' | 'prepareResourceCatalog' | 'reviewCatalog' | 'prepareReviewResourceCatalog'
     >;
     /** Host readiness only; never a Client-selected protocol or an old-Run upgrade. */
     readonly resultProtocol?: () => 1 | 2;
@@ -96,6 +121,12 @@ export function createHostRunConfiguration(
   // Cordis returns a fresh tracing proxy on each service read. Compare the
   // public original identity, while calling through the scoped proxy.
   const origin = llm && (Reflect.get(llm, symbols.original) ?? llm);
+  const reviewExecution = options.execution;
+  const readReview = reviewExecution.readExpertReviewPreparation;
+  const reviewResources = options.resources;
+  const prepareReviewResources = reviewResources?.prepareReviewResourceCatalog;
+  const currentReviewCatalog = reviewResources?.reviewCatalog;
+  const reviewSignal = options.signal;
   function active() {
     const current = ctx.get('llm');
     if (
@@ -124,6 +155,41 @@ export function createHostRunConfiguration(
       canonicalPayload(tools.definition) !== canonicalPayload(describeAcceptedInputTool())
     )
       throw new ExecutionRunError('run-authority-unavailable');
+    return undefined;
+  }
+  function reviewActive() {
+    active();
+    if (
+      options.execution !== reviewExecution ||
+      !readReview ||
+      reviewExecution.readExpertReviewPreparation !== readReview ||
+      options.resources !== reviewResources ||
+      !reviewResources ||
+      reviewResources.prepareReviewResourceCatalog !== prepareReviewResources ||
+      reviewResources.reviewCatalog !== currentReviewCatalog ||
+      options.signal !== reviewSignal
+    )
+      throw new ExecutionRunError('run-authority-unavailable');
+  }
+  function assertCurrentReviewComposition(
+    raw: unknown,
+    current: ExecutionReviewPreparation,
+  ): undefined {
+    reviewActive();
+    if (!options.resources) throw new ExecutionRunError('run-authority-unavailable');
+    const snapshot = readExecutionReviewComposition(raw);
+    if (
+      !llm.listProviders().some((provider) => provider.id === snapshot.payload.model.provider) ||
+      snapshot.payload.firstMessage.text.length > NATIVE_WORK_LIMITS.messageChars
+    )
+      throw new ExecutionRunError('run-authority-unavailable');
+    assertExecutionReviewComposition(snapshot, {
+      ...current,
+      model: snapshot.payload.model,
+      tools: reviewTools(),
+      resourceCatalog: options.resources.reviewCatalog(current),
+    });
+    reviewActive();
     return undefined;
   }
 
@@ -168,10 +234,91 @@ export function createHostRunConfiguration(
     },
   };
 
-  return {
+  const configuration = {
     ...assertions,
     assertModel,
-    async prepare(request: MemberRequest, payload: unknown): Promise<BeginRunRequest> {
+    /** Synchronous re-derivation from D's current authorized preparation facts.
+     * The returned configuration/string is never read/send/vote authority. */
+    assertReviewConfiguration(
+      ...[memberId, spaceId, node, raw]: Parameters<
+        NonNullable<ExecutionRunHostPorts['assertReviewConfiguration']>
+      >
+    ): undefined {
+      reviewActive();
+      const snapshot = readExecutionReviewComposition(raw);
+      const scope = snapshot.payload.scope;
+      if (
+        scope.actorId !== memberId ||
+        scope.spaceId !== spaceId ||
+        node.taskId !== scope.taskId ||
+        node.planId !== scope.planId ||
+        node.revision !== scope.revision ||
+        node.nodeId !== scope.nodeId
+      )
+        throw new ExecutionRunError('run-authority-denied');
+      return assertCurrentReviewComposition(snapshot, {
+        scope,
+        node,
+        applied: createExecutionHandoff(scope, options.readWorkbench()),
+      });
+    },
+    async prepareReview(
+      request: MemberRequest,
+      payload: unknown,
+      wait?: AbortSignal,
+    ): Promise<FrozenExecutionReviewComposition> {
+      const parsed = reviewRequest.safeParse(payload);
+      if (!parsed.success) throw new ExecutionRunError('run-validation');
+      reviewActive();
+      wait?.throwIfAborted();
+      if (!options.resources) throw new ExecutionRunError('run-authority-unavailable');
+      const { model, ...query } = parsed.data;
+      const signal = AbortSignal.any([options.signal, ...(wait ? [wait] : [])]);
+      const first = await readReview.call(reviewExecution, request, query);
+      reviewActive();
+      signal.throwIfAborted();
+      if (!first.ok) throw new ExecutionRunError('run-authority-denied');
+      const models = await readHostRunModels(ctx, signal);
+      reviewActive();
+      if (
+        models.kind !== 'ready' ||
+        !models.items.some(
+          (item) => item.value.provider === model.provider && item.value.model === model.model,
+        )
+      )
+        throw new ExecutionRunError('run-authority-unavailable');
+      const qualified = await options.resources.prepareReviewResourceCatalog(request, query, wait);
+      try {
+        reviewActive();
+        signal.throwIfAborted();
+        qualified.assertCurrent();
+        if (
+          canonicalPayload(first.value.scope) !== canonicalPayload(qualified.preparation.scope) ||
+          canonicalPayload(first.value.applied) !== canonicalPayload(qualified.preparation.applied)
+        )
+          throw new ExecutionRunError('run-authority-denied');
+        const composition = freezeExecutionReviewComposition({
+          ...qualified.preparation,
+          model,
+          tools: reviewTools(),
+          resourceCatalog: qualified.catalog,
+        });
+        const final = await readReview.call(reviewExecution, request, query);
+        reviewActive();
+        signal.throwIfAborted();
+        qualified.assertCurrent();
+        if (!final.ok) throw new ExecutionRunError('run-authority-denied');
+        assertCurrentReviewComposition(composition, final.value);
+        return composition;
+      } finally {
+        qualified.release();
+      }
+    },
+    async prepare(
+      request: MemberRequest,
+      payload: unknown,
+      frozenWorkspace?: ExecutionWorkspace,
+    ): Promise<BeginRunRequest> {
       const parsed = beginRequest.safeParse(payload);
       if (!parsed.success) throw new ExecutionRunError('run-validation');
       active();
@@ -206,14 +353,23 @@ export function createHostRunConfiguration(
         throw new ExecutionRunError('run-authority-unavailable');
       const local =
         input.workspace.kind === 'local'
-          ? options.workspaces!.select(
-              inputs.actorId,
-              input.spaceId,
-              applied.task.projectId,
-              input.workspace.id,
-            )
+          ? frozenWorkspace
+            ? options.workspaces!.selectFrozen(
+                inputs.actorId,
+                input.spaceId,
+                applied.task.projectId,
+                frozenWorkspace,
+              )
+            : options.workspaces!.select(
+                inputs.actorId,
+                input.spaceId,
+                applied.task.projectId,
+                input.workspace.id,
+              )
           : undefined;
       let workspace: ExecutionWorkspace = local?.workspace ?? { kind: 'text-only' };
+      if (local && input.workspace.kind === 'local' && local.policy.id !== input.workspace.id)
+        throw new ExecutionRunError('run-authority-denied');
       const state = readExecutionRunState(node);
       const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
       if (prior) {
@@ -300,5 +456,94 @@ export function createHostRunConfiguration(
       }
       return prepared;
     },
+    /** Original Service ticket only. HTTP never passes a ticket or full workspace here. */
+    async prepareWorkflow(
+      request: MemberRequest,
+      ticket: WorkflowStartTicket,
+      wait?: AbortSignal,
+    ): Promise<BeginRunRequest> {
+      active();
+      wait?.throwIfAborted();
+      ticket.check();
+      const { location, reservation, defaults } = ticket;
+      const original = canonicalPayload({ location, reservation, defaults });
+      const member = await resolveMember(ctx, request);
+      if (!member.ok) throw new ExecutionRunError('run-authority-denied');
+      ticket.check();
+      const applied = options
+        .readWorkbench()
+        .appliedPlans.find(
+          (plan) =>
+            plan.id === location.planId &&
+            plan.taskId === location.taskId &&
+            plan.revision === location.revision,
+        );
+      if (!applied) throw new ExecutionRunError('run-authority-denied');
+      const currentNode = options.execution.readRunNode({
+        ...location,
+        nodeId: reservation.nodeId,
+      });
+      if (!currentNode) throw new ExecutionRunError('run-authority-denied');
+      const tools = effectiveWorkflowToolKind(defaults.tools, currentNode.handoff.inputRefs);
+      const selected =
+        defaults.workspace.kind === 'local'
+          ? options.workspaces?.selectFrozen(
+              member.memberId,
+              location.spaceId,
+              applied.task.projectId,
+              defaults.workspace,
+            )
+          : undefined;
+      if (defaults.workspace.kind === 'local' && !selected)
+        throw new ExecutionRunError('run-authority-unavailable');
+      const prepared = await configuration.prepare(
+        request,
+        {
+          ...location,
+          nodeId: reservation.nodeId,
+          requestId: reservation.requestId,
+          newRunId: reservation.newRunId,
+          newSegmentId: reservation.newSegmentId,
+          expectedNodeVersion: reservation.expectedNodeVersion,
+          expectedRunVersion: reservation.expectedRunVersion,
+          mode: 'begin',
+          model: defaults.model,
+          executor: {
+            kind: 'plan-expert',
+            ref: { id: reservation.expertId, version: reservation.expertVersionId },
+          },
+          tools,
+          workspace: selected ? { kind: 'local', id: selected.policy.id } : { kind: 'text-only' },
+        },
+        defaults.workspace,
+      );
+      active();
+      wait?.throwIfAborted();
+      ticket.check();
+      const node = options.execution.readRunNode({ ...location, nodeId: reservation.nodeId });
+      const executor = prepared.composition.payload.executor;
+      if (
+        canonicalPayload({
+          location: ticket.location,
+          reservation: ticket.reservation,
+          defaults: ticket.defaults,
+        }) !== original ||
+        !node ||
+        node.handoff.assignee.kind !== 'expert' ||
+        node.handoff.assignee.id !== reservation.expertId ||
+        node.handoff.expertRef?.version !== reservation.expertVersionId ||
+        createHash('sha256').update(canonicalPayload(node.handoff.inputRefs)).digest('hex') !==
+          reservation.inputsFingerprint ||
+        executor.kind !== 'plan-expert' ||
+        executor.ref.id !== reservation.expertId ||
+        executor.ref.version !== reservation.expertVersionId ||
+        canonicalPayload(prepared.workspace) !== canonicalPayload(defaults.workspace) ||
+        prepared.composition.payload.tools.kind !==
+          effectiveWorkflowToolKind(defaults.tools, node.handoff.inputRefs)
+      )
+        throw new ExecutionRunError('run-authority-denied');
+      return prepared;
+    },
   };
+  return configuration;
 }

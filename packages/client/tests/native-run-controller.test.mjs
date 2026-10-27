@@ -96,6 +96,57 @@ test('Run view contract: initial mount and repeated refresh only read, never sel
   h.controller.dispose();
 });
 
+test('Run view contract: a settled submitted read cannot reuse pre-settlement start capabilities', async () => {
+  let completed = false;
+  const h = setup({
+    async options() {
+      return {
+        ...options(),
+        currentRunId: summary.runId,
+        selection,
+        nodeVersion: summary.nodeVersion,
+        runVersion: summary.runVersion,
+        start: { kind: 'unavailable', message: '当前运行仍占用资源，请先停止并等待确认。' },
+      };
+    },
+    async read() {
+      return completed
+        ? {
+            ...summary,
+            status: 'completed',
+            resources: 'settled',
+            nodeVersion: 4,
+            runVersion: 4,
+            resultDelivery: {
+              kind: 'delivered',
+              artifactVersionId: 'artifact',
+              artifactVersion: 1,
+              roundId: 'round',
+              receipt: { idempotencyKey: 'delivery', version: 4 },
+            },
+            sendCapabilities: {
+              followup: { kind: 'unavailable' },
+              steer: { kind: 'unavailable' },
+              queue: { kind: 'unavailable' },
+            },
+          }
+        : summary;
+    },
+  });
+  await h.controller.refresh();
+  completed = true;
+  await h.controller.refresh(false);
+  const current = h.controller.getSnapshot().view;
+  assert.equal(current.run.resources, 'settled');
+  assert.deepEqual(current.actions.start, {
+    kind: 'unavailable',
+    message: '产物已提交，本轮会话只读。',
+  });
+  assert.equal(current.actions.stop.kind, 'unavailable');
+  assert.deepEqual(h.calls, ['history', 'history']);
+  h.controller.dispose();
+});
+
 test('Run view contract: uncertain same start retries identical durable IDs; no automatic second begin', async () => {
   let first;
   const h = setup({
