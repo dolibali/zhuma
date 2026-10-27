@@ -231,6 +231,15 @@ import {
 import { ExecutionWorkflowIntents, type WorkflowMember } from './execution-workflow-intent.js';
 import { ExecutionWorkspaceApprovals } from './execution-workspace-approval.js';
 import {
+  projectArtifactsQuerySchema,
+  type ProjectArtifactsValue,
+} from './execution-project-artifacts-contract.js';
+import {
+  acceptedProjectFileArtifact,
+  projectArtifactsProjection,
+  selectProjectArtifacts,
+} from './execution-project-artifacts.js';
+import {
   WorkspaceApprovalError,
   type WorkspaceApprovalHostSource,
   type WorkspaceApprovalOwner,
@@ -291,6 +300,12 @@ const fileReadSchema = z.discriminatedUnion('purpose', [
     ...fileReadLocation,
     purpose: z.literal('upstream'),
     sourceNodeId: WorkTaskSchema.shape.id,
+    artifactVersionId: artifactId,
+  }),
+  z.strictObject({
+    ...fileReadLocation,
+    purpose: z.literal('accepted'),
+    projectId: WorkTaskSchema.shape.id,
     artifactVersionId: artifactId,
   }),
 ]);
@@ -5434,6 +5449,58 @@ export class ExecutionService {
     );
   }
 
+  /** Project result reads share the ORIGINAL request's file/member authority.
+   * Metadata/text projection never repairs dependencies, writes or opens bytes. */
+  projectArtifacts(
+    caller: ExecutionCaller,
+    body: unknown,
+    source?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionResult<ProjectArtifactsValue>> {
+    const parsed = parseBody(projectArtifactsQuerySchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    const query = parsed.value,
+      scope = query.view === 'list' ? query : query.ref;
+    return this.withFileAuthority(caller, body, source, async (actor, authority) =>
+      this.enqueue(async () => {
+        const check = () => {
+          this.assertFileAuthority(authority, actor.actorId, scope.projectId, scope.spaceId);
+          if (
+            this.fileLifetime.signal.aborted ||
+            authority.lease.signal.aborted ||
+            !actor.spaceIds.includes(scope.spaceId)
+          )
+            throw new ArtifactUploadError('not-found');
+        };
+        check();
+        const selection = selectProjectArtifacts(
+          this.workbench.readWorkbench(),
+          actor.actorId,
+          scope.spaceId,
+          scope.projectId,
+        );
+        const value = projectArtifactsProjection(selection, query, (ref) => {
+          check();
+          try {
+            return this.currentFileNode(ref);
+          } catch (error) {
+            if (error instanceof ArtifactUploadError && error.code === 'not-found')
+              return undefined;
+            throw error;
+          }
+        });
+        check();
+        const fresh = selectProjectArtifacts(
+          this.workbench.readWorkbench(),
+          actor.actorId,
+          scope.spaceId,
+          scope.projectId,
+        );
+        if (fresh.fingerprint !== selection.fingerprint) return fail('conflict');
+        return { ok: true, value };
+      }),
+    );
+  }
+
   report(
     caller: ExecutionCaller,
     body: unknown,
@@ -6133,7 +6200,10 @@ export class ExecutionService {
         )
           throw new ArtifactUploadError('not-found');
       }
-      const artifact = source.artifactVersions.find((item) => item.id === query.artifactVersionId);
+      const artifact =
+        query.purpose === 'accepted'
+          ? acceptedProjectFileArtifact(this.workbench.readWorkbench(), actorId, query, source)
+          : source.artifactVersions.find((item) => item.id === query.artifactVersionId);
       if (!artifact) throw new ArtifactUploadError('not-found');
       if (query.purpose === 'review') {
         const round = source.rounds.find(
@@ -6153,6 +6223,8 @@ export class ExecutionService {
         throw new ArtifactUploadError('not-found');
       file = artifact.files.find((item) => item.id === query.uploadId);
       if (!file) throw new ArtifactUploadError('not-found');
+      if (query.purpose === 'accepted' && authority.lease.signal.aborted)
+        throw new ArtifactUploadError('not-found');
     }
     const record = this.fileStore.get(query.uploadId);
     if (
