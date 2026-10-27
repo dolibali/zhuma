@@ -192,6 +192,17 @@ export type NativeConversationFrame =
   | {
       readonly type: 'assistant-stream';
       readonly frame:
+        | {
+            readonly type: 'snapshot';
+            readonly revision: number;
+            readonly activeAttempt?: {
+              readonly attemptId: string;
+              readonly startedAfterSeq: number;
+              readonly nextIndex: number;
+              readonly text: string;
+              readonly toolNames: readonly string[];
+            };
+          }
         | { readonly type: 'start'; readonly attemptId: string; readonly revision: number }
         | {
             readonly type: 'chunk';

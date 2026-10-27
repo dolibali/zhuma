@@ -8,6 +8,8 @@ import type {
 export function createConversationState() {
   const saved = new Map<string, NativeRunMessage>();
   const awaiting = new Map<string, NativeRunMessage>();
+  let streamRevision = -1;
+  let streamAttempt: { id: string; index: number } | undefined;
   let inbox: NativeRunInbox | undefined;
   let partial:
     | {
@@ -26,6 +28,8 @@ export function createConversationState() {
       awaiting.clear();
       inbox = undefined;
       partial = undefined;
+      streamRevision = -1;
+      streamAttempt = undefined;
     },
     disconnect() {
       partial = undefined;
@@ -64,7 +68,39 @@ export function createConversationState() {
         return false;
       }
       const frame = value.frame;
+      if (frame.type === 'snapshot') {
+        const active = frame.activeAttempt;
+        if (frame.revision < streamRevision) return false;
+        if (
+          active &&
+          ((frame.revision === streamRevision && streamAttempt?.id !== active.attemptId) ||
+            (partial && frame.revision === partial.revision) ||
+            (streamAttempt?.id === active.attemptId && active.nextIndex - 1 < streamAttempt.index))
+        )
+          return false;
+        streamRevision = frame.revision;
+        streamAttempt = active ? { id: active.attemptId, index: active.nextIndex - 1 } : undefined;
+        partial = active
+          ? {
+              id: active.attemptId,
+              revision: frame.revision,
+              index: active.nextIndex - 1,
+              text: active.text,
+              tools: new Set(active.toolNames),
+              messageSeen: [...saved.values(), ...awaiting.values()].some(
+                (message) =>
+                  message.role === 'assistant' && message.sequence > active.startedAfterSeq,
+              ),
+              after: active.startedAfterSeq,
+            }
+          : undefined;
+        return false;
+      }
       if (frame.type === 'start') {
+        if (frame.revision >= streamRevision) {
+          streamRevision = frame.revision;
+          streamAttempt = { id: frame.attemptId, index: -1 };
+        }
         if (partial) {
           partial = undefined;
           return true;
@@ -89,6 +125,11 @@ export function createConversationState() {
       }
       partial.index = frame.index;
       partial.revision = frame.revision;
+      if (frame.revision >= streamRevision) {
+        streamRevision = frame.revision;
+        streamAttempt =
+          frame.type === 'chunk' ? { id: frame.attemptId, index: frame.index } : undefined;
+      }
       if (frame.type === 'chunk') {
         if (frame.text) partial.text = (partial.text + frame.text).slice(0, 262_144);
         if (frame.toolName && partial.tools.size < 128) partial.tools.add(frame.toolName);

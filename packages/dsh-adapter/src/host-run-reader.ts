@@ -167,6 +167,25 @@ function publicFrame(value: NativeConversationFrame): NativeConversationFrame {
       return { type: value.type, after: value.after };
     case 'assistant-stream': {
       const frame = value.frame;
+      if (frame.type === 'snapshot')
+        return {
+          type: value.type,
+          frame: {
+            type: 'snapshot',
+            revision: frame.revision,
+            ...(frame.activeAttempt
+              ? {
+                  activeAttempt: {
+                    attemptId: frame.activeAttempt.attemptId,
+                    startedAfterSeq: frame.activeAttempt.startedAfterSeq,
+                    nextIndex: frame.activeAttempt.nextIndex,
+                    text: frame.activeAttempt.text,
+                    toolNames: [...frame.activeAttempt.toolNames],
+                  },
+                }
+              : {}),
+          },
+        };
       const common = { type: frame.type, attemptId: frame.attemptId, revision: frame.revision };
       if (frame.type === 'start') return { type: value.type, frame: { ...common, type: 'start' } };
       if (frame.type === 'chunk')

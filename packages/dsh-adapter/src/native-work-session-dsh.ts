@@ -46,6 +46,7 @@ import {
   type NativeWorkScope,
   type NativeInboxSnapshot,
 } from './native-work-session-contract.js';
+import { NativeAssistantSnapshotCache } from './native-work-session-snapshot.js';
 
 const MAX_FRAME_BYTES = 262_144;
 const MAX_BUFFER_BYTES = 524_288;
@@ -73,6 +74,7 @@ function registryIdentity(ctx: Context): object {
 
 interface LiveSession {
   readonly handle: AgentHandle;
+  readonly presentation: NativeAssistantSnapshotCache;
   readonly grant: NativeWorkGrant;
   readonly binding: NativeSessionBinding;
   readonly directory: NativeDirectoryContext;
@@ -444,8 +446,19 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     directory.assert();
     assertNativeInputReadOwner(binding.nativeSessionId, this);
     if (!stored && !allowCreate) throw new NativeWorkError('delivery-unknown');
+    const presentation = new NativeAssistantSnapshotCache(binding.nativeSessionId);
     const setup: AgentSetup = async (agentCtx, unpublishedAgent) => {
       this.current(grant);
+      // Capture before the first request, in this exact Agent's owned scope.
+      agentCtx.on('agent/assistant-stream', ({ agent, frame }) => {
+        if (agent === unpublishedAgent) presentation.push(frame, Number(agent.session.seq) - 1);
+      });
+      const forget = () => presentation.close();
+      signal.addEventListener('abort', forget, { once: true });
+      agentCtx.effect(() => () => {
+        signal.removeEventListener('abort', forget);
+        presentation.close();
+      });
       await directory.prepare(unpublishedAgent);
       assertNativeInputReadOwner(binding.nativeSessionId, this);
       // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
@@ -577,6 +590,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       throw new NativeWorkError('configuration-mismatch');
     }
     const revoke = () => {
+      presentation.close();
       // Revocation cannot wake parked input or grant authority to a late frame.
       handle.agent.cancel({ kind: 'disposed' }, { keepInbox: true });
       void handle.agent
@@ -586,6 +600,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     };
     this.live.set(binding.nativeSessionId, {
       handle,
+      presentation,
       binding: structuredClone(binding),
       directory,
       grant,
@@ -1043,6 +1058,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     callerSignal: AbortSignal,
     allowAbsent = false,
     assertCurrent: () => void = () => {},
+    expectedScope?: NativeWorkScope,
   ): AsyncIterable<NativeWorkFrame> {
     const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
     signal.throwIfAborted();
@@ -1052,7 +1068,8 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     let bufferedBytes = 0;
     let overflow = false;
     let failure: unknown;
-    const source = this.live.get(sessionId)?.handle.agent;
+    const live = this.live.get(sessionId);
+    const source = live?.handle.agent;
     const persistence = this.ctx.sessionPersistence.identity;
     const registry = registryIdentity(this.ctx);
     const stops: (() => void)[] = [];
@@ -1087,6 +1104,12 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       // may have ended with the Run. Source identity must still be exact.
       if (source && this.ctx.agents.get(SessionId(sessionId)) !== source)
         throw new NativeWorkError('unavailable');
+      if (
+        live &&
+        expectedScope &&
+        this.scopeAddress(live.binding.scope) !== this.scopeAddress(expectedScope)
+      )
+        throw new NativeWorkError('scope-mismatch');
     };
     let wake: (() => void) | undefined;
     const notify = () => {
@@ -1165,6 +1188,22 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         }
         if (events.length < 100) break;
       }
+      checkSource();
+      if (overflow) {
+        yield { type: 'gap', after: cursor };
+        return;
+      }
+      let opening;
+      try {
+        opening = live?.presentation.snapshot() ?? { type: 'snapshot' as const, revision: 0 };
+      } catch {
+        yield { type: 'gap', after: cursor };
+        return;
+      }
+      // Capture and watermark are synchronous. Queued native frames through
+      // this revision are represented (or settled) by this opening baseline.
+      const streamCut = opening.revision;
+      yield { type: 'assistant-stream', frame: opening };
       while (!signal.aborted) {
         if (failure) throw failure;
         checkSource();
@@ -1184,6 +1223,16 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         if (item.value.type === 'event') {
           if (item.value.event.seq <= cursor) continue;
           cursor = item.value.event.seq;
+        } else if (item.value.type === 'assistant-stream') {
+          const frame = item.value.frame;
+          if (
+            frame !== null &&
+            typeof frame === 'object' &&
+            'revision' in frame &&
+            typeof frame.revision === 'number' &&
+            frame.revision <= streamCut
+          )
+            continue;
         }
         yield item.value;
       }
@@ -1199,6 +1248,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const live = this.live.get(sessionId);
     if (!live) return;
     this.live.delete(sessionId);
+    live.presentation.close();
     this.touch(sessionId);
     live.directory.signal.removeEventListener('abort', live.revoke);
     const work = Promise.resolve().then(() => live.handle.dispose());
