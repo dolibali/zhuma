@@ -1545,15 +1545,37 @@ export class NativeWorkSessionService {
     const binding = this.required(grant, 'follow');
     if (!Number.isSafeInteger(after) || after < -1) throw new NativeWorkError('invalid-request');
     const combined = AbortSignal.any([grant.signal, signal]);
+    const verify = () => {
+      combined.throwIfAborted();
+      const fresh = this.required(grant, 'follow');
+      if (
+        fresh.nativeSessionId !== binding.nativeSessionId ||
+        fresh.nativeAgentId !== binding.nativeAgentId ||
+        !this.sameScope(fresh.scope, binding.scope) ||
+        !sameSelection(fresh.selection, binding.selection)
+      )
+        throw new NativeWorkError('scope-mismatch');
+    };
     for await (const frame of this.runtime.follow(
       binding.nativeSessionId,
       after,
       combined,
       binding.receipts.length === 0,
       () => this.check(grant, 'follow'),
+      binding.scope,
     )) {
       if (combined.aborted) return;
-      this.check(grant, 'follow');
+      // Re-read the binding at the opening cut; ordinary native frames retain
+      // the original current-grant check without parsing all receipts per chunk.
+      if (
+        frame.type === 'assistant-stream' &&
+        frame.frame !== null &&
+        typeof frame.frame === 'object' &&
+        'type' in frame.frame &&
+        frame.frame.type === 'snapshot'
+      )
+        verify();
+      else this.check(grant, 'follow');
       yield {
         scope: structuredClone(binding.scope),
         nativeSessionId: binding.nativeSessionId,

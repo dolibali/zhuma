@@ -177,6 +177,19 @@ export interface NativeInboxSnapshot {
   }[];
 }
 
+/** Process-local visible prefix, never a durable message or a native stream replay. */
+export interface NativeAssistantSnapshot {
+  readonly type: 'snapshot';
+  readonly revision: number;
+  readonly activeAttempt?: {
+    readonly attemptId: string;
+    readonly startedAfterSeq: number;
+    readonly nextIndex: number;
+    readonly text: string;
+    readonly toolNames: readonly string[];
+  };
+}
+
 /** Whitelisted presentation only. No raw events, reasoning, tool arguments or replay data. */
 export type NativeConversationFrame =
   | {
@@ -192,6 +205,7 @@ export type NativeConversationFrame =
   | {
       readonly type: 'assistant-stream';
       readonly frame:
+        | NativeAssistantSnapshot
         | { readonly type: 'start'; readonly attemptId: string; readonly revision: number }
         | {
             readonly type: 'chunk';
@@ -268,6 +282,7 @@ export interface NativeWorkRuntime {
     signal: AbortSignal,
     allowAbsent?: boolean,
     assertCurrent?: () => void,
+    expectedScope?: NativeWorkScope,
   ): AsyncIterable<NativeWorkFrame>;
   disconnect(sessionId: string): Promise<void>;
   /** Independent cleanup authority is checked by the service, not an expired old drive grant.
