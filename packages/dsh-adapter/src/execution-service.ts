@@ -5564,6 +5564,14 @@ export class ExecutionService {
           for (const projectId of projects) {
             this.assertFileAuthority(authority, actor.actorId, projectId, query.spaceId);
             live(); // A synchronous source callback may invalidate or replace its lease.
+            // Project checks are external callbacks. Stable lease fields alone
+            // cannot certify that the original request still has this identity.
+            try {
+              synchronousRunAssertion(assertCurrent.call(lease, query.spaceId));
+            } catch {
+              throw new ArtifactUploadError('not-found');
+            }
+            live();
           }
           const state = this.workbench.readWorkbench();
           if (
