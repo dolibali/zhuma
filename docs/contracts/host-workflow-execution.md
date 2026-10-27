@@ -36,16 +36,20 @@
 
 Stop 先通过原 Service 验证并撤销准入，再等待在途启动和原 Run 的停止／实际 drain。尚未物理收尾不能报告 paused。关闭按桥 fence、原 Run owner 收尾、桥 join 的顺序执行；收尾失败保留失败和门禁，不以持久化标签或 CLI 退出冒充恢复。
 
-正常固定结果提交成功同样通过原 `retireForCleanup` 取得 scope 清理凭据，再释放原 owner。Host 仅在原资源收尾和 settle 完成后，按完整 scope 和原 native.service 保留原 drain 对象、signal 与 assertCurrent 方法的引用；每次读取重新核验。原迁移凭据优先，只有已知尚未准备或尚未建立 binding 时才查询本 owner 的真实清理凭据，未知失败不被缓存遮盖。该有界缓存不持久化，不由 settled／active0 标签生成，关闭时清除；新 Host 实例不能凭旧标签推断 paused，必须重新取得真实凭据。当前重挂载负向验证不等同于跨进程工作流恢复验收。
+正常固定结果提交成功同样通过原 `retireForCleanup` 取得 scope 清理凭据，再释放原 owner。Host 仅在原资源收尾和 settle 完成后，按完整 scope 和原 native.service 保留原 drain 对象、signal 与 assertCurrent 方法的引用；每次读取重新核验。原迁移凭据优先，只有已知尚未准备或尚未建立 binding 时才查询本 owner 的真实清理凭据，未知失败不被缓存遮盖。该有界缓存不持久化，不由 settled／active0 标签生成，关闭时清除。
+
+新 Host 在用户显式继续时，先以原可信成员和完整工作流位置重新授权，核对意图版本及全部预留与已提交 Run 的原绑定。只有原当前、终态且已 settled、实际 received/acknowledged 并有完整原生会话身份的 Run 才能取得原 `cleanupAfterSettlement` 清理资格；资格不等于 drain。Host 再调用原 C `retireForCleanup`，核对真实返回的完整 scope、会话／Agent ID 和 flushed-and-closed 凭据，等待本 owner 尚有的资源采用收尾，并在 await 两侧重查成员和原意图。仅在上述检查通过后保留本 owner 的真实凭据，再交原 D resume 最终门禁。缺失预留回执、未知接收、缺失 binding、过期成员或未完成 drain 均不冒充恢复；不会创建 Agent、重发请求或重新提交旧产物。
 
 ## 客户端入口
 
 任务负责人在已确认工作流上显式运行、继续或停止。首次运行选择实际模型、工作区和并行上限；继续使用原冻结选择。无 Agent 的计划通过现有“查看待办／开始执行”派发，不要求配置模型。
 
-未建立执行节点时，节点 Agent 入口显示不可用并指向明确的启动／派发路径。读取状态、打开页面、切换视图和重新登录都不会自动执行。执行中的状态刷新只是被动读取，不在 Client 另建调度循环。
+负责人尚未派发时，节点 Agent 入口显示不可用并指向明确的启动／派发路径。其他参与者的节点入口使用原 Run controller 读取本人有权处理的节点／Run，不能依赖负责人专有的工作流控制投影，也不开放工作流管理权限。节点未派发或授权失败仍由原节点服务拒绝，不猜测 planStarted。读取状态、打开页面、切换视图和重新登录都不会自动执行。执行中的状态刷新只是被动读取，不在 Client 另建调度循环。
 
 ## 验证边界
 
 `--phase host-workflow` 是原发射 Host、原 Service／桥／factory、真实成员 Cookie、JSON／JSONL 与本地脚本模型的定向接缝入口。`host-workflow-admission` 单独覆盖并行与评审门禁、原 metadata／Agent-created 中的 Stop 窗口，以及正常准入后原 Run 的存活和显式停止。精确运行结果、源 SHA、Host 字节与失败证据以对应 PR 为准，不从命令声明推断通过。
+
+`--phase host-workflow-cold` 独立运行旧 Host 写入并关闭与新 OS 进程重新授权／显式继续两阶段，验证读取不隐式收尾、无关／撤销成员及错误空间／版本拒绝、原继续回执幂等、旧分支不重跑、原评审通过后才执行合流与解锁人工提交。使用真实 Host／SDK／JSON／JSONL 与本地脚本模型，不扩张为正式编译 GUI 或供应商验收。
 
 源码别名 SDK、正式编译包、正常桌面入口、真实供应商和安装验收分别记录。没有完成对应层级验证前，不将本接缝或旧版本证据称为产品验收。文件结果、Agent 评审和多层子任务继续消费各自冻结的原能力，不能由本控制条冒充已经完成。

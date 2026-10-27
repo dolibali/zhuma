@@ -864,6 +864,10 @@ export function TaskEditor({
               fixedNode &&
               !applied.task.workflows.some((flow) => flow.parentNodeId === fixedNode.id) &&
               (!nativeRun.api.workflow ||
+              // Only the task owner has workflow-control facts. Other members
+              // use the original node controller, which reads their own authority
+              // before exposing a start/send action; no plan state is inferred.
+              api.member?.actorId !== task.ownerId ||
               (workflowView?.target.planId === applied.id &&
                 workflowView.target.revision === applied.revision &&
                 workflowView.planStarted) ? (

@@ -88,6 +88,11 @@ export function createHostWorkflowOwner(
     readonly workspaces: ReturnType<typeof createHostRunWorkspaces>;
     readonly signal: AbortSignal;
     readWorkbench(): Workbench;
+    prepareResume(
+      original: MemberRequest,
+      view: WorkflowExecutionView,
+      wait?: AbortSignal,
+    ): Promise<void>;
   },
 ) {
   const { execution, signal, workspaces } = options;
@@ -269,7 +274,34 @@ export function createHostWorkflowOwner(
     async resume(original, payload, wait) {
       active(wait);
       const input = parse(workflowResumeSchema, payload);
-      const resumed = await execution.resumeWorkflowExecution(original, input);
+      const facts = await context(
+        original,
+        {
+          spaceId: input.spaceId,
+          taskId: input.taskId,
+          planId: input.planId,
+          revision: input.revision,
+        },
+        wait,
+      );
+      // Preserve the original replay and warm-owner/cancelled-reservation path.
+      // Only its explicit recovery refusal may request physical cleanup here;
+      // reads/options never enter this path and D remains the final write gate.
+      let resumed = await execution.resumeWorkflowExecution(original, input);
+      if (!resumed.ok && resumed.error.code === 'workflow-recovery-required') {
+        const intent = facts.view.intent;
+        if (
+          !intent ||
+          intent.intentId !== input.intentId ||
+          intent.generation !== input.generation ||
+          intent.version !== input.expectedVersion
+        )
+          throw new ExecutionWorkflowError('workflow-conflict');
+        await options.prepareResume(original, facts.view, wait);
+        active(wait);
+        resumed = await execution.resumeWorkflowExecution(original, input);
+      }
+      active(wait);
       if (!resumed.ok) return resumed;
       await bridge.attach(original, resumed.value);
       return current(original, resumed.value.location);

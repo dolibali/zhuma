@@ -62,8 +62,12 @@ import {
   createNativeOutputFileIssuer,
   type NativeOutputFileIssuer,
 } from './native-work-session-output-file.js';
-import { resolveMember, type MemberRequest } from './member-session.js';
-import { ExecutionWorkflowError, type WorkflowStartTicket } from './execution-workflow-contract.js';
+import { openExecutionMemberLease, resolveMember, type MemberRequest } from './member-session.js';
+import {
+  ExecutionWorkflowError,
+  type WorkflowStartTicket,
+  type WorkflowExecutionView,
+} from './execution-workflow-contract.js';
 
 const id = z.string().min(1).max(200);
 const positive = z.number().int().positive().refine(Number.isSafeInteger);
@@ -407,6 +411,7 @@ export async function openHostRunOwner(
       signal: lifetime.signal,
       workspaces,
       readWorkbench: options.readWorkbench,
+      prepareResume: recoverWorkflowDrains,
     });
   } catch (error) {
     workflow?.fence();
@@ -721,6 +726,91 @@ export async function openHostRunOwner(
       await work;
     } finally {
       delete state.accepting;
+    }
+  }
+  async function recoverWorkflowDrains(
+    request: MemberRequest,
+    view: WorkflowExecutionView,
+    wait?: AbortSignal,
+  ) {
+    const intent = view.intent;
+    if (!intent) throw new ExecutionWorkflowError('workflow-not-found');
+    const lease = await openExecutionMemberLease(ctx, request);
+    const fixed = canonicalPayload(intent);
+    const check = () => {
+      active();
+      wait?.throwIfAborted();
+      lease.assertCurrent(view.location.spaceId);
+      if (lease.memberId !== intent.actorId)
+        throw new ExecutionWorkflowError('workflow-authority-denied');
+    };
+    const fresh = async () => {
+      check();
+      const current = await execution.readWorkflowExecution(request, view.location);
+      check();
+      if (!current.ok || canonicalPayload(current.value.intent) !== fixed)
+        throw new ExecutionWorkflowError('workflow-conflict');
+    };
+    try {
+      await fresh();
+      // Validate every original reservation before touching any native scope.
+      // Missing/unknown receipts and a superseded attempt remain fail-closed.
+      const bound = intent.starts.map((reservation) => {
+        const node = execution.readRunNode({ ...view.location, nodeId: reservation.nodeId });
+        const state = node && readExecutionRunState(node);
+        const receipt = state?.receipts.find((item) => item.requestId === reservation.requestId);
+        const run = receipt && state?.runs.find((item) => item.attempt.id === receipt.runId);
+        if (
+          !node ||
+          !run ||
+          run.attempt.id !== reservation.newRunId ||
+          run.segmentId !== reservation.newSegmentId ||
+          run.actorId !== intent.actorId ||
+          run.spaceId !== view.location.spaceId ||
+          currentExecutionRun(node)?.attempt.id !== run.attempt.id ||
+          run.dispatch !== 'received' ||
+          !run.attempt.acknowledged ||
+          !run.attempt.sessionId ||
+          !run.attempt.executorRunId ||
+          run.resources !== 'settled' ||
+          !isTerminalRunStatus(run.attempt.status)
+        )
+          throw new ExecutionWorkflowError('workflow-recovery-required');
+        return { scope: executionRunScope(node, run), run };
+      });
+      for (const { scope, run } of bound) {
+        await fresh();
+        if (retirementDrains?.read(scope)) continue;
+        const cleanup = authorities.cleanupAfterSettlement(locatorFor(scope));
+        const assertCleanup = () => {
+          check();
+          authorities.assertCleanup(cleanup, 'cleanup');
+          return undefined;
+        };
+        const result = await native.service.retireForCleanup(
+          { scope, assertCurrent: assertCleanup },
+          AbortSignal.any([lifetime.signal, lease.signal, ...(wait ? [wait] : [])]),
+        );
+        assertCleanup();
+        if (
+          result.status !== 'retired' ||
+          !result.binding ||
+          nativeScopeKey(result.binding.scope) !== nativeScopeKey(scope) ||
+          result.binding.nativeSessionId !== run.attempt.sessionId ||
+          result.binding.nativeAgentId !== run.attempt.executorRunId ||
+          result.drain.basis !== 'flushed-and-closed'
+        )
+          throw new ExecutionWorkflowError('workflow-recovery-required');
+        result.drain.assertCurrent();
+        await owned.get(nativeScopeKey(scope))?.resourceAdoption?.drain();
+        await fresh();
+        assertCleanup();
+        result.drain.assertCurrent();
+        retirementDrains?.remember(scope, result);
+      }
+      await fresh();
+    } finally {
+      lease.release();
     }
   }
   async function settle(state: OwnedRun): Promise<void> {
