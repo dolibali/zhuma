@@ -78,6 +78,8 @@ export async function boot(
     skill = false,
     userOnly = false,
     parentSkill = false,
+    reviewerExpert = false,
+    reviewerSkill = false,
     review = false,
     localWorkspace = undefined,
     failFileLedger = false,
@@ -204,13 +206,25 @@ export async function boot(
     },
   }));
   const data = fixture();
-  const imported = skill ? await importedSkillSeed(data.state, userOnly) : undefined;
-  data.state.participants.find((item) => item.id === 'qa').instructions =
-    'EXACT_PLAN_EXPERT_METHOD';
-  const state = applyWorkbenchCommand(imported?.state ?? data.state, {
+  const imported =
+    skill || reviewerSkill ? await importedSkillSeed(data.state, userOnly) : undefined;
+  const planning = imported?.state ?? data.state;
+  if (reviewerExpert) {
+    planning.participants.push({
+      ...planning.participants.find((item) => item.id === 'qa'),
+      id: 'qa-review',
+      name: 'Independent review expert',
+      instructions:
+        'Independently read the Host-bound fixed artifact and use the selected review method.',
+      resourceBindings: { skillIds: reviewerSkill ? ['api-skill'] : [], mcpIds: [] },
+    });
+  }
+  planning.participants.find((item) => item.id === 'qa').instructions = 'EXACT_PLAN_EXPERT_METHOD';
+  const state = applyWorkbenchCommand(planning, {
     type: 'save-task',
     task: {
       ...data.task,
+      ...(reviewerExpert ? { participantIds: [...data.task.participantIds, 'qa-review'] } : {}),
       status: 'ready',
       workflows: [
         {
