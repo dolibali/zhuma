@@ -90,6 +90,104 @@ const FIXTURE = {
   projectSpaces: [{ projectId: 'portal', spaceId: 'team-north' }],
 };
 
+test('first configuration contract: the original opened directory has passive status and one resumable canonical import', async () => {
+  const { ctx, media } = mount();
+  const directory = await openSpaceDirectory(ctx.storageDomain);
+  const before = structuredClone(media.get('zhuma_spaces'));
+  assert.deepEqual(directory.initializationStatus(), { kind: 'unconfigured' });
+  assert.deepEqual(media.get('zhuma_spaces'), before);
+  const receipt = await directory.initializeImport(FIXTURE);
+  assert.equal(receipt.kind, 'initialized');
+  assert.deepEqual(directory.initializationStatus(), {
+    kind: 'configured',
+    fingerprint: receipt.fingerprint,
+  });
+  assert.deepEqual(await directory.initializeImport(FIXTURE), receipt);
+  assert.equal(directory.isMember('team-north', 'lin'), true);
+  await assert.rejects(directory.initializeImport({ ...FIXTURE, memberships: [] }), {
+    code: 'conflict',
+  });
+  await directory.close();
+});
+
+test('first configuration contract: failed import is visible only to explicit pending initialization and resumes in the same original domain', async () => {
+  const media = new Map();
+  let calls = 0;
+  const { ctx } = mount({
+    media,
+    faults: { put: () => (++calls === 2 ? Error('isolated put failure') : undefined) },
+  });
+  const first = await openSpaceDirectory(ctx.storageDomain);
+  await assert.rejects(first.initializeImport(FIXTURE));
+  assert.equal(first.initializationStatus().kind, 'pending');
+  for (const read of [
+    () => first.spaces(),
+    () => first.space('personal-lin'),
+    () => first.isMember('personal-lin', 'lin'),
+    () => first.spacesForMember('lin'),
+  ])
+    assert.throws(read, { code: 'unavailable' });
+  assert.deepEqual(first.spaceForProjectNow('portal'), { ok: false, reason: 'unavailable' });
+  for (const write of [
+    () => first.createSpace({ id: 'other', kind: 'team', name: 'Other' }),
+    () => first.grantMembership('personal-lin', 'lin'),
+    () => first.revokeMembership('personal-lin', 'lin'),
+    () => first.assignProjectSpace('other', 'personal-lin'),
+  ])
+    await assert.rejects(write(), { code: 'unavailable' });
+  await first.close();
+  await assert.rejects(openSpaceDirectory(mount({ media }).ctx.storageDomain));
+  const second = await openSpaceDirectory(mount({ media }).ctx.storageDomain, undefined, {
+    allowPendingInitialization: true,
+  });
+  assert.equal(second.initializationStatus().kind, 'pending');
+  await second.initializeImport(FIXTURE);
+  assert.equal(second.isMember('team-north', 'lin'), true);
+  await second.close();
+});
+
+test('first configuration contract: import initialization refuses writer facts and never recreates a revoked completed membership', async () => {
+  const { ctx } = mount();
+  const writer = await openSpaceDirectory(ctx.storageDomain);
+  await writer.createSpace({ id: 'existing', kind: 'team', name: 'Existing' });
+  assert.equal(writer.initializationStatus().kind, 'recovery-required');
+  await assert.rejects(writer.initializeImport(FIXTURE), { code: 'conflict' });
+  assert.deepEqual(
+    writer.spaces().map((item) => item.id),
+    ['existing'],
+  );
+  await writer.close();
+  const complete = await openSpaceDirectory(mount().ctx.storageDomain);
+  await complete.initializeImport(FIXTURE);
+  await complete.revokeMembership('team-north', 'lin');
+  await assert.rejects(complete.initializeImport(FIXTURE), { code: 'conflict' });
+  assert.equal(complete.isMember('team-north', 'lin'), false);
+  await complete.close();
+});
+
+test('first configuration contract: unknown rows inside a marked partial cannot be accepted as part of the matching seed', async () => {
+  const media = new Map();
+  let count = 0;
+  const first = await openSpaceDirectory(
+    mount({ media, faults: { put: () => (++count === 2 ? Error('isolated failure') : undefined) } })
+      .ctx.storageDomain,
+  );
+  await assert.rejects(first.initializeImport(FIXTURE));
+  await first.close();
+  media
+    .get('zhuma_spaces')
+    .tables.get('spaces')
+    .set('unrelated', { id: 'unrelated', kind: 'team', name: 'Unknown' });
+  const second = await openSpaceDirectory(mount({ media }).ctx.storageDomain, undefined, {
+    allowPendingInitialization: true,
+  });
+  const before = structuredClone(media.get('zhuma_spaces'));
+  await assert.rejects(second.initializeImport(FIXTURE), { code: 'conflict' });
+  assert.deepEqual(media.get('zhuma_spaces'), before);
+  assert.throws(() => second.spacesForMember('lin'), { code: 'unavailable' });
+  await second.close();
+});
+
 test('an import seeds an empty directory and members can enumerate spaces, including empty ones', async () => {
   const { ctx } = mount();
   const directory = await openSpaceDirectory(ctx.storageDomain, FIXTURE);

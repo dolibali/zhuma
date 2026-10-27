@@ -49,7 +49,11 @@ import {
   type UpstreamInputView,
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
-import type { NativeWorkGrant, NativeWorkAction } from './native-work-session-contract.js';
+import type {
+  NativeWorkGrant,
+  NativeWorkAction,
+  NativeMigrationDrain,
+} from './native-work-session-contract.js';
 import type {
   NativeFixedResultIssuer,
   NativeFixedResultPublicationsIssuer,
@@ -143,6 +147,7 @@ import {
 import {
   ExecutionReviewError,
   executionReviewTargetSchema,
+  executionReviewScopeSchema,
   type ExecutionReviewAttempt,
   type ExecutionReviewTarget,
   type ExecutionReviewScope,
@@ -172,7 +177,24 @@ import {
   type ExecutionReviewPreparation,
   type FrozenExecutionReviewComposition,
 } from './execution-review-composition.js';
-import { admitExecutionReview } from './execution-review-lifecycle.js';
+import { admitExecutionReview, recordExecutionReviewEvent } from './execution-review-lifecycle.js';
+import type {
+  ExecutionReviewNativePorts,
+  ExecutionReviewNativeOutcome,
+} from './execution-review-native-port.js';
+import {
+  ExecutionReviewFixedResultError,
+  commitExecutionReviewFixedResult,
+  readExecutionReviewFixedReceipt,
+  readExecutionReviewFailure,
+  recordExecutionReviewFailure,
+  type ExecutionReviewFailure,
+  type ExecutionReviewFixedFacts,
+} from './execution-review-fixed-result.js';
+import {
+  NativeReviewError,
+  type NativeFixedReviewLease,
+} from './native-work-session-review-contract.js';
 import {
   ExecutionReviewDriveAuthorities,
   type ExecutionReviewDriveGrant,
@@ -206,7 +228,13 @@ import {
 } from './native-work-session-output-file-tool.js';
 import { ExecutionWorkflowIntents, type WorkflowMember } from './execution-workflow-intent.js';
 import {
+  WORKFLOW_REVIEW_REQUEST_PREFIX,
+  workflowReviewRequestId,
+  workflowReviewCandidates,
+} from './execution-workflow-reviews.js';
+import {
   ExecutionWorkflowError,
+  workflowExecutionIntentSchema,
   type WorkflowExecutionClaim,
   type WorkflowExecutionIntent,
   type WorkflowExecutionView,
@@ -336,6 +364,15 @@ const expertReviewAdmitSchema = z.strictObject({
   expectedAttemptVersion: z.number().int().positive().refine(Number.isSafeInteger),
   composition: z.unknown(),
 });
+const expertReviewNativeSchema = expertReviewAdmitSchema
+  .omit({ composition: true, expectedAttemptVersion: true })
+  .extend({
+    requestId: z
+      .string()
+      .min(1)
+      .max(200)
+      .refine((value) => value.trim() === value),
+  });
 const settleSchema = z.strictObject({
   ...locate,
   roundId: id,
@@ -1016,15 +1053,45 @@ export class ExecutionService {
   private reviewDriveAuthorities: ExecutionReviewDriveAuthorities | undefined;
   private writes: Promise<unknown> = Promise.resolve();
   private readonly runLifetime = new AbortController();
+  private readonly reviewCleanupLifetime = new AbortController();
+  private reviewCleanupSealed = false;
   private readonly runChanges = new Set<() => void>();
   private readonly runPreparations = new Set<Promise<ExecutionResult<ExecutionRunDecision>>>();
   private runPreparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private workflowIntents: ExecutionWorkflowIntents | undefined;
+  private readonly reviewWorkflowClaims = new Map<
+    string,
+    {
+      original: MemberRequest;
+      claim: WorkflowExecutionClaim;
+      dispose(): void;
+    }
+  >();
+  private readonly reviewDrains = new Map<
+    string,
+    {
+      drain: NativeMigrationDrain;
+      signal: AbortSignal;
+      assert: NativeMigrationDrain['assertCurrent'];
+    }
+  >();
   private nativeResultIssuer: NativeResultPort | undefined;
   private nativeResultPublicationsIssuer: NativeResultPort | undefined;
+  private reviewNativePorts:
+    | {
+        readonly original: ExecutionReviewNativePorts;
+        readonly issuer: ExecutionReviewNativePorts['issuer'];
+        readonly grantFor: ExecutionReviewNativePorts['grantFor'];
+        readonly retireForCleanup: ExecutionReviewNativePorts['retireForCleanup'];
+        readonly prepare: ExecutionReviewNativePorts['issuer']['prepareFixedReview'];
+        readonly assert: ExecutionReviewNativePorts['issuer']['assertFixedReview'];
+        readonly read: ExecutionReviewNativePorts['issuer']['readFixedReview'];
+      }
+    | undefined;
   private readonly nativeResultOperations = new Set<Promise<unknown>>();
+  private nativeReviewCleanupOperations = 0;
   private nativeResultCleanupFailure: NativeResultDeliveryError | undefined;
   private readonly uploadLifetime = new AbortController();
   private readonly uploadDrains = new Set<Promise<void>>();
@@ -1238,6 +1305,10 @@ export class ExecutionService {
               throw new ExecutionWorkflowError('workflow-recovery-required');
             }
           },
+          assertReviewDrained: (review) => {
+            facts(true);
+            this.assertExpertReviewDrained(review.scope);
+          },
           initialize: async (requestId) => {
             facts(false);
             const started = await this.startPlanNow(
@@ -1397,6 +1468,7 @@ export class ExecutionService {
   prepareExpertReview(
     original: MemberRequest,
     body: unknown,
+    workflowClaim?: WorkflowExecutionClaim,
   ): Promise<
     ExecutionResult<{ disposition: 'applied' | 'replayed'; attempt: ExecutionReviewAttempt }>
   > {
@@ -1410,9 +1482,13 @@ export class ExecutionService {
         original,
         input.target,
         async (host, lease) => {
-          const prepare = () => this.currentExpertReviewPreparation(host, lease, input).prepared;
+          const prepare = () => {
+            this.assertWorkflowReviewPreparation(original, workflowClaim, input);
+            return this.currentExpertReviewPreparation(host, lease, input).prepared;
+          };
           const proposed = prepare();
-          if (proposed.disposition === 'replayed')
+          if (proposed.disposition === 'replayed') {
+            this.bindWorkflowReview(original, workflowClaim, input.requestId, proposed.attempt);
             return {
               ok: true,
               value: structuredClone({
@@ -1420,6 +1496,7 @@ export class ExecutionService {
                 attempt: proposed.attempt,
               }),
             };
+          }
           if (!this.storage.writeGlobal) throw new ExecutionRunError('run-authority-unavailable');
           await enableExecutionReviewWriter(
             () => this.readRunGlobal(),
@@ -1434,6 +1511,7 @@ export class ExecutionService {
             const stored = await this.persist(() => this.writeNode(decision.record, true));
             if (!stored.ok) return stored;
           }
+          this.bindWorkflowReview(original, workflowClaim, input.requestId, decision.attempt);
           return {
             ok: true,
             value: structuredClone({
@@ -1486,8 +1564,9 @@ export class ExecutionService {
           const attempt = state?.attempts.find((item) => item.scope.runId === input.runId);
           const receipt = state?.receipts.find((item) => item.runId === input.runId);
           if (!attempt || !receipt) throw new ExecutionReviewError('review-not-prepared');
-          const current = () =>
-            this.currentExpertReviewPreparation(host, lease, {
+          const current = () => {
+            this.assertWorkflowReviewBinding(node, attempt, composition);
+            return this.currentExpertReviewPreparation(host, lease, {
               requestId: receipt.requestId,
               expectedReviewVersion: state!.version,
               target: attempt.scope.review.target,
@@ -1497,6 +1576,7 @@ export class ExecutionService {
               },
               configurationId: attempt.configurationId,
             });
+          };
           current();
           if (typeof host.assertReviewConfiguration !== 'function')
             throw new ExecutionRunError('run-authority-unavailable');
@@ -1652,9 +1732,9 @@ export class ExecutionService {
   }
 
   private reviewDrives(): ExecutionReviewDriveAuthorities {
-    const host = this.requireRunHost();
+    const host = this.requireReviewCleanupHost();
     const resolve = (locator: ExecutionReviewReadLocator) => {
-      if (host !== this.requireRunHost())
+      if (host !== this.requireReviewCleanupHost())
         throw new ExecutionReviewReadError('review-authority-denied');
       requireExecutionReviewWriter(this.readRunGlobal());
       const node = this.readRunNode(locator);
@@ -1677,6 +1757,7 @@ export class ExecutionService {
       memberLease: (request) => host.memberLease(request),
       resolve,
       assertCurrent: (scope, selection, _action) => {
+        this.requireRunHost();
         const check = () => {
           const current = resolve(scope);
           this.assertCurrentExpertReviewTarget(host, scope);
@@ -1706,7 +1787,7 @@ export class ExecutionService {
       },
       assertCleanup: (scope, selection) => {
         // Retire this exact already admitted scope even after member/target
-        // revocation. This cannot drive, vote, emit terminal events or prove drain.
+        // revocation. This cannot drive, vote, or prove drain by itself.
         const current = resolve(scope);
         if (
           canonicalPayload(current.scope) !== canonicalPayload(scope) ||
@@ -1744,6 +1825,733 @@ export class ExecutionService {
   assertExpertReviewCleanupAuthority(authority: ExecutionReviewCleanupAuthority): void {
     if (!this.reviewDriveAuthorities) throw new ExecutionReviewReadError('review-authority-denied');
     this.reviewDriveAuthorities.assertCleanup(authority);
+  }
+
+  /** Owner Stop remains possible after the expert/model/target stopped being
+   * dispatchable. This only requests Stop; C's actual cleanup certifies it. */
+  requestExpertReviewStop(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionReviewAttempt>> {
+    return this.enqueue(async () => {
+      const actor = this.actorField(body);
+      if (actor) return actor;
+      const parsed = parseBody(expertReviewAdmitSchema.omit({ composition: true }), body);
+      if (!parsed.ok) return parsed;
+      return this.withRunMember(
+        original,
+        parsed.value,
+        async (_host, lease) => {
+          const { node, attempt } = this.nativeReviewFacts(parsed.value);
+          if (attempt.scope.actorId !== lease.memberId)
+            throw new ExecutionReviewReadError('review-authority-denied');
+          if (
+            attempt.stopPhase !== 'none' ||
+            ['completed', 'failed', 'cancelled'].includes(attempt.status)
+          )
+            return { ok: true, value: structuredClone(attempt) };
+          if (attempt.version !== parsed.value.expectedAttemptVersion)
+            throw new ExecutionReviewError('review-conflict');
+          const decision = recordExecutionReviewEvent(node, {
+            scope: attempt.scope,
+            kind: 'stop-requested',
+            sequence: attempt.lastEventSequence + 1,
+          });
+          synchronousRunAssertion(lease.assertCurrent(parsed.value.spaceId));
+          const stored = await this.persist(() => this.writeNode(decision.record, true));
+          return stored.ok ? { ok: true, value: structuredClone(decision.attempt) } : stored;
+        },
+        true,
+        'review',
+      );
+    });
+  }
+
+  /** The original cleanup capability survives member/expert revocation. It can
+   * only stop and retire its own original scope, never drive or cast a ballot. */
+  retireExpertReviewForCleanup(
+    original: ExecutionReviewCleanupAuthority,
+    wait: AbortSignal = this.reviewCleanupLifetime.signal,
+  ): Promise<ExecutionResult<{ status: 'pending' | 'settled' }>> {
+    return this.nativeResultOperation<{ status: 'pending' | 'settled' }>(
+      wait,
+      async (operation) => {
+        this.assertExpertReviewCleanupAuthority(original); // Before reading claimed fields.
+        const stopped = await this.enqueue(() => this.requestCleanupStop(original, operation));
+        if (!stopped.ok) return stopped;
+        return this.settleNativeReviewCleanupNow(original.scope, operation);
+      },
+      true,
+    );
+  }
+
+  /** Cold Host recovery from the original committed workflow Stop, not a scope
+   * supplied as permission. Unknown, manual or a different generation stays held. */
+  recoverStoppedWorkflowReviewCleanup(
+    raw: ExecutionReviewScope,
+    wait: AbortSignal = this.reviewCleanupLifetime.signal,
+  ): Promise<ExecutionResult<{ status: 'pending' | 'settled' }>> {
+    return this.nativeResultOperation<{ status: 'pending' | 'settled' }>(
+      wait,
+      async (operation) => {
+        const scope = executionReviewScopeSchema.parse(raw);
+        const stopped = await this.enqueue(async () => {
+          operation.check();
+          const { node, attempt } = this.nativeReviewFacts(scope);
+          if (canonicalPayload(attempt.scope) !== canonicalPayload(scope))
+            throw new ExecutionReviewReadError('review-authority-denied');
+          const plan = this.storage.readPlan(planKey(scope.taskId, scope.planId, scope.revision));
+          const parsed = workflowExecutionIntentSchema.safeParse(plan?.workflowExecution);
+          const receipt = readExecutionReviewState(node)!.receipts.find(
+            (item) => item.runId === scope.runId,
+          );
+          if (
+            !parsed.success ||
+            node.ownerId !== scope.actorId ||
+            !plan?.nodeIds.includes(scope.nodeId) ||
+            parsed.data.status !== 'stopping' ||
+            parsed.data.actorId !== scope.actorId ||
+            parsed.data.spaceId !== scope.spaceId ||
+            !parsed.data.commandReceipts.some(
+              (item) =>
+                item.kind === 'stop' &&
+                item.generation === parsed.data.generation &&
+                item.fingerprint ===
+                  createHash('sha256')
+                    .update(
+                      canonicalPayload({
+                        kind: 'stop',
+                        memberId: scope.actorId,
+                        spaceId: scope.spaceId,
+                        taskId: scope.taskId,
+                        planId: scope.planId,
+                        revision: scope.revision,
+                        requestId: item.requestId,
+                        intentId: parsed.data.intentId,
+                        generation: parsed.data.generation,
+                      }),
+                    )
+                    .digest('hex'),
+            ) ||
+            receipt?.requestId !==
+              workflowReviewRequestId(
+                parsed.data,
+                scope.review.target,
+                scope.review.principal.reviewerRef.id,
+              )
+          )
+            throw new ExecutionReviewReadError('review-authority-denied');
+          if (attempt.stopPhase === 'none' && ['requested', 'running'].includes(attempt.status)) {
+            const decision = recordExecutionReviewEvent(node, {
+              scope,
+              kind: 'stop-requested',
+              sequence: attempt.lastEventSequence + 1,
+            });
+            const stored = await this.persist(() => this.writeNode(decision.record, true));
+            if (!stored.ok) return stored;
+          }
+          return { ok: true as const, value: undefined };
+        });
+        return stopped.ok ? this.settleNativeReviewCleanupNow(scope, operation) : stopped;
+      },
+      true,
+    );
+  }
+
+  private async requestCleanupStop(
+    original: ExecutionReviewCleanupAuthority,
+    operation: NativeResultOperation,
+  ): Promise<ExecutionResult<void>> {
+    operation.check();
+    this.assertExpertReviewCleanupAuthority(original);
+    const { node, attempt } = this.nativeReviewFacts(original.scope);
+    if (canonicalPayload(attempt.scope) !== canonicalPayload(original.scope))
+      throw new ExecutionReviewReadError('review-authority-denied');
+    if (attempt.stopPhase === 'none' && ['requested', 'running'].includes(attempt.status)) {
+      const decision = recordExecutionReviewEvent(node, {
+        scope: attempt.scope,
+        kind: 'stop-requested',
+        sequence: attempt.lastEventSequence + 1,
+      });
+      this.assertExpertReviewCleanupAuthority(original);
+      const stored = await this.persist(() => this.writeNode(decision.record, true));
+      if (!stored.ok) return stored;
+    }
+    return { ok: true, value: undefined };
+  }
+
+  /** Actual retained C view only. Settled labels and parsed scope cannot mint it;
+   * after a cold start explicit C cleanup must re-establish the original view. */
+  assertExpertReviewDrained(scope: ExecutionReviewScope): void {
+    this.nativeReviews(true);
+    const proof = this.reviewDrains.get(canonicalPayload(scope));
+    if (
+      !proof ||
+      proof.drain.signal !== proof.signal ||
+      proof.signal.aborted ||
+      proof.drain.assertCurrent !== proof.assert
+    )
+      throw new ExecutionWorkflowError('workflow-recovery-required');
+    synchronousRunAssertion(proof.assert.call(proof.drain));
+  }
+
+  private assertWorkflowReviewPreparation(
+    original: MemberRequest,
+    claim: WorkflowExecutionClaim | undefined,
+    input: z.infer<typeof expertReviewPrepareSchema>,
+  ) {
+    if (!input.requestId.startsWith(WORKFLOW_REVIEW_REQUEST_PREFIX)) return;
+    if (!claim) throw new ExecutionWorkflowError('workflow-authority-denied');
+    const current = this.workflows().assertClaim(original, claim);
+    if (
+      input.requestId !==
+        workflowReviewRequestId(current.intent, input.target, input.reviewerRef.id) ||
+      !current.facts.nodes.some(
+        (node) =>
+          samePlan(node, input.target.taskId, input.target.planId, input.target.revision) &&
+          node.nodeId === input.target.nodeId,
+      ) ||
+      input.target.spaceId !== current.intent.spaceId
+    )
+      throw new ExecutionWorkflowError('workflow-authority-denied');
+    const node = current.facts.nodes.find((node) => node.nodeId === input.target.nodeId)!;
+    const prior = readExecutionReviewState(node)?.receipts.some(
+      (receipt) => receipt.requestId === input.requestId,
+    );
+    if (
+      !prior &&
+      (current.availableSlots <= 0 ||
+        !workflowReviewCandidates(
+          current.facts.nodes,
+          current.intent,
+          current.facts.availableExpertIds,
+        ).some((item) => item.requestId === input.requestId))
+    )
+      throw new ExecutionWorkflowError('workflow-capacity');
+    if (!prior && this.reviewWorkflowClaims.size >= 512)
+      throw new ExecutionWorkflowError('workflow-capacity');
+  }
+
+  private bindWorkflowReview(
+    original: MemberRequest,
+    claim: WorkflowExecutionClaim | undefined,
+    requestId: string,
+    attempt: ExecutionReviewAttempt,
+  ) {
+    if (!requestId.startsWith(WORKFLOW_REVIEW_REQUEST_PREFIX)) return;
+    if (!claim) throw new ExecutionWorkflowError('workflow-authority-denied');
+    this.workflows().assertClaim(original, claim);
+    const prior = this.reviewWorkflowClaims.get(attempt.scope.runId);
+    if (prior) return;
+    if (this.reviewWorkflowClaims.size >= 512)
+      throw new ExecutionWorkflowError('workflow-capacity');
+    const abort = () => {
+      this.reviewWorkflowClaims.delete(attempt.scope.runId);
+      this.notifyRuns();
+    };
+    claim.signal.addEventListener('abort', abort, { once: true });
+    this.reviewWorkflowClaims.set(attempt.scope.runId, {
+      original,
+      claim,
+      dispose: () => claim.signal.removeEventListener('abort', abort),
+    });
+    if (claim.signal.aborted) abort();
+  }
+
+  private assertWorkflowReviewBinding(
+    node: ExecutionNodeRecord,
+    attempt: ExecutionReviewAttempt,
+    composition?: FrozenExecutionReviewComposition,
+  ) {
+    const state = readExecutionReviewState(node)!;
+    const receipt = state.receipts.find((receipt) => receipt.runId === attempt.scope.runId)!;
+    if (!receipt.requestId.startsWith(WORKFLOW_REVIEW_REQUEST_PREFIX)) return;
+    const bound = this.reviewWorkflowClaims.get(attempt.scope.runId);
+    if (!bound) throw new ExecutionWorkflowError('workflow-authority-denied');
+    const current = this.workflows().assertClaim(bound.original, bound.claim);
+    if (
+      receipt.requestId !==
+        workflowReviewRequestId(
+          current.intent,
+          attempt.scope.review.target,
+          attempt.scope.review.principal.reviewerRef.id,
+        ) ||
+      (composition &&
+        canonicalPayload(composition.payload.model) !==
+          canonicalPayload(current.intent.defaults.model))
+    )
+      throw new ExecutionWorkflowError('workflow-authority-denied');
+  }
+
+  /** Install views/adapters of A's one original C owner. No Client transport or
+   * alternate Agent factory is created by this method. */
+  installNativeReviewPorts(ports: ExecutionReviewNativePorts): void {
+    this.requireRunHost();
+    if (
+      this.reviewNativePorts ||
+      !ports ||
+      !ports.issuer ||
+      typeof ports.grantFor !== 'function' ||
+      typeof ports.retireForCleanup !== 'function' ||
+      [
+        'prepareFixedReview',
+        'assertFixedReview',
+        'readFixedReview',
+        'registerNativeReviewTools',
+      ].some((key) => typeof Reflect.get(ports.issuer, key) !== 'function')
+    )
+      throw new ExecutionReviewFixedResultError('review-result-invalid');
+    this.reviewNativePorts = Object.freeze({
+      original: ports,
+      issuer: ports.issuer,
+      grantFor: ports.grantFor,
+      retireForCleanup: ports.retireForCleanup,
+      prepare: ports.issuer.prepareFixedReview,
+      assert: ports.issuer.assertFixedReview,
+      read: ports.issuer.readFixedReview,
+    });
+  }
+
+  /** Only A's trusted original native bridge owns the genuine drive object.
+   * Terminal events require the fixed-result/cleanup paths below, never JSON. */
+  recordNativeReviewEvent(
+    grant: ExecutionReviewDriveGrant,
+    event: unknown,
+  ): Promise<ExecutionResult<{ disposition: string; attempt: ExecutionReviewAttempt }>> {
+    return this.enqueue(async () => {
+      this.assertExpertReviewDriveGrant(grant, 'send');
+      const kind = event && typeof event === 'object' ? Reflect.get(event, 'kind') : undefined;
+      if (!['received', 'accepted', 'dispatch-unknown', 'idle'].includes(kind))
+        throw new ExecutionReviewFixedResultError('review-result-invalid');
+      const facts = this.nativeReviewFacts(grant.scope);
+      const result = recordExecutionReviewEvent(facts.node, event);
+      if (canonicalPayload(result.attempt.scope) !== canonicalPayload(grant.scope))
+        throw new ExecutionReviewFixedResultError('review-result-stale');
+      if (result.disposition === 'applied') {
+        const stored = await this.persist(() => this.writeNode(result.record, true));
+        if (!stored.ok) return stored;
+      }
+      return {
+        ok: true,
+        value: structuredClone({ disposition: result.disposition, attempt: result.attempt }),
+      };
+    });
+  }
+
+  /** Passive recovery does not revive a drive, read C again, or resend a model. */
+  confirmNativeFixedReview(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionReviewNativeOutcome>> {
+    return this.enqueue(async () => {
+      const actor = this.actorField(body);
+      if (actor) return actor;
+      const parsed = parseBody(expertReviewNativeSchema, body);
+      if (!parsed.ok) return parsed;
+      return this.withRunMember(
+        original,
+        parsed.value,
+        async () => {
+          const facts = this.nativeReviewFacts(parsed.value);
+          const outcome = this.reviewHistoricalOutcome(
+            facts.node,
+            facts.attempt,
+            parsed.value.requestId,
+          );
+          return outcome
+            ? { ok: true, value: structuredClone(outcome) }
+            : fail('review-result-not-recorded');
+        },
+        true,
+        'review',
+      );
+    });
+  }
+
+  /** Keep the original drive running+held while C authenticates the read/cut and
+   * retires its writer. Only then atomically complete and cast the original ballot. */
+  submitNativeFixedReview(
+    original: MemberRequest,
+    body: unknown,
+    grant: ExecutionReviewDriveGrant,
+    wait: AbortSignal = this.runLifetime.signal,
+  ): Promise<ExecutionResult<ExecutionReviewNativeOutcome>> {
+    const actor = this.actorField(body);
+    if (actor) return Promise.resolve(actor);
+    const parsed = parseBody(expertReviewNativeSchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    const input = parsed.value;
+    return this.nativeResultOperation<ExecutionReviewNativeOutcome>(wait, (operation) =>
+      this.withRunMember(
+        original,
+        input,
+        async (host, member) => {
+          const memberId = member.memberId,
+            expires = member.expiresAt,
+            memberSignal = member.signal,
+            memberCheck = member.assertCurrent,
+            memberRelease = member.release;
+          const memberCurrent = () => {
+            operation.check();
+            if (
+              host !== this.requireRunHost() ||
+              member.memberId !== memberId ||
+              member.expiresAt !== expires ||
+              member.signal !== memberSignal ||
+              member.assertCurrent !== memberCheck ||
+              member.release !== memberRelease ||
+              memberSignal.aborted ||
+              expires <= Date.now()
+            )
+              throw new ExecutionReviewReadError('review-authority-denied');
+            operation.assert(() => memberCheck.call(member, input.spaceId));
+            const node = this.nativeReviewFacts(input).node;
+            this.assertRunNodeAccess(host, memberId, input.spaceId, node);
+            this.assertReviewController(memberId, node);
+            return node;
+          };
+          const recovered = await this.enqueue(async () => {
+            const node = memberCurrent(),
+              facts = this.nativeReviewFacts(input);
+            const outcome = this.reviewHistoricalOutcome(node, facts.attempt, input.requestId);
+            if (outcome && node.command.status === 'completed') {
+              const repaired = await this.unlockFrom(node);
+              if (!repaired.ok) return repaired;
+            }
+            return {
+              ok: true,
+              value: outcome,
+            };
+          });
+          if (!recovered.ok) return recovered;
+          if (recovered.value) return { ok: true, value: structuredClone(recovered.value) };
+          const driveCurrent = () => {
+            const node = memberCurrent();
+            this.assertExpertReviewDriveGrant(grant, 'send');
+            const current = this.nativeReviewFacts(input);
+            if (
+              grant.scope.actorId !== memberId ||
+              canonicalPayload(grant.scope) !== canonicalPayload(current.attempt.scope)
+            )
+              throw new ExecutionReviewReadError('review-authority-denied');
+            return { node, attempt: current.attempt };
+          };
+          driveCurrent();
+          const port = this.nativeReviews();
+          const nativeGrant = port.grantFor.call(port.original, grant);
+          const signal = AbortSignal.any([operation.signal, memberSignal, grant.signal]);
+          let fixed: ExecutionReviewFixedFacts;
+          let live: NativeFixedReviewLease;
+          try {
+            const prepared = await port.prepare.call(port.issuer, nativeGrant, signal);
+            driveCurrent();
+            if (prepared.status === 'pending')
+              return { ok: true, value: { status: 'pending', reason: prepared.reason } };
+            operation.assert(() => port.assert.call(port.issuer, nativeGrant, prepared.ref));
+            live = await port.read.call(port.issuer, nativeGrant, prepared.ref, signal);
+            const check = live?.check,
+              release = live?.release,
+              sourceSignal = live?.signal;
+            if (
+              typeof check !== 'function' ||
+              typeof release !== 'function' ||
+              !(sourceSignal instanceof AbortSignal)
+            )
+              throw new ExecutionReviewFixedResultError('review-result-invalid');
+            operation.release(() => release.call(live));
+            const leaseCurrent = () => {
+              driveCurrent();
+              if (
+                live.check !== check ||
+                live.release !== release ||
+                live.signal !== sourceSignal ||
+                sourceSignal.aborted
+              )
+                throw new ExecutionReviewFixedResultError('review-result-stale');
+              operation.assert(() => port.assert.call(port.issuer, nativeGrant, prepared.ref));
+              operation.assert(() => check.call(live));
+            };
+            leaseCurrent();
+            fixed = structuredClone({
+              source: live.source,
+              content: live.content,
+              readManifest: live.readManifest,
+              readManifestDigest: live.readManifestDigest,
+              digest: live.digest,
+              provenanceFingerprint: live.provenanceFingerprint,
+            });
+            leaseCurrent();
+            const committed = await this.enqueue(
+              async (): Promise<ExecutionResult<ExecutionReviewNativeOutcome>> => {
+                const node = memberCurrent(),
+                  { attempt } = this.nativeReviewFacts(input);
+                const prior = this.reviewHistoricalOutcome(node, attempt, input.requestId);
+                if (prior) return { ok: true, value: structuredClone(prior) };
+                driveCurrent();
+                leaseCurrent();
+                try {
+                  const decision = commitExecutionReviewFixedResult(
+                    node,
+                    grant.scope,
+                    input.requestId,
+                    fixed,
+                  );
+                  const stamped = withExecutionEvent(
+                    decision.record,
+                    'ballot-recorded',
+                    grant.scope.review.principal.reviewerRef.id,
+                  );
+                  if (!stamped) return fail('unavailable');
+                  const stored = await this.persist(() => this.writeNode(stamped, true));
+                  if (!stored.ok) return stored;
+                  if (stamped.command.status === 'completed') {
+                    const unlocked = await this.unlockFrom(stamped);
+                    if (!unlocked.ok) return unlocked;
+                  }
+                  return {
+                    ok: true,
+                    value: {
+                      status: 'committed',
+                      receipt: structuredClone(decision.receipt),
+                      cleanup: 'pending',
+                    },
+                  };
+                } catch (error) {
+                  if (
+                    !(error instanceof ExecutionReviewFixedResultError) ||
+                    error.code !== 'review-read-required'
+                  )
+                    throw error;
+                  const failed = recordExecutionReviewFailure(node, grant.scope, {
+                    requestId: input.requestId,
+                    code: 'review-read-required',
+                    resourceRefs: [...error.resourceRefs],
+                  });
+                  leaseCurrent();
+                  const stored = await this.persist(() => this.writeNode(failed.record, true));
+                  if (!stored.ok) return stored;
+                  return {
+                    ok: true,
+                    value: {
+                      status: 'needs-attention',
+                      failure: structuredClone(failed.failure),
+                      cleanup: 'pending',
+                    },
+                  };
+                }
+              },
+            );
+            if (!committed.ok) return committed;
+            // Never check/reopen C through a now-terminal drive. Cleanup has its
+            // own original issuer and physical certificate after the atomic put.
+            const cleanup = await this.finishNativeReviewCleanup(grant.scope, operation);
+            return {
+              ok: true,
+              value: { ...committed.value, cleanup },
+            };
+          } catch (error) {
+            // Another exact operation may have committed while this C lease
+            // was being invalidated. Confirm its original receipt without
+            // reviving drive or reading C through a now-closed target.
+            const raced = await this.enqueue(async () => {
+              const node = memberCurrent(),
+                { attempt } = this.nativeReviewFacts(input);
+              const outcome = this.reviewHistoricalOutcome(node, attempt, input.requestId);
+              if (outcome && node.command.status === 'completed') {
+                const repaired = await this.unlockFrom(node);
+                if (!repaired.ok) return repaired;
+              }
+              return { ok: true, value: outcome };
+            });
+            if (!raced.ok) return raced;
+            if (raced.value) return { ok: true, value: structuredClone(raced.value) };
+            if (
+              !(error instanceof NativeReviewError) ||
+              ![
+                'review-unsupported-material',
+                'review-read-budget-exceeded',
+                'output-too-large',
+                'review-result-rejected',
+              ].includes(error.code)
+            )
+              throw error;
+            const failed = await this.enqueue(
+              async (): Promise<ExecutionResult<ExecutionReviewNativeOutcome>> => {
+                const { node } = driveCurrent();
+                const decision = recordExecutionReviewFailure(node, grant.scope, {
+                  requestId: input.requestId,
+                  code: error.code as ExecutionReviewFailure['code'],
+                  resourceRefs: [],
+                });
+                const stored = await this.persist(() => this.writeNode(decision.record, true));
+                return stored.ok
+                  ? {
+                      ok: true,
+                      value: {
+                        status: 'needs-attention',
+                        failure: structuredClone(decision.failure),
+                        cleanup: 'pending',
+                      },
+                    }
+                  : stored;
+              },
+            );
+            if (!failed.ok) return failed;
+            const cleanup = await this.finishNativeReviewCleanup(grant.scope, operation);
+            return {
+              ok: true,
+              value: { ...failed.value, cleanup },
+            };
+          }
+        },
+        true,
+        'review',
+      ),
+    );
+  }
+
+  /** Host-internal explicit recovery, not a passive query or model permission. */
+  settleNativeReviewCleanup(
+    scope: ExecutionReviewScope,
+    wait: AbortSignal = this.reviewCleanupLifetime.signal,
+  ): Promise<ExecutionResult<{ status: 'pending' | 'settled' }>> {
+    return this.nativeResultOperation<{ status: 'pending' | 'settled' }>(
+      wait,
+      (operation) => this.settleNativeReviewCleanupNow(scope, operation),
+      true,
+    );
+  }
+
+  private async finishNativeReviewCleanup(
+    scope: ExecutionReviewScope,
+    operation: NativeResultOperation,
+  ): Promise<'pending' | 'settled' | 'failed'> {
+    try {
+      const result = await this.settleNativeReviewCleanupNow(scope, operation);
+      return result.ok ? result.value.status : 'failed';
+    } catch {
+      return 'failed';
+    } // A committed receipt must remain confirmable.
+  }
+
+  private async settleNativeReviewCleanupNow(
+    scope: ExecutionReviewScope,
+    operation: NativeResultOperation,
+  ): Promise<ExecutionResult<{ status: 'pending' | 'settled' }>> {
+    const authority = this.reviewCleanupAfterCommit(scope),
+      port = this.nativeReviews(true);
+    this.assertExpertReviewCleanupAuthority(authority);
+    const retired = await port.retireForCleanup.call(port.original, authority, operation.signal);
+    if (retired.status === 'pending') return { ok: true, value: { status: 'pending' as const } };
+    const drain = retired.drain;
+    if (
+      !(drain?.signal instanceof AbortSignal) ||
+      drain.signal.aborted ||
+      typeof drain.assertCurrent !== 'function'
+    )
+      throw new ExecutionReviewFixedResultError('review-result-invalid');
+    return this.enqueue(async () => {
+      operation.check();
+      this.assertExpertReviewCleanupAuthority(authority);
+      operation.assert(() => drain.assertCurrent());
+      const facts = this.nativeReviewFacts(scope),
+        { review: _review, ...nativeScope } = scope;
+      if (
+        retired.binding &&
+        (canonicalPayload(retired.binding.scope) !== canonicalPayload(nativeScope) ||
+          retired.binding.selection.configurationId !== facts.attempt.configurationId)
+      )
+        throw new ExecutionReviewFixedResultError('review-result-stale');
+      if (
+        facts.attempt.nativeSessionId &&
+        (!retired.binding ||
+          retired.binding.nativeSessionId !== facts.attempt.nativeSessionId ||
+          retired.binding.nativeAgentId !== facts.attempt.nativeAgentId ||
+          drain.basis !== 'flushed-and-closed')
+      )
+        throw new ExecutionReviewFixedResultError('review-result-stale');
+      let node = facts.node;
+      if (!['completed', 'failed', 'cancelled'].includes(facts.attempt.status)) {
+        if (facts.attempt.stopPhase !== 'requested')
+          throw new ExecutionReviewFixedResultError('review-result-not-running');
+        node = recordExecutionReviewEvent(node, {
+          scope,
+          kind: 'stopped',
+          sequence: facts.attempt.lastEventSequence + 1,
+        }).record;
+      }
+      const current = this.nativeReviewFacts({ ...scope });
+      const sequence = readExecutionReviewState(node)!.attempts.find(
+        (a) => a.scope.runId === scope.runId,
+      )!;
+      if (sequence.status === 'prepared')
+        throw new ExecutionReviewFixedResultError('review-result-invalid');
+      const result = recordExecutionReviewEvent(node, {
+        scope,
+        kind: 'cleanup',
+        sequence: sequence.lastEventSequence + 1,
+      });
+      const key = canonicalPayload(scope);
+      if (!this.reviewDrains.has(key) && this.reviewDrains.size >= 512)
+        this.reviewDrains.delete(this.reviewDrains.keys().next().value!);
+      this.reviewDrains.set(key, { drain, signal: drain.signal, assert: drain.assertCurrent });
+      if (current.attempt.resources !== 'settled' && result.disposition === 'applied') {
+        operation.assert(() => drain.assertCurrent());
+        const stored = await this.persist(() => this.writeNode(result.record, true));
+        if (!stored.ok) return stored;
+      } else this.notifyRuns();
+      return { ok: true, value: { status: 'settled' as const } };
+    });
+  }
+
+  private nativeReviews(cleanup = false) {
+    if (cleanup) this.requireReviewCleanupHost();
+    else this.requireRunHost();
+    const port = this.reviewNativePorts;
+    if (
+      !port ||
+      port.original.issuer !== port.issuer ||
+      port.original.grantFor !== port.grantFor ||
+      port.original.retireForCleanup !== port.retireForCleanup ||
+      port.issuer.prepareFixedReview !== port.prepare ||
+      port.issuer.assertFixedReview !== port.assert ||
+      port.issuer.readFixedReview !== port.read
+    )
+      throw new ExecutionReviewFixedResultError('review-result-invalid');
+    return port;
+  }
+  private nativeReviewFacts(input: ExecutionReviewReadLocator) {
+    requireExecutionReviewWriter(this.readRunGlobal());
+    const node = this.readRunNode(input),
+      state = node && readExecutionReviewState(node);
+    const attempt = state?.attempts.find((a) => a.scope.runId === input.runId);
+    if (
+      !node ||
+      !attempt ||
+      attempt.status === 'prepared' ||
+      attempt.scope.spaceId !== input.spaceId
+    )
+      throw new ExecutionReviewFixedResultError('review-result-not-running');
+    return { node, attempt };
+  }
+  private reviewHistoricalOutcome(
+    node: ExecutionNodeRecord,
+    attempt: ExecutionReviewAttempt,
+    requestId: string,
+  ): ExecutionReviewNativeOutcome | undefined {
+    const receipt = readExecutionReviewFixedReceipt(node, attempt),
+      failure = readExecutionReviewFailure(node, attempt);
+    if (
+      (receipt && receipt.requestId !== requestId) ||
+      (failure && failure.requestId !== requestId)
+    )
+      throw new ExecutionReviewFixedResultError('review-result-conflict');
+    const cleanup = attempt.resources === 'settled' ? ('settled' as const) : ('pending' as const);
+    return receipt
+      ? { status: 'confirmed', receipt, cleanup }
+      : failure
+        ? { status: 'needs-attention', failure, cleanup }
+        : undefined;
   }
   private assertExpertReviewTargetReader(
     grant: ExecutionReviewReadGrant | ExecutionReviewDriveGrant,
@@ -2432,23 +3240,32 @@ export class ExecutionService {
     return { ok: true, value: nativeResultDeliveryReceipt(node, run, 'confirmed') };
   }
 
-  private nativeResultOperation(
+  private nativeResultOperation<T extends object>(
     signal: AbortSignal,
-    work: (
-      operation: NativeResultOperation,
-    ) => Promise<ExecutionResult<NativeResultDeliveryReceipt>>,
-  ): Promise<ExecutionResult<NativeResultDeliveryReceipt>> {
+    work: (operation: NativeResultOperation) => Promise<ExecutionResult<T>>,
+    cleanup = false,
+  ): Promise<ExecutionResult<T>> {
     if (!(signal instanceof AbortSignal)) return Promise.resolve(fail('validation'));
-    if (this.nativeResultOperations.size >= 8)
-      return Promise.resolve(fail('native-result-capacity'));
-    const combined = AbortSignal.any([this.runLifetime.signal, signal]);
+    if (cleanup && this.reviewCleanupSealed)
+      return Promise.resolve(fail('run-authority-unavailable'));
+    // Cleanup must be able to retire the physical IO occupying all read slots.
+    // It cannot read target bytes/send/vote and shares the original close join.
+    const occupied = cleanup
+      ? this.nativeReviewCleanupOperations
+      : this.nativeResultOperations.size - this.nativeReviewCleanupOperations;
+    if (occupied >= 8) return Promise.resolve(fail('native-result-capacity'));
+    const combined = AbortSignal.any([
+      cleanup ? this.reviewCleanupLifetime.signal : this.runLifetime.signal,
+      signal,
+    ]);
     const releases: (() => unknown)[] = [];
     const check = () => {
-      this.requireRunHost();
+      if (cleanup) this.requireReviewCleanupHost();
+      else this.requireRunHost();
       if (combined.aborted) throw new NativeResultDeliveryError('native-result-cancelled');
     };
     const operation = Promise.resolve().then(async () => {
-      let result: ExecutionResult<NativeResultDeliveryReceipt>;
+      let result: ExecutionResult<T>;
       try {
         check();
         result = await work({
@@ -2471,6 +3288,9 @@ export class ExecutionService {
         result = fail(
           error instanceof NativeResultDeliveryError ||
             error instanceof NativeResultError ||
+            error instanceof NativeReviewError ||
+            error instanceof ExecutionReviewReadError ||
+            error instanceof ExecutionReviewFixedResultError ||
             error instanceof ExecutionRunError ||
             error instanceof ExecutionRunCompositionError
             ? error.code
@@ -2498,9 +3318,13 @@ export class ExecutionService {
       }
       return result;
     });
+    if (cleanup) this.nativeReviewCleanupOperations++;
     this.nativeResultOperations.add(operation);
     void operation
-      .finally(() => this.nativeResultOperations.delete(operation))
+      .finally(() => {
+        this.nativeResultOperations.delete(operation);
+        if (cleanup) this.nativeReviewCleanupOperations--;
+      })
       .catch(() => undefined);
     return operation;
   }
@@ -2804,12 +3628,20 @@ export class ExecutionService {
   /** Call only after the native owner drained and its cleanup facts committed. */
   async closeRuns(): Promise<void> {
     this.fenceRuns();
+    this.reviewCleanupSealed = true;
     while (this.runPreparations.size) await Promise.allSettled([...this.runPreparations]);
     while (this.nativeResultOperations.size)
       await Promise.allSettled([...this.nativeResultOperations]);
     await this.writes;
-    await this.workflowIntents?.close();
-    await this.runAuthorities?.close();
+    try {
+      await this.workflowIntents?.close();
+      await this.runAuthorities?.close();
+    } finally {
+      this.reviewCleanupLifetime.abort();
+      for (const binding of this.reviewWorkflowClaims.values()) binding.dispose();
+      this.reviewWorkflowClaims.clear();
+      this.reviewDrains.clear();
+    }
     if (this.runPreparationFailure) throw this.runPreparationFailure;
     if (this.nativeResultCleanupFailure) throw this.nativeResultCleanupFailure;
   }
@@ -2817,6 +3649,12 @@ export class ExecutionService {
   private requireRunHost(): ExecutionRunHostPorts {
     const host = this.runHost;
     if (!host || host.signal.aborted || this.runLifetime.signal.aborted)
+      throw new ExecutionRunError('run-authority-unavailable');
+    return host;
+  }
+  private requireReviewCleanupHost(): ExecutionRunHostPorts {
+    const host = this.runHost;
+    if (!host || this.reviewCleanupLifetime.signal.aborted)
       throw new ExecutionRunError('run-authority-unavailable');
     return host;
   }
@@ -2900,6 +3738,10 @@ export class ExecutionService {
   ): ExecutionNodeRecord {
     const node = this.readRunNode(scope);
     if (!node) throw new ExecutionReviewReadError('review-target-changed');
+    const attempt = readExecutionReviewState(node)?.attempts.find(
+      (item) => item.scope.runId === scope.runId,
+    );
+    if (attempt) this.assertWorkflowReviewBinding(node, attempt);
     this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
     this.assertReviewController(scope.actorId, node);
     const target = executionReviewTarget(node, scope.spaceId);
@@ -3013,6 +3855,9 @@ export class ExecutionService {
     } catch (error) {
       if (
         error instanceof ExecutionReviewError ||
+        error instanceof ExecutionReviewFixedResultError ||
+        error instanceof NativeReviewError ||
+        error instanceof NativeResultDeliveryError ||
         error instanceof ExecutionReviewReadError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionWorkflowError ||
@@ -3111,7 +3956,16 @@ export class ExecutionService {
         throw new ExecutionRunError('run-state-invalid');
     }
     await this.storage.writeNode(nodeRecordKey(record), record);
-    for (const recheck of this.runChanges) {
+    for (const attempt of readExecutionReviewState(record)?.attempts ?? []) {
+      if (attempt.status !== 'prepared' && attempt.resources === 'settled') {
+        this.reviewWorkflowClaims.get(attempt.scope.runId)?.dispose();
+        this.reviewWorkflowClaims.delete(attempt.scope.runId);
+      }
+    }
+    this.notifyRuns();
+  }
+  private notifyRuns(): void {
+    for (const recheck of [...this.runChanges]) {
       try {
         recheck();
       } catch {
@@ -5321,6 +6175,7 @@ export class ExecutionService {
         error instanceof ArtifactUploadError ||
         error instanceof ExecutionReviewReadError ||
         error instanceof ExecutionReviewError ||
+        error instanceof ExecutionReviewFixedResultError ||
         error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionRunProtocolError ||

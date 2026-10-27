@@ -570,13 +570,16 @@ diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
    const response = await fetch(url, { redirect: 'manual' })
    const cookie = response.headers.get('set-cookie')
    await response.body?.cancel()
-@@ -85,7 +89,10 @@
+@@ -85,7 +89,13 @@
    for (const name of ['host', 'origin', 'cookie', 'sec-fetch-site']) headers.delete(name)
    headers.set('cookie', cookie)
    const init = { method: request.method, headers, body: request.body, signal: request.signal, duplex: 'half', redirect: 'manual' as const }
 -  const response = await fetch(target, init)
 +  const response = await memberCookies.forward(request, host, cookie, (credential) => {
 +    headers.set('cookie', credential)
++    // The bridge has verified the original dsh-app Origin before dispatching.
++    // Preserve an explicit same-Host CSRF Origin only for this owner setup POST.
++    if (source.pathname === '/api/zhuma-local-setup/initialize' && request.method === 'POST') headers.set('origin', target.origin)
 +    return fetch(target, init)
 +  })
    const outgoing = new Headers(response.headers)
@@ -1689,3 +1692,21 @@ index 3e44feab..0e3850b3 100644
      "@deepseek-ai/dsh-skill": "workspace:*",
      "@deepseek-ai/dsh-tools": "workspace:*",
      "@deepseek-ai/cordis": "workspace:~",
+diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
+--- a/apps/desktop/src/project-manager.ts
++++ b/apps/desktop/src/project-manager.ts
+@@ -172,5 +172,14 @@
+ 
+ /** Create the first external plugin profile without running a package manager. */
+ export function createPluginProfile(projectDir: string): void {
++  // Only the first profile creation selects member mode. Existing profile patches
++  // and legacy data keep their explicit/inherited mode until a separate migration.
++  const patch = join(projectDir, 'cordis.patch.yml')
++  if (!existsSync(join(projectDir, 'package.json')) && !existsSync(patch)) {
++    mkdirSync(projectDir, { recursive: true, mode: 0o700 })
++    // Write the selection before the manifest: a failed init can retry without
++    // falling back to an inherited legacy default or replacing an existing patch.
++    writeFileSync(patch, '# Zhuma first profile: explicit member setup.\n- id: zhuma-workbench\n  config:\n    deploymentMode: multi-member\n    localSetup: true\n', { flag: 'wx', mode: 0o600 })
++  }
+   initProfile(projectDir, WEB_PROFILE.bundles)
+ }

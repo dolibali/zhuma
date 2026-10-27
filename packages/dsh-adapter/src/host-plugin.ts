@@ -2,7 +2,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import { z } from 'zod';
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
 import { parseCredentialKey } from '@deepseek-ai/dsh-credentials';
-import { applyIdentity, identityInject, type IdentityImport } from './identity-session.js';
+import {
+  applyIdentity,
+  identityInject,
+  type IdentityImport,
+  type IdentityInitializationOptions,
+} from './identity-session.js';
 import { configureDeploymentMode, type IdentityExecutionOptions } from './member-session.js';
 import { createHostDirectoryLifecycle } from './host-directory-lifecycle.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
@@ -15,6 +20,8 @@ import { openHostRunOwner } from './host-run-owner.js';
 import { openHostWorkflowHttp } from './host-workflow-http.js';
 import { hostLocalExecutionSchema } from './host-run-workspaces.js';
 import { hostTeamCatalogGrantsSchema } from './host-team-catalog.js';
+import { openHostLocalSetup } from './host-local-setup.js';
+import { openHostLocalSetupHttp } from './host-local-setup-http.js';
 import { nativeWorkSessionInject } from './native-work-session-storage.js';
 import {
   applySpaceDirectory,
@@ -43,6 +50,7 @@ export const Config = z.strictObject({
   spaceDirectoryBootstrapKey: bootstrapRecordKey.optional(),
   localExecution: hostLocalExecutionSchema.optional(),
   teamCatalog: hostTeamCatalogGrantsSchema.optional(),
+  localSetup: z.boolean().optional(),
   bodyBytes: z
     .number()
     .int()
@@ -63,6 +71,7 @@ export const inject = workbenchInject;
 interface IdentityMountConfig {
   readonly bootstrapKey?: string | undefined;
   readonly executionOptions?: IdentityExecutionOptions | undefined;
+  readonly initialization?: IdentityInitializationOptions | undefined;
 }
 export const identityPlugin = {
   inject: [...identityInject],
@@ -75,7 +84,7 @@ export const identityPlugin = {
       // B validates the opaque payload before it is ever used as import data.
       imported = record.payload as IdentityImport;
     }
-    await applyIdentity(ctx, imported, config.executionOptions);
+    await applyIdentity(ctx, imported, config.executionOptions, config.initialization);
   },
 };
 
@@ -93,6 +102,7 @@ export const nativeRunPlugin = {
 interface DirectoryMountConfig {
   bootstrapKey?: string | undefined;
   publish(directory: OpenedSpaceDirectoryHandle): () => void;
+  allowPendingInitialization?: boolean;
 }
 
 /** The same producer instance is used by identity and execution in this Host bundle. */
@@ -107,7 +117,11 @@ export const spaceDirectoryPlugin = {
       imported = record.payload as SpaceDirectoryImport;
     }
     // B validates, persists and registers the directory; A only owns startup and scope.
-    await applySpaceDirectory(ctx, imported);
+    await applySpaceDirectory(
+      ctx,
+      imported,
+      config.allowPendingInitialization ? { allowPendingInitialization: true } : undefined,
+    );
     const directory = spaceDirectoryFor(ctx);
     if (!directory) throw new Error('Space directory did not become available.');
     const unpublish = config.publish(directory);
@@ -118,13 +132,19 @@ export const spaceDirectoryPlugin = {
 /** Official Host composition; no seed or missing facts can become inferred authority. */
 export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   const config = Config.parse(rawConfig);
+  if (config.localSetup && config.deploymentMode !== 'multi-member')
+    throw new Error('Local member setup requires explicit multi-member mode.');
   configureDeploymentMode(ctx, config.deploymentMode);
   // Public boot presentation only. Authorization continues to use the Host's own configuration.
   ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
     table.push({
       kind: 'global',
       name: '__ZHUMA_WORKBENCH_BOOT__',
-      value: { version: 1, deploymentMode: config.deploymentMode },
+      value: {
+        version: 1,
+        deploymentMode: config.deploymentMode,
+        ...(config.localSetup ? { localSetup: true } : {}),
+      },
     });
   });
   // Registers fail-closed streaming gates before the first asynchronous domain open.
@@ -136,6 +156,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
   let workflowHttp: ReturnType<typeof openHostWorkflowHttp> | undefined;
+  let localSetup: ReturnType<typeof openHostLocalSetup> | undefined;
+  let localSetupHttp: ReturnType<typeof openHostLocalSetupHttp> | undefined;
   let runClosing: Promise<void> | undefined;
   const runLifetime = new AbortController();
   let runsClosed = false;
@@ -172,6 +194,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   const beforeClose = async () => {
     closed = true;
+    localSetup?.close();
+    const setupClosing = localSetupHttp?.close();
     const runs = closeRunBridge();
     directoryLifecycle.close();
     try {
@@ -180,10 +204,24 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     } finally {
       // Keep the shared Workbench facts available until native cleanup has
       // committed through the original execution owner.
-      await runs;
+      try {
+        await setupClosing;
+      } finally {
+        await runs;
+      }
     }
   };
   const workbench = await openWorkbench(ctx, config, { beforeClose });
+  if (config.localSetup) {
+    localSetup = openHostLocalSetup({
+      workbench,
+      directory: directoryLifecycle.currentDirectory,
+      ...(config.teamCatalog === undefined ? {} : { configuredCatalog: config.teamCatalog }),
+    });
+    localSetupHttp = openHostLocalSetupHttp(ctx, () =>
+      closed ? undefined : localSetup?.operations,
+    );
+  }
   const identitySelected =
     config.deploymentMode === 'multi-member' || config.identityBootstrapKey !== undefined;
   if (identitySelected || config.spaceDirectoryBootstrapKey !== undefined) {
@@ -191,6 +229,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       await ctx.plugin(spaceDirectoryPlugin, {
         bootstrapKey: config.spaceDirectoryBootstrapKey,
         publish: directoryLifecycle.publish,
+        ...(config.localSetup ? { allowPendingInitialization: true } : {}),
       });
     } catch {
       ctx.logger.error('Zhuma space directory is unavailable; member space access remains closed.');
@@ -202,6 +241,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       await ctx.plugin(identityPlugin, {
         bootstrapKey: config.identityBootstrapKey,
         executionOptions: { currentDirectoryBinding: directoryLifecycle.currentDirectoryBinding },
+        ...(localSetup ? { initialization: localSetup.initialization } : {}),
       });
     } catch {
       // The independent fence stays mounted; Cordis retains the identity child's FAILED status.
@@ -235,12 +275,22 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       }
       let http: ReturnType<typeof workbench.openMemberWorkbench>;
       try {
-        const catalog = config.teamCatalog?.length
-          ? await workbench.openTeamCatalog({
-              grants: config.teamCatalog,
-              directory: directoryLifecycle.currentDirectory,
-            })
-          : undefined;
+        await localSetup?.restore();
+        const configuredCatalog =
+          config.teamCatalog?.length && !localSetup?.hasSetup()
+            ? await workbench.openTeamCatalog({
+                grants: config.teamCatalog,
+                directory: directoryLifecycle.currentDirectory,
+              })
+            : undefined;
+        const catalog = localSetup
+          ? async (spaceId: string) =>
+              localSetup!.hasSetup()
+                ? localSetup!.catalog(spaceId)
+                : configuredCatalog
+                  ? configuredCatalog(spaceId)
+                  : { experts: [], assets: [] }
+          : configuredCatalog;
         if (closed) {
           await operations?.close();
           return undefined;

@@ -13,6 +13,7 @@ import { MemberExecutionPage } from '../execution/MemberExecutionPage.js';
 import { createIdentityApi } from '../identity/api.js';
 import { createMemberShell } from '../identity/shell.js';
 import { SidebarAccountSettingsLauncher } from '../identity/SidebarAccountSettingsLauncher.js';
+import { LocalSetupBoundary, enterTeamAfterLocalSetup } from '../identity/LocalSetupBoundary.js';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 import nativeRunStyles from '../run/NativeRunPanel.css';
@@ -26,7 +27,8 @@ function deploymentMode(): 'legacy-single-user' | 'multi-member' {
     typeof boot === 'object' &&
     boot !== null &&
     !Array.isArray(boot) &&
-    Object.keys(boot).length === 2 &&
+    (Object.keys(boot).length === 2 ||
+      (Object.keys(boot).length === 3 && 'localSetup' in boot && boot.localSetup === true)) &&
     'version' in boot &&
     boot.version === 1 &&
     'deploymentMode' in boot &&
@@ -37,6 +39,10 @@ function deploymentMode(): 'legacy-single-user' | 'multi-member' {
 }
 export function apply(ctx: Context): void {
   const mode = deploymentMode();
+  const localSetup =
+    mode === 'multi-member' &&
+    (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: { localSetup?: unknown } }).__ZHUMA_WORKBENCH_BOOT__
+      ?.localSetup === true;
   const layout = ctx.layout as typeof ctx.layout & {
     registerPanelGuard?: (
       guard: (target: MainPanelId | null, proceed: () => void, signal: AbortSignal) => void,
@@ -106,6 +112,7 @@ export function apply(ctx: Context): void {
             appearance,
             initialSection: panel.section,
             expertLibrary: panel.expertLibrary,
+            legacyMode: true,
           }),
         },
         (props: ComponentProps<typeof WorkbenchPage>) => (
@@ -166,17 +173,30 @@ export function apply(ctx: Context): void {
     ctx.slots.inject('main', () => {
       const dispose = ctx.slots.register(
         { name: 'main', key: panel.id, inject: () => ({}) },
-        () => (
-          <div className="zm-shell-panel">
-            <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
-            <MemberExecutionPage
-              shell={memberShell}
-              view={panel.view}
-              openWork={() => ctx.layout.selectPanel(executionPanel)}
-              {...(panel.view === 'catalog' ? { workbenchAppearance: appearance } : {})}
-            />
-          </div>
-        ),
+        () => {
+          const content = (
+            <div className="zm-shell-panel">
+              <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
+              <MemberExecutionPage
+                shell={memberShell}
+                view={panel.view}
+                openWork={() => ctx.layout.selectPanel(executionPanel)}
+                {...(panel.view === 'catalog' ? { workbenchAppearance: appearance } : {})}
+              />
+            </div>
+          );
+          return localSetup ? (
+            <LocalSetupBoundary
+              onInitialized={(credentials, team, signal) =>
+                enterTeamAfterLocalSetup(memberShell, credentials, team, signal)
+              }
+            >
+              {content}
+            </LocalSetupBoundary>
+          ) : (
+            content
+          );
+        },
       );
       return () => {
         if (ctx.layout.panelInfo.getSnapshot().activePanelId === panel.id)

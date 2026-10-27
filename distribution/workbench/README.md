@@ -17,6 +17,8 @@ pnpm desktop:dev
 
 ## 边界
 
+全新桌面 profile 首次生成时显式设置 `multi-member + localSetup`，正常首屏创建账号、个人／团队空间并选择基础专家，见 [本机首次成员设置](../../docs/contracts/local-member-setup.md)。已有 profile 保持其原显式配置；Bundle 的 legacy 继承默认保留，不因升级自动迁移旧单人库。
+
 - `.build/workbench` 是可再生的 Host/Client 插件产物；安装脚本只修改 `.build/desktop/deepseek-harness` 的 Web Bundle，不修改 `upstream/deepseek-harness`。
 - 浏览器 React 由 DSH 的模块加载器提供，避免加载第二个 React。画布使用 React Flow。
 - HTTP 接入采用 Connection 公开的 exact Fetch routes，路径 `/api/zhuma/{snapshot,command,plan,preview-import,resource-files}`，使用官方 RPC 请求/响应信封。认证、Host/Origin 校验和 owner-only 限制由 Connection 执行。已有 `/api` RPC 拦截器保留给官方网关。

@@ -25,6 +25,16 @@ A 只读取私有记录地址并管理子作用域；不复制 B 的事实模型
 显式指定的私有记录缺失、类型不符或种子初始化失败时，保留失败子作用域及旧路由门禁，成员访问保持关闭。
 目录错误不会导致 owner 回退。初始化数据和原始异常不进入成员响应。
 
+### 原身份域的首次配置接缝
+
+`applyIdentity` 保持原三参调用和 `Promise<void>` 返回；可选第四参 `IdentityInitializationOptions.publish(handle)` 仅向同 Host 装配层发布当前已打开域的句柄，回调返回撤回函数，不另开域。句柄的 `status()` 仅返回 `unconfigured`、`pending`（原 requestId）、`configured` 或 `recovery-required`；不含账号表、指纹、verifier、会话 secret 或凭据 grant。
+
+`initialize({requestId, imported})` 只供受信 Host 调用，不是 HTTP 准入本身。最多排队 8 项，单份规范化输入不超过 64 KiB／100 账号。它先在原 global 固定请求 ID、种子指纹及 writing 阶段，再向原表补同一种子的缺失记录，最后标记 complete。相同键和种子返回同一 `initialized` 回执；相同键异体或未完成的异键返回 `conflict`。既有完成库返回 `already-configured`，不能把它当成本次账号已创建；没有可证明指纹的旧 partial 返回 `recovery-required`，零覆盖。固定错误仅为 `invalid-input`、`conflict`、`recovery-required`、`unavailable`。
+
+多成员模式的未完成 partial 不能登录或继续使用旧会话；显式 legacy 单人语义保持。关闭先撤回句柄并取消新写，再等原存储队列排空后关闭原域。同盘重开只读原状态，不自动恢复写入。Host 的异步密码生成和私有初始化记录重试核对复用原 scrypt 队列限制；renderer 不生成或接收 verifier。
+
+新配置控制面必须先通过原 DSH 连接的 Host／Origin 门禁及真实 owner admission；这是本机操作方的首次配置权限，不映射为产品成员，也不开放旧 owner 业务路由。原 SDK exact Fetch route 已有 owner 限制；GET 状态使用 buffered，POST 初始化单独使用 streaming 并施加有界读取，不能把流式 GET 交给原 Request 构造器。此处仅记录已验证的接缝方向；完整 credentials／目录／工作区装配、配置 UI 与正式默认模式仍须同一产品切片接续，尚未认证新安装可用。
+
 ## 生命周期与执行句柄
 
 `spaceDirectoryPlugin` 与身份、执行同属正式 Host 作用域，目录挂载成功才发布本次实例。

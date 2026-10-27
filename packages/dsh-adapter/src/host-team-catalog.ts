@@ -105,6 +105,8 @@ export async function openHostTeamCatalog(options: {
     command: ImportCommand;
   }): Promise<unknown>;
   signal: AbortSignal;
+  /** Completed first setup may only verify its already-published immutable records. */
+  initialize?: boolean;
   /** Host-private build/test source, never a Config or HTTP field. */
   packages?: unknown;
 }): Promise<(spaceId: string) => Promise<MemberWorkbenchCatalog>> {
@@ -223,6 +225,7 @@ export async function openHostTeamCatalog(options: {
       [...current.participants, ...current.assets].some((candidate) => candidate.id === item.id),
     );
     if (!present || readPackage(definition.record.versionId) === undefined) {
+      if (options.initialize === false) unavailable();
       const command = structuredClone(definition.command);
       for (const choice of command.input.choices)
         choice.replace = [...current.participants, ...current.assets].some(
