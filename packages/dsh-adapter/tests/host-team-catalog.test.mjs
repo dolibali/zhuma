@@ -141,6 +141,20 @@ test('team catalog contract: immutable files before a failed global write can be
   assert.equal(h.state.participants.length, 2);
 });
 
+test('team catalog contract: completed first-setup verification refuses missing definitions or packages without any import/write', async () => {
+  for (const missing of ['definition', 'package']) {
+    const h = await setup();
+    await openHostTeamCatalog(h.options);
+    const calls = h.calls,
+      writes = h.writes;
+    if (missing === 'definition') h.state.participants.shift();
+    else h.packages.delete(h.state.participants[0].origin.versionId);
+    await assert.rejects(openHostTeamCatalog({ ...h.options, initialize: false }));
+    assert.equal(h.calls, calls);
+    assert.equal(h.writes, writes);
+  }
+});
+
 test('team catalog contract: unknown/duplicate grants, personal space, changed package and owner close fail closed', async () => {
   for (const mutate of [
     (h) => {

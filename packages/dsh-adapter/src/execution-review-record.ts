@@ -7,6 +7,10 @@ import {
 import type { ExecutionRunState } from './execution-run-state.js';
 import { readExecutionReviewComposition } from './execution-review-composition.js';
 import {
+  readExecutionReviewFixedReceipt,
+  readExecutionReviewFailure,
+} from './execution-review-fixed-result.js';
+import {
   executionReviewStateSchema,
   ExecutionReviewError,
   type ExecutionReviewAttempt,
@@ -119,6 +123,12 @@ export function assertExecutionReviewRecord(
         return refuse('review-state-invalid');
       if (attempt.nativeSessionId) nativeIds.add(attempt.nativeSessionId);
       if (attempt.nativeAgentId) nativeIds.add(attempt.nativeAgentId);
+      try {
+        readExecutionReviewFixedReceipt(record, attempt);
+        readExecutionReviewFailure(record, attempt);
+      } catch {
+        return refuse('review-state-invalid');
+      }
     }
   }
   const requests = new Set<string>();

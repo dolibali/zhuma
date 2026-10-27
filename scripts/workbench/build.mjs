@@ -116,7 +116,7 @@ await writeFile(
       name: '@zhuma/workbench',
       version: '0.1.0',
       private: true,
-      license: 'UNLICENSED',
+      license: 'MIT',
       type: 'module',
       main: './index.js',
       exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' },
@@ -149,6 +149,7 @@ await writeFile(
 );
 console.log('Built Host/Client plugin in .build/workbench');
 
+await writeFile(resolve(out, 'LICENSE'), await readFile(resolve(root, 'LICENSE')));
 // Preserve the full license text for every bundled dependency, including transitive modules.
 const licenses = new Map();
 for (const input of [

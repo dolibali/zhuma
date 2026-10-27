@@ -62,6 +62,7 @@ export function WorkbenchPage({
   expertLibrary = false,
   openWork,
   nativeRun,
+  legacyMode = false,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
@@ -69,6 +70,7 @@ export function WorkbenchPage({
   expertLibrary?: boolean;
   openWork?: () => void;
   nativeRun?: { api: NativeRunApi; spaceId: string };
+  legacyMode?: boolean;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
@@ -627,6 +629,9 @@ export function WorkbenchPage({
             </Button>
           </div>
         </header>
+        {legacyMode && (
+          <p className="zm-mode-notice">当前保留单人模式；已有资料不会自动迁入团队。</p>
+        )}
         {!expertLibrary && (
           <div className="zm-page-bar">
             <nav className="zm-tabs" aria-label="工作台导航">

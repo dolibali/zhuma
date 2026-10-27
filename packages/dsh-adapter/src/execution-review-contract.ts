@@ -120,6 +120,8 @@ const admittedReviewAttemptSchema = z
     // The shared record validator verifies the actual serialized composition;
     // the data contract must not import a runtime/composition dependency here.
     composition: z.unknown(),
+    result: z.unknown().optional(),
+    failure: z.unknown().optional(),
     status: z.enum(['requested', 'running', 'completed', 'failed', 'cancelled']),
     dispatch: z.enum(['reserved', 'received', 'unknown']),
     resources: z.enum(['held', 'settled']),
@@ -141,6 +143,8 @@ const admittedReviewAttemptSchema = z
       (value.status === 'cancelled' && value.stopPhase !== 'confirmed') ||
       (value.status !== 'cancelled' && value.stopPhase === 'confirmed') ||
       (value.status === 'completed' && value.stopPhase !== 'none') ||
+      (value.result !== undefined && value.status !== 'completed') ||
+      (value.failure !== undefined && value.status !== 'failed') ||
       (value.lastEventSequence === 0 &&
         (value.status !== 'requested' ||
           value.stopPhase !== 'none' ||

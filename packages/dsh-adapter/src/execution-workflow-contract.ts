@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import { executionWorkspaceSchema } from './execution-run-state.js';
+import type { ExecutionReviewScope } from './execution-review-contract.js';
+import type {
+  WorkflowReviewCandidate,
+  WorkflowReviewAttention,
+} from './execution-workflow-reviews.js';
 
 export const WORKFLOW_EXECUTION_LIMITS = Object.freeze({
   commandReceipts: 128,
@@ -129,6 +134,15 @@ export interface WorkflowExecutionView {
   readonly intent: WorkflowExecutionIntent | undefined;
   readonly requiresResume: boolean;
   readonly activeRunIds: readonly string[];
+  readonly reviewAttention?: readonly WorkflowReviewAttention[];
+  /** Independent review lane; never mixed into author Run IDs. Metadata only. */
+  readonly reviewResources?: readonly {
+    readonly scope: ExecutionReviewScope;
+    readonly version: number;
+    readonly status: 'requested' | 'running' | 'completed' | 'failed' | 'cancelled';
+    readonly resources: 'held' | 'settled';
+    readonly stopPhase: 'none' | 'requested' | 'confirmed';
+  }[];
   /** Derived from original delivery/resource facts; reads never write status. */
   readonly state: 'running' | 'stopping' | 'paused' | 'completed' | 'requires-resume' | 'inactive';
 }
@@ -149,6 +163,8 @@ export interface WorkflowStartTicket {
 export interface WorkflowExecutionClaim {
   readonly view: WorkflowExecutionView;
   readonly tickets: readonly WorkflowStartTicket[];
+  /** No write/dispatch permission; prepare requires this genuine claim again. */
+  readonly reviewCandidates?: readonly WorkflowReviewCandidate[];
   readonly signal: AbortSignal;
   check(): undefined;
   onChange(listener: () => void): () => void;

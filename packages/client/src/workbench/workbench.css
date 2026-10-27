@@ -239,6 +239,118 @@
   color: var(--zm-danger);
   overflow-wrap: anywhere;
 }
+.zhuma .zm-mode-notice {
+  margin: 0 0 16px;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zhuma.zm-local-setup-entry {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 32px 24px;
+}
+.zhuma .zm-local-setup-card {
+  width: min(100%, 720px);
+  padding: 32px;
+  border: 1px solid var(--zm-line);
+  border-radius: 10px;
+  background: var(--zm-paper);
+  display: grid;
+  gap: 28px;
+}
+.zhuma .zm-local-setup-card header {
+  display: grid;
+  gap: 8px;
+}
+.zhuma .zm-local-setup-card h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+.zhuma .zm-local-setup-card p {
+  margin: 0;
+}
+.zhuma .zm-local-setup-card header p,
+.zhuma .zm-local-setup-card small {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zhuma .zm-local-setup-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.zhuma .zm-local-setup-card h2 {
+  font-size: 14px;
+  line-height: 1.4;
+  margin: 0 0 4px;
+}
+.zhuma .zm-local-setup-account,
+.zhuma .zm-local-setup-experts {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  min-width: 0;
+}
+.zhuma .zm-local-setup-account .zm-field {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.zhuma .zm-local-setup-experts {
+  padding-left: 28px;
+  border-left: 1px solid var(--zm-line);
+}
+.zhuma .zm-local-setup-experts label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+.zhuma .zm-local-setup-experts input {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--zm-accent);
+}
+.zhuma .zm-local-setup-experts span {
+  display: grid;
+  gap: 4px;
+}
+.zhuma .zm-local-setup-experts strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.zhuma .zm-local-setup-card footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 20px;
+  border-top: 1px solid var(--zm-line);
+}
+@media (max-width: 820px) {
+  .zhuma .zm-local-setup-card {
+    padding: 24px;
+  }
+  .zhuma .zm-local-setup-fields {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .zhuma .zm-local-setup-experts {
+    border-left: 0;
+    border-top: 1px solid var(--zm-line);
+    padding-left: 0;
+    padding-top: 20px;
+  }
+}
 .zhuma .zm-login-status {
   display: flex;
   align-items: center;
