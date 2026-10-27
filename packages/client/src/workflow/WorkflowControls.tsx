@@ -27,6 +27,7 @@ const labels: Record<WorkflowView['state'], string> = {
   completed: '已完成',
   'requires-resume': '等待继续',
 };
+const invalidWorkspaceMessage = '所选工作目录已不可用，请重新选择目录，或选择“仅处理任务资料”。';
 /** Commands belong to the original member API and exact plan, including same-id re-login. */
 export function WorkflowControls(props: Props) {
   const identity = JSON.stringify(props.target);
@@ -39,7 +40,8 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
   const directoryId = useId(),
     manageId = useId(),
     runTriggerId = useId(),
-    liveManageId = useId();
+    liveManageId = useId(),
+    workspaceErrorId = useId();
   const returnToDirectory = useRef(false);
   const returnToRun = useRef(false);
   const returnToLiveManage = useRef(false);
@@ -130,6 +132,10 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
     void refresh(true);
   }
   function commit() {
+    if (!canCommit) {
+      if (workspaceUnavailable && !view?.intent) command.setError(invalidWorkspaceMessage);
+      return;
+    }
     if (!choices || !view || loading) return;
     reader.current?.abort();
     const accept = (next: WorkflowView) => {
@@ -153,7 +159,11 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
       const workspace = workspaceId
         ? choices.workspaces.find((item) => item.id === workspaceId)
         : undefined;
-      if (!model || (workspaceId && !workspace)) return;
+      if (!model) return;
+      if (workspaceId && !workspace) {
+        command.setError(invalidWorkspaceMessage);
+        return;
+      }
       const input = {
         ...fixedTarget,
         model,
@@ -188,6 +198,8 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
   const canStart = view?.state === 'inactive' && view.expertNodeCount > 0;
   const selected =
     choices?.models.kind === 'ready' && choices.models.items.some((item) => item.id === modelId);
+  const workspaceUnavailable =
+    !!choices && !!workspaceId && !choices.workspaces.some((item) => item.id === workspaceId);
   const savedModel = view?.selection?.model;
   const frozenWorkspace = view?.selection?.workspace;
   const modelPresent =
@@ -203,7 +215,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
     !command.pending &&
     (view?.intent
       ? canResume && !!modelPresent && frozenWorkspace?.kind !== 'unavailable'
-      : canStart && !!selected);
+      : canStart && !!selected && !workspaceUnavailable);
   return (
     <div className="zm-workflow-controls" aria-label="工作流执行">
       {view && (
@@ -372,10 +384,20 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                         <select
                           id={directoryId}
                           aria-label="工作目录"
+                          aria-invalid={workspaceUnavailable || undefined}
+                          aria-describedby={workspaceUnavailable ? workspaceErrorId : undefined}
                           value={workspaceId}
                           disabled={command.pending}
-                          onChange={(event) => setWorkspaceId(event.target.value)}
+                          onChange={(event) => {
+                            setWorkspaceId(event.target.value);
+                            command.setError('');
+                          }}
                         >
+                          {workspaceUnavailable && (
+                            <option value={workspaceId} disabled>
+                              所选工作目录已失效
+                            </option>
+                          )}
                           <option value="">仅处理任务资料</option>
                           {choices.workspaces.map((item) => (
                             <option key={item.id} value={item.id}>
@@ -384,6 +406,11 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                             </option>
                           ))}
                         </select>
+                        {workspaceUnavailable && (
+                          <p id={workspaceErrorId} className="zm-error" role="alert">
+                            {invalidWorkspaceMessage}
+                          </p>
+                        )}
                       </div>
                       <label className="zm-field">
                         同时运行的 Agent
