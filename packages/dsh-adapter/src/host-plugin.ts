@@ -12,6 +12,7 @@ import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import { openHostRunHttp } from './host-run-http.js';
 import { openHostRunOwner } from './host-run-owner.js';
+import { openHostWorkflowHttp } from './host-workflow-http.js';
 import { hostLocalExecutionSchema } from './host-run-workspaces.js';
 import { nativeWorkSessionInject } from './native-work-session-storage.js';
 import {
@@ -132,6 +133,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let runOwner: Awaited<ReturnType<typeof openHostRunOwner>> | undefined;
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
+  let workflowHttp: ReturnType<typeof openHostWorkflowHttp> | undefined;
   let runClosing: Promise<void> | undefined;
   const runLifetime = new AbortController();
   let runsClosed = false;
@@ -154,14 +156,17 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         },
       );
     const httpClose = runHttp?.close();
-    return (runClosing = Promise.allSettled([nativeClose, httpClose]).then((results) => {
-      const failed = results.filter((item) => item.status === 'rejected');
-      if (failed.length)
-        throw new AggregateError(
-          failed.map((item) => item.reason),
-          'Run bridge close failed.',
-        );
-    }));
+    const workflowClose = workflowHttp?.close();
+    return (runClosing = Promise.allSettled([nativeClose, httpClose, workflowClose]).then(
+      (results) => {
+        const failed = results.filter((item) => item.status === 'rejected');
+        if (failed.length)
+          throw new AggregateError(
+            failed.map((item) => item.reason),
+            'Run bridge close failed.',
+          );
+      },
+    ));
   }
   const beforeClose = async () => {
     closed = true;
@@ -205,6 +210,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   if (closed) return;
   if (config.deploymentMode === 'multi-member') {
+    workflowHttp = openHostWorkflowHttp(ctx, {
+      current: () => runOwner?.workflowOperations,
+      limits: { bodyBytes: config.bodyBytes, bodyTimeoutMs: config.bodyTimeoutMs },
+    });
     runHttp = openHostRunHttp(ctx, {
       current: () => runOwner?.operations,
       limits: { bodyBytes: config.bodyBytes, bodyTimeoutMs: config.bodyTimeoutMs },

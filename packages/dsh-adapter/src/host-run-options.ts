@@ -11,6 +11,11 @@ import type { ExecutionService } from './execution-service.js';
 import type { MemberRequest } from './member-session.js';
 import type { createHostRunResourceSource } from './host-run-resource-source.js';
 import { BASIC_TASK_EXECUTOR } from './execution-run-composition.js';
+import {
+  readHostRunModels,
+  type HostRunModel as Model,
+  type HostRunModels,
+} from './host-run-models.js';
 import type { createHostRunWorkspaces, HostWorkspaceChoice } from './host-run-workspaces.js';
 import {
   ExecutionRunError,
@@ -27,12 +32,6 @@ const query = z.strictObject({
   nodeId: id,
 });
 type Executor = { kind: 'builtin' } | { kind: 'plan-expert'; ref: { id: string; version: string } };
-type Model = {
-  provider: string;
-  model: string;
-  maxTokens: number;
-  reasoningEffort?: string | undefined;
-};
 export interface HostRunOptionsView {
   readonly target: z.infer<typeof query>;
   readonly nodeVersion: number;
@@ -44,9 +43,7 @@ export interface HostRunOptionsView {
     workspace?: { kind: 'local'; id: string } | { kind: 'unavailable' };
   } | null;
   readonly workspaces?: readonly HostWorkspaceChoice[];
-  readonly models:
-    | { kind: 'ready'; items: { id: string; label: string; value: Model }[] }
-    | { kind: 'unavailable'; message: string };
+  readonly models: HostRunModels;
   readonly experts: { id: string; label: string; description: string; value: Executor }[];
   readonly resources: {
     id: string;
@@ -94,52 +91,7 @@ export function createHostRunOptions(
     };
     // Reject a foreign/changed node before asking any provider for metadata.
     await authorize();
-    const providers = llm.listProviders();
-    let models: HostRunOptionsView['models'];
-    if (providers.length > 16) {
-      models = { kind: 'unavailable', message: '模型目录过大，请先缩小已配置的供应商范围。' };
-    } else {
-      const deadline = AbortSignal.any([
-        signal,
-        AbortSignal.timeout(options.modelTimeoutMs ?? 2500),
-      ]);
-      let cancel: (() => void) | undefined;
-      try {
-        // SDK listModels has no AbortSignal parameter. Bound our wait and contain
-        // late rejection; completion never publishes without another member gate.
-        const cancelled = new Promise<never>((_, reject) => {
-          cancel = () => reject(deadline.reason);
-          deadline.addEventListener('abort', cancel, { once: true });
-        });
-        deadline.throwIfAborted();
-        const catalogs = await Promise.race([
-          Promise.all(providers.map((provider) => llm.listModels(provider.id))),
-          cancelled,
-        ]);
-        active(signal);
-        if (catalogs.flat().length > 256) throw Error('Model catalog exceeds projection limit');
-        models = {
-          kind: 'ready',
-          items: catalogs.flatMap((catalog) =>
-            catalog.map((model) => ({
-              id: JSON.stringify([model.provider, model.id]),
-              label: `${model.name.slice(0, 160)} · ${model.provider.slice(0, 100)}`,
-              // Explicit application output budget, never a guessed provider default.
-              value: {
-                provider: id.parse(model.provider),
-                model: id.parse(model.id),
-                maxTokens: 4096,
-              },
-            })),
-          ),
-        };
-      } catch {
-        active(signal);
-        models = { kind: 'unavailable', message: '模型目录暂不可用，请检查模型配置后刷新。' };
-      } finally {
-        if (cancel) deadline.removeEventListener('abort', cancel);
-      }
-    }
+    const models = await readHostRunModels(ctx, signal, options.modelTimeoutMs);
     // Metadata discovery may await network IO. Revalidate member, directory,
     // controller, full locator and inputs, then synchronously read current facts.
     let resourceReady = false;

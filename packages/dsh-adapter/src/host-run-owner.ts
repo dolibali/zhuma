@@ -23,7 +23,7 @@ import {
 } from './host-run-reader.js';
 import { observeHostNativeRun, type HostNativeClaim } from './host-run-observation.js';
 import type { HostRunOperations } from './host-run-http.js';
-import type { ExecutionService, RunEventAuthority } from './execution-service.js';
+import type { ExecutionService, ExecutionResult, RunEventAuthority } from './execution-service.js';
 import type {
   ExecutionRunAuthorities,
   ExecutionRunCleanupAuthority,
@@ -56,12 +56,14 @@ import { registerNativeAcceptedInputTool } from './native-work-session-input-too
 import { NativeWorkError, type NativeWorkScope } from './native-work-session-contract.js';
 import { nativeScopeKey } from './native-work-session-record.js';
 import { createHostRunWorkspaces, type HostLocalExecutionConfig } from './host-run-workspaces.js';
+import { createHostWorkflowOwner, type HostWorkflowOperations } from './host-workflow-owner.js';
 import { adoptNativeRunLocalTools } from './native-run-local-tools.js';
 import {
   createNativeOutputFileIssuer,
   type NativeOutputFileIssuer,
 } from './native-work-session-output-file.js';
 import { resolveMember, type MemberRequest } from './member-session.js';
+import { ExecutionWorkflowError, type WorkflowStartTicket } from './execution-workflow-contract.js';
 
 const id = z.string().min(1).max(200);
 const positive = z.number().int().positive().refine(Number.isSafeInteger);
@@ -116,6 +118,11 @@ interface OwnedRun {
   resultPending?: 'draining' | 'not-durable' | 'delivery-unconfirmed';
   resultFailure?: unknown;
 }
+interface WorkflowAdmission {
+  readonly state: OwnedRun;
+  readonly ticket: WorkflowStartTicket;
+  readonly wait?: AbortSignal;
+}
 
 /** One native owner consuming the already opened D execution owner. No new Run store/queue. */
 export async function openHostRunOwner(
@@ -132,6 +139,7 @@ export async function openHostRunOwner(
   const execution = options.execution;
   const lifetime = new AbortController();
   const owned = new Map<string, OwnedRun>();
+  const admissions = new Map<string, WorkflowAdmission>();
   const absentRetirements = new Map<string, HostAbsentRetirement>();
   const commands = new Set<Promise<unknown>>();
   const events = new Set<Promise<unknown>>();
@@ -140,6 +148,7 @@ export async function openHostRunOwner(
   let results: NativeFixedResultIssuer | undefined;
   let publications: NativeFixedResultPublicationsIssuer | undefined;
   let outputs: NativeOutputFileIssuer | undefined;
+  let workflow: ReturnType<typeof createHostWorkflowOwner> | undefined;
   let fenced = false;
   let closing: Promise<void> | undefined;
   // This owner chooses once. An absent legacy backend is distinct from a
@@ -217,6 +226,7 @@ export async function openHostRunOwner(
       const state = owned.get(nativeScopeKey(grant.scope));
       if (!state || state.opened?.grant !== grant)
         throw new ExecutionRunError('run-authority-denied');
+      assertAdmission(state);
       const snapshot = execution.readRunComposition(locatorFor(grant.scope));
       const projected = executionRunCompositionRequest(snapshot);
       assertExecutionRunCompositionBinding(snapshot, binding.scope, projected);
@@ -298,6 +308,7 @@ export async function openHostRunOwner(
         grant,
         authorities,
       );
+      assertAdmission(state);
       const adopted = await registerExecutionRunResources(
         agentCtx,
         snapshot,
@@ -307,6 +318,7 @@ export async function openHostRunOwner(
       );
       state.resourceAdoption = adopted;
       await adopted.ready;
+      assertAdmission(state);
       if (
         canonicalPayload([...baseTools, ...adopted.toolAllowlist]) !==
         canonicalPayload(snapshot.payload.toolAllowlist)
@@ -378,12 +390,24 @@ export async function openHostRunOwner(
       );
     }
     execution.installNativeResultIssuer(results, publications);
+    workflow = createHostWorkflowOwner(ctx, {
+      execution,
+      runs: {
+        beginWorkflowRun,
+        stop: (original, payload, wait) => operations.stop(original, payload, wait),
+      },
+      signal: lifetime.signal,
+      workspaces,
+      readWorkbench: options.readWorkbench,
+    });
   } catch (error) {
+    workflow?.fence();
     await outputs?.close();
     await results?.close();
     await native.close();
     await workspaces.close();
     await backendOwner?.dispose();
+    await workflow?.close();
     throw error;
   }
   const stopResultReady = results.onReady((grant, ref) => {
@@ -462,6 +486,25 @@ export async function openHostRunOwner(
   }
   function active() {
     if (fenced || lifetime.signal.aborted) throw new ExecutionRunError('run-authority-unavailable');
+  }
+  function assertAdmission(state: OwnedRun) {
+    const entry = admissions.get(nativeScopeKey(state.scope));
+    if (!entry) return;
+    if (entry.state !== state) throw new ExecutionRunError('run-scope-mismatch');
+    entry.wait?.throwIfAborted();
+    entry.ticket.check();
+    const location = entry.ticket.location;
+    const reservation = entry.ticket.reservation;
+    if (
+      location.taskId !== state.scope.taskId ||
+      location.planId !== state.scope.planId ||
+      location.revision !== state.scope.revision ||
+      location.spaceId !== state.scope.spaceId ||
+      reservation.nodeId !== state.scope.nodeId ||
+      reservation.newRunId !== state.scope.runId ||
+      reservation.newSegmentId !== state.scope.segmentId
+    )
+      throw new ExecutionRunError('run-scope-mismatch');
   }
   function current(state: OwnedRun) {
     const node = execution.readRunNode(state.scope);
@@ -736,9 +779,16 @@ export async function openHostRunOwner(
     previousScope?: NativeWorkScope,
   ): Promise<'received' | 'unknown'> {
     try {
+      assertAdmission(state);
       let absent = previousScope && absentRetirements.get(nativeScopeKey(previousScope));
       const opened = await authorities.open(state.request, locatorFor(state.scope), 'drive');
       state.opened = opened;
+      try {
+        assertAdmission(state);
+      } catch (error) {
+        opened.dispose();
+        throw error;
+      }
       const revoked = () => {
         if (!fenced) {
           if (current(state).run.resultDelivery) release(state);
@@ -794,6 +844,7 @@ export async function openHostRunOwner(
       const snapshot = execution.readRunComposition(locatorFor(state.scope));
       const first = executionRunCompositionRequest(snapshot);
       const { run } = current(state);
+      assertAdmission(state);
       const receipt = await native.service.send(opened.grant, {
         requestId: run.attempt.idempotencyKey,
         text: first.firstMessage.text,
@@ -835,56 +886,122 @@ export async function openHostRunOwner(
     if (commands.size >= 256) throw new ExecutionRunError('run-capacity');
     return track(Promise.resolve().then(operation), commands);
   }
+  function startNativeRun(
+    request: MemberRequest,
+    payload: unknown,
+    wait?: AbortSignal,
+    ticket?: WorkflowStartTicket,
+  ): Promise<ExecutionResult<unknown>> {
+    return command(async () => {
+      wait?.throwIfAborted();
+      if (owned.size + beginning >= 256) throw new ExecutionRunError('run-capacity');
+      beginning++;
+      try {
+        const input = ticket
+          ? await configuration.prepareWorkflow(request, ticket, wait)
+          : await configuration.prepare(request, payload);
+        ticket?.check();
+        active();
+        // This performs the original owner's pre/post-marker checks and whole-node put.
+        const committed = await execution.startRun(request, input, ticket);
+        if (!committed.ok) return committed;
+        const decision = committed.value;
+        if (decision.effect?.kind === 'dispatch') {
+          const state = retain(decision, request);
+          const admissionKey = nativeScopeKey(state.scope);
+          const admission: WorkflowAdmission | undefined = ticket
+            ? { state, ticket, ...(wait ? { wait } : {}) }
+            : undefined;
+          if (admission) {
+            // The same full-scope effect is already owned. Preserve its entry
+            // and do not dispatch again or discard the committed reservation.
+            if (admissions.has(admissionKey))
+              return {
+                ok: true,
+                value: {
+                  disposition: decision.disposition,
+                  ...locatorFor(state.scope),
+                  generation: state.scope.generation,
+                  segmentId: state.scope.segmentId,
+                  dispatch: 'unknown',
+                },
+              };
+            admissions.set(admissionKey, admission);
+          }
+          const admissionSignal = ticket
+            ? wait
+              ? AbortSignal.any([ticket.signal, wait])
+              : ticket.signal
+            : undefined;
+          // Only the pending admission is requalified. Once dispatch returns,
+          // removing this hook lets the original Run outlive permit disposal.
+          const recheckAdmission = () => {
+            if (!admission || admissions.get(admissionKey) !== admission) return;
+            const opened = state.opened;
+            if (opened && nativeScopeKey(opened.grant.scope) === admissionKey) opened.dispose();
+          };
+          admissionSignal?.addEventListener('abort', recheckAdmission, { once: true });
+          let dispatchStatus: 'received' | 'unknown';
+          try {
+            const dispatching = dispatch(state, decision.effect.previousScope);
+            state.dispatching = dispatching;
+            dispatchStatus = await dispatching;
+          } finally {
+            admissionSignal?.removeEventListener('abort', recheckAdmission);
+            delete state.dispatching;
+            if (admissions.get(admissionKey) === admission) admissions.delete(admissionKey);
+          }
+          return {
+            ok: true,
+            value: {
+              disposition: decision.disposition,
+              ...locatorFor(state.scope),
+              generation: state.scope.generation,
+              segmentId: state.scope.segmentId,
+              dispatch: dispatchStatus,
+            },
+          };
+        }
+        // A lost reply/cold replay returns the original owner's current
+        // durable facts in the same shape; no native resume or resend.
+        const scope = executionRunScope(decision.record, decision.run);
+        return {
+          ok: true,
+          value: {
+            disposition: decision.disposition,
+            ...locatorFor(scope),
+            generation: scope.generation,
+            segmentId: scope.segmentId,
+            dispatch: decision.run.dispatch,
+          },
+        };
+      } finally {
+        beginning--;
+      }
+    });
+  }
+  async function beginWorkflowRun(
+    request: MemberRequest,
+    ticket: WorkflowStartTicket,
+    wait?: AbortSignal,
+  ): Promise<ExecutionResult<unknown>> {
+    try {
+      return await startNativeRun(request, undefined, wait, ticket);
+    } catch (error) {
+      if (error instanceof ExecutionRunError || error instanceof ExecutionWorkflowError)
+        return {
+          ok: false,
+          error: { code: error.code, message: '工作流节点未能开始。', details: {} },
+        };
+      throw error;
+    }
+  }
   const operations: HostRunOperations = {
     options(request, payload, wait) {
       return command(() => readOptions(request, payload, wait));
     },
     begin(request, payload, wait) {
-      return command(async () => {
-        wait?.throwIfAborted();
-        if (owned.size + beginning >= 256) throw new ExecutionRunError('run-capacity');
-        beginning++;
-        try {
-          const input = await configuration.prepare(request, payload);
-          active();
-          // This performs the original owner's pre/post-marker checks and whole-node put.
-          const committed = await execution.startRun(request, input);
-          if (!committed.ok) return committed;
-          const decision = committed.value;
-          if (decision.effect?.kind === 'dispatch') {
-            const state = retain(decision, request);
-            const dispatching = dispatch(state, decision.effect.previousScope);
-            state.dispatching = dispatching;
-            const dispatchStatus = await dispatching;
-            delete state.dispatching;
-            return {
-              ok: true,
-              value: {
-                disposition: decision.disposition,
-                ...locatorFor(state.scope),
-                generation: state.scope.generation,
-                segmentId: state.scope.segmentId,
-                dispatch: dispatchStatus,
-              },
-            };
-          }
-          // A lost reply/cold replay returns the original owner's current
-          // durable facts in the same shape; no native resume or resend.
-          const scope = executionRunScope(decision.record, decision.run);
-          return {
-            ok: true,
-            value: {
-              disposition: decision.disposition,
-              ...locatorFor(scope),
-              generation: scope.generation,
-              segmentId: scope.segmentId,
-              dispatch: decision.run.dispatch,
-            },
-          };
-        } finally {
-          beginning--;
-        }
-      });
+      return startNativeRun(request, payload, wait);
     },
     send(request, payload, wait) {
       return command(async () => {
@@ -1003,8 +1120,18 @@ export async function openHostRunOwner(
     },
   };
 
+  const workflowOperations: HostWorkflowOperations = {
+    options: (...args) => command(() => workflow!.operations.options(...args)),
+    read: (...args) => command(() => workflow!.operations.read(...args)),
+    start: (...args) => command(() => workflow!.operations.start(...args)),
+    resume: (...args) => command(() => workflow!.operations.resume(...args)),
+    stop: (...args) => command(() => workflow!.operations.stop(...args)),
+  };
+
   return {
     operations,
+    beginWorkflowRun,
+    workflowOperations,
     close(): Promise<void> {
       if (closing) return closing;
       let resolveClose!: () => void;
@@ -1014,9 +1141,11 @@ export async function openHostRunOwner(
         rejectClose = reject;
       });
       closing = closed;
+      workflow?.fence();
       fenced = true;
       stopResultReady();
       absentRetirements.clear();
+      admissions.clear();
       execution.fenceRuns();
       lifetime.abort();
       void (async () => {
@@ -1054,6 +1183,11 @@ export async function openHostRunOwner(
         }
         if (drained && !failures.length) await workspaces.close();
         if (drained && !failures.length) await backendOwner?.dispose();
+        try {
+          await workflow?.close();
+        } catch (error) {
+          failures.push(error);
+        }
         if (failures.length)
           throw new AggregateError(failures, 'Native Run cleanup remains unconfirmed.');
       })().then(resolveClose, rejectClose);

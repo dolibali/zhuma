@@ -194,6 +194,17 @@ export {
 } from './native-work-session-result.js';
 export { describeNativeResultPublicationsTool } from './native-work-session-result-publications-tool.js';
 export {
+  createNativeWorkflowBridge,
+  type NativeWorkflowRunPort,
+} from './native-work-session-workflow-bridge.js';
+export type {
+  WorkflowExecutionView,
+  WorkflowStartTicket,
+  WorkflowRunDefaults,
+  WorkflowLocation,
+} from './execution-workflow-contract.js';
+export type { HostWorkflowView, HostWorkflowOptions } from './host-workflow-owner.js';
+export {
   NATIVE_RESULT_PUBLICATIONS_TOOL_VERSION,
   type NativeFixedResultPublicationsLease,
   type NativeFixedResultPublicationsSource,
