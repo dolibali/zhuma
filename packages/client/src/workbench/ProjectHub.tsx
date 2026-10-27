@@ -212,21 +212,29 @@ export function ProjectHub({
       <ul className="zm-project-people">
         {state.participants
           .filter((p) => ids.includes(p.id))
-          .map((p) => (
-            <li key={p.id}>
-              <span className={`zm-avatar ${p.kind}`}>
-                {p.kind === 'expert' ? 'AI' : p.name.slice(0, 1)}
-              </span>
-              <span>
-                <strong>{p.name}</strong>
-                <small>
-                  {p.kind === 'expert' ? 'Agent 专家' : '团队成员'}
-                  {p.role ? ` · ${p.role}` : ''}
-                </small>
-              </span>
-              {!p.available && <small>已停用</small>}
-            </li>
-          ))}
+          .map((p) => {
+            const avatarLabel = `${p.name} · ${p.kind === 'expert' ? 'Agent 专家' : '团队成员'}（参与者）`;
+            return (
+              <li key={p.id}>
+                <span
+                  className={`zm-avatar ${p.kind}`}
+                  role="img"
+                  title={avatarLabel}
+                  aria-label={avatarLabel}
+                >
+                  {p.kind === 'expert' ? 'AI' : p.name.slice(0, 1)}
+                </span>
+                <span>
+                  <strong>{p.name}</strong>
+                  <small>
+                    {p.kind === 'expert' ? 'Agent 专家' : '团队成员'}
+                    {p.role ? ` · ${p.role}` : ''}
+                  </small>
+                </span>
+                {!p.available && <small>已停用</small>}
+              </li>
+            );
+          })}
       </ul>
     );
   }
@@ -346,60 +354,6 @@ export function ProjectHub({
       )}
       {tab === 'materials' && (
         <div className="zm-project-materials">
-          <section className="zm-project-panel">
-            <header>
-              <h2>
-                参考链接 <small>{references.length}</small>
-              </h2>
-              <Button disabled={!canEdit} onClick={edit}>
-                管理资料
-              </Button>
-            </header>
-            {references.length ? (
-              <ul className="zm-project-links">
-                {references.map((r) => (
-                  <li key={r.id}>
-                    <a href={r.url} target="_blank" rel="noreferrer">
-                      {r.name} ↗
-                    </a>
-                    <small>{r.url}</small>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="zm-project-muted">尚未关联参考链接。</p>
-            )}
-            <p className="zm-project-muted">AI 规划可读取链接名称和地址，不会自动抓取正文。</p>
-          </section>
-          <section className="zm-project-panel">
-            <header>
-              <h2>
-                关联资产 <small>{assets.length}</small>
-              </h2>
-            </header>
-            {assets.length ? (
-              <ul className="zm-project-assets">
-                {assets.map((a) => (
-                  <li key={a.id}>
-                    <span>
-                      <strong>{a.name}</strong>
-                      <small>{a.description || assetKind[a.kind]}</small>
-                    </span>
-                    <span>
-                      {assetKind[a.kind]}
-                      {!a.available && ' · 已停用'}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="zm-project-muted">
-                {resourcesConnected
-                  ? '可在“管理资料”中关联已有 Skill、MCP 或工作流。'
-                  : '当前空间的团队资产尚未接入。'}
-              </p>
-            )}
-          </section>
           {projectExecution?.projectArtifacts && spaceId ? (
             <ProjectArtifactsPanel
               spaceId={spaceId}
@@ -414,6 +368,78 @@ export function ProjectHub({
                 <h2>已接受成果</h2>
               </header>
               <p className="zm-project-muted">成果查询尚未接通。</p>
+            </section>
+          )}
+          {!references.length && !assets.length && (
+            <section className="zm-project-panel">
+              <header>
+                <h2>
+                  参考链接与资产 <small>{resourcesConnected ? '未添加' : '团队资产尚未接入'}</small>
+                </h2>
+                <Button disabled={!canEdit} onClick={edit}>
+                  管理资料
+                </Button>
+              </header>
+            </section>
+          )}
+          {!!references.length && (
+            <section className="zm-project-panel">
+              <header>
+                <h2>
+                  参考链接 <small>{references.length}</small>
+                </h2>
+                <Button disabled={!canEdit} onClick={edit}>
+                  管理资料
+                </Button>
+              </header>
+              <ul className="zm-project-links">
+                {references.map((r) => (
+                  <li key={r.id}>
+                    <a href={r.url} target="_blank" rel="noreferrer">
+                      {r.name} ↗
+                    </a>
+                    <small>{r.url}</small>
+                  </li>
+                ))}
+              </ul>
+              <p className="zm-project-muted">AI 规划可读取链接名称和地址，不会自动抓取正文。</p>
+            </section>
+          )}
+          {!!assets.length && (
+            <section className="zm-project-panel">
+              <header>
+                <h2>
+                  关联资产 <small>{assets.length}</small>
+                </h2>
+                {!references.length && (
+                  <Button disabled={!canEdit} onClick={edit}>
+                    管理资料
+                  </Button>
+                )}
+              </header>
+              <ul className="zm-project-assets">
+                {assets.map((a) => (
+                  <li key={a.id}>
+                    <span>
+                      <strong>{a.name}</strong>
+                      <small>{a.description || assetKind[a.kind]}</small>
+                    </span>
+                    <span>
+                      {assetKind[a.kind]}
+                      {!a.available && ' · 已停用'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {!!references.length && !assets.length && !resourcesConnected && (
+            <section className="zm-project-panel">
+              <header>
+                <h2>
+                  关联资产 <small>团队资产尚未接入</small>
+                </h2>
+              </header>
             </section>
           )}
         </div>
