@@ -101,6 +101,141 @@ if (mode !== undefined) {
     );
   });
 
+  test('actual SDK late observer restores the current visible prefix and cuts queued overlap without replaying native frames', async (t) => {
+    const entered = Promise.withResolvers(),
+      suffix = Promise.withResolvers(),
+      suffixSent = Promise.withResolvers(),
+      tail = Promise.withResolvers(),
+      tailSent = Promise.withResolvers();
+    let modelSignal;
+    const host = await setup(t, [
+      async function* (options) {
+        modelSignal = options.signal;
+        yield { type: 'block-start', index: 0, blockType: 'reasoning' };
+        yield { type: 'reasoning-delta', index: 0, text: 'private-late-reasoning' };
+        yield {
+          type: 'block-end',
+          index: 0,
+          block: { type: 'reasoning', text: 'private-late-reasoning' },
+        };
+        yield { type: 'block-start', index: 1, blockType: 'text' };
+        yield { type: 'text-delta', index: 1, text: 'visible-prefix' };
+        entered.resolve();
+        await suffix.promise;
+        yield { type: 'text-delta', index: 1, text: '-overlap' };
+        suffixSent.resolve();
+        await tail.promise;
+        yield { type: 'text-delta', index: 1, text: '-live' };
+        tailSent.resolve();
+        await new Promise((resolve, reject) => {
+          if (options.signal.aborted) return reject(Error('script stopped'));
+          options.signal.addEventListener('abort', () => reject(Error('script stopped')), {
+            once: true,
+          });
+        });
+      },
+    ]);
+    t.onTestFinished(() => {
+      suffix.resolve();
+      tail.resolve();
+    });
+    await host.service.send(host.current, message('late-observer', 'synthetic request'));
+    await entered.promise;
+    const readGrant = grant();
+    const binding = host.service.open(readGrant).binding;
+    const agent = host.ctx.agents.get(binding.nativeSessionId);
+    const originalHistory = host.runtime.history.bind(host.runtime);
+    async function attach(overlap = false) {
+      const historyRead = Promise.withResolvers();
+      host.runtime.history = async (...args) => {
+        const rows = await originalHistory(...args);
+        if (overlap) {
+          suffix.resolve();
+          await suffixSent.promise;
+          await setImmediate();
+        }
+        historyRead.resolve();
+        return rows;
+      };
+      const ui = new AbortController(),
+        frames = [],
+        live = Promise.withResolvers();
+      t.onTestFinished(() => ui.abort());
+      const observing = (async () => {
+        for await (const frame of host.service.observe(readGrant, -1, ui.signal)) {
+          frames.push(frame);
+          if (
+            frame.type === 'assistant-stream' &&
+            frame.frame.type === 'chunk' &&
+            frame.frame.text === '-live'
+          )
+            live.resolve();
+        }
+      })();
+      await historyRead.promise;
+      await setImmediate();
+      await setImmediate();
+      const opening = frames.find(
+        (f) => f.type === 'assistant-stream' && f.frame.type === 'snapshot',
+      );
+      assert.ok(opening, 'late observer requires an explicit current-attempt opening snapshot');
+      return { ui, frames, live, observing, opening: opening.frame };
+    }
+    const first = await attach();
+    assert.equal(first.opening.activeAttempt.text, 'visible-prefix');
+    assert.equal(agent.status, 'running');
+    assert.equal(
+      (await originalHistory(binding.nativeSessionId, -1, 100, host.current.signal)).some(
+        (e) => e.type === 'assistant/message',
+      ),
+      false,
+    );
+    first.ui.abort();
+    await first.observing;
+    assert.equal(agent.status, 'running');
+    assert.equal(modelSignal.aborted, false);
+    const second = await attach(true);
+    assert.equal(second.opening.activeAttempt.text, 'visible-prefix-overlap');
+    assert.equal(
+      second.frames.some((f) => f.type === 'assistant-stream' && f.frame.type === 'chunk'),
+      false,
+      'queued prefix already represented by snapshot cannot duplicate',
+    );
+    tail.resolve();
+    await tailSent.promise;
+    await second.live.promise;
+    const live = second.frames.filter(
+      (f) => f.type === 'assistant-stream' && f.frame.type === 'chunk',
+    );
+    assert.equal(live.length, 1);
+    assert.equal(live[0].frame.text, '-live');
+    assert.equal(live[0].frame.index, second.opening.activeAttempt.nextIndex);
+    assert.ok(live[0].frame.revision > second.opening.revision);
+    assert.equal((await host.service.stop(host.current)).status, 'stopped');
+    await agent.whenIdle();
+    await setImmediate();
+    assert.equal(modelSignal.aborted, true);
+    const final = second.frames.find((f) => f.type === 'message' && f.role === 'assistant');
+    const end = second.frames.find((f) => f.type === 'assistant-stream' && f.frame.type === 'end');
+    assert.equal(final.text, 'visible-prefix-overlap-live');
+    assert.equal(final.interrupted, true);
+    assert.equal(end.frame.outcome.messageKey, final.messageKey);
+    assert.equal(end.frame.outcome.seq, final.seq);
+    second.ui.abort();
+    await second.observing;
+    const settled = await attach();
+    assert.equal(settled.opening.activeAttempt, undefined);
+    settled.ui.abort();
+    await settled.observing;
+    assert.equal(
+      JSON.stringify([first.frames, second.frames, settled.frames]).includes('private-late'),
+      false,
+    );
+    assert.equal(host.adapter.requests.length, 1);
+    readGrant.revoke();
+    await assert.rejects(host.service.observe(readGrant).next(), { code: 'cancelled' });
+  });
+
   test('actual SDK partial text is observable before completion and settles into one keyed durable message', async (t) => {
     const entered = Promise.withResolvers(),
       release = Promise.withResolvers();

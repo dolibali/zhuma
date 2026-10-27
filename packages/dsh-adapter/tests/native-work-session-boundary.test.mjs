@@ -138,6 +138,28 @@ test('contract: stale authorization is checked after a delayed source and before
   await assert.rejects(next, /currentness-rejected/);
 });
 
+test('contract: an opening snapshot cannot use a native mapping replaced during its read', async () => {
+  const h = harness(),
+    current = grant();
+  await h.service.send(current, message('one', 'original session'));
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  h.runtime.follow = async function* () {
+    entered.resolve();
+    await release.promise;
+    yield { type: 'assistant-stream', frame: { type: 'snapshot', revision: 0 } };
+  };
+  const observing = h.service.observe(current).next();
+  await entered.promise;
+  const [key, original] = [...h.records][0];
+  const replaced = structuredClone(original);
+  if (replaced.schemaVersion === 2) replaced.current.nativeSessionId = 'replacement';
+  else replaced.nativeSessionId = 'replacement';
+  h.records.set(key, replaced);
+  release.resolve();
+  await assert.rejects(observing, { code: 'scope-mismatch' });
+});
+
 test('contract: UI history cancellation does not revoke the Run grant', async () => {
   const h = harness(),
     current = grant(),
