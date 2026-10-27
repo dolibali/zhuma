@@ -135,7 +135,18 @@ export {
   type SpaceDirectoryImport,
   type SpaceDirectoryWriter,
   type SpaceKind,
+  type SpaceDirectoryInitializationStatus,
+  type SpaceDirectoryOpenOptions,
 } from './space-directory.js';
+export type {
+  IdentityInitializationHandle,
+  IdentityInitializationOptions,
+  IdentityInitializationStatus,
+  IdentitySetupContext,
+  IdentitySetupPreparation,
+  IdentitySetupSnapshot,
+} from './identity-session.js';
+export type { HostLocalSetupInput, HostLocalSetupSnapshot } from './host-local-setup-http.js';
 export type * from './s1-integration.js';
 export {
   openExecutionMemberLease,
