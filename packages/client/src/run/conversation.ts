@@ -13,8 +13,10 @@ function object(value: unknown): Record<string, unknown> {
     ? (value as Record<string, unknown>)
     : invalid();
 }
-function text(value: unknown, max = 200): string {
-  return typeof value === 'string' && value.length > 0 && value.length <= max ? value : invalid();
+function text(value: unknown, max = 200, min = 1): string {
+  return typeof value === 'string' && value.length >= min && value.length <= max
+    ? value
+    : invalid();
 }
 function number(value: unknown, min = 0): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= min
@@ -24,8 +26,8 @@ function number(value: unknown, min = 0): number {
 function oneOf<T extends string>(value: unknown, choices: readonly T[]): T {
   return typeof value === 'string' && choices.includes(value as T) ? (value as T) : invalid();
 }
-function array(value: unknown): unknown[] {
-  return Array.isArray(value) && value.length <= 10_000 ? value : invalid();
+function array(value: unknown, max = 10_000): unknown[] {
+  return Array.isArray(value) && value.length <= max ? value : invalid();
 }
 function envelope(raw: unknown, run: NativeRunSummary, spaceId: string) {
   const value = object(raw),
@@ -114,8 +116,38 @@ export function readConversationFrame(
     return { type: 'status', status: oneOf(value.status, ['idle', 'running']) };
   if (value.type === 'gap') return { type: 'gap', after: number(value.after, -1) };
   if (value.type !== 'assistant-stream') invalid();
-  const frame = object(value.frame),
-    common = { attemptId: text(frame.attemptId, 1000), revision: number(frame.revision) };
+  const frame = object(value.frame);
+  if (frame.type === 'snapshot') {
+    const active = frame.activeAttempt === undefined ? undefined : object(frame.activeAttempt);
+    const toolNames = active ? array(active.toolNames, 128).map((name) => text(name)) : [];
+    if (
+      new Set(toolNames).size !== toolNames.length ||
+      toolNames.some((name) => /[\u0000-\u001f\u007f]/u.test(name))
+    )
+      invalid();
+    const snapshot = {
+      type: 'assistant-stream' as const,
+      frame: {
+        type: 'snapshot' as const,
+        revision: number(frame.revision),
+        ...(active
+          ? {
+              activeAttempt: {
+                attemptId: text(active.attemptId, 1000),
+                startedAfterSeq: number(active.startedAfterSeq, -1),
+                nextIndex: number(active.nextIndex),
+                text: text(active.text, 262_144, 0),
+                toolNames,
+              },
+            }
+          : {}),
+      },
+    };
+    // The original public frame budget excludes the transport's target/session envelope.
+    if (new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > 262_144) invalid();
+    return snapshot;
+  }
+  const common = { attemptId: text(frame.attemptId, 1000), revision: number(frame.revision) };
   if (frame.type === 'start') return { type: value.type, frame: { type: 'start', ...common } };
   const index = number(frame.index);
   if (frame.type === 'chunk') {
