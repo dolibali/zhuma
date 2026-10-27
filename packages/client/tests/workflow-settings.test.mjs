@@ -276,6 +276,84 @@ test(
   },
 );
 test(
+  'workflow settings DOM: running and draining workflows can open original revocation without opening execution settings or starting again',
+  dom,
+  async (t) => {
+    for (const state of ['running', 'stopping']) {
+      const active = {
+        ...view,
+        state,
+        planStarted: true,
+        activeRunCount: 1,
+        intent: { intentId: 'intent', generation: 1, version: 1, concurrent: 2 },
+        selection: {
+          model: { provider: 'contract', model: 'model', maxTokens: 4096 },
+          workspace: { kind: 'local', id: 'workspace' },
+        },
+      };
+      let revoked = false,
+        reads = 0;
+      const h = await mount(t, WorkflowControls, {
+        target,
+        api: {
+          read: async () => {
+            reads++;
+            return active;
+          },
+          options: () => assert.fail('management must not open execution configuration'),
+          start: () => assert.fail(),
+          resume: () => assert.fail(),
+          stop: () => assert.fail(),
+        },
+        workspaceApprovals: {
+          location,
+          api: {
+            context: async () => ({ accountName: 'chen', projectName: '订单中心' }),
+            options: async () => ({
+              available: true,
+              directories: [],
+              approvals: [
+                {
+                  id: 'approval',
+                  workspaceId: 'workspace',
+                  generation: revoked ? 2 : 1,
+                  status: revoked ? 'revoked' : 'approved',
+                  access: revoked ? null : 'read',
+                  publish: [],
+                },
+              ],
+            }),
+            revoke: async (input, signal) => {
+              assert.deepEqual(
+                { ...input, requestId: 'same-command-key' },
+                {
+                  ...location,
+                  approvalId: 'approval',
+                  expectedGeneration: 1,
+                  requestId: 'same-command-key',
+                },
+              );
+              assert.equal(typeof input.requestId, 'string');
+              assert.equal(signal.aborted, false);
+              revoked = true;
+            },
+          },
+        },
+      });
+      assert.equal(button(h, '管理目录授权').disabled, false);
+      assert.equal(h.container.querySelectorAll('select').length, 0);
+      await click(button(h, '管理目录授权'));
+      assert.equal(h.container.querySelectorAll('dialog').length, 1);
+      await click(button(h, '撤销'));
+      assert.equal(revoked, true);
+      assert.ok(reads >= 2, 'original workflow fact is refreshed after revocation');
+      await click(button(h, '返回工作流'));
+      assert.equal(document.activeElement, button(h, '管理目录授权'));
+      assert.equal(h.container.querySelectorAll('select').length, 0);
+    }
+  },
+);
+test(
   'settings launcher DOM: binding uses the real owner callback and is released on unmount',
   dom,
   async (t) => {

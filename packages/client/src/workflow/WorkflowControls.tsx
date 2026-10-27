@@ -38,9 +38,11 @@ export function WorkflowControls(props: Props) {
 function Controls({ api, target, onViewChange, workspaceApprovals, openModelSettings }: Props) {
   const directoryId = useId(),
     manageId = useId(),
-    runTriggerId = useId();
+    runTriggerId = useId(),
+    liveManageId = useId();
   const returnToDirectory = useRef(false);
   const returnToRun = useRef(false);
+  const returnToLiveManage = useRef(false);
   const fixedTarget = useRef(target).current;
   const changed = useRef(onViewChange);
   changed.current = onViewChange;
@@ -55,6 +57,12 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
     }
   }, [open, runTriggerId]);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  useEffect(() => {
+    if (!workspaceOpen && returnToLiveManage.current) {
+      returnToLiveManage.current = false;
+      (document.getElementById(liveManageId) ?? document.getElementById(runTriggerId))?.focus();
+    }
+  }, [workspaceOpen, liveManageId, runTriggerId]);
   const [choices, setChoices] = useState<WorkflowOptions>();
   const [modelId, setModelId] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
@@ -226,6 +234,18 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
           onClick={stop}
         >
           停止工作流
+        </Button>
+      )}
+      {workspaceApprovals && view && ['running', 'stopping'].includes(view.state) && !open && (
+        <Button
+          id={liveManageId}
+          variant="quiet"
+          onClick={() => {
+            returnToLiveManage.current = true;
+            setWorkspaceOpen(true);
+          }}
+        >
+          管理目录授权
         </Button>
       )}
       <Button variant="quiet" disabled={loading || command.pending} onClick={() => void refresh()}>
@@ -419,8 +439,8 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
           api={workspaceApprovals.api}
           location={workspaceApprovals.location}
           close={() => setWorkspaceOpen(false)}
-          returnLabel="返回运行设置"
-          changed={() => refresh(true)}
+          returnLabel={open ? '返回运行设置' : '返回工作流'}
+          changed={() => refresh(open)}
         />
       )}
     </div>
