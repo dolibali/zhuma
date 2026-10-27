@@ -144,7 +144,9 @@ test('original SDK bridge: Stop during actual resource adoption fences admission
 
 test('original SDK bridge: copied genuine claim cannot reserve, drive a model or poison the later original claim', async (t) => {
   const h = await setup(t, { file: false });
-  h.bridge.consumeClaim(h.d.request, { ...h.claim });
+  assert.throws(() => h.bridge.consumeClaim(h.d.request, { ...h.claim }), {
+    code: 'workflow-authority-denied',
+  });
   await h.bridge.whenIdle();
   assert.equal(readExecutionReviewState(h.d.read())?.attempts.length ?? 0, 0);
   assert.equal(h.adapter.requests.length, 0);
@@ -152,6 +154,38 @@ test('original SDK bridge: copied genuine claim cannot reserve, drive a model or
   await h.waitFor(() => h.d.read().command.status === 'completed');
   await h.bridge.whenIdle();
   assert.equal(h.d.read().rounds[0].ballots.length, 1);
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+});
+
+test('original SDK bridge: a copied claim immediately followed by its original cannot occupy the original reservation', async (t) => {
+  let preparations = 0;
+  const h = await setup(t, {
+    file: false,
+    afterPreparation() {
+      preparations++;
+    },
+  });
+  const copied = { ...h.claim };
+  assert.equal(copied.check(), undefined, 'a borrowed callback still passes its own check');
+  let rejected;
+  try {
+    h.bridge.consumeClaim(h.d.request, copied);
+  } catch (error) {
+    rejected = error;
+  }
+  // No await or idle drain between the copied claim and the genuine original.
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  assert.equal(rejected?.code, 'workflow-authority-denied');
+  await h.waitFor(() => h.d.read().command.status === 'completed');
+  await h.bridge.whenIdle();
+  const state = readExecutionReviewState(h.d.read());
+  assert.equal(preparations, 1, 'the copy must not reach Host preparation');
+  assert.equal(state.attempts.length, 1);
+  assert.equal(state.attempts[0].resources, 'settled');
+  assert.equal(h.d.read().rounds[0].ballots.length, 1);
+  assert.equal(h.d.read('consume').command.status, 'ready');
+  assert.equal(h.adapter.requests.length, 2);
   assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
 });
 

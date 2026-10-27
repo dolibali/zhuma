@@ -1204,6 +1204,13 @@ export class ExecutionService {
     return this.workflows().claim(request, body);
   }
 
+  /** Host checks original claim/request identity before reserving local work.
+   * A copied claim's borrowed check closure is not an authority check. */
+  assertWorkflowExecutionClaim(request: MemberRequest, claim: WorkflowExecutionClaim): undefined {
+    this.workflows().assertClaim(request, claim);
+    return undefined;
+  }
+
   private workflows(): ExecutionWorkflowIntents {
     const host = this.requireRunHost();
     const migrationDrain = host.migrationDrain;
