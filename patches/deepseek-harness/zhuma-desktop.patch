@@ -11,6 +11,63 @@ index 0682e6e9..3af33c8b 100644
    readonly directories: {
      readonly output: string
    }
+diff --git a/apps/desktop/scripts/desktop-build-version.mjs b/apps/desktop/scripts/desktop-build-version.mjs
+index bddf4ca..4ecbe62 100644
+--- a/apps/desktop/scripts/desktop-build-version.mjs
++++ b/apps/desktop/scripts/desktop-build-version.mjs
+@@ -28,6 +28,9 @@ import { parse } from 'semver'
+ /** Environment variable that carries the build version through one packaging and upload run. */
+ export const DESKTOP_BUILD_VERSION_ENV = 'DSH_DESKTOP_BUILD_VERSION'
+ 
++/** Explicit version of the independent product; the SDK manifest remains the runtime version. */
++export const DESKTOP_PRODUCT_VERSION_ENV = 'ZHUMA_DESKTOP_PRODUCT_VERSION'
++
+ /** Prerelease field that opens a test build's suffix on a stable product version. */
+ const STABLE_TEST_FIELD = 'test'
+ 
+@@ -47,6 +50,17 @@ function parseVersion(version, label) {
+   return parsed
+ }
+ 
++/**
++ * Resolve the independent product version without changing the SDK runtime manifest.
++ * @param {NodeJS.ProcessEnv} env - The owned packaging wrapper's explicit version.
++ * @param {string} runtimeVersion - Unmodified SDK version, used by ordinary SDK builds.
++ * @returns {string} The product version validated by the original strict semver parser.
++ */
++export function resolveDesktopProductVersion(env, runtimeVersion) {
++  const productVersion = env[DESKTOP_PRODUCT_VERSION_ENV]
++  return productVersion === undefined ? runtimeVersion : parseVersion(productVersion, 'product version').version
++}
++
+ /**
+  * The prerelease fields every build version for one product version starts with.
+  * @param {import('semver').SemVer} product - Parsed product version.
+@@ -87,6 +101,7 @@ export function validateDesktopBuildVersion(buildVersion, productVersion) {
+  * @returns {string} The build version when one is present, otherwise the product version.
+  */
+ export function resolveDesktopBuildVersion(env, productVersion) {
++  productVersion = resolveDesktopProductVersion(env, productVersion)
+   const buildVersion = env[DESKTOP_BUILD_VERSION_ENV]?.trim()
+   if (buildVersion === undefined || buildVersion === '') return productVersion
+   return validateDesktopBuildVersion(buildVersion, productVersion)
+diff --git a/apps/desktop/scripts/desktop-build-version.d.mts b/apps/desktop/scripts/desktop-build-version.d.mts
+index 969b601..10e0e7c 100644
+--- a/apps/desktop/scripts/desktop-build-version.d.mts
++++ b/apps/desktop/scripts/desktop-build-version.d.mts
+@@ -1,6 +1,12 @@
+ /** Environment variable that carries the build version through one packaging and upload run. */
+ export const DESKTOP_BUILD_VERSION_ENV: 'DSH_DESKTOP_BUILD_VERSION'
+ 
++/** Explicit independent product version; absent means the SDK runtime version. */
++export const DESKTOP_PRODUCT_VERSION_ENV: 'ZHUMA_DESKTOP_PRODUCT_VERSION'
++
++/** Resolve the independent product version through the original strict semver parser. */
++export function resolveDesktopProductVersion(env: NodeJS.ProcessEnv, runtimeVersion: string): string
++
+ /**
+  * Validate a build version against the product version it extends.
+  * @param buildVersion - Version this build publishes.
 diff --git a/apps/desktop/scripts/desktop-build-version-discovery.ts b/apps/desktop/scripts/desktop-build-version-discovery.ts
 index 68291ca3..db3ed424 100644
 --- a/apps/desktop/scripts/desktop-build-version-discovery.ts
@@ -163,9 +220,27 @@ index 4ba0fd12..00adcdfd 100644
    const zipApp = join(root, 'zip', basename(appPath))
    const dmgApp = join(root, 'dmg', basename(appPath))
 diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/package-target.ts
-index be2f577e..bf3cee31 100644
+index be2f577..a236a15 100644
 --- a/apps/desktop/scripts/package-target.ts
 +++ b/apps/desktop/scripts/package-target.ts
+@@ -19,7 +19,7 @@ import { macOSDownloadEnvironment, resolveMacOSPackageSettings } from './macos-p
+ import { packagingErrorDetails, packagingStep } from './packaging-step.mjs'
+ import { notarizeMacOS } from './notarize-macos.mjs'
+ import { resolveMacOSNotarizationEnvironment } from './desktop-release-environment.mjs'
+-import { DESKTOP_BUILD_VERSION_ENV, resolveDesktopBuildVersion, validateDesktopBuildVersion } from './desktop-build-version.mjs'
++import { DESKTOP_BUILD_VERSION_ENV, resolveDesktopBuildVersion, resolveDesktopProductVersion, validateDesktopBuildVersion } from './desktop-build-version.mjs'
+ import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts'
+ import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
+ import { requireDesktopToolchain } from './desktop-toolchain-preflight.ts'
+@@ -348,7 +348,7 @@ async function main(): Promise<void> {
+     : loadDesktopPackageEnvironment(target.platform, process.env, APP_ROOT, {
+       unsigned: invocation.unsigned, prepareOnly: invocation.prepareOnly,
+     })
+-  const productVersion = packageVersion(join(APP_ROOT, 'package.json'), 'desktop package')
++  const productVersion = resolveDesktopProductVersion(environment, packageVersion(join(APP_ROOT, 'package.json'), 'desktop package'))
+   // Release settings come from the selected configuration files, so the version this run publishes is an
+   // argument; the environment variable below only carries it to the child processes that build.
+   const buildVersion = await resolveRequestedBuildVersion(invocation, productVersion, environment)
 @@ -401,7 +401,7 @@ async function main(): Promise<void> {
    if (success && target.platform === 'darwin' && !invocation.directory && !invocation.prepareOnly) {
      const paths = desktopTargetBuildPaths(target.name)
