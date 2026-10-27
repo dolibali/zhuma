@@ -58,7 +58,7 @@ const definition = {
   name: NATIVE_REVIEW_TOOL,
   sourceVersion: NATIVE_REVIEW_TOOL_VERSION,
   description:
-    'Declare one independent review of the Host-bound fixed target. Submit approve, request-changes or comment with a nonempty rationale (at most 100000 characters), at most 50 byte-range anchors and 1–16 unique read references returned by successful read_review_target calls in this review Run. Anchors must be within those actual returned ranges. Do not claim the whole target was read from a partial manifest. Unsupported required material prevents a decision; comment records an opinion and leaves the review obligation pending. Supply no actor, reviewer, round, target, permission or read-proof claim. This ends the native turn, not the review round: the Host separately authenticates reads, completion cut and original writer retirement before the original Service may record an idempotent ballot. Do not issue further work or tools after declaration.',
+    'Declare one independent review of the Host-bound fixed target. Submit approve, request-changes or comment with a nonempty rationale (at most 100000 characters), at most 50 byte-range anchors and 1–16 unique read references returned by successful read_review_target calls in this review Run. The entire argument JSON is limited to 120000 UTF-8 bytes, including syntax, escaping and whitespace. Its JSON arguments field plus a 16384-byte reserved envelope must fit the unchanged 262144-byte public frame. The Host rejects over-budget declarations before intent/ACK without truncation. Anchors must be within those actual returned ranges. Do not claim the whole target was read from a partial manifest. Unsupported required material prevents a decision; comment records an opinion and leaves the review obligation pending. Supply no actor, reviewer, round, target, permission or read-proof claim. This ends the native turn, not the review round: the Host separately authenticates reads, completion cut and original writer retirement before the original Service may record an idempotent ballot. Do not issue further work or tools after declaration.',
   parameters: {
     type: 'object',
     additionalProperties: false,
@@ -67,7 +67,8 @@ const definition = {
       conclusion: { type: 'string', enum: [...REVIEW_ACTIONS] },
       rationale: {
         type: 'string',
-        description: 'Nonempty review reasoning, at most 100000 characters.',
+        description:
+          'Nonempty review reasoning, at most 100000 characters and within the total 120000-byte UTF-8 JSON argument budget.',
       },
       anchors: {
         type: 'array',

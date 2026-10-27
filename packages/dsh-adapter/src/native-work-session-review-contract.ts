@@ -25,6 +25,9 @@ export const NATIVE_REVIEW_READ_TOOL = 'read_review_target';
 export const NATIVE_REVIEW_READ_TOOL_VERSION = 'zhuma-native-review-read@1';
 export const NATIVE_REVIEW_LIMITS = Object.freeze({
   rationaleCharacters: NATIVE_RESULT_LIMITS.textCharacters,
+  argumentBytes: 120_000,
+  publicFrameBytes: 262_144,
+  frameEnvelopeBytes: 16_384,
   anchors: 50,
   reads: 16,
   readBytes: 65_536,
@@ -119,7 +122,19 @@ export const nativeReviewAnchorSchema = z
     length: natural.min(1).max(NATIVE_REVIEW_LIMITS.readBytes),
   })
   .refine((value) => Number.isSafeInteger(value.offset + value.length));
-export const nativeReviewContentSchema = z
+const withinArgumentBudget = (serialized: string): boolean =>
+  Buffer.byteLength(serialized, 'utf8') <= NATIVE_REVIEW_LIMITS.argumentBytes &&
+  Buffer.byteLength(JSON.stringify({ arguments: serialized }), 'utf8') +
+    NATIVE_REVIEW_LIMITS.frameEnvelopeBytes <=
+    NATIVE_REVIEW_LIMITS.publicFrameBytes;
+const serializedArguments = (raw: unknown): string | undefined => {
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return undefined;
+  }
+};
+const reviewContentBodySchema = z
   .strictObject({
     conclusion: z.enum(REVIEW_ACTIONS),
     rationale: z.string().trim().min(1).max(NATIVE_REVIEW_LIMITS.rationaleCharacters),
@@ -130,7 +145,32 @@ export const nativeReviewContentSchema = z
     if (new Set(value.evidenceRefs).size !== value.evidenceRefs.length)
       ctx.addIssue({ code: 'custom', message: 'Duplicate read reference.' });
   });
+/** Check the original value before trim/normalization. A declaration may fit
+ * the character budget while its UTF-8/JSON escaping exceeds the frame budget. */
+export const nativeReviewContentSchema = z.preprocess((raw, ctx) => {
+  const serialized = serializedArguments(raw);
+  if (serialized === undefined || !withinArgumentBudget(serialized)) {
+    ctx.addIssue({ code: 'custom', message: 'Invalid or over-budget review arguments.' });
+    return z.NEVER;
+  }
+  return raw;
+}, reviewContentBodySchema);
 export type NativeReviewContent = z.infer<typeof nativeReviewContentSchema>;
+/** callArguments is original SDK source text supplied by the Host, not a model
+ * field. The actual runtime must call this before persisting an intent or ACK. */
+export function parseNativeReviewArguments(
+  raw: unknown,
+  callArguments?: string,
+): NativeReviewContent {
+  if (callArguments !== undefined && !withinArgumentBudget(callArguments))
+    throw new NativeReviewError('output-too-large');
+  const serialized = serializedArguments(raw);
+  if (serialized === undefined) throw new NativeReviewError('invalid-arguments');
+  if (!withinArgumentBudget(serialized)) throw new NativeReviewError('output-too-large');
+  const parsed = nativeReviewContentSchema.safeParse(raw);
+  if (!parsed.success) throw new NativeReviewError('invalid-arguments');
+  return parsed.data;
+}
 export const nativeReviewRunSourceSchema = z
   .strictObject({
     context: nativeReviewContextSchema,

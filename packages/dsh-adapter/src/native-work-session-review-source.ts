@@ -1,7 +1,7 @@
 import { canonicalPayload } from '@zhuma/agent-core';
 import {
   NativeReviewError,
-  nativeReviewContentSchema,
+  parseNativeReviewArguments,
   nativeReviewReadManifestSchema,
   nativeReviewRunSourceSchema,
   nativeReviewContentDigest,
@@ -25,8 +25,7 @@ export function validateNativeReviewEvidence(
   readonly readManifestDigest: string;
   readonly digest: string;
 } {
-  const parsedContent = nativeReviewContentSchema.safeParse(rawContent);
-  if (!parsedContent.success) throw new NativeReviewError('invalid-arguments');
+  const content = parseNativeReviewArguments(rawContent);
   const parsedManifest = nativeReviewReadManifestSchema.safeParse(rawManifest);
   if (!parsedManifest.success) {
     if (
@@ -42,8 +41,7 @@ export function validateNativeReviewEvidence(
   const parsedSource = nativeReviewRunSourceSchema.safeParse(rawSource);
   if (!parsedSource.success || !Number.isSafeInteger(completionCallSeq) || completionCallSeq < 0)
     throw new NativeReviewError('review-read-mismatch');
-  const content = parsedContent.data,
-    readManifest = parsedManifest.data;
+  const readManifest = parsedManifest.data;
   const origin = (source: NativeReviewRunSource) =>
     canonicalPayload({
       context: source.context,
