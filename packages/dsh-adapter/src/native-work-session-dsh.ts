@@ -9,6 +9,7 @@ import {
   type SessionHandle,
 } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
+import { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
 import { assertNativeInputReadOwner } from './native-work-session.js';
 import {
   NativeSessionPurpose,
@@ -55,6 +56,36 @@ const MAX_READERS = 8;
 const MAX_OBSERVERS = 16;
 const STOP_MS = 5_000;
 const READ_MS = 15_000;
+
+/** Shadow only the pinned Web deployment's development guidance in this Agent scope. */
+function configureNativeWorkPrompt(ctx: Context): void {
+  ctx.systemPrompt.section({
+    name: PERSONA_PREFIX_SECTION,
+    order: ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
+    text: '你在 Zhuma 中处理当前工作节点。遵循固定节点目标、所选专家指令、固定输入清单和实际授权工具，以及平台的安全与交付约束。',
+    interpolate: false,
+  });
+  for (const [name, order] of [
+    ['harness:source', 'HARNESS_SOURCE'],
+    ['app:web-surface', 'WEB_SURFACE'],
+  ] as const) {
+    // Do not suppress all runtime context or replace the complete prompt:
+    // workspace/security, selected Skill/MCP guidance and attribution remain.
+    ctx.systemPrompt.section({
+      name,
+      order: ctx.systemPrompt.getSectionOrder(order),
+      text: '',
+      interpolate: false,
+    });
+    ctx.systemPrompt.context({
+      name,
+      order: ctx.systemPrompt.getContextOrder(order),
+      text: '',
+      interpolate: false,
+    });
+  }
+}
+
 interface ResourceEpoch {
   readonly owner: DshNativeWorkRuntime;
   readonly controller: AbortController;
@@ -463,6 +494,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       assertNativeInputReadOwner(binding.nativeSessionId, this);
       // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
       agentCtx.tools.presentAs('native');
+      configureNativeWorkPrompt(agentCtx);
       const composition = await this.options.compose(agentCtx, structuredClone(binding), grant);
       signal.throwIfAborted();
       this.current(grant);
