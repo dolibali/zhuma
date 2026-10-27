@@ -84,7 +84,7 @@ zhuma/
 
 ## 桌面与发行
 
-桌面复用上游 `apps/desktop/`。品牌、插件预装及发行补丁在 `distribution/`、`branding/` 与补丁层维护；在 `.build/` 临时构建树应用，不直接长期修改子模块。当前已有构建集中于 macOS arm64；Windows、Linux 不计为已验证，正式签名、公证及最终发布仍有独立门槛。
+桌面复用上游 `apps/desktop/`。品牌、插件预装及发行补丁在 `distribution/`、`branding/` 与补丁层维护；在 `.build/` 临时构建树应用，不直接长期修改子模块。当前已有构建集中于 macOS arm64；Windows、Linux 不计为已验证。Developer ID 签名、公证和自动更新尚未提供；正式 v1.0.0 的支持平台、安装限制、签名状态与必要验收按最终发行说明核对。
 
 桌面构建使用可验证的上游补丁和独立临时 Git worktree，避免修改固定子模块。桌面不强制显示 DeepSeek 平台账号欢迎界面；Zhuma 成员登录与供应商模型凭据各走自己的正常入口。macOS 安装包构建指令、签名限制和调试说明见 [桌面发行指南](distribution/desktop/README.md)。
 
