@@ -245,6 +245,210 @@ function runningOptions(current = summary) {
     start: { kind: 'unavailable', message: 'Held' },
   };
 }
+function heldRead() {
+  const result = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  let signal;
+  return {
+    entered: entered.promise,
+    get signal() {
+      return signal;
+    },
+    resolve: result.resolve,
+    async wait(current) {
+      signal = current;
+      current.throwIfAborted();
+      const abort = () => result.reject(current.reason);
+      current.addEventListener('abort', abort, { once: true });
+      entered.resolve();
+      try {
+        return await result.promise;
+      } finally {
+        current.removeEventListener('abort', abort);
+      }
+    },
+  };
+}
+
+test('Run refresh priority contract: a passive tick cannot abort a foreground catalog or history read or discard the current prefix', async (t) => {
+  for (const stage of ['options', 'history']) {
+    const held = heldRead(),
+      trace = [];
+    let armed = false;
+    const h = setup({
+      async options(_target, signal) {
+        trace.push('options');
+        if (armed && stage === 'options') {
+          armed = false;
+          return held.wait(signal);
+        }
+        return runningOptions();
+      },
+      async read() {
+        trace.push('read');
+        return summary;
+      },
+      async history(_target, _run, after, signal) {
+        trace.push('history');
+        if (armed && stage === 'history') {
+          armed = false;
+          return held.wait(signal);
+        }
+        return { messages: [], nextAfter: after };
+      },
+      async *observe(_run, _after, signal) {
+        yield {
+          type: 'assistant-stream',
+          frame: {
+            type: 'snapshot',
+            revision: 1,
+            activeAttempt: {
+              attemptId: 'attempt',
+              startedAfterSeq: -1,
+              nextIndex: 1,
+              text: 'current visible prefix',
+              toolNames: [],
+            },
+          },
+        };
+        await new Promise((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', resolve, { once: true });
+        });
+      },
+    });
+    t.after(() => h.controller.dispose());
+    await h.controller.refresh();
+    await new Promise(setImmediate);
+    armed = true;
+    const manual = h.controller.refresh().catch((error) => error);
+    await held.entered;
+    const before = [...trace];
+    await h.controller.refresh(false); // The original workspace timer's action, without a real timer.
+    assert.equal(held.signal.aborted, false);
+    assert.deepEqual(trace, before, 'passive polling does not issue a competing read');
+    assert.equal(h.controller.getSnapshot().busy, 'refresh');
+    held.resolve(stage === 'options' ? runningOptions() : { messages: [], nextAfter: -1 });
+    assert.equal(await manual, undefined);
+    assert.equal(h.controller.getSnapshot().view.kind, 'ready');
+    assert.equal(h.controller.getSnapshot().view.messages[0].text, 'current visible prefix');
+    assert.equal(h.controller.getSnapshot().error, undefined);
+    assert.equal(h.calls.some(Array.isArray), false, 'no execution command is sent');
+  }
+});
+
+test('Run refresh priority contract: passive reads do not cancel each other and an explicit refresh still replaces a pending passive read', async (t) => {
+  const held = heldRead();
+  let armed = false,
+    optionsCalls = 0;
+  const h = setup({
+    async options() {
+      optionsCalls++;
+      return runningOptions();
+    },
+    async history(_target, _run, after, signal) {
+      if (armed) {
+        armed = false;
+        return held.wait(signal);
+      }
+      return { messages: [], nextAfter: after };
+    },
+  });
+  t.after(() => h.controller.dispose());
+  await h.controller.refresh();
+  armed = true;
+  const passive = h.controller.refresh(false).catch((error) => error);
+  await held.entered;
+  await h.controller.refresh(false);
+  assert.equal(held.signal.aborted, false);
+  await h.controller.refresh();
+  assert.equal((await passive).name, 'AbortError');
+  assert.equal(optionsCalls, 2, 'explicit refresh still reads the catalog');
+  assert.equal(h.controller.getSnapshot().view.kind, 'ready');
+  assert.equal(h.calls.some(Array.isArray), false);
+});
+
+test('Run refresh priority contract: genuine catalog and history failures still reject and publish the unavailable view', async (t) => {
+  for (const stage of ['options', 'history']) {
+    const failure = Object.assign(new Error('Synthetic read failure'), { code: 'unavailable' });
+    let armed = false;
+    const h = setup({
+      async options() {
+        if (armed && stage === 'options') throw failure;
+        return runningOptions();
+      },
+      async history(_target, _run, after) {
+        if (armed && stage === 'history') throw failure;
+        return { messages: [], nextAfter: after };
+      },
+    });
+    t.after(() => h.controller.dispose());
+    await h.controller.refresh();
+    armed = true;
+    await assert.rejects(h.controller.refresh(), (error) => error === failure);
+    assert.equal(h.controller.getSnapshot().view.kind, 'unavailable');
+    assert.match(h.controller.getSnapshot().view.message, /暂时无法读取/);
+    assert.equal(h.controller.getSnapshot().busy, undefined);
+    assert.equal(h.calls.some(Array.isArray), false);
+  }
+});
+
+test('Run refresh priority contract: Stop, a replacement generation and scope disposal still cancel an in-flight foreground read', async (t) => {
+  for (const action of ['stop', 'generation', 'dispose']) {
+    const held = heldRead();
+    let armed = false,
+      current = summary,
+      stops = 0;
+    const h = setup({
+      async options(_target, signal) {
+        if (armed) {
+          armed = false;
+          return held.wait(signal);
+        }
+        return runningOptions(current);
+      },
+      async read() {
+        return current;
+      },
+      async stop() {
+        stops++;
+        current = { ...summary, status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' };
+      },
+    });
+    t.after(() => h.controller.dispose());
+    await h.controller.refresh();
+    armed = true;
+    const old = h.controller.refresh().catch((error) => error);
+    await held.entered;
+    if (action === 'stop') await h.controller.stop();
+    else if (action === 'generation') {
+      current = {
+        ...summary,
+        runId: 'replacement',
+        generation: 2,
+        segmentId: 'replacement-segment',
+      };
+      await h.controller.refresh();
+    } else h.controller.dispose();
+    assert.equal(held.signal.aborted, true);
+    assert.equal((await old).name, 'AbortError');
+    const snapshot = JSON.stringify(h.controller.getSnapshot());
+    held.resolve(runningOptions(summary));
+    await new Promise(setImmediate);
+    assert.equal(
+      JSON.stringify(h.controller.getSnapshot()),
+      snapshot,
+      'late old catalog cannot replace the current scope/generation',
+    );
+    if (action === 'stop') {
+      assert.equal(stops, 1);
+      assert.equal(h.controller.getSnapshot().view.run.stopPhase, 'confirmed');
+    } else if (action === 'generation')
+      assert.equal(h.controller.getSnapshot().view.run.generation, 2);
+    else await assert.rejects(h.controller.refresh(), { name: 'AbortError' });
+  }
+});
+
 test('Run view contract: a deferred send cannot block independent Stop or clear its busy/identity on late success', async () => {
   const sent = Promise.withResolvers(),
     stopped = Promise.withResolvers();

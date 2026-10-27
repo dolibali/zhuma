@@ -2,7 +2,7 @@
  * The separate artifact case below uses actual Host/member HTTP/JSON and no plan seed. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { emptyWorkbench } from '@zhuma/agent-core';
+import { createExecutionHandoff, emptyWorkbench } from '@zhuma/agent-core';
 import { WorkbenchService } from '../dist/workbench-service.js';
 import {
   openHostTeamCatalog,
@@ -394,7 +394,7 @@ test(
                   reviewRequired: true,
                   reviewerIds: ['zhuma-interaction-review'],
                   dependsOn: [],
-                  skillIds: [],
+                  skillIds: ['work-planning'],
                   mcpIds: [],
                   input: '任务目标',
                   output: '工作计划',
@@ -409,6 +409,12 @@ test(
       await command({ type: 'confirm-task', taskId: 'public-task' });
       const plan = view.state.appliedPlans[0];
       assert.equal(plan.task.workflows[0].nodes[0].assigneeId, 'zhuma-work-planning');
+      assert.deepEqual(plan.task.workflows[0].nodes[0].skillIds, ['work-planning']);
+      const handoff = createExecutionHandoff(
+        { taskId: plan.task.id, planId: plan.id, revision: plan.revision },
+        view.state,
+      );
+      assert.deepEqual(handoff.task.workflows[0].nodes[0].skillIds, ['work-planning']);
       assert.deepEqual(plan.assets.map((item) => item.id).sort(), [
         'interaction-review',
         'work-planning',

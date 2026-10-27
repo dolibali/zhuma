@@ -18,6 +18,7 @@ import { apply as applyExecution, inject as executionInject } from './execution-
 import { openHostRunHttp } from './host-run-http.js';
 import { openHostRunOwner } from './host-run-owner.js';
 import { openHostWorkflowHttp } from './host-workflow-http.js';
+import { openHostWorkspaceApprovalHttp } from './host-workspace-approval-http.js';
 import { hostLocalExecutionSchema } from './host-run-workspaces.js';
 import { hostTeamCatalogGrantsSchema } from './host-team-catalog.js';
 import { openHostLocalSetup } from './host-local-setup.js';
@@ -156,6 +157,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
   let workflowHttp: ReturnType<typeof openHostWorkflowHttp> | undefined;
+  let workspaceApprovalHttp: ReturnType<typeof openHostWorkspaceApprovalHttp> | undefined;
   let localSetup: ReturnType<typeof openHostLocalSetup> | undefined;
   let localSetupHttp: ReturnType<typeof openHostLocalSetupHttp> | undefined;
   let runClosing: Promise<void> | undefined;
@@ -181,16 +183,20 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       );
     const httpClose = runHttp?.close();
     const workflowClose = workflowHttp?.close();
-    return (runClosing = Promise.allSettled([nativeClose, httpClose, workflowClose]).then(
-      (results) => {
-        const failed = results.filter((item) => item.status === 'rejected');
-        if (failed.length)
-          throw new AggregateError(
-            failed.map((item) => item.reason),
-            'Run bridge close failed.',
-          );
-      },
-    ));
+    const workspaceClose = workspaceApprovalHttp?.close();
+    return (runClosing = Promise.allSettled([
+      nativeClose,
+      httpClose,
+      workflowClose,
+      workspaceClose,
+    ]).then((results) => {
+      const failed = results.filter((item) => item.status === 'rejected');
+      if (failed.length)
+        throw new AggregateError(
+          failed.map((item) => item.reason),
+          'Run bridge close failed.',
+        );
+    }));
   }
   const beforeClose = async () => {
     closed = true;
@@ -252,6 +258,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   if (closed) return;
   if (config.deploymentMode === 'multi-member') {
+    workspaceApprovalHttp = openHostWorkspaceApprovalHttp(ctx, {
+      current: () => runOwner?.workspaceApprovalOperations,
+      limits: { bodyBytes: config.bodyBytes, bodyTimeoutMs: config.bodyTimeoutMs },
+    });
     workflowHttp = openHostWorkflowHttp(ctx, {
       current: () => runOwner?.workflowOperations,
       limits: { bodyBytes: config.bodyBytes, bodyTimeoutMs: config.bodyTimeoutMs },

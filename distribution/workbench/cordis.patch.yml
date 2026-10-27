@@ -6,6 +6,11 @@
   disabled: true
 - id: ui-settings-account
   disabled: true
+- id: session-log-deepseek
+  config:
+    # Product default: do not contribute session logs to model requests.
+    # Keep the official volatile setting available for an explicit user choice.
+    enabled: false
 - id: ui-settings-models
   config:
     # Manual work stays available before a model is configured. The Models

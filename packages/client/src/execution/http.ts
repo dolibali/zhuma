@@ -131,6 +131,10 @@ export function createExecutionHttpApi(
       }
       const envelope: unknown = await response.json();
       requireCurrent(signal);
+      if (endpoint === 'zhuma-exec/project-artifacts' || endpoint === 'zhuma-exec/task-progress') {
+        await verifySpace(signal, callerSignal);
+        requireCurrent(signal);
+      }
       if (
         !envelope ||
         typeof envelope !== 'object' ||
@@ -173,6 +177,8 @@ export function createExecutionHttpApi(
     },
   };
   const api = createExecutionApi(rpc, scope?.spaceId);
+  const projectArtifacts = api.projectArtifacts;
+  const taskProgress = api.taskProgress;
   async function observed<T>(
     request: Promise<T>,
     signal?: AbortSignal,
@@ -213,6 +219,30 @@ export function createExecutionHttpApi(
     );
   }
   return {
+    ...(taskProgress
+      ? {
+          taskProgress: {
+            read: (
+              query: Parameters<NonNullable<ExecutionApi['taskProgress']>['read']>[0],
+              signal: AbortSignal,
+            ) => memberRead(taskProgress.read(query, signal), signal, false),
+          },
+        }
+      : {}),
+    ...(projectArtifacts
+      ? {
+          projectArtifacts: {
+            list: (
+              query: Parameters<NonNullable<ExecutionApi['projectArtifacts']>['list']>[0],
+              signal: AbortSignal,
+            ) => observed(projectArtifacts.list(query, signal), signal),
+            content: (
+              query: Parameters<NonNullable<ExecutionApi['projectArtifacts']>['content']>[0],
+              signal: AbortSignal,
+            ) => observed(projectArtifacts.content(query, signal), signal),
+          },
+        }
+      : {}),
     ...(scope && expectedActorId
       ? {
           files: createExecutionFilesApi(fetcher, scope.spaceId, {

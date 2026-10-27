@@ -6,6 +6,7 @@ import ToolRuntime, { type ToolDefinition } from '@deepseek-ai/dsh-tools';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import { scopeOf } from '@deepseek-ai/dsh-scope';
 import { canonicalPayload } from '@zhuma/agent-core';
+import { z } from 'zod';
 import {
   readExecutionRunComposition,
   type FrozenExecutionRunComposition,
@@ -53,6 +54,13 @@ export interface ExecutionRunResourceProducer {
   /** Called ONLY inside unpublished Agent compose, after durable Run admission. */
   openMcp(resource: FrozenMcpResource, signal: AbortSignal): Promise<ExecutionMcpConnectionLease>;
 }
+/** Same SDK registration core, with authority supplied by its original purpose owner. */
+export interface ExecutionResourceScopeProducer {
+  readonly sourceVersion: typeof EXECUTION_RESOURCE_SOURCE_VERSION;
+  readonly signal: AbortSignal;
+  assertCurrent(): undefined;
+  openMcp(resource: FrozenMcpResource, signal: AbortSignal): Promise<ExecutionMcpConnectionLease>;
+}
 export interface ExecutionRunResourceAdoption {
   readonly signal: AbortSignal;
   readonly toolAllowlist: readonly string[];
@@ -76,7 +84,23 @@ function assertion(value: unknown): void {
 }
 /** Public official SDK projection. Never serialize the execute closure or Host configuration. */
 export function describeExecutionResourceTool(definition: ToolDefinition): ExecutionResourceTool {
-  const parsed = executionResourceToolSchema.safeParse({
+  return describeResourceTool(definition, executionResourceToolSchema);
+}
+const skillResourceToolSchema = executionResourceToolSchema.extend({ name: z.literal('skill') });
+/** The actual SDK loader is a resource tool, but never an MCP snapshot entry. */
+export function describeExecutionScopedResourceTool(
+  definition: ToolDefinition,
+): ExecutionResourceTool {
+  return describeResourceTool(
+    definition,
+    definition.name === 'skill' ? skillResourceToolSchema : executionResourceToolSchema,
+  );
+}
+function describeResourceTool(
+  definition: ToolDefinition,
+  schema: z.ZodType<ExecutionResourceTool>,
+): ExecutionResourceTool {
+  const parsed = schema.safeParse({
     name: definition.name,
     description: definition.description,
     parameters: definition.parameters,
@@ -94,16 +118,7 @@ export async function registerExecutionRunResources(
   producer: ExecutionRunResourceProducer,
 ): Promise<ExecutionRunResourceAdoption> {
   snapshot = readExecutionRunComposition(snapshot);
-  const scope = scopeOf(context),
-    tools = context.get('tools'),
-    registeredLookup: unknown = tools && Reflect.get(tools, 'getRegistered'),
-    bindSkillRegistry: unknown = Reflect.get(ToolSkill, 'bindSkillRegistry');
   if (
-    !scope ||
-    !tools ||
-    typeof registeredLookup !== 'function' ||
-    typeof bindSkillRegistry !== 'function' ||
-    ![1, 2].includes(snapshot.schemaVersion) ||
     !producer ||
     producer.sourceVersion !== EXECUTION_RESOURCE_SOURCE_VERSION ||
     !(producer.signal instanceof AbortSignal) ||
@@ -117,9 +132,6 @@ export async function registerExecutionRunResources(
       ? snapshot.payload.resources
       : { sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION, skills: [], mcp: [] },
   );
-  const captureMcpClientClose: unknown = Reflect.get(McpClient, 'captureMcpClientClose');
-  if (resources.mcp.length && typeof captureMcpClientClose !== 'function')
-    fail('resources-unavailable');
   if (
     snapshot.schemaVersion === 1 &&
     (snapshot.payload.handoff.skillRefs.length || snapshot.payload.handoff.mcpRefs.length)
@@ -133,6 +145,61 @@ export async function registerExecutionRunResources(
     snapshot.configurationId !== `composition_${executionResourceDigest(snapshot.payload)}`
   )
     fail();
+  const sourceSignal = producer.signal,
+    sourceCheck = producer.assertCurrent,
+    sourceOpen = producer.openMcp;
+  return registerExecutionResourceScope(
+    context,
+    resources,
+    grant,
+    Object.freeze<ExecutionResourceScopeProducer>({
+      sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
+      signal: sourceSignal,
+      assertCurrent() {
+        if (
+          producer.signal !== sourceSignal ||
+          producer.assertCurrent !== sourceCheck ||
+          producer.openMcp !== sourceOpen ||
+          producer.sourceVersion !== EXECUTION_RESOURCE_SOURCE_VERSION
+        )
+          fail('resources-unavailable');
+        assertion(sourceCheck.call(producer, snapshot, binding, grant));
+        return undefined;
+      },
+      openMcp: (resource, signal) => sourceOpen.call(producer, resource, signal),
+    }),
+  );
+}
+
+/** Registers actual providers in the same unpublished SDK scope. This is not a
+ * grant issuer: each purpose must continuously validate its original live grant. */
+export async function registerExecutionResourceScope(
+  context: Context,
+  rawResources: unknown,
+  grant: NativeWorkGrant,
+  producer: ExecutionResourceScopeProducer,
+): Promise<ExecutionRunResourceAdoption> {
+  const scope = scopeOf(context),
+    tools = context.get('tools'),
+    registeredLookup: unknown = tools && Reflect.get(tools, 'getRegistered'),
+    bindSkillRegistry: unknown = Reflect.get(ToolSkill, 'bindSkillRegistry');
+  if (
+    !scope ||
+    !tools ||
+    typeof registeredLookup !== 'function' ||
+    typeof bindSkillRegistry !== 'function' ||
+    !producer ||
+    producer.sourceVersion !== EXECUTION_RESOURCE_SOURCE_VERSION ||
+    !(producer.signal instanceof AbortSignal) ||
+    !(grant?.signal instanceof AbortSignal) ||
+    typeof producer.assertCurrent !== 'function' ||
+    typeof producer.openMcp !== 'function'
+  )
+    fail('resources-unavailable');
+  const resources = readExecutionRunResources(rawResources);
+  const captureMcpClientClose: unknown = Reflect.get(McpClient, 'captureMcpClientClose');
+  if (resources.mcp.length && typeof captureMcpClientClose !== 'function')
+    fail('resources-unavailable');
   const sourceSignal = producer.signal,
     sourceCheck = producer.assertCurrent,
     sourceOpen = producer.openMcp;
@@ -225,7 +292,7 @@ export async function registerExecutionRunResources(
       )
         fail('resources-unavailable');
       grant.assertCurrent('send');
-      assertion(sourceCheck.call(producer, snapshot, binding, grant));
+      assertion(sourceCheck.call(producer));
       for (const [name, definition] of definitions) {
         const actual: unknown = registeredLookup.call(tools, name, scope);
         if (actual !== definition) fail('resources-unavailable');

@@ -46,10 +46,22 @@ Stop 先通过原 Service 验证并撤销准入，再等待在途启动和原 Ru
 
 负责人尚未派发时，节点 Agent 入口显示不可用并指向明确的启动／派发路径。其他参与者的节点入口使用原 Run controller 读取本人有权处理的节点／Run，不能依赖负责人专有的工作流控制投影，也不开放工作流管理权限。节点未派发或授权失败仍由原节点服务拒绝，不猜测 planStarted。读取状态、打开页面、切换视图和重新登录都不会自动执行。执行中的状态刷新只是被动读取，不在 Client 另建调度循环。
 
+## 独立专家评审的资源接入
+
+原工作流桥把同一个可信请求及原 `WorkflowExecutionClaim` 转交原生评审桥。评审桥使用原 Service 的候选、准入、drive、固定读取和原子票；Host 在原 native owner 中按真实 review purpose 分流工作目录与 compose，不另开会话服务或替换 Agent factory。评审采用 text-only 工作目录，仅从固定评审读取工具获得本轮正文／文件；不继承作者的工作区、工具、Skill 或历史。评审分支的容量或未就绪拒绝不会 fence 同一 claim 的作者票。
+
+Host 从原 LLM 目录准备模型配置，从本计划冻结的具名评审专家及其不可变资源包准备 Skill。实际采用持续复核原 D drive、同 C owner 的原 review grant、完整目标／配置和当前包版本，再在同一个未发布 Agent scope 中注册官方 SkillRegistry／ToolSkill。与作者共用 SDK 注册和排空内核，但评审不用作者 composition 或作者 Run 授权。交给评审桥的 allowlist 和描述符来自实际注册的工具，包括真实 Skill loader；元数据资格或 configurationId 文本不等于实际采用、发送或投票权限。
+
+当前正常 Host 尚无可信 MCP 连接租约来源，非空 MCP 配置明确拒绝。不能从资产文本解析凭据、借用全局连接或用描述符宣称 MCP 已加载。原通用 SDK MCP 注册／关闭内核保留，后续消费具名、可撤销的可信连接租约。
+
+Host 关闭必须先 fence 派发，再等待原评审桥的实际 cleanup 和资源 drain，然后关闭结果收集及 native owner。评审 pending／拒绝时保留这些 owner，不通过关闭输入读取来制造成功或与在途结果收集互相等待。普通工作流 Stop 通过原 claim／drive 撤权触发本 scope 清理，不调用全局评审 fence。显式继续时另核原 `reviewResources` 完整 scope，仅对终态或已请求 Stop 的原评审调用真实 cleanup；pending 继续保留恢复门禁，不重发模型或重投票。
+
 ## 验证边界
 
 `--phase host-workflow` 是原发射 Host、原 Service／桥／factory、真实成员 Cookie、JSON／JSONL 与本地脚本模型的定向接缝入口。`host-workflow-admission` 单独覆盖并行与评审门禁、原 metadata／Agent-created 中的 Stop 窗口，以及正常准入后原 Run 的存活和显式停止。精确运行结果、源 SHA、Host 字节与失败证据以对应 PR 为准，不从命令声明推断通过。
 
 `--phase host-workflow-cold` 独立运行旧 Host 写入并关闭与新 OS 进程重新授权／显式继续两阶段，验证读取不隐式收尾、无关／撤销成员及错误空间／版本拒绝、原继续回执幂等、旧分支不重跑、原评审通过后才执行合流与解锁人工提交。使用真实 Host／SDK／JSON／JSONL 与本地脚本模型，不扩张为正式编译 GUI 或供应商验收。
+
+`--phase host-review-resources` 定向验证实际 Host 中独立专家加载所选 Skill、读取固定正文、原子落票和下游，以及未读取内容不投票、运行中关闭等待真实评审 stream。原身份／计划数据和模型响应使用明确隔离夹具，不据此声称正常创建、真实供应商或安装验收已通过。
 
 源码别名 SDK、正式编译包、正常桌面入口、真实供应商和安装验收分别记录。没有完成对应层级验证前，不将本接缝或旧版本证据称为产品验收。文件结果、Agent 评审和多层子任务继续消费各自冻结的原能力，不能由本控制条冒充已经完成。

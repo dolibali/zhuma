@@ -5,8 +5,17 @@
 当前补丁覆盖：
 
 - 桌面名称、应用标识、协议、图标路径和构建产物命名；保留第三方许可。
+- 发行包装器显式传自有根包产品版本 `P`，品牌配置给构建版本 `B`，固定 SDK manifests／runtime 保持原版本 `R`。原版本解析器仍严格校验 `B` 对 `P` 的版本与后缀；未传自有产品版本时沿用 SDK 行为。主打包、构建记录、签名和 electron-builder 共用该解析器；成品 `extraMetadata.version` 仍对真实 SDK manifest `R` 比较并写入 `B`，原 runtime-tree 校验继续期待 `R`。不改第三方 package 版本、不绕过平台校验，不以改名代替应用内版本。
 - 开发版本地工作台入口和公开品牌文字；不伪造模型平台登录状态。
 - macOS 侧栏使用现有浅深主题的不透明背景，移除蓝紫渐变和壁纸叠色。继续使用官方主题服务、原生主题同步和窗口拖动机制。
+
+## 构建来源隐私
+
+固定工具链的 tsdown `0.22.2`／Rolldown `1.1.1` 及 Vite `8.2.2`／Rolldown `1.2.7` 默认会将 CSS 虚拟模块的绝对构建根写入 `//#region`。根 workspace 配置、桌面独立配置（含其 welcome Vite 调用）和 DevTools 的独立 Vite 构建均使用原生 `experimental.attachDebugInfo: 'none'`（分别位于 `inputOptions`／`build.rolldownOptions`）关闭调试标签；不使用 `comments: false`、额外压缩或字符串替换，保留原版权／许可策略、虚拟模块读取与 watch 合同，由编译器生成有效 SourceMap。原 DevTools 的 Oxc 压缩本就不保留内联法律注释，其独立许可文件仍由原生成器输出，本补丁不改变这两项策略。
+
+`desktop:prepare` 将自有只读 `verify-build-source-paths.ts` 复制到隔离 SDK 并纳入原 recipe 摘要。官方构建在原产物摘要写入前检查生成的 JavaScript；运行时复制后在签名、清单及完整性描述前再次检查 SDK 输出。门禁只识别真实单行 region 注释中的绝对路径，包含未知虚拟前缀；字符串、模板、块注释和公开示例不作替换。无生成输出或有残留即失败，不改固定子模块、SourceMap、已签 ASAR 或生产依赖锁。
+
+定向契约为 `node --test packages/dsh-adapter/tests/desktop-build-source-paths.test.mjs`。另将 `ZHUMA_DESKTOP_SOURCE_TOOLCHAIN` 显式指向已安装依赖的固定 SDK，可运行 tsdown、Vite、Vite 原 Oxc 压缩三个离线四类 CSS 虚拟 ID 探针：旧配置确实泄漏，原开关移除标签，法律注释策略、非注释 token、执行结果和有效映射保持；不同构建根下的生成 JS 相同。缺少该工具链时只跳过这三个编译探针，源码／门禁契约仍执行。升级固定工具链须更新并重验探针；最终重封包的 ASAR／DMG 全文件扫描仍须独立完成，契约通过不代表发行隐私已验收。
 
 侧栏修改的独立官方桌面验证、前后截图及未验收项见 [桌面外壳记录](../../docs/review/desktop-shell/README.md)。原生拖窗、真实系统浅色矩阵和安装包不因该记录自动通过。上游若提供可配置的中性侧栏，优先改用其公开配置并删除对应 CSS 补丁。
 

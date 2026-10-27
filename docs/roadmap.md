@@ -1,5 +1,7 @@
 # 实施顺序
 
+用户已批准首个 v1.0.0 集中完成账号／项目任务规划、本地 Zhuma 持续执行（模型／Skill）、固定正文／文件、人工／Agent 评审、下游与项目成果的完整闭环，并独立验真实模型与安装／恢复。非空 MCP、资产／工作流发布版本、批量反馈、复杂子流程、效能统计为后续版本，个人专家直接使用及外部 CLI 的原后置安排不变。以下完整产品队列继续保留范围和退出条件；本次明确后置不计完成，也不要求全部 FR 关闭才能发布首个版本。见 [v1.0.0 范围与验收说明](release-v1.0.md)。
+
 以 [产品能力覆盖账本](product-coverage.md) 保留 FR01–17 的范围、证据基线与退出条件；[总索引 #25](https://github.com/dolibali/zhuma/issues/25)及对应 Issue 是实时阶段、依赖和阻塞的唯一入口。原型主要能力是范围基线，UI/UE 可重做；不能以目录 CRUD、领域契约或布局完善代替用户任务闭环。
 
 任务 → 同一 workspace 持续会话 → 固定产物 → 多人评审的补充范围与分期见[联动方案](architecture/task-session-delivery/development-plan.md)（PR #13 范围、[PR #15](https://github.com/dolibali/zhuma/pull/15) S1 接入分工与 [PR #16](https://github.com/dolibali/zhuma/pull/16) LC-11 同页 CLI 交接均已合入；这只是方案基线）。保留六工具逐一验证、本地专家及项目四入口的范围，按原批次接入，先完成首个正式身份／人工交付／评审切片，再接原生会话和一个外部工具；不等待六工具全部完成才联调。

@@ -20,6 +20,7 @@ import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { createMemberWorkbenchAdapter } from '../workbench/member-adapter.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { createNativeRunApi } from '../run/api.js';
+import type { RegisterWorkspaceDirectory } from '../run/workspace-approvals.js';
 
 function MemberWork({
   fetcher,
@@ -31,6 +32,8 @@ function MemberWork({
   view,
   openWork,
   registerLeaveGuard,
+  registerWorkspaceDirectory,
+  openModelSettings,
 }: {
   fetcher: typeof fetch;
   accountId: string;
@@ -38,6 +41,8 @@ function MemberWork({
   spaceUnavailable(): void;
   lifetime: MemberSpaceLifetime;
   appearance?: AppearanceStore;
+  registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
+  openModelSettings?: (() => void) | undefined;
   view: 'catalog' | 'work';
   openWork?: (() => void) | undefined;
   registerLeaveGuard?:
@@ -102,6 +107,25 @@ function MemberWork({
     [fetcher, accountId, spaceId, view],
   );
   const [refreshKey, setRefreshKey] = useState(0);
+  const projectExecution = useMemo(
+    () =>
+      createExecutionHttpApi(
+        fetcher,
+        () => currentLifetime.current.onUnauthenticated(),
+        accountId,
+        {
+          spaceId,
+          isCurrent: () =>
+            alive.current && currentLifetime.current.isCurrent() && view === 'catalog',
+          onUnavailable: () => currentSpaceUnavailable.current(),
+        },
+      ),
+    [fetcher, accountId, spaceId, view],
+  );
+  const projectContext = useMemo(
+    () => ({ api: projectExecution, spaceId }),
+    [projectExecution, spaceId],
+  );
   const nativeApi = useMemo(
     () =>
       createNativeRunApi(
@@ -113,8 +137,10 @@ function MemberWork({
           onUnavailable: () => currentSpaceUnavailable.current(),
         },
         () => currentLifetime.current.onUnauthenticated(),
+        registerWorkspaceDirectory,
+        openModelSettings,
       ),
-    [fetcher, accountId, spaceId, view],
+    [fetcher, accountId, spaceId, view, registerWorkspaceDirectory, openModelSettings],
   );
   const nativeRun = useMemo(() => ({ api: nativeApi, spaceId }), [nativeApi, spaceId]);
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
@@ -128,6 +154,7 @@ function MemberWork({
             initialSection="tasks"
             appearance={appearance}
             nativeRun={nativeRun}
+            projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}
           />
         </div>
@@ -153,12 +180,16 @@ export function MemberExecutionPage({
   workbenchAppearance,
   view,
   openWork,
+  registerWorkspaceDirectory,
+  openModelSettings,
 }: {
   fetcher?: typeof fetch;
   shell?: MemberShell;
   workbenchAppearance?: AppearanceStore;
   view?: 'catalog' | 'work';
   openWork?: () => void;
+  registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
+  openModelSettings?: (() => void) | undefined;
 }) {
   const snapshot = useSyncExternalStore(
     shell?.subscribe ?? noSubscription,
@@ -232,6 +263,8 @@ export function MemberExecutionPage({
                 view={view ?? (workbenchAppearance ? 'catalog' : 'work')}
                 openWork={openWork}
                 registerLeaveGuard={shell ? registerLeaveGuard : undefined}
+                registerWorkspaceDirectory={registerWorkspaceDirectory}
+                openModelSettings={openModelSettings}
                 {...(workbenchAppearance ? { appearance: workbenchAppearance } : {})}
               />
             )}

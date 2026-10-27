@@ -5,11 +5,12 @@ import LlmRuntime, { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import { createHostRunConfiguration } from '../dist/host-run-configuration.js';
 import { freezeExecutionRunComposition } from '../dist/execution-run-composition.js';
 import { describeAcceptedInputTool } from '../dist/native-work-session-input-tool.js';
+import { describeNativeAcceptedFileTool } from '../dist/native-work-session-files-tool.js';
 import { compositionFacts } from './execution-run-composition-fixture.mjs';
 
 // Content-producer contracts. Identity, input directory and provider registration
 // are explicit stand-ins; these fixtures do not prove actual Host authorization.
-function setup({ upstream = false } = {}) {
+function setup({ upstream = false, acceptedFilesReady } = {}) {
   const ctx = new Context();
   const facts = compositionFacts({ upstream });
   if (upstream) facts.tools.definition = describeAcceptedInputTool();
@@ -30,6 +31,7 @@ function setup({ upstream = false } = {}) {
     execution,
     readWorkbench: () => facts.workbench,
     signal: lifetime.signal,
+    ...(acceptedFilesReady ? { acceptedFilesReady } : {}),
   });
   const input = {
     taskId: facts.scope.taskId,
@@ -79,6 +81,41 @@ test('Host configuration contract: assemble only from the normal same-owner proj
     );
   } finally {
     await h.ctx.fiber.dispose();
+  }
+});
+
+test('Host configuration contract: only ready new fixed inputs receive the exact @2 file slot; saved legacy content is never upgraded', async () => {
+  let ready = true;
+  const h = setup({ upstream: true, acceptedFilesReady: () => ready });
+  try {
+    const savedLegacy = freezeExecutionRunComposition(h.facts);
+    const original = JSON.stringify(savedLegacy);
+    assert.equal(h.configuration.assertModel(savedLegacy), undefined);
+    assert.equal(JSON.stringify(savedLegacy), original);
+    assert.equal(savedLegacy.payload.acceptedFileReader, undefined);
+    const prepared = await h.configuration.prepare(h.request, h.input);
+    assert.equal(prepared.composition.schemaVersion, 2);
+    assert.deepEqual(
+      prepared.composition.payload.acceptedFileReader,
+      describeNativeAcceptedFileTool(),
+    );
+    assert(prepared.composition.payload.toolAllowlist.includes('read_accepted_file'));
+    ready = false;
+    assert.throws(() => h.configuration.assertModel(prepared.composition), {
+      code: 'run-authority-unavailable',
+    });
+    const withoutReader = await h.configuration.prepare(h.request, h.input);
+    assert.equal(withoutReader.composition.payload.acceptedFileReader, undefined);
+    assert(!withoutReader.composition.payload.toolAllowlist.includes('read_accepted_file'));
+  } finally {
+    await h.ctx.fiber.dispose();
+  }
+  const noInputs = setup({ acceptedFilesReady: () => true });
+  try {
+    const prepared = await noInputs.configuration.prepare(noInputs.request, noInputs.input);
+    assert.equal(prepared.composition.payload.acceptedFileReader, undefined);
+  } finally {
+    await noInputs.ctx.fiber.dispose();
   }
 });
 

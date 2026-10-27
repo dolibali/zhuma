@@ -14,7 +14,7 @@ export const fail = (code) => ({
   error: { code, message: 'Contract refusal.', details: {} },
 });
 
-export function workflowFixture() {
+export function workflowFixture({ consumeClaim } = {}) {
   const host = new AbortController();
   const lifetime = new AbortController();
   const original = { headers: { cookie: 'synthetic-workflow-port-contract' } };
@@ -169,7 +169,12 @@ export function workflowFixture() {
       return stopHandler(request, command, wait);
     },
   };
-  const bridge = createNativeWorkflowBridge({ execution, runs, signal: host.signal });
+  const bridge = createNativeWorkflowBridge({
+    execution,
+    runs,
+    signal: host.signal,
+    ...(consumeClaim ? { consumeClaim } : {}),
+  });
   return {
     bridge,
     execution,

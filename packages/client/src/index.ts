@@ -12,6 +12,36 @@ export type {
   WorkflowWorkspace,
 } from './workflow/api.js';
 export { WorkflowControls } from './workflow/WorkflowControls.js';
+export { createTaskProgressApi } from './execution/task-progress.js';
+export type {
+  TaskProgressApi,
+  TaskProgressTarget,
+  TaskProgressQuery,
+  TaskProgressResources,
+  TaskProgressRow,
+  TaskProgressValue,
+  TaskProgressUnknownReason,
+} from './execution/task-progress.js';
+export type {
+  ProjectArtifactsApi,
+  ProjectArtifactRef,
+  ProjectArtifactCursor,
+  ProjectArtifactSummary,
+  ProjectArtifactsList,
+  ProjectArtifactContent,
+} from './workbench/project-artifacts-contract.js';
+export { ProjectArtifactsPanel } from './workbench/ProjectArtifactsPanel.js';
+export type { ProjectArtifactsPanelProps } from './workbench/ProjectArtifactsPanel.js';
+export type {
+  WorkspaceApprovalApi,
+  WorkspaceApprovalLocation,
+  WorkspaceApprovalInput,
+  WorkspaceRevokeInput,
+  WorkspaceApprovalView,
+  WorkspaceApprovalRow,
+  WorkspacePublishRange,
+  RegisterWorkspaceDirectory,
+} from './run/workspace-approvals.js';
 export type {
   NativeConversationTarget,
   NativeConversationFrame,

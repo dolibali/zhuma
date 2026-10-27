@@ -87,6 +87,64 @@ test('panels render delivery and review without an actor control', () => {
   assert.match(workspace, /需要我处理/);
 });
 
+for (const mode of ['submit', 'revise', 'review'])
+  test(`execution goal headings: ${mode} keeps complete work outside the short heading`, () => {
+    let writes = 0;
+    const api = {
+      async submit() {
+        writes++;
+      },
+      async ballot() {
+        writes++;
+      },
+    };
+    for (const [goal, title] of [
+      [
+        '确认订单接口\n\n完整工作：' + '保留业务要求。'.repeat(100) + '<规则> & 末尾要求',
+        '确认订单接口',
+      ],
+      ['确认订单接口\r\n\r\n保留 CRLF 和末尾空格  ', '确认订单接口'],
+      ['长'.repeat(200) + '末尾要求', '长'.repeat(160)],
+      ['\n\n没有首行标题的完整说明', '工作项'],
+      ['', '工作项'],
+      ['确认订单接口', '确认订单接口'],
+    ]) {
+      const current = Object.freeze({
+        ...node,
+        goal,
+        status: mode === 'review' ? 'in-review' : mode === 'revise' ? 'needs-revision' : 'ready',
+      });
+      const markup = renderToStaticMarkup(
+        mode === 'review'
+          ? createElement(ReviewWorkspace, { api, node: current, onSubmitted() {} })
+          : createElement(DeliveryPanel, { api, node: current, mode, onSubmitted() {} }),
+      );
+      assert.equal(markup.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/)?.[1], title);
+      const body = markup.match(/<p class="zm-execution-text">([\s\S]*?)<\/p>/)?.[1];
+      if (goal !== title) {
+        const escaped = renderToStaticMarkup(createElement('span', null, goal)).slice(6, -7);
+        assert.equal(
+          body,
+          escaped,
+          'The complete original goal stays in ordinary text, without truncation',
+        );
+      } else assert.equal(body, undefined, 'A one-line title is not repeated as a description');
+      assert.equal(current.goal, goal);
+      if (mode === 'review') {
+        assert.match(markup, /第一版接口说明/);
+        assert.match(markup, /第 1 版/);
+        assert.match(markup, /通过/);
+        assert.match(markup, /退回修改/);
+      } else {
+        assert.match(markup, /交付内容：接口说明/);
+        assert.match(markup, /产物正文/);
+        assert.match(markup, /保存草稿/);
+        assert.match(markup, mode === 'revise' ? /重新提交/ : /提交产物/);
+      }
+    }
+    assert.equal(writes, 0, 'Rendering instructions must not execute a delivery or review');
+  });
+
 test('read-only rendering never starts a plan and missing round artifact cannot be approved', () => {
   let writes = 0;
   const api = {

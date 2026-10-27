@@ -11,6 +11,63 @@ index 0682e6e9..3af33c8b 100644
    readonly directories: {
      readonly output: string
    }
+diff --git a/apps/desktop/scripts/desktop-build-version.mjs b/apps/desktop/scripts/desktop-build-version.mjs
+index bddf4ca..4ecbe62 100644
+--- a/apps/desktop/scripts/desktop-build-version.mjs
++++ b/apps/desktop/scripts/desktop-build-version.mjs
+@@ -28,6 +28,9 @@ import { parse } from 'semver'
+ /** Environment variable that carries the build version through one packaging and upload run. */
+ export const DESKTOP_BUILD_VERSION_ENV = 'DSH_DESKTOP_BUILD_VERSION'
+ 
++/** Explicit version of the independent product; the SDK manifest remains the runtime version. */
++export const DESKTOP_PRODUCT_VERSION_ENV = 'ZHUMA_DESKTOP_PRODUCT_VERSION'
++
+ /** Prerelease field that opens a test build's suffix on a stable product version. */
+ const STABLE_TEST_FIELD = 'test'
+ 
+@@ -47,6 +50,17 @@ function parseVersion(version, label) {
+   return parsed
+ }
+ 
++/**
++ * Resolve the independent product version without changing the SDK runtime manifest.
++ * @param {NodeJS.ProcessEnv} env - The owned packaging wrapper's explicit version.
++ * @param {string} runtimeVersion - Unmodified SDK version, used by ordinary SDK builds.
++ * @returns {string} The product version validated by the original strict semver parser.
++ */
++export function resolveDesktopProductVersion(env, runtimeVersion) {
++  const productVersion = env[DESKTOP_PRODUCT_VERSION_ENV]
++  return productVersion === undefined ? runtimeVersion : parseVersion(productVersion, 'product version').version
++}
++
+ /**
+  * The prerelease fields every build version for one product version starts with.
+  * @param {import('semver').SemVer} product - Parsed product version.
+@@ -87,6 +101,7 @@ export function validateDesktopBuildVersion(buildVersion, productVersion) {
+  * @returns {string} The build version when one is present, otherwise the product version.
+  */
+ export function resolveDesktopBuildVersion(env, productVersion) {
++  productVersion = resolveDesktopProductVersion(env, productVersion)
+   const buildVersion = env[DESKTOP_BUILD_VERSION_ENV]?.trim()
+   if (buildVersion === undefined || buildVersion === '') return productVersion
+   return validateDesktopBuildVersion(buildVersion, productVersion)
+diff --git a/apps/desktop/scripts/desktop-build-version.d.mts b/apps/desktop/scripts/desktop-build-version.d.mts
+index 969b601..10e0e7c 100644
+--- a/apps/desktop/scripts/desktop-build-version.d.mts
++++ b/apps/desktop/scripts/desktop-build-version.d.mts
+@@ -1,6 +1,12 @@
+ /** Environment variable that carries the build version through one packaging and upload run. */
+ export const DESKTOP_BUILD_VERSION_ENV: 'DSH_DESKTOP_BUILD_VERSION'
+ 
++/** Explicit independent product version; absent means the SDK runtime version. */
++export const DESKTOP_PRODUCT_VERSION_ENV: 'ZHUMA_DESKTOP_PRODUCT_VERSION'
++
++/** Resolve the independent product version through the original strict semver parser. */
++export function resolveDesktopProductVersion(env: NodeJS.ProcessEnv, runtimeVersion: string): string
++
+ /**
+  * Validate a build version against the product version it extends.
+  * @param buildVersion - Version this build publishes.
 diff --git a/apps/desktop/scripts/desktop-build-version-discovery.ts b/apps/desktop/scripts/desktop-build-version-discovery.ts
 index 68291ca3..db3ed424 100644
 --- a/apps/desktop/scripts/desktop-build-version-discovery.ts
@@ -163,9 +220,27 @@ index 4ba0fd12..00adcdfd 100644
    const zipApp = join(root, 'zip', basename(appPath))
    const dmgApp = join(root, 'dmg', basename(appPath))
 diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/package-target.ts
-index be2f577e..bf3cee31 100644
+index be2f577..a236a15 100644
 --- a/apps/desktop/scripts/package-target.ts
 +++ b/apps/desktop/scripts/package-target.ts
+@@ -19,7 +19,7 @@ import { macOSDownloadEnvironment, resolveMacOSPackageSettings } from './macos-p
+ import { packagingErrorDetails, packagingStep } from './packaging-step.mjs'
+ import { notarizeMacOS } from './notarize-macos.mjs'
+ import { resolveMacOSNotarizationEnvironment } from './desktop-release-environment.mjs'
+-import { DESKTOP_BUILD_VERSION_ENV, resolveDesktopBuildVersion, validateDesktopBuildVersion } from './desktop-build-version.mjs'
++import { DESKTOP_BUILD_VERSION_ENV, resolveDesktopBuildVersion, resolveDesktopProductVersion, validateDesktopBuildVersion } from './desktop-build-version.mjs'
+ import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts'
+ import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
+ import { requireDesktopToolchain } from './desktop-toolchain-preflight.ts'
+@@ -348,7 +348,7 @@ async function main(): Promise<void> {
+     : loadDesktopPackageEnvironment(target.platform, process.env, APP_ROOT, {
+       unsigned: invocation.unsigned, prepareOnly: invocation.prepareOnly,
+     })
+-  const productVersion = packageVersion(join(APP_ROOT, 'package.json'), 'desktop package')
++  const productVersion = resolveDesktopProductVersion(environment, packageVersion(join(APP_ROOT, 'package.json'), 'desktop package'))
+   // Release settings come from the selected configuration files, so the version this run publishes is an
+   // argument; the environment variable below only carries it to the child processes that build.
+   const buildVersion = await resolveRequestedBuildVersion(invocation, productVersion, environment)
 @@ -401,7 +401,7 @@ async function main(): Promise<void> {
    if (success && target.platform === 'darwin' && !invocation.directory && !invocation.prepareOnly) {
      const paths = desktopTargetBuildPaths(target.name)
@@ -578,8 +653,8 @@ diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
 +  const response = await memberCookies.forward(request, host, cookie, (credential) => {
 +    headers.set('cookie', credential)
 +    // The bridge has verified the original dsh-app Origin before dispatching.
-+    // Preserve an explicit same-Host CSRF Origin only for this owner setup POST.
-+    if (source.pathname === '/api/zhuma-local-setup/initialize' && request.method === 'POST') headers.set('origin', target.origin)
++    // Preserve same-Host CSRF Origin only for explicit owner control-plane POSTs.
++    if ((source.pathname === '/api/zhuma-local-setup/initialize' || /^\/api\/zhuma-workspaces\/(?:options|approve|revoke)$/.test(source.pathname)) && request.method === 'POST') headers.set('origin', target.origin)
 +    return fetch(target, init)
 +  })
    const outgoing = new Headers(response.headers)
@@ -1710,3 +1785,117 @@ diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-mana
 +  }
    initProfile(projectDir, WEB_PROFILE.bundles)
  }
+diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
+index 9de39d3f..36878060 100644
+--- a/apps/desktop/scripts/prepare-dsh.ts
++++ b/apps/desktop/scripts/prepare-dsh.ts
+@@ -1,5 +1,6 @@
+ /** Materialize the complete production runtime before publishing Desktop resources. */
+ 
++import { verifyBuildSourcePaths } from '../../../scripts/zhuma-verify-build-source-paths.ts'
+ import { resolveMacOSSignatureCacheDirectory } from './macos-signature-cache-directory.mjs'
+ import { packagingStep } from './packaging-step.mjs'
+ import { spawn } from 'node:child_process'
+@@ -157,6 +158,8 @@ async function main(): Promise<void> {
+     if (!existsSync(join(DSH_OUTPUT_ROOT, 'node_modules', '@deepseek-ai', `libreoffice-kit-${officeEngine}`, 'prebuilds.json'))) {
+       throw new Error(`desktop runtime: missing required LibreOffice engine ${officeEngine}`)
+     }
++    // Reject SDK output regressions before runtime signing, manifests and integrity descriptors.
++    verifyBuildSourcePaths(DSH_OUTPUT_ROOT, ['node_modules/@deepseek-ai/*/{lib,dist}/**/*.{js,mjs,cjs}'])
+     if (process.platform === 'darwin' && process.env.DSH_DESKTOP_UNSIGNED !== '1') {
+       const cacheDirectory = resolveMacOSSignatureCacheDirectory(process.env, BUILD_PATHS.root)
+       await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'sign:dsh-native', () => signMacOSRuntime(DSH_OUTPUT_ROOT, resolveDesktopAppId(process.env), resolveMacOSSigningEnvironment(process.env), target.arch, cacheDirectory))
+diff --git a/apps/desktop/tsdown.config.ts b/apps/desktop/tsdown.config.ts
+index d8470bac..376dbadc 100644
+--- a/apps/desktop/tsdown.config.ts
++++ b/apps/desktop/tsdown.config.ts
+@@ -43,6 +43,8 @@ export default defineConfig([
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     codeSplitting: false,
+     deps: { alwaysBundle: ['@deepseek-ai/dsh-atomic-write'] },
+   },
+@@ -71,6 +73,7 @@ export default defineConfig([
+         build: {
+           outDir: 'lib/welcome',
+           emptyOutDir: true,
++          rolldownOptions: { experimental: { attachDebugInfo: 'none' } },
+           lib: {
+             entry: 'src/client/welcome.tsx',
+             formats: ['iife'],
+@@ -88,6 +91,8 @@ export default defineConfig([
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     deps: { neverBundle: ['electron'] },
+   },
+   ...(['preload-app', 'preload-welcome', 'preload-platform-account', 'preload-mandatory', 'preload-update-dialog'] as const).map(name => ({
+@@ -102,6 +107,8 @@ export default defineConfig([
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     deps: { neverBundle: ['electron'] },
+   })),
+ ])
+diff --git a/scripts/build.ts b/scripts/build.ts
+index b5008c3f..23c5dd2e 100644
+--- a/scripts/build.ts
++++ b/scripts/build.ts
+@@ -9,6 +9,7 @@
+  * the Typert declarations that Client compilation imports, without bundling.
+  */
+ 
++import { verifyBuildSourcePaths } from './zhuma-verify-build-source-paths.ts'
+ import { rmSync } from 'node:fs'
+ import { resolve } from 'node:path'
+ import { parseArgs } from 'node:util'
+@@ -175,6 +176,8 @@ async function main(): Promise<number> {
+   const gates = buildGates(root, scope, environment)
+   const exitCode = await runAggregate(name, gates, workers(gates))
+   if (exitCode !== 0) return exitCode
++  // Verify emitted bytes before the original artifact digest and any release packing.
++  verifyBuildSourcePaths(root)
+   const record = writeClientBuildRecord(root, clientEnvironment)
+   console.log(
+     `build: recorded ${String(record.artifacts.fileCount)} client artifact(s) with ${String(Object.keys(record.environment).length)} public value(s)`,
+diff --git a/tsdown.config.ts b/tsdown.config.ts
+index b66a197e..4776c613 100644
+--- a/tsdown.config.ts
++++ b/tsdown.config.ts
+@@ -32,6 +32,8 @@ export default defineConfig(({ env }) => {
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     plugins: client ? [] : [typertPlugin({ mode: 'workspace', faces: WORKSPACE_TYPERT_FACES })],
+   }
+ })
+diff --git a/packages/experimental/inspector/scripts/devtools/vite.ts b/packages/experimental/inspector/scripts/devtools/vite.ts
+index b521d8ef..85e76f15 100644
+--- a/packages/experimental/inspector/scripts/devtools/vite.ts
++++ b/packages/experimental/inspector/scripts/devtools/vite.ts
+@@ -72,6 +72,7 @@ export const LOCAL_FETCH_PATTERN = "data:application/json,{}", REMOTE_FETCH_PATT
+   for (const directory of ['panels/recorder/injected/injected', 'models/live-metrics/web-vitals-injected/web-vitals-injected']) {
+     const result = await build({ ...base, plugins: [sourcePlugin()], build: {
+       write: false, minify: 'oxc', target: 'es2022', sourcemap: false,
++      rolldownOptions: { experimental: { attachDebugInfo: 'none' } },
+       lib: { entry: join(front, `${directory}.ts`), name: 'DevToolsInjected', formats: ['iife'] },
+     } })
+     const outputs = Array.isArray(result) ? result : [result]
+@@ -110,7 +111,7 @@ export const LOCAL_FETCH_PATTERN = "data:application/json,{}", REMOTE_FETCH_PATT
+   }], build: {
+     outDir: output, emptyOutDir: true, minify: 'oxc', sourcemap: false, target: 'es2022', modulePreload: false,
+     lib: { entry: input, formats: ['es'] },
+-    rolldownOptions: { output: {
++    rolldownOptions: { experimental: { attachDebugInfo: 'none' }, output: {
+       entryFileNames: chunk => chunk.name === 'connect' ? 'connect.js' : entryFiles[chunk.name]!,
+       chunkFileNames: 'chunks/[name]-[hash].js',
+     } },

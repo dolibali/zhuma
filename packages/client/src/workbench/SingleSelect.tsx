@@ -1,14 +1,17 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode, type AriaAttributes, type CSSProperties } from 'react';
 import { Select } from '@base-ui/react/select';
 import { Combobox } from '@base-ui/react/combobox';
-import { ControlIcon } from './ControlIcon.js';
+import { ControlIcon, CheckIcon } from './ControlIcon.js';
 
 export interface SelectOption {
   value: string;
   label: string;
   disabled?: boolean;
 }
-export interface SingleSelectProps {
+export interface SingleSelectProps extends Pick<
+  AriaAttributes,
+  'aria-invalid' | 'aria-describedby'
+> {
   id?: string;
   label: string;
   title?: string;
@@ -17,6 +20,8 @@ export interface SingleSelectProps {
   options: SelectOption[];
   disabled?: boolean;
   triggerContent?: ReactNode;
+  /** Icon-only controls need readable choices; normal fields stay exactly anchor-wide. */
+  popupMinWidth?: number;
   onValueChange(value: string): void;
 }
 
@@ -30,11 +35,15 @@ export function SingleSelect({
   options,
   disabled,
   triggerContent,
+  popupMinWidth,
   onValueChange,
+  'aria-invalid': invalid,
+  'aria-describedby': descriptionId,
 }: SingleSelectProps) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [anchorFont, setAnchorFont] = useState<CSSProperties>();
   const closeReason = useRef('');
   const searchable = options.length > 8;
   const finalFocus = () => closeReason.current !== 'focus-out';
@@ -43,16 +52,22 @@ export function SingleSelect({
     id,
     ref: trigger,
     'aria-label': label,
+    'aria-invalid': invalid,
+    'aria-describedby': descriptionId,
     title: title ?? caption,
     className: `zm-single-select ${className}`,
   };
   const positioning = {
     side: 'bottom' as const,
     align: 'start' as const,
-    sideOffset: 5,
+    sideOffset: 4,
     collisionPadding: 8,
     positionMethod: 'fixed' as const,
     className: 'zm-select-positioner',
+    style: {
+      ...anchorFont,
+      ...(popupMinWidth ? { '--zm-select-min-width': `${popupMinWidth}px` } : {}),
+    },
   };
   // A body portal is inert and below a native modal dialog. Keep it in the active dialog instead.
   const preparePortal = (
@@ -63,7 +78,20 @@ export function SingleSelect({
     if (details.reason === 'escape-key') details.event.preventDefault();
     closeReason.current = details.reason;
     setOpen(open);
-    if (open) setContainer(trigger.current?.closest('dialog') ?? document.body);
+    if (open) {
+      setContainer(trigger.current?.closest('dialog') ?? document.body);
+      // The portal may sit outside the workbench. Inherit this field's theme typography.
+      if (trigger.current) {
+        const font = window.getComputedStyle(trigger.current);
+        setAnchorFont({
+          fontFamily: font.fontFamily,
+          fontSize: font.fontSize,
+          fontWeight: font.fontWeight,
+          lineHeight: font.lineHeight,
+          letterSpacing: font.letterSpacing,
+        });
+      }
+    }
   };
   const content = triggerContent ?? (
     <>
@@ -102,7 +130,9 @@ export function SingleSelect({
                     disabled={option.disabled}
                     className="zm-select-option"
                   >
-                    <Combobox.ItemIndicator className="zm-select-check">✓</Combobox.ItemIndicator>
+                    <Combobox.ItemIndicator className="zm-select-check">
+                      <CheckIcon />
+                    </Combobox.ItemIndicator>
                     <span>{option.label}</span>
                   </Combobox.Item>
                 )}
@@ -136,7 +166,9 @@ export function SingleSelect({
                   disabled={option.disabled}
                   className="zm-select-option"
                 >
-                  <Select.ItemIndicator className="zm-select-check">✓</Select.ItemIndicator>
+                  <Select.ItemIndicator className="zm-select-check">
+                    <CheckIcon />
+                  </Select.ItemIndicator>
                   <Select.ItemText>{option.label}</Select.ItemText>
                 </Select.Item>
               ))}

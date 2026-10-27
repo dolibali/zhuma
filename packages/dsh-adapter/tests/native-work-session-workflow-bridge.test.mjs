@@ -312,3 +312,42 @@ test('bridge contract: cleanup failure remains visible and does not release an u
     { code: 'workflow-owner-unavailable' },
   );
 });
+
+test('bridge review callback contract: forwards each exact original claim without waiting for model work', async () => {
+  const calls = [];
+  const h = workflowFixture({
+    consumeClaim: (original, claim) => {
+      calls.push({ original, claim });
+    },
+  });
+  const claim = h.claim([]);
+  h.setClaim(async () => ok(claim));
+  await h.bridge.attach(h.original, h.view());
+  await turns();
+  assert.equal(calls[0].original, h.original);
+  assert.equal(calls[0].claim, claim);
+  assert.equal(h.calls.begin.length, 0);
+  await h.bridge.close();
+});
+
+test('bridge review callback contract: a refused review cannot fence the same claim author tickets', async () => {
+  const h = workflowFixture({
+    consumeClaim() {
+      throw Error('explicit review capacity refusal');
+    },
+  });
+  const permit = h.ticket('produce');
+  h.offered.push([permit]);
+  const finish = Promise.withResolvers();
+  h.setBegin(async () => {
+    await finish.promise;
+    return ok({ dispatch: 'received' });
+  });
+  await h.bridge.attach(h.original, h.view());
+  await turns();
+  assert.equal(h.calls.begin.length, 1);
+  assert.equal(h.calls.fences, 0);
+  assert.equal(permit.signal.aborted, false);
+  finish.resolve();
+  await h.bridge.close();
+});

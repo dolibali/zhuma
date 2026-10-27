@@ -303,7 +303,8 @@ function Selection({
             <small>暂无可用执行者</small>
           )}
         </div>
-        {(view.workspaces?.length || (chosenWorkspace && chosenWorkspace.kind !== 'text-only')) && (
+        {(view.workspaces !== undefined ||
+          (chosenWorkspace && chosenWorkspace.kind !== 'text-only')) && (
           <div className="zm-native-run__choice">
             <span>执行范围</span>
             {disabled ? (
@@ -577,6 +578,11 @@ function RunPanel(props: NativeRunPanelProps) {
         </div>
         <div className="zm-native-run__header-actions">
           {ready && matching && <RunState run={run} />}
+          {ready && matching && props.onManageWorkspaces && (
+            <Button variant="quiet" onClick={props.onManageWorkspaces}>
+              管理目录授权
+            </Button>
+          )}
           {ready && matching && hasRun && (held || ready.actions.stop.kind === 'available') && (
             <Button
               variant="quiet"

@@ -11,10 +11,21 @@ import type {
   HostReviewPreparationRequest,
   HostRunSkillPolicyQualification,
 } from './host-run-skill-policy.js';
-import type { ExecutionReviewPreparation } from './execution-review-composition.js';
+import {
+  executionReviewCompositionRequest,
+  readExecutionReviewComposition,
+  type ExecutionReviewPreparation,
+  type FrozenExecutionReviewComposition,
+} from './execution-review-composition.js';
+import { readExecutionReviewState } from './execution-review-state.js';
+import type { ExecutionReviewDriveGrant } from './execution-review-drive-authority.js';
+import { nativeReviewContextFromScope } from './native-work-session-review-contract.js';
 import type { ExecutionRunAuthorities } from './execution-run-authority.js';
 import type { NativeSessionBinding, NativeWorkGrant } from './native-work-session-contract.js';
-import type { ExecutionRunResourceProducer } from './execution-run-resources.js';
+import type {
+  ExecutionRunResourceProducer,
+  ExecutionResourceScopeProducer,
+} from './execution-run-resources.js';
 import {
   assertExecutionRunCompositionBinding,
   executionRunCompositionRequest,
@@ -34,7 +45,7 @@ type Execution = Pick<
   ExecutionService,
   'readRunNode' | 'readRunCompositionInputs' | 'readRunComposition'
 > &
-  Partial<Pick<ExecutionService, 'readExpertReviewPreparation'>>;
+  Partial<Pick<ExecutionService, 'readExpertReviewPreparation' | 'assertExpertReviewDriveGrant'>>;
 type Policies = ReturnType<typeof createHostRunSkillPolicies>;
 
 /** Structurally matches the frozen D private operation port. Not a Run grant. */
@@ -268,6 +279,74 @@ export function createHostRunResourceSource(options: {
       } catch {
         return unavailable();
       }
+    },
+    /** Same admitted reviewer, fixed target and original D/C grants on every use.
+     * Preparation qualifications are deliberately absent from this lifetime. */
+    reviewProducer(
+      raw: FrozenExecutionReviewComposition,
+      binding: NativeSessionBinding,
+      grant: NativeWorkGrant,
+      drive: ExecutionReviewDriveGrant,
+    ): ExecutionResourceScopeProducer {
+      active();
+      const assertDrive = execution.assertExpertReviewDriveGrant;
+      if (!assertDrive) unavailable();
+      const snapshot = readExecutionReviewComposition(raw);
+      const fingerprint = canonicalPayload(snapshot);
+      const projected = executionReviewCompositionRequest(snapshot);
+      const context = nativeReviewContextFromScope(snapshot.payload.scope);
+      function facts(): ExecutionReviewPreparation {
+        active();
+        if (execution.assertExpertReviewDriveGrant !== assertDrive) unavailable();
+        assertDrive!.call(execution, drive, 'send');
+        grant.assertCurrent('send');
+        if (
+          drive.signal.aborted ||
+          grant.signal.aborted ||
+          canonicalPayload(drive.scope) !== canonicalPayload(snapshot.payload.scope) ||
+          canonicalPayload(grant.scope) !== canonicalPayload(context.scope) ||
+          canonicalPayload(binding.scope) !== canonicalPayload(context.scope) ||
+          canonicalPayload(binding.selection) !== canonicalPayload(projected.selection) ||
+          canonicalPayload(drive.selection) !== canonicalPayload(projected.selection)
+        )
+          unavailable();
+        const node = readNode.call(execution, drive.scope);
+        const attempt =
+          node &&
+          readExecutionReviewState(node)?.attempts.find(
+            (item) => item.scope.runId === drive.scope.runId,
+          );
+        if (
+          !node ||
+          !attempt ||
+          attempt.status === 'prepared' ||
+          canonicalPayload(attempt.scope) !== canonicalPayload(drive.scope) ||
+          canonicalPayload(readExecutionReviewComposition(attempt.composition)) !== fingerprint
+        )
+          unavailable();
+        return {
+          scope: drive.scope,
+          node,
+          applied: createExecutionHandoff(drive.scope, readWorkbench()),
+        };
+      }
+      const selected = reviewSelection(facts());
+      function current(): undefined {
+        facts();
+        selected.assertCurrent();
+        return undefined;
+      }
+      if (canonicalPayload(selected.resources) !== canonicalPayload(snapshot.payload.resources))
+        unavailable();
+      current();
+      return Object.freeze({
+        sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
+        signal: AbortSignal.any([signal, grant.signal, drive.signal]),
+        assertCurrent: current,
+        async openMcp() {
+          return unavailable();
+        },
+      });
     },
     /** Called only in unpublished native compose, after durable Run admission. */
     async producer(

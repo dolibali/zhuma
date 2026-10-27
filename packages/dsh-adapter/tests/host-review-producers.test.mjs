@@ -389,3 +389,111 @@ test('Host review producers: the original Service adopts the exact synchronous H
   assert.equal(h.host.read('node-1').rounds[0].ballots.length, 0);
   assert.equal(h.inference, 0);
 });
+
+// Actual D drive and persisted admitted composition; the NativeWorkGrant below
+// is an explicit contract. SDK purpose identity is verified by separate Host proof.
+async function admittedResources(t, options) {
+  const h = await setup(t, options);
+  const composition = await h.configuration.prepareReview(h.host.request, h.input);
+  const { attempt } = checked(
+    await h.host.service.prepareExpertReview(h.host.request, {
+      ...h.query,
+      configurationId: composition.configurationId,
+    }),
+  );
+  const locator = { ...h.host.locate('node-1'), spaceId: 'north', runId: attempt.scope.runId };
+  checked(
+    await h.host.service.admitExpertReview(h.host.request, {
+      ...locator,
+      expectedAttemptVersion: attempt.version,
+      composition,
+    }),
+  );
+  const drive = checked(await h.host.service.openExpertReviewDrive(h.host.request, locator));
+  t.after(() => drive.dispose());
+  const { review: _review, ...scope } = drive.grant.scope;
+  const binding = {
+    scope,
+    nativeSessionId: 'review-contract',
+    nativeAgentId: 'review-contract',
+    selection: drive.grant.selection,
+  };
+  const grant = Object.freeze({
+    scope,
+    signal: drive.grant.signal,
+    assertCurrent: (action) => h.host.service.assertExpertReviewDriveGrant(drive.grant, action),
+  });
+  return { ...h, composition, drive, binding, grant };
+}
+
+test('Host review adoption source: admitted original drive keeps imported reviewer Skill and invocation policy without inference or writes', async (t) => {
+  const h = await admittedResources(t);
+  const before = await businessHashes(h.root);
+  const producer = h.resources.reviewProducer(h.composition, h.binding, h.grant, h.drive.grant);
+  assert.equal(producer.assertCurrent(), undefined);
+  assert.equal(h.composition.payload.resources.skills[0].invocation.modelInvocable, false);
+  assert.equal(h.composition.payload.resources.skills[0].policySource.kind, 'asset-package');
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.equal(h.inference, 0);
+  await assert.rejects(producer.openMcp({}, new AbortController().signal));
+});
+
+test('Host review adoption source: a copied D drive, wrong native purpose scope or selection is refused', async (t) => {
+  const h = await admittedResources(t);
+  assert.throws(() =>
+    h.resources.reviewProducer(h.composition, h.binding, h.grant, { ...h.drive.grant }),
+  );
+  assert.throws(() =>
+    h.resources.reviewProducer(
+      h.composition,
+      {
+        ...h.binding,
+        scope: { ...h.binding.scope, runId: 'author-run' },
+      },
+      h.grant,
+      h.drive.grant,
+    ),
+  );
+  assert.throws(() =>
+    h.resources.reviewProducer(
+      h.composition,
+      {
+        ...h.binding,
+        selection: { ...h.binding.selection, configurationId: 'author-composition' },
+      },
+      h.grant,
+      h.drive.grant,
+    ),
+  );
+  assert.equal(h.inference, 0);
+});
+
+test('Host review adoption source: live package mutation and missing original admitted attempt revoke usage', async (t) => {
+  const h = await admittedResources(t);
+  const producer = h.resources.reviewProducer(h.composition, h.binding, h.grant, h.drive.grant);
+  const raw = h.packages.get(version);
+  h.packages.set(version, { ...raw, digest: '0'.repeat(64) });
+  assert.throws(() => producer.assertCurrent());
+  assert.equal(h.drive.grant.signal.aborted, true, 'restoring bytes cannot revive the old drive');
+  const h2 = await admittedResources(t);
+  const producer2 = h2.resources.reviewProducer(
+    h2.composition,
+    h2.binding,
+    h2.grant,
+    h2.drive.grant,
+  );
+  const read = h2.host.service.readRunNode;
+  h2.host.service.readRunNode = () => undefined;
+  assert.throws(() => producer2.assertCurrent());
+  h2.host.service.readRunNode = read;
+});
+
+test('Host review adoption source: expiry or Host close removes live rights without a preparation signal being borrowed', async (t) => {
+  const h = await admittedResources(t, { empty: true });
+  const producer = h.resources.reviewProducer(h.composition, h.binding, h.grant, h.drive.grant);
+  assert.equal(producer.signal.aborted, false);
+  assert.deepEqual(h.composition.payload.resources.skills, []);
+  h.lifetime.abort();
+  assert.equal(producer.signal.aborted, true);
+  assert.throws(() => producer.assertCurrent());
+});
