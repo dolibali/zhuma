@@ -1,11 +1,9 @@
 import { createHash } from 'node:crypto';
-import { z } from 'zod';
 import {
   AppliedPlanSchema,
   canonicalPayload,
   createNodeHandoffs,
   type AppliedPlan,
-  type ArtifactVersion,
   type ExecutionNodeRecord,
 } from '@zhuma/agent-core';
 import {
@@ -16,7 +14,6 @@ import {
 import {
   EXECUTION_REVIEW_LIMITS,
   ExecutionReviewError,
-  executionReviewStateSchema,
   executionReviewTargetSchema,
   prepareExecutionReviewSchema,
   type ExecutionReviewAttempt,
@@ -26,8 +23,12 @@ import {
   type ExecutionReviewTarget,
 } from './execution-review-contract.js';
 
+import {
+  splitExecutionReviewRecord,
+  executionReviewArtifactFingerprint,
+} from './execution-review-record.js';
+
 /** Prepared data only. No storage, member authentication, native send, or voting here. */
-const reviewOnlySchema = z.strictObject({ schemaVersion: z.literal(2) });
 type ReviewNativeState = {
   readonly schemaVersion: 2;
   readonly review: ExecutionReviewState;
@@ -42,62 +43,23 @@ function refuse(code: ExecutionReviewErrorCode): never {
 function hash(value: unknown): string {
   return createHash('sha256').update(canonicalPayload(value)).digest('hex');
 }
-function reservationFingerprint(requestId: string, attempt: ExecutionReviewAttempt): string {
-  const { scope } = attempt;
-  return hash({
-    requestId,
-    target: scope.review.target,
-    reviewerId: scope.review.principal.reviewerRef.id,
-    controllerMemberId: scope.actorId,
-    configurationId: attempt.configurationId,
-    newRunId: scope.runId,
-    newSegmentId: scope.segmentId,
-    binding: scope.review,
-  });
-}
 function nativeParts(record: ExecutionNodeRecord): {
   author?: ExecutionRunState;
   review?: ExecutionReviewState;
 } {
-  if (!Object.hasOwn(record, 'nativeExecution')) return {};
-  const raw = (record as { nativeExecution?: unknown }).nativeExecution;
-  if (!raw || typeof raw !== 'object') return refuse('review-state-invalid');
-  if (!Object.hasOwn(raw, 'review')) {
-    try {
-      const author = readExecutionRunState(record);
-      return author ? { author: raw as ExecutionRunState } : refuse('review-state-invalid');
-    } catch {
-      return refuse('review-state-invalid');
-    }
-  }
-  const { review, ...rest } = raw as Record<string, unknown>;
-  if (rest.schemaVersion !== 2) return refuse('review-state-invalid');
-  const parsed = executionReviewStateSchema.safeParse(review);
-  if (!parsed.success) return refuse('review-state-invalid');
-  if (Object.keys(rest).length === 1) {
-    if (!reviewOnlySchema.safeParse(rest).success) return refuse('review-state-invalid');
-    return { review: parsed.data };
-  }
   try {
-    const author = readExecutionRunState({
-      ...record,
-      nativeExecution: { ...rest, schemaVersion: 1 },
-    } as ExecutionNodeRecord);
-    if (!author) return refuse('review-state-invalid');
-    // Retain the original author's fields verbatim after validation, including
-    // optional-field presence and key order. Review preparation does not rewrite them.
+    const parts = splitExecutionReviewRecord(record);
+    const author = readExecutionRunState(record);
     return {
-      author: { ...rest, schemaVersion: 1 } as ExecutionRunState,
-      review: parsed.data,
+      ...(author ? { author: parts.author as ExecutionRunState } : {}),
+      ...(parts.review ? { review: parts.review } : {}),
     };
   } catch {
     return refuse('review-state-invalid');
   }
 }
 
-export function executionReviewArtifactFingerprint(artifact: ArtifactVersion): string {
-  return hash(artifact);
-}
+export { executionReviewArtifactFingerprint } from './execution-review-record.js';
 
 /** Exact current open target, including contents and immutable file references. */
 export function executionReviewTarget(
@@ -132,58 +94,7 @@ export function executionReviewTarget(
 export function readExecutionReviewState(
   record: ExecutionNodeRecord,
 ): ExecutionReviewState | undefined {
-  const { author, review } = nativeParts(record);
-  if (!review) return undefined;
-  if ((author?.runs.length ?? 0) + review.attempts.length > EXECUTION_RUN_LIMITS.runs)
-    return refuse('review-state-invalid');
-  const runIds = new Set(author?.runs.map((run) => run.attempt.id));
-  const segments = new Set(author?.runs.map((run) => run.segmentId));
-  const lanes = new Set<string>();
-  for (const [index, attempt] of review.attempts.entries()) {
-    const { scope } = attempt;
-    const { target, principal } = scope.review;
-    const artifact = record.artifactVersions.find((item) => item.id === target.artifactVersionId);
-    const round = record.rounds.find((item) => item.id === target.roundId);
-    const lane = canonicalPayload([target, principal.reviewerRef.id]);
-    if (
-      scope.taskId !== record.taskId ||
-      scope.planId !== record.planId ||
-      scope.revision !== record.revision ||
-      scope.nodeId !== record.nodeId ||
-      scope.generation !== index + 1 ||
-      !artifact ||
-      artifact.nodeId !== record.nodeId ||
-      executionReviewArtifactFingerprint(artifact) !== target.artifactFingerprint ||
-      !round ||
-      round.artifactVersionId !== artifact.id ||
-      !round.reviewerIds.includes(principal.reviewerRef.id) ||
-      principal.reviewerRef.id === record.handoff.assignee.id ||
-      principal.reviewerRef.id === artifact.submittedBy ||
-      runIds.has(scope.runId) ||
-      segments.has(scope.segmentId) ||
-      lanes.has(lane)
-    )
-      return refuse('review-state-invalid');
-    runIds.add(scope.runId);
-    segments.add(scope.segmentId);
-    lanes.add(lane);
-  }
-  const requests = new Set<string>();
-  const receiptedRuns = new Set<string>();
-  for (const receipt of review.receipts) {
-    const attempt = review.attempts.find((item) => item.scope.runId === receipt.runId);
-    if (
-      requests.has(receipt.requestId) ||
-      receiptedRuns.has(receipt.runId) ||
-      !attempt ||
-      receipt.fingerprint !== reservationFingerprint(receipt.requestId, attempt)
-    )
-      return refuse('review-state-invalid');
-    requests.add(receipt.requestId);
-    receiptedRuns.add(receipt.runId);
-  }
-  if (review.receipts.length !== review.attempts.length) return refuse('review-state-invalid');
-  return review;
+  return nativeParts(record).review;
 }
 
 /** Caller must first supply the original live member lease and trusted applied snapshot.

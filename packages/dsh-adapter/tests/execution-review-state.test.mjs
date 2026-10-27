@@ -18,7 +18,12 @@ import {
   prepareExecutionReview,
   readExecutionReviewState,
 } from '../dist/execution-review-state.js';
-import { beginExecutionRun, readExecutionRunState } from '../dist/execution-run-state.js';
+import {
+  beginExecutionRun,
+  readExecutionRunState,
+  nativeExecutionStateSchema,
+  withExecutionRunState,
+} from '../dist/execution-run-state.js';
 import { command, available, applyEvent } from './execution-run-fixture.mjs';
 
 // Pure contracts only: no member authentication, native SDK/model, files, or votes by an Agent.
@@ -131,7 +136,16 @@ test('review contract: one fixed target and named expert reserve an independent 
   assert.match(prepared.attempt.scope.review.principal.reviewerRef.digest, /^[a-f0-9]{64}$/u);
   assert.equal(readExecutionReviewState(prepared.record).attempts.length, 1);
   assert.equal(prepared.record.nativeExecution.runs, undefined, 'no fabricated author Run');
-  refused(() => readExecutionRunState(prepared.record), 'run-state-invalid');
+  assert.equal(
+    nativeExecutionStateSchema.safeParse(prepared.record.nativeExecution).success,
+    false,
+    'the original strict v1 schema rejects the new envelope',
+  );
+  assert.equal(
+    readExecutionRunState(prepared.record),
+    undefined,
+    'new reader sees no fabricated author',
+  );
 });
 
 test('review contract: exact replay is zero change; changed controller/configuration/Run is not the same request', () => {
@@ -405,6 +419,17 @@ test('review contract: an original author Run remains intact; held author resour
   );
   assert.equal(prepared.record.command, record.command);
   assert.equal(review.attempts.length, 1);
+  const reviewBytes = JSON.stringify(review);
+  const updated = withExecutionRunState(prepared.record, {
+    ...readExecutionRunState(prepared.record),
+    version: before.version + 1,
+  });
+  assert.equal(updated.nativeExecution.version, before.version + 1);
+  assert.equal(
+    JSON.stringify(updated.nativeExecution.review),
+    reviewBytes,
+    'the original author-state replacement preserves the review lane verbatim',
+  );
   refused(
     () =>
       prepareExecutionReview(

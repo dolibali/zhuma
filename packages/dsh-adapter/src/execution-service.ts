@@ -127,6 +127,7 @@ import {
   requestExecutionRunStop,
   validateExecutionRunBegin,
   stopExecutionRunSchema,
+  withExecutionRunState,
   type ExecutionRunDecision,
   type ExecutionRunEvent,
 } from './execution-run-state.js';
@@ -135,7 +136,16 @@ import {
   enableExecutionRunWriter,
   ExecutionRunProtocolError,
   requireExecutionRunWriter,
+  enableExecutionReviewWriter,
+  type ExecutionWriterGlobal,
 } from './execution-run-protocol.js';
+import {
+  ExecutionReviewError,
+  executionReviewTargetSchema,
+  type ExecutionReviewAttempt,
+  type ExecutionReviewTarget,
+} from './execution-review-contract.js';
+import { executionReviewTarget, prepareExecutionReview } from './execution-review-state.js';
 import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import {
   ARTIFACT_FILE_LIMITS,
@@ -271,6 +281,16 @@ const ballotSchema = z.strictObject({
   action: z.enum(['approve', 'request-changes', 'comment']),
   comment: boundedText.optional(),
   unresolvedCommentIds: z.array(z.string()).max(50).optional(),
+});
+const expertReviewPrepareSchema = z.strictObject({
+  requestId: z.string().trim().min(1).max(200),
+  expectedReviewVersion: z.number().int().nonnegative().refine(Number.isSafeInteger),
+  target: executionReviewTargetSchema,
+  reviewerRef: z.strictObject({
+    id: z.string().min(1).max(100),
+    version: z.string().min(1).max(100),
+  }),
+  configurationId: z.string().trim().min(1).max(200),
 });
 const settleSchema = z.strictObject({
   ...locate,
@@ -460,7 +480,7 @@ export interface ExecutionStorage {
   listPlans(): readonly { readonly key: string; readonly receipt: PlanReceipt }[];
   /** Same execution domain global. Optional only for legacy non-Run consumers. */
   readGlobal?(): unknown;
-  writeGlobal?(value: { schemaVersion: 1; nativeExecutionWriter: 1 }): Promise<void>;
+  writeGlobal?(value: ExecutionWriterGlobal): Promise<void>;
 }
 
 export interface ExecutionFailure {
@@ -1287,6 +1307,128 @@ export class ExecutionService {
     });
   }
 
+  /** Host-only preparation, not native dispatch or a grant. ConfigurationId is a
+   * reservation reference; actual prompt/model/tool configuration is still a later gate. */
+  prepareExpertReview(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<
+    ExecutionResult<{ disposition: 'applied' | 'replayed'; attempt: ExecutionReviewAttempt }>
+  > {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(expertReviewPrepareSchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      return this.withRunMember(
+        original,
+        input.target,
+        async (host, lease) => {
+          const prepare = () => {
+            this.requireRunHost();
+            lease.assertCurrent(input.target.spaceId);
+            const node = this.readRunNode(input.target);
+            if (!node) throw new ExecutionRunError('run-authority-denied');
+            this.assertRunNodeAccess(host, lease.memberId, input.target.spaceId, node);
+            this.assertReviewController(lease.memberId, node);
+            if (input.reviewerRef.version !== node.planId)
+              throw new ExecutionReviewError('review-plan-mismatch');
+            const applied = createExecutionHandoff(node, this.workbench.readWorkbench());
+            const live = this.workbench
+              .readWorkbench()
+              .participants.find((p) => p.id === input.reviewerRef.id);
+            if (!live || live.kind !== 'expert' || !live.available)
+              throw new ExecutionReviewError('review-expert-unavailable');
+            const reservation = createHash('sha256')
+              .update(
+                canonicalPayload({
+                  location: input.target,
+                  controllerMemberId: lease.memberId,
+                  requestId: input.requestId,
+                }),
+              )
+              .digest('hex');
+            return prepareExecutionReview(node, applied, {
+              requestId: input.requestId,
+              expectedReviewVersion: input.expectedReviewVersion,
+              target: input.target,
+              reviewerId: input.reviewerRef.id,
+              controllerMemberId: lease.memberId,
+              configurationId: input.configurationId,
+              newRunId: `review-run-${reservation}`,
+              newSegmentId: `review-segment-${reservation}`,
+            });
+          };
+          const proposed = prepare();
+          if (proposed.disposition === 'replayed')
+            return {
+              ok: true,
+              value: structuredClone({
+                disposition: proposed.disposition,
+                attempt: proposed.attempt,
+              }),
+            };
+          if (!this.storage.writeGlobal) throw new ExecutionRunError('run-authority-unavailable');
+          await enableExecutionReviewWriter(
+            () => this.readRunGlobal(),
+            (next) => this.storage.writeGlobal!(next),
+            this.storage.listNodes(),
+          );
+          // Marker-only is a safe crash prefix. Fresh membership, target and state
+          // are checked after that await and immediately before the original node put.
+          const decision = prepare();
+          lease.assertCurrent(input.target.spaceId);
+          if (decision.disposition === 'applied') {
+            const stored = await this.persist(() => this.writeNode(decision.record, true));
+            if (!stored.ok) return stored;
+          }
+          return {
+            ok: true,
+            value: structuredClone({
+              disposition: decision.disposition,
+              attempt: decision.attempt,
+            }),
+          };
+        },
+        false,
+        'review',
+      );
+    });
+  }
+
+  /** Passive exact target discovery: never creates a marker, reservation, or grant. */
+  readExpertReviewTarget(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionReviewTarget>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(
+        z.strictObject({
+          spaceId: id,
+          taskId: id,
+          planId: id,
+          revision: z.number().int().positive(),
+          nodeId: id,
+        }),
+        body,
+      );
+      if (!parsed.ok) return parsed;
+      return this.withRunMember(
+        original,
+        parsed.value,
+        async (_host, _lease, node) => ({
+          ok: true,
+          value: executionReviewTarget(node, parsed.value.spaceId),
+        }),
+        false,
+        'review',
+      );
+    });
+  }
+
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
   beginRun(
     request: MemberRequest,
@@ -1648,15 +1790,12 @@ export class ExecutionService {
           artifactVersionId: ids.artifactId,
           ...(node.handoff.reviewRequired ? { roundId: ids.roundId } : {}),
         });
-        const combined = {
-          ...delivered.record,
-          nativeExecution: {
-            ...ended,
-            runs: ended.runs.map((item) =>
-              item.attempt.id === run.attempt.id ? { ...item, resultDelivery } : item,
-            ),
-          },
-        };
+        const combined = withExecutionRunState(delivered.record, {
+          ...ended,
+          runs: ended.runs.map((item) =>
+            item.attempt.id === run.attempt.id ? { ...item, resultDelivery } : item,
+          ),
+        });
         const stamped = withExecutionEvent(
           combined,
           'delivery-submitted',
@@ -2274,6 +2413,12 @@ export class ExecutionService {
     if (controller !== memberId) throw new ExecutionRunError('run-not-controller');
   }
 
+  private assertReviewController(memberId: string, node: ExecutionNodeRecord): void {
+    const task = this.workbench.readWorkbench().tasks.find((item) => item.id === node.taskId);
+    if (node.ownerId !== memberId || task?.ownerId !== memberId)
+      throw new ExecutionReviewError('review-not-controller');
+  }
+
   private async withRunMember<T>(
     request: MemberRequest,
     input: ExecutionNodeLocator & { spaceId: string },
@@ -2283,6 +2428,7 @@ export class ExecutionService {
       node: ExecutionNodeRecord,
     ) => Promise<ExecutionResult<T>>,
     requireWriter = true,
+    control: 'author' | 'review' = 'author',
   ): Promise<ExecutionResult<T>> {
     const host = this.requireRunHost();
     if (requireWriter) requireExecutionRunWriter(this.readRunGlobal());
@@ -2306,10 +2452,12 @@ export class ExecutionService {
       const node = this.readRunNode(input);
       if (!node) throw new ExecutionRunError('run-authority-denied');
       this.assertRunNodeAccess(host, lease.memberId, input.spaceId, node);
-      this.assertRunController(lease.memberId, node);
+      if (control === 'review') this.assertReviewController(lease.memberId, node);
+      else this.assertRunController(lease.memberId, node);
       return await work(host, lease, node);
     } catch (error) {
       if (
+        error instanceof ExecutionReviewError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunProtocolError ||
@@ -2401,8 +2549,8 @@ export class ExecutionService {
     if (current && !native) {
       assertExecutionRunQuiescent(current);
       if (
-        canonicalPayload(readExecutionRunState(current) ?? null) !==
-        canonicalPayload(readExecutionRunState(record) ?? null)
+        canonicalPayload((current as { nativeExecution?: unknown }).nativeExecution ?? null) !==
+        canonicalPayload((record as { nativeExecution?: unknown }).nativeExecution ?? null)
       )
         throw new ExecutionRunError('run-state-invalid');
     }
@@ -4615,6 +4763,7 @@ export class ExecutionService {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
       if (
         error instanceof ArtifactUploadError ||
+        error instanceof ExecutionReviewError ||
         error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionRunProtocolError ||
@@ -5134,7 +5283,11 @@ export class ExecutionService {
       await write();
       return { ok: true, value: undefined };
     } catch (error) {
-      if (error instanceof ExecutionRunError || error instanceof ExecutionRunProtocolError)
+      if (
+        error instanceof ExecutionReviewError ||
+        error instanceof ExecutionRunError ||
+        error instanceof ExecutionRunProtocolError
+      )
         return fail(error.code);
       return fail('unavailable');
     }

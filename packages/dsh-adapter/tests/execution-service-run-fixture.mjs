@@ -72,6 +72,7 @@ export async function open(
     beforePublish,
     prepareDomain,
     startupFailure,
+    workbench: suppliedWorkbench,
     expertNode,
     projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
     closeState = { calls: 0, closed: false, errors: [] },
@@ -87,7 +88,7 @@ export async function open(
   const changes = new Set();
   const request = Object.freeze({ headers: {} });
   const members = new Map([[request, 'chen']]);
-  let workbench = confirmed(expertNode);
+  let workbench = suppliedWorkbench ?? confirmed(expertNode);
   const plan = workbench.appliedPlans.at(-1);
   let service;
   let authorities;
@@ -162,6 +163,7 @@ export async function open(
                           throw Error('PRIVATE_NODE_WRITE_FAILURE');
                         await table.put(key, value);
                         counters[name]++;
+                        if (name === 'nodes') await faults.afterNodeWrite?.(value);
                       },
                     };
                   },

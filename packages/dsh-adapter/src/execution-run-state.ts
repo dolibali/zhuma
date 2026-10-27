@@ -27,6 +27,11 @@ import {
   executionNativeResultDeliverySchema,
   assertNativeResultDelivery,
 } from './execution-native-result-delivery.js';
+import {
+  splitExecutionReviewRecord,
+  assertExecutionReviewRecord,
+} from './execution-review-record.js';
+import type { ExecutionReviewState } from './execution-review-contract.js';
 
 // Host-internal facts only. This module neither authenticates a request nor writes storage.
 const id = z.string().min(1).max(200);
@@ -124,7 +129,12 @@ export const nativeExecutionStateSchema = z.strictObject({
 export type ExecutionRunState = z.infer<typeof nativeExecutionStateSchema>;
 export type ExecutionRun = z.infer<typeof wrapperSchema>;
 export type ExecutionRunNode = ExecutionNodeRecord & {
-  readonly nativeExecution?: ExecutionRunState;
+  readonly nativeExecution?:
+    | ExecutionRunState
+    | (Omit<ExecutionRunState, 'schemaVersion'> & {
+        readonly schemaVersion: 2;
+        readonly review: ExecutionReviewState;
+      });
 };
 
 export const EXECUTION_RUN_ERRORS = [
@@ -177,7 +187,17 @@ function parsed<T>(schema: z.ZodType<T>, input: unknown): T {
 /** Missing is legacy; present-but-invalid is never interpreted as an empty Run list. */
 export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRunState | undefined {
   if (!Object.hasOwn(record, 'nativeExecution')) return undefined;
-  const raw = (record as { nativeExecution?: unknown }).nativeExecution;
+  let raw: unknown;
+  let review: ReturnType<typeof splitExecutionReviewRecord>['review'];
+  try {
+    ({ author: raw, review } = splitExecutionReviewRecord(record));
+    if (review && raw === undefined) {
+      assertExecutionReviewRecord(record, review, undefined, EXECUTION_RUN_LIMITS.runs);
+      return undefined;
+    }
+  } catch {
+    return refuse('run-state-invalid');
+  }
   const parsed = nativeExecutionStateSchema.safeParse(raw);
   if (!parsed.success) return refuse('run-state-invalid');
   const state = parsed.data;
@@ -249,6 +269,13 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
     if (receipts.has(receipt.requestId) || !ids.has(receipt.runId)) refuse('run-state-invalid');
     receipts.add(receipt.requestId);
   }
+  if (review) {
+    try {
+      assertExecutionReviewRecord(record, review, state, EXECUTION_RUN_LIMITS.runs);
+    } catch {
+      return refuse('run-state-invalid');
+    }
+  }
   return state;
 }
 export function executionRunScope(record: ExecutionNodeRecord, run: ExecutionRun): NativeWorkScope {
@@ -273,10 +300,27 @@ export function assertExecutionRunQuiescent(record: ExecutionNodeRecord): void {
   if (state?.runs.some((r) => r.resources === 'held' || !isTerminalRunStatus(r.attempt.status)))
     refuse('run-active');
 }
-function withState(record: ExecutionNodeRecord, state: ExecutionRunState): ExecutionRunNode {
-  const next = { ...record, nativeExecution: state };
+export function withExecutionRunState(
+  record: ExecutionNodeRecord,
+  state: ExecutionRunState,
+): ExecutionRunNode {
+  if (!nativeExecutionStateSchema.safeParse(state).success) refuse('run-state-invalid');
+  const parts = splitExecutionReviewRecord(record);
+  const next = {
+    ...record,
+    nativeExecution: parts.review
+      ? {
+          ...state,
+          schemaVersion: 2,
+          review: (record as { nativeExecution?: { review?: unknown } }).nativeExecution!.review,
+        }
+      : state,
+  };
   readExecutionRunState(next);
-  return next;
+  return next as ExecutionRunNode;
+}
+function withState(record: ExecutionNodeRecord, state: ExecutionRunState): ExecutionRunNode {
+  return withExecutionRunState(record, state);
 }
 function transition(
   record: ExecutionNodeRecord,
@@ -393,6 +437,7 @@ function decideExecutionRunBegin(
   const request = parsed(beginExecutionRunSchema, input);
   if (!canDrive(record, request.actorId)) refuse('run-not-controller');
   const state = readExecutionRunState(record);
+  const review = splitExecutionReviewRecord(record).review;
   if (state?.runs.some((run) => run.actorId !== request.actorId || run.spaceId !== request.spaceId))
     refuse('run-scope-mismatch');
   const fingerprint = beginFingerprint(record, request);
@@ -423,12 +468,18 @@ function decideExecutionRunBegin(
   )
     refuse('run-conflict');
   if (
-    (state?.runs.length ?? 0) >= EXECUTION_RUN_LIMITS.runs ||
+    (state?.runs.length ?? 0) + (review?.attempts.length ?? 0) >= EXECUTION_RUN_LIMITS.runs ||
     (state?.receipts.length ?? 0) >= EXECUTION_RUN_LIMITS.receipts
   )
     refuse('run-capacity');
   assertExecutionRunQuiescent(record);
+  if (review?.attempts.some((attempt) => attempt.resources === 'held')) refuse('run-active');
   if (
+    review?.attempts.some(
+      (attempt) =>
+        attempt.scope.runId === request.newRunId ||
+        attempt.scope.segmentId === request.newSegmentId,
+    ) ||
     state?.runs.some(
       (r) => r.attempt.id === request.newRunId || r.segmentId === request.newSegmentId,
     )
