@@ -13,6 +13,7 @@ import {
 } from '../dist/native-work-session-result.js';
 import { nativeReviewContextFromScope } from '../dist/native-work-session-review-contract.js';
 export { toolResponse };
+export { boot, ScriptedAdapter };
 export { bootNativeResults } from './native-work-session-result-fixture.mjs';
 export { NATIVE_REVIEW_LIMITS } from '../dist/native-work-session-review-contract.js';
 

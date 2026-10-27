@@ -670,13 +670,24 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     );
   }
   async stop(sessionId: string, signal: AbortSignal): Promise<'stopped' | 'pending'> {
-    this.touch(sessionId);
+    if (!this.retired.has(sessionId)) this.touch(sessionId);
+    const joinRetirement = async () => {
+      if (!this.retired.has(sessionId)) return false;
+      const work = this.retiring.get(sessionId);
+      if (work) await work;
+      // The same original physical barrier, never a closed-handle error or
+      // absence of a live Agent, certifies a concurrent cleanup finished.
+      this.migrationDrain(sessionId).assertCurrent();
+      signal.throwIfAborted();
+      return true;
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'pending'>((resolve) => {
       timer = setTimeout(() => resolve('pending'), STOP_MS);
     });
     try {
       const settled = (async () => {
+        if (await joinRetirement()) return 'stopped' as const;
         const connecting = this.connecting.get(sessionId);
         if (connecting) {
           connecting.abort.abort();
@@ -686,7 +697,15 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         if (!live) return connecting ? ('stopped' as const) : ('pending' as const);
         live.handle.agent.cancel({ kind: 'user' }, { keepInbox: true });
         await live.handle.agent.whenIdle();
-        await this.flush(sessionId);
+        if (!(await joinRetirement())) {
+          try {
+            await this.flush(sessionId);
+          } catch (error) {
+            // Cleanup can start between the check and flush. Do not swallow
+            // failed retirement: joining/rechecking its real proof must pass.
+            if (!(await joinRetirement())) throw error;
+          }
+        }
         signal.throwIfAborted();
         return 'stopped' as const;
       })();

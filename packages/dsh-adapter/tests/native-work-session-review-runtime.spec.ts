@@ -2,7 +2,8 @@
  * selection are synthetic fixtures; no D authentication or ballot proof. */
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { appendPluginRecord } from '@deepseek-ai/dsh-session';
@@ -11,6 +12,8 @@ import {
   bootNativeResults,
   toolResponse,
   NATIVE_REVIEW_LIMITS,
+  boot,
+  ScriptedAdapter,
 } from './zhuma-native-review-runtime-bundle.ts';
 
 async function setup(t, options = {}) {
@@ -42,6 +45,193 @@ function completionErrors(events) {
       }
     });
 }
+
+for (const ending of ['stop', 'revoke'])
+  test(`original SDK cleanup: warm routed review after ${ending} retains its original role and physically retires`, async (t) => {
+    const h = await setup(t),
+      r = h.reviewer();
+    h.adapter.script.push('Review is waiting for a controller decision.');
+    await h.start(r);
+    await r.actor().whenIdle();
+    const before = h.service.open(r.grant).binding;
+    // Explicit D-style original-issuer cleanup contract, independent of drive.
+    const originals = new WeakSet<object>();
+    const cleanup = Object.freeze({
+      scope: r.grant.scope,
+      assertCurrent() {
+        assert.ok(originals.has(cleanup));
+        return undefined;
+      },
+    });
+    originals.add(cleanup);
+    if (ending === 'stop') assert.equal((await h.service.stop(r.grant)).status, 'stopped');
+    else r.revoke();
+    const result = await h.service.retireForCleanup(cleanup, new AbortController().signal);
+    assert.equal(result.status, 'retired');
+    if (result.status !== 'retired') throw Error('actual retirement did not finish');
+    assert.equal(result.binding?.nativeSessionId, before.nativeSessionId);
+    assert.equal(result.binding?.nativeAgentId, before.nativeAgentId);
+    assert.equal(result.drain.basis, 'flushed-and-closed');
+    result.drain.assertCurrent();
+    assert.equal(h.ctx.agents.get(before.nativeAgentId), undefined);
+    assert.equal(h.runtime.migrationDrain(before.nativeSessionId).basis, 'flushed-and-closed');
+    assert.equal(h.adapter.requests.length, 1);
+  });
+
+for (const ending of ['stop', 'revoke'])
+  test(`original SDK cleanup: ${ending} retains the actual review source I/O until physical retirement finishes`, async (t) => {
+    const entered = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    t.onTestFinished(() => release.resolve());
+    const h = await setup(t, {
+        beforeRead: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      }),
+      r = h.reviewer();
+    h.planReview(r);
+    await h.start(r);
+    await entered.promise;
+    const before = h.service.open(r.grant).binding;
+    const originals = new WeakSet<object>();
+    const cleanup = Object.freeze({
+      scope: r.grant.scope,
+      assertCurrent() {
+        assert.ok(originals.has(cleanup));
+        return undefined;
+      },
+    });
+    originals.add(cleanup);
+    const stopped = ending === 'stop' ? h.service.stop(r.grant) : undefined;
+    if (ending === 'revoke') r.revoke();
+    const waiter = new AbortController(),
+      retiring = h.service.retireForCleanup(cleanup, waiter.signal);
+    waiter.abort();
+    assert.deepEqual(await retiring, { status: 'pending' });
+    let idle = false;
+    const drain = h.service.whenRetirementsIdle().then(() => (idle = true));
+    await new Promise(setImmediate);
+    assert.equal(idle, false);
+    release.resolve();
+    if (stopped) assert.equal((await stopped).status, 'stopped');
+    await drain;
+    const result = await h.service.retireForCleanup(cleanup, new AbortController().signal);
+    assert.equal(result.status, 'retired');
+    if (result.status !== 'retired') throw Error('actual review I/O did not drain');
+    assert.equal(result.binding?.nativeSessionId, before.nativeSessionId);
+    assert.equal(result.drain.basis, 'flushed-and-closed');
+    result.drain.assertCurrent();
+    assert.equal(h.ctx.agents.get(before.nativeAgentId), undefined);
+    assert.equal(h.leases.size, 0);
+    assert.equal(h.adapter.requests.length, 1);
+  });
+
+// Run this case in two separately launched original SDK worker processes. The
+// producer closes before the consumer starts. Only persisted locators travel;
+// the consumer's cleanup issuer identity is a new explicit Host-port fixture.
+const cleanupPhase = process.env.ZHUMA_REVIEW_CLEANUP_PHASE;
+(cleanupPhase ? test : test.skip)(
+  'original SDK cleanup process: a new OS owner cleans the persisted v3 review without reacquiring send/read or constructing an Agent',
+  async (t) => {
+    const root = process.env.ZHUMA_REVIEW_CLEANUP_HOME;
+    if (!root || !['producer', 'consumer'].includes(cleanupPhase!))
+      throw Error('explicit isolated cleanup phase/home required');
+    const factsPath = join(root, 'cleanup-facts.json');
+    if (cleanupPhase === 'producer') {
+      const h = await bootNativeReviews(root);
+      t.onTestFinished(() => h.close());
+      h.adapter.script.push('Author history must stay separate.');
+      await h.service.send(h.author, h.authorMessage);
+      await h.actors.get('author').whenIdle();
+      const author = h.service.open(h.author).binding;
+      const reviewer = h.reviewer('cold-cleanup');
+      h.adapter.script.push('Persist the review session for independent cleanup.');
+      await h.start(reviewer);
+      await reviewer.actor().whenIdle();
+      const binding = h.service.open(reviewer.grant).binding;
+      assert.notEqual(author.nativeSessionId, binding.nativeSessionId);
+      await writeFile(
+        factsPath,
+        JSON.stringify({ scope: reviewer.scope, binding, author, producerPid: process.pid }),
+      );
+      return;
+    }
+    const facts = JSON.parse(await readFile(factsPath, 'utf8'));
+    assert.notEqual(process.pid, facts.producerPid);
+    const hashes = async () => {
+      const result: Record<string, string> = {};
+      for (const base of ['domains', 'sessions'])
+        for (const relative of await readdir(join(root, base), { recursive: true }))
+          if (relative.endsWith('.json') || relative.endsWith('.jsonl'))
+            result[`${base}/${relative}`] = createHash('sha256')
+              .update(await readFile(join(root, base, relative)))
+              .digest('hex');
+      return result;
+    };
+    const before = await hashes(),
+      original = Object.freeze({}),
+      originals = new WeakMap<object, unknown>([[original, facts.scope]]),
+      forbidden: string[] = [];
+    const refuse = (name: string) => () => {
+      forbidden.push(name);
+      throw Error(`cleanup attempted ${name}`);
+    };
+    const adapter = new ScriptedAdapter();
+    const h = await boot(
+      root,
+      adapter,
+      refuse('Agent composition'),
+      {},
+      {
+        authorize: refuse('send qualification'),
+        readTarget: refuse('target read'),
+        unavailableRequired: refuse('target catalog'),
+        authorizeCleanup(value: object) {
+          if (!originals.has(value)) throw Error('not the new cleanup issuer original');
+          return originals.get(value);
+        },
+      },
+    );
+    t.onTestFinished(() => h.close());
+    assert.throws(() => h.service.reviewGrant(original));
+    assert.deepEqual(forbidden, ['send qualification']);
+    forbidden.length = 0;
+    await assert.rejects(
+      h.service.retireReviewForCleanup({ ...original }, new AbortController().signal),
+    );
+    const result = await h.service.retireReviewForCleanup(original, new AbortController().signal);
+    assert.equal(result.status, 'retired');
+    if (result.status !== 'retired') throw Error('persisted review was not physically retired');
+    assert.equal(result.binding?.nativeSessionId, facts.binding.nativeSessionId);
+    assert.equal(result.binding?.nativeAgentId, facts.binding.nativeAgentId);
+    assert.equal(
+      result.binding?.selection.configurationId,
+      facts.binding.selection.configurationId,
+    );
+    assert.equal(result.drain.basis, 'flushed-and-closed');
+    result.drain.assertCurrent();
+    assert.equal(h.runtime.isConnected(facts.binding.nativeSessionId), false);
+    assert.equal(h.ctx.agents.get(facts.binding.nativeAgentId), undefined);
+    assert.equal(h.ctx.agents.get(facts.author.nativeAgentId), undefined);
+    assert.equal(adapter.requests.length, 0);
+    assert.deepEqual(forbidden, []);
+    assert.deepEqual(await hashes(), before);
+    await writeFile(
+      join(root, 'cleanup-consumer.json'),
+      JSON.stringify({
+        producerPid: facts.producerPid,
+        consumerPid: process.pid,
+        basis: result.drain.basis,
+        nativeSessionId: result.binding?.nativeSessionId,
+        modelCalls: adapter.requests.length,
+        forbidden,
+        before,
+        after: await hashes(),
+      }),
+    );
+  },
+);
 
 test('original SDK: author and two independent reviewer sessions/tools/history remain isolated; actual returned bytes produce original-owner fixed reviews only after retirement', async (t) => {
   const h = await setup(t);

@@ -12,6 +12,14 @@
 
 D 的 `ExecutionReviewReadGrant` 只授权固定目标读取。须经过原 Service 的 issuer 鉴别；不能拿它授权 Native 启动/send/落票。真实 Drive/冻结 model、Skills、MCP 资格仍由 D/A/Host 原链路接续，组合不完整时保持拒绝。配置元信息不是资源已实际采用的证据。
 
+## 纯清理与冷进程
+
+热进程的 `retireForCleanup` 保留同一 owner 已路由的 review scope 角色，仍逐次调用原 cleanup 断言，不删除 scope 比较。角色不会随九字段解析或复制丢失；其他 owner 的已路由 scope 拒绝。原共同 `retireScope` 在同一 bindings 域通过 review adapter 严格核对 v3 context 与内层 binding，再等待原元数据/正文 I/O 槽和实际 writer 退役，不按旧作者记录误报 absence。Stop 与 cleanup 并发时，Stop 等待同一实际退役及其 drain，不能以关闭句柄错误充当停止确认。
+
+新进程不从持久 JSON 续签 send。可选同步 `NativeReviewPorts.authorizeCleanup(original): ExecutionReviewScope` 由 Host 先调用 D 原 Service 的 `assertExpertReviewCleanupAuthority(original)` 验证真实 cleanup issuer，之后返回其准确 scope；仅调用对象自报的 `assertCurrent` 不足够。`service.retireReviewForCleanup(original, waitSignal)` 只在该核对后建立本 owner 临时角色关联并复用原共同清理，缺口、异步 producer、复制对象、来源替换、跨 owner、目标变化均拒绝。该入口不获取成员 drive/read、模型 selection 或评审目录，不构建 Agent、不写 ballot。D 仍负责原 admitted/held、准确 round/artifact/native IDs 与新进程清理重资格，不允许凭 scope 数据升级权限。
+
+caller 取消或超时只结束等待；已开始的物理清理仍归原 owner 持有，直到真实源 I/O/关闭完成。返回 drain 在实际元数据、writer 或 Host 生命周期变化后失效。重启用例使用两个不同 OS worker 的原 SDK 和实际 JSON 域/日志，consumer 零模型/Agent且业务 JSON/作者和评审日志字节不变；新 cleanup issuer 身份仍明确是 Host 契约 fixture，不认证 D 真实重资格或正式 Host 接线。
+
 ## 读取、声明与固定证明
 
 `read_review_target` 只接受 Host 固定目标目录中的引用及 byte range。先在原队列持久预扣尝试/字节预算，再启动真实字节 I/O；只有真实底层操作和 lease 结束后才释放原读槽，超时、Stop 或撤权不提前宣称排空。每页最多 8192 请求字节，16 次/65536 字节预算不因恢复清零。UTF-8 页面末尾截断时只返回完整字符前缀，保留 BOM 和准确 offset/length/total；不把所读取的尾部半字符计入模型实际收到的范围。
