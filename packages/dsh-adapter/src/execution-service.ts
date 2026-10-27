@@ -142,6 +142,8 @@ import {
   requireExecutionRunWriter,
   enableExecutionReviewWriter,
   requireExecutionReviewWriter,
+  requireWorkspaceApprovalWriter,
+  enableWorkspaceApprovalWriter,
   type ExecutionWriterGlobal,
 } from './execution-run-protocol.js';
 import {
@@ -227,6 +229,23 @@ import {
   NATIVE_OUTPUT_FILE_TOOL,
 } from './native-work-session-output-file-tool.js';
 import { ExecutionWorkflowIntents, type WorkflowMember } from './execution-workflow-intent.js';
+import { ExecutionWorkspaceApprovals } from './execution-workspace-approval.js';
+import {
+  projectArtifactsQuerySchema,
+  type ProjectArtifactsValue,
+} from './execution-project-artifacts-contract.js';
+import {
+  acceptedProjectFileArtifact,
+  projectArtifactsProjection,
+  selectProjectArtifacts,
+} from './execution-project-artifacts.js';
+import {
+  WorkspaceApprovalError,
+  type WorkspaceApprovalHostSource,
+  type WorkspaceApprovalOwner,
+  type WorkspaceApprovalRun,
+  type WorkspaceApprovalState,
+} from './execution-workspace-approval-contract.js';
 import {
   WORKFLOW_REVIEW_REQUEST_PREFIX,
   workflowReviewRequestId,
@@ -281,6 +300,12 @@ const fileReadSchema = z.discriminatedUnion('purpose', [
     ...fileReadLocation,
     purpose: z.literal('upstream'),
     sourceNodeId: WorkTaskSchema.shape.id,
+    artifactVersionId: artifactId,
+  }),
+  z.strictObject({
+    ...fileReadLocation,
+    purpose: z.literal('accepted'),
+    projectId: WorkTaskSchema.shape.id,
     artifactVersionId: artifactId,
   }),
 ]);
@@ -570,6 +595,11 @@ export interface ExecutionStorage {
   /** Same execution domain global. Optional only for legacy non-Run consumers. */
   readGlobal?(): unknown;
   writeGlobal?(value: ExecutionWriterGlobal): Promise<void>;
+  /** Handle over the same already opened execution domain. No caller owns put. */
+  workspaceApprovals?: {
+    read(): unknown;
+    write(state: WorkspaceApprovalState): Promise<void>;
+  };
 }
 
 export interface ExecutionFailure {
@@ -1061,6 +1091,7 @@ export class ExecutionService {
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private workflowIntents: ExecutionWorkflowIntents | undefined;
+  private workspaceApprovalOwner: ExecutionWorkspaceApprovals | undefined;
   private readonly reviewWorkflowClaims = new Map<
     string,
     {
@@ -1123,6 +1154,130 @@ export class ExecutionService {
     private readonly fileStore?: ArtifactFileStore,
   ) {
     this.assertRunStoreCompatibility();
+    if (storage.workspaceApprovals?.read() !== undefined)
+      requireWorkspaceApprovalWriter(this.readRunGlobal());
+  }
+
+  /** A registers its actual controlled SDK confirmation producer once. The
+   * returned private view never exposes the table writer to Host or Client. */
+  openWorkspaceApprovalOwner(source: WorkspaceApprovalHostSource): WorkspaceApprovalOwner {
+    const table = this.storage.workspaceApprovals;
+    if (!table || this.workspaceApprovalOwner || this.runLifetime.signal.aborted)
+      throw new WorkspaceApprovalError('workspace-approval-unavailable');
+    let installedHost: ExecutionRunHostPorts | undefined;
+    let migrationDrain: ExecutionRunHostPorts['migrationDrain'];
+    const currentHost = () => {
+      const host = this.requireRunHost();
+      if (!installedHost) {
+        installedHost = host;
+        migrationDrain = host.migrationDrain;
+      }
+      if (host !== installedHost || host.migrationDrain !== migrationDrain)
+        throw new WorkspaceApprovalError('workspace-approval-unavailable');
+      return host;
+    };
+    const approvals = new ExecutionWorkspaceApprovals(
+      {
+        signal: this.runLifetime.signal,
+        read: () => table.read(),
+        write: (state) => table.write(state),
+        assertCompatible: (hasState) => {
+          this.assertRunStoreCompatibility();
+          if (hasState) requireWorkspaceApprovalWriter(this.readRunGlobal());
+        },
+        enableWriter: () => {
+          if (!this.storage.writeGlobal)
+            throw new WorkspaceApprovalError('workspace-approval-unavailable');
+          return enableWorkspaceApprovalWriter(
+            () => this.readRunGlobal(),
+            (next) => this.storage.writeGlobal!(next),
+            this.storage.listNodes(),
+          );
+        },
+        enqueue: (work) =>
+          this.enqueue(async () => {
+            const result = await work();
+            return result.ok ? result : fail(result.error.code);
+          }),
+        member: async (original, scope) => {
+          const host = currentHost(),
+            member = await host.memberLease(original);
+          const { memberId, expiresAt, signal, assertCurrent, release } = member;
+          let released = false;
+          return {
+            actorId: memberId,
+            signal,
+            assertCurrent: () => {
+              currentHost();
+              if (
+                released ||
+                !Number.isSafeInteger(expiresAt) ||
+                expiresAt <= Date.now() ||
+                signal.aborted ||
+                member.memberId !== memberId ||
+                member.expiresAt !== expiresAt ||
+                member.signal !== signal ||
+                member.assertCurrent !== assertCurrent ||
+                member.release !== release
+              )
+                throw new WorkspaceApprovalError('workspace-approval-unauthenticated');
+              synchronousRunAssertion(assertCurrent.call(member, scope.spaceId));
+              if (
+                !this.workbench
+                  .readWorkbench()
+                  .projects.some((project) => project.id === scope.projectId)
+              )
+                throw new WorkspaceApprovalError('workspace-approval-not-found');
+              synchronousRunAssertion(host.assertProjectSpace(scope.projectId, scope.spaceId));
+              if (signal.aborted)
+                throw new WorkspaceApprovalError('workspace-approval-unauthenticated');
+              return undefined;
+            },
+            release() {
+              if (released) return;
+              released = true;
+              return release.call(member);
+            },
+          };
+        },
+        runs: () => {
+          const found: WorkspaceApprovalRun[] = [];
+          for (const node of this.storage.listNodes())
+            for (const run of readExecutionRunState(node)?.runs ?? []) {
+              if (run.workspace.kind !== 'local') continue;
+              found.push({
+                scope: executionRunScope(node, run),
+                workspace: run.workspace,
+                resources: run.resources,
+                ...(run.attempt.sessionId ? { nativeSessionId: run.attempt.sessionId } : {}),
+                ...(run.attempt.executorRunId ? { nativeAgentId: run.attempt.executorRunId } : {}),
+              });
+            }
+          return found;
+        },
+        assertDrained: (run) => {
+          const host = currentHost();
+          if (!migrationDrain)
+            throw new WorkspaceApprovalError('workspace-approval-recovery-required');
+          const proof = migrationDrain.call(host, run.scope);
+          if (
+            !proof ||
+            !(proof.signal instanceof AbortSignal) ||
+            proof.signal.aborted ||
+            typeof proof.assertCurrent !== 'function'
+          )
+            throw new WorkspaceApprovalError('workspace-approval-recovery-required');
+          synchronousRunAssertion(proof.assertCurrent());
+          if (proof.signal.aborted)
+            throw new WorkspaceApprovalError('workspace-approval-recovery-required');
+          return undefined;
+        },
+        notify: () => this.notifyRuns(),
+      },
+      source,
+    );
+    this.workspaceApprovalOwner = approvals;
+    return approvals.owner;
   }
 
   /** Install once on this owner. A supplies the SAME Host bundle's real member lease issuer. */
@@ -1202,6 +1357,13 @@ export class ExecutionService {
     body: unknown,
   ): Promise<ExecutionResult<WorkflowExecutionClaim>> {
     return this.workflows().claim(request, body);
+  }
+
+  /** Host checks original claim/request identity before reserving local work.
+   * A copied claim's borrowed check closure is not an authority check. */
+  assertWorkflowExecutionClaim(request: MemberRequest, claim: WorkflowExecutionClaim): undefined {
+    this.workflows().assertClaim(request, claim);
+    return undefined;
   }
 
   private workflows(): ExecutionWorkflowIntents {
@@ -3622,6 +3784,7 @@ export class ExecutionService {
   /** Fence driving first. A may still commit capability-checked cleanup during native drain. */
   fenceRuns(): void {
     this.runLifetime.abort();
+    this.workspaceApprovalOwner?.fence();
     this.runAuthorities?.fence();
   }
 
@@ -3632,6 +3795,12 @@ export class ExecutionService {
     while (this.runPreparations.size) await Promise.allSettled([...this.runPreparations]);
     while (this.nativeResultOperations.size)
       await Promise.allSettled([...this.nativeResultOperations]);
+    let workspaceApprovalFailure: unknown;
+    try {
+      await this.workspaceApprovalOwner?.close();
+    } catch (error) {
+      workspaceApprovalFailure = error;
+    }
     await this.writes;
     try {
       await this.workflowIntents?.close();
@@ -3644,6 +3813,7 @@ export class ExecutionService {
     }
     if (this.runPreparationFailure) throw this.runPreparationFailure;
     if (this.nativeResultCleanupFailure) throw this.nativeResultCleanupFailure;
+    if (workspaceApprovalFailure) throw workspaceApprovalFailure;
   }
 
   private requireRunHost(): ExecutionRunHostPorts {
@@ -5286,6 +5456,58 @@ export class ExecutionService {
     );
   }
 
+  /** Project result reads share the ORIGINAL request's file/member authority.
+   * Metadata/text projection never repairs dependencies, writes or opens bytes. */
+  projectArtifacts(
+    caller: ExecutionCaller,
+    body: unknown,
+    source?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionResult<ProjectArtifactsValue>> {
+    const parsed = parseBody(projectArtifactsQuerySchema, body);
+    if (!parsed.ok) return Promise.resolve(parsed);
+    const query = parsed.value,
+      scope = query.view === 'list' ? query : query.ref;
+    return this.withFileAuthority(caller, body, source, async (actor, authority) =>
+      this.enqueue(async () => {
+        const check = () => {
+          this.assertFileAuthority(authority, actor.actorId, scope.projectId, scope.spaceId);
+          if (
+            this.fileLifetime.signal.aborted ||
+            authority.lease.signal.aborted ||
+            !actor.spaceIds.includes(scope.spaceId)
+          )
+            throw new ArtifactUploadError('not-found');
+        };
+        check();
+        const selection = selectProjectArtifacts(
+          this.workbench.readWorkbench(),
+          actor.actorId,
+          scope.spaceId,
+          scope.projectId,
+        );
+        const value = projectArtifactsProjection(selection, query, (ref) => {
+          check();
+          try {
+            return this.currentFileNode(ref);
+          } catch (error) {
+            if (error instanceof ArtifactUploadError && error.code === 'not-found')
+              return undefined;
+            throw error;
+          }
+        });
+        check();
+        const fresh = selectProjectArtifacts(
+          this.workbench.readWorkbench(),
+          actor.actorId,
+          scope.spaceId,
+          scope.projectId,
+        );
+        if (fresh.fingerprint !== selection.fingerprint) return fail('conflict');
+        return { ok: true, value };
+      }),
+    );
+  }
+
   report(
     caller: ExecutionCaller,
     body: unknown,
@@ -5985,7 +6207,10 @@ export class ExecutionService {
         )
           throw new ArtifactUploadError('not-found');
       }
-      const artifact = source.artifactVersions.find((item) => item.id === query.artifactVersionId);
+      const artifact =
+        query.purpose === 'accepted'
+          ? acceptedProjectFileArtifact(this.workbench.readWorkbench(), actorId, query, source)
+          : source.artifactVersions.find((item) => item.id === query.artifactVersionId);
       if (!artifact) throw new ArtifactUploadError('not-found');
       if (query.purpose === 'review') {
         const round = source.rounds.find(
@@ -6005,6 +6230,8 @@ export class ExecutionService {
         throw new ArtifactUploadError('not-found');
       file = artifact.files.find((item) => item.id === query.uploadId);
       if (!file) throw new ArtifactUploadError('not-found');
+      if (query.purpose === 'accepted' && authority.lease.signal.aborted)
+        throw new ArtifactUploadError('not-found');
     }
     const record = this.fileStore.get(query.uploadId);
     if (
@@ -6173,6 +6400,7 @@ export class ExecutionService {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
       if (
         error instanceof ArtifactUploadError ||
+        error instanceof WorkspaceApprovalError ||
         error instanceof ExecutionReviewReadError ||
         error instanceof ExecutionReviewError ||
         error instanceof ExecutionReviewFixedResultError ||

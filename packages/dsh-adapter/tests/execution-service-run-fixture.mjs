@@ -164,8 +164,10 @@ export async function open(
                       async put(key, value) {
                         if (name === 'nodes' && faults.node)
                           throw Error('PRIVATE_NODE_WRITE_FAILURE');
+                        if (faults.table === name) throw Error('CONTRACT_TABLE_WRITE_FAILURE');
                         await table.put(key, value);
-                        counters[name]++;
+                        counters[name] = (counters[name] ?? 0) + 1;
+                        await faults.afterTableWrite?.(name, value);
                         if (name === 'nodes') await faults.afterNodeWrite?.(value);
                       },
                     };
@@ -308,7 +310,7 @@ export async function open(
       closeState,
       disposeExecution: () => executionFiber.dispose(),
       resetCounts() {
-        counters.global = counters.nodes = counters.plans = 0;
+        for (const key of Object.keys(counters)) counters[key] = 0;
       },
       runLocator(nodeId) {
         return { ...locate(nodeId), runId: currentExecutionRun(read(nodeId)).attempt.id };
