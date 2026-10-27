@@ -509,7 +509,7 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
     consumeClaim(original, claim) {
       if (fenced || signal.aborted) return failure();
       bound();
-      sync(claim.check());
+      sync(execution.assertWorkflowExecutionClaim(original, claim));
       if (
         claim.signal.aborted ||
         claim.view.state !== 'running' ||
