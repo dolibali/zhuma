@@ -13,6 +13,8 @@ import { nativeResultDigest } from '../dist/native-work-session-result-source.js
 import { nativeResultProvenance } from '../dist/execution-native-result-delivery.js';
 import { executionRunScope } from '../dist/execution-run-state.js';
 import { EXECUTION_RESOURCE_SOURCE_VERSION } from '../dist/execution-run-resource-snapshot.js';
+import { upstreamInputsFor } from '../dist/upstream-inputs.js';
+import { describeAcceptedInputTool } from '../dist/native-work-session-input-tool.js';
 
 export async function openWorkflowContract(root, { workbench, resources = false } = {}) {
   const h = await open(root, { seed: !workbench, expertNode: 'produce' });
@@ -113,7 +115,7 @@ export async function openWorkflowContract(root, { workbench, resources = false 
         intentId: view.intent.intentId,
         generation: view.intent.generation,
       }),
-    beginBody(ticket, overrides = {}) {
+    beginBody(ticket, overrides = {}, configuration = {}) {
       const reservation = ticket.reservation,
         node = row(reservation.nodeId);
       const state = readExecutionRunState(node);
@@ -139,12 +141,26 @@ export async function openWorkflowContract(root, { workbench, resources = false 
         },
         model: ticket.defaults.model,
         executor: { kind: 'plan-expert', ref: node.handoff.expertRef },
-        tools: { kind: ticket.defaults.tools },
+        tools:
+          configuration.tools ??
+          (ticket.defaults.tools === 'accepted-input-reader'
+            ? node.handoff.inputRefs.length === 0
+              ? { kind: 'text-only' }
+              : { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() }
+            : { kind: ticket.defaults.tools }),
         ...(resources
           ? { resourceCatalog: { sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION, mcp: [] } }
           : {}),
         resultIntentTool: describeNativeResultTool(),
-        inputs: { ...locate(node.nodeId), actorId, spaceId: 'north', items: [] },
+        inputs: {
+          ...locate(node.nodeId),
+          actorId,
+          spaceId: 'north',
+          items: upstreamInputsFor(
+            node,
+            [...h.domain.table('nodes').entries()].map(([, row]) => row),
+          ),
+        },
       });
       const { firstMessage: _message, ...projection } = executionRunCompositionRequest(composition);
       return { ...locate(node.nodeId), ...input, ...projection, composition, ...overrides };
