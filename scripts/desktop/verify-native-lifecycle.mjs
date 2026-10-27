@@ -30,6 +30,7 @@ if (
     'host-resources',
     'host-results',
     'host-local-workspace',
+    'host-workspace-approvals',
     'host-local-policy',
     'host-fixed-publications',
     'host-backend-readiness',
@@ -509,6 +510,10 @@ void publicContract;
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-local-workspace.spec.ts'),
   );
   copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-workspace-approvals.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-workspace-approvals.spec.ts'),
+  );
+  copyFileSync(
     join(root, 'packages/dsh-adapter/tests/host-run-local-policy.spec.ts'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-local-policy.spec.ts'),
   );
@@ -897,6 +902,18 @@ void publicContract;
       {},
       14,
     );
+  else if (values.phase === 'host-workspace-approvals')
+    verify(
+      'host-workspace-approvals',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-workspace-approvals.spec.ts',
+        '-t',
+        'actual Host workspace approvals:',
+      ],
+      2,
+      {},
+      14,
+    );
   else if (values.phase === 'host-resources')
     verify(
       'host-resources',
@@ -1005,6 +1022,9 @@ void publicContract;
         hostRunSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts')),
         hostLocalWorkspaceSpecSha256: hash(
           join(root, 'packages/dsh-adapter/tests/host-run-local-workspace.spec.ts'),
+        ),
+        hostWorkspaceApprovalsSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-workspace-approvals.spec.ts'),
         ),
         hostLocalPolicySpecSha256: hash(
           join(root, 'packages/dsh-adapter/tests/host-run-local-policy.spec.ts'),

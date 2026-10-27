@@ -3,6 +3,11 @@ import { createIdentityApi } from '../identity/api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
 import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
+import {
+  createWorkspaceApprovalApi,
+  type RegisterWorkspaceDirectory,
+  type WorkspaceApprovalApi,
+} from './workspace-approvals.js';
 import type {
   NativeRunAction,
   NativeRunExpertChoice,
@@ -33,6 +38,7 @@ export type NativeRunOptions = {
   start: NativeRunAction & { mode?: 'begin' | 'retry' | 'restart' };
   tools: 'text-only' | 'accepted-input-reader';
   workspaces?: readonly NativeRunWorkspaceChoice[];
+  workspaceApprovalScope?: { readonly spaceId: string; readonly projectId: string };
 };
 export type NativeRunRead = NativeRunSummary & {
   sendCapabilities: Readonly<Record<NativeRunSendMode, NativeRunAction>>;
@@ -52,6 +58,7 @@ export type NativeRunBegin = NativeRunLocator & {
 };
 export interface NativeRunApi {
   readonly workflow?: WorkflowApi;
+  readonly workspaceApprovals?: WorkspaceApprovalApi;
   inbox?(run: NativeRunSummary, signal: AbortSignal): Promise<NativeRunInbox>;
   observe?(
     run: NativeRunSummary,
@@ -236,6 +243,17 @@ function optionsView(
             };
           }),
         }),
+    ...(row.workspaceApprovalScope === undefined
+      ? {}
+      : {
+          workspaceApprovalScope: {
+            spaceId:
+              object(row.workspaceApprovalScope).spaceId === target.spaceId
+                ? target.spaceId
+                : invalid(),
+            projectId: string(object(row.workspaceApprovalScope).projectId),
+          },
+        }),
   };
 }
 const unavailable: NativeRunAction = { kind: 'unavailable', message: '当前运行暂不支持此操作。' };
@@ -382,6 +400,7 @@ export function createNativeRunApi(
   accountId: string,
   scope: MemberExecutionScope,
   onUnauthenticated: () => void,
+  registerDirectory?: RegisterWorkspaceDirectory,
 ): NativeRunApi {
   const identity = createIdentityApi(fetcher);
   function current(signal: AbortSignal) {
@@ -410,7 +429,7 @@ export function createNativeRunApi(
     endpoint: string,
     payload: object,
     caller: AbortSignal,
-    group: 'run' | 'workflow' = 'run',
+    group: 'run' | 'workflow' | 'workspaces' = 'run',
   ) {
     const connecting = new AbortController();
     const timer = setTimeout(() => connecting.abort(), 10_000);
@@ -443,6 +462,8 @@ export function createNativeRunApi(
       current(signal);
       if (response.status === 401)
         throw new ExecutionError('unauthenticated', '登录已失效，请重新登录。');
+      if (response.status === 403 && group === 'workspaces')
+        throw new ExecutionError('workspace-owner-required', '请在本机所有者入口管理目录授权。');
       if (!response.ok)
         throw new ExecutionError('unavailable', 'Agent 服务暂不可用，请刷新后重试。');
       delivered = true;
@@ -456,7 +477,7 @@ export function createNativeRunApi(
     endpoint: string,
     payload: object,
     caller: AbortSignal,
-    group: 'run' | 'workflow' = 'run',
+    group: 'run' | 'workflow' | 'workspaces' = 'run',
   ): Promise<unknown> {
     const signal = AbortSignal.any([caller, AbortSignal.timeout(10_000)]);
     try {
@@ -476,6 +497,31 @@ export function createNativeRunApi(
   });
   const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
   return {
+    workspaceApprovals: createWorkspaceApprovalApi(
+      (endpoint, payload, signal) => call(endpoint, payload, signal, 'workspaces'),
+      scope.spaceId,
+      registerDirectory
+        ? async (signal) => {
+            const authorize = async () => {
+              current(signal);
+              const session = await identity.session(signal);
+              current(signal);
+              if (session.accountId !== accountId)
+                throw new ExecutionError('unauthenticated', '账号已变化，请重新登录。');
+              if (!session.spaces.some((item) => item.id === scope.spaceId))
+                throw new ExecutionError('space-unavailable', '此空间已不可访问。');
+            };
+            try {
+              await authorize();
+              const value = await registerDirectory(signal, authorize);
+              await authorize();
+              return value;
+            } catch (error) {
+              return report(error, signal);
+            }
+          }
+        : undefined,
+    ),
     workflow: createWorkflowApi(
       (endpoint, payload, signal) => call(endpoint, payload, signal, 'workflow'),
       scope.spaceId,

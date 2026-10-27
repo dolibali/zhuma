@@ -578,8 +578,8 @@ diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
 +  const response = await memberCookies.forward(request, host, cookie, (credential) => {
 +    headers.set('cookie', credential)
 +    // The bridge has verified the original dsh-app Origin before dispatching.
-+    // Preserve an explicit same-Host CSRF Origin only for this owner setup POST.
-+    if (source.pathname === '/api/zhuma-local-setup/initialize' && request.method === 'POST') headers.set('origin', target.origin)
++    // Preserve same-Host CSRF Origin only for explicit owner control-plane POSTs.
++    if ((source.pathname === '/api/zhuma-local-setup/initialize' || /^\/api\/zhuma-workspaces\/(?:options|approve|revoke)$/.test(source.pathname)) && request.method === 'POST') headers.set('origin', target.origin)
 +    return fetch(target, init)
 +  })
    const outgoing = new Headers(response.headers)

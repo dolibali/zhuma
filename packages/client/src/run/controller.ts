@@ -93,6 +93,11 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         experts: { kind: 'ready', items: options.experts },
         resources: options.resources,
         ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
+        ...(options.workspaceApprovalScope === undefined
+          ? {}
+          : {
+              workspaceApprovalScope: options.workspaceApprovalScope,
+            }),
         actions: {
           start: stopping
             ? stopPending

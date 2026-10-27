@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
+import { realpathSync, statSync } from 'node:fs';
 import { symbols, type Context } from '@deepseek-ai/cordis';
 import { WorkspaceId, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace';
 import FsLocal from '@deepseek-ai/dsh-fs-local';
@@ -34,6 +35,10 @@ import {
 import type { NativeOutputPublicationAuthority } from './native-work-session-output-file-contract.js';
 import { describeNativeOutputFileTool } from './native-work-session-output-file-tool.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
+import type {
+  WorkspaceApprovalIdentity,
+  WorkspaceApprovalOwner,
+} from './execution-workspace-approval-contract.js';
 
 const id = z.string().trim().min(1).max(200);
 const range = z.strictObject({
@@ -77,6 +82,14 @@ export type HostWorkspaceChoice = {
   readonly publish: boolean;
 };
 type Execution = Pick<ExecutionService, 'readRunNode' | 'readRunComposition'>;
+type LocalPolicy = HostLocalExecutionConfig['bindings'][number];
+type PolicySource = {
+  readonly policy: LocalPolicy;
+  readonly deviceId: string;
+  readonly identity?: WorkspaceApprovalIdentity;
+};
+const policyKey = (source: PolicySource) =>
+  createHash('sha256').update(canonicalPayload(source)).digest('hex');
 type BoundSession = { context: Context; agent: Agent; session: Session; published: boolean };
 type RememberedWorkspace = {
   snapshot: FrozenExecutionRunComposition;
@@ -94,6 +107,7 @@ export function createHostRunWorkspaces(
   ctx: Context,
   options: {
     config?: HostLocalExecutionConfig | undefined;
+    readonly approvals?: WorkspaceApprovalOwner | undefined;
     readonly execution: Execution;
     readonly signal: AbortSignal;
     readWorkbench(): Workbench;
@@ -103,6 +117,9 @@ export function createHostRunWorkspaces(
     options.config === undefined ? undefined : hostLocalExecutionSchema.parse(options.config);
   const sourceConfig = options.config;
   const sourceBindings = sourceConfig?.bindings;
+  const approvals = options.approvals;
+  const approvalSnapshot = approvals?.snapshot;
+  const approvalSubscribe = approvals?.onChange;
   const execution = options.execution;
   const readNode = execution.readRunNode;
   const readComposition = execution.readRunComposition;
@@ -129,37 +146,38 @@ export function createHostRunWorkspaces(
   localLifetime.signal.addEventListener('abort', changed, { once: true });
   // This component follows the original SDK dependencies. Their unload cancels
   // local I/O without introducing another Host or disabling text-only work.
-  const localOwner = config?.bindings.length
-    ? ctx.plugin({
-        name: 'zhuma-local-workspace-owner',
-        inject: ['workspaceRegistry', 'fs', 'tools', 'sandboxPolicy', 'sessions'],
-        async apply(owner: Context) {
-          if (localSignal.aborted) return;
-          owner.effect(() => () => {
-            localReady = false;
-            localLifetime.abort();
-          });
-          // A private original SDK Tools service owns real registrations with
-          // the SAME bounded config as runtime adoption. No Agent/session is
-          // created here, and Agents never inherit this metadata-only context.
-          const definitions = owner.isolate('tools').isolate('systemPrompt').isolate('fs');
-          await definitions.plugin(FsLocal);
-          await definitions.plugin(SystemPrompt);
-          await definitions.plugin(Tools, { mode: 'native' });
-          await definitions.plugin(ToolFs, NATIVE_RUN_LOCAL_TOOL_CONFIG);
-          metadataContext = definitions;
-          localReady = true;
-          owner.on(
-            'session/event',
-            (_session, event) => {
-              if (event.type === 'sandbox/mode') changed();
-            },
-            { global: true },
-          );
-          owner.on('session/disposed', () => changed(), { global: true });
-        },
-      })
-    : undefined;
+  const localOwner =
+    config?.bindings.length || approvals
+      ? ctx.plugin({
+          name: 'zhuma-local-workspace-owner',
+          inject: ['workspaceRegistry', 'fs', 'tools', 'sandboxPolicy', 'sessions'],
+          async apply(owner: Context) {
+            if (localSignal.aborted) return;
+            owner.effect(() => () => {
+              localReady = false;
+              localLifetime.abort();
+            });
+            // A private original SDK Tools service owns real registrations with
+            // the SAME bounded config as runtime adoption. No Agent/session is
+            // created here, and Agents never inherit this metadata-only context.
+            const definitions = owner.isolate('tools').isolate('systemPrompt').isolate('fs');
+            await definitions.plugin(FsLocal);
+            await definitions.plugin(SystemPrompt);
+            await definitions.plugin(Tools, { mode: 'native' });
+            await definitions.plugin(ToolFs, NATIVE_RUN_LOCAL_TOOL_CONFIG);
+            metadataContext = definitions;
+            localReady = true;
+            owner.on(
+              'session/event',
+              (_session, event) => {
+                if (event.type === 'sandbox/mode') changed();
+              },
+              { global: true },
+            );
+            owner.on('session/disposed', () => changed(), { global: true });
+          },
+        })
+      : undefined;
   const ready = localOwner
     ? Promise.resolve(localOwner).then(
         () => undefined,
@@ -188,6 +206,9 @@ export function createHostRunWorkspaces(
       execution.readRunComposition !== readComposition ||
       options.readWorkbench !== readWorkbench ||
       options.config !== sourceConfig ||
+      options.approvals !== approvals ||
+      approvals?.snapshot !== approvalSnapshot ||
+      approvals?.onChange !== approvalSubscribe ||
       sourceConfig?.bindings !== sourceBindings ||
       sourceConfig?.deviceId !== config?.deviceId
     ) {
@@ -258,27 +279,85 @@ export function createHostRunWorkspaces(
     producer.assertCurrent();
     return producer;
   }
+  function policySources(): PolicySource[] {
+    active();
+    // These are the original domain facts, not a cached permission table. A
+    // tombstone shadows legacy configuration for the same member/project/root.
+    const state = approvals?.snapshot().state;
+    const rows = state?.approvals ?? [];
+    const legacy = (config?.bindings ?? []).filter(
+      (policy) =>
+        !rows.some(
+          (row) =>
+            row.id === policy.id ||
+            (row.actorId === policy.actorId &&
+              row.spaceId === policy.spaceId &&
+              row.projectId === policy.projectId &&
+              row.identity.workspaceId === policy.workspaceId),
+        ),
+    );
+    return [
+      ...legacy.map((policy) => ({ policy, deviceId: config!.deviceId })),
+      ...rows.flatMap((row): PolicySource[] =>
+        row.status === 'approved' && row.policy && state
+          ? [
+              {
+                policy: {
+                  id: row.id,
+                  generation: row.generation,
+                  actorId: row.actorId,
+                  spaceId: row.spaceId,
+                  projectId: row.projectId,
+                  workspaceId: row.identity.workspaceId,
+                  ...row.policy,
+                },
+                deviceId: state.deviceId,
+                identity: row.identity,
+              },
+            ]
+          : [],
+      ),
+    ];
+  }
+  const stopApprovals = approvals?.onChange(() => {
+    let current: Set<string>;
+    try {
+      current = new Set(policySources().map(policyKey));
+    } catch {
+      current = new Set();
+    }
+    // Abort the old generation immediately, including pending physical IO.
+    for (const [key, controller] of policyLifetimes)
+      if (!current.has(key)) {
+        controller.abort();
+        policyLifetimes.delete(key);
+        roots.delete(key);
+      }
+    changed();
+  });
   function selected(actorId: string, spaceId: string, projectId: string, bindingId: string) {
     active();
-    const policy = config?.bindings.find(
-      (row) =>
-        row.id === bindingId &&
-        row.actorId === actorId &&
-        row.spaceId === spaceId &&
-        row.projectId === projectId,
+    const binding = policySources().find(
+      ({ policy }) =>
+        policy.id === bindingId &&
+        policy.actorId === actorId &&
+        policy.spaceId === spaceId &&
+        policy.projectId === projectId,
     );
-    if (!policy || !config) denied();
+    if (!binding) denied();
+    const { policy, deviceId, identity: approvedIdentity } = binding;
+    const key = policyKey(binding);
     const currentPolicy = sourceConfig?.bindings.filter((row) => row.id === policy.id);
-    const controller = policyLifetimes.get(policy.id) ?? new AbortController();
-    policyLifetimes.set(policy.id, controller);
+    const controller = policyLifetimes.get(key) ?? new AbortController();
+    policyLifetimes.set(key, controller);
     if (controller.signal.aborted) denied();
     const parsedPolicy =
       currentPolicy?.length === 1
         ? hostLocalExecutionSchema.shape.bindings.element.safeParse(currentPolicy[0])
         : undefined;
     if (
-      !parsedPolicy?.success ||
-      canonicalPayload(parsedPolicy.data) !== canonicalPayload(policy)
+      !approvedIdentity &&
+      (!parsedPolicy?.success || canonicalPayload(parsedPolicy.data) !== canonicalPayload(policy))
     ) {
       controller.abort();
       changed();
@@ -290,8 +369,24 @@ export function createHostRunWorkspaces(
       changed();
       denied();
     }
+    if (approvedIdentity) {
+      try {
+        if (
+          source.createdAt !== approvedIdentity.createdAt ||
+          source.path !== realpathSync(source.path) ||
+          !statSync(source.path).isDirectory() ||
+          createHash('sha256').update(source.path).digest('hex') !==
+            approvedIdentity.pathFingerprint
+        )
+          denied();
+      } catch {
+        controller.abort();
+        changed();
+        denied();
+      }
+    }
     const identity = original(source);
-    const prior = roots.get(policy.id);
+    const prior = roots.get(key);
     if (
       prior &&
       (prior.identity !== identity ||
@@ -302,7 +397,7 @@ export function createHostRunWorkspaces(
       changed();
       denied();
     }
-    roots.set(policy.id, prior ?? { identity, path: source.path, createdAt: source.createdAt });
+    roots.set(key, prior ?? { identity, path: source.path, createdAt: source.createdAt });
     const access: 'read' | 'write' =
       policy.access === 'write' && sdkPolicy().mode !== 'read-only' ? 'write' : 'read';
     const tools = actualProducer();
@@ -311,7 +406,7 @@ export function createHostRunWorkspaces(
       .update(
         canonicalPayload({
           policy,
-          deviceId: config.deviceId,
+          deviceId,
           path: source.path,
           createdAt: source.createdAt,
         }),
@@ -319,12 +414,13 @@ export function createHostRunWorkspaces(
       .digest('hex')}`;
     return {
       policy,
+      key,
       source,
       tools,
       signal: AbortSignal.any([localSignal, controller.signal]),
       workspace: {
         kind: 'local' as const,
-        deviceId: config.deviceId,
+        deviceId,
         rootId: policy.workspaceId,
         grantId,
         generation: policy.generation,
@@ -423,7 +519,7 @@ export function createHostRunWorkspaces(
     projectId: string,
     workspace: ExecutionWorkspace,
   ) {
-    for (const row of config?.bindings ?? []) {
+    for (const { policy: row } of policySources()) {
       if (row.actorId !== actorId || row.spaceId !== spaceId || row.projectId !== projectId)
         continue;
       try {
@@ -477,7 +573,7 @@ export function createHostRunWorkspaces(
     // Registry.create accepts only real canonical directories. Re-prove that identity
     // on explicit start, before the original runtime creates the session cwd.
     if (info?.type !== 'directory' || canonical !== current.source.path) denied();
-    const root = roots.get(current.policy.id);
+    const root = roots.get(current.key);
     if (!root || (root.canonical && root.canonical !== canonical)) denied();
     root.canonical = canonical;
     const check = () => {
@@ -515,7 +611,7 @@ export function createHostRunWorkspaces(
       scopeOf(agent.ctx) !== agent
     )
       denied();
-    const canonical = roots.get(current.policy.id)?.canonical;
+    const canonical = roots.get(current.key)?.canonical;
     if (!canonical || agent.session.header.cwd !== canonical) denied();
     const stored = frozen(current.snapshot.configurationId);
     if (stored.session && stored.session.agent !== agent) denied();
@@ -536,7 +632,7 @@ export function createHostRunWorkspaces(
   function resolve(binding: NativeSessionBinding, grant: NativeWorkGrant) {
     const current = located(binding, grant);
     const snapshot = current.snapshot;
-    const canonical = roots.get(current.policy.id)?.canonical;
+    const canonical = roots.get(current.key)?.canonical;
     const bound = frozen(snapshot.configurationId).session;
     const session = bound?.session;
     if (
@@ -597,6 +693,7 @@ export function createHostRunWorkspaces(
     close(): Promise<void> {
       if (closing) return closing;
       closed = true;
+      stopApprovals?.();
       localLifetime.abort();
       return (closing = (async () => {
         await localOwner?.dispose();
@@ -663,7 +760,8 @@ export function createHostRunWorkspaces(
     },
     choices(actorId: string, spaceId: string, projectId: string): readonly HostWorkspaceChoice[] {
       active();
-      return (config?.bindings ?? [])
+      return policySources()
+        .map(({ policy }) => policy)
         .filter(
           (row) =>
             row.actorId === actorId && row.spaceId === spaceId && row.projectId === projectId,

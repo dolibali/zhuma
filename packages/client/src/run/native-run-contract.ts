@@ -122,6 +122,7 @@ export type NativeRunPanelView =
       readonly experts: NativeRunChoices<NativeRunExpertChoice>;
       readonly resources: readonly NativeRunResource[];
       readonly workspaces?: readonly NativeRunWorkspaceChoice[];
+      readonly workspaceApprovalScope?: { readonly spaceId: string; readonly projectId: string };
       readonly actions: {
         readonly start: NativeRunAction;
         readonly send: Readonly<Record<NativeRunSendMode, NativeRunAction>>;
@@ -143,6 +144,7 @@ export interface NativeRunPanelProps {
   onDirtyChange?: ((dirty: boolean) => void) | undefined;
   /** Embedded workspaces can place their close action beside the node title. */
   onClose?: (() => void) | undefined;
+  onManageWorkspaces?: (() => void) | undefined;
   onSelectionChange(selection: NativeRunSelection): void;
   onStart(selection: NativeRunSelection): Promise<void>;
   onSend(text: string, mode: NativeRunSendMode): Promise<void>;

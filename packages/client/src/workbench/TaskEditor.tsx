@@ -761,6 +761,14 @@ export function TaskEditor({
             api={nativeRun.api.workflow}
             target={{ taskId: task.id, planId: applied.id, revision: applied.revision }}
             onViewChange={setWorkflowView}
+            workspaceApprovals={
+              nativeRun.api.workspaceApprovals
+                ? {
+                    api: nativeRun.api.workspaceApprovals,
+                    location: { spaceId: nativeRun.spaceId, projectId: task.projectId },
+                  }
+                : undefined
+            }
           />
         )}
       {hasGaps && (

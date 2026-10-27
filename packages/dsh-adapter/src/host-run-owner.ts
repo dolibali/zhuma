@@ -56,6 +56,7 @@ import { registerNativeAcceptedInputTool } from './native-work-session-input-too
 import { NativeWorkError, type NativeWorkScope } from './native-work-session-contract.js';
 import { nativeScopeKey } from './native-work-session-record.js';
 import { createHostRunWorkspaces, type HostLocalExecutionConfig } from './host-run-workspaces.js';
+import { openHostWorkspaceApprovals } from './host-workspace-approvals.js';
 import { createHostWorkflowOwner, type HostWorkflowOperations } from './host-workflow-owner.js';
 import { adoptNativeRunLocalTools } from './native-run-local-tools.js';
 import {
@@ -190,8 +191,13 @@ export async function openHostRunOwner(
       throw new ExecutionRunError('run-authority-unavailable');
     return attachmentBackend === undefined ? 1 : 2;
   };
+  const workspaceApprovals = openHostWorkspaceApprovals(ctx, {
+    execution,
+    signal: lifetime.signal,
+  });
   const workspaces = createHostRunWorkspaces(ctx, {
     config: options.localExecution,
+    approvals: workspaceApprovals.owner,
     execution,
     signal: lifetime.signal,
     readWorkbench: options.readWorkbench,
@@ -353,12 +359,14 @@ export async function openHostRunOwner(
   }).catch(async (error: unknown) => {
     // No native handle was published, so no Run could have been admitted.
     await workspaces.close();
+    await workspaceApprovals.close();
     await backendOwner?.dispose();
     throw error;
   });
   if (options.signal.aborted) {
     await native.close();
     await workspaces.close();
+    await workspaceApprovals.close();
     await backendOwner?.dispose();
     throw new DOMException('Host closed during native publication', 'AbortError');
   }
@@ -419,6 +427,7 @@ export async function openHostRunOwner(
     await results?.close();
     await native.close();
     await workspaces.close();
+    await workspaceApprovals.close();
     await backendOwner?.dispose();
     await workflow?.close();
     throw error;
@@ -1233,6 +1242,14 @@ export async function openHostRunOwner(
     operations,
     beginWorkflowRun,
     workflowOperations,
+    workspaceApprovalOperations: {
+      options: (...args: Parameters<typeof workspaceApprovals.operations.options>) =>
+        command(() => workspaceApprovals.operations.options(...args)),
+      approve: (...args: Parameters<typeof workspaceApprovals.operations.approve>) =>
+        command(() => workspaceApprovals.operations.approve(...args)),
+      revoke: (...args: Parameters<typeof workspaceApprovals.operations.revoke>) =>
+        command(() => workspaceApprovals.operations.revoke(...args)),
+    },
     close(): Promise<void> {
       if (closing) return closing;
       let resolveClose!: () => void;
@@ -1272,6 +1289,7 @@ export async function openHostRunOwner(
         // Native close interrupts admitted sends/reads; await their late completions
         // before cleanup, with D's original domain and cleanup capabilities still open.
         while (commands.size || events.size) await Promise.allSettled([...commands, ...events]);
+        await workspaceApprovals.close();
         for (const state of [...owned.values()]) {
           if (state.resultFailure) failures.push(state.resultFailure);
           try {

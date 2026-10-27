@@ -13,6 +13,16 @@ export type {
 } from './workflow/api.js';
 export { WorkflowControls } from './workflow/WorkflowControls.js';
 export type {
+  WorkspaceApprovalApi,
+  WorkspaceApprovalLocation,
+  WorkspaceApprovalInput,
+  WorkspaceRevokeInput,
+  WorkspaceApprovalView,
+  WorkspaceApprovalRow,
+  WorkspacePublishRange,
+  RegisterWorkspaceDirectory,
+} from './run/workspace-approvals.js';
+export type {
   NativeConversationTarget,
   NativeConversationFrame,
   NativeRunInbox,

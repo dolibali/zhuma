@@ -12,7 +12,7 @@ type Reference = {
   readonly uploadComplete?: boolean;
 };
 type Props = {
-  api: ExecutionApi;
+  api: Pick<ExecutionApi, 'files'>;
   target: FileTarget;
   files: readonly Reference[];
   names?: readonly { readonly id: string; readonly name: string }[];
