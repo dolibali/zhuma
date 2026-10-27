@@ -33,6 +33,16 @@ export type WorkspaceRevokeInput = WorkspaceApprovalLocation & {
   readonly expectedGeneration: number;
 };
 export interface WorkspaceApprovalApi {
+  /** Labels from the original current member directory; presentation, never a grant. */
+  context?:
+    | ((
+        location: WorkspaceApprovalLocation,
+        signal: AbortSignal,
+      ) => Promise<{
+        readonly accountName: string;
+        readonly projectName: string;
+      }>)
+    | undefined;
   options(location: WorkspaceApprovalLocation, signal: AbortSignal): Promise<WorkspaceApprovalView>;
   approve(input: WorkspaceApprovalInput, signal: AbortSignal): Promise<WorkspaceApprovalRow>;
   revoke(input: WorkspaceRevokeInput, signal: AbortSignal): Promise<WorkspaceApprovalRow>;

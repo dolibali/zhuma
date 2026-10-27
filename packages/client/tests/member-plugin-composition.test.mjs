@@ -229,14 +229,19 @@ async function checkComposition({
           ? node.props.children.map(findShell).find(Boolean)
           : findShell(node?.props?.children)));
   assert.equal(findShell(element), injected.shell);
-  const launcher = launchers[0].component({
-    ...injected,
-    wide: false,
-    settingsOpen: false,
-    openSettings() {},
-  });
-  assert.equal(launcher.props.children[0].props.shell, injected.shell);
-  assert.equal(launcher.props.children[0].props.wide, false);
+  // Render through React: the public owner now binds its real settings action
+  // with an effect, so invoking a component as a plain function is invalid.
+  const launcher = require('react-dom/server').renderToStaticMarkup(
+    require('react').createElement(launchers[0].component, {
+      ...injected,
+      wide: false,
+      settingsOpen: false,
+      openSettings() {},
+    }),
+  );
+  assert.ok(launcher.includes('data-wide="false"'));
+  assert.ok(launcher.includes(restored ? '账号与空间：contract-member' : '登录账号'));
+  assert.ok(launcher.includes('aria-label="设置"'));
   assert.deepEqual(reads, Array(restored ? 2 : 1).fill('/zhuma-id/session'));
   if (memberMode && panel.activePanelId === 'zhuma-workbench') {
     const html = require('react-dom/server').renderToStaticMarkup(element);

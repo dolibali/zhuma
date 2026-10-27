@@ -18,6 +18,7 @@ import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 import nativeRunStyles from '../run/NativeRunPanel.css';
 import { createWorkspaceDirectoryRegistrar } from '../run/workspace-directory.js';
+import { ExecutionError } from '../execution/ExecutionApi.js';
 
 export const inject = ['slots', 'layout', 'connection', 'theme'];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
@@ -57,6 +58,19 @@ export function apply(ctx: Context): void {
   const api = createWorkbenchApi(connection.rpc);
   const memberShell = createMemberShell(createIdentityApi());
   const registerWorkspaceDirectory = createWorkspaceDirectoryRegistrar(ctx);
+  let settingsLauncher: (() => void) | undefined;
+  const bindSettingsLauncher = (open: () => void) => {
+    settingsLauncher = open;
+    return () => {
+      if (settingsLauncher === open) settingsLauncher = undefined;
+    };
+  };
+  const openModelSettings = () => {
+    ctx.fiber.assertActive();
+    if (!settingsLauncher)
+      throw new ExecutionError('unavailable', '设置入口暂不可用，请稍后重试。');
+    settingsLauncher();
+  };
   const executionPanel = 'zhuma-my-work' as MainPanelId;
   const workbenchPanel = 'zhuma-workbench' as MainPanelId;
   ctx.effect(() => {
@@ -182,6 +196,7 @@ export function apply(ctx: Context): void {
               <MemberExecutionPage
                 shell={memberShell}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
+                openModelSettings={openModelSettings}
                 view={panel.view}
                 openWork={() => ctx.layout.selectPanel(executionPanel)}
                 {...(panel.view === 'catalog' ? { workbenchAppearance: appearance } : {})}
@@ -250,6 +265,7 @@ export function apply(ctx: Context): void {
         name: 'settings.launcher',
         inject: () => ({
           shell: memberShell,
+          bindSettingsLauncher,
           openWork: () => {
             if (ctx.layout.panelInfo.getSnapshot().activePanelId !== executionPanel)
               ctx.layout.selectPanel(executionPanel);
