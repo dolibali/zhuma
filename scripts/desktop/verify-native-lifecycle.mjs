@@ -822,7 +822,7 @@ void publicContract;
     verify(
       'native-work-session',
       nativeSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
-      73,
+      74,
     );
     const inboxData = join(evidence, 'native-stream-data');
     mkdirSync(inboxData, { mode: 0o700 });
