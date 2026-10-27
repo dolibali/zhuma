@@ -25,6 +25,12 @@ import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
 import { ControlIcon } from './ControlIcon.js';
 import {
+  latestTaskPlan,
+  useTaskProgress,
+  type TaskProgressState,
+} from '../execution/useTaskProgress.js';
+import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import {
   ProjectHub,
   ProjectFields,
   defaultProjectParticipants,
@@ -76,7 +82,7 @@ export function WorkbenchPage({
         readonly spaceId: string;
         readonly api: Pick<
           import('../execution/ExecutionApi.js').ExecutionApi,
-          'files' | 'projectArtifacts'
+          'files' | 'projectArtifacts' | 'taskProgress'
         >;
       }
     | undefined;
@@ -561,6 +567,33 @@ export function WorkbenchPage({
       (t) => (!projectFilter || t.projectId === projectFilter) && matches(`${t.title} ${t.goal}`),
     )
     .reverse();
+  const progressTasks = activeTask
+    ? [activeTask]
+    : activeProject && ['overview', 'work'].includes(projectTab)
+      ? state.tasks
+          .filter((task) => task.projectId === activeProject.id)
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          .filter((task) => projectTab === 'overview' || matches(`${task.title} ${task.goal}`))
+          .slice(0, projectTab === 'overview' ? 5 : undefined)
+      : section === 'tasks'
+        ? tasks
+        : [];
+  const progressPlans = progressTasks.flatMap((task) => {
+    const plan = latestTaskPlan(state.appliedPlans, task.id);
+    return plan ? [{ taskId: task.id, planId: plan.id, revision: plan.revision }] : [];
+  });
+  const progress = useTaskProgress(
+    projectExecution?.api.taskProgress,
+    projectExecution?.spaceId,
+    progressPlans,
+    state,
+  );
+  function progressFor(taskId: string): TaskProgressState | undefined {
+    if (!state.appliedPlans.some((plan) => plan.taskId === taskId)) return undefined;
+    if (!latestTaskPlan(state.appliedPlans, taskId))
+      return { state: 'error', message: '当前确认计划不唯一，请刷新。' };
+    return progress.get(taskId);
+  }
   if (loading)
     return (
       <div className="zhuma zm-loading" role="status">
@@ -589,6 +622,8 @@ export function WorkbenchPage({
             setActiveTaskId(null);
           }}
           appearance={appearance}
+          progress={progressFor(activeTask.id)}
+          refreshProgress={progress.refresh}
           backLabel={activeProject ? '项目' : '任务清单'}
           {...(initialPlanning ? { initialPlanning } : {})}
           {...(openWork ? { openWork } : {})}
@@ -792,6 +827,7 @@ export function WorkbenchPage({
             resourcesConnected={!member || capabilities?.resources === 'authorized'}
             projectExecution={projectExecution?.api}
             spaceId={projectExecution?.spaceId}
+            taskProgress={progressFor}
           />
         )}
         {section === 'projects' && !activeProject && !!projects.length && (
@@ -891,8 +927,14 @@ export function WorkbenchPage({
                     {t.workflows.flatMap((w) => w.nodes).length} 节点
                     {t.workflows.length > 1 && <small>{t.workflows.length} 个工作流</small>}
                   </span>
-                  <span className={`zm-status ${t.status}`}>
-                    {t.status === 'draft' ? '计划草稿' : '已确认'}
+                  <span className="zm-task-state-cell">
+                    <span className={`zm-status ${t.status}`}>
+                      {t.status === 'draft' ? '计划草稿' : '计划已确认'}
+                    </span>
+                    <TaskProgressSummary
+                      progress={progressFor(t.id)}
+                      confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
+                    />
                   </span>
                 </button>
               ))}
