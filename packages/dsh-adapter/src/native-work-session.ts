@@ -1,4 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { NativeSessionPurpose, assertNativePurposeOwner } from './native-work-session-purpose.js';
+import {
+  NativeReviewError,
+  nativeReviewRecordSchema,
+  nativeReviewIntentSchema,
+  NATIVE_REVIEW_LIMITS,
+  type NativeReviewContext,
+  type NativeReviewRecord,
+  type NativeReviewSnapshot,
+} from './native-work-session-review-contract.js';
 import {
   NativeWorkError,
   type NativeMessageMode,
@@ -97,6 +107,7 @@ function sameSelection(a: NativeSessionSelection, b: NativeSessionSelection): bo
 function check(grant: NativeWorkGrant, action: NativeWorkAction): void {
   if (grant.signal.aborted) throw new NativeWorkError('cancelled');
   const s = grant.scope;
+  if (Object.hasOwn(s, 'review')) throw new NativeWorkError('invalid-request');
   if (
     [s.actorId, s.spaceId, s.taskId, s.planId, s.nodeId, s.runId, s.segmentId].some(
       (value) => typeof value !== 'string' || value.length === 0 || value.length > 200,
@@ -159,7 +170,7 @@ export class NativeWorkSessionService {
   >();
   private inputReadsSealed = false;
   private observeNativeAdmission(scope: NativeWorkScope): void {
-    const address = nativeScopeKey(scope);
+    const address = this.scopeKey(scope);
     if (!this.nativeAdmissions.has(address) && this.nativeAdmissions.size >= MAX_OWNER_SCOPES)
       throw new NativeWorkError('capacity');
     this.nativeAdmissions.add(address);
@@ -177,15 +188,228 @@ export class NativeWorkSessionService {
   constructor(
     private readonly storage: NativeWorkStorage,
     private readonly runtime: NativeWorkRuntime,
+    private readonly review?: {
+      readonly purpose: NativeSessionPurpose;
+      readonly read: (key: string) => unknown;
+      readonly write: (key: string, record: NativeReviewRecord) => Promise<void>;
+      readonly enable: () => Promise<void>;
+    },
   ) {}
 
+  private check(grant: NativeWorkGrant, action: NativeWorkAction): void {
+    assertNativePurposeOwner(grant, this.review?.purpose);
+    check(grant, action);
+  }
+  private sessionKey(scope: NativeWorkScope): string {
+    return this.review?.purpose.key(scope) ?? nativeWorkSessionKey(scope);
+  }
+  private scopeKey(scope: NativeWorkScope): string {
+    return this.review?.purpose.address(scope) ?? nativeScopeKey(scope);
+  }
+  private cloneScope(scope: NativeWorkScope): NativeWorkScope {
+    return this.review?.purpose.cloneScope(scope) ?? structuredClone(scope);
+  }
+  private sameScope(a: NativeWorkScope, b: NativeWorkScope): boolean {
+    return this.scopeKey(a) === this.scopeKey(b);
+  }
+  /** Original object identity is checked by the configured Host authority port. */
+  reviewGrant(original: unknown): NativeWorkGrant {
+    if (!this.review) throw new NativeReviewError('review-unavailable');
+    return this.review.purpose.reviewGrant(original);
+  }
+  reviewContext(grant: NativeWorkGrant): NativeReviewContext | undefined {
+    this.check(grant, 'open');
+    return this.review?.purpose.context(grant.scope);
+  }
+  /** Role observation only; this grants no operation or source access. */
+  isReviewPurpose(grant: NativeWorkGrant): boolean {
+    return (
+      !!grant &&
+      typeof grant === 'object' &&
+      this.review?.purpose.context(grant.scope) !== undefined
+    );
+  }
+  reviewAccess(grant: NativeWorkGrant) {
+    this.check(grant, 'send');
+    const context = this.review?.purpose.context(grant.scope);
+    if (!this.review || !context) throw new NativeReviewError('review-authority-denied');
+    return {
+      context,
+      original: this.review.purpose.original(grant),
+      ports: this.review.purpose.ports,
+      selection: this.review.purpose.selection(grant),
+    };
+  }
+  reviewIntent(grant: NativeWorkGrant) {
+    return this.reviewRecord(grant).reviewIntent;
+  }
+  private completionPending(grant: NativeWorkGrant, binding: NativeSessionBinding): boolean {
+    return (
+      binding.resultIntent !== undefined ||
+      (this.review?.purpose.context(grant.scope) !== undefined &&
+        this.reviewRecord(grant).reviewIntent !== undefined)
+    );
+  }
+  async readReviewSnapshot(
+    grant: NativeWorkGrant,
+    signal: AbortSignal,
+  ): Promise<NativeReviewSnapshot> {
+    this.reviewAccess(grant);
+    const snapshot = await this.readResultSnapshot(grant, signal);
+    if (
+      !('sourceBytes' in snapshot) ||
+      typeof snapshot.sourceBytes !== 'number' ||
+      !Number.isSafeInteger(snapshot.sourceBytes) ||
+      snapshot.sourceBytes < 0 ||
+      snapshot.sourceBytes > NATIVE_REVIEW_LIMITS.scanBytes
+    )
+      throw new NativeReviewError('review-unavailable');
+    snapshot.check();
+    return { ...snapshot, sourceBytes: snapshot.sourceBytes };
+  }
+
+  declareReviewIntent(
+    grant: NativeWorkGrant,
+    raw: unknown,
+    validate: (snapshot: NativeResultSnapshot) => undefined,
+  ): Promise<void> {
+    const intent = nativeReviewIntentSchema.parse(raw);
+    if (intent.cut) throw new NativeReviewError('invalid-arguments');
+    return this.serial(grant, 'send', async (verify) => {
+      const record = this.reviewRecord(grant);
+      if (record.reviewIntent) throw new NativeReviewError('review-result-rejected');
+      const snapshot = await this.readResultSnapshot(grant, grant.signal);
+      verify();
+      if (snapshot.hasPending) throw new NativeReviewError('review-input-pending');
+      if (validate(snapshot) !== undefined) throw new NativeReviewError('review-result-rejected');
+      snapshot.check();
+      await this.writeReview(grant, { ...record, reviewIntent: intent });
+      verify();
+      snapshot.check();
+    });
+  }
+  clearReviewIntent(grant: NativeWorkGrant, intentId: string): Promise<void> {
+    return this.serial(grant, 'send', async (verify) => {
+      const record = this.reviewRecord(grant);
+      if (!record.reviewIntent) return;
+      if (record.reviewIntent.intentId !== intentId || record.reviewIntent.cut)
+        throw new NativeReviewError('review-result-rejected');
+      const { reviewIntent: _intent, ...next } = record;
+      await this.writeReview(grant, next);
+      verify();
+    });
+  }
+  sealReviewIntent(
+    grant: NativeWorkGrant,
+    intentId: string,
+    raw: unknown,
+    assertSource: () => undefined,
+  ): Promise<void> {
+    const cut = nativeResultCutSchema.parse(raw);
+    return this.serial(grant, 'send', async (verify) => {
+      const record = this.reviewRecord(grant);
+      if (
+        record.reviewIntent?.intentId !== intentId ||
+        (record.reviewIntent.cut && JSON.stringify(record.reviewIntent.cut) !== JSON.stringify(cut))
+      )
+        throw new NativeReviewError('review-result-rejected');
+      if (assertSource() !== undefined) throw new NativeReviewError('review-result-rejected');
+      if (!record.reviewIntent.cut)
+        await this.writeReview(grant, { ...record, reviewIntent: { ...record.reviewIntent, cut } });
+      verify();
+      if (assertSource() !== undefined) throw new NativeReviewError('review-result-rejected');
+    });
+  }
+
+  /** Same admission/drain slots as author input reads; the review row alone owns
+   * its conservative byte/attempt charge. release waits for the source promise. */
+  reserveReviewRead(grant: NativeWorkGrant, length: number) {
+    return this.serial(grant, 'send', async (verify) => {
+      if (this.inputReadsSealed) throw new NativeReviewError('review-unavailable');
+      const record = this.reviewRecord(grant),
+        binding = currentBinding(record.binding);
+      if (record.reviewIntent) throw new NativeReviewError('review-result-rejected');
+      const budget = record.readBudget ?? { attempts: 0, chargedBytes: 0 };
+      if (!Number.isSafeInteger(length) || length < 1 || length > NATIVE_REVIEW_LIMITS.pageBytes)
+        throw new NativeReviewError('review-range-invalid');
+      if (
+        budget.attempts >= NATIVE_REVIEW_LIMITS.reads ||
+        budget.chargedBytes + length > NATIVE_REVIEW_LIMITS.readBytes
+      )
+        throw new NativeReviewError('review-read-budget-exceeded');
+      const key = this.sessionKey(grant.scope);
+      assertNativeInputReadOwner(binding.nativeSessionId, this.runtime);
+      if (this.inputReadDrains.has(key) || activeInputReads.has(binding.nativeSessionId))
+        throw new NativeReviewError('review-capacity');
+      let resolveDrain!: () => void;
+      const drain = {
+        promise: new Promise<void>((resolve) => {
+          resolveDrain = resolve;
+        }),
+        resolve: () => resolveDrain(),
+      };
+      const active = { owner: this.runtime, drain: drain.promise };
+      this.inputReadDrains.set(key, drain.promise);
+      activeInputReads.set(binding.nativeSessionId, active);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        if (this.inputReadDrains.get(key) === drain.promise) this.inputReadDrains.delete(key);
+        if (activeInputReads.get(binding.nativeSessionId) === active)
+          activeInputReads.delete(binding.nativeSessionId);
+        drain.resolve();
+      };
+      try {
+        await this.writeReview(grant, {
+          ...record,
+          readBudget: { attempts: budget.attempts + 1, chargedBytes: budget.chargedBytes + length },
+        });
+        verify();
+        if (this.inputReadsSealed) throw new NativeReviewError('review-unavailable');
+        return {
+          release,
+          check: () => {
+            if (released) throw new NativeReviewError('cancelled');
+            verify();
+          },
+        };
+      } catch (error) {
+        release();
+        throw error;
+      }
+    });
+  }
+  private reviewRecord(grant: NativeWorkGrant): NativeReviewRecord {
+    this.check(grant, 'open');
+    const context = this.review?.purpose.context(grant.scope);
+    if (!context || !this.review) throw new NativeReviewError('review-authority-denied');
+    const raw = this.review.read(this.sessionKey(grant.scope));
+    if (raw === undefined) throw new NativeWorkError('not-started');
+    const record = nativeReviewRecordSchema.parse(raw);
+    if (JSON.stringify(record.context) !== JSON.stringify(context))
+      throw new NativeReviewError('review-target-changed');
+    return record;
+  }
+  private async writeReview(grant: NativeWorkGrant, record: unknown): Promise<void> {
+    this.check(grant, 'send');
+    if (!this.review) throw new NativeReviewError('review-unavailable');
+    const parsed = nativeReviewRecordSchema.parse(record);
+    if (JSON.stringify(parsed.context) !== JSON.stringify(this.review.purpose.context(grant.scope)))
+      throw new NativeReviewError('review-target-changed');
+    await this.review.enable();
+    this.check(grant, 'send');
+    await this.review.write(this.sessionKey(grant.scope), parsed);
+    this.check(grant, 'send');
+  }
+
   private touchScope(scope: NativeWorkScope): void {
-    const key = nativeScopeKey(scope);
+    const key = this.scopeKey(scope);
     this.scopeEpochs.set(key, (this.scopeEpochs.get(key) ?? 0) + 1);
     this.prepared.get(key)?.controller.abort();
   }
   private trackScope<T>(scope: NativeWorkScope, work: Promise<T>): Promise<T> {
-    const key = nativeScopeKey(scope);
+    const key = this.scopeKey(scope);
     let active = this.scopeActivity.get(key);
     if (!active) this.scopeActivity.set(key, (active = new Set()));
     active.add(work);
@@ -198,8 +422,8 @@ export class NativeWorkSessionService {
     return work;
   }
   private async whenScopeIdle(scope: NativeWorkScope): Promise<void> {
-    while (this.scopeActivity.get(nativeScopeKey(scope))?.size)
-      await Promise.allSettled(this.scopeActivity.get(nativeScopeKey(scope))!);
+    while (this.scopeActivity.get(this.scopeKey(scope))?.size)
+      await Promise.allSettled(this.scopeActivity.get(this.scopeKey(scope))!);
   }
 
   private serial<T>(
@@ -207,17 +431,17 @@ export class NativeWorkSessionService {
     action: NativeWorkAction,
     operation: (verify: () => void) => Promise<T>,
   ): Promise<T> {
-    check(grant, action);
+    this.check(grant, action);
     this.touchScope(grant.scope);
-    if (this.retiredScopes.has(nativeScopeKey(grant.scope)))
+    if (this.retiredScopes.has(this.scopeKey(grant.scope)))
       return Promise.reject(new NativeWorkError('scope-mismatch'));
-    const key = nativeWorkSessionKey(grant.scope);
-    const scope = structuredClone(grant.scope);
+    const key = this.sessionKey(grant.scope);
+    const scope = this.cloneScope(grant.scope);
     const epoch = this.stopEpochs.get(key) ?? 0;
     const verify = () => {
-      check(grant, action);
-      if (!sameScope(scope, grant.scope)) throw new NativeWorkError('scope-mismatch');
-      if (this.retiredScopes.has(nativeScopeKey(scope))) throw new NativeWorkError('cancelled');
+      this.check(grant, action);
+      if (!this.sameScope(scope, grant.scope)) throw new NativeWorkError('scope-mismatch');
+      if (this.retiredScopes.has(this.scopeKey(scope))) throw new NativeWorkError('cancelled');
       if ((this.stopEpochs.get(key) ?? 0) !== epoch) throw new NativeWorkError('cancelled');
     };
     return this.trackScope(
@@ -253,9 +477,9 @@ export class NativeWorkSessionService {
     return this.serial(grant, 'send', async (verify) => {
       if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
       const binding = this.required(grant, 'send');
-      if (binding.resultIntent) throw new NativeWorkError('completion-pending');
+      if (this.completionPending(grant, binding)) throw new NativeWorkError('completion-pending');
       assertNativeInputReadOwner(binding.nativeSessionId, this.runtime);
-      const key = nativeWorkSessionKey(grant.scope);
+      const key = this.sessionKey(grant.scope);
       const budget = binding.inputReadBudget ?? { attempts: 0, chargedBytes: 0 };
       if (
         !Number.isSafeInteger(budget.attempts) ||
@@ -292,7 +516,7 @@ export class NativeWorkSessionService {
       activeInputReads.set(binding.nativeSessionId, active);
       const issued = {
         key,
-        scope: structuredClone(grant.scope),
+        scope: this.cloneScope(grant.scope),
         epoch: this.stopEpochs.get(key) ?? 0,
         release: () => {
           if (this.inputReadDrains.get(key) === drain.promise) this.inputReadDrains.delete(key);
@@ -335,8 +559,8 @@ export class NativeWorkSessionService {
           usedBytes > reservation.maximumBytes
         )
           throw new NativeWorkError('invalid-request');
-        check(grant, 'send');
-        if (!sameScope(grant.scope, issued.scope)) throw new NativeWorkError('scope-mismatch');
+        this.check(grant, 'send');
+        if (!this.sameScope(grant.scope, issued.scope)) throw new NativeWorkError('scope-mismatch');
         if ((this.stopEpochs.get(issued.key) ?? 0) !== issued.epoch) return;
         const binding = this.required(grant, 'send');
         const budget = binding.inputReadBudget;
@@ -359,7 +583,7 @@ export class NativeWorkSessionService {
   /** Actual source-Promise drain, not the logical tool wait or native driver idle. */
   async whenInputReadsIdle(scope?: NativeWorkScope): Promise<void> {
     if (scope) {
-      const key = nativeWorkSessionKey(scope);
+      const key = this.sessionKey(scope);
       while (this.inputReadDrains.has(key)) await this.inputReadDrains.get(key);
     } else {
       while (this.inputReadDrains.size) await Promise.all(this.inputReadDrains.values());
@@ -388,11 +612,11 @@ export class NativeWorkSessionService {
     )
       throw new NativeWorkError('invalid-request');
     const scope = parsed.data,
-      address = nativeScopeKey(scope),
+      address = this.scopeKey(scope),
       method = authority.assertCurrent;
     const verify = () => {
       if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
-      if (authority.assertCurrent !== method || !sameScope(scope, authority.scope))
+      if (authority.assertCurrent !== method || !this.sameScope(scope, authority.scope))
         throw new NativeWorkError('scope-mismatch');
       try {
         const result: unknown = authority.assertCurrent();
@@ -452,8 +676,8 @@ export class NativeWorkSessionService {
   private async retireScope(
     scope: NativeWorkScope,
   ): Promise<Extract<NativeScopeCleanupResult, { status: 'retired' }>> {
-    const key = nativeWorkSessionKey(scope),
-      address = nativeScopeKey(scope);
+    const key = this.sessionKey(scope),
+      address = this.scopeKey(scope);
     const find = () => {
       const stored = this.storage.read(key);
       return stored && bindingForScope(readNativeRecord(stored), scope);
@@ -542,7 +766,7 @@ export class NativeWorkSessionService {
     if (!parsed.success) throw new NativeWorkError('invalid-request');
     if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
     const data = parsed.data,
-      key = nativeWorkSessionKey(data.scope);
+      key = this.sessionKey(data.scope);
     if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
     if (this.migrating.has(key) || this.locks.has(key) || this.inputReadDrains.has(key))
       throw new NativeWorkError('unavailable');
@@ -554,7 +778,7 @@ export class NativeWorkSessionService {
     if (!previous) throw new NativeWorkError('binding-state-invalid');
     for (const binding of new Set([previous, currentBinding(record)])) {
       if (
-        this.scopeActivity.get(nativeScopeKey(binding.scope))?.size ||
+        this.scopeActivity.get(this.scopeKey(binding.scope))?.size ||
         activeInputReads.has(binding.nativeSessionId) ||
         (this.runtime.isConnected(binding.nativeSessionId) &&
           this.runtime.status(binding.nativeSessionId) !== 'idle')
@@ -567,7 +791,7 @@ export class NativeWorkSessionService {
         // ready certificate. An owned pending preparation must finish first.
         if (!(error instanceof NativeWorkError) || error.code !== 'migration-not-ready')
           throw error;
-        if (this.retiredScopes.has(nativeScopeKey(binding.scope)))
+        if (this.retiredScopes.has(this.scopeKey(binding.scope)))
           throw new NativeWorkError('unavailable');
       }
     }
@@ -578,11 +802,11 @@ export class NativeWorkSessionService {
    * external scope activity; a send/queue/source/restore always invalidates it. */
   migrationDrain(scope: NativeWorkScope): NativeMigrationDrain {
     if (!nativeScopeSchema.safeParse(scope).success) throw new NativeWorkError('invalid-request');
-    const record = this.storage.read(nativeWorkSessionKey(scope));
+    const record = this.storage.read(this.sessionKey(scope));
     if (!record) throw new NativeWorkError('not-started');
     const binding = bindingForScope(readNativeRecord(record), scope);
     if (!binding) throw new NativeWorkError('scope-mismatch');
-    const key = nativeScopeKey(scope),
+    const key = this.scopeKey(scope),
       prepared = this.prepared.get(key);
     if (!prepared) {
       // A pending/cold certificate is distinct from a known native ownership or
@@ -607,7 +831,7 @@ export class NativeWorkSessionService {
           activeInputReads.has(prepared.binding.nativeSessionId)
         )
           throw new NativeWorkError('unavailable');
-        const stored = this.storage.read(nativeWorkSessionKey(scope));
+        const stored = this.storage.read(this.sessionKey(scope));
         const binding = stored && bindingForScope(readNativeRecord(stored), scope);
         if (
           !binding ||
@@ -646,7 +870,7 @@ export class NativeWorkSessionService {
       method = authority.assertCurrent;
     if (!validMigrationPair(data.previousScope, data.scope))
       throw new NativeWorkError('scope-mismatch');
-    const key = nativeWorkSessionKey(data.scope);
+    const key = this.sessionKey(data.scope);
     const verify = (phase: 'prepare' | 'migrate') => {
       if (this.inputReadsSealed || signal.aborted) throw new NativeWorkError('cancelled');
       if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
@@ -689,7 +913,7 @@ export class NativeWorkSessionService {
       )
         throw error;
     }
-    this.retiredScopes.add(nativeScopeKey(data.previousScope));
+    this.retiredScopes.add(this.scopeKey(data.previousScope));
     if (this.locks.has(key)) this.stopEpochs.set(key, (this.stopEpochs.get(key) ?? 0) + 1);
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), 5_000);
@@ -714,12 +938,12 @@ export class NativeWorkSessionService {
       const binding = latest && bindingForScope(readNativeRecord(latest), data.previousScope);
       if (!binding || binding.nativeSessionId !== previous.nativeSessionId)
         throw new NativeWorkError('scope-mismatch');
-      this.prepared.get(nativeScopeKey(data.previousScope))?.controller.abort();
+      this.prepared.get(this.scopeKey(data.previousScope))?.controller.abort();
       const controller = new AbortController();
-      this.prepared.set(nativeScopeKey(data.previousScope), {
+      this.prepared.set(this.scopeKey(data.previousScope), {
         controller,
         signal: AbortSignal.any([controller.signal, native.signal]),
-        epoch: this.scopeEpochs.get(nativeScopeKey(data.previousScope)) ?? 0,
+        epoch: this.scopeEpochs.get(this.scopeKey(data.previousScope)) ?? 0,
         native,
         binding: {
           scope: binding.scope,
@@ -809,22 +1033,26 @@ export class NativeWorkSessionService {
   }
 
   private read(grant: NativeWorkGrant, action: NativeWorkAction): NativeSessionBinding | undefined {
-    check(grant, action);
-    const key = nativeWorkSessionKey(grant.scope);
+    this.check(grant, action);
+    const key = this.sessionKey(grant.scope);
     if (['send', 'queue'].includes(action)) {
       if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
-      if (this.retiredScopes.has(nativeScopeKey(grant.scope)))
+      if (this.retiredScopes.has(this.scopeKey(grant.scope)))
         throw new NativeWorkError('scope-mismatch');
     }
-    const stored = this.storage.read(key);
+    const context = this.review?.purpose.context(grant.scope);
+    const stored = context ? this.review?.read(key) : this.storage.read(key);
     if (stored === undefined) return undefined;
-    const record = readNativeRecord(stored);
+    const record = context ? this.reviewRecord(grant).binding : readNativeRecord(stored);
     const value = ['open', 'history', 'follow'].includes(action)
       ? bindingForScope(record, grant.scope)
       : currentBinding(record);
-    if (value === undefined || !sameScope(value.scope, grant.scope))
+    if (value && context) this.review?.purpose.bindScope(value.scope, context);
+    if (value === undefined || !this.sameScope(value.scope, grant.scope))
       throw new NativeWorkError('scope-mismatch');
-    return structuredClone(value);
+    const clone = structuredClone(value);
+    if (context) this.review?.purpose.bindScope(clone.scope, context);
+    return clone;
   }
 
   private async writeBinding(
@@ -832,15 +1060,32 @@ export class NativeWorkSessionService {
     action: NativeWorkAction,
     binding: NativeSessionBinding,
   ): Promise<void> {
-    check(grant, action);
-    const key = nativeWorkSessionKey(grant.scope);
+    this.check(grant, action);
+    const key = this.sessionKey(grant.scope);
+    const context = this.review?.purpose.context(grant.scope);
+    if (context) {
+      const record = this.reviewRecord(grant),
+        current = currentBinding(record.binding);
+      if (
+        !sameScope(current.scope, binding.scope) ||
+        current.nativeSessionId !== binding.nativeSessionId ||
+        current.nativeAgentId !== binding.nativeAgentId
+      )
+        throw new NativeWorkError('scope-mismatch');
+      await this.writeReview(grant, {
+        ...record,
+        binding:
+          record.binding.schemaVersion === 1 ? binding : { ...record.binding, current: binding },
+      });
+      return;
+    }
     if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
     const stored = this.storage.read(key);
     if (!stored) throw new NativeWorkError('not-started');
     const record = readNativeRecord(stored);
     const current = currentBinding(record);
     if (
-      !sameScope(current.scope, binding.scope) ||
+      !this.sameScope(current.scope, binding.scope) ||
       current.nativeSessionId !== binding.nativeSessionId ||
       current.nativeAgentId !== binding.nativeAgentId
     )
@@ -881,7 +1126,7 @@ export class NativeWorkSessionService {
     const verify = () => {
       const fresh = this.required(grant, 'history');
       if (
-        !sameScope(fresh.scope, binding.scope) ||
+        !this.sameScope(fresh.scope, binding.scope) ||
         !sameSelection(fresh.selection, binding.selection) ||
         fresh.nativeSessionId !== binding.nativeSessionId ||
         fresh.nativeAgentId !== binding.nativeAgentId
@@ -905,7 +1150,7 @@ export class NativeWorkSessionService {
     if (intent.cut) throw new NativeWorkError('invalid-request');
     return this.serial(grant, 'send', async (verify) => {
       const binding = this.required(grant, 'send');
-      if (binding.resultIntent) throw new NativeWorkError('completion-pending');
+      if (this.completionPending(grant, binding)) throw new NativeWorkError('completion-pending');
       const snapshot = await this.readResultSnapshot(grant, grant.signal);
       verify();
       if (snapshot.hasPending) throw new NativeWorkError('input-pending');
@@ -992,14 +1237,17 @@ export class NativeWorkSessionService {
         const sessionId = `zhuma-work-${randomUUID()}`;
         binding = {
           schemaVersion: 1,
-          scope: structuredClone(grant.scope),
+          scope: this.cloneScope(grant.scope),
           nativeSessionId: sessionId,
           nativeAgentId: sessionId,
           selection,
           receipts: [],
         };
         verify();
-        await this.storage.write(nativeWorkSessionKey(grant.scope), binding);
+        const context = this.review?.purpose.context(grant.scope);
+        if (context)
+          await this.writeReview(grant, { schemaVersion: 3, role: 'review', context, binding });
+        else await this.storage.write(this.sessionKey(grant.scope), binding);
       }
       verify();
       if (!sameSelection(binding.selection, input.selection))
@@ -1010,7 +1258,7 @@ export class NativeWorkSessionService {
       const prior = binding.receipts.find((receipt) => receipt.requestId === input.requestId);
       if (prior && prior.fingerprint !== fingerprint)
         throw new NativeWorkError('idempotency-mismatch');
-      if (binding.resultIntent) {
+      if (this.completionPending(grant, binding)) {
         if (!prior) throw new NativeWorkError('completion-pending');
         // An acknowledged retry remains readable and never wakes the sealed writer.
         const snapshot = await this.readResultSnapshot(grant, grant.signal);
@@ -1090,7 +1338,7 @@ export class NativeWorkSessionService {
         receipt,
       ],
     };
-    check(grant, action);
+    this.check(grant, action);
     await this.writeBinding(grant, action, next);
     return next;
   }
@@ -1117,7 +1365,7 @@ export class NativeWorkSessionService {
     if (input.kind === 'edit') textInput(input.text);
     return this.serial(grant, 'queue', async (verify) => {
       const binding = this.required(grant, 'queue');
-      if (binding.resultIntent) throw new NativeWorkError('completion-pending');
+      if (this.completionPending(grant, binding)) throw new NativeWorkError('completion-pending');
       this.observeNativeAdmission(binding.scope);
       await this.runtime.connect(binding, grant, false);
       verify();
@@ -1136,8 +1384,8 @@ export class NativeWorkSessionService {
 
   /** Does not hold the mutation lock while a cooperative native cancellation drains. */
   async stop(grant: NativeWorkGrant) {
-    check(grant, 'stop');
-    const key = nativeWorkSessionKey(grant.scope);
+    this.check(grant, 'stop');
+    const key = this.sessionKey(grant.scope);
     if (this.locks.has(key) || this.inputReadDrains.has(key))
       this.stopEpochs.set(key, (this.stopEpochs.get(key) ?? 0) + 1);
     const binding = this.required(grant, 'stop');
@@ -1154,7 +1402,7 @@ export class NativeWorkSessionService {
         })(),
         pending,
       ]);
-      check(grant, 'stop');
+      this.check(grant, 'stop');
       return { status: result };
     } finally {
       clearTimeout(timer);
@@ -1185,7 +1433,7 @@ export class NativeWorkSessionService {
       binding.receipts.length === 0,
     );
     combined.throwIfAborted();
-    check(grant, 'history');
+    this.check(grant, 'history');
     return { binding, events: structuredClone(events) };
   }
 
@@ -1199,7 +1447,7 @@ export class NativeWorkSessionService {
       if (
         fresh.nativeSessionId !== binding.nativeSessionId ||
         fresh.nativeAgentId !== binding.nativeAgentId ||
-        !sameScope(fresh.scope, binding.scope) ||
+        !this.sameScope(fresh.scope, binding.scope) ||
         !sameSelection(fresh.selection, binding.selection)
       )
         throw new NativeWorkError('scope-mismatch');
@@ -1248,10 +1496,10 @@ export class NativeWorkSessionService {
     const binding = this.required(grant, 'follow');
     const projection = new NativeConversationProjection(binding.nativeSessionId, after);
     for await (const item of this.follow(grant, after, signal)) {
-      check(grant, 'follow');
+      this.check(grant, 'follow');
       const frame = projection.push(item);
       if (!frame) continue;
-      check(grant, 'follow');
+      this.check(grant, 'follow');
       yield {
         scope: structuredClone(binding.scope),
         nativeSessionId: binding.nativeSessionId,
@@ -1270,10 +1518,10 @@ export class NativeWorkSessionService {
       after,
       combined,
       binding.receipts.length === 0,
-      () => check(grant, 'follow'),
+      () => this.check(grant, 'follow'),
     )) {
       if (combined.aborted) return;
-      check(grant, 'follow');
+      this.check(grant, 'follow');
       yield {
         scope: structuredClone(binding.scope),
         nativeSessionId: binding.nativeSessionId,

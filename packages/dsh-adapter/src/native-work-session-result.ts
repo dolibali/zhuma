@@ -67,6 +67,35 @@ import {
   assertNativeResultDeclaration,
   qualifyNativeFixedResult,
 } from './native-work-session-result-source.js';
+import {
+  NativeReviewError,
+  NATIVE_REVIEW_ERRORS,
+  NATIVE_REVIEW_LIMITS,
+  NATIVE_REVIEW_TOOL,
+  NATIVE_REVIEW_TOOL_VERSION,
+  NATIVE_REVIEW_READ_TOOL_VERSION,
+  nativeReviewReadRequestSchema,
+  nativeReviewReadOutputSchema,
+  nativeReviewReadRef,
+  parseNativeReviewArguments,
+  nativeReviewScopeKey,
+  type NativeReviewErrorCode,
+  type NativeReviewIntent,
+  type NativeReviewReadLease,
+  type NativeReviewReadOutput,
+  type NativeFixedReviewRef,
+  type NativeFixedReviewLease,
+  type NativeFixedReviewPreparation,
+} from './native-work-session-review-contract.js';
+import { describeNativeReviewTool } from './native-work-session-review-tool.js';
+import { describeNativeReviewReadTool } from './native-work-session-review-read.js';
+import {
+  nativeReviewAck,
+  nativeReviewRunSource,
+  nativeReviewDeclaration,
+  assertNativeReviewDeclaration,
+  qualifyNativeFixedReview,
+} from './native-work-session-review-native-source.js';
 
 type Authority = Pick<ExecutionRunAuthorities, 'assertGrant'>;
 const address = (grant: NativeWorkGrant) => canonicalPayload(grant.scope);
@@ -120,6 +149,46 @@ export interface NativeFixedResultPublicationsIssuer extends Omit<
   ): Promise<NativeFixedResultPublicationsLease>;
 }
 type AnyLease = NativeFixedResultLease | NativeFixedResultPublicationsLease;
+export interface NativeFixedReviewIssuer {
+  registerNativeReviewTools(
+    ctx: Context,
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+  ): NativeDshComposition;
+  prepareFixedReview(
+    grant: NativeWorkGrant,
+    signal: AbortSignal,
+  ): Promise<NativeFixedReviewPreparation>;
+  assertFixedReview(grant: NativeWorkGrant, ref: NativeFixedReviewRef): undefined;
+  readFixedReview(
+    grant: NativeWorkGrant,
+    ref: NativeFixedReviewRef,
+    signal: AbortSignal,
+  ): Promise<NativeFixedReviewLease>;
+}
+interface IssuedReview {
+  readonly source: NativeFixedReviewLease['source'];
+  readonly digest: string;
+  readonly readManifestDigest: string;
+  readonly drain: NativeMigrationDrain;
+  readonly signal: AbortSignal;
+}
+/** View of the existing original owner. It never constructs a second owner or
+ * creates authority; the service must already have a real review-purpose port. */
+export function nativeFixedReviewIssuer(
+  sessions: NativeWorkSessionService,
+  runtime: NativeWorkRuntime,
+): NativeFixedReviewIssuer {
+  const owner = owners.get(sessions);
+  if (!owner || !sessions.ownsResultRuntime(runtime))
+    throw new NativeReviewError('review-unavailable');
+  return {
+    registerNativeReviewTools: owner.registerNativeReviewTools.bind(owner),
+    prepareFixedReview: owner.prepareFixedReview.bind(owner),
+    assertFixedReview: owner.assertFixedReview.bind(owner),
+    readFixedReview: owner.readFixedReview.bind(owner),
+  };
+}
 interface Manifest {
   readonly entries: readonly NativePublicationManifestEntry[];
   readonly digest: string;
@@ -236,7 +305,11 @@ class NativeResultOwner {
   private readonly listeners = new Set<
     (grant: NativeWorkGrant, ref: NativeFixedResultRef) => void
   >();
-  private readonly leases = new Set<AnyLease>();
+  private readonly leases = new Set<AnyLease | NativeFixedReviewLease>();
+  private readonly reviewIssued = new WeakMap<NativeFixedReviewRef, IssuedReview>();
+  private readonly reviewReady = new Map<string, NativeFixedReviewRef>();
+  private readonly reviewJobs = new Map<string, Promise<NativeFixedReviewPreparation>>();
+  private readonly reviewFailures = new Map<string, NativeReviewError>();
   private pendingLeases = 0;
   constructor(
     private readonly sessions: NativeWorkSessionService,
@@ -246,6 +319,7 @@ class NativeResultOwner {
     private readonly publications?: NativeOutputFileIssuer,
   ) {}
   private check(grant: NativeWorkGrant): void {
+    if (this.sessions.isReviewPurpose(grant)) throw new NativeResultError('result-unavailable');
     this.authority.assertGrant(grant, 'send');
     if (
       this.lifetime.signal.aborted ||
@@ -253,6 +327,575 @@ class NativeResultOwner {
       !this.sessions.ownsResultRuntime(this.runtime)
     )
       throw new NativeResultError('cancelled');
+  }
+  private reviewCheck(grant: NativeWorkGrant) {
+    if (
+      this.lifetime.signal.aborted ||
+      owners.get(this.sessions) !== this ||
+      !this.sessions.ownsResultRuntime(this.runtime)
+    )
+      throw new NativeReviewError('cancelled');
+    const access = this.sessions.reviewAccess(grant),
+      binding = this.sessions.open(grant)?.binding;
+    const failure = this.reviewFailures.get(nativeReviewScopeKey(access.context));
+    if (failure) throw failure;
+    if (
+      !binding ||
+      binding.resultIntent ||
+      canonicalPayload(binding.scope) !== canonicalPayload(access.context.scope) ||
+      canonicalPayload(binding.selection) !== canonicalPayload(access.selection)
+    )
+      throw new NativeReviewError('review-result-rejected');
+    return { ...access, binding };
+  }
+  private reviewCode(error: unknown): NativeReviewErrorCode {
+    return error instanceof NativeReviewError ? error.code : 'review-unavailable';
+  }
+  registerNativeReviewTools(
+    ctx: Context,
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+  ): NativeDshComposition {
+    const active = this.reviewCheck(grant),
+      agent = scopeOf(ctx);
+    if (
+      !agent ||
+      binding.nativeSessionId !== active.binding.nativeSessionId ||
+      binding.nativeAgentId !== active.binding.nativeAgentId ||
+      binding.selection.configurationId !== active.binding.selection.configurationId
+    )
+      throw new NativeReviewError('review-result-rejected');
+    const current = (exec: Readonly<ToolExecution>) => {
+      this.reviewCheck(grant);
+      if (
+        exec.signal.aborted ||
+        exec.agent !== agent ||
+        exec.agent.id !== binding.nativeAgentId ||
+        ctx.agents.get(exec.agent.id) !== exec.agent
+      )
+        throw new NativeReviewError('cancelled');
+    };
+    type Reservation = Awaited<ReturnType<NativeWorkSessionService['reserveReviewRead']>>;
+    const reads = new Map<
+      ToolExecution['token'],
+      { value: NativeReviewReadOutput; lease?: NativeReviewReadLease; reservation?: Reservation }
+    >();
+    const completions = new Map<
+      ToolExecution['token'],
+      { value: unknown; intent?: NativeReviewIntent }
+    >();
+    const releaseRead = (token: ToolExecution['token']) => {
+      const read = reads.get(token);
+      reads.delete(token);
+      try {
+        read?.lease?.release();
+      } catch {
+        this.reviewFailures.set(
+          nativeReviewScopeKey(active.context),
+          new NativeReviewError('review-unavailable'),
+        );
+      } finally {
+        read?.reservation?.release();
+      }
+    };
+    ctx.effect(() => () => {
+      for (const token of reads.keys()) releaseRead(token);
+    });
+    ctx.on('tools/result', (exec) => {
+      releaseRead(exec.token);
+      completions.delete(exec.token);
+    });
+    ctx.on('agent/status', ({ agent: actual, status }) => {
+      if (actual === agent && status === 'idle')
+        void this.prepareFixedReview(grant, this.lifetime.signal).catch(() => undefined);
+    });
+    ctx.tools.guard(() =>
+      this.sessions.reviewIntent(grant) ? 'native-completion-pending' : undefined,
+    );
+    const readDefinition = describeNativeReviewReadTool();
+    ctx.tools.register({
+      name: readDefinition.name,
+      description: readDefinition.description,
+      parameters: readDefinition.parameters,
+      output: { schema: readDefinition.outputSchema, render: (_args, value) => blocks(value) },
+      execute: async (raw, exec) => {
+        const failure = (code: NativeReviewErrorCode): NativeReviewReadOutput => ({
+          ok: false,
+          code,
+        });
+        let value: NativeReviewReadOutput;
+        const timeout = new AbortController();
+        const timer = setTimeout(() => timeout.abort(), NATIVE_REVIEW_LIMITS.readTimeoutMs);
+        const signal = AbortSignal.any([
+          exec.signal,
+          grant.signal,
+          timeout.signal,
+          this.lifetime.signal,
+        ]);
+        try {
+          current(exec);
+          const query = nativeReviewReadRequestSchema.safeParse(raw);
+          if (!query.success) throw new NativeReviewError('invalid-arguments');
+          const reservation = await this.sessions.reserveReviewRead(grant, query.data.length);
+          let abandoned = false;
+          const operation = (async (): Promise<NativeReviewReadOutput> => {
+            let lease: NativeReviewReadLease | undefined,
+              retained = false;
+            try {
+              signal.throwIfAborted();
+              current(exec);
+              const access = this.reviewCheck(grant);
+              lease = await access.ports.readTarget(access.original, query.data, signal);
+              signal.throwIfAborted();
+              current(exec);
+              reservation.check();
+              lease.check();
+              if (
+                canonicalPayload({
+                  context: lease.source.context,
+                  nativeSessionId: lease.source.nativeSessionId,
+                  nativeAgentId: lease.source.nativeAgentId,
+                  configurationId: lease.source.configurationId,
+                }) !== canonicalPayload(nativeReviewRunSource(binding, access.context)) ||
+                lease.source.resourceRef !== query.data.resourceRef ||
+                lease.range.offset !== query.data.offset ||
+                lease.range.length > query.data.length ||
+                lease.range.length !== lease.bytes.byteLength
+              )
+                throw new NativeReviewError('review-read-mismatch');
+              if (lease.encoding !== 'utf-8')
+                throw new NativeReviewError('review-unsupported-material');
+              const sourceBytes = Buffer.from(lease.bytes);
+              if (sourceBytes.length && query.data.offset > 0 && (sourceBytes[0]! & 0xc0) === 0x80)
+                throw new NativeReviewError('review-range-invalid');
+              let text: string;
+              try {
+                text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+                  sourceBytes,
+                  { stream: lease.range.offset + lease.range.length < lease.range.total },
+                );
+              } catch {
+                throw new NativeReviewError('review-unsupported-material');
+              }
+              // A byte page may end inside a multi-byte character. Only expose
+              // the complete decoded prefix, retaining the actual byte offset.
+              const bytes = Buffer.from(text, 'utf8');
+              if (sourceBytes.length && !bytes.length)
+                throw new NativeReviewError('review-range-invalid');
+              if (!bytes.equals(sourceBytes.subarray(0, bytes.length)))
+                throw new NativeReviewError('review-read-mismatch');
+              const range = { ...lease.range, length: bytes.length };
+              const sha256 = createHash('sha256').update(bytes).digest('hex');
+              const page = {
+                ok: true,
+                protocolVersion: 1,
+                toolVersion: NATIVE_REVIEW_READ_TOOL_VERSION,
+                callId: exec.callId,
+                source: lease.source,
+                range,
+                encoding: 'utf-8',
+                sha256,
+                text,
+                readRef: nativeReviewReadRef(lease.source, exec.callId, range, sha256),
+              };
+              if (Buffer.byteLength(JSON.stringify(page)) > NATIVE_REVIEW_LIMITS.outputBytes)
+                throw new NativeReviewError('output-too-large');
+              const parsed = nativeReviewReadOutputSchema.parse(page);
+              signal.throwIfAborted();
+              lease.check();
+              current(exec);
+              reservation.check();
+              if (abandoned) throw new NativeReviewError('cancelled');
+              reads.set(exec.token, { value: parsed, lease, reservation });
+              retained = true;
+              return parsed;
+            } finally {
+              if (!retained) {
+                try {
+                  lease?.release();
+                } finally {
+                  reservation.release();
+                }
+              }
+            }
+          })();
+          value = await new Promise<NativeReviewReadOutput>((resolve) => {
+            const abort = () => {
+              abandoned = true;
+              signal.removeEventListener('abort', abort);
+              resolve(failure(timeout.signal.aborted ? 'read-timeout' : 'cancelled'));
+            };
+            signal.addEventListener('abort', abort, { once: true });
+            void operation.then(
+              (page) => {
+                signal.removeEventListener('abort', abort);
+                if (!abandoned) resolve(page);
+              },
+              (error: unknown) => {
+                signal.removeEventListener('abort', abort);
+                if (!abandoned) resolve(failure(this.reviewCode(error)));
+              },
+            );
+            if (signal.aborted) abort();
+          });
+        } catch (error) {
+          value = failure(
+            signal.aborted
+              ? timeout.signal.aborted
+                ? 'read-timeout'
+                : 'cancelled'
+              : this.reviewCode(error),
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+        if (!reads.has(exec.token)) reads.set(exec.token, { value });
+        return value;
+      },
+      finalizeContent: (exec, result) => {
+        try {
+          current(exec);
+          const read = reads.get(exec.token);
+          if (!read || result.isError || hash(read.value) !== hash(result.value))
+            throw new NativeReviewError('review-read-mismatch');
+          if (read.value.ok) {
+            if (!read.lease || !read.reservation)
+              throw new NativeReviewError('review-read-mismatch');
+            read.lease.check();
+            read.reservation.check();
+            if (
+              read.value.range.offset !== read.lease.range.offset ||
+              read.value.range.total !== read.lease.range.total ||
+              read.value.range.length > read.lease.bytes.byteLength ||
+              createHash('sha256')
+                .update(read.lease.bytes.subarray(0, read.value.range.length))
+                .digest('hex') !== read.value.sha256 ||
+              canonicalPayload(read.lease.source) !== canonicalPayload(read.value.source)
+            )
+              throw new NativeReviewError('review-read-mismatch');
+          }
+          return blocks(read.value);
+        } catch (error) {
+          return blocks({ ok: false, code: this.reviewCode(error) });
+        }
+      },
+    } satisfies ToolDefinition);
+    const complete = describeNativeReviewTool();
+    ctx.tools.register({
+      name: complete.name,
+      description: complete.description,
+      parameters: complete.parameters,
+      output: { schema: complete.outputSchema, render: (_args, value) => blocks(value) },
+      execute: async (raw, exec) => {
+        let intent: NativeReviewIntent | undefined;
+        try {
+          current(exec);
+          const requested = parseNativeReviewArguments(raw);
+          const access = this.reviewCheck(grant),
+            limitations = [...access.ports.unavailableRequired(access.original)];
+          const snapshot = await this.sessions.readReviewSnapshot(grant, exec.signal);
+          current(exec);
+          if (
+            snapshot.sourceBytes + NATIVE_REVIEW_LIMITS.publicFrameBytes >
+            NATIVE_REVIEW_LIMITS.scanBytes
+          )
+            throw new NativeReviewError('output-too-large');
+          const found = nativeReviewDeclaration(
+            snapshot,
+            binding,
+            access.context,
+            exec.callId,
+            limitations,
+          );
+          if (!found || canonicalPayload(found.content) !== canonicalPayload(requested))
+            throw new NativeReviewError('review-result-rejected');
+          intent = {
+            protocolVersion: 1,
+            toolVersion: NATIVE_REVIEW_TOOL_VERSION,
+            intentId: randomUUID(),
+            callId: exec.callId,
+            digest: found.digest,
+            readManifestDigest: found.readManifestDigest,
+          };
+          const declaring = intent;
+          await this.sessions.declareReviewIntent(grant, declaring, (currentSnapshot) => {
+            if (
+              !('sourceBytes' in currentSnapshot) ||
+              typeof currentSnapshot.sourceBytes !== 'number' ||
+              currentSnapshot.sourceBytes + NATIVE_REVIEW_LIMITS.publicFrameBytes >
+                NATIVE_REVIEW_LIMITS.scanBytes
+            )
+              throw new NativeReviewError('output-too-large');
+            return assertNativeReviewDeclaration(
+              currentSnapshot,
+              binding,
+              access.context,
+              declaring,
+              [...this.reviewCheck(grant).ports.unavailableRequired(access.original)],
+            );
+          });
+          current(exec);
+          const value = nativeReviewAck(binding, access.context, intent);
+          completions.set(exec.token, { value, intent });
+          exec.concludeTurn();
+          return value;
+        } catch (error) {
+          if (intent)
+            await this.sessions.clearReviewIntent(grant, intent.intentId).catch(() => undefined);
+          const value = { ok: false, code: this.reviewCode(error) };
+          completions.set(exec.token, { value });
+          return value;
+        }
+      },
+      finalizeContent: (exec, result) => {
+        const call = completions.get(exec.token);
+        try {
+          current(exec);
+          if (!call || result.isError || hash(call.value) !== hash(result.value))
+            throw new NativeReviewError('review-result-rejected');
+          if (call.intent && this.sessions.reviewIntent(grant)?.intentId !== call.intent.intentId)
+            throw new NativeReviewError('review-result-rejected');
+          return blocks(call.value);
+        } catch (error) {
+          if (call?.intent)
+            void this.sessions
+              .clearReviewIntent(grant, call.intent.intentId)
+              .catch(() => undefined);
+          return blocks({ ok: false, code: this.reviewCode(error) });
+        }
+      },
+    } satisfies ToolDefinition);
+    return { context: '', toolAllowlist: [readDefinition.name, complete.name] };
+  }
+
+  async prepareFixedReview(
+    grant: NativeWorkGrant,
+    signal: AbortSignal,
+  ): Promise<NativeFixedReviewPreparation> {
+    const access = this.reviewCheck(grant),
+      key = nativeReviewScopeKey(access.context);
+    if (signal.aborted) throw new NativeReviewError('cancelled');
+    const cached = this.reviewReady.get(key);
+    if (cached) {
+      this.assertFixedReview(grant, cached);
+      return { status: 'ready', ref: cached };
+    }
+    const intent = this.sessions.reviewIntent(grant);
+    if (!intent) return { status: 'pending', reason: 'not-declared' };
+    if (
+      this.runtime.isConnected(access.binding.nativeSessionId) &&
+      this.runtime.status(access.binding.nativeSessionId) !== 'idle'
+    )
+      return { status: 'pending', reason: 'running' };
+    let work = this.reviewJobs.get(key);
+    if (!work) {
+      if (
+        this.jobs.size + this.reviewJobs.size >= NATIVE_RESULT_LIMITS.readers ||
+        this.ready.size + this.reviewReady.size >= 4096
+      )
+        throw new NativeReviewError('review-capacity');
+      work = this.collectReview(grant, access.binding, intent);
+      this.reviewJobs.set(key, work);
+      const owned = work;
+      void owned
+        .finally(() => {
+          if (this.reviewJobs.get(key) === owned) this.reviewJobs.delete(key);
+        })
+        .catch(() => undefined);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort!: () => void;
+    try {
+      const pending = new Promise<NativeFixedReviewPreparation>((resolve) => {
+        abort = () => resolve({ status: 'pending', reason: 'draining' });
+        timer = setTimeout(abort, NATIVE_REVIEW_LIMITS.waitMs);
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      });
+      const result = await Promise.race([work, pending]);
+      this.reviewCheck(grant);
+      return result;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+    }
+  }
+  private async collectReview(
+    grant: NativeWorkGrant,
+    binding: NativeSessionBinding,
+    intent: NativeReviewIntent,
+  ): Promise<NativeFixedReviewPreparation> {
+    const access = this.reviewCheck(grant),
+      signal = AbortSignal.any([grant.signal, this.lifetime.signal]);
+    await this.sessions.whenInputReadsIdle(grant.scope);
+    this.reviewCheck(grant);
+    const before = await this.sessions.readReviewSnapshot(grant, signal);
+    const limitations = () => {
+      const fresh = this.reviewCheck(grant);
+      return [...fresh.ports.unavailableRequired(fresh.original)];
+    };
+    const candidate = qualifyNativeFixedReview(
+      before,
+      binding,
+      access.context,
+      intent,
+      limitations(),
+    );
+    if (!candidate) return { status: 'pending', reason: 'not-durable' };
+    before.check();
+    const drain = await this.runtime.retire(binding.nativeSessionId, signal);
+    this.reviewCheck(grant);
+    drain.assertCurrent();
+    if (drain.basis !== 'flushed-and-closed') throw new NativeReviewError('review-result-rejected');
+    const snapshot = await this.sessions.readReviewSnapshot(grant, signal);
+    const fixed = qualifyNativeFixedReview(
+      snapshot,
+      binding,
+      access.context,
+      intent,
+      limitations(),
+    );
+    if (
+      !fixed ||
+      fixed.digest !== candidate.digest ||
+      fixed.readManifestDigest !== candidate.readManifestDigest ||
+      fixed.cut.callSeq !== candidate.cut.callSeq ||
+      fixed.cut.resultSeq !== candidate.cut.resultSeq ||
+      fixed.cut.turnEndSeq !== candidate.cut.turnEndSeq
+    )
+      throw new NativeReviewError('review-result-rejected');
+    await this.sessions.sealReviewIntent(grant, intent.intentId, fixed.cut, () => {
+      this.reviewCheck(grant);
+      drain.assertCurrent();
+      snapshot.check();
+      return undefined;
+    });
+    this.reviewCheck(grant);
+    drain.assertCurrent();
+    snapshot.check();
+    const source = freezeFacts({
+      ...nativeReviewRunSource(binding, access.context),
+      toolVersion: NATIVE_REVIEW_TOOL_VERSION,
+      intentId: intent.intentId,
+      callId: intent.callId,
+      cut: fixed.cut,
+      readManifestDigest: intent.readManifestDigest,
+    } satisfies NativeFixedReviewLease['source']);
+    // This cast only brands an object actually inserted into this original
+    // owner's WeakMap. No parsed/serialized object can pass the lookup.
+    const ref = Object.freeze({}) as NativeFixedReviewRef;
+    const issued = {
+      source,
+      digest: intent.digest,
+      readManifestDigest: intent.readManifestDigest,
+      drain,
+      signal: AbortSignal.any([signal, drain.signal]),
+    };
+    this.reviewIssued.set(ref, issued);
+    this.assertFixedReview(grant, ref);
+    const key = nativeReviewScopeKey(access.context);
+    this.reviewReady.set(key, ref);
+    issued.signal.addEventListener(
+      'abort',
+      () => {
+        if (this.reviewReady.get(key) === ref) this.reviewReady.delete(key);
+      },
+      { once: true },
+    );
+    return { status: 'ready', ref };
+  }
+  assertFixedReview(grant: NativeWorkGrant, ref: NativeFixedReviewRef): undefined {
+    const access = this.reviewCheck(grant),
+      issued = this.reviewIssued.get(ref);
+    if (!issued) throw new NativeReviewError('review-result-rejected');
+    if (issued.signal.aborted) throw new NativeReviewError('cancelled');
+    const intent = this.sessions.reviewIntent(grant);
+    if (
+      canonicalPayload(nativeReviewRunSource(access.binding, access.context)) !==
+        canonicalPayload({
+          context: issued.source.context,
+          nativeSessionId: issued.source.nativeSessionId,
+          nativeAgentId: issued.source.nativeAgentId,
+          configurationId: issued.source.configurationId,
+        }) ||
+      intent?.intentId !== issued.source.intentId ||
+      intent.callId !== issued.source.callId ||
+      intent.digest !== issued.digest ||
+      intent.readManifestDigest !== issued.readManifestDigest ||
+      canonicalPayload(intent.cut) !== canonicalPayload(issued.source.cut)
+    )
+      throw new NativeReviewError('review-result-rejected');
+    issued.drain.assertCurrent();
+    return undefined;
+  }
+  async readFixedReview(
+    grant: NativeWorkGrant,
+    ref: NativeFixedReviewRef,
+    signal: AbortSignal,
+  ): Promise<NativeFixedReviewLease> {
+    this.assertFixedReview(grant, ref);
+    if (signal.aborted) throw new NativeReviewError('cancelled');
+    if (this.leases.size + this.pendingLeases >= NATIVE_RESULT_LIMITS.readers)
+      throw new NativeReviewError('review-capacity');
+    this.pendingLeases++;
+    try {
+      const issued = this.reviewIssued.get(ref)!,
+        combined = AbortSignal.any([signal, issued.signal]);
+      const access = this.reviewCheck(grant),
+        snapshot = await this.sessions.readReviewSnapshot(grant, combined);
+      this.assertFixedReview(grant, ref);
+      const fixed = qualifyNativeFixedReview(
+        snapshot,
+        access.binding,
+        access.context,
+        this.sessions.reviewIntent(grant)!,
+        [...access.ports.unavailableRequired(access.original)],
+      );
+      if (
+        !fixed ||
+        fixed.digest !== issued.digest ||
+        fixed.readManifestDigest !== issued.readManifestDigest
+      )
+        throw new NativeReviewError('review-result-rejected');
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        combined.removeEventListener('abort', release);
+        this.leases.delete(lease);
+      };
+      const source = freezeFacts(structuredClone(issued.source));
+      const lease: NativeFixedReviewLease = Object.freeze({
+        source,
+        content: freezeFacts(fixed.content),
+        readManifest: freezeFacts(fixed.readManifest),
+        digest: issued.digest,
+        readManifestDigest: issued.readManifestDigest,
+        provenanceFingerprint: hash({
+          source,
+          digest: issued.digest,
+          readManifestDigest: issued.readManifestDigest,
+        }),
+        signal: combined,
+        release,
+        check: () => {
+          if (released || combined.aborted) throw new NativeReviewError('cancelled');
+          this.assertFixedReview(grant, ref);
+          snapshot.check();
+        },
+      });
+      this.leases.add(lease);
+      combined.addEventListener('abort', release, { once: true });
+      try {
+        lease.check();
+      } catch (error) {
+        lease.release();
+        throw error;
+      }
+      return lease;
+    } finally {
+      this.pendingLeases--;
+    }
   }
   private binding(
     grant: NativeWorkGrant,
@@ -595,7 +1238,8 @@ class NativeResultOwner {
       return { status: 'pending', reason: 'running' };
     let work = this.jobs.get(key);
     if (!work) {
-      if (this.jobs.size >= NATIVE_RESULT_LIMITS.readers) throw new NativeResultError('capacity');
+      if (this.jobs.size + this.reviewJobs.size >= NATIVE_RESULT_LIMITS.readers)
+        throw new NativeResultError('capacity');
       work = this.collect(grant, binding);
       this.jobs.set(key, work);
       const owned = work;
@@ -865,6 +1509,8 @@ class NativeResultOwner {
     this.listeners.clear();
     this.ready.clear();
     this.failures.clear();
-    await Promise.allSettled(this.jobs.values());
+    this.reviewReady.clear();
+    this.reviewFailures.clear();
+    await Promise.allSettled([...this.jobs.values(), ...this.reviewJobs.values()]);
   }
 }

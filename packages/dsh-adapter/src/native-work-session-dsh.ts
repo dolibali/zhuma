@@ -10,6 +10,12 @@ import {
 } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
 import { assertNativeInputReadOwner } from './native-work-session.js';
+import { NativeSessionPurpose, assertNativePurposeOwner } from './native-work-session-purpose.js';
+import {
+  NATIVE_REVIEW_TOOL,
+  NATIVE_REVIEW_READ_TOOL,
+  nativeReviewScopeKey,
+} from './native-work-session-review-contract.js';
 import {
   NATIVE_RESULT_LIMITS,
   type NativeResultSnapshot,
@@ -257,6 +263,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
   constructor(
     private readonly ctx: Context,
     private readonly options: NativeDshOptions,
+    private readonly purpose?: NativeSessionPurpose,
   ) {
     this.readTimeoutMs = options.readTimeoutMs ?? READ_MS;
     if (
@@ -267,15 +274,24 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       throw new NativeWorkError('invalid-request');
   }
 
+  private current(grant: NativeWorkGrant): void {
+    assertNativePurposeOwner(grant, this.purpose);
+    current(grant);
+  }
+  private scopeAddress(scope: NativeWorkScope): string {
+    const context = this.purpose?.context(scope);
+    return context ? nativeReviewScopeKey(context) : scopeAddress(scope);
+  }
+
   private async directory(
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
     parentSignal: AbortSignal,
   ): Promise<NativeDirectoryContext> {
-    current(grant);
-    const address = scopeAddress(binding.scope);
+    this.current(grant);
+    const address = this.scopeAddress(binding.scope);
     if (
-      scopeAddress(grant.scope) !== address ||
+      this.scopeAddress(grant.scope) !== address ||
       typeof this.options.workingDirectory !== 'function'
     )
       throw new NativeWorkError('unavailable');
@@ -285,13 +301,13 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     } catch {
       throw new NativeWorkError('unavailable');
     }
-    current(grant);
+    this.current(grant);
     if (parentSignal.aborted) throw new NativeWorkError('cancelled');
     if (selected?.kind === 'text-only') {
       const assert = () => {
-        current(grant);
+        this.current(grant);
         if (parentSignal.aborted) throw new NativeWorkError('cancelled');
-        if (selected.kind !== 'text-only' || scopeAddress(grant.scope) !== address)
+        if (selected.kind !== 'text-only' || this.scopeAddress(grant.scope) !== address)
           throw new NativeWorkError('configuration-mismatch');
       };
       assert();
@@ -315,15 +331,15 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     if (!directoryIdentity || typeof directoryIdentity !== 'object')
       throw new NativeWorkError('unavailable');
     const assert = (agent?: Agent) => {
-      current(grant);
+      this.current(grant);
       if (signal.aborted) throw new NativeWorkError('cancelled');
       if (
         selected.kind !== 'local' ||
         selected.cwd !== cwd ||
         selected.signal !== sourceSignal ||
         selected.assertCurrent !== assertCurrent ||
-        scopeAddress(selected.scope) !== address ||
-        scopeAddress(grant.scope) !== address
+        this.scopeAddress(selected.scope) !== address ||
+        this.scopeAddress(grant.scope) !== address
       )
         throw new NativeWorkError('configuration-mismatch');
       try {
@@ -366,7 +382,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     grant: NativeWorkGrant,
     allowCreate: boolean,
   ): Promise<void> {
-    current(grant);
+    this.current(grant);
     // Even a parked resume constructs an executable Agent scope/writer. A
     // separate historical read grant must never authorize that factory call.
     grant.assertCurrent('send');
@@ -385,7 +401,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const prior = this.connecting.get(binding.nativeSessionId);
     if (prior) {
       await prior.promise;
-      current(grant);
+      this.current(grant);
       this.agent(binding.nativeSessionId);
       return;
     }
@@ -420,19 +436,19 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const signal = directory.signal;
     const stored = await this.ctx.sessionPersistence.stat(id, { signal });
     signal.throwIfAborted();
-    current(grant);
+    this.current(grant);
     directory.assert();
     assertNativeInputReadOwner(binding.nativeSessionId, this);
     if (!stored && !allowCreate) throw new NativeWorkError('delivery-unknown');
     const setup: AgentSetup = async (agentCtx, unpublishedAgent) => {
-      current(grant);
+      this.current(grant);
       await directory.prepare(unpublishedAgent);
       assertNativeInputReadOwner(binding.nativeSessionId, this);
       // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
       agentCtx.tools.presentAs('native');
       const composition = await this.options.compose(agentCtx, structuredClone(binding), grant);
       signal.throwIfAborted();
-      current(grant);
+      this.current(grant);
       directory.assert(unpublishedAgent);
       if (
         typeof composition.context !== 'string' ||
@@ -441,6 +457,13 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       )
         throw new NativeWorkError('invalid-request');
       const allowed = new Set(composition.toolAllowlist);
+      const review = this.purpose?.context(grant.scope);
+      if (
+        review
+          ? allowed.has('complete_work')
+          : allowed.has(NATIVE_REVIEW_TOOL) || allowed.has(NATIVE_REVIEW_READ_TOOL)
+      )
+        throw new NativeWorkError('invalid-request');
       // DSH restrict() masks inherited/global capabilities, not registrations
       // owned by this Agent scope; passing a scope-local name is an error.
       agentCtx.tools.restrict({
@@ -448,7 +471,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       });
       agentCtx.tools.guard((exec) => {
         try {
-          current(grant);
+          this.current(grant);
           directory.assert(unpublishedAgent);
           grant.assertCurrent('send');
           return allowed.has(exec.name) ? undefined : 'native-tool-not-authorized';
@@ -469,28 +492,28 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         required: true,
       });
       agentCtx.on('agent/pre-step', async (_payload, next) => {
-        current(grant);
+        this.current(grant);
         await directory.prepare(unpublishedAgent);
         grant.assertCurrent('send');
         checkToolSurface();
         const result = await next();
-        current(grant);
+        this.current(grant);
         directory.assert(unpublishedAgent);
         checkToolSurface();
         return result;
       });
       agentCtx.on('tools/pre-execute', async (_exec, next) => {
-        current(grant);
+        this.current(grant);
         await directory.prepare(unpublishedAgent);
         grant.assertCurrent('send');
         return next();
       });
       agentCtx.on('agent/request', async (_payload, next) => {
-        current(grant);
+        this.current(grant);
         directory.assert(unpublishedAgent);
         grant.assertCurrent('send');
         const config = await next();
-        current(grant);
+        this.current(grant);
         directory.assert(unpublishedAgent);
         if (
           config.provider !== binding.selection.provider ||
@@ -501,7 +524,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       });
       return {
         commit: () => {
-          current(grant);
+          this.current(grant);
           directory.assert(unpublishedAgent);
           checkToolSurface();
         },
@@ -535,7 +558,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       throw new NativeWorkError('cancelled');
     }
     try {
-      current(grant);
+      this.current(grant);
       directory.assert(handle.agent);
     } catch (error) {
       await handle.dispose();
@@ -916,6 +939,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           check();
           return {
             asOfSeq: restored.snapshot.asOfSeq,
+            ...(this.purpose?.context(binding.scope) ? { sourceBytes: bytes } : {}),
             inheritedEventCount: handle.inheritedEventCount,
             hasPending: inbox['next-step'].length > 0 || inbox['next-turn'].length > 0,
             pendingMessageIds: [...inbox['next-step'], ...inbox['next-turn']].flatMap((value) =>

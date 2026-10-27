@@ -87,7 +87,13 @@ export function response(text) {
   ];
 }
 
-export async function boot(root, adapter = new ScriptedAdapter(), compose, runtimeOptions = {}) {
+export async function boot(
+  root,
+  adapter = new ScriptedAdapter(),
+  compose,
+  runtimeOptions = {},
+  reviewPorts,
+) {
   const ctx = new Context();
   try {
     await ctx.plugin(LlmRuntime);
@@ -102,17 +108,21 @@ export async function boot(root, adapter = new ScriptedAdapter(), compose, runti
     await ctx.plugin(JsonStorage, { root: join(root, 'domains') });
     await ctx.plugin(Domain, { backend: 'json' });
     ctx.llm.registerAdapter(['contract'], adapter);
-    const work = await openNativeWorkSessions(ctx, {
-      workingDirectory: () => ({ kind: 'text-only' }),
-      ...runtimeOptions,
-      compose:
-        compose ??
-        (() => ({
-          context:
-            'Synthetic task goal. Catalog: accepted-v1, accepted-v2, accepted-v3. Read selected fixed inputs only.',
-          toolAllowlist: [],
-        })),
-    });
+    const work = await openNativeWorkSessions(
+      ctx,
+      {
+        workingDirectory: () => ({ kind: 'text-only' }),
+        ...runtimeOptions,
+        compose:
+          compose ??
+          (() => ({
+            context:
+              'Synthetic task goal. Catalog: accepted-v1, accepted-v2, accepted-v3. Read selected fixed inputs only.',
+            toolAllowlist: [],
+          })),
+      },
+      reviewPorts,
+    );
     return { ctx, ...work, adapter, close: () => ctx.fiber.dispose() };
   } catch (error) {
     await ctx.fiber.dispose();
