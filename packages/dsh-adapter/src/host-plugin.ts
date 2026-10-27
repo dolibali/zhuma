@@ -14,6 +14,7 @@ import { openHostRunHttp } from './host-run-http.js';
 import { openHostRunOwner } from './host-run-owner.js';
 import { openHostWorkflowHttp } from './host-workflow-http.js';
 import { hostLocalExecutionSchema } from './host-run-workspaces.js';
+import { hostTeamCatalogGrantsSchema } from './host-team-catalog.js';
 import { nativeWorkSessionInject } from './native-work-session-storage.js';
 import {
   applySpaceDirectory,
@@ -41,6 +42,7 @@ export const Config = z.strictObject({
   identityBootstrapKey: bootstrapRecordKey.optional(),
   spaceDirectoryBootstrapKey: bootstrapRecordKey.optional(),
   localExecution: hostLocalExecutionSchema.optional(),
+  teamCatalog: hostTeamCatalogGrantsSchema.optional(),
   bodyBytes: z
     .number()
     .int()
@@ -233,6 +235,16 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       }
       let http: ReturnType<typeof workbench.openMemberWorkbench>;
       try {
+        const catalog = config.teamCatalog?.length
+          ? await workbench.openTeamCatalog({
+              grants: config.teamCatalog,
+              directory: directoryLifecycle.currentDirectory,
+            })
+          : undefined;
+        if (closed) {
+          await operations?.close();
+          return undefined;
+        }
         http = workbench.openMemberWorkbench(ctx, {
           directory: () => memberWorkbenchDirectoryFor(ctx),
           writer: () => {
@@ -241,6 +253,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             return { assignProjectSpace: current.assignProjectSpace.bind(current) };
           },
           model: workbench.planningModel,
+          ...(catalog ? { catalog } : {}),
           ...(operations ? { operations: operations.journal } : {}),
         });
       } catch (error) {

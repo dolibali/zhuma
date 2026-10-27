@@ -205,6 +205,20 @@ export type {
 } from './execution-workflow-contract.js';
 export type { HostWorkflowView, HostWorkflowOptions } from './host-workflow-owner.js';
 export {
+  ExecutionReviewCompositionError,
+  freezeExecutionReviewComposition,
+  readExecutionReviewComposition,
+  assertExecutionReviewComposition,
+  executionReviewCompositionRequest,
+  type ExecutionReviewPreparation,
+  type ExecutionReviewCompositionInput,
+  type FrozenExecutionReviewComposition,
+  type ExecutionReviewToolDefinition,
+} from './execution-review-composition.js';
+export type { ExecutionReviewTarget, ExecutionReviewScope } from './execution-review-contract.js';
+export { describeNativeReviewTool } from './native-work-session-review-tool.js';
+export { describeNativeReviewReadTool } from './native-work-session-review-read.js';
+export {
   NATIVE_RESULT_PUBLICATIONS_TOOL_VERSION,
   type NativeFixedResultPublicationsLease,
   type NativeFixedResultPublicationsSource,
@@ -270,6 +284,11 @@ export {
   type MemberWorkbenchHttpHandle,
 } from './member-workbench-http.js';
 export { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
+export {
+  hostTeamCatalogManifest,
+  hostTeamCatalogPin,
+  type HostTeamCatalogGrants,
+} from './host-team-catalog.js';
 export {
   MemberWorkbenchOperations,
   openMemberWorkbenchOperations,

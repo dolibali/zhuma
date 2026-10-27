@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { NativeHistoryEvent, NativeWorkFrame } from './native-work-session-contract.js';
 import { NATIVE_RESULT_LIMITS, NATIVE_RESULT_TOOL } from './native-work-session-result-contract.js';
+import { NATIVE_REVIEW_TOOL } from './native-work-session-review-contract.js';
+
+const isCompletionTool = (name: unknown): boolean =>
+  name === NATIVE_RESULT_TOOL || name === NATIVE_REVIEW_TOOL;
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue | undefined =>
@@ -36,7 +40,7 @@ function omit(value: ObjectValue, field: string): ObjectValue {
 
 function toolBlock(value: unknown): unknown {
   const block = object(value);
-  return block?.type === 'tool-call' && block.name === NATIVE_RESULT_TOOL && callId(block.id)
+  return block?.type === 'tool-call' && isCompletionTool(block.name) && callId(block.id)
     ? omit(block, 'arguments')
     : value;
 }
@@ -48,9 +52,9 @@ class ResultArgumentChunks {
   private complete(position: unknown, id: unknown, name: unknown): boolean {
     if (!index(position) || !callId(id)) return false;
     if (typeof name === 'string') {
-      if (name !== NATIVE_RESULT_TOOL) this.names.delete(position);
+      if (!isCompletionTool(name)) this.names.delete(position);
       else if (this.names.has(position) || this.names.size < 128) this.names.set(position, id);
-      return name === NATIVE_RESULT_TOOL;
+      return isCompletionTool(name);
     }
     if (this.names.get(position) === id) return true;
     this.names.delete(position);
@@ -90,7 +94,7 @@ class ResultArgumentChunks {
 export function publicNativeResultEvent(event: NativeHistoryEvent): NativeHistoryEvent {
   const data = object(event.data);
   if (!data) return event;
-  if (event.type === 'tool/call' && data.name === NATIVE_RESULT_TOOL && callId(data.callId)) {
+  if (event.type === 'tool/call' && isCompletionTool(data.name) && callId(data.callId)) {
     const projected = omit(data, 'arguments');
     return projected === data ? event : { ...event, data: projected };
   }

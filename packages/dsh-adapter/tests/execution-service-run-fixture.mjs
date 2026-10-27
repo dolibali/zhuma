@@ -72,6 +72,9 @@ export async function open(
     beforePublish,
     prepareDomain,
     startupFailure,
+    workbench: suppliedWorkbench,
+    attachments,
+    assertReviewConfiguration,
     expertNode,
     projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
     closeState = { calls: 0, closed: false, errors: [] },
@@ -87,7 +90,7 @@ export async function open(
   const changes = new Set();
   const request = Object.freeze({ headers: {} });
   const members = new Map([[request, 'chen']]);
-  let workbench = confirmed(expertNode);
+  let workbench = suppliedWorkbench ?? confirmed(expertNode);
   const plan = workbench.appliedPlans.at(-1);
   let service;
   let authorities;
@@ -126,6 +129,7 @@ export async function open(
                 };
               }),
             connection: { fetch: { register: () => () => {} } },
+            get: (name) => (name === 'attachments' ? attachments : undefined),
             storageDomain: {
               async open(spec) {
                 if (spec.name === 'zhuma_files') return ctx.storageDomain.open(spec);
@@ -162,6 +166,7 @@ export async function open(
                           throw Error('PRIVATE_NODE_WRITE_FAILURE');
                         await table.put(key, value);
                         counters[name]++;
+                        if (name === 'nodes') await faults.afterNodeWrite?.(value);
                       },
                     };
                   },
@@ -240,6 +245,7 @@ export async function open(
       );
     if (mount)
       authorities = service.installRunHost({
+        ...(assertReviewConfiguration ? { assertReviewConfiguration } : {}),
         signal: source.signal,
         async memberLease(original) {
           const memberId = members.get(original);
@@ -247,7 +253,7 @@ export async function open(
           let released = false;
           return {
             memberId,
-            expiresAt: Date.now() + 60_000,
+            expiresAt: Date.now() + (faults.leaseDurationMs ?? 60_000),
             signal: member.signal,
             assertCurrent(spaceId) {
               if (released || member.signal.aborted || spaceId !== 'north')

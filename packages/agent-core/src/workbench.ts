@@ -240,6 +240,23 @@ export class WorkbenchError extends Error {
 }
 
 /** Definitions are validated here; runtime and review decisions remain execution-owned. */
+function assignedExperts(task: WorkTask, state: Workbench): Participant[] {
+  const assigned = new Set(
+    task.workflows.flatMap((workflow) =>
+      workflow.nodes.flatMap((node) => [
+        ...(node.assigneeId ? [node.assigneeId] : []),
+        ...node.reviewerIds,
+      ]),
+    ),
+  );
+  return state.participants.filter(
+    (participant) =>
+      participant.kind === 'expert' &&
+      task.participantIds.includes(participant.id) &&
+      assigned.has(participant.id),
+  );
+}
+
 export function validateWorkTask(
   task: WorkTask,
   state: Workbench,
@@ -344,6 +361,25 @@ export function validateWorkTask(
           if (!asset || (task.status === 'ready' && !asset.available))
             errors.push(`「${node.title}」引用的 ${kind} 不存在或不可用。`);
         }
+      }
+    }
+  }
+  if (task.status === 'ready') {
+    for (const expert of assignedExperts(task, state)) {
+      for (const [refs, kind] of [
+        [expert.resourceBindings?.skillIds ?? [], 'skill'],
+        [expert.resourceBindings?.mcpIds ?? [], 'mcp'],
+      ] as const) {
+        if (
+          new Set(refs).size !== refs.length ||
+          refs.some(
+            (id) =>
+              !state.assets.some(
+                (asset) => asset.id === id && asset.kind === kind && asset.available,
+              ),
+          )
+        )
+          errors.push(`专家「${expert.name}」绑定的 ${kind} 不存在、不可用或重复，请重新选择。`);
       }
     }
   }
@@ -868,12 +904,21 @@ export function applyWorkbenchCommand(state: Workbench, command: WorkbenchComman
 }
 
 function definitionSnapshot(task: WorkTask, state: Workbench) {
+  // Executor and reviewer methods keep their own dependencies. Freezing their
+  // definitions does not grant those tools to the author's node or fill old plans.
+  const assetIds = new Set([
+    ...task.workflows.flatMap((workflow) =>
+      workflow.nodes.flatMap((node) => [...node.skillIds, ...node.mcpIds]),
+    ),
+    ...assignedExperts(task, state).flatMap((expert) => [
+      ...(expert.resourceBindings?.skillIds ?? []),
+      ...(expert.resourceBindings?.mcpIds ?? []),
+    ]),
+  ]);
   return structuredClone({
     task,
     participants: state.participants.filter((p) => task.participantIds.includes(p.id)),
-    assets: state.assets.filter((a) =>
-      task.workflows.some((w) => w.nodes.some((n) => [...n.skillIds, ...n.mcpIds].includes(a.id))),
-    ),
+    assets: state.assets.filter((asset) => assetIds.has(asset.id)),
   });
 }
 
