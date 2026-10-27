@@ -60,4 +60,6 @@ Host 显式关闭在原生运行和 I/O 清理确认后销毁元数据插件及�
 
 既有 Run 按持久化 descriptor 选择协议，不能由新后端或 Client 标记升级。Host 读取、冷确认与 Client DTO 成对保留 @2 的 `protocolVersion: 2`、`manifestDigest`；旧 @1 回执保持原字段。每个 native owner 只选择一次结果 owner：明确无附件的旧文本 Host 使用一份原 @1 owner，真实后端存在却初始化失败时不降级；后端卸载后原运行撤权并排空，恢复需关闭后重开 owner。旧 @2 的配置不改为 @1，未接回文件后端不能继续采用 @2 文件结果。
 
+登记但尚在初始化的原附件服务同样不属于“无附件”。Host 用公开非严格查询辨认登记，再用严格查询核对同一服务已经就绪；未就绪时在创建 native owner／安装 Run authority 前抛出 `run-authority-unavailable`，不接纳新 Run。依赖 child 的 `await()` 不表示等待 PENDING 服务完成。后端稍后就绪不会自动重启已经失败的独立 native child；需明确重挂载原 Host，重新绑定原附件与 ExecutionService 后才能创建 @2 运行。定向 `--phase host-backend-readiness` 覆盖真实 LocalAttachmentStore 的延迟就绪、初始化失败、明确重挂载后的 @2，以及无附件／卸载兼容；正常官方冷启动及界面可用性仍需单独验收。
+
 新增 `--phase host-fixed-publications` 仅验证此次 Host 接入：真实发布后删除原源文件、纯文件固定提交、回执被动读取、无附件旧文本兼容、原文件台账初始化失败、注销／附件卸载撤权，以及旧 @1 写进程到双协议 Host 读进程的冷确认。使用原 SDK factory、真实 Cookie／Run／JSON／JSONL／附件和本地脚本模型，仍是源码别名模块图，不能代替正式编译包、GUI、评审／下游或供应商验收。文件业务提交按自身有界事件预算等待，不以原生声明成功推断业务成功。
