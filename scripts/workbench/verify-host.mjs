@@ -22,12 +22,14 @@ try {
   );
   const temporaryProof = join(runtime, 'proof.json');
   const clientFileProof = join(runtime, 'client-files-proof.json');
+  const teamCatalogProof = join(runtime, 'team-catalog-proof.json');
   const child = spawn(
     process.execPath,
     [
       '--test',
       'packages/dsh-adapter/tests/s1a-host.test.mjs',
       'packages/dsh-adapter/tests/member-file-client-host.test.mjs',
+      'packages/dsh-adapter/tests/host-team-catalog.test.mjs',
     ],
     {
       cwd: root,
@@ -37,6 +39,7 @@ try {
         S1A_HOST_MODULE: join(runtime, 'index.js'),
         S1A_PROOF_FILE: temporaryProof,
         S1A_CLIENT_FILE_PROOF_FILE: clientFileProof,
+        S1A_TEAM_CATALOG_PROOF_FILE: teamCatalogProof,
       },
     },
   );
@@ -86,8 +89,20 @@ try {
         await readFile(join(root, 'packages/dsh-adapter/tests/member-file-client-host.test.mjs')),
       ),
     };
+    const teamCatalog = JSON.parse(await readFile(teamCatalogProof, 'utf8'));
+    if (
+      !teamCatalog.passed ||
+      !teamCatalog.sameHostBytes ||
+      !teamCatalog.separateProcesses ||
+      teamCatalog.seededPlan ||
+      teamCatalog.modelCalls !== 0 ||
+      teamCatalog.hostSha256 !== proof.artifact['index.js'] ||
+      teamCatalog.sourceHead !== proof.sourceHead
+    )
+      throw Error('Incomplete or crossed team catalog Host proof');
+    proof.teamCatalog = teamCatalog;
     proof.scope =
-      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream; a private temporary SDK package link; no installed-desktop or model-quality claim.';
+      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream and public team catalog member creation/confirmation/cold reopen; a private temporary SDK package link; no installed-desktop or model-quality claim.';
     if (process.env.S1A_PROOF_FILE) {
       const target = resolve(process.env.S1A_PROOF_FILE);
       await mkdir(dirname(target), { recursive: true });
@@ -100,6 +115,7 @@ try {
         clientSha256: proof.artifact['client.js'],
         realServiceCases: proof.cases.length,
         clientFileHostCase: proof.clientFiles.passed,
+        teamCatalogHostCase: proof.teamCatalog.passed,
       }),
     );
   }
