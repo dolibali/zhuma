@@ -1091,6 +1091,7 @@ export class ExecutionService {
       }
     | undefined;
   private readonly nativeResultOperations = new Set<Promise<unknown>>();
+  private nativeReviewCleanupOperations = 0;
   private nativeResultCleanupFailure: NativeResultDeliveryError | undefined;
   private readonly uploadLifetime = new AbortController();
   private readonly uploadDrains = new Set<Promise<void>>();
@@ -3247,8 +3248,12 @@ export class ExecutionService {
     if (!(signal instanceof AbortSignal)) return Promise.resolve(fail('validation'));
     if (cleanup && this.reviewCleanupSealed)
       return Promise.resolve(fail('run-authority-unavailable'));
-    if (this.nativeResultOperations.size >= 8)
-      return Promise.resolve(fail('native-result-capacity'));
+    // Cleanup must be able to retire the physical IO occupying all read slots.
+    // It cannot read target bytes/send/vote and shares the original close join.
+    const occupied = cleanup
+      ? this.nativeReviewCleanupOperations
+      : this.nativeResultOperations.size - this.nativeReviewCleanupOperations;
+    if (occupied >= 8) return Promise.resolve(fail('native-result-capacity'));
     const combined = AbortSignal.any([
       cleanup ? this.reviewCleanupLifetime.signal : this.runLifetime.signal,
       signal,
@@ -3313,9 +3318,13 @@ export class ExecutionService {
       }
       return result;
     });
+    if (cleanup) this.nativeReviewCleanupOperations++;
     this.nativeResultOperations.add(operation);
     void operation
-      .finally(() => this.nativeResultOperations.delete(operation))
+      .finally(() => {
+        this.nativeResultOperations.delete(operation);
+        if (cleanup) this.nativeReviewCleanupOperations--;
+      })
       .catch(() => undefined);
     return operation;
   }
