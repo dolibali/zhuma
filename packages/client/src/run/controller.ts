@@ -169,7 +169,8 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     lifetime.signal.throwIfAborted();
     clearTimeout(resync);
     resync = undefined;
-    if (!catalog && Object.values(active).some((command) => command.epoch === epoch)) return;
+    // Passive polling yields to existing reads/commands; explicit refresh can replace a read.
+    if (!catalog && (reading || writing())) return;
     reading?.abort();
     const request = new AbortController();
     reading = request;
