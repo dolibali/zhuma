@@ -64,7 +64,7 @@ function workbench() {
     },
   });
 }
-async function host(t, { file, links = [] } = {}) {
+async function host(t, { file, links = [], assertReviewConfiguration } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-review-service-'));
   const snapshot = workbench();
   let media, attachments;
@@ -74,7 +74,7 @@ async function host(t, { file, links = [] } = {}) {
     await media;
     attachments = ctx.attachments;
   }
-  const h = await open(root, { workbench: snapshot, attachments });
+  const h = await open(root, { workbench: snapshot, attachments, assertReviewConfiguration });
   t.after(async () => {
     await h.close();
     await media?.dispose();
@@ -163,6 +163,128 @@ async function body(h, patch = {}) {
     ...patch,
   };
 }
+
+async function admission(h) {
+  const { configurationId: _configuration, ...query } = await body(h);
+  const preparation = checked(await h.service.readExpertReviewPreparation(h.request, query));
+  const composition = freezeExecutionReviewComposition({
+    ...preparation,
+    model: { provider: 'contract', model: 'review-contract', maxTokens: 1000 },
+    tools: {
+      readTarget: reviewDescriptors.readTarget,
+      completeReview: reviewDescriptors.completeReview,
+    },
+  });
+  const { attempt } = checked(
+    await h.service.prepareExpertReview(h.request, {
+      ...query,
+      configurationId: composition.configurationId,
+    }),
+  );
+  h.resetCounts();
+  return {
+    ...h.locate(),
+    spaceId: 'north',
+    runId: attempt.scope.runId,
+    expectedAttemptVersion: attempt.version,
+    composition,
+  };
+}
+
+for (const [name, assertion] of [
+  ['missing', undefined],
+  ['false result', () => false],
+  ['pending promise', async () => undefined],
+  ['rejected promise', () => Promise.reject(Error('PRIVATE_ASSERTION_REFUSAL'))],
+])
+  test(`review Service admission: ${name} configuration source cannot turn a JSON snapshot into execution`, async (t) => {
+    const h = await host(t, { assertReviewConfiguration: assertion }),
+      command = await admission(h);
+    const before = await businessHashes(h.root);
+    refused(await h.service.admitExpertReview(h.request, command), 'run-authority-unavailable');
+    assert.equal(h.read().nativeExecution.review.attempts[0].status, 'prepared');
+    assert.deepEqual(await businessHashes(h.root), before);
+    assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  });
+
+test('review Service admission: qualified original source gates one durable transition and exact retries do not dispatch or vote', async (t) => {
+  let calls = 0;
+  const h = await host(t, {
+    assertReviewConfiguration(memberId, spaceId, node, composition) {
+      calls++;
+      assert.equal(memberId, 'chen');
+      assert.equal(spaceId, 'north');
+      assert.equal(node.nodeId, 'produce');
+      assert.equal(composition.payload.reviewer.id, 'qa');
+      assert.equal(composition.payload.model.model, 'review-contract');
+      return undefined; // Explicit original Host source contract, not real llm/SDK proof.
+    },
+  });
+  const command = await admission(h),
+    before = structuredClone(h.read());
+  const result = checked(await h.service.admitExpertReview(h.request, command));
+  assert.equal(result.disposition, 'applied');
+  assert.equal(result.attempt.status, 'requested');
+  assert.equal(result.attempt.dispatch, 'reserved');
+  assert.equal(result.attempt.resources, 'held');
+  assert.equal(calls, 1);
+  assert.deepEqual(h.counters, { global: 0, nodes: 1, plans: 0 });
+  for (const key of ['command', 'rounds', 'artifactVersions', 'comments', 'receipts'])
+    assert.deepEqual(h.read()[key], before[key]);
+  assert.equal(readExecutionRunState(h.read()), undefined);
+  const committed = await businessHashes(h.root);
+  h.resetCounts();
+  const replay = checked(await h.service.admitExpertReview(h.request, command));
+  assert.equal(replay.disposition, 'replayed');
+  assert.equal(calls, 2, 'a copied old snapshot cannot replace the current original source');
+  assert.deepEqual(await businessHashes(h.root), committed);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+});
+
+test('review Service admission: current member, reviewer availability and strict snapshot binding are rechecked before the original put', async (t) => {
+  let calls = 0;
+  const h = await host(t, {
+      assertReviewConfiguration() {
+        calls++;
+      },
+    }),
+    command = await admission(h);
+  const before = await businessHashes(h.root);
+  refused(await h.service.admitExpertReview({ memberId: 'chen' }, command), 'run-authority-denied');
+  refused(
+    await h.service.admitExpertReview(h.request, { ...command, actorId: 'chen' }),
+    'actor-from-body',
+  );
+  const changed = structuredClone(command);
+  changed.composition.payload.scope.actorId = 'outside';
+  refused(await h.service.admitExpertReview(h.request, changed), 'review-validation');
+  h.setWorkbench((w) => ({
+    ...w,
+    participants: w.participants.map((p) => (p.id === 'qa' ? { ...p, available: false } : p)),
+  }));
+  refused(await h.service.admitExpertReview(h.request, command), 'review-expert-unavailable');
+  assert.equal(calls, 0);
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+});
+
+test('review Service admission: synchronous configuration-source revocation is rechecked before the original put', async (t) => {
+  let h;
+  h = await host(t, {
+    assertReviewConfiguration() {
+      h.setWorkbench((w) => ({
+        ...w,
+        participants: w.participants.map((p) => (p.id === 'qa' ? { ...p, available: false } : p)),
+      }));
+    },
+  });
+  const command = await admission(h),
+    before = await businessHashes(h.root);
+  refused(await h.service.admitExpertReview(h.request, command), 'review-expert-unavailable');
+  assert.equal(h.read().nativeExecution.review.attempts[0].status, 'prepared');
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+});
 
 test('review Service: current preparation facts reserve no state and match the later exact configured reservation', async (t) => {
   const h = await host(t),
