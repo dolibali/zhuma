@@ -1,10 +1,14 @@
 import { canonicalPayload } from '@zhuma/agent-core';
-import type { ExecutionReviewScope } from './execution-review-contract.js';
+import {
+  executionReviewScopeSchema,
+  type ExecutionReviewScope,
+} from './execution-review-contract.js';
 import type {
   NativeSessionSelection,
   NativeWorkAction,
   NativeWorkGrant,
   NativeWorkScope,
+  NativeScopeCleanupAuthority,
 } from './native-work-session-contract.js';
 import {
   nativeSelectionSchema,
@@ -21,6 +25,15 @@ import {
 } from './native-work-session-review-contract.js';
 
 const grantOwners = new WeakMap<NativeWorkGrant, NativeSessionPurpose>();
+const scopeOwners = new WeakMap<NativeWorkScope, NativeSessionPurpose>();
+const cleanupOwners = new WeakMap<object, NativeSessionPurpose>();
+export function assertNativeScopePurposeOwner(
+  scope: NativeWorkScope,
+  purpose?: NativeSessionPurpose,
+): void {
+  const owner = scopeOwners.get(scope);
+  if (owner && owner !== purpose) throw new NativeReviewError('review-authority-denied');
+}
 /** A routed review capability cannot be replayed through another service/runtime. */
 export function assertNativePurposeOwner(
   grant: NativeWorkGrant,
@@ -33,6 +46,10 @@ export function assertNativePurposeOwner(
 /** C Host port, not a D DTO or grant issuer. Production must adapt the real D
  * identity registry; the SDK PoC explicitly supplies a synthetic resolver. */
 export interface NativeReviewPorts {
+  /** Cleanup only. Host must first validate the original in D's genuine cleanup
+   * issuer; an object's own assertCurrent or copied scope is not that validation.
+   * No member/drive/read grant or model selection is requested by this port. */
+  authorizeCleanup?(original: object): ExecutionReviewScope;
   authorize(
     original: object,
     action: NativeWorkAction,
@@ -62,10 +79,49 @@ export class NativeSessionPurpose {
   private readonly authorize: NativeReviewPorts['authorize'];
   private readonly readTarget: NativeReviewPorts['readTarget'];
   private readonly unavailableRequired: NativeReviewPorts['unavailableRequired'];
+  private readonly authorizeCleanup: NativeReviewPorts['authorizeCleanup'];
   constructor(readonly ports: NativeReviewPorts) {
     this.authorize = ports.authorize;
     this.readTarget = ports.readTarget;
     this.unavailableRequired = ports.unavailableRequired;
+    this.authorizeCleanup = ports.authorizeCleanup;
+  }
+
+  cleanupAuthority(original: unknown): NativeScopeCleanupAuthority {
+    if (!original || typeof original !== 'object')
+      throw new NativeReviewError('review-authority-denied');
+    const owner = cleanupOwners.get(original);
+    if (owner && owner !== this) throw new NativeReviewError('review-authority-denied');
+    const resolve = () => {
+      if (
+        typeof this.authorizeCleanup !== 'function' ||
+        this.ports.authorizeCleanup !== this.authorizeCleanup
+      )
+        throw new NativeReviewError('review-authority-denied');
+      let value: unknown;
+      try {
+        value = this.authorizeCleanup.call(this.ports, original);
+        if (value && typeof value === 'object' && 'then' in value) {
+          void Promise.resolve(value).catch(() => undefined);
+          throw new NativeReviewError('review-authority-denied');
+        }
+        return nativeReviewContextFromScope(executionReviewScopeSchema.parse(value));
+      } catch {
+        throw new NativeReviewError('review-authority-denied');
+      }
+    };
+    const context = resolve(),
+      identity = canonicalPayload(context);
+    cleanupOwners.set(original, this);
+    const scope = this.bindScope(Object.freeze({ ...context.scope }), context);
+    return Object.freeze({
+      scope,
+      assertCurrent: () => {
+        if (canonicalPayload(resolve()) !== identity)
+          throw new NativeReviewError('review-target-changed');
+        return undefined;
+      },
+    });
   }
 
   reviewGrant(original: unknown): NativeWorkGrant {
@@ -134,15 +190,18 @@ export class NativeSessionPurpose {
     return nativeSelectionSchema.parse(this.resolve(this.original(grant), 'open').selection);
   }
   context(scope: NativeWorkScope): NativeReviewContext | undefined {
+    assertNativeScopePurposeOwner(scope, this);
     const context = this.scopes.get(scope);
     if (context && canonicalPayload(scope) !== canonicalPayload(context.scope))
       throw new NativeReviewError('review-target-changed');
     return context;
   }
   bindScope(scope: NativeWorkScope, context: NativeReviewContext): NativeWorkScope {
+    assertNativeScopePurposeOwner(scope, this);
     if (canonicalPayload(scope) !== canonicalPayload(context.scope))
       throw new NativeReviewError('review-target-changed');
     this.scopes.set(scope, structuredClone(context));
+    scopeOwners.set(scope, this);
     return scope;
   }
   cloneScope(scope: NativeWorkScope): NativeWorkScope {

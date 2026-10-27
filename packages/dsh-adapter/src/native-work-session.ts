@@ -1,8 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { NativeSessionPurpose, assertNativePurposeOwner } from './native-work-session-purpose.js';
+import {
+  NativeSessionPurpose,
+  assertNativePurposeOwner,
+  assertNativeScopePurposeOwner,
+} from './native-work-session-purpose.js';
 import {
   NativeReviewError,
   nativeReviewRecordSchema,
+  nativeReviewScopeKey,
   nativeReviewIntentSchema,
   NATIVE_REVIEW_LIMITS,
   type NativeReviewContext,
@@ -611,7 +616,10 @@ export class NativeWorkSessionService {
       !(waitSignal instanceof AbortSignal)
     )
       throw new NativeWorkError('invalid-request');
-    const scope = parsed.data,
+    assertNativeScopePurposeOwner(authority.scope, this.review?.purpose);
+    const scope = this.review?.purpose.context(authority.scope)
+        ? this.cloneScope(authority.scope)
+        : parsed.data,
       address = this.scopeKey(scope),
       method = authority.assertCurrent;
     const verify = () => {
@@ -667,6 +675,16 @@ export class NativeWorkSessionService {
     }
   }
 
+  /** Cold or warm review cleanup after the Host validates D's original cleanup
+   * capability. Never opens an Agent or reissues drive/read authority. */
+  async retireReviewForCleanup(
+    original: unknown,
+    waitSignal: AbortSignal,
+  ): Promise<NativeScopeCleanupResult> {
+    if (!this.review) throw new NativeReviewError('review-unavailable');
+    return this.retireForCleanup(this.review.purpose.cleanupAuthority(original), waitSignal);
+  }
+
   /** Global close seals new admissions first, then waits for every owned retirement. */
   async whenRetirementsIdle(): Promise<void> {
     while (this.cleanups.size) await Promise.allSettled([...this.cleanups.values()]);
@@ -677,10 +695,21 @@ export class NativeWorkSessionService {
     scope: NativeWorkScope,
   ): Promise<Extract<NativeScopeCleanupResult, { status: 'retired' }>> {
     const key = this.sessionKey(scope),
-      address = this.scopeKey(scope);
+      address = this.scopeKey(scope),
+      context = this.review?.purpose.context(scope);
     const find = () => {
-      const stored = this.storage.read(key);
-      return stored && bindingForScope(readNativeRecord(stored), scope);
+      const stored = context ? this.review!.read(key) : this.storage.read(key);
+      if (stored === undefined) return undefined;
+      let record;
+      if (context) {
+        const review = nativeReviewRecordSchema.parse(stored);
+        if (nativeReviewScopeKey(review.context) !== address)
+          throw new NativeWorkError('scope-mismatch');
+        record = review.binding;
+      } else record = readNativeRecord(stored);
+      const binding = bindingForScope(record, scope);
+      if (binding && context) this.review!.purpose.bindScope(binding.scope, context);
+      return binding;
     };
     // The owned runtime retirement itself keeps physical cleanup after a wait abort.
     const control = new AbortController();
@@ -744,7 +773,7 @@ export class NativeWorkSessionService {
     return {
       status: 'retired',
       binding: {
-        scope: structuredClone(binding.scope),
+        scope: this.cloneScope(binding.scope),
         nativeSessionId: binding.nativeSessionId,
         nativeAgentId: binding.nativeAgentId,
         selection: structuredClone(binding.selection),
