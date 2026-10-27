@@ -116,6 +116,20 @@ test('SDK patched source contract: root host/client and every independent deskto
   inspect(devtoolsSource);
   assert.equal(viteOptions.length, 2, 'independent injected and main DevTools Vite builds');
   for (const option of viteOptions) assert.equal(option?.text, 'none');
+  const welcomeOptions = [];
+  function inspectWelcome(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(desktopSource) === 'build') {
+      let value = node.arguments[0];
+      for (const name of ['build', 'rolldownOptions', 'experimental', 'attachDebugInfo'])
+        value = value?.properties?.find(
+          (p) => p.name?.getText(desktopSource) === name,
+        )?.initializer;
+      welcomeOptions.push(value?.text);
+    }
+    ts.forEachChild(node, inspectWelcome);
+  }
+  inspectWelcome(desktopSource);
+  assert.deepEqual(welcomeOptions, ['none'], 'nested welcome Vite call has its own native option');
 });
 
 const kinds = ['css', 'inline-css', 'global-css', 'devtools:css'];
@@ -146,6 +160,7 @@ test('source verifier contract: preserve licenses, public examples, strings, tem
     '/*! @license Copyright Example */',
     '// Public example: /Users/example/project',
     `const quoted = ${JSON.stringify(marker('css'))};`,
+    'const regex = /\\/\\/#region \\\\0dsh-css:\\/synthetic\\/sdk\\/file.css.mjs/;',
     'const template = `',
     marker('inline-css'),
     '${1}',
@@ -158,7 +173,28 @@ test('source verifier contract: preserve licenses, public examples, strings, tem
     '//#region \\0dsh-css:packages/client/example/src/test.css.mjs',
     '//# sourceMappingURL=client.js.map',
   ].join('\n');
+  assert.equal(
+    parsed(text).parseDiagnostics.length,
+    0,
+    'valid string/template/block/regex controls',
+  );
   assert.doesNotThrow(() => assertNoAbsoluteSourceRegions(text));
+});
+test('source verifier contract: reject real comments at closing punctuation and within template expressions', () => {
+  const comment = marker('css', '/synthetic/build');
+  for (const text of [
+    `export const value = [\n${comment}\n];`,
+    `export const value = {\n${comment}\n};`,
+    `const value = example(\n${comment}\n);`,
+    `function example(\n${comment}\n) {}`,
+    `function example() {\n${comment}\n}`,
+    `const value = 1\n${comment}\n;`,
+    'const value = `text ${[\n' + comment + '\n]}`;',
+    `const value = [/pattern/,\n${comment}\n];`,
+  ]) {
+    assert.equal(parsed(text).parseDiagnostics.length, 0, 'valid JavaScript punctuation boundary');
+    assert.throws(() => assertNoAbsoluteSourceRegions(text), /Absolute build-source/);
+  }
 });
 test('source verifier contract: scan generated SDK and copied runtime outputs read-only, reject absent output', async (t) => {
   const directory = await temporary(t);

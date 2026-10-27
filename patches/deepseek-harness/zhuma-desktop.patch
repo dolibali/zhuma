@@ -1806,7 +1806,7 @@ index 9de39d3f..36878060 100644
        const cacheDirectory = resolveMacOSSignatureCacheDirectory(process.env, BUILD_PATHS.root)
        await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'sign:dsh-native', () => signMacOSRuntime(DSH_OUTPUT_ROOT, resolveDesktopAppId(process.env), resolveMacOSSigningEnvironment(process.env), target.arch, cacheDirectory))
 diff --git a/apps/desktop/tsdown.config.ts b/apps/desktop/tsdown.config.ts
-index d8470bac..fbb69f35 100644
+index d8470bac..376dbadc 100644
 --- a/apps/desktop/tsdown.config.ts
 +++ b/apps/desktop/tsdown.config.ts
 @@ -43,6 +43,8 @@ export default defineConfig([
@@ -1818,7 +1818,15 @@ index d8470bac..fbb69f35 100644
      codeSplitting: false,
      deps: { alwaysBundle: ['@deepseek-ai/dsh-atomic-write'] },
    },
-@@ -88,6 +90,8 @@ export default defineConfig([
+@@ -71,6 +73,7 @@ export default defineConfig([
+         build: {
+           outDir: 'lib/welcome',
+           emptyOutDir: true,
++          rolldownOptions: { experimental: { attachDebugInfo: 'none' } },
+           lib: {
+             entry: 'src/client/welcome.tsx',
+             formats: ['iife'],
+@@ -88,6 +91,8 @@ export default defineConfig([
      fixedExtension: false,
      dts: false,
      clean: false,
@@ -1827,7 +1835,7 @@ index d8470bac..fbb69f35 100644
      deps: { neverBundle: ['electron'] },
    },
    ...(['preload-app', 'preload-welcome', 'preload-platform-account', 'preload-mandatory', 'preload-update-dialog'] as const).map(name => ({
-@@ -102,6 +106,8 @@ export default defineConfig([
+@@ -102,6 +107,8 @@ export default defineConfig([
      fixedExtension: false,
      dts: false,
      clean: false,

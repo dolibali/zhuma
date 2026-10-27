@@ -33,7 +33,8 @@ export function assertNoAbsoluteSourceRegions(text: string): void {
       if (label && /(?:^|:)(?:\/|[A-Za-z]:[\\/]|\\\\)/u.test(label))
         throw new Error('Absolute build-source region marker in generated JavaScript');
     }
-    ts.forEachChild(node, visit);
+    // Include punctuation tokens: their leading trivia can contain comments without an AST child.
+    for (const child of node.getChildren(source)) visit(child);
   };
   visit(source);
 }
