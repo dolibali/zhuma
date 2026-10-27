@@ -1,15 +1,25 @@
 import { Service, type Context } from '@deepseek-ai/cordis';
 import { isAbsolute } from 'node:path';
 import type { Agent, AgentHandle, AgentSetup } from '@deepseek-ai/dsh-agent';
-import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
-import { SessionId, SessionLogOffset, type UserMessage } from '@deepseek-ai/dsh-session';
+import {
+  MessageId,
+  ReasoningEffortId,
+  createUserMessage,
+  type ContextSnapshotSection,
+} from '@deepseek-ai/dsh-llm';
+import {
+  SessionId,
+  SessionLogOffset,
+  type SessionSeq,
+  type UserMessage,
+} from '@deepseek-ai/dsh-session';
 import type { ProjectionCheckpoint } from '@deepseek-ai/dsh-session-projection';
 import {
   SessionPersistenceNotFoundError,
   type SessionHandle,
 } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
-import { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
+import { PERSONA_PREFIX_SECTION, joinContextSections } from '@deepseek-ai/dsh-system-prompt';
 import { assertNativeInputReadOwner } from './native-work-session.js';
 import {
   NativeSessionPurpose,
@@ -58,7 +68,18 @@ const STOP_MS = 5_000;
 const READ_MS = 15_000;
 
 /** Shadow only the pinned Web deployment's development guidance in this Agent scope. */
-function configureNativeWorkPrompt(ctx: Context): void {
+function configureNativeWorkPrompt(ctx: Context, textOnly: boolean): void {
+  if (textOnly) {
+    // The original service still owns its real directory for Skill lookup.
+    // Request admission refreshes this scoped contribution after assembly.
+    ctx.systemPrompt.context({
+      name: 'working-directory:current',
+      order: ctx.systemPrompt.getContextOrder('WORKING_DIRECTORY'),
+      text: '',
+      interpolate: false,
+      required: true,
+    });
+  }
   ctx.systemPrompt.section({
     name: PERSONA_PREFIX_SECTION,
     order: ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
@@ -84,6 +105,60 @@ function configureNativeWorkPrompt(ctx: Context): void {
       interpolate: false,
     });
   }
+}
+
+/** Validate every visible SDK snapshot before proposing any model-only replacement. */
+function textOnlyContextReplacements(agent: Agent): readonly {
+  readonly seq: SessionSeq;
+  readonly message: UserMessage;
+  readonly sourceEventSeqs: SessionSeq[];
+}[] {
+  const changes: {
+    seq: SessionSeq;
+    message: UserMessage;
+    sourceEventSeqs: SessionSeq[];
+  }[] = [];
+  for (const seq of agent.session.surface.nodes) {
+    const event = agent.session.eventAt(seq);
+    if (event?.type !== 'user/message') continue;
+    const message = event.data;
+    const sourceKind: unknown = Reflect.get(message.source, 'kind');
+    if (sourceKind !== 'runtime-context') continue;
+    const sections: unknown = Reflect.get(message.source, 'sections');
+    if (Reflect.get(message.source, 'form') !== 'snapshot' || !Array.isArray(sections))
+      throw new NativeWorkError('unavailable');
+    const named: ContextSnapshotSection[] = [];
+    const names = new Set<string>();
+    for (const section of sections) {
+      if (typeof section !== 'object' || section === null || Array.isArray(section))
+        throw new NativeWorkError('unavailable');
+      const name: unknown = Reflect.get(section, 'name');
+      const text: unknown = Reflect.get(section, 'text');
+      if (typeof name !== 'string' || !name || names.has(name) || typeof text !== 'string')
+        throw new NativeWorkError('unavailable');
+      names.add(name);
+      named.push({ ...section, name, text });
+    }
+    const [body] = message.content;
+    if (
+      message.content.length !== 1 ||
+      body?.type !== 'text' ||
+      body.text !== joinContextSections(named)
+    )
+      throw new NativeWorkError('unavailable');
+    if (!names.has('working-directory:current')) continue;
+    const kept = named.filter((section) => section.name !== 'working-directory:current');
+    const source = { ...message.source, sections: kept };
+    changes.push({
+      seq,
+      message: createUserMessage({
+        content: [{ ...body, text: joinContextSections(kept) }],
+        source,
+      }),
+      sourceEventSeqs: [...new Set([...(event.sourceEventSeqs ?? []), seq])],
+    });
+  }
+  return changes;
 }
 
 interface ResourceEpoch {
@@ -494,7 +569,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       assertNativeInputReadOwner(binding.nativeSessionId, this);
       // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
       agentCtx.tools.presentAs('native');
-      configureNativeWorkPrompt(agentCtx);
+      configureNativeWorkPrompt(agentCtx, directory.meta === undefined);
       const composition = await this.options.compose(agentCtx, structuredClone(binding), grant);
       signal.throwIfAborted();
       this.current(grant);
@@ -576,6 +651,22 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           this.current(grant);
           directory.assert(unpublishedAgent);
           checkToolSurface();
+          if (directory.meta === undefined) {
+            // Preparation is explicit create/resume, never a history/view read.
+            // Original append-origin events remain the human transcript.
+            const changes = textOnlyContextReplacements(unpublishedAgent);
+            for (const change of changes) {
+              this.current(grant);
+              directory.assert(unpublishedAgent);
+              grant.assertCurrent('send');
+              unpublishedAgent.session.append('user/message', change.message, {
+                surfaceOp: { op: 'replace', startSeq: change.seq, endSeq: change.seq },
+                sourceEventSeqs: change.sourceEventSeqs,
+              });
+            }
+            this.current(grant);
+            directory.assert(unpublishedAgent);
+          }
         },
       };
     };
