@@ -2,12 +2,26 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'rea
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import type { LoginCredentials } from './api.js';
+import type { MemberSessionController } from './shell.js';
 import {
   createLocalSetupApi,
   LocalSetupApiError,
   type LocalSetupInput,
   type LocalSetupSnapshot,
 } from './local-setup-api.js';
+
+/** Initial restore can have failed while setup was pending. Re-read the real
+ * session before login, and never start a late login after this view closes. */
+export async function loginAfterLocalSetup(
+  session: Pick<MemberSessionController, 'restore' | 'login'>,
+  credentials: LoginCredentials,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  await session.restore();
+  signal.throwIfAborted();
+  await session.login(credentials);
+}
 
 export function LocalSetupForm({
   snapshot,
@@ -183,7 +197,7 @@ export function LocalSetupBoundary({
   fetcher = globalThis.fetch,
 }: {
   readonly children: ReactNode;
-  onInitialized(credentials: LoginCredentials): Promise<void>;
+  onInitialized(credentials: LoginCredentials, signal: AbortSignal): Promise<void>;
   fetcher?: typeof fetch;
 }) {
   const api = useMemo(() => createLocalSetupApi(fetcher), [fetcher]);
@@ -235,7 +249,10 @@ export function LocalSetupBoundary({
               throw new LocalSetupApiError(
                 result.kind === 'recovery-required' ? 'recovery-required' : 'unavailable',
               );
-            await onInitialized({ accountId: input.accountId, password: input.password });
+            await onInitialized(
+              { accountId: input.accountId, password: input.password },
+              current.signal,
+            );
             current.signal.throwIfAborted();
             setState({ kind: 'configured' });
           }}

@@ -3,7 +3,9 @@ import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
 import { createLocalSetupApi, LocalSetupApiError } from '../dist/identity/local-setup-api.js';
-import { LocalSetupForm } from '../dist/identity/LocalSetupBoundary.js';
+import { LocalSetupForm, loginAfterLocalSetup } from '../dist/identity/LocalSetupBoundary.js';
+import { IdentityApiError } from '../dist/identity/api.js';
+import { createMemberSessionController } from '../dist/identity/session.js';
 
 const packs = [
   { id: 'zhuma-work-planning', version: '1.0.0', name: '工作规划专家', role: '规划与分工' },
@@ -120,4 +122,57 @@ test('first setup form SSR contract: real labels and explicit expert choices, no
     }),
   );
   assert(pending.includes('继续完成首次设置'));
+});
+
+test('first setup login contract: recheck an initially unavailable original controller before entering with the new account', async () => {
+  let ready = false,
+    authenticated = false,
+    logins = 0;
+  const controller = createMemberSessionController({
+    session: async () => {
+      if (!ready) throw new IdentityApiError('unavailable');
+      if (!authenticated) throw new IdentityApiError('unauthenticated');
+      return {
+        accountId: input.accountId,
+        principal: { kind: 'zhuma-member', memberId: input.accountId },
+        peerId: 'contract-peer',
+        spaces: [],
+      };
+    },
+    login: async (credentials) => {
+      assert.equal(credentials.accountId, input.accountId);
+      authenticated = true;
+      logins++;
+      return { accountId: input.accountId };
+    },
+    logout: async () => ({ accountId: input.accountId }),
+  });
+  await controller.restore();
+  assert.equal(controller.getSnapshot().status, 'unavailable');
+  ready = true;
+  await loginAfterLocalSetup(controller, input, signal());
+  assert.equal(logins, 1);
+  assert.equal(controller.getSnapshot().status, 'authenticated');
+  assert.equal(JSON.stringify(controller.getSnapshot()).includes(input.password), false);
+  controller.dispose();
+});
+
+test('first setup login contract: closing the view during session recheck cannot start a late login', async () => {
+  const checked = Promise.withResolvers(),
+    abort = new AbortController();
+  let logins = 0;
+  const pending = loginAfterLocalSetup(
+    {
+      restore: () => checked.promise,
+      login: async () => {
+        logins++;
+      },
+    },
+    input,
+    abort.signal,
+  );
+  abort.abort();
+  checked.resolve();
+  await assert.rejects(pending);
+  assert.equal(logins, 0);
 });
