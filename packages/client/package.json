@@ -2,7 +2,7 @@
   "name": "@zhuma/client",
   "version": "0.0.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "exports": {
     "./workbench/ui": {

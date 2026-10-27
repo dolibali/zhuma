@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Context } from '@deepseek-ai/cordis';
 import { defineDomain, type Domain } from '@deepseek-ai/dsh-storage-domain';
-import { WorkbenchError } from '@zhuma/agent-core';
+import { WorkbenchError, canonicalPayload } from '@zhuma/agent-core';
 import { PROJECT_SPACE_LIMIT } from './project-space.js';
 import type { ProjectSpaceDirectory, ProjectSpaceLookup } from './project-space.js';
 
@@ -112,6 +112,17 @@ export interface SpaceDirectoryImport {
     readonly { readonly projectId: string; readonly spaceId: string }[] | undefined;
 }
 
+export type SpaceDirectoryInitializationStatus =
+  | { readonly kind: 'unconfigured' }
+  | { readonly kind: 'pending'; readonly fingerprint: string }
+  | { readonly kind: 'configured'; readonly fingerprint: string | null }
+  | { readonly kind: 'recovery-required' };
+export interface SpaceDirectoryOpenOptions {
+  /** Only the original Host's setup control plane may resume a pending import.
+   * Member reads and ordinary writes remain unavailable until it completes. */
+  readonly allowPendingInitialization?: boolean;
+}
+
 /**
  * Trusted read side. `spacesForMember` enumerates every space the account
  * belongs to, including spaces with no projects and no notes. `isMember` is
@@ -195,7 +206,7 @@ function validateImport(imported: NormalizedImport): void {
   }
 }
 
-function parseImport(imported: SpaceDirectoryImport): NormalizedImport {
+function parseImport(imported: unknown): NormalizedImport {
   const parsed = ImportSchema.safeParse(imported);
   if (!parsed.success) throw invalid('空间目录导入无效。');
   const memberships = parsed.data.memberships ?? [];
@@ -231,6 +242,16 @@ function importSeed(imported: NormalizedImport): string {
     projectSpaces: imported.projectSpaces.map((record) => [record.projectId, record.spaceId]),
   });
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+/** Same normalized seed used by the original directory importer, not authority. */
+export function spaceDirectoryInitializationFingerprint(imported: SpaceDirectoryImport): string {
+  return importSeed(parseImport(imported));
+}
+
+/** Validate and copy a Host initializer through the same original import schema. */
+export function readSpaceDirectoryInitialization(imported: unknown): SpaceDirectoryImport {
+  return parseImport(imported);
 }
 
 function directoryHasRows(domain: SpaceDirectoryDomain): boolean {
@@ -336,6 +357,75 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
 
   constructor(private readonly domain: SpaceDirectoryDomain) {}
 
+  private active(): void {
+    if (this.signal.aborted) throw new WorkbenchError('unavailable', '空间目录已关闭。');
+  }
+  private available(): void {
+    this.active();
+    if (readPhase(this.domain) === 'importing')
+      throw new WorkbenchError('unavailable', '空间目录初始化尚未完成。');
+  }
+  initializationStatus(): SpaceDirectoryInitializationStatus {
+    this.active();
+    const global = this.domain.global.get();
+    if (
+      (global.importComplete && global.importState !== null) ||
+      (global.importState === 'importing' && !global.importSeed)
+    )
+      return { kind: 'recovery-required' };
+    switch (readPhase(this.domain)) {
+      case 'complete':
+        return { kind: 'configured', fingerprint: global.importSeed };
+      case 'importing':
+        return { kind: 'pending', fingerprint: global.importSeed! };
+      case 'writer':
+        return { kind: 'recovery-required' };
+      case 'empty':
+        return global.importSeed ? { kind: 'recovery-required' } : { kind: 'unconfigured' };
+    }
+  }
+  async initializeImport(
+    imported: SpaceDirectoryImport,
+  ): Promise<{ readonly kind: 'initialized'; readonly fingerprint: string }> {
+    const normalized = parseImport(imported),
+      fingerprint = importSeed(normalized);
+    return this.exclusive(async () => {
+      const status = this.initializationStatus();
+      if (
+        status.kind === 'recovery-required' ||
+        ((status.kind === 'pending' || status.kind === 'configured') &&
+          status.fingerprint !== fingerprint)
+      )
+        throw new WorkbenchError('conflict', '空间目录初始化与原有记录不一致。');
+      const expected = [
+        [this.domain.table('spaces'), new Map(normalized.spaces.map((row) => [row.id, row]))],
+        [
+          this.domain.table('memberships'),
+          new Map(
+            normalized.memberships.map((row) => [membershipKey(row.spaceId, row.accountId), row]),
+          ),
+        ],
+        [
+          this.domain.table('project_spaces'),
+          new Map(normalized.projectSpaces.map((row) => [row.projectId, row])),
+        ],
+      ] as const;
+      for (const [table, rows] of expected) {
+        const byKey = new Map<string, unknown>(rows);
+        for (const [key, row] of table.entries())
+          if (canonicalPayload(row) !== canonicalPayload(byKey.get(key) ?? null))
+            throw new WorkbenchError('conflict', '空间目录存在未知的初始化记录。');
+        // An already completed directory may have been deliberately changed.
+        // Retrying setup cannot silently restore a revoked membership.
+        if (status.kind === 'configured' && table.size !== byKey.size)
+          throw new WorkbenchError('conflict', '已完成的空间目录发生了变化。');
+      }
+      await reconcileImport(this.domain, normalized);
+      this.active();
+      return { kind: 'initialized', fingerprint };
+    });
+  }
+
   /**
    * Hold the decision and the awaited domain write together. `put` itself only
    * enqueues the durable job; the memory row appears when that job finishes.
@@ -350,6 +440,7 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
   }
 
   spaces(): readonly AuthorizedSpace[] {
+    this.available();
     const list: AuthorizedSpace[] = [];
     for (const [, record] of this.domain.table('spaces').entries()) {
       list.push({ id: record.id, kind: record.kind, name: record.name });
@@ -358,16 +449,19 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
   }
 
   space(spaceId: string): AuthorizedSpace | undefined {
+    this.available();
     const record = this.domain.table('spaces').get(spaceId);
     if (record === undefined) return undefined;
     return { id: record.id, kind: record.kind, name: record.name };
   }
 
   isMember(spaceId: string, accountId: string): boolean {
+    this.available();
     return this.domain.table('memberships').get(membershipKey(spaceId, accountId)) !== undefined;
   }
 
   spacesForMember(accountId: string): readonly AuthorizedSpace[] {
+    this.available();
     const list: AuthorizedSpace[] = [];
     for (const [, membership] of this.domain.table('memberships').entries()) {
       if (membership.accountId !== accountId) continue;
@@ -380,6 +474,7 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
   spaceForProjectNow(projectId: string): ProjectSpaceLookup {
     if (this.signal.aborted) return { ok: false, reason: 'unavailable' };
     try {
+      this.available();
       const record = this.domain.table('project_spaces').get(projectId);
       if (record === undefined) return { ok: false, reason: 'unknown' };
       return { ok: true, spaceId: record.spaceId };
@@ -398,6 +493,7 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
     const parsed = SpaceSchema.safeParse(space);
     if (!parsed.success) throw invalid('空间标识无效。');
     await this.exclusive(async () => {
+      this.available();
       const table = this.domain.table('spaces');
       if (table.get(space.id) !== undefined) throw new WorkbenchError('conflict', '空间已存在。');
       if (table.size >= SPACE_DIRECTORY_SPACE_LIMIT) throw invalid('空间目录超过上限。');
@@ -410,6 +506,7 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
     const parsed = MembershipSchema.safeParse({ spaceId, accountId });
     if (!parsed.success) throw invalid('空间成员标识无效。');
     await this.exclusive(async () => {
+      this.available();
       if (this.domain.table('spaces').get(spaceId) === undefined) {
         throw invalid('空间不存在。');
       }
@@ -426,6 +523,7 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
 
   async revokeMembership(spaceId: string, accountId: string): Promise<void> {
     await this.exclusive(async () => {
+      this.available();
       // Durable delete first; later reads agree with the medium.
       await this.domain.table('memberships').delete(membershipKey(spaceId, accountId));
     });
@@ -435,6 +533,7 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
     const parsed = ProjectSpaceRecordSchema.safeParse({ projectId, spaceId });
     if (!parsed.success) throw invalid('项目空间归属的标识无效。');
     await this.exclusive(async () => {
+      this.available();
       if (this.domain.table('spaces').get(spaceId) === undefined) {
         throw invalid('空间不存在。');
       }
@@ -467,6 +566,10 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
 
 export interface OpenedSpaceDirectoryHandle extends SpaceDirectory, SpaceDirectoryWriter {
   readonly signal: AbortSignal;
+  initializationStatus(): SpaceDirectoryInitializationStatus;
+  initializeImport(
+    imported: SpaceDirectoryImport,
+  ): Promise<{ readonly kind: 'initialized'; readonly fingerprint: string }>;
   /** Host authorization reads the same current domain; closed/failed sources refuse. */
   spaceForProjectNow(projectId: string): ProjectSpaceLookup;
   close(): Promise<void>;
@@ -505,12 +608,13 @@ export function spaceDirectoryFor(ctx: object): OpenedSpaceDirectoryHandle | und
 export async function applySpaceDirectory(
   ctx: Context,
   imported?: SpaceDirectoryImport,
+  options?: SpaceDirectoryOpenOptions,
 ): Promise<void> {
   const seam = (ctx as { storageDomain?: StorageDomainSeam }).storageDomain;
   if (seam === undefined || typeof seam.open !== 'function') {
     throw new Error('space directory startup refused: storageDomain is not available');
   }
-  const directory = await openSpaceDirectory(seam, imported);
+  const directory = await openSpaceDirectory(seam, imported, options);
   const host = directoryHost(ctx);
   if (directories.has(host)) {
     await directory.close();
@@ -537,10 +641,16 @@ export async function applySpaceDirectory(
 export async function openSpaceDirectory(
   storageDomain: StorageDomainSeam,
   imported?: SpaceDirectoryImport,
+  options?: SpaceDirectoryOpenOptions,
 ): Promise<OpenedSpaceDirectoryHandle> {
   const domain = await storageDomain.open(spaceDirectoryDomainSpec);
   try {
-    await reconcileImport(domain, imported);
+    if (!(
+      options?.allowPendingInitialization &&
+      imported === undefined &&
+      readPhase(domain) === 'importing'
+    ))
+      await reconcileImport(domain, imported);
   } catch (error) {
     await domain.close().catch(() => {});
     throw error;
