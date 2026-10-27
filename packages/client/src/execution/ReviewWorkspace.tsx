@@ -5,6 +5,7 @@ import { Field } from '../workbench/controls.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type { ExecutionApi, ExecutionNodeWire, ReviewDraft } from './ExecutionApi.js';
 import { reviewIdentity, useExecutionCommand, useFormKey } from './interaction.js';
+import { createExecutionGoalView } from '../execution-view.js';
 
 type Props = {
   api: ExecutionApi;
@@ -17,6 +18,7 @@ export function ReviewWorkspace(props: Props) {
 }
 function ReviewForm({ api, node, onSubmitted }: Props) {
   const titleId = useId();
+  const goal = createExecutionGoalView(node.goal);
   const round = node.rounds.find((item) => item.id === node.currentRoundId);
   // A review is always tied to its exact submitted artifact, never the latest unrelated one.
   const artifact = node.artifacts.find((item) => item.id === round?.artifactVersionId);
@@ -55,9 +57,10 @@ function ReviewForm({ api, node, onSubmitted }: Props) {
       <div className="zm-page-heading">
         <div>
           <p className="zm-eyebrow">评审产物</p>
-          <h2 id={titleId}>{node.goal}</h2>
+          <h2 id={titleId}>{goal.title}</h2>
         </div>
       </div>
+      {goal.description !== undefined && <p className="zm-execution-text">{goal.description}</p>}
       {command.error && (
         <div role="alert" className="zm-error">
           {command.error}
