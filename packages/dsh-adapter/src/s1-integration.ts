@@ -22,6 +22,15 @@ import type {
   ProjectArtifactsRequest,
   ProjectArtifactsValue,
 } from './execution-project-artifacts-contract.js';
+import type { TaskProgressValue } from './execution-task-progress-contract.js';
+export type {
+  TaskProgressTarget,
+  TaskProgressQuery,
+  TaskProgressResources,
+  TaskProgressRow,
+  TaskProgressValue,
+  TaskProgressUnknownReason,
+} from './execution-task-progress-contract.js';
 import type {
   ExecutionFileAuthority,
   ExecutionFileAuthoritySource,
@@ -147,6 +156,7 @@ export type ExecutionEndpoints = readonly [
   'draft',
   'upstream-content',
   'project-artifacts',
+  'task-progress',
   'inbox-counts',
   'events',
 ];
@@ -474,6 +484,11 @@ export interface ExecutionServiceMethods {
     body: unknown,
     fileAuthority?: ExecutionFileAuthoritySource,
   ): Promise<ExecutionChannelResult<ProjectArtifactsValue>>;
+  taskProgress(
+    caller: ExecutionCaller,
+    body: unknown,
+    fileAuthority?: ExecutionFileAuthoritySource,
+  ): Promise<ExecutionChannelResult<TaskProgressValue>>;
   /** Raw byte upload rides headers + a byte stream, never the JSON envelope. */
   uploadFile(
     caller: ExecutionCaller,
@@ -505,6 +520,10 @@ export interface ExecutionRoutes {
   readonly 'project-artifacts': {
     readonly body: ProjectArtifactsRequest;
     readonly value: ProjectArtifactsValue;
+  };
+  readonly 'task-progress': {
+    readonly body: import('./execution-task-progress-contract.js').TaskProgressQuery;
+    readonly value: TaskProgressValue;
   };
   readonly draft: {
     readonly body: RevisionRequest | DeliveryDraftWrite;

@@ -142,6 +142,7 @@ type ServiceMethodName =
   | 'revision'
   | 'upstreamContent'
   | 'projectArtifacts'
+  | 'taskProgress'
   | 'uploadFile'
   | 'draft'
   | 'inboxCounts'
@@ -179,6 +180,9 @@ export type UpstreamContentMethodBoth = Assert<
 >;
 export type ProjectArtifactsMethodBoth = Assert<
   Both<ExecutionService['projectArtifacts'], ExecutionServiceMethods['projectArtifacts']>
+>;
+export type TaskProgressMethodBoth = Assert<
+  Both<ExecutionService['taskProgress'], ExecutionServiceMethods['taskProgress']>
 >;
 export type UploadFileMethodBoth = Assert<
   Both<ExecutionService['uploadFile'], ExecutionServiceMethods['uploadFile']>

@@ -5,6 +5,8 @@ import { Field, MultiSelect, ParticipantSelect } from './controls.js';
 import { ControlIcon } from './ControlIcon.js';
 import { ProjectArtifactsPanel } from './ProjectArtifactsPanel.js';
 import type { ExecutionApi } from '../execution/ExecutionApi.js';
+import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import type { TaskProgressState } from '../execution/useTaskProgress.js';
 
 export type ProjectTab = 'overview' | 'work' | 'materials' | 'people';
 const tabs: Record<ProjectTab, string> = {
@@ -158,6 +160,7 @@ export function ProjectHub({
   resourcesConnected = true,
   projectExecution,
   spaceId,
+  taskProgress,
 }: {
   project: Project;
   state: Workbench;
@@ -171,6 +174,7 @@ export function ProjectHub({
   resourcesConnected?: boolean;
   projectExecution?: Pick<ExecutionApi, 'files' | 'projectArtifacts'> | undefined;
   spaceId?: string | undefined;
+  taskProgress?: ((taskId: string) => TaskProgressState | undefined) | undefined;
 }) {
   const [search, setSearch] = useState('');
   const tasks = state.tasks
@@ -198,8 +202,14 @@ export function ProjectHub({
                 {task.workflows.flatMap((w) => w.nodes).length} 个节点
               </small>
             </span>
-            <span className={`zm-badge ${task.status}`}>
-              {task.status === 'ready' ? '计划已确认' : '计划草稿'}
+            <span className="zm-task-state-cell">
+              <span className={`zm-badge ${task.status}`}>
+                {task.status === 'ready' ? '计划已确认' : '计划草稿'}
+              </span>
+              <TaskProgressSummary
+                progress={taskProgress?.(task.id)}
+                confirmed={state.appliedPlans.some((plan) => plan.taskId === task.id)}
+              />
             </span>
             <ControlIcon direction="right" />
           </button>

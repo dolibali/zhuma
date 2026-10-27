@@ -220,11 +220,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
     <div className="zm-workflow-controls" aria-label="工作流执行">
       {view && (
         <span className="zm-workflow-state" role="status">
-          {view.state === 'inactive'
-            ? view.planStarted
-              ? '已派发'
-              : '尚未派发'
-            : labels[view.state]}
+          自动执行：{labels[view.state]}
           {view.activeRunCount ? ` · ${view.activeRunCount} 个 Agent` : ''}
         </span>
       )}

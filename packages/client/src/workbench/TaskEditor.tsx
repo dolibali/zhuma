@@ -33,6 +33,8 @@ import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
 import type { NativeRunApi } from '../run/api.js';
 import { WorkflowControls } from '../workflow/WorkflowControls.js';
 import type { WorkflowView } from '../workflow/api.js';
+import { latestTaskPlan, type TaskProgressState } from '../execution/useTaskProgress.js';
+import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -70,6 +72,8 @@ export function TaskEditor({
   backLabel = '任务清单',
   openWork,
   nativeRun,
+  progress,
+  refreshProgress,
 }: {
   original: WorkTask;
   state: Workbench;
@@ -82,6 +86,8 @@ export function TaskEditor({
   backLabel?: string;
   openWork?: () => void;
   nativeRun?: { api: NativeRunApi; spaceId: string };
+  progress?: TaskProgressState | undefined;
+  refreshProgress?: (() => void) | undefined;
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const [workflowView, setWorkflowView] = useState<WorkflowView>();
@@ -157,7 +163,22 @@ export function TaskEditor({
     task: WorkTask;
   } | null>(null);
   const dirty = JSON.stringify(task) !== baseline;
-  const applied = state.appliedPlans.filter((plan) => plan.taskId === task.id).at(-1);
+  const applied = latestTaskPlan(state.appliedPlans, task.id);
+  const workflowFacts = useRef('');
+  function updateWorkflowView(next: WorkflowView) {
+    setWorkflowView(next);
+    const facts = JSON.stringify([
+      next.target,
+      next.state,
+      next.planStarted,
+      next.activeRunCount,
+      next.intent,
+    ]);
+    if (workflowFacts.current !== facts) {
+      workflowFacts.current = facts;
+      refreshProgress?.();
+    }
+  }
   const fixedNode = applied?.task.workflows
     .flatMap((flow) => flow.nodes)
     .find((node) => node.id === selectedId);
@@ -693,9 +714,10 @@ export function TaskEditor({
         <div className="zm-task-meta">
           <span className={`zm-status ${task.status}`}>
             {task.status === 'ready'
-              ? `已确认 v${state.appliedPlans.filter((p) => p.taskId === task.id).at(-1)?.revision ?? 1}${api.member ? '' : ' · 待执行接入'}`
+              ? `计划已确认${applied ? ` v${applied.revision}` : ''}${api.member ? '' : ' · 待执行接入'}`
               : '计划草稿'}
           </span>
+          <TaskProgressSummary progress={progress} confirmed={!!applied} />
           {locked ? (
             <span className="zm-task-owner-readonly">
               <span>负责人</span>
@@ -760,7 +782,7 @@ export function TaskEditor({
           <WorkflowControls
             api={nativeRun.api.workflow}
             target={{ taskId: task.id, planId: applied.id, revision: applied.revision }}
-            onViewChange={setWorkflowView}
+            onViewChange={updateWorkflowView}
             openModelSettings={nativeRun.api.openModelSettings}
             workspaceApprovals={
               nativeRun.api.workspaceApprovals

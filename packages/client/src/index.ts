@@ -12,6 +12,16 @@ export type {
   WorkflowWorkspace,
 } from './workflow/api.js';
 export { WorkflowControls } from './workflow/WorkflowControls.js';
+export { createTaskProgressApi } from './execution/task-progress.js';
+export type {
+  TaskProgressApi,
+  TaskProgressTarget,
+  TaskProgressQuery,
+  TaskProgressResources,
+  TaskProgressRow,
+  TaskProgressValue,
+  TaskProgressUnknownReason,
+} from './execution/task-progress.js';
 export type {
   ProjectArtifactsApi,
   ProjectArtifactRef,
