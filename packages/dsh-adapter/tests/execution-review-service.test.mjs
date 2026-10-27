@@ -29,6 +29,7 @@ import {
 import { readExecutionReviewState } from '../dist/execution-review-state.js';
 import { freezeExecutionReviewComposition } from '../dist/execution-review-composition.js';
 import { reviewDescriptors } from './execution-review-composition-fixture.mjs';
+import { recordExecutionReviewEvent } from '../dist/execution-review-lifecycle.js';
 
 // Product Service/original DSH JSON and queue. Member/config/native inputs are
 // explicit contracts; no real login, native review or model is exercised. Only
@@ -190,6 +191,141 @@ async function admission(h) {
     composition,
   };
 }
+
+test('review drive Service: only admitted true-source scope drives and reads exact bytes; published read grants cannot be promoted', async (t) => {
+  const h = await host(t, { assertReviewConfiguration() {} }),
+    command = await admission(h);
+  const { expectedAttemptVersion: _version, composition: _composition, ...locator } = command;
+  refused(await h.service.openExpertReviewDrive(h.request, locator), 'review-authority-denied');
+  checked(await h.service.admitExpertReview(h.request, command));
+  const before = await businessHashes(h.root),
+    live = checked(await h.service.openExpertReviewDrive(h.request, locator));
+  t.after(() => live.dispose());
+  assert.equal(h.service.assertExpertReviewDriveGrant(live.grant, 'send'), undefined);
+  const read = checked(await h.service.openExpertReviewRead(h.request, locator));
+  t.after(() => read.dispose());
+  assert.throws(() => h.service.assertExpertReviewDriveGrant(read.grant, 'send'), {
+    code: 'review-authority-denied',
+  });
+  assert.throws(() => h.service.assertExpertReviewDriveGrant({ ...live.grant }, 'send'), {
+    code: 'review-authority-denied',
+  });
+  const lease = await h.service.readExpertReviewResource(
+    live.grant,
+    { resourceRef: 'review_text', offset: 0, length: 8192 },
+    new AbortController().signal,
+  );
+  assert.equal(
+    Buffer.from(lease.bytes).toString('utf8'),
+    'POST /login requires a valid challenge.',
+  );
+  lease.release();
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.equal(h.read().rounds[0].ballots.length, 0);
+});
+
+test('review drive Service: current reviewer revocation aborts driving while exact original cleanup retains only retirement authority', async (t) => {
+  const h = await host(t, { assertReviewConfiguration() {} }),
+    command = await admission(h);
+  checked(await h.service.admitExpertReview(h.request, command));
+  const { expectedAttemptVersion: _version, composition: _composition, ...locator } = command;
+  const live = checked(await h.service.openExpertReviewDrive(h.request, locator));
+  h.setWorkbench((w) => ({
+    ...w,
+    participants: w.participants.map((p) => (p.id === 'qa' ? { ...p, available: false } : p)),
+  }));
+  assert.equal(live.grant.signal.aborted, true);
+  assert.throws(() => h.service.assertExpertReviewDriveGrant(live.grant, 'send'), {
+    code: 'review-authority-denied',
+  });
+  assert.equal(h.service.assertExpertReviewCleanupAuthority(live.cleanup), undefined);
+  assert.throws(() => live.cleanup.assertCurrent('stopped'), { code: 'review-authority-denied' });
+  assert.throws(
+    () => h.service.reviewCleanupAfterCommit(live.cleanup.scope),
+    { code: 'review-authority-denied' },
+    'a still running record cannot manufacture cold terminal cleanup',
+  );
+});
+
+test('review drive Service: admitted native event versions preserve the fixed drive, while terminal state revokes send without losing cleanup', async (t) => {
+  const h = await host(t, { assertReviewConfiguration() {} }),
+    command = await admission(h);
+  checked(await h.service.admitExpertReview(h.request, command));
+  const { expectedAttemptVersion: _version, composition: _composition, ...locator } = command;
+  const live = checked(await h.service.openExpertReviewDrive(h.request, locator));
+  t.after(() => live.dispose());
+  const before = h.read().nativeExecution.review.attempts[0].version;
+  let record = recordExecutionReviewEvent(h.read(), {
+    scope: live.grant.scope,
+    kind: 'accepted',
+    sequence: 1,
+    nativeSessionId: 'native-contract-one',
+    nativeAgentId: 'native-contract-one',
+  }).record;
+  await h.domain.table('nodes').put(nodeRecordKey(record), record);
+  assert(h.read().nativeExecution.review.attempts[0].version > before);
+  assert.equal(h.service.assertExpertReviewDriveGrant(live.grant, 'send'), undefined);
+  record = recordExecutionReviewEvent(record, {
+    scope: live.grant.scope,
+    kind: 'completed',
+    sequence: 2,
+  }).record;
+  await h.domain.table('nodes').put(nodeRecordKey(record), record);
+  assert.throws(() => h.service.assertExpertReviewDriveGrant(live.grant, 'send'), {
+    code: 'review-target-changed',
+  });
+  assert.equal(live.grant.signal.aborted, true);
+  assert.equal(h.service.assertExpertReviewCleanupAuthority(live.cleanup), undefined);
+  assert.equal(h.read().rounds[0].ballots.length, 0);
+});
+
+test('review cleanup Service: a cold OS reconstructs cleanup for a closed target and completed held scope without old cookie/drive objects or writes', async (t) => {
+  const h = await host(t, { assertReviewConfiguration() {} }),
+    command = await admission(h);
+  checked(await h.service.admitExpertReview(h.request, command));
+  // Explicit native fact contracts create the persisted lifecycle fixture. The
+  // child proves cleanup authorization recovery, never actual runtime/drain.
+  let record = h.read();
+  const scope = record.nativeExecution.review.attempts[0].scope;
+  record = recordExecutionReviewEvent(record, {
+    scope,
+    kind: 'accepted',
+    sequence: 1,
+    nativeSessionId: 'contract-review-native',
+    nativeAgentId: 'contract-review-native',
+  }).record;
+  record = recordExecutionReviewEvent(record, { scope, kind: 'completed', sequence: 2 }).record;
+  await h.domain.table('nodes').put(nodeRecordKey(record), record);
+  const round = record.rounds[0];
+  checked(
+    await h.service.ballot(caller('outside'), {
+      ...h.human('produce', 'return-for-cold-cleanup'),
+      roundId: round.id,
+      artifactVersionId: round.artifactVersionId,
+      action: 'request-changes',
+      comment: 'Needs changes.',
+    }),
+  );
+  assert.equal(h.read().rounds[0].status, 'changes-requested');
+  await h.close();
+  const before = await businessHashes(h.root);
+  const childPath = fileURLToPath(new URL('./fixtures/review-cleanup-child.mjs', import.meta.url));
+  const child = await promisify(execFile)(process.execPath, [
+    childPath,
+    h.root,
+    JSON.stringify(h.snapshot),
+  ]);
+  const result = JSON.parse(child.stdout.split('\n').find((line) => line.startsWith('{')));
+  assert.deepEqual(result, {
+    cleanup: true,
+    drive: false,
+    status: 'completed',
+    resources: 'held',
+    nativeProof: false,
+    writes: { global: 0, nodes: 0, plans: 0 },
+  });
+  assert.deepEqual(await businessHashes(h.root), before);
+});
 
 for (const [name, assertion] of [
   ['missing', undefined],

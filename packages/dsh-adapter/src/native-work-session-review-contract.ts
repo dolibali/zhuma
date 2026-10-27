@@ -17,6 +17,7 @@ import {
 import {
   NATIVE_RESULT_LIMITS,
   nativeResultCutSchema,
+  type NativeResultSnapshot,
 } from './native-work-session-result-contract.js';
 
 export const NATIVE_REVIEW_TOOL = 'complete_review';
@@ -243,6 +244,7 @@ const readSuccess = z
       ctx.addIssue({ code: 'custom', message: 'Inconsistent read page.' });
   });
 export const nativeReviewReadOutputSchema = z.union([errorOutput, readSuccess]);
+export type NativeReviewReadOutput = z.infer<typeof nativeReviewReadOutputSchema>;
 
 /** SDK-linked metadata only. Parsing this object confers no source authority. */
 export const nativeReviewReadEvidenceSchema = z
@@ -332,6 +334,11 @@ export const nativeReviewIntentSchema = z.strictObject({
   readManifestDigest: digest,
   cut: nativeResultCutSchema.optional(),
 });
+export type NativeReviewIntent = z.infer<typeof nativeReviewIntentSchema>;
+/** Actual bytes charged by the original SDK cut reader, not an estimated DTO size. */
+export interface NativeReviewSnapshot extends NativeResultSnapshot {
+  readonly sourceBytes: number;
+}
 export const nativeReviewReadBudgetSchema = z
   .strictObject({
     attempts: natural.max(NATIVE_REVIEW_LIMITS.reads),
