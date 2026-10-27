@@ -1,0 +1,76 @@
+{
+  "environment": "Official compiled Web/Host; isolated fictitious members and projects; local scripted model only",
+  "boundary": "Preconfirmed plan fixture, not normal member creation, real provider, automatic Agent review, installation, or graph-layout acceptance. Fixture positions overlap. Team catalog gap tracked separately.",
+  "images": [
+    {
+      "file": "183-stopped-dark.jpg",
+      "sourceCommit": "2d4db09283be13bf8916ce93c0a60667a98c56d0",
+      "scene": "Stopped workflow, actual GUI",
+      "width": 1440,
+      "height": 900,
+      "bytes": 58463,
+      "sha256": "4d7b60c07010b127c8059e992f02ab3e8bebc459f6682843c5a9c021cd14a707",
+      "gitBlob": "79b43b8ac1e07fd8ecfa14cb16ad2bd560f610fd"
+    },
+    {
+      "file": "183-human-review-dark.jpg",
+      "sourceCommit": "2d4db09283be13bf8916ce93c0a60667a98c56d0",
+      "scene": "Independent human review, actual GUI",
+      "width": 1440,
+      "height": 900,
+      "bytes": 54171,
+      "sha256": "10a0d8c2651c73db422b18c12d7894436360cd02a48c48aea55ebf4d2489fa99",
+      "gitBlob": "68520c0438813144eb0ca82fcf73e9bdccd6248d"
+    },
+    {
+      "file": "186-role-denial-dark.jpg",
+      "sourceCommit": "e2049cb71c1853b8c8b0cbc8eb5fd35d55ffc25f",
+      "scene": "Reviewer cannot drive original node",
+      "width": 1440,
+      "height": 900,
+      "bytes": 30826,
+      "sha256": "a38502e06a1b357b5ed18be100ac3446650886c8e9d2a193332e49899dc96897",
+      "gitBlob": "6782e2251918e6c910babdb5f09d86dfa3e46a10"
+    },
+    {
+      "file": "186-cold-awaits-resume-dark.jpg",
+      "sourceCommit": "e2049cb71c1853b8c8b0cbc8eb5fd35d55ffc25f",
+      "scene": "New process awaits explicit continuation",
+      "width": 1440,
+      "height": 900,
+      "bytes": 59418,
+      "sha256": "18e18c2255b272b4e63333de23964f3b0ba6b91f8947e74b57a2de71406d9ba3",
+      "gitBlob": "3faa014309dd87fd7558a86b6021d57a457c9b07"
+    },
+    {
+      "file": "186-completed-readonly-dark.jpg",
+      "sourceCommit": "e2049cb71c1853b8c8b0cbc8eb5fd35d55ffc25f",
+      "scene": "Completed original node is read-only",
+      "width": 1440,
+      "height": 900,
+      "bytes": 42343,
+      "sha256": "7b10d59037f8b5cb94cad305fd48afe9ad99547bedaa9a2aa18a31456f439c9c",
+      "gitBlob": "3c41724c282f32b5ad2fef5ae8dccbba92309e60"
+    },
+    {
+      "file": "186-completed-list-dark.jpg",
+      "sourceCommit": "e2049cb71c1853b8c8b0cbc8eb5fd35d55ffc25f",
+      "scene": "Completed workflow list, dark",
+      "width": 1440,
+      "height": 900,
+      "bytes": 58626,
+      "sha256": "27f911064c642f7c9ad8cb0c530995fd26b01c3586dffd25c41e0e2e514a1fb8",
+      "gitBlob": "347ed50d1907cac2b4f2031d241688cecf4b6e61"
+    },
+    {
+      "file": "186-completed-list-light.jpg",
+      "sourceCommit": "e2049cb71c1853b8c8b0cbc8eb5fd35d55ffc25f",
+      "scene": "Same completed workflow list, light",
+      "width": 1440,
+      "height": 900,
+      "bytes": 61030,
+      "sha256": "665899124abaa5cbf7e89f8ec9a4c26016137d3837a61dfd29c889e5dbad670d",
+      "gitBlob": "7562b2d7191946f13a1afc65b32191c61639313a"
+    }
+  ]
+}
