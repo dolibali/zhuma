@@ -142,6 +142,8 @@ import {
   requireExecutionRunWriter,
   enableExecutionReviewWriter,
   requireExecutionReviewWriter,
+  requireWorkspaceApprovalWriter,
+  enableWorkspaceApprovalWriter,
   type ExecutionWriterGlobal,
 } from './execution-run-protocol.js';
 import {
@@ -227,6 +229,14 @@ import {
   NATIVE_OUTPUT_FILE_TOOL,
 } from './native-work-session-output-file-tool.js';
 import { ExecutionWorkflowIntents, type WorkflowMember } from './execution-workflow-intent.js';
+import { ExecutionWorkspaceApprovals } from './execution-workspace-approval.js';
+import {
+  WorkspaceApprovalError,
+  type WorkspaceApprovalHostSource,
+  type WorkspaceApprovalOwner,
+  type WorkspaceApprovalRun,
+  type WorkspaceApprovalState,
+} from './execution-workspace-approval-contract.js';
 import {
   WORKFLOW_REVIEW_REQUEST_PREFIX,
   workflowReviewRequestId,
@@ -570,6 +580,11 @@ export interface ExecutionStorage {
   /** Same execution domain global. Optional only for legacy non-Run consumers. */
   readGlobal?(): unknown;
   writeGlobal?(value: ExecutionWriterGlobal): Promise<void>;
+  /** Handle over the same already opened execution domain. No caller owns put. */
+  workspaceApprovals?: {
+    read(): unknown;
+    write(state: WorkspaceApprovalState): Promise<void>;
+  };
 }
 
 export interface ExecutionFailure {
@@ -1061,6 +1076,7 @@ export class ExecutionService {
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private workflowIntents: ExecutionWorkflowIntents | undefined;
+  private workspaceApprovalOwner: ExecutionWorkspaceApprovals | undefined;
   private readonly reviewWorkflowClaims = new Map<
     string,
     {
@@ -1123,6 +1139,130 @@ export class ExecutionService {
     private readonly fileStore?: ArtifactFileStore,
   ) {
     this.assertRunStoreCompatibility();
+    if (storage.workspaceApprovals?.read() !== undefined)
+      requireWorkspaceApprovalWriter(this.readRunGlobal());
+  }
+
+  /** A registers its actual controlled SDK confirmation producer once. The
+   * returned private view never exposes the table writer to Host or Client. */
+  openWorkspaceApprovalOwner(source: WorkspaceApprovalHostSource): WorkspaceApprovalOwner {
+    const table = this.storage.workspaceApprovals;
+    if (!table || this.workspaceApprovalOwner || this.runLifetime.signal.aborted)
+      throw new WorkspaceApprovalError('workspace-approval-unavailable');
+    let installedHost: ExecutionRunHostPorts | undefined;
+    let migrationDrain: ExecutionRunHostPorts['migrationDrain'];
+    const currentHost = () => {
+      const host = this.requireRunHost();
+      if (!installedHost) {
+        installedHost = host;
+        migrationDrain = host.migrationDrain;
+      }
+      if (host !== installedHost || host.migrationDrain !== migrationDrain)
+        throw new WorkspaceApprovalError('workspace-approval-unavailable');
+      return host;
+    };
+    const approvals = new ExecutionWorkspaceApprovals(
+      {
+        signal: this.runLifetime.signal,
+        read: () => table.read(),
+        write: (state) => table.write(state),
+        assertCompatible: (hasState) => {
+          this.assertRunStoreCompatibility();
+          if (hasState) requireWorkspaceApprovalWriter(this.readRunGlobal());
+        },
+        enableWriter: () => {
+          if (!this.storage.writeGlobal)
+            throw new WorkspaceApprovalError('workspace-approval-unavailable');
+          return enableWorkspaceApprovalWriter(
+            () => this.readRunGlobal(),
+            (next) => this.storage.writeGlobal!(next),
+            this.storage.listNodes(),
+          );
+        },
+        enqueue: (work) =>
+          this.enqueue(async () => {
+            const result = await work();
+            return result.ok ? result : fail(result.error.code);
+          }),
+        member: async (original, scope) => {
+          const host = currentHost(),
+            member = await host.memberLease(original);
+          const { memberId, expiresAt, signal, assertCurrent, release } = member;
+          let released = false;
+          return {
+            actorId: memberId,
+            signal,
+            assertCurrent: () => {
+              currentHost();
+              if (
+                released ||
+                !Number.isSafeInteger(expiresAt) ||
+                expiresAt <= Date.now() ||
+                signal.aborted ||
+                member.memberId !== memberId ||
+                member.expiresAt !== expiresAt ||
+                member.signal !== signal ||
+                member.assertCurrent !== assertCurrent ||
+                member.release !== release
+              )
+                throw new WorkspaceApprovalError('workspace-approval-unauthenticated');
+              synchronousRunAssertion(assertCurrent.call(member, scope.spaceId));
+              if (
+                !this.workbench
+                  .readWorkbench()
+                  .projects.some((project) => project.id === scope.projectId)
+              )
+                throw new WorkspaceApprovalError('workspace-approval-not-found');
+              synchronousRunAssertion(host.assertProjectSpace(scope.projectId, scope.spaceId));
+              if (signal.aborted)
+                throw new WorkspaceApprovalError('workspace-approval-unauthenticated');
+              return undefined;
+            },
+            release() {
+              if (released) return;
+              released = true;
+              return release.call(member);
+            },
+          };
+        },
+        runs: () => {
+          const found: WorkspaceApprovalRun[] = [];
+          for (const node of this.storage.listNodes())
+            for (const run of readExecutionRunState(node)?.runs ?? []) {
+              if (run.workspace.kind !== 'local') continue;
+              found.push({
+                scope: executionRunScope(node, run),
+                workspace: run.workspace,
+                resources: run.resources,
+                ...(run.attempt.sessionId ? { nativeSessionId: run.attempt.sessionId } : {}),
+                ...(run.attempt.executorRunId ? { nativeAgentId: run.attempt.executorRunId } : {}),
+              });
+            }
+          return found;
+        },
+        assertDrained: (run) => {
+          const host = currentHost();
+          if (!migrationDrain)
+            throw new WorkspaceApprovalError('workspace-approval-recovery-required');
+          const proof = migrationDrain.call(host, run.scope);
+          if (
+            !proof ||
+            !(proof.signal instanceof AbortSignal) ||
+            proof.signal.aborted ||
+            typeof proof.assertCurrent !== 'function'
+          )
+            throw new WorkspaceApprovalError('workspace-approval-recovery-required');
+          synchronousRunAssertion(proof.assertCurrent());
+          if (proof.signal.aborted)
+            throw new WorkspaceApprovalError('workspace-approval-recovery-required');
+          return undefined;
+        },
+        notify: () => this.notifyRuns(),
+      },
+      source,
+    );
+    this.workspaceApprovalOwner = approvals;
+    return approvals.owner;
   }
 
   /** Install once on this owner. A supplies the SAME Host bundle's real member lease issuer. */
@@ -3622,6 +3762,7 @@ export class ExecutionService {
   /** Fence driving first. A may still commit capability-checked cleanup during native drain. */
   fenceRuns(): void {
     this.runLifetime.abort();
+    this.workspaceApprovalOwner?.fence();
     this.runAuthorities?.fence();
   }
 
@@ -3632,6 +3773,12 @@ export class ExecutionService {
     while (this.runPreparations.size) await Promise.allSettled([...this.runPreparations]);
     while (this.nativeResultOperations.size)
       await Promise.allSettled([...this.nativeResultOperations]);
+    let workspaceApprovalFailure: unknown;
+    try {
+      await this.workspaceApprovalOwner?.close();
+    } catch (error) {
+      workspaceApprovalFailure = error;
+    }
     await this.writes;
     try {
       await this.workflowIntents?.close();
@@ -3644,6 +3791,7 @@ export class ExecutionService {
     }
     if (this.runPreparationFailure) throw this.runPreparationFailure;
     if (this.nativeResultCleanupFailure) throw this.nativeResultCleanupFailure;
+    if (workspaceApprovalFailure) throw workspaceApprovalFailure;
   }
 
   private requireRunHost(): ExecutionRunHostPorts {
@@ -6173,6 +6321,7 @@ export class ExecutionService {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
       if (
         error instanceof ArtifactUploadError ||
+        error instanceof WorkspaceApprovalError ||
         error instanceof ExecutionReviewReadError ||
         error instanceof ExecutionReviewError ||
         error instanceof ExecutionReviewFixedResultError ||

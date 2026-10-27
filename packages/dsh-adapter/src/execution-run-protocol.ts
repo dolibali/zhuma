@@ -9,13 +9,16 @@ export const executionRunGlobalSchema = z
     schemaVersion: z.literal(1),
     nativeExecutionWriter: z.literal(1).optional(),
     nativeReviewWriter: z.literal(1).optional(),
+    workspaceApprovalWriter: z.literal(1).optional(),
   })
-  .refine((value) => value.nativeReviewWriter !== 1 || value.nativeExecutionWriter === 1);
+  .refine((value) => value.nativeReviewWriter !== 1 || value.nativeExecutionWriter === 1)
+  .refine((value) => value.workspaceApprovalWriter !== 1 || value.nativeExecutionWriter === 1);
 
 export type ExecutionWriterGlobal = {
   schemaVersion: 1;
   nativeExecutionWriter: 1;
   nativeReviewWriter?: 1;
+  workspaceApprovalWriter?: 1;
 };
 
 export class ExecutionRunProtocolError extends Error {
@@ -41,6 +44,7 @@ export function prepareExecutionRunWriter(global: unknown): ExecutionWriterGloba
     schemaVersion: 1,
     nativeExecutionWriter: 1,
     ...(parsed.data.nativeReviewWriter === 1 ? { nativeReviewWriter: 1 } : {}),
+    ...(parsed.data.workspaceApprovalWriter === 1 ? { workspaceApprovalWriter: 1 } : {}),
   };
 }
 
@@ -52,6 +56,26 @@ export function requireExecutionReviewWriter(global: unknown): void {
 }
 export function prepareExecutionReviewWriter(global: unknown): ExecutionWriterGlobal {
   return { ...prepareExecutionRunWriter(global), nativeReviewWriter: 1 };
+}
+export function requireWorkspaceApprovalWriter(global: unknown): void {
+  requireExecutionRunWriter(global);
+  if (executionRunGlobalSchema.parse(global).workspaceApprovalWriter !== 1)
+    throw new ExecutionRunProtocolError('run-writer-unavailable');
+}
+export async function enableWorkspaceApprovalWriter(
+  readGlobal: () => unknown,
+  writeGlobal: (next: ExecutionWriterGlobal) => Promise<void>,
+  nodes: readonly object[],
+): Promise<void> {
+  const global = readGlobal();
+  assertExecutionRunStoreCompatibility(global, nodes);
+  if (executionRunGlobalSchema.parse(global).workspaceApprovalWriter === 1) return;
+  try {
+    await writeGlobal({ ...prepareExecutionRunWriter(global), workspaceApprovalWriter: 1 });
+  } catch {
+    throw new ExecutionRunProtocolError('run-writer-unavailable');
+  }
+  requireWorkspaceApprovalWriter(readGlobal());
 }
 /** Startup must not silently adopt native rows which lack their compatibility barrier. */
 export function assertExecutionRunStoreCompatibility(

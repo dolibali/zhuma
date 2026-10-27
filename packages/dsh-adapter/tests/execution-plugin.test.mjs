@@ -80,6 +80,7 @@ async function mount(options = {}) {
   const effects = [];
   const nodes = new Map(options.nodes ?? []);
   const plans = new Map(options.plans ?? []);
+  const workspaceApprovals = new Map();
   let explode = '';
   let secret = false;
   const ctx = {
@@ -125,13 +126,14 @@ async function mount(options = {}) {
         }
         assert.equal(spec.name, 'zhuma_execution');
         assert.equal(spec.version, 1);
-        assert.deepEqual(Object.keys(spec.tables), ['nodes', 'plans']);
+        assert.deepEqual(Object.keys(spec.tables), ['nodes', 'plans', 'workspace_approvals']);
         spec.global.schema.parse(spec.global.initial);
         return {
           close() {},
           global: { get: () => spec.global.initial, set: async () => {} },
           table(name) {
-            const table = name === 'nodes' ? nodes : plans;
+            const table = { nodes, plans, workspace_approvals: workspaceApprovals }[name];
+            assert.ok(table, 'execution fixture must not alias unrelated tables');
             const schema = spec.tables[name].valueSchema;
             return {
               get: (key) => table.get(key),
