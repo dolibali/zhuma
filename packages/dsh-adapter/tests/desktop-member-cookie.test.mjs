@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { createDesktopMemberCookieBridge } from '../dist/desktop-member-cookie.js';
+import { hostWorkflowEndpoints } from '../dist/host-workflow-http.js';
 import { hashPassword } from '../dist/identity-session.js';
 import {
   apply as applyExecution,
@@ -82,6 +83,141 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/spaces/%2F',
   ])
     assert.equal(await sentCookie(bridge, path), OWNER);
+});
+
+for (const endpoint of hostWorkflowEndpoints)
+  test(`desktop workflow carrier contract: exact ${endpoint} POST carries the member and preserves the explicit request`, async () => {
+    const bridge = createDesktopMemberCookieBridge();
+    await login(bridge);
+    const location = { spaceId: 'north', taskId: 'task', planId: 'plan', revision: 1 };
+    const payload =
+      endpoint === 'start'
+        ? {
+            ...location,
+            requestId: randomUUID(),
+            model: { provider: 'contract', model: 'not-called', maxTokens: 4096 },
+            workspace: { kind: 'text-only' },
+            concurrent: 1,
+          }
+        : endpoint === 'resume' || endpoint === 'stop'
+          ? {
+              ...location,
+              requestId: randomUUID(),
+              intentId: 'intent',
+              generation: 1,
+              ...(endpoint === 'resume' ? { expectedVersion: 1 } : {}),
+            }
+          : location;
+    const body = {
+      type: 'client-request',
+      rpcId: randomUUID(),
+      method: `zhuma-workflow/${endpoint}`,
+      payload,
+    };
+    const original = request(`/api/zhuma-workflow/${endpoint}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: 'zhuma-member=forged-renderer' },
+      body: JSON.stringify(body),
+    });
+    const response = await bridge.forward(original, HOST, OWNER, async (sent) => {
+      assert.equal(sent, `${OWNER}; zhuma-member=${COOKIE_A}`);
+      assert.equal(original.method, 'POST');
+      assert.deepEqual(await original.clone().json(), body);
+      return reply(COOKIE_B); // A workflow response cannot replace the login carrier.
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(original.bodyUsed, false);
+    assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_A}`);
+    await response.body?.cancel();
+    await original.body?.cancel();
+  });
+
+test('desktop workflow carrier contract: unknown or near-prefix paths and original owner controls never gain the member cookie', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  await login(bridge);
+  for (const path of [
+    '/api/zhuma-workflow',
+    '/api/zhuma-workflow/',
+    '/api/zhuma-workflow/unknown',
+    '/api/zhuma-workflow/reader',
+    '/api/zhuma-workflow/READ',
+    '/api/zhuma-workflow/read/extra',
+    '/api/zhuma-workflow/read%2Fextra',
+    '/api/zhuma-workflow/%72ead',
+    '/api/zhuma-workflows/read',
+    '/api/zhuma-local-setup/initialize',
+    '/api/zhuma-workspaces/options',
+    '/api/zhuma-workspaces/approve',
+    '/api/zhuma-workspaces/revoke',
+  ])
+    assert.equal(await sentCookie(bridge, path), OWNER, path);
+});
+
+test('desktop workflow carrier contract: missing member and pending/completed logout deny all five routes without owner fallback', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  async function denied() {
+    for (const endpoint of hostWorkflowEndpoints) {
+      const result = await bridge.forward(
+        request(`/api/zhuma-workflow/${endpoint}`, { method: 'POST' }),
+        HOST,
+        OWNER,
+        async () => assert.fail('A workflow request without a member cannot dispatch as owner'),
+      );
+      assert.equal(result.status, 401);
+      assert.equal(result.headers.get('cache-control'), 'no-store');
+    }
+  }
+  await denied();
+  await login(bridge);
+  const pending = deferred();
+  const logout = bridge.forward(
+    request('/zhuma-id/logout', { method: 'POST' }),
+    HOST,
+    OWNER,
+    async (sent) => {
+      assert.equal(sent, `${OWNER}; zhuma-member=${COOKIE_A}`);
+      return pending.promise;
+    },
+  );
+  await denied();
+  pending.resolve(new Response('{}'));
+  assert.equal((await logout).status, 200);
+  await denied();
+});
+
+test('desktop workflow carrier contract: a space denial preserves login while a workflow member-401 revokes all five routes', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  await login(bridge);
+  const path = '/api/zhuma-workflow/read';
+  const denied = await bridge.forward(
+    request(path, { method: 'POST' }),
+    HOST,
+    OWNER,
+    async (sent) => {
+      assert.equal(sent, `${OWNER}; zhuma-member=${COOKIE_A}`);
+      return new Response(null, { status: 403 });
+    },
+  );
+  assert.equal(denied.status, 403);
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_A}`);
+  const revoked = await bridge.forward(
+    request(path, { method: 'POST' }),
+    HOST,
+    OWNER,
+    async () => new Response(null, { status: 401 }),
+  );
+  assert.equal(revoked.status, 401);
+  for (const endpoint of hostWorkflowEndpoints) {
+    const result = await bridge.forward(
+      request(`/api/zhuma-workflow/${endpoint}`, { method: 'POST' }),
+      HOST,
+      OWNER,
+      async () => assert.fail('A revoked member cannot fall back to the owner'),
+    );
+    assert.equal(result.status, 401);
+  }
 });
 
 test('desktop transport contract: renderer cookies and all response cookies stay outside the carrier', async () => {
