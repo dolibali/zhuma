@@ -1,0 +1,191 @@
+{
+  "purpose": "PR228 self-generated synthetic UI evidence, personally operated and visually inspected; no user attachment",
+  "beforeSource": "8fc9c98222bd411fc930d3f7cb5eeea998144e27",
+  "beforeTree": "a59a694c3070799de612e606212cab32bd28ef2a",
+  "afterSource": "283fa82dc27116589dcdbf870a54a9b1fbd144bc",
+  "afterTree": "f612a1ad2027bee47595eeacc7d938cbe837f8ab",
+  "implementation": "753dc45255d0043c5198c7ab88394c198857bcaf",
+  "integration": "f8050a1ab5836da0b0337b8222a1af2f2b90dbeb",
+  "files": [
+    {
+      "name": "08-task-progress-accepted-and-not-started-light.jpg",
+      "sha256": "14d19c45584f68723c85794f317d0f9874a57a37e38d0f7609df87f40e2f54de",
+      "bytes": 42272,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "8fc9c98222bd411fc930d3f7cb5eeea998144e27"
+    },
+    {
+      "name": "12-project-search-shortcut-stuck-progress-before-light.jpg",
+      "sha256": "2a1135e64230cd7c02738a6cc893dada852b3ffa37b9939f28a59c7053b109d6",
+      "bytes": 43124,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "8fc9c98222bd411fc930d3f7cb5eeea998144e27"
+    },
+    {
+      "name": "15-task-progress-compact-after-light.jpg",
+      "sha256": "6c1e1e81254cc003d8289fc504003b45b314ea420e8770770cbaff65295fb132",
+      "bytes": 39762,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "16-anchored-long-model-menu-after-light-1440.jpg",
+      "sha256": "6424b2058a4df990f5faf448550743d863711b4025cf5d482fa98eccaa43fb5b",
+      "bytes": 97693,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "17-anchored-permission-menu-after-light-1440.jpg",
+      "sha256": "cb302ce8ee81d75a82e9f765b0f4c82fa929390534032803951bf5a2268d3c16",
+      "bytes": 71635,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "18-file-scope-menu-after-light-1440.jpg",
+      "sha256": "437e3a260e01482c49cca8291bf94fb96262dd74ed27b040d94d69dab9f5c453",
+      "bytes": 73795,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "19-concurrency-menu-after-light-1440.jpg",
+      "sha256": "a4e4cef9e85da7d54eb5c4e6946cf7f40aeab8b51ae859bda303f2c5c911bff9",
+      "bytes": 67997,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "20-icon-theme-menu-after-light-1440.jpg",
+      "sha256": "0406d6a6bd58cad6b942bc465ad016bdae273baf767ada1e7509f3b13dfeedda",
+      "bytes": 68749,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "21-anchored-long-model-menu-after-dark-1440.jpg",
+      "sha256": "83937ccc25ca67c56d6f3e714236fd516749e652818275c7eebce3faa358c896",
+      "bytes": 92238,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "22-directory-menu-after-dark-1280.jpg",
+      "sha256": "5190175c2849540ce0bca000136aeeae76f945938e68bd5542ea4295d7793ec4",
+      "bytes": 51464,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "23-permission-menu-after-dark-1280.jpg",
+      "sha256": "e4a34e7dfe810f77a400d28befa25255709b2c6c55d74a7cc8e297b0d4be956a",
+      "bytes": 52681,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "24-workspace-menu-after-dark-1280.jpg",
+      "sha256": "fccd7b99528f97e0b67af2bcb531d7dd54e828926e899f335e6e9bdaa04a5d88",
+      "bytes": 55890,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "25-running-directory-management-dark-1280.jpg",
+      "sha256": "4eb1db3d1946f710fcc289d4664393ac313ac14c6ec38f46c47e0868ef7bbfb5",
+      "bytes": 50665,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "26-workflow-stopped-after-revoke-dark-1280.jpg",
+      "sha256": "ee76b14f30135206b47edc37fb182d05bfea62b8c457695c15201b53cd01c65e",
+      "bytes": 60511,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "27-project-search-shortcut-progress-after-light-1440.jpg",
+      "sha256": "f51b0de7d0f65ecc155f61b8565b9ef0e902958e83b57a3d20a3da7967d0e4d2",
+      "bytes": 42020,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "29-project-fixed-content-after-light-1440.jpg",
+      "sha256": "b916dace0d937293ef1973924872bcd254c720a50a64e6b0eb7f1d486b001a3b",
+      "bytes": 56684,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    },
+    {
+      "name": "30-project-fixed-content-after-dark-1440.jpg",
+      "sha256": "7dbf99c61cddcca2fbbae194947072ef9f6843a59e4aba2d6eb05a3fd8315a49",
+      "bytes": 54751,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "283fa82dc27116589dcdbf870a54a9b1fbd144bc"
+    }
+  ],
+  "boundaries": [
+    "Actual original Web/Host and member Cookie with fictional account/project.",
+    "Long model names are local scripted adapter fixtures; no external model calls.",
+    "25/26 prove workflow intent management and stop only; no native stream or physical drain proof.",
+    "Project accepted result shown here contains text and link only, no file.",
+    "08/15 same tasks/state/theme/viewport density comparison.",
+    "12/27 same project shortcut and accepted manual result; second task intent was separately started/stopped before27.",
+    "No public before-expanded native popup captured; private user screenshot is excluded.",
+    "No OS200percent zoom, installer or real supplier evidence."
+  ]
+}
