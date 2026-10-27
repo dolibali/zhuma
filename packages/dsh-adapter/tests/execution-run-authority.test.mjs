@@ -289,3 +289,67 @@ test('contract: a post-commit expired member cannot strand the reserved Run; cle
   });
   assert.throws(() => cleanup.assertCurrent('completed'), { code: 'run-authority-denied' });
 });
+
+test('contract: a fresh owner may only recheck cleanup for the exact settled terminal Run', async (t) => {
+  const row = applyEvent(accepted(), 'completed', stable).record;
+  const h = setup({ row });
+  const other = setup({ row: structuredClone(row) });
+  t.after(() => Promise.all([h.manager.close(), other.manager.close()]));
+  const before = JSON.stringify(h.row);
+  // The existing post-commit capability is still restricted to held Runs.
+  assert.throws(() => h.manager.cleanupAfterCommit(locator(h.row)), {
+    code: 'run-authority-denied',
+  });
+  const cleanup = h.manager.cleanupAfterSettlement(locator(h.row));
+  h.manager.assertCleanup(cleanup, 'cleanup');
+  assert.equal(Object.isFrozen(cleanup.scope), true);
+  for (const action of ['failed', 'stop-pending', 'stopped', 'completed'])
+    assert.throws(() => cleanup.assertCurrent(action), { code: 'run-authority-denied' });
+  for (const action of ['send', 'queue', 'history', 'open'])
+    assert.throws(() => h.manager.assertGrant(cleanup, action), {
+      code: 'run-authority-denied',
+    });
+  for (const copied of [{ ...cleanup }, JSON.parse(JSON.stringify(cleanup))])
+    assert.throws(() => h.manager.assertCleanup(copied, 'cleanup'), {
+      code: 'run-authority-denied',
+    });
+  assert.throws(() => other.manager.assertCleanup(cleanup, 'cleanup'), {
+    code: 'run-authority-denied',
+  });
+  assert.equal(h.leases.length, 0, 'internal cleanup must not issue a drive/member grant');
+  assert.equal(JSON.stringify(h.row), before, 'qualification must not change persisted facts');
+});
+
+test('contract: settled recovery refuses unknown, active, changed, fenced and closed scopes', async (t) => {
+  const h = setup();
+  t.after(() => h.manager.close());
+  assert.throws(() => h.manager.cleanupAfterSettlement(locator(h.row)), {
+    code: 'run-authority-denied',
+  });
+  h.row = applyEvent(h.row, 'completed', stable).record;
+  assert.throws(() => h.manager.cleanupAfterSettlement({ ...locator(h.row), runId: 'missing' }), {
+    code: 'run-authority-denied',
+  });
+  const cleanup = h.manager.cleanupAfterSettlement(locator(h.row));
+  const frozen = structuredClone(h.row);
+  h.row = structuredClone(frozen);
+  h.row.nativeExecution.runs[0].selection.model = 'changed-model';
+  assert.throws(() => h.manager.assertCleanup(cleanup, 'cleanup'), {
+    code: 'run-authority-denied',
+  });
+  h.row = frozen;
+  h.manager.assertCleanup(cleanup, 'cleanup');
+  h.manager.fence();
+  assert.throws(() => h.manager.cleanupAfterSettlement(locator(h.row)), {
+    code: 'run-authority-denied',
+  });
+  // Existing cleanup still drains during close, exactly like the old hook.
+  h.manager.assertCleanup(cleanup, 'cleanup');
+  await h.manager.close();
+  assert.throws(() => h.manager.assertCleanup(cleanup, 'cleanup'), {
+    code: 'run-authority-denied',
+  });
+  assert.throws(() => h.manager.cleanupAfterSettlement(locator(h.row)), {
+    code: 'run-authority-denied',
+  });
+});
