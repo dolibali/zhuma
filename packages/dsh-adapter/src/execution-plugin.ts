@@ -20,6 +20,7 @@ import type { ProjectSpaceDirectory } from './project-space.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import { executionRunGlobalSchema } from './execution-run-protocol.js';
 import { executionPlanReceiptSchema } from './execution-workflow-contract.js';
+import { workspaceApprovalStateSchema } from './execution-workspace-approval-contract.js';
 import {
   ArtifactUploadError,
   openArtifactFileStore,
@@ -97,6 +98,7 @@ const domainSpec = {
   tables: {
     nodes: { valueSchema: nodeSchema },
     plans: { valueSchema: planSchema },
+    workspace_approvals: { valueSchema: workspaceApprovalStateSchema },
   },
 };
 
@@ -533,6 +535,9 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   });
   const nodes = domain.table('nodes');
   const plans = domain.table('plans');
+  const workspaceApprovals = domain.table('workspace_approvals');
+  if ([...workspaceApprovals.entries()].some(([key]) => key !== 'state'))
+    throw new WorkbenchError('unavailable', '工作区授权存储不兼容。');
   const storage: ExecutionStorage = {
     readNode: (key) => nodes.get(key),
     writeNode: (key, value) => nodes.put(key, value),
@@ -543,6 +548,10 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     listPlans: () => [...plans.entries()].map(([key, receipt]) => ({ key, receipt })),
     readGlobal: () => domain.global.get(),
     writeGlobal: (next) => domain.global.set(next),
+    workspaceApprovals: {
+      read: () => workspaceApprovals.get('state'),
+      write: (state) => workspaceApprovals.put('state', state),
+    },
   };
   // The attachment service is mounted by the Host (A 装配); the metadata
   // ledger opens on this storage domain. Without either, uploads fail closed.
