@@ -105,6 +105,7 @@ function props(partial = {}) {
     ...partial,
   };
 }
+
 const render = (partial = {}) =>
   renderToStaticMarkup(createElement(NativeRunPanel, props(partial)));
 const running = (partial = {}) =>
@@ -191,6 +192,7 @@ test('SSR review: a delivered completed run shows the authoritative waiting reas
     }),
   });
   assert.match(html, /正在等待评审/);
+  assert.doesNotMatch(html, /role="combobox"/);
   assert.doesNotMatch(html, /开始新一轮/);
   assert.doesNotMatch(html, /当前运行暂不支持此操作/);
 });

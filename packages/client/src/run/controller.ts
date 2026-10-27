@@ -72,6 +72,16 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       kind: 'unavailable' as const,
       message: '停止结果尚待确认，请刷新或重试停止。',
     };
+    // Passive reads may finish a Run while catalog=false retains older start
+    // capabilities. Do not repeat a pre-settlement resource reason or enable
+    // an old start action; only a fresh catalog can authorize the next round.
+    const submittedWithOldOptions =
+      run?.status === 'completed' &&
+      run.resources === 'settled' &&
+      run.resultDelivery?.kind === 'delivered' &&
+      (options.currentRunId !== run.runId ||
+        options.nodeVersion !== run.nodeVersion ||
+        options.runVersion !== run.runVersion);
     publish({
       view: {
         kind: 'ready',
@@ -84,7 +94,11 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         resources: options.resources,
         ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
         actions: {
-          start: stopping ? stopPending : options.start,
+          start: stopping
+            ? stopPending
+            : submittedWithOldOptions
+              ? { kind: 'unavailable', message: '产物已提交，本轮会话只读。' }
+              : options.start,
           send: stopping
             ? { followup: stopPending, steer: stopPending, queue: stopPending }
             : (run?.sendCapabilities ?? {

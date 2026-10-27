@@ -31,6 +31,8 @@ import { useUnsavedChanges } from './UnsavedChanges.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
 import type { NativeRunApi } from '../run/api.js';
+import { WorkflowControls } from '../workflow/WorkflowControls.js';
+import type { WorkflowView } from '../workflow/api.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -82,6 +84,7 @@ export function TaskEditor({
   nativeRun?: { api: NativeRunApi; spaceId: string };
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
+  const [workflowView, setWorkflowView] = useState<WorkflowView>();
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
   const [revision, setRevision] = useState(state.revision);
   const [workflowId, setWorkflowId] = useState(original.workflows.find((w) => !w.parentNodeId)!.id);
@@ -749,6 +752,17 @@ export function TaskEditor({
           )}
         </details>
       </div>
+      {nativeRun?.api.workflow &&
+        api.member?.actorId === task.ownerId &&
+        task.status === 'ready' &&
+        applied &&
+        !dirty && (
+          <WorkflowControls
+            api={nativeRun.api.workflow}
+            target={{ taskId: task.id, planId: applied.id, revision: applied.revision }}
+            onViewChange={setWorkflowView}
+          />
+        )}
       {hasGaps && (
         <div className="zm-template-gap-banner" role="status">
           <span>
@@ -848,7 +862,15 @@ export function TaskEditor({
               !dirty &&
               applied &&
               fixedNode &&
-              !applied.task.workflows.some((flow) => flow.parentNodeId === fixedNode.id) && (
+              !applied.task.workflows.some((flow) => flow.parentNodeId === fixedNode.id) &&
+              (!nativeRun.api.workflow ||
+              // Only the task owner has workflow-control facts. Other members
+              // use the original node controller, which reads their own authority
+              // before exposing a start/send action; no plan state is inferred.
+              api.member?.actorId !== task.ownerId ||
+              (workflowView?.target.planId === applied.id &&
+                workflowView.target.revision === applied.revision &&
+                workflowView.planStarted) ? (
                 <NativeRunLauncher
                   api={nativeRun.api}
                   target={{
@@ -860,7 +882,14 @@ export function TaskEditor({
                     title: fixedNode.title,
                   }}
                 />
-              )}
+              ) : (
+                <Button
+                  disabled
+                  title="请先运行工作流，或前往「查看待办」开始派发后处理分配给你的工作。"
+                >
+                  使用 Agent
+                </Button>
+              ))}
             <button
               className="zm-quiet"
               aria-pressed={inspectorOpen && panel === 'config'}

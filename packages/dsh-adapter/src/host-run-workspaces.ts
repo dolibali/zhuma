@@ -685,6 +685,19 @@ export function createHostRunWorkspaces(
         });
     },
     select: selected,
+    /** Private workflow defaults are compared with this original local source;
+     * a rootId is never a public selector and cannot itself issue authority. */
+    selectFrozen(
+      actorId: string,
+      spaceId: string,
+      projectId: string,
+      workspace: ExecutionWorkspace,
+    ) {
+      if (workspace.kind !== 'local') denied();
+      const current = byWorkspace(actorId, spaceId, projectId, workspace);
+      if (workspace.access === 'write' && current.workspace.access !== 'write') denied();
+      return { ...current, workspace: structuredClone(workspace) };
+    },
     directory,
     bindSession,
     resolve,

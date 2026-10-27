@@ -49,6 +49,9 @@ if (!domModule) {
   const { NativeRunLauncher } = await import('../dist/run/NativeRunWorkspace.js');
   const { ExecutionWorkspace } = await import('../dist/execution/ExecutionWorkspace.js');
   const { UnsavedChangesBoundary } = await import('../dist/workbench/UnsavedChanges.js');
+  const { TaskEditor } = await import('../dist/workbench/TaskEditor.js');
+  const { applyWorkbenchCommand } = await import('@zhuma/agent-core');
+  const { fixture } = await import('../../../tests/fixtures/workbench.mjs');
   const target = {
     spaceId: 'north',
     taskId: 'task',
@@ -181,6 +184,122 @@ if (!domModule) {
       },
     };
   }
+  test('DOM task entry: a human assignee who is not the task owner reads the original node controller without workflow control', async () => {
+    for (const { authorized, owner } of [
+      { authorized: true, owner: false },
+      { authorized: false, owner: false },
+      { authorized: false, owner: true },
+    ]) {
+      const data = fixture();
+      data.task.ownerId = 'outside';
+      data.task.participantIds.push('outside');
+      const state = applyWorkbenchCommand(data.state, {
+        type: 'save-task',
+        task: { ...data.task, status: 'ready' },
+      });
+      const task = state.tasks[0],
+        plan = state.appliedPlans[0];
+      const expected = {
+        spaceId: 'north',
+        taskId: task.id,
+        planId: plan.id,
+        revision: plan.revision,
+        nodeId: data.node.id,
+        title: data.node.title,
+      };
+      const node = document.createElement('div');
+      document.body.append(node);
+      const root = createRoot(node);
+      let reads = 0;
+      const forbidden = () =>
+        assert.fail('A node entry cannot control or read owner-only workflow state');
+      const native = api({
+        workflow: {
+          options: forbidden,
+          read: owner
+            ? async () => ({
+                target: {
+                  spaceId: 'north',
+                  taskId: task.id,
+                  planId: plan.id,
+                  revision: plan.revision,
+                },
+                title: task.title,
+                state: 'inactive',
+                planStarted: false,
+                requiresResume: false,
+                activeRunCount: 0,
+                expertNodeCount: 1,
+                intent: null,
+                selection: null,
+              })
+            : forbidden,
+          start: forbidden,
+          resume: forbidden,
+          stop: forbidden,
+        },
+        options: async (received) => {
+          reads++;
+          assert.deepEqual(received, expected);
+          if (!authorized) throw Error('Original node authority denied');
+          return {
+            ...(await api().options()),
+            target: expected,
+            currentRunId: null,
+            selection: null,
+            start: available,
+          };
+        },
+      });
+      try {
+        await act(async () =>
+          root.render(
+            h(TaskEditor, {
+              original: task,
+              state,
+              api: {
+                member: {
+                  actorId: owner ? 'outside' : 'chen',
+                  capabilities: () => ({ tasks: [] }),
+                },
+              },
+              model: '',
+              saved: forbidden,
+              close() {},
+              appearance: { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} },
+              nativeRun: { api: native, spaceId: 'north' },
+            }),
+          ),
+        );
+        assert.equal(reads, 0, 'Rendering a task must not perform model discovery or commands');
+        const launch = [...node.querySelectorAll('button')].find(
+          (item) => item.querySelector('.zm-button-label')?.textContent === '使用 Agent',
+        );
+        assert.ok(launch);
+        if (owner) {
+          assert.equal(launch.disabled, true);
+          assert.match(launch.title, /请先运行工作流/);
+          assert.equal(reads, 0);
+          continue;
+        }
+        assert.equal(
+          launch.disabled,
+          false,
+          'The assignee does not need task-owner workflow state',
+        );
+        assert.equal(node.querySelector('[aria-label="工作流执行"]'), null);
+        await act(async () => launch.click());
+        assert.equal(reads, 1);
+        assert.ok(
+          node.textContent.includes(authorized ? '配置此次执行' : '暂时无法读取这个工作节点'),
+        );
+        if (!authorized) assert.equal(node.querySelector('[aria-label="选择模型"]'), null);
+      } finally {
+        await act(async () => root.unmount());
+        node.remove();
+      }
+    }
+  });
   test('DOM contract: close/ESC guards preserve unsent text and focus; only confirmed abandon clears this scope', async () => {
     const current = await mount();
     try {
