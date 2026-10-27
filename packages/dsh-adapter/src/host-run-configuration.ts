@@ -12,28 +12,37 @@ import {
   executionRunCompositionRequest,
   freezeExecutionRunComposition,
   type FrozenExecutionRunComposition,
-  type ResultIntentToolDefinition,
+  type OutputFilePublisherToolDefinition,
 } from './execution-run-composition.js';
-import { ExecutionRunError, readExecutionRunState } from './execution-run-state.js';
+import {
+  ExecutionRunError,
+  readExecutionRunState,
+  type ExecutionWorkspace,
+} from './execution-run-state.js';
 import type { MemberRequest } from './member-session.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
-import { describeNativeResultTool } from './native-work-session-result-tool.js';
-import {
-  NATIVE_RESULT_TOOL,
-  NATIVE_RESULT_TOOL_VERSION,
-} from './native-work-session-result-contract.js';
+import { hostResultTool } from './host-run-result-protocol.js';
 import { NATIVE_WORK_LIMITS } from './native-work-session.js';
-import type { createHostRunResourceSource } from './host-run-resource-source.js';
-
-function declaredResultTool(): ResultIntentToolDefinition {
-  const definition = describeNativeResultTool();
+import type { createHostRunWorkspaces } from './host-run-workspaces.js';
+import { describeNativeOutputFileTool } from './native-work-session-output-file-tool.js';
+import {
+  NATIVE_OUTPUT_FILE_TOOL,
+  NATIVE_OUTPUT_FILE_VERSION,
+} from './native-work-session-output-file-contract.js';
+function declaredOutputTool(): OutputFilePublisherToolDefinition {
+  const definition = describeNativeOutputFileTool();
   if (
-    definition.name !== NATIVE_RESULT_TOOL ||
-    definition.sourceVersion !== NATIVE_RESULT_TOOL_VERSION
+    definition.name !== NATIVE_OUTPUT_FILE_TOOL ||
+    definition.sourceVersion !== NATIVE_OUTPUT_FILE_VERSION
   )
     throw new ExecutionRunError('run-authority-unavailable');
-  return { ...definition, name: NATIVE_RESULT_TOOL, sourceVersion: NATIVE_RESULT_TOOL_VERSION };
+  return {
+    ...definition,
+    name: NATIVE_OUTPUT_FILE_TOOL,
+    sourceVersion: NATIVE_OUTPUT_FILE_VERSION,
+  };
 }
+import type { createHostRunResourceSource } from './host-run-resource-source.js';
 
 const id = z.string().trim().min(1).max(200);
 const nonnegative = z.number().int().nonnegative().refine(Number.isSafeInteger);
@@ -60,8 +69,11 @@ const beginRequest = z.strictObject({
     z.strictObject({ kind: z.literal('builtin') }),
     z.strictObject({ kind: z.literal('plan-expert'), ref: z.strictObject({ id, version: id }) }),
   ]),
-  tools: z.enum(['text-only', 'accepted-input-reader']),
-  workspace: z.strictObject({ kind: z.literal('text-only') }),
+  tools: z.enum(['text-only', 'accepted-input-reader', 'local-tools']),
+  workspace: z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('text-only') }),
+    z.strictObject({ kind: z.literal('local'), id }),
+  ]),
 });
 
 /** Host content assembly only. D still checks fresh authority/inputs in its original queue. */
@@ -71,10 +83,13 @@ export function createHostRunConfiguration(
     readonly execution: ExecutionService;
     readWorkbench(): Workbench;
     readonly signal: AbortSignal;
+    readonly workspaces?: ReturnType<typeof createHostRunWorkspaces>;
     readonly resources?: Pick<
       ReturnType<typeof createHostRunResourceSource>,
       'catalog' | 'prepareResourceCatalog'
     >;
+    /** Host readiness only; never a Client-selected protocol or an old-Run upgrade. */
+    readonly resultProtocol?: () => 1 | 2;
   },
 ) {
   const llm = ctx.llm;
@@ -100,6 +115,10 @@ export function createHostRunConfiguration(
       throw new ExecutionRunError('run-authority-unavailable');
     active();
     const tools = snapshot.payload.tools;
+    if (tools.kind === 'local-tools') {
+      if (!options.workspaces) throw new ExecutionRunError('run-authority-unavailable');
+      options.workspaces.assertComposition(snapshot);
+    }
     if (
       tools.kind === 'accepted-input-reader' &&
       canonicalPayload(tools.definition) !== canonicalPayload(describeAcceptedInputTool())
@@ -133,12 +152,19 @@ export function createHostRunConfiguration(
       );
       return assertModel(request.composition);
     },
-    assertWorkspace(_memberId, _spaceId, workspace) {
+    assertWorkspace(memberId, spaceId, workspace, access, configurationId) {
       active();
-      // A text-only Run has no filesystem/root authority. A real local-root
-      // producer must replace this explicit refusal before local execution ships.
-      if (workspace.kind !== 'text-only') throw new ExecutionRunError('run-authority-denied');
-      return undefined;
+      if (!options.workspaces) {
+        if (workspace.kind !== 'text-only') throw new ExecutionRunError('run-authority-denied');
+        return undefined;
+      }
+      return options.workspaces.assertWorkspace(
+        memberId,
+        spaceId,
+        workspace,
+        access,
+        configurationId,
+      );
     },
   };
 
@@ -165,8 +191,37 @@ export function createHostRunConfiguration(
       const inputs = visible.value;
       const node = options.execution.readRunNode(input);
       if (!node) throw new ExecutionRunError('run-authority-denied');
+      const applied = options
+        .readWorkbench()
+        .appliedPlans.find(
+          (plan) =>
+            plan.id === input.planId &&
+            plan.taskId === input.taskId &&
+            plan.revision === input.revision,
+        );
+      if (!applied) throw new ExecutionRunError('run-authority-denied');
+      if ((input.workspace.kind === 'local') !== (input.tools === 'local-tools'))
+        throw new ExecutionRunError('run-validation');
+      if (input.workspace.kind === 'local' && !options.workspaces)
+        throw new ExecutionRunError('run-authority-unavailable');
+      const local =
+        input.workspace.kind === 'local'
+          ? options.workspaces!.select(
+              inputs.actorId,
+              input.spaceId,
+              applied.task.projectId,
+              input.workspace.id,
+            )
+          : undefined;
+      let workspace: ExecutionWorkspace = local?.workspace ?? { kind: 'text-only' };
       const state = readExecutionRunState(node);
       const prior = state?.receipts.find((receipt) => receipt.requestId === input.requestId);
+      if (prior) {
+        const previous = state!.runs.find((run) => run.attempt.id === prior.runId)?.workspace;
+        if (previous && options.workspaces?.sameGrant(previous, workspace)) workspace = previous;
+        else if (canonicalPayload(previous) !== canonicalPayload(workspace))
+          throw new ExecutionRunError('run-idempotency-mismatch');
+      }
       let composition: FrozenExecutionRunComposition;
       if (prior) {
         // Cold or same-process retry keeps the original content. It never
@@ -209,18 +264,31 @@ export function createHostRunConfiguration(
           inputs,
           ...(resourceCatalog ? { resourceCatalog } : {}),
           ...(node.handoff.assignee.kind === 'expert'
-            ? { resultIntentTool: declaredResultTool() }
+            ? { resultIntentTool: hostResultTool(options.resultProtocol?.() ?? 1) }
             : {}),
-          tools:
-            input.tools === 'text-only'
+          tools: local
+            ? {
+                kind: 'local-tools',
+                definitions: local.tools.describe(
+                  local.workspace.access === 'write' ? ['read', 'write', 'edit'] : ['read'],
+                ),
+                ...(inputs.items.length
+                  ? { acceptedInputReader: describeAcceptedInputTool() }
+                  : {}),
+              }
+            : input.tools === 'text-only'
               ? { kind: 'text-only' }
               : { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() },
+          ...(local?.policy.publish.length
+            ? { outputFilePublisherTool: declaredOutputTool() }
+            : {}),
         });
       }
+      options.workspaces?.remember(composition, workspace);
       assertModel(composition);
       const { model: _model, executor: _executor, tools: _tools, ...command } = input;
       const { firstMessage: _message, ...projection } = executionRunCompositionRequest(composition);
-      const prepared = { ...command, ...projection, composition };
+      const prepared = { ...command, workspace, ...projection, composition };
       if (prior && options.resources) {
         const qualified = await options.resources.prepareResourceCatalog(request, prepared);
         try {

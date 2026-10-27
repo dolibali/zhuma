@@ -22,6 +22,10 @@ Skill loader 的隔离补丁仅增加 `ToolRegistry.getRegistered(name, scope)` 
 
 正式编译回归：`node scripts/desktop/verify-compiled-skill-scope.mjs --upstream <已安装测试依赖的固定SDK>`。验证器在自己的临时检出使用 SDK 原 pnpm 离线、冻结锁文件、禁用安装脚本，按原 TypeScript references 和 tsdown／Typert 配置构建相关运行时包。独立 Node 进程从普通编译包创建原生 Agent，由原 factory 提供未发布的 Agent scope，装配真实 SkillRegistry 并绑定。仅撤销新增 peer 后，同样创建必须在模型调用前失败并回滚；恢复后须通过绑定和一次本地脚本模型调用，父／继承上下文、假注册表及已退出 scope 仍拒绝。运行探针没有源码别名、加载 hook 或替换 factory；该证据仍不替代正式 Host 资源接入、正常 GUI、真实模型效果或安装验收。
 
+Host 本地工作区接入复用 Web 已有的 `dsh-workspace`／`dsh-tool-fs`，并将受控 FS facade 使用的 `dsh-fs-observation-policy` 增加为 Web 的直接运行时依赖。补丁同时记录 SDK 锁文件 importer 的原 workspace 链接，不更新依赖版本、不将 SDK workspace 并入根仓，也不把该依赖当成文件或发布授权。安装仍须使用固定 SDK 自己的 pnpm 与冻结锁文件；详细授权边界见 [Host 本地工作区接缝](../../docs/contracts/host-local-workspaces.md)。
+
+正式 Web 的全局 FsSandbox 不能当作 D 的裸 local producer。策略交集修复把私有后端使用的原 `dsh-fs-local` 和真实策略来源 `dsh-sandbox-policy` 从 Web 的开发依赖移到运行时依赖，同步原锁文件位置；不改全局 FS 或 sandbox 默认值。权限仍逐次与 SDK 部署／真实 session 策略相交，默认 read-only 不因操作方 write 绑定被提升；没有改原 producer 的 sandbox 拒绝分支。
+
 ## MCP 实例关闭确认
 
 MCP Client 增加公开 `captureMcpClientClose(originalMcpFiber.ctx): McpClientCloseHandle`，其 `close(): Promise<void>` 绑定原插件 supervisor。仅接受该实例的原 Context；父、兄弟、继承或 JSON 对象均拒绝。句柄应在销毁前捕获，调用方先等待明确关闭成功，再把原 fiber 销毁结果用于后续清理。句柄不授予连接、工具执行或 Run 权限，消费方仍须核对原私有配置与成员／Run 资格。
