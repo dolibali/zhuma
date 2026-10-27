@@ -156,6 +156,11 @@ export class MemberWorkbenchService {
       task.participantIds.some((id) => !scope.participants.some((p) => p.id === id && p.available))
     )
       fail('resource-unavailable', '任务参与者不在当前授权目录中。');
+    // Check new draft -> ready transitions, not already committed legacy replays.
+    // The original scoped catalog gates kind, availability and source completeness.
+    const confirming =
+      task.status === 'ready' &&
+      state.tasks.some((existing) => existing.id === task.id && existing.status === 'draft');
     for (const node of task.workflows.flatMap((w) => w.nodes)) {
       for (const [ids, kind] of [
         [node.skillIds, 'skill'],
@@ -168,6 +173,20 @@ export class MemberWorkbenchService {
           )
         )
           fail('resource-unavailable', '工作节点引用的资源不可用。');
+      const assignee = scope.participants.find((p) => p.id === node.assigneeId);
+      if (confirming && assignee?.kind === 'expert') {
+        for (const [required, selected, label] of [
+          [assignee.resourceBindings?.skillIds ?? [], node.skillIds, 'Skill'],
+          [assignee.resourceBindings?.mcpIds ?? [], node.mcpIds, 'MCP'],
+        ] as const) {
+          const missing = required.filter((id) => !selected.includes(id));
+          if (missing.length)
+            fail(
+              'resource-unavailable',
+              `「${node.title}」的执行专家「${assignee.name}」需要在节点中选择 ${label}：${missing.join('、')}。`,
+            );
+        }
+      }
     }
     const errors = validateWorkTask(task, this.catalogState(state, scope), { requireOwner: true });
     if (errors.length) fail('validation', errors.join('\n'));
