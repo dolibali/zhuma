@@ -16,9 +16,14 @@ import Sessions from '@deepseek-ai/dsh-session';
 import Projections from '@deepseek-ai/dsh-session-projection';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import Sandbox from '@deepseek-ai/dsh-sandbox-policy';
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
+import Tools from '@deepseek-ai/dsh-tools';
+import FsLocal from '@deepseek-ai/dsh-fs-local';
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
 import { open } from './execution-service-run-fixture.mjs';
 import { createHostWorkspaceApprovalSource } from '../dist/host-workspace-approval-source.js';
 import { openHostWorkspaceApprovals } from '../dist/host-workspace-approvals.js';
+import { createHostRunWorkspaces } from '../dist/host-run-workspaces.js';
 
 async function setup(t, { mode = 'workspace-write', direct = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-host-workspace-source-'));
@@ -102,6 +107,90 @@ const checked = (result) => {
   assert.equal(result.ok, true, result.ok ? '' : result.error.code);
   return result.value;
 };
+
+test('Host workspace source: original dynamic approval feeds actual tool choices, revocation aborts IO and never restores the static binding', async (t) => {
+  const h = await setup(t);
+  for (const [plugin, config] of [
+    [SystemPrompt],
+    [Tools],
+    [FsLocal, { cwd: h.dir }],
+    [WorkingDirectory, { defaultDirectory: h.dir }],
+  ])
+    await h.sdk.plugin(plugin, config);
+  const staticConfig = {
+    deviceId: 'contract-legacy-device',
+    bindings: [
+      {
+        id: 'legacy-binding',
+        generation: 1,
+        actorId: 'chen',
+        spaceId: 'north',
+        projectId: 'project',
+        workspaceId: h.registered.id,
+        access: 'write',
+        publish: [],
+      },
+    ],
+  };
+  const source = createHostRunWorkspaces(h.sdk, {
+    config: staticConfig,
+    approvals: h.owner,
+    execution: h.d.service,
+    signal: h.lifetime.signal,
+    readWorkbench: h.d.readWorkbench,
+  });
+  t.after(() => source.close());
+  await source.ready;
+  const args = ['chen', 'north', 'project'];
+  const legacy = source.select(...args, 'legacy-binding');
+  assert.equal(legacy.signal.aborted, false);
+  const first = checked(
+    await h.api.operations.approve(
+      h.request,
+      h.command({
+        publish: [{ kind: 'directory', path: 'deliverables' }],
+      }),
+    ),
+  );
+  assert.equal(legacy.signal.aborted, true, 'a dynamic row shadows the static source');
+  const choices = source.choices(...args);
+  assert.deepEqual(
+    choices.map((row) => row.id),
+    [first.current.id],
+  );
+  assert.equal(choices[0].publish, true);
+  const selected = source.select(...args, first.current.id);
+  assert.notEqual(selected.workspace.deviceId, staticConfig.deviceId);
+  assert.equal(selected.workspace.generation, 1);
+  assert.deepEqual(
+    selected.tools.describe(['read', 'write', 'edit']).map((tool) => tool.name),
+    ['read', 'write', 'edit'],
+  );
+  assert.throws(() => source.select('another-member', ...args.slice(1), first.current.id));
+  const revoked = checked(
+    await h.api.operations.revoke(h.request, {
+      requestId: randomUUID(),
+      spaceId: 'north',
+      projectId: 'project',
+      approvalId: first.current.id,
+      expectedGeneration: 1,
+    }),
+  );
+  assert.equal(revoked.current.status, 'revoked');
+  assert.equal(selected.signal.aborted, true);
+  assert.deepEqual(source.choices(...args), []);
+  assert.throws(() => source.select(...args, 'legacy-binding'));
+  assert.throws(() => source.select(...args, first.current.id));
+  checked(
+    await h.api.operations.approve(h.request, h.command({ expectedGeneration: 2, access: 'read' })),
+  );
+  const renewed = source.select(...args, first.current.id);
+  assert.equal(renewed.workspace.generation, 3);
+  assert.equal(renewed.workspace.access, 'read');
+  assert.equal(renewed.signal.aborted, false);
+  assert.notEqual(renewed.workspace.grantId, selected.workspace.grantId);
+  assert.equal(selected.signal.aborted, true);
+});
 
 test('Host workspace source: listing an actual registered directory is passive; explicit original D approval persists no path and exact retry does not rewrite', async (t) => {
   const h = await setup(t);

@@ -264,6 +264,7 @@ export function createHostWorkspaceApprovalSource(
       const access = policy().mode === 'read-only' ? 'read' : 'write';
       return registry()
         .list()
+        .slice(-WORKSPACE_APPROVAL_LIMITS.approvals)
         .flatMap((record) => {
           try {
             const selected = root(record.id);

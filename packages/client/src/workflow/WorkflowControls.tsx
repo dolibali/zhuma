@@ -4,11 +4,18 @@ import { Modal } from '../workbench/controls.js';
 import { executionErrorMessage } from '../execution/ExecutionApi.js';
 import { useExecutionCommand } from '../execution/interaction.js';
 import type { WorkflowApi, WorkflowOptions, WorkflowTarget, WorkflowView } from './api.js';
+import { WorkspaceApprovalDialog } from '../run/WorkspaceApprovalDialog.js';
+import type {
+  WorkspaceApprovalApi,
+  WorkspaceApprovalLocation,
+} from '../run/workspace-approvals.js';
 
 type Props = {
   api: WorkflowApi;
   target: WorkflowTarget;
   onViewChange?: ((view: WorkflowView) => void) | undefined;
+  workspaceApprovals?:
+    { api: WorkspaceApprovalApi; location: WorkspaceApprovalLocation } | undefined;
 };
 const labels: Record<WorkflowView['state'], string> = {
   inactive: '尚未运行',
@@ -26,7 +33,7 @@ export function WorkflowControls(props: Props) {
     lifetime.current = { api: props.api, identity, epoch: lifetime.current.epoch + 1 };
   return <Controls key={lifetime.current.epoch} {...props} />;
 }
-function Controls({ api, target, onViewChange }: Props) {
+function Controls({ api, target, onViewChange, workspaceApprovals }: Props) {
   const fixedTarget = useRef(target).current;
   const changed = useRef(onViewChange);
   changed.current = onViewChange;
@@ -34,6 +41,7 @@ function Controls({ api, target, onViewChange }: Props) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [choices, setChoices] = useState<WorkflowOptions>();
   const [modelId, setModelId] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
@@ -285,6 +293,15 @@ function Controls({ api, target, onViewChange }: Props) {
                           ))}
                         </select>
                       </label>
+                      {workspaceApprovals && (
+                        <Button
+                          variant="quiet"
+                          disabled={command.pending || loading}
+                          onClick={() => setWorkspaceOpen(true)}
+                        >
+                          管理目录授权
+                        </Button>
+                      )}
                       <label className="zm-field">
                         同时运行的 Agent
                         <select
@@ -332,6 +349,14 @@ function Controls({ api, target, onViewChange }: Props) {
             </footer>
           </form>
         </Modal>
+      )}
+      {workspaceOpen && workspaceApprovals && (
+        <WorkspaceApprovalDialog
+          api={workspaceApprovals.api}
+          location={workspaceApprovals.location}
+          close={() => setWorkspaceOpen(false)}
+          changed={() => refresh(true)}
+        />
       )}
     </div>
   );

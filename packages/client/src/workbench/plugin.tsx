@@ -17,6 +17,7 @@ import { LocalSetupBoundary, enterTeamAfterLocalSetup } from '../identity/LocalS
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 import nativeRunStyles from '../run/NativeRunPanel.css';
+import { createWorkspaceDirectoryRegistrar } from '../run/workspace-directory.js';
 
 export const inject = ['slots', 'layout', 'connection', 'theme'];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
@@ -55,6 +56,7 @@ export function apply(ctx: Context): void {
   ) as import('@deepseek-ai/dsh-client-connection/client').ConnectionHandle;
   const api = createWorkbenchApi(connection.rpc);
   const memberShell = createMemberShell(createIdentityApi());
+  const registerWorkspaceDirectory = createWorkspaceDirectoryRegistrar(ctx);
   const executionPanel = 'zhuma-my-work' as MainPanelId;
   const workbenchPanel = 'zhuma-workbench' as MainPanelId;
   ctx.effect(() => {
@@ -179,6 +181,7 @@ export function apply(ctx: Context): void {
               <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
               <MemberExecutionPage
                 shell={memberShell}
+                registerWorkspaceDirectory={registerWorkspaceDirectory}
                 view={panel.view}
                 openWork={() => ctx.layout.selectPanel(executionPanel)}
                 {...(panel.view === 'catalog' ? { workbenchAppearance: appearance } : {})}

@@ -6,6 +6,8 @@ import { NativeRunPanel } from './NativeRunPanel.js';
 import { createNativeRunController } from './controller.js';
 import type { NativeRunApi } from './api.js';
 import type { NativeRunTarget } from './native-run-contract.js';
+import { WorkspaceApprovalDialog } from './WorkspaceApprovalDialog.js';
+import type { WorkspaceApprovalLocation } from './workspace-approvals.js';
 
 type Props = {
   api: NativeRunApi;
@@ -28,6 +30,7 @@ export function NativeRunWorkspace(props: Props) {
 function Workspace({ api, target, onDirtyChange, onClose }: Props) {
   const fixedTarget = useRef(target).current;
   const [controller, setController] = useState<ReturnType<typeof createNativeRunController>>();
+  const [approvalLocation, setApprovalLocation] = useState<WorkspaceApprovalLocation>();
   useEffect(() => {
     const current = createNativeRunController(api, fixedTarget);
     setController(current);
@@ -49,34 +52,54 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
     return () => clearInterval(timer);
   }, [controller, run?.runId, run?.resources, state.view.kind]);
   return (
-    <NativeRunPanel
-      target={target}
-      view={state.view}
-      busy={state.busy}
-      error={state.error}
-      onDirtyChange={onDirtyChange}
-      onClose={onClose}
-      onSelectionChange={(selection) => controller?.select(selection)}
-      onStart={async (selection) => {
-        if (!controller) throw Error('Loading');
-        await controller.start(selection);
-      }}
-      onSend={async (text, mode) => {
-        if (!controller) throw Error('Loading');
-        await controller.send(text, mode);
-      }}
-      onStop={async () => {
-        if (!controller) throw Error('Loading');
-        await controller.stop();
-      }}
-      onRefresh={async () => {
-        if (!controller) throw Error('Loading');
-        await controller.refresh();
-      }}
-      onLoadEarlier={async () => {
-        /* SDK history is forward-only; no earlier-page affordance. */
-      }}
-    />
+    <>
+      <NativeRunPanel
+        target={target}
+        view={state.view}
+        busy={state.busy}
+        error={state.error}
+        onDirtyChange={onDirtyChange}
+        onClose={onClose}
+        onManageWorkspaces={
+          api.workspaceApprovals && state.view.kind === 'ready' && state.view.workspaceApprovalScope
+            ? () => {
+                if (state.view.kind === 'ready')
+                  setApprovalLocation(state.view.workspaceApprovalScope);
+              }
+            : undefined
+        }
+        onSelectionChange={(selection) => controller?.select(selection)}
+        onStart={async (selection) => {
+          if (!controller) throw Error('Loading');
+          await controller.start(selection);
+        }}
+        onSend={async (text, mode) => {
+          if (!controller) throw Error('Loading');
+          await controller.send(text, mode);
+        }}
+        onStop={async () => {
+          if (!controller) throw Error('Loading');
+          await controller.stop();
+        }}
+        onRefresh={async () => {
+          if (!controller) throw Error('Loading');
+          await controller.refresh();
+        }}
+        onLoadEarlier={async () => {
+          /* SDK history is forward-only; no earlier-page affordance. */
+        }}
+      />
+      {api.workspaceApprovals && approvalLocation && (
+        <WorkspaceApprovalDialog
+          api={api.workspaceApprovals}
+          location={approvalLocation}
+          close={() => setApprovalLocation(undefined)}
+          changed={async () => {
+            await controller?.refresh();
+          }}
+        />
+      )}
+    </>
   );
 }
 
