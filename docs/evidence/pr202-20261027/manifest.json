@@ -1,0 +1,86 @@
+{
+  "environment": "Official compiled Web/Host; isolated fictitious account/team/projects; no identity bootstrap, directory seed, confirmed-plan fixture or model adapter",
+  "boundary": "Root personally performed first setup, team landing, chosen expert selection, project/task/manual plan creation and same-origin new-OS-process recovery. Business JSON bytes unchanged after cold open. No Agent/model execution, local file approval, automatic expert review, installed Desktop or Release proof. First setup is new functionality with no prior equivalent form.",
+  "images": [
+    {
+      "file": "setup-selected-light.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "New first setup, two selected experts, light",
+      "width": 1440,
+      "height": 900,
+      "bytes": 46480,
+      "sha256": "a614b5bea45244b2a31cce533c9a157104589a2fedbf59e1e2d1ed4df40136be",
+      "gitBlob": "26ed18c3e699116fc1c51be74549b0609b33cead"
+    },
+    {
+      "file": "setup-selected-dark.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "Same first setup input and selected experts, dark",
+      "width": 1440,
+      "height": 900,
+      "bytes": 46006,
+      "sha256": "e243a191b8a5db842c42cc891f66172670c2a72bfdec9cb3cdc1a11268e173d4",
+      "gitBlob": "34226be93a33783dfdffacbfb264b514aa0e040b"
+    },
+    {
+      "file": "created-team-light.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "Normal GUI creation lands in the actual newly created team",
+      "width": 1440,
+      "height": 900,
+      "bytes": 33577,
+      "sha256": "5865b6123f87befee893f394494fa3a9999d66caf2d43a295b4ade34195c5e1f",
+      "gitBlob": "68107ec02fd3a22a5a264da73741b6e2048badb9"
+    },
+    {
+      "file": "normal-project-light.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "Normal project entry selects current member and actual team expert",
+      "width": 1440,
+      "height": 900,
+      "bytes": 49045,
+      "sha256": "bc57cd0f64a9c413309196296ebcdcf58d7e3ebb98cae61fcf878f771f6b9179",
+      "gitBlob": "4695efcafb6c15b0aad2899191d36b58b506b590"
+    },
+    {
+      "file": "normal-manual-task-light.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "Normal task with inherited participants and explicit manual planning",
+      "width": 1440,
+      "height": 900,
+      "bytes": 63611,
+      "sha256": "2f578457ac216bc456ac79467ec4b96cd0fb32657407e47f364c79dde715f00f",
+      "gitBlob": "d676dbc977f6baa5247710ec2648bd073b0b960a"
+    },
+    {
+      "file": "confirmed-plan-light.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "Normal saved and confirmed plan remains undispatched, light",
+      "width": 1440,
+      "height": 900,
+      "bytes": 58913,
+      "sha256": "97fc5dc0067651d847058a0e553cd9b4af253128403937fbccc940d7e1f5ba38",
+      "gitBlob": "db48d87b8bbc950e46901e1977bb4a7571c341fa"
+    },
+    {
+      "file": "confirmed-plan-dark.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "Same confirmed plan and content remain undispatched, dark",
+      "width": 1440,
+      "height": 900,
+      "bytes": 59904,
+      "sha256": "d04c8adbdaab865736a5eb2569ff2cb0254b63b9988af339787a0615418d2489",
+      "gitBlob": "07da9e711240d15693f25af5c5c8adaf0c35bddb"
+    },
+    {
+      "file": "new-process-restored-dark.jpg",
+      "sourceCommit": "537f08a08dda079fa5b3468982d7fe1825ecddc9",
+      "scene": "New official Host process at same origin restores actual team and confirmed task",
+      "width": 1440,
+      "height": 900,
+      "bytes": 32023,
+      "sha256": "1b9abcc5b8c97a34240e61fb802397d74be6db4a1a86d8250c823c75dc837521",
+      "gitBlob": "811dfba0ce41863ed3e909c23cc952a0648f8559"
+    }
+  ]
+}
