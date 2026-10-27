@@ -547,3 +547,67 @@ test('task progress Service: maximum legal submitted text stays out of metadata 
   assert.ok(Buffer.byteLength(JSON.stringify(item)) < 2048);
   assert.deepEqual(await domainBytes(h.root), before);
 });
+
+for (const kind of ['numeric-id', 'missing-metadata'])
+  test(`task progress Service: persisted accepted artifact ${kind} is unknown, not delivered`, async (t) => {
+    const h = await progressHost(t, {
+      workbench: projectWorkbench({ count: 1, privateTask: false }),
+    });
+    await h.submit();
+    const record = structuredClone(h.service.readRunNode({ ...h.target(), nodeId: 'work-0' }));
+    const artifact = record.artifactVersions[0];
+    if (kind === 'numeric-id') {
+      record.acceptedArtifactVersionId = 123;
+      record.artifactVersions = [{ ...artifact, id: 123 }];
+    } else {
+      record.artifactVersions = [
+        { id: artifact.id, nodeId: artifact.nodeId, version: artifact.version },
+      ];
+    }
+    // Exercise the published JSON backend's original shallow non-native row
+    // schema, not a fabricated projection callback or a failed write.
+    await h.domain.table('nodes').put(nodeRecordKey(record), record);
+    assert.deepEqual(h.domain.table('nodes').get(nodeRecordKey(record)), record);
+    const before = await domainBytes(h.root);
+    const persisted = before
+      .map(([, bytes]) => JSON.parse(Buffer.from(bytes, 'base64')))
+      .map((value) => value.tables?.nodes?.[nodeRecordKey(record)])
+      .find((value) => value !== undefined);
+    assert.deepEqual(persisted, record, 'the malformed row really reached the original JSON file');
+    h.resetCounts();
+    const item = await row(h);
+    assert.equal(item.facts, 'unknown');
+    assert.equal(item.reason, 'invalid-accepted');
+    assert.equal(item.delivery, 'unknown');
+    assert.equal(item.acceptedNodes, null);
+    assert.equal(item.byStatus, null);
+    assert.equal(item.resources, null);
+    assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+    assert.deepEqual(await domainBytes(h.root), before);
+  });
+
+test('task progress Service: final project callback changing the original request identity is refused by a fresh issuer check', async (t) => {
+  const h = await progressHost(t, {
+    workbench: projectWorkbench({ count: 1, privateTask: false }),
+  });
+  await h.submit();
+  // This independent member-source contract checks the original request map,
+  // rather than deriving current identity from unchanged lease fields/signals.
+  h.hooks.member = () => {
+    assert.equal(
+      h.members.get(h.request),
+      'chen',
+      'the original request no longer identifies chen',
+    );
+  };
+  h.hooks.project = () => {
+    if (h.calls.project === 2) h.members.set(h.request, 'outside');
+  };
+  const before = await domainBytes(h.root);
+  h.resetCounts();
+  refused(await h.progress(), 'not-found');
+  assert.equal(h.calls.project, 2, 'the mapping changed in the final source callback');
+  assert.equal(h.calls.release, 1);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  assert.deepEqual(await domainBytes(h.root), before);
+});

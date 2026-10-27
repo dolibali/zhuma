@@ -157,15 +157,19 @@ function nodeAt(
 }
 function accepted(node: ExecutionNodeRecord) {
   const id = node.acceptedArtifactVersionId;
+  if (typeof id !== 'string' || !id.trim()) return false;
   const artifacts = node.artifactVersions.filter((artifact) => artifact.id === id);
   const artifact = artifacts[0];
   if (
-    !id ||
     artifacts.length !== 1 ||
     !artifact ||
     artifact.nodeId !== node.nodeId ||
     !Number.isSafeInteger(artifact.version) ||
-    artifact.version < 1
+    artifact.version < 1 ||
+    typeof artifact.submittedBy !== 'string' ||
+    !artifact.submittedBy.trim() ||
+    !Array.isArray(artifact.files) ||
+    !Array.isArray(artifact.links)
   )
     return false;
   if (node.handoff.reviewRequired || node.currentRoundId !== undefined) {
