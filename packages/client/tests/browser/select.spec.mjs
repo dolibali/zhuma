@@ -45,8 +45,12 @@ test('项目菜单真实展开、搜索与选择；不同可视区不越界', as
     // A wider menu at the right edge may shift inward to remain visible.
     expect(b.x).toBeLessThanOrEqual(a.x + 2);
     expect(b.x + b.width).toBeGreaterThanOrEqual(a.x + a.width - 2);
-    expect(b.y - a.y - a.height).toBeGreaterThanOrEqual(4);
-    expect(b.y - a.y - a.height).toBeLessThanOrEqual(6);
+    // Floating UI may round the nominal 4px offset to a fractional CSS pixel.
+    const nominalGap = 4,
+      pixelTolerance = 0.5;
+    const gap = b.y - a.y - a.height;
+    expect(gap).toBeGreaterThanOrEqual(nominalGap - pixelTolerance);
+    expect(gap).toBeLessThanOrEqual(nominalGap + pixelTolerance);
     expect(b.width).toBeGreaterThanOrEqual(a.width);
     expect(await popup(page).evaluate((el) => getComputedStyle(el).fontSize)).toBe(
       await project.evaluate((el) => getComputedStyle(el).fontSize),
