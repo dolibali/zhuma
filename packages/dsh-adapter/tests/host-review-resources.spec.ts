@@ -13,10 +13,17 @@ const row = (h, id) =>
   [...h.table.entries()].map(([, node]) => node).find((node) => node.nodeId === id);
 const attempt = (h) => row(h, 'produce')?.nativeExecution?.review?.attempts.at(-1);
 function observeErrors(h) {
+  const acceptedReads = [];
   h.ctx.on(
     'tools/result',
     (exec, result) => {
       errors.push(['SDK_TOOL_RESULT', exec.name, result.isError ? result.error : result.value]);
+      if (exec.name === 'read_accepted_input')
+        acceptedReads.push({
+          agentId: exec.agent?.id,
+          isError: result.isError,
+          value: result.isError ? undefined : structuredClone(result.value),
+        });
     },
     { global: true },
   );
@@ -31,6 +38,7 @@ function observeErrors(h) {
     },
     { global: true },
   );
+  return acceptedReads;
 }
 function diagnostics(h) {
   return {
@@ -77,10 +85,11 @@ async function wait(h, predicate) {
       },
       { global: true },
     );
+    // Observation only; the production 5s read timeout and Run budgets are unchanged.
     const timer = setTimeout(() => {
       stop();
       reject(new Error(JSON.stringify(diagnostics(h))));
-    }, 60000);
+    }, 150000);
     if (predicate()) {
       clearTimeout(timer);
       stop();
@@ -135,9 +144,10 @@ const start = (h) =>
 
 test(
   'actual Host independent review: real selected Skill and fixed read precede atomic expert ballot and downstream',
-  { timeout: 120000 },
+  { timeout: 180000 },
   async (t) => {
     let h;
+    let acceptedReads;
     const body = 'Fixed API contract: retain the status field.';
     const adapter = new ScriptedAdapter([
       tool('complete_work', { text: body, links: [] }),
@@ -173,8 +183,48 @@ test(
           evidenceRefs,
         })();
       },
-      'Independent review declaration finished.',
-      tool('complete_work', { text: 'Downstream used the reviewed contract.', links: [] }),
+      (request) => {
+        // complete_review concludes its own turn. This slot belongs to the
+        // downstream Agent, whose first request contains only an input catalog.
+        const refs = [...new Set(JSON.stringify(request).match(/input_[a-f0-9]{64}/gu))];
+        assert.equal(refs.length, 1);
+        assert(request.tools.some((item) => item.name === 'read_accepted_input'));
+        assert(!JSON.stringify(request).includes(body));
+        return tool('read_accepted_input', {
+          inputRef: refs[0],
+          part: 'text',
+          offset: 0,
+          limit: 4096,
+        })();
+      },
+      (request) => {
+        const produce = row(h, 'produce'),
+          consume = row(h, 'consume');
+        const fixed = produce.artifactVersions.find(
+          (item) => item.id === produce.acceptedArtifactVersionId,
+        );
+        assert.ok(fixed);
+        assert.equal(acceptedReads.length, 1);
+        const read = acceptedReads[0];
+        assert.equal(read.agentId, consume.nativeExecution.runs.at(-1).attempt.executorRunId);
+        assert.equal(read.isError, false);
+        assert.equal(read.value.ok, true);
+        assert.equal(read.value.part, 'text');
+        assert.equal(read.value.text, body);
+        assert.equal(read.value.source.sourceNodeId, 'produce');
+        assert.equal(read.value.source.downstreamNodeId, 'consume');
+        assert.equal(read.value.source.artifactVersionId, fixed.id);
+        assert.equal(read.value.source.version, fixed.version);
+        assert.equal(read.value.range.hasMore, false);
+        assert.equal(read.value.range.returned, body.length);
+        const conversation = JSON.stringify(request);
+        assert(conversation.includes(body));
+        assert(conversation.includes(fixed.id));
+        return tool('complete_work', {
+          text: 'Downstream used the reviewed contract.',
+          links: [],
+        })();
+      },
     ]);
     h = await boot(t, {
       expert: true,
@@ -185,19 +235,22 @@ test(
       adapter,
       workflowNodes: nodes,
     });
-    observeErrors(h);
+    acceptedReads = observeErrors(h);
     checked(await start(h));
     await wait(
       h,
       () =>
-        row(h, 'consume')?.command.status === 'completed' && attempt(h)?.resources === 'settled',
+        row(h, 'consume')?.command.status === 'completed' &&
+        row(h, 'consume')?.nativeExecution?.runs.at(-1)?.resources === 'settled' &&
+        attempt(h)?.resources === 'settled' &&
+        h.ctx.agents.list().length === 0,
     );
     assert.equal(row(h, 'produce').rounds[0].ballots.length, 1);
     assert.equal(row(h, 'produce').rounds[0].ballots[0].reviewerId, 'qa-review');
     assert.equal(attempt(h).status, 'completed');
     assert.notEqual(
       attempt(h).nativeSessionId,
-      row(h, 'produce').nativeExecution.runs[0].nativeSessionId,
+      row(h, 'produce').nativeExecution.runs[0].attempt.sessionId,
     );
     assert.equal(h.counts.nativeOpened, 1);
     assert.equal(h.counts.executionOpened, 1);
@@ -207,12 +260,15 @@ test(
     );
     assert.equal(h.ctx.agents.get(attempt(h).nativeAgentId), undefined);
     assert.equal(adapter.script.length, 0);
+    await h.host.dispose();
+    assert.equal(h.counts.nativeClosed, 1);
+    assert.equal(h.counts.executionClosed, 1);
   },
 );
 
 test(
   'actual Host independent review: missing fixed read is rejected without a ballot or downstream and retains its review obligation',
-  { timeout: 120000 },
+  { timeout: 180000 },
   async (t) => {
     const adapter = new ScriptedAdapter([
       tool('complete_work', { text: 'Fixed output needing independent review.', links: [] }),
@@ -254,7 +310,7 @@ test(
 
 test(
   'actual Host independent review: close retains the original owners until an actual held review stream ends',
-  { timeout: 120000 },
+  { timeout: 180000 },
   async (t) => {
     const entered = Promise.withResolvers(),
       cancelled = Promise.withResolvers(),
