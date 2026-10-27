@@ -103,14 +103,60 @@ export const executionReviewOutputSchema = z
 export type ExecutionReviewOutput = z.infer<typeof executionReviewOutputSchema>;
 
 /** A durable reservation is not a native start, a completed review, or a ballot. */
-export const executionReviewAttemptSchema = z.strictObject({
+const reviewAttemptFields = {
   version: positive,
   scope: executionReviewScopeSchema,
   configurationId: id,
+};
+const preparedReviewAttemptSchema = z.strictObject({
+  ...reviewAttemptFields,
   status: z.literal('prepared'),
   dispatch: z.literal('reserved'),
   resources: z.literal('held'),
 });
+const admittedReviewAttemptSchema = z
+  .strictObject({
+    ...reviewAttemptFields,
+    // The shared record validator verifies the actual serialized composition;
+    // the data contract must not import a runtime/composition dependency here.
+    composition: z.unknown(),
+    status: z.enum(['requested', 'running', 'completed', 'failed', 'cancelled']),
+    dispatch: z.enum(['reserved', 'received', 'unknown']),
+    resources: z.enum(['held', 'settled']),
+    stopPhase: z.enum(['none', 'requested', 'confirmed']),
+    lastEventSequence: integer,
+    nativeSessionId: id.optional(),
+    nativeAgentId: id.optional(),
+    lastEvent: z.strictObject({ sequence: positive, fingerprint: digest }).optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.version < 2 ||
+      (value.nativeSessionId === undefined) !== (value.nativeAgentId === undefined) ||
+      (value.nativeSessionId !== undefined && value.nativeSessionId !== value.nativeAgentId) ||
+      (value.nativeSessionId !== undefined && value.dispatch === 'reserved') ||
+      (['running', 'completed'].includes(value.status) && !value.nativeSessionId) ||
+      (value.status === 'requested' && value.dispatch === 'received' && !value.nativeSessionId) ||
+      (value.resources === 'settled' && ['requested', 'running'].includes(value.status)) ||
+      (value.status === 'cancelled' && value.stopPhase !== 'confirmed') ||
+      (value.status !== 'cancelled' && value.stopPhase === 'confirmed') ||
+      (value.status === 'completed' && value.stopPhase !== 'none') ||
+      (value.lastEventSequence === 0 &&
+        (value.status !== 'requested' ||
+          value.stopPhase !== 'none' ||
+          value.resources !== 'held' ||
+          value.dispatch !== 'reserved' ||
+          value.nativeSessionId !== undefined)) ||
+      (value.lastEventSequence === 0
+        ? value.lastEvent !== undefined
+        : value.lastEvent?.sequence !== value.lastEventSequence)
+    )
+      context.addIssue({ code: 'custom', message: 'Invalid review attempt lifecycle.' });
+  });
+export const executionReviewAttemptSchema = z.union([
+  preparedReviewAttemptSchema,
+  admittedReviewAttemptSchema,
+]);
 export type ExecutionReviewAttempt = z.infer<typeof executionReviewAttemptSchema>;
 
 export const executionReviewStateSchema = z.strictObject({
@@ -152,6 +198,14 @@ export const EXECUTION_REVIEW_ERRORS = [
   'review-attempt-budget',
   'review-run-id-conflict',
   'review-author-active',
+  'review-not-prepared',
+  'review-not-admitted',
+  'review-not-running',
+  'review-stopping',
+  'review-stop-not-requested',
+  'review-event-mismatch',
+  'review-session-mismatch',
+  'review-native-active',
 ] as const;
 export type ExecutionReviewErrorCode = (typeof EXECUTION_REVIEW_ERRORS)[number];
 export class ExecutionReviewError extends Error {

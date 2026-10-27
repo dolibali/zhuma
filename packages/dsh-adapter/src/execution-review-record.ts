@@ -5,6 +5,7 @@ import {
   type ExecutionNodeRecord,
 } from '@zhuma/agent-core';
 import type { ExecutionRunState } from './execution-run-state.js';
+import { readExecutionReviewComposition } from './execution-review-composition.js';
 import {
   executionReviewStateSchema,
   ExecutionReviewError,
@@ -65,6 +66,11 @@ export function assertExecutionReviewRecord(
   const runIds = new Set(author?.runs.map((run) => run.attempt.id));
   const segments = new Set(author?.runs.map((run) => run.segmentId));
   const lanes = new Set<string>();
+  const nativeIds = new Set(
+    author?.runs.flatMap((run) =>
+      [run.attempt.sessionId, run.attempt.executorRunId].filter((id) => id !== undefined),
+    ),
+  );
   for (const [index, attempt] of review.attempts.entries()) {
     const { scope } = attempt;
     const { target, principal } = scope.review;
@@ -97,6 +103,23 @@ export function assertExecutionReviewRecord(
     runIds.add(scope.runId);
     segments.add(scope.segmentId);
     lanes.add(lane);
+    if (attempt.status !== 'prepared') {
+      let saved;
+      try {
+        saved = readExecutionReviewComposition(attempt.composition);
+      } catch {
+        return refuse('review-state-invalid');
+      }
+      if (
+        saved.configurationId !== attempt.configurationId ||
+        canonicalPayload(saved.payload.scope) !== canonicalPayload(scope) ||
+        (attempt.nativeSessionId && nativeIds.has(attempt.nativeSessionId)) ||
+        (attempt.nativeAgentId && nativeIds.has(attempt.nativeAgentId))
+      )
+        return refuse('review-state-invalid');
+      if (attempt.nativeSessionId) nativeIds.add(attempt.nativeSessionId);
+      if (attempt.nativeAgentId) nativeIds.add(attempt.nativeAgentId);
+    }
   }
   const requests = new Set<string>();
   const receiptedRuns = new Set<string>();

@@ -74,6 +74,7 @@ export async function open(
     startupFailure,
     workbench: suppliedWorkbench,
     attachments,
+    assertReviewConfiguration,
     expertNode,
     projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
     closeState = { calls: 0, closed: false, errors: [] },
@@ -244,6 +245,7 @@ export async function open(
       );
     if (mount)
       authorities = service.installRunHost({
+        ...(assertReviewConfiguration ? { assertReviewConfiguration } : {}),
         signal: source.signal,
         async memberLease(original) {
           const memberId = members.get(original);
