@@ -546,11 +546,11 @@ export class ExecutionWorkspaceApprovals {
         : [...(previous?.approvals ?? []), next],
     };
     const parsed = workspaceApprovalStateSchema.safeParse(candidate);
+    // Tombstone receipt growth must also preserve every remaining active
+    // approval's revocation allowance. A revoke spends only its own reserve.
     const reserve =
-      command.operation === 'approve'
-        ? candidate.approvals.filter((item) => item.status === 'approved').length *
-          limits.revokeReserveBytes
-        : 0;
+      candidate.approvals.filter((item) => item.status === 'approved').length *
+      limits.revokeReserveBytes;
     if (
       !parsed.success ||
       Buffer.byteLength(JSON.stringify(candidate)) + reserve > limits.stateBytes
