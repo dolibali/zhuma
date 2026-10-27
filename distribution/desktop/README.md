@@ -22,6 +22,8 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 ## 本地优先，登录策略与数据隔离
 
+全新桌面外部 profile 首次创建时，仅在 `package.json` 和 `cordis.patch.yml` 均不存在的情况下写入 `deploymentMode: multi-member` 与 `localSetup: true`，进入首次成员设置。已有 profile 保留其显式或继承的模式与数据，不自动迁移；Bundle 中的 `legacy-single-user` 默认用于旧 profile 兼容，不代表全新安装的默认模式。已有 profile 的成员模式迁移需独立实施和验收。
+
 成员模式的原生HTTP登录运输使用壳内单槽载体，复用现有Host签发／校验与执行权限；所有Set-Cookie仍不回renderer。窗口重载可恢复同一Host会话，整App／Host换代需重新登录，业务数据仍由原持久存储恢复。格式、路径、来源、退出与迟到回执边界见[桌面成员运输契约](../../docs/contracts/desktop-member-cookie.md)；实现／契约测试不等于原生安装版验收。
 
 Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek 账号登录/欢迎界面。此修改发生在 Electron 壳的窗口选择逻辑，不伪造服务器账号状态、不修改模型服务身份验证、不自动填入或上传 API Key。用户如需调用在线模型，应在模型设置中自行配置有效的供应商凭据。
@@ -32,7 +34,7 @@ Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek �
 
 修改图标导出后，可以在桌面退出且临时工作树仍匹配源码补丁时执行 `pnpm desktop:prepare --refresh-assets`，仅刷新资源。源码补丁不匹配时先检查差异；确认临时树可丢弃后，再执行 `pnpm desktop:reset` 和 `pnpm desktop:prepare`。`desktop:reset` 仅清理专用临时工作树，不删安装版用户资料。上游版本升级必须更新 `runtime.lock.json`，重新校验并调整补丁，不能直接跟随浮动 `master`。
 
-保持 DSH 上游的版权与 MIT 许可声明；公开仓库中的独立 Zhuma 许可另行确定。当前四个自研包仍处于基础骨架阶段。
+Zhuma 自有代码采用 [MIT 许可](../../LICENSE)。DSH 上游及其他第三方的版权和许可声明均保留，见[第三方说明](../../THIRD_PARTY_NOTICES.md)；发行包同时携带自有许可与打包依赖的许可文本。
 
 ## 持续会话的队列保留能力
 
