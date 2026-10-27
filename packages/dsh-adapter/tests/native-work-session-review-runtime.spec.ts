@@ -46,6 +46,56 @@ function completionErrors(events) {
     });
 }
 
+test('original SDK isolated Skill: only the original execution result releases its review read before completion', async (t) => {
+  const h = await setup(t, { isolatedSkill: true }),
+    r = h.reviewer('isolated-skill-reviewer'),
+    entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  t.onTestFinished(() => release.resolve());
+  const stop = h.ctx.on(
+    'tools/post-execute',
+    async (exec, result, next) => {
+      if (exec.name === 'read_review_target') {
+        entered.resolve({ exec, result });
+        await release.promise;
+      }
+      return next();
+    },
+    { global: true },
+  );
+  t.onTestFinished(stop);
+  h.adapter.script.push(toolResponse({ name: 'selected-review' }, 'load-selected-review', 'skill'));
+  h.planReview(r);
+  await h.start(r);
+  const { exec, result } = await entered.promise;
+  assert.equal(h.leases.size, 1);
+  let drained = false;
+  const draining = h.service.whenInputReadsIdle(r.grant.scope).then(() => (drained = true));
+  // Synthetic negative notifications cannot release the real SDK execution:
+  // foreign token, borrowed token with another Agent, or a copied execution.
+  for (const foreign of [
+    { ...exec, token: Symbol('foreign-tool-execution') },
+    { ...exec, agent: { ...exec.agent } },
+    { ...exec },
+  ])
+    h.ctx.emit('tools/result', foreign, result);
+  await new Promise(setImmediate);
+  assert.equal(drained, false);
+  assert.equal(h.leases.size, 1);
+  release.resolve();
+  await draining;
+  await r.actor().whenIdle();
+  const prepared = await h.review.prepareFixedReview(r.grant, new AbortController().signal);
+  assert.equal(prepared.status, 'ready');
+  if (prepared.status !== 'ready') throw Error('The actual fixed review was not collected.');
+  h.review.assertFixedReview(r.grant, prepared.ref);
+  assert.equal(h.leases.size, 0);
+  assert.equal(h.adapter.requests.length, 3);
+  const events = await history(h, r.grant);
+  assert.match(JSON.stringify(events), /SELECTED_ORIGINAL_SKILL_BODY/u);
+  assert.deepEqual(completionErrors(events), []);
+});
+
 for (const destination of ['author-only', 'other-review-owner'])
   test(`original SDK capability: copied review grants cannot fall back to author routing in ${destination}`, async (t) => {
     const source = await setup(t),

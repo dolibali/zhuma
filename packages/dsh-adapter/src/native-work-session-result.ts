@@ -385,11 +385,16 @@ class NativeResultOwner {
     type Reservation = Awaited<ReturnType<NativeWorkSessionService['reserveReviewRead']>>;
     const reads = new Map<
       ToolExecution['token'],
-      { value: NativeReviewReadOutput; lease?: NativeReviewReadLease; reservation?: Reservation }
+      {
+        execution: Readonly<ToolExecution>;
+        value: NativeReviewReadOutput;
+        lease?: NativeReviewReadLease;
+        reservation?: Reservation;
+      }
     >();
     const completions = new Map<
       ToolExecution['token'],
-      { value: unknown; intent?: NativeReviewIntent }
+      { execution: Readonly<ToolExecution>; value: unknown; intent?: NativeReviewIntent }
     >();
     const releaseRead = (token: ToolExecution['token']) => {
       const read = reads.get(token);
@@ -408,10 +413,18 @@ class NativeResultOwner {
     ctx.effect(() => () => {
       for (const token of reads.keys()) releaseRead(token);
     });
-    ctx.on('tools/result', (exec) => {
-      releaseRead(exec.token);
-      completions.delete(exec.token);
-    });
+    ctx.on(
+      'tools/result',
+      (exec) => {
+        // Resource plugins can isolate service routing after registration.
+        // Only this Agent's original SDK execution may settle its reservation;
+        // a copied event borrowing an opaque token is not that execution.
+        if (exec.agent !== agent || exec.agent.id !== binding.nativeAgentId) return;
+        if (reads.get(exec.token)?.execution === exec) releaseRead(exec.token);
+        if (completions.get(exec.token)?.execution === exec) completions.delete(exec.token);
+      },
+      { global: true },
+    );
     ctx.on('agent/status', ({ agent: actual, status }) => {
       if (actual === agent && status === 'idle')
         void this.prepareFixedReview(grant, this.lifetime.signal).catch(() => undefined);
@@ -513,7 +526,7 @@ class NativeResultOwner {
               current(exec);
               reservation.check();
               if (abandoned) throw new NativeReviewError('cancelled');
-              reads.set(exec.token, { value: parsed, lease, reservation });
+              reads.set(exec.token, { execution: exec, value: parsed, lease, reservation });
               retained = true;
               return parsed;
             } finally {
@@ -556,7 +569,7 @@ class NativeResultOwner {
         } finally {
           clearTimeout(timer);
         }
-        if (!reads.has(exec.token)) reads.set(exec.token, { value });
+        if (!reads.has(exec.token)) reads.set(exec.token, { execution: exec, value });
         return value;
       },
       finalizeContent: (exec, result) => {
@@ -643,14 +656,14 @@ class NativeResultOwner {
           });
           current(exec);
           const value = nativeReviewAck(binding, access.context, intent);
-          completions.set(exec.token, { value, intent });
+          completions.set(exec.token, { execution: exec, value, intent });
           exec.concludeTurn();
           return value;
         } catch (error) {
           if (intent)
             await this.sessions.clearReviewIntent(grant, intent.intentId).catch(() => undefined);
           const value = { ok: false, code: this.reviewCode(error) };
-          completions.set(exec.token, { value });
+          completions.set(exec.token, { execution: exec, value });
           return value;
         }
       },

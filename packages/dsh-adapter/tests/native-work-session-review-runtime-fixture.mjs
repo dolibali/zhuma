@@ -4,6 +4,10 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { scopeOf } from '@deepseek-ai/dsh-scope';
+import Skills from '@deepseek-ai/dsh-skill';
+import * as ToolSkill from '@deepseek-ai/dsh-tool-skill';
+import FsLocal from '@deepseek-ai/dsh-fs-local';
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
 import { canonicalPayload } from '@zhuma/agent-core';
 import { boot, grant, scope, selection, ScriptedAdapter } from './native-work-session-fixture.mjs';
 import { toolResponse } from './native-work-session-input-fixture.mjs';
@@ -86,16 +90,36 @@ export async function bootNativeReviews(root, options = {}) {
   host = await boot(
     root,
     adapter,
-    (ctx, binding, current) => {
+    async (ctx, binding, current) => {
       const context = host.service.reviewContext(current);
       actors.set(context?.review.principal.reviewerRef.id ?? 'author', scopeOf(ctx));
-      return context
+      const registered = context
         ? review.registerNativeReviewTools(ctx, binding, current)
         : { context: 'Author fixture context only.', toolAllowlist: [] };
+      if (!context || !options.isolatedSkill) return registered;
+      // Use the same official isolated Skill registry and binding as resource
+      // composition. Only the selected body/source is a synthetic fixture.
+      const isolated = ctx.isolate('skills');
+      await isolated.plugin(Skills);
+      const skills = isolated.get('skills');
+      skills.register({
+        name: 'selected-review',
+        description: 'Read the fixed target before completing the review.',
+        content: 'SELECTED_ORIGINAL_SKILL_BODY',
+        source: 'synthetic-review-test',
+        resourceBase: { kind: 'opaque', description: 'No filesystem access.' },
+      });
+      ToolSkill.bindSkillRegistry(ctx, skills);
+      await isolated.plugin(ToolSkill);
+      return { ...registered, toolAllowlist: ['skill', ...registered.toolAllowlist] };
     },
     {},
     ports,
   );
+  if (options.isolatedSkill) {
+    await host.ctx.plugin(FsLocal, { cwd: root });
+    await host.ctx.plugin(WorkingDirectory, { defaultDirectory: root });
+  }
   const owner = createNativeFixedResultIssuer(
     host.ctx,
     host.service,
