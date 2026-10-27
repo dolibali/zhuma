@@ -23,6 +23,7 @@ try {
   const temporaryProof = join(runtime, 'proof.json');
   const clientFileProof = join(runtime, 'client-files-proof.json');
   const teamCatalogProof = join(runtime, 'team-catalog-proof.json');
+  const firstSetupProof = join(runtime, 'first-setup-proof.json');
   const child = spawn(
     process.execPath,
     [
@@ -30,6 +31,7 @@ try {
       'packages/dsh-adapter/tests/s1a-host.test.mjs',
       'packages/dsh-adapter/tests/member-file-client-host.test.mjs',
       'packages/dsh-adapter/tests/host-team-catalog.test.mjs',
+      'packages/dsh-adapter/tests/host-first-setup.test.mjs',
     ],
     {
       cwd: root,
@@ -40,6 +42,7 @@ try {
         S1A_PROOF_FILE: temporaryProof,
         S1A_CLIENT_FILE_PROOF_FILE: clientFileProof,
         S1A_TEAM_CATALOG_PROOF_FILE: teamCatalogProof,
+        S1A_FIRST_SETUP_PROOF_FILE: firstSetupProof,
       },
     },
   );
@@ -65,7 +68,10 @@ try {
           '--',
           'packages',
           'scripts/workbench',
+          'scripts/lib/team-starter-packages.mjs',
           'distribution/workbench',
+          'patches/deepseek-harness',
+          'resources/experts/starter-pack',
           'package.json',
           'pnpm-lock.yaml',
         ],
@@ -101,8 +107,20 @@ try {
     )
       throw Error('Incomplete or crossed team catalog Host proof');
     proof.teamCatalog = teamCatalog;
+    const firstSetup = JSON.parse(await readFile(firstSetupProof, 'utf8'));
+    if (
+      firstSetup.cases.length !== 2 ||
+      firstSetup.cases.some(
+        (entry) =>
+          !entry.passed ||
+          entry.sourceHead !== proof.sourceHead ||
+          entry.hostSha256 !== proof.artifact['index.js'],
+      )
+    )
+      throw Error('Incomplete or crossed normal first-setup Host proof');
+    proof.firstSetup = firstSetup;
     proof.scope =
-      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream and public team catalog member creation/confirmation/cold reopen; a private temporary SDK package link; no installed-desktop or model-quality claim.';
+      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream, public team catalog member creation/confirmation/cold reopen, and normal first setup/catalog-prefix crash with explicit same-context recovery; a private temporary SDK package link; no installed-desktop or model-quality claim.';
     if (process.env.S1A_PROOF_FILE) {
       const target = resolve(process.env.S1A_PROOF_FILE);
       await mkdir(dirname(target), { recursive: true });
@@ -116,6 +134,7 @@ try {
         realServiceCases: proof.cases.length,
         clientFileHostCase: proof.clientFiles.passed,
         teamCatalogHostCase: proof.teamCatalog.passed,
+        firstSetupHostCases: proof.firstSetup.cases.length,
       }),
     );
   }

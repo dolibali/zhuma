@@ -44,4 +44,4 @@ Host 使用原 `previewResourcePackage`、导入命令、WorkbenchService 串行
 
 `pnpm test:host` 另用完全相同的 emitted Host、真实 DSH Connection／身份／空间／JSON 存储及两个独立进程：从没有任务及确认计划开始，经正常成员 HTTP 创建项目、任务、选择专家并确认，再冷开保留同一依赖版本。身份与空间初始数据为临时合成 bootstrap，不读取真实用户资料；无预置确认计划、无模型生成、无原生执行或 GUI 验收声明。
 
-此配置是首次初始化的受控接缝。正常用户首次建账号、创建团队、显式启用基础包及失败后恢复仍需消费原身份／目录初始化接口后接入，不能以手改配置或 bootstrap 测试宣称首次使用闭环完成。
+此配置是受控 Host 接缝。正常首次使用由 [本机首次成员设置](local-member-setup.md) 消费原身份／目录初始化和同一目录，不要求用户手改配置；该入口的实际 Host／GUI／发行证据分别验证，不能以 bootstrap 测试宣称完整产品验收。

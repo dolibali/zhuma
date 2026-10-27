@@ -102,7 +102,7 @@ function planningModel(ctx: Context): PlanningModel | undefined {
 
 export interface OpenedWorkbench {
   openTeamCatalog(
-    options: Pick<Parameters<typeof openHostTeamCatalog>[0], 'grants' | 'directory'>,
+    options: Pick<Parameters<typeof openHostTeamCatalog>[0], 'grants' | 'directory' | 'initialize'>,
   ): ReturnType<typeof openHostTeamCatalog>;
   createRunSkillPolicies(
     execution: Parameters<typeof createHostRunSkillPolicies>[0]['execution'],
