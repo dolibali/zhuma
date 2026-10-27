@@ -1911,7 +1911,11 @@ export class ExecutionService {
         attempt,
         composition,
         scope: attempt.scope,
-        selection: executionReviewCompositionRequest(composition).selection,
+        // This same resolve already fully validated and froze the composition.
+        selection: Object.freeze({
+          ...composition.payload.model,
+          configurationId: composition.configurationId,
+        }),
       };
     };
     this.reviewDriveAuthorities ??= new ExecutionReviewDriveAuthorities({
