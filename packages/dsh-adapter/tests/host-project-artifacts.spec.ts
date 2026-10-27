@@ -38,7 +38,6 @@ test(
     const submitted = checked(
       await h.rpc('exec', 'submit', {
         ...h.locator,
-        spaceId: 'north',
         expectedVersion: h.row().command.version,
         idempotencyKey: randomUUID(),
         text: privateText,
