@@ -132,7 +132,7 @@ test(
         },
       ],
     });
-    checked(await start(h, 2));
+    const started = checked(await start(h, 2));
     await waitFor(
       h.ctx,
       () =>
@@ -143,6 +143,18 @@ test(
     assert.equal(row(h, 'join').command.status, 'blocked');
     assert.equal(run(h, 'join'), undefined);
     assert.equal(run(h, 'human'), undefined);
+    checked(await h.rpc('workflow', 'stop', control(h, started)));
+    const paused = checked(await h.rpc('workflow', 'read', h.workflowLocation));
+    assert.equal(paused.state, 'paused');
+    const resumed = checked(
+      await h.rpc('workflow', 'resume', {
+        ...control(h, paused),
+        requestId: 'resume-workflow',
+        expectedVersion: paused.intent.version,
+      }),
+    );
+    assert.equal(resumed.intent.generation, 2);
+    assert.equal(adapter.requests.length, 2, 'Resume must not restart the completed branches');
     const first = row(h, 'first');
     const round = first.rounds.at(-1);
     checked(
@@ -158,6 +170,11 @@ test(
     );
     await waitFor(h.ctx, () => row(h, 'join').command.status === 'completed');
     assert.equal(adapter.requests.length, 3);
+    assert.equal(
+      run(h, 'join').attempt.generation,
+      1,
+      'Native generation is distinct from workflow generation',
+    );
     assert.equal(row(h, 'join').handoff.inputRefs.length, 2);
     assert.equal(run(h, 'human'), undefined);
     assert.equal(row(h, 'human').command.status, 'ready');
