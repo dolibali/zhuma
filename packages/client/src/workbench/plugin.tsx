@@ -23,8 +23,6 @@ import { ExecutionError } from '../execution/ExecutionApi.js';
 export const inject = ['slots', 'layout', 'connection', 'theme'];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
   const boot = (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: unknown }).__ZHUMA_WORKBENCH_BOOT__;
-  // Compatibility with existing legacy deployments which predate this presentation DTO.
-  if (boot === undefined) return 'legacy-single-user';
   if (
     typeof boot === 'object' &&
     boot !== null &&

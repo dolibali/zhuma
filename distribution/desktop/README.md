@@ -1,6 +1,14 @@
 # Zhuma macOS Desktop 发行指南
 
-Zhuma 使用固定的官方 DSH Electron 实现。所有产品改动保存在 `patches/deepseek-harness/zhuma-desktop.patch`；构建脚本在 `.build/desktop/deepseek-harness/` 创建一次性的 DSH Git worktree，**不修改** `upstream/deepseek-harness/` 的已固定代码。
+Zhuma 使用固定的官方 DSH Electron 实现，自有工作台通过插件预装，必要的上游改动保存在 `patches/deepseek-harness/zhuma-desktop.patch`。构建脚本在 `.build/desktop/deepseek-harness/` 创建一次性的 DSH Git worktree，**不修改** `upstream/deepseek-harness/` 的已固定代码。
+
+## 安装与首发边界
+
+目标产品版本为 `1.0.0`，计划 tag 为 `v1.0.0`；工程包、Draft PR 或候选资产不等于正式 Release。当前已有候选构建集中于 **macOS arm64（Apple Silicon）**，使用 ad-hoc 临时签名、未公证，不认证 Intel Mac、Windows 或 Linux。Developer ID 签名、公证和自动更新尚未提供；正式 v1.0.0 的支持平台、安装限制、签名状态与必要验收按最终发行说明核对。
+
+安装时打开已核对来源的候选 DMG，将 Zhuma 拖入 Applications 后运行。正常首次账号／团队、模型与交付入口见[工作台正常操作](../workbench/README.md#正常操作)。已有 profile 不因安装新包而自动迁移或更改部署模式。
+
+源码／服务契约、历史安装操作与最终候选验收分别留证。最新候选的正常界面、真实模型＋Skill、独立 Agent 评审、下游及安装／恢复尚须完成对应实际验证；实时结果见 [#25](https://github.com/dolibali/zhuma/issues/25)，不从构建成功或既往记录推定全链路通过。首发后置范围见 [v1.0.0 说明](../../docs/release-v1.0.md)。
 
 ## 前置条件
 
@@ -12,13 +20,13 @@ Zhuma 使用固定的官方 DSH Electron 实现。所有产品改动保存在 `p
 cd /path/to/zhuma  # 替换为实际仓库路径
 pnpm desktop:prepare             # 创建隔离工作树，应用补丁与品牌图标
 pnpm desktop:dev                 # 首次构建上游 Host/Client、启动 Electron 和 DevTools
-pnpm desktop:package:mac         # 创建 macOS arm64 未签名发行版（DMG）
+pnpm desktop:package:mac         # 创建 macOS arm64 工程候选 DMG
 pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签名和 DMG
 ```
 
 桌面预览开发应用位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/development/Zhuma Dev.app`，Renderer CDP 默认 `127.0.0.1:9222`，Main/Host 分别为 `9229`/`9230`。切换 DevTools 使用 `Command + Option + I`。
 
-未签名 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**，方便直接双击安装。此为开发者测试发行；正式分发仍需独立 Apple Developer ID 签名、公证、更新服务和安全验收。勿将其称为已签名正式发行。
+候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；当前验收候选采用 ad-hoc 临时签名、未公证。此为开发者测试包，正式发行状态以最终 v1.0.0 说明为准。
 
 ## 本地优先，登录策略与数据隔离
 
@@ -26,7 +34,7 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 成员模式的原生HTTP登录运输使用壳内单槽载体，复用现有Host签发／校验与执行权限；所有Set-Cookie仍不回renderer。窗口重载可恢复同一Host会话，整App／Host换代需重新登录，业务数据仍由原持久存储恢复。格式、路径、来源、退出与迟到回执边界见[桌面成员运输契约](../../docs/contracts/desktop-member-cookie.md)；实现／契约测试不等于原生安装版验收。
 
-Zhuma 桌面冷启动直接进入本地工作台，不再强制弹出 DeepSeek 账号登录/欢迎界面。此修改发生在 Electron 壳的窗口选择逻辑，不伪造服务器账号状态、不修改模型服务身份验证、不自动填入或上传 API Key。用户如需调用在线模型，应在模型设置中自行配置有效的供应商凭据。
+Zhuma 桌面不强制弹出 DeepSeek 平台账号登录／欢迎界面；成员模式仍通过本机首次设置或成员登录进入工作台。此修改发生在 Electron 壳的窗口选择逻辑，不伪造服务器账号状态、不修改模型服务身份验证、不自动填入或上传 API Key。用户如需调用在线模型，应在模型设置中自行配置有效的供应商凭据。
 
 使用 `Zhuma` 应用名称和独立的 App ID `dev.zhuma.app`、`zhuma://` URL 协议；`DSH_HOME` 默认隔离在 Zhuma userData 下，避免与另一个 DSH 桌面安装共用工作区。开发版使用上游开发器自己的隔离目录。升级、遥测、登录回调、CLI 命令安装均不应沿用上游官方发布基础设施而未经评审启用。
 
