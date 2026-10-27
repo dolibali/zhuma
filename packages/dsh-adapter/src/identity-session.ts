@@ -46,7 +46,13 @@ import {
   resolveMember,
   type IdentityExecutionOptions,
 } from './member-session.js';
-import { spaceDirectoryFor, type SpaceDirectory } from './space-directory.js';
+import {
+  spaceDirectoryFor,
+  readSpaceDirectoryInitialization,
+  spaceDirectoryInitializationFingerprint,
+  type SpaceDirectory,
+  type SpaceDirectoryImport,
+} from './space-directory.js';
 
 const PREFIX = '/zhuma-id';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -68,6 +74,46 @@ const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_KEYLEN = 32;
 const VERIFIER_PATTERN = /^scrypt\$16384\$8\$1\$([0-9a-f]{32})\$([0-9a-f]{64})$/;
+const SETUP_CONTEXT_BYTES = 16 * 1024;
+const setupId = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(/^[\w-]+$/u);
+const SetupContextSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    teamCatalog: z
+      .array(
+        z.strictObject({
+          spaceId: setupId,
+          packs: z
+            .array(
+              z.strictObject({
+                id: setupId,
+                version: z
+                  .string()
+                  .min(1)
+                  .max(100)
+                  .regex(/^[\w.+-]+$/u),
+              }),
+            )
+            .min(1)
+            .max(100),
+        }),
+      )
+      .max(100),
+  })
+  .superRefine((value, context) => {
+    if (
+      new Set(value.teamCatalog.map((item) => item.spaceId)).size !== value.teamCatalog.length ||
+      value.teamCatalog.some(
+        (item) => new Set(item.packs.map((pack) => pack.id)).size !== item.packs.length,
+      )
+    )
+      context.addIssue({ code: 'custom', message: 'Duplicate setup catalog selection.' });
+  });
+export type IdentitySetupContext = z.infer<typeof SetupContextSchema>;
 
 const AccountSchema = z.object({
   id: z.string().min(1),
@@ -94,6 +140,25 @@ const GlobalSchema = z.object({
       requestId: z.string().min(1).max(100),
       fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
       phase: z.enum(['writing', 'complete']),
+      setup: z
+        .object({
+          accountId: z.string().min(1).max(64),
+          setupFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+          directoryFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+          setupContext: SetupContextSchema.optional(),
+          /** Private recovery verifier. Removed from the intent after completion. */
+          passwordHash: z.string().regex(VERIFIER_PATTERN).optional(),
+        })
+        .optional(),
+    })
+    .superRefine((value, context) => {
+      if (
+        value.setup &&
+        (value.phase === 'writing'
+          ? value.setup.passwordHash === undefined
+          : value.setup.passwordHash !== undefined)
+      )
+        context.addIssue({ code: 'custom', message: 'Invalid private setup recovery intent.' });
     })
     .optional(),
 });
@@ -138,6 +203,9 @@ export class IdentityInitializationError extends Error {
 export interface IdentityInitializationHandle {
   readonly signal: AbortSignal;
   status(): IdentityInitializationStatus;
+  /** Original Host publisher only. A detached non-secret choice, never member
+   * authority. Pending/unknown setup cannot activate a catalog on cold open. */
+  readSetup(): IdentitySetupSnapshot | undefined;
   initialize(input: {
     readonly requestId: string;
     readonly imported: IdentityImport;
@@ -145,9 +213,39 @@ export interface IdentityInitializationHandle {
     | { readonly kind: 'initialized'; readonly requestId: string }
     | { readonly kind: 'already-configured' }
   >;
+  /** Host control plane only. The raw password never enters a status/receipt. */
+  initializeAccount(input: {
+    readonly requestId: string;
+    readonly accountId: string;
+    readonly password: string;
+    readonly directory: SpaceDirectoryImport;
+    /** Exact directory/catalog plan pin from A's original trusted producer. */
+    readonly setupFingerprint: string;
+    readonly setupContext: IdentitySetupContext;
+  }): Promise<
+    | { readonly kind: 'initialized'; readonly requestId: string }
+    | { readonly kind: 'already-configured' }
+  >;
+}
+export interface IdentitySetupPreparation {
+  readonly requestId: string;
+  readonly fingerprint: string;
+  readonly accountIds: readonly string[];
+  readonly directoryFingerprint: string;
+  readonly setupFingerprint: string;
+  readonly setupContext: IdentitySetupContext;
+  readonly signal: AbortSignal;
+}
+export interface IdentitySetupSnapshot {
+  readonly requestId: string;
+  readonly setupFingerprint: string;
+  readonly setupContext: IdentitySetupContext;
 }
 export interface IdentityInitializationOptions {
   publish(handle: IdentityInitializationHandle): () => void;
+  /** Original Host producer must establish and verify the exact public catalog
+   * plan. A Client ready flag or mere configuration string is not this source. */
+  beforeComplete?(input: IdentitySetupPreparation): undefined | Promise<undefined>;
 }
 
 const identityInitialState: z.infer<typeof GlobalSchema> = {
@@ -480,8 +578,20 @@ function readImport(value: unknown): IdentityImport | undefined {
   return imported;
 }
 
-function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
+function createIdentityInitialization(
+  ctx: Context,
+  domain: IdentityDomain,
+  options?: IdentityInitializationOptions,
+) {
   const lifetime = new AbortController();
+  const beforeComplete = options?.beforeComplete;
+  type SetupIntent = NonNullable<
+    NonNullable<z.infer<typeof GlobalSchema>['initialization']>['setup']
+  >;
+  interface SetupPlan {
+    readonly directory: SpaceDirectoryImport;
+    readonly intent: SetupIntent;
+  }
   let tail: Promise<void> = Promise.resolve();
   let pending = 0;
   const fail = (code: IdentityInitializationError['code']): never => {
@@ -507,7 +617,30 @@ function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
       return { kind: 'recovery-required' };
     return { kind: 'unconfigured' };
   }
-  function fingerprint(imported: IdentityImport) {
+  function readContext(raw: unknown): IdentitySetupContext {
+    const value = SetupContextSchema.parse(raw);
+    value.teamCatalog.sort((a, b) => a.spaceId.localeCompare(b.spaceId, 'en'));
+    for (const grant of value.teamCatalog)
+      grant.packs.sort((a, b) => a.id.localeCompare(b.id, 'en'));
+    const canonical = canonicalPayload(value);
+    if (Buffer.byteLength(canonical) > SETUP_CONTEXT_BYTES) return fail('invalid-input');
+    return JSON.parse(canonical);
+  }
+  function readSetup(): IdentitySetupSnapshot | undefined {
+    active();
+    const global = domain.global.get(),
+      marker = global.initialization,
+      setup = marker?.setup;
+    if (!setup) return undefined;
+    if (!setup.setupContext || !marker || global.importComplete !== (marker.phase === 'complete'))
+      return fail('recovery-required');
+    return {
+      requestId: marker.requestId,
+      setupFingerprint: setup.setupFingerprint,
+      setupContext: readContext(setup.setupContext),
+    };
+  }
+  function fingerprint(imported: IdentityImport, setup?: SetupPlan) {
     const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     return createHash('sha256')
       .update(
@@ -517,13 +650,33 @@ function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
           notes: [...(imported.notes ?? [])]
             .map((note) => ({ ...note, teamMemberIds: [...note.teamMemberIds].sort() }))
             .sort(byId),
+          ...(setup
+            ? {
+                directoryFingerprint: setup.intent.directoryFingerprint,
+                setupFingerprint: setup.intent.setupFingerprint,
+                setupContext: setup.intent.setupContext,
+              }
+            : {}),
         }),
       )
       .digest('hex');
   }
-  async function perform(requestId: string, imported: IdentityImport) {
+  function setupDirectory(setup: SetupPlan) {
+    const directory = spaceDirectoryFor(ctx);
+    if (!directory || directory.signal.aborted || typeof beforeComplete !== 'function')
+      return fail('unavailable');
+    const state = directory.initializationStatus();
+    if (state.kind === 'recovery-required') return fail('recovery-required');
+    if (
+      (state.kind === 'pending' || state.kind === 'configured') &&
+      state.fingerprint !== setup.intent.directoryFingerprint
+    )
+      return fail('conflict');
+    return directory;
+  }
+  async function perform(requestId: string, imported: IdentityImport, setup?: SetupPlan) {
     active();
-    const seed = fingerprint(imported);
+    const seed = fingerprint(imported, setup);
     const global = domain.global.get();
     const marker = global.initialization;
     if (marker?.requestId === requestId && marker.fingerprint !== seed) fail('conflict');
@@ -554,6 +707,7 @@ function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
       requestId,
       fingerprint: seed,
       phase: 'writing' as const,
+      ...(setup ? { setup: setup.intent } : {}),
     };
     if (!marker) {
       await domain.global.set({ ...global, initialization: writing });
@@ -569,19 +723,50 @@ function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
       if (!domain.table('notes').get(note.id)) await domain.table('notes').put(note.id, note);
     }
     active();
+    if (setup) {
+      const directory = setupDirectory(setup);
+      const receipt = await directory.initializeImport(setup.directory);
+      active();
+      if (receipt.fingerprint !== setup.intent.directoryFingerprint) fail('conflict');
+      const result: unknown = await beforeComplete!({
+        requestId,
+        fingerprint: seed,
+        accountIds: imported.accounts.map((account) => account.id).sort(),
+        directoryFingerprint: setup.intent.directoryFingerprint,
+        setupFingerprint: setup.intent.setupFingerprint,
+        setupContext: readSetup()!.setupContext,
+        signal: lifetime.signal,
+      });
+      active();
+      if (result !== undefined || spaceDirectoryFor(ctx) !== directory) fail('unavailable');
+      // The asynchronous catalog producer cannot hide a concurrent revocation
+      // or directory replacement. A completed import never restores missing rows.
+      await directory.initializeImport(setup.directory);
+      active();
+    }
+    const completedSetup = setup && {
+      accountId: setup.intent.accountId,
+      setupFingerprint: setup.intent.setupFingerprint,
+      directoryFingerprint: setup.intent.directoryFingerprint,
+      setupContext: setup.intent.setupContext,
+    };
     await domain.global.set({
       ownerAccountId: imported.ownerAccountId ?? '',
       importComplete: true,
-      initialization: { ...writing, phase: 'complete' },
+      initialization: {
+        ...writing,
+        phase: 'complete',
+        ...(completedSetup ? { setup: completedSetup } : {}),
+      },
     });
     active();
     return { kind: 'initialized' as const, requestId };
   }
-  function enqueue(requestId: string, imported: IdentityImport) {
+  function enqueue<T>(perform: () => Promise<T>): Promise<T> {
     active();
     if (pending >= 8) fail('unavailable');
     pending++;
-    const work = tail.then(() => perform(requestId, imported));
+    const work = tail.then(perform);
     tail = work
       .then(
         () => undefined,
@@ -601,6 +786,14 @@ function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
         return fail('unavailable');
       }
     },
+    readSetup() {
+      try {
+        return readSetup();
+      } catch (error) {
+        if (error instanceof IdentityInitializationError) throw error;
+        return fail('unavailable');
+      }
+    },
     async initialize(input) {
       let admitted = false;
       try {
@@ -615,7 +808,83 @@ function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
         )
           throw new IdentityInitializationError('invalid-input');
         admitted = true;
-        return await enqueue(parsed.requestId, imported);
+        return await enqueue(() => perform(parsed.requestId, imported));
+      } catch (error) {
+        if (error instanceof IdentityInitializationError) throw error;
+        return fail(admitted ? 'unavailable' : 'invalid-input');
+      }
+    },
+    async initializeAccount(input) {
+      let admitted = false;
+      try {
+        const parsed = z
+          .strictObject({
+            requestId: z.string().min(1).max(100),
+            accountId: z
+              .string()
+              .min(1)
+              .max(64)
+              .regex(/^[\w-]+$/u),
+            password: z.string().min(8).max(200),
+            directory: z.unknown(),
+            setupFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+            setupContext: SetupContextSchema,
+          })
+          .parse(input);
+        const directory = readSpaceDirectoryInitialization(parsed.directory);
+        const setupContext = readContext(parsed.setupContext);
+        if (
+          Buffer.byteLength(JSON.stringify(parsed)) > MAX_BODY_BYTES ||
+          !directory.spaces.length ||
+          !directory.memberships?.length ||
+          directory.memberships.some((member) => member.accountId !== parsed.accountId)
+        )
+          return fail('invalid-input');
+        const directoryFingerprint = spaceDirectoryInitializationFingerprint(directory);
+        admitted = true;
+        return await enqueue(async () => {
+          active();
+          const global = domain.global.get(),
+            marker = global.initialization;
+          if (global.importComplete && !marker?.setup)
+            return { kind: 'already-configured' as const };
+          if (
+            marker &&
+            (marker.requestId !== parsed.requestId ||
+              !marker.setup ||
+              marker.setup.accountId !== parsed.accountId ||
+              marker.setup.setupFingerprint !== parsed.setupFingerprint ||
+              !marker.setup.setupContext ||
+              canonicalPayload(marker.setup.setupContext) !== canonicalPayload(setupContext) ||
+              marker.setup.directoryFingerprint !== directoryFingerprint)
+          )
+            return fail('conflict');
+          if (status().kind === 'recovery-required') return fail('recovery-required');
+          const intent: SetupIntent = {
+            accountId: parsed.accountId,
+            setupFingerprint: parsed.setupFingerprint,
+            directoryFingerprint,
+            setupContext,
+          };
+          const plan: SetupPlan = { directory, intent };
+          setupDirectory(plan);
+          if (marker) {
+            const stored =
+              marker.phase === 'writing'
+                ? marker.setup?.passwordHash
+                : domain.table('accounts').get(parsed.accountId)?.passwordHash;
+            if (!stored) return fail('recovery-required');
+            if (!(await identityInitializationPasswordMatches(stored, parsed.password)))
+              return fail('conflict');
+            intent.passwordHash = stored;
+          } else intent.passwordHash = await hashIdentityInitializationPassword(parsed.password);
+          active();
+          return perform(
+            parsed.requestId,
+            { accounts: [{ id: parsed.accountId, passwordHash: intent.passwordHash }] },
+            plan,
+          );
+        });
       } catch (error) {
         if (error instanceof IdentityInitializationError) throw error;
         return fail(admitted ? 'unavailable' : 'invalid-input');
@@ -626,7 +895,7 @@ function createIdentityInitialization(ctx: Context, domain: IdentityDomain) {
     handle,
     async bootstrap(imported: IdentityImport | undefined) {
       if (imported && !domain.global.get().importComplete)
-        await enqueue('bootstrap-import', imported);
+        await enqueue(() => perform('bootstrap-import', imported));
     },
     async close() {
       lifetime.abort();
@@ -975,7 +1244,7 @@ export async function applyIdentity(
     throw new Error('identity startup refused: deployment mode is not configured');
   }
   const domain = await ctx.storageDomain.open(identityDomainSpec);
-  const initializer = createIdentityInitialization(ctx, domain);
+  const initializer = createIdentityInitialization(ctx, domain, initialization);
   const attempts = createLoginFailureTable();
   try {
     const { credentials, webServer, remoteAccess } = seams(ctx);
