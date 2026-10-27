@@ -27,6 +27,8 @@ import {
   assertExecutionRunStoreCompatibility,
 } from '../dist/execution-run-protocol.js';
 import { readExecutionReviewState } from '../dist/execution-review-state.js';
+import { freezeExecutionReviewComposition } from '../dist/execution-review-composition.js';
+import { reviewDescriptors } from './execution-review-composition-fixture.mjs';
 
 // Product Service/original DSH JSON and queue. Member/config/native inputs are
 // explicit contracts; no real login, native review or model is exercised. Only
@@ -161,6 +163,109 @@ async function body(h, patch = {}) {
     ...patch,
   };
 }
+
+test('review Service: current preparation facts reserve no state and match the later exact configured reservation', async (t) => {
+  const h = await host(t),
+    request = await body(h);
+  const { configurationId: _configuration, ...query } = request;
+  const before = await businessHashes(h.root);
+  const candidate = checked(await h.service.readExpertReviewPreparation(h.request, query));
+  assert.equal(candidate.node.nodeId, 'produce');
+  assert.equal(candidate.scope.review.principal.reviewerRef.id, 'qa');
+  assert.equal(candidate.scope.actorId, 'chen');
+  assert.equal(candidate.applied.id, request.target.planId);
+  assert.equal(h.read().nativeExecution, undefined);
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  const composition = freezeExecutionReviewComposition({
+    ...candidate,
+    model: { provider: 'contract', model: 'review-contract', maxTokens: 1000 },
+    tools: {
+      readTarget: reviewDescriptors.readTarget,
+      completeReview: reviewDescriptors.completeReview,
+    },
+  });
+  const prepared = checked(
+    await h.service.prepareExpertReview(h.request, {
+      ...query,
+      configurationId: composition.configurationId,
+    }),
+  );
+  assert.deepEqual(prepared.attempt.scope, candidate.scope);
+  assert.equal(prepared.attempt.configurationId, composition.configurationId);
+  const committed = await businessHashes(h.root);
+  h.resetCounts();
+  const replay = checked(await h.service.readExpertReviewPreparation(h.request, query));
+  assert.deepEqual(replay.scope, prepared.attempt.scope);
+  replay.applied.participants[0].name = 'Changed clone';
+  replay.node.command.status = 'complete';
+  assert.deepEqual(await businessHashes(h.root), committed);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  assert.equal(h.read().command.status, 'in-review');
+  assert.equal(h.read().rounds[0].ballots.length, 0);
+});
+
+test('review Service: passive configuration preparation retains true controller, identity and exact-target refusal', async (t) => {
+  const h = await host(t),
+    request = await body(h);
+  const { configurationId: _configuration, ...query } = request;
+  const before = await businessHashes(h.root);
+  refused(
+    await h.service.readExpertReviewPreparation(h.request, { ...query, actorId: 'chen' }),
+    'actor-from-body',
+  );
+  refused(
+    await h.service.readExpertReviewPreparation(h.request, {
+      ...query,
+      target: { ...query.target, roundId: 'stale' },
+    }),
+    'review-target-stale',
+  );
+  refused(
+    await h.service.readExpertReviewPreparation({ memberId: 'chen' }, query),
+    'run-authority-denied',
+  );
+  refused(
+    await h.service.readExpertReviewPreparation(h.request, {
+      ...query,
+      reviewerRef: { ...query.reviewerRef, id: 'outside' },
+    }),
+    'review-expert-unavailable',
+  );
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+});
+
+test('review Service: a peer reservation invalidates only the uncommitted candidate and requires fresh review CAS before the original put', async (t) => {
+  const h = await host(t),
+    request = await body(h);
+  const { configurationId: _configuration, ...query } = request;
+  const candidate = checked(await h.service.readExpertReviewPreparation(h.request, query));
+  checked(
+    await h.service.prepareExpertReview(h.request, {
+      ...request,
+      requestId: 'peer-first',
+      reviewerRef: { ...request.reviewerRef, id: 'qa-two' },
+    }),
+  );
+  const committed = await businessHashes(h.root);
+  h.resetCounts();
+  refused(
+    await h.service.prepareExpertReview(h.request, {
+      ...request,
+      configurationId: 'stale-candidate',
+    }),
+    'review-conflict',
+  );
+  assert.deepEqual(await businessHashes(h.root), committed);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  const fresh = checked(
+    await h.service.readExpertReviewPreparation(h.request, { ...query, expectedReviewVersion: 1 }),
+  );
+  assert.equal(fresh.scope.generation, candidate.scope.generation + 1);
+  assert.deepEqual(fresh.scope.review, candidate.scope.review);
+  assert.equal(h.read().nativeExecution.review.attempts.length, 1);
+});
 
 test('review Service: discovery is zero-write; original queue persists marker before the first v2 node and never votes', async (t) => {
   const h = await host(t);

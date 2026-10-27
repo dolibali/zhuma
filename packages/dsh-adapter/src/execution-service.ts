@@ -165,6 +165,7 @@ import {
   type ExecutionReviewResource,
   type ExecutionReviewTargetReadLease,
 } from './execution-review-target-reader.js';
+import type { ExecutionReviewPreparation } from './execution-review-composition.js';
 import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import {
   ARTIFACT_FILE_LIMITS,
@@ -311,6 +312,7 @@ const expertReviewPrepareSchema = z.strictObject({
   }),
   configurationId: z.string().trim().min(1).max(200),
 });
+const expertReviewPreparationSchema = expertReviewPrepareSchema.omit({ configurationId: true });
 const settleSchema = z.strictObject({
   ...locate,
   roundId: id,
@@ -1327,6 +1329,37 @@ export class ExecutionService {
     });
   }
 
+  /** Passive Host facts for A's real configuration producer. The candidate scope
+   * has no durable reservation, model selection, grant, or dispatch authority. */
+  readExpertReviewPreparation(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionReviewPreparation>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(expertReviewPreparationSchema, body);
+      if (!parsed.ok) return parsed;
+      return this.withRunMember(
+        original,
+        parsed.value.target,
+        async (host, lease) => {
+          const decision = this.currentExpertReviewPreparation(host, lease, parsed.value);
+          return {
+            ok: true,
+            value: structuredClone({
+              scope: decision.prepared.attempt.scope,
+              applied: decision.applied,
+              node: decision.node,
+            }),
+          };
+        },
+        false,
+        'review',
+      );
+    });
+  }
+
   /** Host-only preparation, not native dispatch or a grant. ConfigurationId is a
    * reservation reference; actual prompt/model/tool configuration is still a later gate. */
   prepareExpertReview(
@@ -1345,41 +1378,7 @@ export class ExecutionService {
         original,
         input.target,
         async (host, lease) => {
-          const prepare = () => {
-            this.requireRunHost();
-            lease.assertCurrent(input.target.spaceId);
-            const node = this.readRunNode(input.target);
-            if (!node) throw new ExecutionRunError('run-authority-denied');
-            this.assertRunNodeAccess(host, lease.memberId, input.target.spaceId, node);
-            this.assertReviewController(lease.memberId, node);
-            if (input.reviewerRef.version !== node.planId)
-              throw new ExecutionReviewError('review-plan-mismatch');
-            const applied = createExecutionHandoff(node, this.workbench.readWorkbench());
-            const live = this.workbench
-              .readWorkbench()
-              .participants.find((p) => p.id === input.reviewerRef.id);
-            if (!live || live.kind !== 'expert' || !live.available)
-              throw new ExecutionReviewError('review-expert-unavailable');
-            const reservation = createHash('sha256')
-              .update(
-                canonicalPayload({
-                  location: input.target,
-                  controllerMemberId: lease.memberId,
-                  requestId: input.requestId,
-                }),
-              )
-              .digest('hex');
-            return prepareExecutionReview(node, applied, {
-              requestId: input.requestId,
-              expectedReviewVersion: input.expectedReviewVersion,
-              target: input.target,
-              reviewerId: input.reviewerRef.id,
-              controllerMemberId: lease.memberId,
-              configurationId: input.configurationId,
-              newRunId: `review-run-${reservation}`,
-              newSegmentId: `review-segment-${reservation}`,
-            });
-          };
+          const prepare = () => this.currentExpertReviewPreparation(host, lease, input).prepared;
           const proposed = prepare();
           if (proposed.disposition === 'replayed')
             return {
@@ -2681,6 +2680,51 @@ export class ExecutionService {
     const task = this.workbench.readWorkbench().tasks.find((item) => item.id === node.taskId);
     if (node.ownerId !== memberId || task?.ownerId !== memberId)
       throw new ExecutionReviewError('review-not-controller');
+  }
+
+  private currentExpertReviewPreparation(
+    host: ExecutionRunHostPorts,
+    lease: ExecutionMemberLease,
+    input: z.infer<typeof expertReviewPreparationSchema> & { readonly configurationId?: string },
+  ) {
+    if (host !== this.requireRunHost()) throw new ExecutionRunError('run-authority-denied');
+    lease.assertCurrent(input.target.spaceId);
+    const node = this.readRunNode(input.target);
+    if (!node) throw new ExecutionRunError('run-authority-denied');
+    this.assertRunNodeAccess(host, lease.memberId, input.target.spaceId, node);
+    this.assertReviewController(lease.memberId, node);
+    if (input.reviewerRef.version !== node.planId)
+      throw new ExecutionReviewError('review-plan-mismatch');
+    const applied = createExecutionHandoff(node, this.workbench.readWorkbench());
+    const live = this.workbench
+      .readWorkbench()
+      .participants.find((p) => p.id === input.reviewerRef.id);
+    if (!live || live.kind !== 'expert' || !live.available)
+      throw new ExecutionReviewError('review-expert-unavailable');
+    const reservation = createHash('sha256')
+      .update(
+        canonicalPayload({
+          location: input.target,
+          controllerMemberId: lease.memberId,
+          requestId: input.requestId,
+        }),
+      )
+      .digest('hex');
+    const state = readExecutionReviewState(node);
+    const receipt = state?.receipts.find((item) => item.requestId === input.requestId);
+    const prior = receipt && state?.attempts.find((item) => item.scope.runId === receipt.runId);
+    const prepared = prepareExecutionReview(node, applied, {
+      requestId: input.requestId,
+      expectedReviewVersion: input.expectedReviewVersion,
+      target: input.target,
+      reviewerId: input.reviewerRef.id,
+      controllerMemberId: lease.memberId,
+      configurationId:
+        input.configurationId ?? (prior ? prior.configurationId : 'review-preparation-only'),
+      newRunId: `review-run-${reservation}`,
+      newSegmentId: `review-segment-${reservation}`,
+    });
+    return { node, applied, prepared };
   }
 
   private async withRunMember<T>(
