@@ -308,14 +308,15 @@ test('native prompt scope: original scoped Skill loader and selected MCP instruc
     projected = executionRunCompositionRequest(snapshot);
   const current = grant(facts.scope),
     source = new AbortController();
-  let released = 0;
+  let released = 0,
+    adopted;
   const adapter = new ScriptedAdapter([
     toolResponse({ name: 'selected-skill' }, 'load-method', 'skill'),
     toolResponse({}, 'read-docs', 'mcp__docs__ping'),
     'Work draft returned.',
   ]);
   const h = await boot(root, adapter, async (ctx, binding, received) => {
-    const adopted = await registerExecutionRunResources(ctx, snapshot, binding, received, {
+    adopted = await registerExecutionRunResources(ctx, snapshot, binding, received, {
       sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
       signal: source.signal,
       assertCurrent(saved, actual, authority) {
@@ -343,7 +344,10 @@ test('native prompt scope: original scoped Skill loader and selected MCP instruc
     await adopted.ready;
     return { context: snapshot.payload.context, toolAllowlist: adopted.toolAllowlist };
   });
-  t.onTestFinished(() => h.close());
+  t.onTestFinished(async () => {
+    await adopted?.dispose();
+    await h.close();
+  });
   await h.ctx.plugin(FsLocal, { cwd: root });
   await h.ctx.plugin(WorkingDirectory, { defaultDirectory: root });
   await h.service.send(current, {
@@ -370,7 +374,8 @@ test('native prompt scope: original scoped Skill loader and selected MCP instruc
   assert(JSON.stringify(adapter.requests[2]).includes('ACTUAL_LOCAL_MCP_RESULT'));
   assert.equal(peer.calls(), 1);
   assert.equal((await h.service.stop(current)).status, 'stopped');
-  assert.equal(released, 1, 'the original scope lifecycle releases the selected MCP lease');
+  await adopted.dispose();
+  assert.equal(released, 1, 'the resource owner drains the original SDK connection lease');
 });
 
 test('native prompt scope: cold resume keeps fixed context and the original stable session without restoring development guidance', async (t) => {
@@ -406,6 +411,16 @@ test('native prompt scope: independent review retains its fixed target and real 
   // cases prove their replacement/preservation against a nonempty deployment.
   const reviewer = h.reviewer('prompt-reviewer'),
     ready = Promise.withResolvers<void>();
+  let published;
+  t.onTestFinished(
+    h.ctx.on(
+      'agent/created',
+      ({ agent }) => {
+        published = agent;
+      },
+      { global: true },
+    ),
+  );
   t.onTestFinished(
     h.review.onReviewReady((actual) => {
       if (actual === reviewer.grant) ready.resolve();
@@ -415,7 +430,9 @@ test('native prompt scope: independent review retains its fixed target and real 
   h.planReview(reviewer);
   await h.start(reviewer);
   await ready.promise;
-  await idle(h, reviewer.grant);
+  assert(published, 'capture the original Agent before accepted review retires its registry entry');
+  assert.equal(published.id, h.service.open(reviewer.grant).binding.nativeSessionId);
+  await published.whenIdle();
   assert.equal(h.adapter.requests.length, 3);
   assert(JSON.stringify(h.adapter.requests[1]).includes('SELECTED_ORIGINAL_SKILL_BODY'));
   assert.equal(h.reads.length, 1, 'the real SDK tool reads the fixed target');
