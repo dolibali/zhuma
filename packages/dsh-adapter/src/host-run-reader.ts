@@ -38,13 +38,16 @@ export type HostRunSendCapabilities = Readonly<
 export type HostRunResultPending = 'draining' | 'not-durable' | 'delivery-unconfirmed';
 export type HostRunResultDelivery =
   | { readonly kind: 'pending'; readonly phase: HostRunResultPending }
-  | {
+  | ({
       readonly kind: 'delivered';
       readonly artifactVersionId: string;
       readonly artifactVersion: number;
       readonly roundId?: string;
       readonly receipt: { readonly idempotencyKey: string; readonly version: number };
-    };
+    } & (
+      | { readonly protocolVersion?: never; readonly manifestDigest?: never }
+      | { readonly protocolVersion: 2; readonly manifestDigest: string }
+    ));
 export interface HostRunReadView extends ExecutionNodeLocator {
   readonly runId: string;
   readonly generation: number;
@@ -363,6 +366,9 @@ export function createHostRunReader(
               intentId: delivered.source.intentId,
               digest: delivered.digest,
               provenanceFingerprint: delivered.provenanceFingerprint,
+              ...(delivered.protocolVersion === 2
+                ? { protocolVersion: 2, manifestDigest: delivered.manifestDigest }
+                : {}),
             },
             wait,
           );
@@ -377,6 +383,9 @@ export function createHostRunReader(
               idempotencyKey: receipt.receipt.idempotencyKey,
               version: receipt.receipt.version,
             },
+            ...(delivered.protocolVersion === 2
+              ? { protocolVersion: 2 as const, manifestDigest: delivered.manifestDigest }
+              : {}),
           };
         } else if (
           current?.binding.resultIntent &&

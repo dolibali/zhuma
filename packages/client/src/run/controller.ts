@@ -82,6 +82,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         models: options.models,
         experts: { kind: 'ready', items: options.experts },
         resources: options.resources,
+        ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
         actions: {
           start: stopping ? stopPending : options.start,
           send: stopping
@@ -291,6 +292,13 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
           !options.experts.some((item) => matches(item.value, next.executor))
         )
           throw Error('Selection changed');
+        const chosenWorkspace = next.workspace;
+        if (
+          chosenWorkspace?.kind === 'unavailable' ||
+          (chosenWorkspace?.kind === 'local' &&
+            !options.workspaces?.some((item) => item.id === chosenWorkspace.id))
+        )
+          throw Error('Workspace changed');
         const content = {
           spaceId: target.spaceId,
           taskId: target.taskId,
@@ -302,8 +310,8 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
           mode: options.start.mode,
           model: next.model,
           executor: next.executor,
-          tools: options.tools,
-          workspace: { kind: 'text-only' as const },
+          tools: chosenWorkspace?.kind === 'local' ? ('local-tools' as const) : options.tools,
+          workspace: chosenWorkspace ?? { kind: 'text-only' as const },
         };
         const saved = key('start', JSON.stringify(['begin', content]));
         const input: NativeRunBegin = {

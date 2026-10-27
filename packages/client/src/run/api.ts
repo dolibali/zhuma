@@ -16,6 +16,7 @@ import type {
   NativeRunInbox,
   NativeRunResultDelivery,
   NativeConversationFrame,
+  NativeRunWorkspaceChoice,
 } from './native-run-contract.js';
 
 export type NativeRunLocator = Pick<NativeRunTarget, 'taskId' | 'planId' | 'revision' | 'nodeId'>;
@@ -30,6 +31,7 @@ export type NativeRunOptions = {
   resources: readonly NativeRunResource[];
   start: NativeRunAction & { mode?: 'begin' | 'retry' | 'restart' };
   tools: 'text-only' | 'accepted-input-reader';
+  workspaces?: readonly NativeRunWorkspaceChoice[];
 };
 export type NativeRunRead = NativeRunSummary & {
   sendCapabilities: Readonly<Record<NativeRunSendMode, NativeRunAction>>;
@@ -44,8 +46,8 @@ export type NativeRunBegin = NativeRunLocator & {
   mode: 'begin' | 'retry' | 'restart';
   model: NativeRunSelection['model'];
   executor: NativeRunSelection['executor'];
-  tools: 'text-only' | 'accepted-input-reader';
-  workspace: { kind: 'text-only' };
+  tools: 'text-only' | 'accepted-input-reader' | 'local-tools';
+  workspace: { kind: 'text-only' } | { kind: 'local'; id: string };
 };
 export interface NativeRunApi {
   inbox?(run: NativeRunSummary, signal: AbortSignal): Promise<NativeRunInbox>;
@@ -120,7 +122,26 @@ function executor(value: unknown): NativeRunSelection['executor'] {
 }
 function selection(value: unknown): NativeRunSelection {
   const row = object(value);
-  return { model: model(row.model), executor: executor(row.executor) };
+  return {
+    model: model(row.model),
+    executor: executor(row.executor),
+    ...(row.workspace === undefined
+      ? {}
+      : {
+          workspace:
+            object(row.workspace).kind === 'unavailable'
+              ? { kind: 'unavailable' as const }
+              : workspace(row.workspace),
+        }),
+  };
+}
+function workspace(value: unknown): NativeRunBegin['workspace'] {
+  const row = object(value);
+  return row.kind === 'text-only'
+    ? { kind: 'text-only' }
+    : row.kind === 'local'
+      ? { kind: 'local', id: string(row.id) }
+      : invalid();
 }
 function locator(value: unknown, expected: NativeRunLocator): NativeRunLocator {
   const row = object(value);
@@ -200,6 +221,19 @@ function optionsView(
           ? { kind: 'unavailable', message: string(start.message, 500) }
           : invalid(),
     tools: oneOf(row.tools, ['text-only', 'accepted-input-reader']),
+    ...(row.workspaces === undefined
+      ? {}
+      : {
+          workspaces: array(row.workspaces, 100).map((raw) => {
+            const item = object(raw);
+            return {
+              id: string(item.id),
+              label: string(item.label),
+              access: oneOf(item.access, ['read', 'write']),
+              publish: boolean(item.publish),
+            };
+          }),
+        }),
   };
 }
 const unavailable: NativeRunAction = { kind: 'unavailable', message: '当前运行暂不支持此操作。' };
@@ -219,6 +253,14 @@ function resultDelivery(value: unknown): NativeRunResultDelivery {
   if (kind === 'pending')
     return { kind, phase: oneOf(row.phase, ['draining', 'not-durable', 'delivery-unconfirmed']) };
   const receipt = object(row.receipt);
+  const protocol =
+    row.protocolVersion === undefined && row.manifestDigest === undefined
+      ? {}
+      : row.protocolVersion === 2 &&
+          typeof row.manifestDigest === 'string' &&
+          /^[a-f0-9]{64}$/u.test(row.manifestDigest)
+        ? { protocolVersion: 2 as const, manifestDigest: row.manifestDigest }
+        : invalid();
   return {
     kind,
     artifactVersionId: string(row.artifactVersionId),
@@ -228,6 +270,7 @@ function resultDelivery(value: unknown): NativeRunResultDelivery {
       idempotencyKey: string(receipt.idempotencyKey),
       version: integer(receipt.version, 1),
     },
+    ...protocol,
   };
 }
 function readView(value: unknown, expected: NativeRunLocator, runId: string): NativeRunRead {
@@ -491,7 +534,7 @@ export function createNativeRunApi(
             model: model(input.model),
             executor: executor(input.executor),
             tools: input.tools,
-            workspace: { kind: 'text-only' },
+            workspace: workspace(input.workspace),
           },
           signal,
         ),

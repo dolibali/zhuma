@@ -28,6 +28,7 @@ import RemoteAccess from '@deepseek-ai/dsh-api-remote-access';
 import * as Host from './zhuma-host-run-plugin.js';
 import { applyWorkbenchCommand, hashPassword, fixture } from './zhuma-host-run-test-data.js';
 import { ScriptedAdapter } from './zhuma-native-work-bundle.ts';
+import { LocalAttachmentStore } from '@deepseek-ai/dsh-attachment-local';
 
 const deferred = () => Promise.withResolvers();
 function checked(response) {
@@ -99,6 +100,13 @@ async function boot(
     [RemoteAccess],
   ])
     await ctx.plugin(plugin, config);
+  // The new Host compatibility phase reopens an existing V1 business receipt
+  // under the real dual-protocol owner. The writer remains the legacy Host.
+  if (
+    process.env.ZHUMA_HOST_COLD_ATTACHMENTS === 'reader' &&
+    process.env.ZHUMA_HOST_COLD_MODE === 'read'
+  )
+    await ctx.plugin(LocalAttachmentStore, { dshHome: root });
   ctx.llm.registerAdapter(['contract'], adapter);
   const originalOpen = ctx.storageDomain.open.bind(ctx.storageDomain);
   ctx.storageDomain.open = async (spec) => {
