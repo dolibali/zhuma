@@ -4,6 +4,7 @@ import { canonicalPayload, type ExecutionNodeRecord } from '@zhuma/agent-core';
 import type { MemberRequest } from './member-session.js';
 import type { BeginRunRequest, ExecutionResult, PlanReceipt } from './execution-service.js';
 import { readExecutionRunState, type ExecutionRun } from './execution-run-state.js';
+import { effectiveWorkflowToolKind } from './execution-workflow-tools.js';
 import {
   ExecutionWorkflowError,
   WORKFLOW_EXECUTION_LIMITS,
@@ -736,7 +737,8 @@ export class ExecutionWorkflowIntents {
       input.mode !== 'begin' ||
       canonicalPayload(model) !== canonicalPayload(intent.defaults.model) ||
       canonicalPayload(input.workspace) !== canonicalPayload(intent.defaults.workspace) ||
-      input.composition.payload.tools.kind !== intent.defaults.tools ||
+      input.composition.payload.tools.kind !==
+        effectiveWorkflowToolKind(intent.defaults.tools, node.handoff.inputRefs) ||
       input.composition.payload.executor.kind !== 'plan-expert' ||
       input.composition.payload.executor.ref.id !== reservation.expertId ||
       input.composition.payload.executor.ref.version !== reservation.expertVersionId
