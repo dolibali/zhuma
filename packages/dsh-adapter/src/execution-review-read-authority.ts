@@ -74,6 +74,12 @@ export class ExecutionReviewReadAuthorities {
   private poisoned = false;
   constructor(private readonly source: ExecutionReviewReadAuthoritySource) {}
 
+  private poison(): void {
+    if (this.poisoned) return;
+    this.poisoned = true;
+    for (const close of [...this.live]) close();
+  }
+
   async open(
     original: MemberRequest,
     locator: ExecutionReviewReadLocator,
@@ -143,14 +149,13 @@ export class ExecutionReviewReadAuthorities {
         try {
           stop?.();
         } catch {
-          this.poisoned = true;
+          this.poison();
         }
         try {
           synchronous(member.release());
         } catch {
-          this.poisoned = true;
+          this.poison();
         }
-        if (this.poisoned) for (const closeOther of [...this.live]) closeOther();
       };
       const close = dispose;
       this.grants.set(grant, { check, dispose: close });
@@ -186,7 +191,7 @@ export class ExecutionReviewReadAuthorities {
         try {
           synchronous(lease?.release());
         } catch {
-          this.poisoned = true;
+          this.poison();
         }
       }
       if (error instanceof ExecutionReviewReadError) throw error;

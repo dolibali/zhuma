@@ -785,3 +785,95 @@ test('real local attachment: cancellation and close wait for the original physic
   await close;
   assert.equal(h.service.fileReadResources.size, 0);
 });
+
+test('review read authority: failed open plus failed lease release immediately aborts every live grant and held physical reader', async (t) => {
+  const h = await host(t, {
+    file: { name: 'held.txt', mediaType: 'text/plain', text: 'HELD fixed review bytes' },
+  });
+  const first = await readAuthority(h),
+    second = checked(await h.service.openExpertReviewRead(h.request, first.locator));
+  const entered = Promise.withResolvers(),
+    unblock = Promise.withResolvers();
+  t.after(() => {
+    unblock.resolve();
+    first.dispose();
+    second.dispose();
+  });
+  const original = h.attachments.readFileStream.bind(h.attachments);
+  let physicalSignal;
+  h.attachments.readFileStream = async function* (...args) {
+    physicalSignal = args[1];
+    entered.resolve();
+    await unblock.promise;
+    yield* original(...args);
+  };
+  const file = h.service.listExpertReviewResources(first.grant).find((r) => r.kind === 'file');
+  const reading = h.service.readExpertReviewResource(
+    first.grant,
+    { resourceRef: file.resourceRef, offset: 0, length: 4 },
+    new AbortController().signal,
+  );
+  const rejected = assert.rejects(reading);
+  await entered.promise;
+  const before = await businessHashes(h.root);
+  h.resetCounts();
+  const other = Object.freeze({ headers: {} });
+  h.members.set(other, 'outside');
+  try {
+    h.faults.release = true;
+    refused(await h.service.openExpertReviewRead(other, first.locator), 'review-authority-denied');
+    assert.equal(first.grant.signal.aborted, true, 'no follow-up assertion is needed');
+    assert.equal(second.grant.signal.aborted, true);
+    assert.equal(physicalSignal.aborted, true);
+    assert.equal(
+      h.service.fileReadResources.size,
+      1,
+      'actual pending IO retains its physical slot',
+    );
+    assert.deepEqual(await businessHashes(h.root), before);
+    assert.deepEqual(h.counters, { nodes: 0, plans: 0, global: 0 });
+    h.faults.release = false;
+    refused(
+      await h.service.openExpertReviewRead(h.request, first.locator),
+      'review-authority-denied',
+    );
+  } finally {
+    h.faults.release = false;
+    unblock.resolve();
+  }
+  await rejected;
+  assert.equal(h.service.fileReadResources.size, 0);
+});
+
+test('review read authority: pending opens cannot mint grants after the owner is poisoned', async (t) => {
+  const h = await host(t),
+    owned = await readAuthority(h);
+  const entered = Promise.withResolvers(),
+    unblock = Promise.withResolvers();
+  t.after(() => {
+    unblock.resolve();
+    owned.dispose();
+  });
+  const original = h.service.runHost.memberLease.bind(h.service.runHost);
+  const pendingRequest = Object.freeze({ headers: {} });
+  h.members.set(pendingRequest, 'chen');
+  h.service.runHost.memberLease = async (request) => {
+    if (request === pendingRequest) {
+      entered.resolve();
+      await unblock.promise;
+    }
+    return original(request);
+  };
+  const before = await businessHashes(h.root);
+  h.resetCounts();
+  const pending = h.service.openExpertReviewRead(pendingRequest, owned.locator);
+  await entered.promise;
+  h.faults.release = true;
+  owned.dispose();
+  assert.equal(owned.grant.signal.aborted, true);
+  h.faults.release = false;
+  unblock.resolve();
+  refused(await pending, 'review-authority-denied');
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.deepEqual(h.counters, { nodes: 0, plans: 0, global: 0 });
+});
