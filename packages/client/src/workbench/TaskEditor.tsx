@@ -35,6 +35,7 @@ import { WorkflowControls } from '../workflow/WorkflowControls.js';
 import type { WorkflowView } from '../workflow/api.js';
 import { latestTaskPlan, type TaskProgressState } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { expertResources, prepareExpertProposal } from './expert-resources.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -149,6 +150,8 @@ export function TaskEditor({
   const [planFailed, setPlanFailed] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [proposal, setProposal] = useState<PlanProposal | null>(null);
+  const planningCatalog = useRef({ task, members: state.participants, assets: state.assets });
+  planningCatalog.current = { task, members: state.participants, assets: state.assets };
   const [adjustmentScope, setAdjustmentScope] = useState<'all' | 'node' | 'assignment'>('all');
   const [previewOriginal, setPreviewOriginal] = useState(false);
   const [comparison, setComparison] = useState(() => ({
@@ -253,7 +256,22 @@ export function TaskEditor({
   const hasGaps = !!(gaps.participants.length + gaps.assets.length);
   const participantSource =
     task.status === 'ready' && applied ? applied.participants : state.participants;
-  const actualMembers = participantSource.filter((m) => task.participantIds.includes(m.id));
+  const actualMembers = useMemo(
+    () => participantSource.filter((m) => task.participantIds.includes(m.id)),
+    [participantSource, task.participantIds],
+  );
+  const proposalMissingResources = useMemo(() => {
+    let count = 0;
+    const examples: string[] = [];
+    for (const flow of proposal?.result.workflows ?? [])
+      for (const node of flow.nodes)
+        for (const resource of expertResources(node, actualMembers, state.assets))
+          if (!resource.available || !resource.selected) {
+            count++;
+            if (examples.length < 3) examples.push(`${node.title}：${resource.name}`);
+          }
+    return { count, examples };
+  }, [proposal, actualMembers, state.assets]);
   const members = [
     ...actualMembers,
     ...gaps.participants.map((p) => ({
@@ -292,8 +310,12 @@ export function TaskEditor({
     void initialPlanning.result.then((result) => {
       if (!subscribed || controller.current !== initialPlanning.controller) return;
       if (initialPlanning.controller.signal.aborted) setMessage('已取消规划');
-      else if (result.ok) setProposal(result.proposal);
-      else {
+      else if (result.ok) {
+        const catalog = planningCatalog.current;
+        setProposal(
+          prepareExpertProposal(result.proposal, catalog.task, catalog.members, catalog.assets),
+        );
+      } else {
         setError(result.error instanceof Error ? result.error.message : '规划失败，请重试。');
         setConflict(result.error instanceof WorkbenchError && result.error.code === 'conflict');
         setPlanFailed(true);
@@ -526,7 +548,8 @@ export function TaskEditor({
       );
       abort.signal.throwIfAborted();
       if (api.member && !alive.current) return;
-      setProposal(next);
+      const catalog = planningCatalog.current;
+      setProposal(prepareExpertProposal(next, catalog.task, catalog.members, catalog.assets));
       setComparison({ workflows: comparedWorkflows, label: comparisonLabel });
       setPreviewOriginal(false);
     } catch (error) {
@@ -1269,6 +1292,15 @@ export function TaskEditor({
                       </summary>
                       <p>{proposal.result.summary}</p>
                     </details>
+                    {!!proposalMissingResources.count && (
+                      <p className="zm-warning" role="status">
+                        必需能力尚未齐备：{proposalMissingResources.examples.join('；')}
+                        {proposalMissingResources.count > 3
+                          ? ` 等 ${proposalMissingResources.count} 项`
+                          : ''}
+                        。可应用为草稿，补齐后才能确认。
+                      </p>
+                    )}
                     {proposal.result.questions.length > 0 && (
                       <div className="zm-questions">
                         <strong>需要你确认</strong>
