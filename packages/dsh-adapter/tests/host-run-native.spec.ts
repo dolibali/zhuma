@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'vitest';
@@ -17,6 +17,11 @@ import SkillRegistry from '@deepseek-ai/dsh-skill';
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill';
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
 import FsLocal from '@deepseek-ai/dsh-fs-local';
+import WorkspaceRegistry from '@deepseek-ai/dsh-workspace';
+import * as ToolFs from '@deepseek-ai/dsh-tool-fs';
+import { LocalAttachmentStore } from '@deepseek-ai/dsh-attachment-local';
+import SandboxPolicy from '@deepseek-ai/dsh-sandbox-policy';
+import FsSandbox from '@deepseek-ai/dsh-fs-sandbox';
 import Agents from '@deepseek-ai/dsh-agent';
 import Loop from '@deepseek-ai/dsh-agent-loop';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
@@ -38,11 +43,11 @@ import {
 import { ScriptedAdapter } from './zhuma-native-work-bundle.ts';
 
 const deferred = () => Promise.withResolvers();
-function checked(response) {
+export function checked(response) {
   assert.equal(response.result.ok, true, response.result.ok ? '' : response.result.error.code);
   return response.result.value;
 }
-function waitFor(ctx, predicate) {
+export function waitFor(ctx, predicate) {
   if (predicate()) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const stop = ctx.on(
@@ -66,7 +71,7 @@ function waitFor(ctx, predicate) {
     }
   });
 }
-async function boot(
+export async function boot(
   t,
   {
     expert = false,
@@ -74,6 +79,10 @@ async function boot(
     userOnly = false,
     parentSkill = false,
     review = false,
+    localWorkspace = undefined,
+    failFileLedger = false,
+    attachmentInitialization = undefined,
+    allowNativeUnavailable = false,
     adapter = new ScriptedAdapter(['FIRST', 'SECOND']),
   } = {},
 ) {
@@ -83,6 +92,7 @@ async function boot(
   const counts = { executionOpened: 0, nativeOpened: 0, executionClosed: 0, nativeClosed: 0 };
   let host;
   t.onTestFinished(async () => {
+    attachmentInitialization?.resolve();
     await host?.dispose();
     await ctx.fiber.dispose();
     await rm(root, { recursive: true, force: true });
@@ -93,7 +103,18 @@ async function boot(
     [Projections],
     [Prompt],
     [Tools],
-    [FsLocal, { cwd: root }],
+    ...(localWorkspace
+      ? [
+          [
+            SandboxPolicy,
+            {
+              workspaceRoot: join(root, 'project-files'),
+              ...(localWorkspace.policyMode ? { mode: localWorkspace.policyMode } : {}),
+            },
+          ],
+        ]
+      : []),
+    [localWorkspace?.sandboxed ? FsSandbox : FsLocal, { cwd: root }],
     [WorkingDirectory, { defaultDirectory: root }],
     [Agents],
     [Persistence, { root: join(root, 'sessions'), compression: 'none' }],
@@ -107,6 +128,27 @@ async function boot(
     [RemoteAccess],
   ])
     await ctx.plugin(plugin, config);
+  let workspace, workspaceFiber, attachmentFiber;
+  const workspaceRoot = join(root, 'project-files');
+  if (localWorkspace) {
+    await mkdir(workspaceRoot);
+    workspaceFiber = await ctx.plugin(WorkspaceRegistry);
+    workspace = await ctx.workspaceRegistry.create(workspaceRoot, 'Local contract project');
+    await ctx.plugin(ToolFs, { readImage: false });
+    if (!attachmentInitialization) await ctx.plugin(LocalAttachmentStore, { dshHome: root });
+  }
+  if (attachmentInitialization) {
+    const registered = deferred();
+    attachmentFiber = ctx.plugin({
+      name: 'delayed-original-attachment-provider',
+      async apply(provider) {
+        new LocalAttachmentStore(provider, { dshHome: root });
+        registered.resolve();
+        await attachmentInitialization.promise;
+      },
+    });
+    await registered.promise;
+  }
   if (parentSkill) {
     await ctx.plugin(SkillRegistry);
     ctx.get('skills').register({
@@ -126,6 +168,8 @@ async function boot(
   ctx.llm.registerAdapter(['contract'], adapter);
   const originalOpen = ctx.storageDomain.open.bind(ctx.storageDomain);
   ctx.storageDomain.open = async (spec) => {
+    if (failFileLedger && spec.name === 'zhuma_files')
+      throw Error('Injected original file ledger initialization failure');
     const domain = await originalOpen(spec);
     const key =
       spec.name === 'zhuma_execution'
@@ -201,6 +245,25 @@ async function boot(
     deploymentMode: 'multi-member',
     identityBootstrapKey: 'zhuma-identity/bootstrap',
     spaceDirectoryBootstrapKey: 'zhuma-spaces/bootstrap',
+    ...(workspace
+      ? {
+          localExecution: {
+            deviceId: 'local-contract-device',
+            bindings: [
+              {
+                id: 'project-files',
+                generation: 1,
+                actorId: 'chen',
+                spaceId: 'north',
+                projectId: 'project',
+                workspaceId: workspace.id,
+                access: localWorkspace.access ?? 'write',
+                publish: localWorkspace.publish ?? [],
+              },
+            ],
+          },
+        }
+      : {}),
   });
   await host;
   if (imported)
@@ -210,7 +273,11 @@ async function boot(
       .put(imported.record.versionId, imported.record);
   const nativeFibers = [...(ctx.registry.get(Host.nativeRunPlugin)?.fibers ?? [])];
   assert.equal(nativeFibers.length, 1);
-  await Promise.all(nativeFibers.map((fiber) => fiber.await()));
+  const nativeReadiness = await Promise.allSettled(nativeFibers.map((fiber) => fiber.await()));
+  if (!allowNativeUnavailable) {
+    const failed = nativeReadiness.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+  }
   async function login(accountId = 'chen') {
     const response = await fetch(base + '/zhuma-id/login', {
       method: 'POST',
@@ -279,6 +346,16 @@ async function boot(
     table,
     locator,
     begin,
+    workspaceRoot,
+    workspaceFiber,
+    attachmentFiber,
+    nativeReadiness,
+    async remountHost() {
+      await host.restart();
+      const fibers = [...(ctx.registry.get(Host.nativeRunPlugin)?.fibers ?? [])];
+      assert.equal(fibers.length, 1);
+      await Promise.all(fibers.map((fiber) => fiber.await()));
+    },
   };
 }
 

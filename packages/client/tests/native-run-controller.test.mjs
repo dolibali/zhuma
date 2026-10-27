@@ -115,6 +115,52 @@ test('Run view contract: uncertain same start retries identical durable IDs; no 
   h.controller.dispose();
 });
 
+test('Run workspace contract: selection stays passive and explicit start sends only the authorized workspace ID', async () => {
+  const choice = { id: 'project-files', label: 'Project', access: 'write', publish: true };
+  const h = setup({
+    async options() {
+      return { ...options(), workspaces: [choice] };
+    },
+  });
+  await h.controller.refresh();
+  const next = { ...selection, workspace: { kind: 'local', id: choice.id } };
+  h.controller.select(next);
+  assert.equal(
+    h.calls.some((call) => Array.isArray(call)),
+    false,
+  );
+  assert.deepEqual(h.controller.getSnapshot().view.workspaces, [choice]);
+  await h.controller.start(next);
+  const input = h.calls.find((call) => Array.isArray(call))[1];
+  assert.equal(input.tools, 'local-tools');
+  assert.deepEqual(input.workspace, { kind: 'local', id: choice.id });
+  assert.equal('path' in input.workspace, false);
+  assert.equal('access' in input.workspace, false);
+  h.controller.dispose();
+});
+
+test('Run workspace contract: stale or unlisted workspace IDs cannot begin and do not silently fall back', async () => {
+  const h = setup({
+    async options() {
+      return { ...options(), workspaces: [] };
+    },
+  });
+  await h.controller.refresh();
+  await assert.rejects(
+    h.controller.start({ ...selection, workspace: { kind: 'local', id: 'stale-workspace' } }),
+    /Workspace changed/,
+  );
+  await assert.rejects(
+    h.controller.start({ ...selection, workspace: { kind: 'unavailable' } }),
+    /Workspace changed/,
+  );
+  assert.equal(
+    h.calls.some((call) => Array.isArray(call)),
+    false,
+  );
+  h.controller.dispose();
+});
+
 test('Run view contract: saved selection and mode capabilities stay frozen; progress reads do not rediscover models', async () => {
   const h = setup({
     async options() {
@@ -520,12 +566,22 @@ test('Run transport contract: fixed delivery reads are bounded and reject malfor
     delivered,
   );
   assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-run/read']);
+  const v2 = { ...delivered, protocolVersion: 2, manifestDigest: 'a'.repeat(64) };
+  const v2Transport = transport((request) => reply(request, { ...read, resultDelivery: v2 }));
+  assert.deepEqual(
+    (await v2Transport.api.read(target, 'run', new AbortController().signal)).resultDelivery,
+    v2,
+  );
   for (const invalid of [
     { ...read, status: 'running' },
     { ...read, resources: 'held' },
     { ...read, resultDelivery: null },
     { ...read, resultDelivery: { ...delivered, artifactVersion: 0 } },
     { ...read, resultDelivery: { ...delivered, receipt: null } },
+    { ...read, resultDelivery: { ...v2, protocolVersion: 1 } },
+    { ...read, resultDelivery: { ...v2, manifestDigest: undefined } },
+    { ...read, resultDelivery: { ...v2, protocolVersion: undefined } },
+    { ...read, resultDelivery: { ...v2, manifestDigest: 'untrusted' } },
     { ...summary, resultDelivery: { kind: 'pending', phase: 'invented' } },
     { ...read, resultDelivery: { kind: 'pending', phase: 'draining' } },
   ]) {
