@@ -116,7 +116,7 @@ await writeFile(
       name: '@zhuma/workbench',
       version: '0.1.0',
       private: true,
-      license: 'Apache-2.0',
+      license: 'MIT',
       type: 'module',
       main: './index.js',
       exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' },
