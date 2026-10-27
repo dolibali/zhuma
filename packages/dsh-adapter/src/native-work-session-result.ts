@@ -157,7 +157,10 @@ export interface NativeFixedReviewIssuer {
     ctx: Context,
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
+    beforeRetire?: () => undefined,
   ): NativeDshComposition;
+  /** Actual original collection state; preparing/idle alone is not draining. */
+  reviewCollectionPhase?(grant: NativeWorkGrant): 'unstarted' | 'draining' | 'ready';
   prepareFixedReview(
     grant: NativeWorkGrant,
     signal: AbortSignal,
@@ -188,6 +191,7 @@ export function nativeFixedReviewIssuer(
   return {
     onReviewReady: owner.onReviewReady.bind(owner),
     registerNativeReviewTools: owner.registerNativeReviewTools.bind(owner),
+    reviewCollectionPhase: owner.reviewCollectionPhase.bind(owner),
     prepareFixedReview: owner.prepareFixedReview.bind(owner),
     assertFixedReview: owner.assertFixedReview.bind(owner),
     readFixedReview: owner.readFixedReview.bind(owner),
@@ -316,6 +320,11 @@ class NativeResultOwner {
   private readonly reviewIssued = new WeakMap<NativeFixedReviewRef, IssuedReview>();
   private readonly reviewReady = new Map<string, NativeFixedReviewRef>();
   private readonly reviewJobs = new Map<string, Promise<NativeFixedReviewPreparation>>();
+  private readonly reviewRetirements = new WeakMap<
+    NativeWorkGrant,
+    Promise<NativeMigrationDrain>
+  >();
+  private readonly reviewBeforeRetire = new WeakMap<NativeWorkGrant, () => undefined>();
   private readonly reviewFailures = new Map<string, NativeReviewError>();
   private pendingLeases = 0;
   constructor(
@@ -362,6 +371,7 @@ class NativeResultOwner {
     ctx: Context,
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
+    beforeRetire?: () => undefined,
   ): NativeDshComposition {
     const active = this.reviewCheck(grant),
       agent = scopeOf(ctx);
@@ -372,6 +382,14 @@ class NativeResultOwner {
       binding.selection.configurationId !== active.binding.selection.configurationId
     )
       throw new NativeReviewError('review-result-rejected');
+    if (beforeRetire) {
+      if (
+        typeof beforeRetire !== 'function' ||
+        (this.reviewBeforeRetire.has(grant) && this.reviewBeforeRetire.get(grant) !== beforeRetire)
+      )
+        throw new NativeReviewError('review-unavailable');
+      this.reviewBeforeRetire.set(grant, beforeRetire);
+    }
     const current = (exec: Readonly<ToolExecution>) => {
       this.reviewCheck(grant);
       if (
@@ -425,10 +443,20 @@ class NativeResultOwner {
       },
       { global: true },
     );
-    ctx.on('agent/status', ({ agent: actual, status }) => {
-      if (actual === agent && status === 'idle')
-        void this.prepareFixedReview(grant, this.lifetime.signal).catch(() => undefined);
-    });
+    ctx.on(
+      'agent/status',
+      ({ agent: actual, status }) => {
+        if (
+          actual === agent &&
+          actual.id === binding.nativeAgentId &&
+          actual.session.id === binding.nativeSessionId &&
+          ctx.agents.get(actual.id) === actual &&
+          status === 'idle'
+        )
+          void this.prepareFixedReview(grant, this.lifetime.signal).catch(() => undefined);
+      },
+      { global: true },
+    );
     ctx.tools.guard(() =>
       this.sessions.reviewIntent(grant) ? 'native-completion-pending' : undefined,
     );
@@ -688,6 +716,11 @@ class NativeResultOwner {
     return { context: '', toolAllowlist: [readDefinition.name, complete.name] };
   }
 
+  reviewCollectionPhase(grant: NativeWorkGrant): 'unstarted' | 'draining' | 'ready' {
+    const access = this.reviewCheck(grant);
+    if (this.reviewReady.has(nativeReviewScopeKey(access.context))) return 'ready';
+    return this.reviewRetirements.has(grant) ? 'draining' : 'unstarted';
+  }
   async prepareFixedReview(
     grant: NativeWorkGrant,
     signal: AbortSignal,
@@ -763,7 +796,18 @@ class NativeResultOwner {
     );
     if (!candidate) return { status: 'pending', reason: 'not-durable' };
     before.check();
-    const drain = await this.runtime.retire(binding.nativeSessionId, signal);
+    const check = this.reviewBeforeRetire.get(grant);
+    if (check) {
+      const result: unknown = check();
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new NativeReviewError('review-unavailable');
+      }
+    }
+    this.reviewCheck(grant);
+    const retiring = this.runtime.retire(binding.nativeSessionId, signal);
+    this.reviewRetirements.set(grant, retiring);
+    const drain = await retiring;
     this.reviewCheck(grant);
     drain.assertCurrent();
     if (drain.basis !== 'flushed-and-closed') throw new NativeReviewError('review-result-rejected');

@@ -61,12 +61,199 @@ test('original SDK bridge: omitted actual uploaded file records attention and cl
 test('original SDK bridge: mismatched A adoption never reaches a model or votes and genuine cleanup keeps the original scope', async (t) => {
   const h = await setup(t, { adoption: { configurationId: 'foreign-configuration' } });
   h.bridge.consumeClaim(h.d.request, h.claim);
-  await h.waitFor(() => readExecutionReviewState(h.d.read())?.attempts[0]?.resources === 'settled');
   await h.bridge.whenIdle();
   assert.equal(h.adapter.requests.length, 0);
   assert.equal(h.d.read().rounds[0].ballots.length, 0);
   assert.equal(h.d.read('consume').command.status, 'blocked');
-  assert.equal(readExecutionReviewState(h.d.read()).attempts[0].status, 'cancelled');
+  assert.equal(readExecutionReviewState(h.d.read()).attempts[0].resources, 'held');
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'pending');
+});
+
+test('original SDK resource barrier: normal scope disposal can abort registration while authority stays live; held explicit drain blocks ballot and downstream until the same close finishes', async (t) => {
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  t.onTestFinished(() => release.resolve());
+  const local = new AbortController();
+  let disposals = 0,
+    drains = 0;
+  const h = await setup(t, {
+    adoption(ctx) {
+      ctx.effect(() => () => local.abort());
+      return {
+        assertCurrent() {
+          local.signal.throwIfAborted();
+          return undefined;
+        },
+        async dispose() {
+          disposals++;
+          local.abort();
+        },
+        async drain() {
+          drains++;
+          entered.resolve();
+          await release.promise;
+        },
+      };
+    },
+  });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await entered.promise;
+  const attempt = readExecutionReviewState(h.d.read()).attempts[0];
+  assert.equal(local.signal.aborted, true, 'actual SDK scope teardown ran its finalizer');
+  h.native.runtime.migrationDrain(attempt.nativeSessionId).assertCurrent();
+  assert.throws(() => h.d.service.assertExpertReviewDrained(attempt.scope));
+  assert.equal(attempt.resources, 'held');
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(h.d.read('consume').command.status, 'blocked');
+  const calls = h.adapter.requests.length;
+  release.resolve();
+  await h.waitFor(() => h.d.read().command.status === 'completed');
+  await h.bridge.whenIdle();
+  h.d.service.assertExpertReviewDrained(attempt.scope);
+  assert.equal(h.d.read().rounds[0].ballots.length, 1);
+  assert.equal(h.d.read('consume').command.status, 'ready');
+  assert.equal(h.adapter.requests.length, calls, 'late close never resends a model');
+  assert.deepEqual({ disposals, drains }, { disposals: 1, drains: 1 });
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+});
+
+test('original SDK resource barrier: rejected disposal stays held across repeated close and actual Stop cannot resume over it', async (t) => {
+  let disposals = 0,
+    drains = 0;
+  const h = await setup(t, {
+    file: false,
+    adoption: {
+      async dispose() {
+        disposals++;
+        throw Error('SYNTHETIC_ORIGINAL_DISPOSAL_FAILURE');
+      },
+      async drain() {
+        drains++;
+      },
+    },
+  });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await h.waitFor(() => h.adapter.requests.length === 2);
+  await h.bridge.whenIdle();
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(h.d.read('consume').command.status, 'blocked');
+  const attempt = readExecutionReviewState(h.d.read()).attempts[0];
+  assert.equal(attempt.resources, 'held');
+  assert.throws(() => h.d.service.assertExpertReviewDrained(attempt.scope));
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'pending');
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'pending');
+  const stopped = await h.d.service.stopWorkflowExecution(h.d.request, {
+    ...h.location,
+    requestId: 'stop-rejected-disposal',
+    intentId: h.view.intent.intentId,
+    generation: h.view.intent.generation,
+  });
+  assert.equal(stopped.ok, true);
+  if (!stopped.ok) throw Error('The actual Stop request failed.');
+  assert.equal(stopped.value.state, 'stopping');
+  const resumed = await h.d.service.resumeWorkflowExecution(h.d.request, {
+    ...h.location,
+    requestId: 'resume-rejected-disposal',
+    intentId: stopped.value.intent.intentId,
+    generation: stopped.value.intent.generation,
+    expectedVersion: stopped.value.intent.version,
+  });
+  assert.equal(resumed.ok, false);
+  assert.deepEqual({ disposals, drains }, { disposals: 1, drains: 1 });
+});
+
+test('original SDK resource barrier: malformed returned adoption retains its available disposer and never becomes empty settled resources', async (t) => {
+  let disposals = 0;
+  const h = await setup(t, {
+    file: false,
+    adoption: {
+      drain: undefined,
+      async dispose() {
+        disposals++;
+      },
+    },
+  });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await h.bridge.whenIdle();
+  assert.equal(disposals, 1);
+  assert.equal(h.adapter.requests.length, 0);
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(readExecutionReviewState(h.d.read()).attempts[0].resources, 'held');
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'pending');
+  assert.equal(disposals, 1);
+});
+
+test('original SDK resource barrier: a resource losing live qualification before collection cannot retire into a fixed result', async (t) => {
+  let active = true;
+  const h = await setup(t, {
+    file: false,
+    beforeCompletion() {
+      active = false;
+    },
+    adoption: {
+      assertCurrent() {
+        assert.equal(active, true, 'the real resource has become unavailable before collection');
+        return undefined;
+      },
+    },
+  });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await h.waitFor(() => readExecutionReviewState(h.d.read())?.attempts[0]?.resources === 'settled');
+  await h.bridge.whenIdle();
+  assert.equal(h.adapter.requests.length, 2);
+  assert.equal(h.reads.length, 1);
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(h.d.read('consume').command.status, 'blocked');
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+});
+
+for (const revocation of ['producer', 'member', 'configuration'])
+  test(`original SDK resource barrier: continuing ${revocation} authority revoked during an actual close never casts a ballot`, async (t) => {
+    const authority = new AbortController(),
+      entered = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    t.onTestFinished(() => release.resolve());
+    const h = await setup(t, {
+      file: false,
+      adoption: {
+        signal: authority.signal,
+        async drain() {
+          entered.resolve();
+          await release.promise;
+        },
+      },
+    });
+    h.bridge.consumeClaim(h.d.request, h.claim);
+    await entered.promise;
+    if (revocation === 'producer') authority.abort();
+    else if (revocation === 'member') {
+      h.d.members.clear();
+      h.d.member.abort();
+    } else h.compositions.clear();
+    release.resolve();
+    await h.waitFor(
+      () => readExecutionReviewState(h.d.read())?.attempts[0]?.resources === 'settled',
+    );
+    await h.bridge.whenIdle();
+    assert.equal(h.d.read().rounds[0].ballots.length, 0);
+    assert.equal(h.d.read('consume').command.status, 'blocked');
+    assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+  });
+
+test('original SDK resource barrier: an unknown cleanup scope without its original A obligation requires recovery before D is called', async (t) => {
+  const h = await setup(t, { file: false });
+  let calls = 0;
+  const original = h.d.service.recoverStoppedWorkflowReviewCleanup;
+  h.d.service.recoverStoppedWorkflowReviewCleanup = async (...args) => {
+    calls++;
+    return original.apply(h.d.service, args);
+  };
+  const result = await h.bridge.recoverStopped({});
+  assert.equal(result.ok, false);
+  if (result.ok) throw Error('Unknown resource ownership must require recovery.');
+  assert.equal(result.error.code, 'review-bridge-recovery-required');
+  assert.equal(calls, 0);
+  assert.equal(h.adapter.requests.length, 0);
   assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
 });
 

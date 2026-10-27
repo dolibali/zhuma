@@ -236,14 +236,16 @@ export class NativeWorkSessionService {
     );
   }
   reviewAccess(grant: NativeWorkGrant) {
+    if (!this.review?.purpose.owns(grant)) throw new NativeReviewError('review-authority-denied');
     this.check(grant, 'send');
     const context = this.review?.purpose.context(grant.scope);
     if (!this.review || !context) throw new NativeReviewError('review-authority-denied');
+    const access = this.review.purpose.access(grant);
     return {
       context,
-      original: this.review.purpose.original(grant),
+      original: access.original,
       ports: this.review.purpose.ports,
-      selection: this.review.purpose.selection(grant),
+      selection: access.selection,
     };
   }
   reviewIntent(grant: NativeWorkGrant) {

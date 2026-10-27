@@ -85,7 +85,7 @@ export async function bootReviewBridge(root, after, options = {}) {
               'read_review_target',
             ),
           );
-        adapter.script.push((request) => {
+        adapter.script.push(async (request) => {
           const evidenceRefs = [
             ...new Set(JSON.stringify(request).match(/review_read_[a-f0-9]{64}/gu)),
           ];
@@ -93,6 +93,7 @@ export async function bootReviewBridge(root, after, options = {}) {
             evidenceRefs.length,
             options.omitFile ? 1 : saved.payload.targetResources.length,
           );
+          await options.beforeCompletion?.();
           return toolResponse(
             {
               conclusion: 'approve',
@@ -108,7 +109,8 @@ export async function bootReviewBridge(root, after, options = {}) {
         await options.afterPreparation?.(saved);
         return saved;
       },
-      async adoptReviewResources(_ctx, { drive, composition }) {
+      async adoptReviewResources(ctx, input) {
+        const { drive, composition } = input;
         options.adoptionStarted?.();
         assert.equal(composition.payload.resources.skills.length, 0);
         assert.equal(composition.payload.resources.mcp.length, 0);
@@ -126,7 +128,9 @@ export async function bootReviewBridge(root, after, options = {}) {
           },
           async drain() {},
           async dispose() {},
-          ...options.adoption,
+          ...(typeof options.adoption === 'function'
+            ? await options.adoption(ctx, input)
+            : options.adoption),
         };
       },
     },

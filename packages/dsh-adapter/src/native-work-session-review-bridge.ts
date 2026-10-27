@@ -11,6 +11,7 @@ import type {
   NativeSessionBinding,
   NativeWorkGrant,
   NativeWorkRuntime,
+  NativeScopeCleanupResult,
 } from './native-work-session-contract.js';
 import type { NativeDshComposition } from './native-work-session-dsh.js';
 import type { NativeReviewPorts } from './native-work-session-purpose.js';
@@ -32,12 +33,18 @@ import {
   type NativeReviewMessageClaim,
 } from './native-work-session-review-observation.js';
 import type { OpenedExecutionReviewDrive } from './execution-review-drive-authority.js';
+import { NATIVE_REVIEW_LIMITS } from './native-work-session-review-contract.js';
+import {
+  retainNativeReviewResources,
+  type NativeReviewResourceClosure,
+} from './native-work-session-review-closure.js';
 
 /** A installs resources in the same unpublished SDK Agent scope. These fields
  * bind the live adoption; their copied metadata alone never grants authority. */
 export interface NativeReviewBridgeAdoption {
   readonly scope: ExecutionReviewScope;
   readonly configurationId: string;
+  /** Continuous authority only; normal registration disposal must not abort it. */
   readonly signal: AbortSignal;
   readonly context: string;
   readonly toolAllowlist: readonly string[];
@@ -97,7 +104,11 @@ export interface NativeReviewBridgeOptions {
 
 export class NativeReviewBridgeError extends Error {
   constructor(
-    readonly code: 'review-bridge-unavailable' | 'review-bridge-capacity' | 'review-bridge-pending',
+    readonly code:
+      | 'review-bridge-unavailable'
+      | 'review-bridge-capacity'
+      | 'review-bridge-pending'
+      | 'review-bridge-recovery-required',
   ) {
     super('原生评审尚未完成，请查看当前任务状态。');
     this.name = 'NativeReviewBridgeError';
@@ -115,6 +126,9 @@ interface OwnedReview {
   receipt?: { readonly messageId: string };
   observation?: ReturnType<typeof observeNativeReview>;
   adoption?: NativeReviewBridgeAdoption;
+  adopting?: Promise<NativeReviewBridgeAdoption>;
+  resources?: NativeReviewResourceClosure;
+  resourceClosing?: Promise<void>;
   removeRevocation?: () => void;
   accepted: boolean;
   events: Promise<void>;
@@ -126,7 +140,6 @@ interface OwnedReview {
   released: boolean;
   starting: boolean;
   accepting?: Promise<void>;
-  releaseAdoption?: () => Promise<void>;
   releasing?: Promise<void>;
 }
 const owners = new WeakSet<ExecutionService>();
@@ -196,12 +209,91 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
       return failure();
     return { scope, attempt };
   }
+  function closeResources(state: OwnedReview): Promise<void> {
+    if (state.resourceClosing) return state.resourceClosing;
+    const work = own(
+      Promise.resolve().then(async () => {
+        // Opening and closing keep the same original obligation even if the
+        // caller stopped waiting. A failed open has no invented empty handle.
+        if (state.adopting) await state.adopting;
+        if (state.resources) {
+          await state.resources.close();
+          state.resources.assertClosed();
+        }
+      }),
+    );
+    state.resourceClosing = work;
+    void work.then(() => scheduleResult(state)).catch(() => undefined);
+    return work;
+  }
+  async function waitOwned(work: Promise<void>, wait: AbortSignal): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop!: () => void;
+    try {
+      return await Promise.race([
+        work.then(() => true),
+        new Promise<false>((resolve) => {
+          stop = () => resolve(false);
+          timer = setTimeout(stop, NATIVE_REVIEW_LIMITS.waitMs);
+          wait.addEventListener('abort', stop, { once: true });
+          if (wait.aborted) stop();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      wait.removeEventListener('abort', stop);
+    }
+  }
+  function resultState(grant: NativeWorkGrant): OwnedReview {
+    const issuer = bound().issuer;
+    // This view authenticates the original grant before consulting a phase.
+    const phase = issuer.reviewCollectionPhase?.(grant) ?? failure();
+    const state = byGrant.get(grant) ?? failure();
+    current(state);
+    const resources = state.resources ?? failure();
+    if (phase === 'unstarted') resources.assertLive();
+    else resources.assertAuthority();
+    current(state);
+    return state;
+  }
+  async function retireWithResources(
+    original: Parameters<ExecutionService['assertExpertReviewCleanupAuthority']>[0],
+    wait: AbortSignal,
+  ): Promise<NativeScopeCleanupResult> {
+    // Cleanup authority is checked before reading its purported scope. It does
+    // not acquire a new driving/member/phase qualification after revocation.
+    execution.assertExpertReviewCleanupAuthority(original);
+    const state = [...states.values()].find(
+      (item) =>
+        item.drive && canonicalPayload(item.drive.grant.scope) === canonicalPayload(original.scope),
+    );
+    if (!state) throw new NativeReviewBridgeError('review-bridge-recovery-required');
+    const retired = await bound().service.retireReviewForCleanup(original, wait);
+    if (retired.status === 'pending') return retired;
+    if (state.starting && !state.adopting) return { status: 'pending' };
+    if (!(await waitOwned(closeResources(state), wait))) return { status: 'pending' };
+    state.resources?.assertClosed();
+    const raw = retired.drain,
+      assert = raw.assertCurrent,
+      signal = raw.signal;
+    const drain = Object.freeze({
+      basis: raw.basis,
+      signal,
+      assertCurrent() {
+        if (raw.assertCurrent !== assert || raw.signal !== signal) return failure();
+        assert.call(raw);
+        state.resources?.assertClosed();
+      },
+    });
+    drain.assertCurrent();
+    return { ...retired, drain };
+  }
   function release(state: OwnedReview): Promise<void> {
     if (state.released) return Promise.resolve();
     if (state.releasing) return state.releasing;
     const work = Promise.resolve().then(async () => {
       // A failed resource disposal remains retained and prevents false close success.
-      await state.releaseAdoption?.();
+      await closeResources(state);
       state.observation?.close();
       state.removeRevocation?.();
       state.drive?.dispose();
@@ -494,16 +586,74 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
     bindNative(service, runtime) {
       if (native || fenced || !service.ownsResultRuntime(runtime)) return failure();
       const issuer = nativeFixedReviewIssuer(service, runtime);
-      if (typeof issuer.onReviewReady !== 'function') return failure();
+      if (
+        typeof issuer.onReviewReady !== 'function' ||
+        typeof issuer.reviewCollectionPhase !== 'function'
+      )
+        return failure();
       native = { service, runtime, issuer };
       unsubscribeReady = issuer.onReviewReady((grant) => {
         const state = byGrant.get(grant);
         if (state) scheduleResult(state);
       });
+      const qualified: NativeFixedReviewIssuer = Object.freeze<NativeFixedReviewIssuer>({
+        registerNativeReviewTools: issuer.registerNativeReviewTools,
+        async prepareFixedReview(grant, wait) {
+          const state = resultState(grant);
+          const prepared = await issuer.prepareFixedReview(grant, wait);
+          if (prepared.status === 'pending') {
+            resultState(grant);
+            return prepared;
+          }
+          resultState(grant);
+          if (!(await waitOwned(closeResources(state), wait)))
+            return { status: 'pending', reason: 'draining' };
+          state.resources!.assertClosed();
+          resultState(grant);
+          issuer.assertFixedReview(grant, prepared.ref);
+          return prepared;
+        },
+        assertFixedReview(grant, ref) {
+          issuer.assertFixedReview(grant, ref);
+          resultState(grant).resources!.assertClosed();
+          return undefined;
+        },
+        async readFixedReview(grant, ref, wait) {
+          qualified.assertFixedReview(grant, ref);
+          const lease = await issuer.readFixedReview(grant, ref, wait);
+          const check = lease.check,
+            release = lease.release,
+            sourceSignal = lease.signal;
+          try {
+            qualified.assertFixedReview(grant, ref);
+            const state = resultState(grant);
+            return Object.freeze({
+              ...lease,
+              signal: AbortSignal.any([sourceSignal, state.adoption!.signal]),
+              check() {
+                if (
+                  lease.check !== check ||
+                  lease.release !== release ||
+                  lease.signal !== sourceSignal
+                )
+                  return failure();
+                qualified.assertFixedReview(grant, ref);
+                check.call(lease);
+              },
+              release() {
+                release.call(lease);
+              },
+            });
+          } catch (error) {
+            release.call(lease);
+            throw error;
+          }
+        },
+      });
       execution.installNativeReviewPorts({
-        issuer,
+        issuer: qualified,
         grantFor: (original) => service.reviewGrant(original),
-        retireForCleanup: (original, wait) => service.retireReviewForCleanup(original, wait),
+        retireForCleanup: retireWithResources,
       });
     },
     consumeClaim(original, claim) {
@@ -583,15 +733,30 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
           else scheduleResult(state);
         },
       });
-      const registered = bound().issuer.registerNativeReviewTools(ctx, binding, grant);
-      const adopted = await host.adoptReviewResources(ctx, {
-        original: state.original,
-        composition: snapshot,
-        drive,
-        binding,
-        grant,
+      const registered = bound().issuer.registerNativeReviewTools(ctx, binding, grant, () => {
+        current(state);
+        (state.resources ?? failure()).assertLive();
+        current(state);
+        return undefined;
       });
-      state.adoption = adopted;
+      if (state.adopting) return failure();
+      state.adopting = Promise.resolve().then(async () => {
+        const adopted = await host.adoptReviewResources(ctx, {
+          original: state.original,
+          composition: snapshot,
+          drive,
+          binding,
+          grant,
+        });
+        state.resources = retainNativeReviewResources(
+          adopted,
+          drive.scope,
+          snapshot.configurationId,
+        );
+        state.adoption = adopted;
+        return adopted;
+      });
+      const adopted = await state.adopting;
       const sourceSignal = adopted.signal,
         sourceAssert = adopted.assertCurrent,
         sourceReady = adopted.ready,
@@ -606,13 +771,9 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
         typeof sourceDispose !== 'function'
       )
         return failure();
-      state.releaseAdoption = async () => {
-        if (adopted.drain !== sourceDrain || adopted.dispose !== sourceDispose) return failure();
-        await sourceDispose.call(adopted);
-        await sourceDrain.call(adopted);
-      };
       const validate = () => {
         current(state);
+        state.resources!.assertLive();
         if (
           adopted.signal !== sourceSignal ||
           sourceSignal.aborted ||
@@ -707,6 +868,20 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
           error: {
             code: 'review-bridge-unavailable',
             message: '原生评审清理入口已关闭。',
+            details: {},
+          },
+        });
+      if (
+        ![...states.values()].some(
+          (state) =>
+            state.drive && canonicalPayload(state.drive.grant.scope) === canonicalPayload(scope),
+        )
+      )
+        return Promise.resolve({
+          ok: false,
+          error: {
+            code: 'review-bridge-recovery-required',
+            message: '缺少原评审资源拥有者，尚不能确认资源已排空。',
             details: {},
           },
         });

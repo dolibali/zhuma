@@ -50,8 +50,14 @@ test('original SDK isolated Skill: only the original execution result releases i
   const h = await setup(t, { isolatedSkill: true }),
     r = h.reviewer('isolated-skill-reviewer'),
     entered = Promise.withResolvers(),
-    release = Promise.withResolvers();
+    release = Promise.withResolvers(),
+    ready = Promise.withResolvers();
   t.onTestFinished(() => release.resolve());
+  t.onTestFinished(
+    h.review.onReviewReady((actual, ref) => {
+      if (actual === r.grant) ready.resolve(ref);
+    }),
+  );
   const stop = h.ctx.on(
     'tools/post-execute',
     async (exec, result, next) => {
@@ -85,10 +91,8 @@ test('original SDK isolated Skill: only the original execution result releases i
   release.resolve();
   await draining;
   await r.actor().whenIdle();
-  const prepared = await h.review.prepareFixedReview(r.grant, new AbortController().signal);
-  assert.equal(prepared.status, 'ready');
-  if (prepared.status !== 'ready') throw Error('The actual fixed review was not collected.');
-  h.review.assertFixedReview(r.grant, prepared.ref);
+  const ref = await ready.promise;
+  h.review.assertFixedReview(r.grant, ref);
   assert.equal(h.leases.size, 0);
   assert.equal(h.adapter.requests.length, 3);
   const events = await history(h, r.grant);
