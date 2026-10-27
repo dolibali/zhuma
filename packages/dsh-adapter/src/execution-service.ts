@@ -137,6 +137,7 @@ import {
   ExecutionRunProtocolError,
   requireExecutionRunWriter,
   enableExecutionReviewWriter,
+  requireExecutionReviewWriter,
   type ExecutionWriterGlobal,
 } from './execution-run-protocol.js';
 import {
@@ -145,7 +146,18 @@ import {
   type ExecutionReviewAttempt,
   type ExecutionReviewTarget,
 } from './execution-review-contract.js';
-import { executionReviewTarget, prepareExecutionReview } from './execution-review-state.js';
+import {
+  executionReviewTarget,
+  prepareExecutionReview,
+  readExecutionReviewState,
+} from './execution-review-state.js';
+import {
+  ExecutionReviewReadAuthorities,
+  ExecutionReviewReadError,
+  type ExecutionReviewReadGrant,
+  type ExecutionReviewReadLocator,
+  type OpenedExecutionReviewRead,
+} from './execution-review-read-authority.js';
 import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import {
   ARTIFACT_FILE_LIMITS,
@@ -960,6 +972,7 @@ function rejectionDetails(
 
 /** Serializes durable execution commands. One user command writes one node record. */
 export class ExecutionService {
+  private reviewReadAuthorities: ExecutionReviewReadAuthorities | undefined;
   private writes: Promise<unknown> = Promise.resolve();
   private readonly runLifetime = new AbortController();
   private readonly runChanges = new Set<() => void>();
@@ -1427,6 +1440,101 @@ export class ExecutionService {
         'review',
       );
     });
+  }
+
+  /** Genuine read-only capability. No native session/model send or ballot rights. */
+  openExpertReviewRead(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<OpenedExecutionReviewRead>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(
+        z.strictObject({
+          spaceId: id,
+          taskId: id,
+          planId: id,
+          revision: z.number().int().positive(),
+          nodeId: id,
+          runId: id,
+        }),
+        body,
+      );
+      if (!parsed.ok) return parsed;
+      const host = this.requireRunHost();
+      const resolve = (locator: ExecutionReviewReadLocator) => {
+        requireExecutionReviewWriter(this.readRunGlobal());
+        const node = this.readRunNode(locator);
+        const attempt =
+          node &&
+          readExecutionReviewState(node)?.attempts.find(
+            (item) => item.scope.runId === locator.runId,
+          );
+        if (!node || !attempt) throw new ExecutionReviewReadError('review-authority-denied');
+        return { scope: attempt.scope, version: attempt.version };
+      };
+      this.reviewReadAuthorities ??= new ExecutionReviewReadAuthorities({
+        signal: AbortSignal.any([host.signal, this.runLifetime.signal]),
+        memberLease: (request) => host.memberLease(request),
+        resolve,
+        assertCurrent: (scope, version) => {
+          if (host !== this.requireRunHost())
+            throw new ExecutionReviewReadError('review-authority-denied');
+          const current = resolve(scope);
+          if (
+            current.version !== version ||
+            canonicalPayload(current.scope) !== canonicalPayload(scope)
+          )
+            throw new ExecutionReviewReadError('review-target-changed');
+          const node = this.readRunNode(scope)!;
+          this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
+          this.assertReviewController(scope.actorId, node);
+          const target = executionReviewTarget(node, scope.spaceId);
+          const reviewer = scope.review.principal.reviewerRef;
+          const plan = createExecutionHandoff(node, this.workbench.readWorkbench());
+          const frozen = plan.participants.find((p) => p.id === reviewer.id);
+          const live = this.workbench
+            .readWorkbench()
+            .participants.find((p) => p.id === reviewer.id);
+          const round = node.rounds.find((r) => r.id === target.roundId)!;
+          if (
+            canonicalPayload(target) !== canonicalPayload(scope.review.target) ||
+            !frozen ||
+            frozen.kind !== 'expert' ||
+            !frozen.available ||
+            !frozen.instructions.trim() ||
+            reviewer.version !== node.planId ||
+            createHash('sha256').update(canonicalPayload(frozen)).digest('hex') !==
+              reviewer.digest ||
+            !live ||
+            live.kind !== 'expert' ||
+            !live.available ||
+            !node.handoff.reviewerIds.includes(reviewer.id) ||
+            !round.reviewerIds.includes(reviewer.id) ||
+            round.ballots.some(
+              (ballot) => ballot.reviewerId === reviewer.id && ballot.action !== 'comment',
+            )
+          )
+            throw new ExecutionReviewReadError('review-target-changed');
+        },
+        onChange: (recheck) => {
+          const stop = host.onChange(recheck);
+          this.runChanges.add(recheck);
+          return () => {
+            this.runChanges.delete(recheck);
+            stop();
+          };
+        },
+      });
+      return { ok: true, value: await this.reviewReadAuthorities.open(original, parsed.value) };
+    });
+  }
+
+  /** Owner identity is checked before inspecting any purported grant fields. */
+  assertExpertReviewReadGrant(grant: ExecutionReviewReadGrant): void {
+    if (!this.reviewReadAuthorities) throw new ExecutionReviewReadError('review-authority-denied');
+    this.reviewReadAuthorities.assertGrant(grant);
   }
 
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
@@ -2458,6 +2566,7 @@ export class ExecutionService {
     } catch (error) {
       if (
         error instanceof ExecutionReviewError ||
+        error instanceof ExecutionReviewReadError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunProtocolError ||
@@ -4763,6 +4872,7 @@ export class ExecutionService {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
       if (
         error instanceof ArtifactUploadError ||
+        error instanceof ExecutionReviewReadError ||
         error instanceof ExecutionReviewError ||
         error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunError ||

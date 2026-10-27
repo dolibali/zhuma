@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { applyWorkbenchCommand } from '@zhuma/agent-core';
+import { applyWorkbenchCommand, nodeRecordKey } from '@zhuma/agent-core';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { open, caller, checked, refused } from './execution-service-run-fixture.mjs';
 import { businessHashes } from './execution-native-result-service-fixture.mjs';
@@ -374,4 +374,159 @@ test('original storage guard refuses a legacy writer that drops review metadata 
   await assert.rejects(h.service.writeNode(dropped), { code: 'run-state-invalid' });
   assert.deepEqual(await businessHashes(h.root), before);
   assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+});
+
+async function readAuthority(h) {
+  const prepared = checked(await h.service.prepareExpertReview(h.request, await body(h)));
+  const locator = { ...h.locate(), spaceId: 'north', runId: prepared.attempt.scope.runId };
+  return { locator, ...checked(await h.service.openExpertReviewRead(h.request, locator)) };
+}
+
+test('review read authority: original live member opens a genuine immutable read grant with zero read-time writes', async (t) => {
+  const h = await host(t),
+    owned = await readAuthority(h),
+    grant = owned.grant;
+  const before = await businessHashes(h.root);
+  h.resetCounts();
+  assert.equal(grant.purpose, 'review-target');
+  assert.equal(grant.scope.actorId, 'chen');
+  assert.equal(grant.assertCurrent('read-target'), undefined);
+  assert.equal(h.service.assertExpertReviewReadGrant(grant), undefined);
+  assert.ok(Object.isFrozen(grant.scope.review.target));
+  for (const clone of [
+    { ...grant },
+    structuredClone({ purpose: grant.purpose, scope: grant.scope }),
+    {},
+  ]) {
+    assert.throws(() => h.service.assertExpertReviewReadGrant(clone), {
+      code: 'review-authority-denied',
+    });
+  }
+  assert.throws(() => ({ ...grant }).assertCurrent('read-target'), {
+    code: 'review-authority-denied',
+  });
+  assert.throws(() => grant.assertCurrent('send'), { code: 'review-authority-denied' });
+  assert.throws(() => h.authorities.assertGrant(grant, 'send'), { code: 'run-authority-denied' });
+  owned.dispose();
+  owned.dispose();
+  assert.equal(grant.signal.aborted, true);
+  assert.throws(() => grant.assertCurrent('read-target'), { code: 'review-authority-denied' });
+  assert.deepEqual(await businessHashes(h.root), before);
+  assert.deepEqual(h.counters, { nodes: 0, plans: 0, global: 0 });
+});
+
+test('review read authority: JSON member snapshots, another controller and another Service cannot borrow the capability', async (t) => {
+  const h = await host(t),
+    owned = await readAuthority(h),
+    other = await host(t);
+  t.after(() => owned.dispose());
+  refused(
+    await h.service.openExpertReviewRead(
+      { headers: {}, member: { ok: true, memberId: 'chen' } },
+      owned.locator,
+    ),
+    'review-authority-denied',
+  );
+  const outsider = Object.freeze({ headers: {} });
+  h.members.set(outsider, 'outside');
+  refused(await h.service.openExpertReviewRead(outsider, owned.locator), 'review-authority-denied');
+  refused(
+    await h.service.openExpertReviewRead(h.request, { ...owned.locator, actorId: 'chen' }),
+    'actor-from-body',
+  );
+  assert.throws(() => other.service.assertExpertReviewReadGrant(owned.grant), {
+    code: 'review-authority-denied',
+  });
+  assert.equal(owned.grant.signal.aborted, false);
+});
+
+test('review read authority: peer review preparations and ballots keep exact target permission; a returned round revokes it', async (t) => {
+  const h = await host(t),
+    owned = await readAuthority(h);
+  t.after(() => owned.dispose());
+  checked(
+    await h.service.prepareExpertReview(
+      h.request,
+      await body(h, {
+        requestId: 'peer-preparation',
+        reviewerRef: { id: 'qa-two', version: owned.grant.scope.planId },
+      }),
+    ),
+  );
+  const round = h.read().rounds[0];
+  checked(
+    await h.service.ballot(caller('outside'), {
+      ...h.human('produce', 'peer-comment'),
+      roundId: round.id,
+      artifactVersionId: round.artifactVersionId,
+      action: 'comment',
+      comment: 'Clarify the error code.',
+    }),
+  );
+  assert.equal(owned.grant.assertCurrent('read-target'), undefined);
+  assert.equal(owned.grant.signal.aborted, false);
+  const latest = h.read();
+  await h.domain.table('nodes').put(nodeRecordKey(latest), {
+    ...latest,
+    command: { ...latest.command, version: latest.command.version + 1 },
+  });
+  assert.equal(
+    owned.grant.assertCurrent('read-target'),
+    undefined,
+    'ordinary node CAS version is not the fixed review target',
+  );
+  checked(
+    await h.service.ballot(caller('outside'), {
+      ...h.human('produce', 'peer-return'),
+      roundId: round.id,
+      artifactVersionId: round.artifactVersionId,
+      action: 'request-changes',
+      comment: 'Missing invalid challenge handling.',
+    }),
+  );
+  assert.equal(owned.grant.signal.aborted, true);
+  assert.throws(() => h.service.assertExpertReviewReadGrant(owned.grant), {
+    code: 'review-authority-denied',
+  });
+});
+
+for (const revoke of ['member', 'host', 'expert'])
+  test(`review read authority: ${revoke} revocation aborts the retained capability`, async (t) => {
+    const h = await host(t),
+      owned = await readAuthority(h);
+    t.after(() => owned.dispose());
+    if (revoke === 'member') h.member.abort();
+    else if (revoke === 'host') h.source.abort();
+    else
+      h.setWorkbench((w) => ({
+        ...w,
+        participants: w.participants.map((p) => (p.id === 'qa' ? { ...p, available: false } : p)),
+      }));
+    assert.equal(owned.grant.signal.aborted, true);
+    assert.throws(() => owned.grant.assertCurrent('read-target'), {
+      code: 'review-authority-denied',
+    });
+  });
+
+test('review read authority: expiration and failed lease release fail closed without reviving old grants', async (t) => {
+  const h = await host(t);
+  const initial = await readAuthority(h);
+  initial.dispose();
+  h.faults.leaseDurationMs = 1000;
+  const owned = {
+    locator: initial.locator,
+    ...checked(await h.service.openExpertReviewRead(h.request, initial.locator)),
+  };
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(owned.grant.signal.aborted, true);
+  h.faults.leaseDurationMs = 60_000;
+  const next = checked(await h.service.openExpertReviewRead(h.request, owned.locator));
+  h.faults.release = true;
+  next.dispose();
+  h.faults.release = false;
+  refused(
+    await h.service.openExpertReviewRead(h.request, owned.locator),
+    'review-authority-denied',
+  );
+  assert.equal(next.grant.signal.aborted, true);
 });

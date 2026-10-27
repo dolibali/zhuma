@@ -249,7 +249,7 @@ export async function open(
           let released = false;
           return {
             memberId,
-            expiresAt: Date.now() + 60_000,
+            expiresAt: Date.now() + (faults.leaseDurationMs ?? 60_000),
             signal: member.signal,
             assertCurrent(spaceId) {
               if (released || member.signal.aborted || spaceId !== 'north')
