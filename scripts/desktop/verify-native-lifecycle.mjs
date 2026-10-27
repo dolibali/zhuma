@@ -20,8 +20,17 @@ import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({
-  options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
+  options: {
+    upstream: { type: 'string' },
+    phase: { type: 'string', default: 'all' },
+    'review-case': { type: 'string' },
+  },
 });
+if (
+  values['review-case'] !== undefined &&
+  (values.phase !== 'host-review-resources' || values['review-case'] !== 'uploaded-file')
+)
+  throw new Error('review-case only supports uploaded-file in host-review-resources.');
 if (
   ![
     'all',
@@ -923,7 +932,7 @@ void publicContract;
       ],
       1,
       {},
-      16,
+      17,
     );
   else if (values.phase === 'host-review-resources')
     verify(
@@ -931,11 +940,13 @@ void publicContract;
       [
         'packages/core/agent-loop/tests/zhuma-host-review-resources.spec.ts',
         '-t',
-        'actual Host independent review:',
+        values['review-case'] === 'uploaded-file'
+          ? 'actual Host independent review: fixed uploaded UTF8 file'
+          : 'actual Host independent review:',
       ],
-      3,
+      values['review-case'] === 'uploaded-file' ? 1 : 4,
       {},
-      14,
+      values['review-case'] === 'uploaded-file' ? 17 : 14,
     );
   else if (values.phase === 'host-project-artifacts')
     verify(
@@ -1057,6 +1068,7 @@ void publicContract;
         patchSha256: hash(patch),
         verifierSha256: hash(fileURLToPath(import.meta.url)),
         phase: values.phase,
+        ...(values['review-case'] ? { reviewCase: values['review-case'] } : {}),
         ...(values.phase === 'host-fixed-publications'
           ? {
               hostFixedPublicationTimings: JSON.parse(

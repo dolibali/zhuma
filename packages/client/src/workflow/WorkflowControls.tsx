@@ -195,7 +195,8 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
     );
   }
   const canResume = view?.state === 'paused' || view?.state === 'requires-resume';
-  const canStart = view?.state === 'inactive' && view.expertNodeCount > 0;
+  const canStart =
+    view?.state === 'inactive' && (view.expertNodeCount > 0 || view.expertReviewRequired === true);
   const selected =
     choices?.models.kind === 'ready' && choices.models.items.some((item) => item.id === modelId);
   const workspaceUnavailable =

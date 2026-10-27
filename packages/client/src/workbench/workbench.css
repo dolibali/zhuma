@@ -1958,7 +1958,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 .zm-table-heading,
 .zm-task-row {
-  grid-template-columns: minmax(180px, 1fr) 136px 96px 92px;
+  grid-template-columns: minmax(180px, 1fr) 136px 96px minmax(170px, 220px);
 }
 .zm-task-row strong {
   font-size: 14px;
@@ -2926,7 +2926,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
   }
   .zm-table-heading,
   .zm-task-row {
-    grid-template-columns: minmax(180px, 1fr) 100px 80px 88px;
+    grid-template-columns: minmax(180px, 1fr) 100px 80px minmax(148px, 180px);
     gap: 10px;
   }
 }
@@ -2947,7 +2947,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
   }
   .zm-table-heading,
   .zm-task-row {
-    grid-template-columns: 1fr 88px;
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 170px);
   }
   .zm-table-heading > :nth-child(2),
   .zm-table-heading > :nth-child(3),
@@ -4105,8 +4105,29 @@ html[data-platform='darwin'] .zm-shell-chrome {
   line-height: 1.5;
 }
 .zhuma .zm-task-progress {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   font-size: 12px;
   color: var(--zm-muted);
+}
+.zhuma .zm-task-progress small {
+  flex-basis: 100%;
+}
+.zhuma .zm-task-progress-compact > span {
+  white-space: nowrap;
+}
+.zhuma .zm-task-state-cell > .zm-status,
+.zhuma .zm-task-state-cell > .zm-badge {
+  color: var(--zm-muted);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 400;
+}
+.zhuma .zm-project-work-list > button > .zm-task-state-cell {
+  flex: 0 1 220px;
 }
 .zm-workflow-controls {
   display: flex;

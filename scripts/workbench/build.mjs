@@ -114,7 +114,7 @@ await writeFile(
   JSON.stringify(
     {
       name: '@zhuma/workbench',
-      version: '0.1.0',
+      version: adapterManifest.version,
       private: true,
       license: 'MIT',
       type: 'module',

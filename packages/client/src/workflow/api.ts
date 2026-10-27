@@ -21,6 +21,7 @@ export interface WorkflowView {
   readonly requiresResume: boolean;
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
+  readonly expertReviewRequired?: boolean;
   readonly intent: {
     readonly intentId: string;
     readonly generation: number;
@@ -148,6 +149,9 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
     requiresResume,
     activeRunCount: integer(item.activeRunCount, 0, 512),
     expertNodeCount: integer(item.expertNodeCount, 0, 1000),
+    ...(item.expertReviewRequired === undefined
+      ? {}
+      : { expertReviewRequired: boolean(item.expertReviewRequired) }),
     intent: intent
       ? {
           intentId: string(intent.intentId),

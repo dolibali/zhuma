@@ -1,6 +1,7 @@
 /** Emitted production Host, original SDK Agent/Skill and real member cookies.
  * Model responses and confirmed plan data are explicit isolated fixtures. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test, beforeEach } from 'vitest';
 const errors = [];
 beforeEach(() => {
@@ -141,6 +142,226 @@ const start = (h) =>
     workspace: { kind: 'text-only' },
     concurrent: 1,
   });
+
+test(
+  'actual Host independent review: fixed uploaded UTF8 file reaches Agent read receipt, ballot and Agent downstream',
+  { timeout: 180000 },
+  async (t) => {
+    const text = '附件约定：保留旧调用方的 status 字段，保持中文文件内容。';
+    const bytes = Buffer.from(text, 'utf8');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const reads = [],
+      fileReads = [];
+    let h, fixed, resourceRef, inputRef, fileId;
+    const adapter = new ScriptedAdapter([
+      (request) => {
+        assert.deepEqual(request.tools.map((item) => item.name).sort(), [
+          'complete_review',
+          'read_review_target',
+        ]);
+        const actual = JSON.stringify(request);
+        assert(!actual.includes(text), 'Catalog must not eagerly inject file bytes');
+        const refs = [...new Set(actual.match(/review_file_[a-f0-9]{64}/gu))];
+        assert.equal(refs.length, 1, 'Select the file reference from the actual Host catalog');
+        resourceRef = refs[0];
+        assert.equal(attempt(h).scope.review.target.artifactVersionId, fixed.id);
+        return tool('read_review_target', { resourceRef, offset: 0, length: bytes.length })();
+      },
+      (request) => {
+        assert.equal(reads.length, 1);
+        const read = reads[0];
+        assert.equal(read.isError, false);
+        const result = read.value;
+        assert.equal(result.ok, true);
+        assert.equal(result.encoding, 'utf-8');
+        assert.equal(result.sha256, sha256);
+        assert.deepEqual(Buffer.from(result.text, 'utf8'), bytes);
+        assert.deepEqual(result.range, { offset: 0, length: bytes.length, total: bytes.length });
+        assert.equal(result.source.resourceRef, resourceRef);
+        assert.equal(result.source.context.review.target.artifactVersionId, fixed.id);
+        assert.equal(result.source.context.review.target.roundId, row(h, 'produce').rounds[0].id);
+        assert.equal(result.source.nativeAgentId, attempt(h).nativeAgentId);
+        assert.equal(read.agentId, attempt(h).nativeAgentId);
+        const actual = JSON.stringify(request);
+        assert(actual.includes(text));
+        assert(actual.includes(sha256));
+        assert(actual.includes(result.readRef));
+        const evidenceRefs = [...new Set(actual.match(/review_read_[a-f0-9]{64}/gu))];
+        assert.deepEqual(
+          evidenceRefs,
+          [result.readRef],
+          'Actual SDK receipt reaches the next model request',
+        );
+        return tool('complete_review', {
+          conclusion: 'approve',
+          rationale: '已读取固定附件的真实 UTF8 字节并核对约定。',
+          anchors: [{ resourceRef, offset: 0, length: bytes.length }],
+          evidenceRefs,
+        })();
+      },
+      (request) => {
+        const actual = JSON.stringify(request);
+        assert(request.tools.some((item) => item.name === 'read_accepted_file'));
+        assert(!actual.includes(text), 'Downstream initially receives only a fixed input catalog');
+        const refs = [...new Set(actual.match(/input_[a-f0-9]{64}/gu))];
+        assert.equal(refs.length, 1);
+        inputRef = refs[0];
+        return tool('read_accepted_file', { inputRef, part: 'files' }, 'list-fixed-files')();
+      },
+      (request) => {
+        assert.equal(fileReads.length, 1);
+        const listed = fileReads[0];
+        assert.equal(listed.isError, false);
+        assert.equal(listed.value.ok, true);
+        assert.equal(listed.value.part, 'files');
+        assert.equal(listed.value.source.artifactVersionId, fixed.id);
+        assert.equal(listed.value.source.version, fixed.version);
+        assert.equal(listed.value.files.length, 1);
+        const file = listed.value.files[0];
+        assert.equal(file.fileId, fixed.files[0].id);
+        assert.equal(file.sha256, sha256);
+        assert.equal(file.bytes, bytes.length);
+        fileId = file.fileId;
+        const actual = JSON.stringify(request);
+        assert(actual.includes(fileId));
+        assert(actual.includes(sha256));
+        assert(!actual.includes(text), 'File list is metadata, never body-read evidence');
+        return tool(
+          'read_accepted_file',
+          { inputRef, part: 'file', fileId, offset: 0, length: bytes.length },
+          'read-fixed-file',
+        )();
+      },
+      (request) => {
+        assert.equal(fileReads.length, 2);
+        const read = fileReads[1];
+        const result = read.value;
+        assert.equal(read.isError, false);
+        assert.equal(result.ok, true);
+        assert.equal(result.part, 'file');
+        assert.equal(result.encoding, 'utf-8');
+        assert.equal(result.source.artifactVersionId, fixed.id);
+        assert.equal(result.source.version, fixed.version);
+        assert.equal(result.source.file.fileId, fileId);
+        assert.equal(result.source.file.sha256, sha256);
+        assert.equal(result.source.scope.nodeId, 'consume');
+        assert.deepEqual(result.range, { offset: 0, length: bytes.length, total: bytes.length });
+        assert.deepEqual(Buffer.from(result.text, 'utf8'), bytes);
+        assert.equal(
+          read.agentId,
+          row(h, 'consume').nativeExecution.runs.at(-1).attempt.executorRunId,
+        );
+        const actual = JSON.stringify(request);
+        for (const content of [text, fixed.id, fileId, sha256]) assert(actual.includes(content));
+        return tool('complete_work', {
+          text: '已使用评审接受的固定文件完成下游工作。',
+          links: [],
+          publications: [],
+        })();
+      },
+    ]);
+    h = await boot(t, {
+      reviewerExpert: true,
+      adapter,
+      localWorkspace: { configured: false, policyMode: 'read-only' },
+      workflowNodes: (base) =>
+        nodes(base).map((node) => ({ ...node, assigneeId: node.id === 'produce' ? 'chen' : 'qa' })),
+    });
+    observeErrors(h);
+    const stop = h.ctx.on(
+      'tools/result',
+      (exec, result) => {
+        if (exec.name === 'read_accepted_file')
+          fileReads.push({
+            agentId: exec.agent?.id,
+            isError: result.isError,
+            value: result.isError ? undefined : structuredClone(result.value),
+          });
+        if (exec.name === 'read_review_target')
+          reads.push({
+            agentId: exec.agent?.id,
+            isError: result.isError,
+            value: result.isError ? undefined : structuredClone(result.value),
+          });
+      },
+      { global: true },
+    );
+    t.onTestFinished(stop);
+    const target = {
+      taskId: h.locator.taskId,
+      planId: h.locator.planId,
+      revision: h.locator.revision,
+      nodeId: 'produce',
+    };
+    const uploaded = await fetch(h.base + '/api/zhuma-exec/upload-file', {
+      method: 'POST',
+      headers: {
+        cookie: h.cookie,
+        origin: h.base,
+        'content-type': 'application/octet-stream',
+        'x-zhuma-file-name': encodeURIComponent('接口约定.txt'),
+        'x-zhuma-file-type': 'text/plain',
+        'x-zhuma-file-size': String(bytes.length),
+        'x-zhuma-file-sha256': sha256,
+        'x-zhuma-space': 'north',
+        'x-zhuma-task': target.taskId,
+        'x-zhuma-plan': target.planId,
+        'x-zhuma-revision': String(target.revision),
+        'x-zhuma-node': target.nodeId,
+        'x-zhuma-idempotency-key': 'fixed-review-file',
+      },
+      body: bytes,
+    });
+    assert.equal(uploaded.status, 200);
+    const receipt = await uploaded.json();
+    assert.equal(receipt.ok, true);
+    assert.equal(receipt.value.reference.checksum, sha256);
+    const submitted = checked(
+      await h.rpc('exec', 'submit', {
+        ...target,
+        expectedVersion: row(h, 'produce').command.version,
+        idempotencyKey: 'submit-fixed-file',
+        files: [receipt.value.reference],
+        links: [],
+      }),
+    );
+    fixed = row(h, 'produce').artifactVersions.find(
+      (item) => item.id === submitted.node.rounds[0].artifactVersionId,
+    );
+    assert.ok(fixed);
+    assert.equal(fixed.version, 1);
+    assert.equal(fixed.text, undefined);
+    assert.deepEqual(fixed.files, [receipt.value.reference]);
+    assert.equal(row(h, 'consume').command.status, 'blocked');
+    checked(await start(h));
+    await wait(
+      h,
+      () =>
+        row(h, 'produce')?.command.status === 'completed' &&
+        row(h, 'consume')?.command.status === 'completed' &&
+        row(h, 'consume')?.nativeExecution?.runs.at(-1)?.resources === 'settled' &&
+        attempt(h)?.resources === 'settled' &&
+        h.ctx.agents.list().length === 0,
+    );
+    const accepted = row(h, 'produce');
+    assert.equal(accepted.acceptedArtifactVersionId, fixed.id);
+    assert.equal(accepted.rounds[0].ballots.length, 1);
+    assert.equal(accepted.rounds[0].ballots[0].reviewerId, 'qa-review');
+    assert.equal(attempt(h).status, 'completed');
+    const downstream = row(h, 'consume');
+    assert(
+      downstream.handoff.inputRefs.some(
+        (input) => input.sourceNodeId === 'produce' && input.artifactVersionId === fixed.id,
+      ),
+    );
+    assert.equal(adapter.script.length, 0);
+    assert.equal(adapter.requests.length, 5);
+    assert.equal(h.ctx.agents.list().length, 0);
+    await h.host.dispose();
+    assert.equal(h.counts.nativeClosed, 1);
+    assert.equal(h.counts.executionClosed, 1);
+  },
+);
 
 test(
   'actual Host independent review: real selected Skill and fixed read precede atomic expert ballot and downstream',

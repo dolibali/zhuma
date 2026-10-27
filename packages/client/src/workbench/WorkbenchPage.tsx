@@ -573,7 +573,6 @@ export function WorkbenchPage({
       ? state.tasks
           .filter((task) => task.projectId === activeProject.id)
           .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-          .filter((task) => projectTab === 'overview' || matches(`${task.title} ${task.goal}`))
           .slice(0, projectTab === 'overview' ? 5 : undefined)
       : section === 'tasks'
         ? tasks
@@ -867,6 +866,7 @@ export function WorkbenchPage({
                     onClick={() => {
                       setActiveProjectId(p.id);
                       setProjectTab('work');
+                      setSearch('');
                       newTask(p.id);
                     }}
                   >
@@ -928,13 +928,14 @@ export function WorkbenchPage({
                     {t.workflows.length > 1 && <small>{t.workflows.length} 个工作流</small>}
                   </span>
                   <span className="zm-task-state-cell">
-                    <span className={`zm-status ${t.status}`}>
-                      {t.status === 'draft' ? '计划草稿' : '计划已确认'}
-                    </span>
                     <TaskProgressSummary
                       progress={progressFor(t.id)}
                       confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
+                      compact
                     />
+                    <span className={`zm-status ${t.status}`}>
+                      {t.status === 'draft' ? '计划草稿' : '计划已确认'}
+                    </span>
                   </span>
                 </button>
               ))}

@@ -39,6 +39,8 @@ export interface HostWorkflowView {
   readonly requiresResume: boolean;
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
+  /** Optional for older clients. Assignment count retains its original meaning. */
+  readonly expertReviewRequired?: boolean;
   readonly intent: {
     readonly intentId: string;
     readonly generation: number;
@@ -191,6 +193,13 @@ export function createHostWorkflowOwner(
       requiresResume: view.requiresResume,
       activeRunCount: view.activeRunIds.length,
       expertNodeCount: nodes.filter((node) => node.assignee.kind === 'expert').length,
+      expertReviewRequired: nodes.some(
+        (node) =>
+          node.reviewRequired &&
+          node.reviewerIds.some((id) =>
+            applied.participants.some((member) => member.id === id && member.kind === 'expert'),
+          ),
+      ),
       intent: view.intent
         ? {
             intentId: view.intent.intentId,

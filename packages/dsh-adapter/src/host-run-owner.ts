@@ -56,6 +56,8 @@ import { frozenHostResultProtocol } from './host-run-result-protocol.js';
 import type { NativeFixedResultRef } from './native-work-session-result-contract.js';
 import type { NativeResultSubmit } from './execution-native-result-delivery.js';
 import { registerNativeAcceptedInputTool } from './native-work-session-input-tool.js';
+import { registerNativeAcceptedFileTool } from './native-work-session-files-tool.js';
+import type { NativeRunAcceptedFiles } from './native-work-session-files-contract.js';
 import { NativeWorkError, type NativeWorkScope } from './native-work-session-contract.js';
 import { nativeScopeKey } from './native-work-session-record.js';
 import { createHostRunWorkspaces, type HostLocalExecutionConfig } from './host-run-workspaces.js';
@@ -156,6 +158,7 @@ export async function openHostRunOwner(
   let results: NativeFixedResultIssuer | undefined;
   let publications: NativeFixedResultPublicationsIssuer | undefined;
   let outputs: NativeOutputFileIssuer | undefined;
+  let acceptedFiles: NativeRunAcceptedFiles | undefined;
   let workflow: ReturnType<typeof createHostWorkflowOwner> | undefined;
   let fenced = false;
   let retirementDrains: ReturnType<typeof createHostRunRetirements> | undefined;
@@ -219,6 +222,9 @@ export async function openHostRunOwner(
     resources,
     workspaces,
     resultProtocol,
+    acceptedFilesReady() {
+      return resultProtocol() === 2 && acceptedFiles !== undefined;
+    },
   });
   const readOptions = createHostRunOptions(ctx, {
     execution,
@@ -311,6 +317,19 @@ export async function openHostRunOwner(
             },
           );
           baseTools = registered.toolAllowlist;
+        }
+        if (snapshot.schemaVersion === 2 && snapshot.payload.acceptedFileReader) {
+          resultProtocol();
+          if (!acceptedFiles) throw new NativeWorkError('configuration-mismatch');
+          const registered = registerNativeAcceptedFileTool(
+            agentCtx,
+            binding,
+            grant,
+            native.service,
+            authorities,
+            acceptedFiles,
+          );
+          baseTools = [...baseTools, ...registered.toolAllowlist];
         }
         if (snapshot.payload.tools.kind === 'local-tools') {
           const local = workspaces.resolve(binding, grant);
@@ -419,6 +438,15 @@ export async function openHostRunOwner(
       }),
     );
     if (resultProtocol() === 2) {
+      acceptedFiles = execution.createRunAcceptedFiles(authorities, {
+        signal: lifetime.signal,
+        assertCurrent(attachments) {
+          resultProtocol();
+          if (original(attachments) !== attachmentBackend)
+            throw new ExecutionRunError('run-authority-unavailable');
+          return undefined;
+        },
+      });
       outputs = createNativeOutputFileIssuer(
         ctx,
         native.service,

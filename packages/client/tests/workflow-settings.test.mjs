@@ -34,6 +34,7 @@ const { createRoot } = await import('react-dom/client');
 const { emptyWorkbench } = await import('@zhuma/agent-core');
 const { createNativeRunApi } = await import('../dist/run/api.js');
 const { WorkflowControls } = await import('../dist/workflow/WorkflowControls.js');
+const { createWorkflowApi } = await import('../dist/workflow/api.js');
 const { WorkspaceApprovalDialog } = await import('../dist/run/WorkspaceApprovalDialog.js');
 const { SidebarAccountSettingsLauncher } =
   await import('../dist/identity/SidebarAccountSettingsLauncher.js');
@@ -181,6 +182,55 @@ async function choose(item, value) {
     await tick();
   });
 }
+test('workflow review entry wire: optional frozen expert review need is strict and preserves old assignment counts', async () => {
+  let response = { ...view, expertNodeCount: 0, expertReviewRequired: true };
+  const api = createWorkflowApi(async () => response, 'north');
+  assert.equal((await api.read(target, new AbortController().signal)).expertReviewRequired, true);
+  assert.equal((await api.read(target, new AbortController().signal)).expertNodeCount, 0);
+  response = { ...view, expertNodeCount: 0 };
+  assert.equal(
+    (await api.read(target, new AbortController().signal)).expertReviewRequired ?? false,
+    false,
+  );
+  response = { ...response, expertReviewRequired: 'true' };
+  await assert.rejects(api.read(target, new AbortController().signal), { code: 'validation' });
+});
+test(
+  'workflow review entry DOM: human author plus expert reviewer can explicitly configure a model; pure human work does not ask for one',
+  dom,
+  async (t) => {
+    let optionsRead = 0;
+    const reviewView = { ...view, expertNodeCount: 0, expertReviewRequired: true };
+    const h = await mount(t, WorkflowControls, {
+      target,
+      api: {
+        read: async () => reviewView,
+        options: async () => {
+          optionsRead++;
+          return { ...options, ...reviewView };
+        },
+        start: () => assert.fail('Explicit confirmation is required'),
+      },
+    });
+    assert.equal(optionsRead, 0);
+    await click(button(h, '运行工作流'));
+    assert.equal(optionsRead, 1);
+    assert.equal(button(h, '确认运行').disabled, true);
+    await h.update({
+      target,
+      api: {
+        read: async () => ({ ...reviewView, expertReviewRequired: false }),
+        options: () => assert.fail('Pure human work needs no model'),
+      },
+    });
+    assert(
+      ![...h.container.querySelectorAll('button')].some((item) =>
+        item.textContent.includes('运行工作流'),
+      ),
+    );
+    assert.equal(h.container.querySelectorAll('dialog').length, 0);
+  },
+);
 test(
   'workflow settings DOM: empty model explains next action; settings opens only explicitly after closing the foreground dialog',
   dom,

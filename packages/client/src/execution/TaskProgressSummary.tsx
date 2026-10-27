@@ -53,9 +53,11 @@ export function taskProgressFacts(row: TaskProgressRow): string[] {
 export function TaskProgressSummary({
   progress,
   confirmed = false,
+  compact = false,
 }: {
   progress?: TaskProgressState | undefined;
   confirmed?: boolean;
+  compact?: boolean;
 }) {
   if (!progress) return confirmed ? <span className="zm-muted">进度尚未接通</span> : null;
   if (progress.state === 'loading') return <span className="zm-muted">正在读取进度…</span>;
@@ -67,11 +69,15 @@ export function TaskProgressSummary({
     );
   const row = progress.row;
   return (
-    <span className="zm-task-progress" aria-label="当前确认计划进度">
-      {taskProgressFacts(row).map((fact) => (
+    <span
+      className={`zm-task-progress${compact ? ' zm-task-progress-compact' : ''}`}
+      aria-label="当前确认计划进度"
+      title={row.facts === 'unknown' ? unknownLabels[row.reason] : undefined}
+    >
+      {(compact && row.facts === 'unknown' ? ['进度未知'] : taskProgressFacts(row)).map((fact) => (
         <span key={fact}>{fact}</span>
       ))}
-      {row.facts !== 'unknown' && (
+      {!compact && row.facts !== 'unknown' && (
         <small>
           分配：人工 {row.assigneeCounts.human} · 专家 {row.assigneeCounts.expert}
         </small>

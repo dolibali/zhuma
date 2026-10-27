@@ -21,6 +21,8 @@ if (domModule) {
     'Event',
     'MouseEvent',
     'MutationObserver',
+    'HTMLInputElement',
+    'ResizeObserver',
   ]) {
     Object.defineProperty(globalThis, name, {
       configurable: true,
@@ -79,7 +81,120 @@ test('task progress UI: execution, review, current acceptance and held resources
   );
   assert.match(project, /产物全部已接受 5\/5/);
   assert.match(project, /计划草稿/); // A newer draft does not erase an earlier confirmed delivery.
+  assert.doesNotMatch(project, /分配：|人工 3|专家 2/);
+  const compact = renderToStaticMarkup(
+    el(TaskProgressSummary, { compact: true, progress: { state: 'ready', row: unknown() } }),
+  );
+  assert.match(compact, /进度未知/);
+  assert.doesNotMatch(compact, /\d+\s*\/\s*\d+|100%|分配：/);
 });
+
+test(
+  'project directory shortcut: searching the project then creating/cancelling a task still reads existing confirmed task progress',
+  { skip: !domModule },
+  async (t) => {
+    const { WorkbenchPage } = await import('../dist/workbench/WorkbenchPage.js');
+    const { applyWorkbenchCommand } = await import('@zhuma/agent-core');
+    const data = fixture();
+    const state = applyWorkbenchCommand(data.state, {
+      type: 'save-task',
+      task: { ...data.task, title: '账号登录', goal: '实现登录能力', status: 'ready' },
+    });
+    const calls = [];
+    const props = {
+      initialSection: 'projects',
+      api: { snapshot: async () => ({ state: structuredClone(state), model: 'contract' }) },
+      appearance: { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} },
+      projectExecution: {
+        spaceId: 'north',
+        api: {
+          taskProgress: {
+            async read(query) {
+              calls.push(query);
+              return value(
+                query.plans.map((target) =>
+                  row({
+                    target,
+                    expectedNodes: 1,
+                    acceptedNodes: 1,
+                    delivery: 'all-accepted',
+                    byStatus: { ...row().byStatus, running: 0, 'in-review': 0, completed: 1 },
+                    assigneeCounts: { human: 1, expert: 0 },
+                    resources: { authorHeld: 0, reviewHeld: 0, stopRequested: 0 },
+                  }),
+                ),
+              );
+            },
+          },
+        },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    t.after(async () => {
+      await act(async () => root.unmount());
+      container.remove();
+    });
+    await act(async () => {
+      root.render(el(WorkbenchPage, props));
+      await tick();
+    });
+    assert.equal(calls.length, 0);
+    const search = container.querySelector('input[aria-label="搜索项目"]');
+    assert.ok(search);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(
+        search,
+        '客户门户',
+      );
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick();
+    });
+    assert.equal(search.value, '客户门户');
+    const project = container.querySelector('article[aria-label="客户门户"]');
+    assert.ok(project);
+    await act(async () => {
+      [...project.querySelectorAll('button')]
+        .find(
+          (button) =>
+            (button.querySelector('.zm-button-label')?.textContent ?? button.textContent).trim() ===
+            '创建任务',
+        )
+        .click();
+      await tick();
+    });
+    const modal = container.querySelector('dialog');
+    assert.ok(modal);
+    await act(async () => {
+      [...modal.querySelectorAll('button')]
+        .find(
+          (button) =>
+            (button.querySelector('.zm-button-label')?.textContent ?? button.textContent).trim() ===
+            '取消',
+        )
+        .click();
+      await tick();
+    });
+    assert.equal(calls.length, 1, 'The project search must not filter the task progress targets');
+    assert.equal(calls[0].plans[0].taskId, data.task.id);
+    assert.match(container.textContent, /账号登录/);
+    assert.match(container.textContent, /产物全部已接受 1\/1/);
+    assert.doesNotMatch(container.textContent, /正在读取进度/);
+    await act(async () => {
+      [...container.querySelectorAll('button')]
+        .find(
+          (button) =>
+            (button.querySelector('.zm-button-label')?.textContent ?? button.textContent).trim() ===
+            '刷新',
+        )
+        .click();
+      await tick();
+    });
+    assert.equal(calls.length, 2);
+    assert.match(container.textContent, /产物全部已接受 1\/1/);
+  },
+);
 
 test(
   'task progress DOM: sequential batches <=5, original API/space/plan generations and late replies cannot restore old rows',
