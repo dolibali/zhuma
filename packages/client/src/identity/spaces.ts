@@ -44,7 +44,14 @@ export function createMemberSpaceController(
     pending?.abort();
     pending = undefined;
   }
-  async function refresh(requestedSpaceId?: string, keepCurrent = false, explicit = false) {
+  async function refresh(
+    requestedSpaceId?: string,
+    keepCurrent = false,
+    explicit = false,
+    caller?: AbortSignal,
+  ) {
+    if (caller?.aborted) return;
+    const before = state;
     const restoring =
       !explicit &&
       restoringPreference !== undefined &&
@@ -61,6 +68,22 @@ export function createMemberSpaceController(
         : { status: 'checking', session: state.session, epoch, requestedSpaceId: targetId },
     );
     const current = () => epoch === currentEpoch && !request.signal.aborted;
+    const cancelled = () => {
+      if (epoch !== currentEpoch) return;
+      cancel();
+      publish(
+        before.status === 'ready'
+          ? { ...before, epoch, refreshing: false }
+          : {
+              status: 'error',
+              session: before.session,
+              epoch,
+              error: new IdentityApiError('unavailable'),
+            },
+      );
+    };
+    caller?.addEventListener('abort', cancelled, { once: true });
+    if (caller?.aborted) cancelled();
     try {
       const session = await api.session(request.signal);
       if (!current()) return;
@@ -111,6 +134,7 @@ export function createMemberSpaceController(
       )
         invalidate();
     } finally {
+      caller?.removeEventListener('abort', cancelled);
       if (current()) pending = undefined;
     }
   }
@@ -132,10 +156,11 @@ export function createMemberSpaceController(
         true,
       );
     },
-    select(spaceId: string) {
+    select(spaceId: string, signal?: AbortSignal) {
+      if (signal?.aborted) return Promise.resolve();
       if (state.status === 'ready' && state.space.id === spaceId) return Promise.resolve();
       restoringPreference = undefined;
-      return refresh(spaceId, false, true);
+      return refresh(spaceId, false, true, signal);
     },
     /** Used by the scoped transport after a membership failure; no stale content remains visible. */
     invalidate(expectedEpoch: number) {

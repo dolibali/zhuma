@@ -235,7 +235,7 @@ export function openHostLocalSetup(options: {
       if (configured && canonicalPayload(configured) !== canonicalPayload(grants))
         throw new HostLocalSetupError('conflict');
       try {
-        await owner.initializeAccount({
+        const result = await owner.initializeAccount({
           requestId: input.requestId,
           accountId: input.accountId,
           password: input.password,
@@ -245,6 +245,21 @@ export function openHostLocalSetup(options: {
         });
         current(owner);
         if (owner.readSetup()) await establish(owner.readSetup(), owner);
+        if (result.kind === 'initialized') {
+          const checked = parse(owner.readSetup());
+          const team = checked.directory.space(checked.grants[0]!.spaceId);
+          if (
+            checked.value.requestId !== input.requestId ||
+            !team ||
+            team.kind !== 'team' ||
+            !checked.directory.isMember(team.id, input.accountId)
+          )
+            return unavailable();
+          return {
+            ...operations.status(),
+            createdTeam: { id: team.id, kind: 'team', name: team.name },
+          };
+        }
         return operations.status();
       } catch (error) {
         if (error instanceof HostLocalSetupError) throw error;

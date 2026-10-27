@@ -1,3 +1,4 @@
+import type { MemberSpace } from './api.js';
 export interface LocalSetupPack {
   readonly id: string;
   readonly version: '1.0.0';
@@ -6,8 +7,13 @@ export interface LocalSetupPack {
 }
 export type LocalSetupSnapshot =
   | {
-      readonly kind: 'unconfigured' | 'configured' | 'recovery-required';
+      readonly kind: 'unconfigured' | 'recovery-required';
       readonly packs: readonly LocalSetupPack[];
+    }
+  | {
+      readonly kind: 'configured';
+      readonly packs: readonly LocalSetupPack[];
+      readonly createdTeam?: MemberSpace;
     }
   | {
       readonly kind: 'pending';
@@ -75,9 +81,26 @@ function snapshot(raw: unknown): LocalSetupSnapshot {
     seen.add(pack.id);
     return Object.freeze({ id: pack.id, version: pack.version, name: pack.name, role: pack.role });
   });
+  let createdTeam: MemberSpace | undefined;
+  if (raw.createdTeam !== undefined) {
+    const team = raw.createdTeam;
+    if (
+      raw.kind !== 'configured' ||
+      !record(team) ||
+      typeof team.id !== 'string' ||
+      !/^[\w-]{1,100}$/u.test(team.id) ||
+      team.kind !== 'team' ||
+      typeof team.name !== 'string' ||
+      !team.name ||
+      team.name.length > 160
+    )
+      throw new LocalSetupApiError('invalid-response');
+    createdTeam = Object.freeze({ id: team.id, kind: 'team', name: team.name });
+  }
   return Object.freeze({
     kind: raw.kind,
     ...(raw.kind === 'pending' ? { requestId: raw.requestId } : {}),
+    ...(createdTeam ? { createdTeam } : {}),
     packs: Object.freeze(packs),
   }) as LocalSetupSnapshot;
 }

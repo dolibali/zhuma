@@ -1,11 +1,13 @@
 /** Exact emitted Host, real SDK/HTTP/JSON and two-process first setup; no bootstrap or model generation. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { startAcceptanceHost } from './fixtures/m1-acceptance-harness.mjs';
 
 const settings = { deploymentMode: 'multi-member', localSetup: true };
@@ -41,12 +43,40 @@ const facts = async (home) =>
     ),
   );
 const completed = [];
-async function proof(host, name) {
+async function publicClient() {
+  const built = await build({
+    stdin: {
+      contents:
+        "export {createLocalSetupApi,createIdentityApi,createMemberShell,enterTeamAfterLocalSetup} from '@zhuma/client';",
+      resolveDir: fileURLToPath(new URL('../../client', import.meta.url)),
+      sourcefile: 'first-setup-public-client-proof.mjs',
+    },
+    bundle: true,
+    write: false,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    loader: { '.css': 'text' },
+    define: { 'process.env.NODE_ENV': '"production"' },
+    metafile: true,
+  });
+  assert.equal(
+    Object.keys(built.metafile.inputs).some((path) => /dsh-adapter\/src\//u.test(path)),
+    false,
+  );
+  const bytes = built.outputFiles[0].contents;
+  return {
+    api: await import(`data:text/javascript;base64,${Buffer.from(bytes).toString('base64')}`),
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  };
+}
+async function proof(host, name, publicClientSha256) {
   completed.push({
     name,
     passed: true,
     sourceHead: host.boundModule.sourceSha,
     hostSha256: host.boundModule.contentDigest,
+    ...(publicClientSha256 ? { publicClientSha256 } : {}),
   });
   if (process.env.S1A_FIRST_SETUP_PROOF_FILE)
     await writeFile(
@@ -68,7 +98,7 @@ test(
   { skip: !process.env.S1A_HOST_MODULE, timeout: 30_000 },
   async () => {
     const home = await mkdtemp(join(tmpdir(), 'zhuma-first-setup-normal-'));
-    let host;
+    let host, shell;
     const value = input();
     try {
       host = await startAcceptanceHost(home, settings);
@@ -88,11 +118,53 @@ test(
         before,
         'Rejected inputs must not initialize business facts',
       );
-      const created = okay(await initialize(host, value));
+      const client = await publicClient();
+      let clientCookie;
+      // Test-only browser cookie carrier; identity and directory decisions stay
+      // in the actual Host and public Client controllers, not this adapter.
+      const fetcher = async (url, options = {}) => {
+        const headers = new Headers(options.headers);
+        headers.set('origin', host.baseURL);
+        headers.set('cookie', `${host.ownerCookie}${clientCookie ? '; ' + clientCookie : ''}`);
+        const response = await fetch(host.baseURL + url, { ...options, headers });
+        const issued = response.headers
+          .getSetCookie()
+          .find((line) => line.startsWith('zhuma-member='));
+        if (issued) clientCookie = issued.split(';')[0];
+        return response;
+      };
+      const selected = [];
+      shell = client.api.createMemberShell(client.api.createIdentityApi(fetcher), {
+        read: () => undefined,
+        save: (_account, id) => selected.push(id),
+        clearIfMatches: () => {},
+      });
+      shell.start();
+      await shell.session.restore();
+      assert.notEqual(shell.session.getSnapshot().status, 'authenticated');
+      const created = await client.api
+        .createLocalSetupApi(fetcher)
+        .initialize(value, new AbortController().signal);
       assert.equal(created.kind, 'configured');
+      assert.deepEqual(created.createdTeam, {
+        id: `team-${value.requestId}`,
+        kind: 'team',
+        name: value.teamName,
+      });
       assert.equal(JSON.stringify(created).includes('setupContext'), false);
       assert.equal(JSON.stringify(created).includes(value.password), false);
-      let cookie = await host.login(value.accountId, value.password);
+      await client.api.enterTeamAfterLocalSetup(
+        shell,
+        { accountId: value.accountId, password: value.password },
+        created.createdTeam,
+        new AbortController().signal,
+      );
+      assert.equal(shell.session.getSnapshot().status, 'authenticated');
+      assert.equal(shell.space.getSnapshot().status, 'ready');
+      assert.equal(shell.space.getSnapshot().space.id, created.createdTeam.id);
+      assert.deepEqual(selected, [created.createdTeam.id]);
+      let cookie = clientCookie;
+      assert.ok(cookie);
       const rpc = async (endpoint, payload) => {
         const reply = await host.post(
           '/api/zhuma-member/' + endpoint,
@@ -131,6 +203,8 @@ test(
       assert.equal(snapshot.state.projects.length, 1);
       const stored = await facts(home),
         oldPid = host.child.pid;
+      shell.stop();
+      shell = undefined;
       await host.close();
       host = undefined;
       host = await startAcceptanceHost(home, settings);
@@ -151,8 +225,9 @@ test(
         'Normal projectSpaces growth must not invalidate the original setup pin or rewrite facts',
       );
       assert.equal((await host.act('inspect')).modelCalls, 0);
-      await proof(host, 'normal-first-setup-and-project-cold-open');
+      await proof(host, 'normal-first-setup-and-project-cold-open', client.sha256);
     } finally {
+      shell?.stop();
       await host?.close();
       await rm(home, { recursive: true, force: true });
     }

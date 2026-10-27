@@ -13,7 +13,7 @@ import { MemberExecutionPage } from '../execution/MemberExecutionPage.js';
 import { createIdentityApi } from '../identity/api.js';
 import { createMemberShell } from '../identity/shell.js';
 import { SidebarAccountSettingsLauncher } from '../identity/SidebarAccountSettingsLauncher.js';
-import { LocalSetupBoundary, loginAfterLocalSetup } from '../identity/LocalSetupBoundary.js';
+import { LocalSetupBoundary, enterTeamAfterLocalSetup } from '../identity/LocalSetupBoundary.js';
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 import nativeRunStyles from '../run/NativeRunPanel.css';
@@ -187,8 +187,8 @@ export function apply(ctx: Context): void {
           );
           return localSetup ? (
             <LocalSetupBoundary
-              onInitialized={(credentials, signal) =>
-                loginAfterLocalSetup(memberShell.session, credentials, signal)
+              onInitialized={(credentials, team, signal) =>
+                enterTeamAfterLocalSetup(memberShell, credentials, team, signal)
               }
             >
               {content}

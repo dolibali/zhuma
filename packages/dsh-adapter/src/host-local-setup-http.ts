@@ -28,6 +28,8 @@ export type HostLocalSetupInput = z.infer<typeof hostLocalSetupInputSchema>;
 export interface HostLocalSetupSnapshot {
   readonly kind: 'unconfigured' | 'pending' | 'configured' | 'recovery-required';
   readonly requestId?: string;
+  /** Only the matching successful initialization POST returns this live directory receipt. */
+  readonly createdTeam?: { readonly id: string; readonly kind: 'team'; readonly name: string };
   readonly packs: readonly {
     readonly id: (typeof localSetupPackIds)[number];
     readonly version: '1.0.0';

@@ -8,6 +8,7 @@ export {
   type MemberSpace,
 } from './api.js';
 export { createMemberSessionController, type MemberSessionState } from './session.js';
+export { enterTeamAfterLocalSetup } from './LocalSetupBoundary.js';
 export {
   createLocalSetupApi,
   LocalSetupApiError,

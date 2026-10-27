@@ -1,8 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
-import type { LoginCredentials } from './api.js';
-import type { MemberSessionController } from './shell.js';
+import type { LoginCredentials, MemberSpace } from './api.js';
+import type { MemberSessionController, MemberShell } from './shell.js';
 import {
   createLocalSetupApi,
   LocalSetupApiError,
@@ -21,6 +21,45 @@ export async function loginAfterLocalSetup(
   await session.restore();
   signal.throwIfAborted();
   await session.login(credentials);
+}
+
+/** The POST receipt nominates a team; the existing space controller still
+ * re-reads membership, selects it and persists the confirmed preference. */
+export async function enterTeamAfterLocalSetup(
+  shell: MemberShell,
+  credentials: LoginCredentials,
+  team: MemberSpace | undefined,
+  signal: AbortSignal,
+): Promise<void> {
+  await loginAfterLocalSetup(shell.session, credentials, signal);
+  signal.throwIfAborted();
+  if (!team) return;
+  const member = shell.session.getSnapshot(),
+    space = shell.space;
+  if (
+    member.status !== 'authenticated' ||
+    member.session.accountId !== credentials.accountId ||
+    !space
+  )
+    throw new LocalSetupApiError('unavailable');
+  await space.refresh();
+  signal.throwIfAborted();
+  const current = () => {
+    const now = shell.session.getSnapshot();
+    return shell.space === space && now.status === 'authenticated' && now.epoch === member.epoch;
+  };
+  if (!current() || space.getSnapshot().status !== 'ready')
+    throw new LocalSetupApiError('unavailable');
+  await space.select(team.id, signal);
+  signal.throwIfAborted();
+  const selected = space.getSnapshot();
+  if (
+    !current() ||
+    selected.status !== 'ready' ||
+    selected.space.id !== team.id ||
+    selected.space.kind !== 'team'
+  )
+    throw new LocalSetupApiError('unavailable');
 }
 
 export function LocalSetupForm({
@@ -197,7 +236,11 @@ export function LocalSetupBoundary({
   fetcher = globalThis.fetch,
 }: {
   readonly children: ReactNode;
-  onInitialized(credentials: LoginCredentials, signal: AbortSignal): Promise<void>;
+  onInitialized(
+    credentials: LoginCredentials,
+    team: MemberSpace | undefined,
+    signal: AbortSignal,
+  ): Promise<void>;
   fetcher?: typeof fetch;
 }) {
   const api = useMemo(() => createLocalSetupApi(fetcher), [fetcher]);
@@ -251,6 +294,7 @@ export function LocalSetupBoundary({
               );
             await onInitialized(
               { accountId: input.accountId, password: input.password },
+              result.createdTeam,
               current.signal,
             );
             current.signal.throwIfAborted();
