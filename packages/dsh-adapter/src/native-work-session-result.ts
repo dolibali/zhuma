@@ -150,6 +150,9 @@ export interface NativeFixedResultPublicationsIssuer extends Omit<
 }
 type AnyLease = NativeFixedResultLease | NativeFixedResultPublicationsLease;
 export interface NativeFixedReviewIssuer {
+  /** Wakeup only, never adoption, completion or ballot authority. Optional for
+   * old transaction-only adapters; the automatic bridge requires this view. */
+  onReviewReady?(listener: (grant: NativeWorkGrant, ref: NativeFixedReviewRef) => void): () => void;
   registerNativeReviewTools(
     ctx: Context,
     binding: NativeSessionBinding,
@@ -183,6 +186,7 @@ export function nativeFixedReviewIssuer(
   if (!owner || !sessions.ownsResultRuntime(runtime))
     throw new NativeReviewError('review-unavailable');
   return {
+    onReviewReady: owner.onReviewReady.bind(owner),
     registerNativeReviewTools: owner.registerNativeReviewTools.bind(owner),
     prepareFixedReview: owner.prepareFixedReview.bind(owner),
     assertFixedReview: owner.assertFixedReview.bind(owner),
@@ -297,6 +301,9 @@ function createOwner(
 }
 
 class NativeResultOwner {
+  private readonly reviewListeners = new Set<
+    (grant: NativeWorkGrant, ref: NativeFixedReviewRef) => void
+  >();
   private readonly lifetime = new AbortController();
   private readonly issued = new WeakMap<NativeFixedResultRef, IssuedResult>();
   private readonly ready = new Map<string, NativeFixedResultRef>();
@@ -802,7 +809,23 @@ class NativeResultOwner {
       },
       { once: true },
     );
+    for (const listener of this.reviewListeners) {
+      try {
+        const pending: unknown = listener(grant, ref);
+        void Promise.resolve(pending).catch(() => undefined);
+      } catch {
+        // This is only a wakeup. It cannot change the fixed owner/ref or ballot.
+      }
+    }
     return { status: 'ready', ref };
+  }
+  onReviewReady(listener: (grant: NativeWorkGrant, ref: NativeFixedReviewRef) => void) {
+    if (this.lifetime.signal.aborted || this.reviewListeners.size >= 64)
+      throw new NativeReviewError('review-unavailable');
+    this.reviewListeners.add(listener);
+    return () => {
+      this.reviewListeners.delete(listener);
+    };
   }
   assertFixedReview(grant: NativeWorkGrant, ref: NativeFixedReviewRef): undefined {
     const access = this.reviewCheck(grant),
@@ -1507,6 +1530,7 @@ class NativeResultOwner {
     if (owners.get(this.sessions) === this) owners.delete(this.sessions);
     for (const lease of this.leases) lease.release();
     this.listeners.clear();
+    this.reviewListeners.clear();
     this.ready.clear();
     this.failures.clear();
     this.reviewReady.clear();
