@@ -17,6 +17,8 @@ pnpm desktop:dev
 
 ## 边界
 
+产品 Bundle 默认设置 `session-log-deepseek.enabled: false`，不默认向模型请求附加会话日志；保留官方 Session Log 设置供用户主动开启，不修改上游插件默认或移除功能。Profile 在 Bundle 之后应用，已有 profile 的自定义 `config` 整体覆盖 Bundle（包括仅设置 `maxBytes` 的旧配置，省略 `enabled` 时仍使用上游默认 `true`）；本补丁不迁移旧 profile。此项只改变会话日志附加字段的默认值，不改变用户主动发送给模型的任务与消息。
+
 全新桌面 profile 首次生成时显式设置 `multi-member + localSetup`，正常首屏创建账号、个人／团队空间并选择基础专家，见 [本机首次成员设置](../../docs/contracts/local-member-setup.md)。已有 profile 保持其原显式配置；Bundle 的 legacy 继承默认保留，不因升级自动迁移旧单人库。
 
 - `.build/workbench` 是可再生的 Host/Client 插件产物；安装脚本只修改 `.build/desktop/deepseek-harness` 的 Web Bundle，不修改 `upstream/deepseek-harness`。
