@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { publicTeamStarterPackages } from '../lib/team-starter-packages.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const adapterManifest = JSON.parse(
@@ -35,6 +36,8 @@ const hostBuild = await build({
   metafile: true,
   target: 'node24',
   sourcemap: false,
+  // Derived from the original public source files; no runtime repo/profile path.
+  define: { ZHUMA_PUBLIC_TEAM_PACKAGES: JSON.stringify(await publicTeamStarterPackages()) },
   // Bundled ZIP dependencies are CommonJS and use Node built-ins. Keep their
   // require calls valid in the official Host's ESM plugin, without runtime installs.
   banner: {

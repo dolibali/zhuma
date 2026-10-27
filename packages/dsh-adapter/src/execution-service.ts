@@ -49,7 +49,7 @@ import {
   type UpstreamInputView,
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
-import type { NativeWorkGrant } from './native-work-session-contract.js';
+import type { NativeWorkGrant, NativeWorkAction } from './native-work-session-contract.js';
 import type {
   NativeFixedResultIssuer,
   NativeFixedResultPublicationsIssuer,
@@ -127,6 +127,7 @@ import {
   requestExecutionRunStop,
   validateExecutionRunBegin,
   stopExecutionRunSchema,
+  withExecutionRunState,
   type ExecutionRunDecision,
   type ExecutionRunEvent,
 } from './execution-run-state.js';
@@ -135,7 +136,49 @@ import {
   enableExecutionRunWriter,
   ExecutionRunProtocolError,
   requireExecutionRunWriter,
+  enableExecutionReviewWriter,
+  requireExecutionReviewWriter,
+  type ExecutionWriterGlobal,
 } from './execution-run-protocol.js';
+import {
+  ExecutionReviewError,
+  executionReviewTargetSchema,
+  type ExecutionReviewAttempt,
+  type ExecutionReviewTarget,
+  type ExecutionReviewScope,
+} from './execution-review-contract.js';
+import {
+  executionReviewTarget,
+  prepareExecutionReview,
+  readExecutionReviewState,
+} from './execution-review-state.js';
+import {
+  ExecutionReviewReadAuthorities,
+  ExecutionReviewReadError,
+  type ExecutionReviewReadGrant,
+  type ExecutionReviewReadLocator,
+  type OpenedExecutionReviewRead,
+} from './execution-review-read-authority.js';
+import {
+  reviewTargetReadSchema,
+  reviewTargetResources,
+  reviewFileResourceRef,
+  type ExecutionReviewResource,
+  type ExecutionReviewTargetReadLease,
+} from './execution-review-target-reader.js';
+import {
+  readExecutionReviewComposition,
+  executionReviewCompositionRequest,
+  type ExecutionReviewPreparation,
+  type FrozenExecutionReviewComposition,
+} from './execution-review-composition.js';
+import { admitExecutionReview } from './execution-review-lifecycle.js';
+import {
+  ExecutionReviewDriveAuthorities,
+  type ExecutionReviewDriveGrant,
+  type ExecutionReviewCleanupAuthority,
+  type OpenedExecutionReviewDrive,
+} from './execution-review-drive-authority.js';
 import type { AttachmentStore, FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import {
   ARTIFACT_FILE_LIMITS,
@@ -272,6 +315,27 @@ const ballotSchema = z.strictObject({
   comment: boundedText.optional(),
   unresolvedCommentIds: z.array(z.string()).max(50).optional(),
 });
+const expertReviewPrepareSchema = z.strictObject({
+  requestId: z.string().trim().min(1).max(200),
+  expectedReviewVersion: z.number().int().nonnegative().refine(Number.isSafeInteger),
+  target: executionReviewTargetSchema,
+  reviewerRef: z.strictObject({
+    id: z.string().min(1).max(100),
+    version: z.string().min(1).max(100),
+  }),
+  configurationId: z.string().trim().min(1).max(200),
+});
+const expertReviewPreparationSchema = expertReviewPrepareSchema.omit({ configurationId: true });
+const expertReviewAdmitSchema = z.strictObject({
+  spaceId: id,
+  taskId: id,
+  planId: id,
+  revision: z.number().int().positive().refine(Number.isSafeInteger),
+  nodeId: id,
+  runId: id,
+  expectedAttemptVersion: z.number().int().positive().refine(Number.isSafeInteger),
+  composition: z.unknown(),
+});
 const settleSchema = z.strictObject({
   ...locate,
   roundId: id,
@@ -333,6 +397,14 @@ export interface ExecutionRunHostPorts
     spaceId: string,
     node: ExecutionNodeRecord,
     request: BeginRunRequest,
+  ): undefined;
+  /** A's original real model/resource producer, never a browser flag. Absence
+   * keeps the review lane read-only. This assertion must complete synchronously. */
+  assertReviewConfiguration?(
+    memberId: string,
+    spaceId: string,
+    node: ExecutionNodeRecord,
+    composition: FrozenExecutionReviewComposition,
   ): undefined;
   assertWorkspace(...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>): undefined;
 }
@@ -460,7 +532,7 @@ export interface ExecutionStorage {
   listPlans(): readonly { readonly key: string; readonly receipt: PlanReceipt }[];
   /** Same execution domain global. Optional only for legacy non-Run consumers. */
   readGlobal?(): unknown;
-  writeGlobal?(value: { schemaVersion: 1; nativeExecutionWriter: 1 }): Promise<void>;
+  writeGlobal?(value: ExecutionWriterGlobal): Promise<void>;
 }
 
 export interface ExecutionFailure {
@@ -940,6 +1012,8 @@ function rejectionDetails(
 
 /** Serializes durable execution commands. One user command writes one node record. */
 export class ExecutionService {
+  private reviewReadAuthorities: ExecutionReviewReadAuthorities | undefined;
+  private reviewDriveAuthorities: ExecutionReviewDriveAuthorities | undefined;
   private writes: Promise<unknown> = Promise.resolve();
   private readonly runLifetime = new AbortController();
   private readonly runChanges = new Set<() => void>();
@@ -1285,6 +1359,549 @@ export class ExecutionService {
       );
       return { ok: true, value: undefined };
     });
+  }
+
+  /** Passive Host facts for A's real configuration producer. The candidate scope
+   * has no durable reservation, model selection, grant, or dispatch authority. */
+  readExpertReviewPreparation(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionReviewPreparation>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(expertReviewPreparationSchema, body);
+      if (!parsed.ok) return parsed;
+      return this.withRunMember(
+        original,
+        parsed.value.target,
+        async (host, lease) => {
+          const decision = this.currentExpertReviewPreparation(host, lease, parsed.value);
+          return {
+            ok: true,
+            value: structuredClone({
+              scope: decision.prepared.attempt.scope,
+              applied: decision.applied,
+              node: decision.node,
+            }),
+          };
+        },
+        false,
+        'review',
+      );
+    });
+  }
+
+  /** Host-only preparation, not native dispatch or a grant. ConfigurationId is a
+   * reservation reference; actual prompt/model/tool configuration is still a later gate. */
+  prepareExpertReview(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<
+    ExecutionResult<{ disposition: 'applied' | 'replayed'; attempt: ExecutionReviewAttempt }>
+  > {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(expertReviewPrepareSchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      return this.withRunMember(
+        original,
+        input.target,
+        async (host, lease) => {
+          const prepare = () => this.currentExpertReviewPreparation(host, lease, input).prepared;
+          const proposed = prepare();
+          if (proposed.disposition === 'replayed')
+            return {
+              ok: true,
+              value: structuredClone({
+                disposition: proposed.disposition,
+                attempt: proposed.attempt,
+              }),
+            };
+          if (!this.storage.writeGlobal) throw new ExecutionRunError('run-authority-unavailable');
+          await enableExecutionReviewWriter(
+            () => this.readRunGlobal(),
+            (next) => this.storage.writeGlobal!(next),
+            this.storage.listNodes(),
+          );
+          // Marker-only is a safe crash prefix. Fresh membership, target and state
+          // are checked after that await and immediately before the original node put.
+          const decision = prepare();
+          lease.assertCurrent(input.target.spaceId);
+          if (decision.disposition === 'applied') {
+            const stored = await this.persist(() => this.writeNode(decision.record, true));
+            if (!stored.ok) return stored;
+          }
+          return {
+            ok: true,
+            value: structuredClone({
+              disposition: decision.disposition,
+              attempt: decision.attempt,
+            }),
+          };
+        },
+        false,
+        'review',
+      );
+    });
+  }
+
+  /** Qualify and persist only. A native driver still needs a separate genuine
+   * drive capability and the original C owner; this method never sends. */
+  admitExpertReview(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<
+    ExecutionResult<{
+      disposition: 'applied' | 'replayed' | 'ignored';
+      attempt: ExecutionReviewAttempt;
+    }>
+  > {
+    return this.enqueue(async () => {
+      // Like the author composition, scope fields inside this strict snapshot
+      // are data compared with the real lease. Other command fields keep the scan.
+      const fields =
+        body && typeof body === 'object' && !Array.isArray(body)
+          ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'composition'))
+          : body;
+      const actorField = this.actorField(fields);
+      if (actorField) return actorField;
+      const parsed = parseBody(expertReviewAdmitSchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      let composition: FrozenExecutionReviewComposition;
+      try {
+        composition = readExecutionReviewComposition(input.composition);
+      } catch {
+        return fail('review-validation');
+      }
+      return this.withRunMember(
+        original,
+        input,
+        async (host, lease, node) => {
+          requireExecutionReviewWriter(this.readRunGlobal());
+          const state = readExecutionReviewState(node);
+          const attempt = state?.attempts.find((item) => item.scope.runId === input.runId);
+          const receipt = state?.receipts.find((item) => item.runId === input.runId);
+          if (!attempt || !receipt) throw new ExecutionReviewError('review-not-prepared');
+          const current = () =>
+            this.currentExpertReviewPreparation(host, lease, {
+              requestId: receipt.requestId,
+              expectedReviewVersion: state!.version,
+              target: attempt.scope.review.target,
+              reviewerRef: {
+                id: attempt.scope.review.principal.reviewerRef.id,
+                version: node.planId,
+              },
+              configurationId: attempt.configurationId,
+            });
+          current();
+          if (typeof host.assertReviewConfiguration !== 'function')
+            throw new ExecutionRunError('run-authority-unavailable');
+          synchronousRunAssertion(
+            host.assertReviewConfiguration(lease.memberId, input.spaceId, node, composition),
+          );
+          // A producer may synchronously invalidate its source. Re-read true
+          // membership, current expert and exact target after that assertion.
+          const fresh = current();
+          const decision = admitExecutionReview(fresh.node, {
+            scope: attempt.scope,
+            expectedAttemptVersion: input.expectedAttemptVersion,
+            composition,
+          });
+          if (decision.disposition === 'applied') {
+            const stored = await this.persist(() => this.writeNode(decision.record, true));
+            if (!stored.ok) return stored;
+          }
+          return {
+            ok: true,
+            value: structuredClone({
+              disposition: decision.disposition,
+              attempt: decision.attempt,
+            }),
+          };
+        },
+        true,
+        'review',
+      );
+    });
+  }
+
+  /** Passive exact target discovery: never creates a marker, reservation, or grant. */
+  readExpertReviewTarget(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ExecutionReviewTarget>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(
+        z.strictObject({
+          spaceId: id,
+          taskId: id,
+          planId: id,
+          revision: z.number().int().positive(),
+          nodeId: id,
+        }),
+        body,
+      );
+      if (!parsed.ok) return parsed;
+      return this.withRunMember(
+        original,
+        parsed.value,
+        async (_host, _lease, node) => ({
+          ok: true,
+          value: executionReviewTarget(node, parsed.value.spaceId),
+        }),
+        false,
+        'review',
+      );
+    });
+  }
+
+  /** Genuine read-only capability. No native session/model send or ballot rights. */
+  openExpertReviewRead(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<OpenedExecutionReviewRead>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(
+        z.strictObject({
+          spaceId: id,
+          taskId: id,
+          planId: id,
+          revision: z.number().int().positive(),
+          nodeId: id,
+          runId: id,
+        }),
+        body,
+      );
+      if (!parsed.ok) return parsed;
+      const host = this.requireRunHost();
+      const resolve = (locator: ExecutionReviewReadLocator) => {
+        requireExecutionReviewWriter(this.readRunGlobal());
+        const node = this.readRunNode(locator);
+        const attempt =
+          node &&
+          readExecutionReviewState(node)?.attempts.find(
+            (item) => item.scope.runId === locator.runId,
+          );
+        if (!node || !attempt) throw new ExecutionReviewReadError('review-authority-denied');
+        return { scope: attempt.scope, version: attempt.version };
+      };
+      this.reviewReadAuthorities ??= new ExecutionReviewReadAuthorities({
+        signal: AbortSignal.any([host.signal, this.runLifetime.signal]),
+        memberLease: (request) => host.memberLease(request),
+        resolve,
+        assertCurrent: (scope, version) => {
+          if (host !== this.requireRunHost())
+            throw new ExecutionReviewReadError('review-authority-denied');
+          const current = resolve(scope);
+          if (
+            current.version !== version ||
+            canonicalPayload(current.scope) !== canonicalPayload(scope)
+          )
+            throw new ExecutionReviewReadError('review-target-changed');
+          this.assertCurrentExpertReviewTarget(host, scope);
+        },
+        onChange: (recheck) => {
+          const stop = host.onChange(recheck);
+          this.runChanges.add(recheck);
+          return () => {
+            this.runChanges.delete(recheck);
+            stop();
+          };
+        },
+      });
+      return { ok: true, value: await this.reviewReadAuthorities.open(original, parsed.value) };
+    });
+  }
+
+  /** Owner identity is checked before inspecting any purported grant fields. */
+  assertExpertReviewReadGrant(grant: ExecutionReviewReadGrant): void {
+    if (!this.reviewReadAuthorities) throw new ExecutionReviewReadError('review-authority-denied');
+    this.reviewReadAuthorities.assertGrant(grant);
+  }
+
+  /** Separate genuine drive issuer, after durable admission and real A source
+   * qualification. No read grant or JSON object is accepted as a promotion. */
+  openExpertReviewDrive(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<OpenedExecutionReviewDrive>> {
+    return this.enqueue(async () => {
+      const actor = this.actorField(body);
+      if (actor) return actor;
+      const parsed = parseBody(
+        expertReviewAdmitSchema.omit({ expectedAttemptVersion: true, composition: true }),
+        body,
+      );
+      if (!parsed.ok) return parsed;
+      return { ok: true, value: await this.reviewDrives().open(original, parsed.value) };
+    });
+  }
+
+  /** Original Host recovery only. Externally requested cleanup still requires A's
+   * fresh member and complete workflow-bound ID checks before this internal call. */
+  reviewCleanupAfterCommit(scope: ExecutionReviewScope): ExecutionReviewCleanupAuthority {
+    return this.reviewDrives().cleanupAfterCommit(scope);
+  }
+
+  private reviewDrives(): ExecutionReviewDriveAuthorities {
+    const host = this.requireRunHost();
+    const resolve = (locator: ExecutionReviewReadLocator) => {
+      if (host !== this.requireRunHost())
+        throw new ExecutionReviewReadError('review-authority-denied');
+      requireExecutionReviewWriter(this.readRunGlobal());
+      const node = this.readRunNode(locator);
+      const attempt =
+        node &&
+        readExecutionReviewState(node)?.attempts.find((a) => a.scope.runId === locator.runId);
+      if (!node || !attempt || attempt.status === 'prepared')
+        throw new ExecutionReviewReadError('review-authority-denied');
+      const composition = readExecutionReviewComposition(attempt.composition);
+      return {
+        node,
+        attempt,
+        composition,
+        scope: attempt.scope,
+        selection: executionReviewCompositionRequest(composition).selection,
+      };
+    };
+    this.reviewDriveAuthorities ??= new ExecutionReviewDriveAuthorities({
+      signal: AbortSignal.any([host.signal, this.runLifetime.signal]),
+      memberLease: (request) => host.memberLease(request),
+      resolve,
+      assertCurrent: (scope, selection, _action) => {
+        const check = () => {
+          const current = resolve(scope);
+          this.assertCurrentExpertReviewTarget(host, scope);
+          if (
+            !['requested', 'running'].includes(current.attempt.status) ||
+            current.attempt.resources !== 'held' ||
+            current.attempt.stopPhase !== 'none' ||
+            canonicalPayload(current.scope) !== canonicalPayload(scope) ||
+            canonicalPayload(current.selection) !== canonicalPayload(selection)
+          )
+            throw new ExecutionReviewReadError('review-target-changed');
+          return current;
+        };
+        const current = check();
+        if (typeof host.assertReviewConfiguration !== 'function')
+          throw new ExecutionReviewReadError('review-authority-denied');
+        synchronousRunAssertion(
+          host.assertReviewConfiguration(
+            scope.actorId,
+            scope.spaceId,
+            current.node,
+            current.composition,
+          ),
+        );
+        check();
+        return undefined;
+      },
+      assertCleanup: (scope, selection) => {
+        // Retire this exact already admitted scope even after member/target
+        // revocation. This cannot drive, vote, emit terminal events or prove drain.
+        const current = resolve(scope);
+        if (
+          canonicalPayload(current.scope) !== canonicalPayload(scope) ||
+          canonicalPayload(current.selection) !== canonicalPayload(selection)
+        )
+          throw new ExecutionReviewReadError('review-target-changed');
+        return undefined;
+      },
+      assertCleanupAfterCommit: (scope, selection) => {
+        const current = resolve(scope);
+        if (
+          canonicalPayload(current.scope) !== canonicalPayload(scope) ||
+          canonicalPayload(current.selection) !== canonicalPayload(selection) ||
+          (!['completed', 'failed', 'cancelled'].includes(current.attempt.status) &&
+            current.attempt.stopPhase !== 'requested')
+        )
+          throw new ExecutionReviewReadError('review-authority-denied');
+        return undefined;
+      },
+      onChange: (recheck) => {
+        const stop = host.onChange(recheck);
+        this.runChanges.add(recheck);
+        return () => {
+          this.runChanges.delete(recheck);
+          stop();
+        };
+      },
+    });
+    return this.reviewDriveAuthorities;
+  }
+  assertExpertReviewDriveGrant(grant: ExecutionReviewDriveGrant, action: NativeWorkAction): void {
+    if (!this.reviewDriveAuthorities) throw new ExecutionReviewReadError('review-authority-denied');
+    this.reviewDriveAuthorities.assertGrant(grant, action);
+  }
+  assertExpertReviewCleanupAuthority(authority: ExecutionReviewCleanupAuthority): void {
+    if (!this.reviewDriveAuthorities) throw new ExecutionReviewReadError('review-authority-denied');
+    this.reviewDriveAuthorities.assertCleanup(authority);
+  }
+  private assertExpertReviewTargetReader(
+    grant: ExecutionReviewReadGrant | ExecutionReviewDriveGrant,
+  ): void {
+    if (this.reviewDriveAuthorities?.owns(grant as ExecutionReviewDriveGrant))
+      this.reviewDriveAuthorities.assertGrant(grant as ExecutionReviewDriveGrant, 'history');
+    else this.assertExpertReviewReadGrant(grant as ExecutionReviewReadGrant);
+  }
+
+  /** Exact target catalog; metadata does not count as content-read evidence. */
+  listExpertReviewResources(
+    grant: ExecutionReviewReadGrant | ExecutionReviewDriveGrant,
+  ): readonly ExecutionReviewResource[] {
+    this.assertExpertReviewTargetReader(grant);
+    const node = this.currentFileNode(grant.scope);
+    const artifact = node.artifactVersions.find(
+      (item) => item.id === grant.scope.review.target.artifactVersionId,
+    );
+    if (!artifact) throw new ExecutionReviewReadError('review-target-changed');
+    return reviewTargetResources(artifact);
+  }
+
+  /** Bounded fixed bytes under the genuine read grant. C alone binds actual SDK
+   * calls/results, native identity and completion cut; this lease is not a vote. */
+  readExpertReviewResource(
+    grant: ExecutionReviewReadGrant | ExecutionReviewDriveGrant,
+    raw: unknown,
+    caller: AbortSignal,
+  ): Promise<ExecutionReviewTargetReadLease> {
+    const job = Promise.resolve().then(async (): Promise<ExecutionReviewTargetReadLease> => {
+      this.assertExpertReviewTargetReader(grant); // issuer before any claimed fields
+      const parsed = reviewTargetReadSchema.safeParse(raw);
+      if (!parsed.success || !(caller instanceof AbortSignal))
+        throw new ArtifactUploadError('invalid-request');
+      const signal = AbortSignal.any([
+        caller,
+        grant.signal,
+        this.fileLifetime.signal,
+        this.runLifetime.signal,
+      ]);
+      const query = parsed.data;
+      const resource = this.listExpertReviewResources(grant).find(
+        (item) => item.resourceRef === query.resourceRef,
+      );
+      if (!resource) throw new ArtifactUploadError('not-found');
+      if (resource.kind === 'external-reference')
+        throw new ArtifactUploadError('review-unsupported-material');
+      const expected = canonicalPayload(resource);
+      let released = false,
+        releaseOwned: (() => void) | undefined;
+      const release = () => {
+        if (released) return;
+        released = true;
+        signal.removeEventListener('abort', release);
+        releaseOwned?.();
+      };
+      const check = () => {
+        if (released || signal.aborted) throw new ArtifactUploadError('cancelled');
+        this.assertExpertReviewTargetReader(grant);
+        const current = this.listExpertReviewResources(grant).find(
+          (item) => item.resourceRef === query.resourceRef,
+        );
+        if (canonicalPayload(current ?? null) !== expected)
+          throw new ArtifactUploadError('not-found');
+      };
+      signal.addEventListener('abort', release, { once: true });
+      try {
+        check();
+        const node = this.currentFileNode(grant.scope);
+        const artifact = node.artifactVersions.find(
+          (item) => item.id === grant.scope.review.target.artifactVersionId,
+        )!;
+        let bytes: Uint8Array, encoding: 'utf-8' | 'binary';
+        if (resource.kind === 'text') {
+          if (
+            [...this.fileReadResources].filter((item) => item.spaceId === grant.scope.spaceId)
+              .length >= ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace
+          )
+            throw new ArtifactUploadError('quota-exceeded');
+          let free!: () => void;
+          const drain = new Promise<void>((resolve) => {
+            free = resolve;
+          });
+          const reservation = { spaceId: grant.scope.spaceId, drain };
+          this.fileReadResources.add(reservation);
+          releaseOwned = () => {
+            free();
+            this.fileReadResources.delete(reservation);
+          };
+          bytes = Buffer.from(artifact.text!, 'utf8');
+          encoding = 'utf-8';
+        } else {
+          const ref = artifact.files.find(
+            (file) => reviewFileResourceRef(file.id) === query.resourceRef,
+          );
+          const record = ref && this.fileStore?.get(ref.id);
+          if (
+            !ref ||
+            !record ||
+            !this.attachments ||
+            record.spaceId !== grant.scope.spaceId ||
+            record.taskId !== grant.scope.taskId ||
+            record.planId !== grant.scope.planId ||
+            record.revision !== grant.scope.revision ||
+            record.nodeId !== grant.scope.nodeId ||
+            !matchesArtifactFileReference(ref, record)
+          )
+            throw new ArtifactUploadError('not-found');
+          const recordFingerprint = canonicalPayload(record);
+          const fileCheck = () => {
+            check();
+            if (canonicalPayload(this.fileStore?.get(ref.id) ?? null) !== recordFingerprint)
+              throw new ArtifactUploadError('not-found');
+          };
+          const owned = await this.verifyOwnedFileBytes(record, signal, fileCheck, true, true);
+          releaseOwned = owned.release;
+          if (released) owned.release();
+          check();
+          fileCheck();
+          if (!owned.bytes) throw new ArtifactUploadError('unavailable');
+          bytes = owned.bytes;
+          encoding = runFileEncoding(
+            {
+              fileId: record.uploadId,
+              name: artifactFileLeaf(record.name),
+              mediaType: record.mediaType,
+              bytes: record.byteSize,
+              sha256: record.sha256,
+            },
+            bytes,
+          );
+        }
+        if (query.offset > bytes.length) throw new ArtifactUploadError('invalid-request');
+        const page = Uint8Array.from(
+          bytes.subarray(query.offset, Math.min(query.offset + query.length, bytes.length)),
+        );
+        check();
+        return {
+          scope: grant.scope,
+          resource: structuredClone(resource),
+          range: { offset: query.offset, length: page.length, total: bytes.length },
+          bytes: page,
+          encoding,
+          signal,
+          check,
+          release,
+        };
+      } catch (error) {
+        release();
+        throw error;
+      }
+    });
+    this.fileOperations.add(job);
+    void job.then(
+      () => this.fileOperations.delete(job),
+      () => this.fileOperations.delete(job),
+    );
+    return job;
   }
 
   /** Commit only. A runs a returned effect AFTER awaiting success, outside this queue. */
@@ -1648,15 +2265,12 @@ export class ExecutionService {
           artifactVersionId: ids.artifactId,
           ...(node.handoff.reviewRequired ? { roundId: ids.roundId } : {}),
         });
-        const combined = {
-          ...delivered.record,
-          nativeExecution: {
-            ...ended,
-            runs: ended.runs.map((item) =>
-              item.attempt.id === run.attempt.id ? { ...item, resultDelivery } : item,
-            ),
-          },
-        };
+        const combined = withExecutionRunState(delivered.record, {
+          ...ended,
+          runs: ended.runs.map((item) =>
+            item.attempt.id === run.attempt.id ? { ...item, resultDelivery } : item,
+          ),
+        });
         const stamped = withExecutionEvent(
           combined,
           'delivery-submitted',
@@ -2274,6 +2888,92 @@ export class ExecutionService {
     if (controller !== memberId) throw new ExecutionRunError('run-not-controller');
   }
 
+  private assertReviewController(memberId: string, node: ExecutionNodeRecord): void {
+    const task = this.workbench.readWorkbench().tasks.find((item) => item.id === node.taskId);
+    if (node.ownerId !== memberId || task?.ownerId !== memberId)
+      throw new ExecutionReviewError('review-not-controller');
+  }
+
+  private assertCurrentExpertReviewTarget(
+    host: ExecutionRunHostPorts,
+    scope: ExecutionReviewScope,
+  ): ExecutionNodeRecord {
+    const node = this.readRunNode(scope);
+    if (!node) throw new ExecutionReviewReadError('review-target-changed');
+    this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
+    this.assertReviewController(scope.actorId, node);
+    const target = executionReviewTarget(node, scope.spaceId);
+    const reviewer = scope.review.principal.reviewerRef;
+    const plan = createExecutionHandoff(node, this.workbench.readWorkbench());
+    const frozen = plan.participants.find((p) => p.id === reviewer.id);
+    const live = this.workbench.readWorkbench().participants.find((p) => p.id === reviewer.id);
+    const round = node.rounds.find((r) => r.id === target.roundId)!;
+    if (
+      canonicalPayload(target) !== canonicalPayload(scope.review.target) ||
+      !frozen ||
+      frozen.kind !== 'expert' ||
+      !frozen.available ||
+      !frozen.instructions.trim() ||
+      reviewer.version !== node.planId ||
+      createHash('sha256').update(canonicalPayload(frozen)).digest('hex') !== reviewer.digest ||
+      !live ||
+      live.kind !== 'expert' ||
+      !live.available ||
+      !node.handoff.reviewerIds.includes(reviewer.id) ||
+      !round.reviewerIds.includes(reviewer.id) ||
+      round.ballots.some(
+        (ballot) => ballot.reviewerId === reviewer.id && ballot.action !== 'comment',
+      )
+    )
+      throw new ExecutionReviewReadError('review-target-changed');
+    return node;
+  }
+
+  private currentExpertReviewPreparation(
+    host: ExecutionRunHostPorts,
+    lease: ExecutionMemberLease,
+    input: z.infer<typeof expertReviewPreparationSchema> & { readonly configurationId?: string },
+  ) {
+    if (host !== this.requireRunHost()) throw new ExecutionRunError('run-authority-denied');
+    lease.assertCurrent(input.target.spaceId);
+    const node = this.readRunNode(input.target);
+    if (!node) throw new ExecutionRunError('run-authority-denied');
+    this.assertRunNodeAccess(host, lease.memberId, input.target.spaceId, node);
+    this.assertReviewController(lease.memberId, node);
+    if (input.reviewerRef.version !== node.planId)
+      throw new ExecutionReviewError('review-plan-mismatch');
+    const applied = createExecutionHandoff(node, this.workbench.readWorkbench());
+    const live = this.workbench
+      .readWorkbench()
+      .participants.find((p) => p.id === input.reviewerRef.id);
+    if (!live || live.kind !== 'expert' || !live.available)
+      throw new ExecutionReviewError('review-expert-unavailable');
+    const reservation = createHash('sha256')
+      .update(
+        canonicalPayload({
+          location: input.target,
+          controllerMemberId: lease.memberId,
+          requestId: input.requestId,
+        }),
+      )
+      .digest('hex');
+    const state = readExecutionReviewState(node);
+    const receipt = state?.receipts.find((item) => item.requestId === input.requestId);
+    const prior = receipt && state?.attempts.find((item) => item.scope.runId === receipt.runId);
+    const prepared = prepareExecutionReview(node, applied, {
+      requestId: input.requestId,
+      expectedReviewVersion: input.expectedReviewVersion,
+      target: input.target,
+      reviewerId: input.reviewerRef.id,
+      controllerMemberId: lease.memberId,
+      configurationId:
+        input.configurationId ?? (prior ? prior.configurationId : 'review-preparation-only'),
+      newRunId: `review-run-${reservation}`,
+      newSegmentId: `review-segment-${reservation}`,
+    });
+    return { node, applied, prepared };
+  }
+
   private async withRunMember<T>(
     request: MemberRequest,
     input: ExecutionNodeLocator & { spaceId: string },
@@ -2283,6 +2983,7 @@ export class ExecutionService {
       node: ExecutionNodeRecord,
     ) => Promise<ExecutionResult<T>>,
     requireWriter = true,
+    control: 'author' | 'review' = 'author',
   ): Promise<ExecutionResult<T>> {
     const host = this.requireRunHost();
     if (requireWriter) requireExecutionRunWriter(this.readRunGlobal());
@@ -2306,10 +3007,13 @@ export class ExecutionService {
       const node = this.readRunNode(input);
       if (!node) throw new ExecutionRunError('run-authority-denied');
       this.assertRunNodeAccess(host, lease.memberId, input.spaceId, node);
-      this.assertRunController(lease.memberId, node);
+      if (control === 'review') this.assertReviewController(lease.memberId, node);
+      else this.assertRunController(lease.memberId, node);
       return await work(host, lease, node);
     } catch (error) {
       if (
+        error instanceof ExecutionReviewError ||
+        error instanceof ExecutionReviewReadError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunProtocolError ||
@@ -2401,8 +3105,8 @@ export class ExecutionService {
     if (current && !native) {
       assertExecutionRunQuiescent(current);
       if (
-        canonicalPayload(readExecutionRunState(current) ?? null) !==
-        canonicalPayload(readExecutionRunState(record) ?? null)
+        canonicalPayload((current as { nativeExecution?: unknown }).nativeExecution ?? null) !==
+        canonicalPayload((record as { nativeExecution?: unknown }).nativeExecution ?? null)
       )
         throw new ExecutionRunError('run-state-invalid');
     }
@@ -4615,6 +5319,8 @@ export class ExecutionService {
     const operation = this.writes.then(work, work).catch((error: unknown) => {
       if (
         error instanceof ArtifactUploadError ||
+        error instanceof ExecutionReviewReadError ||
+        error instanceof ExecutionReviewError ||
         error instanceof ExecutionWorkflowError ||
         error instanceof ExecutionRunError ||
         error instanceof ExecutionRunProtocolError ||
@@ -5134,7 +5840,11 @@ export class ExecutionService {
       await write();
       return { ok: true, value: undefined };
     } catch (error) {
-      if (error instanceof ExecutionRunError || error instanceof ExecutionRunProtocolError)
+      if (
+        error instanceof ExecutionReviewError ||
+        error instanceof ExecutionRunError ||
+        error instanceof ExecutionRunProtocolError
+      )
         return fail(error.code);
       return fail('unavailable');
     }

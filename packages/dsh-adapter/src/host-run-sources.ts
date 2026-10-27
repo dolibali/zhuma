@@ -20,7 +20,10 @@ export interface HostRunSources {
     ReturnType<typeof createHostDirectoryLifecycle>,
     'currentDirectoryBinding' | 'currentDirectory'
   >;
-  readonly configuration: Pick<ExecutionRunHostPorts, 'assertConfiguration' | 'assertWorkspace'>;
+  readonly configuration: Pick<
+    ExecutionRunHostPorts,
+    'assertConfiguration' | 'assertWorkspace' | 'assertReviewConfiguration'
+  >;
   readonly native: Pick<NativeWorkSessionService, 'migrationOrigin' | 'migrationDrain'>;
   readonly signal: AbortSignal;
   readonly resources?: Pick<
@@ -145,6 +148,18 @@ export function createHostRunSources(ctx: Context, sources: HostRunSources): Exe
       active();
       return result;
     },
+    ...(sources.configuration.assertReviewConfiguration
+      ? {
+          assertReviewConfiguration(
+            ...args: Parameters<NonNullable<ExecutionRunHostPorts['assertReviewConfiguration']>>
+          ) {
+            active();
+            const result = sources.configuration.assertReviewConfiguration!(...args);
+            active();
+            return result;
+          },
+        }
+      : {}),
     assertWorkspace(...args) {
       active();
       const result = sources.configuration.assertWorkspace(...args);

@@ -9,7 +9,13 @@ import {
   type NativeWorkStorage,
 } from './native-work-session-contract.js';
 
-import { nativeWorkSessionRecordSchema } from './native-work-session-record.js';
+import { nativeWorkSessionRecordSchema, readNativeRecord } from './native-work-session-record.js';
+import { NativeSessionPurpose, type NativeReviewPorts } from './native-work-session-purpose.js';
+import {
+  nativeReviewAwareRecordSchema,
+  nativeReviewGlobalSchema,
+  NATIVE_REVIEW_WRITER_MARKER,
+} from './native-work-session-review-contract.js';
 export { nativeWorkSessionBindingSchema } from './native-work-session-record.js';
 
 export const nativeWorkSessionDomainSpec = {
@@ -32,21 +38,58 @@ export const nativeWorkSessionInject = [
   'systemPrompt',
 ] as const;
 
+// Same original domain/name/version/table. The old declaration above remains a
+// strict legacy reader for compatibility checks, not a second opened store.
+const reviewAwareDomainSpec = {
+  ...nativeWorkSessionDomainSpec,
+  global: {
+    schema: nativeReviewGlobalSchema,
+    initial: nativeReviewGlobalSchema.parse({ schemaVersion: 1 }),
+  },
+  tables: { bindings: { valueSchema: nativeReviewAwareRecordSchema } },
+};
+
 /** A mounts this once at Host lifetime; callers never open a second mapping domain. */
-export async function openNativeWorkSessions(ctx: Context, options: NativeDshOptions) {
-  const runtime = new DshNativeWorkRuntime(ctx, options);
-  const domain = await ctx.storageDomain.open(nativeWorkSessionDomainSpec);
+export async function openNativeWorkSessions(
+  ctx: Context,
+  options: NativeDshOptions,
+  reviewPorts?: NativeReviewPorts,
+) {
+  const purpose = reviewPorts && new NativeSessionPurpose(reviewPorts);
+  const runtime = new DshNativeWorkRuntime(ctx, options, purpose);
+  const domain = await ctx.storageDomain.open(reviewAwareDomainSpec);
   const bindings = domain.table('bindings');
   const storage: NativeWorkStorage = {
     read: (key) => {
       const value = bindings.get(key);
-      return value === undefined ? undefined : structuredClone(value);
+      return value === undefined ? undefined : readNativeRecord(structuredClone(value));
     },
     write: async (key, value: NativeWorkSessionRecord) => {
       await bindings.put(key, nativeWorkSessionRecordSchema.parse(structuredClone(value)));
     },
   };
-  const service = new NativeWorkSessionService(storage, runtime);
+  let enabling: Promise<void> | undefined;
+  const enable = (): Promise<void> => {
+    if (domain.global.get().nativeReviewWriter === 1) return Promise.resolve();
+    return (enabling ??= domain.global.set(NATIVE_REVIEW_WRITER_MARKER).catch((error: unknown) => {
+      enabling = undefined;
+      throw error;
+    }));
+  };
+  const service = new NativeWorkSessionService(
+    storage,
+    runtime,
+    purpose
+      ? {
+          purpose,
+          read: (key) => structuredClone(bindings.get(key)),
+          write: async (key, record) => {
+            await bindings.put(key, nativeReviewAwareRecordSchema.parse(record));
+          },
+          enable,
+        }
+      : undefined,
+  );
   let closed: Promise<void> | undefined;
   const close = () =>
     (closed ??= (async () => {
