@@ -6,12 +6,14 @@ import {
   resolveTemplateBindings,
   templateBindingGaps,
   comparePlanningWorkflows,
+  validateLocalPlanningChange,
   LOCAL_PLANNING_FIELDS,
   type Workbench,
   type WorkTask,
   type Workflow,
   type WorkNode,
   type PlanProposal,
+  type PlanningAdjustment,
   type WorkflowTemplate,
 } from '@zhuma/agent-core';
 import type { WorkbenchApi } from './api.js';
@@ -528,6 +530,15 @@ export function TaskEditor({
     controller.current = abort;
     const comparedWorkflows = structuredClone(proposal?.result.workflows ?? task.workflows);
     const comparisonLabel = proposal ? '上一份草案' : '已保存草稿';
+    const adjustment: PlanningAdjustment | undefined = targetNodeId
+      ? {
+          nodeId: targetNodeId,
+          fields:
+            adjustmentScope === 'assignment'
+              ? ['assigneeId', 'rationale']
+              : [...LOCAL_PLANNING_FIELDS],
+        }
+      : undefined;
     // Keep the reviewed proposal available if this replacement fails or is cancelled.
     try {
       const next = await api.plan(
@@ -536,20 +547,22 @@ export function TaskEditor({
         instruction,
         abort.signal,
         proposal?.id,
-        targetNodeId
-          ? {
-              nodeId: targetNodeId,
-              fields:
-                adjustmentScope === 'assignment'
-                  ? ['assigneeId', 'rationale']
-                  : [...LOCAL_PLANNING_FIELDS],
-            }
-          : undefined,
+        adjustment,
       );
       abort.signal.throwIfAborted();
       if (api.member && !alive.current) return;
       const catalog = planningCatalog.current;
-      setProposal(prepareExpertProposal(next, catalog.task, catalog.members, catalog.assets));
+      const prepared = prepareExpertProposal(
+        next,
+        catalog.task,
+        catalog.members,
+        catalog.assets,
+        adjustment,
+      );
+      // Recheck the actual visible baseline after Client preparation, including an unapplied preview.
+      if (adjustment && prepared.result.workflows.length)
+        validateLocalPlanningChange(comparedWorkflows, prepared.result.workflows, adjustment);
+      setProposal(prepared);
       setComparison({ workflows: comparedWorkflows, label: comparisonLabel });
       setPreviewOriginal(false);
     } catch (error) {

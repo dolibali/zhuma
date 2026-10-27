@@ -2,6 +2,7 @@ import {
   WorkNodeSchema,
   type Participant,
   type PlanProposal,
+  type PlanningAdjustment,
   type TeamAsset,
   type WorkNode,
   type WorkTask,
@@ -56,6 +57,7 @@ export function prepareExpertProposal(
   task: WorkTask,
   members: readonly Participant[],
   assets: readonly TeamAsset[],
+  adjustment?: PlanningAdjustment,
 ): PlanProposal {
   if (task.status !== 'draft') return proposal;
   const participants = members.filter((member) => task.participantIds.includes(member.id));
@@ -65,10 +67,18 @@ export function prepareExpertProposal(
       ...proposal.result,
       workflows: proposal.result.workflows.map((workflow) => ({
         ...workflow,
-        nodes: workflow.nodes.map((node) => ({
-          ...node,
-          ...selectExpertResources(node, participants, assets),
-        })),
+        nodes: workflow.nodes.map((node) => {
+          if (adjustment && node.id !== adjustment.nodeId) return node;
+          const skillsAllowed = !adjustment || adjustment.fields.includes('skillIds');
+          const mcpAllowed = !adjustment || adjustment.fields.includes('mcpIds');
+          if (!skillsAllowed && !mcpAllowed) return node;
+          const selected = selectExpertResources(node, participants, assets);
+          return {
+            ...node,
+            ...(skillsAllowed ? { skillIds: selected.skillIds } : {}),
+            ...(mcpAllowed ? { mcpIds: selected.mcpIds } : {}),
+          };
+        }),
       })),
     },
   };

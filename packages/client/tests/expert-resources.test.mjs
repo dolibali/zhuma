@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const domModule = process.env.ZHUMA_NATIVE_PANEL_DOM_MODULE;
 if (domModule) {
@@ -43,7 +44,14 @@ if (domModule) {
 const { createElement: el, useState, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
-const { emptyWorkbench, applyWorkbenchCommand, WorkbenchError } = await import('@zhuma/agent-core');
+const {
+  emptyWorkbench,
+  applyWorkbenchCommand,
+  WorkbenchError,
+  canonicalPayload,
+  validateLocalPlanningChange,
+  LOCAL_PLANNING_FIELDS,
+} = await import('@zhuma/agent-core');
 const { expertResources, selectExpertResources, prepareExpertProposal } =
   await import('../dist/workbench/expert-resources.js');
 const { NodeInspector } = await import('../dist/workbench/NodeInspector.js');
@@ -132,6 +140,52 @@ function proposal(task, workflows) {
     result: { summary: '按当前分工生成计划', questions: [], assumptions: [], workflows },
   };
 }
+const hash = (value) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
+function localFixture() {
+  const f = fixture();
+  f.node.assigneeId = 'zhuma-work-planning'; // An intentional, draft-only removal of its required Skill.
+  const target = {
+    ...structuredClone(f.node),
+    id: 'node-b',
+    title: '实现接口',
+    assigneeId: 'chen',
+  };
+  f.task.workflows[0].nodes = [target, f.node];
+  return { ...f, target };
+}
+test('local expert closure changes only the target and only explicitly allowed resource fields; another node keeps its removed Skill', () => {
+  const f = localFixture();
+  const before = structuredClone(f.task.workflows);
+  const after = structuredClone(before);
+  after[0].nodes[0].assigneeId = 'implementation';
+  for (const fields of [
+    ['assigneeId', 'rationale'],
+    ['assigneeId', 'skillIds'],
+    [...LOCAL_PLANNING_FIELDS],
+  ]) {
+    const adjustment = { nodeId: 'node-b', fields };
+    validateLocalPlanningChange(before, after, adjustment);
+    const prepared = prepareExpertProposal(
+      proposal(f.task, after),
+      f.task,
+      f.state.participants,
+      f.state.assets,
+      adjustment,
+    );
+    assert.equal(hash(prepared.result.workflows[0].nodes[1]), hash(before[0].nodes[1]));
+    assert.doesNotThrow(() =>
+      validateLocalPlanningChange(before, prepared.result.workflows, adjustment),
+    );
+    assert.deepEqual(
+      prepared.result.workflows[0].nodes[0].skillIds,
+      fields.includes('skillIds') ? ['implementation-skill'] : [],
+    );
+    assert.deepEqual(
+      prepared.result.workflows[0].nodes[0].mcpIds,
+      fields.includes('mcpIds') ? ['api-tool'] : [],
+    );
+  }
+});
 test('expert selection preserves extra choices across expert switches and humans; reviewers do not add execution resources', () => {
   const { state, node } = fixture();
   node.skillIds = ['extra-skill'];
@@ -266,6 +320,16 @@ async function executor(container, name, label = '执行者') {
   assert.ok(row, `missing visible executor ${name}`);
   await click(row.querySelector('input'));
   await click(button(dialog, '确认选择'));
+}
+async function choose(container, label, option) {
+  await click(container.querySelector(`[aria-label="${label}"]`));
+  const popup = document.querySelector('.zm-select-popup[data-open]');
+  assert.ok(popup, 'the actual scope trigger must open the menu');
+  await click(
+    [...popup.querySelectorAll('[role="option"]')].find(
+      (item) => item.textContent.trim() === option,
+    ),
+  );
 }
 const appearance = { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} };
 function editorProps(f, extra = {}) {
@@ -487,5 +551,88 @@ test(
       }),
     );
     assert.ok(!markup.includes('work-planning Skill'));
+  },
+);
+test(
+  'React local assignment/config previews and original apply preserve the non-target hash and respect allowed capability fields',
+  dom,
+  async (t) => {
+    for (const resourcesAllowed of [false, true]) {
+      const f = localFixture();
+      const before = structuredClone(f.task.workflows);
+      const after = structuredClone(before);
+      after[0].nodes[0].assigneeId = 'implementation';
+      const { calls, props } = editorProps(f);
+      let adjustment;
+      props.api.plan = async (_task, _revision, _instruction, _signal, _baseId, scope) => {
+        adjustment = scope;
+        validateLocalPlanningChange(before, after, scope);
+        return proposal(f.task, after);
+      };
+      const container = await mount(t, el(TaskEditor, props));
+      await click(button(container, '✧ AI 规划'));
+      await choose(container, '调整范围', resourcesAllowed ? '仅当前节点配置' : '仅当前节点执行者');
+      await click(button(container, resourcesAllowed ? '调整节点配置' : '调整执行者'));
+      assert.deepEqual(adjustment, {
+        nodeId: 'node-b',
+        fields: resourcesAllowed ? [...LOCAL_PLANNING_FIELDS] : ['assigneeId', 'rationale'],
+      });
+      const preview = container.querySelector('[aria-label="变更预览"]');
+      assert.match(preview.textContent, /实现专家/);
+      assert.doesNotMatch(preview.textContent, /制定计划/);
+      const fields = [...preview.querySelectorAll('.zm-change-field > strong')].map(
+        (item) => item.textContent,
+      );
+      assert.equal(fields.includes('Skills'), resourcesAllowed);
+      assert.equal(fields.includes('MCP'), resourcesAllowed);
+      assert.match(container.textContent, /必需能力尚未齐备/);
+      assert.equal(calls.length, 0);
+      await click(button(container, '应用草案'));
+      assert.equal(calls.length, 1);
+      const saved = calls[0].command.task.workflows;
+      assert.equal(hash(saved[0].nodes[1]), hash(before[0].nodes[1]));
+      assert.deepEqual(saved[0].nodes[1].skillIds, []);
+      assert.deepEqual(
+        saved[0].nodes[0].skillIds,
+        resourcesAllowed ? ['implementation-skill'] : [],
+      );
+      assert.deepEqual(saved[0].nodes[0].mcpIds, resourcesAllowed ? ['api-tool'] : []);
+      assert.doesNotThrow(() => validateLocalPlanningChange(before, saved, adjustment));
+    }
+  },
+);
+test(
+  'React local replacement cannot discard protected resources from an unapplied visible preview; it retains that preview and the original scope error',
+  dom,
+  async (t) => {
+    const f = fixture();
+    const first = structuredClone(f.task.workflows);
+    first[0].nodes[0].assigneeId = 'implementation';
+    const input = proposal(f.task, first);
+    const { calls, props } = editorProps(f, {
+      initialPlanning: {
+        controller: new AbortController(),
+        result: Promise.resolve({ ok: true, proposal: input }),
+      },
+    });
+    props.api.plan = async (_task, _revision, _instruction, _signal, baseId, adjustment) => {
+      assert.equal(baseId, input.id);
+      const second = structuredClone(first);
+      second[0].nodes[0].assigneeId = 'chen';
+      validateLocalPlanningChange(first, second, adjustment);
+      return { ...proposal(f.task, second), id: 'replacement' };
+    };
+    const container = await mount(t, el(TaskEditor, props));
+    await choose(container, '调整范围', '仅当前节点执行者');
+    await click(button(container, '调整执行者'));
+    assert.match(
+      container.querySelector('[role="alert"]').textContent,
+      /本次只允许修改指定节点的指定字段/,
+    );
+    const preview = container.querySelector('[aria-label="变更预览"]');
+    assert.match(preview.textContent, /实现专家/);
+    assert.match(preview.textContent, /implementation-skill Skill/);
+    assert.match(preview.textContent, /api-tool MCP/);
+    assert.equal(calls.length, 0);
   },
 );
