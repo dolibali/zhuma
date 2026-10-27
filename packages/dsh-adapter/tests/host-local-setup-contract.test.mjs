@@ -226,6 +226,22 @@ test('first setup desktop forwarding source contract: validated local owner POST
       403,
     );
     assert.equal(calls.length, 1);
+    for (const endpoint of ['options', 'approve', 'revoke']) {
+      const allowed = new Request(`dsh-app://app/api/zhuma-workspaces/${endpoint}`, {
+        method: 'POST',
+        body: '{}',
+        headers: { origin: 'dsh-app://app' },
+      });
+      assert.equal((await module.forwardWebRequest(allowed, host, owner)).status, 200);
+      assert.equal(calls.at(-1).headers.get('origin'), host);
+      const foreign = new Request(`dsh-app://app/api/zhuma-workspaces/${endpoint}`, {
+        method: 'POST',
+        body: '{}',
+        headers: { origin: 'https://outside.example' },
+      });
+      assert.equal((await module.forwardWebRequest(foreign, host, owner)).status, 403);
+    }
+    assert.equal(calls.length, 4);
   } finally {
     globalThis.fetch = original;
     await rm(stage, { recursive: true, force: true });

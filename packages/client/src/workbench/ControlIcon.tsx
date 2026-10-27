@@ -30,3 +30,17 @@ export function SettingsIcon() {
     </svg>
   );
 }
+/** Selected choice uses the same bounded stroke icon system as menu/navigation controls. */
+export function CheckIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="m3.5 8 3 3 6-6"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

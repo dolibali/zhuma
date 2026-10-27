@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ExecutionApi, ExecutionNodeWire } from './ExecutionApi.js';
+import type { ExecutionNodeWire } from './ExecutionApi.js';
 import { executionErrorMessage } from './ExecutionApi.js';
 
 export function nodeIdentity(node: ExecutionNodeWire): string {
@@ -10,7 +10,7 @@ export function reviewIdentity(node: ExecutionNodeWire): string {
 }
 
 /** Remount forms on API/session or item change, before an old form can be used. */
-export function useFormKey(api: ExecutionApi, identity: string): number {
+export function useFormKey(api: object, identity: string): number {
   const scope = useRef({ api, identity, generation: 0 });
   if (scope.current.api !== api || scope.current.identity !== identity) {
     scope.current = { api, identity, generation: scope.current.generation + 1 };

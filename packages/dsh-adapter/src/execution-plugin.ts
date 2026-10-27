@@ -38,6 +38,8 @@ const ENDPOINTS = [
   'revision',
   'draft',
   'upstream-content',
+  'project-artifacts',
+  'task-progress',
   'inbox-counts',
   'events',
 ] as const;
@@ -472,6 +474,10 @@ function run(
       return service.revision(caller, payload);
     case 'upstream-content':
       return service.upstreamContent(caller, payload);
+    case 'project-artifacts':
+      return service.projectArtifacts(caller, payload, fileAuthority);
+    case 'task-progress':
+      return service.taskProgress(caller, payload, fileAuthority);
     case 'draft':
       return service.draft(caller, payload, fileAuthority);
     case 'inbox-counts':

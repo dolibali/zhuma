@@ -103,6 +103,12 @@ export interface InboxItemView {
   readonly detail?: string;
 }
 
+/** Handoffs combine a node title and work in goal; only the display heading is shortened. */
+export function createExecutionGoalView(goal: string): { title: string; description?: string } {
+  const title = goal.split(/\r?\n/, 1)[0]!.trim().slice(0, 160) || '工作项';
+  return { title, ...(goal !== title ? { description: goal } : {}) };
+}
+
 /** Read-only projection. Rendering a node does not start work or change execution facts. */
 export function createNodeExecutionView(report: NodeExecutionReport): NodeExecutionView {
   return {

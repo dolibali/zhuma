@@ -9,6 +9,7 @@ const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const stage = `${root}/.build/desktop/deepseek-harness`;
 const task = process.argv[2] ?? 'dev';
 const brand = JSON.parse(readFileSync(join(root, 'branding/default/brand.json'), 'utf8'));
+const product = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 if (!/^[0-9A-Za-z.-]+$/u.test(brand.desktopBuildVersion))
   throw new Error('Invalid desktop build version');
 if (!['dev', 'package'].includes(task)) throw new Error(`Unknown desktop task: ${task}`);
@@ -16,6 +17,8 @@ const env = {
   ...process.env,
   DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
   DSH_CLIENT_TITLE: 'Zhuma',
+  // Keep the independent product/build versions separate from the pinned SDK runtime version.
+  ZHUMA_DESKTOP_PRODUCT_VERSION: product.version,
   // Disallow upstream auto updates in this independent unsigned build.
   DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
 };

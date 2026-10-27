@@ -1,5 +1,8 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
 import type { ExecutionFilesApi } from './files.js';
+import type { ProjectArtifactsApi } from '../workbench/project-artifacts-contract.js';
+import { createProjectArtifactsApi } from '../workbench/project-artifacts-api.js';
+import { createTaskProgressApi, type TaskProgressApi } from './task-progress.js';
 import {
   INBOX_ACTIONS,
   INBOX_KINDS,
@@ -239,6 +242,8 @@ export function executionErrorMessage(error: unknown): string {
 export interface ExecutionApi {
   /** Only the member HTTP transport exposes the authorized byte routes. */
   readonly files?: ExecutionFilesApi;
+  readonly projectArtifacts?: ProjectArtifactsApi;
+  readonly taskProgress?: TaskProgressApi;
   startable(signal?: AbortSignal): Promise<ExecutionStartableValue>;
   startPlan(draft: StartPlanDraft, signal?: AbortSignal): Promise<StartPlanValue>;
   inbox(signal?: AbortSignal): Promise<ExecutionInboxValue>;
@@ -762,6 +767,18 @@ export function createExecutionApi(rpc: ClientConnectionRpc, spaceId?: string): 
     return response.value;
   }
   return {
+    ...(spaceId === undefined
+      ? {}
+      : {
+          projectArtifacts: createProjectArtifactsApi(
+            (query, signal) => call('project-artifacts', query, signal),
+            spaceId,
+          ),
+          taskProgress: createTaskProgressApi(
+            (query, signal) => call('task-progress', query, signal),
+            spaceId,
+          ),
+        }),
     async startable(signal) {
       return scoped(readStartable(await call('startable', scope, signal)));
     },

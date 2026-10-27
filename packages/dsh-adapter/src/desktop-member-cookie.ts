@@ -2,7 +2,7 @@
 const MEMBER = 'zhuma-member';
 const APP_ORIGIN = 'dsh-app://app';
 const MEMBER_PATH =
-  /^\/(?:zhuma-id\/(?:login|logout|session|(?:spaces|notes)\/[a-z0-9-]{1,64})|api\/zhuma-member\/(?:snapshot|command|plan)|api\/zhuma-exec\/(?:start-plan|inbox-counts|inbox|startable|submit|ballot|settle|report|revision|draft|events|upstream-content|upload-file|file)|api\/zhuma-run\/(?:begin|send|stop|read|history|options|inbox|observe))$/;
+  /^\/(?:zhuma-id\/(?:login|logout|session|(?:spaces|notes)\/[a-z0-9-]{1,64})|api\/zhuma-member\/(?:snapshot|command|plan)|api\/zhuma-exec\/(?:start-plan|inbox-counts|inbox|startable|submit|ballot|settle|report|revision|draft|events|upstream-content|project-artifacts|task-progress|upload-file|file)|api\/zhuma-run\/(?:begin|send|stop|read|history|options|inbox|observe)|api\/zhuma-workflow\/(?:options|read|start|resume|stop))$/;
 const MAX_AGE_SECONDS = 12 * 60 * 60;
 
 function rejected(status: number): Response {

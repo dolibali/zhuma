@@ -101,7 +101,10 @@ export interface NativeReviewPorts {
  * object and requalified on every action. No authority/content is persisted here. */
 export class NativeSessionPurpose {
   private readonly scopes = new WeakMap<NativeWorkScope, NativeReviewContext>();
-  private readonly originals = new WeakMap<NativeWorkGrant, object>();
+  private readonly originals = new WeakMap<
+    NativeWorkGrant,
+    { readonly original: object; readonly selection: NativeSessionSelection }
+  >();
   private readonly grants = new WeakMap<object, NativeWorkGrant>();
   private readonly authorize: NativeReviewPorts['authorize'];
   private readonly readTarget: NativeReviewPorts['readTarget'];
@@ -161,7 +164,7 @@ export class NativeSessionPurpose {
       return prior;
     }
     const context = nativeReviewContextFromScope(current.scope);
-    const selection = nativeSelectionSchema.parse(current.selection);
+    const selection = Object.freeze(nativeSelectionSchema.parse(current.selection));
     const identity = canonicalPayload({ context, selection });
     const scope = this.bindScope(Object.freeze({ ...context.scope }), context);
     const purpose = this,
@@ -184,7 +187,7 @@ export class NativeSessionPurpose {
       },
     });
     this.grants.set(original, grant);
-    this.originals.set(grant, original);
+    this.originals.set(grant, Object.freeze({ original, selection }));
     grantOwners.set(grant, this);
     reviewAssertions.add(grant.assertCurrent);
     reviewSignals.add(signal);
@@ -213,14 +216,25 @@ export class NativeSessionPurpose {
       throw new NativeReviewError('review-authority-denied');
     }
   }
+  /** Identity observation only; no source, action or metadata is authorized. */
+  owns(grant: NativeWorkGrant): boolean {
+    return this.originals.has(grant);
+  }
+  access(grant: NativeWorkGrant) {
+    const access = this.originals.get(grant);
+    if (!access) throw new NativeReviewError('review-authority-denied');
+    // One real fresh action checks the same original scope, selection, signal
+    // and port identities. The returned fields are only its frozen metadata;
+    // this does not cache that authorization for another operation or await.
+    invokeNativeWorkGrantAssertion(grant, 'open');
+    if (grant.signal.aborted) throw new NativeReviewError('cancelled');
+    return access;
+  }
   original(grant: NativeWorkGrant): object {
-    const original = this.originals.get(grant);
-    if (!original) throw new NativeReviewError('review-authority-denied');
-    grant.assertCurrent('open');
-    return original;
+    return this.access(grant).original;
   }
   selection(grant: NativeWorkGrant): NativeSessionSelection {
-    return nativeSelectionSchema.parse(this.resolve(this.original(grant), 'open').selection);
+    return this.access(grant).selection;
   }
   context(scope: NativeWorkScope): NativeReviewContext | undefined {
     assertNativeScopePurposeOwner(scope, this);

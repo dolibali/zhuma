@@ -143,7 +143,13 @@ export function PlanningChanges({
         const node = change.kind === 'removed' ? change.before : change.after;
         const flows = change.kind === 'removed' ? before : after;
         const fields =
-          change.kind === 'changed' ? change.fields : (['assigneeId', 'output'] as const);
+          change.kind === 'changed'
+            ? change.fields
+            : [
+                ...(['assigneeId', 'output'] as const),
+                ...(node.skillIds.length ? (['skillIds'] as const) : []),
+                ...(node.mcpIds.length ? (['mcpIds'] as const) : []),
+              ];
         return (
           <details
             className={`zm-change-entry ${change.kind}`}

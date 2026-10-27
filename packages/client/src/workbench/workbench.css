@@ -1,4 +1,121 @@
 /* Theme state belongs to the official DSH ui-theme service. These are presentation tokens only. */
+.zm-local-setup-card .zm-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.zm-workspace-approval {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+  padding: 24px;
+}
+.zm-workspace-approval .zm-field,
+.zm-workflow-settings .zm-field {
+  margin-bottom: 0;
+}
+.zm-workspace-scope {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 24px;
+  margin: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--zm-line);
+}
+.zm-workspace-scope dt {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+.zm-workspace-scope dd {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.zm-workflow-field-heading,
+.zm-workflow-model-empty {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.zm-workflow-model-empty {
+  margin-top: -6px;
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+.zm-workflow-field-heading > .zm-button {
+  min-height: 28px;
+  padding: 3px 8px;
+}
+.zm-workspace-approval h3,
+.zm-workspace-approval p {
+  margin: 0;
+}
+.zm-workspace-approval h3 {
+  font-size: 14px;
+}
+.zm-workspace-approval-toolbar,
+.zm-workspace-approval-toolbar > div,
+.zm-workspace-publish > header,
+.zm-workspace-approved-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.zm-workspace-publish,
+.zm-workspace-approved {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--zm-line);
+}
+.zm-workspace-publish-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.zm-workspace-path {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+.zm-workspace-approved-row {
+  padding: 10px 0;
+}
+.zm-workspace-approved-row > span {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.zm-workspace-approved-row strong,
+.zm-workspace-approved-row small {
+  display: block;
+}
+.zm-workspace-approved-row small {
+  margin-top: 4px;
+  color: var(--zm-muted);
+}
+@media (max-width: 520px) {
+  .zm-workspace-approval {
+    padding: 16px;
+  }
+  .zm-workspace-publish-row {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+  .zm-workspace-publish-row > .zm-button {
+    grid-column: 2;
+    justify-self: end;
+  }
+}
 .zhuma.zm-account-settings {
   display: flex;
   align-items: center;
@@ -1841,7 +1958,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 .zm-table-heading,
 .zm-task-row {
-  grid-template-columns: minmax(180px, 1fr) 136px 96px 92px;
+  grid-template-columns: minmax(180px, 1fr) 136px 96px minmax(170px, 220px);
 }
 .zm-task-row strong {
   font-size: 14px;
@@ -2809,7 +2926,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
   }
   .zm-table-heading,
   .zm-task-row {
-    grid-template-columns: minmax(180px, 1fr) 100px 80px 88px;
+    grid-template-columns: minmax(180px, 1fr) 100px 80px minmax(148px, 180px);
     gap: 10px;
   }
 }
@@ -2830,7 +2947,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
   }
   .zm-table-heading,
   .zm-task-row {
-    grid-template-columns: 1fr 88px;
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 170px);
   }
   .zm-table-heading > :nth-child(2),
   .zm-table-heading > :nth-child(3),
@@ -3267,7 +3384,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
-  font-size: 13px;
+  font: inherit;
   font-weight: 400;
   line-height: 1.4;
   text-align: left;
@@ -3288,7 +3405,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
   z-index: 1500;
   max-width: calc(100vw - 16px);
   color: var(--zm-ink);
-  font-size: 13px;
+  font: inherit;
   font-weight: 400;
   line-height: 1.4;
 }
@@ -3299,9 +3416,13 @@ html[data-platform='darwin'] .zm-shell-chrome {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  min-width: min(var(--anchor-width), var(--available-width));
-  width: max-content;
-  max-width: min(420px, var(--available-width));
+  min-width: 0;
+  width: min(
+    max(var(--anchor-width), var(--zm-select-min-width, 0px)),
+    var(--available-width),
+    calc(100vw - 16px)
+  );
+  max-width: calc(100vw - 16px);
   max-height: var(--available-height);
   border: 1px solid var(--zm-line-strong);
   border-radius: 8px;
@@ -3338,6 +3459,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
 .zm-select-check {
   position: absolute;
   left: 8px;
+  display: flex;
 }
 .zm-select-popup input.zm-select-search {
   box-sizing: border-box;
@@ -3975,6 +4097,42 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 .zm-execution-start .zm-error {
   flex-basis: 100%;
+}
+.zhuma .zm-task-state-cell,
+.zhuma .zm-task-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.zhuma .zm-task-progress {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--zm-muted);
+}
+.zhuma .zm-task-progress small {
+  flex-basis: 100%;
+}
+.zhuma .zm-task-progress-compact > span {
+  white-space: nowrap;
+}
+.zhuma .zm-task-state-cell > .zm-status,
+.zhuma .zm-task-state-cell > .zm-badge {
+  color: var(--zm-muted);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 400;
+}
+.zhuma .zm-project-work-list > button > .zm-task-state-cell {
+  flex: 0 1 220px;
 }
 .zm-workflow-controls {
   display: flex;

@@ -9,6 +9,28 @@ const natural = z.number().int().nonnegative().refine(Number.isSafeInteger);
 const identity = z.string().min(1).max(1000);
 const common = { attemptId: identity, revision: natural };
 const streamSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('snapshot'),
+    revision: natural,
+    activeAttempt: z
+      .object({
+        attemptId: identity,
+        startedAfterSeq: z.number().int().min(-1).refine(Number.isSafeInteger),
+        nextIndex: natural,
+        text: z.string(),
+        toolNames: z
+          .array(
+            z
+              .string()
+              .min(1)
+              .max(200)
+              .refine((name) => !/[\u0000-\u001f\u007f]/u.test(name)),
+          )
+          .max(128)
+          .refine((names) => new Set(names).size === names.length),
+      })
+      .optional(),
+  }),
   z.object({ ...common, type: z.literal('start') }),
   z.object({ ...common, type: z.literal('chunk'), index: natural, chunk: z.unknown() }),
   z.object({
@@ -86,6 +108,26 @@ export class NativeConversationProjection {
       const frame = parsed.data;
       if (frame.revision <= this.revision) return;
       this.revision = frame.revision;
+      if (frame.type === 'snapshot') {
+        this.active = frame.activeAttempt
+          ? {
+              id: frame.activeAttempt.attemptId,
+              nextIndex: frame.activeAttempt.nextIndex,
+              toolNames: new Set(frame.activeAttempt.toolNames),
+            }
+          : undefined;
+        projected = {
+          type: 'assistant-stream',
+          frame: {
+            type: 'snapshot',
+            revision: frame.revision,
+            ...(frame.activeAttempt ? { activeAttempt: frame.activeAttempt } : {}),
+          },
+        };
+        if (Buffer.byteLength(JSON.stringify(projected)) > 262_144)
+          throw new NativeWorkError('capacity');
+        return projected;
+      }
       if (frame.type === 'start') {
         if (this.active) return { type: 'gap', after: this.cursor };
         this.active = { id: frame.attemptId, nextIndex: 0, toolNames: new Set() };

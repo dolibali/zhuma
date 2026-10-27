@@ -14,6 +14,7 @@ import {
   freezeExecutionRunComposition,
   type FrozenExecutionRunComposition,
   type OutputFilePublisherToolDefinition,
+  type AcceptedFileToolDefinition,
 } from './execution-run-composition.js';
 import {
   ExecutionRunError,
@@ -24,6 +25,11 @@ import { resolveMember, type MemberRequest } from './member-session.js';
 import type { WorkflowStartTicket } from './execution-workflow-contract.js';
 import { effectiveWorkflowToolKind } from './execution-workflow-tools.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
+import {
+  describeNativeAcceptedFileTool,
+  NATIVE_ACCEPTED_FILE_TOOL,
+  NATIVE_ACCEPTED_FILE_TOOL_VERSION,
+} from './native-work-session-files-tool.js';
 import { hostResultTool } from './host-run-result-protocol.js';
 import { NATIVE_WORK_LIMITS } from './native-work-session.js';
 import type { createHostRunWorkspaces } from './host-run-workspaces.js';
@@ -100,6 +106,19 @@ const reviewTools = () => ({
   readTarget: describeNativeReviewReadTool(),
   completeReview: describeNativeReviewTool(),
 });
+function declaredAcceptedFileTool(): AcceptedFileToolDefinition {
+  const definition = describeNativeAcceptedFileTool();
+  if (
+    definition.name !== NATIVE_ACCEPTED_FILE_TOOL ||
+    definition.sourceVersion !== NATIVE_ACCEPTED_FILE_TOOL_VERSION
+  )
+    throw new ExecutionRunError('run-authority-unavailable');
+  return {
+    ...definition,
+    name: NATIVE_ACCEPTED_FILE_TOOL,
+    sourceVersion: NATIVE_ACCEPTED_FILE_TOOL_VERSION,
+  };
+}
 
 /** Host content assembly only. D still checks fresh authority/inputs in its original queue. */
 export function createHostRunConfiguration(
@@ -115,6 +134,8 @@ export function createHostRunConfiguration(
     >;
     /** Host readiness only; never a Client-selected protocol or an old-Run upgrade. */
     readonly resultProtocol?: () => 1 | 2;
+    /** The actual installed issuer/file factory is ready; never inferred from metadata. */
+    readonly acceptedFilesReady?: () => boolean;
   },
 ) {
   const llm = ctx.llm;
@@ -155,6 +176,14 @@ export function createHostRunConfiguration(
       canonicalPayload(tools.definition) !== canonicalPayload(describeAcceptedInputTool())
     )
       throw new ExecutionRunError('run-authority-unavailable');
+    if (snapshot.schemaVersion === 2 && snapshot.payload.acceptedFileReader) {
+      if (
+        !options.acceptedFilesReady?.() ||
+        canonicalPayload(snapshot.payload.acceptedFileReader) !==
+          canonicalPayload(declaredAcceptedFileTool())
+      )
+        throw new ExecutionRunError('run-authority-unavailable');
+    }
     return undefined;
   }
   function reviewActive() {
@@ -418,6 +447,10 @@ export function createHostRunConfiguration(
           model: input.model,
           executor: input.executor,
           inputs,
+          ...(inputs.items.some((item) => item.access === 'visible') &&
+          options.acceptedFilesReady?.()
+            ? { acceptedFileReader: declaredAcceptedFileTool() }
+            : {}),
           ...(resourceCatalog ? { resourceCatalog } : {}),
           ...(node.handoff.assignee.kind === 'expert'
             ? { resultIntentTool: hostResultTool(options.resultProtocol?.() ?? 1) }

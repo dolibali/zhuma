@@ -72,8 +72,10 @@ export function createNativeWorkflowBridge(options: {
   readonly execution: Execution;
   readonly runs: NativeWorkflowRunPort;
   readonly signal: AbortSignal;
+  /** Same genuine claim, forwarded by A to the original independent review owner. */
+  readonly consumeClaim?: (original: MemberRequest, claim: WorkflowExecutionClaim) => void;
 }) {
-  const { execution, runs, signal } = options;
+  const { execution, runs, signal, consumeClaim } = options;
   if (owners.has(execution)) throw new BridgeError('workflow-owner-unavailable');
   const identity = {};
   owners.set(execution, identity);
@@ -200,6 +202,16 @@ export function createNativeWorkflowBridge(options: {
       fenceArm(arm);
       for (const ticket of claim.tickets) dispose(ticket);
       return;
+    }
+    if (options.consumeClaim !== consumeClaim) throw new BridgeError('workflow-owner-unavailable');
+    if (consumeClaim) {
+      // The review owner retains its own pending/refused scopes. Its bounded
+      // capacity or initialization refusal cannot cancel unrelated author tickets.
+      try {
+        const result: unknown = consumeClaim(arm.original, claim);
+        if (result !== undefined) void Promise.resolve(result).catch(() => undefined);
+      } catch {}
+      current(arm);
     }
     for (const ticket of claim.tickets) {
       current(arm);

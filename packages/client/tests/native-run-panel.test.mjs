@@ -217,6 +217,27 @@ test('SSR: active or held runs freeze both choices, including terminal runs awai
   );
 });
 
+test('SSR: held execution keeps directory revocation reachable while model, executor and execution range stay fixed', () => {
+  for (const status of ['running', 'waiting-for-input', 'cancelled']) {
+    const html = render({
+      view: running({ run: { ...run, status, resources: 'held' } }),
+      onManageWorkspaces() {
+        assert.fail('render must not manage permissions');
+      },
+    });
+    const management = html.match(
+      /<button\b[^>]*>(?:(?!<\/button>)[\s\S])*?管理目录授权(?:(?!<\/button>)[\s\S])*?<\/button>/u,
+    )?.[0];
+    assert.ok(management);
+    assert.doesNotMatch(management, /\bdisabled(?:=|\s|>)/u);
+    assert.match(html, /本轮配置已固定/);
+    assert.doesNotMatch(
+      html,
+      /aria-label="选择模型"|aria-label="选择执行者"|aria-label="执行范围"/u,
+    );
+  }
+});
+
 test('SSR: idle and received do not advertise adoption, task completion or a stopped receipt', () => {
   const html = render({ view: running() });
   assert.ok(html.includes('运行端已收到'));
@@ -457,6 +478,28 @@ if (domModule) {
       await choose(h, '选择执行者');
       assert.equal(choices.length, 1, 'the old target model must not fill the new target');
     } finally {
+      await h.close();
+    }
+  });
+
+  test('DOM: held runs open permission management while stop is pending without exposing execution choices', async () => {
+    const stop = pending();
+    let managed = 0;
+    const h = await mount({
+      view: running(),
+      onStop: () => stop.promise,
+      onManageWorkspaces: () => managed++,
+      onSelectionChange: () => assert.fail('held configuration remains frozen'),
+    });
+    try {
+      await act(async () => h.button('停止运行').click());
+      assert.equal(h.button('管理目录授权').disabled, false);
+      await act(async () => h.button('管理目录授权').click());
+      assert.equal(managed, 1);
+      assert.equal(h.node.querySelectorAll('[role="combobox"]').length, 0);
+    } finally {
+      stop.resolve();
+      await act(async () => {});
       await h.close();
     }
   });

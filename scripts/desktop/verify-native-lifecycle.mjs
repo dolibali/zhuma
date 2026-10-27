@@ -20,16 +20,29 @@ import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({
-  options: { upstream: { type: 'string' }, phase: { type: 'string', default: 'all' } },
+  options: {
+    upstream: { type: 'string' },
+    phase: { type: 'string', default: 'all' },
+    'review-case': { type: 'string' },
+  },
 });
+if (
+  values['review-case'] !== undefined &&
+  (values.phase !== 'host-review-resources' || values['review-case'] !== 'uploaded-file')
+)
+  throw new Error('review-case only supports uploaded-file in host-review-resources.');
 if (
   ![
     'all',
     'host-run',
     'host-run-cold',
     'host-resources',
+    'host-review-resources',
+    'host-review-skill',
     'host-results',
     'host-local-workspace',
+    'host-workspace-approvals',
+    'host-project-artifacts',
     'host-local-policy',
     'host-fixed-publications',
     'host-backend-readiness',
@@ -509,6 +522,14 @@ void publicContract;
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-local-workspace.spec.ts'),
   );
   copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-workspace-approvals.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-workspace-approvals.spec.ts'),
+  );
+  copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-project-artifacts.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-project-artifacts.spec.ts'),
+  );
+  copyFileSync(
     join(root, 'packages/dsh-adapter/tests/host-run-local-policy.spec.ts'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-local-policy.spec.ts'),
   );
@@ -523,6 +544,10 @@ void publicContract;
   copyFileSync(
     join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-cold.spec.ts'),
+  );
+  copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-review-resources.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-review-resources.spec.ts'),
   );
   const nativeBundle = join(stage, 'packages/core/agent-loop/tests/zhuma-native-work-bundle.ts');
   const executionRunBundle = join(
@@ -797,7 +822,7 @@ void publicContract;
     verify(
       'native-work-session',
       nativeSpecs.map((name) => `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
-      73,
+      74,
     );
     const inboxData = join(evidence, 'native-stream-data');
     mkdirSync(inboxData, { mode: 0o700 });
@@ -897,6 +922,56 @@ void publicContract;
       {},
       14,
     );
+  else if (values.phase === 'host-review-skill')
+    verify(
+      'host-review-skill',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-review-resources.spec.ts',
+        '-t',
+        'actual Host independent review: real selected Skill',
+      ],
+      1,
+      {},
+      17,
+    );
+  else if (values.phase === 'host-review-resources')
+    verify(
+      'host-review-resources',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-review-resources.spec.ts',
+        '-t',
+        values['review-case'] === 'uploaded-file'
+          ? 'actual Host independent review: fixed uploaded UTF8 file'
+          : 'actual Host independent review:',
+      ],
+      values['review-case'] === 'uploaded-file' ? 1 : 4,
+      {},
+      values['review-case'] === 'uploaded-file' ? 17 : 14,
+    );
+  else if (values.phase === 'host-project-artifacts')
+    verify(
+      'host-project-artifacts',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-project-artifacts.spec.ts',
+        '-t',
+        'actual Host project artifacts:',
+      ],
+      1,
+      {},
+      14,
+    );
+  else if (values.phase === 'host-workspace-approvals')
+    verify(
+      'host-workspace-approvals',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-workspace-approvals.spec.ts',
+        '-t',
+        'actual Host workspace approvals:',
+      ],
+      2,
+      {},
+      14,
+    );
   else if (values.phase === 'host-resources')
     verify(
       'host-resources',
@@ -993,6 +1068,7 @@ void publicContract;
         patchSha256: hash(patch),
         verifierSha256: hash(fileURLToPath(import.meta.url)),
         phase: values.phase,
+        ...(values['review-case'] ? { reviewCase: values['review-case'] } : {}),
         ...(values.phase === 'host-fixed-publications'
           ? {
               hostFixedPublicationTimings: JSON.parse(
@@ -1003,8 +1079,17 @@ void publicContract;
         hostArtifactSha256: hash(join(root, '.build/workbench/index.js')),
         hostTestDataSha256: hash(hostTestData),
         hostRunSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts')),
+        hostReviewResourcesSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-review-resources.spec.ts'),
+        ),
         hostLocalWorkspaceSpecSha256: hash(
           join(root, 'packages/dsh-adapter/tests/host-run-local-workspace.spec.ts'),
+        ),
+        hostWorkspaceApprovalsSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-workspace-approvals.spec.ts'),
+        ),
+        hostProjectArtifactsSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-project-artifacts.spec.ts'),
         ),
         hostLocalPolicySpecSha256: hash(
           join(root, 'packages/dsh-adapter/tests/host-run-local-policy.spec.ts'),

@@ -298,3 +298,27 @@ test('resources contract: policy source digest and flags remain pinned on reopen
   copy.payload.resources.skills[0].invocation.userInvocable = false;
   assert.throws(() => readExecutionRunComposition(copy));
 });
+
+test('resource descriptor contract: a real scope loader projection never widens the MCP snapshot schema', async () => {
+  const { describeExecutionResourceTool, describeExecutionScopedResourceTool } =
+    await import('../dist/execution-run-resources.js');
+  const { executionResourceToolSchema } =
+    await import('../dist/execution-run-resource-snapshot.js');
+  const definition = {
+    name: 'skill',
+    description: 'Explicit descriptor contract',
+    parameters: { type: 'object', properties: { name: { type: 'string' } } },
+    output: { schema: { type: 'object' } },
+  };
+  const scoped = describeExecutionScopedResourceTool(definition);
+  assert.equal(scoped.name, 'skill');
+  assert.equal(executionResourceToolSchema.safeParse(scoped).success, false);
+  assert.throws(() => describeExecutionResourceTool(definition));
+  assert.throws(() =>
+    describeExecutionScopedResourceTool({ ...definition, name: 'complete_review' }),
+  );
+  assert.equal(
+    describeExecutionScopedResourceTool({ ...definition, name: 'mcp__contract__ping' }).name,
+    'mcp__contract__ping',
+  );
+});

@@ -16,6 +16,7 @@ export function Appearance({ store }: { store: AppearanceStore }) {
     <SingleSelect
       className="zm-appearance"
       label="外观"
+      popupMinWidth={144}
       title={`外观：${caption}`}
       triggerContent={
         <svg

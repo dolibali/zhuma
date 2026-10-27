@@ -150,11 +150,17 @@ export interface NativeFixedResultPublicationsIssuer extends Omit<
 }
 type AnyLease = NativeFixedResultLease | NativeFixedResultPublicationsLease;
 export interface NativeFixedReviewIssuer {
+  /** Wakeup only, never adoption, completion or ballot authority. Optional for
+   * old transaction-only adapters; the automatic bridge requires this view. */
+  onReviewReady?(listener: (grant: NativeWorkGrant, ref: NativeFixedReviewRef) => void): () => void;
   registerNativeReviewTools(
     ctx: Context,
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
+    beforeRetire?: () => undefined,
   ): NativeDshComposition;
+  /** Actual original collection state; preparing/idle alone is not draining. */
+  reviewCollectionPhase?(grant: NativeWorkGrant): 'unstarted' | 'draining' | 'ready';
   prepareFixedReview(
     grant: NativeWorkGrant,
     signal: AbortSignal,
@@ -183,7 +189,9 @@ export function nativeFixedReviewIssuer(
   if (!owner || !sessions.ownsResultRuntime(runtime))
     throw new NativeReviewError('review-unavailable');
   return {
+    onReviewReady: owner.onReviewReady.bind(owner),
     registerNativeReviewTools: owner.registerNativeReviewTools.bind(owner),
+    reviewCollectionPhase: owner.reviewCollectionPhase.bind(owner),
     prepareFixedReview: owner.prepareFixedReview.bind(owner),
     assertFixedReview: owner.assertFixedReview.bind(owner),
     readFixedReview: owner.readFixedReview.bind(owner),
@@ -297,6 +305,9 @@ function createOwner(
 }
 
 class NativeResultOwner {
+  private readonly reviewListeners = new Set<
+    (grant: NativeWorkGrant, ref: NativeFixedReviewRef) => void
+  >();
   private readonly lifetime = new AbortController();
   private readonly issued = new WeakMap<NativeFixedResultRef, IssuedResult>();
   private readonly ready = new Map<string, NativeFixedResultRef>();
@@ -309,6 +320,11 @@ class NativeResultOwner {
   private readonly reviewIssued = new WeakMap<NativeFixedReviewRef, IssuedReview>();
   private readonly reviewReady = new Map<string, NativeFixedReviewRef>();
   private readonly reviewJobs = new Map<string, Promise<NativeFixedReviewPreparation>>();
+  private readonly reviewRetirements = new WeakMap<
+    NativeWorkGrant,
+    Promise<NativeMigrationDrain>
+  >();
+  private readonly reviewBeforeRetire = new WeakMap<NativeWorkGrant, () => undefined>();
   private readonly reviewFailures = new Map<string, NativeReviewError>();
   private pendingLeases = 0;
   constructor(
@@ -355,6 +371,7 @@ class NativeResultOwner {
     ctx: Context,
     binding: NativeSessionBinding,
     grant: NativeWorkGrant,
+    beforeRetire?: () => undefined,
   ): NativeDshComposition {
     const active = this.reviewCheck(grant),
       agent = scopeOf(ctx);
@@ -365,6 +382,14 @@ class NativeResultOwner {
       binding.selection.configurationId !== active.binding.selection.configurationId
     )
       throw new NativeReviewError('review-result-rejected');
+    if (beforeRetire) {
+      if (
+        typeof beforeRetire !== 'function' ||
+        (this.reviewBeforeRetire.has(grant) && this.reviewBeforeRetire.get(grant) !== beforeRetire)
+      )
+        throw new NativeReviewError('review-unavailable');
+      this.reviewBeforeRetire.set(grant, beforeRetire);
+    }
     const current = (exec: Readonly<ToolExecution>) => {
       this.reviewCheck(grant);
       if (
@@ -378,11 +403,16 @@ class NativeResultOwner {
     type Reservation = Awaited<ReturnType<NativeWorkSessionService['reserveReviewRead']>>;
     const reads = new Map<
       ToolExecution['token'],
-      { value: NativeReviewReadOutput; lease?: NativeReviewReadLease; reservation?: Reservation }
+      {
+        execution: Readonly<ToolExecution>;
+        value: NativeReviewReadOutput;
+        lease?: NativeReviewReadLease;
+        reservation?: Reservation;
+      }
     >();
     const completions = new Map<
       ToolExecution['token'],
-      { value: unknown; intent?: NativeReviewIntent }
+      { execution: Readonly<ToolExecution>; value: unknown; intent?: NativeReviewIntent }
     >();
     const releaseRead = (token: ToolExecution['token']) => {
       const read = reads.get(token);
@@ -401,14 +431,32 @@ class NativeResultOwner {
     ctx.effect(() => () => {
       for (const token of reads.keys()) releaseRead(token);
     });
-    ctx.on('tools/result', (exec) => {
-      releaseRead(exec.token);
-      completions.delete(exec.token);
-    });
-    ctx.on('agent/status', ({ agent: actual, status }) => {
-      if (actual === agent && status === 'idle')
-        void this.prepareFixedReview(grant, this.lifetime.signal).catch(() => undefined);
-    });
+    ctx.on(
+      'tools/result',
+      (exec) => {
+        // Resource plugins can isolate service routing after registration.
+        // Only this Agent's original SDK execution may settle its reservation;
+        // a copied event borrowing an opaque token is not that execution.
+        if (exec.agent !== agent || exec.agent.id !== binding.nativeAgentId) return;
+        if (reads.get(exec.token)?.execution === exec) releaseRead(exec.token);
+        if (completions.get(exec.token)?.execution === exec) completions.delete(exec.token);
+      },
+      { global: true },
+    );
+    ctx.on(
+      'agent/status',
+      ({ agent: actual, status }) => {
+        if (
+          actual === agent &&
+          actual.id === binding.nativeAgentId &&
+          actual.session.id === binding.nativeSessionId &&
+          ctx.agents.get(actual.id) === actual &&
+          status === 'idle'
+        )
+          void this.prepareFixedReview(grant, this.lifetime.signal).catch(() => undefined);
+      },
+      { global: true },
+    );
     ctx.tools.guard(() =>
       this.sessions.reviewIntent(grant) ? 'native-completion-pending' : undefined,
     );
@@ -506,7 +554,7 @@ class NativeResultOwner {
               current(exec);
               reservation.check();
               if (abandoned) throw new NativeReviewError('cancelled');
-              reads.set(exec.token, { value: parsed, lease, reservation });
+              reads.set(exec.token, { execution: exec, value: parsed, lease, reservation });
               retained = true;
               return parsed;
             } finally {
@@ -549,7 +597,7 @@ class NativeResultOwner {
         } finally {
           clearTimeout(timer);
         }
-        if (!reads.has(exec.token)) reads.set(exec.token, { value });
+        if (!reads.has(exec.token)) reads.set(exec.token, { execution: exec, value });
         return value;
       },
       finalizeContent: (exec, result) => {
@@ -636,14 +684,14 @@ class NativeResultOwner {
           });
           current(exec);
           const value = nativeReviewAck(binding, access.context, intent);
-          completions.set(exec.token, { value, intent });
+          completions.set(exec.token, { execution: exec, value, intent });
           exec.concludeTurn();
           return value;
         } catch (error) {
           if (intent)
             await this.sessions.clearReviewIntent(grant, intent.intentId).catch(() => undefined);
           const value = { ok: false, code: this.reviewCode(error) };
-          completions.set(exec.token, { value });
+          completions.set(exec.token, { execution: exec, value });
           return value;
         }
       },
@@ -668,6 +716,11 @@ class NativeResultOwner {
     return { context: '', toolAllowlist: [readDefinition.name, complete.name] };
   }
 
+  reviewCollectionPhase(grant: NativeWorkGrant): 'unstarted' | 'draining' | 'ready' {
+    const access = this.reviewCheck(grant);
+    if (this.reviewReady.has(nativeReviewScopeKey(access.context))) return 'ready';
+    return this.reviewRetirements.has(grant) ? 'draining' : 'unstarted';
+  }
   async prepareFixedReview(
     grant: NativeWorkGrant,
     signal: AbortSignal,
@@ -743,7 +796,18 @@ class NativeResultOwner {
     );
     if (!candidate) return { status: 'pending', reason: 'not-durable' };
     before.check();
-    const drain = await this.runtime.retire(binding.nativeSessionId, signal);
+    const check = this.reviewBeforeRetire.get(grant);
+    if (check) {
+      const result: unknown = check();
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new NativeReviewError('review-unavailable');
+      }
+    }
+    this.reviewCheck(grant);
+    const retiring = this.runtime.retire(binding.nativeSessionId, signal);
+    this.reviewRetirements.set(grant, retiring);
+    const drain = await retiring;
     this.reviewCheck(grant);
     drain.assertCurrent();
     if (drain.basis !== 'flushed-and-closed') throw new NativeReviewError('review-result-rejected');
@@ -802,7 +866,23 @@ class NativeResultOwner {
       },
       { once: true },
     );
+    for (const listener of this.reviewListeners) {
+      try {
+        const pending: unknown = listener(grant, ref);
+        void Promise.resolve(pending).catch(() => undefined);
+      } catch {
+        // This is only a wakeup. It cannot change the fixed owner/ref or ballot.
+      }
+    }
     return { status: 'ready', ref };
+  }
+  onReviewReady(listener: (grant: NativeWorkGrant, ref: NativeFixedReviewRef) => void) {
+    if (this.lifetime.signal.aborted || this.reviewListeners.size >= 64)
+      throw new NativeReviewError('review-unavailable');
+    this.reviewListeners.add(listener);
+    return () => {
+      this.reviewListeners.delete(listener);
+    };
   }
   assertFixedReview(grant: NativeWorkGrant, ref: NativeFixedReviewRef): undefined {
     const access = this.reviewCheck(grant),
@@ -1507,6 +1587,7 @@ class NativeResultOwner {
     if (owners.get(this.sessions) === this) owners.delete(this.sessions);
     for (const lease of this.leases) lease.release();
     this.listeners.clear();
+    this.reviewListeners.clear();
     this.ready.clear();
     this.failures.clear();
     this.reviewReady.clear();

@@ -39,6 +39,8 @@ export interface HostWorkflowView {
   readonly requiresResume: boolean;
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
+  /** Optional for older clients. Assignment count retains its original meaning. */
+  readonly expertReviewRequired?: boolean;
   readonly intent: {
     readonly intentId: string;
     readonly generation: number;
@@ -87,6 +89,7 @@ export function createHostWorkflowOwner(
     readonly runs: NativeWorkflowRunPort;
     readonly workspaces: ReturnType<typeof createHostRunWorkspaces>;
     readonly signal: AbortSignal;
+    readonly consumeClaim?: Parameters<typeof createNativeWorkflowBridge>[0]['consumeClaim'];
     readWorkbench(): Workbench;
     prepareResume(
       original: MemberRequest,
@@ -96,7 +99,12 @@ export function createHostWorkflowOwner(
   },
 ) {
   const { execution, signal, workspaces } = options;
-  const bridge = createNativeWorkflowBridge({ execution, runs: options.runs, signal });
+  const bridge = createNativeWorkflowBridge({
+    execution,
+    runs: options.runs,
+    signal,
+    ...(options.consumeClaim ? { consumeClaim: options.consumeClaim } : {}),
+  });
   const active = (wait?: AbortSignal) => {
     signal.throwIfAborted();
     wait?.throwIfAborted();
@@ -185,6 +193,13 @@ export function createHostWorkflowOwner(
       requiresResume: view.requiresResume,
       activeRunCount: view.activeRunIds.length,
       expertNodeCount: nodes.filter((node) => node.assignee.kind === 'expert').length,
+      expertReviewRequired: nodes.some(
+        (node) =>
+          node.reviewRequired &&
+          node.reviewerIds.some((id) =>
+            applied.participants.some((member) => member.id === id && member.kind === 'expert'),
+          ),
+      ),
       intent: view.intent
         ? {
             intentId: view.intent.intentId,

@@ -54,6 +54,7 @@ test('pinned SDK list registration requires an id and rejects duplicate live ids
 // Compiled real plugin + pinned SDK registry core. No host rendering or sidebar imitation.
 async function checkComposition({
   boot,
+  omitBoot = false,
   initialPanel = null,
   restored = false,
   missingGuard = false,
@@ -78,7 +79,7 @@ async function checkComposition({
     exports: module.exports,
     require,
     window: {},
-    __ZHUMA_WORKBENCH_BOOT__: boot,
+    ...(omitBoot ? {} : { __ZHUMA_WORKBENCH_BOOT__: boot }),
     navigator: { userAgent: 'Node contract' },
     document: { createElement: () => ({ textContent: '', remove() {} }), head: { append() {} } },
     fetch: async (url) => {
@@ -109,7 +110,8 @@ async function checkComposition({
     disposers = [],
     listeners = new Set();
   let panel = { activePanelId: initialPanel },
-    rpcCalls = 0;
+    rpcCalls = 0,
+    effects = 0;
   let panelGuard;
   const layout = {
     panelInfo: {
@@ -157,6 +159,7 @@ async function checkComposition({
     },
     on: () => () => {},
     effect(effect) {
+      effects++;
       const dispose = effect();
       if (dispose) disposers.push(dispose);
     },
@@ -181,6 +184,8 @@ async function checkComposition({
   } catch (error) {
     assert.equal(entries.length, 0);
     assert.equal(reads.length, 0);
+    assert.equal(effects, 0);
+    assert.equal(rpcCalls, 0);
     throw error;
   }
   await new Promise((resolve) => setImmediate(resolve));
@@ -229,14 +234,19 @@ async function checkComposition({
           ? node.props.children.map(findShell).find(Boolean)
           : findShell(node?.props?.children)));
   assert.equal(findShell(element), injected.shell);
-  const launcher = launchers[0].component({
-    ...injected,
-    wide: false,
-    settingsOpen: false,
-    openSettings() {},
-  });
-  assert.equal(launcher.props.children[0].props.shell, injected.shell);
-  assert.equal(launcher.props.children[0].props.wide, false);
+  // Render through React: the public owner now binds its real settings action
+  // with an effect, so invoking a component as a plain function is invalid.
+  const launcher = require('react-dom/server').renderToStaticMarkup(
+    require('react').createElement(launchers[0].component, {
+      ...injected,
+      wide: false,
+      settingsOpen: false,
+      openSettings() {},
+    }),
+  );
+  assert.ok(launcher.includes('data-wide="false"'));
+  assert.ok(launcher.includes(restored ? '账号与空间：contract-member' : '登录账号'));
+  assert.ok(launcher.includes('aria-label="设置"'));
   assert.deepEqual(reads, Array(restored ? 2 : 1).fill('/zhuma-id/session'));
   if (memberMode && panel.activePanelId === 'zhuma-workbench') {
     const html = require('react-dom/server').renderToStaticMarkup(element);
@@ -263,9 +273,17 @@ async function checkComposition({
 }
 
 test('member plugin composition contract: account and settings share the public launcher and owned session', () =>
-  checkComposition());
+  checkComposition({ boot: { version: 1, deploymentMode: 'legacy-single-user' } }));
 test('member plugin composition contract: explicit legacy boot preserves owner navigation and its landing', () =>
   checkComposition({ boot: { version: 1, deploymentMode: 'legacy-single-user' } }));
+test('member plugin composition contract: missing boot never selects legacy or restores a session', async () => {
+  for (const omitBoot of [false, true])
+    for (const restored of [false, true])
+      await assert.rejects(
+        checkComposition({ omitBoot, restored }),
+        /Invalid workbench boot configuration/,
+      );
+});
 test('member plugin composition contract: missing patched navigation capability fails before effects or owner fallback', () =>
   assert.rejects(
     checkComposition({ boot: { version: 1, deploymentMode: 'multi-member' }, missingGuard: true }),

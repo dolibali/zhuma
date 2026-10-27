@@ -1,14 +1,25 @@
 import { Service, type Context } from '@deepseek-ai/cordis';
 import { isAbsolute } from 'node:path';
 import type { Agent, AgentHandle, AgentSetup } from '@deepseek-ai/dsh-agent';
-import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
-import { SessionId, SessionLogOffset, type UserMessage } from '@deepseek-ai/dsh-session';
+import {
+  MessageId,
+  ReasoningEffortId,
+  createUserMessage,
+  type ContextSnapshotSection,
+} from '@deepseek-ai/dsh-llm';
+import {
+  SessionId,
+  SessionLogOffset,
+  type SessionSeq,
+  type UserMessage,
+} from '@deepseek-ai/dsh-session';
 import type { ProjectionCheckpoint } from '@deepseek-ai/dsh-session-projection';
 import {
   SessionPersistenceNotFoundError,
   type SessionHandle,
 } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
+import { PERSONA_PREFIX_SECTION, joinContextSections } from '@deepseek-ai/dsh-system-prompt';
 import { assertNativeInputReadOwner } from './native-work-session.js';
 import {
   NativeSessionPurpose,
@@ -46,6 +57,7 @@ import {
   type NativeWorkScope,
   type NativeInboxSnapshot,
 } from './native-work-session-contract.js';
+import { NativeAssistantSnapshotCache } from './native-work-session-snapshot.js';
 
 const MAX_FRAME_BYTES = 262_144;
 const MAX_BUFFER_BYTES = 524_288;
@@ -54,6 +66,101 @@ const MAX_READERS = 8;
 const MAX_OBSERVERS = 16;
 const STOP_MS = 5_000;
 const READ_MS = 15_000;
+
+/** Shadow only the pinned Web deployment's development guidance in this Agent scope. */
+function configureNativeWorkPrompt(ctx: Context, textOnly: boolean): void {
+  if (textOnly) {
+    // The original service still owns its real directory for Skill lookup.
+    // Request admission refreshes this scoped contribution after assembly.
+    ctx.systemPrompt.context({
+      name: 'working-directory:current',
+      order: ctx.systemPrompt.getContextOrder('WORKING_DIRECTORY'),
+      text: '',
+      interpolate: false,
+      required: true,
+    });
+  }
+  ctx.systemPrompt.section({
+    name: PERSONA_PREFIX_SECTION,
+    order: ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
+    text: '你在 Zhuma 中处理当前工作节点。遵循固定节点目标、所选专家指令、固定输入清单和实际授权工具，以及平台的安全与交付约束。',
+    interpolate: false,
+  });
+  for (const [name, order] of [
+    ['harness:source', 'HARNESS_SOURCE'],
+    ['app:web-surface', 'WEB_SURFACE'],
+  ] as const) {
+    // Do not suppress all runtime context or replace the complete prompt:
+    // workspace/security, selected Skill/MCP guidance and attribution remain.
+    ctx.systemPrompt.section({
+      name,
+      order: ctx.systemPrompt.getSectionOrder(order),
+      text: '',
+      interpolate: false,
+    });
+    ctx.systemPrompt.context({
+      name,
+      order: ctx.systemPrompt.getContextOrder(order),
+      text: '',
+      interpolate: false,
+    });
+  }
+}
+
+/** Validate every visible SDK snapshot before proposing any model-only replacement. */
+function textOnlyContextReplacements(agent: Agent): readonly {
+  readonly seq: SessionSeq;
+  readonly message: UserMessage;
+  readonly sourceEventSeqs: SessionSeq[];
+}[] {
+  const changes: {
+    seq: SessionSeq;
+    message: UserMessage;
+    sourceEventSeqs: SessionSeq[];
+  }[] = [];
+  for (const seq of agent.session.surface.nodes) {
+    const event = agent.session.eventAt(seq);
+    if (event?.type !== 'user/message') continue;
+    const message = event.data;
+    const sourceKind: unknown = Reflect.get(message.source, 'kind');
+    if (sourceKind !== 'runtime-context') continue;
+    const sections: unknown = Reflect.get(message.source, 'sections');
+    if (Reflect.get(message.source, 'form') !== 'snapshot' || !Array.isArray(sections))
+      throw new NativeWorkError('unavailable');
+    const named: ContextSnapshotSection[] = [];
+    const names = new Set<string>();
+    for (const section of sections) {
+      if (typeof section !== 'object' || section === null || Array.isArray(section))
+        throw new NativeWorkError('unavailable');
+      const name: unknown = Reflect.get(section, 'name');
+      const text: unknown = Reflect.get(section, 'text');
+      if (typeof name !== 'string' || !name || names.has(name) || typeof text !== 'string')
+        throw new NativeWorkError('unavailable');
+      names.add(name);
+      named.push({ ...section, name, text });
+    }
+    const [body] = message.content;
+    if (
+      message.content.length !== 1 ||
+      body?.type !== 'text' ||
+      body.text !== joinContextSections(named)
+    )
+      throw new NativeWorkError('unavailable');
+    if (!names.has('working-directory:current')) continue;
+    const kept = named.filter((section) => section.name !== 'working-directory:current');
+    const source = { ...message.source, sections: kept };
+    changes.push({
+      seq,
+      message: createUserMessage({
+        content: [{ ...body, text: joinContextSections(kept) }],
+        source,
+      }),
+      sourceEventSeqs: [...new Set([...(event.sourceEventSeqs ?? []), seq])],
+    });
+  }
+  return changes;
+}
+
 interface ResourceEpoch {
   readonly owner: DshNativeWorkRuntime;
   readonly controller: AbortController;
@@ -73,6 +180,7 @@ function registryIdentity(ctx: Context): object {
 
 interface LiveSession {
   readonly handle: AgentHandle;
+  readonly presentation: NativeAssistantSnapshotCache;
   readonly grant: NativeWorkGrant;
   readonly binding: NativeSessionBinding;
   readonly directory: NativeDirectoryContext;
@@ -444,12 +552,24 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     directory.assert();
     assertNativeInputReadOwner(binding.nativeSessionId, this);
     if (!stored && !allowCreate) throw new NativeWorkError('delivery-unknown');
+    const presentation = new NativeAssistantSnapshotCache(binding.nativeSessionId);
     const setup: AgentSetup = async (agentCtx, unpublishedAgent) => {
       this.current(grant);
+      // Capture before the first request, in this exact Agent's owned scope.
+      agentCtx.on('agent/assistant-stream', ({ agent, frame }) => {
+        if (agent === unpublishedAgent) presentation.push(frame, Number(agent.session.seq) - 1);
+      });
+      const forget = () => presentation.close();
+      signal.addEventListener('abort', forget, { once: true });
+      agentCtx.effect(() => () => {
+        signal.removeEventListener('abort', forget);
+        presentation.close();
+      });
       await directory.prepare(unpublishedAgent);
       assertNativeInputReadOwner(binding.nativeSessionId, this);
       // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
       agentCtx.tools.presentAs('native');
+      configureNativeWorkPrompt(agentCtx, directory.meta === undefined);
       const composition = await this.options.compose(agentCtx, structuredClone(binding), grant);
       signal.throwIfAborted();
       this.current(grant);
@@ -531,6 +651,22 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           this.current(grant);
           directory.assert(unpublishedAgent);
           checkToolSurface();
+          if (directory.meta === undefined) {
+            // Preparation is explicit create/resume, never a history/view read.
+            // Original append-origin events remain the human transcript.
+            const changes = textOnlyContextReplacements(unpublishedAgent);
+            for (const change of changes) {
+              this.current(grant);
+              directory.assert(unpublishedAgent);
+              grant.assertCurrent('send');
+              unpublishedAgent.session.append('user/message', change.message, {
+                surfaceOp: { op: 'replace', startSeq: change.seq, endSeq: change.seq },
+                sourceEventSeqs: change.sourceEventSeqs,
+              });
+            }
+            this.current(grant);
+            directory.assert(unpublishedAgent);
+          }
         },
       };
     };
@@ -577,6 +713,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       throw new NativeWorkError('configuration-mismatch');
     }
     const revoke = () => {
+      presentation.close();
       // Revocation cannot wake parked input or grant authority to a late frame.
       handle.agent.cancel({ kind: 'disposed' }, { keepInbox: true });
       void handle.agent
@@ -586,6 +723,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     };
     this.live.set(binding.nativeSessionId, {
       handle,
+      presentation,
       binding: structuredClone(binding),
       directory,
       grant,
@@ -1043,6 +1181,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     callerSignal: AbortSignal,
     allowAbsent = false,
     assertCurrent: () => void = () => {},
+    expectedScope?: NativeWorkScope,
   ): AsyncIterable<NativeWorkFrame> {
     const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
     signal.throwIfAborted();
@@ -1052,7 +1191,8 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     let bufferedBytes = 0;
     let overflow = false;
     let failure: unknown;
-    const source = this.live.get(sessionId)?.handle.agent;
+    const live = this.live.get(sessionId);
+    const source = live?.handle.agent;
     const persistence = this.ctx.sessionPersistence.identity;
     const registry = registryIdentity(this.ctx);
     const stops: (() => void)[] = [];
@@ -1087,6 +1227,12 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       // may have ended with the Run. Source identity must still be exact.
       if (source && this.ctx.agents.get(SessionId(sessionId)) !== source)
         throw new NativeWorkError('unavailable');
+      if (
+        live &&
+        expectedScope &&
+        this.scopeAddress(live.binding.scope) !== this.scopeAddress(expectedScope)
+      )
+        throw new NativeWorkError('scope-mismatch');
     };
     let wake: (() => void) | undefined;
     const notify = () => {
@@ -1165,6 +1311,22 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         }
         if (events.length < 100) break;
       }
+      checkSource();
+      if (overflow) {
+        yield { type: 'gap', after: cursor };
+        return;
+      }
+      let opening;
+      try {
+        opening = live?.presentation.snapshot() ?? { type: 'snapshot' as const, revision: 0 };
+      } catch {
+        yield { type: 'gap', after: cursor };
+        return;
+      }
+      // Capture and watermark are synchronous. Queued native frames through
+      // this revision are represented (or settled) by this opening baseline.
+      const streamCut = opening.revision;
+      yield { type: 'assistant-stream', frame: opening };
       while (!signal.aborted) {
         if (failure) throw failure;
         checkSource();
@@ -1184,6 +1346,16 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         if (item.value.type === 'event') {
           if (item.value.event.seq <= cursor) continue;
           cursor = item.value.event.seq;
+        } else if (item.value.type === 'assistant-stream') {
+          const frame = item.value.frame;
+          if (
+            frame !== null &&
+            typeof frame === 'object' &&
+            'revision' in frame &&
+            typeof frame.revision === 'number' &&
+            frame.revision <= streamCut
+          )
+            continue;
         }
         yield item.value;
       }
@@ -1199,6 +1371,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const live = this.live.get(sessionId);
     if (!live) return;
     this.live.delete(sessionId);
+    live.presentation.close();
     this.touch(sessionId);
     live.directory.signal.removeEventListener('abort', live.revoke);
     const work = Promise.resolve().then(() => live.handle.dispose());

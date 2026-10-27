@@ -1,6 +1,7 @@
 import type { Participant, Workbench, Workflow, WorkNode } from '@zhuma/agent-core';
 import { ExpandableText, Field, MultiSelect, ParticipantSelect } from './controls.js';
 import { ControlIcon } from './ControlIcon.js';
+import { expertResources, selectExpertResources } from './expert-resources.js';
 
 export function NodeInspector({
   node,
@@ -32,6 +33,14 @@ export function NodeInspector({
   const assignee = members.find((m) => m.id === node.assigneeId);
   const names = (ids: string[]) =>
     ids.map((id) => members.find((m) => m.id === id)?.name ?? '不可用').join('、');
+  const requiredResources = roleMode ? [] : expertResources(node, members, state.assets);
+  const missingResources = requiredResources.filter(
+    (resource) => !resource.selected || !resource.available,
+  );
+  const completedResources = selectExpertResources(node, members, state.assets);
+  const canComplete =
+    completedResources.skillIds.length > node.skillIds.length ||
+    completedResources.mcpIds.length > node.mcpIds.length;
   if (readOnly)
     return (
       <div className="zm-node-summary">
@@ -116,6 +125,13 @@ export function NodeInspector({
           update({
             assigneeId: ids[0] ?? null,
             reviewerIds: node.reviewerIds.filter((id) => id !== ids[0]),
+            ...(!roleMode
+              ? selectExpertResources(
+                  { ...node, assigneeId: ids[0] ?? null },
+                  members,
+                  state.assets,
+                )
+              : {}),
           })
         }
       />
@@ -169,13 +185,45 @@ export function NodeInspector({
           </small>
         )}
       </div>
-      <details className="zm-config-group">
+      <details className="zm-config-group" open={requiredResources.length > 0 ? true : undefined}>
         <summary>
           能力与依赖{' '}
           <span>
             {node.skillIds.length + node.mcpIds.length} 项能力 · {node.dependsOn.length} 项依赖
           </span>
         </summary>
+        {!!requiredResources.length && (
+          <div className="zm-field">
+            <span className="zm-field-label">{assignee?.name} · 必需能力</span>
+            <div className="zm-tags">
+              {requiredResources.map((resource) => (
+                <span key={`${resource.kind}-${resource.id}`}>
+                  {resource.name}
+                  {!resource.available ? ' · 不可用' : !resource.selected ? ' · 未选' : ''}
+                </span>
+              ))}
+            </div>
+            {!!missingResources.length && (
+              <small className="zm-warning" role="status">
+                必需能力未齐，补齐后才能确认工作流。
+                {!canComplete &&
+                assignee?.available &&
+                missingResources.some((resource) => resource.available && !resource.selected)
+                  ? '已达选择上限，请先移除其它能力。'
+                  : ''}
+              </small>
+            )}
+            {canComplete && (
+              <button
+                type="button"
+                className="zm-text-button"
+                onClick={() => update(completedResources)}
+              >
+                补齐必需能力
+              </button>
+            )}
+          </div>
+        )}
         <MultiSelect
           label="Skills"
           options={state.assets.filter(
