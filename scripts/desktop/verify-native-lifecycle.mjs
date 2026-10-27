@@ -28,6 +28,8 @@ if (
     'host-run',
     'host-run-cold',
     'host-resources',
+    'host-review-resources',
+    'host-review-skill',
     'host-results',
     'host-local-workspace',
     'host-local-policy',
@@ -524,6 +526,10 @@ void publicContract;
     join(root, 'packages/dsh-adapter/tests/host-run-cold.spec.ts'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-cold.spec.ts'),
   );
+  copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/host-review-resources.spec.ts'),
+    join(stage, 'packages/core/agent-loop/tests/zhuma-host-review-resources.spec.ts'),
+  );
   const nativeBundle = join(stage, 'packages/core/agent-loop/tests/zhuma-native-work-bundle.ts');
   const executionRunBundle = join(
     stage,
@@ -897,6 +903,30 @@ void publicContract;
       {},
       14,
     );
+  else if (values.phase === 'host-review-skill')
+    verify(
+      'host-review-skill',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-review-resources.spec.ts',
+        '-t',
+        'actual Host independent review: real selected Skill',
+      ],
+      1,
+      {},
+      16,
+    );
+  else if (values.phase === 'host-review-resources')
+    verify(
+      'host-review-resources',
+      [
+        'packages/core/agent-loop/tests/zhuma-host-review-resources.spec.ts',
+        '-t',
+        'actual Host independent review:',
+      ],
+      3,
+      {},
+      14,
+    );
   else if (values.phase === 'host-resources')
     verify(
       'host-resources',
@@ -1003,6 +1033,9 @@ void publicContract;
         hostArtifactSha256: hash(join(root, '.build/workbench/index.js')),
         hostTestDataSha256: hash(hostTestData),
         hostRunSpecSha256: hash(join(root, 'packages/dsh-adapter/tests/host-run-native.spec.ts')),
+        hostReviewResourcesSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/host-review-resources.spec.ts'),
+        ),
         hostLocalWorkspaceSpecSha256: hash(
           join(root, 'packages/dsh-adapter/tests/host-run-local-workspace.spec.ts'),
         ),

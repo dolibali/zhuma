@@ -87,6 +87,7 @@ export function createHostWorkflowOwner(
     readonly runs: NativeWorkflowRunPort;
     readonly workspaces: ReturnType<typeof createHostRunWorkspaces>;
     readonly signal: AbortSignal;
+    readonly consumeClaim?: Parameters<typeof createNativeWorkflowBridge>[0]['consumeClaim'];
     readWorkbench(): Workbench;
     prepareResume(
       original: MemberRequest,
@@ -96,7 +97,12 @@ export function createHostWorkflowOwner(
   },
 ) {
   const { execution, signal, workspaces } = options;
-  const bridge = createNativeWorkflowBridge({ execution, runs: options.runs, signal });
+  const bridge = createNativeWorkflowBridge({
+    execution,
+    runs: options.runs,
+    signal,
+    ...(options.consumeClaim ? { consumeClaim: options.consumeClaim } : {}),
+  });
   const active = (wait?: AbortSignal) => {
     signal.throwIfAborted();
     wait?.throwIfAborted();

@@ -43,6 +43,9 @@ import {
   executionRunCompositionRequest,
 } from './execution-run-composition.js';
 import { openNativeWorkSessions } from './native-work-session-storage.js';
+import { createNativeReviewBridge } from './native-work-session-review-bridge.js';
+import { adoptHostReviewResources } from './host-review-resources.js';
+import { readExecutionReviewState } from './execution-review-state.js';
 import {
   createNativeFixedResultIssuer,
   createNativeFixedResultPublicationsIssuer,
@@ -218,139 +221,171 @@ export async function openHostRunOwner(
     resources,
     workspaces,
   });
-  const native = await openNativeWorkSessions(ctx, {
-    async workingDirectory(binding, grant) {
-      authorities.assertGrant(grant, 'send');
-      const node = execution.readRunNode(grant.scope);
-      const run = node && currentExecutionRun(node);
-      if (
-        !run ||
-        canonicalPayload(executionRunScope(node!, run)) !== canonicalPayload(binding.scope)
-      )
-        throw new ExecutionRunError('run-authority-denied');
-      if (run.workspace.kind === 'text-only') return { kind: 'text-only' };
-      return workspaces.directory(binding, grant);
+  const reviews = createNativeReviewBridge({
+    execution,
+    signal: lifetime.signal,
+    host: {
+      prepareReview: (original, input, wait) => configuration.prepareReview(original, input, wait),
+      adoptReviewResources(agentCtx, input) {
+        return adoptHostReviewResources(agentCtx, input, {
+          native: native.service,
+          resources,
+          assertModel: configuration.assertReviewConfiguration,
+          readNode(scope) {
+            const node = execution.readRunNode(scope);
+            if (!node) throw new ExecutionRunError('run-authority-denied');
+            return node;
+          },
+        });
+      },
     },
-    async compose(agentCtx, binding, grant) {
-      authorities.assertGrant(grant, 'send');
-      const state = owned.get(nativeScopeKey(grant.scope));
-      if (!state || state.opened?.grant !== grant)
-        throw new ExecutionRunError('run-authority-denied');
-      assertAdmission(state);
-      const snapshot = execution.readRunComposition(locatorFor(grant.scope));
-      const projected = executionRunCompositionRequest(snapshot);
-      assertExecutionRunCompositionBinding(snapshot, binding.scope, projected);
-      if (canonicalPayload(binding.selection) !== canonicalPayload(projected.selection))
-        throw new NativeWorkError('configuration-mismatch');
-      if (snapshot.payload.tools.kind === 'local-tools')
-        workspaces.bindSession(agentCtx, binding, grant);
-      configuration.assertModel(snapshot);
-      let baseTools: readonly string[] = [];
-      if (
-        snapshot.payload.tools.kind === 'accepted-input-reader' ||
-        (snapshot.payload.tools.kind === 'local-tools' &&
-          snapshot.payload.tools.acceptedInputReader)
-      ) {
-        const registered = registerNativeAcceptedInputTool(
-          agentCtx,
+  });
+  const native: Awaited<ReturnType<typeof openNativeWorkSessions>> = await openNativeWorkSessions(
+    ctx,
+    {
+      async workingDirectory(binding, grant) {
+        if (native.service.isReviewPurpose(grant)) {
+          native.service.reviewContext(grant);
+          return { kind: 'text-only' };
+        }
+        authorities.assertGrant(grant, 'send');
+        const node = execution.readRunNode(grant.scope);
+        const run = node && currentExecutionRun(node);
+        if (
+          !run ||
+          canonicalPayload(executionRunScope(node!, run)) !== canonicalPayload(binding.scope)
+        )
+          throw new ExecutionRunError('run-authority-denied');
+        if (run.workspace.kind === 'text-only') return { kind: 'text-only' };
+        return workspaces.directory(binding, grant);
+      },
+      async compose(agentCtx, binding, grant) {
+        if (native.service.isReviewPurpose(grant)) return reviews.compose(agentCtx, binding, grant);
+        authorities.assertGrant(grant, 'send');
+        const state = owned.get(nativeScopeKey(grant.scope));
+        if (!state || state.opened?.grant !== grant)
+          throw new ExecutionRunError('run-authority-denied');
+        assertAdmission(state);
+        const snapshot = execution.readRunComposition(locatorFor(grant.scope));
+        const projected = executionRunCompositionRequest(snapshot);
+        assertExecutionRunCompositionBinding(snapshot, binding.scope, projected);
+        if (canonicalPayload(binding.selection) !== canonicalPayload(projected.selection))
+          throw new NativeWorkError('configuration-mismatch');
+        if (snapshot.payload.tools.kind === 'local-tools')
+          workspaces.bindSession(agentCtx, binding, grant);
+        configuration.assertModel(snapshot);
+        let baseTools: readonly string[] = [];
+        if (
+          snapshot.payload.tools.kind === 'accepted-input-reader' ||
+          (snapshot.payload.tools.kind === 'local-tools' &&
+            snapshot.payload.tools.acceptedInputReader)
+        ) {
+          const registered = registerNativeAcceptedInputTool(
+            agentCtx,
+            binding,
+            grant,
+            native.service,
+            {
+              catalog: {
+                scope: grant.scope,
+                inputs: snapshot.payload.inputs.map(({ sourceGoal, ...input }) => ({
+                  input: { ...input, ...(sourceGoal === undefined ? {} : { sourceGoal }) },
+                  required: true,
+                })),
+              },
+              async resolveCurrentCaller(signal) {
+                signal.throwIfAborted();
+                authorities.assertGrant(grant, 'send');
+                const member = await resolveMember(ctx, state.request);
+                authorities.assertGrant(grant, 'send');
+                signal.throwIfAborted();
+                return { member };
+              },
+              reader: execution,
+            },
+          );
+          baseTools = registered.toolAllowlist;
+        }
+        if (snapshot.payload.tools.kind === 'local-tools') {
+          const local = workspaces.resolve(binding, grant);
+          const adoptedLocal = await adoptNativeRunLocalTools(agentCtx, binding, grant, {
+            composition: snapshot,
+            producer: local.tools,
+            workspace: local.workspace,
+          });
+          if (
+            canonicalPayload(adoptedLocal.toolAllowlist) !==
+            canonicalPayload(snapshot.payload.toolAllowlist)
+          )
+            throw new NativeWorkError('configuration-mismatch');
+          baseTools = [
+            ...snapshot.payload.tools.definitions.map((tool) => tool.name),
+            ...baseTools,
+          ];
+        }
+        if (snapshot.schemaVersion === 2 && snapshot.payload.outputFilePublisherTool) {
+          resultProtocol();
+          if (!outputs) throw new NativeWorkError('configuration-mismatch');
+          const registered = outputs.registerNativeOutputFileTool(agentCtx, binding, grant);
+          baseTools = [...baseTools, ...registered.toolAllowlist];
+        }
+        if (snapshot.schemaVersion === 2 && snapshot.payload.resultIntentTool) {
+          const protocol = frozenHostResultProtocol(snapshot);
+          if (
+            !results ||
+            !protocol ||
+            (protocol === 2 && !publications) ||
+            snapshot.payload.handoff.assignee.kind !== 'expert'
+          )
+            throw new NativeWorkError('configuration-mismatch');
+          const registered = results.registerNativeResultTool(agentCtx, binding, grant);
+          baseTools = [...baseTools, ...registered.toolAllowlist];
+        }
+        state.stopResources?.();
+        await state.resourceAdoption?.dispose();
+        const producer = await resources.producer(
+          state.request,
+          snapshot,
           binding,
           grant,
-          native.service,
-          {
-            catalog: {
-              scope: grant.scope,
-              inputs: snapshot.payload.inputs.map(({ sourceGoal, ...input }) => ({
-                input: { ...input, ...(sourceGoal === undefined ? {} : { sourceGoal }) },
-                required: true,
-              })),
-            },
-            async resolveCurrentCaller(signal) {
-              signal.throwIfAborted();
-              authorities.assertGrant(grant, 'send');
-              const member = await resolveMember(ctx, state.request);
-              authorities.assertGrant(grant, 'send');
-              signal.throwIfAborted();
-              return { member };
-            },
-            reader: execution,
-          },
+          authorities,
         );
-        baseTools = registered.toolAllowlist;
-      }
-      if (snapshot.payload.tools.kind === 'local-tools') {
-        const local = workspaces.resolve(binding, grant);
-        const adoptedLocal = await adoptNativeRunLocalTools(agentCtx, binding, grant, {
-          composition: snapshot,
-          producer: local.tools,
-          workspace: local.workspace,
-        });
+        assertAdmission(state);
+        const adopted = await registerExecutionRunResources(
+          agentCtx,
+          snapshot,
+          binding,
+          grant,
+          producer,
+        );
+        state.resourceAdoption = adopted;
+        await adopted.ready;
+        assertAdmission(state);
         if (
-          canonicalPayload(adoptedLocal.toolAllowlist) !==
+          canonicalPayload([...baseTools, ...adopted.toolAllowlist]) !==
           canonicalPayload(snapshot.payload.toolAllowlist)
         )
           throw new NativeWorkError('configuration-mismatch');
-        baseTools = [...snapshot.payload.tools.definitions.map((tool) => tool.name), ...baseTools];
-      }
-      if (snapshot.schemaVersion === 2 && snapshot.payload.outputFilePublisherTool) {
-        resultProtocol();
-        if (!outputs) throw new NativeWorkError('configuration-mismatch');
-        const registered = outputs.registerNativeOutputFileTool(agentCtx, binding, grant);
-        baseTools = [...baseTools, ...registered.toolAllowlist];
-      }
-      if (snapshot.schemaVersion === 2 && snapshot.payload.resultIntentTool) {
-        const protocol = frozenHostResultProtocol(snapshot);
-        if (
-          !results ||
-          !protocol ||
-          (protocol === 2 && !publications) ||
-          snapshot.payload.handoff.assignee.kind !== 'expert'
-        )
-          throw new NativeWorkError('configuration-mismatch');
-        const registered = results.registerNativeResultTool(agentCtx, binding, grant);
-        baseTools = [...baseTools, ...registered.toolAllowlist];
-      }
-      state.stopResources?.();
-      await state.resourceAdoption?.dispose();
-      const producer = await resources.producer(
-        state.request,
-        snapshot,
-        binding,
-        grant,
-        authorities,
-      );
-      assertAdmission(state);
-      const adopted = await registerExecutionRunResources(
-        agentCtx,
-        snapshot,
-        binding,
-        grant,
-        producer,
-      );
-      state.resourceAdoption = adopted;
-      await adopted.ready;
-      assertAdmission(state);
-      if (
-        canonicalPayload([...baseTools, ...adopted.toolAllowlist]) !==
-        canonicalPayload(snapshot.payload.toolAllowlist)
-      )
-        throw new NativeWorkError('configuration-mismatch');
-      const revokeResources = () => {
-        if (!fenced) scheduleResultOrRetirement(state);
-      };
-      adopted.signal.addEventListener('abort', revokeResources, { once: true });
-      state.stopResources = () => adopted.signal.removeEventListener('abort', revokeResources);
-      state.observation?.close();
-      state.observation = observeHostNativeRun(agentCtx, binding, grant);
-      state.stopObservation = state.observation.onClaim((claim) => {
-        void accept(state, claim).catch(() => undefined);
-      });
-      state.stopFault = state.observation.onFault(() => {
-        if (!fenced) scheduleResultOrRetirement(state);
-      });
-      // Use the stored composition exactly; registration must not append a second catalog.
-      return { context: snapshot.payload.context, toolAllowlist: snapshot.payload.toolAllowlist };
+        const revokeResources = () => {
+          if (!fenced) scheduleResultOrRetirement(state);
+        };
+        adopted.signal.addEventListener('abort', revokeResources, { once: true });
+        state.stopResources = () => adopted.signal.removeEventListener('abort', revokeResources);
+        state.observation?.close();
+        state.observation = observeHostNativeRun(agentCtx, binding, grant);
+        state.stopObservation = state.observation.onClaim((claim) => {
+          void accept(state, claim).catch(() => undefined);
+        });
+        state.stopFault = state.observation.onFault(() => {
+          if (!fenced) scheduleResultOrRetirement(state);
+        });
+        // Use the stored composition exactly; registration must not append a second catalog.
+        return { context: snapshot.payload.context, toolAllowlist: snapshot.payload.toolAllowlist };
+      },
     },
-  }).catch(async (error: unknown) => {
+    reviews.reviewPorts,
+  ).catch(async (error: unknown) => {
+    reviews.fence();
     // No native handle was published, so no Run could have been admitted.
     await workspaces.close();
     await backendOwner?.dispose();
@@ -402,6 +437,7 @@ export async function openHostRunOwner(
       );
     }
     execution.installNativeResultIssuer(results, publications);
+    reviews.bindNative(native.service, native.runtime);
     workflow = createHostWorkflowOwner(ctx, {
       execution,
       runs: {
@@ -412,9 +448,13 @@ export async function openHostRunOwner(
       workspaces,
       readWorkbench: options.readWorkbench,
       prepareResume: recoverWorkflowDrains,
+      consumeClaim: (original, claim) => reviews.consumeClaim(original, claim),
     });
   } catch (error) {
     workflow?.fence();
+    reviews.fence();
+    const reviewClose = await reviews.closeBeforeNative();
+    if (reviewClose.status !== 'settled') throw new NativeWorkError('unavailable');
     await outputs?.close();
     await results?.close();
     await native.close();
@@ -778,6 +818,27 @@ export async function openHostRunOwner(
           throw new ExecutionWorkflowError('workflow-recovery-required');
         return { scope: executionRunScope(node, run), run };
       });
+      const reviewScopes = (view.reviewResources ?? []).map((resource) => {
+        const scope = resource.scope;
+        const node = execution.readRunNode(scope);
+        const attempt =
+          node &&
+          readExecutionReviewState(node)?.attempts.find((item) => item.scope.runId === scope.runId);
+        if (
+          scope.actorId !== intent.actorId ||
+          scope.spaceId !== view.location.spaceId ||
+          scope.taskId !== view.location.taskId ||
+          scope.planId !== view.location.planId ||
+          scope.revision !== view.location.revision ||
+          !attempt ||
+          attempt.status === 'prepared' ||
+          canonicalPayload(attempt.scope) !== canonicalPayload(scope) ||
+          (attempt.stopPhase !== 'requested' &&
+            !['completed', 'failed', 'cancelled'].includes(attempt.status))
+        )
+          throw new ExecutionWorkflowError('workflow-recovery-required');
+        return scope;
+      });
       for (const { scope, run } of bound) {
         await fresh();
         if (retirementDrains?.read(scope)) continue;
@@ -807,6 +868,17 @@ export async function openHostRunOwner(
         assertCleanup();
         result.drain.assertCurrent();
         retirementDrains?.remember(scope, result);
+      }
+      for (const scope of reviewScopes) {
+        await fresh();
+        const outcome = await reviews.recoverStopped(
+          scope,
+          AbortSignal.any([lifetime.signal, lease.signal, ...(wait ? [wait] : [])]),
+        );
+        check();
+        if (!outcome.ok || outcome.value.status !== 'settled')
+          throw new ExecutionWorkflowError('workflow-recovery-required');
+        execution.assertExpertReviewDrained(scope);
       }
       await fresh();
     } finally {
@@ -1243,6 +1315,7 @@ export async function openHostRunOwner(
       });
       closing = closed;
       workflow?.fence();
+      reviews.fence();
       fenced = true;
       stopResultReady();
       absentRetirements.clear();
@@ -1251,6 +1324,15 @@ export async function openHostRunOwner(
       execution.fenceRuns();
       lifetime.abort();
       void (async () => {
+        // The bridge owns in-flight review collection. Keep both the result
+        // owner and unsealed C reads alive until its genuine cleanup is settled.
+        try {
+          if ((await reviews.closeBeforeNative()).status !== 'settled')
+            throw new NativeWorkError('unavailable');
+        } catch (error) {
+          closing = undefined;
+          throw error;
+        }
         const failures: unknown[] = [];
         let drained = false;
         try {
