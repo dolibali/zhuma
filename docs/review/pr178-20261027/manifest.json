@@ -1,0 +1,53 @@
+{
+  "scope": "Real official compiled Web/Host normal GUI; synthetic members and project only.",
+  "viewport": [
+    1440,
+    900
+  ],
+  "source": {
+    "prHead": "4b3fec80ba6dab351e9772eb4257850e055c1dc1",
+    "integrationSource": "13dab35a41c1517accd3892400d429e0e736dec5",
+    "tree": "b9e7676fdffa50a0de51fa29c7896b42ba1ad3f5"
+  },
+  "model": "Local scripted adapter outside the untouched compiled SDK; no real model supplier.",
+  "result": "Original write/read/edit/publish, file-only @2 declaration, real Service in-review, two independent human review accounts, accepted downstream fixed file after a new OS process.",
+  "download": {
+    "bytes": 40,
+    "sha256": "88e4551bc9f9ab6872299dafc3187c76f8b4a696c55693f27b820fc50871a397",
+    "matches": [
+      "review-b",
+      "review-c",
+      "downstream"
+    ],
+    "originalWorkspaceSourceRemovedAfterPublication": true
+  },
+  "cold": "Original execution JSON bytes unchanged and model calls stayed at 5 through process restart and normal downstream read.",
+  "notes": "New file-only result capability has no equivalent old successful GUI. The submitted screenshot retains an independently tracked misleading busy footer; A is fixing its presentation separately. This is not proof of automatic expert review, all-Agent workflow, real-model quality, membership creation or installed desktop.",
+  "images": {
+    "01-cold-config-dark.jpg": {
+      "blob": "0af70c71efb592450af23d079692e02fd58e4066",
+      "sha256": "2995045568218908ce2d00afb902a76aa571f336384bdc0a2fd0d1fcc7cb3adc",
+      "bytes": 33931
+    },
+    "02-file-only-submitted-dark.jpg": {
+      "blob": "b1c5c8df9ca9b99a04c1b2daa5dbdd3fb1ed7ee1",
+      "sha256": "1ed994192fd25bb072c0bbcc5ef38f4ff0c9c77618176560fea64778e860cd76",
+      "bytes": 47852
+    },
+    "03-review-fixed-file-dark.jpg": {
+      "blob": "f1a17ef0bb09462be1da1c8c7dbad46d4095dc80",
+      "sha256": "4f7760b7a312f9e887dceae7e84ca77fd66e9da9ae692fcb96cbfaed0e606d25",
+      "bytes": 53627
+    },
+    "04-downstream-fixed-file-dark.jpg": {
+      "blob": "b3f7f99c8de41257ce69522e85a3e68b6f7e6339",
+      "sha256": "a6bc091f8e5ec8c91f0177fafea95cf3fe0a1dc5c53efc58dc5c243bf2a5832c",
+      "bytes": 47969
+    },
+    "05-downstream-fixed-file-light.jpg": {
+      "blob": "de8c29f590b988ccdb4390a0960b8eb8320560ac",
+      "sha256": "c41ec09cea35051fa2bf00c84a30224ea6b5f5f515284a5e2863640ca03e756e",
+      "bytes": 49172
+    }
+  }
+}
