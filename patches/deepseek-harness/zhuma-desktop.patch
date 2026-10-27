@@ -1785,3 +1785,117 @@ diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-mana
 +  }
    initProfile(projectDir, WEB_PROFILE.bundles)
  }
+diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
+index 9de39d3f..36878060 100644
+--- a/apps/desktop/scripts/prepare-dsh.ts
++++ b/apps/desktop/scripts/prepare-dsh.ts
+@@ -1,5 +1,6 @@
+ /** Materialize the complete production runtime before publishing Desktop resources. */
+ 
++import { verifyBuildSourcePaths } from '../../../scripts/zhuma-verify-build-source-paths.ts'
+ import { resolveMacOSSignatureCacheDirectory } from './macos-signature-cache-directory.mjs'
+ import { packagingStep } from './packaging-step.mjs'
+ import { spawn } from 'node:child_process'
+@@ -157,6 +158,8 @@ async function main(): Promise<void> {
+     if (!existsSync(join(DSH_OUTPUT_ROOT, 'node_modules', '@deepseek-ai', `libreoffice-kit-${officeEngine}`, 'prebuilds.json'))) {
+       throw new Error(`desktop runtime: missing required LibreOffice engine ${officeEngine}`)
+     }
++    // Reject SDK output regressions before runtime signing, manifests and integrity descriptors.
++    verifyBuildSourcePaths(DSH_OUTPUT_ROOT, ['node_modules/@deepseek-ai/*/{lib,dist}/**/*.{js,mjs,cjs}'])
+     if (process.platform === 'darwin' && process.env.DSH_DESKTOP_UNSIGNED !== '1') {
+       const cacheDirectory = resolveMacOSSignatureCacheDirectory(process.env, BUILD_PATHS.root)
+       await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'sign:dsh-native', () => signMacOSRuntime(DSH_OUTPUT_ROOT, resolveDesktopAppId(process.env), resolveMacOSSigningEnvironment(process.env), target.arch, cacheDirectory))
+diff --git a/apps/desktop/tsdown.config.ts b/apps/desktop/tsdown.config.ts
+index d8470bac..376dbadc 100644
+--- a/apps/desktop/tsdown.config.ts
++++ b/apps/desktop/tsdown.config.ts
+@@ -43,6 +43,8 @@ export default defineConfig([
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     codeSplitting: false,
+     deps: { alwaysBundle: ['@deepseek-ai/dsh-atomic-write'] },
+   },
+@@ -71,6 +73,7 @@ export default defineConfig([
+         build: {
+           outDir: 'lib/welcome',
+           emptyOutDir: true,
++          rolldownOptions: { experimental: { attachDebugInfo: 'none' } },
+           lib: {
+             entry: 'src/client/welcome.tsx',
+             formats: ['iife'],
+@@ -88,6 +91,8 @@ export default defineConfig([
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     deps: { neverBundle: ['electron'] },
+   },
+   ...(['preload-app', 'preload-welcome', 'preload-platform-account', 'preload-mandatory', 'preload-update-dialog'] as const).map(name => ({
+@@ -102,6 +107,8 @@ export default defineConfig([
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     deps: { neverBundle: ['electron'] },
+   })),
+ ])
+diff --git a/scripts/build.ts b/scripts/build.ts
+index b5008c3f..23c5dd2e 100644
+--- a/scripts/build.ts
++++ b/scripts/build.ts
+@@ -9,6 +9,7 @@
+  * the Typert declarations that Client compilation imports, without bundling.
+  */
+ 
++import { verifyBuildSourcePaths } from './zhuma-verify-build-source-paths.ts'
+ import { rmSync } from 'node:fs'
+ import { resolve } from 'node:path'
+ import { parseArgs } from 'node:util'
+@@ -175,6 +176,8 @@ async function main(): Promise<number> {
+   const gates = buildGates(root, scope, environment)
+   const exitCode = await runAggregate(name, gates, workers(gates))
+   if (exitCode !== 0) return exitCode
++  // Verify emitted bytes before the original artifact digest and any release packing.
++  verifyBuildSourcePaths(root)
+   const record = writeClientBuildRecord(root, clientEnvironment)
+   console.log(
+     `build: recorded ${String(record.artifacts.fileCount)} client artifact(s) with ${String(Object.keys(record.environment).length)} public value(s)`,
+diff --git a/tsdown.config.ts b/tsdown.config.ts
+index b66a197e..4776c613 100644
+--- a/tsdown.config.ts
++++ b/tsdown.config.ts
+@@ -32,6 +32,8 @@ export default defineConfig(({ env }) => {
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Source-region debug labels can expose absolute CSS virtual IDs. Keep legal comments and maps.
++    inputOptions: { experimental: { attachDebugInfo: 'none' as const } },
+     plugins: client ? [] : [typertPlugin({ mode: 'workspace', faces: WORKSPACE_TYPERT_FACES })],
+   }
+ })
+diff --git a/packages/experimental/inspector/scripts/devtools/vite.ts b/packages/experimental/inspector/scripts/devtools/vite.ts
+index b521d8ef..85e76f15 100644
+--- a/packages/experimental/inspector/scripts/devtools/vite.ts
++++ b/packages/experimental/inspector/scripts/devtools/vite.ts
+@@ -72,6 +72,7 @@ export const LOCAL_FETCH_PATTERN = "data:application/json,{}", REMOTE_FETCH_PATT
+   for (const directory of ['panels/recorder/injected/injected', 'models/live-metrics/web-vitals-injected/web-vitals-injected']) {
+     const result = await build({ ...base, plugins: [sourcePlugin()], build: {
+       write: false, minify: 'oxc', target: 'es2022', sourcemap: false,
++      rolldownOptions: { experimental: { attachDebugInfo: 'none' } },
+       lib: { entry: join(front, `${directory}.ts`), name: 'DevToolsInjected', formats: ['iife'] },
+     } })
+     const outputs = Array.isArray(result) ? result : [result]
+@@ -110,7 +111,7 @@ export const LOCAL_FETCH_PATTERN = "data:application/json,{}", REMOTE_FETCH_PATT
+   }], build: {
+     outDir: output, emptyOutDir: true, minify: 'oxc', sourcemap: false, target: 'es2022', modulePreload: false,
+     lib: { entry: input, formats: ['es'] },
+-    rolldownOptions: { output: {
++    rolldownOptions: { experimental: { attachDebugInfo: 'none' }, output: {
+       entryFileNames: chunk => chunk.name === 'connect' ? 'connect.js' : entryFiles[chunk.name]!,
+       chunkFileNames: 'chunks/[name]-[hash].js',
+     } },
