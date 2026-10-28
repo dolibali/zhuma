@@ -17,7 +17,10 @@ import { LocalSetupBoundary, enterTeamAfterLocalSetup } from '../identity/LocalS
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 import nativeRunStyles from '../run/NativeRunPanel.css';
-import { createWorkspaceDirectoryRegistrar } from '../run/workspace-directory.js';
+import {
+  createLocalWorkspaceDirectory,
+  createWorkspaceDirectoryRegistrar,
+} from '../run/workspace-directory.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 
 export const inject = ['slots', 'layout', 'connection', 'theme'];
@@ -56,6 +59,11 @@ export function apply(ctx: Context): void {
   const api = createWorkbenchApi(connection.rpc);
   const memberShell = createMemberShell(createIdentityApi());
   const registerWorkspaceDirectory = createWorkspaceDirectoryRegistrar(ctx);
+  const originalLocalDirectory = createLocalWorkspaceDirectory(ctx);
+  // Native task Sessions require C's scoped continuation registration before
+  // exposing ordinary Conversation navigation. The existing directory reader
+  // is safe independently: selection never registers a directory or starts work.
+  const localDirectory = { read: originalLocalDirectory.read };
   let settingsLauncher: (() => void) | undefined;
   const bindSettingsLauncher = (open: () => void) => {
     settingsLauncher = open;
@@ -195,6 +203,7 @@ export function apply(ctx: Context): void {
                 shell={memberShell}
                 allowRegistration={mode === 'multi-member'}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
+                localDirectory={localDirectory}
                 openModelSettings={openModelSettings}
                 view={panel.view}
                 openWork={() => ctx.layout.selectPanel(executionPanel)}

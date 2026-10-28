@@ -22,6 +22,7 @@ import { createMemberWorkbenchAdapter } from '../workbench/member-adapter.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { createNativeRunApi } from '../run/api.js';
 import type { RegisterWorkspaceDirectory } from '../run/workspace-approvals.js';
+import type { LocalWorkspaceDirectory } from '../run/workspace-directory.js';
 
 function MemberWork({
   fetcher,
@@ -34,6 +35,7 @@ function MemberWork({
   openWork,
   registerLeaveGuard,
   registerWorkspaceDirectory,
+  localDirectory,
   openModelSettings,
   nativeExecution,
 }: {
@@ -44,6 +46,7 @@ function MemberWork({
   lifetime: MemberSpaceLifetime;
   appearance?: AppearanceStore;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
+  localDirectory?: LocalWorkspaceDirectory | undefined;
   openModelSettings?: (() => void) | undefined;
   nativeExecution: boolean;
   view: 'catalog' | 'work';
@@ -142,8 +145,17 @@ function MemberWork({
         () => currentLifetime.current.onUnauthenticated(),
         registerWorkspaceDirectory,
         openModelSettings,
+        localDirectory,
       ),
-    [fetcher, accountId, spaceId, view, registerWorkspaceDirectory, openModelSettings],
+    [
+      fetcher,
+      accountId,
+      spaceId,
+      view,
+      registerWorkspaceDirectory,
+      openModelSettings,
+      localDirectory,
+    ],
   );
   const nativeRun = useMemo(() => ({ api: nativeApi, spaceId }), [nativeApi, spaceId]);
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
@@ -188,6 +200,7 @@ export function MemberExecutionPage({
   view,
   openWork,
   registerWorkspaceDirectory,
+  localDirectory,
   openModelSettings,
   nativeExecution = true,
   allowRegistration = false,
@@ -198,6 +211,7 @@ export function MemberExecutionPage({
   view?: 'catalog' | 'work';
   openWork?: () => void;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
+  localDirectory?: LocalWorkspaceDirectory | undefined;
   openModelSettings?: (() => void) | undefined;
   /** Web members do not implicitly run an Agent on the backend machine. */
   nativeExecution?: boolean;
@@ -278,6 +292,7 @@ export function MemberExecutionPage({
                 openWork={openWork}
                 registerLeaveGuard={shell ? registerLeaveGuard : undefined}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
+                localDirectory={localDirectory}
                 openModelSettings={openModelSettings}
                 nativeExecution={nativeExecution}
                 {...(workbenchAppearance ? { appearance: workbenchAppearance } : {})}

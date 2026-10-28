@@ -56,15 +56,30 @@ function Dialog({ api, location, close, changed, returnLabel = '关闭' }: Props
       try {
         if (!api.context)
           throw new ExecutionError('unavailable', '暂时无法确认授权范围，请刷新后重试。');
-        const [value, scope] = await Promise.all([
+        const [value, scope, existing] = await Promise.all([
           api.options(fixed, request.signal),
           api.context(fixed, request.signal),
+          api.existingDirectories?.(request.signal),
         ]);
         if (!current()) return;
         if (!scope.accountName.trim() || !scope.projectName.trim())
           throw new ExecutionError('validation', '授权范围不完整，请刷新后重试。');
         setContext(scope);
-        setView(value);
+        // A row from the local sidebar is a selection hint. Preserve only the
+        // directory capabilities independently returned by the original Host.
+        setView(
+          existing
+            ? {
+                ...value,
+                directories: existing.flatMap((entry) => {
+                  const capability = value.directories.find((item) => item.id === entry.id);
+                  return capability && capability.path === entry.path
+                    ? [{ ...capability, title: entry.title }]
+                    : [];
+                }),
+              }
+            : value,
+        );
         if (workspaceId) select(workspaceId);
       } catch (caught) {
         if (current()) setError(executionErrorMessage(caught));
@@ -176,7 +191,7 @@ function Dialog({ api, location, close, changed, returnLabel = '关闭' }: Props
                 disabled={loading || command.pending || !context}
                 onClick={() => void pick()}
               >
-                选择本机目录
+                添加本机工作区
               </Button>
             )}
           </div>
@@ -189,18 +204,25 @@ function Dialog({ api, location, close, changed, returnLabel = '关闭' }: Props
                 目录服务暂不可用，仍可撤销已有授权。
               </p>
             )}
-            <Field label="目录">
+            <Field label="本机已有工作区">
               <SingleSelect
-                label="目录"
+                label="本机已有工作区"
                 value={selected}
                 disabled={busy || !view.available || !context}
                 onValueChange={select}
                 options={[
-                  { value: '', label: '选择已登记目录' },
+                  { value: '', label: '选择已有工作区' },
                   ...view.directories.map((item) => ({ value: item.id, label: item.title })),
                 ]}
               />
             </Field>
+            {!view.directories.length && (
+              <p className="zm-muted" role="status">
+                {view.available
+                  ? '本机暂无可授权的工作区，可先在侧栏添加。'
+                  : '本机工作区暂不可用，请重新连接后刷新。'}
+              </p>
+            )}
             {directory && (
               <>
                 <p className="zm-workspace-path" title={directory.path}>

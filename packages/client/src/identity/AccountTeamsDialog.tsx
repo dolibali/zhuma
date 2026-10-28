@@ -111,7 +111,7 @@ export function AccountTeamsDialog({
   const controlsDisabled = busy || !administrator;
   return (
     <Modal title="账号与团队" close={close}>
-      <div className="zm-account-management">
+      <div className="zhuma zm-form-body zm-account-management">
         <nav className="zm-tabs" aria-label="账号管理">
           <button
             aria-current={tab === 'teams' ? 'page' : undefined}
@@ -271,7 +271,7 @@ export function AccountTeamsDialog({
                           <input
                             required
                             maxLength={64}
-                            pattern="[A-Za-z0-9_-]+"
+                            pattern={'[A-Za-z0-9_\\-]+'}
                             placeholder="成员账号"
                             disabled={controlsDisabled}
                             value={target}

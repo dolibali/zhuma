@@ -1,0 +1,98 @@
+/** Provider-port contracts only; no existing profile or real credential is read. */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createMemberLocalPrivateStore } from '../dist/host-member-local-credentials.js';
+import { MemberLocalExecutionSecrets } from '../dist/member-local-execution-secrets.js';
+const slot = `zhuma.member-local.device.${'a'.repeat(64)}`;
+function fixture() {
+  const rows = new Map(),
+    calls = [],
+    chains = new Map();
+  let provider = {
+    async readRecord(key) {
+      calls.push(['read', key]);
+      return structuredClone(rows.get(key));
+    },
+    modifyRecord(key, mutate) {
+      calls.push(['modify', key]);
+      const next = (chains.get(key) ?? Promise.resolve()).then(async () => {
+        const value = await mutate(structuredClone(rows.get(key)));
+        if (value !== undefined) rows.set(key, structuredClone(value));
+        return structuredClone(rows.get(key));
+      });
+      chains.set(
+        key,
+        next.catch(() => undefined),
+      );
+      return next;
+    },
+  };
+  const lifetime = new AbortController();
+  const ctx = {
+    fiber: { assertActive() {} },
+    get(name) {
+      assert.equal(name, 'credentials');
+      return provider;
+    },
+  };
+  return {
+    rows,
+    calls,
+    lifetime,
+    ctx,
+    replace: () => {
+      provider = { ...provider };
+    },
+    store: createMemberLocalPrivateStore(ctx, lifetime.signal),
+  };
+}
+test('private adapter confines keys to original credential records and uses its atomic update', async () => {
+  const h = fixture();
+  assert.equal(h.calls.length, 0);
+  await assert.rejects(h.store.read('provider/model-key'), { code: 'invalid' });
+  assert.equal(h.calls.length, 0);
+  const stored = await h.store.modify(slot, () => ({ version: 1 }));
+  assert.deepEqual(stored, { version: 1 });
+  assert.deepEqual(h.calls, [['modify', `zhuma-workbench/member-local-device-${'a'.repeat(64)}`]]);
+  assert.deepEqual(await h.store.read(slot), stored);
+  h.rows.set(h.calls[0][1], { kind: 'api-key', key: 'synthetic-unrelated' });
+  await assert.rejects(h.store.read(slot), { code: 'unavailable' });
+  await assert.rejects(
+    h.store.modify(slot, () => assert.fail()),
+    { code: 'unavailable' },
+  );
+});
+test('two actual secret owners preserve one device/accept intent through the original atomic provider seam', async () => {
+  const h = fixture();
+  const one = new MemberLocalExecutionSecrets(h.store);
+  const two = new MemberLocalExecutionSecrets(
+    createMemberLocalPrivateStore(h.ctx, h.lifetime.signal),
+  );
+  const backend = '00000000-0000-4000-8000-000000000001';
+  const devices = await Promise.all([one.device(backend, 'chen'), two.device(backend, 'chen')]);
+  assert.equal(devices[0].deviceId, devices[1].deviceId);
+  const request = '00000000-0000-4000-8000-000000000002';
+  const intents = await Promise.all([
+    one.accept(devices[0], request, 'b'.repeat(64)),
+    two.accept(devices[1], request, 'b'.repeat(64)),
+  ]);
+  assert.deepEqual(intents[0].drive, intents[1].drive);
+  assert.deepEqual(intents[0].cleanup, intents[1].cleanup);
+  assert.equal(h.rows.size, 2);
+});
+test('provider replacement and disposal reject even a late provider read', async () => {
+  for (const mode of ['replace', 'close']) {
+    const pending = Promise.withResolvers();
+    let provider = { readRecord: () => pending.promise };
+    const lifetime = new AbortController();
+    const store = createMemberLocalPrivateStore(
+      { fiber: { assertActive() {} }, get: () => provider },
+      lifetime.signal,
+    );
+    const read = store.read(slot);
+    if (mode === 'replace') provider = { ...provider };
+    else lifetime.abort();
+    pending.resolve({ kind: 'grant', payload: { version: 1 } });
+    await assert.rejects(read, { code: mode === 'close' ? 'cancelled' : 'unavailable' });
+  }
+});

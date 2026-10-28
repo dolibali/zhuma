@@ -31,11 +31,17 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
   const fixedTarget = useRef(target).current;
   const [controller, setController] = useState<ReturnType<typeof createNativeRunController>>();
   const [approvalLocation, setApprovalLocation] = useState<WorkspaceApprovalLocation>();
+  const navigation = useRef<AbortController>();
   useEffect(() => {
+    const lifetime = new AbortController();
+    navigation.current = lifetime;
     const current = createNativeRunController(api, fixedTarget);
     setController(current);
     void current.refresh().catch(() => undefined);
-    return () => current.dispose();
+    return () => {
+      lifetime.abort();
+      current.dispose();
+    };
   }, [api, fixedTarget]);
   const state = useSyncExternalStore(
     controller?.subscribe ?? subscribeNone,
@@ -60,6 +66,15 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
         error={state.error}
         onDirtyChange={onDirtyChange}
         onClose={onClose}
+        onOpenSession={
+          api.openNativeSession && run?.native
+            ? async () => {
+                const lifetime = navigation.current;
+                if (!lifetime) throw new DOMException('View changed', 'AbortError');
+                await api.openNativeSession!(run, lifetime.signal);
+              }
+            : undefined
+        }
         onManageWorkspaces={
           api.workspaceApprovals && state.view.kind === 'ready' && state.view.workspaceApprovalScope
             ? () => {
