@@ -13,6 +13,7 @@ import {
   SessionId,
   MemberLocalExecutionProtocol,
   MemberLocalExecutionSecrets,
+  acceptedInputRef,
 } from './zhuma-member-local-owner-bundle.ts';
 
 async function setup(t, options = {}) {
@@ -40,6 +41,39 @@ async function until(read, accept, timeout = 10_000) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+test('original local input owner: original tool reads remote accepted content only on demand before native fixed completion', async (t) => {
+  let ref;
+  const h = await setup(t, {
+    remote: { upstream: true, text: 'UNIQUE_REMOTE_INPUT_😀汉', chunkBytes: 17 },
+    script: [
+      () => toolResponse({ inputRef: ref, part: 'text', limit: 20 })(),
+      toolResponse(
+        { text: 'Consumed fixed accepted input.', links: [] },
+        'input-completion',
+        'complete_work',
+      ),
+    ],
+  });
+  ref = acceptedInputRef(h.run.composition.payload.scope, h.run.composition.payload.inputs[0]);
+  assert.equal(
+    h.remote.seen.some((v) => v.request.operation === 'input-read'),
+    false,
+  );
+  await h.owner.start(h.run);
+  await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'submitted',
+  );
+  assert.equal(h.adapter.requests.length, 2);
+  assert(!JSON.stringify(h.adapter.requests[0]).includes('UNIQUE_REMOTE_INPUT_'));
+  assert(JSON.stringify(h.adapter.requests[1]).includes('UNIQUE_REMOTE_INPUT_'));
+  assert(h.remote.seen.filter((v) => v.request.operation === 'input-read').length > 1);
+  assert.equal(h.ctx.agents.list().length, 0);
+  assert.equal(
+    h.remote.seen.find((v) => v.request.operation === 'submit-result').request.payload.draft.text,
+    'Consumed fixed accepted input.',
+  );
+});
 test('original local owner: actual native fixed result is drained before completed and submitted through HTTP', async (t) => {
   const h = await setup(t, {
     script: [

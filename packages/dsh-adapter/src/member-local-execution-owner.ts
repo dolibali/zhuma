@@ -41,6 +41,7 @@ import {
   type FrozenMcpResource,
 } from './execution-run-resources.js';
 import { observeHostNativeRun } from './host-run-observation.js';
+import { registerMemberLocalAcceptedInputs } from './member-local-execution-inputs.js';
 
 export interface MemberLocalOwnerOptions {
   readonly protocol: MemberLocalExecutionProtocol;
@@ -162,6 +163,15 @@ export class MemberLocalExecutionOwner {
           const state = this.state(grant),
             snapshot = state.run.composition;
           this.check(state, 'send');
+          const input = await registerMemberLocalAcceptedInputs(
+            agentCtx,
+            binding,
+            grant,
+            this.native.service,
+            this.options.protocol,
+            state.run,
+          );
+          this.check(state, 'send');
           await this.options.assertModel(binding.selection, grant.signal);
           this.check(state, 'send');
           const extra = this.options.native
@@ -201,6 +211,7 @@ export class MemberLocalExecutionOwner {
           if (
             canonicalPayload([
               ...extra.toolAllowlist,
+              ...input.toolAllowlist,
               ...result.toolAllowlist,
               ...state.resources.toolAllowlist,
             ]) !== canonicalPayload(snapshot.payload.toolAllowlist)
@@ -321,7 +332,7 @@ export class MemberLocalExecutionOwner {
       snapshot.payload.resultIntentTool?.sourceVersion !== 'zhuma-native-result-intent@1' ||
       snapshot.payload.outputFilePublisherTool ||
       snapshot.payload.acceptedFileReader ||
-      (snapshot.payload.tools.kind !== 'text-only' && !this.options.native) ||
+      (snapshot.payload.tools.kind === 'local-tools' && !this.options.native) ||
       (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
     )
       throw new NativeWorkError('configuration-mismatch');

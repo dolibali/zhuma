@@ -74,6 +74,7 @@ export class MemberLocalExecutionClient {
     decode: (result: unknown) => T,
     signal?: AbortSignal,
     privateHeaders?: HeadersInit,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<T> {
     if (this.lifetime.signal.aborted)
       return Promise.reject(new MemberLocalTransportError('unavailable'));
@@ -146,11 +147,16 @@ export class MemberLocalExecutionClient {
     );
     // Keep the underlying job retained even if an auth provider ignores cancellation.
     // Once it returns, the abort check prevents a late network command.
-    return this.wait(work, bounded).catch((error: unknown) => {
-      if (bounded.aborted) throw new MemberLocalTransportError('cancelled');
-      if (error instanceof MemberLocalTransportError) throw error;
-      throw new MemberLocalTransportError('unavailable');
-    });
+    // Native input reservations must own the actual source job, including an
+    // authentication provider that ignores abort. Ordinary RPC waits keep their
+    // existing early cancellation behavior; retained reads do not imply drain.
+    return (options?.waitForSourceSettlement ? work : this.wait(work, bounded)).catch(
+      (error: unknown) => {
+        if (bounded.aborted) throw new MemberLocalTransportError('cancelled');
+        if (error instanceof MemberLocalTransportError) throw error;
+        throw new MemberLocalTransportError('unavailable');
+      },
+    );
   }
   private wait<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {

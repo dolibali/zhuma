@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createPublicKey, randomUUID, verify } from 'node:crypto';
+import { createHash, createPublicKey, randomUUID, verify } from 'node:crypto';
 import { createServer } from 'node:http';
 import {
   canonicalPayload,
@@ -12,18 +12,66 @@ import { MemberLocalExecutionProtocol } from '../dist/member-local-execution-pro
 import { MemberLocalExecutionSecrets } from '../dist/member-local-execution-secrets.js';
 import { freezeExecutionRunComposition } from '../dist/execution-run-composition.js';
 import { describeNativeResultTool } from '../dist/native-work-session-result-tool.js';
+import { describeAcceptedInputTool } from '../dist/native-work-session-input-tool.js';
 import { compositionFacts } from './execution-run-composition-fixture.mjs';
 
 // Actual outgoing HTTP, Ed25519 and original composition decoder. Member/device
 // authorization and backend Run state remain a contract, not two product Hosts.
 export async function fixture(t, options = {}) {
-  const facts = { ...compositionFacts(), resultIntentTool: describeNativeResultTool() },
-    composition = freezeExecutionRunComposition(facts),
+  const facts = {
+    ...compositionFacts({ upstream: options.upstream }),
+    resultIntentTool: describeNativeResultTool(),
+  };
+  if (options.upstream)
+    facts.tools = { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() };
+  const composition = freezeExecutionRunComposition(facts),
     backendId = randomUUID(),
     driveEpoch = randomUUID(),
     cleanupEpoch = randomUUID(),
     rows = new Map(),
     seen = [];
+  const document = options.upstream
+    ? {
+        actorId: facts.scope.actorId,
+        spaceId: facts.scope.spaceId,
+        downstream: {
+          taskId: facts.scope.taskId,
+          planId: facts.scope.planId,
+          revision: facts.scope.revision,
+          nodeId: facts.scope.nodeId,
+        },
+        source: {
+          taskId: facts.scope.taskId,
+          planId: facts.scope.planId,
+          revision: facts.scope.revision,
+          nodeId: facts.node.handoff.inputRefs[0].sourceNodeId,
+        },
+        version: {
+          id: facts.node.handoff.inputRefs[0].artifactVersionId,
+          version: facts.inputs.items[0].version,
+        },
+        content: {
+          text: options.text ?? 'PRIVATE_SOURCE_BODY_NOT_IN_PROMPT',
+          links: options.links ?? [],
+          files: [],
+        },
+      }
+    : undefined;
+  options.mutateDocument?.(document);
+  const data = document ? Buffer.from(canonicalPayload(document)) : undefined;
+  const inputs = document
+    ? [
+        {
+          slotId: 'remote-slot-1',
+          kind: 'text',
+          name: 'Accepted contract content',
+          sourceNodeId: document.source.nodeId,
+          artifactVersionId: document.version.id,
+          byteSize: data.length,
+          sha256: createHash('sha256').update(data).digest('hex'),
+        },
+      ]
+    : [];
   let key,
     value,
     acceptCalls = 0,
@@ -137,7 +185,7 @@ export async function fixture(t, options = {}) {
             composition,
             context: composition.payload.context,
             handoff: composition.payload.handoff,
-            inputs: [],
+            inputs,
           },
         };
         if (lost) {
@@ -148,6 +196,36 @@ export async function fixture(t, options = {}) {
         const reply = structuredClone(value);
         options.mutate?.(reply);
         respond({ ok: true, value: reply });
+      } else if (['input-list', 'input-read'].includes(request.operation)) {
+        const intent = [...rows.values()].find((row) => row.requestId);
+        assert.equal(req.headers[REMOTE_RUN_PERMIT_HEADER], intent.drive.secret);
+        const inputError =
+          typeof options.inputError === 'function' ? options.inputError() : options.inputError;
+        if (inputError) return respond({ ok: false, error: { code: inputError } });
+        if (request.operation === 'input-list') {
+          const listed = structuredClone(inputs);
+          options.mutateCatalog?.(listed);
+          respond({ ok: true, value: { scope: value.scope, items: listed } });
+        } else {
+          assert.equal(request.payload.slotId, inputs[0].slotId);
+          const { offset, maximumBytes } = request.payload;
+          const bytes = data.subarray(
+            offset,
+            offset + Math.min(maximumBytes, options.chunkBytes ?? maximumBytes),
+          );
+          const page = {
+            scope: value.scope,
+            slotId: inputs[0].slotId,
+            offset,
+            byteSize: bytes.length,
+            totalBytes: data.length,
+            sha256: inputs[0].sha256,
+            base64: bytes.toString('base64'),
+            eof: offset + bytes.length === data.length,
+          };
+          options.mutatePage?.(page);
+          respond({ ok: true, value: page });
+        }
       } else if (request.operation === 'reconcile') {
         const intent = [...rows.values()].find(
           (row) => row.requestId === request.payload.acceptRequestId,
@@ -240,7 +318,10 @@ export async function fixture(t, options = {}) {
     origin: `http://127.0.0.1:${server.address().port}`,
     methods,
     expectedActorId: 'chen',
-    authentication: () => ({ cookie: 'synthetic-original-member' }),
+    authentication: async (signal) => {
+      await options.beforeAuthentication?.(signal);
+      return { cookie: 'synthetic-original-member' };
+    },
     secrets: new MemberLocalExecutionSecrets(store),
   };
   const input = {
@@ -258,7 +339,11 @@ export async function fixture(t, options = {}) {
     model: facts.model,
     workspace: { kind: 'text-only' },
     executor: facts.executor,
-    capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
+    capabilities: {
+      resultIntent: 'zhuma-native-result-intent@1',
+      localTools: [],
+      ...(options.upstream ? { acceptedInput: '1' } : {}),
+    },
   };
   return {
     rows,

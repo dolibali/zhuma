@@ -191,8 +191,14 @@ export class MemberLocalExecutionProtocol {
     request: Request,
     secret?: string,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<RemoteRunOperationValue<Request['operation']>>;
-  private async signed(request: Unsigned, secret?: string, signal?: AbortSignal): Promise<unknown> {
+  private async signed(
+    request: Unsigned,
+    secret?: string,
+    signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
+  ): Promise<unknown> {
     const device = this.identity(),
       parsed = remoteRunRequestSchema.parse({
         ...request,
@@ -207,17 +213,20 @@ export class MemberLocalExecutionProtocol {
       remoteRunRequestSchema.parse({ ...parsed, proof: { ...parsed.proof, signature } }),
       secret,
       signal,
+      options,
     );
   }
   private call<Request extends RemoteRunRequest>(
     request: Request,
     secret?: string,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<RemoteRunOperationValue<Request['operation']>>;
   private async call(
     request: RemoteRunRequest,
     secret?: string,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<unknown> {
     if (this.lifetime.signal.aborted) throw new MemberLocalProtocolError('local-closed');
     const parsed = remoteRunRequestSchema.parse(request),
@@ -230,6 +239,7 @@ export class MemberLocalExecutionProtocol {
       (raw) => remoteRunResponseSchema(parsed.operation).parse(raw),
       AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]),
       secret === undefined ? undefined : { [REMOTE_RUN_PERMIT_HEADER]: secret },
+      options,
     );
     if (!response.ok) throw new MemberLocalProtocolError(response.error.code);
     return response.value;
@@ -387,11 +397,13 @@ export class MemberLocalExecutionProtocol {
     run: MemberLocalRunHandle,
     command: Command,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<RemoteRunOperationValue<Command['operation']>>;
   async command(
     run: MemberLocalRunHandle,
     command: RunCommand,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<unknown> {
     const secrets = this.accepted.get(run);
     if (!secrets) throw new MemberLocalProtocolError('local-mismatch');
@@ -419,7 +431,7 @@ export class MemberLocalExecutionProtocol {
     if (request.operation === 'info' || request.operation === 'stop')
       throw new MemberLocalProtocolError('local-mismatch');
     const { proof: _proof, ...unsigned } = request,
-      send = (secret: string) => this.signed(unsigned, secret, signal),
+      send = (secret: string) => this.signed(unsigned, secret, signal, options),
       value = await (cleanup ? secrets.withCleanupSecret(send) : secrets.withDriveSecret(send));
     if ('scope' in value && canonicalPayload(value.scope) !== canonicalPayload(run.value.scope))
       throw new MemberLocalProtocolError('local-mismatch');
