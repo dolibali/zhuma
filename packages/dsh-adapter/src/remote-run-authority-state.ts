@@ -36,6 +36,7 @@ export const remoteRunBindingSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
     files: z.literal('zhuma-native-output-file@1').optional(),
+    acceptedFiles: z.literal('zhuma-accepted-files@2').optional(),
     backendId: z.uuid(),
     deviceId: z.uuid(),
     publicKey: z.string().min(40).max(128),
