@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { KnowledgeDraftValueSchema, KnowledgeWriteValueSchema } from '@zhuma/agent-core';
+import {
+  KnowledgeDraftValueSchema,
+  KnowledgeWriteValueSchema,
+  KnowledgeDraftsValueSchema,
+} from '@zhuma/agent-core';
 import { createHash } from 'node:crypto';
 import { knowledgeHost, value } from './knowledge-fixture.mjs';
 
@@ -315,5 +319,107 @@ test('knowledge write: only exact readable source refs are accepted and inputs n
       )
     ).ok,
     true,
+  );
+});
+
+test('knowledge drafts: author-only metadata is discoverable without body reads or cross-author cursor side channels', async (t) => {
+  const h = await knowledgeHost(t);
+  for (const pageId of ['a', 'b'])
+    value(await h.service.saveDraft(h.requests.ann, save({ pageId })));
+  value(
+    await h.service.saveDraft(
+      h.requests.bob,
+      save({
+        pageId: 'bob',
+        content: { ...save().content, title: 'BOB_SECRET_TITLE', text: 'BOB_PRIVATE_BODY' },
+      }),
+    ),
+  );
+  const first = value(await h.service.drafts(h.requests.ann, { ...library, limit: 1 }));
+  KnowledgeDraftsValueSchema.parse(first);
+  assert.ok(first.nextCursor);
+  assert.equal(first.pages[0].ownerActorId, 'ann');
+  assert.doesNotMatch(JSON.stringify(first), /BOB|真实正文|reference|text/u);
+  assert.equal(
+    (await h.service.drafts(h.requests.bob, { ...library, limit: 1, cursor: first.nextCursor }))
+      .error.code,
+    'conflict',
+  );
+  value(await h.service.saveDraft(h.requests.bob, save({ pageId: 'bob-two' })));
+  h.ctx.attachments.readFileStream = () => {
+    throw Error('Draft directory must not read bytes');
+  };
+  const next = value(
+    await h.service.drafts(h.requests.ann, { ...library, limit: 1, cursor: first.nextCursor }),
+  );
+  assert.equal(next.pages.length, 1);
+  assert.notEqual(next.pages[0].pageId, first.pages[0].pageId);
+  assert.equal((await h.service.drafts(h.requests.dana, library)).ok, false);
+  assert.equal((await h.service.drafts(h.requests.ann, { ...library, actorId: 'bob' })).ok, false);
+});
+
+test('knowledge drafts: saved times are persistent facts or unknown; publication removes the pending directory entry', async (t) => {
+  const h = await knowledgeHost(t);
+  value(await h.service.saveDraft(h.requests.ann, save()));
+  const stored = h.service.store.get('north', 'guide');
+  const first = value(await h.service.drafts(h.requests.ann, library)).pages[0];
+  assert.equal(first.savedAt, stored.draft.savedAt);
+  assert.equal(first.hasPublished, false);
+  const again = value(await h.service.drafts(h.requests.ann, library)).pages[0];
+  assert.equal(again.savedAt, first.savedAt);
+  delete stored.draft.savedAt;
+  await h.service.store.put(stored);
+  assert.equal(
+    Object.hasOwn(value(await h.service.drafts(h.requests.ann, library)).pages[0], 'savedAt'),
+    false,
+  );
+  value(await h.service.publish(h.requests.ann, publish()));
+  assert.equal(value(await h.service.drafts(h.requests.ann, library)).pages.length, 0);
+  value(
+    await h.service.saveDraft(
+      h.requests.ann,
+      save({ expectedVersion: 2, idempotencyKey: 'next-draft' }),
+    ),
+  );
+  assert.equal(value(await h.service.drafts(h.requests.ann, library)).pages[0].hasPublished, true);
+});
+
+test('knowledge drafts: original-presence metadata follows the exact published reference and never destroys older originals', async (t) => {
+  const h = await knowledgeHost(t);
+  value(
+    await h.service.saveDraft(
+      h.requests.ann,
+      save({
+        content: { ...save().content, originalText: '原始固定资料' },
+      }),
+    ),
+  );
+  assert.equal(value(await h.service.draft(h.requests.ann, page)).publishedHasOriginal, false);
+  const first = value(await h.service.publish(h.requests.ann, publish())).reference;
+  const after = value(await h.service.draft(h.requests.ann, page));
+  assert.equal(after.publishedHasOriginal, true);
+  assert.deepEqual(after.published, first);
+  value(
+    await h.service.saveDraft(
+      h.requests.ann,
+      save({ expectedVersion: 2, idempotencyKey: 'without-original' }),
+    ),
+  );
+  assert.equal(value(await h.service.draft(h.requests.ann, page)).publishedHasOriginal, true);
+  const second = value(
+    await h.service.publish(
+      h.requests.ann,
+      publish({
+        expectedVersion: 3,
+        idempotencyKey: 'publish-two',
+      }),
+    ),
+  ).reference;
+  const final = value(await h.service.draft(h.requests.ann, page));
+  assert.equal(final.publishedHasOriginal, false);
+  assert.deepEqual(final.published, second);
+  assert.equal(
+    value(await h.service.read(h.requests.ann, { ...first, part: 'original' })).text,
+    '原始固定资料',
   );
 });

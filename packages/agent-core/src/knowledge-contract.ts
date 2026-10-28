@@ -80,6 +80,32 @@ export const KnowledgeListValueSchema = z.strictObject({
 export type KnowledgeListRequest = z.input<typeof KnowledgeListRequestSchema>;
 export type KnowledgeListValue = z.infer<typeof KnowledgeListValueSchema>;
 
+/** Author-only draft discovery. A draft is not a published version reference. */
+export const KnowledgeDraftsRequestSchema = KnowledgeListRequestSchema;
+export const KnowledgeDraftSummarySchema = z.strictObject({
+  spaceId: id,
+  libraryId: id,
+  pageId: id,
+  ownerActorId: id,
+  title: z.string().trim().min(1).max(200),
+  format: KnowledgeFormatSchema,
+  pageRevision: positive,
+  bytes: natural.max(KNOWLEDGE_LIMITS.bodyBytes),
+  authorship: z.enum(['member', 'agent']),
+  savedAt: z.iso.datetime().optional(),
+  hasPublished: z.boolean(),
+});
+export const KnowledgeDraftsValueSchema = z.strictObject({
+  actorId: id,
+  spaceId: id,
+  libraryId: id,
+  pages: z.array(KnowledgeDraftSummarySchema).max(KNOWLEDGE_LIMITS.listResults),
+  nextCursor: z.string().max(2048).nullable(),
+});
+export type KnowledgeDraftsRequest = z.input<typeof KnowledgeDraftsRequestSchema>;
+export type KnowledgeDraftSummary = z.infer<typeof KnowledgeDraftSummarySchema>;
+export type KnowledgeDraftsValue = z.infer<typeof KnowledgeDraftsValueSchema>;
+
 export const KnowledgeSearchRequestSchema = z.strictObject({
   spaceId: id,
   libraryIds: z
@@ -180,6 +206,7 @@ export const KnowledgeDraftValueSchema = z.strictObject({
   pageRevision: positive,
   draft: KnowledgeDraftContentSchema.extend({ authorship: z.enum(['member', 'agent']) }).nullable(),
   published: KnowledgeVersionRefSchema.nullable(),
+  publishedHasOriginal: z.boolean(),
 });
 export const KnowledgeWriteValueSchema = z.strictObject({
   actorId: id,

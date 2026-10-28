@@ -38,7 +38,7 @@ export const KnowledgeDraftRecordSchema = z.strictObject({
   original: KnowledgeBlobSchema.optional(),
   sources: z.array(KnowledgeVersionRefSchema).max(KNOWLEDGE_LIMITS.sourcesPerVersion),
   authorship: z.enum(['member', 'agent']),
-  savedAt: z.iso.datetime(),
+  savedAt: z.iso.datetime().optional(),
 });
 export const KnowledgeWriteReceiptSchema = z.strictObject({
   key: id,

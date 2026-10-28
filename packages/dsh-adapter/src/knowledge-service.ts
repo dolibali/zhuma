@@ -9,6 +9,7 @@ import {
   KnowledgeSearchRequestSchema,
   KnowledgeReadRequestSchema,
   KnowledgeDraftRequestSchema,
+  KnowledgeDraftsRequestSchema,
   KnowledgeSaveDraftRequestSchema,
   KnowledgePublishRequestSchema,
   type KnowledgeErrorCode,
@@ -22,6 +23,7 @@ import {
   type KnowledgeVersionRef,
   type KnowledgeDraftValue,
   type KnowledgeWriteValue,
+  type KnowledgeDraftsValue,
 } from '@zhuma/agent-core';
 import { openExecutionMemberLease, type MemberRequest } from './member-session.js';
 import { scanActorField } from './execution-identity.js';
@@ -423,6 +425,59 @@ export class KnowledgeService {
     if (page.ownerActorId !== access.actorId) throw new KnowledgeError('not-found');
     return page;
   }
+
+  drafts(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeDraftsValue>> {
+    return this.run(request, raw, signal, (access) => {
+      const input = KnowledgeDraftsRequestSchema.parse(raw);
+      this.library(access, input.libraryId);
+      const pages: KnowledgeDraftsValue['pages'] = this.store
+        .pages(access.spaceId)
+        .filter(
+          (page) =>
+            page.libraryId === input.libraryId &&
+            page.ownerActorId === access.actorId &&
+            page.draft,
+        )
+        .map((page) => {
+          this.owned(access, input.libraryId, page.pageId);
+          const pending = page.draft!;
+          return {
+            spaceId: access.spaceId,
+            libraryId: input.libraryId,
+            pageId: page.pageId,
+            ownerActorId: page.ownerActorId,
+            title: pending.title,
+            format: pending.format,
+            pageRevision: page.version,
+            bytes: pending.body.bytes,
+            authorship: pending.authorship,
+            ...(pending.savedAt ? { savedAt: pending.savedAt } : {}),
+            hasPublished: page.versions.length > 0,
+          };
+        })
+        .sort((a, b) => a.title.localeCompare(b.title) || a.pageId.localeCompare(b.pageId));
+      const binding = {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        libraryId: input.libraryId,
+        query: 'drafts',
+        fingerprint: digest(pages),
+      };
+      const offset = input.cursor ? this.cursor(input.cursor, binding) : 0;
+      const end = Math.min(offset + input.limit, pages.length);
+      return {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        libraryId: input.libraryId,
+        pages: pages.slice(offset, end),
+        nextCursor: end < pages.length ? this.issueCursor(binding, end) : null,
+      };
+    });
+  }
   private checkSources(access: Access, sources: readonly KnowledgeVersionRef[]): void {
     const seen = new Set<string>();
     for (const source of sources) {
@@ -514,6 +569,7 @@ export class KnowledgeService {
             }
           : null,
         published: published ? reference(page, published) : null,
+        publishedHasOriginal: published?.original !== undefined,
       };
     });
   }
