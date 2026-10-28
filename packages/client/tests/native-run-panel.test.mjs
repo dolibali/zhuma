@@ -737,3 +737,41 @@ if (domModule) {
     }
   });
 }
+
+test('SSR per-Run publication: ranges stay explicit, and incomplete relative paths disable start before a Host call', () => {
+  const workspace = {
+    id: 'files',
+    label: 'Project files',
+    access: 'write',
+    publish: false,
+    publication: 'per-run',
+  };
+  const html = render({
+    view: view({
+      workspaces: [workspace],
+      selection: {
+        ...selection,
+        workspace: {
+          kind: 'local',
+          id: workspace.id,
+          publish: [{ kind: 'file', path: '../private' }],
+        },
+      },
+    }),
+  });
+  assert.match(html, /文件交付范围/);
+  assert.match(html, /请填写工作区内的相对路径/);
+  const start = [...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/gu)]
+    .map((match) => match[0])
+    .find((button) => button.includes('>开始执行</span>'));
+  assert(start);
+  assert.match(start, /disabled=""/);
+  const untouched = render({
+    view: view({
+      workspaces: [workspace],
+      selection: { ...selection, workspace: { kind: 'local', id: workspace.id } },
+    }),
+  });
+  assert.match(untouched, /未授权/);
+  assert.match(untouched, /添加相对路径后/);
+});

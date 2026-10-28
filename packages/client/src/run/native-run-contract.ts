@@ -25,7 +25,14 @@ export interface NativeRunSelection {
   readonly executor: NativeRunExecutor;
   readonly workspace?:
     | { readonly kind: 'text-only' }
-    | { readonly kind: 'local'; readonly id: string }
+    | {
+        readonly kind: 'local';
+        readonly id: string;
+        readonly publish?: readonly {
+          readonly kind: 'file' | 'directory';
+          readonly path: string;
+        }[];
+      }
     | { readonly kind: 'unavailable' };
 }
 export interface NativeRunWorkspaceChoice {
@@ -33,6 +40,7 @@ export interface NativeRunWorkspaceChoice {
   readonly label: string;
   readonly access: 'read' | 'write';
   readonly publish: boolean;
+  readonly publication?: 'per-run';
 }
 export interface NativeRunModelChoice {
   readonly id: string;

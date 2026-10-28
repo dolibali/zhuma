@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { Button } from '../workbench/Button.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { ControlIcon } from '../workbench/ControlIcon.js';
+import { workspacePublishRanges, type WorkspacePublishRange } from './workspace-approvals.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type {
   NativeRunAction,
@@ -16,6 +17,14 @@ import type {
 type ReadyView = Extract<NativeRunPanelView, { kind: 'ready' }>;
 type Operation = NonNullable<NativeRunPanelProps['busy']>;
 const TEXT_LIMIT = 16_384;
+function validPublication(ranges: unknown) {
+  try {
+    workspacePublishRanges(ranges);
+    return true;
+  } catch {
+    return false;
+  }
+}
 const modes: readonly NativeRunSendMode[] = ['followup', 'steer', 'queue'];
 const modeLabels = { followup: '发送消息', steer: '补充当前运行', queue: '下一轮处理' };
 const operationErrors: Record<Operation, string> = {
@@ -183,6 +192,17 @@ function Selection({
   const [partialExecutor, setPartialExecutor] = useState<NativeRunSelection['executor']>();
   const [partialWorkspace, setPartialWorkspace] = useState<NativeRunSelection['workspace']>();
   const chosenWorkspace = selected?.workspace ?? partialWorkspace;
+  const perRunPublication =
+    chosenWorkspace?.kind === 'local' &&
+    view.workspaces?.find((item) => item.id === chosenWorkspace.id)?.publication === 'per-run';
+  const publishRanges = chosenWorkspace?.kind === 'local' ? (chosenWorkspace.publish ?? []) : [];
+  const publicationValid = validPublication(publishRanges);
+  function changePublication(publish: readonly WorkspacePublishRange[]) {
+    if (disabled || chosenWorkspace?.kind !== 'local') return;
+    const workspace = { ...chosenWorkspace, publish };
+    setPartialWorkspace(workspace);
+    if (model && expert) onChange({ model: model.value, executor: expert.value, workspace });
+  }
   const chosenModel = selected?.model ?? partialModel;
   const chosenExecutor = selected?.executor ?? partialExecutor;
   const model =
@@ -355,6 +375,72 @@ function Selection({
         )}
         {disabled && <span className="zm-native-run__fixed">本轮配置已固定</span>}
       </div>
+      {perRunPublication && (
+        <details className="zm-native-run__resources zm-native-run__disclosure">
+          <summary>
+            文件交付范围{publishRanges.length ? ` · ${publishRanges.length}` : ' · 未授权'}
+          </summary>
+          <div className="zm-workspace-publish">
+            {!publicationValid && (
+              <p role="alert">请填写工作区内的相对路径，例如 deliverables/report.md。</p>
+            )}
+            {!publishRanges.length && (
+              <p className="zm-muted">添加相对路径后，Agent 才能把这些本机文件提交给团队。</p>
+            )}
+            {publishRanges.map((range, index) => (
+              <div className="zm-workspace-publish-row" key={index}>
+                <SingleSelect
+                  label={`第 ${index + 1} 项交付范围类型`}
+                  value={range.kind}
+                  disabled={disabled}
+                  options={[
+                    { value: 'file', label: '文件' },
+                    { value: 'directory', label: '目录' },
+                  ]}
+                  onValueChange={(kind) =>
+                    changePublication(
+                      publishRanges.map((item, at) =>
+                        at === index
+                          ? { ...item, kind: kind === 'directory' ? 'directory' : 'file' }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+                <input
+                  aria-label={`第 ${index + 1} 项相对路径`}
+                  value={range.path}
+                  disabled={disabled}
+                  placeholder="例如 deliverables/report.md"
+                  maxLength={512}
+                  onChange={(event) =>
+                    changePublication(
+                      publishRanges.map((item, at) =>
+                        at === index ? { ...item, path: event.currentTarget.value } : item,
+                      ),
+                    )
+                  }
+                />
+                {!disabled && (
+                  <Button
+                    onClick={() => changePublication(publishRanges.filter((_, at) => at !== index))}
+                  >
+                    移除
+                  </Button>
+                )}
+              </div>
+            ))}
+            {!disabled && (
+              <Button
+                disabled={publishRanges.length >= 16}
+                onClick={() => changePublication([...publishRanges, { kind: 'file', path: '' }])}
+              >
+                添加范围
+              </Button>
+            )}
+          </div>
+        </details>
+      )}
       {!!view.resources.length && (
         <details className="zm-native-run__resources zm-native-run__disclosure">
           <summary>
@@ -479,8 +565,15 @@ function RunPanel(props: NativeRunPanelProps) {
     ready && matching ? modes.filter((mode) => ready.actions.send[mode].kind === 'available') : [];
   const mode = availableModes.includes(selectedMode) ? selectedMode : availableModes[0];
   const selectedWorkspace = ready?.selection?.workspace;
+  const publicationReady =
+    selectedWorkspace?.kind !== 'local' ||
+    selectedWorkspace.publish === undefined ||
+    (ready?.workspaces?.find((item) => item.id === selectedWorkspace.id)?.publication ===
+      'per-run' &&
+      validPublication(selectedWorkspace.publish));
   const selectionReady =
     !!ready?.selection &&
+    publicationReady &&
     selectedWorkspace?.kind !== 'unavailable' &&
     (selectedWorkspace?.kind !== 'local' ||
       !!ready.workspaces?.some((item) => item.id === selectedWorkspace.id)) &&

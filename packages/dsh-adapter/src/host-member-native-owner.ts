@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import { z } from 'zod';
-import { canonicalPayload, remoteRunScopeSchema } from '@zhuma/agent-core';
+import {
+  canonicalPayload,
+  remoteRunScopeSchema,
+  remoteLocalCapabilitiesSchema,
+} from '@zhuma/agent-core';
 import { HostSharedBackend, SharedBackendError } from './host-shared-backend.js';
 import { MemberLocalExecutionProtocol } from './member-local-execution-protocol.js';
 import { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
@@ -15,6 +19,14 @@ import { readHostRunModels } from './host-run-models.js';
 import { publicFrame, conversationTarget, type HostRunFrameSink } from './host-run-reader.js';
 import { ExecutionRunError } from './execution-run-state.js';
 import type { NativeHistoryEvent } from './native-work-session-contract.js';
+import {
+  createHostMemberNativeWorkspaces,
+  memberNativeWorkspaceSchema,
+} from './host-member-native-workspaces.js';
+
+const memberBeginRequest = hostRunBeginRequestSchema.extend({
+  workspace: memberNativeWorkspaceSchema,
+});
 
 const id = z.string().min(1).max(200);
 const integer = z.number().int().nonnegative().refine(Number.isSafeInteger);
@@ -50,7 +62,9 @@ const metadata = z.object({
   runVersion: integer,
   currentRunId: id.nullable(),
   currentRun: sharedRun.nullable(),
-  selection: z.unknown(),
+  selection: z
+    .object({ model: z.unknown(), executor: z.unknown(), workspace: z.unknown().optional() })
+    .nullable(),
   experts: z.array(z.unknown()).max(100),
   resources: z.array(z.unknown()).max(300),
   start: z.unknown(),
@@ -136,10 +150,21 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     await connection.authentication(signal);
     lifetime.signal.throwIfAborted();
   };
+  const workspaces = createHostMemberNativeWorkspaces(ctx, {
+    connectionId: connection.connectionId,
+    backendId: protocol.backendId,
+    deviceId: protocol.deviceId,
+    actorId: protocol.actorId,
+    signal: lifetime.signal,
+  });
   let native: MemberLocalExecutionOwner;
   try {
     native = await MemberLocalExecutionOwner.open(ctx, {
       protocol,
+      native: workspaces.native,
+      ...(protocol.supportsFilePublishing
+        ? { outputFiles: { resolveBytes: workspaces.output } }
+        : {}),
       async assertModel(selection, signal) {
         await assertCurrent(signal);
         const models = await readHostRunModels(ctx, signal);
@@ -154,6 +179,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       },
     });
   } catch (error) {
+    await workspaces.close();
     await protocol.close();
     throw error;
   }
@@ -248,11 +274,30 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       await facts(target, wait);
       const models = await readHostRunModels(ctx, wait);
       const value = await facts(target, wait);
-      return { ...value, models, workspaces: [] };
+      return {
+        ...value,
+        models,
+        workspaces: native.outputFileSource ? workspaces.choices() : [],
+        ...(value.selection?.workspace && value.currentRun
+          ? {
+              selection: {
+                ...value.selection,
+                workspace: workspaces.selection({
+                  ...value.target,
+                  actorId: protocol.actorId,
+                  runId: value.currentRun.runId,
+                  generation: value.currentRun.generation,
+                  segmentId: value.currentRun.segmentId,
+                }),
+              },
+            }
+          : {}),
+      };
     }
     if (endpoint === 'begin') {
-      const input = hostRunBeginRequestSchema.parse(raw);
-      if (input.workspace.kind !== 'text-only' || input.tools === 'local-tools')
+      const input = memberBeginRequest.parse(raw);
+      const local = input.workspace.kind === 'local';
+      if (local !== (input.tools === 'local-tools') || (local && !native.outputFileSource))
         throw new ExecutionRunError('run-authority-unavailable');
       const target = hostRunOptionsQuerySchema.parse({
         spaceId: input.spaceId,
@@ -261,7 +306,11 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         revision: input.revision,
         nodeId: input.nodeId,
       });
-      await facts(target, wait);
+      const value = await facts(target, wait);
+      const selected = workspaces.prepare(input.requestId, target, input.workspace);
+      const acceptedInput =
+        input.tools === 'accepted-input-reader' ||
+        (local && value.tools === 'accepted-input-reader');
       const resources = MemberLocalExecutionOwner.resourceSource(ctx);
       const accepted = await (
         await protocol.prepareAccept(
@@ -274,17 +323,28 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
             expectedRunVersion: input.expectedRunVersion,
             model: input.model,
             executor: input.executor,
-            workspace: { kind: 'text-only' },
+            workspace: selected?.workspace ?? { kind: 'text-only' },
             capabilities: {
               ...(resources ? { resources } : {}),
-              ...(input.tools === 'accepted-input-reader' ? { acceptedInput: '1' as const } : {}),
-              resultIntent: 'zhuma-native-result-intent@1',
-              localTools: [],
+              ...(acceptedInput ? { acceptedInput: '1' as const } : {}),
+              ...(acceptedInput && protocol.supportsFilePublishing && native.acceptedFileSource
+                ? { acceptedFile: native.acceptedFileSource }
+                : {}),
+              ...(selected ? { outputFile: native.outputFileSource! } : {}),
+              resultIntent: selected
+                ? 'zhuma-native-result-intent@2'
+                : 'zhuma-native-result-intent@1',
+              localTools: selected
+                ? remoteLocalCapabilitiesSchema.shape.localTools.parse(
+                    workspaces.describe(selected),
+                  )
+                : [],
             },
           },
           wait,
         )
       ).send(wait);
+      workspaces.bind(input.requestId, accepted);
       // A client disconnect is not rollback of this actual accepted Run.
       await native.start(accepted);
       await assertCurrent(lifetime.signal);
@@ -422,7 +482,9 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         // Native close owns physical cleanup before its original private
         // outgoing protocol or credentials adapter is sealed.
         closing = (async () => {
+          workspaces.fence();
           await native.close();
+          await workspaces.close();
           lifetime.abort();
           await Promise.allSettled([...jobs]);
           await protocol.close();
