@@ -148,6 +148,19 @@ export async function fixture(t, options = {}) {
         const reply = structuredClone(value);
         options.mutate?.(reply);
         respond({ ok: true, value: reply });
+      } else if (request.operation === 'reconcile') {
+        const intent = [...rows.values()].find(
+          (row) => row.requestId === request.payload.acceptRequestId,
+        );
+        assert(intent);
+        assert.equal(req.headers[REMOTE_RUN_PERMIT_HEADER], intent.drive.secret);
+        const { disposition, ...reconciled } = structuredClone(value);
+        reconciled.serverTime = Date.now();
+        reconciled.permit.expiresAt = Date.now() + 60_000;
+        reconciled.authority =
+          value.result && !value.stopRequested ? 'commit-only' : 'recovery-required';
+        Object.assign(value, reconciled);
+        respond({ ok: true, value: reconciled });
       } else if (
         ['status', 'renew', 'event', 'submit-result', 'cleanup'].includes(request.operation)
       ) {
@@ -180,6 +193,11 @@ export async function fixture(t, options = {}) {
           return;
         }
         if (request.operation === 'submit-result') {
+          if (options.submitFailures > 0) {
+            options.submitFailures--;
+            respond({ ok: false, error: { code: 'remote-unavailable' } });
+            return;
+          }
           assert.deepEqual(request.payload.result, value.result);
           value.receipt = {
             requestId: value.result.requestId,
@@ -196,7 +214,7 @@ export async function fixture(t, options = {}) {
         if (cleanup && request.payload.observation.kind === 'drained') {
           view.resources = 'settled';
           view.authority = 'cleanup-only';
-          view.runStatus = 'cancelled';
+          if (view.runStatus !== 'completed') view.runStatus = 'cancelled';
           view.nextSequence++;
           Object.assign(value, view);
         }

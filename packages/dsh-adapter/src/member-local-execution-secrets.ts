@@ -186,21 +186,55 @@ export class MemberLocalExecutionSecrets {
         record.intentFingerprint !== intentFingerprint
       )
         throw new MemberLocalSecretError('conflict');
-      const drive = publicToken(record.drive),
-        cleanup = publicToken(record.cleanup);
-      if (drive.id === cleanup.id || drive.sha256 === cleanup.sha256)
-        throw new MemberLocalSecretError('unavailable');
-      return Object.freeze({
-        requestId,
-        intentFingerprint,
-        drive,
-        cleanup,
-        withDriveSecret: <T>(work: (secret: string) => T) => work(record.drive.secret),
-        withCleanupSecret: <T>(work: (secret: string) => T) => work(record.cleanup.secret),
-      });
+      return this.intentHandle(record);
     } catch (error) {
       if (error instanceof MemberLocalSecretError) throw error;
       throw new MemberLocalSecretError('unavailable');
     }
+  }
+  /** Exact-key cold lookup only: no enumeration, new intent, secret rotation or
+   * accept/network command. An absent local record never authorizes recovery. */
+  async recoverAccept(
+    device: MemberLocalDeviceIdentity,
+    requestId: string,
+    signal?: AbortSignal,
+  ): Promise<MemberLocalAcceptSecrets | undefined> {
+    try {
+      checkSignal(signal);
+      const owner = this.issued.get(device);
+      if (!owner) throw new MemberLocalSecretError('invalid');
+      z.uuid().parse(requestId);
+      const raw = await this.store.read(
+        key('accept', [owner.backendId, owner.actorId, owner.deviceId, requestId]),
+      );
+      checkSignal(signal);
+      if (raw === undefined) return undefined;
+      const record = intentRecord.parse(raw);
+      if (
+        record.backendId !== owner.backendId ||
+        record.actorId !== owner.actorId ||
+        record.deviceId !== owner.deviceId ||
+        record.requestId !== requestId
+      )
+        throw new MemberLocalSecretError('conflict');
+      return this.intentHandle(record);
+    } catch (error) {
+      if (error instanceof MemberLocalSecretError) throw error;
+      throw new MemberLocalSecretError('unavailable');
+    }
+  }
+  private intentHandle(record: IntentRecord): MemberLocalAcceptSecrets {
+    const drive = publicToken(record.drive),
+      cleanup = publicToken(record.cleanup);
+    if (drive.id === cleanup.id || drive.sha256 === cleanup.sha256)
+      throw new MemberLocalSecretError('unavailable');
+    return Object.freeze({
+      requestId: record.requestId,
+      intentFingerprint: record.intentFingerprint,
+      drive,
+      cleanup,
+      withDriveSecret: <T>(work: (secret: string) => T) => work(record.drive.secret),
+      withCleanupSecret: <T>(work: (secret: string) => T) => work(record.cleanup.secret),
+    });
   }
 }

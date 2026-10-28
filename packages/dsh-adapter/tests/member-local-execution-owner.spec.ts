@@ -1,7 +1,7 @@
 /** Original local SDK/factory/log/drain over actual HTTP; backend ACL is a contract. */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'vitest';
@@ -11,21 +11,24 @@ import {
   toolResponse,
   response,
   SessionId,
+  MemberLocalExecutionProtocol,
+  MemberLocalExecutionSecrets,
 } from './zhuma-member-local-owner-bundle.ts';
 
 async function setup(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-member-local-owner-')),
-    remote = await fixture({ after: (fn) => t.onTestFinished(fn) }),
+    remote = await fixture({ after: (fn) => t.onTestFinished(fn) }, options.remote ?? {}),
     protocol = await remote.open(),
     h = await bootLocalOwner(root, protocol, options),
-    prepared = await protocol.prepareAccept(randomUUID(), remote.input),
+    requestId = randomUUID(),
+    prepared = await protocol.prepareAccept(requestId, remote.input),
     run = await prepared.send();
   t.onTestFinished(async () => {
     await h.close();
     await protocol.close();
     await rm(root, { recursive: true, force: true });
   });
-  return { ...h, remote, protocol, run, root };
+  return { ...h, remote, protocol, run, root, requestId };
 }
 async function until(read, accept, timeout = 10_000) {
   const deadline = Date.now() + timeout;
@@ -216,4 +219,69 @@ test('original workspace: deletion during unpublished compose cannot attach a la
   assert.deepEqual(other.sessionIds, []);
   assert.equal(h.ctx.workspaceRegistry.get(h.workspace.id), undefined);
   assert.equal(h.adapter.requests.length, 0);
+});
+test('original cold result: same fixed cut is requalified with read-only authority and never restarts an Agent', async (t) => {
+  const h = await setup(t, {
+    remote: { submitFailures: 1 },
+    script: [
+      toolResponse(
+        { text: 'Fixed before local restart.', links: [] },
+        'fixed-before-restart',
+        'complete_work',
+      ),
+    ],
+  });
+  await h.owner.start(h.run);
+  await until(
+    () => h.owner.read(h.run),
+    (value) => value.phase === 'retired',
+  );
+  assert.equal(h.remote.value().runStatus, 'completed');
+  assert.equal(h.remote.value().receipt, undefined);
+  await h.close();
+  const metadataPath = join(h.root, 'domains', 'zhuma_native_work_sessions.json'),
+    before = await readFile(metadataPath, 'utf8'),
+    protocol = await MemberLocalExecutionProtocol.open({
+      ...h.remote.protocolOptions,
+      secrets: new MemberLocalExecutionSecrets(h.remote.store),
+    }),
+    recovered = await protocol.recover({
+      target: h.remote.input.target,
+      acceptRequestId: h.requestId,
+    }),
+    cold = await bootLocalOwner(h.root, protocol, {
+      assertModel() {
+        assert.fail('cold result continuation must not resolve any model');
+      },
+    });
+  t.onTestFinished(async () => {
+    await cold.close();
+    await protocol.close();
+  });
+  assert.equal(recovered.value.authority, 'commit-only');
+  await assert.rejects(cold.owner.start(recovered), { code: 'remote-recovery-required' });
+  await cold.owner.continueResult(recovered);
+  const delivered = await until(
+    () => cold.owner.read(recovered),
+    (v) => v.phase === 'submitted',
+  );
+  assert.equal(cold.ctx.agents.list().length, 0);
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(delivered.receipt.requestId, h.remote.value().result.requestId);
+  assert.equal(
+    h.remote.seen.filter(
+      ({ request }) => request.operation === 'event' && request.payload.event.kind === 'completed',
+    ).length,
+    1,
+  );
+  assert.equal(h.remote.seen.filter(({ request }) => request.operation === 'accept').length, 1);
+  assert.equal(
+    await readFile(metadataPath, 'utf8'),
+    before,
+    'the original sealed native metadata is not rewritten',
+  );
+  await assert.rejects(
+    cold.owner.send(recovered, { requestId: randomUUID(), text: 'must not run', mode: 'followup' }),
+  );
+  assert.equal(cold.adapter.requests.length, 0);
 });

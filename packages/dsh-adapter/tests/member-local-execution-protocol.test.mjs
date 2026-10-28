@@ -111,3 +111,26 @@ test('member-local protocol contract: a backend may explicitly lack file/input o
     false,
   );
 });
+test('member-local protocol contract: exact cold reconcile is not accept or a fresh drive handle', async (t) => {
+  const h = await fixture(t),
+    owner = await h.open(),
+    requestId = randomUUID();
+  t.after(() => owner.close());
+  await (await owner.prepareAccept(requestId, h.input)).send();
+  const before = structuredClone([...h.rows.values()]),
+    recovered = await owner.recover({
+      target: h.input.target,
+      acceptRequestId: requestId,
+    });
+  assert.equal(recovered.value.authority, 'recovery-required');
+  assert.deepEqual(recovered.composition, h.composition);
+  assert.throws(() => owner.assertStartHandle(recovered), { code: 'remote-recovery-required' });
+  await assert.rejects(owner.command(recovered, { operation: 'renew', payload: {} }), {
+    code: 'remote-recovery-required',
+  });
+  await assert.rejects(owner.command(recovered, { operation: 'input-list', payload: {} }), {
+    code: 'remote-recovery-required',
+  });
+  assert.equal(h.seen.filter(({ request }) => request.operation === 'accept').length, 1);
+  assert.deepEqual([...h.rows.values()], before);
+});
