@@ -17,7 +17,7 @@
  * The published RemoteAccessService class is not loaded.
  */
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -348,7 +348,13 @@ async function mount(shared = {}) {
     {
       inject: [...identityInject],
       apply: (ctx, imported) =>
-        applyIdentity(ctx, imported, shared.executionOptions?.(ctx), shared.initialization),
+        applyIdentity(
+          ctx,
+          imported,
+          shared.executionOptions?.(ctx),
+          shared.initialization,
+          shared.lifecycle,
+        ),
     },
     shared.imported === undefined ? fixtureImport() : shared.imported,
   );
@@ -3639,4 +3645,377 @@ test('directory unmount and real remount issue only from the new authoritative h
   assert.equal(fresh.assertCurrent('team-north'), undefined);
   fresh.release();
   assert.throws(() => previous.assertCurrent('team-north'), /unavailable/);
+});
+
+// v1.1 member lifecycle: actual original Connection/resolver, DomainFacility and
+// durable KV fault contract; not a real filesystem, emitted Host, GUI or model.
+async function lifecycleHost(options = {}) {
+  let lifecycle;
+  const host = await mount({
+    ...options,
+    lifecycle: {
+      publish(handle) {
+        lifecycle = handle;
+        return () => {};
+      },
+    },
+    executionOptions(ctx) {
+      const directory = spaceDirectoryFor(ctx),
+        signal = new AbortController().signal;
+      const binding = { directory, signal, isCurrent: () => spaceDirectoryFor(ctx) === directory };
+      return { currentDirectoryBinding: () => binding };
+    },
+  });
+  return { ...host, lifecycle, directory: spaceDirectoryFor(host.ctx) };
+}
+const anonymousMemberRequest = () => ({
+  headers: { host: AUTHORITY },
+  socket: { remoteAddress: randomBytes(8).toString('hex') },
+});
+async function lifecycleLogin(host, accountId, password) {
+  const response = await call(host.web, {
+    method: 'POST',
+    path: '/zhuma-id/login',
+    remoteAddress: randomBytes(8).toString('hex'),
+    body: { accountId, password },
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.json));
+  return leaseRequest(cookiePair(response.headers['set-cookie']));
+}
+const lifecycleError = (code) => (error) => error?.code === code;
+const mediumSnapshot = (host) => structuredClone([...host.media]);
+
+test('member lifecycle: anonymous registration is idempotent, creates one personal space, and logs in through the original member cookie', async () => {
+  const host = await lifecycleHost({ imported: null, emptyDirectory: true });
+  try {
+    const input = { requestId: randomUUID(), accountId: 'new-member', password: randomPassword() };
+    const before = mediumSnapshot(host);
+    for (const raw of [
+      { ...input, actorId: 'owner' },
+      { ...input, password: 'short' },
+      { ...input, accountId: '../escape' },
+    ])
+      await assert.rejects(
+        host.lifecycle.register(anonymousMemberRequest(), raw),
+        lifecycleError('validation'),
+      );
+    await assert.rejects(
+      host.lifecycle.register(
+        { headers: { host: AUTHORITY, origin: 'https://foreign.example' } },
+        input,
+      ),
+      lifecycleError('untrusted-request'),
+    );
+    assert.deepEqual(mediumSnapshot(host), before);
+    await assert.rejects(
+      host.lifecycle.register(anonymousMemberRequest(), {
+        ...input,
+        accountId: 'zhuma-work-planning',
+      }),
+      lifecycleError('conflict'),
+    );
+    assert.deepEqual(mediumSnapshot(host), before);
+    const results = await Promise.all([
+      host.lifecycle.register(anonymousMemberRequest(), input),
+      host.lifecycle.register(anonymousMemberRequest(), input),
+    ]);
+    assert.deepEqual(results.map((r) => r.disposition).sort(), ['created', 'replayed']);
+    assert.equal(host.directory.spaces().length, 1);
+    assert.deepEqual(host.directory.memberIdsForSpace('personal-new-member'), ['new-member']);
+    const request = await lifecycleLogin(host, input.accountId, input.password);
+    const member = await resolveMember(host.ctx, request);
+    assert.equal(member.ok, true);
+    assert.equal(member.memberId, input.accountId);
+    assert.deepEqual(member.spaceIds, ['personal-new-member']);
+    const session = await call(host.web, {
+      method: 'GET',
+      path: '/zhuma-id/session',
+      cookie: request.headers.cookie,
+    });
+    assert.equal(session.json.principal.kind, 'zhuma-member');
+    assert.equal(JSON.stringify(results).includes('password'), false);
+    await assert.rejects(
+      host.lifecycle.register(anonymousMemberRequest(), { ...input, requestId: randomUUID() }),
+      lifecycleError('conflict'),
+    );
+    await assert.rejects(
+      host.lifecycle.register(anonymousMemberRequest(), { ...input, password: randomPassword() }),
+      lifecycleError('conflict'),
+    );
+    const noMember = await resolveMember(host.ctx, anonymousMemberRequest());
+    assert.equal(noMember.ok, false);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('member lifecycle: interrupted registration hides its partial space and resumes exactly after a fresh domain open', async () => {
+  const faults = {};
+  let host = await lifecycleHost({ imported: null, emptyDirectory: true, faults });
+  const input = {
+    requestId: randomUUID(),
+    accountId: 'recover-member',
+    password: randomPassword(),
+  };
+  const credentials = host.credentials,
+    media = host.media;
+  try {
+    faults.put = (table) =>
+      table === 'memberships' ? Error('synthetic durable membership failure') : undefined;
+    await assert.rejects(host.lifecycle.register(anonymousMemberRequest(), input));
+    assert.equal(host.directory.space('personal-recover-member'), undefined);
+    assert.equal(host.directory.isMember('personal-recover-member', input.accountId), false);
+    assert.equal(
+      media.get('zhuma_identity').tables.get('accounts')?.has(input.accountId) ?? false,
+      false,
+    );
+    const operations = [...media.get('zhuma_identity').tables.get('member_operations').values()];
+    assert.equal(operations[0].phase, 'pending');
+    assert.equal(operations[0].verifier.includes(input.password), false);
+    delete faults.put;
+    await host.dispose();
+    host = await lifecycleHost({ imported: null, emptyDirectory: true, credentials, media });
+    await assert.rejects(
+      host.lifecycle.register(anonymousMemberRequest(), { ...input, requestId: randomUUID() }),
+      lifecycleError('recovery-required'),
+    );
+    assert.equal(
+      (await host.lifecycle.register(anonymousMemberRequest(), input)).disposition,
+      'created',
+    );
+    assert.equal(
+      (await host.lifecycle.register(anonymousMemberRequest(), input)).disposition,
+      'replayed',
+    );
+    assert.equal(host.directory.spaces().length, 1);
+    await lifecycleLogin(host, input.accountId, input.password);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('member lifecycle: account activation before a lost completion receipt is recovered without duplicate facts', async () => {
+  const faults = {};
+  const host = await lifecycleHost({ imported: null, emptyDirectory: true, faults });
+  try {
+    let writes = 0;
+    faults.put = (table) =>
+      table === 'member_operations' && ++writes === 2
+        ? Error('synthetic lost completion receipt')
+        : undefined;
+    const input = {
+      requestId: randomUUID(),
+      accountId: 'receipt-member',
+      password: randomPassword(),
+    };
+    await assert.rejects(host.lifecycle.register(anonymousMemberRequest(), input));
+    assert.equal(host.directory.isMember('personal-receipt-member', input.accountId), true);
+    await lifecycleLogin(host, input.accountId, input.password);
+    delete faults.put;
+    await host.lifecycle.register(anonymousMemberRequest(), input);
+    assert.equal(host.directory.spaces().length, 1);
+    assert.equal(host.media.get('zhuma_identity').tables.get('accounts').size, 1);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('member lifecycle: only the new team administrator manages existing accounts; revocation invalidates a real member lease and replay never restores it', async () => {
+  const host = await lifecycleHost();
+  try {
+    const adminRequest = await lifecycleLogin(host, 'lin', passwords.lin);
+    const zhao = await lifecycleLogin(host, 'zhao', passwords.zhao);
+    const chen = await lifecycleLogin(host, 'chen', passwords.chen);
+    const teamInput = { requestId: randomUUID(), name: '交付团队' };
+    const created = await host.lifecycle.createTeam(adminRequest, teamInput);
+    assert.equal(
+      (await host.lifecycle.createTeam(adminRequest, teamInput)).disposition,
+      'replayed',
+    );
+    const spaceId = created.spaceId;
+    assert.equal(host.directory.administratorForSpace(spaceId), 'lin');
+    const add = { requestId: randomUUID(), spaceId, accountId: 'zhao', action: 'add' };
+    await host.lifecycle.setMember(adminRequest, add);
+    assert.deepEqual((await host.lifecycle.members(zhao, { spaceId })).accountIds, ['lin', 'zhao']);
+    assert.equal(
+      (await host.lifecycle.teams(zhao)).teams.find((t) => t.id === spaceId).role,
+      'member',
+    );
+    assert.equal(
+      (await host.lifecycle.teams(adminRequest)).teams.find((t) => t.id === spaceId).role,
+      'administrator',
+    );
+    const before = mediumSnapshot(host);
+    await assert.rejects(
+      host.lifecycle.setMember(zhao, { ...add, requestId: randomUUID(), accountId: 'chen' }),
+      lifecycleError('forbidden'),
+    );
+    await assert.rejects(
+      host.lifecycle.setMember(adminRequest, {
+        ...add,
+        requestId: randomUUID(),
+        accountId: 'missing',
+      }),
+      lifecycleError('not-found'),
+    );
+    await assert.rejects(
+      host.lifecycle.setMember(adminRequest, {
+        ...add,
+        requestId: randomUUID(),
+        accountId: 'lin',
+        action: 'remove',
+      }),
+      lifecycleError('forbidden'),
+    );
+    await assert.rejects(host.lifecycle.members(chen, { spaceId }));
+    await assert.rejects(
+      host.lifecycle.createTeam(anonymousMemberRequest(), teamInput),
+      lifecycleError('unauthenticated'),
+    );
+    await assert.rejects(
+      host.lifecycle.createTeam(leaseRequest(ownerCookie(host.connection)), teamInput),
+      lifecycleError('unauthenticated'),
+    );
+    assert.deepEqual(mediumSnapshot(host), before);
+    const lease = await openExecutionMemberLease(host.ctx, zhao);
+    lease.assertCurrent(spaceId);
+    await host.lifecycle.setMember(adminRequest, {
+      ...add,
+      requestId: randomUUID(),
+      action: 'remove',
+    });
+    assert.equal(lease.signal.aborted, true);
+    assert.throws(() => lease.assertCurrent(spaceId));
+    await host.lifecycle.setMember(adminRequest, add);
+    assert.equal(
+      host.directory.isMember(spaceId, 'zhao'),
+      false,
+      'replayed old add is not a new membership grant',
+    );
+    await assert.rejects(host.lifecycle.members(zhao, { spaceId }));
+    assert.equal(
+      host.directory.administratorForSpace('team-north'),
+      undefined,
+      'legacy membership does not imply administration',
+    );
+    await assert.rejects(
+      host.lifecycle.setMember(adminRequest, {
+        ...add,
+        spaceId: 'team-north',
+        requestId: randomUUID(),
+      }),
+      lifecycleError('forbidden'),
+    );
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('member lifecycle: interrupted team provisioning stays hidden and pending membership receipts fence later conflicting changes', async () => {
+  const faults = {};
+  const host = await lifecycleHost({ faults });
+  try {
+    const request = await lifecycleLogin(host, 'lin', passwords.lin);
+    const input = { requestId: randomUUID(), name: '恢复团队' },
+      spaceId = `team-${input.requestId}`;
+    faults.put = (table, key) =>
+      table === 'memberships' && key.startsWith(spaceId)
+        ? Error('synthetic team membership failure')
+        : undefined;
+    await assert.rejects(host.lifecycle.createTeam(request, input));
+    assert.equal(host.directory.space(spaceId), undefined);
+    delete faults.put;
+    assert.equal((await host.lifecycle.createTeam(request, input)).spaceId, spaceId);
+    let writes = 0;
+    faults.put = (table) =>
+      table === 'member_operations' && ++writes === 2
+        ? Error('synthetic lost member receipt')
+        : undefined;
+    const add = { requestId: randomUUID(), spaceId, accountId: 'zhao', action: 'add' };
+    await assert.rejects(host.lifecycle.setMember(request, add));
+    assert.equal(host.directory.isMember(spaceId, 'zhao'), true);
+    delete faults.put;
+    const before = mediumSnapshot(host);
+    await assert.rejects(
+      host.lifecycle.setMember(request, { ...add, requestId: randomUUID(), action: 'remove' }),
+      lifecycleError('recovery-required'),
+    );
+    assert.deepEqual(mediumSnapshot(host), before);
+    await host.lifecycle.setMember(request, add);
+    await host.lifecycle.setMember(request, { ...add, requestId: randomUUID(), action: 'remove' });
+    assert.equal(host.directory.isMember(spaceId, 'zhao'), false);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('member lifecycle: password change revokes every old cookie and retained member lease without rewriting unrelated accounts', async () => {
+  const host = await lifecycleHost();
+  try {
+    const one = await lifecycleLogin(host, 'lin', passwords.lin),
+      two = await lifecycleLogin(host, 'lin', passwords.lin);
+    const other = await lifecycleLogin(host, 'chen', passwords.chen);
+    const lease = await openExecutionMemberLease(host.ctx, one);
+    lease.assertCurrent('team-north');
+    const input = { oldPassword: passwords.lin, newPassword: randomPassword() };
+    const before = mediumSnapshot(host);
+    await assert.rejects(
+      host.lifecycle.changePassword(one, { ...input, oldPassword: 'incorrect-password' }),
+      lifecycleError('invalid-login'),
+    );
+    assert.deepEqual(mediumSnapshot(host), before);
+    assert.deepEqual(await host.lifecycle.changePassword(one, input), { reauthenticate: true });
+    assert.equal(lease.signal.aborted, true);
+    for (const request of [one, two])
+      assert.equal((await resolveMember(host.ctx, request)).ok, false);
+    assert.equal((await resolveMember(host.ctx, other)).ok, true);
+    const oldLogin = await call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      body: { accountId: 'lin', password: passwords.lin },
+    });
+    assert.equal(oldLogin.status, 401);
+    await lifecycleLogin(host, 'lin', input.newPassword);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test('member lifecycle: a login hashing an old verifier cannot issue a session after the password changes', async () => {
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  let hold = false;
+  const host = await lifecycleHost({
+    hashProbe: {
+      note() {},
+      async hold() {
+        if (hold) {
+          entered.resolve();
+          await release.promise;
+        }
+      },
+    },
+  });
+  try {
+    const current = await lifecycleLogin(host, 'lin', passwords.lin);
+    hold = true;
+    const pending = call(host.web, {
+      method: 'POST',
+      path: '/zhuma-id/login',
+      remoteAddress: '203.0.113.200',
+      body: { accountId: 'lin', password: passwords.lin },
+    });
+    await entered.promise;
+    await host.lifecycle.changePassword(current, {
+      oldPassword: passwords.lin,
+      newPassword: randomPassword(),
+    });
+    const sessions = host.media.get('zhuma_identity').tables.get('sessions').size;
+    release.resolve();
+    assert.equal((await pending).status, 401);
+    assert.equal(host.media.get('zhuma_identity').tables.get('sessions').size, sessions);
+  } finally {
+    release.resolve();
+    await host.dispose();
+  }
 });
