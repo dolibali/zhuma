@@ -21,7 +21,10 @@ import {
   type RemoteAcceptValue,
   type RemoteRunScope,
   type RemoteRunErrorCode,
+  type RemoteInputDescriptor,
+  type RemoteReconcileValue,
 } from '@zhuma/agent-core';
+import type { UpstreamContentValue } from './execution-service.js';
 import { memberSessionId, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
 import {
@@ -65,6 +68,8 @@ const supported = [
   'reconcile',
   'submit-result',
   'result-status',
+  'input-list',
+  'input-read',
 ] satisfies RemoteRunOperation[];
 const hash = (value: unknown) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
 const same = (left: unknown, right: unknown) => canonicalPayload(left) === canonicalPayload(right);
@@ -93,6 +98,13 @@ export interface RemoteRunAuthoritySource {
   readNode(target: Target): ExecutionNodeRecord | undefined;
   listNodes(): readonly ExecutionNodeRecord[];
   writeNode(next: ExecutionNodeRecord): Promise<void>;
+  readInput(
+    actorId: string,
+    spaceId: string,
+    downstream: ExecutionNodeRecord,
+    sourceNodeId: string,
+    artifactVersionId: string,
+  ): UpstreamContentValue | undefined;
   prepareDelivery(record: ExecutionNodeRecord, actorId: string): ExecutionNodeRecord;
   afterDelivery(record: ExecutionNodeRecord): Promise<void>;
   /** Current membership/project/assignment AND the unique latest applied plan. */
@@ -264,6 +276,12 @@ export class RemoteRunAuthorities {
               ...(receipt ? { receipt } : {}),
             };
           }
+          case 'input-list':
+            this.requireInputDrive(loaded);
+            this.assertInputCatalog(loaded);
+            return { scope: target, items: loaded.remote.inputs };
+          case 'input-read':
+            return this.readInput(body, loaded);
           default:
             return deny('remote-protocol-unsupported');
         }
@@ -520,25 +538,106 @@ export class RemoteRunAuthorities {
     await this.source.writeNode(next);
     return this.load({ ...executionRunScope(next, run), backendId: run.remote!.backendId });
   }
-  private acceptValue(
-    value: Loaded,
-    disposition: 'accepted' | 'replayed',
-    sessionCurrent = true,
-  ): RemoteAcceptValue {
+  private savedSnapshot(value: Loaded) {
     const composition = value.run.composition;
     if (!composition) deny('remote-unavailable');
     const shared = remoteRunSharedSnapshotSchema.parse({
       configurationId: composition.configurationId,
       composition,
       context: composition.payload.context,
-      handoff: value.node.handoff,
+      handoff: composition.payload.handoff,
       inputs: value.remote.inputs,
     });
+    return { selection: value.run.selection, shared };
+  }
+  private acceptValue(
+    value: Loaded,
+    disposition: 'accepted' | 'replayed',
+    sessionCurrent = true,
+  ): RemoteAcceptValue {
     return {
       ...this.view(value, false, sessionCurrent),
+      ...this.savedSnapshot(value),
       disposition,
-      selection: value.run.selection,
-      shared,
+    };
+  }
+  private reconcileValue(value: Loaded, sessionCurrent = true): RemoteReconcileValue {
+    const view = this.view(value, false, sessionCurrent);
+    return {
+      ...view,
+      ...this.savedSnapshot(value),
+      authority: view.authority === 'drive' ? 'recovery-required' : view.authority,
+    };
+  }
+  private inputSnapshot(
+    scope: RemoteRunScope,
+    node: ExecutionNodeRecord,
+    sourceNodeId: string,
+    artifactVersionId: string,
+  ) {
+    const content = this.source.readInput(
+      scope.actorId,
+      scope.spaceId,
+      node,
+      sourceNodeId,
+      artifactVersionId,
+    );
+    if (!content) deny('remote-input-stale');
+    const data = Buffer.from(canonicalPayload(content), 'utf8');
+    // Original bounded accepted text/links JSON, never a transcript, link fetch or file body.
+    if (data.byteLength > 1024 * 1024) deny('remote-quota');
+    const descriptor: RemoteInputDescriptor = {
+      slotId: `input_${hash({ scope, sourceNodeId, artifactVersionId })}`,
+      kind: 'text',
+      name: `${sourceNodeId} · 第 ${content.version.version} 版`,
+      sourceNodeId,
+      artifactVersionId,
+      byteSize: data.byteLength,
+      sha256: createHash('sha256').update(data).digest('hex'),
+    };
+    return { descriptor, data };
+  }
+  private inputCatalog(scope: RemoteRunScope, node: ExecutionNodeRecord) {
+    return node.handoff.inputRefs.map(
+      (ref) => this.inputSnapshot(scope, node, ref.sourceNodeId, ref.artifactVersionId).descriptor,
+    );
+  }
+  private requireInputDrive(value: Loaded): void {
+    if (isTerminalRunStatus(value.run.attempt.status) || value.run.resources !== 'held')
+      deny('remote-permit-revoked');
+  }
+  private assertInputCatalog(value: Loaded): void {
+    const scope = {
+      ...executionRunScope(value.node, value.run),
+      backendId: value.remote.backendId,
+    };
+    if (!same(this.inputCatalog(scope, value.node), value.remote.inputs))
+      deny('remote-input-stale');
+  }
+  private readInput(body: Extract<RemoteRunRequest, { operation: 'input-read' }>, value: Loaded) {
+    this.requireInputDrive(value);
+    const slot = value.remote.inputs.find((item) => item.slotId === body.payload.slotId);
+    if (!slot?.sourceNodeId || !slot.artifactVersionId || slot.kind !== 'text')
+      deny('remote-input-stale');
+    const current = this.inputSnapshot(
+      body.payload.scope,
+      value.node,
+      slot.sourceNodeId,
+      slot.artifactVersionId,
+    );
+    if (!same(current.descriptor, slot)) deny('remote-input-stale');
+    const offset = body.payload.offset;
+    if (offset > current.data.byteLength) deny('remote-validation');
+    const chunk = current.data.subarray(offset, offset + body.payload.maximumBytes);
+    return {
+      scope: body.payload.scope,
+      slotId: slot.slotId,
+      offset,
+      byteSize: chunk.byteLength,
+      totalBytes: current.data.byteLength,
+      sha256: slot.sha256,
+      base64: chunk.toString('base64'),
+      eof: offset + chunk.byteLength === current.data.byteLength,
     };
   }
   private async accept(
@@ -580,13 +679,13 @@ export class RemoteRunAuthorities {
       payload.capabilities.resultIntent !== 'zhuma-native-result-intent@1' ||
       payload.capabilities.outputFile ||
       payload.capabilities.acceptedFile ||
-      payload.capabilities.acceptedInput ||
       payload.capabilities.localTools.length ||
       payload.workspace.kind !== 'text-only' ||
-      node.handoff.inputRefs.length ||
       node.handoff.skillRefs.length ||
       node.handoff.mcpRefs.length
     )
+      deny('remote-protocol-unsupported');
+    if (node.handoff.inputRefs.length && payload.capabilities.acceptedInput !== '1')
       deny('remote-protocol-unsupported');
     if (
       payload.credentials.drive.id === payload.credentials.cleanup.id ||
@@ -601,6 +700,7 @@ export class RemoteRunAuthorities {
       segmentId: randomUUID(),
     };
     const composition = this.source.compose(lease.memberId, body, node, scope);
+    const inputs = this.inputCatalog({ ...scope, backendId: body.backendId }, node);
     const projected = executionRunCompositionRequest(composition);
     const decision = beginExecutionRun(
       node,
@@ -633,7 +733,7 @@ export class RemoteRunAuthorities {
       acceptFingerprint: fingerprint,
       memberSessionHash: sessionHash,
       stopRequested: false,
-      inputs: [],
+      inputs,
       controls: [],
       drive: {
         ...payload.credentials.drive,
@@ -951,9 +1051,9 @@ export class RemoteRunAuthorities {
           },
         },
       });
-      return this.view(next);
+      return this.reconcileValue(next);
     }
-    return this.view(value, false, value.remote.memberSessionHash === sessionHash);
+    return this.reconcileValue(value, value.remote.memberSessionHash === sessionHash);
   }
   private async submit(
     body: Extract<RemoteRunRequest, { operation: 'submit-result' }>,
