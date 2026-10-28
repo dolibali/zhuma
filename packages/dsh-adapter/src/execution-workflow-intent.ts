@@ -291,7 +291,11 @@ export class ExecutionWorkflowIntents {
     const bound = intent ? this.bound(facts, intent) : [];
     const active = bound.filter(({ run }) => run.resources === 'held');
     const reviews = workflowReviewResources(facts.nodes);
-    const reviewAttention = workflowReviewAttention(facts.nodes, intent);
+    const reviewAttention = workflowReviewAttention(
+      facts.nodes,
+      intent,
+      member.assertReviewDrained?.bind(member),
+    );
     let drained =
       active.length === 0 &&
       !reviews.some((review) => review.resources === 'held') &&
@@ -522,7 +526,10 @@ export class ExecutionWorkflowIntents {
           if (!member.assertReviewDrained) return fail('workflow-recovery-required');
           member.assertReviewDrained(review);
         }
-        if (workflowReviewAttention(facts.nodes, current).length)
+        if (
+          workflowReviewAttention(facts.nodes, current, member.assertReviewDrained?.bind(member))
+            .length
+        )
           return fail('workflow-review-attention-required');
         const old = this.arms.get(keyOf(location));
         // No absence inference for an unbound reservation after an owner was lost.
@@ -696,10 +703,12 @@ export class ExecutionWorkflowIntents {
           view: this.view(location, member),
           tickets: Object.freeze(tickets),
           reviewCandidates: freeze(
-            workflowReviewCandidates(facts.nodes, intent, facts.availableExpertIds).slice(
-              0,
-              Math.max(0, slots),
-            ),
+            workflowReviewCandidates(
+              facts.nodes,
+              intent,
+              facts.availableExpertIds,
+              member.assertReviewDrained?.bind(member),
+            ).slice(0, Math.max(0, slots)),
           ),
           signal: arm.signal,
           check: () => {

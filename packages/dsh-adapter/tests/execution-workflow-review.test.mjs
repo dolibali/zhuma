@@ -56,6 +56,235 @@ async function reserveCandidate(h, retained) {
     },
   };
 }
+
+test('workflow review: explicit Stop and real retirement permit one new scope for a cancelled unvoted review without changing the peer vote', async (t) => {
+  const h = await nativeReviewHost(t, { workflow: {}, reviewerIds: ['qa', 'outside'] });
+  const round = h.read().rounds[0];
+  checked(
+    await h.service.ballot(caller('outside'), {
+      ...h.human('produce', 'peer-approval'),
+      roundId: round.id,
+      artifactVersionId: round.artifactVersionId,
+      action: 'approve',
+      comment: 'Peer checked the fixed version.',
+    }),
+  );
+  const stopped = checked(
+    await h.service.stopWorkflowExecution(h.request, control(h, 'stop-unvoted-review')),
+  );
+  assert.equal(stopped.state, 'stopping');
+  refused(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...control(h, 'resume-before-retirement', stopped),
+      expectedVersion: stopped.intent.version,
+    }),
+    'workflow-recovery-required',
+  );
+  checked(await h.service.recoverStoppedWorkflowReviewCleanup(h.drive.grant.scope));
+  const old = structuredClone(h.read());
+  const resumed = checked(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...control(h, 'resume-unvoted-review', stopped),
+      expectedVersion: stopped.intent.version,
+    }),
+  );
+  assert.equal(resumed.intent.generation, stopped.intent.generation + 1);
+  assert.equal(h.drive.grant.signal.aborted, true);
+  refused(await h.service.openExpertReviewDrive(h.request, h.locator), 'review-authority-denied');
+  const retained = checked(await claim(h, resumed));
+  assert.equal(retained.reviewCandidates.length, 1);
+  h.resetCounts();
+  const fresh = await reserveCandidate(h, retained);
+  assert.notEqual(fresh.prepared.attempt.scope.runId, h.locator.runId);
+  assert.deepEqual(fresh.prepared.attempt.scope.review, h.drive.grant.scope.review);
+  assert.equal(
+    checked(await h.service.admitExpertReview(h.request, fresh.command)).disposition,
+    'applied',
+  );
+  assert.equal(
+    checked(await h.service.admitExpertReview(h.request, fresh.command)).disposition,
+    'replayed',
+  );
+  assert.equal(checked(await claim(h, resumed)).reviewCandidates.length, 0);
+  const current = h.read();
+  assert.deepEqual(
+    current.nativeExecution.review.attempts[0],
+    old.nativeExecution.review.attempts[0],
+  );
+  assert.deepEqual(
+    current.nativeExecution.review.receipts[0],
+    old.nativeExecution.review.receipts[0],
+  );
+  for (const key of ['command', 'artifactVersions', 'rounds', 'comments', 'receipts'])
+    assert.deepEqual(current[key], old[key]);
+  assert.equal(current.rounds[0].ballots[0].reviewerId, 'outside');
+  assert.equal(current.rounds[0].ballots.length, 1);
+  assert.equal(current.nativeExecution.review.attempts.length, 2);
+  assert.deepEqual(h.counters, { global: 0, nodes: 2, plans: 0 });
+});
+
+test('workflow review: a cold cancelled settled label cannot retry before the original C retirement proof is recovered', async (t) => {
+  const h = await nativeReviewHost(t, { workflow: {} });
+  const scope = h.drive.grant.scope;
+  const stopped = checked(
+    await h.service.stopWorkflowExecution(h.request, control(h, 'stop-before-cold-retry')),
+  );
+  checked(await h.service.recoverStoppedWorkflowReviewCleanup(scope));
+  const old = JSON.stringify(h.read().nativeExecution.review);
+  await h.close();
+  const cold = await open(h.root, {
+    seed: false,
+    workbench: h.snapshot,
+    assertReviewConfiguration() {},
+  });
+  t.after(() => cold.close());
+  let retires = 0;
+  cold.service.installNativeReviewPorts({
+    issuer: {
+      registerNativeReviewTools() {
+        throw Error('no dispatch');
+      },
+      prepareFixedReview() {
+        throw Error('no dispatch');
+      },
+      assertFixedReview() {
+        throw Error('no read');
+      },
+      readFixedReview() {
+        throw Error('no read');
+      },
+    },
+    grantFor() {
+      throw Error('no drive');
+    },
+    async retireForCleanup(authority) {
+      retires++;
+      cold.service.assertExpertReviewCleanupAuthority(authority);
+      return {
+        status: 'retired',
+        binding: h.binding,
+        drain: {
+          basis: 'flushed-and-closed',
+          signal: new AbortController().signal,
+          assertCurrent() {
+            cold.service.assertExpertReviewCleanupAuthority(authority);
+          },
+        },
+      };
+    },
+  });
+  refused(
+    await cold.service.resumeWorkflowExecution(cold.request, {
+      ...control(h, 'cold-resume-without-proof', stopped),
+      expectedVersion: stopped.intent.version,
+    }),
+    'workflow-recovery-required',
+  );
+  checked(await cold.service.recoverStoppedWorkflowReviewCleanup(scope));
+  assert.equal(retires, 1);
+  assert.equal(JSON.stringify(cold.read().nativeExecution.review), old);
+  const resumed = checked(
+    await cold.service.resumeWorkflowExecution(cold.request, {
+      ...control(h, 'cold-resume-after-proof', stopped),
+      expectedVersion: stopped.intent.version,
+    }),
+  );
+  const retained = checked(
+    await cold.service.claimWorkflowExecution(cold.request, {
+      ...h.workflowLocation,
+      intentId: resumed.intent.intentId,
+      generation: resumed.intent.generation,
+    }),
+  );
+  const fresh = await reserveCandidate(cold, retained);
+  checked(await cold.service.admitExpertReview(cold.request, fresh.command));
+  assert.equal(cold.read().nativeExecution.review.attempts.length, 2);
+  assert.deepEqual(cold.read().nativeExecution.review.attempts[0], JSON.parse(old).attempts[0]);
+  refused(
+    await cold.service.openExpertReviewDrive(cold.request, h.locator),
+    'review-authority-denied',
+  );
+});
+
+test('workflow review: wrong Stop, unknown dispatch and an existing expert opinion keep the original retry refusal', async (t) => {
+  for (const fault of ['wrong-stop', 'unknown-dispatch', 'expert-vote']) {
+    const h = await nativeReviewHost(t, { workflow: {} });
+    if (fault === 'unknown-dispatch') {
+      const attempt = readExecutionReviewState(h.read()).attempts[0];
+      checked(
+        await h.service.recordNativeReviewEvent(h.drive.grant, {
+          scope: attempt.scope,
+          sequence: attempt.lastEventSequence + 1,
+          kind: 'dispatch-unknown',
+        }),
+      );
+    }
+    if (fault === 'expert-vote') {
+      h.hooks.facts = { conclusion: 'comment' };
+      checked(await h.service.submitNativeFixedReview(h.request, h.command, h.drive.grant));
+      assert.equal(h.read().rounds[0].ballots[0].reviewerId, 'qa');
+    }
+    const stopped = checked(
+      await h.service.stopWorkflowExecution(h.request, control(h, `stop-${fault}`)),
+    );
+    checked(await h.service.recoverStoppedWorkflowReviewCleanup(h.drive.grant.scope));
+    if (fault === 'wrong-stop') {
+      const [key, value] = [...h.domain.table('plans').entries()][0];
+      const row = structuredClone(value);
+      row.workflowExecution.commandReceipts.find((r) => r.kind === 'stop').fingerprint = '0'.repeat(
+        64,
+      );
+      await h.domain.table('plans').put(key, row);
+    }
+    const before = JSON.stringify(h.read());
+    h.resetCounts();
+    refused(
+      await h.service.resumeWorkflowExecution(h.request, {
+        ...control(h, `resume-${fault}`, stopped),
+        expectedVersion: stopped.intent.version,
+      }),
+      'workflow-review-attention-required',
+    );
+    assert.equal(JSON.stringify(h.read()), before);
+    assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  }
+});
+
+test('workflow review: a C proof revoked after new preparation cannot survive through admission replay', async (t) => {
+  const h = await nativeReviewHost(t, { workflow: {} });
+  const lifetime = new AbortController();
+  h.hooks.retire = (authority) => ({
+    status: 'retired',
+    binding: h.binding,
+    drain: {
+      basis: 'flushed-and-closed',
+      signal: lifetime.signal,
+      assertCurrent() {
+        lifetime.signal.throwIfAborted();
+        h.service.assertExpertReviewCleanupAuthority(authority);
+      },
+    },
+  });
+  const stopped = checked(
+    await h.service.stopWorkflowExecution(h.request, control(h, 'stop-proof-replay')),
+  );
+  checked(await h.service.recoverStoppedWorkflowReviewCleanup(h.drive.grant.scope));
+  const resumed = checked(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...control(h, 'resume-proof-replay', stopped),
+      expectedVersion: stopped.intent.version,
+    }),
+  );
+  const fresh = await reserveCandidate(h, checked(await claim(h, resumed)));
+  lifetime.abort();
+  h.resetCounts();
+  refused(
+    await h.service.admitExpertReview(h.request, fresh.command),
+    'workflow-recovery-required',
+  );
+  assert.equal(readExecutionReviewState(h.read()).attempts[1].status, 'prepared');
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+});
 test('workflow review: only the original retained claim/request can reserve automatic review; old manual API stays independent', async (t) => {
   const h = await nativeReviewHost(t, { workflow: {} });
   for (const forged of [undefined, { ...h.workflowClaim }, {}]) {

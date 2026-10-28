@@ -262,8 +262,9 @@ import {
   workflowReviewCandidates,
   hasCommittedWorkflowStop,
   stoppedWorkflowReviewGeneration,
-  stoppedPreparedWorkflowReviewRunIds,
+  stoppedWorkflowReviewRunIds,
 } from './execution-workflow-reviews.js';
+import { isStoppedReviewHistory } from './execution-review-record.js';
 import {
   ExecutionWorkflowError,
   workflowExecutionIntentSchema,
@@ -2182,6 +2183,7 @@ export class ExecutionService {
           current.facts.nodes,
           current.intent,
           current.facts.availableExpertIds,
+          (review) => this.assertExpertReviewDrained(review.scope),
         ).some((item) => item.requestId === input.requestId))
     )
       throw new ExecutionWorkflowError('workflow-capacity');
@@ -4014,9 +4016,23 @@ export class ExecutionService {
       workflow.success &&
       workflow.data.status === 'running' &&
       input.requestId === workflowReviewRequestId(workflow.data, input.target, input.reviewerRef.id)
-        ? stoppedPreparedWorkflowReviewRunIds(node, workflow.data)
+        ? stoppedWorkflowReviewRunIds(node, workflow.data, (review) =>
+            this.assertExpertReviewDrained(review.scope),
+          )
         : new Set<string>();
     if (stopped.size) requireExecutionReviewWriter(this.readRunGlobal());
+    // Replayed preparation must not preserve an admission permission after its
+    // predecessor's genuine C proof expired between prepare and admit.
+    if (prior && state) {
+      for (const older of state.attempts.slice(0, state.attempts.indexOf(prior))) {
+        if (
+          isStoppedReviewHistory(older) &&
+          canonicalPayload(older.scope.review) === canonicalPayload(prior.scope.review) &&
+          !stopped.has(older.scope.runId)
+        )
+          throw new ExecutionWorkflowError('workflow-recovery-required');
+      }
+    }
     const prepared = prepareExecutionReview(
       node,
       applied,
