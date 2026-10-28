@@ -41,6 +41,7 @@ export async function startLocalServer({ sdk, data, host = '127.0.0.1', port = 3
   await writeFile(
     overlay,
     JSON.stringify([
+      { id: 'typert-gateway', config: { sessionAdmissionRequired: true } },
       { id: 'zhuma-workbench', disabled: true },
       {
         insert: [

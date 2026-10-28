@@ -17,6 +17,7 @@ import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import { openHostRunHttp } from './host-run-http.js';
 import { openHostRemoteRunHttp } from './host-remote-run-http.js';
+import { openHostSessionAdmission } from './host-session-admission.js';
 import type { ExecutionService } from './execution-service.js';
 import { openHostRunOwner } from './host-run-owner.js';
 import { openHostWorkflowHttp } from './host-workflow-http.js';
@@ -198,6 +199,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let localSetup: ReturnType<typeof openHostLocalSetup> | undefined;
   let localSetupHttp: ReturnType<typeof openHostLocalSetupHttp> | undefined;
   let runClosing: Promise<void> | undefined;
+  const sessionAdmission =
+    config.deploymentMode === 'multi-member'
+      ? openHostSessionAdmission(ctx, () => (closed || runsClosed ? undefined : runOwner))
+      : undefined;
   const runLifetime = new AbortController();
   let runsClosed = false;
   function closeRunBridge(): Promise<void> {
@@ -240,6 +245,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   const beforeClose = async () => {
     closed = true;
+    sessionAdmission?.close();
     const identityClosing = identityHttp?.close();
     const knowledgeClosing = knowledge?.close();
     localSetup?.close();

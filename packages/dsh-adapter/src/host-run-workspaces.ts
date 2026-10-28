@@ -591,6 +591,7 @@ export function createHostRunWorkspaces(
       kind: 'local' as const,
       scope: grant.scope,
       cwd: canonical,
+      workspaceId: current.policy.workspaceId,
       signal,
       assertCurrent: check,
     };

@@ -52,3 +52,11 @@ MCP Client 增加公开 `captureMcpClientClose(originalMcpFiber.ctx): McpClientC
 固定源码 SDK 的增量验证命令为 `pnpm desktop:verify:native-lifecycle --phase mcp-close --upstream <已安装测试依赖的固定SDK>`。在独立临时检出应用完整累计补丁，按 MCP 包原有 TypeScript project references 编译，并检查公开入口的句柄／Promise／错误码类型。仅运行受影响的 3 项原 SDK 关闭契约和 3 项真实本地 HTTP 案例：正常 list/call/close、错误上下文拒绝，以及实例 transport.close 返回但真实请求仍持有时，明确确认必须拒绝。后者还核对恢复原 close 后真实请求才排空；没有修改产品超时或用日志签发排空结论。
 
 该验证不调用模型、不读凭据或用户 profile，也不证明远端业务回滚、stdio 子进程、Run 的 MCP 资源采用、编译后的 Web 模块图、正常 GUI 或安装包。正式资源桥必须实际等待该明确确认口；公开 API 和定义可选本身不表示已完成 MCP 接入。
+
+## 任务原生会话的普通命令门禁
+
+`Gateway.registerSessionAdmission` 在原 exact 参数及原 RemoteAccess 校验之后、任何 receiver/Agent lookup 之前，串行检查 `session` 命名空间的 unary 与 mux stream。注册后保持 required 状态；卸载、迟到通过或当前守卫失效不会恢复默认放行。可配置 `sessionAdmissionRequired: true`，使产品启动尚未安装守卫时也拒绝命令。无产品配置、未注册守卫的 SDK 保持原行为。
+
+产品 Host 消费 C 原 native 表的 reverse lookup：只有明确 `null` 表示普通会话；work/review 命中、foreign、损坏、关闭或初始化未完成均不得走普通 Session 命令。覆盖实际 create/reuse、prompt、queue、cancel、model selection、rename/fork、attachment/projections，以及 page/follow 的直接和父子地址。该接缝本身不授予任何任务历史、发送、停止或评审权限；Task 界面仍使用原成员、Run、世代、幂等与评审绑定。
+
+定向 SDK 检查入口为 `node scripts/desktop/verify-session-admission.mjs --sdk <已构建的固定公开SDK>`。脚本只在临时源树应用 Gateway 两文件增量，使用公开编译依赖并检验真实 Gateway dispatch 顺序；业务 service/lookup 为明确夹具，不能当作原 SessionController、原生 Agent、模型、两 Host 或 GUI 验收。原生归组、普通侧栏导航与共享后端装配另按实际 SHA 验证。

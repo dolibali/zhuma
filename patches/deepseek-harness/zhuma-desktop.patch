@@ -1942,3 +1942,110 @@ diff --git a/scripts/primary-runtime/prepare.ts b/scripts/primary-runtime/prepar
  }
  
  if (import.meta.main) {
+diff --git a/packages/api/gateway/src/types.ts b/packages/api/gateway/src/types.ts
+--- a/packages/api/gateway/src/types.ts
++++ b/packages/api/gateway/src/types.ts
+@@ -144,8 +144,20 @@
+   | 'gateway/signature-invalid'
+   | 'gateway/uplink-overflow'
+ 
++/** One serial product guard, after argument/access validation and before any
++ * Session receiver or Agent lookup. Only an explicit true admits a command. */
++export type SessionCommandAdmission = (
++  method: string,
++  args: Readonly<Record<string, unknown>>,
++  signal: AbortSignal,
++) => boolean | Promise<boolean>
++
+ /** Host dispatcher consumed by Connection adapters. */
+ export interface TypertGateway {
++  /** Installs one Session guard. Once enabled, removal fails closed until a
++   * replacement is ready; ordinary SDK deployments install no guard. */
++  registerSessionAdmission(admit: SessionCommandAdmission): () => void
++
+   /** Carrier adapter shared by WebSocket and in-process transports. */
+   readonly wireStream: TypertGatewayWireStream
+ 
+diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.ts
+--- a/packages/api/gateway/src/index.ts
++++ b/packages/api/gateway/src/index.ts
+@@ -36,6 +36,7 @@
+ } from '@deepseek-ai/dsh-typert-protocol'
+ import type {
+   InvokeRemoteRequest,
++  SessionCommandAdmission,
+   TypertGateway,
+   TypertGatewayErrorCode,
+   TypertGatewayWireStream,
+@@ -70,6 +71,7 @@
+ 
+ export type {
+   InvokeRemoteRequest,
++  SessionCommandAdmission,
+   TypertGateway,
+   TypertGatewayErrorCode,
+   TypertGatewayWireStream,
+@@ -154,6 +156,9 @@
+ 
+ /** Gateway transport configuration. */
+ export interface Config {
++  /** Product Session commands stay closed before registration or after unload.
++   * Plain SDK deployments default to their original behavior. @default false */
++  readonly sessionAdmissionRequired?: boolean
+   /** WebSocket Ping interval from 1 through 2,147,483,647 milliseconds. @default 2000 */
+   readonly websocketHeartbeatIntervalMs?: number
+   /** Buffered uplink frame bytes one logical stream may hold before it fails with `gateway/uplink-overflow`. @default 262144 */
+@@ -209,10 +214,22 @@
+ export class TypertGatewayService extends Service implements TypertGateway {
+   static inject = ['typert', 'remoteAccess']
+   static Config: z<Config> = z.object({
++    sessionAdmissionRequired: z.boolean().default(false),
+     websocketHeartbeatIntervalMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS)
+       .default(DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS),
+     streamInboxBytes: z.number().step(1).min(1).default(DEFAULT_STREAM_INBOX_BYTES),
+   })
++
++  private sessionAdmissionRequired = false
++  private sessionAdmission: { readonly admit: SessionCommandAdmission } | undefined
++
++  registerSessionAdmission(admit: SessionCommandAdmission): () => void {
++    if (this.sessionAdmission !== undefined) throw new Error('Session admission is already registered')
++    this.sessionAdmissionRequired = true
++    const registration = { admit }
++    this.sessionAdmission = registration
++    return () => { if (this.sessionAdmission === registration) this.sessionAdmission = undefined }
++  }
+ 
+   /** Carrier adapter shared by the WebSocket mux and local Host transports. */
+   readonly wireStream: TypertGatewayWireStream = {
+@@ -236,6 +253,7 @@
+   constructor(ctx: Context, config: Config) {
+     super(ctx, 'typertGateway')
+     const resolved = config as ResolvedConfig
++    this.sessionAdmissionRequired = resolved.sessionAdmissionRequired === true
+     ctx.on('internal/service', () => {
+       this.srcClaims = undefined
+     })
+@@ -807,6 +825,22 @@
+         })
+       }
+     }
++    // Covers unary and mux streams, including already-live prompt/queue/cancel
++    // and cold history/create. A refusing guard must activate no Agent lookup.
++    if (request.namespace === 'session') {
++      const admission = this.sessionAdmission
++      if (admission === undefined) {
++        if (this.sessionAdmissionRequired) throw new TypertGatewayError(
++          'gateway/service-unavailable', endpoint, 'Session command admission is unavailable')
++      } else {
++        const signal = request.signal ?? NEVER_ABORTED_SIGNAL
++        signal.throwIfAborted()
++        const allowed = await admission.admit(request.method, validated, signal)
++        signal.throwIfAborted()
++        if (this.sessionAdmission !== admission || allowed !== true) throw new TypertGatewayError(
++          'gateway/invocation-unavailable', endpoint, 'Use the authorized task Session controls')
++      }
++    }
+     const receiverContext = await this.resolveReceiverContext(descriptor, validated, endpoint)
+     const receiver: unknown = receiverContext.get(descriptor.service)
+     if (!isObject(receiver)) {

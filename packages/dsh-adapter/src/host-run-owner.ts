@@ -1455,6 +1455,7 @@ export async function openHostRunOwner(
   };
 
   return {
+    lookupNativeSession: native.lookupNativeSession,
     operations,
     beginWorkflowRun,
     workflowOperations,

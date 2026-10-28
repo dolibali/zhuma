@@ -327,3 +327,38 @@ export {
   KnowledgeError,
   type KnowledgeServiceOptions,
 } from './knowledge-service.js';
+
+export {
+  MemberLocalExecutionClient,
+  MemberLocalTransportError,
+} from './member-local-execution-client.js';
+export type {
+  MemberLocalClientOptions,
+  MemberLocalTransportCode,
+} from './member-local-execution-client.js';
+export {
+  MemberLocalExecutionProtocol,
+  MemberLocalProtocolError,
+} from './member-local-execution-protocol.js';
+export type {
+  MemberLocalProtocolOptions,
+  MemberLocalAcceptedRun,
+  MemberLocalPreparedAccept,
+  MemberLocalAcceptInput,
+} from './member-local-execution-protocol.js';
+export { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
+export type {
+  MemberLocalOwnerOptions,
+  MemberLocalOwnerView,
+} from './member-local-execution-owner.js';
+export {
+  MemberLocalExecutionSecrets,
+  MemberLocalSecretError,
+} from './member-local-execution-secrets.js';
+export type {
+  MemberLocalPrivateStore,
+  MemberLocalDeviceIdentity,
+  MemberLocalAcceptSecrets,
+} from './member-local-execution-secrets.js';
+export { createMemberLocalPrivateStore } from './host-member-local-credentials.js';
+export { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';

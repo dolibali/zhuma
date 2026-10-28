@@ -83,6 +83,7 @@ export class MemberLocalExecutionProtocol {
   private readonly lifetime = new AbortController();
   private device?: MemberLocalDeviceIdentity;
   private clock?: { readonly serverTime: number; readonly sampledAt: number };
+  private operations = new Set<RemoteRunOperation>();
   private constructor(private readonly options: MemberLocalProtocolOptions) {
     this.transport = new MemberLocalExecutionClient({
       origin: options.origin,
@@ -137,10 +138,24 @@ export class MemberLocalExecutionProtocol {
     if (
       info.actorId !== this.options.expectedActorId ||
       !info.purposes.includes('work') ||
-      !REMOTE_RUN_OPERATIONS.every((operation) => info.operations.includes(operation))
+      !(
+        [
+          'info',
+          'register-device',
+          'accept',
+          'status',
+          'renew',
+          'event',
+          'cleanup',
+          'reconcile',
+          'submit-result',
+          'result-status',
+        ] satisfies RemoteRunOperation[]
+      ).every((operation) => info.operations.includes(operation))
     )
       throw new MemberLocalProtocolError('local-mismatch');
     this.clock = { serverTime: info.serverTime, sampledAt: performance.now() };
+    this.operations = new Set(info.operations);
     this.device = await this.options.secrets.device(info.backendId, info.actorId, signal);
     const registered = await this.signed(
       {
@@ -197,13 +212,16 @@ export class MemberLocalExecutionProtocol {
   ): Promise<unknown> {
     if (this.lifetime.signal.aborted) throw new MemberLocalProtocolError('local-closed');
     const parsed = remoteRunRequestSchema.parse(request),
-      response = await this.transport.invoke(
-        this.options.methods[parsed.operation],
-        parsed,
-        (raw) => remoteRunResponseSchema(parsed.operation).parse(raw),
-        AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]),
-        secret === undefined ? undefined : { [REMOTE_RUN_PERMIT_HEADER]: secret },
-      );
+      operation = parsed.operation;
+    if (operation !== 'info' && !this.operations.has(operation))
+      throw new MemberLocalProtocolError('remote-protocol-unsupported');
+    const response = await this.transport.invoke(
+      this.options.methods[parsed.operation],
+      parsed,
+      (raw) => remoteRunResponseSchema(parsed.operation).parse(raw),
+      AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]),
+      secret === undefined ? undefined : { [REMOTE_RUN_PERMIT_HEADER]: secret },
+    );
     if (!response.ok) throw new MemberLocalProtocolError(response.error.code);
     return response.value;
   }
