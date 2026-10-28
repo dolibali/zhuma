@@ -7,6 +7,13 @@ import {
   KnowledgeSearchValueSchema,
   KnowledgeReadRequestSchema,
   KnowledgeReadValueSchema,
+  KnowledgeDraftsRequestSchema,
+  KnowledgeDraftsValueSchema,
+  KnowledgeDraftRequestSchema,
+  KnowledgeDraftValueSchema,
+  KnowledgeSaveDraftRequestSchema,
+  KnowledgePublishRequestSchema,
+  KnowledgeWriteValueSchema,
   KnowledgeErrorCodeSchema,
   type KnowledgeLibrariesRequest,
   type KnowledgeLibrariesValue,
@@ -17,6 +24,13 @@ import {
   type KnowledgeReadRequest,
   type KnowledgeReadValue,
   type KnowledgeErrorCode,
+  type KnowledgeDraftsRequest,
+  type KnowledgeDraftsValue,
+  type KnowledgeDraftRequest,
+  type KnowledgeDraftValue,
+  type KnowledgeSaveDraftRequest,
+  type KnowledgePublishRequest,
+  type KnowledgeWriteValue,
 } from '@zhuma/agent-core';
 
 export interface KnowledgeApi {
@@ -27,6 +41,10 @@ export interface KnowledgeApi {
   list(input: KnowledgeListRequest, signal: AbortSignal): Promise<KnowledgeListValue>;
   search(input: KnowledgeSearchRequest, signal: AbortSignal): Promise<KnowledgeSearchValue>;
   read(input: KnowledgeReadRequest, signal: AbortSignal): Promise<KnowledgeReadValue>;
+  drafts(input: KnowledgeDraftsRequest, signal: AbortSignal): Promise<KnowledgeDraftsValue>;
+  draft(input: KnowledgeDraftRequest, signal: AbortSignal): Promise<KnowledgeDraftValue>;
+  saveDraft(input: KnowledgeSaveDraftRequest, signal: AbortSignal): Promise<KnowledgeWriteValue>;
+  publish(input: KnowledgePublishRequest, signal: AbortSignal): Promise<KnowledgeWriteValue>;
 }
 export interface KnowledgeApiScope {
   readonly actorId: string;
@@ -152,6 +170,62 @@ export function createKnowledgeApi(
         ref.version !== request.version ||
         (request.checksum !== undefined && request.checksum !== ref.checksum) ||
         value.part !== request.part
+      )
+        throw new KnowledgeClientError('invalid-response');
+      return value;
+    },
+    async drafts(input, signal) {
+      const request = KnowledgeDraftsRequestSchema.parse(input);
+      const value = await call('drafts', request, KnowledgeDraftsValueSchema, signal);
+      if (
+        value.libraryId !== request.libraryId ||
+        value.pages.some(
+          (page) =>
+            page.spaceId !== scope.spaceId ||
+            page.libraryId !== request.libraryId ||
+            page.ownerActorId !== scope.actorId,
+        )
+      )
+        throw new KnowledgeClientError('invalid-response');
+      return value;
+    },
+    async draft(input, signal) {
+      const request = KnowledgeDraftRequestSchema.parse(input);
+      const value = await call('draft', request, KnowledgeDraftValueSchema, signal);
+      if (
+        value.libraryId !== request.libraryId ||
+        value.pageId !== request.pageId ||
+        (value.published &&
+          (value.published.spaceId !== request.spaceId ||
+            value.published.libraryId !== request.libraryId ||
+            value.published.pageId !== request.pageId))
+      )
+        throw new KnowledgeClientError('invalid-response');
+      return value;
+    },
+    async saveDraft(input, signal) {
+      const request = KnowledgeSaveDraftRequestSchema.parse(input);
+      const value = await call('save-draft', request, KnowledgeWriteValueSchema, signal);
+      if (
+        value.libraryId !== request.libraryId ||
+        value.pageId !== request.pageId ||
+        value.operation !== 'save-draft'
+      )
+        throw new KnowledgeClientError('invalid-response');
+      return value;
+    },
+    async publish(input, signal) {
+      const request = KnowledgePublishRequestSchema.parse(input);
+      const value = await call('publish', request, KnowledgeWriteValueSchema, signal);
+      const ref = value.reference;
+      if (
+        value.libraryId !== request.libraryId ||
+        value.pageId !== request.pageId ||
+        value.operation !== 'publish' ||
+        !ref ||
+        ref.spaceId !== request.spaceId ||
+        ref.libraryId !== request.libraryId ||
+        ref.pageId !== request.pageId
       )
         throw new KnowledgeClientError('invalid-response');
       return value;

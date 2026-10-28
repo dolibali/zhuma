@@ -14,6 +14,7 @@ export const KNOWLEDGE_LIMITS = {
   pagesPerLibrary: 200,
   versionsPerPage: 32,
   sourcesPerVersion: 20,
+  receiptsPerPage: 128,
 } as const;
 
 const id = z
@@ -79,6 +80,32 @@ export const KnowledgeListValueSchema = z.strictObject({
 export type KnowledgeListRequest = z.input<typeof KnowledgeListRequestSchema>;
 export type KnowledgeListValue = z.infer<typeof KnowledgeListValueSchema>;
 
+/** Author-only draft discovery. A draft is not a published version reference. */
+export const KnowledgeDraftsRequestSchema = KnowledgeListRequestSchema;
+export const KnowledgeDraftSummarySchema = z.strictObject({
+  spaceId: id,
+  libraryId: id,
+  pageId: id,
+  ownerActorId: id,
+  title: z.string().trim().min(1).max(200),
+  format: KnowledgeFormatSchema,
+  pageRevision: positive,
+  bytes: natural.max(KNOWLEDGE_LIMITS.bodyBytes),
+  authorship: z.enum(['member', 'agent']),
+  savedAt: z.iso.datetime().optional(),
+  hasPublished: z.boolean(),
+});
+export const KnowledgeDraftsValueSchema = z.strictObject({
+  actorId: id,
+  spaceId: id,
+  libraryId: id,
+  pages: z.array(KnowledgeDraftSummarySchema).max(KNOWLEDGE_LIMITS.listResults),
+  nextCursor: z.string().max(2048).nullable(),
+});
+export type KnowledgeDraftsRequest = z.input<typeof KnowledgeDraftsRequestSchema>;
+export type KnowledgeDraftSummary = z.infer<typeof KnowledgeDraftSummarySchema>;
+export type KnowledgeDraftsValue = z.infer<typeof KnowledgeDraftsValueSchema>;
+
 export const KnowledgeSearchRequestSchema = z.strictObject({
   spaceId: id,
   libraryIds: z
@@ -136,6 +163,66 @@ export const KnowledgeReadValueSchema = z.strictObject({
 });
 export type KnowledgeReadRequest = z.input<typeof KnowledgeReadRequestSchema>;
 export type KnowledgeReadValue = z.infer<typeof KnowledgeReadValueSchema>;
+
+const knowledgeText = z
+  .string()
+  .max(KNOWLEDGE_LIMITS.bodyBytes)
+  .refine((text) => {
+    const bytes = new TextEncoder().encode(text);
+    return (
+      bytes.byteLength <= KNOWLEDGE_LIMITS.bodyBytes &&
+      new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) === text
+    );
+  });
+export const KnowledgeDraftContentSchema = z.strictObject({
+  title: z.string().trim().min(1).max(200),
+  format: KnowledgeFormatSchema,
+  text: knowledgeText,
+  originalText: knowledgeText.optional(),
+  sources: z.array(KnowledgeVersionRefSchema).max(KNOWLEDGE_LIMITS.sourcesPerVersion).default([]),
+});
+export type KnowledgeDraftContent = z.infer<typeof KnowledgeDraftContentSchema>;
+export const KnowledgeDraftRequestSchema = z.strictObject({
+  spaceId: id,
+  libraryId: id,
+  pageId: id,
+});
+export const KnowledgeSaveDraftRequestSchema = KnowledgeDraftRequestSchema.extend({
+  /** Zero creates a page; later writes compare the authoritative page revision. */
+  expectedVersion: natural,
+  idempotencyKey: id,
+  content: KnowledgeDraftContentSchema,
+});
+export const KnowledgePublishRequestSchema = KnowledgeDraftRequestSchema.extend({
+  expectedVersion: positive,
+  idempotencyKey: id,
+});
+export const KnowledgeDraftValueSchema = z.strictObject({
+  actorId: id,
+  spaceId: id,
+  libraryId: id,
+  pageId: id,
+  ownerActorId: id,
+  pageRevision: positive,
+  draft: KnowledgeDraftContentSchema.extend({ authorship: z.enum(['member', 'agent']) }).nullable(),
+  published: KnowledgeVersionRefSchema.nullable(),
+  publishedHasOriginal: z.boolean(),
+});
+export const KnowledgeWriteValueSchema = z.strictObject({
+  actorId: id,
+  spaceId: id,
+  libraryId: id,
+  pageId: id,
+  pageRevision: positive,
+  operation: z.enum(['save-draft', 'publish']),
+  disposition: z.enum(['saved', 'published', 'replayed']),
+  reference: KnowledgeVersionRefSchema.optional(),
+});
+export type KnowledgeDraftRequest = z.input<typeof KnowledgeDraftRequestSchema>;
+export type KnowledgeSaveDraftRequest = z.input<typeof KnowledgeSaveDraftRequestSchema>;
+export type KnowledgePublishRequest = z.input<typeof KnowledgePublishRequestSchema>;
+export type KnowledgeDraftValue = z.infer<typeof KnowledgeDraftValueSchema>;
+export type KnowledgeWriteValue = z.infer<typeof KnowledgeWriteValueSchema>;
 
 export const KnowledgeErrorCodeSchema = z.enum([
   'invalid',
