@@ -24,6 +24,7 @@ const operationErrors: Record<Operation, string> = {
   stop: '未确认停止结果，请刷新状态。',
   refresh: '刷新失败，请重试。',
   history: '较早消息暂未加载，请重试。',
+  open: '工作区会话暂未打开，请刷新状态后重试。',
 };
 const modelKey = (selection: NativeRunSelection['model']) =>
   JSON.stringify([
@@ -578,6 +579,16 @@ function RunPanel(props: NativeRunPanelProps) {
         </div>
         <div className="zm-native-run__header-actions">
           {ready && matching && <RunState run={run} />}
+          {ready && matching && run?.native && props.onOpenSession && (
+            <Button
+              variant="quiet"
+              busy={running('open')}
+              busyLabel="正在打开…"
+              onClick={() => void command('open', props.onOpenSession!)}
+            >
+              在工作区中打开
+            </Button>
+          )}
           {ready && matching && props.onManageWorkspaces && (
             <Button variant="quiet" onClick={props.onManageWorkspaces}>
               管理目录授权

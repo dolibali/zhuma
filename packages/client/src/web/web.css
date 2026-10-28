@@ -45,6 +45,15 @@ body {
   font-weight: 700;
   text-decoration: none;
 }
+.zm-web-identity {
+  display: grid;
+  gap: 4px;
+}
+.zm-web-context {
+  padding: 0 12px;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
 .zm-web-sidebar nav {
   min-height: 0;
   overflow-y: auto;
@@ -54,6 +63,21 @@ body {
 .zm-web-sidebar nav .zm-button {
   justify-content: flex-start;
   padding: 10px 12px;
+}
+.zm-web-sidebar nav .zm-button-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.zm-web-sidebar nav svg {
+  flex: 0 0 18px;
+}
+.zm-web-local-context {
+  margin: 0;
+  padding: 0 12px;
+  color: var(--zm-muted);
+  font-size: 12px;
 }
 .zm-web-sidebar nav [aria-current='page'] {
   background: var(--zm-paper);
@@ -73,6 +97,10 @@ body {
   min-height: 0;
 }
 @media (max-width: 720px) {
+  .zm-web-context,
+  .zm-web-local-context {
+    display: none;
+  }
   .zm-web-shell {
     flex-direction: column;
   }
