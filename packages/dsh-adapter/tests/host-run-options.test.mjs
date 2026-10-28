@@ -6,7 +6,7 @@ import { compositionFacts } from './execution-run-composition-fixture.mjs';
 import { accepted, applyEvent, begin, stable } from './execution-run-fixture.mjs';
 
 // Metadata/producer contracts. Stand-in authorization never proves a real member lease.
-function setup({ expert = false, list, timeout = 1000 } = {}) {
+function setup({ expert = false, list, timeout = 1000, localSelection = false } = {}) {
   const ctx = new Context();
   const facts = compositionFacts({ expert });
   const signal = new AbortController();
@@ -26,7 +26,10 @@ function setup({ expert = false, list, timeout = 1000 } = {}) {
     readRunComposition: () => ({ payload: { model: facts.model, executor: { kind: 'builtin' } } }),
   };
   ctx.provide('llm', {
-    listProviders: () => [{ id: 'contract' }],
+    listProviders: () => {
+      assert.equal(localSelection, false, 'Shared metadata must not discover backend providers');
+      return [{ id: 'contract' }];
+    },
     async listModels(provider) {
       catalogs++;
       return list ? list(provider) : [{ provider, id: 'actual-model', name: 'Configured model' }];
@@ -40,6 +43,16 @@ function setup({ expert = false, list, timeout = 1000 } = {}) {
     readWorkbench: () => facts.workbench,
     signal: signal.signal,
     modelTimeoutMs: timeout,
+    ...(localSelection
+      ? {
+          localSelection: true,
+          workspaces: {
+            choices() {
+              assert.fail('Shared metadata must not read backend directories');
+            },
+          },
+        }
+      : {}),
   });
   const { taskId, planId, revision, nodeId, spaceId } = facts.scope;
   return {
@@ -55,6 +68,41 @@ function setup({ expert = false, list, timeout = 1000 } = {}) {
     counts: () => ({ reads, catalogs }),
   };
 }
+
+test('options contract: shared member metadata keeps actual node facts but never discovers backend models/directories', async (t) => {
+  const h = setup({ localSelection: true });
+  t.after(() => h.ctx.fiber.dispose());
+  const before = JSON.stringify(h.facts);
+  const { value } = await h.read(h.request, h.query);
+  assert.equal(value.models.kind, 'unavailable');
+  assert.equal(Object.hasOwn(value, 'workspaces'), false);
+  assert.equal(Object.hasOwn(value, 'workspaceApprovalScope'), false);
+  assert.equal(value.currentRunId, null);
+  assert.equal(value.currentRun, null);
+  assert.equal(value.nodeVersion, h.facts.node.command.version);
+  assert.equal(value.start.kind, 'available');
+  assert.deepEqual(
+    value.experts.map((expert) => expert.value.kind),
+    ['builtin', 'plan-expert'],
+  );
+  assert.deepEqual(h.counts(), { reads: 2, catalogs: 0 });
+  assert.equal(
+    JSON.stringify(h.facts),
+    before,
+    'Metadata never creates a Run or changes its facts',
+  );
+  h.facts.node = begin(h.facts.node).record;
+  const saved = h.facts.node.nativeExecution.runs[0];
+  const next = (await h.read(h.request, h.query)).value.currentRun;
+  assert.equal(next.runId, saved.attempt.id);
+  assert.equal(next.generation, saved.attempt.generation);
+  assert.equal(next.segmentId, saved.segmentId);
+  assert.equal(next.dispatch, saved.dispatch);
+  assert.equal(next.acknowledged, saved.attempt.acknowledged);
+  assert.equal(next.resources, saved.resources);
+  assert.equal(next.stopPhase, saved.attempt.stopPhase);
+  assert.equal(next.native, null, 'A backend cannot certify member-local native readiness');
+});
 
 test('options contract: passive catalog has no first/default selection or Run, exact plan experts only', async (t) => {
   const h = setup();

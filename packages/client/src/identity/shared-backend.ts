@@ -60,6 +60,7 @@ const targets = {
   '/api/zhuma-member/snapshot': ['POST', 'member.snapshot'],
   '/api/zhuma-member/command': ['POST', 'member.command'],
   '/api/zhuma-member/plan': ['POST', 'member.plan'],
+  '/api/zhuma-member/local-run-options': ['POST', 'execution.local-run-options'],
   '/api/zhuma-knowledge/libraries': ['POST', 'knowledge.libraries'],
   '/api/zhuma-knowledge/list': ['POST', 'knowledge.list'],
   '/api/zhuma-knowledge/search': ['POST', 'knowledge.search'],

@@ -37,6 +37,7 @@ import { openMemberWebEntry } from './member-web-entry.js';
 import { openIdentityMemberHttp } from './identity-member-http.js';
 import { openHostKnowledge } from './host-knowledge.js';
 import { mountHostSharedBackend } from './host-shared-backend-http.js';
+import { openHostMemberLocalOptionsHttp } from './host-member-local-options-http.js';
 import type {
   IdentityMemberLifecycleHandle,
   IdentityMemberLifecycleOptions,
@@ -206,6 +207,11 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     ? openHostRemoteRunHttp(ctx, () => (closed ? undefined : remoteExecution))
     : undefined;
   let runOwner: Awaited<ReturnType<typeof openHostRunOwner>> | undefined;
+  const memberLocalOptionsHttp = config.remoteExecution
+    ? openHostMemberLocalOptionsHttp(ctx, () =>
+        closed || runsClosed ? undefined : runOwner?.memberLocalOptions,
+      )
+    : undefined;
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
   let workflowHttp: ReturnType<typeof openHostWorkflowHttp> | undefined;
@@ -240,12 +246,14 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       );
     const httpClose = runHttp?.close();
     const remoteClose = remoteHttp?.close();
+    const localOptionsClose = memberLocalOptionsHttp?.close();
     const workflowClose = workflowHttp?.close();
     const workspaceClose = workspaceApprovalHttp?.close();
     return (runClosing = Promise.allSettled([
       nativeClose,
       httpClose,
       remoteClose,
+      localOptionsClose,
       workflowClose,
       workspaceClose,
     ]).then((results) => {

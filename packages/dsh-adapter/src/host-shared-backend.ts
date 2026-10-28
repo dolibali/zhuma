@@ -29,6 +29,7 @@ import { taskProgressQuerySchema } from './execution-task-progress-contract.js';
 import { projectArtifactsQuerySchema } from './execution-project-artifacts-contract.js';
 import { executionMemberRequestSchemas } from './execution-service.js';
 import { EXECUTION_BODY_BYTE_LIMIT } from './execution-plugin.js';
+import { hostRunOptionsQuerySchema } from './host-run-options.js';
 
 /** The existing execution carrier's legal text/draft budget, not a file stream. */
 export const SHARED_BACKEND_BODY_BYTE_LIMIT = EXECUTION_BODY_BYTE_LIMIT;
@@ -70,6 +71,7 @@ export const SHARED_BACKEND_OPERATIONS = [
   'execution.revision',
   'execution.upstream-content',
   'execution.draft',
+  'execution.local-run-options',
 ] as const;
 export type SharedBackendOperation = (typeof SHARED_BACKEND_OPERATIONS)[number];
 export const sharedBackendRequestSchema = z.strictObject({
@@ -319,6 +321,12 @@ const descriptors = {
       executionMemberRequestSchemas.draftWrite,
     ]),
     path: '/api/zhuma-exec/draft',
+    verb: 'POST',
+    auth: false,
+  },
+  'execution.local-run-options': {
+    schema: hostRunOptionsQuerySchema,
+    path: '/api/zhuma-member/local-run-options',
     verb: 'POST',
     auth: false,
   },

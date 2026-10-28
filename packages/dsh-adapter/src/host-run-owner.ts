@@ -245,6 +245,7 @@ export async function openHostRunOwner(
     signal: lifetime.signal,
     resources,
     workspaces,
+    ...(options.remoteOnly ? { localSelection: true } : {}),
   });
   const reviews = createNativeReviewBridge({
     execution,
@@ -1480,6 +1481,10 @@ export async function openHostRunOwner(
 
   return {
     lookupNativeSession: native.lookupNativeSession,
+    memberLocalOptions(request: MemberRequest, payload: unknown, wait?: AbortSignal) {
+      if (!options.remoteOnly) throw new ExecutionRunError('run-authority-denied');
+      return command(() => readOptions(request, payload, wait));
+    },
     operations,
     beginWorkflowRun,
     workflowOperations,

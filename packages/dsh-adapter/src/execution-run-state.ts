@@ -241,6 +241,10 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
           (run.workspace.kind !== 'local' ||
             fileConfiguration?.resultIntentTool?.sourceVersion !== 'zhuma-native-result-intent@2' ||
             fileConfiguration.outputFilePublisherTool?.sourceVersion !== remote.files)) ||
+        (remote.acceptedFiles !== undefined &&
+          fileConfiguration?.acceptedFileReader?.sourceVersion !== remote.acceptedFiles) ||
+        (fileConfiguration?.acceptedFileReader !== undefined) !==
+          (remote.acceptedFiles !== undefined) ||
         (source?.toolVersion === 'zhuma-native-result-intent@2' && remote.files === undefined) ||
         (source &&
           (canonicalPayload(source.scope) !== canonicalPayload(executionRunScope(record, run)) ||
