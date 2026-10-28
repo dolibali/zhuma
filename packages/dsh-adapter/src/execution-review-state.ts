@@ -26,6 +26,7 @@ import {
 import {
   splitExecutionReviewRecord,
   executionReviewArtifactFingerprint,
+  isStoppedReviewHistory,
 } from './execution-review-record.js';
 
 /** Prepared data only. No storage, member authentication, native send, or voting here. */
@@ -103,7 +104,7 @@ export function prepareExecutionReview(
   record: ExecutionNodeRecord,
   appliedInput: AppliedPlan,
   input: unknown,
-  stoppedPreparedRunIds: ReadonlySet<string> = new Set(),
+  stoppedReviewRunIds: ReadonlySet<string> = new Set(),
 ): {
   readonly disposition: 'applied' | 'replayed';
   readonly record: ExecutionReviewNode;
@@ -200,9 +201,9 @@ export function prepareExecutionReview(
     state?.attempts.some(
       (attempt) =>
         !(
-          attempt.status === 'prepared' &&
-          attempt.version === 1 &&
-          stoppedPreparedRunIds.has(attempt.scope.runId)
+          ((attempt.status === 'prepared' && attempt.version === 1) ||
+            isStoppedReviewHistory(attempt)) &&
+          stoppedReviewRunIds.has(attempt.scope.runId)
         ) &&
         attempt.scope.review.target.roundId === target.roundId &&
         attempt.scope.review.target.artifactVersionId === target.artifactVersionId &&

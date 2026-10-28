@@ -39,7 +39,8 @@
     "test:ui": "pnpm workbench:build && pnpm test:ui:run",
     "test:host": "pnpm workbench:build && pnpm test:host:run",
     "test:host:run": "node scripts/workbench/verify-host.mjs",
-    "test:ui:run": "playwright test --config packages/client/tests/browser/playwright.config.mjs"
+    "test:ui:run": "playwright test --config packages/client/tests/browser/playwright.config.mjs",
+    "desktop:dev:host": "node scripts/desktop/dev-host.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

@@ -352,7 +352,7 @@ class NativeResultOwner {
     )
       throw new NativeReviewError('cancelled');
     const access = this.sessions.reviewAccess(grant),
-      binding = this.sessions.open(grant)?.binding;
+      binding = access.binding;
     const failure = this.reviewFailures.get(nativeReviewScopeKey(access.context));
     if (failure) throw failure;
     if (

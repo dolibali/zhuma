@@ -543,9 +543,11 @@ export const executionRunCompositionSchema = z.preprocess(
         ),
       );
       const derived = derive(source);
+      const canonical = canonicalPayload(derived);
       if (
-        canonicalPayload(derived) !== canonicalPayload(value.payload) ||
-        value.configurationId !== `composition_${hash(derived)}`
+        canonical !== canonicalPayload(value.payload) ||
+        value.configurationId !==
+          `composition_${createHash('sha256').update(canonical).digest('hex')}`
       )
         throw Error();
     } catch {
@@ -723,7 +725,9 @@ function freezeForRevisionRound(
   }
 }
 export function executionRunCompositionRequest(snapshot: FrozenExecutionRunComposition) {
-  const saved = readExecutionRunComposition(snapshot);
+  return projectExecutionRunComposition(readExecutionRunComposition(snapshot));
+}
+function projectExecutionRunComposition(saved: FrozenExecutionRunComposition) {
   return freeze({
     selection: { ...saved.payload.model, configurationId: saved.configurationId },
     expertVersionId:
@@ -747,7 +751,16 @@ export function assertExecutionRunCompositionBinding(
   },
 ): undefined {
   const snapshot = readExecutionRunComposition(saved);
-  const projected = executionRunCompositionRequest(snapshot);
+  return assertParsedExecutionRunCompositionBinding(snapshot, scope, request);
+}
+/** Internal pure comparison after the full composition schema has parsed this
+ * value in the same synchronous state read. This grants no operation/authority. */
+export function assertParsedExecutionRunCompositionBinding(
+  snapshot: FrozenExecutionRunComposition,
+  scope: NativeWorkScope,
+  request: Parameters<typeof assertExecutionRunCompositionBinding>[2],
+): undefined {
+  const projected = projectExecutionRunComposition(snapshot);
   if (
     canonicalPayload(snapshot.payload.scope) !== canonicalPayload(scope) ||
     canonicalPayload(request.selection) !== canonicalPayload(projected.selection) ||
@@ -774,7 +787,7 @@ export function assertExecutionRunComposition(
   const returnedRevision =
     snapshot.schemaVersion === 2 ? snapshot.payload.returnedRevision : undefined;
   const expected = freezeForRevisionRound(current, returnedRevision?.roundId ?? null);
-  const projected = executionRunCompositionRequest(snapshot);
+  const projected = projectExecutionRunComposition(snapshot);
   if (
     canonicalPayload(snapshot) !== canonicalPayload(expected) ||
     canonicalPayload(request.selection) !== canonicalPayload(projected.selection) ||

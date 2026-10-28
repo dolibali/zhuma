@@ -262,8 +262,9 @@ import {
   workflowReviewCandidates,
   hasCommittedWorkflowStop,
   stoppedWorkflowReviewGeneration,
-  stoppedPreparedWorkflowReviewRunIds,
+  stoppedWorkflowReviewRunIds,
 } from './execution-workflow-reviews.js';
+import { isStoppedReviewHistory, splitExecutionReviewRecord } from './execution-review-record.js';
 import {
   ExecutionWorkflowError,
   workflowExecutionIntentSchema,
@@ -1456,7 +1457,8 @@ export class ExecutionService {
                 ),
             )
             .map((expert) => expert.id);
-          if (nodes.some((node) => readExecutionReviewState(node)))
+          // These private clones were fully validated by readRunNode above.
+          if (nodes.some((node) => splitExecutionReviewRecord(node).review !== undefined))
             requireExecutionReviewWriter(this.readRunGlobal());
           return { receipt: receipt && structuredClone(receipt), nodes, availableExpertIds };
         };
@@ -1917,7 +1919,9 @@ export class ExecutionService {
       const node = this.readRunNode(locator);
       const attempt =
         node &&
-        readExecutionReviewState(node)?.attempts.find((a) => a.scope.runId === locator.runId);
+        splitExecutionReviewRecord(node).review?.attempts.find(
+          (a) => a.scope.runId === locator.runId,
+        );
       if (!node || !attempt || attempt.status === 'prepared')
         throw new ExecutionReviewReadError('review-authority-denied');
       const composition = readExecutionReviewComposition(attempt.composition);
@@ -1941,7 +1945,7 @@ export class ExecutionService {
         this.requireRunHost();
         const check = () => {
           const current = resolve(scope);
-          this.assertCurrentExpertReviewTarget(host, scope);
+          this.assertCurrentExpertReviewTarget(host, scope, current.node);
           if (
             !['requested', 'running'].includes(current.attempt.status) ||
             current.attempt.resources !== 'held' ||
@@ -2086,16 +2090,28 @@ export class ExecutionService {
           const receipt = readExecutionReviewState(node)!.receipts.find(
             (item) => item.runId === scope.runId,
           );
+          const stoppedGeneration = parsed.success
+            ? stoppedWorkflowReviewGeneration(node, parsed.data, attempt)
+            : undefined;
+          // Resume preserves terminal history but a cold owner loses its live
+          // drain. Rebuild only that stopped history, never a new driving scope.
+          const historicalStop =
+            parsed.success &&
+            parsed.data.status === 'running' &&
+            stoppedGeneration !== undefined &&
+            stoppedGeneration < parsed.data.generation &&
+            isStoppedReviewHistory(attempt);
           if (
             !parsed.success ||
             node.ownerId !== scope.actorId ||
             !plan?.nodeIds.includes(scope.nodeId) ||
-            parsed.data.status !== 'stopping' ||
+            (!historicalStop &&
+              (parsed.data.status !== 'stopping' ||
+                !hasCommittedWorkflowStop(node, parsed.data, parsed.data.generation))) ||
             parsed.data.actorId !== scope.actorId ||
             parsed.data.spaceId !== scope.spaceId ||
-            !hasCommittedWorkflowStop(node, parsed.data, parsed.data.generation) ||
             !receipt ||
-            stoppedWorkflowReviewGeneration(node, parsed.data, attempt) === undefined
+            stoppedGeneration === undefined
           )
             throw new ExecutionReviewReadError('review-authority-denied');
           if (attempt.stopPhase === 'none' && ['requested', 'running'].includes(attempt.status)) {
@@ -2182,6 +2198,7 @@ export class ExecutionService {
           current.facts.nodes,
           current.intent,
           current.facts.availableExpertIds,
+          (review) => this.assertExpertReviewDrained(review.scope),
         ).some((item) => item.requestId === input.requestId))
     )
       throw new ExecutionWorkflowError('workflow-capacity');
@@ -2219,13 +2236,18 @@ export class ExecutionService {
     node: ExecutionNodeRecord,
     attempt: ExecutionReviewAttempt,
     composition?: FrozenExecutionReviewComposition,
+    admittedDrive = false,
+    validatedReview?: ReturnType<typeof readExecutionReviewState>,
   ) {
-    const state = readExecutionReviewState(node)!;
+    const state = validatedReview ?? readExecutionReviewState(node)!;
     const receipt = state.receipts.find((receipt) => receipt.runId === attempt.scope.runId)!;
     if (!receipt.requestId.startsWith(WORKFLOW_REVIEW_REQUEST_PREFIX)) return;
     const bound = this.reviewWorkflowClaims.get(attempt.scope.runId);
     if (!bound) throw new ExecutionWorkflowError('workflow-authority-denied');
-    const current = this.workflows().assertClaim(bound.original, bound.claim);
+    const current =
+      admittedDrive && !composition && attempt.status !== 'prepared'
+        ? this.workflows().assertClaimCurrent(bound.original, bound.claim)
+        : this.workflows().assertClaim(bound.original, bound.claim);
     if (
       receipt.requestId !==
       workflowReviewRequestId(
@@ -3939,13 +3961,22 @@ export class ExecutionService {
   private assertCurrentExpertReviewTarget(
     host: ExecutionRunHostPorts,
     scope: ExecutionReviewScope,
+    validatedNode?: ExecutionNodeRecord,
   ): ExecutionNodeRecord {
-    const node = this.readRunNode(scope);
+    // The private drive check has just validated/cloned this node synchronously.
+    // Its next check after the Host callback resolves a fresh node again.
+    const node = validatedNode ?? this.readRunNode(scope);
     if (!node) throw new ExecutionReviewReadError('review-target-changed');
-    const attempt = readExecutionReviewState(node)?.attempts.find(
-      (item) => item.scope.runId === scope.runId,
-    );
-    if (attempt) this.assertWorkflowReviewBinding(node, attempt);
+    const review = splitExecutionReviewRecord(node).review;
+    const attempt = review?.attempts.find((item) => item.scope.runId === scope.runId);
+    if (attempt)
+      this.assertWorkflowReviewBinding(
+        node,
+        attempt,
+        undefined,
+        validatedNode !== undefined,
+        review,
+      );
     this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
     this.assertReviewController(scope.actorId, node);
     const target = executionReviewTarget(node, scope.spaceId);
@@ -4014,9 +4045,23 @@ export class ExecutionService {
       workflow.success &&
       workflow.data.status === 'running' &&
       input.requestId === workflowReviewRequestId(workflow.data, input.target, input.reviewerRef.id)
-        ? stoppedPreparedWorkflowReviewRunIds(node, workflow.data)
+        ? stoppedWorkflowReviewRunIds(node, workflow.data, (review) =>
+            this.assertExpertReviewDrained(review.scope),
+          )
         : new Set<string>();
     if (stopped.size) requireExecutionReviewWriter(this.readRunGlobal());
+    // Replayed preparation must not preserve an admission permission after its
+    // predecessor's genuine C proof expired between prepare and admit.
+    if (prior && state) {
+      for (const older of state.attempts.slice(0, state.attempts.indexOf(prior))) {
+        if (
+          isStoppedReviewHistory(older) &&
+          canonicalPayload(older.scope.review) === canonicalPayload(prior.scope.review) &&
+          !stopped.has(older.scope.runId)
+        )
+          throw new ExecutionWorkflowError('workflow-recovery-required');
+      }
+    }
     const prepared = prepareExecutionReview(
       node,
       applied,

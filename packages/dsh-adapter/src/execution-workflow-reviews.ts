@@ -4,6 +4,7 @@ import { executionReviewTarget, readExecutionReviewState } from './execution-rev
 import type { ExecutionReviewAttempt, ExecutionReviewTarget } from './execution-review-contract.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import type { WorkflowExecutionIntent } from './execution-workflow-contract.js';
+import { isStoppedReviewHistory } from './execution-review-record.js';
 
 export const WORKFLOW_REVIEW_REQUEST_PREFIX = 'workflow-review-';
 export function workflowReviewRequestId(
@@ -124,6 +125,50 @@ export function stoppedPreparedWorkflowReviewRunIds(
   return result;
 }
 export type WorkflowReviewResource = Exclude<ExecutionReviewAttempt, { status: 'prepared' }>;
+/** Only explicit Stop/Resume may replace a cancelled, unvoted review of this
+ * same fixed target. The actual original C proof is mandatory in this Host;
+ * stored settled labels, a different vote or a caller list are insufficient. */
+export function stoppedWorkflowReviewRunIds(
+  node: ExecutionNodeRecord,
+  intent: WorkflowExecutionIntent,
+  assertDrained?: (review: WorkflowReviewResource) => void,
+): ReadonlySet<string> {
+  const result = new Set(stoppedPreparedWorkflowReviewRunIds(node, intent));
+  if (!assertDrained || node.command.status !== 'in-review') return result;
+  const state = readExecutionReviewState(node);
+  if (!state?.attempts.some(isStoppedReviewHistory)) return result;
+  const target = executionReviewTarget(node, intent.spaceId);
+  const round = node.rounds.find((item) => item.id === target.roundId)!;
+  if (node.acceptedArtifactVersionId === target.artifactVersionId) return result;
+  for (const attempt of state.attempts) {
+    if (
+      attempt.status === 'prepared' ||
+      !isStoppedReviewHistory(attempt) ||
+      canonicalPayload(attempt.scope.review.target) !== canonicalPayload(target) ||
+      round.ballots.some(
+        (ballot) => ballot.reviewerId === attempt.scope.review.principal.reviewerRef.id,
+      )
+    )
+      continue;
+    const generation = stoppedWorkflowReviewGeneration(node, intent, attempt);
+    if (
+      generation === undefined ||
+      (generation === intent.generation && intent.status !== 'stopping')
+    )
+      continue;
+    try {
+      const checked: unknown = assertDrained(attempt);
+      if (checked !== undefined) {
+        void Promise.resolve(checked).catch(() => undefined);
+        continue;
+      }
+      result.add(attempt.scope.runId);
+    } catch {
+      // No fresh original C proof means the original attention/budget remains.
+    }
+  }
+  return result;
+}
 /** Original attempt metadata, not native readiness, a drive or a drain. */
 export function workflowReviewResources(nodes: readonly ExecutionNodeRecord[]) {
   return nodes.flatMap((node) =>
@@ -176,10 +221,13 @@ export interface WorkflowReviewAttention {
 export function workflowReviewAttention(
   nodes: readonly ExecutionNodeRecord[],
   intent?: WorkflowExecutionIntent,
+  assertDrained?: (review: WorkflowReviewResource) => void,
 ): WorkflowReviewAttention[] {
   return nodes.flatMap((node) => {
     if (node.command.status !== 'in-review') return [];
-    const stopped = intent ? stoppedPreparedWorkflowReviewRunIds(node, intent) : new Set<string>();
+    const stopped = intent
+      ? stoppedWorkflowReviewRunIds(node, intent, assertDrained)
+      : new Set<string>();
     return (readExecutionReviewState(node)?.attempts ?? []).flatMap(
       (attempt): WorkflowReviewAttention[] => {
         const { target, principal } = attempt.scope.review;
@@ -212,6 +260,7 @@ export function workflowReviewCandidates(
   nodes: readonly ExecutionNodeRecord[],
   intent: WorkflowExecutionIntent,
   availableExpertIds: readonly string[],
+  assertDrained?: (review: WorkflowReviewResource) => void,
 ): WorkflowReviewCandidate[] {
   const result: WorkflowReviewCandidate[] = [];
   for (const node of nodes) {
@@ -226,7 +275,7 @@ export function workflowReviewCandidates(
     )
       continue;
     const target = executionReviewTarget(node, intent.spaceId);
-    const stopped = stoppedPreparedWorkflowReviewRunIds(node, intent);
+    const stopped = stoppedWorkflowReviewRunIds(node, intent, assertDrained);
     if (
       state?.attempts.some(
         (attempt) =>
