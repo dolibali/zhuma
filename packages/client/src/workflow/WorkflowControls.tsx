@@ -195,7 +195,9 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
       apply,
     );
   }
-  const canResume = view?.state === 'paused' || view?.state === 'requires-resume';
+  const recovering = view?.state === 'stopping';
+  const canResume = recovering || view?.state === 'paused' || view?.state === 'requires-resume';
+  const resumeLabel = recovering ? '恢复工作流' : '继续工作流';
   const canStart =
     view?.state === 'inactive' && (view.expertNodeCount > 0 || view.expertReviewRequired === true);
   const selected =
@@ -233,7 +235,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
           disabled={loading || command.pending}
           onClick={prepare}
         >
-          {canResume ? '继续工作流' : '运行工作流'}
+          {canResume ? resumeLabel : '运行工作流'}
         </Button>
       )}
       {view?.state === 'running' && (
@@ -268,7 +270,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
       )}
       {open && !workspaceOpen && (
         <Modal
-          title={view?.intent ? '继续工作流' : '运行工作流'}
+          title={view?.intent ? resumeLabel : '运行工作流'}
           {...(returnToDirectory.current ? { initialFocusId: manageId } : {})}
           close={() => {
             if (!command.pending) {
@@ -457,7 +459,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                 busy={command.pending}
                 busyLabel="正在确认…"
               >
-                {view?.intent ? '继续工作流' : '确认运行'}
+                {view?.intent ? resumeLabel : '确认运行'}
               </Button>
             </footer>
           </form>

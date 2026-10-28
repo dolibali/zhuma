@@ -13,14 +13,16 @@ import {
 } from '../dist/member-session.js';
 import { workflowExecutionIntentSchema } from '../dist/execution-workflow-contract.js';
 
-for (const { recovery, abortAfterCommit, negative } of [
+for (const { recovery, abortAfterCommit, negative, stopping = false } of [
   ...[false, true].flatMap((recovery) =>
     [false, true].map((abortAfterCommit) => ({ recovery, abortAfterCommit })),
   ),
   { recovery: false, abortAfterCommit: false, negative: 'already-aborted' },
   { recovery: false, abortAfterCommit: false, negative: 'refused' },
+  { recovery: true, abortAfterCommit: false, stopping: true },
+  { recovery: true, abortAfterCommit: false, stopping: true, negative: 'refused' },
 ]) {
-  test(`Host resume contract: ${negative ?? `${recovery ? 'recovery' : 'warm'} accepted generation with caller abort=${abortAfterCommit}`}`, async () => {
+  test(`Host resume contract: ${stopping ? 'stopping ' : ''}${negative ?? `${recovery ? 'recovery' : 'warm'} accepted generation with caller abort=${abortAfterCommit}`}`, async () => {
     const data = fixture();
     const state = applyWorkbenchCommand(data.state, {
       type: 'save-task',
@@ -40,7 +42,7 @@ for (const { recovery, abortAfterCommit, negative } of [
       spaceId: 'north',
       generation: 1,
       version: 1,
-      status: 'paused',
+      status: stopping ? 'stopping' : 'paused',
       defaults: {
         model: { provider: 'contract', model: 'model', maxTokens: 1000 },
         tools: 'text-only',
@@ -83,11 +85,11 @@ for (const { recovery, abortAfterCommit, negative } of [
         ...intent,
         generation: committed ? 2 : 1,
         version: committed ? 2 : 1,
-        status: committed ? 'running' : 'paused',
+        status: committed ? 'running' : stopping ? 'stopping' : 'paused',
       },
-      requiresResume: !committed && recovery,
+      requiresResume: !committed && recovery && !stopping,
       activeRunIds: [],
-      state: committed ? 'running' : 'paused',
+      state: committed ? 'running' : stopping ? 'stopping' : 'paused',
     });
     const execution = {
       readWorkflowExecution: async () => ({ ok: true, value: view() }),
@@ -115,8 +117,14 @@ for (const { recovery, abortAfterCommit, negative } of [
       signal: lifetime.signal,
       workspaces: {},
       readWorkbench: () => state,
-      prepareResume: async () => {
+      prepareResume: async (original, before) => {
         preparations++;
+        assert.equal(original, request);
+        if (stopping) {
+          assert.equal(before.state, 'stopping');
+          assert.equal(before.intent.generation, 1);
+          assert.equal(before.intent.version, 1);
+        }
       },
     });
     try {

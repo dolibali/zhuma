@@ -843,6 +843,83 @@ export class ExecutionRunAuthorities {
       return denied();
     return this.makeCleanup(parsed.data, current.run, true);
   }
+  /** Host-only recovery of a receipt-bound historical reservation, after A's
+   * fresh member/intent authorization. Both terminal Runs stay fixed across C's
+   * real cleanup; this capability itself never certifies physical drain.
+   */
+  cleanupSettledHistoricalReservation(
+    rawLocator: unknown,
+    expectedCurrentRunId: string,
+  ): ExecutionRunCleanupAuthority {
+    const parsed = locatorSchema.safeParse(rawLocator);
+    const expected = id.safeParse(expectedCurrentRunId);
+    if (!parsed.success || !expected.success || parsed.data.runId === expected.data)
+      return denied();
+    const signal = this.ownerSignal;
+    const readNode = this.source.readNode;
+    const writerState = this.source.writerState;
+    const active = () => {
+      if (
+        this.disposed ||
+        this.fenced ||
+        signal.aborted ||
+        this.source.signal !== signal ||
+        this.source.readNode !== readNode ||
+        this.source.writerState !== writerState
+      )
+        return denied();
+    };
+    const pair = () => {
+      active();
+      const old = this.current(parsed.data);
+      active();
+      const current = old.state.runs.find((run) => run.attempt.id === expected.data);
+      if (
+        old.current ||
+        old.state.currentRunId !== expected.data ||
+        !current ||
+        old.run.resources !== 'settled' ||
+        current.resources !== 'settled' ||
+        !isTerminalRunStatus(old.run.attempt.status) ||
+        !isTerminalRunStatus(current.attempt.status) ||
+        old.run.actorId !== current.actorId ||
+        old.run.spaceId !== current.spaceId
+      )
+        return denied();
+      return { old, current };
+    };
+    const snapshot = ({ old, current }: ReturnType<typeof pair>) =>
+      canonicalPayload([
+        old.state.version,
+        executionRunScope(old.node, old.run),
+        old.run,
+        old.state.currentRunId,
+        current,
+      ]);
+    let initial: ReturnType<typeof pair>;
+    try {
+      initial = pair();
+    } catch {
+      return denied();
+    }
+    const bound = snapshot(initial);
+    let invalid = false;
+    const authority: ExecutionRunCleanupAuthority = Object.freeze({
+      scope: executionRunScope(initial.old.node, initial.old.run),
+      assertCurrent(this: ExecutionRunCleanupAuthority, ...args: readonly unknown[]) {
+        if (this !== authority || args.length !== 1 || args[0] !== 'cleanup' || invalid)
+          return denied();
+        try {
+          if (snapshot(pair()) !== bound) return denied();
+        } catch {
+          invalid = true;
+          return denied();
+        }
+      },
+    });
+    this.cleanups.add(authority);
+    return authority;
+  }
   /** B checks object identity as well as the closure before accepting an internal event. */
   assertGrant(grant: NativeWorkGrant, action: NativeWorkAction): void {
     if (!this.grants.has(grant)) return denied();

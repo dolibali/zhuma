@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ExecutionRunAuthorities } from '../dist/execution-run-authority.js';
-import { requestExecutionRunStop } from '../dist/execution-run-state.js';
+import { executionRunScope, requestExecutionRunStop } from '../dist/execution-run-state.js';
 import {
   begin,
   accepted,
@@ -352,4 +352,136 @@ test('contract: settled recovery refuses unknown, active, changed, fenced and cl
   assert.throws(() => h.manager.cleanupAfterSettlement(locator(h.row)), {
     code: 'run-authority-denied',
   });
+});
+
+function historicalPair({ active = false } = {}) {
+  const previous = applyEvent(accepted(), 'completed', stable).record;
+  const oldLocator = locator(previous);
+  let row = accepted(
+    begin(previous, {
+      requestId: 'revision-run',
+      newRunId: 'run-2',
+      newSegmentId: 'segment-2',
+    }).record,
+  );
+  if (!active) row = applyEvent(row, 'completed', stable).record;
+  return { row, oldLocator };
+}
+
+test('contract: a settled historical reservation grants only exact old-scope cleanup without broadening existing recovery', async (t) => {
+  const { row, oldLocator } = historicalPair();
+  const h = setup({ row });
+  const other = setup({ row: structuredClone(row) });
+  t.after(() => Promise.all([h.manager.close(), other.manager.close()]));
+  const before = JSON.stringify(row);
+  assert.throws(() => h.manager.cleanupAfterSettlement(oldLocator), {
+    code: 'run-authority-denied',
+  });
+  const cleanup = h.manager.cleanupSettledHistoricalReservation(oldLocator, 'run-2');
+  assert.deepEqual(cleanup.scope, executionRunScope(row, row.nativeExecution.runs[0]));
+  assert(Object.isFrozen(cleanup.scope));
+  h.manager.assertCleanup(cleanup, 'cleanup');
+  for (const kind of ['failed', 'stop-pending', 'stopped', 'completed', 'send', 'history'])
+    assert.throws(() => cleanup.assertCurrent(kind), { code: 'run-authority-denied' });
+  for (const kind of ['open', 'send', 'queue', 'stop', 'history', 'follow'])
+    assert.throws(() => h.manager.assertGrant(cleanup, kind), { code: 'run-authority-denied' });
+  assert.throws(() => h.manager.assertCleanup({ ...cleanup }, 'cleanup'), {
+    code: 'run-authority-denied',
+  });
+  assert.throws(() => ({ ...cleanup }).assertCurrent('cleanup'), { code: 'run-authority-denied' });
+  assert.throws(() => other.manager.assertCleanup(cleanup, 'cleanup'), {
+    code: 'run-authority-denied',
+  });
+  assert.equal(h.leases.length, 0);
+  assert.equal(JSON.stringify(h.row), before);
+  const originalCurrent = h.manager.cleanupAfterSettlement(locator(row));
+  h.manager.fence();
+  h.manager.assertCleanup(originalCurrent, 'cleanup');
+  assert.throws(() => h.manager.assertCleanup(cleanup, 'cleanup'), {
+    code: 'run-authority-denied',
+  });
+});
+
+test('contract: historical cleanup refuses changed old/current Runs or a new state epoch across an awaited cleanup', async (t) => {
+  for (const change of [
+    (row) => {
+      row.nativeExecution.runs[0].attempt.sessionId = 'changed-old-scope';
+      return row;
+    },
+    (row) => {
+      row.nativeExecution.runs[1].selection.model = 'changed-current-model';
+      return row;
+    },
+    (row) => {
+      row.nativeExecution.version++;
+      return row;
+    },
+    (row) =>
+      applyEvent(
+        accepted(
+          begin(row, {
+            requestId: 'third',
+            newRunId: 'run-3',
+            newSegmentId: 'segment-3',
+          }).record,
+        ),
+        'completed',
+        stable,
+      ).record,
+  ]) {
+    const { row, oldLocator } = historicalPair();
+    const h = setup({ row });
+    t.after(() => h.manager.close());
+    const cleanup = h.manager.cleanupSettledHistoricalReservation(oldLocator, 'run-2');
+    await Promise.resolve();
+    h.row = change(structuredClone(row));
+    assert.throws(() => h.manager.assertCleanup(cleanup, 'cleanup'), {
+      code: 'run-authority-denied',
+    });
+    h.row = row;
+    assert.throws(() => h.manager.assertCleanup(cleanup, 'cleanup'), {
+      code: 'run-authority-denied',
+    });
+  }
+});
+
+test('contract: historical cleanup refuses active/current/missing targets and writer/source/fence/close loss', async (t) => {
+  const { row, oldLocator } = historicalPair({ active: true });
+  const active = setup({ row });
+  t.after(() => active.manager.close());
+  assert.throws(() => active.manager.cleanupSettledHistoricalReservation(oldLocator, 'run-2'), {
+    code: 'run-authority-denied',
+  });
+  for (const invalidate of [
+    (h) => {
+      h.source.writerState = () => ({ schemaVersion: 1 });
+    },
+    (h) => {
+      h.source.signal = new AbortController().signal;
+    },
+    (h) => h.manager.fence(),
+    (h) => {
+      void h.manager.close();
+    },
+  ]) {
+    const pair = historicalPair();
+    const h = setup({ row: pair.row });
+    t.after(() => h.manager.close());
+    for (const [target, expected] of [
+      [pair.oldLocator, 'missing'],
+      [locator(pair.row), 'run-2'],
+      [{ ...pair.oldLocator, nodeId: 'other' }, 'run-2'],
+    ])
+      assert.throws(() => h.manager.cleanupSettledHistoricalReservation(target, expected), {
+        code: 'run-authority-denied',
+      });
+    const cleanup = h.manager.cleanupSettledHistoricalReservation(pair.oldLocator, 'run-2');
+    invalidate(h);
+    assert.throws(() => h.manager.assertCleanup(cleanup, 'cleanup'), {
+      code: 'run-authority-denied',
+    });
+    assert.throws(() => h.manager.cleanupSettledHistoricalReservation(pair.oldLocator, 'run-2'), {
+      code: 'run-authority-denied',
+    });
+  }
 });
