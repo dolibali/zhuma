@@ -230,11 +230,18 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
     if (run.remote) {
       const remote = run.remote;
       const source = remote.result?.source;
+      const fileConfiguration =
+        run.composition?.schemaVersion === 2 ? run.composition.payload : undefined;
       if (
         remote.acceptRequestId !== a.idempotencyKey ||
         (remote.result && (a.status !== 'completed' || run.resources !== 'settled')) ||
         (remote.lastWireEvent?.sequence ?? 0) > a.lastEventSequence ||
         (run.workspace.kind === 'local' && run.workspace.deviceId !== remote.deviceId) ||
+        (remote.files !== undefined &&
+          (run.workspace.kind !== 'local' ||
+            fileConfiguration?.resultIntentTool?.sourceVersion !== 'zhuma-native-result-intent@2' ||
+            fileConfiguration.outputFilePublisherTool?.sourceVersion !== remote.files)) ||
+        (source?.toolVersion === 'zhuma-native-result-intent@2' && remote.files === undefined) ||
         (source &&
           (canonicalPayload(source.scope) !== canonicalPayload(executionRunScope(record, run)) ||
             source.configurationId !== run.selection.configurationId ||
