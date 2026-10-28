@@ -54,6 +54,40 @@ const accept = () => ({
   },
 });
 
+test('remote recovery contract: signed permit binds known scope or exact committed accept lookup; lookup carries no drive command', () => {
+  const base = accept();
+  const known = {
+    ...base,
+    operation: 'reconcile',
+    payload: { scope: scope(), permit: declaration(), lastSequence: 0 },
+  };
+  remoteRunRequestSchema.parse(known);
+  const missingPermit = structuredClone(known);
+  delete missingPermit.payload.permit;
+  assert.equal(remoteRunRequestSchema.safeParse(missingPermit).success, false);
+  const lookup = {
+    ...base,
+    operation: 'reconcile',
+    payload: {
+      target: base.payload.target,
+      acceptRequestId: base.requestId,
+      permit: declaration(),
+    },
+  };
+  remoteRunRequestSchema.parse(lookup);
+  for (const extra of [
+    { mode: 'begin' },
+    { model: base.payload.model },
+    { scope: scope() },
+    { actorId: 'other' },
+  ])
+    assert.equal(
+      remoteRunRequestSchema.safeParse({ ...lookup, payload: { ...lookup.payload, ...extra } })
+        .success,
+      false,
+    );
+});
+
 test('remote protocol data contract: one exact operation inventory, including cleanup, is distinct from a capability', () => {
   assert.equal(REMOTE_RUN_OPERATIONS.length, 16);
   assert.equal(new Set(REMOTE_RUN_OPERATIONS).size, 16);

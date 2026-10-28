@@ -32,6 +32,7 @@ import {
   assertExecutionReviewRecord,
 } from './execution-review-record.js';
 import type { ExecutionReviewState } from './execution-review-contract.js';
+import { remoteRunBindingSchema } from './remote-run-authority-state.js';
 
 // Host-internal facts only. This module neither authenticates a request nor writes storage.
 const id = z.string().min(1).max(200);
@@ -104,6 +105,7 @@ const wrapperSchema = z.strictObject({
   attempt: attemptSchema,
   composition: executionRunCompositionSchema.optional(),
   resultDelivery: executionNativeResultDeliverySchema.optional(),
+  remote: remoteRunBindingSchema.optional(),
   actorId: id,
   spaceId: id,
   segmentId: id,
@@ -225,6 +227,30 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
     )
       refuse('run-state-invalid');
     ids.add(a.id);
+    if (run.remote) {
+      const remote = run.remote;
+      const source = remote.result?.source;
+      if (
+        remote.acceptRequestId !== a.idempotencyKey ||
+        (remote.result && (a.status !== 'completed' || run.resources !== 'settled')) ||
+        (remote.lastWireEvent?.sequence ?? 0) > a.lastEventSequence ||
+        (run.workspace.kind === 'local' && run.workspace.deviceId !== remote.deviceId) ||
+        (source &&
+          (canonicalPayload(source.scope) !== canonicalPayload(executionRunScope(record, run)) ||
+            source.configurationId !== run.selection.configurationId ||
+            source.nativeSessionId !== a.sessionId ||
+            source.nativeAgentId !== a.executorRunId)) ||
+        (remote.receipt &&
+          (!remote.result ||
+            remote.receipt.requestId !== remote.result.requestId ||
+            remote.receipt.digest !== remote.result.digest ||
+            remote.receipt.artifactDigest !== remote.result.artifactDigest ||
+            !record.artifactVersions.some(
+              (artifact) => artifact.id === remote.receipt!.artifactVersionId,
+            )))
+      )
+        refuse('run-state-invalid');
+    }
     if (run.composition) {
       try {
         assertParsedExecutionRunCompositionBinding(

@@ -232,7 +232,7 @@ export class ExecutionRunAuthorities {
       return denied();
     const state = readExecutionRunState(node);
     const run = state?.runs.find((r) => r.attempt.id === locator.runId);
-    if (!run) return denied();
+    if (!run || run.remote) return denied();
     return { node, run, current: state!.currentRunId === run.attempt.id, state: state! };
   }
   open(
@@ -537,7 +537,8 @@ export class ExecutionRunAuthorities {
     if (
       canonicalPayload(previous.selection) !== canonicalPayload(parsed.data.selection) ||
       history.some(
-        (run) => run.actorId !== current.run.actorId || run.spaceId !== current.run.spaceId,
+        (run) =>
+          run.remote || run.actorId !== current.run.actorId || run.spaceId !== current.run.spaceId,
       ) ||
       history
         .slice(0, -1)
