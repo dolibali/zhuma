@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { RemoteRunAuthorities, RemoteRunError } from './remote-run-authority.js';
 import { freezeExecutionRunComposition } from './execution-run-composition.js';
 import { describeNativeResultTool } from './native-work-session-result-tool.js';
+import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -1581,6 +1582,8 @@ export class ExecutionService {
         readNode: (target) => this.readRunNode(target),
         listNodes: () => this.storage.listNodes(),
         writeNode: (next) => this.writeNode(next, true),
+        readInput: (actorId, spaceId, node, sourceNodeId, artifactVersionId) =>
+          this.readUpstreamContent(actorId, spaceId, node, sourceNodeId, artifactVersionId),
         prepareDelivery: (record, actorId) => {
           const stamped = withExecutionEvent(
             withoutDeliveryDraft(record),
@@ -1631,8 +1634,19 @@ export class ExecutionService {
             scope,
             model: request.payload.model,
             executor: request.payload.executor,
-            inputs: { actorId, ...request.payload.target, items: [] },
-            tools: { kind: 'text-only' },
+            inputs: {
+              actorId,
+              ...request.payload.target,
+              items: upstreamInputsFor(
+                node,
+                this.storage
+                  .listNodes()
+                  .filter((source) => samePlan(source, node.taskId, node.planId, node.revision)),
+              ),
+            },
+            tools: node.handoff.inputRefs.length
+              ? { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() }
+              : { kind: 'text-only' },
             resultIntentTool: {
               ...descriptor,
               name: descriptor.name,
@@ -6575,6 +6589,56 @@ export class ExecutionService {
     return { ...record };
   }
 
+  /** Shared fixed-source reader, called only after the original member/task/space
+   * gates or the remote device+permit gates. Metadata is copied; no file bytes or links are fetched. */
+  private readUpstreamContent(
+    actorId: string,
+    spaceId: string,
+    downstream: ExecutionNodeRecord,
+    sourceNodeId: string,
+    artifactVersionId: string,
+  ): UpstreamContentValue | undefined {
+    if (
+      !downstream.handoff.inputRefs.some(
+        (ref) => ref.sourceNodeId === sourceNodeId && ref.artifactVersionId === artifactVersionId,
+      )
+    )
+      return undefined;
+    const source = this.storage.readNode(nodeRecordKey({ ...downstream, nodeId: sourceNodeId }));
+    if (
+      !source ||
+      !intactNode(source) ||
+      source.nodeId !== sourceNodeId ||
+      !samePlan(source, downstream.taskId, downstream.planId, downstream.revision) ||
+      source.acceptedArtifactVersionId !== artifactVersionId
+    )
+      return undefined;
+    const artifact = source.artifactVersions.find((item) => item.id === artifactVersionId);
+    if (!artifact) return undefined;
+    return {
+      actorId,
+      spaceId,
+      downstream: {
+        taskId: downstream.taskId,
+        planId: downstream.planId,
+        revision: downstream.revision,
+        nodeId: downstream.nodeId,
+      },
+      source: {
+        taskId: source.taskId,
+        planId: source.planId,
+        revision: source.revision,
+        nodeId: source.nodeId,
+      },
+      version: { id: artifact.id, version: artifact.version },
+      content: {
+        ...(artifact.text === undefined ? {} : { text: artifact.text }),
+        links: [...artifact.links],
+        files: artifact.files.map((file) => ({ ...file })),
+      },
+    };
+  }
+
   upstreamContent(
     caller: ExecutionCaller,
     body: unknown,
@@ -6600,60 +6664,14 @@ export class ExecutionService {
         actor.value.actorId,
       );
       if (membership !== 'allowed') return fail('not-found');
-      // The frozen ref must be exactly one of this node's declared inputs.
-      const ref = (downstream.handoff.inputRefs ?? []).find(
-        (input) =>
-          input.sourceNodeId === parsed.value.sourceNodeId &&
-          input.artifactVersionId === parsed.value.artifactVersionId,
+      const value = this.readUpstreamContent(
+        actor.value.actorId,
+        scope,
+        downstream,
+        parsed.value.sourceNodeId,
+        parsed.value.artifactVersionId,
       );
-      if (!ref) return fail('not-found');
-      // Read the source node in the same task.
-      const source = this.storage.readNode(
-        nodeRecordKey({
-          taskId: parsed.value.taskId,
-          planId: parsed.value.planId,
-          revision: parsed.value.revision,
-          nodeId: parsed.value.sourceNodeId,
-        }),
-      );
-      if (!source || !intactNode(source)) return fail('not-found');
-      // The source's current accepted version must be exactly the pinned one:
-      // pending or replaced refs stay a hint and never serve content.
-      if (source.acceptedArtifactVersionId !== parsed.value.artifactVersionId) {
-        return fail('not-found');
-      }
-      const artifact = source.artifactVersions.find(
-        (item) => item.id === parsed.value.artifactVersionId,
-      );
-      if (!artifact) return fail('not-found');
-      return {
-        ok: true,
-        value: {
-          actorId: actor.value.actorId,
-          spaceId: scope,
-          downstream: {
-            nodeId: parsed.value.nodeId,
-            taskId: parsed.value.taskId,
-            planId: parsed.value.planId,
-            revision: parsed.value.revision,
-          },
-          source: {
-            nodeId: parsed.value.sourceNodeId,
-            taskId: parsed.value.taskId,
-            planId: parsed.value.planId,
-            revision: parsed.value.revision,
-          },
-          version: { id: artifact.id, version: artifact.version },
-          content: {
-            ...(artifact.text === undefined ? {} : { text: artifact.text }),
-            // Copy the arrays and file metadata: the domain table returns the
-            // stored objects, and a caller mutating this DTO must not rewrite
-            // the stored fact.
-            links: [...artifact.links],
-            files: artifact.files.map((file) => ({ ...file })),
-          },
-        },
-      };
+      return value ? { ok: true, value } : fail('not-found');
     });
   }
 
