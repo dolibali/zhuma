@@ -378,3 +378,55 @@ test('Host resource source contract: close during an admitted metadata read reje
   await denied(reading);
   assert.equal(h.packageReads, 0);
 });
+
+test('initial remote metadata uses real package qualifications before composition, retains actor and releases only the operation', async () => {
+  const h = await setup({ imported: true });
+  assert.equal(h.persisted, undefined);
+  const q = await h.source.prepareInitialResourceCatalog(h.request, h.locator);
+  assert.equal(q.actorId, 'chen');
+  assert.equal(q.catalog.skills.length, 1);
+  assert.equal(q.catalog.skills[0].policySource.kind, 'asset-package');
+  assert.equal(q.assertCurrent(), undefined);
+  assert.equal(h.persisted, undefined);
+  assert.ok(h.packageReads > 0);
+  q.release();
+  assert.equal(q.signal.aborted, true);
+  assert.throws(q.assertCurrent);
+  assert.equal(h.lifetime.signal.aborted, false);
+  const next = await h.source.prepareInitialResourceCatalog(h.request, h.locator);
+  assert.equal(next.assertCurrent(), undefined);
+  next.release();
+});
+test('initial remote metadata refuses changed source/locator and a late cancelled qualification without manufacturing a Run', async () => {
+  for (const change of [
+    (h) => {
+      h.node.handoff.goal = 'changed';
+    },
+    (h) => {
+      h.locator.nodeId = 'changed';
+    },
+    (h) => h.lifetime.abort(),
+  ]) {
+    const h = await setup();
+    const q = await h.source.prepareInitialResourceCatalog(h.request, h.locator);
+    change(h);
+    assert.throws(q.assertCurrent);
+    q.release();
+    assert.equal(h.persisted, undefined);
+  }
+  const h = await setup(),
+    entered = Promise.withResolvers(),
+    release = Promise.withResolvers(),
+    wait = new AbortController();
+  h.authorize = async () => {
+    entered.resolve();
+    await release.promise;
+    return { ok: true, value: { ...h.locator, actorId: 'chen', items: [] } };
+  };
+  const preparing = h.source.prepareInitialResourceCatalog(h.request, h.locator, wait.signal);
+  await entered.promise;
+  wait.abort();
+  release.resolve();
+  await denied(preparing);
+  assert.equal(h.persisted, undefined);
+});

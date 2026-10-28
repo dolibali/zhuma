@@ -28,7 +28,7 @@ export interface HostRunSources {
   readonly signal: AbortSignal;
   readonly resources?: Pick<
     ReturnType<typeof createHostRunResourceSource>,
-    'prepareResourceCatalog'
+    'prepareResourceCatalog' | 'prepareInitialResourceCatalog'
   >;
   readonly workspaces?: Pick<ReturnType<typeof createHostRunWorkspaces>, 'onChange'>;
   readonly retirementDrain?: NonNullable<ExecutionRunHostPorts['migrationDrain']>;
@@ -113,12 +113,26 @@ export function createHostRunRetirements(owner: NativeWorkSessionService, signal
 }
 
 /** Combine original Host producers. This does not install a writer or drive native work. */
-export function createHostRunSources(ctx: Context, sources: HostRunSources): ExecutionRunHostPorts {
+export function createHostRunSources(
+  ctx: Context,
+  sources: HostRunSources,
+): ExecutionRunHostPorts & {
+  prepareInitialResourceCatalog: NonNullable<
+    HostRunSources['resources']
+  >['prepareInitialResourceCatalog'];
+} {
   const active = () => {
     if (sources.signal.aborted) throw new ExecutionRunError('run-authority-unavailable');
   };
   return {
     signal: sources.signal,
+    prepareInitialResourceCatalog(request, locator, wait) {
+      active();
+      if (!sources.resources) throw new ExecutionRunError('run-authority-unavailable');
+      // The original qualification may complete after cancellation. D owns the
+      // whole promise and must release it; no native composition is fabricated.
+      return sources.resources.prepareInitialResourceCatalog(request, locator, wait);
+    },
     prepareResourceCatalog(request, command) {
       active();
       if (!sources.resources) throw new ExecutionRunError('run-authority-unavailable');
