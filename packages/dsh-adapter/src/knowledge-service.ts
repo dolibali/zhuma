@@ -1,0 +1,448 @@
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { z } from 'zod';
+import type { Context } from '@deepseek-ai/cordis';
+import {
+  canonicalPayload,
+  KNOWLEDGE_LIMITS,
+  KnowledgeLibrariesRequestSchema,
+  KnowledgeListRequestSchema,
+  KnowledgeSearchRequestSchema,
+  KnowledgeReadRequestSchema,
+  type KnowledgeErrorCode,
+  type KnowledgeResult,
+  type KnowledgeLibrary,
+  type KnowledgeLibrariesValue,
+  type KnowledgeListValue,
+  type KnowledgeSearchValue,
+  type KnowledgeReadValue,
+  type KnowledgePageSummary,
+  type KnowledgeVersionRef,
+} from '@zhuma/agent-core';
+import { openExecutionMemberLease, type MemberRequest } from './member-session.js';
+import { scanActorField } from './execution-identity.js';
+import type { ExecutionMemberLease } from './execution-run-authority.js';
+import { spaceDirectoryFor, type OpenedSpaceDirectoryHandle } from './space-directory.js';
+import {
+  openKnowledgeStorage,
+  KnowledgeBytes,
+  type KnowledgeStorage,
+  type KnowledgePageRecord,
+  type KnowledgePublished,
+} from './knowledge-storage.js';
+
+export class KnowledgeError extends Error {
+  constructor(readonly code: KnowledgeErrorCode) {
+    super(code);
+  }
+}
+const unavailable = () => {
+  throw new KnowledgeError('unavailable');
+};
+const digest = (value: unknown) =>
+  createHash('sha256').update(canonicalPayload(value)).digest('hex');
+const decode = (value: Uint8Array) =>
+  new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(value);
+interface Access {
+  readonly actorId: string;
+  readonly spaceId: string;
+  readonly directory: OpenedSpaceDirectoryHandle;
+  readonly lease: ExecutionMemberLease;
+  readonly signal: AbortSignal;
+  check(): void;
+}
+function reference(page: KnowledgePageRecord, version: KnowledgePublished): KnowledgeVersionRef {
+  return {
+    spaceId: page.spaceId,
+    libraryId: page.libraryId,
+    pageId: page.pageId,
+    version: version.version,
+    checksum: version.body.checksum,
+  };
+}
+function summary(page: KnowledgePageRecord, version: KnowledgePublished): KnowledgePageSummary {
+  return {
+    reference: reference(page, version),
+    title: version.title,
+    format: version.format,
+    ownerActorId: page.ownerActorId,
+    pageRevision: page.version,
+    bytes: version.body.bytes,
+    publishedAt: version.publishedAt,
+  };
+}
+function snippet(text: string, query: string): string {
+  const at = text.toLowerCase().indexOf(query.toLowerCase());
+  const start = Math.max(0, Array.from(text.slice(0, Math.max(0, at))).length - 50);
+  const chars = Array.from(text),
+    end = Math.min(chars.length, start + 238);
+  return `${start ? '…' : ''}${chars.slice(start, end).join('')}${end < chars.length ? '…' : ''}`;
+}
+
+/** Original trusted member leases and directory; no caller permission flag is
+ * accepted. A mounts this once and owns shutdown before the DSH providers. */
+export class KnowledgeService {
+  private readonly lifetime = new AbortController();
+  private readonly operations = new Set<Promise<unknown>>();
+  private readonly cursorKey = randomBytes(32);
+  private closing?: Promise<void>;
+  constructor(
+    private readonly ctx: Context,
+    private readonly store: KnowledgeStorage,
+    private readonly bytes: KnowledgeBytes,
+  ) {}
+
+  private run<T>(
+    request: MemberRequest,
+    raw: unknown,
+    signal: AbortSignal | undefined,
+    work: (access: Access) => Promise<T> | T,
+  ): Promise<KnowledgeResult<T>> {
+    if (this.lifetime.signal.aborted)
+      return Promise.resolve({
+        ok: false,
+        error: { code: 'unavailable', message: '知识服务暂不可用。' },
+      });
+    if (this.operations.size >= 32)
+      return Promise.resolve({
+        ok: false,
+        error: { code: 'limit', message: '知识请求超过当前限制。' },
+      });
+    const job = Promise.resolve().then(async (): Promise<KnowledgeResult<T>> => {
+      let lease: ExecutionMemberLease | undefined;
+      const bounded = AbortSignal.any([
+        this.lifetime.signal,
+        ...(signal ? [signal] : []),
+        AbortSignal.timeout(30_000),
+      ]);
+      try {
+        bounded.throwIfAborted();
+        try {
+          lease = await openExecutionMemberLease(this.ctx, request);
+        } catch {
+          throw new KnowledgeError('unauthenticated');
+        }
+        if (scanActorField(raw) !== 'clean') throw new KnowledgeError('invalid');
+        const shape = z.object({ spaceId: z.string().min(1).max(100) }).parse(raw);
+        const directory = spaceDirectoryFor(this.ctx);
+        if (!directory) return unavailable();
+        const current = lease;
+        const joined = AbortSignal.any([bounded, current.signal, directory.signal]);
+        const access: Access = {
+          actorId: current.memberId,
+          spaceId: shape.spaceId,
+          directory,
+          lease: current,
+          signal: joined,
+          check: () => {
+            joined.throwIfAborted();
+            if (spaceDirectoryFor(this.ctx) !== directory || directory.signal.aborted)
+              return unavailable();
+            try {
+              current.assertCurrent(shape.spaceId);
+            } catch {
+              throw new KnowledgeError('forbidden');
+            }
+            if (
+              !directory.space(shape.spaceId) ||
+              !directory.isMember(shape.spaceId, current.memberId)
+            )
+              throw new KnowledgeError('not-found');
+          },
+        };
+        access.check();
+        const value = await work(access);
+        access.check();
+        return { ok: true, value: structuredClone(value) };
+      } catch (error) {
+        const code: KnowledgeErrorCode = bounded.aborted
+          ? 'cancelled'
+          : error instanceof KnowledgeError
+            ? error.code
+            : error instanceof z.ZodError
+              ? 'invalid'
+              : 'unavailable';
+        return {
+          ok: false,
+          error: {
+            code,
+            message:
+              code === 'invalid'
+                ? '知识请求格式无效。'
+                : code === 'not-found'
+                  ? '知识条目不存在或无权读取。'
+                  : code === 'conflict'
+                    ? '知识已变化，请刷新后重试。'
+                    : code === 'limit'
+                      ? '知识请求超过当前限制，请缩小范围。'
+                      : code === 'cancelled'
+                        ? '知识操作已取消。'
+                        : code === 'unauthenticated'
+                          ? '请先登录成员账号。'
+                          : code === 'forbidden'
+                            ? '当前账号无权执行此操作。'
+                            : '知识服务暂不可用。',
+          },
+        };
+      } finally {
+        lease?.release();
+      }
+    });
+    this.operations.add(job);
+    void job.then(
+      () => this.operations.delete(job),
+      () => this.operations.delete(job),
+    );
+    return job;
+  }
+
+  private library(access: Access, libraryId: string): KnowledgeLibrary {
+    access.check();
+    const space = access.directory.space(access.spaceId);
+    if (!space || libraryId !== space.id) throw new KnowledgeError('not-found');
+    return { id: space.id, spaceId: space.id, kind: space.kind, name: space.name, canCreate: true };
+  }
+  private page(access: Access, libraryId: string, pageId: string): KnowledgePageRecord {
+    const library = this.library(access, libraryId),
+      page = this.store.get(access.spaceId, pageId);
+    if (
+      !page ||
+      page.spaceId !== access.spaceId ||
+      page.libraryId !== library.id ||
+      (library.kind === 'personal' && page.ownerActorId !== access.actorId)
+    )
+      throw new KnowledgeError('not-found');
+    return page;
+  }
+  private fixed(
+    access: Access,
+    ref: KnowledgeVersionRef,
+    visited = new Set<string>(),
+    budget = { remaining: 64 },
+  ): { page: KnowledgePageRecord; version: KnowledgePublished } {
+    if (ref.spaceId !== access.spaceId) throw new KnowledgeError('not-found');
+    const key = canonicalPayload(ref);
+    if (visited.has(key) || budget.remaining-- <= 0) return unavailable();
+    visited.add(key);
+    const page = this.page(access, ref.libraryId, ref.pageId),
+      version = page.versions.find((item) => item.version === ref.version);
+    if (!version || version.body.checksum !== ref.checksum) throw new KnowledgeError('not-found');
+    for (const source of version.sources) this.fixed(access, source, new Set(visited), budget);
+    return { page, version };
+  }
+  private published(
+    access: Access,
+    libraryId: string,
+  ): { page: KnowledgePageRecord; version: KnowledgePublished }[] {
+    const library = this.library(access, libraryId);
+    return this.store
+      .pages(access.spaceId)
+      .filter(
+        (page) =>
+          page.libraryId === library.id &&
+          (library.kind !== 'personal' || page.ownerActorId === access.actorId) &&
+          page.versions.length > 0,
+      )
+      .map((page) => {
+        const version = page.versions.at(-1)!;
+        this.fixed(access, reference(page, version));
+        return { page, version };
+      });
+  }
+  private async body(
+    access: Access,
+    page: KnowledgePageRecord,
+    version: KnowledgePublished,
+    part: 'body' | 'original',
+  ): Promise<Uint8Array> {
+    const ref = reference(page, version),
+      original = digest(version);
+    const blob = part === 'body' ? version.body : version.original;
+    if (!blob) throw new KnowledgeError('not-found');
+    const check = () => {
+      access.check();
+      const current = this.fixed(access, ref);
+      if (digest(current.version) !== original || current.page.ownerActorId !== page.ownerActorId)
+        throw new KnowledgeError('conflict');
+    };
+    check();
+    const result = await this.bytes.read(blob, access.signal, check);
+    check();
+    return result;
+  }
+
+  libraries(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeLibrariesValue>> {
+    return this.run(request, raw, signal, (access) => {
+      KnowledgeLibrariesRequestSchema.parse(raw);
+      return {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        libraries: [this.library(access, access.spaceId)],
+      };
+    });
+  }
+  list(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeListValue>> {
+    return this.run(request, raw, signal, (access) => {
+      const input = KnowledgeListRequestSchema.parse(raw);
+      const pages = this.published(access, input.libraryId)
+        .map(({ page, version }) => summary(page, version))
+        .sort(
+          (a, b) =>
+            a.title.localeCompare(b.title) || a.reference.pageId.localeCompare(b.reference.pageId),
+        );
+      const binding = {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        libraryId: input.libraryId,
+        query: '',
+        fingerprint: digest(pages),
+      };
+      const offset = input.cursor ? this.cursor(input.cursor, binding) : 0;
+      const end = Math.min(offset + input.limit, pages.length);
+      return {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        libraryId: input.libraryId,
+        pages: pages.slice(offset, end),
+        nextCursor: end < pages.length ? this.issueCursor(binding, end) : null,
+      };
+    });
+  }
+  search(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeSearchValue>> {
+    return this.run(request, raw, signal, async (access) => {
+      const input = KnowledgeSearchRequestSchema.parse(raw);
+      const pages = input.libraryIds.flatMap((libraryId) => this.published(access, libraryId));
+      if (
+        pages.length > KNOWLEDGE_LIMITS.searchPages ||
+        pages.reduce((n, { version }) => n + version.body.bytes, 0) > KNOWLEDGE_LIMITS.searchBytes
+      )
+        throw new KnowledgeError('limit');
+      const terms = input.query.normalize('NFKC').toLowerCase().split(/\s+/u),
+        hits: { value: KnowledgeSearchValue['hits'][number]; score: number }[] = [];
+      for (const { page, version } of pages) {
+        const text = decode(await this.body(access, page, version, 'body'));
+        const title = version.title.normalize('NFKC').toLowerCase(),
+          body = text.normalize('NFKC').toLowerCase();
+        if (!terms.every((term) => title.includes(term) || body.includes(term))) continue;
+        const score = terms.filter((term) => title.includes(term)).length;
+        hits.push({
+          score,
+          value: {
+            ...summary(page, version),
+            snippet: snippet(text, terms.find((term) => body.includes(term)) ?? terms[0]!),
+          },
+        });
+      }
+      hits.sort(
+        (a, b) =>
+          b.score - a.score ||
+          a.value.title.localeCompare(b.value.title) ||
+          a.value.reference.pageId.localeCompare(b.value.reference.pageId),
+      );
+      return {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        libraryIds: input.libraryIds,
+        query: input.query,
+        hits: hits.slice(0, input.limit).map((hit) => hit.value),
+        complete: true,
+      };
+    });
+  }
+  read(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeReadValue>> {
+    return this.run(request, raw, signal, async (access) => {
+      const input = KnowledgeReadRequestSchema.parse(raw),
+        page = this.page(access, input.libraryId, input.pageId),
+        version = page.versions.find((item) => item.version === input.version);
+      if (!version || (input.checksum && input.checksum !== version.body.checksum))
+        throw new KnowledgeError('not-found');
+      const bytes = await this.body(access, page, version, input.part),
+        start = input.offset;
+      if (start > bytes.length || (start < bytes.length && (bytes[start]! & 0xc0) === 0x80))
+        throw new KnowledgeError('invalid');
+      let end = Math.min(start + input.length, bytes.length);
+      while (end > start && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+      if (end === start && start < bytes.length) throw new KnowledgeError('invalid');
+      const blob = input.part === 'body' ? version.body : version.original!;
+      return {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        reference: reference(page, version),
+        part: input.part,
+        title: version.title,
+        format: version.format,
+        text: decode(bytes.subarray(start, end)),
+        offset: start,
+        length: end - start,
+        nextOffset: end,
+        totalBytes: bytes.length,
+        partChecksum: blob.checksum,
+        sources: version.sources,
+      };
+    });
+  }
+
+  private issueCursor(binding: object, offset: number): string {
+    const payload = Buffer.from(
+      JSON.stringify({ binding, offset, expires: Date.now() + 120_000 }),
+    ).toString('base64url');
+    return `${payload}.${createHmac('sha256', this.cursorKey).update(payload).digest('base64url')}`;
+  }
+  private cursor(token: string, binding: object): number {
+    try {
+      const [payload, signature, ...extra] = token.split('.');
+      if (!payload || !signature || extra.length) throw Error();
+      const actual = Buffer.from(signature, 'base64url'),
+        expected = createHmac('sha256', this.cursorKey).update(payload).digest();
+      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw Error();
+      const value = z
+        .strictObject({
+          binding: z.unknown(),
+          offset: z.number().int().nonnegative(),
+          expires: z.number(),
+        })
+        .parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
+      if (
+        value.expires < Date.now() ||
+        canonicalPayload(value.binding) !== canonicalPayload(binding)
+      )
+        throw Error();
+      return value.offset;
+    } catch {
+      throw new KnowledgeError('conflict');
+    }
+  }
+  close(): Promise<void> {
+    this.closing ??= (async () => {
+      this.lifetime.abort();
+      await Promise.allSettled([...this.operations]);
+      await this.bytes.idle();
+      await this.store.close();
+    })();
+    return this.closing;
+  }
+}
+export async function openKnowledgeService(ctx: Context): Promise<KnowledgeService> {
+  const store = await openKnowledgeStorage(ctx);
+  try {
+    return new KnowledgeService(ctx, store, new KnowledgeBytes(ctx.attachments));
+  } catch {
+    await store.close();
+    throw new KnowledgeError('unavailable');
+  }
+}
