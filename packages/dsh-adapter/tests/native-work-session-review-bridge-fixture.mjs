@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { host } from './execution-review-service-fixture.mjs';
-import { checked } from './execution-service-run-fixture.mjs';
+import { checked, open } from './execution-service-run-fixture.mjs';
 import { boot, ScriptedAdapter, response } from './native-work-session-fixture.mjs';
 import { toolResponse } from './native-work-session-input-fixture.mjs';
 import { createNativeReviewBridge } from '../dist/native-work-session-review-bridge.js';
@@ -34,6 +34,7 @@ export async function bootReviewBridge(root, after, options = {}) {
             },
       assertReviewConfiguration(_member, _space, _node, saved) {
         assert.deepEqual(saved, compositions.get(saved.configurationId));
+        if (options.refuseAdmission) throw Error('SYNTHETIC_REVIEW_CONFIGURATION_REFUSAL');
         return undefined;
       },
     },
@@ -235,6 +236,7 @@ export async function bootReviewBridge(root, after, options = {}) {
     });
   }
   return {
+    root,
     d,
     native,
     owner,
@@ -249,4 +251,57 @@ export async function bootReviewBridge(root, after, options = {}) {
     submitTrace,
     waitFor,
   };
+}
+
+/** Reopen the same genuine D JSON and native Session with fresh owners and no
+ * claim consumption. No model or resource adoption is allowed in cold cleanup. */
+export async function reopenStoppedReviewBridge(warm, after) {
+  assert.equal((await warm.bridge.closeBeforeNative()).status, 'settled');
+  await warm.owner.close();
+  await warm.native.close();
+  await warm.d.close();
+  const d = await open(warm.d.root, { seed: false, workbench: warm.d.snapshot });
+  after(() => d.close());
+  const source = new AbortController(),
+    adapter = new ScriptedAdapter(),
+    bridge = createNativeReviewBridge({
+      execution: d.service,
+      signal: source.signal,
+      host: {
+        async prepareReview() {
+          throw Error('Cold cleanup must never prepare another review.');
+        },
+        async adoptReviewResources() {
+          throw Error('Cold cleanup must never adopt another resource scope.');
+        },
+      },
+    });
+  const native = await boot(
+    join(warm.root, 'native'),
+    adapter,
+    () => {
+      throw Error('Cold cleanup must never create or resume an Agent.');
+    },
+    {},
+    bridge.reviewPorts,
+  );
+  after(() => native.close());
+  createNativeFixedResultIssuer(
+    native.ctx,
+    native.service,
+    native.runtime,
+    {
+      assertGrant() {
+        throw Error('Cold cleanup cannot drive an author.');
+      },
+    },
+    {
+      readRunComposition() {
+        throw Error('Cold cleanup cannot read author composition.');
+      },
+    },
+  );
+  bridge.bindNative(native.service, native.runtime);
+  after(() => bridge.closeBeforeNative());
+  return { d, native, bridge, source, adapter };
 }

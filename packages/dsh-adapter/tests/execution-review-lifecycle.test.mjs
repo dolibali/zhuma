@@ -95,6 +95,62 @@ test('review lifecycle: prepared metadata alone cannot receive native events', (
   );
 });
 
+test('review lifecycle: preserving an unadmitted marker never permits two admitted attempts in the same lane', () => {
+  const f = reserved();
+  const scope = {
+    ...f.scope,
+    runId: 'new-review-run',
+    segmentId: 'new-review-segment',
+    generation: 2,
+  };
+  const composition = freezeExecutionReviewComposition({ ...f, scope });
+  const request = {
+    requestId: 'new-review-request',
+    expectedReviewVersion: 1,
+    target: scope.review.target,
+    reviewerId: 'qa',
+    controllerMemberId: 'chen',
+    configurationId: composition.configurationId,
+    newRunId: scope.runId,
+    newSegmentId: scope.segmentId,
+  };
+  // This set is a pure helper contract. Only the Service may derive it from
+  // the original queued Stop; no public request accepts it.
+  const next = prepareExecutionReview(f.record, f.applied, request, new Set([f.scope.runId]));
+  assert.deepEqual(next.record.nativeExecution.review.attempts[0], f.attempt);
+  const live = admitExecutionReview(next.record, {
+    scope,
+    expectedAttemptVersion: 1,
+    composition,
+  }).record;
+  assert.equal(readExecutionReviewState(live).attempts[1].status, 'requested');
+  assert.throws(
+    () =>
+      admitExecutionReview(live, {
+        scope: f.scope,
+        expectedAttemptVersion: 1,
+        composition: f.composition,
+      }),
+    { code: 'review-state-invalid' },
+  );
+  assert.throws(
+    () =>
+      prepareExecutionReview(
+        live,
+        f.applied,
+        {
+          ...request,
+          requestId: 'third-review',
+          expectedReviewVersion: live.nativeExecution.review.version,
+          newRunId: 'third-run',
+          newSegmentId: 'third-segment',
+        },
+        new Set([f.scope.runId, scope.runId]),
+      ),
+    { code: 'review-attempt-budget' },
+  );
+});
+
 test('review lifecycle: exact native receipt/acceptance is independent, while idle and completed never create a vote or settle resources', () => {
   let { record } = admitted();
   record = apply(record, 'received').record;

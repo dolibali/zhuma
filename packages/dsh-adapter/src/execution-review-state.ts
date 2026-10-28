@@ -103,6 +103,7 @@ export function prepareExecutionReview(
   record: ExecutionNodeRecord,
   appliedInput: AppliedPlan,
   input: unknown,
+  stoppedPreparedRunIds: ReadonlySet<string> = new Set(),
 ): {
   readonly disposition: 'applied' | 'replayed';
   readonly record: ExecutionReviewNode;
@@ -198,6 +199,11 @@ export function prepareExecutionReview(
   if (
     state?.attempts.some(
       (attempt) =>
+        !(
+          attempt.status === 'prepared' &&
+          attempt.version === 1 &&
+          stoppedPreparedRunIds.has(attempt.scope.runId)
+        ) &&
         attempt.scope.review.target.roundId === target.roundId &&
         attempt.scope.review.target.artifactVersionId === target.artifactVersionId &&
         attempt.scope.review.principal.reviewerRef.id === reviewer.id,

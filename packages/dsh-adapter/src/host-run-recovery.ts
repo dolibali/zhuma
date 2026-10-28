@@ -1,6 +1,7 @@
-import { canonicalPayload, type ExecutionNodeRecord } from '@zhuma/agent-core';
+import { canonicalPayload, isTerminalRunStatus, type ExecutionNodeRecord } from '@zhuma/agent-core';
 import {
   ExecutionRunError,
+  currentExecutionRun,
   executionRunScope,
   readExecutionRunState,
 } from './execution-run-state.js';
@@ -15,6 +16,58 @@ import { NativeWorkError } from './native-work-session-contract.js';
 import type { NativeWorkSessionService } from './native-work-session.js';
 import type { ExecutionRunAuthorities } from './execution-run-authority.js';
 import { nativeScopeKey } from './native-work-session-record.js';
+import { ExecutionWorkflowError } from './execution-workflow-contract.js';
+import type { WorkflowLocation, WorkflowStartReservation } from './execution-workflow-contract.js';
+
+/** Original reservation metadata only; this cannot authorize or certify a drain. */
+export function hostWorkflowRecoveryBinding(
+  node: ExecutionNodeRecord | undefined,
+  reservation: WorkflowStartReservation,
+  location: WorkflowLocation,
+  actorId: string,
+) {
+  const state = node && readExecutionRunState(node);
+  const receipt = state?.receipts.find((item) => item.requestId === reservation.requestId);
+  const run = receipt && state?.runs.find((item) => item.attempt.id === receipt.runId);
+  const current = node && currentExecutionRun(node);
+  if (
+    !node ||
+    !run ||
+    !current ||
+    node.taskId !== location.taskId ||
+    node.planId !== location.planId ||
+    node.revision !== location.revision ||
+    node.nodeId !== reservation.nodeId ||
+    run.attempt.id !== reservation.newRunId ||
+    run.segmentId !== reservation.newSegmentId ||
+    [run, current].some(
+      (item) =>
+        item.actorId !== actorId ||
+        item.spaceId !== location.spaceId ||
+        item.resources !== 'settled' ||
+        !isTerminalRunStatus(item.attempt.status),
+    ) ||
+    current.attempt.generation < run.attempt.generation ||
+    run.dispatch !== 'received' ||
+    !run.attempt.acknowledged ||
+    !run.attempt.sessionId ||
+    !run.attempt.executorRunId
+  )
+    throw new ExecutionWorkflowError('workflow-recovery-required');
+  return {
+    scope: executionRunScope(node, run),
+    run,
+    currentRunId: current.attempt.id,
+    control: canonicalPayload({
+      command: node.command,
+      handoff: node.handoff,
+      currentRoundId: node.currentRoundId,
+      stateVersion: state!.version,
+      run,
+      current,
+    }),
+  };
+}
 
 /** Rebuild one original physical certificate outside the domain command queue.
  * Fresh authorization/target checks are supplied by the explicit Host command.

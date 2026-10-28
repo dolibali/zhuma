@@ -69,7 +69,7 @@ export function assertExecutionReviewRecord(
     return refuse('review-state-invalid');
   const runIds = new Set(author?.runs.map((run) => run.attempt.id));
   const segments = new Set(author?.runs.map((run) => run.segmentId));
-  const lanes = new Set<string>();
+  const lanes = new Map<string, ExecutionReviewAttempt>();
   const nativeIds = new Set(
     author?.runs.flatMap((run) =>
       [run.attempt.sessionId, run.attempt.executorRunId].filter((id) => id !== undefined),
@@ -85,6 +85,7 @@ export function assertExecutionReviewRecord(
       target.artifactVersionId,
       principal.reviewerRef.id,
     ]);
+    const previous = lanes.get(lane);
     if (
       scope.taskId !== record.taskId ||
       scope.planId !== record.planId ||
@@ -101,12 +102,15 @@ export function assertExecutionReviewRecord(
       principal.reviewerRef.id === artifact.submittedBy ||
       runIds.has(scope.runId) ||
       segments.has(scope.segmentId) ||
-      lanes.has(lane)
+      (previous !== undefined && !(previous.status === 'prepared' && previous.version === 1))
     )
       return refuse('review-state-invalid');
     runIds.add(scope.runId);
     segments.add(scope.segmentId);
-    lanes.add(lane);
+    // A fenced, never-admitted reservation stays as immutable history when the
+    // original Service authorizes a new scope. Two admitted attempts in one
+    // lane remain invalid; parsing these records does not authorize a retry.
+    lanes.set(lane, attempt);
     if (attempt.status !== 'prepared') {
       let saved;
       try {

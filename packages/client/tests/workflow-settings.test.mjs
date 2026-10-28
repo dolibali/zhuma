@@ -43,6 +43,7 @@ const { emptyWorkbench } = await import('@zhuma/agent-core');
 const { createNativeRunApi } = await import('../dist/run/api.js');
 const { WorkflowControls } = await import('../dist/workflow/WorkflowControls.js');
 const { createWorkflowApi } = await import('../dist/workflow/api.js');
+const { ExecutionError } = await import('../dist/execution/ExecutionApi.js');
 const { WorkspaceApprovalDialog } = await import('../dist/run/WorkspaceApprovalDialog.js');
 const { SidebarAccountSettingsLauncher } =
   await import('../dist/identity/SidebarAccountSettingsLauncher.js');
@@ -528,6 +529,86 @@ test(
     }
   },
 );
+for (const refusal of [false, true])
+  test(
+    `workflow stopping recovery DOM: explicit original resume ${refusal ? 'retains stopping after refusal' : 'alone accepts the new generation'}`,
+    dom,
+    async (t) => {
+      const model = { provider: 'contract', model: 'model', maxTokens: 4096 };
+      const current = {
+        ...view,
+        state: 'stopping',
+        planStarted: true,
+        intent: { intentId: 'original', generation: 1, version: 3, concurrent: 1 },
+        selection: { model, workspace: { kind: 'text-only' } },
+      };
+      const pending = Promise.withResolvers();
+      t.after(() => pending.resolve(current));
+      const calls = [];
+      const api = {
+        read: async () => current,
+        options: async () => ({
+          ...options,
+          ...current,
+          models: { kind: 'ready', items: [{ id: 'model', label: 'Model', value: model }] },
+        }),
+        start: () => assert.fail('Recovery cannot start another intent'),
+        stop: () => assert.fail('Recovery uses the original resume API'),
+        resume: async (input) => {
+          calls.push(input);
+          return pending.promise;
+        },
+      };
+      const h = await mount(t, WorkflowControls, { target, api });
+      assert.equal(calls.length, 0);
+      await click(button(h, '刷新状态'));
+      assert.equal(calls.length, 0, 'passive reads never recover');
+      await click(button(h, '恢复工作流'));
+      assert.equal(calls.length, 0, 'opening settings is not recovery');
+      const dialog = h.container.querySelector('dialog');
+      assert.ok(dialog);
+      const confirm = button({ container: dialog }, '恢复工作流');
+      assert.equal(confirm.type, 'submit');
+      assert.equal(confirm.disabled, false);
+      await click(confirm);
+      assert.equal(confirm.disabled, true);
+      assert.equal(calls.length, 1);
+      const { requestId, ...input } = calls[0];
+      assert.equal(typeof requestId, 'string');
+      assert.deepEqual(input, {
+        ...target,
+        intentId: 'original',
+        generation: 1,
+        expectedVersion: 3,
+      });
+      await act(async () => {
+        if (refusal)
+          pending.reject(
+            new ExecutionError('workflow-recovery-required', '资源尚未释放，请重试。'),
+          );
+        else
+          pending.resolve({
+            ...current,
+            state: 'running',
+            intent: { ...current.intent, generation: 2, version: 4 },
+          });
+        await tick();
+      });
+      if (refusal) {
+        assert.ok(h.container.querySelector('dialog'));
+        assert.match(h.container.textContent, /正在停止/);
+        assert.match(dialog.querySelector('[role="alert"]').textContent, /尚未释放/);
+        assert.equal(confirm.disabled, false);
+      } else {
+        assert.equal(h.container.querySelector('dialog'), null);
+        assert.match(h.container.textContent, /运行中/);
+        assert.ok(button(h, '停止工作流'));
+      }
+      assert.equal(calls.length, 1);
+      assert.equal(model.maxTokens, 4096);
+    },
+  );
+
 test(
   'settings launcher DOM: binding uses the real owner callback and is released on unmount',
   dom,

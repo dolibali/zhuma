@@ -15,6 +15,7 @@ import {
   assertHostAbsentRetry,
   retireHostUnadmittedScope,
   retireHostSettledScope,
+  hostWorkflowRecoveryBinding,
   type HostAbsentRetirement,
 } from './host-run-recovery.js';
 import {
@@ -829,12 +830,25 @@ export async function openHostRunOwner(
     if (!intent) throw new ExecutionWorkflowError('workflow-not-found');
     const lease = await openExecutionMemberLease(ctx, request);
     const fixed = canonicalPayload(intent);
+    let bound: ReturnType<typeof hostWorkflowRecoveryBinding>[] = [];
     const check = () => {
       active();
       wait?.throwIfAborted();
       lease.assertCurrent(view.location.spaceId);
       if (lease.memberId !== intent.actorId)
         throw new ExecutionWorkflowError('workflow-authority-denied');
+      for (let index = 0; index < bound.length; index++) {
+        const original = bound[index]!;
+        const reservation = intent.starts[index]!;
+        const latest = hostWorkflowRecoveryBinding(
+          execution.readRunNode(original.scope),
+          reservation,
+          view.location,
+          intent.actorId,
+        );
+        if (latest.control !== original.control)
+          throw new ExecutionWorkflowError('workflow-conflict');
+      }
     };
     const fresh = async () => {
       check();
@@ -842,34 +856,28 @@ export async function openHostRunOwner(
       check();
       if (!current.ok || canonicalPayload(current.value.intent) !== fixed)
         throw new ExecutionWorkflowError('workflow-conflict');
+      for (const original of bound) {
+        const allowed = await execution.readRunCompositionInputs(request, {
+          ...view.location,
+          nodeId: original.scope.nodeId,
+        });
+        check();
+        if (!allowed.ok || allowed.value.actorId !== intent.actorId)
+          throw new ExecutionWorkflowError('workflow-authority-denied');
+      }
     };
     try {
       await fresh();
-      // Validate every original reservation before touching any native scope.
-      // Missing/unknown receipts and a superseded attempt remain fail-closed.
-      const bound = intent.starts.map((reservation) => {
-        const node = execution.readRunNode({ ...view.location, nodeId: reservation.nodeId });
-        const state = node && readExecutionRunState(node);
-        const receipt = state?.receipts.find((item) => item.requestId === reservation.requestId);
-        const run = receipt && state?.runs.find((item) => item.attempt.id === receipt.runId);
-        if (
-          !node ||
-          !run ||
-          run.attempt.id !== reservation.newRunId ||
-          run.segmentId !== reservation.newSegmentId ||
-          run.actorId !== intent.actorId ||
-          run.spaceId !== view.location.spaceId ||
-          currentExecutionRun(node)?.attempt.id !== run.attempt.id ||
-          run.dispatch !== 'received' ||
-          !run.attempt.acknowledged ||
-          !run.attempt.sessionId ||
-          !run.attempt.executorRunId ||
-          run.resources !== 'settled' ||
-          !isTerminalRunStatus(run.attempt.status)
-        )
-          throw new ExecutionWorkflowError('workflow-recovery-required');
-        return { scope: executionRunScope(node, run), run };
-      });
+      // Resolve only original receipts. A settled historical reservation needs
+      // D's dedicated cleanup capability, never the current Run's authority.
+      bound = intent.starts.map((reservation) =>
+        hostWorkflowRecoveryBinding(
+          execution.readRunNode({ ...view.location, nodeId: reservation.nodeId }),
+          reservation,
+          view.location,
+          intent.actorId,
+        ),
+      );
       const reviewScopes = (view.reviewResources ?? []).map((resource) => {
         const scope = resource.scope;
         const node = execution.readRunNode(scope);
@@ -891,10 +899,15 @@ export async function openHostRunOwner(
           throw new ExecutionWorkflowError('workflow-recovery-required');
         return scope;
       });
-      for (const { scope, run } of bound) {
+      for (const { scope, run, currentRunId } of bound) {
         await fresh();
         if (retirementDrains?.read(scope)) continue;
-        const cleanup = authorities.cleanupAfterSettlement(locatorFor(scope));
+        const cleanup =
+          currentRunId === scope.runId
+            ? authorities.cleanupAfterSettlement(locatorFor(scope))
+            : authorities.cleanupSettledHistoricalReservation(locatorFor(scope), currentRunId);
+        if (nativeScopeKey(cleanup.scope) !== nativeScopeKey(scope))
+          throw new ExecutionWorkflowError('workflow-recovery-required');
         const assertCleanup = () => {
           check();
           authorities.assertCleanup(cleanup, 'cleanup');
