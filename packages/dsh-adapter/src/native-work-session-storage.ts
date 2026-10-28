@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { NativeWorkSessionService } from './native-work-session.js';
 import { DshNativeWorkRuntime, type NativeDshOptions } from './native-work-session-dsh.js';
 import {
@@ -38,6 +39,15 @@ export const nativeWorkSessionInject = [
   'systemPrompt',
 ] as const;
 
+/** Internal Host-only namespace. The caller must obtain backendId from its
+ * verified backend binding, never a model argument or an arbitrary URL. The
+ * original DSH table and record format are retained; this is not a session DB. */
+export function nativeWorkSessionStorageKey(key: string, backendId?: string): string {
+  if (backendId === undefined) return key;
+  if (!/^[A-Za-z0-9_.:-]{1,200}$/u.test(backendId)) throw new NativeWorkError('invalid-request');
+  return `backend_${createHash('sha256').update(backendId).digest('hex')}:${key}`;
+}
+
 // Same original domain/name/version/table. The old declaration above remains a
 // strict legacy reader for compatibility checks, not a second opened store.
 const reviewAwareDomainSpec = {
@@ -54,18 +64,24 @@ export async function openNativeWorkSessions(
   ctx: Context,
   options: NativeDshOptions,
   reviewPorts?: NativeReviewPorts,
+  backendId?: string,
 ) {
+  // Validate before creating a runtime or opening any provider.
+  nativeWorkSessionStorageKey('', backendId);
   const purpose = reviewPorts && new NativeSessionPurpose(reviewPorts);
   const runtime = new DshNativeWorkRuntime(ctx, options, purpose);
   const domain = await ctx.storageDomain.open(reviewAwareDomainSpec);
   const bindings = domain.table('bindings');
   const storage: NativeWorkStorage = {
     read: (key) => {
-      const value = bindings.get(key);
+      const value = bindings.get(nativeWorkSessionStorageKey(key, backendId));
       return value === undefined ? undefined : readNativeRecord(structuredClone(value));
     },
     write: async (key, value: NativeWorkSessionRecord) => {
-      await bindings.put(key, nativeWorkSessionRecordSchema.parse(structuredClone(value)));
+      await bindings.put(
+        nativeWorkSessionStorageKey(key, backendId),
+        nativeWorkSessionRecordSchema.parse(structuredClone(value)),
+      );
     },
   };
   let enabling: Promise<void> | undefined;
@@ -82,9 +98,12 @@ export async function openNativeWorkSessions(
     purpose
       ? {
           purpose,
-          read: (key) => structuredClone(bindings.get(key)),
+          read: (key) => structuredClone(bindings.get(nativeWorkSessionStorageKey(key, backendId))),
           write: async (key, record) => {
-            await bindings.put(key, nativeReviewAwareRecordSchema.parse(record));
+            await bindings.put(
+              nativeWorkSessionStorageKey(key, backendId),
+              nativeReviewAwareRecordSchema.parse(record),
+            );
           },
           enable,
         }
