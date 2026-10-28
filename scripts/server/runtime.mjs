@@ -2,6 +2,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile, access, symlink, realpath, copyFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -12,7 +13,12 @@ export async function startLocalServer({ sdk, data, host = '127.0.0.1', port = 3
   const lock = JSON.parse(await readFile(join(root, 'runtime.lock.json'), 'utf8'));
   const pin = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sdkRoot, encoding: 'utf8' }).trim();
   if (pin !== lock.upstreams.deepseekHarness.commit) throw new Error('Unexpected SDK revision');
-  const runtime = join(root, '.build/server-runtime');
+  // Code snapshots are separate from profile/data and from another SDK cut.
+  // Rebuilding A's bundle must not rewrite the files a running C probe loaded.
+  const codeDigest = createHash('sha256').update(sdkRoot);
+  for (const file of ['index.js', 'member-web.js', 'client.js'])
+    codeDigest.update(await readFile(join(root, '.build/workbench', file)));
+  const runtime = join(root, '.build/server-runtime', codeDigest.digest('hex'));
   await mkdir(runtime, { recursive: true });
   for (const file of [
     'index.js',
