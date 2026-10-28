@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { canonicalPayload } from '@zhuma/agent-core';
 import type { MemberRequest } from './member-session.js';
 import type { BeginRunRequest } from './execution-service.js';
+import type { HostReviewPreparationRequest } from './host-run-skill-policy.js';
+import type { HostReviewResourceQualification } from './host-run-resource-source.js';
+import type { ExecutionReviewPreparation } from './execution-review-composition.js';
+import { executionReviewScopeSchema } from './execution-review-contract.js';
 import {
   assertExecutionRunCompositionBinding,
   readExecutionRunComposition,
@@ -39,6 +43,12 @@ export type ExecutionInitialResourceLocator = {
 /** Supplied only by the original installed Host. No browser representation exists. */
 export interface ExecutionRunResourceCatalogHost {
   readonly signal: AbortSignal;
+  /** The original passive fixed-review qualification; never a provisional Run or native grant. */
+  prepareReviewResourceCatalog?(
+    originalRequest: MemberRequest,
+    query: HostReviewPreparationRequest,
+    wait?: AbortSignal,
+  ): Promise<HostReviewResourceQualification>;
   prepareResourceCatalog?(
     originalRequest: MemberRequest,
     command: BeginRunRequest,
@@ -319,6 +329,127 @@ export async function withExecutionInitialResourceQualification<T>(
     };
     current();
     const result = await work(Object.freeze({ actorId, catalog, assertCurrent: current }));
+    current();
+    return result;
+  } finally {
+    await Promise.allSettled(assertions);
+    if (typeof release !== 'function') throw new ExecutionRunResourceQualificationCloseError();
+    try {
+      const result: unknown = release.call(qualification);
+      if (result !== undefined) {
+        await Promise.resolve(result);
+        throw new ExecutionRunResourceQualificationCloseError();
+      }
+    } catch {
+      throw new ExecutionRunResourceQualificationCloseError();
+    }
+  }
+}
+
+/** Queue-external qualification of the original independent review preparation.
+ * It retains the original provider until actual release, including late assertions. */
+export async function withExecutionReviewResourceQualification<T>(
+  input: {
+    readonly host: ExecutionRunResourceCatalogHost;
+    readonly ownerSignal: AbortSignal;
+    readonly originalRequest: MemberRequest;
+    readonly query: HostReviewPreparationRequest;
+  },
+  work: (
+    verified: ExecutionRunResourceVerification & {
+      readonly preparation: ExecutionReviewPreparation;
+    },
+  ) => Promise<T>,
+): Promise<T> {
+  const { host, ownerSignal, originalRequest, query } = input;
+  const prepare = host.prepareReviewResourceCatalog;
+  const hostSignal = host.signal;
+  const fingerprint = canonicalPayload(query);
+  const active = () => {
+    if (
+      !(hostSignal instanceof AbortSignal) ||
+      !(ownerSignal instanceof AbortSignal) ||
+      host.signal !== hostSignal ||
+      host.prepareReviewResourceCatalog !== prepare ||
+      hostSignal.aborted ||
+      ownerSignal.aborted ||
+      canonicalPayload(query) !== fingerprint
+    )
+      unavailable();
+  };
+  active();
+  if (typeof prepare !== 'function') unavailable();
+  let qualification: HostReviewResourceQualification;
+  try {
+    qualification = await prepare.call(
+      host,
+      originalRequest,
+      query,
+      AbortSignal.any([ownerSignal, hostSignal]),
+    );
+  } catch {
+    return unavailable();
+  }
+  const release = qualification?.release;
+  const assertions: Promise<unknown>[] = [];
+  try {
+    const signal = qualification?.signal,
+      check = qualification?.assertCurrent,
+      originalCatalog = qualification?.catalog,
+      originalPreparation = qualification?.preparation;
+    if (
+      !(signal instanceof AbortSignal) ||
+      typeof check !== 'function' ||
+      typeof release !== 'function'
+    )
+      unavailable();
+    const scope = executionReviewScopeSchema.safeParse(originalPreparation?.scope);
+    if (
+      !scope.success ||
+      canonicalPayload(scope.data.review.target) !== canonicalPayload(query.target) ||
+      scope.data.review.principal.reviewerRef.id !== query.reviewerRef.id ||
+      scope.data.review.principal.reviewerRef.version !== query.reviewerRef.version
+    )
+      unavailable();
+    const parsed = catalogSchema.safeParse(originalCatalog);
+    if (!parsed.success) unavailable();
+    readExecutionRunResources({
+      sourceVersion: parsed.data.sourceVersion,
+      skills: [],
+      mcp: parsed.data.mcp,
+    });
+    const catalogFingerprint = canonicalPayload(originalCatalog),
+      preparationFingerprint = canonicalPayload(originalPreparation);
+    const preparation = freeze(structuredClone(originalPreparation));
+    const catalog: ExecutionRunResourceCatalog = freeze({
+      sourceVersion: parsed.data.sourceVersion,
+      mcp: parsed.data.mcp,
+      ...(parsed.data.skills === undefined ? {} : { skills: parsed.data.skills }),
+    });
+    const current = (): undefined => {
+      active();
+      if (
+        qualification.signal !== signal ||
+        signal.aborted ||
+        qualification.assertCurrent !== check ||
+        qualification.release !== release ||
+        qualification.catalog !== originalCatalog ||
+        qualification.preparation !== originalPreparation ||
+        canonicalPayload(originalCatalog) !== catalogFingerprint ||
+        canonicalPayload(originalPreparation) !== preparationFingerprint
+      )
+        unavailable();
+      const result: unknown = check.call(qualification);
+      if (result !== undefined) {
+        const pending = Promise.resolve(result);
+        void pending.catch(() => undefined);
+        assertions.push(pending);
+        unavailable();
+      }
+      return undefined;
+    };
+    current();
+    const result = await work(Object.freeze({ catalog, preparation, assertCurrent: current }));
     current();
     return result;
   } finally {
