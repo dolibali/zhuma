@@ -661,22 +661,9 @@ export interface RemoteDeviceValue {
   readonly disposition: 'enrolled' | 'replayed';
   readonly serverTime: number;
 }
-export interface RemoteFileValue {
-  readonly scope: RemoteRunScope;
-  readonly uploadId: string;
-  readonly idempotencyKey: string;
-  readonly status: 'pending' | 'completed' | 'abandoned';
-  readonly file?: z.infer<typeof artifactFile> | undefined;
-  readonly record?: RemoteCompletedNativeFileRecord | undefined;
-}
-export interface RemoteFileReservationValue {
-  readonly scope: RemoteRunScope;
-  /** Private process-owned I/O reservation, never an upload/publication receipt. */
-  readonly reservationId: string;
-  readonly idempotencyKey: string;
-  readonly status: 'reserved';
-  readonly maximumBytes: number;
-}
+export type RemoteFileValue = z.infer<typeof remoteFileValueSchema>;
+/** Private process-owned I/O reservation, never an upload/publication receipt. */
+export type RemoteFileReservationValue = z.infer<typeof remoteFileReservationValueSchema>;
 export interface RemoteRunOperationValues {
   readonly info: RemoteBackendInfo;
   readonly 'register-device': RemoteDeviceValue;
@@ -701,9 +688,9 @@ export interface RemoteRunOperationValues {
     readonly base64: string;
     readonly eof: boolean;
   };
-  readonly 'publish-file': RemoteFileValue | RemoteFileReservationValue;
-  readonly 'file-status': RemoteFileValue | RemoteFileReservationValue;
-  readonly 'abandon-file': RemoteFileValue;
+  readonly 'publish-file': z.infer<(typeof remoteRunValueSchemas)['publish-file']>;
+  readonly 'file-status': z.infer<(typeof remoteRunValueSchemas)['file-status']>;
+  readonly 'abandon-file': z.infer<(typeof remoteRunValueSchemas)['abandon-file']>;
   readonly 'submit-result': {
     readonly scope: RemoteRunScope;
     readonly disposition: 'committed' | 'replayed';
