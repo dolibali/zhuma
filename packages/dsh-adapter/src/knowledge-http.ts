@@ -5,14 +5,25 @@ import { resolveMember } from './member-session.js';
 import { registerProductFetch } from './member-web-transport.js';
 import { readWorkbenchBody, WorkbenchBodyError } from './workbench-http.js';
 
-export const knowledgeReadEndpoints = ['libraries', 'list', 'search', 'read'] as const;
+const knowledgeMethods = {
+  libraries: 'libraries',
+  list: 'list',
+  search: 'search',
+  read: 'read',
+  drafts: 'drafts',
+  draft: 'draft',
+  'save-draft': 'saveDraft',
+  publish: 'publish',
+} as const;
+type Endpoint = keyof typeof knowledgeMethods;
+export const knowledgeEndpoints = Object.keys(knowledgeMethods) as Endpoint[];
 
-/** Four exact product operations; no generic RPC owner or caller-supplied actor. */
+/** Eight exact member operations. Host-only Agent proposals have no browser route. */
 export function openKnowledgeHttp(ctx: Context, current: () => KnowledgeService | undefined) {
   const lifetime = new AbortController();
   const pending = new Set<Promise<Response>>();
   let closing: Promise<void> | undefined;
-  const stops = knowledgeReadEndpoints.map((endpoint) =>
+  const stops = knowledgeEndpoints.map((endpoint) =>
     registerProductFetch(ctx, {
       path: `/api/zhuma-knowledge/${endpoint}`,
       methods: ['POST'],
@@ -25,7 +36,7 @@ export function openKnowledgeHttp(ctx: Context, current: () => KnowledgeService 
       },
     }),
   );
-  async function handle(endpoint: (typeof knowledgeReadEndpoints)[number], request: Request) {
+  async function handle(endpoint: Endpoint, request: Request) {
     let rpcId = '';
     const reply = (result: unknown, status = 200) =>
       Response.json(
@@ -50,7 +61,11 @@ export function openKnowledgeHttp(ctx: Context, current: () => KnowledgeService 
         return fail('invalid', 415);
       const signal = AbortSignal.any([request.signal, lifetime.signal]);
       const envelope = clientRequestSchema.safeParse(
-        await readWorkbenchBody(request, { bodyBytes: 16_384, bodyTimeoutMs: 10_000 }, signal),
+        await readWorkbenchBody(
+          request,
+          { bodyBytes: endpoint === 'save-draft' ? 1024 * 1024 : 16_384, bodyTimeoutMs: 10_000 },
+          signal,
+        ),
       );
       if (!envelope.success || envelope.data.method !== `zhuma-knowledge/${endpoint}`)
         return fail('invalid', 400);
@@ -58,7 +73,7 @@ export function openKnowledgeHttp(ctx: Context, current: () => KnowledgeService 
       signal.throwIfAborted();
       const owner = current();
       return owner
-        ? reply(await owner[endpoint](original, envelope.data.payload, signal))
+        ? reply(await owner[knowledgeMethods[endpoint]](original, envelope.data.payload, signal))
         : fail('unavailable', 503);
     } catch (error) {
       if (error instanceof WorkbenchBodyError)
