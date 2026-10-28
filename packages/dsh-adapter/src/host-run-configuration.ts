@@ -37,7 +37,7 @@ import { describeNativeOutputFileTool } from './native-work-session-output-file-
 import { describeNativeReviewTool } from './native-work-session-review-tool.js';
 import { describeNativeReviewReadTool } from './native-work-session-review-read.js';
 import {
-  assertExecutionReviewComposition,
+  ExecutionReviewCompositionError,
   freezeExecutionReviewComposition,
   readExecutionReviewComposition,
   type ExecutionReviewPreparation,
@@ -148,6 +148,7 @@ export function createHostRunConfiguration(
   const prepareReviewResources = reviewResources?.prepareReviewResourceCatalog;
   const currentReviewCatalog = reviewResources?.reviewCatalog;
   const reviewSignal = options.signal;
+  const readWorkbench = options.readWorkbench;
   function active() {
     const current = ctx.get('llm');
     if (
@@ -196,28 +197,35 @@ export function createHostRunConfiguration(
       !reviewResources ||
       reviewResources.prepareReviewResourceCatalog !== prepareReviewResources ||
       reviewResources.reviewCatalog !== currentReviewCatalog ||
-      options.signal !== reviewSignal
+      options.signal !== reviewSignal ||
+      options.readWorkbench !== readWorkbench
     )
       throw new ExecutionRunError('run-authority-unavailable');
   }
   function assertCurrentReviewComposition(
-    raw: unknown,
+    snapshot: FrozenExecutionReviewComposition,
     current: ExecutionReviewPreparation,
+    synchronousApplied: ExecutionReviewPreparation['applied'],
   ): undefined {
     reviewActive();
     if (!options.resources) throw new ExecutionRunError('run-authority-unavailable');
-    const snapshot = readExecutionReviewComposition(raw);
     if (
       !llm.listProviders().some((provider) => provider.id === snapshot.payload.model.provider) ||
       snapshot.payload.firstMessage.text.length > NATIVE_WORK_LIMITS.messageChars
     )
       throw new ExecutionRunError('run-authority-unavailable');
-    assertExecutionReviewComposition(snapshot, {
+    // Both callers have just validated/frozen this snapshot. Rebuild the current
+    // configuration once; reparsing the same immutable value cannot add freshness.
+    const fresh = freezeExecutionReviewComposition({
       ...current,
       model: snapshot.payload.model,
       tools: reviewTools(),
-      resourceCatalog: options.resources.reviewCatalog(current),
+      // This plan was read in this synchronous call. Comparing it with current
+      // also rejects a preparation that became stale across its final await.
+      resourceCatalog: options.resources.reviewCatalog(current, synchronousApplied),
     });
+    if (canonicalPayload(snapshot) !== canonicalPayload(fresh))
+      throw new ExecutionReviewCompositionError('review-composition-mismatch');
     reviewActive();
     return undefined;
   }
@@ -285,11 +293,8 @@ export function createHostRunConfiguration(
         node.nodeId !== scope.nodeId
       )
         throw new ExecutionRunError('run-authority-denied');
-      return assertCurrentReviewComposition(snapshot, {
-        scope,
-        node,
-        applied: createExecutionHandoff(scope, options.readWorkbench()),
-      });
+      const applied = createExecutionHandoff(scope, readWorkbench.call(options));
+      return assertCurrentReviewComposition(snapshot, { scope, node, applied }, applied);
     },
     async prepareReview(
       request: MemberRequest,
@@ -337,7 +342,11 @@ export function createHostRunConfiguration(
         signal.throwIfAborted();
         qualified.assertCurrent();
         if (!final.ok) throw new ExecutionRunError('run-authority-denied');
-        assertCurrentReviewComposition(composition, final.value);
+        assertCurrentReviewComposition(
+          composition,
+          final.value,
+          createExecutionHandoff(final.value.scope, readWorkbench.call(options)),
+        );
         return composition;
       } finally {
         qualified.release();

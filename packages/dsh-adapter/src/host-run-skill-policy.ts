@@ -10,6 +10,7 @@ import {
   packageFileBytes,
   packageFileText,
   StoredAssetPackageSchema,
+  type AppliedPlan,
   type TeamAsset,
   type Workbench,
 } from '@zhuma/agent-core';
@@ -185,13 +186,14 @@ export function createHostRunSkillPolicies(options: {
   };
   function reviewPolicies(
     preparation: ExecutionReviewPreparation,
+    synchronousApplied?: AppliedPlan,
   ): HostRunSkillPolicyQualification {
     try {
       active();
       if (!readReview || execution.readExpertReviewPreparation !== readReview) unavailable();
       const scope = executionReviewScopeSchema.parse(preparation.scope);
       const applied = AppliedPlanSchema.parse(
-        createExecutionHandoff(scope, readWorkbench.call(options)),
+        synchronousApplied ?? createExecutionHandoff(scope, readWorkbench.call(options)),
       );
       const fingerprint = canonicalPayload(applied);
       const handoffFingerprint = canonicalPayload(preparation.node.handoff);
@@ -207,7 +209,7 @@ export function createHostRunSkillPolicies(options: {
         digest(canonicalPayload(reviewer)) !== scope.review.principal.reviewerRef.digest
       )
         unavailable();
-      const checkSource = () => {
+      const checkSource = (sameCallApplied?: AppliedPlan) => {
         active();
         if (execution.readExpertReviewPreparation !== readReview) unavailable();
         const current = readNode.call(execution, scope);
@@ -224,12 +226,13 @@ export function createHostRunSkillPolicies(options: {
             (item) => item.reviewerId === reviewer.id && item.action !== 'comment',
           ) ||
           canonicalPayload(
-            AppliedPlanSchema.parse(createExecutionHandoff(scope, readWorkbench.call(options))),
+            sameCallApplied ??
+              AppliedPlanSchema.parse(createExecutionHandoff(scope, readWorkbench.call(options))),
           ) !== fingerprint
         )
           unavailable();
       };
-      checkSource();
+      checkSource(synchronousApplied ? applied : undefined);
       const refs = reviewer.resourceBindings?.skillIds ?? [];
       if (new Set(refs).size !== refs.length) unavailable();
       const originals = new Map<string, { raw: unknown; fingerprint: string }>();
@@ -277,7 +280,11 @@ export function createHostRunSkillPolicies(options: {
           return unavailable();
         }
       };
-      assertCurrent();
+      // A synchronous catalog consumes the already fresh plan once. The returned
+      // continuing assertion still ALWAYS reads live sources, including after an
+      // await; the supplied same-call plan is not used by that closure.
+      if (!synchronousApplied) assertCurrent();
+      active();
       return Object.freeze({ policies: Object.freeze(policies), assertCurrent });
     } catch {
       return unavailable();
