@@ -316,3 +316,59 @@ export {
   MemberWorkbenchOperations,
   openMemberWorkbenchOperations,
 } from './member-workbench-operation.js';
+export type {
+  IdentityMemberLifecycleHandle,
+  IdentityMemberLifecycleOptions,
+  IdentityTeamView,
+} from './identity-member-lifecycle.js';
+export {
+  openKnowledgeService,
+  KnowledgeService,
+  KnowledgeError,
+  type KnowledgeServiceOptions,
+} from './knowledge-service.js';
+
+export {
+  MemberLocalExecutionClient,
+  MemberLocalTransportError,
+} from './member-local-execution-client.js';
+export type {
+  MemberLocalClientOptions,
+  MemberLocalTransportCode,
+} from './member-local-execution-client.js';
+export {
+  MemberLocalExecutionProtocol,
+  MemberLocalProtocolError,
+} from './member-local-execution-protocol.js';
+export type {
+  MemberLocalProtocolOptions,
+  MemberLocalAcceptedRun,
+  MemberLocalRunHandle,
+  MemberLocalReadHandle,
+  MemberLocalStopInput,
+  MemberLocalRecoveryInput,
+  MemberLocalPreparedAccept,
+  MemberLocalAcceptInput,
+} from './member-local-execution-protocol.js';
+export { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
+export type {
+  MemberLocalOwnerOptions,
+  MemberLocalOwnerView,
+} from './member-local-execution-owner.js';
+export {
+  MemberLocalExecutionSecrets,
+  MemberLocalSecretError,
+} from './member-local-execution-secrets.js';
+export type {
+  MemberLocalPrivateStore,
+  MemberLocalDeviceIdentity,
+  MemberLocalAcceptSecrets,
+} from './member-local-execution-secrets.js';
+export { createMemberLocalPrivateStore } from './host-member-local-credentials.js';
+export { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';
+export {
+  REMOTE_RUN_UPLOAD_MEDIA_TYPE,
+  REMOTE_RUN_UPLOAD_METHOD,
+  encodeRemoteRunUploadPrefix,
+} from './remote-run-file-transport.js';
+export type { RemoteRunUpload } from './remote-run-files.js';

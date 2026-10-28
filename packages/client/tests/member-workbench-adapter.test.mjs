@@ -71,6 +71,31 @@ test('member adapter contract keeps explicit create intent and idempotency acros
   assert.equal('updatedAt' in f.commands[0].command.task, false);
 });
 
+test('member template adapter captures only saved source IDs and strips local task timestamps', async () => {
+  const f = fixture();
+  const { workflows: _workflows, status: _status, ...seed } = task();
+  const command = {
+    type: 'instantiate-template',
+    input: {
+      templateId: 'template-a',
+      task: { ...seed, id: crypto.randomUUID() },
+      roleBindings: {},
+      resourceBindings: {},
+    },
+  };
+  await assert.rejects(f.api.save(0, command, crypto.randomUUID()), { code: 'unsupported' });
+  await f.api.save(0, command, crypto.randomUUID(), 'create-task');
+  assert.equal('updatedAt' in f.commands[0].command.input.task, false);
+  const input = {
+    templateId: crypto.randomUUID(),
+    sourceTaskId: 'task-a',
+    name: '流程',
+    description: '',
+  };
+  await f.api.saveTemplate(1, input, crypto.randomUUID());
+  assert.deepEqual(f.commands[1].command, { type: 'save-template', input });
+});
+
 test('member adapter contract confirms the saved draft by ID only and blocks unsaved changes', async () => {
   const f = fixture();
   await f.api.snapshot();

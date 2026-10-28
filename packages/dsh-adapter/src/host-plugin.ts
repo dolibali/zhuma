@@ -13,9 +13,17 @@ import { createHostDirectoryLifecycle } from './host-directory-lifecycle.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
 import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
+import { defaultMemberTemplates } from './member-template-catalog.js';
+import { mergeDefaultMemberEngineeringSkills } from './member-engineering-skill-catalog.js';
+
+declare const ZHUMA_PUBLIC_MEMBER_TEMPLATES: unknown;
+declare const ZHUMA_PUBLIC_ENGINEERING_SKILLS: unknown;
 import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import { openHostRunHttp } from './host-run-http.js';
+import { openHostRemoteRunHttp } from './host-remote-run-http.js';
+import { openHostSessionAdmission } from './host-session-admission.js';
+import type { ExecutionService } from './execution-service.js';
 import { openHostRunOwner } from './host-run-owner.js';
 import { openHostWorkflowHttp } from './host-workflow-http.js';
 import { openHostWorkspaceApprovalHttp } from './host-workspace-approval-http.js';
@@ -24,6 +32,15 @@ import { hostTeamCatalogGrantsSchema } from './host-team-catalog.js';
 import { openHostLocalSetup } from './host-local-setup.js';
 import { openHostLocalSetupHttp } from './host-local-setup-http.js';
 import { nativeWorkSessionInject } from './native-work-session-storage.js';
+import { enableMemberWeb } from './member-web-transport.js';
+import { openMemberWebEntry } from './member-web-entry.js';
+import { openIdentityMemberHttp } from './identity-member-http.js';
+import { openHostKnowledge } from './host-knowledge.js';
+import { mountHostSharedBackend } from './host-shared-backend-http.js';
+import type {
+  IdentityMemberLifecycleHandle,
+  IdentityMemberLifecycleOptions,
+} from './identity-member-lifecycle.js';
 import {
   applySpaceDirectory,
   spaceDirectoryFor,
@@ -52,6 +69,9 @@ export const Config = z.strictObject({
   localExecution: hostLocalExecutionSchema.optional(),
   teamCatalog: hostTeamCatalogGrantsSchema.optional(),
   localSetup: z.boolean().optional(),
+  memberWeb: z.boolean().optional(),
+  remoteExecution: z.boolean().optional(),
+  remoteFileUploads: z.literal(true).optional(),
   bodyBytes: z
     .number()
     .int()
@@ -73,6 +93,7 @@ interface IdentityMountConfig {
   readonly bootstrapKey?: string | undefined;
   readonly executionOptions?: IdentityExecutionOptions | undefined;
   readonly initialization?: IdentityInitializationOptions | undefined;
+  readonly lifecycle?: IdentityMemberLifecycleOptions | undefined;
 }
 export const identityPlugin = {
   inject: [...identityInject],
@@ -85,7 +106,13 @@ export const identityPlugin = {
       // B validates the opaque payload before it is ever used as import data.
       imported = record.payload as IdentityImport;
     }
-    await applyIdentity(ctx, imported, config.executionOptions, config.initialization);
+    await applyIdentity(
+      ctx,
+      imported,
+      config.executionOptions,
+      config.initialization,
+      config.lifecycle,
+    );
   },
 };
 
@@ -135,7 +162,19 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   const config = Config.parse(rawConfig);
   if (config.localSetup && config.deploymentMode !== 'multi-member')
     throw new Error('Local member setup requires explicit multi-member mode.');
+  if (config.memberWeb && config.deploymentMode !== 'multi-member')
+    throw new Error('Member Web requires explicit multi-member mode.');
+  if (config.remoteExecution && config.deploymentMode !== 'multi-member')
+    throw new Error('Remote execution requires explicit multi-member mode.');
+  if (config.remoteFileUploads && !config.remoteExecution)
+    throw new Error('Remote file uploads require the explicit shared execution backend.');
   configureDeploymentMode(ctx, config.deploymentMode);
+  if (config.deploymentMode === 'multi-member' && config.localSetup && !config.remoteExecution)
+    mountHostSharedBackend(ctx);
+  if (config.memberWeb) {
+    enableMemberWeb(ctx);
+    openMemberWebEntry(ctx);
+  }
   // Public boot presentation only. Authorization continues to use the Host's own configuration.
   ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
     table.push({
@@ -145,6 +184,9 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         version: 1,
         deploymentMode: config.deploymentMode,
         ...(config.localSetup ? { localSetup: true } : {}),
+        ...(config.localSetup && !config.remoteExecution && config.deploymentMode === 'multi-member'
+          ? { sharedBackend: true }
+          : {}),
       },
     });
   });
@@ -153,6 +195,16 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let closed = false;
   const directoryLifecycle = createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
   let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
+  let knowledge: ReturnType<typeof openHostKnowledge> | undefined;
+  let identityMembers: IdentityMemberLifecycleHandle | undefined;
+  const identityHttp =
+    config.deploymentMode === 'multi-member'
+      ? openIdentityMemberHttp(ctx, () => (closed ? undefined : identityMembers))
+      : undefined;
+  let remoteExecution: ExecutionService | undefined;
+  const remoteHttp = config.remoteExecution
+    ? openHostRemoteRunHttp(ctx, () => (closed ? undefined : remoteExecution))
+    : undefined;
   let runOwner: Awaited<ReturnType<typeof openHostRunOwner>> | undefined;
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
@@ -161,11 +213,16 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let localSetup: ReturnType<typeof openHostLocalSetup> | undefined;
   let localSetupHttp: ReturnType<typeof openHostLocalSetupHttp> | undefined;
   let runClosing: Promise<void> | undefined;
-  const runLifetime = new AbortController();
   let runsClosed = false;
+  const sessionAdmission =
+    config.deploymentMode === 'multi-member'
+      ? openHostSessionAdmission(ctx, () => (closed || runsClosed ? undefined : runOwner))
+      : undefined;
+  const runLifetime = new AbortController();
   function closeRunBridge(): Promise<void> {
     if (runClosing) return runClosing;
     runsClosed = true;
+    remoteExecution = undefined;
     runLifetime.abort();
     const owner = runOwner;
     runOwner = undefined;
@@ -182,11 +239,13 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         },
       );
     const httpClose = runHttp?.close();
+    const remoteClose = remoteHttp?.close();
     const workflowClose = workflowHttp?.close();
     const workspaceClose = workspaceApprovalHttp?.close();
     return (runClosing = Promise.allSettled([
       nativeClose,
       httpClose,
+      remoteClose,
       workflowClose,
       workspaceClose,
     ]).then((results) => {
@@ -200,6 +259,9 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   const beforeClose = async () => {
     closed = true;
+    sessionAdmission?.close();
+    const identityClosing = identityHttp?.close();
+    const knowledgeClosing = knowledge?.close();
     localSetup?.close();
     const setupClosing = localSetupHttp?.close();
     const runs = closeRunBridge();
@@ -213,7 +275,15 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       try {
         await setupClosing;
       } finally {
-        await runs;
+        try {
+          await identityClosing;
+        } finally {
+          try {
+            await knowledgeClosing;
+          } finally {
+            await runs;
+          }
+        }
       }
     }
   };
@@ -248,6 +318,23 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         bootstrapKey: config.identityBootstrapKey,
         executionOptions: { currentDirectoryBinding: directoryLifecycle.currentDirectoryBinding },
         ...(localSetup ? { initialization: localSetup.initialization } : {}),
+        ...(config.deploymentMode === 'multi-member'
+          ? {
+              lifecycle: {
+                publish(handle: IdentityMemberLifecycleHandle) {
+                  identityMembers = handle;
+                  return () => {
+                    if (identityMembers === handle) identityMembers = undefined;
+                  };
+                },
+                reservedAccountIds: () =>
+                  workbench
+                    .readWorkbench()
+                    .participants.filter((item) => item.kind === 'expert')
+                    .map((item) => item.id),
+              },
+            }
+          : {}),
       });
     } catch {
       // The independent fence stays mounted; Cordis retains the identity child's FAILED status.
@@ -293,7 +380,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                 directory: directoryLifecycle.currentDirectory,
               })
             : undefined;
-        const catalog = localSetup
+        const resourceCatalog = localSetup
           ? async (spaceId: string) =>
               localSetup!.hasSetup()
                 ? localSetup!.catalog(spaceId)
@@ -301,6 +388,21 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                   ? configuredCatalog(spaceId)
                   : { experts: [], assets: [] }
           : configuredCatalog;
+        const templates =
+          typeof ZHUMA_PUBLIC_MEMBER_TEMPLATES === 'undefined'
+            ? []
+            : defaultMemberTemplates(ZHUMA_PUBLIC_MEMBER_TEMPLATES);
+        const catalog = async (spaceId: string) => {
+          const resources = (await resourceCatalog?.(spaceId)) ?? { experts: [], assets: [] };
+          const assets =
+            typeof ZHUMA_PUBLIC_ENGINEERING_SKILLS === 'undefined'
+              ? resources.assets
+              : mergeDefaultMemberEngineeringSkills(
+                  resources.assets,
+                  ZHUMA_PUBLIC_ENGINEERING_SKILLS,
+                );
+          return { experts: resources.experts, assets: [...assets, ...templates] };
+        };
         if (closed) {
           await operations?.close();
           return undefined;
@@ -313,7 +415,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             return { assignProjectSpace: current.assignProjectSpace.bind(current) };
           },
           model: workbench.planningModel,
-          ...(catalog ? { catalog } : {}),
+          catalog,
           ...(operations ? { operations: operations.journal } : {}),
         });
       } catch (error) {
@@ -335,6 +437,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     })();
     await memberOpening;
     if (closed) return;
+    knowledge = openHostKnowledge(ctx, directoryLifecycle.currentDirectory);
     // Even if identity failed, mount the member-gated routes. They reject absent
     // identity or directory facts; they never fall back to the owner principal.
     await ctx.plugin(executionPlugin, {
@@ -350,15 +453,32 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
               readWorkbench: workbench.readWorkbench,
               skillPolicies: workbench.createRunSkillPolicies(service),
               localExecution: config.localExecution,
+              remoteOnly: config.remoteExecution === true,
             });
             const opened = await runOpening;
             if (closed || runsClosed) {
               await opened.close();
               return;
             }
+            if (config.remoteExecution) {
+              try {
+                await service.enableRemoteRuns(
+                  config.remoteFileUploads ? { fileUploads: true } : {},
+                );
+              } catch (error) {
+                await opened.close();
+                throw error;
+              }
+              if (closed || runsClosed) {
+                await opened.close();
+                return;
+              }
+              remoteExecution = service;
+            }
             runOwner = opened;
             nativeCtx.effect(() => () => {
               if (runOwner === opened) runOwner = undefined;
+              if (remoteExecution === service) remoteExecution = undefined;
               return opened.close();
             });
           },

@@ -19,7 +19,7 @@ const id = z
   .max(100)
   .regex(/^[\w-]+$/u);
 export const MemberWorkbenchScopeSchema = z.strictObject({ spaceId: id });
-// The server owns status and timestamps. Template instantiation/import is not this command.
+// The server owns status, timestamps and fixed template provenance.
 export const MemberTaskInputSchema = WorkTaskSchema.omit({
   status: true,
   updatedAt: true,
@@ -35,6 +35,26 @@ export const MemberWorkbenchCommandSchema = z.strictObject({
     z.strictObject({ type: z.literal('create-task'), task: MemberTaskInputSchema }),
     z.strictObject({ type: z.literal('update-task'), task: MemberTaskInputSchema }),
     z.strictObject({ type: z.literal('confirm-task'), taskId: id }),
+    z.strictObject({
+      type: z.literal('instantiate-template'),
+      input: z.strictObject({
+        templateId: id,
+        sourceSpaceId: id.optional(),
+        task: MemberTaskInputSchema.omit({ workflows: true }).extend({ id: z.uuid() }),
+        roleBindings: z.record(id, id.nullable()),
+        resourceBindings: z.record(id, id.nullable()),
+      }),
+    }),
+    z.strictObject({
+      type: z.literal('save-template'),
+      input: z.strictObject({
+        templateId: z.uuid(),
+        sourceTaskId: id,
+        sourceSpaceId: id.optional(),
+        name: z.string().trim().min(1).max(160),
+        description: z.string().max(8000),
+      }),
+    }),
   ]),
 });
 export const MemberWorkbenchPlanSchema = PlanRequestSchema.extend({ spaceId: id }).strict();
@@ -44,6 +64,8 @@ export type MemberWorkbenchPlan = z.infer<typeof MemberWorkbenchPlanSchema>;
 /** Trusted Host injection. No browser fields can supply this directory or resource grant. */
 export interface MemberWorkbenchDirectory extends SpaceDirectory {
   membersForSpace(spaceId: string): readonly { readonly id: string; readonly name?: string }[];
+  /** The same live directory's managed personal owner; absence never infers ownership. */
+  administratorForSpace?(spaceId: string): string | undefined;
 }
 export interface MemberWorkbenchCatalog {
   readonly experts: readonly Participant[];

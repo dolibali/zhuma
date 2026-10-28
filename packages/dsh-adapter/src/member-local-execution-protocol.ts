@@ -17,7 +17,10 @@ import {
   type RemoteRunRequest,
   type RemoteRunView,
 } from '@zhuma/agent-core';
-import { MemberLocalExecutionClient } from './member-local-execution-client.js';
+import {
+  MemberLocalExecutionClient,
+  type MemberLocalSourceOptions,
+} from './member-local-execution-client.js';
 import {
   MemberLocalExecutionSecrets,
   type MemberLocalAcceptSecrets,
@@ -76,6 +79,11 @@ export type MemberLocalRecoveryInput = Omit<
 type StopRequest = Extract<RemoteRunRequest, { operation: 'stop' }>;
 export type MemberLocalStopInput = Pick<StopRequest, 'requestId'> &
   Omit<StopRequest['payload'], 'scope'>;
+type PublishRequest = Extract<RemoteRunRequest, { operation: 'publish-file' }>;
+type PublishInput = Omit<
+  Extract<PublishRequest['payload'], { mode: 'publish' }>,
+  'scope' | 'permit'
+>;
 export interface MemberLocalPreparedAccept {
   readonly requestId: string;
   /** Retry explicitly with this same durable intent; never rotate credentials on lost ACK. */
@@ -136,6 +144,12 @@ export class MemberLocalExecutionProtocol {
   }
   get deviceId(): string {
     return this.identity().deviceId;
+  }
+  get supportsFilePublishing(): boolean {
+    this.identity();
+    return ['publish-file', 'file-status', 'abandon-file'].every((operation) =>
+      this.operations.has(operation as RemoteRunOperation),
+    );
   }
   /** Monotonic estimate sampled from this backend; never a new authority. */
   get serverTime(): number {
@@ -213,13 +227,13 @@ export class MemberLocalExecutionProtocol {
     request: Request,
     secret?: string,
     signal?: AbortSignal,
-    options?: { readonly waitForSourceSettlement: true },
+    options?: MemberLocalSourceOptions,
   ): Promise<RemoteRunOperationValue<Request['operation']>>;
   private async signed(
     request: Unsigned,
     secret?: string,
     signal?: AbortSignal,
-    options?: { readonly waitForSourceSettlement: true },
+    options?: MemberLocalSourceOptions,
   ): Promise<unknown> {
     const device = this.identity(),
       parsed = remoteRunRequestSchema.parse({
@@ -242,13 +256,13 @@ export class MemberLocalExecutionProtocol {
     request: Request,
     secret?: string,
     signal?: AbortSignal,
-    options?: { readonly waitForSourceSettlement: true },
+    options?: MemberLocalSourceOptions,
   ): Promise<RemoteRunOperationValue<Request['operation']>>;
   private async call(
     request: RemoteRunRequest,
     secret?: string,
     signal?: AbortSignal,
-    options?: { readonly waitForSourceSettlement: true },
+    options?: MemberLocalSourceOptions,
   ): Promise<unknown> {
     if (this.lifetime.signal.aborted) throw new MemberLocalProtocolError('local-closed');
     const parsed = remoteRunRequestSchema.parse(request),
@@ -509,6 +523,19 @@ export class MemberLocalExecutionProtocol {
   assertStartHandle(run: MemberLocalAcceptedRun): void {
     if (!this.starts.has(run)) throw new MemberLocalProtocolError('remote-recovery-required');
   }
+  /** Same canonical signed command and private drive header. Only its byte
+   * carrier differs; JSON never carries native file bodies. */
+  publishFile(
+    run: MemberLocalRunHandle,
+    payload: PublishInput,
+    data: AsyncIterable<Uint8Array>,
+    signal: AbortSignal,
+  ) {
+    return this.command(run, { operation: 'publish-file', payload }, signal, {
+      waitForSourceSettlement: true,
+      upload: data,
+    });
+  }
   /** The connection's own issued handle is required; matching JSON is rejected.
    * This performs a fresh server request, not a cached local ACL decision. */
   async status(run: MemberLocalReadHandle, signal?: AbortSignal) {
@@ -531,13 +558,13 @@ export class MemberLocalExecutionProtocol {
     run: MemberLocalReadHandle,
     command: Command,
     signal?: AbortSignal,
-    options?: { readonly waitForSourceSettlement: true },
+    options?: MemberLocalSourceOptions,
   ): Promise<RemoteRunOperationValue<Command['operation']>>;
   async command(
     run: MemberLocalReadHandle,
     command: RunCommand,
     signal?: AbortSignal,
-    options?: { readonly waitForSourceSettlement: true },
+    options?: MemberLocalSourceOptions,
   ): Promise<unknown> {
     const secrets = this.accepted.get(run);
     if (!secrets) throw new MemberLocalProtocolError('local-mismatch');
@@ -553,7 +580,7 @@ export class MemberLocalExecutionProtocol {
         'status',
         'cleanup',
         'result-status',
-        ...(run.value.authority === 'commit-only' ? ['submit-result'] : []),
+        ...(run.value.authority === 'commit-only' ? ['submit-result', 'file-status'] : []),
       ].includes(command.operation)
     )
       throw new MemberLocalProtocolError('remote-recovery-required');

@@ -165,3 +165,4 @@ export {
   type MemberTaskInput,
 } from './workbench/member-api.js';
 export { createMemberWorkbenchAdapter } from './workbench/member-adapter.js';
+export type { LocalWorkspaceDirectory } from './run/workspace-directory.js';

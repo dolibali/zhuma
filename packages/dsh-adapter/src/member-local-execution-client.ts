@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
+import {
+  REMOTE_RUN_UPLOAD_MEDIA_TYPE,
+  REMOTE_RUN_UPLOAD_METHOD,
+  encodeRemoteRunUploadPrefix,
+} from './remote-run-file-transport.js';
 
 export type MemberLocalTransportCode =
   'invalid' | 'unavailable' | 'cancelled' | 'limit' | 'rejected' | 'protocol';
@@ -23,6 +28,11 @@ export interface MemberLocalClientOptions {
   readonly timeoutMs?: number;
 }
 const RESPONSE_BYTES = 256 * 1024;
+export interface MemberLocalSourceOptions {
+  readonly waitForSourceSettlement: true;
+  /** Only the original publisher supplies bytes. No model-selected URL or DTO. */
+  readonly upload?: AsyncIterable<Uint8Array>;
+}
 const serverResponse = z.strictObject({
   type: z.literal('server-response'),
   rpcId: z.string(),
@@ -74,7 +84,7 @@ export class MemberLocalExecutionClient {
     decode: (result: unknown) => T,
     signal?: AbortSignal,
     privateHeaders?: HeadersInit,
-    options?: { readonly waitForSourceSettlement: true },
+    options?: MemberLocalSourceOptions,
   ): Promise<T> {
     if (this.lifetime.signal.aborted)
       return Promise.reject(new MemberLocalTransportError('unavailable'));
@@ -95,50 +105,83 @@ export class MemberLocalExecutionClient {
     const work = Promise.resolve().then(async () => {
       bounded.throwIfAborted();
       const rpcId = randomUUID(),
-        body = JSON.stringify(
-          clientRequestSchema.parse({ type: 'client-request', method, rpcId, payload }),
-        );
+        envelope = clientRequestSchema.parse({ type: 'client-request', method, rpcId, payload }),
+        body = JSON.stringify(envelope);
       if (Buffer.byteLength(body) > RESPONSE_BYTES) throw new MemberLocalTransportError('limit');
       const authorization = await this.options.authentication(bounded);
       bounded.throwIfAborted();
       const headers = new Headers(authorization);
       for (const [name, value] of scopedHeaders) headers.set(name, value);
-      headers.set('content-type', 'application/json');
-      const response = await fetch(`${this.origin}/api/${method}`, {
-        method: 'POST',
-        headers,
-        body,
-        signal: bounded,
-        redirect: 'error',
-        cache: 'no-store',
-      });
-      if (!response.ok) throw new MemberLocalTransportError('rejected');
-      const reader = response.body?.getReader();
-      if (!reader) throw new MemberLocalTransportError('protocol');
-      let size = 0;
-      const chunks: Uint8Array[] = [];
+      if (options?.upload && method !== REMOTE_RUN_UPLOAD_METHOD)
+        throw new MemberLocalTransportError('invalid');
+      const uploading = options?.upload
+        ? this.upload(encodeRemoteRunUploadPrefix(envelope), options.upload, bounded)
+        : undefined;
+      headers.set('content-type', uploading ? REMOTE_RUN_UPLOAD_MEDIA_TYPE : 'application/json');
       try {
-        for (;;) {
-          bounded.throwIfAborted();
-          const next = await reader.read();
-          if (next.done) break;
-          size += next.value.byteLength;
-          if (size > RESPONSE_BYTES) throw new MemberLocalTransportError('limit');
-          chunks.push(next.value);
+        const request: RequestInit & { duplex?: 'half' } = {
+          method: 'POST',
+          headers,
+          body: uploading
+            ? new ReadableStream<Uint8Array>(
+                {
+                  async pull(controller) {
+                    try {
+                      const next = await uploading.next();
+                      if (next.done) controller.close();
+                      else controller.enqueue(next.value);
+                    } catch (error) {
+                      controller.error(error);
+                    }
+                  },
+                  async cancel() {
+                    await uploading.return();
+                  },
+                },
+                { highWaterMark: 0 },
+              )
+            : body,
+          ...(uploading ? { duplex: 'half' as const } : {}),
+          signal: bounded,
+          redirect: 'error',
+          cache: 'no-store',
+        };
+        const response = await fetch(`${this.origin}/api/${method}`, {
+          ...request,
+        });
+        if (!response.ok) throw new MemberLocalTransportError('rejected');
+        const reader = response.body?.getReader();
+        if (!reader) throw new MemberLocalTransportError('protocol');
+        let size = 0;
+        const chunks: Uint8Array[] = [];
+        try {
+          for (;;) {
+            bounded.throwIfAborted();
+            const next = await reader.read();
+            if (next.done) break;
+            size += next.value.byteLength;
+            if (size > RESPONSE_BYTES) throw new MemberLocalTransportError('limit');
+            chunks.push(next.value);
+          }
+        } finally {
+          await reader.cancel().catch(() => undefined);
+          reader.releaseLock();
         }
+        bounded.throwIfAborted();
+        const bytes = Buffer.concat(chunks, size);
+        const envelope = serverResponse.parse(
+          JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+        );
+        if (envelope.rpcId !== rpcId) throw new MemberLocalTransportError('protocol');
+        const value = decode(envelope.result);
+        bounded.throwIfAborted();
+        return value;
       } finally {
-        await reader.cancel().catch(() => undefined);
-        reader.releaseLock();
+        // fetch returning/aborting is not native byte-source drain. In
+        // particular an uncooperative pending next() remains owned until it
+        // and the source's original return() really settle.
+        await uploading?.return();
       }
-      bounded.throwIfAborted();
-      const bytes = Buffer.concat(chunks, size);
-      const envelope = serverResponse.parse(
-        JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
-      );
-      if (envelope.rpcId !== rpcId) throw new MemberLocalTransportError('protocol');
-      const value = decode(envelope.result);
-      bounded.throwIfAborted();
-      return value;
     });
     this.pending.add(work);
     void work.then(
@@ -157,6 +200,31 @@ export class MemberLocalExecutionClient {
         throw new MemberLocalTransportError('unavailable');
       },
     );
+  }
+  private async *upload(
+    prefix: Uint8Array,
+    source: AsyncIterable<Uint8Array>,
+    signal: AbortSignal,
+  ): AsyncGenerator<Uint8Array, void, unknown> {
+    signal.throwIfAborted();
+    yield prefix;
+    signal.throwIfAborted();
+    const iterator = source[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        signal.throwIfAborted();
+        const next = await iterator.next();
+        signal.throwIfAborted();
+        if (next.done) break;
+        if (!(next.value instanceof Uint8Array)) throw new MemberLocalTransportError('invalid');
+        for (let offset = 0; offset < next.value.byteLength; offset += 65536) {
+          signal.throwIfAborted();
+          yield next.value.subarray(offset, offset + 65536);
+        }
+      }
+    } finally {
+      await iterator.return?.();
+    }
   }
   private wait<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {

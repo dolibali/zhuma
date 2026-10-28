@@ -39,3 +39,10 @@ export {
   MemberSessionView,
   type MemberSessionBoundaryProps,
 } from './MemberSessionBoundary.js';
+export { createIdentityLifecycleApi, IdentityLifecycleError } from './lifecycle-api.js';
+export type {
+  RegistrationInput,
+  RegisterAccount,
+  MemberTeam,
+  TeamMembers,
+} from './lifecycle-api.js';

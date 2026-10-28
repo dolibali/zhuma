@@ -138,13 +138,15 @@ export type NativeRunPanelView =
 export interface NativeRunPanelProps {
   readonly target: NativeRunTarget;
   readonly view: NativeRunPanelView;
-  readonly busy?: 'start' | 'send' | 'stop' | 'refresh' | 'history' | undefined;
+  readonly busy?: 'start' | 'send' | 'stop' | 'refresh' | 'history' | 'open' | undefined;
   readonly error?: string | undefined;
   /** Ephemeral unsent-input presence only. No draft text or persistence crosses this seam. */
   onDirtyChange?: ((dirty: boolean) => void) | undefined;
   /** Embedded workspaces can place their close action beside the node title. */
   onClose?: (() => void) | undefined;
   onManageWorkspaces?: (() => void) | undefined;
+  /** Explicit navigation to the same authorized native Session, never a start. */
+  onOpenSession?: (() => Promise<void>) | undefined;
   onSelectionChange(selection: NativeRunSelection): void;
   onStart(selection: NativeRunSelection): Promise<void>;
   onSend(text: string, mode: NativeRunSendMode): Promise<void>;

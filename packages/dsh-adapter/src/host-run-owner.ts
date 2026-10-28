@@ -151,10 +151,15 @@ export async function openHostRunOwner(
     readonly signal: AbortSignal;
     readonly skillPolicies: ReturnType<typeof createHostRunSkillPolicies>;
     readonly localExecution?: HostLocalExecutionConfig | undefined;
+    /** Shared backend owns facts/permissions only; never a native driver. */
+    readonly remoteOnly?: boolean;
     readWorkbench(): Workbench;
   },
 ) {
   const execution = options.execution;
+  const assertNativeDrive = () => {
+    if (options.remoteOnly) throw new ExecutionRunError('run-authority-denied');
+  };
   const lifetime = new AbortController();
   const owned = new Map<string, OwnedRun>();
   const admissions = new Map<string, WorkflowAdmission>();
@@ -489,9 +494,10 @@ export async function openHostRunOwner(
       );
     }
     execution.installNativeResultIssuer(results, publications);
-    reviews.bindNative(native.service, native.runtime);
+    if (!options.remoteOnly) reviews.bindNative(native.service, native.runtime);
     workflow = createHostWorkflowOwner(ctx, {
       execution,
+      remoteOnly: options.remoteOnly === true,
       runs: {
         beginWorkflowRun,
         stop: (original, payload, wait) => operations.stop(original, payload, wait),
@@ -540,6 +546,7 @@ export async function openHostRunOwner(
       queue: capability,
     });
     try {
+      if (options.remoteOnly) return all({ kind: 'unavailable', code: 'not-permitted' });
       wait?.throwIfAborted();
       opened = await authorities.open(request, locator, 'drive');
       wait?.throwIfAborted();
@@ -1016,6 +1023,7 @@ export async function openHostRunOwner(
     state: OwnedRun,
     previousScope?: NativeWorkScope,
   ): Promise<'received' | 'unknown'> {
+    assertNativeDrive();
     try {
       assertAdmission(state);
       let absent = previousScope && absentRetirements.get(nativeScopeKey(previousScope));
@@ -1218,6 +1226,7 @@ export async function openHostRunOwner(
     ticket?: WorkflowStartTicket,
   ): Promise<ExecutionResult<unknown>> {
     return command(async () => {
+      assertNativeDrive();
       wait?.throwIfAborted();
       if (owned.size + beginning >= 256) throw new ExecutionRunError('run-capacity');
       beginning++;
@@ -1324,13 +1333,28 @@ export async function openHostRunOwner(
   }
   const operations: HostRunOperations = {
     options(request, payload, wait) {
-      return command(() => readOptions(request, payload, wait));
+      return command(async () => {
+        const result = await readOptions(request, payload, wait);
+        return options.remoteOnly
+          ? {
+              ...result,
+              value: {
+                ...result.value,
+                start: {
+                  kind: 'unavailable' as const,
+                  message: '请在成员设备的 Zhuma 中开始执行。',
+                },
+              },
+            }
+          : result;
+      });
     },
     begin(request, payload, wait) {
       return startNativeRun(request, payload, wait);
     },
     send(request, payload, wait) {
       return command(async () => {
+        assertNativeDrive();
         wait?.throwIfAborted();
         const parsed = sendRequest.safeParse(payload);
         if (!parsed.success) throw new ExecutionRunError('run-validation');
@@ -1455,6 +1479,7 @@ export async function openHostRunOwner(
   };
 
   return {
+    lookupNativeSession: native.lookupNativeSession,
     operations,
     beginWorkflowRun,
     workflowOperations,

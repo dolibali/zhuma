@@ -33,9 +33,20 @@ import {
 import type { NativeDshOptions } from './native-work-session-dsh.js';
 import {
   createNativeFixedResultIssuer,
+  createNativeFixedResultPublicationsIssuer,
   type NativeFixedResultIssuer,
+  type NativeFixedResultPublicationsIssuer,
 } from './native-work-session-result.js';
 import type { NativeFixedResultRef } from './native-work-session-result-contract.js';
+import type { NativeFixedResultLease } from './native-work-session-result-contract.js';
+import type { NativeFixedResultPublicationsLease } from './native-work-session-result-publications-contract.js';
+import {
+  createNativeOutputFileIssuer,
+  type NativeOutputFileIssuer,
+} from './native-work-session-output-file.js';
+import type { NativeOutputFileByteProducer } from './native-work-session-output-file-source.js';
+import { NATIVE_OUTPUT_FILE_VERSION } from './native-work-session-output-file-tool.js';
+import { createMemberLocalOutputFiles } from './member-local-execution-files.js';
 import {
   executionRunCompositionRequest,
   type FrozenExecutionRunComposition,
@@ -50,6 +61,7 @@ import {
 import { observeHostNativeRun } from './host-run-observation.js';
 import { registerMemberLocalAcceptedInputs } from './member-local-execution-inputs.js';
 import { MemberLocalExecutionHistory } from './member-local-execution-history.js';
+import type { ExecutionService } from './execution-service.js';
 
 export interface MemberLocalOwnerOptions {
   readonly protocol: MemberLocalExecutionProtocol;
@@ -57,6 +69,14 @@ export interface MemberLocalOwnerOptions {
   assertModel(selection: NativeSessionSelection, signal: AbortSignal): void | Promise<void>;
   /** Actual original local tool/workspace adapters, when those tools were selected. */
   readonly native?: NativeDshOptions;
+  /** Original Host-qualified FS/workspace/publication capability. Absence keeps
+   * file publication and v2 completion unavailable, including after recovery. */
+  readonly outputFiles?: {
+    resolveBytes(
+      binding: NativeSessionBinding,
+      grant: NativeWorkGrant,
+    ): NativeOutputFileByteProducer;
+  };
   /** Original private MCP configuration owner, required for selected MCP entries. */
   openMcp?(resource: FrozenMcpResource, signal: AbortSignal): Promise<ExecutionMcpConnectionLease>;
 }
@@ -108,10 +128,19 @@ export class MemberLocalExecutionOwner {
   private readonly jobs = new Set<Promise<unknown>>();
   private native!: NativeOwner;
   private results!: NativeFixedResultIssuer;
+  private publicationResults?: NativeFixedResultPublicationsIssuer;
+  private publications?: NativeOutputFileIssuer;
   private historyReader!: MemberLocalExecutionHistory;
   private heartbeat?: ReturnType<typeof setInterval>;
   private closing?: Promise<void>;
   private constructor(private readonly options: MemberLocalOwnerOptions) {}
+  /** Advertise only after the real original publisher and remote file operations
+   * were opened. This is not a grant to any local path or selected Run. */
+  get outputFileSource(): typeof NATIVE_OUTPUT_FILE_VERSION | undefined {
+    return this.publications && this.options.protocol.supportsFilePublishing
+      ? NATIVE_OUTPUT_FILE_VERSION
+      : undefined;
+  }
   /** Read-only local SDK availability for the accept capability declaration.
    * Actual frozen resources are still adopted and checked in the unpublished
    * Agent scope, before its first model request. No catalog/body is loaded here. */
@@ -241,6 +270,11 @@ export class MemberLocalExecutionOwner {
             : { context: '', toolAllowlist: [] };
           this.check(state, 'send');
           const result = this.results.registerNativeResultTool(agentCtx, binding, grant);
+          const output =
+            snapshot.schemaVersion === 2 && snapshot.payload.outputFilePublisherTool
+              ? this.publications?.registerNativeOutputFileTool(agentCtx, binding, grant)
+              : { context: '', toolAllowlist: [] };
+          if (!output) throw new NativeWorkError('configuration-mismatch');
           state.resources = await registerExecutionRunResources(
             agentCtx,
             snapshot,
@@ -274,6 +308,7 @@ export class MemberLocalExecutionOwner {
             canonicalPayload([
               ...extra.toolAllowlist,
               ...input.toolAllowlist,
+              ...output.toolAllowlist,
               ...result.toolAllowlist,
               ...state.resources.toolAllowlist,
             ]) !== canonicalPayload(snapshot.payload.toolAllowlist)
@@ -298,12 +333,8 @@ export class MemberLocalExecutionOwner {
       undefined,
       this.options.protocol.backendId,
     );
-    this.results = createNativeFixedResultIssuer(
-      ctx,
-      this.native.service,
-      this.native.runtime,
-      { assertGrant: (grant) => this.checkResult(grant) },
-      {
+    const authority = { assertGrant: (grant: NativeWorkGrant) => this.checkResult(grant) },
+      execution: Pick<ExecutionService, 'readRunComposition'> = {
         readRunComposition: (locator) => {
           const state = [...this.states.values()].find((candidate) =>
             (['taskId', 'planId', 'revision', 'nodeId', 'runId'] as const).every(
@@ -314,8 +345,41 @@ export class MemberLocalExecutionOwner {
           this.checkResult(state.grant);
           return this.composition(state);
         },
-      },
-    );
+      };
+    if (this.options.outputFiles) {
+      this.publications = createNativeOutputFileIssuer(
+        ctx,
+        this.native.service,
+        authority,
+        {
+          ...execution,
+          createRunOutputFiles: (_authority, source) => {
+            if (_authority !== authority) throw new NativeWorkError('configuration-mismatch');
+            return createMemberLocalOutputFiles(this.options.protocol, source, (grant) =>
+              this.workRun(this.state(grant)),
+            );
+          },
+        },
+        this.options.outputFiles.resolveBytes,
+      );
+      this.publicationResults = createNativeFixedResultPublicationsIssuer(
+        ctx,
+        this.native.service,
+        this.native.runtime,
+        authority,
+        execution,
+        this.publications,
+      );
+      this.results = this.publicationResults.v1Issuer;
+    } else {
+      this.results = createNativeFixedResultIssuer(
+        ctx,
+        this.native.service,
+        this.native.runtime,
+        authority,
+        execution,
+      );
+    }
     this.historyReader = new MemberLocalExecutionHistory(this.native, this.options.protocol);
     this.results.onReady((grant, ref) => {
       const state = this.grants.get(grant);
@@ -405,8 +469,12 @@ export class MemberLocalExecutionOwner {
       view.runStatus !== 'requested' ||
       view.stopRequested ||
       snapshot.schemaVersion !== 2 ||
-      snapshot.payload.resultIntentTool?.sourceVersion !== 'zhuma-native-result-intent@1' ||
-      snapshot.payload.outputFilePublisherTool ||
+      !['zhuma-native-result-intent@1', 'zhuma-native-result-intent@2'].includes(
+        snapshot.payload.resultIntentTool?.sourceVersion ?? '',
+      ) ||
+      (snapshot.payload.resultIntentTool?.sourceVersion === 'zhuma-native-result-intent@2' &&
+        !this.publicationResults) ||
+      (snapshot.payload.outputFilePublisherTool && !this.outputFileSource) ||
       snapshot.payload.acceptedFileReader ||
       (snapshot.payload.tools.kind === 'local-tools' && !this.options.native) ||
       (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
@@ -533,20 +601,22 @@ export class MemberLocalExecutionOwner {
         ? { status: 'ready' as const, ref }
         : await this.results.prepareFixedResult(state.grant, state.grant.signal);
       if (prepared.status !== 'ready') return;
-      const lease = await this.results.readFixedResult(
-        state.grant,
-        prepared.ref,
-        state.grant.signal,
-      );
+      const lease = await this.fixedLease(state, prepared.ref);
       try {
         await state.resources?.drain();
         lease.check();
-        const draft = remoteResultDigestInput({ ...lease.content, files: [] }),
+        const draft = remoteResultDigestInput({
+            ...lease.content,
+            files: 'manifest' in lease ? lease.content.files : [],
+          }),
           result = remoteResultDeclarationSchema.parse({
             requestId: lease.source.intentId,
             digest: lease.digest,
             artifactDigest: hash(draft),
             source: lease.source,
+            ...('manifest' in lease
+              ? { publications: lease.manifest.map((entry) => entry.evidence) }
+              : {}),
           });
         state.phase = 'fixed';
         await this.emit(state, {
@@ -592,6 +662,20 @@ export class MemberLocalExecutionOwner {
     state.phase = 'submitted';
     if (state.timer) clearTimeout(state.timer);
   }
+  private fixedLease(
+    state: Owned,
+    ref: NativeFixedResultRef,
+  ): Promise<NativeFixedResultLease | NativeFixedResultPublicationsLease> {
+    const snapshot = this.composition(state);
+    if (
+      snapshot.schemaVersion === 2 &&
+      snapshot.payload.resultIntentTool?.sourceVersion === 'zhuma-native-result-intent@2'
+    ) {
+      if (!this.publicationResults) throw new NativeWorkError('configuration-mismatch');
+      return this.publicationResults.readFixedResult(state.grant, ref, state.grant.signal);
+    }
+    return this.results.readFixedResult(state.grant, ref, state.grant.signal);
+  }
   /** Explicit same-result continuation. It cannot call send, factory create/
    * resume, register tools or issue a new completion declaration. */
   async continueResult(run: MemberLocalRunHandle): Promise<MemberLocalOwnerView> {
@@ -606,7 +690,11 @@ export class MemberLocalExecutionOwner {
       view.resources !== 'settled' ||
       view.stopRequested ||
       !view.result ||
-      view.result.source.toolVersion !== 'zhuma-native-result-intent@1'
+      !['zhuma-native-result-intent@1', 'zhuma-native-result-intent@2'].includes(
+        view.result.source.toolVersion,
+      ) ||
+      (view.result.source.toolVersion === 'zhuma-native-result-intent@2' &&
+        !this.publicationResults)
     )
       throw new MemberLocalProtocolError('remote-recovery-required');
     if (prior?.collecting || (prior && !prior.abort.signal.aborted && prior.phase !== 'fixed'))
@@ -632,18 +720,20 @@ export class MemberLocalExecutionOwner {
         ? { status: 'ready' as const, ref }
         : await this.results.prepareFixedResult(state.grant, state.grant.signal);
       if (prepared.status !== 'ready') return;
-      const lease = await this.results.readFixedResult(
-        state.grant,
-        prepared.ref,
-        state.grant.signal,
-      );
+      const lease = await this.fixedLease(state, prepared.ref);
       try {
         lease.check();
-        const draft = remoteResultDigestInput({ ...lease.content, files: [] });
+        const draft = remoteResultDigestInput({
+          ...lease.content,
+          files: 'manifest' in lease ? lease.content.files : [],
+        });
         if (
           canonicalPayload(lease.source) !== canonicalPayload(declared.source) ||
           lease.digest !== declared.digest ||
-          hash(draft) !== declared.artifactDigest
+          hash(draft) !== declared.artifactDigest ||
+          ('manifest' in lease &&
+            canonicalPayload(lease.manifest.map((entry) => entry.evidence)) !==
+              canonicalPayload(declared.publications))
         )
           throw new MemberLocalProtocolError('local-mismatch');
         await this.commit(state, declared, draft);
@@ -834,6 +924,7 @@ export class MemberLocalExecutionOwner {
       for (const state of this.states.values()) this.fence(state);
       await Promise.allSettled([...this.jobs]);
       await this.results.close();
+      await this.publications?.close();
       await this.native.close();
     })());
   }

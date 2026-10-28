@@ -33,6 +33,16 @@ export type WorkspaceRevokeInput = WorkspaceApprovalLocation & {
   readonly expectedGeneration: number;
 };
 export interface WorkspaceApprovalApi {
+  /** Existing Workspaces from this member's official local sidebar. */
+  existingDirectories?:
+    | ((signal: AbortSignal) => Promise<
+        readonly {
+          readonly id: string;
+          readonly title: string;
+          readonly path: string;
+        }[]
+      >)
+    | undefined;
   /** Labels from the original current member directory; presentation, never a grant. */
   context?:
     | ((

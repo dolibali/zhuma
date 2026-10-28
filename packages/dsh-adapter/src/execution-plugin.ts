@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
+import { registerProductFetch } from './member-web-transport.js';
 import type {} from '@deepseek-ai/dsh-storage-domain';
 import type { Workbench } from '@zhuma/agent-core';
 import { WorkbenchError, type ExecutionNodeRecord } from '@zhuma/agent-core';
@@ -580,7 +581,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   if (!reconciled.ok) throw new WorkbenchError(reconciled.error.code, reconciled.error.message);
   unpublish = config.publishRunService?.(service);
   const stops = ENDPOINTS.map((endpoint) =>
-    ctx.connection.fetch.register({
+    registerProductFetch(ctx, {
       path: `/api/zhuma-exec/${endpoint}`,
       methods: ['POST'],
       requestBody: 'streaming',
@@ -637,7 +638,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   );
   // Raw byte upload rides the same member gate but never enters the JSON
   // envelope: declarations ride headers, the body is the byte stream.
-  const uploadStop = ctx.connection.fetch.register({
+  const uploadStop = registerProductFetch(ctx, {
     path: '/api/zhuma-exec/upload-file',
     methods: ['POST'],
     requestBody: 'streaming',
@@ -752,7 +753,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   stops.push(uploadStop);
 
   stops.push(
-    ctx.connection.fetch.register({
+    registerProductFetch(ctx, {
       path: '/api/zhuma-exec/file',
       methods: ['GET'],
       requestBody: 'buffered',

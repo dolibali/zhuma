@@ -58,6 +58,11 @@ test('member directory real components: only live account keys intersect current
   ]);
   assert.deepEqual(directory.membersForSpace('south'), [{ id: 'cy' }, { id: 'dana' }]);
   assert.deepEqual(directory.membersForSpace('personal-ann'), [{ id: 'ann' }]);
+  assert.equal(
+    directory.administratorForSpace('personal-ann'),
+    host.directory.administratorForSpace('personal-ann'),
+  );
+  assert.equal(directory.administratorForSpace('unknown-space'), undefined);
   const copy = directory.membersForSpace('north');
   copy[0].id = 'mutated';
   await host.directory.revokeMembership('north', 'bob');
@@ -149,6 +154,7 @@ for (const replacement of ['identity', 'directory']) {
     release.resolve();
     assert.deepEqual(await inFlight, { ok: false, reason: 'unavailable' });
     assert.throws(() => previous.membersForSpace('north'), rejected('unavailable'));
+    assert.throws(() => previous.administratorForSpace('personal-ann'), rejected('unavailable'));
     assert.deepEqual(memberWorkbenchDirectoryFor(host.ctx).membersForSpace('north'), [
       { id: 'ann' },
       { id: 'bob' },

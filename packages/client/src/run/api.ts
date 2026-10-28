@@ -4,6 +4,7 @@ import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
 import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
+import type { LocalWorkspaceDirectory } from './workspace-directory.js';
 import {
   createWorkspaceApprovalApi,
   type RegisterWorkspaceDirectory,
@@ -58,6 +59,7 @@ export type NativeRunBegin = NativeRunLocator & {
   workspace: { kind: 'text-only' } | { kind: 'local'; id: string };
 };
 export interface NativeRunApi {
+  openNativeSession?: ((run: NativeRunSummary, signal: AbortSignal) => Promise<void>) | undefined;
   readonly workflow?: WorkflowApi;
   readonly workspaceApprovals?: WorkspaceApprovalApi;
   readonly openModelSettings?: (() => void) | undefined;
@@ -404,6 +406,7 @@ export function createNativeRunApi(
   onUnauthenticated: () => void,
   registerDirectory?: RegisterWorkspaceDirectory,
   openModelSettings?: () => void,
+  localDirectory?: LocalWorkspaceDirectory,
 ): NativeRunApi {
   const identity = createIdentityApi(fetcher);
   const directory = createMemberWorkbenchApi(
@@ -419,6 +422,15 @@ export function createNativeRunApi(
   function current(signal: AbortSignal) {
     signal.throwIfAborted();
     if (scope.isCurrent?.() === false) throw new DOMException('View changed', 'AbortError');
+  }
+  async function authorizeLocal(signal: AbortSignal) {
+    current(signal);
+    const session = await identity.session(signal);
+    current(signal);
+    if (session.accountId !== accountId)
+      throw new ExecutionError('unauthenticated', '账号已变化，请重新登录。');
+    if (!session.spaces.some((item) => item.id === scope.spaceId))
+      throw new ExecutionError('space-unavailable', '此空间已不可访问。');
   }
   function report(error: unknown, signal: AbortSignal): never {
     current(signal);
@@ -510,6 +522,30 @@ export function createNativeRunApi(
   });
   const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
   return {
+    ...(localDirectory?.openSession
+      ? {
+          async openNativeSession(run: NativeRunSummary, signal: AbortSignal) {
+            try {
+              const latest = readView(await call('read', runLocator(run), signal), run, run.runId);
+              if (
+                !latest.native ||
+                !run.native ||
+                latest.generation !== run.generation ||
+                latest.segmentId !== run.segmentId ||
+                latest.native.sessionId !== run.native.sessionId
+              )
+                throw new ExecutionError('unavailable', '工作会话已变化，请刷新后重试。');
+              current(signal);
+              await localDirectory.openSession!(latest.native.sessionId, signal, () =>
+                authorizeLocal(signal),
+              );
+              current(signal);
+            } catch (error) {
+              return report(error, signal);
+            }
+          },
+        }
+      : {}),
     ...(openModelSettings
       ? {
           openModelSettings: () => {
@@ -519,6 +555,19 @@ export function createNativeRunApi(
         }
       : {}),
     workspaceApprovals: {
+      ...(localDirectory
+        ? {
+            existingDirectories: async (signal: AbortSignal) => {
+              try {
+                const entries = await localDirectory.read(signal, () => authorizeLocal(signal));
+                current(signal);
+                return entries;
+              } catch (error) {
+                return report(error, signal);
+              }
+            },
+          }
+        : {}),
       ...createWorkspaceApprovalApi(
         (endpoint, payload, signal) => call(endpoint, payload, signal, 'workspaces'),
         scope.spaceId,
