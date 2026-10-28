@@ -243,6 +243,7 @@ export type {
   NodeCommandResult,
   PlanStartResult,
 } from './human-node.js';
+export * from './knowledge-contract.js';
 export {
   nodeRecordKey,
   unlockKey,
