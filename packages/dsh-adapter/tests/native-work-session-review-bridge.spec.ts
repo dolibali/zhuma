@@ -797,3 +797,115 @@ test('original SDK review target: an authenticated fixed-body read does not depe
       });
   }
 });
+
+test('original SDK review Resume: a real stopped drain survives caller completion and a different request before actual Host preparation', async (t) => {
+  const callerDone = new AbortController(),
+    sendErrors = [],
+    firstTurnEnd = Promise.withResolvers();
+  const options = {
+    file: false,
+    productionHost: true,
+    productionPrepare: true,
+    finishReason: 'stop',
+    afterNative({ native }) {
+      native.ctx.on(
+        'session/event',
+        (session, event) => {
+          if (event.type === 'turn/end')
+            firstTurnEnd.resolve({ sessionId: session.id, reason: event.data.reason.kind });
+        },
+        { global: true },
+      );
+      const retire = native.service.retireReviewForCleanup.bind(native.service);
+      const send = native.service.send.bind(native.service);
+      native.service.send = async (...args) => {
+        try {
+          return await send(...args);
+        } catch (error) {
+          sendErrors.push(error.code);
+          throw error;
+        }
+      };
+      let stoppedRun;
+      native.service.retireReviewForCleanup = (authority, wait) => {
+        stoppedRun ??= authority.scope.runId;
+        return retire(
+          authority,
+          authority.scope.runId === stoppedRun ? AbortSignal.any([wait, callerDone.signal]) : wait,
+        );
+      };
+    },
+  };
+  const h = await setup(t, options);
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await h.waitFor(() => readExecutionReviewState(h.d.read())?.attempts[0]?.status === 'running');
+  const first = readExecutionReviewState(h.d.read()).attempts[0];
+  const ended = await firstTurnEnd.promise;
+  assert.equal(ended.sessionId, first.nativeSessionId);
+  assert.equal(ended.reason, 'completed');
+  await h.native.ctx.agents.get(first.nativeAgentId).whenIdle();
+  await h.bridge.whenIdle();
+  const original = readExecutionReviewState(h.d.read()).attempts[0];
+  assert.equal(h.hostMetrics.preparations, 1);
+  assert.equal(original.status, 'running');
+  assert.equal(h.adapter.requests.length, 2);
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  const stopped = await h.d.service.stopWorkflowExecution(h.d.request, {
+    ...h.location,
+    requestId: 'stop-real-review-before-resume',
+    intentId: h.view.intent.intentId,
+    generation: h.view.intent.generation,
+  });
+  assert.equal(stopped.ok, true);
+  await h.waitFor(() => readExecutionReviewState(h.d.read()).attempts[0].resources === 'settled');
+  await h.bridge.whenIdle();
+  assert.equal(
+    h.native.runtime.migrationDrain(original.nativeSessionId).basis,
+    'flushed-and-closed',
+  );
+  assert.equal(h.native.ctx.agents.get(original.nativeAgentId), undefined);
+  callerDone.abort();
+  assert.doesNotThrow(() => h.d.service.assertExpertReviewDrained(original.scope));
+  const before = structuredClone(readExecutionReviewState(h.d.read()).attempts[0]);
+  const bindings = h.native.ctx.storageDomain.get('zhuma_native_work_sessions').table('bindings');
+  const oldRows = structuredClone([...bindings.entries()]);
+  assert.equal(oldRows.length, 1);
+  const resumed = await h.d.service.resumeWorkflowExecution(h.d.request, {
+    ...h.location,
+    requestId: 'resume-real-stopped-review',
+    intentId: stopped.value.intent.intentId,
+    generation: stopped.value.intent.generation,
+    expectedVersion: stopped.value.intent.version,
+  });
+  assert.equal(resumed.ok, true);
+  assert.doesNotThrow(() => h.d.service.assertExpertReviewDrained(original.scope));
+  const claim = await h.d.service.claimWorkflowExecution(h.d.request, {
+    ...h.location,
+    intentId: resumed.value.intent.intentId,
+    generation: resumed.value.intent.generation,
+  });
+  assert.equal(claim.ok, true);
+  assert.equal(claim.value.reviewCandidates.length, 1);
+  assert.notEqual(claim.value.reviewCandidates[0].requestId, h.claim.reviewCandidates[0].requestId);
+  options.finishReason = undefined;
+  h.bridge.consumeClaim(h.d.request, claim.value);
+  assert.doesNotThrow(
+    () => h.d.service.assertExpertReviewDrained(original.scope),
+    'a new same-target request cannot contaminate the previous physical drain',
+  );
+  await h.bridge.whenIdle();
+  assert.equal(h.hostMetrics.preparations, 2);
+  assert.equal(readExecutionReviewState(h.d.read()).attempts.length, 2);
+  assert.deepEqual(sendErrors, [], 'the new scope must open its own authenticated native binding');
+  await h.waitFor(() => h.d.read().command.status === 'completed');
+  await h.bridge.whenIdle();
+  assert.deepEqual(readExecutionReviewState(h.d.read()).attempts[0], before);
+  assert.deepEqual(bindings.get(oldRows[0][0]), oldRows[0][1]);
+  assert.equal([...bindings.entries()].length, 2);
+  const next = readExecutionReviewState(h.d.read()).attempts[1];
+  assert.notEqual(next.nativeSessionId, original.nativeSessionId);
+  assert.equal(next.resources, 'settled');
+  assert.doesNotThrow(() => h.d.service.assertExpertReviewDrained(original.scope));
+  assert.equal(h.d.read().rounds[0].ballots.length, 1);
+  assert.equal(h.d.read('consume').command.status, 'ready');
+});

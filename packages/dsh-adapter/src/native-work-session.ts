@@ -9,6 +9,7 @@ import {
   NativeReviewError,
   nativeReviewRecordSchema,
   nativeReviewScopeKey,
+  nativeReviewSessionKey,
   nativeReviewIntentSchema,
   NATIVE_REVIEW_LIMITS,
   type NativeReviewContext,
@@ -207,7 +208,18 @@ export class NativeWorkSessionService {
     check(grant, action);
   }
   private sessionKey(scope: NativeWorkScope): string {
-    return this.review?.purpose.key(scope) ?? nativeWorkSessionKey(scope);
+    const context = this.review?.purpose.context(scope);
+    if (!context || !this.review) return nativeWorkSessionKey(scope);
+    const legacyKey = this.review.purpose.key(scope),
+      scopedKey = nativeReviewScopeKey(context);
+    if (this.review.read(scopedKey) !== undefined) return scopedKey;
+    const legacy = this.review.read(legacyKey);
+    // Keep the original record/key stable for its already-issued drain. A
+    // different review Run uses the existing scope key in the same table.
+    if (legacy === undefined) return legacyKey;
+    const previous = nativeReviewRecordSchema.parse(legacy).context;
+    if (nativeReviewSessionKey(previous) !== legacyKey) throw new NativeWorkError('scope-mismatch');
+    return nativeReviewScopeKey(previous) === scopedKey ? legacyKey : scopedKey;
   }
   private scopeKey(scope: NativeWorkScope): string {
     return this.review?.purpose.address(scope) ?? nativeScopeKey(scope);

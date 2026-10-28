@@ -23,7 +23,7 @@ export async function bootReviewBridge(root, after, options = {}) {
     changes = new Set(),
     reads = [],
     submitTrace = [];
-  const hostMetrics = { checks: 0, workbenchReads: 0, elapsedMs: 0 };
+  const hostMetrics = { checks: 0, workbenchReads: 0, elapsedMs: 0, preparations: 0 };
   let productionConfiguration,
     checkingProduction = 0;
   const d = await host(
@@ -77,21 +77,36 @@ export async function bootReviewBridge(root, after, options = {}) {
   };
   const source = new AbortController(),
     adapter = new ScriptedAdapter();
+  if (options.productionPrepare)
+    adapter.listModels = async (provider) => [
+      { provider, id: 'contract-model', name: 'Synthetic passive model catalogue' },
+    ];
   const bridge = createNativeReviewBridge({
     execution: d.service,
     signal: source.signal,
     host: {
       async prepareReview(original, { model, ...query }, wait) {
         wait.throwIfAborted();
-        const preparation = checked(await d.service.readExpertReviewPreparation(original, query));
-        const saved = freezeExecutionReviewComposition({
-          ...preparation,
-          model,
-          tools: {
-            readTarget: describeNativeReviewReadTool(),
-            completeReview: describeNativeReviewTool(),
-          },
-        });
+        let saved;
+        if (options.productionPrepare) {
+          hostMetrics.preparations++;
+          const { provider, model: modelId, reasoningEffort } = model;
+          saved = await productionConfiguration.prepareReview(
+            original,
+            { ...query, model: { provider, model: modelId, reasoningEffort } },
+            wait,
+          );
+        } else {
+          const preparation = checked(await d.service.readExpertReviewPreparation(original, query));
+          saved = freezeExecutionReviewComposition({
+            ...preparation,
+            model,
+            tools: {
+              readTarget: describeNativeReviewReadTool(),
+              completeReview: describeNativeReviewTool(),
+            },
+          });
+        }
         compositions.set(saved.configurationId, saved);
         for (const resource of saved.payload.targetResources.filter(
           (item) => !options.omitFile || item.kind !== 'file',
@@ -130,7 +145,7 @@ export async function bootReviewBridge(root, after, options = {}) {
             'complete_review',
           )();
         });
-        adapter.script.push('Review complete.');
+        if (!options.finishReason) adapter.script.push('Review complete.');
         await options.afterPreparation?.(saved);
         return saved;
       },
@@ -283,6 +298,7 @@ export async function bootReviewBridge(root, after, options = {}) {
     compositions,
     reads,
     submitTrace,
+    hostMetrics,
     waitFor,
   };
 }
