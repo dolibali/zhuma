@@ -9,6 +9,7 @@ import {
   NativeReviewError,
   nativeReviewRecordSchema,
   nativeReviewScopeKey,
+  nativeReviewSessionKey,
   nativeReviewIntentSchema,
   NATIVE_REVIEW_LIMITS,
   type NativeReviewContext,
@@ -207,7 +208,18 @@ export class NativeWorkSessionService {
     check(grant, action);
   }
   private sessionKey(scope: NativeWorkScope): string {
-    return this.review?.purpose.key(scope) ?? nativeWorkSessionKey(scope);
+    const context = this.review?.purpose.context(scope);
+    if (!context || !this.review) return nativeWorkSessionKey(scope);
+    const legacyKey = this.review.purpose.key(scope),
+      scopedKey = nativeReviewScopeKey(context);
+    if (this.review.read(scopedKey) !== undefined) return scopedKey;
+    const legacy = this.review.read(legacyKey);
+    // Keep the original record/key stable for its already-issued drain. A
+    // different review Run uses the existing scope key in the same table.
+    if (legacy === undefined) return legacyKey;
+    const previous = nativeReviewRecordSchema.parse(legacy).context;
+    if (nativeReviewSessionKey(previous) !== legacyKey) throw new NativeWorkError('scope-mismatch');
+    return nativeReviewScopeKey(previous) === scopedKey ? legacyKey : scopedKey;
   }
   private scopeKey(scope: NativeWorkScope): string {
     return this.review?.purpose.address(scope) ?? nativeScopeKey(scope);
@@ -240,12 +252,22 @@ export class NativeWorkSessionService {
     this.check(grant, 'send');
     const context = this.review?.purpose.context(grant.scope);
     if (!this.review || !context) throw new NativeReviewError('review-authority-denied');
+    const record = this.readReviewRecord(grant.scope, context);
+    const binding = record && bindingForScope(record.binding, grant.scope);
+    if (binding) this.review.purpose.bindScope(binding.scope, context);
+    if (record && (!binding || !this.sameScope(binding.scope, grant.scope)))
+      throw new NativeWorkError('scope-mismatch');
+    // Keep send before the storage read and a fresh open check after it. This
+    // one synchronous metadata entry never retains authorization across awaits.
     const access = this.review.purpose.access(grant);
+    const clonedBinding = binding && structuredClone(binding);
+    if (clonedBinding) this.review.purpose.bindScope(clonedBinding.scope, context);
     return {
       context,
       original: access.original,
       ports: this.review.purpose.ports,
       selection: access.selection,
+      binding: clonedBinding,
     };
   }
   reviewIntent(grant: NativeWorkGrant) {
@@ -392,8 +414,16 @@ export class NativeWorkSessionService {
     this.check(grant, 'open');
     const context = this.review?.purpose.context(grant.scope);
     if (!context || !this.review) throw new NativeReviewError('review-authority-denied');
-    const raw = this.review.read(this.sessionKey(grant.scope));
-    if (raw === undefined) throw new NativeWorkError('not-started');
+    const record = this.readReviewRecord(grant.scope, context);
+    if (!record) throw new NativeWorkError('not-started');
+    return record;
+  }
+  private readReviewRecord(
+    scope: NativeWorkScope,
+    context: NativeReviewContext,
+  ): NativeReviewRecord | undefined {
+    const raw = this.review!.read(this.sessionKey(scope));
+    if (raw === undefined) return undefined;
     const record = nativeReviewRecordSchema.parse(raw);
     if (JSON.stringify(record.context) !== JSON.stringify(context))
       throw new NativeReviewError('review-target-changed');
@@ -1134,9 +1164,14 @@ export class NativeWorkSessionService {
     return value;
   }
 
+  /** Authenticated binding metadata; reading it does not query the live Agent's status. */
+  readBinding(grant: NativeWorkGrant): NativeSessionBinding | undefined {
+    return this.read(grant, 'open');
+  }
+
   /** Read-only navigation: never creates, resumes, wakes or replays native work. */
   open(grant: NativeWorkGrant) {
-    const binding = this.read(grant, 'open');
+    const binding = this.readBinding(grant);
     return binding === undefined
       ? undefined
       : {

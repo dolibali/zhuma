@@ -256,14 +256,16 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
     current(state);
     return state;
   }
-  function retainedReview(scope: ExecutionReviewScope): OwnedReview | undefined {
+  function retainedReview(scope: ExecutionReviewScope, requestId: string): OwnedReview | undefined {
     return [...states.values()].find((state) => {
       const known = state.drive?.grant.scope ?? state.composition?.payload.scope;
+      if (known) return canonicalPayload(known) === canonicalPayload(scope);
       return (
-        (known && canonicalPayload(known) === canonicalPayload(scope)) ||
-        (canonicalPayload(state.candidate.target) === canonicalPayload(scope.review.target) &&
-          state.candidate.reviewerRef.id === scope.review.principal.reviewerRef.id &&
-          state.candidate.reviewerRef.version === scope.review.principal.reviewerRef.version)
+        state.candidate.requestId === requestId &&
+        state.claim.view.intent?.actorId === scope.actorId &&
+        canonicalPayload(state.candidate.target) === canonicalPayload(scope.review.target) &&
+        state.candidate.reviewerRef.id === scope.review.principal.reviewerRef.id &&
+        state.candidate.reviewerRef.version === scope.review.principal.reviewerRef.version
       );
     });
   }
@@ -283,13 +285,22 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
     // Cleanup authority is checked before reading its purported scope. It does
     // not acquire a new driving/member/phase qualification after revocation.
     execution.assertExpertReviewCleanupAuthority(original);
-    let state = retainedReview(original.scope);
+    const node = execution.readRunNode(original.scope),
+      requestId =
+        node &&
+        readExecutionReviewState(node)?.receipts.find(
+          (receipt) => receipt.runId === original.scope.runId,
+        )?.requestId;
+    if (!requestId) return failure();
+    // This immutable receipt identity correlates ownership; it grants no new
+    // operation and does not cache member/source/drain authorization.
+    let state = retainedReview(original.scope, requestId);
     if (state && preparingReview(state, original.scope)) return { status: 'pending' };
     const retired = await bound().service.retireReviewForCleanup(original, wait);
     if (retired.status === 'pending') return retired;
     // A cold owner still needs the original C binding and physical retirement.
     // Recheck retained starts after that await before qualifying any resource barrier.
-    state = retainedReview(original.scope);
+    state = retainedReview(original.scope, requestId);
     if (state) {
       if (preparingReview(state, original.scope)) return { status: 'pending' };
       if (!(await waitOwned(closeResources(state), wait))) return { status: 'pending' };
@@ -304,7 +315,7 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
       assertCurrent() {
         if (raw.assertCurrent !== assert || raw.signal !== signal) return failure();
         assert.call(raw);
-        const retained = retainedReview(original.scope);
+        const retained = retainedReview(original.scope, requestId);
         if (retained && retained !== state) return failure();
         state?.resources?.assertClosed();
       },
@@ -573,7 +584,7 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
         selection: projected.selection,
       });
       current(state);
-      state.binding = bound().service.open(state.grant)?.binding ?? failure();
+      state.binding = bound().service.readBinding(state.grant) ?? failure();
       if (
         !['received', 'claimed'].includes(receipt.status) ||
         receipt.fingerprint !== projected.firstMessage.inputFingerprint
@@ -622,7 +633,7 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
       );
       try {
         const grant = bound().service.reviewGrant(original),
-          binding = bound().service.open(grant)?.binding ?? failure();
+          binding = bound().service.readBinding(grant) ?? failure();
         return {
           source: {
             context: nativeReviewContextFromScope(actual.scope),

@@ -23,6 +23,20 @@ function refuse(code: 'review-state-invalid'): never {
 function hash(value: unknown): string {
   return createHash('sha256').update(canonicalPayload(value)).digest('hex');
 }
+/** Structural history only. Reusing this lane still requires the original
+ * Service's exact Stop, current target/no-vote and genuine C drain checks. */
+export function isStoppedReviewHistory(attempt: ExecutionReviewAttempt): boolean {
+  return (
+    attempt.status === 'cancelled' &&
+    attempt.stopPhase === 'confirmed' &&
+    attempt.resources === 'settled' &&
+    attempt.dispatch === 'received' &&
+    !!attempt.nativeSessionId &&
+    attempt.nativeAgentId === attempt.nativeSessionId &&
+    attempt.result === undefined &&
+    attempt.failure === undefined
+  );
+}
 export function executionReviewArtifactFingerprint(artifact: ArtifactVersion): string {
   return hash(artifact);
 }
@@ -102,14 +116,16 @@ export function assertExecutionReviewRecord(
       principal.reviewerRef.id === artifact.submittedBy ||
       runIds.has(scope.runId) ||
       segments.has(scope.segmentId) ||
-      (previous !== undefined && !(previous.status === 'prepared' && previous.version === 1))
+      (previous !== undefined &&
+        !(previous.status === 'prepared' && previous.version === 1) &&
+        !isStoppedReviewHistory(previous))
     )
       return refuse('review-state-invalid');
     runIds.add(scope.runId);
     segments.add(scope.segmentId);
-    // A fenced, never-admitted reservation stays as immutable history when the
-    // original Service authorizes a new scope. Two admitted attempts in one
-    // lane remain invalid; parsing these records does not authorize a retry.
+    // Stopped history remains immutable when the original Service qualifies a
+    // new scope. An active or completed predecessor still blocks the lane;
+    // parsing cancellation labels cannot issue the required C drain proof.
     lanes.set(lane, attempt);
     if (attempt.status !== 'prepared') {
       let saved;

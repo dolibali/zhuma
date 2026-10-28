@@ -6,6 +6,7 @@ import { NativeSessionPurpose } from '../dist/native-work-session-purpose.js';
 import { NativeWorkSessionService } from '../dist/native-work-session.js';
 import {
   nativeReviewSessionKey,
+  nativeReviewScopeKey,
   nativeReviewRecordSchema,
 } from '../dist/native-work-session-review-contract.js';
 import { binding, context } from './native-work-session-review-fixture.mjs';
@@ -148,6 +149,19 @@ test('review cleanup contract: persisted target mismatch cannot become an absenc
   await assert.rejects(h.service.retireReviewForCleanup(h.original, wait()), {
     code: 'scope-mismatch',
   });
+  h.records.set(h.key, h.row);
+  const scoped = nativeReviewScopeKey(h.row.context);
+  h.records.set(scoped, wrong);
+  await assert.rejects(h.service.retireReviewForCleanup(h.original, wait()), {
+    code: 'scope-mismatch',
+  });
+  h.records.set(scoped, { schemaVersion: 3 });
+  await assert.rejects(h.service.retireReviewForCleanup(h.original, wait()));
+  assert.deepEqual(
+    h.records.get(h.key),
+    h.row,
+    'an invalid scoped row cannot use or change legacy',
+  );
   assert.deepEqual(h.calls, []);
 });
 

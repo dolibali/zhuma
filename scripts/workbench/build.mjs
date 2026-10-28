@@ -6,12 +6,19 @@ import { fileURLToPath } from 'node:url';
 import { publicTeamStarterPackages } from '../lib/team-starter-packages.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+const hostOnly = process.argv.slice(2).includes('--host-only');
+if (process.argv.slice(2).some((arg) => arg !== '--host-only'))
+  throw new Error('Unknown workbench build option');
 const adapterManifest = JSON.parse(
   await readFile(resolve(root, 'packages/dsh-adapter/package.json'), 'utf8'),
 );
 const compile = spawnSync(
   process.execPath,
-  [resolve(root, 'node_modules/typescript/bin/tsc'), '-b'],
+  [
+    resolve(root, 'node_modules/typescript/bin/tsc'),
+    '-b',
+    ...(hostOnly ? ['packages/agent-core', 'packages/context'] : []),
+  ],
   { cwd: root, stdio: 'inherit' },
 );
 if (compile.error || compile.status !== 0) throw new Error('Workbench type build failed.');
@@ -91,99 +98,121 @@ if (
   )
 )
   throw new Error('Workbench bundled a live SDK storage or credentials service implementation.');
-const clientBuild = await build({
-  absWorkingDir: root,
-  entryPoints: ['packages/client/src/workbench/plugin.tsx'],
-  outfile: resolve(out, 'client.js'),
-  bundle: true,
-  platform: 'browser',
-  format: 'cjs',
-  metafile: true,
-  target: 'es2022',
-  loader: { '.css': 'text' },
-  minify: true,
-  external: ['react', 'react/*', 'react-dom', 'react-dom/*'],
-  define: { 'process.env.NODE_ENV': '"production"' },
-  banner: {
-    js: 'window.__ModuleLoader__.load({id:"@zhuma/workbench",factory:(require)=>{var module={exports:{}};var exports=module.exports;',
-  },
-  footer: { js: 'return module.exports;}});' },
-});
-await writeFile(
-  resolve(out, 'package.json'),
-  JSON.stringify(
-    {
-      name: '@zhuma/workbench',
-      version: adapterManifest.version,
-      private: true,
-      license: 'MIT',
-      type: 'module',
-      main: './index.js',
-      exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' },
-      peerDependencies: Object.fromEntries(
-        [...new Set(hostSdkImports)].sort().map((name) => {
-          // Every external is already pinned in the owning package manifest.
-          const version =
-            adapterManifest.dependencies?.[name] ?? adapterManifest.devDependencies?.[name];
-          if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/u.test(version))
-            throw new Error(`Missing exact Host SDK peer version: ${name}`);
-          return [name, version];
-        }),
-      ),
-      dsh: {
-        client: {
-          platform: 'web',
-          inject: [
-            '@deepseek-ai/dsh-client-ui-layout',
-            '@deepseek-ai/dsh-client-ui-sidebar',
-            '@deepseek-ai/dsh-client-ui-renderer',
-            '@deepseek-ai/dsh-client-ui-theme',
-            '@deepseek-ai/dsh-client-connection',
-          ],
+if (hostOnly) {
+  // A Host refresh cannot silently change the already assembled peer graph/UI.
+  const previous = JSON.parse(await readFile(resolve(out, 'package.json'), 'utf8'));
+  const peers = [...new Set(hostSdkImports)].sort();
+  if (
+    JSON.stringify(Object.keys(previous.peerDependencies).sort()) !== JSON.stringify(peers) ||
+    peers.some(
+      (name) =>
+        previous.peerDependencies[name] !==
+        (adapterManifest.dependencies?.[name] ?? adapterManifest.devDependencies?.[name]),
+    )
+  )
+    throw new Error('Host SDK peers changed; run the complete workbench build first.');
+  for (const name of ['client.js', 'LICENSE', 'THIRD_PARTY_LICENSES.txt'])
+    await readFile(resolve(out, name));
+  console.log('Built Host only in .build/workbench; existing Client and legal files retained.');
+} else {
+  const clientBuild = await build({
+    absWorkingDir: root,
+    entryPoints: ['packages/client/src/workbench/plugin.tsx'],
+    outfile: resolve(out, 'client.js'),
+    bundle: true,
+    platform: 'browser',
+    format: 'cjs',
+    metafile: true,
+    target: 'es2022',
+    loader: { '.css': 'text' },
+    minify: true,
+    external: ['react', 'react/*', 'react-dom', 'react-dom/*'],
+    define: { 'process.env.NODE_ENV': '"production"' },
+    banner: {
+      js: 'window.__ModuleLoader__.load({id:"@zhuma/workbench",factory:(require)=>{var module={exports:{}};var exports=module.exports;',
+    },
+    footer: { js: 'return module.exports;}});' },
+  });
+  await writeFile(
+    resolve(out, 'package.json'),
+    JSON.stringify(
+      {
+        name: '@zhuma/workbench',
+        version: adapterManifest.version,
+        private: true,
+        license: 'MIT',
+        type: 'module',
+        main: './index.js',
+        exports: {
+          '.': './index.js',
+          './client': './client.js',
+          './package.json': './package.json',
+        },
+        peerDependencies: Object.fromEntries(
+          [...new Set(hostSdkImports)].sort().map((name) => {
+            // Every external is already pinned in the owning package manifest.
+            const version =
+              adapterManifest.dependencies?.[name] ?? adapterManifest.devDependencies?.[name];
+            if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/u.test(version))
+              throw new Error(`Missing exact Host SDK peer version: ${name}`);
+            return [name, version];
+          }),
+        ),
+        dsh: {
+          client: {
+            platform: 'web',
+            inject: [
+              '@deepseek-ai/dsh-client-ui-layout',
+              '@deepseek-ai/dsh-client-ui-sidebar',
+              '@deepseek-ai/dsh-client-ui-renderer',
+              '@deepseek-ai/dsh-client-ui-theme',
+              '@deepseek-ai/dsh-client-connection',
+            ],
+          },
         },
       },
-    },
-    null,
-    2,
-  ) + '\n',
-);
-console.log('Built Host/Client plugin in .build/workbench');
+      null,
+      2,
+    ) + '\n',
+  );
+  console.log('Built Host/Client plugin in .build/workbench');
 
-await writeFile(resolve(out, 'LICENSE'), await readFile(resolve(root, 'LICENSE')));
-// Preserve the full license text for every bundled dependency, including transitive modules.
-const licenses = new Map();
-for (const input of [
-  ...Object.keys(hostBuild.metafile.inputs),
-  ...Object.keys(clientBuild.metafile.inputs),
-]) {
-  if (!input.includes('node_modules/')) continue;
-  let directory = dirname(resolve(root, input));
-  while (directory !== dirname(directory)) {
-    try {
-      const manifest = JSON.parse(await readFile(resolve(directory, 'package.json'), 'utf8'));
-      if (manifest.name && !manifest.name.startsWith('@zhuma/')) {
-        if (!licenses.has(manifest.name)) {
-          const files = (await readdir(directory)).filter((name) =>
-            /^(licen[sc]e|copying|notice)(\.|$)/iu.test(name),
-          );
-          if (!files.length) throw new Error(`Missing bundled license: ${manifest.name}`);
-          const content = await Promise.all(
-            files.map((name) => readFile(resolve(directory, name), 'utf8')),
-          );
-          licenses.set(
-            manifest.name,
-            `${manifest.name}@${manifest.version}\n${content.join('\n')}`,
-          );
+  await writeFile(resolve(out, 'LICENSE'), await readFile(resolve(root, 'LICENSE')));
+  // Preserve the full license text for every bundled dependency, including transitive modules.
+  const licenses = new Map();
+  for (const input of [
+    ...Object.keys(hostBuild.metafile.inputs),
+    ...Object.keys(clientBuild.metafile.inputs),
+  ]) {
+    if (!input.includes('node_modules/')) continue;
+    let directory = dirname(resolve(root, input));
+    while (directory !== dirname(directory)) {
+      try {
+        const manifest = JSON.parse(await readFile(resolve(directory, 'package.json'), 'utf8'));
+        if (manifest.name && !manifest.name.startsWith('@zhuma/')) {
+          if (!licenses.has(manifest.name)) {
+            const files = (await readdir(directory)).filter((name) =>
+              /^(licen[sc]e|copying|notice)(\.|$)/iu.test(name),
+            );
+            if (!files.length) throw new Error(`Missing bundled license: ${manifest.name}`);
+            const content = await Promise.all(
+              files.map((name) => readFile(resolve(directory, name), 'utf8')),
+            );
+            licenses.set(
+              manifest.name,
+              `${manifest.name}@${manifest.version}\n${content.join('\n')}`,
+            );
+          }
+          break;
         }
-        break;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
       }
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+      directory = dirname(directory);
     }
-    directory = dirname(directory);
   }
+  await writeFile(
+    resolve(out, 'THIRD_PARTY_LICENSES.txt'),
+    [...licenses.values()].sort().join('\n\n--------------------\n\n'),
+  );
 }
-await writeFile(
-  resolve(out, 'THIRD_PARTY_LICENSES.txt'),
-  [...licenses.values()].sort().join('\n\n--------------------\n\n'),
-);

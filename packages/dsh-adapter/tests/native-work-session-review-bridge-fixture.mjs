@@ -13,6 +13,10 @@ import { freezeExecutionReviewComposition } from '../dist/execution-review-compo
 import { describeNativeReviewTool } from '../dist/native-work-session-review-tool.js';
 import { describeNativeReviewReadTool } from '../dist/native-work-session-review-read.js';
 import { readExecutionReviewState } from '../dist/execution-review-state.js';
+import { createHostRunConfiguration } from '../dist/host-run-configuration.js';
+import { createHostRunSkillPolicies } from '../dist/host-run-skill-policy.js';
+import { createHostRunResourceSource } from '../dist/host-run-resource-source.js';
+import { seedScaledReviewMetadata } from './native-work-session-review-scale-fixture.mjs';
 export { readExecutionReviewState };
 
 export async function bootReviewBridge(root, after, options = {}) {
@@ -20,6 +24,9 @@ export async function bootReviewBridge(root, after, options = {}) {
     changes = new Set(),
     reads = [],
     submitTrace = [];
+  const hostMetrics = { checks: 0, workbenchReads: 0, elapsedMs: 0, preparations: 0 };
+  let productionConfiguration,
+    checkingProduction = 0;
   const d = await host(
     { after },
     {
@@ -32,9 +39,20 @@ export async function bootReviewBridge(root, after, options = {}) {
               mediaType: 'text/plain',
               text: '固定附件：旧 status 参数必须兼容。',
             },
-      assertReviewConfiguration(_member, _space, _node, saved) {
+      assertReviewConfiguration(member, space, node, saved) {
         assert.deepEqual(saved, compositions.get(saved.configurationId));
         if (options.refuseAdmission) throw Error('SYNTHETIC_REVIEW_CONFIGURATION_REFUSAL');
+        if (options.productionHost) {
+          hostMetrics.checks++;
+          const outer = checkingProduction++ === 0,
+            start = performance.now();
+          try {
+            return productionConfiguration.assertReviewConfiguration(member, space, node, saved);
+          } finally {
+            checkingProduction--;
+            if (outer) hostMetrics.elapsedMs += performance.now() - start;
+          }
+        }
         return undefined;
       },
     },
@@ -60,21 +78,36 @@ export async function bootReviewBridge(root, after, options = {}) {
   };
   const source = new AbortController(),
     adapter = new ScriptedAdapter();
+  if (options.productionPrepare)
+    adapter.listModels = async (provider) => [
+      { provider, id: 'contract-model', name: 'Synthetic passive model catalogue' },
+    ];
   const bridge = createNativeReviewBridge({
     execution: d.service,
     signal: source.signal,
     host: {
       async prepareReview(original, { model, ...query }, wait) {
         wait.throwIfAborted();
-        const preparation = checked(await d.service.readExpertReviewPreparation(original, query));
-        const saved = freezeExecutionReviewComposition({
-          ...preparation,
-          model,
-          tools: {
-            readTarget: describeNativeReviewReadTool(),
-            completeReview: describeNativeReviewTool(),
-          },
-        });
+        let saved;
+        if (options.productionPrepare) {
+          hostMetrics.preparations++;
+          const { provider, model: modelId, reasoningEffort } = model;
+          saved = await productionConfiguration.prepareReview(
+            original,
+            { ...query, model: { provider, model: modelId, reasoningEffort } },
+            wait,
+          );
+        } else {
+          const preparation = checked(await d.service.readExpertReviewPreparation(original, query));
+          saved = freezeExecutionReviewComposition({
+            ...preparation,
+            model,
+            tools: {
+              readTarget: describeNativeReviewReadTool(),
+              completeReview: describeNativeReviewTool(),
+            },
+          });
+        }
         compositions.set(saved.configurationId, saved);
         for (const resource of saved.payload.targetResources.filter(
           (item) => !options.omitFile || item.kind !== 'file',
@@ -113,7 +146,7 @@ export async function bootReviewBridge(root, after, options = {}) {
             'complete_review',
           )();
         });
-        adapter.script.push('Review complete.');
+        if (!options.finishReason) adapter.script.push('Review complete.');
         await options.afterPreparation?.(saved);
         return saved;
       },
@@ -167,7 +200,25 @@ export async function bootReviewBridge(root, after, options = {}) {
     },
   );
   bridge.bindNative(native.service, native.runtime);
-  await options.afterNative?.({ native, bridge, d });
+  if (options.productionHost) {
+    const lifetime = new AbortController();
+    after(() => lifetime.abort());
+    const source = {
+      execution: d.service,
+      readWorkbench() {
+        hostMetrics.workbenchReads++;
+        return d.readWorkbench();
+      },
+      signal: lifetime.signal,
+    };
+    // This fixture's reviewer selects no Skills/MCP. Nonempty package authority
+    // remains covered by the Host importer's own fixtures.
+    const policies = createHostRunSkillPolicies({ ...source, readPackage: () => undefined });
+    const resources = createHostRunResourceSource({ ...source, policies });
+    productionConfiguration = createHostRunConfiguration(native.ctx, { ...source, resources });
+  }
+  if (options.scaledHistory) await seedScaledReviewMetadata(d);
+  await options.afterNative?.({ native, bridge, d, hostMetrics });
   after(() => bridge.closeBeforeNative());
   const { nodeId: _nodeId, ...location } = { ...d.locate(), spaceId: 'north' };
   const view = checked(
@@ -249,6 +300,7 @@ export async function bootReviewBridge(root, after, options = {}) {
     compositions,
     reads,
     submitTrace,
+    hostMetrics,
     waitFor,
   };
 }

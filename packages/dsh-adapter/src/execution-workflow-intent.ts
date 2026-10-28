@@ -237,6 +237,7 @@ export class ExecutionWorkflowIntents {
     }
   }
   private bound(facts: WorkflowFacts, intent: WorkflowExecutionIntent) {
+    const states = new Map<ExecutionNodeRecord, ReturnType<typeof readExecutionRunState>>();
     const found: {
       reservation: WorkflowStartReservation;
       node: ExecutionNodeRecord;
@@ -245,7 +246,8 @@ export class ExecutionWorkflowIntents {
     for (const reservation of intent.starts) {
       const node = facts.nodes.find((item) => item.nodeId === reservation.nodeId);
       if (!node) return fail('workflow-incompatible');
-      const state = readExecutionRunState(node);
+      if (!states.has(node)) states.set(node, readExecutionRunState(node));
+      const state = states.get(node);
       const receipt = state?.receipts.find((item) => item.requestId === reservation.requestId);
       if (!receipt) {
         if (
@@ -291,7 +293,11 @@ export class ExecutionWorkflowIntents {
     const bound = intent ? this.bound(facts, intent) : [];
     const active = bound.filter(({ run }) => run.resources === 'held');
     const reviews = workflowReviewResources(facts.nodes);
-    const reviewAttention = workflowReviewAttention(facts.nodes, intent);
+    const reviewAttention = workflowReviewAttention(
+      facts.nodes,
+      intent,
+      member.assertReviewDrained?.bind(member),
+    );
     let drained =
       active.length === 0 &&
       !reviews.some((review) => review.resources === 'held') &&
@@ -522,7 +528,10 @@ export class ExecutionWorkflowIntents {
           if (!member.assertReviewDrained) return fail('workflow-recovery-required');
           member.assertReviewDrained(review);
         }
-        if (workflowReviewAttention(facts.nodes, current).length)
+        if (
+          workflowReviewAttention(facts.nodes, current, member.assertReviewDrained?.bind(member))
+            .length
+        )
           return fail('workflow-review-attention-required');
         const old = this.arms.get(keyOf(location));
         // No absence inference for an unbound reservation after an owner was lost.
@@ -696,10 +705,12 @@ export class ExecutionWorkflowIntents {
           view: this.view(location, member),
           tickets: Object.freeze(tickets),
           reviewCandidates: freeze(
-            workflowReviewCandidates(facts.nodes, intent, facts.availableExpertIds).slice(
-              0,
-              Math.max(0, slots),
-            ),
+            workflowReviewCandidates(
+              facts.nodes,
+              intent,
+              facts.availableExpertIds,
+              member.assertReviewDrained?.bind(member),
+            ).slice(0, Math.max(0, slots)),
           ),
           signal: arm.signal,
           check: () => {
@@ -721,6 +732,11 @@ export class ExecutionWorkflowIntents {
     );
   }
   /** Original claim identity plus retained request/arm, never caller .check(). */
+  assertClaimCurrent(request: MemberRequest, claim: WorkflowExecutionClaim) {
+    const arm = this.claims.get(claim);
+    if (!arm || arm.request !== request) return fail('workflow-authority-denied');
+    return this.current(arm);
+  }
   assertClaim(request: MemberRequest, claim: WorkflowExecutionClaim) {
     const arm = this.claims.get(claim);
     if (!arm || arm.request !== request) return fail('workflow-authority-denied');

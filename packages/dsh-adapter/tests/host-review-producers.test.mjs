@@ -123,6 +123,8 @@ async function setup(t, { empty = false, mcp = false } = {}) {
     ctx,
     metadata: 0,
     inference: 0,
+    workbenchReads: 0,
+    packageReads: 0,
     models: ['review-model'],
     hold: undefined,
   };
@@ -141,23 +143,30 @@ async function setup(t, { empty = false, mcp = false } = {}) {
   })();
   ctx.llm.registerAdapter(['contract'], adapter);
   const lifetime = new AbortController();
+  const readWorkbench = () => {
+    h.workbenchReads++;
+    return host.readWorkbench();
+  };
   const policyOptions = {
     execution: host.service,
-    readWorkbench: host.readWorkbench,
-    readPackage: (id) => packages.get(id),
+    readWorkbench,
+    readPackage: (id) => {
+      h.packageReads++;
+      return packages.get(id);
+    },
     signal: lifetime.signal,
   };
   const policies = createHostRunSkillPolicies(policyOptions);
   const resourceOptions = {
     execution: host.service,
     policies,
-    readWorkbench: host.readWorkbench,
+    readWorkbench,
     signal: lifetime.signal,
   };
   const resources = createHostRunResourceSource(resourceOptions);
   const configurationOptions = {
     execution: host.service,
-    readWorkbench: host.readWorkbench,
+    readWorkbench,
     resources,
     signal: lifetime.signal,
   };
@@ -327,6 +336,59 @@ test('Host review producers: a member revoked during actual registry metadata ca
   release.resolve();
   await assert.rejects(pending);
   assert.deepEqual(h.host.counters, { global: 0, nodes: 0, plans: 0 });
+  assert.equal(h.inference, 0);
+});
+
+test('Host review producers: each synchronous configuration assertion reads one fresh snapshot and package, including after an await', async (t) => {
+  const h = await setup(t);
+  const composition = await h.configuration.prepareReview(h.host.request, h.input);
+  const current = checked(
+    await h.host.service.readExpertReviewPreparation(h.host.request, h.query),
+  );
+  h.workbenchReads = h.packageReads = 0;
+  assert.equal(assertReview(h, composition, current), undefined);
+  assert.deepEqual([h.workbenchReads, h.packageReads], [1, 1]);
+
+  await Promise.resolve();
+  assert.equal(assertReview(h, composition, current), undefined);
+  assert.deepEqual([h.workbenchReads, h.packageReads], [2, 2]);
+  const tampered = structuredClone(composition);
+  tampered.payload.model.maxTokens++;
+  assert.throws(() => assertReview(h, tampered, current));
+
+  const original = h.packages.get(version);
+  await Promise.resolve();
+  h.packages.set(version, { ...original, digest: '0'.repeat(64) });
+  assert.throws(() => assertReview(h, composition, current));
+  h.packages.set(version, original);
+  assert.equal(assertReview(h, composition, current), undefined);
+
+  const readWorkbench = h.configurationOptions.readWorkbench;
+  h.configurationOptions.readWorkbench = () => current.applied;
+  assert.throws(() => assertReview(h, composition, current));
+  h.configurationOptions.readWorkbench = readWorkbench;
+  assert.equal(assertReview(h, composition, current), undefined);
+  h.lifetime.abort();
+  assert.throws(() => assertReview(h, composition, current));
+  assert.equal(h.inference, 0);
+});
+
+test('Host review producers: same-call plan sharing never supplies the continuing policy assertion after an await', async (t) => {
+  const h = await setup(t);
+  const composition = await h.configuration.prepareReview(h.host.request, h.input);
+  const current = checked(
+    await h.host.service.readExpertReviewPreparation(h.host.request, h.query),
+  );
+  const policy = h.policies.review(current, current.applied);
+  assert.equal(policy.assertCurrent(), undefined);
+  await Promise.resolve();
+  h.host.setWorkbench((state) => {
+    state.appliedPlans[0].participants.find((item) => item.id === 'qa').instructions +=
+      ' Changed fixed reviewer instructions.';
+    return state;
+  });
+  assert.throws(() => policy.assertCurrent());
+  assert.throws(() => assertReview(h, composition, current));
   assert.equal(h.inference, 0);
 });
 

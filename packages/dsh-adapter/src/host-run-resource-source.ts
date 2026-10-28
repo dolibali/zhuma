@@ -2,6 +2,7 @@ import {
   canonicalPayload,
   createExecutionHandoff,
   createNodeHandoffs,
+  type AppliedPlan,
   type Workbench,
 } from '@zhuma/agent-core';
 import type { BeginRunRequest, ExecutionService } from './execution-service.js';
@@ -110,11 +111,15 @@ export function createHostRunResourceSource(options: {
   function reviewSelection(
     preparation: ExecutionReviewPreparation,
     qualified?: HostRunSkillPolicyQualification,
+    synchronousApplied?: AppliedPlan,
   ) {
-    active();
-    if (policies.review !== reviewPolicies || policies.qualifyReview !== qualifyReview)
-      unavailable();
-    const policy = qualified ?? reviewPolicies.call(policies, preparation);
+    const checkPolicies = () => {
+      active();
+      if (policies.review !== reviewPolicies || policies.qualifyReview !== qualifyReview)
+        unavailable();
+    };
+    checkPolicies();
+    const policy = qualified ?? reviewPolicies.call(policies, preparation, synchronousApplied);
     const reviewer = preparation.applied.participants.find(
       (item) => item.id === preparation.scope.review.principal.reviewerRef.id,
     );
@@ -138,9 +143,7 @@ export function createHostRunResourceSource(options: {
     });
     const resources = freezeExecutionRunResources(preparation.applied, refs, reviewer, catalog);
     const current = () => {
-      active();
-      if (policies.review !== reviewPolicies || policies.qualifyReview !== qualifyReview)
-        unavailable();
+      checkPolicies();
       const result: unknown = policy.assertCurrent();
       if (result !== undefined) {
         void Promise.resolve(result).catch(() => undefined);
@@ -148,7 +151,8 @@ export function createHostRunResourceSource(options: {
       }
       return undefined;
     };
-    current();
+    if (synchronousApplied) checkPolicies();
+    else current();
     return { catalog, resources, assertCurrent: current };
   }
   async function selected(request: MemberRequest, locator: Locator) {
@@ -235,9 +239,12 @@ export function createHostRunResourceSource(options: {
   return {
     signal,
     /** Original frozen reviewer metadata for D's current-facts assertion; never send authority. */
-    reviewCatalog(preparation: ExecutionReviewPreparation): ExecutionRunResourceCatalog {
+    reviewCatalog(
+      preparation: ExecutionReviewPreparation,
+      synchronousApplied?: AppliedPlan,
+    ): ExecutionRunResourceCatalog {
       try {
-        return reviewSelection(preparation).catalog;
+        return reviewSelection(preparation, undefined, synchronousApplied).catalog;
       } catch {
         return unavailable();
       }

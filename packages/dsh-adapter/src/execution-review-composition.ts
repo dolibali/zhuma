@@ -228,9 +228,11 @@ export function readExecutionReviewComposition(value: unknown): FrozenExecutionR
       ),
     );
     const payload = derive(source);
+    const canonical = canonicalPayload(payload);
     if (
-      canonicalPayload(payload) !== canonicalPayload(snapshot.payload) ||
-      snapshot.configurationId !== `review_composition_${hash(payload)}`
+      canonical !== canonicalPayload(snapshot.payload) ||
+      snapshot.configurationId !==
+        `review_composition_${createHash('sha256').update(canonical).digest('hex')}`
     )
       fail('review-composition-mismatch');
     return freeze(snapshot);
