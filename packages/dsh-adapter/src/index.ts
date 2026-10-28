@@ -316,3 +316,14 @@ export {
   MemberWorkbenchOperations,
   openMemberWorkbenchOperations,
 } from './member-workbench-operation.js';
+export type {
+  IdentityMemberLifecycleHandle,
+  IdentityMemberLifecycleOptions,
+  IdentityTeamView,
+} from './identity-member-lifecycle.js';
+export {
+  openKnowledgeService,
+  KnowledgeService,
+  KnowledgeError,
+  type KnowledgeServiceOptions,
+} from './knowledge-service.js';

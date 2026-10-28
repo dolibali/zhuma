@@ -24,6 +24,7 @@ import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
 import { ControlIcon } from './ControlIcon.js';
+import { TaskBoard } from './TaskBoard.js';
 import {
   latestTaskPlan,
   useTaskProgress,
@@ -134,6 +135,7 @@ export function WorkbenchPage({
     }
   }, [assetContent]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [taskView, setTaskView] = useState<'list' | 'board'>('list');
   const [initialPlanning, setInitialPlanning] = useState<InitialPlanning | null>(null);
   const submitting = useRef(false);
   const pageGeneration = useRef(0);
@@ -721,6 +723,22 @@ export function WorkbenchPage({
                     ...state.projects.map((p) => ({ value: p.id, label: p.name })),
                   ]}
                 />
+                <div className="zm-task-view" role="group" aria-label="任务显示方式">
+                  <Button
+                    variant="quiet"
+                    aria-pressed={taskView === 'list'}
+                    onClick={() => setTaskView('list')}
+                  >
+                    列表
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    aria-pressed={taskView === 'board'}
+                    onClick={() => setTaskView('board')}
+                  >
+                    看板
+                  </Button>
+                </div>
               </div>
             )}
             {section !== 'tasks' && !activeProject && (
@@ -879,67 +897,78 @@ export function WorkbenchPage({
         )}
         {section === 'tasks' && (
           <>
-            <div className="zm-task-table">
-              <div className="zm-table-heading">
-                <span>工作事项</span>
-                <span>参与者</span>
-                <span>工作流</span>
-                <span>状态</span>
-              </div>
-              {tasks.map((t) => (
-                <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
-                  <span>
-                    <strong>{t.title}</strong>
-                    <small>
-                      {state.projects.find((p) => p.id === t.projectId)?.name}
-                      <span className="zm-meta-dot">·</span>
-                      {state.participants.find((p) => p.id === t.ownerId)?.name ?? '负责人待定'}
-                    </small>
-                  </span>
-                  <span className="zm-avatars">
-                    {state.participants
-                      .filter((p) => t.participantIds.includes(p.id))
-                      .slice(0, 3)
-                      .map((p) => {
-                        const avatarLabel = `${p.name} · ${p.kind === 'expert' ? 'Agent 专家' : '团队成员'}（参与者）`;
-                        return (
-                          <span
-                            role="img"
-                            title={avatarLabel}
-                            aria-label={avatarLabel}
-                            className={`zm-avatar ${p.kind}`}
-                            key={p.id}
-                          >
-                            {p.kind === 'expert' ? 'AI' : p.name[0]}
-                          </span>
-                        );
-                      })}
-                    {t.participantIds.length > 3 && (
-                      <span
-                        className="zm-avatar zm-avatar-overflow"
-                        title={`${t.participantIds.length} 位参与者`}
-                      >
-                        +{t.participantIds.length - 3}
-                      </span>
-                    )}
-                  </span>
-                  <span>
-                    {t.workflows.flatMap((w) => w.nodes).length} 节点
-                    {t.workflows.length > 1 && <small>{t.workflows.length} 个工作流</small>}
-                  </span>
-                  <span className="zm-task-state-cell">
-                    <TaskProgressSummary
-                      progress={progressFor(t.id)}
-                      confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
-                      compact
-                    />
-                    <span className={`zm-status ${t.status}`}>
-                      {t.status === 'draft' ? '计划草稿' : '计划已确认'}
+            {taskView === 'board' ? (
+              <TaskBoard
+                tasks={tasks}
+                projects={state.projects}
+                participants={state.participants}
+                progress={progressFor}
+                confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
+                openTask={setActiveTaskId}
+              />
+            ) : (
+              <div className="zm-task-table">
+                <div className="zm-table-heading">
+                  <span>工作事项</span>
+                  <span>参与者</span>
+                  <span>工作流</span>
+                  <span>状态</span>
+                </div>
+                {tasks.map((t) => (
+                  <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
+                    <span>
+                      <strong>{t.title}</strong>
+                      <small>
+                        {state.projects.find((p) => p.id === t.projectId)?.name}
+                        <span className="zm-meta-dot">·</span>
+                        {state.participants.find((p) => p.id === t.ownerId)?.name ?? '负责人待定'}
+                      </small>
                     </span>
-                  </span>
-                </button>
-              ))}
-            </div>
+                    <span className="zm-avatars">
+                      {state.participants
+                        .filter((p) => t.participantIds.includes(p.id))
+                        .slice(0, 3)
+                        .map((p) => {
+                          const avatarLabel = `${p.name} · ${p.kind === 'expert' ? 'Agent 专家' : '团队成员'}（参与者）`;
+                          return (
+                            <span
+                              role="img"
+                              title={avatarLabel}
+                              aria-label={avatarLabel}
+                              className={`zm-avatar ${p.kind}`}
+                              key={p.id}
+                            >
+                              {p.kind === 'expert' ? 'AI' : p.name[0]}
+                            </span>
+                          );
+                        })}
+                      {t.participantIds.length > 3 && (
+                        <span
+                          className="zm-avatar zm-avatar-overflow"
+                          title={`${t.participantIds.length} 位参与者`}
+                        >
+                          +{t.participantIds.length - 3}
+                        </span>
+                      )}
+                    </span>
+                    <span>
+                      {t.workflows.flatMap((w) => w.nodes).length} 节点
+                      {t.workflows.length > 1 && <small>{t.workflows.length} 个工作流</small>}
+                    </span>
+                    <span className="zm-task-state-cell">
+                      <TaskProgressSummary
+                        progress={progressFor(t.id)}
+                        confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
+                        compact
+                      />
+                      <span className={`zm-status ${t.status}`}>
+                        {t.status === 'draft' ? '计划草稿' : '计划已确认'}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             {!tasks.length && (
               <div className="zm-empty">
                 <h3>{search ? '没有匹配的任务' : '开始下一项工作'}</h3>

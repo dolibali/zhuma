@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { createIdentityApi } from '../identity/api.js';
+import { createIdentityLifecycleApi } from '../identity/lifecycle-api.js';
 import { MemberSessionBoundary } from '../identity/MemberSessionBoundary.js';
 import { MemberSpaceBoundary, type MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import type { MemberShell, SpaceSwitch } from '../identity/shell.js';
@@ -34,6 +35,7 @@ function MemberWork({
   registerLeaveGuard,
   registerWorkspaceDirectory,
   openModelSettings,
+  nativeExecution,
 }: {
   fetcher: typeof fetch;
   accountId: string;
@@ -43,6 +45,7 @@ function MemberWork({
   appearance?: AppearanceStore;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
   openModelSettings?: (() => void) | undefined;
+  nativeExecution: boolean;
   view: 'catalog' | 'work';
   openWork?: (() => void) | undefined;
   registerLeaveGuard?:
@@ -153,7 +156,7 @@ function MemberWork({
             api={workbench}
             initialSection="tasks"
             appearance={appearance}
-            nativeRun={nativeRun}
+            {...(nativeExecution ? { nativeRun } : {})}
             projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}
           />
@@ -163,7 +166,11 @@ function MemberWork({
           <h1>我的工作</h1>
           <div className="zm-execution-workspace">
             <StartablePlansPanel api={api} onStarted={started} />
-            <ExecutionWorkspace api={api} refreshKey={refreshKey} nativeRun={nativeRun} />
+            <ExecutionWorkspace
+              api={api}
+              refreshKey={refreshKey}
+              {...(nativeExecution ? { nativeRun } : {})}
+            />
           </div>
         </main>
       )}
@@ -182,6 +189,8 @@ export function MemberExecutionPage({
   openWork,
   registerWorkspaceDirectory,
   openModelSettings,
+  nativeExecution = true,
+  allowRegistration = false,
 }: {
   fetcher?: typeof fetch;
   shell?: MemberShell;
@@ -190,6 +199,9 @@ export function MemberExecutionPage({
   openWork?: () => void;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
   openModelSettings?: (() => void) | undefined;
+  /** Web members do not implicitly run an Agent on the backend machine. */
+  nativeExecution?: boolean;
+  allowRegistration?: boolean;
 }) {
   const snapshot = useSyncExternalStore(
     shell?.subscribe ?? noSubscription,
@@ -211,6 +223,7 @@ export function MemberExecutionPage({
     [shell, epoch],
   );
   const identity = useMemo(() => shell?.api ?? createIdentityApi(fetcher), [fetcher, shell]);
+  const lifecycle = useMemo(() => createIdentityLifecycleApi(fetcher), [fetcher]);
   // Two replacement controllers can share the same account, space and numeric
   // epoch. Their forms and captured handlers must still have separate lifetimes.
   const controllers = useRef({
@@ -237,6 +250,7 @@ export function MemberExecutionPage({
       api={identity}
       controller={shell?.session}
       showAccountHeader={!shell}
+      registerAccount={allowRegistration ? lifecycle.register : undefined}
     >
       {(session, invalidate, isSessionCurrent) =>
         shell && !shell.space ? (
@@ -265,6 +279,7 @@ export function MemberExecutionPage({
                 registerLeaveGuard={shell ? registerLeaveGuard : undefined}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
                 openModelSettings={openModelSettings}
+                nativeExecution={nativeExecution}
                 {...(workbenchAppearance ? { appearance: workbenchAppearance } : {})}
               />
             )}

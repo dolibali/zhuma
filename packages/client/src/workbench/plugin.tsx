@@ -193,6 +193,7 @@ export function apply(ctx: Context): void {
               <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
               <MemberExecutionPage
                 shell={memberShell}
+                allowRegistration={mode === 'multi-member'}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
                 openModelSettings={openModelSettings}
                 view={panel.view}
@@ -263,6 +264,7 @@ export function apply(ctx: Context): void {
         name: 'settings.launcher',
         inject: () => ({
           shell: memberShell,
+          memberLifecycle: mode === 'multi-member',
           bindSettingsLauncher,
           openWork: () => {
             if (ctx.layout.panelInfo.getSnapshot().activePanelId !== executionPanel)

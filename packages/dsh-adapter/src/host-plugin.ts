@@ -24,6 +24,14 @@ import { hostTeamCatalogGrantsSchema } from './host-team-catalog.js';
 import { openHostLocalSetup } from './host-local-setup.js';
 import { openHostLocalSetupHttp } from './host-local-setup-http.js';
 import { nativeWorkSessionInject } from './native-work-session-storage.js';
+import { enableMemberWeb } from './member-web-transport.js';
+import { openMemberWebEntry } from './member-web-entry.js';
+import { openIdentityMemberHttp } from './identity-member-http.js';
+import { openHostKnowledge } from './host-knowledge.js';
+import type {
+  IdentityMemberLifecycleHandle,
+  IdentityMemberLifecycleOptions,
+} from './identity-member-lifecycle.js';
 import {
   applySpaceDirectory,
   spaceDirectoryFor,
@@ -52,6 +60,7 @@ export const Config = z.strictObject({
   localExecution: hostLocalExecutionSchema.optional(),
   teamCatalog: hostTeamCatalogGrantsSchema.optional(),
   localSetup: z.boolean().optional(),
+  memberWeb: z.boolean().optional(),
   bodyBytes: z
     .number()
     .int()
@@ -73,6 +82,7 @@ interface IdentityMountConfig {
   readonly bootstrapKey?: string | undefined;
   readonly executionOptions?: IdentityExecutionOptions | undefined;
   readonly initialization?: IdentityInitializationOptions | undefined;
+  readonly lifecycle?: IdentityMemberLifecycleOptions | undefined;
 }
 export const identityPlugin = {
   inject: [...identityInject],
@@ -85,7 +95,13 @@ export const identityPlugin = {
       // B validates the opaque payload before it is ever used as import data.
       imported = record.payload as IdentityImport;
     }
-    await applyIdentity(ctx, imported, config.executionOptions, config.initialization);
+    await applyIdentity(
+      ctx,
+      imported,
+      config.executionOptions,
+      config.initialization,
+      config.lifecycle,
+    );
   },
 };
 
@@ -135,7 +151,13 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   const config = Config.parse(rawConfig);
   if (config.localSetup && config.deploymentMode !== 'multi-member')
     throw new Error('Local member setup requires explicit multi-member mode.');
+  if (config.memberWeb && config.deploymentMode !== 'multi-member')
+    throw new Error('Member Web requires explicit multi-member mode.');
   configureDeploymentMode(ctx, config.deploymentMode);
+  if (config.memberWeb) {
+    enableMemberWeb(ctx);
+    openMemberWebEntry(ctx);
+  }
   // Public boot presentation only. Authorization continues to use the Host's own configuration.
   ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
     table.push({
@@ -153,6 +175,12 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let closed = false;
   const directoryLifecycle = createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
   let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
+  let knowledge: ReturnType<typeof openHostKnowledge> | undefined;
+  let identityMembers: IdentityMemberLifecycleHandle | undefined;
+  const identityHttp =
+    config.deploymentMode === 'multi-member'
+      ? openIdentityMemberHttp(ctx, () => (closed ? undefined : identityMembers))
+      : undefined;
   let runOwner: Awaited<ReturnType<typeof openHostRunOwner>> | undefined;
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
@@ -200,6 +228,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   const beforeClose = async () => {
     closed = true;
+    const identityClosing = identityHttp?.close();
+    const knowledgeClosing = knowledge?.close();
     localSetup?.close();
     const setupClosing = localSetupHttp?.close();
     const runs = closeRunBridge();
@@ -213,7 +243,15 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       try {
         await setupClosing;
       } finally {
-        await runs;
+        try {
+          await identityClosing;
+        } finally {
+          try {
+            await knowledgeClosing;
+          } finally {
+            await runs;
+          }
+        }
       }
     }
   };
@@ -248,6 +286,23 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         bootstrapKey: config.identityBootstrapKey,
         executionOptions: { currentDirectoryBinding: directoryLifecycle.currentDirectoryBinding },
         ...(localSetup ? { initialization: localSetup.initialization } : {}),
+        ...(config.deploymentMode === 'multi-member'
+          ? {
+              lifecycle: {
+                publish(handle: IdentityMemberLifecycleHandle) {
+                  identityMembers = handle;
+                  return () => {
+                    if (identityMembers === handle) identityMembers = undefined;
+                  };
+                },
+                reservedAccountIds: () =>
+                  workbench
+                    .readWorkbench()
+                    .participants.filter((item) => item.kind === 'expert')
+                    .map((item) => item.id),
+              },
+            }
+          : {}),
       });
     } catch {
       // The independent fence stays mounted; Cordis retains the identity child's FAILED status.
@@ -335,6 +390,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     })();
     await memberOpening;
     if (closed) return;
+    knowledge = openHostKnowledge(ctx, directoryLifecycle.currentDirectory);
     // Even if identity failed, mount the member-gated routes. They reject absent
     // identity or directory facts; they never fall back to the owner principal.
     await ctx.plugin(executionPlugin, {

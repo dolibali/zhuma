@@ -28,6 +28,8 @@ await mkdir(out, { recursive: true });
 // peer of its base bundle. Bundle only the pure definition/key helpers; live
 // services and Cordis must continue to come from the official Host instance.
 const bundledSdkHelpers = new Set([
+  // Only AttachmentId's pure string brand; the live provider stays ctx.attachments.
+  '@deepseek-ai/dsh-attachment',
   '@deepseek-ai/dsh-credentials',
   '@deepseek-ai/dsh-brand',
   '@deepseek-ai/dsh-storage-domain',
@@ -93,7 +95,7 @@ if (
   throw new Error('Workbench Host gained an unverified external SDK dependency.');
 const hostCode = await readFile(resolve(out, 'index.js'), 'utf8');
 if (
-  /\b(?:class\s+(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)|(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)(?:\d+)?\s*=\s*class)\b/u.test(
+  /\b(?:class\s+(?:AttachmentStore|CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)|(?:AttachmentStore|CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)(?:\d+)?\s*=\s*class)\b/u.test(
     hostCode,
   )
 )
@@ -115,6 +117,21 @@ if (hostOnly) {
     await readFile(resolve(out, name));
   console.log('Built Host only in .build/workbench; existing Client and legal files retained.');
 } else {
+  const memberWebBuild = await build({
+    absWorkingDir: root,
+    entryPoints: ['packages/client/src/web/entry.tsx'],
+    outfile: resolve(out, 'member-web.js'),
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    metafile: true,
+    target: 'es2022',
+    loader: { '.css': 'text' },
+    minify: true,
+    define: { 'process.env.NODE_ENV': '"production"' },
+  });
+  if (Object.keys(memberWebBuild.metafile.inputs).some((name) => name.includes('@deepseek-ai')))
+    throw new Error('Member Web must not bundle SDK owner/runtime modules.');
   const clientBuild = await build({
     absWorkingDir: root,
     entryPoints: ['packages/client/src/workbench/plugin.tsx'],
@@ -183,6 +200,7 @@ if (hostOnly) {
   for (const input of [
     ...Object.keys(hostBuild.metafile.inputs),
     ...Object.keys(clientBuild.metafile.inputs),
+    ...Object.keys(memberWebBuild.metafile.inputs),
   ]) {
     if (!input.includes('node_modules/')) continue;
     let directory = dirname(resolve(root, input));
