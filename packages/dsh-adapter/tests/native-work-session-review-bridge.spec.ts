@@ -424,3 +424,101 @@ test('original SDK bridge: A adoption revoking its own signal during the final s
     'a completed close seals further cleanup admission',
   );
 });
+
+test('original SDK review truncation: max-tokens after real fixed reads records attention and physically closes without a ballot or retry', async (t) => {
+  const h = await setup(t, { finishReason: 'max-tokens' });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await h.waitFor(() => readExecutionReviewState(h.d.read())?.attempts[0]?.resources === 'settled');
+  await h.bridge.whenIdle();
+  const node = h.d.read(),
+    attempt = readExecutionReviewState(node).attempts[0];
+  assert.equal(attempt.status, 'failed');
+  assert.equal(attempt.failure.code, 'review-result-rejected');
+  assert.equal(attempt.resources, 'settled');
+  assert.equal(attempt.stopPhase, 'none');
+  assert.equal(node.rounds[0].ballots.length, 0);
+  assert.equal(h.d.read('consume').command.status, 'blocked');
+  assert.equal(h.reads.length, 2, 'both fixed text and uploaded file were actually read');
+  assert.equal(h.adapter.requests.length, 3, 'there is no automatic continuation or retry');
+  assert.ok(h.submitTrace.some((result) => result.ok && result.value.status === 'needs-attention'));
+  assert.equal(h.native.ctx.agents.get(attempt.nativeAgentId), undefined);
+  assert.equal(
+    h.native.runtime.migrationDrain(attempt.nativeSessionId).basis,
+    'flushed-and-closed',
+  );
+  h.d.service.assertExpertReviewDrained(attempt.scope);
+  const events = await h.native.ctx.sessionPersistence.open(attempt.nativeSessionId, 'read');
+  try {
+    const page = await events.read(0, 100);
+    assert.ok(
+      page.events.some(
+        (event) => event.type === 'turn/end' && event.data.reason.kind === 'max-tokens',
+      ),
+    );
+    assert.equal(
+      page.events.some(
+        (event) => event.type === 'tool/call' && event.data.name === 'complete_review',
+      ),
+      false,
+    );
+  } finally {
+    await events.close();
+  }
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+});
+
+test('original SDK review truncation: ordinary completed idle without a declaration remains pending and never becomes a synthetic failure', async (t) => {
+  const h = await setup(t, { finishReason: 'stop' });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await h.waitFor(
+    () => (readExecutionReviewState(h.d.read())?.attempts[0]?.lastEventSequence ?? 0) >= 3,
+  );
+  await h.bridge.whenIdle();
+  const attempt = readExecutionReviewState(h.d.read()).attempts[0];
+  assert.equal(attempt.status, 'running');
+  assert.equal(attempt.failure, undefined);
+  assert.equal(attempt.resources, 'held');
+  assert.equal(h.native.runtime.status(attempt.nativeSessionId), 'idle');
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(h.adapter.requests.length, 3);
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+});
+
+test('original SDK review truncation: actual Stop before a held model response keeps cancellation ahead of output-limit failure', async (t) => {
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  t.onTestFinished(() => release.resolve());
+  const h = await setup(t, {
+    finishReason: 'max-tokens',
+    async beforeCompletion() {
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await entered.promise;
+  const stopped = await h.d.service.stopWorkflowExecution(h.d.request, {
+    ...h.location,
+    requestId: 'stop-before-truncated-review-response',
+    intentId: h.view.intent.intentId,
+    generation: h.view.intent.generation,
+  });
+  assert.equal(stopped.ok, true);
+  release.resolve();
+  await h.waitFor(() => readExecutionReviewState(h.d.read())?.attempts[0]?.resources === 'settled');
+  await h.bridge.whenIdle();
+  const attempt = readExecutionReviewState(h.d.read()).attempts[0];
+  assert.equal(attempt.status, 'cancelled');
+  assert.equal(attempt.failure, undefined);
+  assert.equal(attempt.stopPhase, 'confirmed');
+  assert.equal(attempt.resources, 'settled');
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(h.d.read('consume').command.status, 'blocked');
+  assert.equal(h.adapter.requests.length, 3);
+  assert.equal(h.native.ctx.agents.get(attempt.nativeAgentId), undefined);
+  assert.equal(
+    h.native.runtime.migrationDrain(attempt.nativeSessionId).basis,
+    'flushed-and-closed',
+  );
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+});

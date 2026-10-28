@@ -14,6 +14,7 @@ import {
 import {
   assertHostAbsentRetry,
   retireHostUnadmittedScope,
+  retireHostSettledScope,
   type HostAbsentRetirement,
 } from './host-run-recovery.js';
 import {
@@ -23,7 +24,12 @@ import {
 } from './host-run-reader.js';
 import { observeHostNativeRun, type HostNativeClaim } from './host-run-observation.js';
 import type { HostRunOperations } from './host-run-http.js';
-import type { ExecutionService, ExecutionResult, RunEventAuthority } from './execution-service.js';
+import type {
+  ExecutionService,
+  ExecutionResult,
+  RunEventAuthority,
+  BeginRunRequest,
+} from './execution-service.js';
 import type {
   ExecutionRunAuthorities,
   ExecutionRunCleanupAuthority,
@@ -35,6 +41,7 @@ import {
   currentExecutionRun,
   executionRunScope,
   readExecutionRunState,
+  isExecutionRunRevisionStart,
   type ExecutionRunDecision,
   type ExecutionRunEvent,
 } from './execution-run-state.js';
@@ -237,7 +244,15 @@ export async function openHostRunOwner(
     execution,
     signal: lifetime.signal,
     host: {
-      prepareReview: (original, input, wait) => configuration.prepareReview(original, input, wait),
+      prepareReview: (original, input, wait) => {
+        // Author output limits do not configure the independent review.
+        const { provider, model, reasoningEffort } = input.model;
+        return configuration.prepareReview(
+          original,
+          { ...input, model: { provider, model, reasoningEffort } },
+          wait,
+        );
+      },
       adoptReviewResources(agentCtx, input) {
         return adoptHostReviewResources(agentCtx, input, {
           native: native.service,
@@ -1096,6 +1111,93 @@ export async function openHostRunOwner(
     if (commands.size >= 256) throw new ExecutionRunError('run-capacity');
     return track(Promise.resolve().then(operation), commands);
   }
+  async function recoverRevisionStartDrain(
+    request: MemberRequest,
+    input: BeginRunRequest,
+    wait?: AbortSignal,
+  ): Promise<void> {
+    const initial = execution.readRunNode(input);
+    if (
+      input.mode !== 'begin' ||
+      !initial ||
+      readExecutionRunState(initial)?.receipts.some((item) => item.requestId === input.requestId) ||
+      !isExecutionRunRevisionStart(initial)
+    )
+      return;
+    const previous = currentExecutionRun(initial)!;
+    const scope = executionRunScope(initial, previous);
+    const fixed = canonicalPayload(initial);
+    const lease = await openExecutionMemberLease(ctx, request);
+    const check = () => {
+      active();
+      wait?.throwIfAborted();
+      lease.assertCurrent(input.spaceId);
+      const node = execution.readRunNode(input);
+      if (
+        lease.memberId !== scope.actorId ||
+        input.spaceId !== scope.spaceId ||
+        !node ||
+        canonicalPayload(node) !== fixed ||
+        !isExecutionRunRevisionStart(node) ||
+        input.expectedNodeVersion !== node.command.version ||
+        input.expectedRunVersion !== readExecutionRunState(node)?.version ||
+        input.composition.schemaVersion !== 2 ||
+        input.composition.payload.returnedRevision?.roundId !== node.currentRoundId ||
+        input.composition.payload.returnedRevision?.artifactVersionId !==
+          node.artifactVersions.at(-1)?.id ||
+        previous.dispatch !== 'received' ||
+        !previous.attempt.acknowledged ||
+        !previous.attempt.sessionId ||
+        !previous.attempt.executorRunId
+      )
+        throw new ExecutionRunError('run-recovery-unavailable');
+      configuration.assertConfiguration(lease.memberId, input.spaceId, node, input);
+    };
+    const fresh = async () => {
+      check();
+      const visible = await execution.readRunCompositionInputs(request, {
+        spaceId: input.spaceId,
+        taskId: input.taskId,
+        planId: input.planId,
+        revision: input.revision,
+        nodeId: input.nodeId,
+      });
+      check();
+      if (!visible.ok || visible.value.actorId !== lease.memberId)
+        throw new ExecutionRunError('run-authority-denied');
+    };
+    try {
+      await fresh();
+      if (!retirementDrains) throw new ExecutionRunError('run-authority-unavailable');
+      if (retirementDrains.read(scope)) return;
+      const cleanup = authorities.cleanupAfterSettlement(locatorFor(scope));
+      if (nativeScopeKey(cleanup.scope) !== nativeScopeKey(scope))
+        throw new ExecutionRunError('run-recovery-unavailable');
+      const result = await retireHostSettledScope(
+        native.service,
+        {
+          scope,
+          assertCurrent() {
+            check();
+            authorities.assertCleanup(cleanup, 'cleanup');
+          },
+        },
+        {
+          nativeSessionId: previous.attempt.sessionId!,
+          nativeAgentId: previous.attempt.executorRunId!,
+        },
+        AbortSignal.any([lifetime.signal, lease.signal, ...(wait ? [wait] : [])]),
+        fresh,
+        async () => {
+          await owned.get(nativeScopeKey(scope))?.resourceAdoption?.drain();
+        },
+      );
+      check();
+      retirementDrains.remember(scope, result);
+    } finally {
+      lease.release();
+    }
+  }
   function startNativeRun(
     request: MemberRequest,
     payload: unknown,
@@ -1110,6 +1212,7 @@ export async function openHostRunOwner(
         const input = ticket
           ? await configuration.prepareWorkflow(request, ticket, wait)
           : await configuration.prepare(request, payload);
+        if (!ticket) await recoverRevisionStartDrain(request, input, wait);
         ticket?.check();
         active();
         // This performs the original owner's pre/post-marker checks and whole-node put.

@@ -444,6 +444,34 @@ class NativeResultOwner {
       { global: true },
     );
     ctx.on(
+      'session/event',
+      (session, event) => {
+        const actual = ctx.agents.get(session.id);
+        if (
+          !actual ||
+          actual !== agent ||
+          session !== actual.session ||
+          actual.id !== binding.nativeAgentId ||
+          actual.session.id !== binding.nativeSessionId ||
+          event.type !== 'turn/end' ||
+          !['max-tokens', 'error'].includes(event.data.reason.kind)
+        )
+          return;
+        try {
+          // Only this live review's actual failed turn can reject its result.
+          // Ordinary idle and explicit Stop/revocation keep their original paths.
+          this.reviewCheck(grant);
+          this.reviewFailures.set(
+            nativeReviewScopeKey(active.context),
+            new NativeReviewError('review-result-rejected'),
+          );
+        } catch {
+          // A revoked/stopping review cannot publish a new failure observation.
+        }
+      },
+      { global: true },
+    );
+    ctx.on(
       'agent/status',
       ({ agent: actual, status }) => {
         if (

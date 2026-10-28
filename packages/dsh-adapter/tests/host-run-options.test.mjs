@@ -3,7 +3,7 @@ import test from 'node:test';
 import { Context } from '@deepseek-ai/cordis';
 import { createHostRunOptions } from '../dist/host-run-options.js';
 import { compositionFacts } from './execution-run-composition-fixture.mjs';
-import { begin } from './execution-run-fixture.mjs';
+import { accepted, applyEvent, begin, stable } from './execution-run-fixture.mjs';
 
 // Metadata/producer contracts. Stand-in authorization never proves a real member lease.
 function setup({ expert = false, list, timeout = 1000 } = {}) {
@@ -23,6 +23,7 @@ function setup({ expert = false, list, timeout = 1000 } = {}) {
       return { ok: true, value: facts.inputs };
     },
     readRunNode: () => facts.node,
+    readRunComposition: () => ({ payload: { model: facts.model, executor: { kind: 'builtin' } } }),
   };
   ctx.provide('llm', {
     listProviders: () => [{ id: 'contract' }],
@@ -85,6 +86,58 @@ test('options contract: expert assignment never offers the human builtin or a di
     kind: 'plan-expert',
     ref: { id: 'qa', version: h.query.planId },
   });
+});
+
+test('options contract: only an explicit returned current round offers begin after a settled completed Run', async (t) => {
+  const h = setup();
+  t.after(() => h.ctx.fiber.dispose());
+  const completed = applyEvent(accepted(begin(h.facts.node).record), 'completed', stable).record;
+  const returned = {
+    ...completed,
+    command: { ...completed.command, status: 'needs-revision', entryStatus: 'needs-revision' },
+    currentRoundId: 'returned-round',
+    rounds: [
+      {
+        id: 'returned-round',
+        artifactVersionId: 'returned-artifact',
+        status: 'changes-requested',
+        reviewerIds: ['chen'],
+        ballots: [],
+      },
+    ],
+    artifactVersions: [{ id: 'returned-artifact', producerRunId: 'run-1' }],
+  };
+  h.facts.node = returned;
+  const before = JSON.stringify(returned);
+  assert.deepEqual((await h.read(h.request, h.query)).value.start, {
+    kind: 'available',
+    mode: 'begin',
+  });
+  assert.equal(JSON.stringify(h.facts.node), before, 'metadata never creates a Run');
+  for (const mutate of [
+    (node) => {
+      node.command.status = 'ready';
+    },
+    (node) => {
+      node.command.status = 'completed';
+    },
+    (node) => {
+      node.acceptedArtifactVersionId = 'returned-artifact';
+    },
+    (node) => {
+      node.nativeExecution.runs[0].resources = 'held';
+    },
+    (node) => {
+      node.rounds[0].artifactVersionId = 'other-artifact';
+    },
+    (node) => {
+      node.artifactVersions[0].producerRunId = 'other-run';
+    },
+  ]) {
+    h.facts.node = structuredClone(returned);
+    mutate(h.facts.node);
+    assert.equal((await h.read(h.request, h.query)).value.start.kind, 'unavailable');
+  }
 });
 
 test('options contract: actor fields and denied controller fail before model metadata', async (t) => {

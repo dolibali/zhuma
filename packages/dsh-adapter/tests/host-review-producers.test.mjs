@@ -15,6 +15,11 @@ import { WorkbenchService } from '../dist/workbench-service.js';
 import { createHostRunSkillPolicies } from '../dist/host-run-skill-policy.js';
 import { createHostRunResourceSource } from '../dist/host-run-resource-source.js';
 import { createHostRunConfiguration } from '../dist/host-run-configuration.js';
+import { readHostRunModels } from '../dist/host-run-models.js';
+import {
+  executionReviewCompositionRequest,
+  readExecutionReviewComposition,
+} from '../dist/execution-review-composition.js';
 import { createHostRunSources } from '../dist/host-run-sources.js';
 import { executionReviewTarget } from '../dist/execution-review-state.js';
 import { describeNativeReviewTool } from '../dist/native-work-session-review-tool.js';
@@ -233,6 +238,56 @@ test('Host review producers: original metadata and imported reviewer Skill freez
   assert.deepEqual(await businessHashes(h.root), before);
   assert.deepEqual(h.host.counters, { global: 0, nodes: 0, plans: 0 });
   assert.equal(h.host.read('node-1').nativeExecution, undefined);
+  assert.equal(h.inference, 0);
+});
+
+test('Host review producers: review-only default freezes 16384 while explicit lower, saved review and author budgets remain unchanged', async (t) => {
+  const h = await setup(t);
+  const before = await businessHashes(h.root);
+  const legacy = await h.configuration.prepareReview(h.host.request, {
+    ...h.input,
+    model: { ...h.input.model, maxTokens: 4096 },
+  });
+  const original = JSON.stringify(legacy);
+  const catalog = await readHostRunModels(h.ctx, h.lifetime.signal);
+  assert.equal(catalog.kind, 'ready');
+  assert.equal(catalog.items[0].value.maxTokens, 4096);
+  const { maxTokens: _authorBudget, ...identity } = catalog.items[0].value;
+  const fresh = await h.configuration.prepareReview(h.host.request, {
+    ...h.input,
+    model: identity,
+  });
+  const lower = await h.configuration.prepareReview(h.host.request, h.input);
+  const freshRequest = executionReviewCompositionRequest(fresh);
+  assert.equal(freshRequest.selection.maxTokens, 16_384);
+  assert.deepEqual(fresh.payload.model, { ...identity, maxTokens: 16_384 });
+  assert.equal(freshRequest.selection.configurationId, fresh.configurationId);
+  assert.notEqual(fresh.configurationId, legacy.configurationId);
+  assert.notEqual(fresh.configurationId, lower.configurationId);
+  assert.equal(lower.payload.model.maxTokens, 3000);
+  const restored = readExecutionReviewComposition(JSON.parse(original));
+  const current = checked(
+    await h.host.service.readExpertReviewPreparation(h.host.request, h.query),
+  );
+  assert.equal(assertReview(h, restored, current), undefined);
+  assert.equal(executionReviewCompositionRequest(restored).selection.maxTokens, 4096);
+  assert.equal(JSON.stringify(restored), original);
+  assert.equal(JSON.stringify(legacy), original);
+  assert.equal(catalog.items[0].value.maxTokens, 4096);
+  const upper = await h.configuration.prepareReview(h.host.request, {
+    ...h.input,
+    model: { ...identity, maxTokens: 65_536 },
+  });
+  assert.equal(upper.payload.model.maxTokens, 65_536);
+  for (const maxTokens of [0, 65_537, null])
+    await assert.rejects(
+      h.configuration.prepareReview(h.host.request, {
+        ...h.input,
+        model: { ...identity, maxTokens },
+      }),
+      { code: 'run-validation' },
+    );
+  assert.deepEqual(await businessHashes(h.root), before);
   assert.equal(h.inference, 0);
 });
 
