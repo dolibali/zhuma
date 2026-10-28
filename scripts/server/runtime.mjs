@@ -47,7 +47,12 @@ export async function startLocalServer({ sdk, data, host = '127.0.0.1', port = 3
           {
             id: 'zhuma-member-workbench',
             name: plugin,
-            config: { deploymentMode: 'multi-member', localSetup: true, memberWeb: true },
+            config: {
+              deploymentMode: 'multi-member',
+              localSetup: true,
+              memberWeb: true,
+              remoteExecution: true,
+            },
           },
         ],
       },

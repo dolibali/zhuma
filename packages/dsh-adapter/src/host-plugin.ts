@@ -16,6 +16,8 @@ import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
 import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import { openHostRunHttp } from './host-run-http.js';
+import { openHostRemoteRunHttp } from './host-remote-run-http.js';
+import type { ExecutionService } from './execution-service.js';
 import { openHostRunOwner } from './host-run-owner.js';
 import { openHostWorkflowHttp } from './host-workflow-http.js';
 import { openHostWorkspaceApprovalHttp } from './host-workspace-approval-http.js';
@@ -61,6 +63,7 @@ export const Config = z.strictObject({
   teamCatalog: hostTeamCatalogGrantsSchema.optional(),
   localSetup: z.boolean().optional(),
   memberWeb: z.boolean().optional(),
+  remoteExecution: z.boolean().optional(),
   bodyBytes: z
     .number()
     .int()
@@ -153,6 +156,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     throw new Error('Local member setup requires explicit multi-member mode.');
   if (config.memberWeb && config.deploymentMode !== 'multi-member')
     throw new Error('Member Web requires explicit multi-member mode.');
+  if (config.remoteExecution && config.deploymentMode !== 'multi-member')
+    throw new Error('Remote execution requires explicit multi-member mode.');
   configureDeploymentMode(ctx, config.deploymentMode);
   if (config.memberWeb) {
     enableMemberWeb(ctx);
@@ -181,6 +186,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     config.deploymentMode === 'multi-member'
       ? openIdentityMemberHttp(ctx, () => (closed ? undefined : identityMembers))
       : undefined;
+  let remoteExecution: ExecutionService | undefined;
+  const remoteHttp = config.remoteExecution
+    ? openHostRemoteRunHttp(ctx, () => (closed ? undefined : remoteExecution))
+    : undefined;
   let runOwner: Awaited<ReturnType<typeof openHostRunOwner>> | undefined;
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
@@ -194,6 +203,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   function closeRunBridge(): Promise<void> {
     if (runClosing) return runClosing;
     runsClosed = true;
+    remoteExecution = undefined;
     runLifetime.abort();
     const owner = runOwner;
     runOwner = undefined;
@@ -210,11 +220,13 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         },
       );
     const httpClose = runHttp?.close();
+    const remoteClose = remoteHttp?.close();
     const workflowClose = workflowHttp?.close();
     const workspaceClose = workspaceApprovalHttp?.close();
     return (runClosing = Promise.allSettled([
       nativeClose,
       httpClose,
+      remoteClose,
       workflowClose,
       workspaceClose,
     ]).then((results) => {
@@ -412,9 +424,23 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
               await opened.close();
               return;
             }
+            if (config.remoteExecution) {
+              try {
+                await service.enableRemoteRuns();
+              } catch (error) {
+                await opened.close();
+                throw error;
+              }
+              if (closed || runsClosed) {
+                await opened.close();
+                return;
+              }
+              remoteExecution = service;
+            }
             runOwner = opened;
             nativeCtx.effect(() => () => {
               if (runOwner === opened) runOwner = undefined;
+              if (remoteExecution === service) remoteExecution = undefined;
               return opened.close();
             });
           },

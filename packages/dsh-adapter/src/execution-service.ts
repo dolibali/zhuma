@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { RemoteRunAuthorities, RemoteRunError } from './remote-run-authority.js';
+import { freezeExecutionRunComposition } from './execution-run-composition.js';
+import { describeNativeResultTool } from './native-work-session-result-tool.js';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -1105,6 +1108,7 @@ export class ExecutionService {
   private runPreparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
+  private remoteRunAuthorities: RemoteRunAuthorities | undefined;
   private workflowIntents: ExecutionWorkflowIntents | undefined;
   private workspaceApprovalOwner: ExecutionWorkspaceApprovals | undefined;
   private readonly reviewWorkflowClaims = new Map<
@@ -1549,6 +1553,110 @@ export class ExecutionService {
   readRunGlobal(): unknown {
     if (!this.storage.readGlobal) throw new ExecutionRunError('run-authority-unavailable');
     return structuredClone(this.storage.readGlobal());
+  }
+
+  /** Host composition installs the same genuine member issuer first, then explicitly
+   * enables remote admission. No HTTP read or native effect creates a second writer. */
+  async enableRemoteRuns(): Promise<void> {
+    const host = this.requireRunHost();
+    if (!this.storage.writeGlobal) throw new RemoteRunError('remote-unavailable');
+    if (!this.remoteRunAuthorities) {
+      this.remoteRunAuthorities = new RemoteRunAuthorities({
+        signal: this.runLifetime.signal,
+        enqueue: async (work) => {
+          const result = await this.enqueue(async () => ({ ok: true, value: await work() }));
+          if (!result.ok)
+            throw new RemoteRunError(
+              result.error.code === 'run-active' || result.error.code === 'run-workspace-busy'
+                ? 'remote-resource-held'
+                : result.error.code === 'run-conflict'
+                  ? 'remote-conflict'
+                  : 'remote-unavailable',
+            );
+          return result.value;
+        },
+        memberLease: (request) => host.memberLease(request),
+        readGlobal: () => this.readRunGlobal(),
+        writeGlobal: (next) => this.storage.writeGlobal!(next),
+        readNode: (target) => this.readRunNode(target),
+        listNodes: () => this.storage.listNodes(),
+        writeNode: (next) => this.writeNode(next, true),
+        prepareDelivery: (record, actorId) => {
+          const stamped = withExecutionEvent(
+            withoutDeliveryDraft(record),
+            'delivery-submitted',
+            actorId,
+          );
+          if (!stamped) throw new RemoteRunError('remote-unavailable');
+          return stamped;
+        },
+        afterDelivery: async (record) => {
+          // Artifact and receipt already landed. Original idempotent reconciliation
+          // can retry a failed downstream write without another submission.
+          if (record.command.status === 'completed') {
+            try {
+              await this.unlockFrom(record);
+            } catch {
+              /* Original reconcile retries. */
+            }
+          }
+        },
+        assertTarget: (actorId, target, node) => {
+          if (host !== this.requireRunHost() || host.signal.aborted)
+            throw new RemoteRunError('remote-unavailable');
+          this.assertRunNodeAccess(host, actorId, target.spaceId, node);
+          this.assertRunController(actorId, node);
+          const plans = this.workbench
+            .readWorkbench()
+            .appliedPlans.filter((plan) => plan.taskId === target.taskId);
+          const latest = Math.max(...plans.map((plan) => plan.revision));
+          const current = plans.filter((plan) => plan.revision === latest);
+          if (
+            current.length !== 1 ||
+            current[0]!.id !== target.planId ||
+            latest !== target.revision
+          )
+            throw new RemoteRunError('remote-stale-plan');
+        },
+        compose: (actorId, request, node, scope) => {
+          const descriptor = describeNativeResultTool();
+          if (
+            descriptor.name !== 'complete_work' ||
+            descriptor.sourceVersion !== 'zhuma-native-result-intent@1'
+          )
+            throw new RemoteRunError('remote-protocol-unsupported');
+          return freezeExecutionRunComposition({
+            workbench: this.workbench.readWorkbench(),
+            node,
+            scope,
+            model: request.payload.model,
+            executor: request.payload.executor,
+            inputs: { actorId, ...request.payload.target, items: [] },
+            tools: { kind: 'text-only' },
+            resultIntentTool: {
+              ...descriptor,
+              name: descriptor.name,
+              sourceVersion: descriptor.sourceVersion,
+            },
+          });
+        },
+      });
+      host.signal.addEventListener('abort', () => this.remoteRunAuthorities?.fence(), {
+        once: true,
+      });
+    }
+    await this.remoteRunAuthorities.enable();
+  }
+
+  /** A's product HTTP transport forwards the original request and private header.
+   * This method never starts a native Agent on the shared backend. */
+  remoteRun(request: MemberRequest, body: unknown, privatePermit?: string) {
+    if (!this.remoteRunAuthorities)
+      return Promise.resolve({
+        ok: false as const,
+        error: { code: 'remote-unavailable' as const },
+      });
+    return this.remoteRunAuthorities.handle(request, body, privatePermit);
   }
 
   readRunComposition(locator: ExecutionRunLocator): FrozenExecutionRunComposition {
@@ -3885,6 +3993,7 @@ export class ExecutionService {
     this.runLifetime.abort();
     this.workspaceApprovalOwner?.fence();
     this.runAuthorities?.fence();
+    this.remoteRunAuthorities?.fence();
   }
 
   /** Call only after the native owner drained and its cleanup facts committed. */
