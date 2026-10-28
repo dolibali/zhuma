@@ -571,7 +571,7 @@ export interface RemoteBackendInfo {
   readonly backendId: string;
   readonly serverTime: number;
   readonly actorId: string;
-  readonly purposes: readonly 'work'[];
+  readonly purposes: readonly ('work' | 'review')[];
   readonly operations: readonly RemoteRunOperation[];
 }
 export const remoteInputDescriptorSchema = z.strictObject({
@@ -761,7 +761,10 @@ export const remoteBackendInfoSchema = z.strictObject({
   backendId: z.uuid(),
   actorId: id,
   serverTime: natural,
-  purposes: z.array(z.literal('work')).max(1),
+  purposes: z
+    .array(z.enum(['work', 'review']))
+    .max(2)
+    .refine((values) => new Set(values).size === values.length),
   operations: z.array(z.enum(REMOTE_RUN_OPERATIONS)).max(16),
 });
 export const remoteDeviceValueSchema = z.strictObject({
