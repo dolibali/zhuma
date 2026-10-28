@@ -828,6 +828,105 @@ test('original SDK review target: an authenticated fixed-body read does not depe
   }
 });
 
+test('original SDK scaled review read: calibrated three-author/four-review metadata returns a finalized read reference within the existing budget', async (t) => {
+  const returned = Promise.withResolvers(),
+    ended = Promise.withResolvers();
+  let before, post, final;
+  const h = await setup(t, {
+    file: false,
+    productionHost: true,
+    scaledHistory: true,
+    finishReason: 'stop',
+    afterNative({ native, hostMetrics }) {
+      native.ctx.on(
+        'tools/pre-execute',
+        async (exec, next) => {
+          if (exec.name === 'read_review_target')
+            before = { ...hostMetrics, at: performance.now() };
+          return next();
+        },
+        { global: true },
+      );
+      native.ctx.on(
+        'tools/post-execute',
+        async (exec, result, next) => {
+          if (exec.name === 'read_review_target') post = performance.now() - before.at;
+          return next();
+        },
+        { global: true },
+      );
+      native.ctx.on(
+        'tools/result',
+        (exec, result) => {
+          if (exec.name === 'read_review_target') {
+            final = {
+              elapsedMs: performance.now() - before.at,
+              hostChecks: hostMetrics.checks - before.checks,
+              workbenchReads: hostMetrics.workbenchReads - before.workbenchReads,
+            };
+            returned.resolve(result);
+          }
+        },
+        { global: true },
+      );
+      native.ctx.on(
+        'session/event',
+        (session, event) => {
+          if (event.type === 'turn/end')
+            ended.resolve({ sessionId: session.id, reason: event.data.reason.kind });
+        },
+        { global: true },
+      );
+    },
+  });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  try {
+    const result = await returned.promise;
+    const page = JSON.parse(result.content.find((block) => block.type === 'text').text);
+    const node = h.d.read();
+    assert.equal(node.nativeExecution.runs.length, 3);
+    assert.equal(readExecutionReviewState(node).attempts.length, 4);
+    const bytes = (value) => Buffer.byteLength(JSON.stringify(value));
+    console.info(
+      'C_SDK_SCALED_READ_METRICS ' +
+        JSON.stringify({
+          preToPostMs: post,
+          ...final,
+          pageOk: page.ok,
+          code: page.code,
+          readRefPresent: typeof page.readRef === 'string',
+          nodeBytes: bytes(node),
+          authorBytes: node.nativeExecution.runs.map((run) => bytes(run.composition)),
+          reviewBytes: readExecutionReviewState(node).attempts.map((run) =>
+            run.composition ? bytes(run.composition) : null,
+          ),
+          boundary:
+            'synthetic historical metadata; current SDK tools/result is original, no historical physical drain assertion',
+        }),
+    );
+    assert.equal(page.ok, true);
+    assert.match(page.readRef, /^review_read_[a-f0-9]{64}$/u);
+    assert.ok(
+      final.elapsedMs < 5000,
+      'the original finalized read exceeds the existing read budget',
+    );
+    const turn = await ended.promise;
+    assert.equal(turn.reason, 'completed');
+    await h.bridge.whenIdle();
+    assert.equal(h.reads.length, 1);
+    assert.equal(h.d.read().rounds.at(-1).ballots.length, 0);
+    assert.equal(h.d.read('consume').command.status, 'blocked');
+  } finally {
+    await h.d.service.stopWorkflowExecution(h.d.request, {
+      ...h.location,
+      requestId: 'stop-scaled-read-after-measurement',
+      intentId: h.view.intent.intentId,
+      generation: h.view.intent.generation,
+    });
+    await h.bridge.whenIdle();
+  }
+});
+
 test('original SDK review Resume: a real stopped drain survives caller completion and a different request before actual Host preparation', async (t) => {
   const callerDone = new AbortController(),
     sendErrors = [],

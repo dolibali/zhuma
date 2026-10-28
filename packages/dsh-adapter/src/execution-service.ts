@@ -264,7 +264,7 @@ import {
   stoppedWorkflowReviewGeneration,
   stoppedWorkflowReviewRunIds,
 } from './execution-workflow-reviews.js';
-import { isStoppedReviewHistory } from './execution-review-record.js';
+import { isStoppedReviewHistory, splitExecutionReviewRecord } from './execution-review-record.js';
 import {
   ExecutionWorkflowError,
   workflowExecutionIntentSchema,
@@ -1457,7 +1457,8 @@ export class ExecutionService {
                 ),
             )
             .map((expert) => expert.id);
-          if (nodes.some((node) => readExecutionReviewState(node)))
+          // These private clones were fully validated by readRunNode above.
+          if (nodes.some((node) => splitExecutionReviewRecord(node).review !== undefined))
             requireExecutionReviewWriter(this.readRunGlobal());
           return { receipt: receipt && structuredClone(receipt), nodes, availableExpertIds };
         };
@@ -1918,7 +1919,9 @@ export class ExecutionService {
       const node = this.readRunNode(locator);
       const attempt =
         node &&
-        readExecutionReviewState(node)?.attempts.find((a) => a.scope.runId === locator.runId);
+        splitExecutionReviewRecord(node).review?.attempts.find(
+          (a) => a.scope.runId === locator.runId,
+        );
       if (!node || !attempt || attempt.status === 'prepared')
         throw new ExecutionReviewReadError('review-authority-denied');
       const composition = readExecutionReviewComposition(attempt.composition);
@@ -1942,7 +1945,7 @@ export class ExecutionService {
         this.requireRunHost();
         const check = () => {
           const current = resolve(scope);
-          this.assertCurrentExpertReviewTarget(host, scope);
+          this.assertCurrentExpertReviewTarget(host, scope, current.node);
           if (
             !['requested', 'running'].includes(current.attempt.status) ||
             current.attempt.resources !== 'held' ||
@@ -2233,13 +2236,18 @@ export class ExecutionService {
     node: ExecutionNodeRecord,
     attempt: ExecutionReviewAttempt,
     composition?: FrozenExecutionReviewComposition,
+    admittedDrive = false,
+    validatedReview?: ReturnType<typeof readExecutionReviewState>,
   ) {
-    const state = readExecutionReviewState(node)!;
+    const state = validatedReview ?? readExecutionReviewState(node)!;
     const receipt = state.receipts.find((receipt) => receipt.runId === attempt.scope.runId)!;
     if (!receipt.requestId.startsWith(WORKFLOW_REVIEW_REQUEST_PREFIX)) return;
     const bound = this.reviewWorkflowClaims.get(attempt.scope.runId);
     if (!bound) throw new ExecutionWorkflowError('workflow-authority-denied');
-    const current = this.workflows().assertClaim(bound.original, bound.claim);
+    const current =
+      admittedDrive && !composition && attempt.status !== 'prepared'
+        ? this.workflows().assertClaimCurrent(bound.original, bound.claim)
+        : this.workflows().assertClaim(bound.original, bound.claim);
     if (
       receipt.requestId !==
       workflowReviewRequestId(
@@ -3953,13 +3961,22 @@ export class ExecutionService {
   private assertCurrentExpertReviewTarget(
     host: ExecutionRunHostPorts,
     scope: ExecutionReviewScope,
+    validatedNode?: ExecutionNodeRecord,
   ): ExecutionNodeRecord {
-    const node = this.readRunNode(scope);
+    // The private drive check has just validated/cloned this node synchronously.
+    // Its next check after the Host callback resolves a fresh node again.
+    const node = validatedNode ?? this.readRunNode(scope);
     if (!node) throw new ExecutionReviewReadError('review-target-changed');
-    const attempt = readExecutionReviewState(node)?.attempts.find(
-      (item) => item.scope.runId === scope.runId,
-    );
-    if (attempt) this.assertWorkflowReviewBinding(node, attempt);
+    const review = splitExecutionReviewRecord(node).review;
+    const attempt = review?.attempts.find((item) => item.scope.runId === scope.runId);
+    if (attempt)
+      this.assertWorkflowReviewBinding(
+        node,
+        attempt,
+        undefined,
+        validatedNode !== undefined,
+        review,
+      );
     this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
     this.assertReviewController(scope.actorId, node);
     const target = executionReviewTarget(node, scope.spaceId);

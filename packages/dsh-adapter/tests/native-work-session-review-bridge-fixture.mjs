@@ -16,6 +16,7 @@ import { readExecutionReviewState } from '../dist/execution-review-state.js';
 import { createHostRunConfiguration } from '../dist/host-run-configuration.js';
 import { createHostRunSkillPolicies } from '../dist/host-run-skill-policy.js';
 import { createHostRunResourceSource } from '../dist/host-run-resource-source.js';
+import { seedScaledReviewMetadata } from './native-work-session-review-scale-fixture.mjs';
 export { readExecutionReviewState };
 
 export async function bootReviewBridge(root, after, options = {}) {
@@ -216,6 +217,7 @@ export async function bootReviewBridge(root, after, options = {}) {
     const resources = createHostRunResourceSource({ ...source, policies });
     productionConfiguration = createHostRunConfiguration(native.ctx, { ...source, resources });
   }
+  if (options.scaledHistory) await seedScaledReviewMetadata(d);
   await options.afterNative?.({ native, bridge, d, hostMetrics });
   after(() => bridge.closeBeforeNative());
   const { nodeId: _nodeId, ...location } = { ...d.locate(), spaceId: 'north' };

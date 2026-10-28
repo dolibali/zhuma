@@ -237,6 +237,7 @@ export class ExecutionWorkflowIntents {
     }
   }
   private bound(facts: WorkflowFacts, intent: WorkflowExecutionIntent) {
+    const states = new Map<ExecutionNodeRecord, ReturnType<typeof readExecutionRunState>>();
     const found: {
       reservation: WorkflowStartReservation;
       node: ExecutionNodeRecord;
@@ -245,7 +246,8 @@ export class ExecutionWorkflowIntents {
     for (const reservation of intent.starts) {
       const node = facts.nodes.find((item) => item.nodeId === reservation.nodeId);
       if (!node) return fail('workflow-incompatible');
-      const state = readExecutionRunState(node);
+      if (!states.has(node)) states.set(node, readExecutionRunState(node));
+      const state = states.get(node);
       const receipt = state?.receipts.find((item) => item.requestId === reservation.requestId);
       if (!receipt) {
         if (
@@ -730,6 +732,11 @@ export class ExecutionWorkflowIntents {
     );
   }
   /** Original claim identity plus retained request/arm, never caller .check(). */
+  assertClaimCurrent(request: MemberRequest, claim: WorkflowExecutionClaim) {
+    const arm = this.claims.get(claim);
+    if (!arm || arm.request !== request) return fail('workflow-authority-denied');
+    return this.current(arm);
+  }
   assertClaim(request: MemberRequest, claim: WorkflowExecutionClaim) {
     const arm = this.claims.get(claim);
     if (!arm || arm.request !== request) return fail('workflow-authority-denied');

@@ -21,7 +21,7 @@ import type { NativeSessionSelection, NativeWorkScope } from './native-work-sess
 import { requireExecutionRunWriter } from './execution-run-protocol.js';
 import {
   executionRunCompositionSchema,
-  assertExecutionRunCompositionBinding,
+  assertParsedExecutionRunCompositionBinding,
 } from './execution-run-composition.js';
 import {
   executionNativeResultDeliverySchema,
@@ -227,12 +227,16 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
     ids.add(a.id);
     if (run.composition) {
       try {
-        assertExecutionRunCompositionBinding(run.composition, executionRunScope(record, run), {
-          selection: run.selection,
-          expertVersionId: a.expertVersionId,
-          contextRefs: a.contextRefs,
-          inputFingerprint: a.payloadHash,
-        });
+        assertParsedExecutionRunCompositionBinding(
+          run.composition,
+          executionRunScope(record, run),
+          {
+            selection: run.selection,
+            expertVersionId: a.expertVersionId,
+            contextRefs: a.contextRefs,
+            inputFingerprint: a.payloadHash,
+          },
+        );
       } catch {
         refuse('run-state-invalid');
       }

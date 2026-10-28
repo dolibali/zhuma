@@ -10,6 +10,11 @@ import {
 } from '../dist/execution-run-state.js';
 import { afterExecutionRunCommit } from '../dist/execution-run-effects.js';
 import {
+  freezeExecutionRunComposition,
+  executionRunCompositionRequest,
+} from '../dist/execution-run-composition.js';
+import { compositionFacts } from './execution-run-composition-fixture.mjs';
+import {
   records,
   command,
   begin,
@@ -27,6 +32,34 @@ const stopped = (record) => {
   const requested = requestExecutionRunStop(record, stopCommand(record)).record;
   return applyEvent(requested, 'stopped', stable).record;
 };
+
+test('contract: parsed composition binding still rejects altered derivation, digest, source references, model and a valid foreign scope', () => {
+  const facts = compositionFacts();
+  const composition = freezeExecutionRunComposition(facts);
+  const { firstMessage: _message, ...request } = executionRunCompositionRequest(composition);
+  const record = begin(facts.node, { ...request, composition }, [facts.node]).record;
+  assert.equal(
+    readExecutionRunState(record).runs[0].composition.configurationId,
+    composition.configurationId,
+  );
+  for (const fault of ['derivation', 'digest', 'references', 'model', 'scope']) {
+    const changed = structuredClone(record);
+    const run = changed.nativeExecution.runs[0];
+    if (fault === 'derivation') run.composition.payload.context += ' altered';
+    else if (fault === 'digest') run.composition.configurationId = `composition_${'0'.repeat(64)}`;
+    else if (fault === 'references') run.attempt.contextRefs = ['unread-source'];
+    else if (fault === 'model') run.selection.model = 'different-model';
+    else {
+      run.composition = freezeExecutionRunComposition({
+        ...facts,
+        scope: { ...facts.scope, runId: 'foreign-run' },
+      });
+      run.selection = executionRunCompositionRequest(run.composition).selection;
+      run.attempt.configSnapshotId = run.composition.configurationId;
+    }
+    rejects(() => readExecutionRunState(changed), 'run-state-invalid');
+  }
+});
 
 test('contract: missing native state is legacy, present malformed/unknown versions never become empty', () => {
   const row = records()[0];

@@ -299,6 +299,30 @@ test('review Service admission: synchronous configuration-source revocation is r
   assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
 });
 
+test('review drive Service: a configuration callback revoking the reviewer cannot reuse the earlier validated node', async (t) => {
+  let revoke = false;
+  const h = await host(t, {
+    assertReviewConfiguration() {
+      if (!revoke) return;
+      revoke = false;
+      h.setWorkbench((w) => ({
+        ...w,
+        participants: w.participants.map((p) => (p.id === 'qa' ? { ...p, available: false } : p)),
+      }));
+    },
+  });
+  const command = await admission(h);
+  checked(await h.service.admitExpertReview(h.request, command));
+  const { expectedAttemptVersion: _version, composition: _composition, ...locator } = command;
+  const opened = checked(await h.service.openExpertReviewDrive(h.request, locator));
+  t.after(() => opened.dispose());
+  revoke = true;
+  assert.throws(() => h.service.assertExpertReviewDriveGrant(opened.grant, 'send'));
+  assert.equal(opened.grant.signal.aborted, true);
+  assert.equal(h.service.assertExpertReviewCleanupAuthority(opened.cleanup), undefined);
+  assert.equal(h.read().rounds[0].ballots.length, 0);
+});
+
 test('review Service: current preparation facts reserve no state and match the later exact configured reservation', async (t) => {
   const h = await host(t),
     request = await body(h);
