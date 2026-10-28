@@ -31,6 +31,8 @@ import {
   type TaskProgressState,
 } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
+import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 import {
   ProjectHub,
   ProjectFields,
@@ -38,7 +40,7 @@ import {
   type ProjectTab,
 } from './ProjectHub.js';
 
-type Section = 'projects' | 'tasks' | 'assets' | 'members';
+type Section = 'projects' | 'tasks' | 'assets' | 'members' | 'knowledge';
 type Dialog =
   | { kind: 'project'; value: Project }
   | { kind: 'member'; value: Participant }
@@ -60,6 +62,7 @@ const labels: Record<Section, string> = {
   tasks: '任务清单',
   assets: '团队资产',
   members: '成员与专家',
+  knowledge: '知识',
 };
 
 export function WorkbenchPage({
@@ -71,6 +74,7 @@ export function WorkbenchPage({
   nativeRun,
   projectExecution,
   legacyMode = false,
+  knowledge,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
@@ -88,10 +92,13 @@ export function WorkbenchPage({
       }
     | undefined;
   legacyMode?: boolean;
+  knowledge?: Omit<KnowledgePanelProps, 'onDirtyChange'> | undefined;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
   const [section, setSection] = useState(initialSection);
+  const [knowledgeDirty, setKnowledgeDirty] = useState(false);
+  const knowledgeLeave = useLeaveConfirmation(() => knowledge?.lifetime.isCurrent() ?? true);
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
@@ -636,47 +643,50 @@ export function WorkbenchPage({
     );
   return (
     <div className="zhuma">
+      {knowledgeLeave.dialog}
       <div className={`zm-page${activeProject ? ' zm-project-page' : ''}`}>
-        <header className="zm-page-heading">
-          <div className="zm-page-title">
-            {activeProject && (
-              <Button variant="quiet" onClick={() => setActiveProjectId(null)}>
-                <ControlIcon direction="left" /> 全部项目
+        {section !== 'knowledge' && (
+          <header className="zm-page-heading">
+            <div className="zm-page-title">
+              {activeProject && (
+                <Button variant="quiet" onClick={() => setActiveProjectId(null)}>
+                  <ControlIcon direction="left" /> 全部项目
+                </Button>
+              )}
+              <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>
+              <span>
+                {expertLibrary
+                  ? state.participants.filter((p) => p.kind === 'expert').length
+                  : activeProject
+                    ? undefined
+                    : total}
+              </span>
+            </div>
+            <div className="zm-actions">
+              <Appearance store={appearance} />
+              <Button variant="quiet" onClick={() => void refresh()}>
+                刷新
               </Button>
-            )}
-            <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>
-            <span>
-              {expertLibrary
-                ? state.participants.filter((p) => p.kind === 'expert').length
-                : activeProject
-                  ? undefined
-                  : total}
-            </span>
-          </div>
-          <div className="zm-actions">
-            <Appearance store={appearance} />
-            <Button variant="quiet" onClick={() => void refresh()}>
-              刷新
-            </Button>
-            {activeProject && (!member || capabilities?.createProject) && (
-              <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
-                编辑项目
+              {activeProject && (!member || capabilities?.createProject) && (
+                <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
+                  编辑项目
+                </Button>
+              )}
+              {!member && section === 'assets' && (
+                <Button onClick={() => setImportOpen(true)}>
+                  {expertLibrary ? '导入专家' : '导入定义'}
+                </Button>
+              )}
+              <Button
+                variant="primary"
+                disabled={!!member && (loading || saving || !canCreate)}
+                onClick={createCatalogItem}
+              >
+                ＋ {createLabel}
               </Button>
-            )}
-            {!member && section === 'assets' && (
-              <Button onClick={() => setImportOpen(true)}>
-                {expertLibrary ? '导入专家' : '导入定义'}
-              </Button>
-            )}
-            <Button
-              variant="primary"
-              disabled={!!member && (loading || saving || !canCreate)}
-              onClick={createCatalogItem}
-            >
-              ＋ {createLabel}
-            </Button>
-          </div>
-        </header>
+            </div>
+          </header>
+        )}
         {legacyMode && (
           <p className="zm-mode-notice">当前保留单人模式；已有资料不会自动迁入团队。</p>
         )}
@@ -684,27 +694,36 @@ export function WorkbenchPage({
           <div className="zm-page-bar">
             <nav className="zm-tabs" aria-label="工作台导航">
               {(Object.keys(labels) as Section[])
-                .filter((s) => !member || s === 'projects' || s === 'tasks')
+                .filter((s) =>
+                  s === 'knowledge' ? !!knowledge : !member || s === 'projects' || s === 'tasks',
+                )
                 .map((s) => (
                   <button
                     key={s}
                     aria-current={s === section ? 'page' : undefined}
                     onClick={() => {
-                      setSection(s);
-                      setSearch('');
-                      setActiveProjectId(null);
+                      knowledgeLeave.request(
+                        () => {
+                          setSection(s);
+                          setSearch('');
+                          setActiveProjectId(null);
+                        },
+                        s !== section && knowledgeDirty,
+                      );
                     }}
                   >
                     {labels[s]}
-                    <span>
-                      {s === 'projects'
-                        ? state.projects.length
-                        : s === 'tasks'
-                          ? state.tasks.length
-                          : s === 'members'
-                            ? state.participants.length
-                            : catalog.length}
-                    </span>
+                    {s !== 'knowledge' && (
+                      <span>
+                        {s === 'projects'
+                          ? state.projects.length
+                          : s === 'tasks'
+                            ? state.tasks.length
+                            : s === 'members'
+                              ? state.participants.length
+                              : catalog.length}
+                      </span>
+                    )}
                   </button>
                 ))}
             </nav>
@@ -743,7 +762,7 @@ export function WorkbenchPage({
                 </div>
               </div>
             )}
-            {section !== 'tasks' && !activeProject && (
+            {section !== 'tasks' && section !== 'knowledge' && !activeProject && (
               <div className="zm-filter">
                 <input
                   type="search"
@@ -779,6 +798,9 @@ export function WorkbenchPage({
               </div>
             )}
           </div>
+        )}
+        {section === 'knowledge' && knowledge && (
+          <KnowledgePanel {...knowledge} onDirtyChange={setKnowledgeDirty} />
         )}
         {!expertLibrary && section === 'assets' && (
           <nav className="zm-asset-categories" aria-label="资产分类">
@@ -1094,35 +1116,39 @@ export function WorkbenchPage({
             ))}
           </div>
         )}
-        {!expertLibrary && !activeProject && section !== 'tasks' && !visibleCount && (
-          <div className="zm-empty zm-directory-empty">
-            <h3>{directoryTotal ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
-            <p>
-              {directoryTotal
-                ? '换个关键词，或清除筛选。'
-                : section === 'projects'
-                  ? '创建项目，集中管理相关工作。'
-                  : section === 'members'
-                    ? '添加团队成员或 Agent 专家，填写职责后参与分工。'
-                    : '新建或导入专家、Skill、MCP 能力定义和工作流模板。'}
-            </p>
-            {directoryTotal ? (
-              <Button
-                onClick={() => {
-                  setSearch('');
-                  setMemberKind('all');
-                  setAssetKind('all');
-                }}
-              >
-                清除筛选
-              </Button>
-            ) : (
-              <Button variant="primary" onClick={createCatalogItem} disabled={!canCreate}>
-                {createLabel}
-              </Button>
-            )}
-          </div>
-        )}
+        {!expertLibrary &&
+          !activeProject &&
+          section !== 'tasks' &&
+          section !== 'knowledge' &&
+          !visibleCount && (
+            <div className="zm-empty zm-directory-empty">
+              <h3>{directoryTotal ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
+              <p>
+                {directoryTotal
+                  ? '换个关键词，或清除筛选。'
+                  : section === 'projects'
+                    ? '创建项目，集中管理相关工作。'
+                    : section === 'members'
+                      ? '添加团队成员或 Agent 专家，填写职责后参与分工。'
+                      : '新建或导入专家、Skill、MCP 能力定义和工作流模板。'}
+              </p>
+              {directoryTotal ? (
+                <Button
+                  onClick={() => {
+                    setSearch('');
+                    setMemberKind('all');
+                    setAssetKind('all');
+                  }}
+                >
+                  清除筛选
+                </Button>
+              ) : (
+                <Button variant="primary" onClick={createCatalogItem} disabled={!canCreate}>
+                  {createLabel}
+                </Button>
+              )}
+            </div>
+          )}
       </div>
       {dialog && (
         <Modal

@@ -23,6 +23,7 @@ import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { createNativeRunApi } from '../run/api.js';
 import type { RegisterWorkspaceDirectory } from '../run/workspace-approvals.js';
 import type { LocalWorkspaceDirectory } from '../run/workspace-directory.js';
+import { createKnowledgeApi } from '../knowledge/api.js';
 
 function MemberWork({
   fetcher,
@@ -158,6 +159,20 @@ function MemberWork({
     ],
   );
   const nativeRun = useMemo(() => ({ api: nativeApi, spaceId }), [nativeApi, spaceId]);
+  const knowledgeApi = useMemo(
+    () =>
+      createKnowledgeApi(
+        {
+          actorId: accountId,
+          spaceId,
+          isCurrent: () =>
+            alive.current && currentLifetime.current.isCurrent() && view === 'catalog',
+          onUnauthenticated: () => currentLifetime.current.onUnauthenticated(),
+        },
+        fetcher,
+      ),
+    [fetcher, accountId, spaceId, view],
+  );
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
   return (
     <div className="zm-member-work">
@@ -168,6 +183,7 @@ function MemberWork({
             api={workbench}
             initialSection="tasks"
             appearance={appearance}
+            knowledge={{ api: knowledgeApi, actorId: accountId, spaceId, lifetime }}
             {...(nativeExecution ? { nativeRun } : {})}
             projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}
