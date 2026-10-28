@@ -75,6 +75,7 @@ export async function open(
     workbench: suppliedWorkbench,
     attachments,
     assertReviewConfiguration,
+    prepareInitialResourceCatalog,
     migrationDrain,
     expertNode,
     projectSpaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'north' }]),
@@ -249,6 +250,7 @@ export async function open(
     if (mount)
       authorities = service.installRunHost({
         ...(assertReviewConfiguration ? { assertReviewConfiguration } : {}),
+        ...(prepareInitialResourceCatalog ? { prepareInitialResourceCatalog } : {}),
         ...(migrationDrain ? { migrationDrain } : {}),
         signal: source.signal,
         async memberLease(original) {
