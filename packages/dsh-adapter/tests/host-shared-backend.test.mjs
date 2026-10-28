@@ -10,7 +10,7 @@ import Credentials from '@deepseek-ai/dsh-credentials-local';
 import WebServer from '@deepseek-ai/dsh-host-webserver';
 import * as Connection from '@deepseek-ai/dsh-client-connection';
 import RemoteAccess from '@deepseek-ai/dsh-api-remote-access';
-import { HostSharedBackend } from '../dist/host-shared-backend.js';
+import { HostSharedBackend, SharedBackendError } from '../dist/host-shared-backend.js';
 import { mountHostSharedBackend } from '../dist/host-shared-backend-http.js';
 
 async function fixture(t) {
@@ -136,6 +136,51 @@ async function fixture(t) {
     delay: () => (pending = Promise.withResolvers()),
   };
 }
+
+test('shared backend actual Credentials: a precommit native refusal preserves the old durable selection and retry identity', async (t) => {
+  const h = await fixture(t),
+    selected = await h.selected();
+  const input = {
+    requestId: randomUUID(),
+    expectedConnectionId: selected.connectionId,
+    origin: 'http://next.example',
+  };
+  let calls = 0;
+  await assert.rejects(
+    h.owner.select(input, {
+      async prepare() {
+        calls++;
+        throw new SharedBackendError('native-busy');
+      },
+    }),
+    { code: 'native-busy' },
+  );
+  assert.equal((await h.owner.status()).connectionId, selected.connectionId);
+  const trace = [];
+  const next = await h.owner.select(input, {
+    async prepare() {
+      trace.push('closed-original-child');
+      return {
+        async committed() {
+          trace.push('opened-selected-child');
+        },
+        failed() {
+          assert.fail();
+        },
+      };
+    },
+  });
+  assert.equal(next.origin, input.origin);
+  assert.notEqual(next.connectionId, selected.connectionId);
+  const retry = await h.owner.select(input, {
+    async prepare() {
+      assert.fail('A durable replay must not stop or reopen current work');
+    },
+  });
+  assert.equal(retry.connectionId, next.connectionId);
+  assert.equal(calls, 1);
+  assert.deepEqual(trace, ['closed-original-child', 'opened-selected-child']);
+});
 
 test('shared backend confines fixed methods, persists only original member Cookie privately and cold reads exact origin/identity', async (t) => {
   const h = await fixture(t);

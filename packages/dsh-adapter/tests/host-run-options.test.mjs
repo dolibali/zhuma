@@ -18,6 +18,11 @@ function setup({ expert = false, list, timeout = 1000, localSelection = false } 
     async readRunCompositionInputs(original, query) {
       assert.equal(original, request);
       assert.equal(query.spaceId, facts.scope.spaceId);
+      assert.equal(
+        'runId' in query,
+        false,
+        'History selection must not widen the original input-authority query',
+      );
       reads++;
       if (!authorized) return { ok: false, error: { code: 'denied' } };
       return { ok: true, value: facts.inputs };
@@ -102,6 +107,32 @@ test('options contract: shared member metadata keeps actual node facts but never
   assert.equal(next.resources, saved.resources);
   assert.equal(next.stopPhase, saved.attempt.stopPhase);
   assert.equal(next.native, null, 'A backend cannot certify member-local native readiness');
+});
+
+test('shared metadata: explicit historical Run projects its original facts without selecting the latest or mutating either', async (t) => {
+  const h = setup({ localSelection: true });
+  t.after(() => h.ctx.fiber.dispose());
+  let row = accepted(begin(h.facts.node).record);
+  row = applyEvent(row, 'failed', { resourcesSettled: true }).record;
+  const prior = structuredClone(row.nativeExecution.runs[0]);
+  row = begin(row, {
+    mode: 'retry',
+    requestId: 'retry-history',
+    newRunId: 'run-history-2',
+    newSegmentId: 'segment-history-2',
+  }).record;
+  h.facts.node = row;
+  const before = JSON.stringify(row);
+  const value = (await h.read(h.request, { ...h.query, runId: prior.attempt.id })).value;
+  assert.equal(value.currentRunId, prior.attempt.id);
+  assert.equal(value.currentRun.segmentId, prior.segmentId);
+  assert.equal(value.currentRun.status, prior.attempt.status);
+  assert.equal(value.start.kind, 'unavailable');
+  assert.equal(JSON.stringify(h.facts.node), before);
+  assert.equal((await h.read(h.request, h.query)).value.currentRunId, 'run-history-2');
+  await assert.rejects(h.read(h.request, { ...h.query, runId: 'foreign' }), {
+    code: 'run-scope-mismatch',
+  });
 });
 
 test('options contract: passive catalog has no first/default selection or Run, exact plan experts only', async (t) => {

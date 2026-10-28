@@ -407,6 +407,7 @@ export function createNativeRunApi(
   registerDirectory?: RegisterWorkspaceDirectory,
   openModelSettings?: () => void,
   localDirectory?: LocalWorkspaceDirectory,
+  serverAllocatedRunIds = false,
 ): NativeRunApi {
   const identity = createIdentityApi(fetcher);
   const directory = createMemberWorkbenchApi(
@@ -683,7 +684,11 @@ export function createNativeRunApi(
         ),
       );
       locator(value, input);
-      if (value.runId !== input.newRunId || value.segmentId !== input.newSegmentId) invalid();
+      if (serverAllocatedRunIds) {
+        string(value.runId);
+        string(value.segmentId);
+      } else if (value.runId !== input.newRunId || value.segmentId !== input.newSegmentId)
+        invalid();
     },
     async send(run, text, mode, requestId, signal) {
       const value = object(

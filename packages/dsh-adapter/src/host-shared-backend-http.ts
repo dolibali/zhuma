@@ -12,12 +12,20 @@ import { readWorkbenchBody, WorkbenchBodyError } from './workbench-http.js';
 
 /** All three exact routes retain the ORIGINAL local Connection owner policy.
  * They are intentionally never registered as public member Web routes. */
-export function mountHostSharedBackend(ctx: Context): void {
-  ctx.plugin({
+export function mountHostSharedBackend(
+  ctx: Context,
+  lifecycle?: {
+    publish(owner: HostSharedBackend): void | (() => void);
+    selection: NonNullable<Parameters<HostSharedBackend['select']>[1]>;
+  },
+) {
+  return ctx.plugin({
     name: 'zhuma-shared-backend-connection',
     inject: ['credentials', 'connection'],
     apply(child: Context) {
       const owner = new HostSharedBackend(child);
+      const unpublish = lifecycle?.publish(owner);
+      if (unpublish) child.effect(() => unpublish);
       const empty = z.strictObject({});
       for (const endpoint of ['status', 'select', 'request'] as const) {
         child.connection.fetch.register({
@@ -47,7 +55,10 @@ export function mountHostSharedBackend(ctx: Context): void {
                 endpoint === 'status'
                   ? (empty.parse(envelope.data.payload), await owner.status())
                   : endpoint === 'select'
-                    ? await owner.select(sharedBackendSelectionSchema.parse(envelope.data.payload))
+                    ? await owner.select(
+                        sharedBackendSelectionSchema.parse(envelope.data.payload),
+                        lifecycle?.selection,
+                      )
                     : await owner.request(
                         sharedBackendRequestSchema.parse(envelope.data.payload),
                         request.signal,

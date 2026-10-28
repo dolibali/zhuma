@@ -125,6 +125,11 @@ export function createSharedBackendClient(
       AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]),
     );
     if (!result.ok) {
+      if (endpoint === 'select' && result.error.code === 'backend-native-busy') {
+        const error = new Error('仍有工作在运行或等待清理，请先停止并确认结束后再切换服务。');
+        error.name = 'SharedBackendNativeBusy';
+        throw error;
+      }
       if (endpoint === 'request' && result.error.code === 'backend-invalid-response')
         return { connectionId: snapshot.selection?.connectionId, status: 502, body: null };
       if (
@@ -259,7 +264,11 @@ export function createSharedBackendClient(
         retry = undefined;
       } catch (error) {
         current(attempt);
-        publish({ phase: 'error', selection });
+        publish({
+          phase:
+            error instanceof Error && error.name === 'SharedBackendNativeBusy' ? 'ready' : 'error',
+          selection,
+        });
         throw error;
       }
     },

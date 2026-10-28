@@ -24,8 +24,10 @@ import {
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import { createSharedBackendClient } from '../identity/shared-backend.js';
 import { SharedBackendBoundary } from '../identity/SharedBackendBoundary.js';
+import { createMemberNativeClient } from '../run/member-native.js';
+import { installMemberNativeNavigation } from '../run/MemberNativeNavigation.js';
 
-export const inject = ['slots', 'layout', 'connection', 'theme'];
+export const inject = ['slots', 'layout', 'connection', 'theme', 'uiWorkspace'];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
   const boot = (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: unknown }).__ZHUMA_WORKBENCH_BOOT__;
   if (
@@ -83,6 +85,7 @@ export function apply(ctx: Context): void {
       ? createSharedBackendClient(connection.rpc, restoreBackendMember)
       : undefined;
   const memberFetch = sharedBackend?.fetcher ?? globalThis.fetch;
+  const memberNative = sharedBackend ? createMemberNativeClient(sharedBackend) : undefined;
   memberShell = createMemberShell(createIdentityApi(memberFetch));
   if (sharedBackend) ctx.effect(() => () => sharedBackend.close());
   const registerWorkspaceDirectory = createWorkspaceDirectoryRegistrar(ctx);
@@ -90,7 +93,9 @@ export function apply(ctx: Context): void {
   // Native task Sessions require C's scoped continuation registration before
   // exposing ordinary Conversation navigation. The existing directory reader
   // is safe independently: selection never registers a directory or starts work.
-  const localDirectory = { read: originalLocalDirectory.read };
+  const localDirectory = sharedBackend
+    ? originalLocalDirectory
+    : { read: originalLocalDirectory.read };
   let settingsLauncher: (() => void) | undefined;
   const bindSettingsLauncher = (open: () => void) => {
     settingsLauncher = open;
@@ -104,6 +109,14 @@ export function apply(ctx: Context): void {
       throw new ExecutionError('unavailable', '设置入口暂不可用，请稍后重试。');
     settingsLauncher();
   };
+  if (sharedBackend && memberNative)
+    installMemberNativeNavigation(ctx, {
+      shell: memberShell,
+      backend: sharedBackend,
+      native: memberNative,
+      directory: originalLocalDirectory,
+      openModelSettings,
+    });
   const executionPanel = 'zhuma-my-work' as MainPanelId;
   const workbenchPanel = 'zhuma-workbench' as MainPanelId;
   ctx.effect(() => {
@@ -230,7 +243,8 @@ export function apply(ctx: Context): void {
                 key={sharedBackend?.getSnapshot().selection?.connectionId ?? 'local'}
                 fetcher={memberFetch}
                 shell={memberShell}
-                nativeExecution={!remote}
+                nativeExecution={!remote || !!memberNative}
+                memberNative={remote ? memberNative : undefined}
                 allowRegistration={mode === 'multi-member'}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
                 localDirectory={localDirectory}

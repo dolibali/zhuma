@@ -32,6 +32,7 @@ const query = z.strictObject({
   planId: id,
   revision: z.number().int().positive().refine(Number.isSafeInteger),
   nodeId: id,
+  runId: id.optional(),
 });
 export const hostRunOptionsQuerySchema = query;
 type Executor = { kind: 'builtin' } | { kind: 'plan-expert'; ref: { id: string; version: string } };
@@ -90,7 +91,7 @@ export function createHostRunOptions(
     const parsed = query.safeParse(payload);
     if (!parsed.success) throw new ExecutionRunError('run-validation');
     const signal = AbortSignal.any([options.signal, ...(wait ? [wait] : [])]);
-    const target = parsed.data;
+    const { runId: requestedRunId, ...target } = parsed.data;
     const authorize = async () => {
       active(signal);
       const result = await options.execution.readRunCompositionInputs(request, target);
@@ -130,7 +131,11 @@ export function createHostRunOptions(
     )
       throw new ExecutionRunError('run-scope-mismatch');
     const state = readExecutionRunState(node);
-    const current = currentExecutionRun(node);
+    const latest = currentExecutionRun(node);
+    const current = requestedRunId
+      ? state?.runs.find((run) => run.attempt.id === requestedRunId)
+      : latest;
+    if (requestedRunId && !current) throw new ExecutionRunError('run-scope-mismatch');
     if (current && (current.actorId !== inputs.actorId || current.spaceId !== target.spaceId))
       throw new ExecutionRunError('run-scope-mismatch');
     // This does not project the frozen prompt, method body, owner or grant.
@@ -284,7 +289,10 @@ export function createHostRunOptions(
       models,
       experts,
       resources,
-      start,
+      start:
+        requestedRunId && requestedRunId !== latest?.attempt.id
+          ? { kind: 'unavailable', message: '历史执行仅供查看，请返回当前工作节点开始新一轮。' }
+          : start,
       tools: inputs.items.length ? 'accepted-input-reader' : 'text-only',
       ...(!options.localSelection && options.workspaces
         ? {

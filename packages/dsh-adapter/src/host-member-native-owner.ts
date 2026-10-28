@@ -1,0 +1,434 @@
+import { randomUUID } from 'node:crypto';
+import type { Context } from '@deepseek-ai/cordis';
+import { z } from 'zod';
+import { canonicalPayload, remoteRunScopeSchema } from '@zhuma/agent-core';
+import { HostSharedBackend, SharedBackendError } from './host-shared-backend.js';
+import { MemberLocalExecutionProtocol } from './member-local-execution-protocol.js';
+import { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
+import { MemberLocalExecutionSecrets } from './member-local-execution-secrets.js';
+import { createMemberLocalPrivateStore } from './host-member-local-credentials.js';
+import { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';
+import { hostRunOptionsQuerySchema } from './host-run-options.js';
+import { hostRunBeginRequestSchema } from './host-run-configuration.js';
+import { hostRunSendRequestSchema } from './host-run-owner.js';
+import { readHostRunModels } from './host-run-models.js';
+import { publicFrame, conversationTarget, type HostRunFrameSink } from './host-run-reader.js';
+import { ExecutionRunError } from './execution-run-state.js';
+import type { NativeHistoryEvent } from './native-work-session-contract.js';
+
+const id = z.string().min(1).max(200);
+const integer = z.number().int().nonnegative().refine(Number.isSafeInteger);
+const locator = hostRunOptionsQuerySchema.omit({ spaceId: true }).extend({ runId: id });
+const readLocator = locator.extend({ spaceId: id.optional() });
+const historyLocator = locator.extend({
+  after: z.number().int().min(-1).refine(Number.isSafeInteger).default(-1),
+  limit: integer.min(1).max(100).default(50),
+});
+const stopRequest = locator.extend({
+  spaceId: id,
+  generation: integer.positive(),
+  segmentId: id,
+  requestId: id,
+  expectedNodeVersion: integer,
+  expectedRunVersion: integer,
+});
+const sharedRun = locator.extend({
+  generation: integer.positive(),
+  segmentId: id,
+  nodeVersion: integer,
+  runVersion: integer,
+  status: z.enum(['requested', 'running', 'waiting-for-input', 'completed', 'failed', 'cancelled']),
+  dispatch: z.enum(['reserved', 'received', 'unknown']),
+  resources: z.enum(['held', 'settled']),
+  acknowledged: z.boolean(),
+  stopPhase: z.enum(['none', 'requested', 'confirmed', 'receipt-rejected']),
+  native: z.null(),
+});
+const metadata = z.object({
+  target: hostRunOptionsQuerySchema,
+  nodeVersion: integer,
+  runVersion: integer,
+  currentRunId: id.nullable(),
+  currentRun: sharedRun.nullable(),
+  selection: z.unknown(),
+  experts: z.array(z.unknown()).max(100),
+  resources: z.array(z.unknown()).max(300),
+  start: z.unknown(),
+  tools: z.enum(['text-only', 'accepted-input-reader']),
+});
+const envelope = z.object({
+  type: z.literal('server-response'),
+  rpcId: z.uuid(),
+  result: z.discriminatedUnion('ok', [
+    z.object({ ok: z.literal(true), value: metadata }),
+    z.object({ ok: z.literal(false), error: z.object({ code: z.string() }) }),
+  ]),
+});
+const denied = {
+  kind: 'unavailable' as const,
+  message: '此设备没有仍有效的执行控制权，请刷新或返回原执行设备。',
+};
+
+/** History transport strips runtime context, arguments and unknown event data.
+ * Native logs remain in the original SDK; sequence advancement is preserved. */
+export function publicMemberNativeHistory(event: NativeHistoryEvent): NativeHistoryEvent {
+  const base = { seq: event.seq, time: event.time };
+  const record = (v: unknown): Record<string, unknown> | undefined =>
+    v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+  const data = record(event.data);
+  if (event.type === 'tool/call' && typeof data?.name === 'string')
+    return { ...base, type: 'tool/call', data: { name: data.name.slice(0, 200) } };
+  if (event.type === 'user/message' || event.type === 'assistant/message') {
+    const message = event.type === 'user/message' ? data : record(data?.message);
+    const role = event.type === 'user/message' ? 'user' : 'assistant';
+    if (
+      message?.role === role &&
+      record(message.source)?.kind === (role === 'user' ? 'user' : 'model') &&
+      Array.isArray(message.content)
+    ) {
+      const content = message.content.flatMap((value: unknown) => {
+        const item = record(value);
+        return item?.type === 'text' && typeof item.text === 'string'
+          ? [{ type: 'text', text: item.text.slice(0, 262144) }]
+          : [];
+      });
+      const projected = {
+        role,
+        source: { kind: role === 'user' ? 'user' : 'model' },
+        content,
+        ...(typeof message.id === 'string' ? { id: message.id } : {}),
+      };
+      return {
+        ...base,
+        type: event.type,
+        data: role === 'user' ? projected : { message: projected },
+      };
+    }
+  }
+  return { ...base, type: 'redacted', data: {} };
+}
+
+/** Local owner composition only. D owns every Run, C every handle and native
+ * Session. No local ExecutionService, transcript cache or drive reconstruction. */
+export async function openHostMemberNativeOwner(ctx: Context, backend: HostSharedBackend) {
+  const lifetime = new AbortController();
+  const connection = await backend.nativeConnection(lifetime.signal);
+  const protocol = await MemberLocalExecutionProtocol.open(
+    {
+      origin: connection.origin,
+      methods: MEMBER_LOCAL_REMOTE_METHODS,
+      authentication: connection.authentication,
+      expectedActorId: connection.actorId,
+      secrets: new MemberLocalExecutionSecrets(createMemberLocalPrivateStore(ctx, lifetime.signal)),
+    },
+    lifetime.signal,
+  );
+  const assertCurrent = async (signal: AbortSignal) => {
+    lifetime.signal.throwIfAborted();
+    signal.throwIfAborted();
+    const current = await backend.nativeConnection(signal);
+    if (
+      current.connectionId !== connection.connectionId ||
+      current.backendId !== connection.backendId ||
+      current.actorId !== connection.actorId
+    )
+      throw new SharedBackendError('identity-changed');
+    await connection.authentication(signal);
+    lifetime.signal.throwIfAborted();
+  };
+  let native: MemberLocalExecutionOwner;
+  try {
+    native = await MemberLocalExecutionOwner.open(ctx, {
+      protocol,
+      async assertModel(selection, signal) {
+        await assertCurrent(signal);
+        const models = await readHostRunModels(ctx, signal);
+        if (
+          models.kind !== 'ready' ||
+          !models.items.some(
+            ({ value }) => value.provider === selection.provider && value.model === selection.model,
+          )
+        )
+          throw new ExecutionRunError('run-authority-unavailable');
+        await assertCurrent(signal);
+      },
+    });
+  } catch (error) {
+    await protocol.close();
+    throw error;
+  }
+  const jobs = new Set<Promise<unknown>>();
+  let closed = false,
+    closing: Promise<void> | undefined;
+  async function facts(target: z.infer<typeof hostRunOptionsQuerySchema>, signal: AbortSignal) {
+    await assertCurrent(signal);
+    const rpcId = randomUUID();
+    const response = await backend.request(
+      {
+        connectionId: connection.connectionId,
+        operation: 'execution.local-run-options',
+        rpcId,
+        payload: target,
+      },
+      signal,
+    );
+    const parsed = envelope.parse(response.body);
+    if (parsed.rpcId !== rpcId || !parsed.result.ok)
+      throw new ExecutionRunError('run-authority-denied');
+    const value = parsed.result.value;
+    const { runId: _requestedRunId, ...nodeTarget } = target;
+    if (
+      canonicalPayload(value.target) !== canonicalPayload(nodeTarget) ||
+      value.currentRunId !== (value.currentRun?.runId ?? null)
+    )
+      throw new ExecutionRunError('run-scope-mismatch');
+    await assertCurrent(signal);
+    return value;
+  }
+  async function opened(raw: unknown, signal: AbortSignal) {
+    const target = readLocator.strip().parse(raw);
+    const value = await facts(
+      {
+        spaceId: target.spaceId ?? '',
+        taskId: target.taskId,
+        planId: target.planId,
+        revision: target.revision,
+        nodeId: target.nodeId,
+        runId: target.runId,
+      },
+      signal,
+    );
+    const run = value.currentRun;
+    if (!run || run.runId !== target.runId) throw new ExecutionRunError('run-scope-mismatch');
+    const scope = remoteRunScopeSchema.parse({
+      ...value.target,
+      backendId: protocol.backendId,
+      actorId: protocol.actorId,
+      runId: run.runId,
+      generation: run.generation,
+      segmentId: run.segmentId,
+    });
+    const result = await native.openScope(scope, signal);
+    await assertCurrent(signal);
+    return { ...result, facts: value };
+  }
+  function projected(value: Awaited<ReturnType<typeof opened>>) {
+    const run = value.facts.currentRun!;
+    const view = value.view;
+    const live =
+      view.phase === 'working' &&
+      view.remote.authority === 'drive' &&
+      view.remote.resources === 'held' &&
+      !view.remote.stopRequested;
+    return {
+      ...run,
+      native: view.native
+        ? {
+            sessionId: view.native.binding.nativeSessionId,
+            agentId: view.native.binding.nativeAgentId,
+            status: view.native.status,
+          }
+        : null,
+      sendCapabilities: {
+        followup: live ? { kind: 'available' } : denied,
+        steer: live ? { kind: 'available' } : denied,
+        queue: live ? { kind: 'available' } : denied,
+      },
+    };
+  }
+  const track = <T>(work: Promise<T>) => {
+    jobs.add(work);
+    void work.finally(() => jobs.delete(work)).catch(() => undefined);
+    return work;
+  };
+  async function handle(endpoint: string, raw: unknown, wait: AbortSignal): Promise<unknown> {
+    await assertCurrent(wait);
+    if (endpoint === 'options') {
+      const target = hostRunOptionsQuerySchema.parse(raw);
+      await facts(target, wait);
+      const models = await readHostRunModels(ctx, wait);
+      const value = await facts(target, wait);
+      return { ...value, models, workspaces: [] };
+    }
+    if (endpoint === 'begin') {
+      const input = hostRunBeginRequestSchema.parse(raw);
+      if (input.workspace.kind !== 'text-only' || input.tools === 'local-tools')
+        throw new ExecutionRunError('run-authority-unavailable');
+      const target = hostRunOptionsQuerySchema.parse({
+        spaceId: input.spaceId,
+        taskId: input.taskId,
+        planId: input.planId,
+        revision: input.revision,
+        nodeId: input.nodeId,
+      });
+      await facts(target, wait);
+      const resources = MemberLocalExecutionOwner.resourceSource(ctx);
+      const accepted = await (
+        await protocol.prepareAccept(
+          input.requestId,
+          {
+            target,
+            purpose: 'work',
+            mode: input.mode,
+            expectedNodeVersion: input.expectedNodeVersion,
+            expectedRunVersion: input.expectedRunVersion,
+            model: input.model,
+            executor: input.executor,
+            workspace: { kind: 'text-only' },
+            capabilities: {
+              ...(resources ? { resources } : {}),
+              ...(input.tools === 'accepted-input-reader' ? { acceptedInput: '1' as const } : {}),
+              resultIntent: 'zhuma-native-result-intent@1',
+              localTools: [],
+            },
+          },
+          wait,
+        )
+      ).send(wait);
+      // A client disconnect is not rollback of this actual accepted Run.
+      await native.start(accepted);
+      await assertCurrent(lifetime.signal);
+      return {
+        ...target,
+        runId: accepted.value.scope.runId,
+        segmentId: accepted.value.scope.segmentId,
+      };
+    }
+    // The public Client omits space on original read/send/history requests.
+    // The private carrier supplies this exact bound space separately.
+    if (endpoint === 'read') return projected(await opened(readLocator.parse(raw), wait));
+    if (endpoint === 'history') {
+      const data = z.object({ spaceId: id, query: historyLocator }).parse(raw);
+      const { after, limit, ...target } = data.query;
+      const result = await opened({ ...target, spaceId: data.spaceId }, wait);
+      const page = await native.history(result.run, after, limit, wait);
+      await assertCurrent(wait);
+      return {
+        ...target,
+        sessionId: page.binding.nativeSessionId,
+        events: page.events.map(publicMemberNativeHistory),
+        nextAfter: page.events.at(-1)?.seq ?? after,
+      };
+    }
+    if (endpoint === 'inbox') {
+      const result = await opened(readLocator.parse(raw), wait);
+      const page = await native.readInbox(result.run, wait);
+      await assertCurrent(wait);
+      return {
+        target: conversationTarget(result.view.remote.scope),
+        sessionId: page.binding.nativeSessionId,
+        asOfSeq: page.asOfSeq,
+        receipts: page.receipts.map(({ requestId, messageId, mode, status }) => ({
+          requestId,
+          messageId,
+          mode,
+          status,
+        })),
+        items: page.items.map(({ id, text, target, requestId, mode, status }) => ({
+          id,
+          text,
+          target,
+          requestId,
+          mode,
+          status,
+        })),
+      };
+    }
+    if (endpoint === 'send') {
+      const data = z.object({ spaceId: id, query: hostRunSendRequestSchema }).parse(raw);
+      const { generation, segmentId, requestId, text, mode, ...target } = data.query;
+      const result = await opened({ ...target, spaceId: data.spaceId }, wait);
+      if (
+        result.view.remote.scope.generation !== generation ||
+        result.view.remote.scope.segmentId !== segmentId
+      )
+        throw new ExecutionRunError('run-scope-mismatch');
+      const receipt = await native.send(result.run, { requestId, text, mode });
+      await assertCurrent(wait);
+      return {
+        ...target,
+        requestId: receipt.requestId,
+        messageId: receipt.messageId,
+        mode: receipt.mode,
+        status: receipt.status,
+      };
+    }
+    if (endpoint === 'stop') {
+      const data = stopRequest.parse(raw);
+      const result = await opened(data, wait);
+      if (
+        result.view.remote.scope.generation !== data.generation ||
+        result.view.remote.scope.segmentId !== data.segmentId
+      )
+        throw new ExecutionRunError('run-scope-mismatch');
+      await native.stop(
+        result.run,
+        {
+          requestId: data.requestId,
+          expectedNodeVersion: data.expectedNodeVersion,
+          expectedRunVersion: data.expectedRunVersion,
+        },
+        wait,
+      );
+      const next = await facts(result.facts.target, wait);
+      return {
+        ...data,
+        status:
+          next.currentRun?.resources === 'settled' && next.currentRun.stopPhase === 'confirmed'
+            ? 'stopped'
+            : 'pending',
+      };
+    }
+    if (endpoint === 'lookup') {
+      const { sessionId } = z.strictObject({ sessionId: id }).parse(raw);
+      const found = native.lookupNativeSession(sessionId);
+      if (found === null) return { kind: 'ordinary' };
+      const result = await native.openSession(sessionId, wait);
+      await assertCurrent(wait);
+      return { kind: 'task', target: result.view.remote.scope, sessionId };
+    }
+    throw new ExecutionRunError('run-validation');
+  }
+  return {
+    connectionId: connection.connectionId,
+    actorId: connection.actorId,
+    canSwitchBackend: () =>
+      !closed &&
+      !jobs.size &&
+      (
+        native as MemberLocalExecutionOwner & { canSwitchBackend?: () => boolean }
+      ).canSwitchBackend?.() === true,
+    lookupNativeSession: (id: string) => native.lookupNativeSession(id),
+    handle: (endpoint: string, raw: unknown, wait: AbortSignal) =>
+      track(handle(endpoint, raw, wait)),
+    async observe(raw: unknown, sink: HostRunFrameSink, wait: AbortSignal) {
+      const data = z
+        .object({ spaceId: id, query: historyLocator.omit({ limit: true }) })
+        .parse(raw);
+      const { after, ...target } = data.query;
+      const result = await opened({ ...target, spaceId: data.spaceId }, wait);
+      const scope = result.view.remote.scope;
+      const sessionId = result.view.native?.binding.nativeSessionId;
+      if (!sessionId) throw new ExecutionRunError('run-authority-unavailable');
+      await sink({ type: 'ready', target: conversationTarget(scope), sessionId }, wait);
+      for await (const frame of native.observe(result.run, after, wait)) {
+        await assertCurrent(wait);
+        await sink({ ...publicFrame(frame), target: conversationTarget(scope), sessionId }, wait);
+      }
+    },
+    close() {
+      if (!closing) {
+        closed = true;
+        // Native close owns physical cleanup before its original private
+        // outgoing protocol or credentials adapter is sealed.
+        closing = (async () => {
+          await native.close();
+          lifetime.abort();
+          await Promise.allSettled([...jobs]);
+          await protocol.close();
+        })();
+      }
+      return closing;
+    },
+  };
+}
