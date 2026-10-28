@@ -256,6 +256,26 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
     current(state);
     return state;
   }
+  function retainedReview(scope: ExecutionReviewScope): OwnedReview | undefined {
+    return [...states.values()].find((state) => {
+      const known = state.drive?.grant.scope ?? state.composition?.payload.scope;
+      return (
+        (known && canonicalPayload(known) === canonicalPayload(scope)) ||
+        (canonicalPayload(state.candidate.target) === canonicalPayload(scope.review.target) &&
+          state.candidate.reviewerRef.id === scope.review.principal.reviewerRef.id &&
+          state.candidate.reviewerRef.version === scope.review.principal.reviewerRef.version)
+      );
+    });
+  }
+  function preparingReview(state: OwnedReview, scope: ExecutionReviewScope): boolean {
+    const known = state.drive?.grant.scope ?? state.composition?.payload.scope;
+    // A retained start without a drive is not a cold process or an empty resource scope.
+    return (
+      !known ||
+      canonicalPayload(known) !== canonicalPayload(scope) ||
+      (state.starting && !state.adopting)
+    );
+  }
   async function retireWithResources(
     original: Parameters<ExecutionService['assertExpertReviewCleanupAuthority']>[0],
     wait: AbortSignal,
@@ -263,16 +283,18 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
     // Cleanup authority is checked before reading its purported scope. It does
     // not acquire a new driving/member/phase qualification after revocation.
     execution.assertExpertReviewCleanupAuthority(original);
-    const state = [...states.values()].find(
-      (item) =>
-        item.drive && canonicalPayload(item.drive.grant.scope) === canonicalPayload(original.scope),
-    );
-    if (!state) throw new NativeReviewBridgeError('review-bridge-recovery-required');
+    let state = retainedReview(original.scope);
+    if (state && preparingReview(state, original.scope)) return { status: 'pending' };
     const retired = await bound().service.retireReviewForCleanup(original, wait);
     if (retired.status === 'pending') return retired;
-    if (state.starting && !state.adopting) return { status: 'pending' };
-    if (!(await waitOwned(closeResources(state), wait))) return { status: 'pending' };
-    state.resources?.assertClosed();
+    // A cold owner still needs the original C binding and physical retirement.
+    // Recheck retained starts after that await before qualifying any resource barrier.
+    state = retainedReview(original.scope);
+    if (state) {
+      if (preparingReview(state, original.scope)) return { status: 'pending' };
+      if (!(await waitOwned(closeResources(state), wait))) return { status: 'pending' };
+      state.resources?.assertClosed();
+    }
     const raw = retired.drain,
       assert = raw.assertCurrent,
       signal = raw.signal;
@@ -282,7 +304,9 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
       assertCurrent() {
         if (raw.assertCurrent !== assert || raw.signal !== signal) return failure();
         assert.call(raw);
-        state.resources?.assertClosed();
+        const retained = retainedReview(original.scope);
+        if (retained && retained !== state) return failure();
+        state?.resources?.assertClosed();
       },
     });
     drain.assertCurrent();
@@ -871,20 +895,8 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
             details: {},
           },
         });
-      if (
-        ![...states.values()].some(
-          (state) =>
-            state.drive && canonicalPayload(state.drive.grant.scope) === canonicalPayload(scope),
-        )
-      )
-        return Promise.resolve({
-          ok: false,
-          error: {
-            code: 'review-bridge-recovery-required',
-            message: '缺少原评审资源拥有者，尚不能确认资源已排空。',
-            details: {},
-          },
-        });
+      // Only D's committed Stop and original cleanup capability authorize recovery.
+      // Missing in-memory correlation is neither a refusal nor a drain certificate.
       return own(
         execution.recoverStoppedWorkflowReviewCleanup(scope, wait).then(async (result) => {
           if (result.ok && result.value.status === 'settled') {

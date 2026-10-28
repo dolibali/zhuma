@@ -5,7 +5,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'vitest';
-import { bootReviewBridge, readExecutionReviewState } from './zhuma-native-review-bridge-bundle.ts';
+import {
+  bootReviewBridge,
+  reopenStoppedReviewBridge,
+  readExecutionReviewState,
+} from './zhuma-native-review-bridge-bundle.ts';
 
 async function setup(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-review-bridge-sdk-')),
@@ -240,7 +244,7 @@ for (const revocation of ['producer', 'member', 'configuration'])
     assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
   });
 
-test('original SDK resource barrier: an unknown cleanup scope without its original A obligation requires recovery before D is called', async (t) => {
+test('original SDK cold review: an unknown cleanup scope is rejected by the original D validator before native retirement', async (t) => {
   const h = await setup(t, { file: false });
   let calls = 0;
   const original = h.d.service.recoverStoppedWorkflowReviewCleanup;
@@ -251,8 +255,8 @@ test('original SDK resource barrier: an unknown cleanup scope without its origin
   const result = await h.bridge.recoverStopped({});
   assert.equal(result.ok, false);
   if (result.ok) throw Error('Unknown resource ownership must require recovery.');
-  assert.equal(result.error.code, 'review-bridge-recovery-required');
-  assert.equal(calls, 0);
+  assert.equal(calls, 1);
+  assert.throws(() => h.native.runtime.migrationDrain('unknown-session'));
   assert.equal(h.adapter.requests.length, 0);
   assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
 });
@@ -520,5 +524,154 @@ test('original SDK review truncation: actual Stop before a held model response k
     h.native.runtime.migrationDrain(attempt.nativeSessionId).basis,
     'flushed-and-closed',
   );
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+});
+
+async function coldStoppedReview(t) {
+  const warm = await setup(t, { file: false, finishReason: 'stop' });
+  warm.bridge.consumeClaim(warm.d.request, warm.claim);
+  await warm.bridge.whenIdle();
+  const original = readExecutionReviewState(warm.d.read()).attempts[0];
+  const actor = warm.native.ctx.agents.get(original.nativeAgentId);
+  assert.ok(actor, 'the original review Agent was genuinely published');
+  await actor.whenIdle();
+  await warm.bridge.whenIdle();
+  const scope = readExecutionReviewState(warm.d.read()).attempts[0].scope;
+  const stopped = await warm.d.service.stopWorkflowExecution(warm.d.request, {
+    ...warm.location,
+    requestId: 'persist-original-workflow-stop-before-cold-review',
+    intentId: warm.view.intent.intentId,
+    generation: warm.view.intent.generation,
+  });
+  assert.equal(stopped.ok, true);
+  await warm.waitFor(
+    () => readExecutionReviewState(warm.d.read())?.attempts[0]?.resources === 'settled',
+  );
+  await warm.bridge.whenIdle();
+  const cold = await reopenStoppedReviewBridge(warm, (close) => t.onTestFinished(close));
+  assert.throws(
+    () => cold.d.service.assertExpertReviewDrained(scope),
+    'persisted settled labels are not a new physical certificate',
+  );
+  return { warm, cold, scope };
+}
+
+test('original SDK cold review: committed Stop and exact persisted scope restore a genuine physical drain with empty bridge state', async (t) => {
+  const { cold, scope } = await coldStoppedReview(t);
+  const before = cold.d.read();
+  let retirements = 0;
+  const retire = cold.native.service.retireReviewForCleanup.bind(cold.native.service);
+  cold.native.service.retireReviewForCleanup = (...args) => {
+    retirements++;
+    return retire(...args);
+  };
+  for (const changed of [
+    { ...scope, actorId: 'foreign-controller' },
+    { ...scope, runId: 'foreign-run' },
+    {
+      ...scope,
+      review: { ...scope.review, target: { ...scope.review.target, roundId: 'foreign-round' } },
+    },
+  ]) {
+    const rejected = await cold.bridge.recoverStopped(changed);
+    assert.equal(rejected.ok, false);
+  }
+  assert.equal(retirements, 0, 'only the original committed Stop may reach C cleanup');
+  assert.throws(() => cold.d.service.assertExpertReviewDrained(scope));
+  const result = await cold.bridge.recoverStopped(scope);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.value.status, 'settled');
+  cold.d.service.assertExpertReviewDrained(scope);
+  const attempt = readExecutionReviewState(cold.d.read()).attempts[0];
+  assert.equal(attempt.status, 'cancelled');
+  assert.equal(attempt.stopPhase, 'confirmed');
+  assert.equal(attempt.resources, 'settled');
+  assert.equal(
+    cold.native.runtime.migrationDrain(attempt.nativeSessionId).basis,
+    'flushed-and-closed',
+  );
+  assert.equal(cold.native.ctx.agents.get(attempt.nativeAgentId), undefined);
+  assert.deepEqual(cold.d.read().artifactVersions, before.artifactVersions);
+  assert.deepEqual(cold.d.read().rounds, before.rounds);
+  assert.equal(cold.d.read().rounds[0].ballots.length, 0);
+  assert.equal(cold.d.read('consume').command.status, 'blocked');
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(retirements, 1);
+});
+
+test('original SDK cold review: aborted wait stays pending until the original native retirement finishes', async (t) => {
+  const { cold, scope } = await coldStoppedReview(t);
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  t.onTestFinished(() => release.resolve());
+  const retire = cold.native.runtime.retire.bind(cold.native.runtime);
+  cold.native.runtime.retire = async (...args) => {
+    const actual = await retire(...args);
+    entered.resolve();
+    await release.promise;
+    actual.assertCurrent();
+    return actual;
+  };
+  const wait = new AbortController();
+  const recovering = cold.bridge.recoverStopped(scope, wait.signal);
+  await entered.promise;
+  wait.abort();
+  const pending = await recovering;
+  assert.equal(pending.ok, true, JSON.stringify(pending));
+  assert.equal(pending.value.status, 'pending');
+  assert.throws(() => cold.d.service.assertExpertReviewDrained(scope));
+  assert.equal(cold.d.read().rounds[0].ballots.length, 0);
+  release.resolve();
+  await cold.native.service.whenRetirementsIdle();
+  const recovered = await cold.bridge.recoverStopped(scope);
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.value.status, 'settled');
+  cold.d.service.assertExpertReviewDrained(scope);
+  assert.equal(cold.adapter.requests.length, 0);
+});
+
+test('original SDK cold review: a retained admitted start without its drive cannot be mistaken for an empty cold scope', async (t) => {
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  t.onTestFinished(() => release.resolve());
+  const h = await setup(t, {
+    file: false,
+    afterNative({ d }) {
+      const open = d.service.openExpertReviewDrive.bind(d.service);
+      d.service.openExpertReviewDrive = async (...args) => {
+        const actual = await open(...args);
+        entered.resolve();
+        await release.promise;
+        return actual;
+      };
+    },
+  });
+  let retirements = 0;
+  const retire = h.native.service.retireReviewForCleanup.bind(h.native.service);
+  h.native.service.retireReviewForCleanup = (...args) => {
+    retirements++;
+    return retire(...args);
+  };
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await entered.promise;
+  const scope = readExecutionReviewState(h.d.read()).attempts[0].scope;
+  const stopped = await h.d.service.stopWorkflowExecution(h.d.request, {
+    ...h.location,
+    requestId: 'stop-retained-start-before-drive-return',
+    intentId: h.view.intent.intentId,
+    generation: h.view.intent.generation,
+  });
+  assert.equal(stopped.ok, true);
+  const pending = await h.bridge.recoverStopped(scope);
+  assert.equal(pending.ok, true, JSON.stringify(pending));
+  assert.equal(pending.value.status, 'pending');
+  assert.equal(retirements, 0, 'the retained start must settle before C may qualify cleanup');
+  assert.equal(readExecutionReviewState(h.d.read()).attempts[0].resources, 'held');
+  assert.throws(() => h.d.service.assertExpertReviewDrained(scope));
+  release.resolve();
+  await h.waitFor(() => readExecutionReviewState(h.d.read())?.attempts[0]?.resources === 'settled');
+  await h.bridge.whenIdle();
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(h.adapter.requests.length, 0);
   assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
 });
