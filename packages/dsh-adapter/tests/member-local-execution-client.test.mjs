@@ -27,6 +27,45 @@ async function server(t, handle) {
   return `http://127.0.0.1:${s.address().port}`;
 }
 const decode = (raw) => z.strictObject({ ok: z.literal(true), value: z.string() }).parse(raw).value;
+test('member-local HTTP: per-scope private headers do not replace the original member authentication', async (t) => {
+  const seen = [];
+  let authCalls = 0;
+  const origin = await server(t, (req, res, body) => {
+    assert.equal(req.headers.cookie, 'synthetic-member-session');
+    seen.push(req.headers['x-private-test-permit']);
+    res.end(
+      JSON.stringify({
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: 'confirmed' },
+      }),
+    );
+  });
+  const client = new MemberLocalExecutionClient({
+    origin,
+    methods: ['zhuma-proof/status'],
+    privateHeaderNames: ['x-private-test-permit'],
+    authentication: () => {
+      authCalls++;
+      return { cookie: 'synthetic-member-session' };
+    },
+  });
+  t.after(() => client.close());
+  await client.invoke('zhuma-proof/status', {}, decode, undefined, {
+    'x-private-test-permit': 'drive-token',
+  });
+  await client.invoke('zhuma-proof/status', {}, decode, undefined, {
+    'x-private-test-permit': 'cleanup-token',
+  });
+  await assert.rejects(
+    client.invoke('zhuma-proof/status', {}, decode, undefined, {
+      cookie: 'must-not-replace-member',
+    }),
+    { code: 'invalid' },
+  );
+  assert.deepEqual(seen, ['drive-token', 'cleanup-token']);
+  assert.equal(authCalls, 2);
+});
 test('member-local HTTP: only fixed methods leave the process and actual RPC replies are correlated', async (t) => {
   let calls = 0,
     authCalls = 0;

@@ -18,6 +18,8 @@ export interface MemberLocalClientOptions {
   readonly methods: readonly string[];
   /** Original Host credential owner; secrets never enter ordinary metadata. */
   readonly authentication: (signal: AbortSignal) => HeadersInit | Promise<HeadersInit>;
+  /** Compiled private application headers from the authoritative contract. */
+  readonly privateHeaderNames?: readonly string[];
   readonly timeoutMs?: number;
 }
 const RESPONSE_BYTES = 256 * 1024;
@@ -32,6 +34,7 @@ const serverResponse = z.strictObject({
 export class MemberLocalExecutionClient {
   private readonly origin: string;
   private readonly methods: ReadonlySet<string>;
+  private readonly privateHeaderNames: ReadonlySet<string>;
   private readonly lifetime = new AbortController();
   private readonly pending = new Set<Promise<unknown>>();
   private readonly timeoutMs: number;
@@ -55,6 +58,9 @@ export class MemberLocalExecutionClient {
         throw Error();
       this.origin = url.origin;
       this.methods = new Set(options.methods);
+      const names = options.privateHeaderNames ?? [];
+      if (names.some((name) => !/^x-[a-z0-9-]+$/u.test(name))) throw Error();
+      this.privateHeaderNames = new Set(names);
       this.timeoutMs = options.timeoutMs ?? 10_000;
       if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 100 || this.timeoutMs > 30_000)
         throw Error();
@@ -67,11 +73,19 @@ export class MemberLocalExecutionClient {
     payload: unknown,
     decode: (result: unknown) => T,
     signal?: AbortSignal,
+    privateHeaders?: HeadersInit,
   ): Promise<T> {
     if (this.lifetime.signal.aborted)
       return Promise.reject(new MemberLocalTransportError('unavailable'));
     if (!this.methods.has(method)) return Promise.reject(new MemberLocalTransportError('invalid'));
     if (this.pending.size >= 16) return Promise.reject(new MemberLocalTransportError('limit'));
+    let scopedHeaders: Headers;
+    try {
+      scopedHeaders = new Headers(privateHeaders);
+      for (const [name] of scopedHeaders) if (!this.privateHeaderNames.has(name)) throw Error();
+    } catch {
+      return Promise.reject(new MemberLocalTransportError('invalid'));
+    }
     const bounded = AbortSignal.any([
       this.lifetime.signal,
       ...(signal ? [signal] : []),
@@ -87,6 +101,7 @@ export class MemberLocalExecutionClient {
       const authorization = await this.options.authentication(bounded);
       bounded.throwIfAborted();
       const headers = new Headers(authorization);
+      for (const [name, value] of scopedHeaders) headers.set(name, value);
       headers.set('content-type', 'application/json');
       const response = await fetch(`${this.origin}/api/${method}`, {
         method: 'POST',

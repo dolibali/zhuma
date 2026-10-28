@@ -1256,6 +1256,31 @@ export class NativeWorkSessionService {
     });
   }
 
+  /** Match an already sealed cut with history authority only. This never seals
+   * a new cut, writes metadata, creates an Agent or issues a result/drain proof;
+   * the original result owner must separately requalify its actual SDK source. */
+  readSealedResultIntent(
+    grant: NativeWorkGrant,
+    intentId: string,
+    raw: NativeResultCut,
+    assertSource: () => undefined,
+  ): Promise<NativeSessionBinding> {
+    const cut = nativeResultCutSchema.parse(raw);
+    return this.serial(grant, 'history', async (verify) => {
+      const binding = this.required(grant, 'history');
+      if (binding.resultIntent?.intentId !== intentId || !binding.resultIntent.cut)
+        throw new NativeWorkError('scope-mismatch');
+      if (JSON.stringify(binding.resultIntent.cut) !== JSON.stringify(cut))
+        throw new NativeWorkError('idempotency-mismatch');
+      if (assertSource() !== undefined) throw new NativeWorkError('invalid-request');
+      verify();
+      const current = this.required(grant, 'history');
+      if (JSON.stringify(current) !== JSON.stringify(binding))
+        throw new NativeWorkError('scope-mismatch');
+      return structuredClone(current);
+    });
+  }
+
   clearResultIntent(grant: NativeWorkGrant, intentId: string): Promise<void> {
     return this.serial(grant, 'send', async (verify) => {
       const binding = this.required(grant, 'send');
