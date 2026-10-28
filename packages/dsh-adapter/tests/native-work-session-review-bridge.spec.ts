@@ -675,3 +675,49 @@ test('original SDK cold review: a retained admitted start without its drive cann
   assert.equal(h.adapter.requests.length, 0);
   assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
 });
+
+test('original SDK prepared metadata: only a revoked genuine claim and exact never-admitted marker can release logical ownership without certifying drain', async (t) => {
+  const h = await setup(t, { file: false, refuseAdmission: true });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  await h.bridge.whenIdle();
+  const before = readExecutionReviewState(h.d.read()),
+    attempt = before.attempts[0];
+  assert.equal(attempt.status, 'prepared');
+  assert.equal(attempt.version, 1);
+  assert.equal(attempt.dispatch, 'reserved');
+  assert.equal(attempt.resources, 'held');
+  assert.equal(Object.hasOwn(attempt, 'composition'), false);
+  assert.equal(Object.hasOwn(attempt, 'nativeSessionId'), false);
+  assert.equal(h.adapter.requests.length, 0);
+  assert.equal(h.claim.signal.aborted, false);
+  assert.equal(
+    (await h.bridge.closeBeforeNative()).status,
+    'pending',
+    'a local fence cannot substitute for revoking the genuine workflow claim',
+  );
+  const stopped = await h.d.service.stopWorkflowExecution(h.d.request, {
+    ...h.location,
+    requestId: 'stop-never-admitted-logical-review',
+    intentId: h.view.intent.intentId,
+    generation: h.view.intent.generation,
+  });
+  assert.equal(stopped.ok, true);
+  assert.equal(h.claim.signal.aborted, true);
+  await h.bridge.whenIdle();
+  assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
+  assert.deepEqual(
+    readExecutionReviewState(h.d.read()),
+    before,
+    'the original prepared/held marker and receipt remain untouched',
+  );
+  assert.throws(
+    () => h.d.service.assertExpertReviewDrained(attempt.scope),
+    'logical metadata release cannot mint a physical review certificate',
+  );
+  assert.deepEqual(
+    [...h.native.ctx.storageDomain.get('zhuma_native_work_sessions').table('bindings').entries()],
+    [],
+  );
+  assert.equal(h.d.read().rounds[0].ballots.length, 0);
+  assert.equal(h.adapter.requests.length, 0);
+});

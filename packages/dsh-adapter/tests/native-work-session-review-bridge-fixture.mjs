@@ -34,6 +34,7 @@ export async function bootReviewBridge(root, after, options = {}) {
             },
       assertReviewConfiguration(_member, _space, _node, saved) {
         assert.deepEqual(saved, compositions.get(saved.configurationId));
+        if (options.refuseAdmission) throw Error('SYNTHETIC_REVIEW_CONFIGURATION_REFUSAL');
         return undefined;
       },
     },

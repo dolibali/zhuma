@@ -341,7 +341,47 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
       Promise.resolve()
         .then(async () => {
           if (!state.drive) {
-            if (state.reserved) return false;
+            if (state.reserved) {
+              const snapshot = state.composition;
+              if (
+                !state.claim.signal.aborted ||
+                !snapshot ||
+                state.grant ||
+                state.adopting ||
+                state.adoption ||
+                state.resources ||
+                state.binding ||
+                state.receipt ||
+                state.observation
+              )
+                return false;
+              const scope = snapshot.payload.scope,
+                node = execution.readRunNode(scope),
+                review = node && readExecutionReviewState(node),
+                attempt = review?.attempts.find((item) => item.scope.runId === scope.runId),
+                receipt = review?.receipts.find(
+                  (item) => item.requestId === state.candidate.requestId,
+                );
+              if (
+                !attempt ||
+                attempt.status !== 'prepared' ||
+                attempt.version !== 1 ||
+                attempt.dispatch !== 'reserved' ||
+                attempt.resources !== 'held' ||
+                Object.hasOwn(attempt, 'composition') ||
+                Object.hasOwn(attempt, 'nativeSessionId') ||
+                Object.hasOwn(attempt, 'nativeAgentId') ||
+                node?.ownerId !== scope.actorId ||
+                scope.actorId !== state.claim.view.intent?.actorId ||
+                canonicalPayload(attempt.scope) !== canonicalPayload(scope) ||
+                attempt.configurationId !== snapshot.configurationId ||
+                receipt?.runId !== scope.runId ||
+                canonicalPayload(state.candidate.target) !== canonicalPayload(scope.review.target)
+              )
+                return false;
+              // Release process-local metadata only. D's Stop/queue proof gates
+              // a new generation; this neither changes the marker nor proves drain.
+            }
             await release(state);
             return true;
           }
