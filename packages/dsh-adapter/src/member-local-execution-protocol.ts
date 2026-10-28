@@ -308,6 +308,7 @@ export class MemberLocalExecutionProtocol {
       Boolean(extended?.acceptedFileReader) !== Boolean(capabilities.acceptedFile) ||
       Boolean(extended?.outputFilePublisherTool) !== Boolean(capabilities.outputFile) ||
       acceptedInput !== Boolean(capabilities.acceptedInput) ||
+      (extended?.resources && capabilities.resources !== extended.resources.sourceVersion) ||
       canonicalPayload(localTools) !== canonicalPayload(capabilities.localTools) ||
       (request.payload.workspace.kind === 'text-only' && tools.kind === 'local-tools')
     )

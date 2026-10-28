@@ -74,6 +74,40 @@ test('original local input owner: original tool reads remote accepted content on
     'Consumed fixed accepted input.',
   );
 });
+for (const modelInvocable of [true, false]) {
+  test(`original member-local Skill owner: frozen modelInvocable=${modelInvocable} is enforced by the original scoped loader`, async (t) => {
+    const invocation = { modelInvocable, userInvocable: !modelInvocable };
+    const h = await setup(t, {
+      remote: { skill: true, invocation },
+      script: [
+        toolResponse({ name: 'selected-skill' }, 'load-frozen-skill', 'skill'),
+        toolResponse(
+          { text: 'Fixed result after scoped Skill attempt.', links: [] },
+          'skill-completion',
+          'complete_work',
+        ),
+      ],
+    });
+    assert.equal(
+      h.owner.constructor.resourceSource(h.ctx),
+      h.run.composition.payload.resources.sourceVersion,
+    );
+    assert.deepEqual(h.run.composition.payload.resources.skills[0].invocation, invocation);
+    assert(!h.run.composition.payload.context.includes('LOCAL_FROZEN_SKILL_BODY'));
+    await h.owner.start(h.run);
+    await until(
+      () => h.owner.read(h.run),
+      (v) => v.phase === 'submitted',
+    );
+    assert.equal(h.adapter.requests.length, 2);
+    assert(!JSON.stringify(h.adapter.requests[0]).includes('LOCAL_FROZEN_SKILL_BODY'));
+    assert.equal(
+      JSON.stringify(h.adapter.requests[1]).includes('LOCAL_FROZEN_SKILL_BODY'),
+      modelInvocable,
+    );
+    assert.equal(h.ctx.agents.list().length, 0);
+  });
+}
 test('original local owner: actual native fixed result is drained before completed and submitted through HTTP', async (t) => {
   const h = await setup(t, {
     script: [
