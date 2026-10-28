@@ -37,12 +37,21 @@ const { createElement: el, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { emptyWorkbench } = await import('@zhuma/agent-core');
 const { WorkbenchPage } = await import('../dist/workbench/WorkbenchPage.js');
+const { KnowledgePanel } = await import('../dist/knowledge/KnowledgePanel.js');
+const { createKnowledgeApi } = await import('../dist/knowledge/api.js');
 const tick = () => new Promise(setImmediate);
 async function flush() {
   await act(async () => {
     await tick();
     await tick();
   });
+}
+async function until(check, diagnostic = () => '') {
+  for (let attempt = 0; attempt < 60 && !check(); attempt++) {
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.ok(check(), `Expected asynchronous knowledge operation did not settle: ${diagnostic()}`);
 }
 async function click(target) {
   assert.ok(target);
@@ -56,6 +65,149 @@ const button = (root, text) =>
     (node) =>
       (node.querySelector('.zm-button-label')?.textContent ?? node.textContent).trim() === text,
   );
+
+test('knowledge real API classifies network failure as retryable but keeps malformed/scope/auth closed', async () => {
+  const scope = { actorId: 'ann', spaceId: 'north', isCurrent: () => true, onUnauthenticated() {} };
+  for (const fetcher of [
+    () => {
+      throw new TypeError('synthetic offline');
+    },
+    async () => {
+      throw new TypeError('synthetic offline');
+    },
+  ])
+    await assert.rejects(
+      createKnowledgeApi(scope, fetcher).libraries(
+        { spaceId: 'north' },
+        new AbortController().signal,
+      ),
+      { code: 'unavailable' },
+    );
+  for (const fetcher of [
+    async () => new Response('malformed JSON', { headers: { 'content-type': 'application/json' } }),
+    async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return Response.json({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: { ok: true, value: { actorId: 'other', spaceId: 'north', libraries: [] } },
+      });
+    },
+  ])
+    await assert.rejects(
+      createKnowledgeApi(scope, fetcher).libraries(
+        { spaceId: 'north' },
+        new AbortController().signal,
+      ),
+      { code: 'invalid-response' },
+    );
+  let invalidations = 0;
+  await assert.rejects(
+    createKnowledgeApi(
+      {
+        ...scope,
+        onUnauthenticated() {
+          invalidations++;
+        },
+      },
+      async () => new Response(null, { status: 401 }),
+    ).libraries({ spaceId: 'north' }, new AbortController().signal),
+    { code: 'unauthenticated' },
+  );
+  assert.equal(invalidations, 1);
+});
+
+test(
+  'knowledge real API DOM keeps offline edits and retries the same payload idempotency key',
+  { skip: !window },
+  async (t) => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    t.after(async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    });
+    const scope = {
+      actorId: 'ann',
+      spaceId: 'north',
+      isCurrent: () => true,
+      onUnauthenticated() {},
+    };
+    const writes = [];
+    const api = createKnowledgeApi(scope, async (url, init) => {
+      const request = JSON.parse(init.body);
+      let value;
+      if (url.endsWith('/libraries'))
+        value = {
+          actorId: 'ann',
+          spaceId: 'north',
+          libraries: [
+            { id: 'north', spaceId: 'north', kind: 'team', name: '研发', canCreate: true },
+          ],
+        };
+      else if (url.endsWith('/list') || url.endsWith('/drafts'))
+        value = {
+          actorId: 'ann',
+          spaceId: 'north',
+          libraryId: 'north',
+          pages: [],
+          nextCursor: null,
+        };
+      else {
+        assert.ok(url.endsWith('/save-draft'));
+        writes.push(request.payload);
+        if (writes.length === 1) throw new TypeError('synthetic offline');
+        value = {
+          actorId: 'ann',
+          spaceId: 'north',
+          libraryId: 'north',
+          pageId: request.payload.pageId,
+          pageRevision: 1,
+          operation: 'save-draft',
+          disposition: 'saved',
+        };
+      }
+      return Response.json({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: { ok: true, value },
+      });
+    });
+    await act(async () =>
+      root.render(el(KnowledgePanel, { api, actorId: 'ann', spaceId: 'north', lifetime: scope })),
+    );
+    await flush();
+    await click(button(host, '新建资料'));
+    const title = host.querySelector('article input'),
+      body = host.querySelector('article textarea');
+    for (const [input, value] of [
+      [title, '离线编辑标题'],
+      [body, '尚未保存的正文'],
+    ]) {
+      assert.ok(input);
+      const prototype =
+        input.tagName === 'TEXTAREA'
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, value);
+        input.dispatchEvent(new window.Event('input', { bubbles: true }));
+        await tick();
+      });
+    }
+    await click(button(host, '保存草稿'));
+    await until(() => writes.length === 1 && host.textContent.includes('当前输入已保留'));
+    assert.equal(host.querySelector('article input').value, '离线编辑标题');
+    assert.equal(host.querySelector('article textarea').value, '尚未保存的正文');
+    assert.ok(host.textContent.includes('当前输入已保留'));
+    await click(button(host, '保存草稿'));
+    await until(() => writes.length === 2 && host.textContent.includes('草稿已保存'));
+    assert.equal(writes.length, 2);
+    assert.deepEqual(writes[0], writes[1]);
+    assert.ok(host.textContent.includes('草稿已保存'));
+  },
+);
 
 test(
   'knowledge main-tab contract keeps edits on cancel and leaves through the existing confirmation',

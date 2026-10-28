@@ -91,25 +91,39 @@ export function createKnowledgeApi(
     if (payload.spaceId !== scope.spaceId) throw new KnowledgeClientError('forbidden');
     const rpcId = crypto.randomUUID();
     try {
-      const response = await fetcher(`/api/zhuma-knowledge/${endpoint}`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          type: 'client-request',
-          rpcId,
-          method: `zhuma-knowledge/${endpoint}`,
-          payload,
-        }),
-        signal,
-      });
+      let response: Response;
+      try {
+        response = await fetcher(`/api/zhuma-knowledge/${endpoint}`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'client-request',
+            rpcId,
+            method: `zhuma-knowledge/${endpoint}`,
+            payload,
+          }),
+          signal,
+        });
+      } catch {
+        current(signal);
+        throw new KnowledgeClientError('unavailable');
+      }
       current(signal);
       if (response.status === 401) {
         scope.onUnauthenticated();
         throw new KnowledgeClientError('unauthenticated');
       }
-      const envelope: unknown = await response.json();
+      let envelope: unknown;
+      try {
+        envelope = await response.json();
+      } catch (error) {
+        current(signal);
+        throw new KnowledgeClientError(
+          error instanceof SyntaxError ? 'invalid-response' : 'unavailable',
+        );
+      }
       current(signal);
       if (
         !record(envelope) ||
