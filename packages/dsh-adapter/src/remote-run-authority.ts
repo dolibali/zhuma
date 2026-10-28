@@ -4,6 +4,7 @@ import {
   isTerminalRunStatus,
   requestRunStop,
   REMOTE_RUN_LIMITS,
+  REMOTE_RUN_RESOURCE_SOURCE_VERSION,
   remoteDeviceSigningInput,
   remotePermitHashInput,
   remoteRunRequestSchema,
@@ -403,6 +404,11 @@ export class RemoteRunAuthorities {
       const node = this.source.readNode(body.payload.target);
       if (!node) deny('remote-not-found');
       this.source.assertTarget(lease.memberId, body.payload.target, node);
+      if (
+        node.handoff.skillRefs.length &&
+        body.payload.capabilities.resources !== REMOTE_RUN_RESOURCE_SOURCE_VERSION
+      )
+        deny('remote-protocol-unsupported');
       const prior = readExecutionRunState(node)?.runs.some(
         (run) => run.remote?.acceptRequestId === body.requestId,
       );

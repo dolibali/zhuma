@@ -11,6 +11,7 @@ import {
   remoteRunResponseSchema,
   REMOTE_RUN_EVENT_KINDS,
   REMOTE_RUN_LIMITS,
+  REMOTE_RUN_RESOURCE_SOURCE_VERSION,
   remoteRunRequestSchema,
   remoteRunEventSchema,
   remotePrivatePermitSchema,
@@ -111,6 +112,11 @@ test('remote protocol data contract: one exact operation inventory, including cl
   assert.equal(REMOTE_RUN_LIMITS.renewAfterMs, 20000);
   const parsed = remoteRunRequestSchema.parse(accept());
   assert.equal(Object.hasOwn(parsed, 'assertCurrent'), false);
+  const input = accept();
+  input.payload.capabilities.resources = REMOTE_RUN_RESOURCE_SOURCE_VERSION;
+  remoteRunRequestSchema.parse(input);
+  input.payload.capabilities.resources = 'unsupported-runtime';
+  assert.equal(remoteRunRequestSchema.safeParse(input).success, false);
 });
 
 test('remote protocol data contract: secrets belong only in private credentials and the private HTTP header, never wire JSON', () => {

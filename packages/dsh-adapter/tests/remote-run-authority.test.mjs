@@ -181,7 +181,13 @@ async function fixture(t, options) {
       model: { provider: 'member-local', model: 'contract-local', maxTokens: 1000 },
       workspace: { kind: 'text-only' },
       executor: { kind: 'builtin' },
-      capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
+      capabilities: {
+        resultIntent: 'zhuma-native-result-intent@1',
+        localTools: [],
+        ...(host.read(nodeId).handoff.skillRefs.length
+          ? { resources: EXECUTION_RESOURCE_SOURCE_VERSION }
+          : {}),
+      },
       credentials: { drive: drive.public, cleanup: cleanup.public },
       ...patch,
     });
@@ -952,6 +958,13 @@ test('remote resource contract: missing provider, wrong actor and invalid device
   const invalid = f.accept();
   invalid.deviceId = randomUUID();
   no(await f.send(invalid), 'remote-device-mismatch');
+  assert.equal(prepared, 0);
+  no(
+    await f.send(
+      f.accept({ capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] } }),
+    ),
+    'remote-protocol-unsupported',
+  );
   assert.equal(prepared, 0);
   no(await f.send(f.accept()), 'remote-forbidden');
   assert.equal(q.counts.released, 1);
