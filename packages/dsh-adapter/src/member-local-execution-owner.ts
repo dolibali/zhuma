@@ -63,6 +63,7 @@ import { registerMemberLocalAcceptedInputs } from './member-local-execution-inpu
 import { registerMemberLocalAcceptedFiles } from './member-local-execution-accepted-files.js';
 import { NATIVE_ACCEPTED_FILE_TOOL_VERSION } from './native-work-session-files-tool.js';
 import { MemberLocalExecutionHistory } from './member-local-execution-history.js';
+import { RemoteRunMigrationAuthorities } from './remote-run-migration-authority.js';
 import type { ExecutionService } from './execution-service.js';
 
 export interface MemberLocalOwnerOptions {
@@ -126,6 +127,7 @@ export class MemberLocalExecutionOwner {
   private readonly states = new Map<string, Owned>();
   private readonly handles = new WeakMap<MemberLocalReadHandle, Owned>();
   private readonly grants = new WeakMap<NativeWorkGrant, Owned>();
+  private readonly starts = new WeakMap<NativeWorkGrant, MemberLocalAcceptedRun>();
   private readonly lifetime = new AbortController();
   private readonly jobs = new Set<Promise<unknown>>();
   private native!: NativeOwner;
@@ -133,6 +135,7 @@ export class MemberLocalExecutionOwner {
   private publicationResults?: NativeFixedResultPublicationsIssuer;
   private publications?: NativeOutputFileIssuer;
   private historyReader!: MemberLocalExecutionHistory;
+  private migrations!: RemoteRunMigrationAuthorities;
   private heartbeat?: ReturnType<typeof setInterval>;
   private closing?: Promise<void>;
   private constructor(private readonly options: MemberLocalOwnerOptions) {}
@@ -365,6 +368,35 @@ export class MemberLocalExecutionOwner {
       undefined,
       this.options.protocol.backendId,
     );
+    this.migrations = new RemoteRunMigrationAuthorities({
+      signal: this.lifetime.signal,
+      assertGrant: (grant) => {
+        const state = this.state(grant),
+          accepted = this.starts.get(grant);
+        if (!accepted || state.run !== accepted || state.role !== 'drive')
+          throw new NativeWorkError('scope-mismatch');
+        this.options.protocol.assertStartHandle(accepted);
+        this.check(state, 'send');
+        return undefined;
+      },
+      current: (grant) => {
+        const state = this.state(grant);
+        return {
+          view: state.view,
+          selection: executionRunCompositionRequest(this.composition(state)).selection,
+        };
+      },
+      migrationOrigin: (query) => this.native.service.migrationOrigin(query),
+      migrationDrain: (scope) => {
+        try {
+          return this.native.service.migrationDrain(scope);
+        } catch (error) {
+          if (error instanceof NativeWorkError && error.code === 'migration-not-ready')
+            return undefined;
+          throw error;
+        }
+      },
+    });
     const authority = { assertGrant: (grant: NativeWorkGrant) => this.checkResult(grant) },
       execution: Pick<ExecutionService, 'readRunComposition'> = {
         readRunComposition: (locator) => {
@@ -515,9 +547,9 @@ export class MemberLocalExecutionOwner {
     )
       throw new NativeWorkError('configuration-mismatch');
     const state = this.retain(run, view, before, 'drive', run);
+    this.starts.set(state.grant, run);
     try {
       this.check(state, 'open');
-      if (this.native.service.open(state.grant)) throw new NativeWorkError('scope-mismatch');
       state.dispatch = this.track(this.dispatch(state));
       await state.dispatch;
     } catch (error) {
@@ -570,6 +602,7 @@ export class MemberLocalExecutionOwner {
     return state;
   }
   private async dispatch(state: Owned): Promise<void> {
+    await this.prepareStart(state);
     const { firstMessage, selection } = executionRunCompositionRequest(this.composition(state));
     await this.options.assertModel(selection, state.grant.signal);
     this.check(state, 'send');
@@ -592,6 +625,35 @@ export class MemberLocalExecutionOwner {
     state.received = true;
     state.phase = 'working';
     await this.acceptClaim(state);
+  }
+  private async prepareStart(state: Owned): Promise<void> {
+    let current;
+    try {
+      current = this.native.service.open(state.grant);
+    } catch (error) {
+      // A known old binding is retained under the original node key. Only D's
+      // accepted new Run lineage plus the original SDK drain may replace it.
+      if (
+        !(error instanceof NativeWorkError) ||
+        error.code !== 'scope-mismatch' ||
+        !state.view.migration
+      )
+        throw error;
+      const opened = this.migrations.open(state.grant);
+      try {
+        const prepared = await this.native.service.prepareMigration(opened.grant);
+        if (prepared.status !== 'prepared') throw new NativeWorkError('migration-not-ready');
+        const migrated = await this.native.service.migrate(opened.grant);
+        if (migrated.status === 'pending') throw new NativeWorkError('migration-not-ready');
+        this.check(state, 'send');
+      } finally {
+        opened.dispose();
+      }
+      return;
+    }
+    // An already-present binding for this same new scope requires explicit
+    // recovery; a fresh accepted handle is never permission to replay its send.
+    if (current) throw new NativeWorkError('scope-mismatch');
   }
   private acceptClaim(state: Owned): Promise<void> {
     return this.enqueue(state, async () => {
