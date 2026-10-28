@@ -107,10 +107,14 @@ export async function openHostTeamCatalog(options: {
   signal: AbortSignal;
   /** Completed first setup may only verify its already-published immutable records. */
   initialize?: boolean;
+  /** Shared member backend only: original public packs for real teams without
+   * an explicit selection. This is not a Config/HTTP grant or execution permit. */
+  defaultForTeams?: true;
   /** Host-private build/test source, never a Config or HTTP field. */
   packages?: unknown;
 }): Promise<(spaceId: string) => Promise<MemberWorkbenchCatalog>> {
   const grants = hostTeamCatalogGrantsSchema.parse(options.grants);
+  const defaultForTeams = options.defaultForTeams;
   const signal = options.signal;
   const readWorkbench = options.readWorkbench,
     readPackage = options.readPackage;
@@ -125,6 +129,7 @@ export async function openHostTeamCatalog(options: {
       options.readWorkbench !== readWorkbench ||
       options.readPackage !== readPackage ||
       options.directory !== readDirectory ||
+      options.defaultForTeams !== defaultForTeams ||
       readDirectory() !== directory ||
       directory.space !== readSpace ||
       grants.some((grant) => readSpace.call(directory, grant.spaceId)?.kind !== 'team')
@@ -133,6 +138,7 @@ export async function openHostTeamCatalog(options: {
   };
   active();
   const packages = publicPackages(options.packages);
+  const defaults = defaultForTeams ? packages.map(({ id, version }) => ({ id, version })) : [];
   const definitions = new Map<
     string,
     {
@@ -141,7 +147,7 @@ export async function openHostTeamCatalog(options: {
       command: ImportCommand;
     }
   >();
-  for (const wanted of grants.flatMap((grant) => grant.packs)) {
+  for (const wanted of [...grants.flatMap((grant) => grant.packs), ...defaults]) {
     if (definitions.has(wanted.id)) continue;
     const pack = packages.find((item) => item.id === wanted.id && item.version === wanted.version);
     if (
@@ -244,11 +250,12 @@ export async function openHostTeamCatalog(options: {
   return async (spaceId) => {
     active();
     const grant = grants.find((item) => item.spaceId === spaceId);
-    if (!grant) return { experts: [], assets: [] };
-    if (directory.space(spaceId)?.kind !== 'team') unavailable();
+    const selected = grant?.packs ?? defaults;
+    if (!selected.length || directory.space(spaceId)?.kind !== 'team')
+      return { experts: [], assets: [] };
     const experts: MemberWorkbenchCatalog['experts'][number][] = [],
       assets: MemberWorkbenchCatalog['assets'][number][] = [];
-    for (const ref of grant.packs) {
+    for (const ref of selected) {
       const definition = definitions.get(ref.id);
       if (!definition) unavailable();
       verifyDefinition(readWorkbench(), definition.value, true);

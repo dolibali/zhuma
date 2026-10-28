@@ -388,6 +388,16 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                 directory: directoryLifecycle.currentDirectory,
               })
             : undefined;
+        // Only the explicitly enabled shared member backend supplies defaults.
+        // Startup uses the original immutable importer; catalog reads never write.
+        const defaultCatalog =
+          config.remoteExecution && config.memberWeb
+            ? await workbench.openTeamCatalog({
+                grants: [],
+                directory: directoryLifecycle.currentDirectory,
+                defaultForTeams: true,
+              })
+            : undefined;
         const resourceCatalog = localSetup
           ? async (spaceId: string) =>
               localSetup!.hasSetup()
@@ -401,7 +411,12 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             ? []
             : defaultMemberTemplates(ZHUMA_PUBLIC_MEMBER_TEMPLATES);
         const catalog = async (spaceId: string) => {
-          const resources = (await resourceCatalog?.(spaceId)) ?? { experts: [], assets: [] };
+          const selected = (await resourceCatalog?.(spaceId)) ?? { experts: [], assets: [] };
+          // Explicit selections contain at least one pack. Never concatenate
+          // defaults or recover from a failed/corrupt explicit source.
+          const resources = selected.experts.length
+            ? selected
+            : ((await defaultCatalog?.(spaceId)) ?? selected);
           const assets =
             typeof ZHUMA_PUBLIC_ENGINEERING_SKILLS === 'undefined'
               ? resources.assets

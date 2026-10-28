@@ -152,6 +152,30 @@ try {
   };
   let snapshot = await rpc(ann, 'snapshot', { spaceId: created.spaceId });
   assert.equal(snapshot.ok, true);
+  const expertIds = [
+    'zhuma-engineering-docs',
+    'zhuma-interaction-review',
+    'zhuma-work-planning',
+    'zhuma-workflow-diagram',
+  ];
+  const experts = (value) => value.state.participants.filter((item) => item.kind === 'expert');
+  assert.deepEqual(
+    experts(snapshot.value)
+      .map((expert) => expert.id)
+      .sort(),
+    expertIds,
+  );
+  const fixedExperts = experts(snapshot.value);
+  assert(fixedExperts.every((expert) => expert.origin.filePaths.includes('LICENSE.txt')));
+  assert.equal(
+    (await rpc(ann, 'snapshot', { spaceId: created.spaceId })).value.state.revision,
+    snapshot.value.state.revision,
+    'Reading a newly created team never imports another package',
+  );
+  const personal = await rpc(ann, 'snapshot', { spaceId: first.personalSpaceId });
+  assert.equal(personal.ok, true);
+  assert.deepEqual(experts(personal.value), []);
+  checks.push('normal-new-team-four-fixed-public-experts-personal-isolation-and-zero-read-import');
   snapshot = await rpc(ann, 'command', {
     spaceId: created.spaceId,
     requestId: randomUUID(),
@@ -202,6 +226,11 @@ try {
   assert.deepEqual(
     (await rpc(ann, 'snapshot', { spaceId: created.spaceId })).value.state.projects,
     beforeRestart,
+  );
+  assert.deepEqual(
+    experts((await rpc(ann, 'snapshot', { spaceId: created.spaceId })).value),
+    fixedExperts,
+    'Cold startup retains the exact original public expert versions',
   );
   await bob.identity.login({ accountId: 'bob', password }, signal());
   assert.deepEqual((await bob.lifecycle.teams(signal())).teams, []);
