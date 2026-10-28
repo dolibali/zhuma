@@ -548,6 +548,11 @@ export interface RemoteAcceptValue extends RemoteRunView {
     readonly configurationId: string;
   };
 }
+/** Exact saved snapshot for recovery; this is neither a new accept nor drive permission. */
+export interface RemoteReconcileValue extends RemoteRunView {
+  readonly shared: RemoteRunSharedSnapshot;
+  readonly selection: RemoteAcceptValue['selection'];
+}
 export interface RemoteResultReceipt {
   readonly requestId: string;
   readonly digest: string;
@@ -579,7 +584,7 @@ export interface RemoteRunOperationValues {
   readonly event: RemoteRunView & { readonly disposition: 'applied' | 'replayed' };
   readonly stop: RemoteRunView & { readonly disposition: 'applied' | 'replayed' };
   readonly cleanup: RemoteRunView & { readonly disposition: 'applied' | 'replayed' };
-  readonly reconcile: RemoteRunView;
+  readonly reconcile: RemoteReconcileValue;
   readonly 'input-list': {
     readonly scope: RemoteRunScope;
     readonly items: readonly RemoteInputDescriptor[];
@@ -700,6 +705,10 @@ export const remoteAcceptValueSchema = remoteRunViewSchema.safeExtend({
   shared: remoteRunSharedSnapshotSchema,
   selection: remoteModelSelectionSchema.extend({ configurationId: id }),
 });
+export const remoteReconcileValueSchema = remoteRunViewSchema.safeExtend({
+  shared: remoteRunSharedSnapshotSchema,
+  selection: remoteAcceptValueSchema.shape.selection,
+});
 const changedView = remoteRunViewSchema.safeExtend({
   disposition: z.enum(['applied', 'replayed']),
 });
@@ -749,7 +758,7 @@ export const remoteRunValueSchemas = Object.freeze({
   event: changedView,
   stop: changedView,
   cleanup: changedView,
-  reconcile: remoteRunViewSchema,
+  reconcile: remoteReconcileValueSchema,
   'input-list': inputListValue,
   'input-read': inputReadValue,
   'publish-file': remoteFileValueSchema,

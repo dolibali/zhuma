@@ -14,7 +14,8 @@ import {
   applyWorkbenchCommand,
 } from '@zhuma/agent-core';
 import { fixture as workbenchFixture } from '../../../tests/fixtures/workbench.mjs';
-import { open } from './execution-service-run-fixture.mjs';
+import { open, caller } from './execution-service-run-fixture.mjs';
+import { readExecutionRunComposition } from '../dist/execution-run-composition.js';
 import { currentExecutionRun } from '../dist/execution-run-state.js';
 import { nativeResultDigest } from '../dist/native-work-session-result-source.js';
 import {
@@ -37,6 +38,33 @@ function credential() {
     raw: bytes.toString('base64url'),
     public: { id: randomUUID(), sha256: createHash('sha256').update(bytes).digest('hex') },
   };
+}
+function dependencyWorkbench() {
+  const { state, task, node } = workbenchFixture();
+  return applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      status: 'ready',
+      participantIds: ['chen', 'outside', 'qa'],
+      workflows: [
+        {
+          ...task.workflows[0],
+          nodes: [
+            { ...node, id: 'produce', skillIds: [], reviewRequired: false, reviewerIds: [] },
+            {
+              ...node,
+              id: 'consume',
+              skillIds: [],
+              reviewRequired: false,
+              reviewerIds: [],
+              dependsOn: ['produce'],
+            },
+          ],
+        },
+      ],
+    },
+  });
 }
 async function fixture(t, options) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-remote-run-'));
@@ -134,7 +162,8 @@ async function fixture(t, options) {
         scope,
         nativeSessionId: 'contract-native-session',
         nativeAgentId: 'contract-native-agent',
-        configurationId: currentExecutionRun(host.read()).selection.configurationId,
+        configurationId: currentExecutionRun(host.read(view.scope.nodeId)).selection
+          .configurationId,
         intentId: 'intent',
         callId: 'call',
         toolVersion: 'zhuma-native-result-intent@1',
@@ -339,6 +368,9 @@ test('remote original JSON: lost accept response lookup never allocates and cold
     });
   const found = ok(await f.send(lookup()));
   assert.equal(found.scope.runId, f.view.scope.runId);
+  assert.deepEqual(found.shared, f.view.shared);
+  assert.deepEqual(found.selection, f.view.selection);
+  assert.equal(Object.hasOwn(found, 'disposition'), false);
   const missing = lookup();
   missing.payload.acceptRequestId = randomUUID();
   const count = f.host.read().nativeExecution.runs.length;
@@ -347,6 +379,10 @@ test('remote original JSON: lost accept response lookup never allocates and cold
   await f.reopen();
   const recovered = ok(await f.send(lookup()));
   assert.equal(recovered.authority, 'recovery-required');
+  assert.deepEqual(recovered.shared, found.shared);
+  const composition = readExecutionRunComposition(recovered.shared.composition);
+  assert.equal(composition.configurationId, recovered.selection.configurationId);
+  assert.equal(Object.hasOwn(ok(await f.send(f.scopeBody('status'))), 'shared'), false);
   assert.equal(ok(await f.send(body)).authority, 'recovery-required');
   no(await f.event('idle'), 'remote-permit-expired');
 });
@@ -367,6 +403,10 @@ test('remote original JSON: cold completed result resumes commit-only; explicit 
     ),
   );
   assert.equal(recovered.authority, 'commit-only');
+  assert.equal(
+    readExecutionRunComposition(recovered.shared.composition).payload.scope.runId,
+    recovered.scope.runId,
+  );
   const stop = f.envelope('stop', {
     scope: recovered.scope,
     expectedNodeVersion: recovered.nodeVersion,
@@ -646,4 +686,122 @@ test('remote original JSON: original no-review delivery unlocks downstream with 
     f.host.read().events.filter((event) => event.type === 'delivery-submitted').length,
     1,
   );
+});
+
+test('remote original input: real accepted JSON is read on demand in verified byte ranges without new facts', async (t) => {
+  const f = await fixture(t, { workbench: dependencyWorkbench() });
+  await f.setup();
+  const text = '中' + '🙂'.repeat(20000),
+    links = ['https://example.test/spec'];
+  ok(
+    await f.host.service.submit(caller(), {
+      ...f.host.locate(),
+      idempotencyKey: 'manual-source',
+      expectedVersion: f.host.read().command.version,
+      text,
+      links,
+    }),
+  );
+  const artifactVersionId = f.host.read().acceptedArtifactVersionId;
+  const expected = ok(
+    await f.host.service.upstreamContent(caller(), {
+      ...f.host.locate('consume'),
+      spaceId: 'north',
+      sourceNodeId: 'produce',
+      artifactVersionId,
+    }),
+  );
+  await f.begin(
+    {
+      capabilities: {
+        resultIntent: 'zhuma-native-result-intent@1',
+        acceptedInput: '1',
+        localTools: [],
+      },
+    },
+    'consume',
+  );
+  assert.equal(f.view.shared.composition.payload.tools.kind, 'accepted-input-reader');
+  const frozen = f.view.shared.inputs;
+  assert.equal(frozen.length, 1);
+  f.host.resetCounts();
+  assert.deepEqual(ok(await f.send(f.scopeBody('input-list'))).items, frozen);
+  const slot = frozen[0],
+    chunks = [];
+  let offset = 0;
+  while (offset < slot.byteSize) {
+    const chunk = ok(
+      await f.send(f.scopeBody('input-read', { slotId: slot.slotId, offset, maximumBytes: 32771 })),
+    );
+    const bytes = Buffer.from(chunk.base64, 'base64');
+    assert.equal(bytes.byteLength, chunk.byteSize);
+    assert.equal(chunk.offset, offset);
+    assert.equal(chunk.sha256, slot.sha256);
+    assert.equal(chunk.totalBytes, slot.byteSize);
+    offset += bytes.byteLength;
+    chunks.push(bytes);
+    assert.equal(chunk.eof, offset === slot.byteSize);
+  }
+  const bytes = Buffer.concat(chunks);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), slot.sha256);
+  assert.deepEqual(JSON.parse(bytes.toString('utf8')), expected);
+  assert.equal(expected.content.text, text);
+  no(
+    await f.send(
+      f.scopeBody('input-read', {
+        slotId: slot.slotId,
+        offset: slot.byteSize + 1,
+        maximumBytes: 10,
+      }),
+    ),
+    'remote-validation',
+  );
+  no(
+    await f.send(
+      f.scopeBody('input-read', { slotId: 'foreign-slot', offset: 0, maximumBytes: 10 }),
+    ),
+    'remote-input-stale',
+  );
+  assert.deepEqual(f.host.counters, { global: 0, nodes: 0, plans: 0 });
+  assert.equal(Object.hasOwn(ok(await f.send(f.scopeBody('renew'))), 'shared'), false);
+});
+
+test('remote original input: changed fixed source fails closed and commit-only cannot read new inputs', async (t) => {
+  const f = await fixture(t, { workbench: dependencyWorkbench() });
+  await f.setup();
+  ok(
+    await f.host.service.submit(caller(), {
+      ...f.host.locate(),
+      idempotencyKey: 'manual-source',
+      expectedVersion: f.host.read().command.version,
+      text: '固定输入',
+    }),
+  );
+  await f.begin(
+    {
+      capabilities: {
+        resultIntent: 'zhuma-native-result-intent@1',
+        acceptedInput: '1',
+        localTools: [],
+      },
+    },
+    'consume',
+  );
+  const original = f.host.read(),
+    slot = f.view.shared.inputs[0];
+  const read = () =>
+    f.scopeBody('input-read', { slotId: slot.slotId, offset: 0, maximumBytes: 100 });
+  const replaced = structuredClone(original);
+  replaced.acceptedArtifactVersionId = 'replaced-version';
+  await f.host.domain.table('nodes').put(nodeRecordKey(original), replaced);
+  f.host.resetCounts();
+  no(await f.send(read()), 'remote-input-stale');
+  no(await f.send(f.scopeBody('input-list')), 'remote-input-stale');
+  assert.equal(f.host.counters.nodes, 0);
+  await f.host.domain.table('nodes').put(nodeRecordKey(original), original);
+  await f.accepted();
+  await f.completed('结果');
+  assert.equal(f.view.authority, 'commit-only');
+  no(await f.send(read()), 'remote-permit-revoked');
+  no(await f.send(f.scopeBody('input-list')), 'remote-permit-revoked');
 });
