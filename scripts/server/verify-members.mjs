@@ -169,7 +169,11 @@ try {
     { oldPassword: password, newPassword: 'synthetic-updated-password' },
     signal(),
   );
-  assert.equal(ann.cookie(), '');
+  assert.equal(
+    ann.cookie(),
+    oldCookie,
+    'A delayed password response must not clear a replacement browser login',
+  );
   assert.equal(
     (await fetch(base + '/zhuma-id/session', { headers: { origin: base, cookie: oldCookie } }))
       .status,
@@ -180,7 +184,7 @@ try {
     (error) => error.code === 'invalid-login',
   );
   await ann.identity.login({ accountId: 'ann', password: 'synthetic-updated-password' }, signal());
-  checks.push('password-change-clears-cookie-and-invalidates-original-session');
+  checks.push('password-change-invalidates-original-session-without-unconditional-cookie-clear');
   const beforeRestart = (await rpc(ann, 'snapshot', { spaceId: created.spaceId })).value.state
     .projects;
   await stopLocalServer(child);

@@ -903,6 +903,7 @@ export function WorkbenchPage({
                 projects={state.projects}
                 participants={state.participants}
                 progress={progressFor}
+                confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
                 openTask={setActiveTaskId}
               />
             ) : (

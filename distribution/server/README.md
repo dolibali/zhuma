@@ -32,7 +32,7 @@ node scripts/server/start.mjs --sdk /path/to/prepared-sdk --data /path/to/zhuma-
 
 `registerProductFetch` 仅对显式成员 Web 模式增加产品 exact 路由。它先查 Host/Origin 和真实成员，再调用原处理器；空间/固定版本/文件授权和流式大小预算继续由原业务实现检查。没有通用 owner RPC 代理，没有 owner Peer 冒充。未启用此模式时保留原桌面行为。
 
-账号与团队复用原身份生命周期：`POST /zhuma-id/register`、`POST /zhuma-id/password`、`GET/POST /zhuma-id/teams`、`GET/POST /zhuma-id/team-members`。注册不发会话，完成后经原 `/zhuma-id/login` 登录；改密码后清除成员 cookie。所有请求经原 Host/Origin 和领域身份/管理员检查，入参不接受浏览器提供的 actor。HTTP 有独立 8 KiB/10 秒正文预算，操作已被领域接纳后断线只结束等待，关闭仍等待原操作收口。
+账号与团队复用原身份生命周期：`POST /zhuma-id/register`、`POST /zhuma-id/password`、`GET/POST /zhuma-id/teams`、`GET/POST /zhuma-id/team-members`。注册不发会话，完成后经原 `/zhuma-id/login` 登录。改密码后领域撤销旧会话；仅在账号和 controller 代次仍匹配时，界面回到登录。改密响应不无条件清 cookie，防止迟到响应清掉另一账号的新登录；已失效 cookie 由下次正常登录覆盖。所有请求经原 Host/Origin 和领域身份/管理员检查，入参不接受浏览器提供的 actor。HTTP 有独立 8 KiB/10 秒正文预算，操作已被领域接纳后断线只结束等待，关闭仍等待原操作收口。
 
 ## 验证
 

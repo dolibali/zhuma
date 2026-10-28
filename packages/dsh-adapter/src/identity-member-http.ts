@@ -4,7 +4,6 @@ import { Readable } from 'node:stream';
 import { WorkbenchError } from '@zhuma/agent-core';
 import type { IdentityMemberLifecycleHandle } from './identity-member-lifecycle.js';
 import { readWorkbenchBody, WorkbenchBodyError } from './workbench-http.js';
-import { memberCookieHeader } from './member-session.js';
 
 const endpoints = [
   '/zhuma-id/register',
@@ -47,11 +46,10 @@ export function openIdentityMemberHttp(
       web.effect(() => stop);
     }
   });
-  function send(res: ServerResponse, status: number, value: unknown, clearCookie = false) {
+  function send(res: ServerResponse, status: number, value: unknown) {
     res.writeHead(status, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
-      ...(clearCookie ? { 'set-cookie': memberCookieHeader('', 0) } : {}),
     });
     res.end(JSON.stringify(value));
   }
@@ -125,8 +123,7 @@ export function openIdentityMemberHttp(
                 ? await handle.members(req, payload)
                 : await handle.setMember(req, payload);
       // Disconnect ends waiting, not an admitted durable identity operation.
-      if (!signal.aborted && !res.destroyed)
-        send(res, 200, { ok: true, value }, path === '/zhuma-id/password');
+      if (!signal.aborted && !res.destroyed) send(res, 200, { ok: true, value });
     } catch (error) {
       if (!res.destroyed && !res.writableEnded) {
         const code =

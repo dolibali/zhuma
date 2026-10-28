@@ -8,12 +8,14 @@ export function TaskBoard({
   projects,
   participants,
   progress,
+  confirmed,
   openTask,
 }: {
   tasks: readonly WorkTask[];
   projects: readonly Project[];
   participants: readonly Participant[];
   progress(taskId: string): TaskProgressState | undefined;
+  confirmed(taskId: string): boolean;
   openTask(taskId: string): void;
 }) {
   const rows = tasks.map((task) => ({ task, progress: progress(task.id) }));
@@ -21,7 +23,8 @@ export function TaskBoard({
     <div className="zm-task-board" aria-label="任务看板">
       {taskBoardColumns.map((column) => {
         const items = rows.filter(
-          (item) => taskBoardColumn(item.task, item.progress) === column.id,
+          (item) =>
+            taskBoardColumn(item.task, confirmed(item.task.id), item.progress) === column.id,
         );
         return (
           <section
@@ -39,7 +42,7 @@ export function TaskBoard({
                 <strong>{task.title}</strong>
                 <TaskProgressSummary
                   progress={taskProgress}
-                  confirmed={task.status === 'ready'}
+                  confirmed={confirmed(task.id)}
                   compact
                 />
                 <span className="zm-board-card-footer">

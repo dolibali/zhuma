@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { Button } from '../workbench/Button.js';
 import { Field, Modal } from '../workbench/controls.js';
 import type { MemberShell } from './shell.js';
+import { changePasswordAndInvalidate } from './password-change.js';
 import {
   createIdentityLifecycleApi,
   IdentityLifecycleError,
@@ -20,6 +21,12 @@ export function AccountTeamsDialog({
 }) {
   const snapshot = useSyncExternalStore(shell.subscribe, shell.getSnapshot, shell.getSnapshot);
   const account = snapshot.session.status === 'authenticated' ? snapshot.session : undefined;
+  const initialAccount = useRef(account);
+  const sameAccount =
+    account &&
+    initialAccount.current &&
+    account.epoch === initialAccount.current.epoch &&
+    account.session.accountId === initialAccount.current.session.accountId;
   const api = useMemo(() => createIdentityLifecycleApi(fetcher), [fetcher]);
   const [tab, setTab] = useState<'teams' | 'password'>('teams');
   const [teams, setTeams] = useState<readonly MemberTeam[]>([]);
@@ -87,7 +94,7 @@ export function AccountTeamsDialog({
     }
   }
   useEffect(() => {
-    if (!account) {
+    if (!sameAccount) {
       close();
       return;
     }
@@ -99,7 +106,7 @@ export function AccountTeamsDialog({
       active.current = undefined;
     };
   }, [api, account?.epoch]);
-  if (!account) return null;
+  if (!account || !sameAccount) return null;
   const administrator = members?.administratorId === account.session.accountId;
   const controlsDisabled = busy || !administrator;
   return (
@@ -296,14 +303,19 @@ export function AccountTeamsDialog({
                 return;
               }
               void perform(async (signal) => {
-                await api.changePassword({ oldPassword, newPassword }, signal);
-                signal.throwIfAborted();
-                setOldPassword('');
-                setNewPassword('');
-                setConfirmPassword('');
-                // The backend invalidates all old sessions; the normal controller returns to login.
-                await shell.session.logout();
-                close();
+                const changed = await changePasswordAndInvalidate(
+                  api,
+                  { oldPassword, newPassword },
+                  signal,
+                  shell.session,
+                  { accountId: account.session.accountId, epoch: account.epoch },
+                  () => {
+                    setOldPassword('');
+                    setNewPassword('');
+                    setConfirmPassword('');
+                  },
+                );
+                if (changed) close();
               });
             }}
           >

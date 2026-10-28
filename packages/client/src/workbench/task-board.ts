@@ -14,9 +14,10 @@ export type TaskBoardColumn = (typeof taskBoardColumns)[number]['id'];
 /** Read-only grouping of the same task/confirmed-plan projection used by the list. */
 export function taskBoardColumn(
   task: Pick<WorkTask, 'status'>,
+  confirmed: boolean,
   progress?: TaskProgressState,
 ): TaskBoardColumn {
-  if (task.status === 'draft') return 'planning';
+  if (!confirmed) return task.status === 'draft' ? 'planning' : 'unknown';
   if (progress?.state !== 'ready' || progress.row.facts === 'unknown') return 'unknown';
   const row = progress.row;
   if (row.facts === 'not-started') return 'attention';
