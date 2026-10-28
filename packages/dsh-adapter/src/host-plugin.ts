@@ -13,6 +13,9 @@ import { createHostDirectoryLifecycle } from './host-directory-lifecycle.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
 import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
+import { defaultMemberTemplates } from './member-template-catalog.js';
+
+declare const ZHUMA_PUBLIC_MEMBER_TEMPLATES: unknown;
 import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import { openHostRunHttp } from './host-run-http.js';
@@ -366,7 +369,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                 directory: directoryLifecycle.currentDirectory,
               })
             : undefined;
-        const catalog = localSetup
+        const resourceCatalog = localSetup
           ? async (spaceId: string) =>
               localSetup!.hasSetup()
                 ? localSetup!.catalog(spaceId)
@@ -374,6 +377,14 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                   ? configuredCatalog(spaceId)
                   : { experts: [], assets: [] }
           : configuredCatalog;
+        const templates =
+          typeof ZHUMA_PUBLIC_MEMBER_TEMPLATES === 'undefined'
+            ? []
+            : defaultMemberTemplates(ZHUMA_PUBLIC_MEMBER_TEMPLATES);
+        const catalog = async (spaceId: string) => {
+          const resources = (await resourceCatalog?.(spaceId)) ?? { experts: [], assets: [] };
+          return { experts: resources.experts, assets: [...resources.assets, ...templates] };
+        };
         if (closed) {
           await operations?.close();
           return undefined;
@@ -386,7 +397,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             return { assignProjectSpace: current.assignProjectSpace.bind(current) };
           },
           model: workbench.planningModel,
-          ...(catalog ? { catalog } : {}),
+          catalog,
           ...(operations ? { operations: operations.journal } : {}),
         });
       } catch (error) {

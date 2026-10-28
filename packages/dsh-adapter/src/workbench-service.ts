@@ -113,6 +113,17 @@ export class WorkbenchService {
       const intent = recovery.journal.inspect(recovery.intent);
       const resultPresent = () => {
         const object = recovery.intent;
+        if (object.commandType === 'save-template') {
+          const asset = state.assets.find((item) => item.id === object.objectId);
+          return (
+            !!asset &&
+            asset.kind === 'template' &&
+            asset.memberTemplate?.spaceId === object.spaceId &&
+            asset.memberTemplate.ownerId === object.actorId &&
+            asset.memberTemplate.sourceWorkbenchRevision === object.expectedRevision &&
+            object.templateResultFingerprint === fingerprint(asset)
+          );
+        }
         if (object.commandType === 'create-project' || object.commandType === 'update-project')
           return state.projects.some((p) => p.id === object.objectId);
         if (!state.tasks.some((t) => t.id === object.objectId)) return false;

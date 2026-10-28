@@ -8,6 +8,7 @@ import { TemplatePreview } from './TemplatePreview.js';
 export function TemplateSaveDialog({
   definition,
   initialName,
+  sourceTaskId,
   api,
   revision,
   saved,
@@ -15,6 +16,7 @@ export function TemplateSaveDialog({
 }: {
   definition: WorkflowTemplate;
   initialName: string;
+  sourceTaskId?: string;
   api: WorkbenchApi;
   revision: number;
   saved(state: Workbench): void;
@@ -41,12 +43,22 @@ export function TemplateSaveDialog({
       content: JSON.stringify(definition),
       available: true,
     };
-    const payload = JSON.stringify(asset);
+    const input = {
+      templateId: assetId,
+      sourceTaskId: sourceTaskId ?? '',
+      name: asset.name,
+      description,
+    };
+    const payload = JSON.stringify(api.member ? input : asset);
     if (retry.current?.payload !== payload)
       retry.current = { payload, id: crypto.randomUUID(), revision };
     try {
+      if (api.member && (!api.saveTemplate || !sourceTaskId))
+        throw new Error('请从已保存的任务中保存工作流。');
       saved(
-        await api.save(retry.current.revision, { type: 'save-asset', asset }, retry.current.id),
+        api.member && api.saveTemplate
+          ? await api.saveTemplate(retry.current.revision, input, retry.current.id)
+          : await api.save(retry.current.revision, { type: 'save-asset', asset }, retry.current.id),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败，请重试。');

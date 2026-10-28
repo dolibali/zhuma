@@ -4,6 +4,7 @@ import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publicTeamStarterPackages } from '../lib/team-starter-packages.mjs';
+import { publicMemberTemplates } from '../lib/member-template-defaults.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const hostOnly = process.argv.slice(2).includes('--host-only');
@@ -46,7 +47,10 @@ const hostBuild = await build({
   target: 'node24',
   sourcemap: false,
   // Derived from the original public source files; no runtime repo/profile path.
-  define: { ZHUMA_PUBLIC_TEAM_PACKAGES: JSON.stringify(await publicTeamStarterPackages()) },
+  define: {
+    ZHUMA_PUBLIC_TEAM_PACKAGES: JSON.stringify(await publicTeamStarterPackages()),
+    ZHUMA_PUBLIC_MEMBER_TEMPLATES: JSON.stringify(await publicMemberTemplates()),
+  },
   // Bundled ZIP dependencies are CommonJS and use Node built-ins. Keep their
   // require calls valid in the official Host's ESM plugin, without runtime installs.
   banner: {
@@ -197,6 +201,10 @@ if (hostOnly) {
   await writeFile(resolve(out, 'LICENSE'), await readFile(resolve(root, 'LICENSE')));
   // Preserve the full license text for every bundled dependency, including transitive modules.
   const licenses = new Map();
+  licenses.set(
+    'Zhuma engineering workflow sources',
+    await readFile(resolve(root, 'resources/workflows/engineering-starter/LICENSE.txt'), 'utf8'),
+  );
   for (const input of [
     ...Object.keys(hostBuild.metafile.inputs),
     ...Object.keys(clientBuild.metafile.inputs),

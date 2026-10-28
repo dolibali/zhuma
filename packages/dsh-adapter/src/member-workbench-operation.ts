@@ -21,13 +21,26 @@ const StoredIntentSchema = z.strictObject({
     'create-task',
     'update-task',
     'confirm-task',
+    'instantiate-template',
+    'save-template',
   ]),
   expectedRevision: z.number().int().nonnegative(),
   fingerprint: digest,
   contextFingerprint: digest.optional(),
+  templatePriorFingerprint: digest.nullable().optional(),
+  templateResultFingerprint: digest.optional(),
 });
 export const MemberWorkbenchIntentSchema = StoredIntentSchema.required({
   contextFingerprint: true,
+}).superRefine((intent, context) => {
+  if (
+    intent.commandType === 'save-template' &&
+    (intent.templatePriorFingerprint === undefined || !intent.templateResultFingerprint)
+  )
+    context.addIssue({
+      code: 'custom',
+      message: 'Template operation requires fixed before/result hashes.',
+    });
 });
 export type MemberWorkbenchIntent = z.infer<typeof MemberWorkbenchIntentSchema>;
 export const MemberWorkbenchOperationSchema = z.discriminatedUnion('state', [
@@ -65,6 +78,31 @@ export function memberWorkbenchOperationKey(
 export class MemberWorkbenchOperations {
   constructor(private readonly storage: MemberWorkbenchOperationStorage) {}
 
+  /** Same original journal only: hashes prove this request's own atomic asset result. */
+  templatePins(
+    input: Pick<MemberWorkbenchIntent, 'actorId' | 'spaceId' | 'requestId' | 'fingerprint'>,
+  ):
+    | Pick<MemberWorkbenchIntent, 'templatePriorFingerprint' | 'templateResultFingerprint'>
+    | undefined {
+    const raw = this.storage.get(memberWorkbenchOperationKey(input));
+    if (!raw) return undefined;
+    const previous = MemberWorkbenchOperationSchema.parse(raw);
+    if (
+      previous.commandType !== 'save-template' ||
+      previous.fingerprint !== input.fingerprint ||
+      previous.actorId !== input.actorId ||
+      previous.spaceId !== input.spaceId ||
+      previous.requestId !== input.requestId
+    )
+      throw new WorkbenchError('request-reused', '请求标识已用于另一个操作。');
+    if (previous.templatePriorFingerprint === undefined || !previous.templateResultFingerprint)
+      throw new WorkbenchError('operation-unresolved', '原模板操作缺少固定结果，需要核实。');
+    return {
+      templatePriorFingerprint: previous.templatePriorFingerprint,
+      templateResultFingerprint: previous.templateResultFingerprint,
+    };
+  }
+
   inspect(raw: MemberWorkbenchIntent): MemberWorkbenchOperation | undefined {
     const intent = MemberWorkbenchIntentSchema.parse(raw);
     const previous = this.storage.get(memberWorkbenchOperationKey(intent));
@@ -96,14 +134,17 @@ export class MemberWorkbenchOperations {
   /** Called only within the shared Workbench writer queue, after authorization and full dry-run validation. */
   async begin(intent: MemberWorkbenchIntent): Promise<void> {
     if (this.inspect(intent)) return;
+    const createsTask = (type: MemberWorkbenchIntent['commandType']) =>
+      type === 'create-task' || type === 'instantiate-template';
     const reserved = this.storage
       .values()
       .find(
         (record) =>
           record.state === 'pending' &&
           record.objectId === intent.objectId &&
-          record.commandType === intent.commandType &&
-          (intent.commandType === 'create-project' || intent.commandType === 'create-task'),
+          ((record.commandType === 'create-project' && intent.commandType === 'create-project') ||
+            (record.commandType === 'save-template' && intent.commandType === 'save-template') ||
+            (createsTask(record.commandType) && createsTask(intent.commandType))),
       );
     if (reserved)
       throw new WorkbenchError(

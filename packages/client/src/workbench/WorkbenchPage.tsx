@@ -327,7 +327,9 @@ export function WorkbenchPage({
               : state.tasks.some((t) => t.id === command.task.id)
                 ? 'update-task'
                 : 'create-task'
-            : undefined;
+            : command.type === 'instantiate-template'
+              ? 'create-task'
+              : undefined;
       pending.current = { content, id: uid(), revision: state.revision, intent };
     }
     try {
@@ -1514,7 +1516,10 @@ export function WorkbenchPage({
                           <strong>AI 规划</strong>
                         </span>
                       </label>
-                      {!member && (
+                      {(!member ||
+                        state.assets.some(
+                          (asset) => asset.kind === 'template' && asset.available,
+                        )) && (
                         <label>
                           <input
                             type="radio"
