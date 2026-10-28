@@ -20,6 +20,7 @@ import type { createHostRunWorkspaces, HostWorkspaceChoice } from './host-run-wo
 import {
   ExecutionRunError,
   currentExecutionRun,
+  isExecutionRunRevisionStart,
   readExecutionRunState,
 } from './execution-run-state.js';
 
@@ -197,6 +198,7 @@ export function createHostRunOptions(
             : ('unavailable' as const),
       })),
     ];
+    const revisionStart = isExecutionRunRevisionStart(node);
     const start: HostRunOptionsView['start'] =
       current?.resources === 'held'
         ? { kind: 'unavailable', message: '当前运行仍占用资源，请先停止并等待确认。' }
@@ -210,17 +212,19 @@ export function createHostRunOptions(
                 ? { kind: 'unavailable', message: '固定计划中的执行者暂不可用。' }
                 : current &&
                     current.attempt.status !== 'failed' &&
-                    current.attempt.status !== 'cancelled'
+                    current.attempt.status !== 'cancelled' &&
+                    !revisionStart
                   ? { kind: 'unavailable', message: '当前运行状态暂不支持重新开始。' }
                   : !current && !['ready', 'needs-revision'].includes(node.command.status)
                     ? { kind: 'unavailable', message: '当前节点尚未进入可处理状态。' }
                     : {
                         kind: 'available',
-                        mode: !current
-                          ? 'begin'
-                          : current.attempt.status === 'failed'
-                            ? 'retry'
-                            : 'restart',
+                        mode:
+                          !current || revisionStart
+                            ? 'begin'
+                            : current.attempt.status === 'failed'
+                              ? 'retry'
+                              : 'restart',
                       };
     const value: HostRunOptionsView = {
       target,

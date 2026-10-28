@@ -100,7 +100,7 @@ const reviewRequest = z.strictObject({
   expectedReviewVersion: nonnegative,
   target: executionReviewTargetSchema,
   reviewerRef: z.strictObject({ id, version: id }),
-  model: beginRequest.shape.model,
+  model: beginRequest.shape.model.extend({ maxTokens: positive.max(65_536).default(16_384) }),
 });
 const reviewTools = () => ({
   readTarget: describeNativeReviewReadTool(),

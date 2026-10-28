@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertHostAbsentRetry, retireHostUnadmittedScope } from '../dist/host-run-recovery.js';
+import {
+  assertHostAbsentRetry,
+  retireHostUnadmittedScope,
+  retireHostSettledScope,
+} from '../dist/host-run-recovery.js';
+import { createHostRunRetirements } from '../dist/host-run-sources.js';
 import { NativeWorkError } from '../dist/native-work-session-contract.js';
 import { executionRunScope } from '../dist/execution-run-state.js';
 import { applyEvent, begin } from './execution-run-fixture.mjs';
@@ -55,6 +60,132 @@ function fixture() {
     connects: () => connects,
   };
 }
+
+function settledRetirement() {
+  const { scope } = fixture();
+  const lifetime = new AbortController();
+  const permission = new AbortController();
+  const physical = new AbortController();
+  const expected = { nativeSessionId: 'original-session', nativeAgentId: 'original-agent' };
+  const result = {
+    status: 'retired',
+    binding: { scope: { ...scope }, ...expected },
+    drain: {
+      basis: 'flushed-and-closed',
+      signal: physical.signal,
+      assertCurrent() {
+        physical.signal.throwIfAborted();
+      },
+    },
+  };
+  const counts = { retired: 0, fresh: 0, resources: 0 };
+  const cleanup = {
+    scope,
+    assertCurrent() {
+      permission.signal.throwIfAborted();
+    },
+  };
+  const owner = {
+    async retireForCleanup(original, signal) {
+      assert.equal(original, cleanup);
+      assert.equal(signal, lifetime.signal);
+      counts.retired++;
+      return result;
+    },
+  };
+  const fresh = async () => {
+    counts.fresh++;
+    permission.signal.throwIfAborted();
+  };
+  const resources = async () => {
+    counts.resources++;
+  };
+  return {
+    scope,
+    lifetime,
+    permission,
+    physical,
+    result,
+    counts,
+    owner,
+    cleanup,
+    fresh,
+    resources,
+    recover: () =>
+      retireHostSettledScope(owner, cleanup, expected, lifetime.signal, fresh, resources),
+  };
+}
+
+test('Host settled retirement contract: one exact old scope rebuilds an ephemeral certificate only after physical and resource drains', async () => {
+  const h = settledRetirement();
+  const cache = createHostRunRetirements(h.owner, h.lifetime.signal);
+  assert.equal(cache.read(h.scope), undefined);
+  const result = await h.recover();
+  assert.deepEqual(h.counts, { retired: 1, fresh: 3, resources: 1 });
+  assert.equal(cache.read(h.scope), undefined, 'no proof is published inside physical cleanup');
+  cache.remember(h.scope, result);
+  assert.equal(cache.read(h.scope), h.result.drain);
+  assert.equal(cache.read({ ...h.scope, nodeId: 'another-active-node' }), undefined);
+});
+
+test('Host settled retirement contract: pending, missing, mismatched or unflushed physical results never qualify', async () => {
+  for (const fault of [
+    'pending',
+    'missing-binding',
+    'session',
+    'agent',
+    'unflushed',
+    ...Object.keys(settledRetirement().scope),
+  ]) {
+    const h = settledRetirement();
+    if (fault === 'pending') h.result.status = 'pending';
+    else if (fault === 'missing-binding') h.result.binding = undefined;
+    else if (fault === 'session') h.result.binding.nativeSessionId = 'other-session';
+    else if (fault === 'agent') h.result.binding.nativeAgentId = 'other-agent';
+    else if (fault === 'unflushed') h.result.drain.basis = 'absent-unadmitted';
+    else {
+      const value = h.result.binding.scope[fault];
+      h.result.binding.scope[fault] = typeof value === 'number' ? value + 1 : `${value}-other`;
+    }
+    await assert.rejects(h.recover(), { code: 'run-migration-pending' }, fault);
+    assert.equal(h.counts.resources, 0, fault);
+  }
+});
+
+test('Host settled retirement contract: authorization, cancellation and physical invalidation cannot publish a late certificate', async () => {
+  for (const phase of ['before', 'during-native', 'during-resources', 'cancelled', 'physical']) {
+    const h = settledRetirement();
+    if (phase === 'before') h.permission.abort();
+    if (phase === 'cancelled') h.lifetime.abort();
+    if (phase === 'physical') h.physical.abort();
+    if (phase === 'during-native') {
+      const original = h.owner.retireForCleanup;
+      h.owner.retireForCleanup = async (...args) => {
+        const result = await original(...args);
+        h.permission.abort();
+        return result;
+      };
+    }
+    if (phase === 'during-resources') {
+      const original = h.resources;
+      h.resources = async () => {
+        await original();
+        h.permission.abort();
+      };
+      h.recover = () =>
+        retireHostSettledScope(
+          h.owner,
+          h.cleanup,
+          { nativeSessionId: 'original-session', nativeAgentId: 'original-agent' },
+          h.lifetime.signal,
+          h.fresh,
+          h.resources,
+        );
+    }
+    await assert.rejects(h.recover(), { name: 'AbortError' }, phase);
+    assert.equal(h.counts.retired, ['before', 'cancelled'].includes(phase) ? 0 : 1);
+  }
+});
 
 test('Host recovery contract: exact same-owner absence observation and a new current grant qualify canonical send only', () => {
   const h = fixture();

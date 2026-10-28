@@ -294,6 +294,24 @@ export function executionRunScope(record: ExecutionNodeRecord, run: ExecutionRun
 export function currentExecutionRun(record: ExecutionNodeRecord): ExecutionRun | undefined {
   return readExecutionRunState(record)?.runs.at(-1);
 }
+/** Metadata eligibility only. The original Service must still qualify physical drain. */
+export function isExecutionRunRevisionStart(record: ExecutionNodeRecord): boolean {
+  const run = currentExecutionRun(record);
+  const round = record.rounds.find((item) => item.id === record.currentRoundId);
+  const artifact = record.artifactVersions.at(-1);
+  return (
+    record.command.status === 'needs-revision' &&
+    record.command.entryStatus === 'needs-revision' &&
+    !record.command.upstreamAffected &&
+    !record.acceptedArtifactVersionId &&
+    run?.attempt.status === 'completed' &&
+    run.resources === 'settled' &&
+    round?.status === 'changes-requested' &&
+    artifact !== undefined &&
+    round.artifactVersionId === artifact.id &&
+    (artifact.producerRunId === undefined || artifact.producerRunId === run.attempt.id)
+  );
+}
 /** B must call this in the same command queue before human submit/recovery/overwrite. */
 export function assertExecutionRunQuiescent(record: ExecutionNodeRecord): void {
   const state = readExecutionRunState(record);

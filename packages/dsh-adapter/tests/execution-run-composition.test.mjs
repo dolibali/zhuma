@@ -56,6 +56,79 @@ test('composition contract: required accepted input uses exact scoped handles an
   });
 });
 
+test('composition contract: returned revision freezes only its named current-round feedback and keeps historical snapshots bound', () => {
+  const facts = compositionFacts();
+  const original = freezeExecutionRunComposition(facts);
+  const oldBytes = JSON.stringify(original);
+  facts.node.currentRoundId = 'return-1';
+  facts.node.artifactVersions = [
+    {
+      id: 'artifact-returned',
+      version: 1,
+      text: 'PRIVATE_REVIEWED_BODY_NOT_IN_CONTEXT',
+      files: [],
+      links: [],
+    },
+  ];
+  facts.node.rounds = [
+    {
+      id: 'return-1',
+      artifactVersionId: 'artifact-returned',
+      status: 'changes-requested',
+      reviewerIds: ['chen'],
+      ballots: [
+        {
+          reviewerId: 'chen',
+          roundId: 'return-1',
+          artifactVersionId: 'artifact-returned',
+          action: 'request-changes',
+          comment: '正文限80字，删除长附录。',
+        },
+      ],
+    },
+  ];
+  const revised = freezeExecutionRunComposition(facts);
+  assert.equal(revised.schemaVersion, 2);
+  assert.equal(revised.payload.returnedRevision.roundId, 'return-1');
+  assert.equal(revised.payload.returnedRevision.artifactVersionId, 'artifact-returned');
+  assert.equal(revised.payload.returnedRevision.artifactFingerprint.length, 64);
+  assert.equal(
+    revised.payload.returnedRevision.notes[0].reviewerName,
+    facts.workbench.appliedPlans[0].participants.find((person) => person.id === 'chen').name,
+  );
+  assert(revised.payload.context.includes('正文限80字，删除长附录。'));
+  assert(!revised.payload.context.includes('PRIVATE_REVIEWED_BODY_NOT_IN_CONTEXT'));
+  assert.deepEqual(revised.payload.toolAllowlist, original.payload.toolAllowlist);
+  assert.equal(JSON.stringify(readExecutionRunComposition(original)), oldBytes);
+  assert.equal(
+    assertExecutionRunComposition(original, facts, executionRunCompositionRequest(original)),
+    undefined,
+  );
+  assert.deepEqual(readExecutionRunComposition(JSON.parse(JSON.stringify(revised))), revised);
+  facts.node.currentRoundId = 'new-open-round';
+  facts.node.rounds.push({
+    id: 'new-open-round',
+    artifactVersionId: 'next-artifact',
+    status: 'open',
+    reviewerIds: ['chen'],
+    ballots: [],
+  });
+  assert.equal(
+    freezeExecutionRunComposition(facts).schemaVersion,
+    1,
+    'the old return is not followed as latest feedback',
+  );
+  assert.equal(
+    assertExecutionRunComposition(revised, facts, executionRunCompositionRequest(revised)),
+    undefined,
+  );
+  facts.node.rounds[0].ballots[0].comment = 'altered old feedback';
+  assert.throws(
+    () => assertExecutionRunComposition(revised, facts, executionRunCompositionRequest(revised)),
+    { code: 'composition-mismatch' },
+  );
+});
+
 for (const [name, change] of [
   [
     'hidden',
