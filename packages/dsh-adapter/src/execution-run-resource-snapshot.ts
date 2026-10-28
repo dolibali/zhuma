@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   AssetSchema,
+  REMOTE_RUN_RESOURCE_SOURCE_VERSION,
   canonicalPayload,
   type AppliedPlan,
   type NodeHandoff,
@@ -9,7 +10,7 @@ import {
 } from '@zhuma/agent-core';
 
 /** Bump when the adopted SDK APIs, descriptor projection or lifecycle changes. */
-export const EXECUTION_RESOURCE_SOURCE_VERSION = 'zhuma-run-resources@1/dsh@0.2.1-rc.2';
+export const EXECUTION_RESOURCE_SOURCE_VERSION = REMOTE_RUN_RESOURCE_SOURCE_VERSION;
 export const EXECUTION_RESOURCE_LIMITS = Object.freeze({
   skills: 8,
   skillBodyBytes: 16_384,

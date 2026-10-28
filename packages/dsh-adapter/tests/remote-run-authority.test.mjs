@@ -16,6 +16,10 @@ import {
 import { fixture as workbenchFixture } from '../../../tests/fixtures/workbench.mjs';
 import { open, caller } from './execution-service-run-fixture.mjs';
 import { readExecutionRunComposition } from '../dist/execution-run-composition.js';
+import {
+  EXECUTION_RESOURCE_SOURCE_VERSION,
+  executionResourceDigest,
+} from '../dist/execution-run-resource-snapshot.js';
 import { currentExecutionRun } from '../dist/execution-run-state.js';
 import { nativeResultDigest } from '../dist/native-work-session-result-source.js';
 import {
@@ -65,6 +69,60 @@ function dependencyWorkbench() {
       ],
     },
   });
+}
+function skillWorkbench({ imported = false } = {}) {
+  const { state, task, node } = workbenchFixture();
+  if (imported)
+    state.assets[0] = {
+      ...state.assets[0],
+      origin: {
+        versionId: randomUUID(),
+        format: 'agent-skill',
+        entryPath: 'SKILL.md',
+        filePaths: ['SKILL.md'],
+        totalBytes: Buffer.byteLength(state.assets[0].content),
+        missing: [],
+      },
+    };
+  return applyWorkbenchCommand(state, {
+    type: 'save-task',
+    task: {
+      ...task,
+      status: 'ready',
+      participantIds: ['chen', 'outside', 'qa'],
+      workflows: [
+        { ...task.workflows[0], nodes: [{ ...node, id: 'produce', reviewerIds: ['outside'] }] },
+      ],
+    },
+  });
+}
+function defer() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+function metadata(catalog = { sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION, mcp: [] }) {
+  const life = new AbortController(),
+    counts = { checked: 0, released: 0 };
+  return {
+    life,
+    counts,
+    value: {
+      actorId: 'chen',
+      catalog,
+      signal: life.signal,
+      assertCurrent() {
+        counts.checked++;
+        return undefined;
+      },
+      release() {
+        counts.released++;
+        life.abort();
+      },
+    },
+  };
 }
 async function fixture(t, options) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-remote-run-'));
@@ -123,7 +181,13 @@ async function fixture(t, options) {
       model: { provider: 'member-local', model: 'contract-local', maxTokens: 1000 },
       workspace: { kind: 'text-only' },
       executor: { kind: 'builtin' },
-      capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
+      capabilities: {
+        resultIntent: 'zhuma-native-result-intent@1',
+        localTools: [],
+        ...(host.read(nodeId).handoff.skillRefs.length
+          ? { resources: EXECUTION_RESOURCE_SOURCE_VERSION }
+          : {}),
+      },
       credentials: { drive: drive.public, cleanup: cleanup.public },
       ...patch,
     });
@@ -812,4 +876,236 @@ test('remote original input: changed fixed source fails closed and commit-only c
   assert.equal(f.view.authority, 'commit-only');
   no(await f.send(read()), 'remote-permit-revoked');
   no(await f.send(f.scopeBody('input-list')), 'remote-permit-revoked');
+});
+
+test('remote resource contract: queue-external qualification reenters original read and freezes the selected Skill', async (t) => {
+  const q = metadata();
+  let f,
+    prepared = 0;
+  f = await fixture(t, {
+    workbench: skillWorkbench(),
+    async prepareInitialResourceCatalog(original, locator, wait) {
+      prepared++;
+      assert.equal(original, f.host.request);
+      assert.equal(wait.aborted, false);
+      ok(await f.host.service.readRunCompositionInputs(original, locator));
+      return q.value;
+    },
+  });
+  await f.setup();
+  f.host.faults.configuration = true;
+  const { body, view } = await f.begin();
+  const skill = view.shared.composition.payload.resources.skills[0];
+  assert.equal(skill.definition.id, 'api-skill');
+  assert.equal(skill.definition.content, f.host.readWorkbench().appliedPlans[0].assets[0].content);
+  assert.equal(view.authority, 'drive');
+  assert.equal(q.life.signal.aborted, true);
+  assert.equal(q.counts.released, 1);
+  assert.ok(q.counts.checked > 2);
+  assert.equal(ok(await f.send(body)).disposition, 'replayed');
+  assert.equal(prepared, 1);
+  assert.equal(ok(await f.send(f.scopeBody('status'))).authority, 'drive');
+  ok(await f.event('received', { nativeSessionId: 'contract-native-session' }));
+});
+
+test('remote resource contract: imported policy keeps exact original version and invocation flags', async (t) => {
+  const workbench = skillWorkbench({ imported: true });
+  const plan = workbench.appliedPlans[0],
+    asset = plan.assets[0];
+  const q = metadata({
+    sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
+    mcp: [],
+    skills: [
+      {
+        ref: { id: asset.id, version: plan.id },
+        definitionDigest: executionResourceDigest(asset),
+        invocation: { modelInvocable: false, userInvocable: true },
+        policySource: {
+          kind: 'asset-package',
+          versionId: asset.origin.versionId,
+          digest: 'a'.repeat(64),
+          entryPath: asset.origin.entryPath,
+        },
+      },
+    ],
+  });
+  const f = await fixture(t, { workbench, prepareInitialResourceCatalog: async () => q.value });
+  await f.setup();
+  await f.begin();
+  const skill = f.view.shared.composition.payload.resources.skills[0];
+  assert.deepEqual(skill.invocation, { modelInvocable: false, userInvocable: true });
+  assert.equal(skill.policySource.versionId, asset.origin.versionId);
+  assert.equal(skill.definitionDigest, executionResourceDigest(asset));
+  assert.equal(q.counts.released, 1);
+});
+
+test('remote resource contract: missing provider, wrong actor and invalid device cannot freeze unauthorized definitions', async (t) => {
+  const missing = await fixture(t, { workbench: skillWorkbench() });
+  await missing.setup();
+  no(await missing.send(missing.accept()), 'remote-unavailable');
+  assert.equal(missing.host.read().nativeExecution, undefined);
+  const q = metadata();
+  q.value.actorId = 'outside';
+  let prepared = 0;
+  const f = await fixture(t, {
+    workbench: skillWorkbench(),
+    prepareInitialResourceCatalog: async () => {
+      prepared++;
+      return q.value;
+    },
+  });
+  await f.setup();
+  const invalid = f.accept();
+  invalid.deviceId = randomUUID();
+  no(await f.send(invalid), 'remote-device-mismatch');
+  assert.equal(prepared, 0);
+  no(
+    await f.send(
+      f.accept({ capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] } }),
+    ),
+    'remote-protocol-unsupported',
+  );
+  assert.equal(prepared, 0);
+  no(await f.send(f.accept()), 'remote-forbidden');
+  assert.equal(q.counts.released, 1);
+  assert.equal(f.host.read().nativeExecution, undefined);
+});
+
+test('remote resource contract: failed durable reservation releases metadata and can retry without a second Run', async (t) => {
+  const lives = [];
+  const f = await fixture(t, {
+    workbench: skillWorkbench(),
+    prepareInitialResourceCatalog: async () => {
+      const q = metadata();
+      lives.push(q);
+      return q.value;
+    },
+  });
+  await f.setup();
+  const body = f.accept();
+  f.host.faults.node = true;
+  no(await f.send(body), 'remote-unavailable');
+  assert.equal(lives[0].counts.released, 1);
+  assert.equal(f.host.read().nativeExecution, undefined);
+  f.host.faults.node = false;
+  assert.equal(ok(await f.send(body)).authority, 'drive');
+  assert.equal(lives[1].counts.released, 1);
+  assert.equal(f.host.read().nativeExecution.runs.length, 1);
+});
+
+test('remote resource contract: close waits a late actual qualification/release and prevents post-fence admission', async (t) => {
+  const entered = defer(),
+    ready = defer(),
+    q = metadata();
+  const f = await fixture(t, {
+    workbench: skillWorkbench(),
+    prepareInitialResourceCatalog: async () => {
+      entered.resolve();
+      await ready.promise;
+      return q.value;
+    },
+  });
+  await f.setup();
+  const request = f.send(f.accept());
+  await entered.promise;
+  let closed = false;
+  const closing = f.host.service.closeRuns().then(() => {
+    closed = true;
+  });
+  await Promise.resolve();
+  assert.equal(closed, false);
+  assert.equal(q.counts.released, 0);
+  ready.resolve();
+  no(await request, 'remote-unavailable');
+  await closing;
+  assert.equal(q.counts.released, 1);
+  assert.equal(f.host.read().nativeExecution, undefined);
+});
+
+test('remote resource contract: real release failure grants no drive and remains a close failure', async (t) => {
+  const q = metadata();
+  q.value.release = () => {
+    q.counts.released++;
+    throw Error('CONTRACT_RELEASE_FAILURE');
+  };
+  const f = await fixture(t, {
+    workbench: skillWorkbench(),
+    prepareInitialResourceCatalog: async () => q.value,
+  });
+  await f.setup();
+  const body = f.accept();
+  no(await f.send(body), 'remote-unavailable');
+  assert.equal(q.counts.released, 1);
+  assert.equal(f.host.read().nativeExecution.runs.length, 1);
+  const scope = {
+    ...currentExecutionRun(f.host.read()).composition.payload.scope,
+    backendId: f.host.service.readRunGlobal().remoteExecution.backendId,
+  };
+  assert.equal(
+    ok(await f.send(f.envelope('status', { scope, permit: f.drive.public }))).authority,
+    'recovery-required',
+  );
+  await assert.rejects(f.host.service.closeRuns(), (error) => error.cleanupFailed === true);
+});
+
+test('remote resource contract: an async assertion never admits a Run and its actual settlement is joined', async (t) => {
+  const q = metadata(),
+    assertion = defer(),
+    entered = defer();
+  q.value.assertCurrent = () => {
+    entered.resolve();
+    return assertion.promise;
+  };
+  const f = await fixture(t, {
+    workbench: skillWorkbench(),
+    prepareInitialResourceCatalog: async () => q.value,
+  });
+  await f.setup();
+  const request = f.send(f.accept());
+  await entered.promise;
+  let settled = false;
+  const done = request.then((value) => {
+    settled = true;
+    return value;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.equal(q.counts.released, 0);
+  assertion.resolve();
+  no(await done, 'remote-unavailable');
+  assert.equal(q.counts.released, 1);
+  assert.equal(f.host.read().nativeExecution, undefined);
+});
+
+test('remote resource contract: pending async release cannot be promoted by replay and remains an owned close failure', async (t) => {
+  const q = metadata(),
+    entered = defer(),
+    released = defer();
+  q.value.release = () => {
+    q.counts.released++;
+    entered.resolve();
+    return released.promise;
+  };
+  const f = await fixture(t, {
+    workbench: skillWorkbench(),
+    prepareInitialResourceCatalog: async () => q.value,
+  });
+  await f.setup();
+  const body = f.accept(),
+    request = f.send(body);
+  await entered.promise;
+  const replay = ok(await f.send(body));
+  assert.equal(replay.authority, 'recovery-required');
+  assert.equal(f.host.read().nativeExecution.runs.length, 1);
+  let closed = false;
+  const closing = f.host.service.closeRuns().finally(() => {
+    closed = true;
+  });
+  const failedClose = assert.rejects(closing, (error) => error.cleanupFailed === true);
+  await Promise.resolve();
+  assert.equal(closed, false);
+  released.resolve();
+  no(await request, 'remote-unavailable');
+  await failedClose;
+  assert.equal(q.counts.released, 1);
 });

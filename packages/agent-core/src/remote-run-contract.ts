@@ -4,6 +4,7 @@ import { validateDeliveryContent } from './delivery.js';
 
 /** Portable data only. A decoded object is never member, device or native authority. */
 export const REMOTE_RUN_PROTOCOL_VERSION = 1 as const;
+export const REMOTE_RUN_RESOURCE_SOURCE_VERSION = 'zhuma-run-resources@1/dsh@0.2.1-rc.2' as const;
 export const REMOTE_RUN_LIMITS = Object.freeze({
   driveTtlMs: 60_000,
   renewAfterMs: 20_000,
@@ -113,6 +114,7 @@ const localTool = z.strictObject({
     .optional(),
 });
 export const remoteLocalCapabilitiesSchema = z.strictObject({
+  resources: z.literal(REMOTE_RUN_RESOURCE_SOURCE_VERSION).optional(),
   acceptedInput: z.literal('1').optional(),
   acceptedFile: z.literal('zhuma-accepted-files@2').optional(),
   resultIntent: z.enum(['zhuma-native-result-intent@1', 'zhuma-native-result-intent@2']),
