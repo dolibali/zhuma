@@ -35,6 +35,12 @@ export class KnowledgeError extends Error {
     super(code);
   }
 }
+export interface KnowledgeServiceOptions {
+  /** Host-only synchronous assertion over the SAME current trusted directory.
+   * No browser field, space-name convention or first page author is an owner grant.
+   * Unknown old personal spaces must throw KnowledgeError('unavailable'). */
+  readonly assertPersonalOwner?: (spaceId: string, actorId: string) => void;
+}
 const unavailable = () => {
   throw new KnowledgeError('unavailable');
 };
@@ -89,6 +95,7 @@ export class KnowledgeService {
     private readonly ctx: Context,
     private readonly store: KnowledgeStorage,
     private readonly bytes: KnowledgeBytes,
+    private readonly options: KnowledgeServiceOptions = {},
   ) {}
 
   private run<T>(
@@ -142,11 +149,19 @@ export class KnowledgeService {
             } catch {
               throw new KnowledgeError('forbidden');
             }
-            if (
-              !directory.space(shape.spaceId) ||
-              !directory.isMember(shape.spaceId, current.memberId)
-            )
+            const space = directory.space(shape.spaceId);
+            if (!space || !directory.isMember(shape.spaceId, current.memberId))
               throw new KnowledgeError('not-found');
+            if (space.kind === 'personal') {
+              const assert = this.options.assertPersonalOwner;
+              if (!assert) return unavailable();
+              try {
+                assert(space.id, current.memberId);
+              } catch (error) {
+                if (error instanceof KnowledgeError) throw error;
+                return unavailable();
+              }
+            }
           },
         };
         access.check();
@@ -437,10 +452,13 @@ export class KnowledgeService {
     return this.closing;
   }
 }
-export async function openKnowledgeService(ctx: Context): Promise<KnowledgeService> {
+export async function openKnowledgeService(
+  ctx: Context,
+  options: KnowledgeServiceOptions = {},
+): Promise<KnowledgeService> {
   const store = await openKnowledgeStorage(ctx);
   try {
-    return new KnowledgeService(ctx, store, new KnowledgeBytes(ctx.attachments));
+    return new KnowledgeService(ctx, store, new KnowledgeBytes(ctx.attachments), options);
   } catch {
     await store.close();
     throw new KnowledgeError('unavailable');

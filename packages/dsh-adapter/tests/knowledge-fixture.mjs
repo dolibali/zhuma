@@ -13,7 +13,7 @@ import {
   uninstallMemberResolver,
   memberCredential,
 } from '../dist/member-session.js';
-import { openKnowledgeService } from '../dist/knowledge-service.js';
+import { KnowledgeError, openKnowledgeService } from '../dist/knowledge-service.js';
 
 // Real original member lease, trusted directory, DSH JSON and attachment bytes.
 // Session/account records and HTTP admission policy are synthetic contracts;
@@ -32,6 +32,7 @@ export async function knowledgeHost(t, options = {}) {
     [LocalAttachmentStore, { dshHome: join(root, 'attachments') }],
     [
       {
+        inject: ['storageDomain'],
         apply: (child) =>
           applySpaceDirectory(child, {
             spaces: [
@@ -99,7 +100,21 @@ export async function knowledgeHost(t, options = {}) {
       ];
     }),
   );
-  const service = await openKnowledgeService(ctx);
+  // Synthetic Host-owned personal ownership facts, separate from memberships.
+  const personalOwners = new Map([['personal-ann', 'ann']]);
+  const service = await openKnowledgeService(ctx, {
+    ...(options.omitPersonalOwner
+      ? {}
+      : {
+          assertPersonalOwner(spaceId, actorId) {
+            if (spaceDirectoryFor(ctx) !== directory || directory.signal.aborted)
+              throw new KnowledgeError('unavailable');
+            const owner = personalOwners.get(spaceId);
+            if (!owner) throw new KnowledgeError('unavailable');
+            if (owner !== actorId) throw new KnowledgeError('not-found');
+          },
+        }),
+  });
   let closed = false;
   const close = async () => {
     if (closed) return;
@@ -161,6 +176,17 @@ export async function knowledgeHost(t, options = {}) {
     seed,
     close,
     watchers,
+    personalOwners,
+    async replaceDirectory() {
+      await fibers.at(-1).dispose();
+      const fiber = ctx.plugin({
+        inject: ['storageDomain'],
+        apply: (child) => applySpaceDirectory(child, { spaces: [] }),
+      });
+      fibers.push(fiber);
+      await fiber;
+      return spaceDirectoryFor(ctx);
+    },
     async revoke(spaceId, actorId) {
       await directory.revokeMembership(spaceId, actorId);
       for (const watcher of [...watchers]) watcher();

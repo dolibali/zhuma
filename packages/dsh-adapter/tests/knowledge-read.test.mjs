@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readdir, readFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
+import { createHash } from 'node:crypto';
 import { knowledgeHost, value } from './knowledge-fixture.mjs';
 
 const read = (spaceId = 'north', pageId = 'api', version = 1, patch = {}) => ({
@@ -45,10 +48,9 @@ test('knowledge read: four accounts cannot enumerate another team, personal owne
   await h.directory.grantMembership('personal-ann', 'bob');
   assert.equal((await h.service.read(h.requests.bob, read('personal-ann'))).ok, false);
   assert.equal(
-    value(
-      await h.service.list(h.requests.bob, { spaceId: 'personal-ann', libraryId: 'personal-ann' }),
-    ).pages.length,
-    0,
+    (await h.service.list(h.requests.bob, { spaceId: 'personal-ann', libraryId: 'personal-ann' }))
+      .ok,
+    false,
   );
   assert.equal(
     value(
@@ -286,4 +288,94 @@ test('knowledge read: real DSH JSON and attachment bytes reopen; scope is reauth
   );
   await cold.service.close();
   assert.equal((await cold.service.libraries(cold.requests.ann, { spaceId: 'north' })).ok, false);
+});
+
+test('knowledge read: personal membership is not ownership; unknown owner and missing Host assertion fail closed', async (t) => {
+  const h = await knowledgeHost(t);
+  await h.seed({ spaceId: 'personal-ann', text: 'PERSONAL_OWNER_CANARY' });
+  await h.directory.grantMembership('personal-ann', 'bob');
+  const operations = (who) => [
+    () => h.service.libraries(h.requests[who], { spaceId: 'personal-ann' }),
+    () => h.service.list(h.requests[who], { spaceId: 'personal-ann', libraryId: 'personal-ann' }),
+    () =>
+      h.service.search(h.requests[who], {
+        spaceId: 'personal-ann',
+        libraryIds: ['personal-ann'],
+        query: 'OWNER',
+      }),
+    () => h.service.read(h.requests[who], read('personal-ann')),
+  ];
+  assert.equal(
+    value(await h.service.read(h.requests.ann, read('personal-ann'))).text,
+    'PERSONAL_OWNER_CANARY',
+  );
+  for (const operation of operations('bob')) {
+    const result = await operation();
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'not-found');
+    assert.doesNotMatch(JSON.stringify(result), /CANARY|canCreate/u);
+  }
+  h.personalOwners.delete('personal-ann');
+  for (const operation of operations('ann')) {
+    const result = await operation();
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'unavailable');
+  }
+  const unconfigured = await knowledgeHost(t, { omitPersonalOwner: true });
+  const missing = await unconfigured.service.libraries(unconfigured.requests.ann, {
+    spaceId: 'personal-ann',
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error.code, 'unavailable');
+});
+
+test('knowledge read: directory replacement during byte reads cannot carry old authorization or content', async (t) => {
+  const h = await knowledgeHost(t);
+  await h.seed({ text: 'DIRECTORY_REPLACEMENT_CANARY' });
+  const previous = h.directory;
+  const original = h.ctx.attachments.readFileStream.bind(h.ctx.attachments);
+  h.ctx.attachments.readFileStream = async function* (ref, signal) {
+    for await (const chunk of original(ref, signal)) {
+      yield chunk.subarray(0, 1);
+      assert.notEqual(await h.replaceDirectory(), previous);
+      yield chunk.subarray(1);
+    }
+  };
+  const result = await h.service.read(h.requests.ann, read());
+  assert.equal(result.ok, false);
+  assert.doesNotMatch(JSON.stringify(result), /CANARY/u);
+});
+
+test('knowledge read: success and rejection leave real persistent metadata and attachment bytes unchanged', async (t) => {
+  const h = await knowledgeHost(t);
+  await h.seed();
+  async function snapshot() {
+    const files = {};
+    async function visit(path) {
+      for (const entry of await readdir(path, { withFileTypes: true })) {
+        const next = join(path, entry.name);
+        if (entry.isDirectory()) await visit(next);
+        else
+          files[relative(h.root, next)] = createHash('sha256')
+            .update(await readFile(next))
+            .digest('hex');
+      }
+    }
+    await visit(h.root);
+    return files;
+  }
+  const before = await snapshot();
+  value(await h.service.libraries(h.requests.ann, { spaceId: 'north' }));
+  value(await h.service.list(h.requests.bob, { spaceId: 'north', libraryId: 'north' }));
+  value(
+    await h.service.search(h.requests.cy, {
+      spaceId: 'north',
+      libraryIds: ['north'],
+      query: '接口',
+    }),
+  );
+  value(await h.service.read(h.requests.bob, read()));
+  assert.equal((await h.service.read(h.requests.dana, read())).ok, false);
+  assert.equal((await h.service.read(h.requests.ann, { ...read(), version: 99 })).ok, false);
+  assert.deepEqual(await snapshot(), before);
 });
