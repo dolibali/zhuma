@@ -263,6 +263,7 @@ import {
   hasCommittedWorkflowStop,
   stoppedWorkflowReviewGeneration,
   stoppedWorkflowReviewRunIds,
+  stoppedPreparedWorkflowReviewRunIdsForRevision,
 } from './execution-workflow-reviews.js';
 import { isStoppedReviewHistory, splitExecutionReviewRecord } from './execution-review-record.js';
 import {
@@ -3619,6 +3620,45 @@ export class ExecutionService {
       input,
       async (host, lease, initial) => {
         let node = initial;
+        const revisionReservations = (): ReadonlySet<string> => {
+          if (
+            input.mode !== 'begin' ||
+            ticket ||
+            !isExecutionRunRevisionStart(node) ||
+            !readExecutionReviewState(node)?.attempts.some(
+              (attempt) => attempt.status === 'prepared',
+            )
+          )
+            return new Set<string>();
+          // Never carry the Stop/never-admitted qualification across an await
+          // or a Host callback. Its retained marker stays prepared/held.
+          lease.assertCurrent(input.spaceId);
+          const current = this.readRunNode(input);
+          if (!current || canonicalPayload(current) !== canonicalPayload(node))
+            throw new ExecutionRunError('run-conflict');
+          const raw = this.storage.readPlan(
+            planKey(node.taskId, node.planId, node.revision),
+          )?.workflowExecution;
+          if (raw === undefined) return new Set<string>();
+          const workflow = workflowExecutionIntentSchema.safeParse(raw);
+          if (!workflow.success) throw new ExecutionWorkflowError('workflow-incompatible');
+          if (workflow.data.actorId !== lease.memberId || workflow.data.spaceId !== input.spaceId)
+            return new Set<string>();
+          const stopped = stoppedPreparedWorkflowReviewRunIdsForRevision(node, workflow.data);
+          if (stopped.size) requireExecutionReviewWriter(this.readRunGlobal());
+          return stopped;
+        };
+        const validate = () =>
+          validateExecutionRunBegin(
+            node,
+            this.runInput(input, lease.memberId),
+            this.storage.listNodes(),
+            {
+              expertEnabled: true,
+              executorConnected: true,
+              stoppedPreparedReviewRunIds: revisionReservations(),
+            },
+          );
         const revisionCurrent = () => {
           const state = readExecutionRunState(node);
           if (state?.receipts.some((receipt) => receipt.requestId === input.requestId)) return;
@@ -3743,15 +3783,7 @@ export class ExecutionService {
               input.selection.configurationId,
             ),
           );
-          validateExecutionRunBegin(
-            node,
-            this.runInput(input, lease.memberId),
-            this.storage.listNodes(),
-            {
-              expertEnabled: true,
-              executorConnected: true,
-            },
-          );
+          validate();
           revisionCurrent();
           qualification?.assertCurrent();
         };
@@ -3769,7 +3801,12 @@ export class ExecutionService {
           node,
           this.runInput(input, lease.memberId),
           this.storage.listNodes(),
-          { expertEnabled: true, executorConnected: true, writerState: this.readRunGlobal() },
+          {
+            expertEnabled: true,
+            executorConnected: true,
+            writerState: this.readRunGlobal(),
+            stoppedPreparedReviewRunIds: revisionReservations(),
+          },
         );
         lease.assertCurrent(input.spaceId);
         qualification?.assertCurrent();
@@ -3777,6 +3814,12 @@ export class ExecutionService {
           workflowCurrent();
           lease.assertCurrent(input.spaceId);
           revisionCurrent();
+          if (
+            readExecutionReviewState(node)?.attempts.some(
+              (attempt) => attempt.status === 'prepared',
+            )
+          )
+            validate();
         });
         qualification?.assertCurrent();
         return committed;
