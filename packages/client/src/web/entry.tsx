@@ -63,7 +63,7 @@ function MemberWeb() {
   const navigate = (next: typeof view) => shell.requestLeave(() => setView(next));
   const signedIn = snapshot.session.status === 'authenticated';
   return (
-    <div className="zm-web-shell">
+    <div className="zhuma zm-web-shell">
       {signedIn && (
         <aside className="zm-web-sidebar" aria-label="工作台导航">
           <a className="zm-web-brand" href="/workbench">

@@ -71,7 +71,7 @@ export function RegistrationForm({
                 autoCapitalize="none"
                 spellCheck={false}
                 required
-                pattern="[A-Za-z0-9_-]+"
+                pattern={'[A-Za-z0-9_\\-]+'}
                 maxLength={64}
                 placeholder="字母、数字、下划线或短横线"
                 value={accountId}
