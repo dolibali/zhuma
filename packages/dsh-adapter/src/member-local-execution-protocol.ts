@@ -114,6 +114,26 @@ export class MemberLocalExecutionProtocol {
   private device?: MemberLocalDeviceIdentity;
   private clock?: { readonly serverTime: number; readonly sampledAt: number };
   private operations = new Set<RemoteRunOperation>();
+  private activities = 0;
+  private readonly uncertainAccepts = new Set<string>();
+  canSwitchBackend(): boolean {
+    return (
+      !this.lifetime.signal.aborted &&
+      this.device !== undefined &&
+      this.activities === 0 &&
+      this.uncertainAccepts.size === 0 &&
+      !this.transport.hasPendingWork
+    );
+  }
+  private async activity<T>(operation: () => Promise<T>): Promise<T> {
+    this.activities++;
+    try {
+      return await operation();
+    } finally {
+      this.activities--;
+    }
+  }
+
   private constructor(private readonly options: MemberLocalProtocolOptions) {
     this.transport = new MemberLocalExecutionClient({
       origin: options.origin,
@@ -280,7 +300,14 @@ export class MemberLocalExecutionProtocol {
     if (!response.ok) throw new MemberLocalProtocolError(response.error.code);
     return response.value;
   }
-  async prepareAccept(
+  prepareAccept(
+    requestId: string,
+    input: MemberLocalAcceptInput,
+    signal?: AbortSignal,
+  ): Promise<MemberLocalPreparedAccept> {
+    return this.activity(() => this.prepareAcceptNow(requestId, input, signal));
+  }
+  private async prepareAcceptNow(
     requestId: string,
     input: MemberLocalAcceptInput,
     signal?: AbortSignal,
@@ -305,35 +332,40 @@ export class MemberLocalExecutionProtocol {
       { value: RemoteAcceptValue; composition: FrozenExecutionRunComposition } | undefined;
     return Object.freeze({
       requestId,
-      send: async (wait?: AbortSignal) => {
-        if (!qualified) {
-          const value = await this.signed(unsigned, undefined, wait);
-          qualified = {
-            value: freeze(structuredClone(value)),
-            composition: this.qualifyAccept(value, parsed, secrets),
-          };
-        }
-        const { value, composition } = qualified;
-        // A known accepted response whose local pointer write was interrupted
-        // remains the same obligation. Retry that exact private write, never
-        // automatically accept a second Run or replay the network command.
-        await this.options.secrets.rememberRun(
-          this.identity(),
-          secrets,
-          value.scope,
-          value.selection.configurationId,
-          hash(value.selection),
-          wait,
-        );
-        const handle = Object.freeze({ value: freeze(structuredClone(value)), composition });
-        this.accepted.set(handle, secrets);
-        this.bindings.set(handle, {
-          configurationId: value.selection.configurationId,
-          selectionFingerprint: hash(value.selection),
-        });
-        this.starts.add(handle);
-        return handle;
-      },
+      send: (wait?: AbortSignal) =>
+        this.activity(async () => {
+          // A failed/unknown accept or durable pointer write must not look
+          // quiescent merely because no local Agent/handle was exposed yet.
+          this.uncertainAccepts.add(requestId);
+          if (!qualified) {
+            const value = await this.signed(unsigned, undefined, wait);
+            qualified = {
+              value: freeze(structuredClone(value)),
+              composition: this.qualifyAccept(value, parsed, secrets),
+            };
+          }
+          const { value, composition } = qualified;
+          // A known accepted response whose local pointer write was interrupted
+          // remains the same obligation. Retry that exact private write, never
+          // automatically accept a second Run or replay the network command.
+          await this.options.secrets.rememberRun(
+            this.identity(),
+            secrets,
+            value.scope,
+            value.selection.configurationId,
+            hash(value.selection),
+            wait,
+          );
+          const handle = Object.freeze({ value: freeze(structuredClone(value)), composition });
+          this.accepted.set(handle, secrets);
+          this.bindings.set(handle, {
+            configurationId: value.selection.configurationId,
+            selectionFingerprint: hash(value.selection),
+          });
+          this.starts.add(handle);
+          this.uncertainAccepts.delete(requestId);
+          return handle;
+        }),
     });
   }
   private qualifyAccept(
@@ -405,7 +437,10 @@ export class MemberLocalExecutionProtocol {
   }
   /** Explicit result/cleanup recovery. D's reconcile may update recovery state;
    * pure history MUST use history() instead. This never grants a fresh drive. */
-  async recover(
+  recover(input: MemberLocalRecoveryInput, signal?: AbortSignal): Promise<MemberLocalRunHandle> {
+    return this.activity(() => this.recoverNow(input, signal));
+  }
+  private async recoverNow(
     input: MemberLocalRecoveryInput,
     signal?: AbortSignal,
   ): Promise<MemberLocalRunHandle> {
@@ -442,11 +477,15 @@ export class MemberLocalExecutionProtocol {
       configurationId: value.selection.configurationId,
       selectionFingerprint: hash(value.selection),
     });
+    this.uncertainAccepts.delete(recovery.acceptRequestId);
     return handle;
   }
   /** Fresh signed status + exact local locator. No reconcile, token generation,
    * accept, renew or business write occurs when selecting a cold conversation. */
-  async history(
+  history(scope: RemoteRunView['scope'], signal?: AbortSignal): Promise<MemberLocalReadHandle> {
+    return this.activity(() => this.historyNow(scope, signal));
+  }
+  private async historyNow(
     scope: RemoteRunView['scope'],
     signal?: AbortSignal,
   ): Promise<MemberLocalReadHandle> {
@@ -566,43 +605,45 @@ export class MemberLocalExecutionProtocol {
     signal?: AbortSignal,
     options?: MemberLocalSourceOptions,
   ): Promise<unknown> {
-    const secrets = this.accepted.get(run);
-    if (!secrets) throw new MemberLocalProtocolError('local-mismatch');
-    if (
-      this.histories.has(run) &&
-      command.operation !== 'status' &&
-      !(command.operation === 'cleanup' && this.stopped.has(run))
-    )
-      throw new MemberLocalProtocolError('remote-recovery-required');
-    if (
-      !this.starts.has(run) &&
-      ![
-        'status',
-        'cleanup',
-        'result-status',
-        ...(run.value.authority === 'commit-only' ? ['submit-result', 'file-status'] : []),
-      ].includes(command.operation)
-    )
-      throw new MemberLocalProtocolError('remote-recovery-required');
-    const cleanup = command.operation === 'cleanup',
-      request = remoteRunRequestSchema.parse({
-        ...this.header(command.requestId),
-        operation: command.operation,
-        payload: {
-          ...structuredClone(command.payload),
-          scope: run.value.scope,
-          permit: cleanup ? secrets.cleanup : secrets.drive,
-        },
-        proof: { issuedAt: this.now(), nonce: randomUUID(), signature: 'A'.repeat(86) },
-      });
-    if (request.operation === 'info' || request.operation === 'stop')
-      throw new MemberLocalProtocolError('local-mismatch');
-    const { proof: _proof, ...unsigned } = request,
-      send = (secret: string) => this.signed(unsigned, secret, signal, options),
-      value = await (cleanup ? secrets.withCleanupSecret(send) : secrets.withDriveSecret(send));
-    if ('scope' in value && canonicalPayload(value.scope) !== canonicalPayload(run.value.scope))
-      throw new MemberLocalProtocolError('local-mismatch');
-    return value;
+    return this.activity(async () => {
+      const secrets = this.accepted.get(run);
+      if (!secrets) throw new MemberLocalProtocolError('local-mismatch');
+      if (
+        this.histories.has(run) &&
+        command.operation !== 'status' &&
+        !(command.operation === 'cleanup' && this.stopped.has(run))
+      )
+        throw new MemberLocalProtocolError('remote-recovery-required');
+      if (
+        !this.starts.has(run) &&
+        ![
+          'status',
+          'cleanup',
+          'result-status',
+          ...(run.value.authority === 'commit-only' ? ['submit-result', 'file-status'] : []),
+        ].includes(command.operation)
+      )
+        throw new MemberLocalProtocolError('remote-recovery-required');
+      const cleanup = command.operation === 'cleanup',
+        request = remoteRunRequestSchema.parse({
+          ...this.header(command.requestId),
+          operation: command.operation,
+          payload: {
+            ...structuredClone(command.payload),
+            scope: run.value.scope,
+            permit: cleanup ? secrets.cleanup : secrets.drive,
+          },
+          proof: { issuedAt: this.now(), nonce: randomUUID(), signature: 'A'.repeat(86) },
+        });
+      if (request.operation === 'info' || request.operation === 'stop')
+        throw new MemberLocalProtocolError('local-mismatch');
+      const { proof: _proof, ...unsigned } = request,
+        send = (secret: string) => this.signed(unsigned, secret, signal, options),
+        value = await (cleanup ? secrets.withCleanupSecret(send) : secrets.withDriveSecret(send));
+      if ('scope' in value && canonicalPayload(value.scope) !== canonicalPayload(run.value.scope))
+        throw new MemberLocalProtocolError('local-mismatch');
+      return value;
+    });
   }
   close(): Promise<void> {
     this.lifetime.abort();

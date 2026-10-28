@@ -136,6 +136,20 @@ export class MemberLocalExecutionOwner {
   private heartbeat?: ReturnType<typeof setInterval>;
   private closing?: Promise<void>;
   private constructor(private readonly options: MemberLocalOwnerOptions) {}
+  /** Pure observation only. A must first fence new admissions in its own
+   * transition epoch, then actually close/drain/dispose before replacing us. */
+  canSwitchBackend(): boolean {
+    return (
+      !!this.native &&
+      !!this.historyReader &&
+      !this.lifetime.signal.aborted &&
+      !this.closing &&
+      this.jobs.size === 0 &&
+      this.options.protocol.canSwitchBackend() &&
+      this.historyReader.canSwitchBackend() &&
+      [...this.states.values()].every((state) => !this.active(state))
+    );
+  }
   /** Advertise only after the real original publisher and remote file operations
    * were opened. This is not a grant to any local path or selected Run. */
   get outputFileSource(): typeof NATIVE_OUTPUT_FILE_VERSION | undefined {

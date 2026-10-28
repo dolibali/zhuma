@@ -66,12 +66,15 @@ test('member-local history protocol: a failed pointer write after accept cannot 
     owner = await h.open();
   t.after(() => owner.close());
   const prepared = await owner.prepareAccept(randomUUID(), h.input);
+  assert.equal(owner.canSwitchBackend(), true);
   h.failStore();
   await assert.rejects(prepared.send(), { code: 'unavailable' });
+  assert.equal(owner.canSwitchBackend(), false, 'lost durable pointer is still an obligation');
   assert.equal(h.acceptCalls(), 1, 'the actual accepted Run remains an unknown obligation');
   assert.equal([...h.rows.keys()].filter((key) => key.includes('.run-pointer.')).length, 0);
   h.failStore(false);
   await prepared.send();
+  assert.equal(owner.canSwitchBackend(), true, 'the same original intent is now durably qualified');
   assert.equal(h.acceptCalls(), 1, 'retrying the known pointer write does not re-accept over HTTP');
 });
 test('member-local protocol contract: lost accept ACK explicitly replays the same durable device and intent', async (t) => {

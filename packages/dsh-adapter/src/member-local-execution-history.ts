@@ -39,6 +39,9 @@ export class MemberLocalExecutionHistory {
     private readonly native: NativeOwner,
     private readonly protocol: MemberLocalExecutionProtocol,
   ) {}
+  canSwitchBackend(): boolean {
+    return !this.lifetime.signal.aborted && this.reads.size === 0 && this.jobs.size === 0;
+  }
   private check(read: Reading): void {
     if (
       this.lifetime.signal.aborted ||
