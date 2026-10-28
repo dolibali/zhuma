@@ -20,9 +20,19 @@ export function deferred() {
 }
 export async function openResultContract(
   root,
-  { readerOnly = false, install = true, human = false, text = 'Fixed contract result.' } = {},
+  {
+    readerOnly = false,
+    install = true,
+    human = false,
+    text = 'Fixed contract result.',
+    migrationDrain,
+  } = {},
 ) {
-  const h = await open(root, { seed: !readerOnly, expertNode: human ? undefined : 'produce' });
+  const h = await open(root, {
+    seed: !readerOnly,
+    expertNode: human ? undefined : 'produce',
+    migrationDrain,
+  });
   if (readerOnly) {
     h.resetCounts();
     return h;

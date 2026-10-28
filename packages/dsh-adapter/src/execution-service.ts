@@ -133,6 +133,7 @@ import {
   beginExecutionRun,
   beginExecutionRunSchema,
   currentExecutionRun,
+  isExecutionRunRevisionStart,
   ExecutionRunError,
   executionRunScope,
   readExecutionRunState,
@@ -3609,6 +3610,34 @@ export class ExecutionService {
       input,
       async (host, lease, initial) => {
         let node = initial;
+        const revisionCurrent = () => {
+          const state = readExecutionRunState(node);
+          if (state?.receipts.some((receipt) => receipt.requestId === input.requestId)) return;
+          const previous = currentExecutionRun(node);
+          if (previous?.attempt.status !== 'completed') return;
+          if (input.mode !== 'begin' || ticket || !isExecutionRunRevisionStart(node))
+            throw new ExecutionRunError('run-recovery-unavailable');
+          if (
+            input.composition.schemaVersion !== 2 ||
+            input.composition.payload.returnedRevision?.roundId !== node.currentRoundId
+          )
+            throw new ExecutionRunCompositionError('composition-mismatch');
+          // A persisted settled label alone cannot certify C's old physical scope.
+          const proof = host.migrationDrain?.(executionRunScope(node, previous));
+          if (
+            !proof ||
+            !(proof.signal instanceof AbortSignal) ||
+            proof.signal.aborted ||
+            typeof proof.assertCurrent !== 'function'
+          )
+            throw new ExecutionRunError('run-migration-pending');
+          try {
+            synchronousRunAssertion(proof.assertCurrent());
+          } catch {
+            throw new ExecutionRunError('run-migration-pending');
+          }
+          if (proof.signal.aborted) throw new ExecutionRunError('run-migration-pending');
+        };
         const workflowCurrent = () => {
           if (ticket !== undefined) this.workflows().assertBegin(input, lease.memberId, ticket);
           const intent = this.storage.readPlan(
@@ -3714,6 +3743,7 @@ export class ExecutionService {
               executorConnected: true,
             },
           );
+          revisionCurrent();
           qualification?.assertCurrent();
         };
         await verify();
@@ -3734,7 +3764,11 @@ export class ExecutionService {
         );
         lease.assertCurrent(input.spaceId);
         qualification?.assertCurrent();
-        const committed = await this.commitRunDecision(decision, workflowCurrent);
+        const committed = await this.commitRunDecision(decision, () => {
+          workflowCurrent();
+          lease.assertCurrent(input.spaceId);
+          revisionCurrent();
+        });
         qualification?.assertCurrent();
         return committed;
       },
