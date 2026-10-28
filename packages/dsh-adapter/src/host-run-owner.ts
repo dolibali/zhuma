@@ -237,7 +237,15 @@ export async function openHostRunOwner(
     execution,
     signal: lifetime.signal,
     host: {
-      prepareReview: (original, input, wait) => configuration.prepareReview(original, input, wait),
+      prepareReview: (original, input, wait) => {
+        // Author output limits do not configure the independent review.
+        const { provider, model, reasoningEffort } = input.model;
+        return configuration.prepareReview(
+          original,
+          { ...input, model: { provider, model, reasoningEffort } },
+          wait,
+        );
+      },
       adoptReviewResources(agentCtx, input) {
         return adoptHostReviewResources(agentCtx, input, {
           native: native.service,
