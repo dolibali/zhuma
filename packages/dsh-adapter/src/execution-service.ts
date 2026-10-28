@@ -1,7 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { RemoteRunAuthorities, RemoteRunError } from './remote-run-authority.js';
+import type { RemoteRunFileGrant, RemoteRunUpload } from './remote-run-files.js';
+import type {
+  ExecutionOutputFileGrant,
+  ExecutionOutputFileIssuer,
+  ExecutionOutputFileResources,
+  ExecutionOutputFilePort,
+} from './execution-output-file-port.js';
 import { freezeExecutionRunComposition } from './execution-run-composition.js';
 import { describeNativeResultTool } from './native-work-session-result-tool.js';
+import { describeNativeResultPublicationsTool } from './native-work-session-result-publications-tool.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { z } from 'zod';
 import {
@@ -118,6 +126,7 @@ import {
   ExecutionRunCompositionError,
   type ExecutionRunCompositionInput,
   type FrozenExecutionRunComposition,
+  type ExecutionCompositionTools,
 } from './execution-run-composition.js';
 import {
   withExecutionRunResourceQualification,
@@ -1110,6 +1119,7 @@ export class ExecutionService {
   private runHost: ExecutionRunHostPorts | undefined;
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private remoteRunAuthorities: RemoteRunAuthorities | undefined;
+  private remoteFileUploadsEnabled = false;
   private workflowIntents: ExecutionWorkflowIntents | undefined;
   private workspaceApprovalOwner: ExecutionWorkspaceApprovals | undefined;
   private readonly reviewWorkflowClaims = new Map<
@@ -1558,13 +1568,47 @@ export class ExecutionService {
 
   /** Host composition installs the same genuine member issuer first, then explicitly
    * enables remote admission. No HTTP read or native effect creates a second writer. */
-  async enableRemoteRuns(): Promise<void> {
+  async enableRemoteRuns(options: { readonly fileUploads?: true } = {}): Promise<void> {
+    if (options.fileUploads) {
+      if (!this.attachments || !this.fileStore) throw new RemoteRunError('remote-unavailable');
+      this.remoteFileUploadsEnabled = true;
+    }
     const host = this.requireRunHost();
     if (!this.storage.writeGlobal) throw new RemoteRunError('remote-unavailable');
     if (!this.remoteRunAuthorities) {
       this.remoteRunAuthorities = new RemoteRunAuthorities({
         signal: this.runLifetime.signal,
         resourceHost: host,
+        filesEnabled: () => this.remoteFileUploadsEnabled,
+        outputFiles: (issuer) => this.createRemoteRunOutputFiles(issuer),
+        readNativeFile: (idOrKey) =>
+          this.fileStore?.get(idOrKey) ?? this.fileStore?.findByIdempotencyKey(idOrKey),
+        verifyOutputFiles: async (records, signal, check) => {
+          const job = (async () => {
+            for (const record of records) {
+              check();
+              const verified = await this.verifyOwnedFileBytes(
+                record,
+                AbortSignal.any([signal, this.fileLifetime.signal, this.runLifetime.signal]),
+                check,
+                false,
+                true,
+              );
+              try {
+                await verified.drain;
+                check();
+              } finally {
+                verified.release();
+              }
+            }
+          })();
+          this.fileOperations.add(job);
+          try {
+            await job;
+          } finally {
+            this.fileOperations.delete(job);
+          }
+        },
         enqueue: async (work) => {
           const result = await this.enqueue(async () => ({ ok: true, value: await work() }));
           if (!result.ok)
@@ -1623,12 +1667,54 @@ export class ExecutionService {
             throw new RemoteRunError('remote-stale-plan');
         },
         compose: (actorId, request, node, scope, resourceCatalog) => {
-          const descriptor = describeNativeResultTool();
+          const files =
+            request.payload.capabilities.resultIntent === 'zhuma-native-result-intent@2';
+          const descriptor = files
+            ? describeNativeResultPublicationsTool()
+            : describeNativeResultTool();
+          const publisher = files ? describeNativeOutputFileTool() : undefined;
           if (
             descriptor.name !== 'complete_work' ||
-            descriptor.sourceVersion !== 'zhuma-native-result-intent@1'
+            descriptor.sourceVersion !==
+              (files ? 'zhuma-native-result-intent@2' : 'zhuma-native-result-intent@1')
           )
             throw new RemoteRunError('remote-protocol-unsupported');
+          if (
+            publisher &&
+            (publisher.name !== 'publish_output_file' ||
+              publisher.sourceVersion !== 'zhuma-native-output-file@1')
+          )
+            throw new RemoteRunError('remote-protocol-unsupported');
+          const definitions = request.payload.capabilities.localTools
+            .filter((tool) => tool.name !== 'bash')
+            .map((tool) => {
+              const { name, description, parameters, outputSchema, sourceVersion } = tool;
+              if (name === 'bash') throw new RemoteRunError('remote-protocol-unsupported');
+              return { name, description, parameters, outputSchema, sourceVersion };
+            });
+          const shell = request.payload.capabilities.localTools.find(
+            (tool) => tool.name === 'bash',
+          );
+          const acceptedInputReader = node.handoff.inputRefs.length
+            ? describeAcceptedInputTool()
+            : undefined;
+          let tools: ExecutionCompositionTools;
+          if (definitions.length) {
+            if (shell && !shell.budget) throw new RemoteRunError('remote-protocol-unsupported');
+            tools = {
+              kind: 'local-tools',
+              definitions,
+              ...(shell?.budget
+                ? { shell: { ...shell, name: 'bash' as const, budget: shell.budget } }
+                : {}),
+              ...(acceptedInputReader ? { acceptedInputReader } : {}),
+            };
+          } else {
+            if (shell) throw new RemoteRunError('remote-protocol-unsupported');
+            tools = acceptedInputReader
+              ? { kind: 'accepted-input-reader', definition: acceptedInputReader }
+              : { kind: 'text-only' };
+          }
           return freezeExecutionRunComposition({
             workbench: this.workbench.readWorkbench(),
             node,
@@ -1646,14 +1732,23 @@ export class ExecutionService {
                   .filter((source) => samePlan(source, node.taskId, node.planId, node.revision)),
               ),
             },
-            tools: node.handoff.inputRefs.length
-              ? { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() }
-              : { kind: 'text-only' },
+            tools,
             resultIntentTool: {
               ...descriptor,
               name: descriptor.name,
-              sourceVersion: descriptor.sourceVersion,
+              sourceVersion: files
+                ? 'zhuma-native-result-intent@2'
+                : 'zhuma-native-result-intent@1',
             },
+            ...(publisher
+              ? {
+                  outputFilePublisherTool: {
+                    ...publisher,
+                    name: 'publish_output_file',
+                    sourceVersion: 'zhuma-native-output-file@1',
+                  },
+                }
+              : {}),
           });
         },
       });
@@ -1666,13 +1761,18 @@ export class ExecutionService {
 
   /** A's product HTTP transport forwards the original request and private header.
    * This method never starts a native Agent on the shared backend. */
-  remoteRun(request: MemberRequest, body: unknown, privatePermit?: string) {
+  remoteRun(
+    request: MemberRequest,
+    body: unknown,
+    privatePermit?: string,
+    upload?: RemoteRunUpload,
+  ) {
     if (!this.remoteRunAuthorities)
       return Promise.resolve({
         ok: false as const,
         error: { code: 'remote-unavailable' as const },
       });
-    return this.remoteRunAuthorities.handle(request, body, privatePermit);
+    return this.remoteRunAuthorities.handle(request, body, privatePermit, upload);
   }
 
   readRunComposition(locator: ExecutionRunLocator): FrozenExecutionRunComposition {
@@ -5137,15 +5237,56 @@ export class ExecutionService {
   }
 
   /** Host-only publication, sharing the existing human-upload queue, slots and drain. */
+  private createRemoteRunOutputFiles(
+    issuer: RemoteRunAuthorities,
+  ): ExecutionOutputFilePort<RemoteRunFileGrant> {
+    if (!this.remoteFileUploadsEnabled || issuer !== this.remoteRunAuthorities)
+      throw new ArtifactUploadError('unavailable');
+    const host = this.requireRunHost();
+    return this.outputFilePort<RemoteRunFileGrant>(
+      {
+        assertGrant: (grant, action) => {
+          issuer.assertFileGrant(grant, action);
+        },
+      },
+      {
+        signal: this.runLifetime.signal,
+        assertCurrent: (attachments) => {
+          if (host !== this.requireRunHost() || attachments !== this.attachments || !this.fileStore)
+            throw new ArtifactUploadError('unavailable');
+          return undefined;
+        },
+        assertPublication: (grant, source, selector) =>
+          issuer.assertFilePublication(grant, source, selector),
+      },
+      () => issuer === this.remoteRunAuthorities && this.remoteFileUploadsEnabled,
+    );
+  }
+
+  /** Original local factory still requires the original local issuer. */
   createRunOutputFiles(
     issuer: ExecutionRunAuthorities,
     resources: NativeOutputFileResourceSource,
   ): NativeRunOutputFiles {
+    if (issuer !== this.runAuthorities) throw new ArtifactUploadError('unavailable');
+    return this.outputFilePort<NativeWorkGrant>(
+      issuer,
+      resources,
+      () => issuer === this.runAuthorities,
+    );
+  }
+
+  /** Same queue, quota, stream, SDK drain and ledger for original local and authenticated remote owners. */
+  private outputFilePort<Grant extends ExecutionOutputFileGrant>(
+    issuer: ExecutionOutputFileIssuer<Grant>,
+    resources: ExecutionOutputFileResources<Grant>,
+    isIssuerCurrent: () => boolean,
+  ): ExecutionOutputFilePort<Grant> {
     const host = this.requireRunHost();
     const attachments = this.attachments,
       files = this.fileStore;
     if (
-      issuer !== this.runAuthorities ||
+      !isIssuerCurrent() ||
       !attachments ||
       !files ||
       !(resources?.signal instanceof AbortSignal) ||
@@ -5199,7 +5340,7 @@ export class ExecutionService {
           issuer.assertGrant(grant, 'history');
           if (signal.aborted) throw new ArtifactUploadError('cancelled');
           if (
-            issuer !== this.runAuthorities ||
+            !isIssuerCurrent() ||
             host !== this.requireRunHost() ||
             attachments !== this.attachments ||
             files !== this.fileStore ||
@@ -5308,7 +5449,7 @@ export class ExecutionService {
             const check = (): undefined => {
               if (!permitActive) throw new ArtifactUploadError('cancelled');
               if (
-                issuer !== this.runAuthorities ||
+                !isIssuerCurrent() ||
                 host !== this.requireRunHost() ||
                 attachments !== this.attachments ||
                 files !== this.fileStore ||

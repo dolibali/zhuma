@@ -15,11 +15,13 @@ export const executionRunGlobalSchema = z
     nativeReviewWriter: z.literal(1).optional(),
     workspaceApprovalWriter: z.literal(1).optional(),
     remoteExecutionWriter: z.literal(1).optional(),
+    remoteExecutionFileWriter: z.literal(1).optional(),
     remoteExecution: remoteBackendRegistrySchema.optional(),
   })
   .refine((value) => value.nativeReviewWriter !== 1 || value.nativeExecutionWriter === 1)
   .refine((value) => value.workspaceApprovalWriter !== 1 || value.nativeExecutionWriter === 1)
   .refine((value) => (value.remoteExecutionWriter === 1) === (value.remoteExecution !== undefined))
+  .refine((value) => value.remoteExecutionFileWriter !== 1 || value.remoteExecutionWriter === 1)
   .refine((value) => value.remoteExecutionWriter !== 1 || value.nativeExecutionWriter === 1);
 
 export type ExecutionWriterGlobal = {
@@ -28,6 +30,7 @@ export type ExecutionWriterGlobal = {
   nativeReviewWriter?: 1;
   workspaceApprovalWriter?: 1;
   remoteExecutionWriter?: 1;
+  remoteExecutionFileWriter?: 1;
   remoteExecution?: RemoteBackendRegistry;
 };
 
@@ -55,6 +58,7 @@ export function prepareExecutionRunWriter(global: unknown): ExecutionWriterGloba
     nativeExecutionWriter: 1,
     ...(parsed.data.nativeReviewWriter === 1 ? { nativeReviewWriter: 1 } : {}),
     ...(parsed.data.workspaceApprovalWriter === 1 ? { workspaceApprovalWriter: 1 } : {}),
+    ...(parsed.data.remoteExecutionFileWriter === 1 ? { remoteExecutionFileWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionWriter === 1
       ? { remoteExecutionWriter: 1, remoteExecution: parsed.data.remoteExecution! }
       : {}),
@@ -97,16 +101,24 @@ export function assertExecutionRunStoreCompatibility(
 ): void {
   if (!executionRunGlobalSchema.safeParse(global).success)
     throw new ExecutionRunProtocolError('run-writer-incompatible');
-  const registry = executionRunGlobalSchema.parse(global).remoteExecution;
+  const parsed = executionRunGlobalSchema.parse(global);
+  const registry = parsed.remoteExecution;
   for (const node of nodes) {
-    const raw = (node as { nativeExecution?: { runs?: { remote?: { backendId?: unknown } }[] } })
-      .nativeExecution;
+    const raw = (
+      node as {
+        nativeExecution?: { runs?: { remote?: { backendId?: unknown; files?: unknown } }[] };
+      }
+    ).nativeExecution;
     if (
       Array.isArray(raw?.runs) &&
       raw.runs.some(
         (run) =>
           Object.hasOwn(run, 'remote') &&
-          (!registry || run.remote?.backendId !== registry.backendId),
+          (!registry ||
+            run.remote?.backendId !== registry.backendId ||
+            (run.remote?.files !== undefined &&
+              (parsed.remoteExecutionFileWriter !== 1 ||
+                run.remote.files !== 'zhuma-native-output-file@1'))),
       )
     )
       throw new ExecutionRunProtocolError('run-writer-incompatible');

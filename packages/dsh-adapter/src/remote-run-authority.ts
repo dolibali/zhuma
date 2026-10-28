@@ -14,6 +14,7 @@ import {
   remoteResultDigestInput,
   submitDelivery,
   submitExpertDelivery,
+  submitExpertManifestDelivery,
   type ExecutionNodeRecord,
   type RemoteRunRequest,
   type RemoteDeviceRequest,
@@ -56,6 +57,23 @@ import {
   type ExecutionRunResourceCatalogHost,
 } from './execution-run-resource-qualification.js';
 import type { ExecutionRunResourceCatalog } from './execution-run-resource-snapshot.js';
+import {
+  RemoteRunFiles,
+  type RemoteRunFileGrant,
+  type RemoteRunUpload,
+} from './remote-run-files.js';
+import {
+  ArtifactUploadError,
+  artifactFileReference,
+  type NativeOutputFileSource,
+  type UploadFileRecord,
+} from './artifact-files.js';
+import type { ExecutionOutputFilePort } from './execution-output-file-port.js';
+import {
+  nativeResultManifestRecords,
+  nativeManifestResultDigest,
+  nativeResultPublicationsSourceSchema,
+} from './execution-native-result-delivery.js';
 
 type Accept = Extract<RemoteRunRequest, { operation: 'accept' }>;
 type Target = Accept['payload']['target'];
@@ -80,6 +98,11 @@ const supported = [
   'input-list',
   'input-read',
 ] satisfies RemoteRunOperation[];
+const fileOperations = ['publish-file', 'file-status', 'abandon-file'] as const;
+/** A queued admission may return work which must run outside the original writer queue. */
+class RemoteFileOperation {
+  constructor(readonly run: () => Promise<unknown>) {}
+}
 const hash = (value: unknown) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
 const same = (left: unknown, right: unknown) => canonicalPayload(left) === canonicalPayload(right);
 const privateHash = (raw: unknown) =>
@@ -101,6 +124,14 @@ function deny(code: RemoteRunErrorCode): never {
 export interface RemoteRunAuthoritySource {
   readonly signal: AbortSignal;
   readonly resourceHost?: ExecutionRunResourceCatalogHost;
+  filesEnabled?(): boolean;
+  outputFiles?(issuer: RemoteRunAuthorities): ExecutionOutputFilePort<RemoteRunFileGrant>;
+  readNativeFile?(idOrKey: string): UploadFileRecord | undefined;
+  verifyOutputFiles?(
+    records: readonly UploadFileRecord[],
+    signal: AbortSignal,
+    check: () => undefined,
+  ): Promise<void>;
   enqueue<T>(work: () => Promise<T>): Promise<T>;
   memberLease(request: MemberRequest): Promise<ExecutionMemberLease>;
   readGlobal(): unknown;
@@ -145,6 +176,14 @@ export class RemoteRunAuthorities {
   private readonly operations = new Set<Promise<RemoteRunResponse<unknown>>>();
   private preparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private releaseFailed = false;
+  private files: RemoteRunFiles | undefined;
+  private readonly fileGrants = new WeakMap<
+    RemoteRunFileGrant,
+    {
+      readonly action: 'send' | 'history';
+      check(): undefined;
+    }
+  >();
   constructor(private readonly source: RemoteRunAuthoritySource) {
     source.signal.addEventListener('abort', () => this.fence(), { once: true });
   }
@@ -157,6 +196,13 @@ export class RemoteRunAuthorities {
       if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
       const raw = executionRunGlobalSchema.safeParse(this.source.readGlobal());
       if (!raw.success) deny('remote-unavailable');
+      if (raw.data.remoteExecutionFileWriter === 1 && !this.source.filesEnabled?.())
+        deny('remote-protocol-unsupported');
+      if (
+        this.source.filesEnabled?.() &&
+        (!this.source.outputFiles || !this.source.readNativeFile || !this.source.verifyOutputFiles)
+      )
+        deny('remote-unavailable');
       if (raw.data.remoteExecution) return;
       await this.source.writeGlobal({
         ...prepareExecutionRunWriter(raw.data),
@@ -170,6 +216,16 @@ export class RemoteRunAuthorities {
     const value = executionRunGlobalSchema.safeParse(this.source.readGlobal());
     if (!value.success || !value.data.remoteExecution) deny('remote-unavailable');
     return value.data.remoteExecution;
+  }
+  private filesEnabled(): boolean {
+    const global = executionRunGlobalSchema.safeParse(this.source.readGlobal());
+    return (
+      !!this.source.filesEnabled?.() &&
+      global.success &&
+      !!this.source.outputFiles &&
+      !!this.source.readNativeFile &&
+      !!this.source.verifyOutputFiles
+    );
   }
   private release(runId: string): void {
     const value = this.active.get(runId);
@@ -185,6 +241,7 @@ export class RemoteRunAuthorities {
   }
   fence(): void {
     this.closed = true;
+    this.files?.fence();
     for (const id of this.active.keys()) this.release(id);
   }
   async close(): Promise<void> {
@@ -208,8 +265,11 @@ export class RemoteRunAuthorities {
     request: MemberRequest,
     raw: unknown,
     privatePermit?: string,
+    upload?: RemoteRunUpload,
   ): Promise<RemoteRunResponse<unknown>> {
-    const operation = Promise.resolve().then(() => this.handleNow(request, raw, privatePermit));
+    const operation = Promise.resolve().then(() =>
+      this.handleNow(request, raw, privatePermit, upload),
+    );
     this.operations.add(operation);
     void operation.finally(() => this.operations.delete(operation)).catch(() => undefined);
     return operation;
@@ -218,6 +278,7 @@ export class RemoteRunAuthorities {
     request: MemberRequest,
     raw: unknown,
     privatePermit?: string,
+    upload?: RemoteRunUpload,
   ): Promise<RemoteRunResponse<unknown>> {
     const parsed = remoteRunRequestSchema.safeParse(raw);
     if (
@@ -226,7 +287,18 @@ export class RemoteRunAuthorities {
     )
       return { ok: false, error: { code: 'remote-validation' } };
     const body = parsed.data;
-    if (!supported.includes(body.operation as (typeof supported)[number]))
+    const global = executionRunGlobalSchema.safeParse(this.source.readGlobal());
+    if (
+      global.success &&
+      global.data.remoteExecutionFileWriter === 1 &&
+      !this.filesEnabled() &&
+      body.operation !== 'cleanup'
+    )
+      return { ok: false, error: { code: 'remote-protocol-unsupported' } };
+    const operations: readonly RemoteRunOperation[] = this.filesEnabled()
+      ? [...supported, ...fileOperations]
+      : supported;
+    if (!operations.includes(body.operation))
       return { ok: false, error: { code: 'remote-protocol-unsupported' } };
     let lease: ExecutionMemberLease | undefined;
     let retained = false;
@@ -252,7 +324,9 @@ export class RemoteRunAuthorities {
       const session = lease && memberSessionId(request.headers.cookie);
       if (lease && !session) deny('remote-unauthenticated');
       const sessionHash = session ? hash(session) : '';
-      const execute = (qualification?: ExecutionInitialResourceVerification) =>
+      let proofAdmitted = false;
+      let verifiedOutputFiles = false;
+      const execute = (qualification?: ExecutionInitialResourceVerification): Promise<unknown> =>
         this.source.enqueue(async () => {
           if (body.operation !== 'cleanup' && (this.closed || this.source.signal.aborted))
             deny('remote-unavailable');
@@ -268,7 +342,7 @@ export class RemoteRunAuthorities {
               actorId: lease!.memberId,
               serverTime: this.now(),
               purposes: ['work'],
-              operations: supported,
+              operations,
             };
           if (body.operation === 'register-device') return this.register(body, lease!);
           if (body.operation === 'cleanup') return this.cleanup(body, privatePermit);
@@ -276,7 +350,8 @@ export class RemoteRunAuthorities {
             return this.accept(body, lease!, sessionHash, qualification);
           }
           if (body.operation === 'stop') return this.stop(body, lease!);
-          this.checkDevice(body, lease!.memberId);
+          this.checkDevice(body, lease!.memberId, !proofAdmitted);
+          proofAdmitted = true;
           if (body.operation === 'reconcile')
             return this.reconcile(body, lease!, privatePermit, sessionHash);
           const target = body.payload.scope;
@@ -284,8 +359,25 @@ export class RemoteRunAuthorities {
           this.authorize(loaded, lease!);
           this.checkBinding(body, loaded);
           this.checkPermit(body.payload.permit, privatePermit, loaded.remote.drive);
-          const mutable = body.operation !== 'status' && body.operation !== 'result-status';
+          const mutable =
+            body.operation !== 'status' &&
+            body.operation !== 'result-status' &&
+            body.operation !== 'file-status';
           this.checkLive(loaded, lease!, sessionHash, mutable);
+          if (body.operation === 'event') {
+            const event = body.payload.event;
+            const isNew = this.sequence(loaded, event.sequence, hash(event)) === 'new';
+            if (isNew && event.kind === 'completed') this.assertCompletion(loaded, event.result);
+            if (
+              isNew &&
+              (event.kind === 'completed' || event.kind === 'stopped') &&
+              this.files?.hasHeld(target)
+            )
+              return new RemoteFileOperation(async () => {
+                await this.files!.releaseDrained(target);
+                return execute();
+              });
+          }
           switch (body.operation) {
             case 'status':
               return this.view(loaded, false, loaded.remote.memberSessionHash === sessionHash);
@@ -294,7 +386,51 @@ export class RemoteRunAuthorities {
             case 'event':
               return this.event(body, loaded);
             case 'submit-result':
+              if (
+                body.payload.result.source.toolVersion === 'zhuma-native-result-intent@2' &&
+                !loaded.remote.receipt &&
+                !verifiedOutputFiles
+              ) {
+                const entries = this.outputManifest(
+                  loaded,
+                  body.payload.result,
+                  body.payload.draft,
+                );
+                if (!this.source.verifyOutputFiles) deny('remote-unavailable');
+                const grant = this.fileGrant(
+                  body,
+                  loaded,
+                  lease!,
+                  sessionHash,
+                  privatePermit,
+                  'history',
+                );
+                return new RemoteFileOperation(async () => {
+                  await this.source.verifyOutputFiles!(
+                    entries.map((entry) => entry.record),
+                    grant.signal,
+                    grant.check,
+                  );
+                  grant.check();
+                  verifiedOutputFiles = true;
+                  return execute();
+                });
+              }
               return this.submit(body, loaded);
+            case 'publish-file':
+            case 'file-status':
+            case 'abandon-file': {
+              const grant = this.fileGrant(
+                body,
+                loaded,
+                lease!,
+                sessionHash,
+                privatePermit,
+                body.operation === 'file-status' ? 'history' : 'send',
+              );
+              const files = this.fileManager();
+              return new RemoteFileOperation(() => files.command(grant, body, upload));
+            }
             case 'result-status': {
               const receipt = loaded.remote.receipt;
               if (receipt && receipt.requestId !== body.payload.resultRequestId)
@@ -315,10 +451,11 @@ export class RemoteRunAuthorities {
               return deny('remote-protocol-unsupported');
           }
         });
-      const response =
+      let response: unknown =
         body.operation === 'accept'
           ? await this.prepareAcceptResources(request, body, lease!, execute)
           : await execute();
+      while (response instanceof RemoteFileOperation) response = await response.run();
       // Only after actual metadata release may this request acquire drive. A
       // release failure leaves a durable reserved Run, never a usable new owner.
       const projected =
@@ -364,15 +501,29 @@ export class RemoteRunAuthorities {
       const code =
         error instanceof RemoteRunError
           ? error.code
-          : error instanceof ExecutionRunError
-            ? error.code === 'run-active' || error.code === 'run-workspace-busy'
-              ? 'remote-resource-held'
-              : error.code === 'run-authority-unavailable'
-                ? 'remote-unavailable'
-                : error.code === 'run-conflict'
-                  ? 'remote-conflict'
-                  : 'remote-forbidden'
-            : 'remote-unavailable';
+          : error instanceof ArtifactUploadError
+            ? error.code === 'not-found'
+              ? 'remote-not-found'
+              : error.code === 'quota-exceeded'
+                ? 'remote-quota'
+                : error.code === 'idempotency-mismatch'
+                  ? 'remote-idempotency-mismatch'
+                  : error.code === 'conflict'
+                    ? 'remote-conflict'
+                    : error.code === 'validation' ||
+                        error.code === 'invalid-request' ||
+                        error.code === 'digest-mismatch'
+                      ? 'remote-validation'
+                      : 'remote-unavailable'
+            : error instanceof ExecutionRunError
+              ? error.code === 'run-active' || error.code === 'run-workspace-busy'
+                ? 'remote-resource-held'
+                : error.code === 'run-authority-unavailable'
+                  ? 'remote-unavailable'
+                  : error.code === 'run-conflict'
+                    ? 'remote-conflict'
+                    : 'remote-forbidden'
+              : 'remote-unavailable';
       return { ok: false, error: { code } };
     } finally {
       if (device) {
@@ -389,6 +540,146 @@ export class RemoteRunAuthorities {
         }
       }
     }
+  }
+  private fileManager(): RemoteRunFiles {
+    if (!this.filesEnabled() || !this.source.outputFiles || !this.source.readNativeFile)
+      deny('remote-protocol-unsupported');
+    return (this.files ??= new RemoteRunFiles(
+      this.source.outputFiles(this),
+      this.source.readNativeFile,
+    ));
+  }
+  private fileGrant(
+    body: Extract<
+      RemoteRunRequest,
+      { operation: 'publish-file' | 'file-status' | 'abandon-file' | 'submit-result' }
+    >,
+    value: Loaded,
+    lease: ExecutionMemberLease,
+    sessionHash: string,
+    rawPermit: unknown,
+    action: 'history' | 'send',
+  ): RemoteRunFileGrant {
+    if (value.remote.files !== 'zhuma-native-output-file@1') deny('remote-protocol-unsupported');
+    const owner = action === 'send' ? this.active.get(value.run.attempt.id)?.lease : lease;
+    if (!owner) deny('remote-recovery-required');
+    const remoteScope = Object.freeze({ ...body.payload.scope });
+    const { backendId: _backend, ...scope } = remoteScope;
+    const life = new AbortController();
+    const signal = AbortSignal.any([life.signal, owner.signal, this.source.signal]);
+    const grant: RemoteRunFileGrant = Object.freeze({
+      remoteScope,
+      scope: Object.freeze(scope),
+      signal,
+      check: () => this.assertFileGrant(grant, action),
+      cancel: () => life.abort(),
+    });
+    this.fileGrants.set(grant, {
+      action,
+      check: () => {
+        if (this.closed || signal.aborted || owner.expiresAt <= this.now())
+          deny('remote-unavailable');
+        const current = this.load(remoteScope);
+        this.authorize(current, owner);
+        this.checkBinding(body, current);
+        this.checkPermit(body.payload.permit, rawPermit, current.remote.drive);
+        this.checkLive(current, owner, sessionHash, action === 'send');
+        if (
+          action === 'send' &&
+          (current.run.attempt.status !== 'running' || current.run.resources !== 'held')
+        )
+          deny('remote-resource-held');
+        return undefined;
+      },
+    });
+    grant.check();
+    return grant;
+  }
+  /** Original Service factory only. Copied DTOs never enter this WeakMap. */
+  assertFileGrant(grant: RemoteRunFileGrant, action: 'history' | 'send'): undefined {
+    const state = this.fileGrants.get(grant);
+    if (!state || (action === 'send' && state.action !== 'send')) deny('remote-forbidden');
+    return state.check();
+  }
+  assertFilePublication(
+    grant: RemoteRunFileGrant,
+    source: NativeOutputFileSource,
+    selectorFingerprint: string,
+  ): undefined {
+    this.assertFileGrant(grant, 'send');
+    const value = this.load(grant.remoteScope);
+    if (
+      !/^[a-f0-9]{64}$/u.test(selectorFingerprint) ||
+      !same(source.scope, grant.scope) ||
+      source.configurationId !== value.run.selection.configurationId ||
+      source.expertVersionId !== value.run.attempt.expertVersionId ||
+      source.nativeSessionId !== value.run.attempt.sessionId ||
+      source.nativeAgentId !== value.run.attempt.executorRunId
+    )
+      deny('remote-scope-mismatch');
+    return undefined;
+  }
+  private assertCompletion(
+    value: Loaded,
+    result: Extract<RemoteRunRequest, { operation: 'submit-result' }>['payload']['result'],
+  ): void {
+    const source = result.source;
+    if (
+      !same(source.scope, executionRunScope(value.node, value.run)) ||
+      source.configurationId !== value.run.selection.configurationId ||
+      source.nativeSessionId !== value.run.attempt.sessionId ||
+      source.nativeAgentId !== value.run.attempt.executorRunId
+    )
+      deny('remote-scope-mismatch');
+    const composition = value.run.composition;
+    const tool =
+      composition?.schemaVersion === 2 ? composition.payload.resultIntentTool : undefined;
+    if (tool?.sourceVersion !== source.toolVersion) deny('remote-protocol-unsupported');
+    if (source.toolVersion === 'zhuma-native-result-intent@2') {
+      if (value.remote.files !== 'zhuma-native-output-file@1') deny('remote-protocol-unsupported');
+      this.outputManifest(value, result);
+    }
+  }
+  private outputManifest(
+    value: Loaded,
+    result: Extract<RemoteRunRequest, { operation: 'submit-result' }>['payload']['result'],
+    draft?: Extract<RemoteRunRequest, { operation: 'submit-result' }>['payload']['draft'],
+  ) {
+    if (!this.filesEnabled() || !this.source.readNativeFile) deny('remote-protocol-unsupported');
+    const parsed = nativeResultPublicationsSourceSchema.safeParse(result.source);
+    if (
+      !parsed.success ||
+      !result.publications ||
+      parsed.data.expertVersionId !== value.run.attempt.expertVersionId
+    )
+      deny('remote-scope-mismatch');
+    const entries = nativeResultManifestRecords(
+      parsed.data,
+      result.publications,
+      parsed.data.manifestDigest,
+      this.source.readNativeFile,
+    );
+    if (draft) {
+      const normalized = remoteResultDigestInput(draft);
+      if (
+        !same(
+          normalized.files,
+          entries.map((entry) => artifactFileReference(entry.record)),
+        ) ||
+        hash(normalized) !== result.artifactDigest ||
+        nativeManifestResultDigest(
+          {
+            links: normalized.links,
+            files: normalized.files,
+            ...(normalized.text === undefined ? {} : { text: normalized.text }),
+          },
+          parsed.data.manifestDigest,
+          result.publications,
+        ) !== result.digest
+      )
+        deny('remote-idempotency-mismatch');
+    }
+    return entries;
   }
   private async prepareAcceptResources<T>(
     request: MemberRequest,
@@ -458,10 +749,10 @@ export class RemoteRunAuthorities {
       deny('remote-proof-invalid');
     }
   }
-  private checkDevice(body: RemoteDeviceRequest, actorId: string) {
+  private checkDevice(body: RemoteDeviceRequest, actorId: string, verifyProof = true) {
     const device = this.registry().devices.find((item) => item.deviceId === body.deviceId);
     if (!device || device.actorId !== actorId) deny('remote-device-mismatch');
-    this.proof(body, device.publicKey);
+    if (verifyProof) this.proof(body, device.publicKey);
     return device;
   }
   private async register(
@@ -522,6 +813,11 @@ export class RemoteRunAuthorities {
     const state = node && readExecutionRunState(node);
     const run = state?.runs.find((item) => item.attempt.id === scope.runId);
     if (!node || !state || !run?.remote) deny('remote-not-found');
+    if (
+      run.remote.files !== undefined &&
+      executionRunGlobalSchema.parse(this.source.readGlobal()).remoteExecutionFileWriter !== 1
+    )
+      deny('remote-unavailable');
     if (!same({ ...executionRunScope(node, run), backendId: run.remote.backendId }, scope))
       deny('remote-scope-mismatch');
     if ((run.remote.lastWireEvent?.sequence ?? 0) !== run.attempt.lastEventSequence)
@@ -790,13 +1086,21 @@ export class RemoteRunAuthorities {
         REMOTE_RUN_LIMITS.activeAuthorities
     )
       deny('remote-quota');
-    // First interoperable slice is original text completion. Unsupported source ports refuse explicitly.
+    const files = payload.capabilities.resultIntent === 'zhuma-native-result-intent@2';
     if (
-      payload.capabilities.resultIntent !== 'zhuma-native-result-intent@1' ||
-      payload.capabilities.outputFile ||
+      (files
+        ? !this.filesEnabled() ||
+          !this.source.outputFiles ||
+          !this.source.readNativeFile ||
+          !this.source.verifyOutputFiles ||
+          payload.capabilities.outputFile !== 'zhuma-native-output-file@1' ||
+          payload.workspace.kind !== 'local'
+        : payload.capabilities.outputFile ||
+          payload.capabilities.localTools.length ||
+          payload.workspace.kind !== 'text-only') ||
       payload.capabilities.acceptedFile ||
-      payload.capabilities.localTools.length ||
-      payload.workspace.kind !== 'text-only' ||
+      new Set(payload.capabilities.localTools.map((tool) => tool.name)).size !==
+        payload.capabilities.localTools.length ||
       node.handoff.mcpRefs.length
     )
       deny('remote-protocol-unsupported');
@@ -843,7 +1147,10 @@ export class RemoteRunAuthorities {
         selection: projected.selection,
         expertVersionId: projected.expertVersionId,
         contextRefs: projected.contextRefs,
-        workspace: payload.workspace,
+        workspace:
+          payload.workspace.kind === 'local'
+            ? { ...payload.workspace, deviceId: body.deviceId }
+            : payload.workspace,
         composition,
       },
       this.source.listNodes(),
@@ -851,6 +1158,7 @@ export class RemoteRunAuthorities {
     );
     const remote: RemoteRunBinding = {
       protocolVersion: 1,
+      ...(files ? { files: 'zhuma-native-output-file@1' as const } : {}),
       backendId: body.backendId,
       deviceId: device.deviceId,
       publicKey: device.publicKey,
@@ -880,6 +1188,30 @@ export class RemoteRunAuthorities {
     lease.assertCurrent(payload.target.spaceId);
     this.source.assertTarget(lease.memberId, payload.target, this.source.readNode(payload.target)!);
     qualification?.assertCurrent();
+    if (files) {
+      // Qualify the actual original attachment port BEFORE changing the format.
+      this.fileManager();
+      const global = executionRunGlobalSchema.parse(this.source.readGlobal());
+      if (global.remoteExecutionFileWriter !== 1) {
+        // Original storage has no cross-row transaction. This durable barrier
+        // precedes the first node put in the SAME writer queue. A failed node
+        // put deliberately retains marker-only state; it grants no drive.
+        await this.source.writeGlobal({
+          ...prepareExecutionRunWriter(global),
+          remoteExecutionFileWriter: 1,
+        });
+      }
+      if (executionRunGlobalSchema.parse(this.source.readGlobal()).remoteExecutionFileWriter !== 1)
+        deny('remote-unavailable');
+      lease.assertCurrent(payload.target.spaceId);
+      this.source.assertTarget(
+        lease.memberId,
+        payload.target,
+        this.source.readNode(payload.target)!,
+      );
+      if (!same(this.source.readNode(payload.target), node)) deny('remote-conflict');
+      qualification?.assertCurrent();
+    }
     await this.source.writeNode(next);
     qualification?.assertCurrent();
     return this.acceptValue(this.load({ ...scope, backendId: body.backendId }), 'accepted');
@@ -939,15 +1271,7 @@ export class RemoteRunAuthorities {
       return { ...this.view(value), disposition: 'replayed' };
     if (isTerminalRunStatus(value.run.attempt.status)) deny('remote-permit-revoked');
     if (event.kind === 'completed') {
-      const source = event.result.source;
-      if (
-        source.toolVersion !== 'zhuma-native-result-intent@1' ||
-        !same(source.scope, executionRunScope(value.node, value.run)) ||
-        source.configurationId !== value.run.selection.configurationId ||
-        source.nativeSessionId !== value.run.attempt.sessionId ||
-        source.nativeAgentId !== value.run.attempt.executorRunId
-      )
-        deny('remote-scope-mismatch');
+      this.assertCompletion(value, event.result);
     }
     const control = event.kind === 'stop-received' || event.kind === 'retiring';
     const native = control
@@ -1041,10 +1365,11 @@ export class RemoteRunAuthorities {
   private async cleanup(
     body: Extract<RemoteRunRequest, { operation: 'cleanup' }>,
     rawPermit: unknown,
-  ) {
+    proofAdmitted = false,
+  ): Promise<unknown> {
     const value = this.load(body.payload.scope);
     if (body.deviceId !== value.remote.deviceId) deny('remote-device-mismatch');
-    this.proof(body, value.remote.publicKey);
+    if (!proofAdmitted) this.proof(body, value.remote.publicKey);
     this.checkPermit(body.payload.permit, rawPermit, value.remote.cleanup);
     if (value.remote.cleanup.expiresAt <= this.now()) deny('remote-permit-expired');
     const observation = body.payload.observation;
@@ -1063,6 +1388,11 @@ export class RemoteRunAuthorities {
           observation.evidence.nativeAgentId !== run.attempt.executorRunId)
       )
         deny('remote-scope-mismatch');
+      if (this.files?.hasHeld(body.payload.scope))
+        return new RemoteFileOperation(async () => {
+          await this.files!.releaseDrained(body.payload.scope);
+          return this.source.enqueue(() => this.cleanup(body, rawPermit, true));
+        });
       if (!isTerminalRunStatus(run.attempt.status)) {
         const stopped = requestRunStop(run.attempt);
         if (!stopped.ok) deny('remote-conflict');
@@ -1197,13 +1527,17 @@ export class RemoteRunAuthorities {
     if (value.run.attempt.status !== 'completed' || value.run.resources !== 'settled')
       deny('remote-resource-held');
     const draft = remoteResultDigestInput(body.payload.draft);
-    if (draft.files.length || result.source.toolVersion !== 'zhuma-native-result-intent@1')
-      deny('remote-protocol-unsupported');
+    const files = result.source.toolVersion === 'zhuma-native-result-intent@2';
+    if (files) this.outputManifest(value, result, draft);
+    else if (draft.files.length) deny('remote-protocol-unsupported');
     const content = {
       links: draft.links,
       ...(draft.text === undefined ? {} : { text: draft.text }),
     };
-    if (hash(draft) !== result.artifactDigest || nativeResultDigest(content) !== result.digest)
+    if (
+      hash(draft) !== result.artifactDigest ||
+      (!files && nativeResultDigest(content) !== result.digest)
+    )
       deny('remote-idempotency-mismatch');
     if (value.remote.receipt) {
       await this.source.afterDelivery(value.node);
@@ -1213,23 +1547,35 @@ export class RemoteRunAuthorities {
       record: value.node,
       idempotencyKey: `remote-result:${result.requestId}`,
       expectedVersion: body.payload.expectedNodeVersion,
-      draft: { ...content, files: [] as const },
+      draft: { ...content, files: draft.files },
       artifactId: randomUUID(),
       roundId: randomUUID(),
     };
     const decision =
       value.node.handoff.assignee.kind === 'human'
         ? submitDelivery({ ...common, actorId: value.run.actorId })
-        : submitExpertDelivery({
-            ...common,
-            expertId: value.node.handoff.assignee.id,
-            producerRunId: value.run.attempt.id,
-            provenanceFingerprint: hash({
-              result,
-              scope: body.payload.scope,
-              deviceId: value.remote.deviceId,
-            }),
-          });
+        : files
+          ? submitExpertManifestDelivery({
+              ...common,
+              expertId: value.node.handoff.assignee.id,
+              producerRunId: value.run.attempt.id,
+              provenanceFingerprint: hash({
+                result,
+                scope: body.payload.scope,
+                deviceId: value.remote.deviceId,
+              }),
+            })
+          : submitExpertDelivery({
+              ...common,
+              draft: { ...content, files: [] as const },
+              expertId: value.node.handoff.assignee.id,
+              producerRunId: value.run.attempt.id,
+              provenanceFingerprint: hash({
+                result,
+                scope: body.payload.scope,
+                deviceId: value.remote.deviceId,
+              }),
+            });
     if (!decision.ok || (decision.disposition !== 'applied' && decision.disposition !== 'replayed'))
       deny('remote-conflict');
     const artifact = decision.record.artifactVersions.at(-1);
