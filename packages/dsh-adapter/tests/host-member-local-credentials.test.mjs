@@ -2,7 +2,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMemberLocalPrivateStore } from '../dist/host-member-local-credentials.js';
-import { MemberLocalExecutionSecrets } from '../dist/member-local-execution-secrets.js';
+import {
+  MemberLocalExecutionSecrets,
+  MemberLocalSecretError,
+} from '../dist/member-local-execution-secrets.js';
 const slot = `zhuma.member-local.device.${'a'.repeat(64)}`;
 function fixture() {
   const rows = new Map(),
@@ -79,6 +82,44 @@ test('two actual secret owners preserve one device/accept intent through the ori
   assert.deepEqual(intents[0].drive, intents[1].drive);
   assert.deepEqual(intents[0].cleanup, intents[1].cleanup);
   assert.equal(h.rows.size, 2);
+});
+
+test('private pointer adapter contract maps only the exact new slot and preserves provider CAS', async () => {
+  const h = fixture();
+  const digest = 'b'.repeat(64);
+  const slot = `zhuma.member-local.run-pointer.${digest}`;
+  for (const invalid of [
+    `zhuma.member-local.pointer.${digest}`,
+    `zhuma.member-local.run-pointer.${'B'.repeat(64)}`,
+    `${slot}/child`,
+    `${slot}\n`,
+    `zhuma.member-local.run-pointer.${digest.slice(1)}`,
+  ])
+    await assert.rejects(h.store.read(invalid), { code: 'invalid' });
+  assert.equal(h.calls.length, 0);
+  const value = {
+    version: 1,
+    scopeFingerprint: 'c'.repeat(64),
+    requestId: crypto.randomUUID(),
+    configurationId: 'synthetic-local',
+    selectionFingerprint: 'd'.repeat(64),
+  };
+  const persist = (candidate) => (current) => {
+    if (current !== undefined && JSON.stringify(current) !== JSON.stringify(candidate))
+      throw new MemberLocalSecretError('conflict');
+    return current ?? candidate;
+  };
+  assert.deepEqual(await h.store.modify(slot, persist(value)), value);
+  assert.deepEqual(await h.store.modify(slot, persist(value)), value);
+  await assert.rejects(
+    h.store.modify(slot, persist({ ...value, requestId: crypto.randomUUID() })),
+    { code: 'conflict' },
+  );
+  assert.deepEqual(await h.store.read(slot), value);
+  assert.ok(
+    h.calls.every(([, key]) => key === `zhuma-workbench/member-local-run-pointer-${digest}`),
+  );
+  assert.equal(h.rows.size, 1);
 });
 test('provider replacement and disposal reject even a late provider read', async () => {
   for (const mode of ['replace', 'close']) {

@@ -24,7 +24,7 @@ export function createMemberLocalPrivateStore(
     return live;
   };
   const address = (slot: string) => {
-    const match = /^zhuma\.member-local\.(device|accept)\.([a-f0-9]{64})$/u.exec(slot);
+    const match = /^zhuma\.member-local\.(device|accept|run-pointer)\.([a-f0-9]{64})$/u.exec(slot);
     if (!match) throw new MemberLocalSecretError('invalid');
     return credentialKey('zhuma-workbench', `member-local-${match[1]}-${match[2]}`);
   };
