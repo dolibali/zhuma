@@ -28,7 +28,7 @@ export interface HostRunSources {
   readonly signal: AbortSignal;
   readonly resources?: Pick<
     ReturnType<typeof createHostRunResourceSource>,
-    'prepareResourceCatalog' | 'prepareInitialResourceCatalog'
+    'prepareResourceCatalog' | 'prepareInitialResourceCatalog' | 'prepareReviewResourceCatalog'
   >;
   readonly workspaces?: Pick<ReturnType<typeof createHostRunWorkspaces>, 'onChange'>;
   readonly retirementDrain?: NonNullable<ExecutionRunHostPorts['migrationDrain']>;
@@ -120,6 +120,9 @@ export function createHostRunSources(
   prepareInitialResourceCatalog: NonNullable<
     HostRunSources['resources']
   >['prepareInitialResourceCatalog'];
+  prepareReviewResourceCatalog: NonNullable<
+    HostRunSources['resources']
+  >['prepareReviewResourceCatalog'];
 } {
   const active = () => {
     if (sources.signal.aborted) throw new ExecutionRunError('run-authority-unavailable');
@@ -138,6 +141,13 @@ export function createHostRunSources(
       if (!sources.resources) throw new ExecutionRunError('run-authority-unavailable');
       // D owns the whole promise, including release of a late qualification.
       return sources.resources.prepareResourceCatalog(request, command);
+    },
+    prepareReviewResourceCatalog(request, query, wait) {
+      active();
+      if (!sources.resources) throw new ExecutionRunError('run-authority-unavailable');
+      // Forward the original qualification promise unchanged. The D owner
+      // retains late resolution, current-source checks and actual release.
+      return sources.resources.prepareReviewResourceCatalog(request, query, wait);
     },
     memberLease(request) {
       active();
