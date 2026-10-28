@@ -150,7 +150,15 @@ export function createMemberShell(
         }, signal);
       } else proceed();
     },
-    requestSpace(id: string, restoreFocus?: () => void) {
+    requestSpace(id: string, restoreFocus?: () => void, expectedMemberEpoch?: number) {
+      const current = session.getSnapshot();
+      // A delayed menu event must not apply the former account's choice to
+      // the newly mounted member controller, even when the page is unchanged.
+      if (
+        current.status !== 'authenticated' ||
+        (expectedMemberEpoch !== undefined && current.epoch !== expectedMemberEpoch)
+      )
+        return;
       if (guard && pageActive && guard.epoch === pageEpoch) guard.select(id, restoreFocus);
       else void space?.select(id);
     },

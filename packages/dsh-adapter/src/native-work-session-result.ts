@@ -255,7 +255,7 @@ export function createNativeFixedResultPublicationsIssuer(
   ctx: Context,
   sessions: NativeWorkSessionService,
   runtime: NativeWorkRuntime,
-  authority: ExecutionRunAuthorities,
+  authority: Authority,
   execution: Pick<ExecutionService, 'readRunComposition'>,
   publications: NativeOutputFileIssuer,
 ): NativeFixedResultPublicationsIssuer {

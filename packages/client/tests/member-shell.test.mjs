@@ -200,6 +200,47 @@ test('root shell contract: logout immediately removes shared member/space conten
   shell.stop();
 });
 
+test('account transition: a delayed former-account picker cannot select its team after a new login', async () => {
+  let accountId = 'member-a';
+  const personalB = { id: 'personal-b', kind: 'personal', name: 'New account' };
+  const api = {
+    session: async () => ({
+      ...member(accountId),
+      spaces: accountId === 'member-a' ? spaces : [personalB],
+    }),
+    login: async (input) => {
+      accountId = input.accountId;
+      return { accountId };
+    },
+    logout: async () => ({ accountId }),
+  };
+  const shell = createMemberShell(
+    api,
+    createSpacePreferenceStore(() => undefined),
+  );
+  shell.start();
+  await tick();
+  await shell.space.select('team-a');
+  const former = shell.getSnapshot().session.epoch;
+  const delayedPicker = () => shell.requestSpace('team-a', undefined, former);
+  await shell.session.logout();
+  assert.equal(shell.space, undefined);
+  await shell.session.login({ accountId: 'member-b', password: 'synthetic' });
+  await tick();
+  assert.equal(shell.getSnapshot().space.space.id, personalB.id);
+  delayedPicker();
+  await tick();
+  assert.equal(shell.getSnapshot().space.status, 'ready');
+  assert.equal(shell.getSnapshot().space.space.id, personalB.id);
+  // A genuine current-account choice still goes through the original directory
+  // check and remains closed when it is unavailable: no revocation fallback.
+  shell.requestSpace('team-a', undefined, shell.getSnapshot().session.epoch);
+  await tick();
+  assert.equal(shell.getSnapshot().space.status, 'error');
+  assert.equal(shell.getSnapshot().space.requestedSpaceId, 'team-a');
+  shell.stop();
+});
+
 test('root shell contract: a changed member or revoked session in shared space recheck clears both consumers', async () => {
   let next = member();
   const { shell } = fixture({ session: async () => next });

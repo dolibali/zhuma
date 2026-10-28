@@ -131,7 +131,7 @@ export function SidebarAccountFooter({
                     onValueChange={(id) => {
                       setOpen(false);
                       openWork();
-                      shell.requestSpace(id, () => trigger.current?.focus());
+                      shell.requestSpace(id, () => trigger.current?.focus(), state.epoch);
                     }}
                   />
                 </Field>

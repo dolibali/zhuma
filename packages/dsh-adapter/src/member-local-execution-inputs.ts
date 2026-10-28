@@ -16,6 +16,8 @@ import type { NativeDshComposition } from './native-work-session-dsh.js';
 import {
   describeAcceptedInputTool,
   registerNativeAcceptedInputTool,
+  acceptedInputRef,
+  type NativeAcceptedInputPorts,
 } from './native-work-session-input-tool.js';
 import type { NativeWorkSessionService } from './native-work-session.js';
 
@@ -79,6 +81,24 @@ export async function registerMemberLocalAcceptedInputs(
         ? tools.acceptedInputReader
         : undefined;
   if (canonicalPayload(definition) !== canonicalPayload(describeAcceptedInputTool())) unavailable();
+  return registerNativeAcceptedInputTool(
+    ctx,
+    binding,
+    grant,
+    sessions,
+    await createMemberLocalAcceptedInputPorts(binding, grant, protocol, run),
+  );
+}
+
+/** The same bounded fixed input source for the original text and file tools.
+ * Registration observes catalog metadata only; documents are fetched on demand. */
+export async function createMemberLocalAcceptedInputPorts(
+  binding: NativeSessionBinding,
+  grant: NativeWorkGrant,
+  protocol: MemberLocalExecutionProtocol,
+  run: MemberLocalRunHandle,
+): Promise<NativeAcceptedInputPorts> {
+  const snapshot = run.composition;
   const check = (signal: AbortSignal) => {
     signal.throwIfAborted();
     grant.assertCurrent('send');
@@ -99,9 +119,36 @@ export async function registerMemberLocalAcceptedInputs(
     return value.items;
   };
   const items = await list(grant.signal),
-    inputs = snapshot.payload.inputs;
+    inputs = snapshot.payload.inputs,
+    textItems = items.filter((item) => item.kind === 'text'),
+    fileItems = items.filter((item) => item.kind === 'file'),
+    filesEnabled =
+      snapshot.schemaVersion === 2 && snapshot.payload.acceptedFileReader !== undefined;
   if (
-    items.length !== inputs.length ||
+    items.some((item) => item.kind !== 'text' && item.kind !== 'file') ||
+    (!filesEnabled && fileItems.length) ||
+    new Set(
+      fileItems.map((item) =>
+        canonicalPayload([item.sourceNodeId, item.artifactVersionId, item.fileId]),
+      ),
+    ).size !== fileItems.length ||
+    fileItems.some((item) => {
+      const input = inputs.find(
+        (input) =>
+          input.sourceNodeId === item.sourceNodeId &&
+          input.artifactVersionId === item.artifactVersionId,
+      );
+      return (
+        !input ||
+        !item.fileId ||
+        item.resourceRef?.id !== acceptedInputRef(binding.scope, input) ||
+        item.resourceRef.version !== input.artifactVersionId
+      );
+    })
+  )
+    unavailable();
+  if (
+    textItems.length !== inputs.length ||
     new Set(items.map((item) => item.slotId)).size !== items.length ||
     inputs.some(
       (input) =>
@@ -119,7 +166,7 @@ export async function registerMemberLocalAcceptedInputs(
   // Caller values route the original tool only. Every actual source read still
   // crosses D's live member/device/private-permit gate; this is not a local ACL.
   const callers = new WeakMap<ExecutionCaller, AbortSignal>();
-  return registerNativeAcceptedInputTool(ctx, binding, grant, sessions, {
+  return {
     catalog: {
       scope: binding.scope,
       inputs: inputs.map(({ sourceGoal, ...input }) => ({
@@ -223,5 +270,5 @@ export async function registerMemberLocalAcceptedInputs(
         return { ok: true, value };
       },
     },
-  });
+  };
 }
