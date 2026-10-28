@@ -548,6 +548,16 @@ const draftWriteSchema = z.strictObject({
   files: z.array(fileSchema).max(20).optional(),
   links: z.array(z.string().min(1)).max(20).optional(),
 });
+/** Same-package member transport reuses the original strict decoders; no copied DTOs. */
+export const executionMemberRequestSchemas = Object.freeze({
+  startPlan: startSchema,
+  submit: submitSchema,
+  ballot: ballotSchema,
+  revision: revisionSchema,
+  upstreamContent: upstreamContentSchema,
+  draftRead: draftReadSchema,
+  draftWrite: draftWriteSchema,
+});
 const inboxSchema = z.strictObject({ spaceId: id.optional() });
 const startableSchema = z.strictObject({ spaceId: id.optional() });
 const eventsSchema = z.strictObject({
