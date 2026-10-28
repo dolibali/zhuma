@@ -21,6 +21,7 @@ import {
 import type {} from '@deepseek-ai/dsh-tools';
 import { PERSONA_PREFIX_SECTION, joinContextSections } from '@deepseek-ai/dsh-system-prompt';
 import { assertNativeInputReadOwner } from './native-work-session.js';
+import { nativeWorkspaceAttachment } from './native-work-session-workspace.js';
 import {
   NativeSessionPurpose,
   assertNativePurposeOwner,
@@ -194,6 +195,8 @@ export type NativeDshWorkingDirectory =
       readonly kind: 'local';
       readonly scope: NativeWorkScope;
       readonly cwd: string;
+      /** Exact existing original WorkspaceRegistry id, provided by the live Host grant. */
+      readonly workspaceId?: string;
       readonly signal: AbortSignal;
       assertCurrent(): undefined;
     };
@@ -203,6 +206,7 @@ interface NativeDirectoryContext {
   readonly meta: { readonly cwd: string } | undefined;
   assert(agent?: Agent): void;
   prepare(agent: Agent): Promise<void>;
+  attach?(agent: Agent): Promise<void>;
 }
 
 /** The public working-directory service's narrow read/validation surface. */
@@ -315,6 +319,15 @@ function textOf(message: UserMessage): string {
 
 /** Public DSH registry adapter. No child process, replacement factory, or transcript cache. */
 export class DshNativeWorkRuntime implements NativeWorkRuntime {
+  private readonly admittedAgents = new WeakMap<Agent, NativeWorkGrant>();
+  /** Original serial agent/created gate. Matching IDs or a default-factory
+   * resume cannot borrow this runtime's unpublished setup/grant identity. */
+  assertAgentOwner(agent: Agent): void {
+    const grant = this.admittedAgents.get(agent);
+    if (!grant || this.lifetime.signal.aborted) throw new NativeWorkError('scope-mismatch');
+    this.current(grant);
+    grant.assertCurrent('send');
+  }
   private readonly live = new Map<string, LiveSession>();
   private readonly disconnecting = new Map<string, Promise<void>>();
   private readonly retiring = new Map<string, Promise<void>>();
@@ -435,6 +448,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     )
       throw new NativeWorkError('unavailable');
     const { cwd, signal: sourceSignal, assertCurrent } = selected;
+    const workspaceId = selected.workspaceId;
     const signal = AbortSignal.any([parentSignal, sourceSignal]);
     const directories = this.ctx.get('workingDirectory') as NativeDirectoryService | undefined;
     if (typeof directories?.get !== 'function' || typeof directories.ensure !== 'function')
@@ -450,6 +464,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         selected.cwd !== cwd ||
         selected.signal !== sourceSignal ||
         selected.assertCurrent !== assertCurrent ||
+        selected.workspaceId !== workspaceId ||
         this.scopeAddress(selected.scope) !== address ||
         this.scopeAddress(grant.scope) !== address
       )
@@ -471,12 +486,29 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       }
     };
     assert();
+    const workspace =
+      workspaceId === undefined
+        ? undefined
+        : nativeWorkspaceAttachment(this.ctx, workspaceId, cwd, () => assert());
     return {
       signal,
       meta: { cwd },
-      assert,
+      assert: (agent) => {
+        assert(agent);
+        workspace?.check();
+      },
+      ...(workspace
+        ? {
+            attach: async (agent: Agent) => {
+              assert(agent);
+              await workspace.attach(agent.session.id);
+              assert(agent);
+            },
+          }
+        : {}),
       prepare: async (agent) => {
         assert(agent);
+        workspace?.check();
         let effective: string;
         try {
           effective = await directories.ensure(agent, signal);
@@ -484,6 +516,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           throw new NativeWorkError(signal.aborted ? 'cancelled' : 'unavailable');
         }
         assert(agent);
+        workspace?.check();
         if (effective !== cwd) throw new NativeWorkError('configuration-mismatch');
       },
     };
@@ -555,6 +588,10 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const presentation = new NativeAssistantSnapshotCache(binding.nativeSessionId);
     const setup: AgentSetup = async (agentCtx, unpublishedAgent) => {
       this.current(grant);
+      this.admittedAgents.set(unpublishedAgent, grant);
+      agentCtx.effect(() => () => {
+        this.admittedAgents.delete(unpublishedAgent);
+      });
       // Capture before the first request, in this exact Agent's owned scope.
       agentCtx.on('agent/assistant-stream', ({ agent, frame }) => {
         if (agent === unpublishedAgent) presentation.push(frame, Number(agent.session.seq) - 1);
@@ -566,6 +603,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         presentation.close();
       });
       await directory.prepare(unpublishedAgent);
+      if (stored) await directory.attach?.(unpublishedAgent);
       assertNativeInputReadOwner(binding.nativeSessionId, this);
       // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
       agentCtx.tools.presentAs('native');
@@ -698,6 +736,9 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       throw new NativeWorkError('cancelled');
     }
     try {
+      this.current(grant);
+      directory.assert(handle.agent);
+      await directory.attach?.(handle.agent);
       this.current(grant);
       directory.assert(handle.agent);
     } catch (error) {

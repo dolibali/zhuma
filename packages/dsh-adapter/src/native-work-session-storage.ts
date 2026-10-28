@@ -10,7 +10,12 @@ import {
   type NativeWorkStorage,
 } from './native-work-session-contract.js';
 
-import { nativeWorkSessionRecordSchema, readNativeRecord } from './native-work-session-record.js';
+import {
+  nativeWorkSessionRecordSchema,
+  readNativeRecord,
+  currentBinding,
+  previousBindings,
+} from './native-work-session-record.js';
 import { NativeSessionPurpose, type NativeReviewPorts } from './native-work-session-purpose.js';
 import {
   nativeReviewAwareRecordSchema,
@@ -130,5 +135,54 @@ export async function openNativeWorkSessions(
       }
     })());
   ctx.effect(() => close);
-  return { service, runtime, close };
+  /** Host navigation classification over the ORIGINAL table only. This never
+   * grants history/send or creates an Agent; A must route task hits to the same
+   * member/Run-authorized task controls and refuse unavailable/foreign bindings. */
+  function lookupNativeSession(nativeSessionId: string) {
+    if (closed) throw new NativeWorkError('unavailable');
+    if (typeof nativeSessionId !== 'string' || !nativeSessionId || nativeSessionId.length > 200)
+      throw new NativeWorkError('invalid-request');
+    const matches = [];
+    for (const [key, raw] of bindings.entries()) {
+      const parsed = nativeReviewAwareRecordSchema.safeParse(raw);
+      if (!parsed.success) throw new NativeWorkError('binding-state-invalid');
+      const record = parsed.data.schemaVersion === 3 ? parsed.data.binding : parsed.data;
+      for (const binding of [
+        currentBinding(record),
+        ...previousBindings(record).map((p) => p.binding),
+      ]) {
+        if (binding.nativeSessionId !== nativeSessionId) continue;
+        const currentNamespace =
+          backendId === undefined
+            ? !key.startsWith('backend_')
+            : key.startsWith(nativeWorkSessionStorageKey('', backendId));
+        if (!currentNamespace) throw new NativeWorkError('scope-mismatch');
+        matches.push({
+          role: parsed.data.schemaVersion === 3 ? ('review' as const) : ('work' as const),
+          ...(backendId === undefined ? {} : { backendId }),
+          binding: structuredClone({
+            scope: binding.scope,
+            nativeSessionId: binding.nativeSessionId,
+            nativeAgentId: binding.nativeAgentId,
+            selection: binding.selection,
+          }),
+        });
+      }
+    }
+    if (matches.length > 1) throw new NativeWorkError('binding-state-invalid');
+    return matches[0] ?? null;
+  }
+  // Public SDK serial initialization holds queued input until this resolves.
+  // Cold ordinary resume of a task log is refused before any model step; only
+  // this runtime's exact unpublished Agent setup carries the original grant.
+  const stopAgentGate = ctx.on(
+    'agent/created',
+    ({ agent }) => {
+      if (lookupNativeSession(agent.session.id)) runtime.assertAgentOwner(agent);
+      return undefined;
+    },
+    { global: true },
+  );
+  ctx.effect(() => stopAgentGate);
+  return { service, runtime, close, lookupNativeSession };
 }

@@ -1,0 +1,578 @@
+import { createHash, randomUUID } from 'node:crypto';
+import type { Context } from '@deepseek-ai/cordis';
+import {
+  canonicalPayload,
+  REMOTE_RUN_LIMITS,
+  remoteResultDeclarationSchema,
+  remoteResultDigestInput,
+  type RemoteRunEvent,
+  type RemoteRunView,
+  type RemoteResultReceipt,
+} from '@zhuma/agent-core';
+import {
+  MemberLocalExecutionProtocol,
+  MemberLocalProtocolError,
+  type MemberLocalAcceptedRun,
+} from './member-local-execution-protocol.js';
+import { openNativeWorkSessions } from './native-work-session-storage.js';
+import {
+  NativeWorkError,
+  type NativeWorkAction,
+  type NativeWorkGrant,
+  type NativeWorkScope,
+  type NativeSessionBinding,
+  type NativeSessionSelection,
+} from './native-work-session-contract.js';
+import type { NativeDshOptions } from './native-work-session-dsh.js';
+import {
+  createNativeFixedResultIssuer,
+  type NativeFixedResultIssuer,
+} from './native-work-session-result.js';
+import type { NativeFixedResultRef } from './native-work-session-result-contract.js';
+import { executionRunCompositionRequest } from './execution-run-composition.js';
+import {
+  registerExecutionRunResources,
+  EXECUTION_RESOURCE_SOURCE_VERSION,
+  type ExecutionRunResourceAdoption,
+  type ExecutionMcpConnectionLease,
+  type FrozenMcpResource,
+} from './execution-run-resources.js';
+import { observeHostNativeRun } from './host-run-observation.js';
+
+export interface MemberLocalOwnerOptions {
+  readonly protocol: MemberLocalExecutionProtocol;
+  /** Normal local model owner; this does not copy provider credentials. */
+  assertModel(selection: NativeSessionSelection, signal: AbortSignal): void | Promise<void>;
+  /** Actual original local tool/workspace adapters, when those tools were selected. */
+  readonly native?: NativeDshOptions;
+  /** Original private MCP configuration owner, required for selected MCP entries. */
+  openMcp?(resource: FrozenMcpResource, signal: AbortSignal): Promise<ExecutionMcpConnectionLease>;
+}
+type Phase =
+  'dispatching' | 'working' | 'fixed' | 'submitted' | 'retiring' | 'retired' | 'recovery-required';
+type Observation = ReturnType<typeof observeHostNativeRun>;
+type NativeOwner = Awaited<ReturnType<typeof openNativeWorkSessions>>;
+interface Owned {
+  readonly run: MemberLocalAcceptedRun;
+  readonly scope: NativeWorkScope;
+  readonly abort: AbortController;
+  readonly grant: NativeWorkGrant;
+  view: RemoteRunView;
+  deadline: number;
+  cleanupDeadline: number;
+  phase: Phase;
+  sequence: number;
+  queue: Promise<unknown>;
+  dispatch?: Promise<void>;
+  collecting?: Promise<void>;
+  retirement?: Promise<void>;
+  observation?: Observation;
+  resources?: ExecutionRunResourceAdoption;
+  received: boolean;
+  accepted: boolean;
+  firstMessageId?: string;
+  timer?: ReturnType<typeof setTimeout>;
+  receipt?: RemoteResultReceipt;
+}
+export interface MemberLocalOwnerView {
+  readonly phase: Phase;
+  readonly remote: RemoteRunView;
+  readonly native: ReturnType<NativeOwner['service']['open']> | undefined;
+  readonly receipt?: RemoteResultReceipt;
+}
+const address = (scope: NativeWorkScope) => canonicalPayload(scope);
+const hash = (value: unknown) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
+
+/** One thin owner over the ORIGINAL local SDK/factory, native table and result
+ * issuer. No backend ExecutionService, second transcript or Agent loop lives here. */
+export class MemberLocalExecutionOwner {
+  private readonly states = new Map<string, Owned>();
+  private readonly grants = new WeakMap<NativeWorkGrant, Owned>();
+  private readonly lifetime = new AbortController();
+  private readonly jobs = new Set<Promise<unknown>>();
+  private native!: NativeOwner;
+  private results!: NativeFixedResultIssuer;
+  private heartbeat?: ReturnType<typeof setInterval>;
+  private closing?: Promise<void>;
+  private constructor(private readonly options: MemberLocalOwnerOptions) {}
+  static async open(ctx: Context, options: MemberLocalOwnerOptions) {
+    const owner = new MemberLocalExecutionOwner(options);
+    await owner.initialize(ctx);
+    ctx.effect(() => () => owner.close());
+    return owner;
+  }
+  private state(grant: NativeWorkGrant): Owned {
+    const state = this.grants.get(grant);
+    if (!state || this.states.get(address(state.scope)) !== state)
+      throw new NativeWorkError('scope-mismatch');
+    return state;
+  }
+  private check(state: Owned, action: NativeWorkAction): void {
+    if (
+      this.lifetime.signal.aborted ||
+      state.abort.signal.aborted ||
+      performance.now() >= state.deadline ||
+      state.view.stopRequested ||
+      state.view.authority !== 'drive' ||
+      (state.phase !== 'working' &&
+        state.phase !== 'dispatching' &&
+        !['open', 'history', 'follow'].includes(action))
+    )
+      throw new NativeWorkError('cancelled');
+  }
+  private checkResult(grant: NativeWorkGrant): void {
+    const state = this.state(grant);
+    this.check(state, 'history');
+    if (!['working', 'dispatching', 'fixed'].includes(state.phase))
+      throw new NativeWorkError('cancelled');
+  }
+  private track<T>(job: Promise<T>): Promise<T> {
+    this.jobs.add(job);
+    void job.finally(() => this.jobs.delete(job)).catch(() => undefined);
+    return job;
+  }
+  private enqueue<T>(state: Owned, task: () => Promise<T>): Promise<T> {
+    const job = state.queue.then(task);
+    state.queue = job.catch(() => undefined);
+    return this.track(job);
+  }
+  private async initialize(ctx: Context): Promise<void> {
+    this.native = await openNativeWorkSessions(
+      ctx,
+      {
+        workingDirectory: async (binding, grant) => {
+          const state = this.state(grant);
+          this.check(state, 'send');
+          if (!this.options.native) {
+            if (state.run.composition.payload.tools.kind === 'local-tools')
+              throw new NativeWorkError('configuration-mismatch');
+            return { kind: 'text-only' };
+          }
+          const directory = await this.options.native.workingDirectory(binding, grant);
+          this.check(state, 'send');
+          return directory;
+        },
+        compose: async (agentCtx, binding, grant) => {
+          const state = this.state(grant),
+            snapshot = state.run.composition;
+          this.check(state, 'send');
+          await this.options.assertModel(binding.selection, grant.signal);
+          this.check(state, 'send');
+          const extra = this.options.native
+            ? await this.options.native.compose(agentCtx, binding, grant)
+            : { context: '', toolAllowlist: [] };
+          this.check(state, 'send');
+          const result = this.results.registerNativeResultTool(agentCtx, binding, grant);
+          state.resources = await registerExecutionRunResources(
+            agentCtx,
+            snapshot,
+            binding,
+            grant,
+            {
+              sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
+              signal: grant.signal,
+              assertCurrent: (saved, actual, permission) => {
+                this.check(state, 'send');
+                if (
+                  permission !== grant ||
+                  canonicalPayload(saved) !== canonicalPayload(snapshot) ||
+                  canonicalPayload(actual) !== canonicalPayload(binding)
+                )
+                  throw new NativeWorkError('configuration-mismatch');
+                return undefined;
+              },
+              openMcp: async (resource, signal) => {
+                this.check(state, 'send');
+                if (!this.options.openMcp) throw new NativeWorkError('configuration-mismatch');
+                // The original adopter records even a late lease before its
+                // current() recheck, so revocation cannot strand that resource.
+                return this.options.openMcp(resource, signal);
+              },
+            },
+          );
+          await state.resources.ready;
+          this.check(state, 'send');
+          if (
+            canonicalPayload([
+              ...extra.toolAllowlist,
+              ...result.toolAllowlist,
+              ...state.resources.toolAllowlist,
+            ]) !== canonicalPayload(snapshot.payload.toolAllowlist)
+          )
+            throw new NativeWorkError('configuration-mismatch');
+          state.observation = observeHostNativeRun(agentCtx, binding, grant);
+          state.observation.onClaim(() => {
+            if (state.received) void this.acceptClaim(state).catch(() => this.fence(state));
+          });
+          state.observation.onFault(() => {
+            // Actual result preparation retires this same original Agent. Its
+            // disposal is a wakeup, never a fabricated failed/completed event.
+            this.wake(state);
+          });
+          state.resources.signal.addEventListener('abort', () => this.wake(state), { once: true });
+          return {
+            context: snapshot.payload.context,
+            toolAllowlist: snapshot.payload.toolAllowlist,
+          };
+        },
+      },
+      undefined,
+      this.options.protocol.backendId,
+    );
+    this.results = createNativeFixedResultIssuer(
+      ctx,
+      this.native.service,
+      this.native.runtime,
+      { assertGrant: (grant) => this.checkResult(grant) },
+      {
+        readRunComposition: (locator) => {
+          const state = [...this.states.values()].find((candidate) =>
+            (['taskId', 'planId', 'revision', 'nodeId', 'runId'] as const).every(
+              (field) => candidate.scope[field] === locator[field],
+            ),
+          );
+          if (!state) throw new NativeWorkError('scope-mismatch');
+          this.checkResult(state.grant);
+          return state.run.composition;
+        },
+      },
+    );
+    this.results.onReady((grant, ref) => {
+      const state = this.grants.get(grant);
+      if (state) void this.collect(state, ref).catch(() => this.fence(state));
+    });
+    this.heartbeat = setInterval(() => {
+      for (const state of this.states.values()) {
+        if (['working', 'dispatching'].includes(state.phase))
+          void this.refresh(state.run).catch(() => this.fence(state));
+      }
+    }, REMOTE_RUN_LIMITS.renewAfterMs);
+    this.heartbeat.unref();
+  }
+  private update(state: Owned, view: RemoteRunView, before: number): void {
+    if (
+      canonicalPayload(view.scope) !== canonicalPayload(state.run.value.scope) ||
+      view.deviceId !== this.options.protocol.deviceId ||
+      view.permit.id !== state.run.value.permit.id ||
+      view.permit.epoch !== state.run.value.permit.epoch ||
+      view.cleanup.id !== state.run.value.cleanup.id ||
+      view.cleanup.epoch !== state.run.value.cleanup.epoch ||
+      view.nextSequence < state.sequence
+    )
+      throw new MemberLocalProtocolError('local-mismatch');
+    state.view = structuredClone(view);
+    state.sequence = view.nextSequence;
+    const ttl = view.permit.expiresAt - view.serverTime,
+      cleanupTtl = view.cleanup.expiresAt - view.serverTime;
+    state.deadline = before + Math.min(ttl, REMOTE_RUN_LIMITS.driveTtlMs);
+    state.cleanupDeadline = before + Math.min(cleanupTtl, REMOTE_RUN_LIMITS.cleanupTtlMs);
+    if (state.timer) clearTimeout(state.timer);
+    if (view.authority !== 'drive' || view.stopRequested || ttl <= 0) {
+      if (state.phase !== 'fixed' && state.phase !== 'submitted') this.fence(state);
+    } else {
+      state.timer = setTimeout(
+        () => this.fence(state),
+        Math.max(1, state.deadline - performance.now()),
+      );
+      state.timer.unref();
+    }
+  }
+  private wake(state: Owned): void {
+    setImmediate(() => {
+      if (!['working', 'dispatching'].includes(state.phase)) return;
+      try {
+        const binding = this.native.service.open(state.grant)?.binding;
+        if (binding?.resultIntent) void this.collect(state).catch(() => this.fence(state));
+        else this.fence(state);
+      } catch {
+        this.fence(state);
+      }
+    });
+  }
+  /** Requires this protocol's private accepted handle and a fresh backend status.
+   * Opening old persisted native work never silently resumes or creates an Agent. */
+  async start(run: MemberLocalAcceptedRun): Promise<MemberLocalOwnerView> {
+    if (this.lifetime.signal.aborted) throw new NativeWorkError('unavailable');
+    const before = performance.now(),
+      view = await this.options.protocol.status(run),
+      { backendId: _backendId, ...scope } = view.scope,
+      existing = this.states.get(address(scope));
+    if (existing) return this.read(existing.run);
+    const snapshot = run.composition;
+    if (
+      this.states.size >= REMOTE_RUN_LIMITS.activeAuthorities ||
+      view.authority !== 'drive' ||
+      view.resources !== 'held' ||
+      view.runStatus !== 'requested' ||
+      view.stopRequested ||
+      snapshot.schemaVersion !== 2 ||
+      snapshot.payload.resultIntentTool?.sourceVersion !== 'zhuma-native-result-intent@1' ||
+      snapshot.payload.outputFilePublisherTool ||
+      snapshot.payload.acceptedFileReader ||
+      (snapshot.payload.tools.kind !== 'text-only' && !this.options.native) ||
+      (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
+    )
+      throw new NativeWorkError('configuration-mismatch');
+    const abort = new AbortController(),
+      grant: NativeWorkGrant = Object.freeze({
+        scope: Object.freeze(structuredClone(scope)),
+        signal: abort.signal,
+        assertCurrent: (action: NativeWorkAction) => this.check(this.state(grant), action),
+      }),
+      state: Owned = {
+        run,
+        scope: grant.scope,
+        abort,
+        grant,
+        view,
+        deadline: before,
+        cleanupDeadline: before,
+        phase: 'dispatching',
+        sequence: view.nextSequence,
+        queue: Promise.resolve(),
+        received: false,
+        accepted: false,
+      };
+    this.states.set(address(scope), state);
+    this.grants.set(grant, state);
+    this.update(state, view, before);
+    try {
+      this.check(state, 'open');
+      if (this.native.service.open(grant)) throw new NativeWorkError('scope-mismatch');
+      state.dispatch = this.track(this.dispatch(state));
+      await state.dispatch;
+    } catch (error) {
+      this.fence(state);
+      throw error;
+    }
+    return this.read(run);
+  }
+  private async dispatch(state: Owned): Promise<void> {
+    const { firstMessage, selection } = executionRunCompositionRequest(state.run.composition);
+    await this.options.assertModel(selection, state.grant.signal);
+    this.check(state, 'send');
+    const receipt = await this.native.service.send(state.grant, {
+        requestId: randomUUID(),
+        text: firstMessage.text,
+        mode: firstMessage.mode,
+        selection,
+      }),
+      binding = this.native.service.open(state.grant)?.binding;
+    if (!binding || !['received', 'claimed'].includes(receipt.status))
+      throw new NativeWorkError('unavailable');
+    state.firstMessageId = receipt.messageId;
+    await this.emit(state, {
+      kind: 'received',
+      sequence: state.sequence,
+      nativeSessionId: binding.nativeSessionId,
+    });
+    state.received = true;
+    state.phase = 'working';
+    await this.acceptClaim(state);
+  }
+  private acceptClaim(state: Owned): Promise<void> {
+    return this.enqueue(state, async () => {
+      if (state.accepted || !state.received || !state.firstMessageId) return;
+      const claim = state.observation?.claimFor(state.firstMessageId);
+      if (!claim) return;
+      const before = performance.now(),
+        view = await this.options.protocol.command(state.run, {
+          operation: 'event',
+          payload: {
+            event: {
+              kind: 'accepted',
+              sequence: state.sequence,
+              nativeSessionId: claim.nativeSessionId,
+              executorRunId: claim.nativeAgentId,
+            },
+          },
+        });
+      this.update(state, view, before);
+      state.accepted = true;
+    });
+  }
+  private emit(state: Owned, event: RemoteRunEvent): Promise<void> {
+    return this.enqueue(state, async () => {
+      const before = performance.now(),
+        view = await this.options.protocol.command(state.run, {
+          operation: 'event',
+          payload: { event: { ...event, sequence: state.sequence } },
+        });
+      this.update(state, view, before);
+    });
+  }
+  private collect(state: Owned, ref?: NativeFixedResultRef): Promise<void> {
+    if (state.collecting) return state.collecting;
+    if (!['dispatching', 'working'].includes(state.phase)) return Promise.resolve();
+    const work = Promise.resolve().then(async () => {
+      await state.dispatch;
+      await state.queue;
+      if (!state.accepted) return;
+      const prepared = ref
+        ? { status: 'ready' as const, ref }
+        : await this.results.prepareFixedResult(state.grant, state.grant.signal);
+      if (prepared.status !== 'ready') return;
+      const lease = await this.results.readFixedResult(
+        state.grant,
+        prepared.ref,
+        state.grant.signal,
+      );
+      try {
+        await state.resources?.drain();
+        lease.check();
+        const draft = remoteResultDigestInput({ ...lease.content, files: [] }),
+          result = remoteResultDeclarationSchema.parse({
+            requestId: lease.source.intentId,
+            digest: lease.digest,
+            artifactDigest: hash(draft),
+            source: lease.source,
+          });
+        state.phase = 'fixed';
+        await this.emit(state, {
+          kind: 'completed',
+          sequence: state.sequence,
+          idle: true,
+          flushed: true,
+          resourcesSettled: true,
+          result,
+        });
+        const submitted = await this.enqueue(state, () =>
+          this.options.protocol.command(state.run, {
+            operation: 'submit-result',
+            requestId: result.requestId,
+            payload: { expectedNodeVersion: state.view.nodeVersion, result, draft },
+          }),
+        );
+        if (
+          submitted.receipt.requestId !== result.requestId ||
+          submitted.receipt.digest !== result.digest ||
+          submitted.receipt.artifactDigest !== result.artifactDigest
+        )
+          throw new MemberLocalProtocolError('local-mismatch');
+        state.receipt = Object.freeze(structuredClone(submitted.receipt));
+        state.phase = 'submitted';
+        if (state.timer) clearTimeout(state.timer);
+      } finally {
+        lease.release();
+      }
+    });
+    state.collecting = this.track(
+      work.finally(() => {
+        delete state.collecting;
+      }),
+    );
+    return state.collecting;
+  }
+  private fence(state: Owned): void {
+    if (state.phase === 'submitted' || state.phase === 'retired' || state.retirement) return;
+    state.phase = 'recovery-required';
+    state.abort.abort();
+    if (state.timer) clearTimeout(state.timer);
+    // Leave the SDK callback stack before joining native disposal/persistence.
+    const work = new Promise<void>((resolve) => setImmediate(resolve)).then(() =>
+      this.retire(state),
+    );
+    state.retirement = this.track(work);
+    void work.catch(() => undefined);
+  }
+  private async retire(state: Owned): Promise<void> {
+    state.phase = 'retiring';
+    try {
+      const retired = await this.native.service.retireForCleanup(
+        {
+          scope: state.scope,
+          assertCurrent: () => {
+            if (performance.now() >= state.cleanupDeadline) throw new NativeWorkError('cancelled');
+            return undefined;
+          },
+        },
+        AbortSignal.timeout(Math.max(1, Math.ceil(state.cleanupDeadline - performance.now()))),
+      );
+      if (retired.status !== 'retired') return;
+      await state.resources?.drain();
+      retired.drain.assertCurrent();
+      const evidence =
+        retired.drain.basis === 'absent-unadmitted'
+          ? { basis: 'absent-unadmitted' as const }
+          : retired.binding
+            ? {
+                basis: 'flushed-and-closed' as const,
+                nativeSessionId: retired.binding.nativeSessionId,
+                nativeAgentId: retired.binding.nativeAgentId,
+              }
+            : undefined;
+      if (!evidence) throw new NativeWorkError('unavailable');
+      const before = performance.now(),
+        view = await this.enqueue(state, () =>
+          this.options.protocol.command(state.run, {
+            operation: 'cleanup',
+            payload: { observation: { kind: 'drained', sequence: state.sequence, evidence } },
+          }),
+        );
+      this.update(state, view, before);
+      state.phase = view.resources === 'settled' ? 'retired' : 'recovery-required';
+    } finally {
+      if (state.phase === 'retiring') state.phase = 'recovery-required';
+    }
+  }
+  read(run: MemberLocalAcceptedRun): MemberLocalOwnerView {
+    const { backendId: _backendId, ...scope } = run.value.scope,
+      state = this.states.get(address(scope));
+    if (!state || state.run !== run) throw new NativeWorkError('scope-mismatch');
+    return {
+      phase: state.phase,
+      remote: structuredClone(state.view),
+      native:
+        state.abort.signal.aborted || ['fixed', 'submitted'].includes(state.phase)
+          ? undefined
+          : this.native.service.open(state.grant),
+      ...(state.receipt ? { receipt: state.receipt } : {}),
+    };
+  }
+  /** Host routing only. A still checks current member/space/Run before read/send. */
+  lookupNativeSession(nativeSessionId: string) {
+    return this.native.lookupNativeSession(nativeSessionId);
+  }
+  close(): Promise<void> {
+    return (this.closing ??= (async () => {
+      if (this.heartbeat) clearInterval(this.heartbeat);
+      this.lifetime.abort();
+      for (const state of this.states.values()) this.fence(state);
+      await Promise.allSettled([...this.jobs]);
+      await this.results.close();
+      await this.native.close();
+    })());
+  }
+  async refresh(run: MemberLocalAcceptedRun): Promise<MemberLocalOwnerView> {
+    const { backendId: _backendId, ...scope } = run.value.scope,
+      state = this.states.get(address(scope));
+    if (!state || state.run !== run) throw new NativeWorkError('scope-mismatch');
+    await this.enqueue(state, async () => {
+      this.check(state, 'open');
+      const before = performance.now(),
+        view = await this.options.protocol.command(run, { operation: 'renew', payload: {} });
+      this.update(state, view, before);
+    }).catch((error: unknown) => {
+      this.fence(state);
+      throw error;
+    });
+    return this.read(run);
+  }
+  async send(
+    run: MemberLocalAcceptedRun,
+    input: Omit<Parameters<NativeOwner['service']['send']>[1], 'selection'>,
+  ) {
+    await this.refresh(run);
+    const { backendId: _backendId, ...scope } = run.value.scope,
+      state = this.states.get(address(scope));
+    if (!state || state.run !== run || state.phase !== 'working')
+      throw new NativeWorkError('cancelled');
+    this.check(state, 'send');
+    return this.track(
+      this.native.service.send(state.grant, {
+        ...input,
+        selection: run.value.selection,
+      }),
+    );
+  }
+}
