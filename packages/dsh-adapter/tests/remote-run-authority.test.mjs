@@ -366,7 +366,15 @@ test('remote original JSON: lost accept response lookup never allocates and cold
       acceptRequestId: body.requestId,
       permit: f.drive.public,
     });
+  const beforeLookup = f.host.read();
+  f.host.resetCounts();
   const found = ok(await f.send(lookup()));
+  assert.equal(found.authority, 'recovery-required');
+  assert.equal(found.resources, 'held');
+  assert.deepEqual(f.host.read(), beforeLookup);
+  assert.deepEqual(f.host.counters, { global: 0, nodes: 0, plans: 0 });
+  assert.equal(ok(await f.send(f.scopeBody('status'))).authority, 'drive');
+  assert.equal(ok(await f.send(f.scopeBody('renew'))).authority, 'drive');
   assert.equal(found.scope.runId, f.view.scope.runId);
   assert.deepEqual(found.shared, f.view.shared);
   assert.deepEqual(found.selection, f.view.selection);
