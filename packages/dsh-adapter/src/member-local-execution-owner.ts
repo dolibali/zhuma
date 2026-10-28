@@ -18,6 +18,8 @@ import {
   MemberLocalProtocolError,
   type MemberLocalAcceptedRun,
   type MemberLocalRunHandle,
+  type MemberLocalReadHandle,
+  type MemberLocalStopInput,
 } from './member-local-execution-protocol.js';
 import { openNativeWorkSessions } from './native-work-session-storage.js';
 import {
@@ -34,7 +36,10 @@ import {
   type NativeFixedResultIssuer,
 } from './native-work-session-result.js';
 import type { NativeFixedResultRef } from './native-work-session-result-contract.js';
-import { executionRunCompositionRequest } from './execution-run-composition.js';
+import {
+  executionRunCompositionRequest,
+  type FrozenExecutionRunComposition,
+} from './execution-run-composition.js';
 import {
   registerExecutionRunResources,
   EXECUTION_RESOURCE_SOURCE_VERSION,
@@ -44,6 +49,7 @@ import {
 } from './execution-run-resources.js';
 import { observeHostNativeRun } from './host-run-observation.js';
 import { registerMemberLocalAcceptedInputs } from './member-local-execution-inputs.js';
+import { MemberLocalExecutionHistory } from './member-local-execution-history.js';
 
 export interface MemberLocalOwnerOptions {
   readonly protocol: MemberLocalExecutionProtocol;
@@ -59,8 +65,9 @@ type Phase =
 type Observation = ReturnType<typeof observeHostNativeRun>;
 type NativeOwner = Awaited<ReturnType<typeof openNativeWorkSessions>>;
 interface Owned {
-  readonly run: MemberLocalRunHandle;
-  readonly role: 'drive' | 'result-only';
+  readonly run: MemberLocalReadHandle;
+  readonly workRun?: MemberLocalRunHandle;
+  readonly role: 'drive' | 'result-only' | 'cleanup-only';
   readonly scope: NativeWorkScope;
   readonly abort: AbortController;
   readonly grant: NativeWorkGrant;
@@ -80,6 +87,7 @@ interface Owned {
   firstMessageId?: string;
   timer?: ReturnType<typeof setTimeout>;
   receipt?: RemoteResultReceipt;
+  binding?: NativeSessionBinding;
 }
 export interface MemberLocalOwnerView {
   readonly phase: Phase;
@@ -94,11 +102,13 @@ const hash = (value: unknown) => createHash('sha256').update(canonicalPayload(va
  * issuer. No backend ExecutionService, second transcript or Agent loop lives here. */
 export class MemberLocalExecutionOwner {
   private readonly states = new Map<string, Owned>();
+  private readonly handles = new WeakMap<MemberLocalReadHandle, Owned>();
   private readonly grants = new WeakMap<NativeWorkGrant, Owned>();
   private readonly lifetime = new AbortController();
   private readonly jobs = new Set<Promise<unknown>>();
   private native!: NativeOwner;
   private results!: NativeFixedResultIssuer;
+  private historyReader!: MemberLocalExecutionHistory;
   private heartbeat?: ReturnType<typeof setInterval>;
   private closing?: Promise<void>;
   private constructor(private readonly options: MemberLocalOwnerOptions) {}
@@ -131,12 +141,45 @@ export class MemberLocalExecutionOwner {
       throw new NativeWorkError('scope-mismatch');
     return state;
   }
+  private owned(run: MemberLocalReadHandle): Owned | undefined {
+    const state = this.handles.get(run);
+    return state && this.states.get(address(state.scope)) === state ? state : undefined;
+  }
+  private workRun(state: Owned): MemberLocalRunHandle {
+    if (!state.workRun || state.role === 'cleanup-only')
+      throw new NativeWorkError('configuration-mismatch');
+    return state.workRun;
+  }
+  private composition(state: Owned): FrozenExecutionRunComposition {
+    return this.workRun(state).composition;
+  }
+  private active(state: Owned): boolean {
+    return !(
+      ['submitted', 'retired'].includes(state.phase) &&
+      state.view.resources === 'settled' &&
+      !state.collecting &&
+      !state.retirement
+    );
+  }
+  private trim(): void {
+    const settled = [...this.states].filter(([, state]) => !this.active(state));
+    for (const [key, state] of settled.slice(
+      0,
+      Math.max(0, settled.length - REMOTE_RUN_LIMITS.activeAuthorities),
+    )) {
+      if (state.timer) clearTimeout(state.timer);
+      state.observation?.close();
+      state.abort.abort();
+      this.states.delete(key);
+    }
+  }
   private check(state: Owned, action: NativeWorkAction): void {
     if (
       this.lifetime.signal.aborted ||
       state.abort.signal.aborted ||
       performance.now() >= state.deadline ||
       state.view.stopRequested ||
+      state.role === 'cleanup-only' ||
       (state.role === 'drive'
         ? state.view.authority !== 'drive'
         : state.view.authority !== 'commit-only' || !['open', 'history'].includes(action)) ||
@@ -170,7 +213,7 @@ export class MemberLocalExecutionOwner {
           const state = this.state(grant);
           this.check(state, 'send');
           if (!this.options.native) {
-            if (state.run.composition.payload.tools.kind === 'local-tools')
+            if (this.composition(state).payload.tools.kind === 'local-tools')
               throw new NativeWorkError('configuration-mismatch');
             return { kind: 'text-only' };
           }
@@ -180,7 +223,7 @@ export class MemberLocalExecutionOwner {
         },
         compose: async (agentCtx, binding, grant) => {
           const state = this.state(grant),
-            snapshot = state.run.composition;
+            snapshot = this.composition(state);
           this.check(state, 'send');
           const input = await registerMemberLocalAcceptedInputs(
             agentCtx,
@@ -188,7 +231,7 @@ export class MemberLocalExecutionOwner {
             grant,
             this.native.service,
             this.options.protocol,
-            state.run,
+            this.workRun(state),
           );
           this.check(state, 'send');
           await this.options.assertModel(binding.selection, grant.signal);
@@ -269,10 +312,11 @@ export class MemberLocalExecutionOwner {
           );
           if (!state) throw new NativeWorkError('scope-mismatch');
           this.checkResult(state.grant);
-          return state.run.composition;
+          return this.composition(state);
         },
       },
     );
+    this.historyReader = new MemberLocalExecutionHistory(this.native, this.options.protocol);
     this.results.onReady((grant, ref) => {
       const state = this.grants.get(grant);
       if (state)
@@ -339,10 +383,23 @@ export class MemberLocalExecutionOwner {
       view = await this.options.protocol.status(run),
       { backendId: _backendId, ...scope } = view.scope,
       existing = this.states.get(address(scope));
-    if (existing) return this.read(existing.run);
+    if (existing) {
+      if (
+        !existing.workRun ||
+        existing.role === 'cleanup-only' ||
+        canonicalPayload(existing.workRun?.composition) !== canonicalPayload(run.composition) ||
+        existing.run.value.permit.id !== run.value.permit.id ||
+        existing.run.value.cleanup.id !== run.value.cleanup.id
+      )
+        throw new NativeWorkError('scope-mismatch');
+      this.handles.set(run, existing);
+      return this.read(run);
+    }
+    this.trim();
     const snapshot = run.composition;
     if (
-      this.states.size >= REMOTE_RUN_LIMITS.activeAuthorities ||
+      [...this.states.values()].filter((state) => this.active(state)).length >=
+        REMOTE_RUN_LIMITS.activeAuthorities ||
       view.authority !== 'drive' ||
       view.resources !== 'held' ||
       view.runStatus !== 'requested' ||
@@ -355,7 +412,7 @@ export class MemberLocalExecutionOwner {
       (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
     )
       throw new NativeWorkError('configuration-mismatch');
-    const state = this.retain(run, view, before, 'drive');
+    const state = this.retain(run, view, before, 'drive', run);
     try {
       this.check(state, 'open');
       if (this.native.service.open(state.grant)) throw new NativeWorkError('scope-mismatch');
@@ -368,10 +425,11 @@ export class MemberLocalExecutionOwner {
     return this.read(run);
   }
   private retain(
-    run: MemberLocalRunHandle,
+    run: MemberLocalReadHandle,
     view: RemoteRunView,
     before: number,
     role: Owned['role'],
+    workRun?: MemberLocalRunHandle,
   ): Owned {
     const { backendId: _backendId, ...scope } = view.scope,
       abort = new AbortController(),
@@ -382,6 +440,7 @@ export class MemberLocalExecutionOwner {
       }),
       state: Owned = {
         run,
+        ...(workRun ? { workRun } : {}),
         role,
         scope: grant.scope,
         abort,
@@ -389,7 +448,8 @@ export class MemberLocalExecutionOwner {
         view,
         deadline: before,
         cleanupDeadline: before,
-        phase: role === 'drive' ? 'dispatching' : 'fixed',
+        phase:
+          role === 'drive' ? 'dispatching' : role === 'result-only' ? 'fixed' : 'recovery-required',
         sequence: view.nextSequence,
         queue: Promise.resolve(),
         received: false,
@@ -402,12 +462,13 @@ export class MemberLocalExecutionOwner {
       previous.observation?.close();
     }
     this.states.set(address(scope), state);
+    this.handles.set(run, state);
     this.grants.set(grant, state);
     this.update(state, view, before);
     return state;
   }
   private async dispatch(state: Owned): Promise<void> {
-    const { firstMessage, selection } = executionRunCompositionRequest(state.run.composition);
+    const { firstMessage, selection } = executionRunCompositionRequest(this.composition(state));
     await this.options.assertModel(selection, state.grant.signal);
     this.check(state, 'send');
     const receipt = await this.native.service.send(state.grant, {
@@ -419,6 +480,7 @@ export class MemberLocalExecutionOwner {
       binding = this.native.service.open(state.grant)?.binding;
     if (!binding || !['received', 'claimed'].includes(receipt.status))
       throw new NativeWorkError('unavailable');
+    state.binding = binding;
     state.firstMessageId = receipt.messageId;
     await this.emit(state, {
       kind: 'received',
@@ -503,6 +565,7 @@ export class MemberLocalExecutionOwner {
     state.collecting = this.track(
       work.finally(() => {
         delete state.collecting;
+        this.trim();
       }),
     );
     return state.collecting;
@@ -549,7 +612,7 @@ export class MemberLocalExecutionOwner {
     if (prior?.collecting || (prior && !prior.abort.signal.aborted && prior.phase !== 'fixed'))
       throw new NativeWorkError('unavailable');
     if (prior?.retirement) await prior.retirement;
-    const state = this.retain(run, view, before, 'result-only');
+    const state = this.retain(run, view, before, 'result-only', run);
     try {
       await this.continueFixed(state);
     } catch (error) {
@@ -591,6 +654,7 @@ export class MemberLocalExecutionOwner {
     state.collecting = this.track(
       work.finally(() => {
         delete state.collecting;
+        this.trim();
       }),
     );
     return state.collecting;
@@ -604,7 +668,12 @@ export class MemberLocalExecutionOwner {
     const work = new Promise<void>((resolve) => setImmediate(resolve)).then(() =>
       this.retire(state),
     );
-    state.retirement = this.track(work);
+    state.retirement = this.track(
+      work.finally(() => {
+        delete state.retirement;
+        this.trim();
+      }),
+    );
     void work.catch(() => undefined);
   }
   private async retire(state: Owned): Promise<void> {
@@ -647,17 +716,23 @@ export class MemberLocalExecutionOwner {
       if (state.phase === 'retiring') state.phase = 'recovery-required';
     }
   }
-  read(run: MemberLocalRunHandle): MemberLocalOwnerView {
-    const { backendId: _backendId, ...scope } = run.value.scope,
-      state = this.states.get(address(scope));
-    if (!state || state.run !== run) throw new NativeWorkError('scope-mismatch');
+  read(run: MemberLocalReadHandle): MemberLocalOwnerView {
+    const state = this.owned(run);
+    if (!state) throw new NativeWorkError('scope-mismatch');
+    let native: MemberLocalOwnerView['native'];
+    if (
+      !state.abort.signal.aborted &&
+      performance.now() < state.deadline &&
+      !['fixed', 'submitted'].includes(state.phase)
+    ) {
+      native = this.native.service.open(state.grant);
+      if (native) state.binding = native.binding;
+    } else if (state.binding)
+      native = { binding: structuredClone(state.binding), status: 'detached' };
     return {
       phase: state.phase,
       remote: structuredClone(state.view),
-      native:
-        state.abort.signal.aborted || ['fixed', 'submitted'].includes(state.phase)
-          ? undefined
-          : this.native.service.open(state.grant),
+      native,
       ...(state.receipt ? { receipt: state.receipt } : {}),
     };
   }
@@ -665,20 +740,106 @@ export class MemberLocalExecutionOwner {
   lookupNativeSession(nativeSessionId: string) {
     return this.native.lookupNativeSession(nativeSessionId);
   }
+  /** Fresh authorized navigation. Unlike read(), this is the UI's initial read.
+   * It never activates a drive, factory, model, input or resource registration. */
+  async open(run: MemberLocalReadHandle, signal?: AbortSignal): Promise<MemberLocalOwnerView> {
+    const value = await this.historyReader.open(run, signal),
+      { backendId: _backendId, ...scope } = value.remote.scope,
+      state = this.states.get(address(scope));
+    if (state && value.native) state.binding = value.native.binding;
+    const localPhase =
+      state &&
+      ['working', 'dispatching'].includes(state.phase) &&
+      (state.abort.signal.aborted || performance.now() >= state.deadline)
+        ? 'recovery-required'
+        : state?.phase;
+    const phase: Phase =
+      localPhase ??
+      (value.remote.receipt
+        ? 'submitted'
+        : value.remote.resources === 'settled'
+          ? value.remote.runStatus === 'completed'
+            ? 'fixed'
+            : 'retired'
+          : 'recovery-required');
+    return { ...value, phase, ...(value.remote.receipt ? { receipt: value.remote.receipt } : {}) };
+  }
+  async openScope(scope: RemoteRunView['scope'], signal?: AbortSignal) {
+    const run = await this.options.protocol.history(scope, signal);
+    return { run, view: await this.open(run, signal) };
+  }
+  async openSession(nativeSessionId: string, signal?: AbortSignal) {
+    const found = this.native.lookupNativeSession(nativeSessionId);
+    if (!found || found.role !== 'work' || found.backendId !== this.options.protocol.backendId)
+      throw new NativeWorkError('scope-mismatch');
+    const opened = await this.openScope(
+      { backendId: found.backendId, ...found.binding.scope },
+      signal,
+    );
+    if (opened.view.native?.binding.nativeSessionId !== nativeSessionId)
+      throw new NativeWorkError('scope-mismatch');
+    return opened;
+  }
+  /** Host-internal raw history. Client transport uses observe's whitelist. */
+  history(run: MemberLocalReadHandle, after = -1, limit = 100, signal?: AbortSignal) {
+    return this.historyReader.history(run, after, limit, signal);
+  }
+  readInbox(run: MemberLocalReadHandle, signal?: AbortSignal) {
+    return this.historyReader.readInbox(run, signal);
+  }
+  async updateQueue(
+    run: MemberLocalReadHandle,
+    update: Parameters<NativeOwner['service']['updateQueue']>[1],
+  ) {
+    const state = await this.liveDrive(run);
+    this.check(state, 'queue');
+    return this.track(this.native.service.updateQueue(state.grant, update));
+  }
+  observe(run: MemberLocalReadHandle, after = -1, signal?: AbortSignal) {
+    return this.historyReader.observe(run, after, signal);
+  }
+  /** Host-internal raw frames; never mount this directly in Client transport. */
+  follow(run: MemberLocalReadHandle, after = -1, signal?: AbortSignal) {
+    return this.historyReader.follow(run, after, signal);
+  }
+  async stop(
+    run: MemberLocalReadHandle,
+    input: MemberLocalStopInput,
+    signal?: AbortSignal,
+  ): Promise<MemberLocalOwnerView> {
+    this.options.protocol.assertReadHandle(run);
+    const { backendId: _backendId, ...scope } = run.value.scope;
+    let state = this.states.get(address(scope));
+    if (!state && run.value.resources === 'held') {
+      // Do not extend an old cleanup deadline by treating cached serverTime as
+      // a fresh sample. Actual cleanup still verifies its backend capability.
+      const sampledAt =
+        performance.now() - Math.max(0, this.options.protocol.serverTime - run.value.serverTime);
+      state = this.retain(run, run.value, sampledAt, 'cleanup-only');
+    }
+    // No history read/renew gates a local stop: revoked member access may deny
+    // the business command while the old independent cleanup must still drain.
+    // Dispatch the explicit original stop first. The physical local retirement
+    // is independent of the HTTP wait; unknown is never a stopped/drained ACK.
+    const stopping = this.track(this.options.protocol.stop(run, input, signal));
+    if (state) this.fence(state);
+    await stopping;
+    return this.open(run, signal);
+  }
   close(): Promise<void> {
     return (this.closing ??= (async () => {
       if (this.heartbeat) clearInterval(this.heartbeat);
       this.lifetime.abort();
+      await this.historyReader.close();
       for (const state of this.states.values()) this.fence(state);
       await Promise.allSettled([...this.jobs]);
       await this.results.close();
       await this.native.close();
     })());
   }
-  async refresh(run: MemberLocalRunHandle): Promise<MemberLocalOwnerView> {
-    const { backendId: _backendId, ...scope } = run.value.scope,
-      state = this.states.get(address(scope));
-    if (!state || state.run !== run) throw new NativeWorkError('scope-mismatch');
+  async refresh(run: MemberLocalReadHandle): Promise<MemberLocalOwnerView> {
+    const state = this.owned(run);
+    if (!state) throw new NativeWorkError('scope-mismatch');
     await this.enqueue(state, async () => {
       this.check(state, 'open');
       const before = performance.now(),
@@ -690,20 +851,28 @@ export class MemberLocalExecutionOwner {
     });
     return this.read(run);
   }
+  /** Explicit interaction may use this process's still-live original drive.
+   * A history handle never mints/resumes one, and an expired drive stays expired. */
+  private async liveDrive(run: MemberLocalReadHandle): Promise<Owned> {
+    const opened = await this.open(run),
+      { backendId: _backendId, ...scope } = opened.remote.scope,
+      state = this.states.get(address(scope));
+    if (!state || state.role !== 'drive' || state.phase !== 'working' || !state.workRun)
+      throw new NativeWorkError('cancelled');
+    await this.refresh(state.workRun);
+    this.check(state, 'send');
+    return state;
+  }
   async send(
-    run: MemberLocalRunHandle,
+    run: MemberLocalReadHandle,
     input: Omit<Parameters<NativeOwner['service']['send']>[1], 'selection'>,
   ) {
-    await this.refresh(run);
-    const { backendId: _backendId, ...scope } = run.value.scope,
-      state = this.states.get(address(scope));
-    if (!state || state.run !== run || state.phase !== 'working')
-      throw new NativeWorkError('cancelled');
+    const state = await this.liveDrive(run);
     this.check(state, 'send');
     return this.track(
       this.native.service.send(state.grant, {
         ...input,
-        selection: run.value.selection,
+        selection: this.workRun(state).value.selection,
       }),
     );
   }

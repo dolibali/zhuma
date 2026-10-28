@@ -34,6 +34,46 @@ test('member-local protocol contract: selected resources require the exact local
     code: 'local-mismatch',
   });
 });
+test('member-local history protocol: exact pointer/status reads never reconcile, generate tokens or obtain drive', async (t) => {
+  const h = await fixture(t),
+    owner = await h.open();
+  t.after(() => owner.close());
+  const run = await (await owner.prepareAccept(randomUUID(), h.input)).send();
+  const durable = structuredClone([...h.rows]),
+    cut = h.seen.length;
+  const read = await owner.history(run.value.scope);
+  assert.equal('composition' in read, false);
+  assert.equal(
+    read.value.authority,
+    'drive',
+    'backend status does not itself elevate the private read handle',
+  );
+  await assert.rejects(owner.command(read, { operation: 'renew', payload: {} }), {
+    code: 'remote-recovery-required',
+  });
+  assert.throws(() => owner.assertStartHandle(read), { code: 'remote-recovery-required' });
+  assert.deepEqual([...h.rows], durable);
+  assert.deepEqual(
+    h.seen.slice(cut).map((v) => v.request.operation),
+    ['status'],
+  );
+  const unknown = { ...run.value.scope, runId: 'unknown-run' };
+  await assert.rejects(owner.history(unknown), { code: 'remote-recovery-required' });
+  assert.deepEqual([...h.rows], durable);
+});
+test('member-local history protocol: a failed pointer write after accept cannot yield a start handle', async (t) => {
+  const h = await fixture(t),
+    owner = await h.open();
+  t.after(() => owner.close());
+  const prepared = await owner.prepareAccept(randomUUID(), h.input);
+  h.failStore();
+  await assert.rejects(prepared.send(), { code: 'unavailable' });
+  assert.equal(h.acceptCalls(), 1, 'the actual accepted Run remains an unknown obligation');
+  assert.equal([...h.rows.keys()].filter((key) => key.includes('.run-pointer.')).length, 0);
+  h.failStore(false);
+  await prepared.send();
+  assert.equal(h.acceptCalls(), 1, 'retrying the known pointer write does not re-accept over HTTP');
+});
 test('member-local protocol contract: lost accept ACK explicitly replays the same durable device and intent', async (t) => {
   const h = await fixture(t, { loseAccept: true }),
     owner = await h.open(),
@@ -51,7 +91,11 @@ test('member-local protocol contract: lost accept ACK explicitly replays the sam
   const replay = await cold.prepareAccept(requestId, h.input);
   h.input.model.model = 'changed-after-prepare';
   await replay.send();
-  assert.deepEqual([...h.rows.values()], durable);
+  assert.deepEqual(
+    [...h.rows.values()].filter((row) => row.privateKey || row.drive),
+    durable,
+  );
+  assert.equal([...h.rows.keys()].filter((key) => key.includes('.run-pointer.')).length, 1);
   const requests = h.seen.filter(({ request }) => request.operation === 'accept');
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[0].request.payload, requests[1].request.payload);

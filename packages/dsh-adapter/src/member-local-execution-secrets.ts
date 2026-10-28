@@ -12,6 +12,8 @@ import {
   remotePrivatePermitSchema,
   remotePermitHashInput,
   remoteRunScopeSchema,
+  canonicalPayload,
+  type RemoteRunScope,
 } from '@zhuma/agent-core';
 
 /** A adapts this to its ORIGINAL private credentials owner. Implementations
@@ -47,6 +49,15 @@ const intentRecord = z.strictObject({
   cleanup: remotePrivatePermitSchema,
 });
 type IntentRecord = z.infer<typeof intentRecord>;
+const historyPointer = z
+  .strictObject({
+    version: z.literal(1),
+    scopeFingerprint: digest,
+    requestId: z.uuid(),
+    configurationId: z.string().min(1).max(200),
+    selectionFingerprint: digest,
+  })
+  .refine((value) => Buffer.byteLength(JSON.stringify(value)) <= 1024);
 export interface MemberLocalDeviceIdentity {
   readonly backendId: string;
   readonly actorId: string;
@@ -96,6 +107,7 @@ function publicToken(value: z.infer<typeof remotePrivatePermitSchema>): MemberLo
  * authorize a Run; the backend must validate actor/device/current full scope. */
 export class MemberLocalExecutionSecrets {
   private readonly issued = new WeakMap<object, DeviceRecord>();
+  private readonly intents = new WeakMap<MemberLocalAcceptSecrets, IntentRecord>();
   constructor(private readonly store: MemberLocalPrivateStore) {}
   async device(
     backendId: string,
@@ -223,12 +235,106 @@ export class MemberLocalExecutionSecrets {
       throw new MemberLocalSecretError('unavailable');
     }
   }
+  /** One bounded exact-key locator per original Run, with the same lifetime as
+   * its private accept intent. No list, scan, rotation or history eviction. */
+  async rememberRun(
+    device: MemberLocalDeviceIdentity,
+    intent: MemberLocalAcceptSecrets,
+    rawScope: RemoteRunScope,
+    configurationId: string,
+    selectionFingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      checkSignal(signal);
+      const owner = this.issued.get(device),
+        record = this.intents.get(intent),
+        scope = remoteRunScopeSchema.parse(rawScope);
+      if (
+        !owner ||
+        !record ||
+        owner.backendId !== scope.backendId ||
+        owner.actorId !== scope.actorId ||
+        record.backendId !== owner.backendId ||
+        record.actorId !== owner.actorId ||
+        record.deviceId !== owner.deviceId
+      )
+        throw new MemberLocalSecretError('invalid');
+      const entry = historyPointer.parse({
+        version: 1,
+        scopeFingerprint: this.scopeFingerprint(scope),
+        requestId: record.requestId,
+        configurationId,
+        selectionFingerprint,
+      });
+      const slot = key('run-pointer', [
+        owner.backendId,
+        owner.actorId,
+        owner.deviceId,
+        entry.scopeFingerprint,
+      ]);
+      const same = (raw: unknown) => {
+        const prior = historyPointer.parse(raw);
+        if (canonicalPayload(prior) !== canonicalPayload(entry))
+          throw new MemberLocalSecretError('conflict');
+        return prior;
+      };
+      const current = await this.store.read(slot);
+      checkSignal(signal);
+      if (current !== undefined) {
+        same(current);
+        return;
+      }
+      const saved = await this.store.modify(slot, (raw) => (raw === undefined ? entry : same(raw)));
+      checkSignal(signal);
+      same(saved);
+    } catch (error) {
+      if (error instanceof MemberLocalSecretError) throw error;
+      throw new MemberLocalSecretError('unavailable');
+    }
+  }
+  /** Pure cold navigation: exact pointer + exact intent reads, no scan or write.
+   * A missing locator is unknown; possession never supplies authority. */
+  async historyIntent(
+    device: MemberLocalDeviceIdentity,
+    rawScope: RemoteRunScope,
+    signal?: AbortSignal,
+  ) {
+    try {
+      checkSignal(signal);
+      const owner = this.issued.get(device),
+        scope = remoteRunScopeSchema.parse(rawScope);
+      if (!owner || owner.backendId !== scope.backendId || owner.actorId !== scope.actorId)
+        throw new MemberLocalSecretError('invalid');
+      const fingerprint = this.scopeFingerprint(scope);
+      const raw = await this.store.read(
+        key('run-pointer', [owner.backendId, owner.actorId, owner.deviceId, fingerprint]),
+      );
+      checkSignal(signal);
+      if (raw === undefined) return undefined;
+      const entry = historyPointer.parse(raw);
+      if (entry.scopeFingerprint !== fingerprint) throw new MemberLocalSecretError('conflict');
+      const intent = await this.recoverAccept(device, entry.requestId, signal);
+      if (!intent) return undefined;
+      return Object.freeze({
+        intent,
+        configurationId: entry.configurationId,
+        selectionFingerprint: entry.selectionFingerprint,
+      });
+    } catch (error) {
+      if (error instanceof MemberLocalSecretError) throw error;
+      throw new MemberLocalSecretError('unavailable');
+    }
+  }
+  private scopeFingerprint(scope: RemoteRunScope): string {
+    return createHash('sha256').update(canonicalPayload(scope)).digest('hex');
+  }
   private intentHandle(record: IntentRecord): MemberLocalAcceptSecrets {
     const drive = publicToken(record.drive),
       cleanup = publicToken(record.cleanup);
     if (drive.id === cleanup.id || drive.sha256 === cleanup.sha256)
       throw new MemberLocalSecretError('unavailable');
-    return Object.freeze({
+    const handle: MemberLocalAcceptSecrets = Object.freeze({
       requestId: record.requestId,
       intentFingerprint: record.intentFingerprint,
       drive,
@@ -236,5 +342,7 @@ export class MemberLocalExecutionSecrets {
       withDriveSecret: <T>(work: (secret: string) => T) => work(record.drive.secret),
       withCleanupSecret: <T>(work: (secret: string) => T) => work(record.cleanup.secret),
     });
+    this.intents.set(handle, record);
+    return handle;
   }
 }

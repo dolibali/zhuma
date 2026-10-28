@@ -82,6 +82,7 @@ export async function fixture(t, options = {}) {
     driveEpoch = randomUUID(),
     cleanupEpoch = randomUUID(),
     rows = new Map(),
+    stops = new Set(),
     seen = [];
   const document = options.upstream
     ? {
@@ -179,6 +180,27 @@ export async function fixture(t, options = {}) {
           format: 'der',
         });
       }
+      if (request.operation === 'stop') {
+        if (options.stopError) {
+          respond({ ok: false, error: { code: options.stopError } });
+          return;
+        }
+        const prior = stops.has(request.requestId);
+        if (!prior) {
+          assert.equal(request.payload.expectedNodeVersion, value.nodeVersion);
+          assert.equal(request.payload.expectedRunVersion, value.runVersion);
+          stops.add(request.requestId);
+          value.stopRequested = true;
+          value.authority = 'cleanup-only';
+        }
+        const { disposition, shared, selection, ...view } = value;
+        if (options.loseStop && !prior) {
+          res.destroy();
+          return;
+        }
+        respond({ ok: true, value: { ...view, disposition: prior ? 'replayed' : 'applied' } });
+        return;
+      }
       assert.equal(
         verify(
           null,
@@ -205,7 +227,11 @@ export async function fixture(t, options = {}) {
         );
       } else if (request.operation === 'accept') {
         acceptCalls++;
-        assert.equal(rows.size, 2, 'private device and intent were durable before accept');
+        assert.equal(
+          [...rows.values()].filter((row) => row.privateKey || row.drive).length,
+          2,
+          'private device and intent were durable before accept',
+        );
         assert.equal(req.headers[REMOTE_RUN_PERMIT_HEADER], undefined);
         const intent = [...rows.values()].find((row) => row.requestId === request.requestId);
         assert(!bytes.includes(intent.drive.secret));
@@ -295,6 +321,10 @@ export async function fixture(t, options = {}) {
       } else if (
         ['status', 'renew', 'event', 'submit-result', 'cleanup'].includes(request.operation)
       ) {
+        const statusError =
+          typeof options.statusError === 'function' ? options.statusError() : options.statusError;
+        if (request.operation === 'status' && statusError)
+          return respond({ ok: false, error: { code: statusError } });
         const intent = [...rows.values()].find((row) => row.requestId),
           cleanup = request.operation === 'cleanup';
         assert.equal(
@@ -414,8 +444,8 @@ export async function fixture(t, options = {}) {
     protocolOptions,
     input,
     acceptCalls: () => acceptCalls,
-    failStore: () => {
-      failStore = true;
+    failStore: (value = true) => {
+      failStore = value;
     },
     changeScope: () => {
       changeScope = true;

@@ -108,6 +108,85 @@ test('member-local secrets: concurrent private owners retain one device and one 
     { code: 'invalid' },
   );
 });
+test('member-local pointer contract: fixed per-scope CAS survives reopen and history performs two exact reads with no write', async () => {
+  const h = fixture(),
+    owner = new MemberLocalExecutionSecrets(h.store),
+    backendId = '00000000-0000-4000-8000-000000000001',
+    device = await owner.device(backendId, 'ann'),
+    intent = await owner.accept(device, '00000000-0000-4000-8000-000000000003', 'a'.repeat(64));
+  const scope = {
+    backendId,
+    actorId: 'ann',
+    spaceId: 'space',
+    taskId: 'task',
+    planId: 'plan',
+    revision: 1,
+    nodeId: 'node',
+    runId: 'run',
+    generation: 1,
+    segmentId: 'segment',
+  };
+  await Promise.all(
+    Array.from({ length: 8 }, () =>
+      owner.rememberRun(device, intent, scope, 'config', 'b'.repeat(64)),
+    ),
+  );
+  const pointers = [...h.rows].filter(([key]) => key.includes('.run-pointer.'));
+  assert.equal(pointers.length, 1);
+  assert(Buffer.byteLength(JSON.stringify(pointers[0][1])) <= 1024);
+  assert(!JSON.stringify(pointers[0][1]).includes(intent.withDriveSecret((value) => value)));
+  const cold = new MemberLocalExecutionSecrets(h.store),
+    coldDevice = await cold.device(backendId, 'ann');
+  const rows = structuredClone([...h.rows]),
+    read = h.store.read,
+    modify = h.store.modify,
+    keys = [];
+  h.store.read = (key) => {
+    keys.push(key);
+    return read(key);
+  };
+  h.store.modify = () => assert.fail('history pointer cannot write');
+  const recovered = await cold.historyIntent(coldDevice, scope);
+  assert.equal(recovered.intent.requestId, intent.requestId);
+  assert.equal(recovered.configurationId, 'config');
+  assert.equal(keys.length, 2);
+  assert(keys[0].includes('.run-pointer.'));
+  assert(keys[1].includes('.accept.'));
+  assert.equal(await cold.historyIntent(coldDevice, { ...scope, runId: 'missing' }), undefined);
+  assert.deepEqual([...h.rows], rows);
+  h.store.modify = modify;
+  await assert.rejects(
+    cold.rememberRun(coldDevice, recovered.intent, scope, 'changed-config', 'b'.repeat(64)),
+    { code: 'conflict' },
+  );
+  assert.deepEqual([...h.rows], rows);
+});
+test('member-local pointer contract: a copied secret handle or invalid pointer cannot acquire a locator', async () => {
+  const h = fixture(),
+    owner = new MemberLocalExecutionSecrets(h.store),
+    backendId = '00000000-0000-4000-8000-000000000001',
+    device = await owner.device(backendId, 'ann'),
+    intent = await owner.accept(device, '00000000-0000-4000-8000-000000000003', 'a'.repeat(64));
+  const scope = {
+    backendId,
+    actorId: 'ann',
+    spaceId: 'space',
+    taskId: 'task',
+    planId: 'plan',
+    revision: 1,
+    nodeId: 'node',
+    runId: 'run',
+    generation: 1,
+    segmentId: 'segment',
+  };
+  await assert.rejects(owner.rememberRun(device, { ...intent }, scope, 'config', 'b'.repeat(64)), {
+    code: 'invalid',
+  });
+  await assert.rejects(owner.rememberRun(device, intent, scope, 'x'.repeat(201), 'b'.repeat(64)), {
+    code: 'unavailable',
+  });
+  assert.equal(h.rows.size, 2);
+});
 test('member-local secrets: backend/account switches cannot reuse a private device slot', async () => {
   const h = fixture(),
     owner = new MemberLocalExecutionSecrets(h.store);
