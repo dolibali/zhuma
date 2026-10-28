@@ -321,3 +321,9 @@ export type {
   IdentityMemberLifecycleOptions,
   IdentityTeamView,
 } from './identity-member-lifecycle.js';
+export {
+  openKnowledgeService,
+  KnowledgeService,
+  KnowledgeError,
+  type KnowledgeServiceOptions,
+} from './knowledge-service.js';

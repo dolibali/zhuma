@@ -28,6 +28,8 @@ await mkdir(out, { recursive: true });
 // peer of its base bundle. Bundle only the pure definition/key helpers; live
 // services and Cordis must continue to come from the official Host instance.
 const bundledSdkHelpers = new Set([
+  // Only AttachmentId's pure string brand; the live provider stays ctx.attachments.
+  '@deepseek-ai/dsh-attachment',
   '@deepseek-ai/dsh-credentials',
   '@deepseek-ai/dsh-brand',
   '@deepseek-ai/dsh-storage-domain',
@@ -93,7 +95,7 @@ if (
   throw new Error('Workbench Host gained an unverified external SDK dependency.');
 const hostCode = await readFile(resolve(out, 'index.js'), 'utf8');
 if (
-  /\b(?:class\s+(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)|(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)(?:\d+)?\s*=\s*class)\b/u.test(
+  /\b(?:class\s+(?:AttachmentStore|CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)|(?:AttachmentStore|CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)(?:\d+)?\s*=\s*class)\b/u.test(
     hostCode,
   )
 )

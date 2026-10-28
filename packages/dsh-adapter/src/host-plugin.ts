@@ -27,6 +27,7 @@ import { nativeWorkSessionInject } from './native-work-session-storage.js';
 import { enableMemberWeb } from './member-web-transport.js';
 import { openMemberWebEntry } from './member-web-entry.js';
 import { openIdentityMemberHttp } from './identity-member-http.js';
+import { openHostKnowledge } from './host-knowledge.js';
 import type {
   IdentityMemberLifecycleHandle,
   IdentityMemberLifecycleOptions,
@@ -174,6 +175,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let closed = false;
   const directoryLifecycle = createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
   let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
+  let knowledge: ReturnType<typeof openHostKnowledge> | undefined;
   let identityMembers: IdentityMemberLifecycleHandle | undefined;
   const identityHttp =
     config.deploymentMode === 'multi-member'
@@ -227,6 +229,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   const beforeClose = async () => {
     closed = true;
     const identityClosing = identityHttp?.close();
+    const knowledgeClosing = knowledge?.close();
     localSetup?.close();
     const setupClosing = localSetupHttp?.close();
     const runs = closeRunBridge();
@@ -243,7 +246,11 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         try {
           await identityClosing;
         } finally {
-          await runs;
+          try {
+            await knowledgeClosing;
+          } finally {
+            await runs;
+          }
         }
       }
     }
@@ -383,6 +390,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     })();
     await memberOpening;
     if (closed) return;
+    knowledge = openHostKnowledge(ctx, directoryLifecycle.currentDirectory);
     // Even if identity failed, mount the member-gated routes. They reject absent
     // identity or directory facts; they never fall back to the owner principal.
     await ctx.plugin(executionPlugin, {
