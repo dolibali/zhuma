@@ -2050,3 +2050,120 @@ diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.
      const receiverContext = await this.resolveReceiverContext(descriptor, validated, endpoint)
      const receiver: unknown = receiverContext.get(descriptor.service)
      if (!isObject(receiver)) {
+diff --git a/packages/client/ui-workspace/src/client/index.ts b/packages/client/ui-workspace/src/client/index.ts
+index cc9da07..a5f541d 100644
+--- a/packages/client/ui-workspace/src/client/index.ts
++++ b/packages/client/ui-workspace/src/client/index.ts
+@@ -58,7 +58,7 @@ import { SessionIdMenuItem } from './session-actions/SessionId.tsx'
+ import { WorkspacePicker } from './WorkspacePicker.tsx'
+ import { en, zh, type WorkspaceKey } from './locales.ts'
+ 
+-export type { StartSessionOptions, UiWorkspace } from './navigation.ts'
++export type { StartSessionOptions, SessionNavigationGuard, UiWorkspace } from './navigation.ts'
+ export type {
+   DirectoryFlowOwnerProps, DirectoryFlowSlotName, DirectoryPickingHooks, DirectoryPickingInjected,
+   MenuOpenState, RowToast, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
+diff --git a/packages/client/ui-workspace/src/client/navigation.ts b/packages/client/ui-workspace/src/client/navigation.ts
+index 9c8fa97..689fdc6 100644
+--- a/packages/client/ui-workspace/src/client/navigation.ts
++++ b/packages/client/ui-workspace/src/client/navigation.ts
+@@ -35,8 +35,15 @@ export interface StartSessionOptions extends DraftInitializationOptions {
+   readonly agentPreset?: string
+ }
+ 
++/** Product navigation guard before retaining/following a Session. False means
++ * the guard handled task navigation or refused it; the guard owns user feedback. */
++export type SessionNavigationGuard = (target: SessionTarget, signal: AbortSignal) => boolean | Promise<boolean>
++
+ /** Workspace archive and directory operations consumed by Client UI domains. */
+ export interface UiWorkspace {
++  /** One optional product guard, sharing sidebar/direct/restore navigation. */
++  registerSessionNavigationGuard(guard: SessionNavigationGuard): () => void
++
+   /**
+    * Select a Session and show its Conversation as one UI navigation action.
+    * @param target - known Session identity or durable direct-parent subagent address to display.
+@@ -160,6 +167,19 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+     {}, { persist: { name: 'dsh.sessions.current' } },
+   )
+   private mainReference: SessionReference | undefined
++  private sessionNavigation: { readonly guard: SessionNavigationGuard } | undefined
++  private waitingNavigation: AbortController | undefined
++
++  registerSessionNavigationGuard(guard: SessionNavigationGuard): () => void {
++    if (this.sessionNavigation !== undefined) throw new Error('Session navigation guard is already registered')
++    const registration = { guard }
++    this.sessionNavigation = registration
++    return () => {
++      if (this.sessionNavigation !== registration) return
++      this.sessionNavigation = undefined
++      this.waitingNavigation?.abort()
++    }
++  }
+ 
+   /**
+    * @param ctx - Client root Context.
+@@ -274,7 +294,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+   }
+ 
+   openSession(target: SessionTarget): void {
+-    this.replaceMain(target, this.lifetime.signal, 'reveal')
++    this.replaceMain(target, AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]), 'reveal')
+   }
+ 
+   openWorkspace(
+@@ -441,18 +461,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+ 
+   private async restoreSelection(workspaces: WorkspaceSnapshot, sessions: SessionListState): Promise<void> {
+     const saved = this.selection.getSnapshot()
++    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+     if (saved.subagentAddress !== undefined) {
+-      this.replaceMain(saved.subagentAddress, this.lifetime.signal, 'preserve')
++      this.replaceMain(saved.subagentAddress, navigation, 'preserve')
+       return
+     }
+     const summary = saved.sessionId === undefined ? undefined : sessions.byId[saved.sessionId]
+     const workspace = summary === undefined ? undefined
+       : workspaces.items.find(item => item.sessionIds.includes(summary.id))
+     if (summary !== undefined && (!summary.blank || workspace === undefined)) {
+-      this.replaceMain(summary.id, this.lifetime.signal, 'preserve')
++      this.replaceMain(summary.id, navigation, 'preserve')
+       return
+     }
+-    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+     let sessionId: SessionId | undefined
+     if (summary !== undefined && workspace !== undefined && summary.cwd === workspace.path
+       && !workspaces.archivedSessionIds.includes(summary.id)) {
+@@ -501,6 +521,32 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+     signal: AbortSignal,
+     panel: 'reveal' | 'preserve',
+     beforeOpen?: (sessionId: SessionId) => void,
++  ): void {
++    const registration = this.sessionNavigation
++    if (registration === undefined) { this.commitMain(target, signal, panel, beforeOpen); return }
++    this.waitingNavigation?.abort()
++    const waiting = new AbortController()
++    this.waitingNavigation = waiting
++    const bounded = AbortSignal.any([signal, this.lifetime.signal, waiting.signal])
++    void Promise.resolve().then(() => {
++      bounded.throwIfAborted()
++      return registration.guard(target, bounded)
++    }).then(allowed => {
++      if (bounded.aborted || this.sessionNavigation !== registration || this.waitingNavigation !== waiting) return
++      if (allowed === true) this.commitMain(target, bounded, panel, beforeOpen)
++    }).catch(() => {
++      // Refusal keeps the previous view. The installed product guard owns its
++      // error/login feedback; failure must never default to ordinary history.
++    }).finally(() => {
++      if (this.waitingNavigation === waiting) this.waitingNavigation = undefined
++    })
++  }
++
++  private commitMain(
++    target: SessionTarget,
++    signal: AbortSignal,
++    panel: 'reveal' | 'preserve',
++    beforeOpen?: (sessionId: SessionId) => void,
+   ): void {
+     signal.throwIfAborted()
+     const reference = this.sessions.retain(target, { source: 'mainView' })
