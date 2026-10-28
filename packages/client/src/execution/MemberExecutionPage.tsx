@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { createIdentityApi } from '../identity/api.js';
+import { createIdentityLifecycleApi } from '../identity/lifecycle-api.js';
 import { MemberSessionBoundary } from '../identity/MemberSessionBoundary.js';
 import { MemberSpaceBoundary, type MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import type { MemberShell, SpaceSwitch } from '../identity/shell.js';
@@ -189,6 +190,7 @@ export function MemberExecutionPage({
   registerWorkspaceDirectory,
   openModelSettings,
   nativeExecution = true,
+  allowRegistration = false,
 }: {
   fetcher?: typeof fetch;
   shell?: MemberShell;
@@ -199,6 +201,7 @@ export function MemberExecutionPage({
   openModelSettings?: (() => void) | undefined;
   /** Web members do not implicitly run an Agent on the backend machine. */
   nativeExecution?: boolean;
+  allowRegistration?: boolean;
 }) {
   const snapshot = useSyncExternalStore(
     shell?.subscribe ?? noSubscription,
@@ -220,6 +223,7 @@ export function MemberExecutionPage({
     [shell, epoch],
   );
   const identity = useMemo(() => shell?.api ?? createIdentityApi(fetcher), [fetcher, shell]);
+  const lifecycle = useMemo(() => createIdentityLifecycleApi(fetcher), [fetcher]);
   // Two replacement controllers can share the same account, space and numeric
   // epoch. Their forms and captured handlers must still have separate lifetimes.
   const controllers = useRef({
@@ -246,6 +250,7 @@ export function MemberExecutionPage({
       api={identity}
       controller={shell?.session}
       showAccountHeader={!shell}
+      registerAccount={allowRegistration ? lifecycle.register : undefined}
     >
       {(session, invalidate, isSessionCurrent) =>
         shell && !shell.space ? (

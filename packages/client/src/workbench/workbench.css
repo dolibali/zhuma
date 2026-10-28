@@ -4690,6 +4690,79 @@ html[data-platform='darwin'] .zm-shell-chrome {
   color: var(--zm-muted);
   font-size: 12px;
 }
+.zm-account-management {
+  display: grid;
+  gap: 18px;
+}
+.zm-team-create,
+.zm-team-add {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+.zm-team-create .zm-field,
+.zm-team-add .zm-field {
+  flex: 1;
+  margin: 0;
+}
+.zm-team-directory {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(0, 1.5fr);
+  gap: 22px;
+  min-height: 200px;
+}
+.zm-team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.zhuma .zm-team-list button,
+.zm-dialog .zm-team-list button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  white-space: normal;
+  padding: 12px;
+}
+.zm-team-list [aria-current='true'] {
+  background: var(--zm-soft);
+  border-color: var(--zm-line-strong);
+}
+.zm-team-list small,
+.zm-team-member small {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-team-members h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.zm-team-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--zm-line-subtle);
+}
+.zm-team-member small {
+  margin-left: 8px;
+}
+.zm-team-add {
+  margin-top: 18px;
+}
+.zm-password-change {
+  max-width: 440px;
+}
+@media (max-width: 600px) {
+  .zm-team-directory {
+    grid-template-columns: 1fr;
+  }
+  .zm-team-create,
+  .zm-team-add {
+    flex-wrap: wrap;
+  }
+}
 .zm-board-card-footer {
   display: flex;
   gap: 12px;

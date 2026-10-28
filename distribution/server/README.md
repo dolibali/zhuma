@@ -13,7 +13,9 @@ node scripts/server/start.mjs --sdk /path/to/prepared-sdk --data /path/to/zhuma-
 
 默认只监听 `127.0.0.1:3080`。CLI 的 `--host` 必须是具体地址，不能用 `0.0.0.0` 或 `::`。本版不配置集群、公开网络入口或代理。
 
-首次设置使用数据目录内权限为 `0600` 的 `operator-url.txt`，只供操作者在本机打开。官方 CLI 为每个进程生成该链接；正常退出后删除。不要把它发给成员。成员使用启动时显示的无 token `/workbench` 地址。注册、团队管理和模板/知识页面按各自业务接口的集成版本提供，不能仅凭服务器已启动判断完整产品验收通过。
+成员使用启动时显示的无 token `/workbench` 地址，可创建账号并登录个人空间。在账号菜单打开“账号与团队”，创建团队或由创建者添加已有账号。普通成员可查看自己团队的成员，只有真实管理员可增删成员；旧团队没有管理员事实时保持只读。修改密码会使旧会话失效并要求重新登录。任务列表与看板读取同一批数据，卡片打开原任务；取消或未知进度不会显示为已交付。
+
+原首次设置的操作者入口保留在数据目录内权限为 `0600` 的 `operator-url.txt`，只供操作者在本机打开，普通成员注册不需要该链接。官方 CLI 为每个进程生成该链接；正常退出后删除，不发给成员。模板/知识页面及跨设备执行按各自集成版本验收，不能仅凭服务器已启动判断完整产品通过。
 
 `--data` 下的 `dsh/` 持久化原 SDK 凭据、身份、目录、工作台、执行和附件；`home/` 是隔离的运行 HOME。此目录含私密资料，不提交、不复制其他安装的模型 profile 或会话库。停止服务后备份整个目录；恢复到同版本并用相同 `--data` 启动。旧单人数据不会自动迁移。启动器不继承当前 shell 的模型密钥，也不读取原用户 HOME。
 
@@ -30,10 +32,13 @@ node scripts/server/start.mjs --sdk /path/to/prepared-sdk --data /path/to/zhuma-
 
 `registerProductFetch` 仅对显式成员 Web 模式增加产品 exact 路由。它先查 Host/Origin 和真实成员，再调用原处理器；空间/固定版本/文件授权和流式大小预算继续由原业务实现检查。没有通用 owner RPC 代理，没有 owner Peer 冒充。未启用此模式时保留原桌面行为。
 
+账号与团队复用原身份生命周期：`POST /zhuma-id/register`、`POST /zhuma-id/password`、`GET/POST /zhuma-id/teams`、`GET/POST /zhuma-id/team-members`。注册不发会话，完成后经原 `/zhuma-id/login` 登录；改密码后清除成员 cookie。所有请求经原 Host/Origin 和领域身份/管理员检查，入参不接受浏览器提供的 actor。HTTP 有独立 8 KiB/10 秒正文预算，操作已被领域接纳后断线只结束等待，关闭仍等待原操作收口。
+
 ## 验证
 
 ```sh
 node scripts/server/verify-local.mjs --sdk /path/to/prepared-sdk
+node scripts/server/verify-members.mjs --sdk /path/to/prepared-sdk
 ```
 
-此验证用全新临时 HOME/DSH_HOME 启动真实官方 CLI，经正常首次设置、成员登录、产品 HTTP、owner 拒绝和冷重开检查；报告在 `.artifacts/server/local-proof.json`。不使用导入账号夹具、不调用模型。运输单测只标记契约测试。浏览器交互、模型、本机跨设备执行、安装包和实际网络部署分别验收，不能由此结果代替。
+这两项验证均用全新临时 HOME/DSH_HOME 启动真实官方 CLI，分别核首次设置/成员业务/owner 拒绝，以及无 owner 授权的注册/个人空间/团队权限/改密码/项目与冷重开。报告在 `.artifacts/server/local-proof.json` 和 `member-proof.json`。不使用导入账号夹具、不调用模型。运输与 SSR 单测只标记契约测试。浏览器交互、模型、本机跨设备执行、安装包和实际网络部署分别验收，不能由此结果代替。

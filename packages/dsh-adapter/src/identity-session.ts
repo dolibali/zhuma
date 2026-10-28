@@ -10,8 +10,9 @@
  * `ownerAccountId` authenticates only an isolated host that imported exactly
  * one account and named it. A browser field named actor, actorId, or memberId
  * is refused and is never the account.
- * `applyIdentity` writes accounts only from an explicit `{id, passwordHash}`
- * import. With no import it writes no seed and stores no password.
+ * Startup writes accounts only from an explicit `{id, passwordHash}` import.
+ * A separately published member lifecycle supports explicit registration;
+ * it keeps recovery verifiers private and never stores a plaintext password.
  *
  * Space membership is enforced here. `remoteAccess.decide` allows every owner
  * principal before policy conditions run, so a policy alone cannot isolate
@@ -30,7 +31,13 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { PeerScope, Principal } from '@deepseek-ai/dsh-client-connection';
 import { defineDomain, type Domain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
-import { canonicalPayload } from '@zhuma/agent-core';
+import { canonicalPayload, WorkbenchError } from '@zhuma/agent-core';
+import {
+  createIdentityMemberLifecycle,
+  identityLifecycleOperationSchema,
+  type IdentityMemberLifecycleOptions,
+} from './identity-member-lifecycle.js';
+import { localSetupPackIds } from './host-local-setup-http.js';
 import {
   createLoginFailureTable,
   loginClientAddress,
@@ -44,6 +51,7 @@ import {
   memberCredential,
   memberSessionId,
   resolveMember,
+  openExecutionMemberLease,
   type IdentityExecutionOptions,
 } from './member-session.js';
 import {
@@ -118,11 +126,13 @@ export type IdentitySetupContext = z.infer<typeof SetupContextSchema>;
 const AccountSchema = z.object({
   id: z.string().min(1),
   passwordHash: z.string().regex(VERIFIER_PATTERN),
+  credentialRevision: z.number().int().nonnegative().refine(Number.isSafeInteger).optional(),
 });
 const SessionSchema = z.object({
   id: z.string().min(1),
   accountId: z.string().min(1),
   expiresAt: z.number().int(),
+  credentialRevision: z.number().int().nonnegative().refine(Number.isSafeInteger).optional(),
 });
 const NoteSchema = z.object({
   id: z.string().min(1),
@@ -261,6 +271,7 @@ export const identityDomainSpec = defineDomain({
     accounts: { valueSchema: AccountSchema },
     sessions: { valueSchema: SessionSchema },
     notes: { valueSchema: NoteSchema },
+    member_operations: { valueSchema: identityLifecycleOperationSchema },
   },
 });
 
@@ -893,6 +904,7 @@ function createIdentityInitialization(
   });
   return {
     handle,
+    exclusive: enqueue,
     async bootstrap(imported: IdentityImport | undefined) {
       if (imported && !domain.global.get().importComplete)
         await enqueue(() => perform('bootstrap-import', imported));
@@ -1238,6 +1250,7 @@ export async function applyIdentity(
   imported?: IdentityImport,
   executionOptions?: IdentityExecutionOptions,
   initialization?: IdentityInitializationOptions,
+  lifecycle?: IdentityMemberLifecycleOptions,
 ): Promise<void> {
   const mode = deploymentMode(ctx);
   if (mode === undefined) {
@@ -1250,14 +1263,75 @@ export async function applyIdentity(
     const { credentials, webServer, remoteAccess } = seams(ctx);
     const secret = await signingSecret(credentials);
     await initializer.bootstrap(readImport(imported));
+    const lifecycleAttempts = createLoginFailureTable();
+    const members = createIdentityMemberLifecycle({
+      signal: initializer.handle.signal,
+      check(request) {
+        ctx.fiber.assertActive();
+        if (
+          initializer.handle.signal.aborted ||
+          mode !== 'multi-member' ||
+          !identityAuthenticationReady(ctx, domain)
+        )
+          throw new WorkbenchError('unavailable', '成员账号操作暂不可用。');
+        if (ctx.connection.requestRejection({ headers: request.headers }) === 403)
+          throw new WorkbenchError('untrusted-request', '请求来源不可信。');
+      },
+      rateLimit(request, key) {
+        const address =
+          (request as { readonly socket?: { readonly remoteAddress?: string } }).socket
+            ?.remoteAddress ?? 'unknown';
+        if (lifecycleAttempts.reserve(address, key) === 'limited')
+          throw new WorkbenchError('rate-limited', '操作过于频繁，请稍后重试。');
+      },
+      assertAccountIdAvailable(accountId) {
+        const extra = lifecycle?.reservedAccountIds?.() ?? [];
+        if (!Array.isArray(extra) || extra.some((id) => typeof id !== 'string'))
+          throw new WorkbenchError('unavailable', '成员资源目录暂不可用。');
+        if (localSetupPackIds.some((id) => id === accountId) || extra.includes(accountId))
+          throw new WorkbenchError('conflict', '该账号标识已被使用。');
+      },
+      directory: () => spaceDirectoryFor(ctx),
+      lease: (request) => openExecutionMemberLease(ctx, request),
+      exclusive: initializer.exclusive,
+      async prepareRegistration() {
+        const global = domain.global.get();
+        if (global.importComplete) return;
+        if (
+          global.initialization ||
+          global.ownerAccountId ||
+          domain.table('accounts').size ||
+          domain.table('sessions').size ||
+          domain.table('notes').size
+        )
+          throw new WorkbenchError('recovery-required', '账号初始化尚未完成。');
+        await domain.global.set({ ...global, importComplete: true });
+      },
+      accounts: domain.table('accounts'),
+      operations: {
+        get: (id) => domain.table('member_operations').get(id),
+        put: (id, value) => domain.table('member_operations').put(id, value),
+        values: () => [...domain.table('member_operations').entries()].map(([, op]) => op),
+        get size() {
+          return domain.table('member_operations').size;
+        },
+      },
+      hash: hashIdentityInitializationPassword,
+      matches: identityInitializationPasswordMatches,
+    });
+    const currentSession = (sessionId: string) => {
+      if (!identityAuthenticationReady(ctx, domain)) return undefined;
+      const session = domain.table('sessions').get(sessionId);
+      const account = session && domain.table('accounts').get(session.accountId);
+      return account && (account.credentialRevision ?? 0) === (session!.credentialRevision ?? 0)
+        ? session
+        : undefined;
+    };
     ctx.effect(() => {
       const disposeResolver = installMemberResolver(ctx, {
         secret,
         requestRejection: (headers) => ctx.connection.requestRejection({ headers }),
-        findSession: (sessionId) =>
-          identityAuthenticationReady(ctx, domain)
-            ? domain.table('sessions').get(sessionId)
-            : undefined,
+        findSession: currentSession,
         ...(executionOptions === undefined
           ? {}
           : {
@@ -1304,6 +1378,7 @@ export async function applyIdentity(
       let disposePolicy: (() => void) | undefined;
       let disposeRoute: (() => void) | undefined;
       let unpublish: (() => void) | undefined;
+      let unpublishMembers: (() => void) | undefined;
       try {
         disposePolicy = remoteAccess.registerPolicy(
           'zhuma-member',
@@ -1312,9 +1387,11 @@ export async function applyIdentity(
         disposeRoute = webServer.register({
           kind: 'prefix',
           path: PREFIX,
-          handler: (req, res) => handle(ctx, domain, secret, remoteAccess, attempts, req, res),
+          handler: (req, res) =>
+            handle(ctx, domain, secret, remoteAccess, attempts, req, res, initializer.exclusive),
         });
         unpublish = initialization?.publish(initializer.handle);
+        unpublishMembers = lifecycle?.publish(members);
         return async () => {
           const drain = initializer.close();
           try {
@@ -1322,6 +1399,7 @@ export async function applyIdentity(
             disposeRoute?.();
             disposePolicy?.();
             unpublish?.();
+            unpublishMembers?.();
           } finally {
             await drain;
             await domain.close();
@@ -1332,6 +1410,7 @@ export async function applyIdentity(
         disposeRoute?.();
         disposePolicy?.();
         unpublish?.();
+        unpublishMembers?.();
         throw error;
       }
     });
@@ -1350,6 +1429,7 @@ async function handle(
   attempts: LoginFailureTable,
   req: IncomingMessage,
   res: ServerResponse,
+  exclusive: <T>(work: () => Promise<T>) => Promise<T>,
 ): Promise<void> {
   let memberPeer: PeerScope | undefined;
   try {
@@ -1427,21 +1507,38 @@ async function handle(
         fail(res, 401, 'invalid-login');
         return;
       }
-      attempts.clear(address, parsed.data.accountId);
-      await purgeExpiredSessions(domain);
-      const sessionId = randomUUID();
-      const expiresAt = Date.now() + SESSION_TTL_MS;
-      const session: SessionRecord = { id: sessionId, accountId: account.id, expiresAt };
-      await domain.table('sessions').put(sessionId, session);
-      send(
-        res,
-        200,
-        { ok: true, accountId: account.id },
-        memberCookieHeader(
-          memberCredential(secret, sessionId, expiresAt),
-          Math.floor(SESSION_TTL_MS / 1000),
-        ),
-      );
+      await exclusive(async () => {
+        ctx.fiber.assertActive();
+        const current = domain.table('accounts').get(account.id);
+        if (
+          !identityAuthenticationReady(ctx, domain) ||
+          current?.passwordHash !== account.passwordHash ||
+          (current.credentialRevision ?? 0) !== (account.credentialRevision ?? 0)
+        ) {
+          fail(res, 401, 'invalid-login');
+          return;
+        }
+        attempts.clear(address, parsed.data.accountId);
+        await purgeExpiredSessions(domain);
+        const sessionId = randomUUID();
+        const expiresAt = Date.now() + SESSION_TTL_MS;
+        const session: SessionRecord = {
+          id: sessionId,
+          accountId: account.id,
+          expiresAt,
+          credentialRevision: current.credentialRevision ?? 0,
+        };
+        await domain.table('sessions').put(sessionId, session);
+        send(
+          res,
+          200,
+          { ok: true, accountId: account.id },
+          memberCookieHeader(
+            memberCredential(secret, sessionId, expiresAt),
+            Math.floor(SESSION_TTL_MS / 1000),
+          ),
+        );
+      });
       return;
     }
 
@@ -1479,7 +1576,7 @@ async function handle(
         fail(res, 401, 'member-session-required');
         return;
       }
-      await domain.table('sessions').delete(sessionId);
+      await exclusive(() => domain.table('sessions').delete(sessionId));
       send(res, 200, { ok: true, accountId: actor.accountId }, memberCookieHeader('', 0));
       return;
     }

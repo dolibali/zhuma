@@ -316,3 +316,8 @@ export {
   MemberWorkbenchOperations,
   openMemberWorkbenchOperations,
 } from './member-workbench-operation.js';
+export type {
+  IdentityMemberLifecycleHandle,
+  IdentityMemberLifecycleOptions,
+  IdentityTeamView,
+} from './identity-member-lifecycle.js';
