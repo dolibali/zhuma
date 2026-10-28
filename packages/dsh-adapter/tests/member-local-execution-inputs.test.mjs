@@ -157,7 +157,7 @@ test('member-local input contract: digest-valid JSON still requires exact origin
 test('member-local input contract: rejected current backend membership never exposes cached content', async (t) => {
   let reject = false;
   const h = await setup(t, {
-    inputError: () => (reject ? 'remote-member-unavailable' : undefined),
+    inputError: () => (reject ? 'remote-forbidden' : undefined),
   });
   await h.register();
   reject = true;

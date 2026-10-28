@@ -34,6 +34,7 @@ import { enableMemberWeb } from './member-web-transport.js';
 import { openMemberWebEntry } from './member-web-entry.js';
 import { openIdentityMemberHttp } from './identity-member-http.js';
 import { openHostKnowledge } from './host-knowledge.js';
+import { mountHostSharedBackend } from './host-shared-backend-http.js';
 import type {
   IdentityMemberLifecycleHandle,
   IdentityMemberLifecycleOptions,
@@ -163,6 +164,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   if (config.remoteExecution && config.deploymentMode !== 'multi-member')
     throw new Error('Remote execution requires explicit multi-member mode.');
   configureDeploymentMode(ctx, config.deploymentMode);
+  if (config.deploymentMode === 'multi-member' && config.localSetup && !config.remoteExecution)
+    mountHostSharedBackend(ctx);
   if (config.memberWeb) {
     enableMemberWeb(ctx);
     openMemberWebEntry(ctx);
@@ -176,6 +179,9 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         version: 1,
         deploymentMode: config.deploymentMode,
         ...(config.localSetup ? { localSetup: true } : {}),
+        ...(config.localSetup && !config.remoteExecution && config.deploymentMode === 'multi-member'
+          ? { sharedBackend: true }
+          : {}),
       },
     });
   });

@@ -41,6 +41,289 @@ async function until(read, accept, timeout = 10_000) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+test('original owner replay: two actually issued accept handles address the same live native work', async (t) => {
+  const h = await setup(t, {
+    script: ['First response.', 'Second explicit followup.', 'Same active session from workspace.'],
+  });
+  await h.owner.start(h.run);
+  const replay = await (await h.protocol.prepareAccept(h.requestId, h.remote.input)).send();
+  assert.notEqual(replay, h.run);
+  await h.owner.start(replay);
+  assert.equal(
+    h.owner.read(replay).native.binding.nativeSessionId,
+    h.owner.read(h.run).native.binding.nativeSessionId,
+  );
+  await h.owner.send(replay, {
+    requestId: randomUUID(),
+    text: 'Explicit followup',
+    mode: 'followup',
+  });
+  await until(
+    () => h.adapter.requests.length,
+    (n) => n === 2,
+  );
+  assert.equal(h.ctx.agents.list().length, 1);
+  const fromWorkspace = await h.owner.openSession(
+    h.owner.read(replay).native.binding.nativeSessionId,
+  );
+  await h.owner.send(fromWorkspace.run, {
+    requestId: randomUUID(),
+    text: 'Explicit send from the same workspace conversation',
+    mode: 'followup',
+  });
+  await until(
+    () => h.adapter.requests.length,
+    (n) => n === 3,
+  );
+  const abort = new AbortController(),
+    stream = h.owner.observe(replay, -1, abort.signal);
+  assert.equal((await stream.next()).done, false);
+  abort.abort();
+  await stream.return();
+  const state = h.owner.handles.get(replay);
+  state.deadline = performance.now() - 1;
+  const readonly = await h.owner.open(replay);
+  assert.equal(readonly.remote.resources, 'held');
+  assert.equal(
+    readonly.native.binding.nativeSessionId,
+    h.owner.read(h.run).native.binding.nativeSessionId,
+  );
+  assert((await h.owner.history(replay)).events.length > 0);
+});
+test('owner cache guard contract: 128 settled history entries do not consume live authority quota', async (t) => {
+  const h = await setup(t, { script: ['One actual native Agent, not 128 models.'] });
+  for (let i = 0; i < 128; i++)
+    h.owner.states.set(`contract-terminal-${i}`, {
+      phase: 'retired',
+      view: { resources: 'settled' },
+      abort: new AbortController(),
+      scope: { ...h.run.composition.payload.scope, runId: `contract-terminal-${i}` },
+    });
+  await h.owner.start(h.run);
+  assert.equal(h.adapter.requests.length, 1);
+  await h.owner.close();
+  assert(h.owner.states.size <= 128);
+});
+test('original workspace inbox: explicit live-drive queue editing uses the same native inbox and session', async (t) => {
+  const release = Promise.withResolvers();
+  const h = await setup(t, {
+    script: [
+      async () => {
+        await release.promise;
+        return response('Original model settled.');
+      },
+    ],
+  });
+  t.onTestFinished(() => release.resolve());
+  try {
+    await h.owner.start(h.run);
+    await until(
+      () => h.adapter.requests.length,
+      (n) => n === 1,
+    );
+    const sid = h.owner.read(h.run).native.binding.nativeSessionId,
+      opened = await h.owner.openSession(sid);
+    const receipt = await h.owner.send(opened.run, {
+      requestId: randomUUID(),
+      text: 'Queued request',
+      mode: 'queue',
+    });
+    const before = await h.owner.readInbox(opened.run);
+    assert(before.items.some((item) => item.id === receipt.messageId));
+    await h.owner.updateQueue(opened.run, {
+      kind: 'edit',
+      messageId: receipt.messageId,
+      text: 'Edited queued request',
+    });
+    await h.owner.updateQueue(opened.run, { kind: 'reorder', messageIds: [receipt.messageId] });
+    assert(
+      (await h.owner.readInbox(opened.run)).items.some(
+        (item) => item.text === 'Edited queued request',
+      ),
+    );
+    await h.owner.updateQueue(opened.run, { kind: 'remove', messageId: receipt.messageId });
+    assert(
+      !(await h.owner.readInbox(opened.run)).items.some((item) => item.id === receipt.messageId),
+    );
+    assert.equal(h.adapter.requests.length, 1);
+    assert.equal((await h.owner.open(opened.run)).native.binding.nativeSessionId, sid);
+  } finally {
+    release.resolve();
+    await h.owner.close();
+  }
+});
+test('original completed history: stable SID and cold read/observe/inbox perform no Agent/model or metadata writes', async (t) => {
+  const h = await setup(t, {
+    workspace: true,
+    script: [
+      toolResponse(
+        { text: 'Completed conversation result.', links: [] },
+        'history-complete',
+        'complete_work',
+      ),
+    ],
+  });
+  await h.owner.start(h.run);
+  const done = await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'submitted',
+  );
+  const sid = done.native.binding.nativeSessionId;
+  assert.equal((await h.owner.open(h.run)).native.binding.nativeSessionId, sid);
+  await h.close();
+  await h.protocol.close();
+  const path = join(h.root, 'domains', 'zhuma_native_work_sessions.json'),
+    before = await readFile(path, 'utf8');
+  const coldProtocol = await MemberLocalExecutionProtocol.open({
+    ...h.remote.protocolOptions,
+    secrets: new MemberLocalExecutionSecrets(h.remote.store),
+  });
+  t.onTestFinished(() => coldProtocol.close());
+  const cold = await bootLocalOwner(h.root, coldProtocol, {
+    workspace: h.workspace.id,
+    assertModel: () => assert.fail('read cannot resolve a model'),
+  });
+  t.onTestFinished(() => cold.close());
+  const rows = structuredClone([...h.remote.rows]),
+    cut = h.remote.seen.length;
+  const opened = await cold.owner.openSession(sid);
+  assert.equal(opened.view.native.binding.nativeSessionId, sid);
+  const history = await cold.owner.history(opened.run, -1, 100);
+  assert(history.events.length > 0);
+  const inbox = await cold.owner.readInbox(opened.run);
+  assert(inbox.receipts.length > 0);
+  const abort = new AbortController();
+  const stream = cold.owner.observe(opened.run, -1, abort.signal);
+  const frame = await stream.next();
+  assert.equal(frame.done, false);
+  assert(['message', 'status', 'assistant-stream', 'gap'].includes(frame.value.type));
+  abort.abort();
+  await stream.return();
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(cold.ctx.agents.list().length, 0);
+  assert.deepEqual([...h.remote.rows], rows);
+  assert(h.remote.seen.slice(cut).every((v) => v.request.operation === 'status'));
+  assert.equal(await readFile(path, 'utf8'), before);
+  await assert.rejects(
+    cold.owner.send(opened.run, {
+      requestId: randomUUID(),
+      text: 'read handle cannot send',
+      mode: 'followup',
+    }),
+  );
+  await cold.close();
+  assert.equal(await readFile(path, 'utf8'), before);
+});
+test('original local stop: actual retained model call holds resources until original retirement really drains', async (t) => {
+  const release = Promise.withResolvers();
+  const h = await setup(t, {
+    script: [
+      async () => {
+        await release.promise;
+        return response('Late actual model response.');
+      },
+    ],
+  });
+  t.onTestFinished(() => release.resolve());
+  await h.owner.start(h.run);
+  await until(
+    () => h.adapter.requests.length,
+    (n) => n === 1,
+  );
+  const current = await h.protocol.status(h.run),
+    input = {
+      requestId: randomUUID(),
+      expectedNodeVersion: current.nodeVersion,
+      expectedRunVersion: current.runVersion,
+    };
+  const stopped = await h.owner.stop(h.run, input);
+  assert.equal(stopped.remote.resources, 'held');
+  assert.equal(
+    h.remote.seen.some((v) => v.request.operation === 'cleanup'),
+    false,
+  );
+  release.resolve();
+  await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'retired',
+  );
+  assert.equal((await h.owner.stop(h.run, input)).remote.resources, 'settled');
+  assert.equal(h.remote.seen.filter((v) => v.request.operation === 'cleanup').length, 1);
+  assert.equal(h.adapter.requests.length, 1);
+  assert.equal(h.ctx.agents.list().length, 0);
+});
+test('original local stop: lost HTTP ACK remains unknown while local retirement still requires actual drain', async (t) => {
+  const release = Promise.withResolvers();
+  const h = await setup(t, {
+    remote: { loseStop: true },
+    script: [
+      async () => {
+        await release.promise;
+        return response('Late stopped response.');
+      },
+    ],
+  });
+  t.onTestFinished(() => release.resolve());
+  await h.owner.start(h.run);
+  await until(
+    () => h.adapter.requests.length,
+    (n) => n === 1,
+  );
+  const current = await h.protocol.status(h.run),
+    input = {
+      requestId: randomUUID(),
+      expectedNodeVersion: current.nodeVersion,
+      expectedRunVersion: current.runVersion,
+    };
+  await assert.rejects(h.owner.stop(h.run, input), { outcome: 'unknown' });
+  assert.equal(h.remote.value().resources, 'held');
+  release.resolve();
+  await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'retired',
+  );
+  assert.equal((await h.owner.stop(h.run, input)).remote.resources, 'settled');
+});
+test('original local stop: revoked member history/control cannot prevent the independent actual local cleanup', async (t) => {
+  let revoked = false;
+  const release = Promise.withResolvers();
+  const h = await setup(t, {
+    remote: {
+      stopError: 'remote-forbidden',
+      statusError: () => (revoked ? 'remote-forbidden' : undefined),
+    },
+    script: [
+      async () => {
+        await release.promise;
+        return response('Retained original source.');
+      },
+    ],
+  });
+  t.onTestFinished(() => release.resolve());
+  await h.owner.start(h.run);
+  await until(
+    () => h.adapter.requests.length,
+    (n) => n === 1,
+  );
+  const view = await h.protocol.status(h.run);
+  revoked = true;
+  await assert.rejects(
+    h.owner.stop(h.run, {
+      requestId: randomUUID(),
+      expectedNodeVersion: view.nodeVersion,
+      expectedRunVersion: view.runVersion,
+    }),
+    { code: 'remote-forbidden' },
+  );
+  assert.equal(h.remote.value().resources, 'held');
+  release.resolve();
+  await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'retired',
+  );
+  assert.equal(h.remote.value().resources, 'settled');
+  assert.equal(h.ctx.agents.list().length, 0);
+});
 test('original local input owner: original tool reads remote accepted content only on demand before native fixed completion', async (t) => {
   let ref;
   const h = await setup(t, {

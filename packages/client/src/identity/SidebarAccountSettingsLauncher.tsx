@@ -10,6 +10,7 @@ export type SidebarAccountSettingsLauncherProps = SettingsLauncherOwnerProps & {
   openWork(): void;
   bindSettingsLauncher?: ((open: () => void) => () => void) | undefined;
   memberLifecycle?: boolean;
+  fetcher?: typeof fetch;
 };
 
 /** One expanded footer row; two independent 36px rail actions when collapsed. */
@@ -22,6 +23,7 @@ export function SidebarAccountSettingsLauncher({
   openSettings,
   bindSettingsLauncher,
   memberLifecycle = false,
+  fetcher = globalThis.fetch,
 }: SidebarAccountSettingsLauncherProps) {
   const [accountOpen, setAccountOpen] = useState(false);
   useEffect(() => bindSettingsLauncher?.(openSettings), [bindSettingsLauncher, openSettings]);
@@ -35,7 +37,9 @@ export function SidebarAccountSettingsLauncher({
           memberLifecycle ? () => shell.requestLeave(() => setAccountOpen(true)) : undefined
         }
       />
-      {accountOpen && <AccountTeamsDialog shell={shell} close={() => setAccountOpen(false)} />}
+      {accountOpen && (
+        <AccountTeamsDialog shell={shell} fetcher={fetcher} close={() => setAccountOpen(false)} />
+      )}
       <button
         type="button"
         className="zm-settings-trigger"

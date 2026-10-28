@@ -344,6 +344,8 @@ export type {
   MemberLocalProtocolOptions,
   MemberLocalAcceptedRun,
   MemberLocalRunHandle,
+  MemberLocalReadHandle,
+  MemberLocalStopInput,
   MemberLocalRecoveryInput,
   MemberLocalPreparedAccept,
   MemberLocalAcceptInput,

@@ -1504,7 +1504,7 @@ export class NativeWorkSessionService {
   async history(
     grant: NativeWorkGrant,
     after = -1,
-    limit = NATIVE_WORK_LIMITS.historyEvents,
+    limit: number = NATIVE_WORK_LIMITS.historyEvents,
     signal: AbortSignal = grant.signal,
   ) {
     const binding = this.required(grant, 'history');
