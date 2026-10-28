@@ -398,7 +398,7 @@ class OutputFileOwner implements NativeOutputFileIssuer {
       reading.check();
       permit.check();
       const record = await permit.publish({
-        mediaType: 'application/octet-stream',
+        mediaType: content.mediaType ?? 'application/octet-stream',
         byteSize: content.bytes.byteLength,
         sha256: content.sha256,
         data: {
