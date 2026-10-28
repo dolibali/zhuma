@@ -1786,22 +1786,26 @@ diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-mana
    initProfile(projectDir, WEB_PROFILE.bundles)
  }
 diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
-index 9de39d3f..36878060 100644
 --- a/apps/desktop/scripts/prepare-dsh.ts
 +++ b/apps/desktop/scripts/prepare-dsh.ts
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,8 @@
  /** Materialize the complete production runtime before publishing Desktop resources. */
  
++import { pythonBytecodeSnapshot, verifyRuntimePrivacy } from '../../../scripts/zhuma-verify-runtime-privacy.ts'
++import primaryRuntimeLock from '../../../scripts/primary-runtime/lock.json' with { type: 'json' }
 +import { verifyBuildSourcePaths } from '../../../scripts/zhuma-verify-build-source-paths.ts'
  import { resolveMacOSSignatureCacheDirectory } from './macos-signature-cache-directory.mjs'
  import { packagingStep } from './packaging-step.mjs'
  import { spawn } from 'node:child_process'
-@@ -157,6 +158,8 @@ async function main(): Promise<void> {
+@@ -157,6 +160,11 @@ async function main(): Promise<void> {
      if (!existsSync(join(DSH_OUTPUT_ROOT, 'node_modules', '@deepseek-ai', `libreoffice-kit-${officeEngine}`, 'prebuilds.json'))) {
        throw new Error(`desktop runtime: missing required LibreOffice engine ${officeEngine}`)
      }
 +    // Reject SDK output regressions before runtime signing, manifests and integrity descriptors.
 +    verifyBuildSourcePaths(DSH_OUTPUT_ROOT, ['node_modules/@deepseek-ai/*/{lib,dist}/**/*.{js,mjs,cjs}'])
++    // Read the complete prepared runtime before primary/native signing and descriptor publication.
++    pythonBytecodeSnapshot(join(RUNTIME_ROOT, 'primary-runtime'), primaryRuntimeLock.pythonVersion)
++    verifyRuntimePrivacy(RUNTIME_ROOT)
      if (process.platform === 'darwin' && process.env.DSH_DESKTOP_UNSIGNED !== '1') {
        const cacheDirectory = resolveMacOSSignatureCacheDirectory(process.env, BUILD_PATHS.root)
        await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'sign:dsh-native', () => signMacOSRuntime(DSH_OUTPUT_ROOT, resolveDesktopAppId(process.env), resolveMacOSSigningEnvironment(process.env), target.arch, cacheDirectory))
@@ -1899,3 +1903,42 @@ index b521d8ef..85e76f15 100644
        entryFileNames: chunk => chunk.name === 'connect' ? 'connect.js' : entryFiles[chunk.name]!,
        chunkFileNames: 'chunks/[name]-[hash].js',
      } },
+diff --git a/scripts/primary-runtime/prepare.ts b/scripts/primary-runtime/prepare.ts
+--- a/scripts/primary-runtime/prepare.ts
++++ b/scripts/primary-runtime/prepare.ts
+@@ -1,5 +1,6 @@
+ /** Prepare pinned, relocatable script interpreters without installing into the build host. */
+ 
++import { assertPythonBytecodeUnchanged, pythonBytecodeSnapshot, verifyRuntimePrivacy } from '../zhuma-verify-runtime-privacy.ts'
+ import { execFileSync } from 'node:child_process'
+ import { createHash, randomUUID } from 'node:crypto'
+ import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+@@ -229,6 +230,8 @@ export async function preparePrimaryRuntime(options: PreparePrimaryRuntimeOption
+     const destination = join(paths.runtime, 'primary-runtime')
+     rmSync(destination, { recursive: true, force: true })
+     await copyPrimaryRuntime(output, destination, manifest)
++    pythonBytecodeSnapshot(destination, manifest.python)
++    verifyRuntimePrivacy(destination)
+   } finally {
+     rmSync(staging, { recursive: true, force: true })
+   }
+@@ -259,13 +262,18 @@ export function smokePrimaryRuntime(root: string, environment: NodeJS.ProcessEnv
+     }
+     if (!lstatSync(join(dirname(entries.python), interpreter)).isFile()) throw new Error('primary runtime: versioned Python must be a regular file')
+   }
+-  const options = { stdio: 'inherit', timeout: 120_000, env: environment } as const
++  verifyRuntimePrivacy(root)
++  const bytecode = pythonBytecodeSnapshot(root, manifest.python)
++  // venv/ensurepip descendants do not inherit the parent's -B; this environment is build-smoke-only.
++  const options = { stdio: 'inherit', timeout: 120_000, env: { ...environment, PYTHONDONTWRITEBYTECODE: '1' } } as const
+   execFileSync(entries.python, ['-I', '-B', '-c', 'import decimal, xml.parsers.expat, lzma, uuid, numpy, pandas; assert numpy.arange(4).sum() == 6; assert pandas.DataFrame({"n": [1, 2]}).n.sum() == 3'], options)
+   execFileSync(entries.python, ['-I', '-B', join(import.meta.dirname, 'smoke.py'), JSON.stringify(manifest.pythonPackages),
+     manifest.python], options)
+   execFileSync(entries.python, ['-I', '-B', '-m', 'pip', 'check'], options)
+   if (entries.node !== undefined) execFileSync(entries.node, ['-e', `if (process.versions.node !== ${JSON.stringify(manifest.node)}) process.exit(1)`], options)
+   if (entries.pnpm !== undefined && entries.node !== undefined) execFileSync(entries.node, [entries.pnpm, '--version'], options)
++  assertPythonBytecodeUnchanged(root, manifest.python, bytecode)
++  verifyRuntimePrivacy(root)
+ }
+ 
+ if (import.meta.main) {
