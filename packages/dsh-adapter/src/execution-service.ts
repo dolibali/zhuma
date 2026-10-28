@@ -1564,6 +1564,7 @@ export class ExecutionService {
     if (!this.remoteRunAuthorities) {
       this.remoteRunAuthorities = new RemoteRunAuthorities({
         signal: this.runLifetime.signal,
+        resourceHost: host,
         enqueue: async (work) => {
           const result = await this.enqueue(async () => ({ ok: true, value: await work() }));
           if (!result.ok)
@@ -1621,7 +1622,7 @@ export class ExecutionService {
           )
             throw new RemoteRunError('remote-stale-plan');
         },
-        compose: (actorId, request, node, scope) => {
+        compose: (actorId, request, node, scope, resourceCatalog) => {
           const descriptor = describeNativeResultTool();
           if (
             descriptor.name !== 'complete_work' ||
@@ -1634,6 +1635,7 @@ export class ExecutionService {
             scope,
             model: request.payload.model,
             executor: request.payload.executor,
+            ...(resourceCatalog ? { resourceCatalog } : {}),
             inputs: {
               actorId,
               ...request.payload.target,
@@ -4018,6 +4020,12 @@ export class ExecutionService {
     while (this.nativeResultOperations.size)
       await Promise.allSettled([...this.nativeResultOperations]);
     let workspaceApprovalFailure: unknown;
+    let remoteFailure: unknown;
+    try {
+      await this.remoteRunAuthorities?.close();
+    } catch (error) {
+      remoteFailure = error;
+    }
     try {
       await this.workspaceApprovalOwner?.close();
     } catch (error) {
@@ -4036,6 +4044,7 @@ export class ExecutionService {
     if (this.runPreparationFailure) throw this.runPreparationFailure;
     if (this.nativeResultCleanupFailure) throw this.nativeResultCleanupFailure;
     if (workspaceApprovalFailure) throw workspaceApprovalFailure;
+    if (remoteFailure) throw remoteFailure;
   }
 
   private requireRunHost(): ExecutionRunHostPorts {

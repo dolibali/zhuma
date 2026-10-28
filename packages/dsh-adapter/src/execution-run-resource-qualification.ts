@@ -22,6 +22,20 @@ export interface ExecutionRunResourceQualification {
   assertCurrent(): undefined;
   release(): undefined;
 }
+export interface ExecutionInitialResourceQualification {
+  readonly actorId: string;
+  readonly catalog: ExecutionRunResourceCatalog;
+  readonly signal: AbortSignal;
+  assertCurrent(): undefined;
+  release(): void;
+}
+export type ExecutionInitialResourceLocator = {
+  readonly spaceId: string;
+  readonly taskId: string;
+  readonly planId: string;
+  readonly revision: number;
+  readonly nodeId: string;
+};
 /** Supplied only by the original installed Host. No browser representation exists. */
 export interface ExecutionRunResourceCatalogHost {
   readonly signal: AbortSignal;
@@ -29,11 +43,20 @@ export interface ExecutionRunResourceCatalogHost {
     originalRequest: MemberRequest,
     command: BeginRunRequest,
   ): Promise<ExecutionRunResourceQualification>;
+  /** Original member/package qualification BEFORE a composition exists. Queue-external only. */
+  prepareInitialResourceCatalog?(
+    originalRequest: MemberRequest,
+    locator: ExecutionInitialResourceLocator,
+    wait?: AbortSignal,
+  ): Promise<ExecutionInitialResourceQualification>;
 }
 /** The queue receives data and a current-source check, not metadata release/signal. */
 export interface ExecutionRunResourceVerification {
   readonly catalog: ExecutionRunResourceCatalog;
   assertCurrent(): undefined;
+}
+export interface ExecutionInitialResourceVerification extends ExecutionRunResourceVerification {
+  readonly actorId: string;
 }
 /** An owner must retain this failed cleanup when deciding whether close drained. */
 export class ExecutionRunResourceQualificationCloseError extends ExecutionRunError {
@@ -201,5 +224,114 @@ export async function withExecutionRunResourceQualification<T>(
         throw new ExecutionRunResourceQualificationCloseError();
       }
     } else throw new ExecutionRunResourceQualificationCloseError();
+  }
+}
+
+/** Same original catalog/qualification rules, without inventing a provisional composition.
+ * The caller owns this whole Promise, including a late provider and actual release. */
+export async function withExecutionInitialResourceQualification<T>(
+  input: {
+    readonly host: ExecutionRunResourceCatalogHost;
+    readonly ownerSignal: AbortSignal;
+    readonly originalRequest: MemberRequest;
+    readonly locator: ExecutionInitialResourceLocator;
+  },
+  work: (verified: ExecutionInitialResourceVerification) => Promise<T>,
+): Promise<T> {
+  const { host, ownerSignal, originalRequest, locator } = input;
+  const prepare = host.prepareInitialResourceCatalog;
+  const hostSignal = host.signal;
+  const fingerprint = canonicalPayload(locator);
+  const active = () => {
+    if (
+      !(hostSignal instanceof AbortSignal) ||
+      !(ownerSignal instanceof AbortSignal) ||
+      host.signal !== hostSignal ||
+      host.prepareInitialResourceCatalog !== prepare ||
+      hostSignal.aborted ||
+      ownerSignal.aborted ||
+      canonicalPayload(locator) !== fingerprint
+    )
+      unavailable();
+  };
+  active();
+  if (typeof prepare !== 'function') unavailable();
+  let qualification: ExecutionInitialResourceQualification;
+  try {
+    qualification = await prepare.call(
+      host,
+      originalRequest,
+      locator,
+      AbortSignal.any([ownerSignal, hostSignal]),
+    );
+  } catch {
+    return unavailable();
+  }
+  const release = qualification?.release;
+  const assertions: Promise<unknown>[] = [];
+  try {
+    const signal = qualification?.signal,
+      check = qualification?.assertCurrent,
+      actorId = qualification?.actorId,
+      originalCatalog = qualification?.catalog;
+    if (
+      !(signal instanceof AbortSignal) ||
+      typeof check !== 'function' ||
+      typeof release !== 'function' ||
+      typeof actorId !== 'string' ||
+      !actorId ||
+      actorId.length > 200
+    )
+      unavailable();
+    const parsed = catalogSchema.safeParse(originalCatalog);
+    if (!parsed.success) unavailable();
+    readExecutionRunResources({
+      sourceVersion: parsed.data.sourceVersion,
+      skills: [],
+      mcp: parsed.data.mcp,
+    });
+    const catalogFingerprint = canonicalPayload(originalCatalog);
+    const catalog: ExecutionRunResourceCatalog = freeze({
+      sourceVersion: parsed.data.sourceVersion,
+      mcp: parsed.data.mcp,
+      ...(parsed.data.skills === undefined ? {} : { skills: parsed.data.skills }),
+    });
+    const current = (): undefined => {
+      active();
+      if (
+        qualification.signal !== signal ||
+        signal.aborted ||
+        qualification.actorId !== actorId ||
+        qualification.assertCurrent !== check ||
+        qualification.release !== release ||
+        qualification.catalog !== originalCatalog ||
+        canonicalPayload(originalCatalog) !== catalogFingerprint
+      )
+        unavailable();
+      const result: unknown = check.call(qualification);
+      if (result !== undefined) {
+        const pending = Promise.resolve(result);
+        void pending.catch(() => undefined);
+        assertions.push(pending);
+        unavailable();
+      }
+      return undefined;
+    };
+    current();
+    const result = await work(Object.freeze({ actorId, catalog, assertCurrent: current }));
+    current();
+    return result;
+  } finally {
+    await Promise.allSettled(assertions);
+    if (typeof release !== 'function') throw new ExecutionRunResourceQualificationCloseError();
+    try {
+      const result: unknown = release.call(qualification);
+      if (result !== undefined) {
+        await Promise.resolve(result);
+        throw new ExecutionRunResourceQualificationCloseError();
+      }
+    } catch {
+      throw new ExecutionRunResourceQualificationCloseError();
+    }
   }
 }

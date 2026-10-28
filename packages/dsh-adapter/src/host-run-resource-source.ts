@@ -56,6 +56,9 @@ export interface HostRunResourceQualification {
   assertCurrent(): undefined;
   release(): undefined;
 }
+export interface HostInitialResourceQualification extends HostRunResourceQualification {
+  readonly actorId: string;
+}
 export interface HostReviewResourceQualification extends HostRunResourceQualification {
   readonly preparation: ExecutionReviewPreparation;
 }
@@ -430,6 +433,51 @@ export function createHostRunResourceSource(options: {
       try {
         return (await selected(request, locator)).catalog;
       } catch {
+        return unavailable();
+      }
+    },
+    /** Initial remote admission has no composition yet. The same original
+     * package/member/handoff qualification is retained only for this operation;
+     * D still owns queue admission, the new scope, and continuing Run grants. */
+    async prepareInitialResourceCatalog(
+      request: MemberRequest,
+      locator: Locator,
+      wait?: AbortSignal,
+    ): Promise<HostInitialResourceQualification> {
+      const operation = new AbortController();
+      const lifetime = AbortSignal.any([signal, operation.signal, ...(wait ? [wait] : [])]);
+      const address = () => ({
+        spaceId: locator.spaceId,
+        taskId: locator.taskId,
+        planId: locator.planId,
+        revision: locator.revision,
+        nodeId: locator.nodeId,
+      });
+      const fixed = Object.freeze(address());
+      const fingerprint = canonicalPayload(fixed);
+      try {
+        lifetime.throwIfAborted();
+        active();
+        const source = await selected(request, fixed);
+        const current = () => {
+          lifetime.throwIfAborted();
+          source.assertSource();
+          if (canonicalPayload(address()) !== fingerprint) unavailable();
+          return undefined;
+        };
+        current();
+        return Object.freeze({
+          actorId: source.actorId,
+          catalog: source.catalog,
+          signal: lifetime,
+          assertCurrent: current,
+          release() {
+            operation.abort();
+            return undefined;
+          },
+        });
+      } catch {
+        operation.abort();
         return unavailable();
       }
     },
