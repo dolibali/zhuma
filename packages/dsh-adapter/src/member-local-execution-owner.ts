@@ -355,8 +355,17 @@ export class MemberLocalExecutionOwner {
           ...execution,
           createRunOutputFiles: (_authority, source) => {
             if (_authority !== authority) throw new NativeWorkError('configuration-mismatch');
-            return createMemberLocalOutputFiles(this.options.protocol, source, (grant) =>
-              this.workRun(this.state(grant)),
+            return createMemberLocalOutputFiles(
+              this.options.protocol,
+              source,
+              (grant) => this.workRun(this.state(grant)),
+              async (grant) => {
+                const state = this.state(grant);
+                await state.dispatch;
+                await this.acceptClaim(state);
+                this.check(state, 'send');
+                if (!state.accepted) throw new NativeWorkError('unavailable');
+              },
             );
           },
         },

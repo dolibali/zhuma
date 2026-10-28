@@ -25,6 +25,7 @@ export function createMemberLocalOutputFiles(
   protocol: MemberLocalExecutionProtocol,
   resources: NativeOutputFileResourceSource,
   runForGrant: (grant: NativeWorkGrant) => MemberLocalRunHandle,
+  ready: (grant: NativeWorkGrant) => Promise<void>,
 ): NativeRunOutputFiles {
   const run = (grant: NativeWorkGrant, action: 'send' | 'history') => {
     grant.assertCurrent(action);
@@ -77,6 +78,9 @@ export function createMemberLocalOutputFiles(
       return Object.freeze({ source, record: saved, signal, check });
     },
     async reserve(grant, request, caller) {
+      // A fast first tool call can precede the native receipt and D's accepted
+      // event. Join this original admission; never invent its native identity.
+      await ready(grant);
       const lifetime = new AbortController();
       const handle = run(grant, 'send'),
         source = structuredClone(request.source),

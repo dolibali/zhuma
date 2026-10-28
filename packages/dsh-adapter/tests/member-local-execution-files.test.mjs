@@ -130,9 +130,23 @@ function fixture() {
         assert.equal(g, grant);
         return handle;
       },
+      async () => {
+        await control.admission?.promise;
+      },
     );
   return { files, grant, request, source, seen, control, bytes, record, complete, life };
 }
+test('member-local files contract: first publication waits the original accepted admission before even lookup', async () => {
+  const h = fixture();
+  h.control.admission = Promise.withResolvers();
+  const pending = h.files.reserve(h.grant, h.request, h.life.signal);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.seen.length, 0);
+  h.control.admission.resolve();
+  const lease = await pending;
+  lease.releaseAfter(Promise.resolve());
+  await lease.drain;
+});
 test('member-local files contract: exact original source key and full ledger; raw bytes are not a JSON field', async () => {
   const h = fixture();
   await assert.rejects(h.files.reserve(h.grant, { ...h.request, mode: 'lookup' }, h.life.signal), {
