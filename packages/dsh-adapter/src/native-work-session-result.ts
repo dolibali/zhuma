@@ -1407,17 +1407,20 @@ class NativeResultOwner {
         fixed.cut.turnEndSeq !== candidate.cut.turnEndSeq
       )
         throw new NativeResultError('result-rejected');
-      const binding = await this.sessions.sealResultIntent(
-        grant,
-        intent.intentId,
-        fixed.cut,
-        () => {
-          this.check(grant);
-          snapshot.check();
-          drain.assertCurrent();
-          return undefined;
-        },
-      );
+      const assertSource = () => {
+        this.check(grant);
+        snapshot.check();
+        drain.assertCurrent();
+        return undefined;
+      };
+      const binding = initial.resultIntent?.cut
+        ? await this.sessions.readSealedResultIntent(
+            grant,
+            intent.intentId,
+            fixed.cut,
+            assertSource,
+          )
+        : await this.sessions.sealResultIntent(grant, intent.intentId, fixed.cut, assertSource);
       this.check(grant);
       drain.assertCurrent();
       snapshot.check();

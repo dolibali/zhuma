@@ -39,6 +39,62 @@ function harness(version) {
 }
 
 for (const version of [1, 2]) {
+  test(`contract: v${version} result continuation can only read the exact sealed cut and cannot send`, async () => {
+    const h = harness(version);
+    await h.service.sealResultIntent(h.grant, 'intent', cut, () => undefined);
+    const before = h.value();
+    const readOnly = grant();
+    const original = readOnly.assertCurrent;
+    readOnly.assertCurrent = (action) => {
+      original();
+      if (!['open', 'history'].includes(action)) throw Error('result-continuation-is-not-drive');
+    };
+    const binding = await h.service.readSealedResultIntent(
+      readOnly,
+      'intent',
+      cut,
+      () => undefined,
+    );
+    assert.deepEqual(binding, before);
+    assert.equal(h.writes(), 1);
+    assert.throws(
+      () =>
+        h.service.send(readOnly, {
+          requestId: 'must-not-send',
+          text: 'must-not-start',
+          mode: 'followup',
+          selection,
+        }),
+      /result-continuation-is-not-drive/u,
+    );
+    assert.throws(
+      () => h.service.sealResultIntent(readOnly, 'intent', cut, () => undefined),
+      /result-continuation-is-not-drive/u,
+    );
+    assert.deepEqual(h.value(), before);
+  });
+
+  test(`contract: v${version} read-only continuation cannot manufacture an unsealed cut or reuse changed source authority`, async () => {
+    const h = harness(version);
+    await assert.rejects(
+      h.service.readSealedResultIntent(h.grant, 'intent', cut, () => undefined),
+      { code: 'scope-mismatch' },
+    );
+    assert.equal(h.writes(), 0);
+    await h.service.sealResultIntent(h.grant, 'intent', cut, () => undefined);
+    await assert.rejects(
+      h.service.readSealedResultIntent(h.grant, 'intent', { ...cut, asOfSeq: 5 }, () => undefined),
+      { code: 'idempotency-mismatch' },
+    );
+    await assert.rejects(
+      h.service.readSealedResultIntent(h.grant, 'intent', cut, () => {
+        h.grant.deny();
+        return undefined;
+      }),
+    );
+    assert.equal(h.writes(), 1);
+  });
+
   test(`contract: v${version} first cut persists once and requalified recovery does not rewrite it`, async () => {
     const h = harness(version);
     const first = await h.service.sealResultIntent(h.grant, 'intent', cut, () => undefined);

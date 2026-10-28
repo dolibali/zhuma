@@ -93,6 +93,7 @@ export async function boot(
   compose,
   runtimeOptions = {},
   reviewPorts,
+  backendId,
 ) {
   const ctx = new Context();
   try {
@@ -122,6 +123,7 @@ export async function boot(
           })),
       },
       reviewPorts,
+      backendId,
     );
     return { ctx, ...work, adapter, close: () => ctx.fiber.dispose() };
   } catch (error) {

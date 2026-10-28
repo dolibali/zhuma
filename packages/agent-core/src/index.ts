@@ -259,3 +259,4 @@ export {
   toNodeExecutionReport,
   executionInbox,
 } from './human-node.js';
+export * from './remote-run-contract.js';
