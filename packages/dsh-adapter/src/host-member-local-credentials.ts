@@ -1,4 +1,4 @@
-import type { Context } from '@deepseek-ai/cordis';
+import { symbols, type Context } from '@deepseek-ai/cordis';
 import { credentialKey, type CredentialRecord } from '@deepseek-ai/dsh-credentials';
 import {
   MemberLocalSecretError,
@@ -12,12 +12,16 @@ export function createMemberLocalPrivateStore(
   signal: AbortSignal,
 ): MemberLocalPrivateStore {
   const provider = ctx.get('credentials');
+  const original = (value: unknown): unknown =>
+    value && typeof value === 'object' ? (Reflect.get(value, symbols.original) ?? value) : value;
+  const identity = original(provider);
   const current = () => {
     if (signal.aborted) throw new MemberLocalSecretError('cancelled');
     ctx.fiber.assertActive();
-    if (!provider || ctx.get('credentials') !== provider)
+    const live = ctx.get('credentials');
+    if (!provider || !live || original(live) !== identity)
       throw new MemberLocalSecretError('unavailable');
-    return provider;
+    return live;
   };
   const address = (slot: string) => {
     const match = /^zhuma\.member-local\.(device|accept)\.([a-f0-9]{64})$/u.exec(slot);

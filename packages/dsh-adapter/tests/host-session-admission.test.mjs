@@ -72,6 +72,7 @@ test('work/review task hits reject ordinary live prompt, queue, cancel and cold 
     'selectModel',
     'attachment',
     'projections',
+    'archiveSession',
   ]) {
     assert.equal(await h.call(method, { request: { sessionId: 'task' } }), false);
     assert.equal(await h.call(method, { request: { sessionId: 'ordinary' } }), true);

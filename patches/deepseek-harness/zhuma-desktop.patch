@@ -2026,13 +2026,14 @@ diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.
      ctx.on('internal/service', () => {
        this.srcClaims = undefined
      })
-@@ -807,6 +825,22 @@
+@@ -807,6 +825,23 @@
          })
        }
      }
 +    // Covers unary and mux streams, including already-live prompt/queue/cancel
 +    // and cold history/create. A refusing guard must activate no Agent lookup.
-+    if (request.namespace === 'session') {
++    if (request.namespace === 'session'
++      || (request.namespace === 'workspace' && request.method === 'archiveSession')) {
 +      const admission = this.sessionAdmission
 +      if (admission === undefined) {
 +        if (this.sessionAdmissionRequired) throw new TypertGatewayError(

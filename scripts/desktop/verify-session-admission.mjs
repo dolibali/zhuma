@@ -59,25 +59,35 @@ import Access from '@deepseek-ai/dsh-api-remote-access';
 import { bindTypertRemote } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
 import Gateway from './gateway.mjs';
-let invoked = 0, looked = 0, admitted = 0;
+let invoked = 0, looked = 0, admitted = 0, archiveWrites = 0, stopEvents = 0;
 class Sessions extends Service {
   typertRemote = bindTypertRemote(this, 'admissionFixture', { namespace: 'session' });
   constructor(ctx) { super(ctx, 'admissionFixture'); }
   invoke(agent, request) { invoked++; return { id: agent.id, sessionId: request.sessionId }; }
   async *follow(agent, request) { invoked++; yield { id: agent.id, sessionId: request.sessionId }; }
 }
+class Workspaces extends Service {
+  typertRemote = bindTypertRemote(this, 'admissionWorkspaceFixture', { namespace: 'workspace' });
+  constructor(ctx) { super(ctx, 'admissionWorkspaceFixture'); }
+  archiveSession(request) { archiveWrites++; if (request.stopActivity === true) stopEvents++; return { archivedSessionIds: [request.sessionId] }; }
+}
 const methods = ['create', 'prompt', 'updateQueue', 'cancel', 'rename', 'fork', 'selectModel', 'attachment', 'projections', 'page'];
 const codec = (schema) => ({ mode: 'strict', typeSymbol: '@zhuma/probe#Value', create: () => schema });
 async function setup(required) {
-  const ctx = new Context(); await ctx.plugin(Registry); await ctx.plugin(Access); await ctx.plugin(Gateway, { sessionAdmissionRequired: required }); await ctx.plugin(Sessions);
+  const ctx = new Context(); await ctx.plugin(Registry); await ctx.plugin(Access); await ctx.plugin(Gateway, { sessionAdmissionRequired: required }); await ctx.plugin(Sessions); await ctx.plugin(Workspaces);
   ctx.typert.lookups.register('admissionFixture', { parameter: 'agent', wire: 'agentId', hostTypeSymbol: '@zhuma/probe#Agent', wireTypeSymbol: '@zhuma/probe#AgentId', resolve: (id) => { looked++; return { id }; } });
   ctx.typert.register({ package: '@zhuma/probe', face: 'host', model: { services: [], events: [], objects: [] }, schemas: [], invocations: [...methods, 'follow'].map(method => ({
     id: '@zhuma/probe#session/' + method, namespace: 'session', service: 'admissionFixture', method, implementation: method === 'follow' ? 'follow' : 'invoke', invocation: { kind: 'direct' },
     ...(method === 'follow' ? { mode: 'stream' } : {}), parameters: [{ name: 'agent', wire: 'agentId', source: 'lookup', lookup: 'admissionFixture', codec: { ...codec(z.string()), typeSymbol: '@zhuma/probe#AgentId' } }, { name: 'request', wire: 'request', source: 'json', codec: codec(z.object({ sessionId: z.string() })) }], result: codec(z.object({ id: z.string(), sessionId: z.string() })),
   })) });
+  ctx.typert.register({ package: '@zhuma/archive-probe', face: 'host', model: { services: [], events: [], objects: [] }, schemas: [], invocations: [{
+    id: '@zhuma/archive-probe#workspace/archiveSession', namespace: 'workspace', service: 'admissionWorkspaceFixture', method: 'archiveSession', invocation: { kind: 'direct' },
+    parameters: [{ name: 'request', wire: 'request', source: 'json', codec: codec(z.object({ sessionId: z.string(), stopActivity: z.boolean().optional() })) }], result: codec(z.object({ archivedSessionIds: z.array(z.string()) })),
+  }] });
   const peer = new Peer(ctx, { principal: { kind: 'owner' } });
   const request = (method, id) => ({ namespace: 'session', method, args: { agentId: id, request: { sessionId: id } }, peer });
-  return { ctx, request };
+  const archive = (id) => ({ namespace: 'workspace', method: 'archiveSession', args: { request: { sessionId: id, stopActivity: true } }, peer });
+  return { ctx, request, archive };
 }
 const h = await setup(true);
 try {
@@ -89,6 +99,10 @@ try {
   assert.equal(looked, 0); assert.equal(invoked, 0);
   await assert.rejects(h.ctx.typertGateway.invoke({ ...h.request('prompt', 'ordinary'), args: { agentId: 'ordinary', request: { sessionId: 42 } } }));
   assert.equal(admitted, methods.length + 1);
+  await assert.rejects(h.ctx.typertGateway.invoke(h.archive('task')));
+  assert.equal(archiveWrites, 0); assert.equal(stopEvents, 0);
+  assert.deepEqual(await h.ctx.typertGateway.invoke(h.archive('ordinary')), { archivedSessionIds: ['ordinary'] });
+  assert.equal(archiveWrites, 1); assert.equal(stopEvents, 1);
   assert.deepEqual(await h.ctx.typertGateway.invoke(h.request('prompt', 'ordinary')), { id: 'ordinary', sessionId: 'ordinary' });
   assert.equal(looked, 1); assert.equal(invoked, 1);
   unregister();
@@ -102,7 +116,7 @@ try {
 const plain = await setup(false);
 try { assert.equal((await plain.ctx.typertGateway.invoke(plain.request('prompt', 'ordinary'))).sessionId, 'ordinary'); }
 finally { await plain.ctx.fiber.dispose(); }
-console.log(JSON.stringify({ checks: ['required-before-registration', 'ten-unary-task-commands-before-lookup', 'mux-follow-before-lookup', 'schema-before-admission', 'ordinary-unchanged', 'unload-fails-closed', 'late-admission-refused', 'unconfigured-sdk-unchanged'], taskLookups: 0, taskInvocations: 0 }));
+console.log(JSON.stringify({ checks: ['required-before-registration', 'ten-unary-task-commands-before-lookup', 'mux-follow-before-lookup', 'schema-before-admission', 'ordinary-unchanged', 'unload-fails-closed', 'late-admission-refused', 'unconfigured-sdk-unchanged', 'task-archive-no-write-or-stop', 'ordinary-archive-preserved'], taskLookups: 0, taskInvocations: 0, taskArchiveWrites: 0, taskArchiveStops: 0 }));
 `;
   await writeFile(join(directory, 'probe.mjs'), probe);
   const output = execFileSync(process.execPath, [join(directory, 'probe.mjs')], {

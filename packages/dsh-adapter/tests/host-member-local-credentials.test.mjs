@@ -96,3 +96,32 @@ test('provider replacement and disposal reject even a late provider read', async
     await assert.rejects(read, { code: mode === 'close' ? 'cancelled' : 'unavailable' });
   }
 });
+
+test('scope proxy views of the same original SDK provider do not count as replacement', async () => {
+  const { symbols } = await import('@deepseek-ai/cordis');
+  const rows = new Map();
+  const original = {
+    async readRecord(key) {
+      return rows.get(key);
+    },
+    async modifyRecord(key, update) {
+      const next = await update(rows.get(key));
+      if (next !== undefined) rows.set(key, next);
+      return rows.get(key);
+    },
+  };
+  const ctx = {
+    fiber: { assertActive() {} },
+    get() {
+      return new Proxy(original, {
+        get(target, key) {
+          return key === symbols.original ? target : Reflect.get(target, key);
+        },
+      });
+    },
+  };
+  assert.notEqual(ctx.get(), ctx.get());
+  const store = createMemberLocalPrivateStore(ctx, new AbortController().signal);
+  assert.deepEqual(await store.modify(slot, () => ({ synthetic: true })), { synthetic: true });
+  assert.deepEqual(await store.read(slot), { synthetic: true });
+});

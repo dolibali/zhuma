@@ -55,7 +55,7 @@ MCP Client 增加公开 `captureMcpClientClose(originalMcpFiber.ctx): McpClientC
 
 ## 任务原生会话的普通命令门禁
 
-`Gateway.registerSessionAdmission` 在原 exact 参数及原 RemoteAccess 校验之后、任何 receiver/Agent lookup 之前，串行检查 `session` 命名空间的 unary 与 mux stream。注册后保持 required 状态；卸载、迟到通过或当前守卫失效不会恢复默认放行。可配置 `sessionAdmissionRequired: true`，使产品启动尚未安装守卫时也拒绝命令。无产品配置、未注册守卫的 SDK 保持原行为。
+`Gateway.registerSessionAdmission` 在原 exact 参数及原 RemoteAccess 校验之后、任何 receiver/Agent lookup 之前，串行检查 `session` 命名空间的 unary 与 mux stream，以及会在写入后停止会话的 `workspace/archiveSession`。注册后保持 required 状态；卸载、迟到通过或当前守卫失效不会恢复默认放行。可配置 `sessionAdmissionRequired: true`，使产品启动尚未安装守卫时也拒绝命令。无产品配置、未注册守卫的 SDK 保持原行为。
 
 产品 Host 消费 C 原 native 表的 reverse lookup：只有明确 `null` 表示普通会话；work/review 命中、foreign、损坏、关闭或初始化未完成均不得走普通 Session 命令。覆盖实际 create/reuse、prompt、queue、cancel、model selection、rename/fork、attachment/projections，以及 page/follow 的直接和父子地址。该接缝本身不授予任何任务历史、发送、停止或评审权限；Task 界面仍使用原成员、Run、世代、幂等与评审绑定。
 
