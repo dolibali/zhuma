@@ -4,11 +4,12 @@ import {
   assertHostAbsentRetry,
   retireHostUnadmittedScope,
   retireHostSettledScope,
+  hostWorkflowRecoveryBinding,
 } from '../dist/host-run-recovery.js';
 import { createHostRunRetirements } from '../dist/host-run-sources.js';
 import { NativeWorkError } from '../dist/native-work-session-contract.js';
-import { executionRunScope } from '../dist/execution-run-state.js';
-import { applyEvent, begin } from './execution-run-fixture.mjs';
+import { executionRunScope, readExecutionRunState } from '../dist/execution-run-state.js';
+import { accepted, applyEvent, begin } from './execution-run-fixture.mjs';
 
 // Qualification contracts only. Grants/drains/owners below are stand-ins,
 // not actual native absence or member authorization evidence.
@@ -60,6 +61,89 @@ function fixture() {
     connects: () => connects,
   };
 }
+
+function workflowHistory() {
+  let node = applyEvent(accepted(), 'failed', { resourcesSettled: true }).record;
+  for (const generation of [2, 3]) {
+    const started = begin(node, {
+      mode: 'retry',
+      requestId: `retry-${generation}`,
+      newRunId: `run-${generation}`,
+      newSegmentId: `segment-${generation}`,
+    });
+    node = applyEvent(accepted(started.record), 'failed', { resourcesSettled: true }).record;
+  }
+  // Metadata-only completed history, not native/model or artifact-delivery proof.
+  for (const run of node.nativeExecution.runs) run.attempt.status = 'completed';
+  const state = readExecutionRunState(node);
+  const old = state.runs[0];
+  const scope = executionRunScope(node, old);
+  const { actorId, runId: _run, generation: _generation, segmentId: _segment, ...location } = scope;
+  delete location.nodeId;
+  const reservation = {
+    nodeId: node.nodeId,
+    requestId: state.receipts[0].requestId,
+    newRunId: old.attempt.id,
+    newSegmentId: old.segmentId,
+  };
+  return { node, scope, actorId, location, reservation };
+}
+
+test('Host workflow recovery metadata: original receipt keeps g1 scope when the settled current Run is g3', () => {
+  const h = workflowHistory();
+  const before = JSON.stringify(h.node);
+  const bound = hostWorkflowRecoveryBinding(h.node, h.reservation, h.location, h.actorId);
+  assert.deepEqual(bound.scope, h.scope);
+  assert.equal(bound.scope.generation, 1);
+  assert.equal(bound.currentRunId, 'run-3');
+  const state = readExecutionRunState(h.node);
+  const current = state.runs.at(-1);
+  const own = hostWorkflowRecoveryBinding(
+    h.node,
+    {
+      ...h.reservation,
+      requestId: state.receipts.at(-1).requestId,
+      newRunId: current.attempt.id,
+      newSegmentId: current.segmentId,
+    },
+    h.location,
+    h.actorId,
+  );
+  assert.equal(own.scope.runId, own.currentRunId);
+  assert.equal(JSON.stringify(h.node), before);
+});
+
+test('Host workflow recovery metadata: active or held current work, wrong receipts and foreign full scopes refuse', () => {
+  for (const mutate of [
+    (h) => (h.reservation.requestId = 'unknown-receipt'),
+    (h) => (h.reservation.newRunId = 'wrong-old-run'),
+    (h) => (h.reservation.newSegmentId = 'wrong-old-segment'),
+    (h) => (h.reservation.nodeId = 'other-node'),
+    (h) => (h.location.taskId = 'other-task'),
+    (h) => (h.location.planId = 'other-plan'),
+    (h) => h.location.revision++,
+    (h) => (h.location.spaceId = 'other-space'),
+    (h) => (h.actorId = 'other-member'),
+    (h) => (h.node.nativeExecution.runs[0].resources = 'held'),
+    (h) => (h.node.nativeExecution.runs.at(-1).resources = 'held'),
+    (h) => (h.node.nativeExecution.runs.at(-1).attempt.status = 'running'),
+  ]) {
+    const h = workflowHistory();
+    mutate(h);
+    assert.throws(() => hostWorkflowRecoveryBinding(h.node, h.reservation, h.location, h.actorId));
+  }
+});
+
+test('Host workflow recovery metadata: a changed current Run or control version cannot match a pinned recovery', () => {
+  const h = workflowHistory();
+  const original = hostWorkflowRecoveryBinding(h.node, h.reservation, h.location, h.actorId);
+  h.node.nativeExecution.runs.at(-1).attempt.status = 'failed';
+  const changed = hostWorkflowRecoveryBinding(h.node, h.reservation, h.location, h.actorId);
+  assert.notEqual(changed.control, original.control);
+  h.node.command.version++;
+  const newer = hostWorkflowRecoveryBinding(h.node, h.reservation, h.location, h.actorId);
+  assert.notEqual(newer.control, changed.control);
+});
 
 function settledRetirement() {
   const { scope } = fixture();
