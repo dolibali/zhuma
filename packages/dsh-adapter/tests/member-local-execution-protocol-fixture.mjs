@@ -14,6 +14,10 @@ import { freezeExecutionRunComposition } from '../dist/execution-run-composition
 import { describeNativeResultTool } from '../dist/native-work-session-result-tool.js';
 import { describeAcceptedInputTool } from '../dist/native-work-session-input-tool.js';
 import { compositionFacts } from './execution-run-composition-fixture.mjs';
+import {
+  EXECUTION_RESOURCE_SOURCE_VERSION,
+  executionResourceDigest,
+} from '../dist/execution-run-resource-snapshot.js';
 
 // Actual outgoing HTTP, Ed25519 and original composition decoder. Member/device
 // authorization and backend Run state remain a contract, not two product Hosts.
@@ -24,6 +28,55 @@ export async function fixture(t, options = {}) {
   };
   if (options.upstream)
     facts.tools = { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() };
+  if (options.skill) {
+    const plan = facts.workbench.appliedPlans[0];
+    const asset = {
+      id: 'selected-skill',
+      name: 'Selected Skill',
+      kind: 'skill',
+      description: 'Selected member-local skill routing',
+      content: 'LOCAL_FROZEN_SKILL_BODY',
+      available: true,
+      ...(options.invocation
+        ? {
+            origin: {
+              versionId: '12345678-1234-4234-9234-123456789abc',
+              format: 'agent-skill',
+              entryPath: 'selected-skill/SKILL.md',
+              filePaths: ['selected-skill/SKILL.md'],
+              totalBytes: 100,
+              missing: [],
+            },
+          }
+        : {}),
+    };
+    plan.assets = [asset];
+    plan.task.workflows.flatMap((w) => w.nodes).find((n) => n.id === facts.node.nodeId).skillIds = [
+      asset.id,
+    ];
+    facts.node.handoff.skillRefs = [{ id: asset.id, version: plan.id }];
+    facts.resourceCatalog = {
+      sourceVersion: EXECUTION_RESOURCE_SOURCE_VERSION,
+      mcp: [],
+      ...(options.invocation
+        ? {
+            skills: [
+              {
+                ref: facts.node.handoff.skillRefs[0],
+                definitionDigest: executionResourceDigest(asset),
+                invocation: options.invocation,
+                policySource: {
+                  kind: 'asset-package',
+                  versionId: asset.origin.versionId,
+                  digest: executionResourceDigest('contract-original-package'),
+                  entryPath: asset.origin.entryPath,
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+  }
   const composition = freezeExecutionRunComposition(facts),
     backendId = randomUUID(),
     driveEpoch = randomUUID(),
@@ -343,6 +396,9 @@ export async function fixture(t, options = {}) {
       resultIntent: 'zhuma-native-result-intent@1',
       localTools: [],
       ...(options.upstream ? { acceptedInput: '1' } : {}),
+      ...(options.skill && !options.omitResourceCapability
+        ? { resources: EXECUTION_RESOURCE_SOURCE_VERSION }
+        : {}),
     },
   };
   return {

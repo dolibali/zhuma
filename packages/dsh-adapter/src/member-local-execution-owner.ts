@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
+import SkillRegistry from '@deepseek-ai/dsh-skill';
+import * as ToolSkill from '@deepseek-ai/dsh-tool-skill';
 import {
   canonicalPayload,
   REMOTE_RUN_LIMITS,
@@ -100,6 +102,23 @@ export class MemberLocalExecutionOwner {
   private heartbeat?: ReturnType<typeof setInterval>;
   private closing?: Promise<void>;
   private constructor(private readonly options: MemberLocalOwnerOptions) {}
+  /** Read-only local SDK availability for the accept capability declaration.
+   * Actual frozen resources are still adopted and checked in the unpublished
+   * Agent scope, before its first model request. No catalog/body is loaded here. */
+  static resourceSource(ctx: Context): typeof EXECUTION_RESOURCE_SOURCE_VERSION | undefined {
+    try {
+      const tools = ctx.get('tools');
+      return tools &&
+        ctx.get('workingDirectory') &&
+        typeof SkillRegistry === 'function' &&
+        typeof Reflect.get(tools, 'getRegistered') === 'function' &&
+        typeof Reflect.get(ToolSkill, 'bindSkillRegistry') === 'function'
+        ? EXECUTION_RESOURCE_SOURCE_VERSION
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   static async open(ctx: Context, options: MemberLocalOwnerOptions) {
     const owner = new MemberLocalExecutionOwner(options);
     await owner.initialize(ctx);

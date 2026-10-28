@@ -26,6 +26,14 @@ test('member-local protocol contract: signs canonical requests; raw permits stay
   await assert.rejects(owner.status(run), { code: 'local-mismatch' });
   assert.equal(h.seen.filter(({ request }) => request.operation === 'status').length, 2);
 });
+test('member-local protocol contract: selected resources require the exact local adoption capability', async (t) => {
+  const h = await fixture(t, { skill: true, omitResourceCapability: true }),
+    owner = await h.open();
+  t.after(() => owner.close());
+  await assert.rejects((await owner.prepareAccept(randomUUID(), h.input)).send(), {
+    code: 'local-mismatch',
+  });
+});
 test('member-local protocol contract: lost accept ACK explicitly replays the same durable device and intent', async (t) => {
   const h = await fixture(t, { loseAccept: true }),
     owner = await h.open(),
