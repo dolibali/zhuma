@@ -17,6 +17,7 @@ export const executionRunGlobalSchema = z
     remoteExecutionWriter: z.literal(1).optional(),
     remoteExecutionFileWriter: z.literal(1).optional(),
     remoteExecutionAcceptedFileWriter: z.literal(1).optional(),
+    remoteExecutionReviewWriter: z.literal(1).optional(),
     remoteExecution: remoteBackendRegistrySchema.optional(),
   })
   .refine((value) => value.nativeReviewWriter !== 1 || value.nativeExecutionWriter === 1)
@@ -25,6 +26,11 @@ export const executionRunGlobalSchema = z
   .refine((value) => value.remoteExecutionFileWriter !== 1 || value.remoteExecutionWriter === 1)
   .refine(
     (value) => value.remoteExecutionAcceptedFileWriter !== 1 || value.remoteExecutionWriter === 1,
+  )
+  .refine(
+    (value) =>
+      value.remoteExecutionReviewWriter !== 1 ||
+      (value.remoteExecutionWriter === 1 && value.nativeReviewWriter === 1),
   )
   .refine((value) => value.remoteExecutionWriter !== 1 || value.nativeExecutionWriter === 1);
 
@@ -36,6 +42,7 @@ export type ExecutionWriterGlobal = {
   remoteExecutionWriter?: 1;
   remoteExecutionFileWriter?: 1;
   remoteExecutionAcceptedFileWriter?: 1;
+  remoteExecutionReviewWriter?: 1;
   remoteExecution?: RemoteBackendRegistry;
 };
 
@@ -62,6 +69,7 @@ export function prepareExecutionRunWriter(global: unknown): ExecutionWriterGloba
     schemaVersion: 1,
     nativeExecutionWriter: 1,
     ...(parsed.data.nativeReviewWriter === 1 ? { nativeReviewWriter: 1 } : {}),
+    ...(parsed.data.remoteExecutionReviewWriter === 1 ? { remoteExecutionReviewWriter: 1 } : {}),
     ...(parsed.data.workspaceApprovalWriter === 1 ? { workspaceApprovalWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionFileWriter === 1 ? { remoteExecutionFileWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionAcceptedFileWriter === 1
@@ -119,6 +127,22 @@ export function assertExecutionRunStoreCompatibility(
         };
       }
     ).nativeExecution;
+    const review = (
+      node as {
+        nativeExecution?: { review?: { attempts?: { remote?: { backendId?: unknown } }[] } };
+      }
+    ).nativeExecution?.review;
+    if (
+      Array.isArray(review?.attempts) &&
+      review.attempts.some(
+        (attempt) =>
+          Object.hasOwn(attempt, 'remote') &&
+          (!registry ||
+            parsed.remoteExecutionReviewWriter !== 1 ||
+            attempt.remote?.backendId !== registry.backendId),
+      )
+    )
+      throw new ExecutionRunProtocolError('run-writer-incompatible');
     if (
       Array.isArray(raw?.runs) &&
       raw.runs.some(
