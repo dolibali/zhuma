@@ -297,7 +297,22 @@ test('result Service contract: actual durable put with lost reply confirms in a 
 });
 
 test('result Service contract: exact historical receipt remains readable after rejection and a real next generation', async (t) => {
-  const h = await host(t);
+  let drained = false;
+  const drain = new AbortController();
+  const h = await host(t, {
+    migrationDrain(scope) {
+      assert.equal(scope.runId, 'run-1');
+      assert.equal(scope.generation, 1);
+      return drained
+        ? {
+            signal: drain.signal,
+            assertCurrent() {
+              drain.signal.throwIfAborted();
+            },
+          }
+        : undefined;
+    },
+  });
   const receipt = checked(await submit(h));
   checked(
     await h.service.ballot(caller('outside'), {
@@ -333,8 +348,45 @@ test('result Service contract: exact historical receipt remains readable after r
     inputs: { ...h.locate(), actorId, spaceId: 'north', items: [] },
   });
   const { firstMessage: _message, ...projection } = executionRunCompositionRequest(composition);
-  checked(
-    await h.service.startRun(h.request, { ...h.locate(), ...raw, ...projection, composition }),
+  const request = { ...h.locate(), ...raw, ...projection, composition };
+  assert(composition.payload.context.includes('Refine the fixed result.'));
+  assert.equal(composition.payload.returnedRevision.roundId, receipt.roundId);
+  const returned = h.read();
+  refused(await h.service.startRun(h.request, request), 'run-migration-pending');
+  assert.deepEqual(h.read(), returned, 'settled metadata is not a physical drain proof');
+  drained = true;
+  refused(await h.service.startRun({ headers: {} }, request), 'run-authority-denied');
+  refused(
+    await h.service.startRun(h.request, {
+      ...request,
+      expectedNodeVersion: request.expectedNodeVersion - 1,
+    }),
+    'run-conflict',
+  );
+  const next = checked(await h.service.startRun(h.request, request));
+  assert.equal(next.run.attempt.id, 'run-2');
+  assert.equal(next.run.attempt.generation, 2);
+  assert.equal(next.effect.kind, 'dispatch');
+  assert.deepEqual(h.read().artifactVersions, returned.artifactVersions);
+  assert.deepEqual(h.read().rounds, returned.rounds);
+  assert.deepEqual(h.read().nativeExecution.runs[0], returned.nativeExecution.runs[0]);
+  const replay = checked(await h.service.startRun(h.request, request));
+  assert.equal(replay.disposition, 'replayed');
+  assert.equal(replay.effect.kind, 'reconcile');
+  assert.equal(h.read().nativeExecution.runs.length, 2);
+  refused(
+    await h.service.recordRunEvent(
+      h.locate(),
+      {
+        kind: 'idle',
+        runId: 'run-1',
+        generation: 1,
+        segmentId: 'segment-1',
+        sequence: 999,
+      },
+      { grant: h.opened.grant },
+    ),
+    'run-authority-denied',
   );
   const before = JSON.stringify(h.read());
   h.resetCounts();
