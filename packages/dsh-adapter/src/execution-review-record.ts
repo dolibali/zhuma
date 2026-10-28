@@ -5,6 +5,7 @@ import {
   type ExecutionNodeRecord,
 } from '@zhuma/agent-core';
 import type { ExecutionRunState } from './execution-run-state.js';
+import { remoteReviewBindingMatches } from './remote-review-state.js';
 import { readExecutionReviewComposition } from './execution-review-composition.js';
 import {
   readExecutionReviewFixedReceipt,
@@ -101,6 +102,7 @@ export function assertExecutionReviewRecord(
     ]);
     const previous = lanes.get(lane);
     if (
+      !remoteReviewBindingMatches(attempt) ||
       scope.taskId !== record.taskId ||
       scope.planId !== record.planId ||
       scope.revision !== record.revision ||
@@ -144,7 +146,17 @@ export function assertExecutionReviewRecord(
       if (attempt.nativeSessionId) nativeIds.add(attempt.nativeSessionId);
       if (attempt.nativeAgentId) nativeIds.add(attempt.nativeAgentId);
       try {
-        readExecutionReviewFixedReceipt(record, attempt);
+        const receipt = readExecutionReviewFixedReceipt(record, attempt);
+        if (
+          attempt.remote &&
+          receipt &&
+          (!attempt.remote.result ||
+            receipt.requestId !== attempt.remote.result.requestId ||
+            receipt.digest !== attempt.remote.result.digest ||
+            receipt.provenanceFingerprint !== attempt.remote.result.provenanceFingerprint ||
+            canonicalPayload(receipt.source) !== canonicalPayload(attempt.remote.result.source))
+        )
+          return refuse('review-state-invalid');
         readExecutionReviewFailure(record, attempt);
       } catch {
         return refuse('review-state-invalid');
@@ -159,6 +171,9 @@ export function assertExecutionReviewRecord(
       requests.has(receipt.requestId) ||
       receiptedRuns.has(receipt.runId) ||
       !attempt ||
+      ('remote' in attempt &&
+        attempt.remote &&
+        attempt.remote.acceptRequestId !== receipt.requestId) ||
       receipt.fingerprint !== reservationFingerprint(receipt.requestId, attempt)
     )
       return refuse('review-state-invalid');

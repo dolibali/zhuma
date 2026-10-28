@@ -409,3 +409,30 @@ test('remote HTTP response codecs: terminal state cannot regain drive; accept ca
     false,
   );
 });
+
+test('remote info contract: ready independent review purpose is bounded, unique and explicitly advertised', () => {
+  const value = {
+    protocolVersion: 1,
+    backendId: randomUUID(),
+    serverTime: Date.now(),
+    actorId: 'member',
+    purposes: ['work', 'review'],
+    operations: ['info', 'accept'],
+  };
+  remoteRunResponseSchema('info').parse({ ok: true, value });
+  remoteRunResponseSchema('info').parse({ ok: true, value: { ...value, purposes: ['work'] } });
+  assert.equal(
+    remoteRunResponseSchema('info').safeParse({
+      ok: true,
+      value: { ...value, purposes: ['work', 'work'] },
+    }).success,
+    false,
+  );
+  assert.equal(
+    remoteRunResponseSchema('info').safeParse({
+      ok: true,
+      value: { ...value, purposes: ['unknown'] },
+    }).success,
+    false,
+  );
+});
