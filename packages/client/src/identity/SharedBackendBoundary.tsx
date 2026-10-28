@@ -31,6 +31,24 @@ export function SharedBackendBoundary({
   function select(next: string | null) {
     const active = lifetime.current;
     if (!active || busy) return;
+    if (next !== null) {
+      try {
+        const url = new URL(next);
+        if (
+          !['http:', 'https:'].includes(url.protocol) ||
+          url.username ||
+          url.password ||
+          url.pathname !== '/' ||
+          url.search ||
+          url.hash
+        )
+          throw new Error();
+        next = url.origin;
+      } catch {
+        setError('请填写服务根地址，例如 http://host:3080。');
+        return;
+      }
+    }
     requestChange(async () => {
       setBusy(true);
       setError('');

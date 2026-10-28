@@ -54,7 +54,12 @@ const hash = async (path) =>
 const previous = {},
   candidate = {};
 for (const file of files) {
-  previous[file] = await hash(join(target, file));
+  try {
+    previous[file] = await hash(join(target, file));
+  } catch (error) {
+    if (error.code !== 'ENOENT' || file !== 'member-web.js') throw error;
+    previous[file] = null;
+  }
   candidate[file] = await hash(join(source, file));
 }
 const backupId = createHash('sha256').update(JSON.stringify(previous)).digest('hex');
@@ -62,6 +67,7 @@ const backup = join(root, '.build/desktop-plugin-backups', backupId);
 if (!values['dry-run']) {
   await mkdir(backup, { recursive: true });
   for (const file of files) {
+    if (previous[file] === null) continue;
     try {
       await access(join(backup, file));
       if ((await hash(join(backup, file))) !== previous[file])
