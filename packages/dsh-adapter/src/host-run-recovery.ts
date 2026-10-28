@@ -6,6 +6,7 @@ import {
 } from './execution-run-state.js';
 import type {
   NativeMigrationOriginRequest,
+  NativeScopeCleanupAuthority,
   NativeScopeCleanupResult,
   NativeWorkGrant,
   NativeWorkScope,
@@ -13,6 +14,46 @@ import type {
 import { NativeWorkError } from './native-work-session-contract.js';
 import type { NativeWorkSessionService } from './native-work-session.js';
 import type { ExecutionRunAuthorities } from './execution-run-authority.js';
+import { nativeScopeKey } from './native-work-session-record.js';
+
+/** Rebuild one original physical certificate outside the domain command queue.
+ * Fresh authorization/target checks are supplied by the explicit Host command.
+ */
+export async function retireHostSettledScope(
+  owner: Pick<NativeWorkSessionService, 'retireForCleanup'>,
+  cleanup: NativeScopeCleanupAuthority,
+  expected: { readonly nativeSessionId: string; readonly nativeAgentId: string },
+  signal: AbortSignal,
+  fresh: () => Promise<void>,
+  drainResources: () => Promise<void>,
+): Promise<Extract<NativeScopeCleanupResult, { readonly status: 'retired' }>> {
+  const check = () => {
+    signal.throwIfAborted();
+    cleanup.assertCurrent();
+  };
+  check();
+  await fresh();
+  check();
+  const result = await owner.retireForCleanup(cleanup, signal);
+  check();
+  await fresh();
+  check();
+  if (
+    result.status !== 'retired' ||
+    !result.binding ||
+    nativeScopeKey(result.binding.scope) !== nativeScopeKey(cleanup.scope) ||
+    result.binding.nativeSessionId !== expected.nativeSessionId ||
+    result.binding.nativeAgentId !== expected.nativeAgentId ||
+    result.drain.basis !== 'flushed-and-closed'
+  )
+    throw new ExecutionRunError('run-migration-pending');
+  result.drain.assertCurrent();
+  await drainResources();
+  await fresh();
+  check();
+  result.drain.assertCurrent();
+  return result;
+}
 
 /** A retained observation from this one C owner, never persisted or accepted from a client. */
 export interface HostAbsentRetirement {
