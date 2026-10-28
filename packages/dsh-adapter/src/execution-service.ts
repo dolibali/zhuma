@@ -119,6 +119,11 @@ import {
   type NativeRunFileInfo,
   type NativeRunFileSource,
 } from './native-work-session-files-contract.js';
+import { describeNativeAcceptedFileTool } from './native-work-session-files-tool.js';
+import type {
+  ExecutionAcceptedFileGrant,
+  ExecutionAcceptedFilePort,
+} from './execution-accepted-file-port.js';
 import {
   executionRunCompositionSchema,
   readExecutionRunComposition,
@@ -1591,6 +1596,32 @@ export class ExecutionService {
         resourceHost: host,
         filesEnabled: () => this.remoteFileUploadsEnabled,
         outputFiles: (issuer) => this.createRemoteRunOutputFiles(issuer),
+        acceptedFiles: (issuer) => {
+          if (!this.remoteFileUploadsEnabled || issuer !== this.remoteRunAuthorities)
+            throw new ArtifactUploadError('unavailable');
+          const attachments = this.attachments;
+          if (!attachments) throw new ArtifactUploadError('unavailable');
+          return this.acceptedFilePort<RemoteRunFileGrant>(
+            (grant) => issuer.assertFileGrant(grant, 'send'),
+            {
+              signal: host.signal,
+              assertCurrent: (actual) => {
+                if (actual !== attachments || issuer !== this.remoteRunAuthorities)
+                  throw new ArtifactUploadError('unavailable');
+                return undefined;
+              },
+            },
+            () => issuer === this.remoteRunAuthorities,
+          );
+        },
+        inputFiles: (scope, composition) => {
+          if (!this.remoteFileUploadsEnabled || !this.attachments || !this.fileStore)
+            throw new ArtifactUploadError('unavailable');
+          return composition.payload.contextRefs.map((inputRef) => {
+            const current = this.currentRunFileInput(scope, inputRef, host, composition);
+            return { ...current.source, files: current.infos };
+          });
+        },
         readNativeFile: (idOrKey) =>
           this.fileStore?.get(idOrKey) ?? this.fileStore?.findByIdempotencyKey(idOrKey),
         verifyOutputFiles: async (records, signal, check) => {
@@ -1743,6 +1774,15 @@ export class ExecutionService {
               ),
             },
             tools,
+            ...(request.payload.capabilities.acceptedFile
+              ? {
+                  acceptedFileReader: {
+                    ...describeNativeAcceptedFileTool(),
+                    name: 'read_accepted_file' as const,
+                    sourceVersion: 'zhuma-accepted-files@2' as const,
+                  },
+                }
+              : {}),
             resultIntentTool: {
               ...descriptor,
               name: descriptor.name,
@@ -5112,21 +5152,34 @@ export class ExecutionService {
     issuer: ExecutionRunAuthorities,
     resources: NativeRunFileResourceSource,
   ): NativeRunAcceptedFiles {
+    if (issuer !== this.runAuthorities) throw new ArtifactUploadError('unavailable');
+    return this.acceptedFilePort<NativeWorkGrant>(
+      (grant) => issuer.assertGrant(grant, 'send'),
+      resources,
+      () => issuer === this.runAuthorities,
+    );
+  }
+
+  private acceptedFilePort<Grant extends ExecutionAcceptedFileGrant>(
+    assertGrant: (grant: Grant) => void,
+    resources: NativeRunFileResourceSource,
+    isIssuerCurrent: () => boolean,
+  ): ExecutionAcceptedFilePort<Grant> {
     const host = this.requireRunHost();
     const attachments = this.attachments;
     const files = this.fileStore;
     if (
-      issuer !== this.runAuthorities ||
+      !isIssuerCurrent() ||
       !attachments ||
       !files ||
       !(resources?.signal instanceof AbortSignal) ||
       typeof resources.assertCurrent !== 'function'
     )
       throw new ArtifactUploadError('unavailable');
-    const assertCurrent = (grant: NativeWorkGrant, signal: AbortSignal) => {
-      if (issuer !== this.runAuthorities || host !== this.requireRunHost())
+    const assertCurrent = (grant: Grant, signal: AbortSignal) => {
+      if (!isIssuerCurrent() || host !== this.requireRunHost())
         throw new ArtifactUploadError('unavailable');
-      issuer.assertGrant(grant, 'send');
+      assertGrant(grant);
       if (signal.aborted || resources.signal.aborted || this.fileLifetime.signal.aborted)
         throw new ArtifactUploadError('cancelled');
       if (attachments !== this.attachments || files !== this.fileStore)
@@ -5152,9 +5205,9 @@ export class ExecutionService {
       );
       return pending;
     };
-    const begin = (grant: NativeWorkGrant, caller: AbortSignal) => {
+    const begin = (grant: Grant, caller: AbortSignal) => {
       // Check issuer identity before inspecting any claimed scope/signal.
-      issuer.assertGrant(grant, 'send');
+      assertGrant(grant);
       if (!(caller instanceof AbortSignal)) throw new ArtifactUploadError('invalid-request');
       const signal = AbortSignal.any([
         caller,
@@ -5167,13 +5220,13 @@ export class ExecutionService {
       assertCurrent(grant, signal);
       return signal;
     };
-    const capture = (grant: NativeWorkGrant, inputRef: string, signal: AbortSignal) => {
+    const capture = (grant: Grant, inputRef: string, signal: AbortSignal) => {
       assertCurrent(grant, signal);
-      const initial = this.currentRunFileInput(grant, inputRef, host);
+      const initial = this.currentRunFileInput(grant.scope, inputRef, host);
       const fingerprint = canonicalPayload(initial);
       const check = () => {
         assertCurrent(grant, signal);
-        if (canonicalPayload(this.currentRunFileInput(grant, inputRef, host)) !== fingerprint)
+        if (canonicalPayload(this.currentRunFileInput(grant.scope, inputRef, host)) !== fingerprint)
           throw new ArtifactUploadError('not-found');
         assertCurrent(grant, signal);
       };
@@ -5207,7 +5260,8 @@ export class ExecutionService {
           const info = state.infos[index];
           if (!record || !info) throw new ArtifactUploadError('not-found');
           if (offset > record.byteSize) throw new ArtifactUploadError('invalid-request');
-          let owned: { bytes: Uint8Array | undefined; release(): void } | undefined;
+          let owned:
+            { bytes: Uint8Array | undefined; drain: Promise<void>; release(): void } | undefined;
           let released = false;
           const release = () => {
             if (released) return;
@@ -5230,6 +5284,7 @@ export class ExecutionService {
               bytes,
               encoding,
               signal,
+              drain: owned.drain,
               check() {
                 if (released) throw new ArtifactUploadError('cancelled');
                 state.check();
@@ -5243,7 +5298,7 @@ export class ExecutionService {
             throw error;
           }
         }),
-    } satisfies NativeRunAcceptedFiles);
+    } satisfies ExecutionAcceptedFilePort<Grant>);
   }
 
   /** Host-only publication, sharing the existing human-upload queue, slots and drain. */
@@ -5735,15 +5790,15 @@ export class ExecutionService {
 
   /** Current authoritative fixed objects; no human-assignee or caller impersonation. */
   private currentRunFileInput(
-    grant: NativeWorkGrant,
+    scope: NativeWorkGrant['scope'],
     inputRef: string,
     host: ExecutionRunHostPorts,
+    preparedComposition?: FrozenExecutionRunComposition,
   ): { source: NativeRunFileSource; infos: NativeRunFileInfo[]; records: UploadFileRecord[] } {
     if (!this.fileStore) throw new ArtifactUploadError('unavailable');
-    const scope = grant.scope;
     const node = this.currentFileNode(scope);
     this.assertRunNodeAccess(host, scope.actorId, scope.spaceId, node);
-    const snapshot = this.readRunComposition(scope);
+    const snapshot = preparedComposition ?? this.readRunComposition(scope);
     const saved = snapshot.payload;
     const allowed: readonly string[] = saved.toolAllowlist;
     if (
