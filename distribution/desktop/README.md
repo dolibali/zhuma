@@ -63,3 +63,22 @@ Zhuma 自有代码采用 [MIT 许可](../../LICENSE)。DSH 上游及其他第三
 构建 `0.2.1-rc.2.20261021.3` 使用 `icon-transparent.png` 派生母版：只改外部透明度，原图保持不变；蓝色圆角内的图案和背景保留。Dock、Finder、内部侧边栏、首页及分享卡片统一使用这套资源。
 
 维护者执行 `python3 branding/default/export_icons.py --check` 验证像素；CI 的 `pnpm brand:check` 验证原始 RGB 与 alpha 规则。实际启动应用后执行 `pnpm desktop:verify:icons` 校验 UI 资源字节、四角透明度、无 CSS 背景／阴影并保存真实窗口截图。需要临时用回环 CDP 端口 9333 启动对应应用；正式正常启动不主动开启调试端口。
+
+## 调试窗口先验收，正式包一次构建
+
+Host 业务修复先用官方 unpackaged Electron 窗口验证，不为每个修复生成 DMG。已有精确 SDK、Client 和主运行时后，执行：
+
+```bash
+pnpm desktop:dev:host --prepare-only
+# 或用 --stage /path/to/checked-sdk 复用已核对的固定 SDK 构建树
+```
+
+该命令只增量编译 Host 必要的纯领域包、重建 Host bundle，并更新官方 Web workspace 插件；不会重编 Client／SDK、运行模型、读取 profile 或生成 DMG。准备结果在 `.build/desktop/debug-host-identity.json`，包含源码 SHA／tree／dirty、SDK pin、配方及实际 Host／Client 哈希。依赖图或发行配方变化时应先完整准备，不能借快速入口绕过。Client 使用所选 stage 的既有字节，其身份应与已验版本核对。
+
+由测试操作者自行设置 `DSH_HOME`、`DSH_DESKTOP_USER_DATA_DIR`，然后执行 `pnpm desktop:dev:host`；已有 profile 的凭据只从原入口使用，不复制进开发树。窗口复用官方 `dev.ts --skip-build`，Main／Renderer／Host 端口分别由 `DSH_DESKTOP_MAIN_INSPECT_PORT`、`DSH_DESKTOP_RENDERER_DEBUG_PORT`、`DSH_DESKTOP_HOST_INSPECT_PORT` 配置。首次正常创建官方 Dev.app 仍由上游 launcher 负责。Host 修改后先正常退出窗口，刷新 Host，再启动；这不是运行中热替换或业务验收证明。
+
+真实 Host 核心链路通过、最终源码合入 main 且其既有 CI 成功后，从 Actions 手动运行 **Desktop Release**，填写已验的 **main 完整 40 位 SHA**。`mode=build-artifact` 默认只保存 DMG、`SOURCE.json` 和 `SHA256SUMS`；`mode=publish` 在同次运行中构建一次，再发布同一组产物。无需为 Release 重跑 CI 测试矩阵。工作流须先合入默认分支才会出现手动入口。
+
+工作流固定标准 `macos-15` arm64 runner，并在运行时核对架构；依据 [GitHub runner 官方说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。Actions 固定完整提交，产品和 SDK 使用各自 frozen lock。发布复查 main SHA、同 SHA 最新 CI、版本／构建版本一致及 tag／Release 不存在；不覆盖旧 tag 或资产。只有发布 job 获得 `contents: write`，默认构建 job 只有读取权限。发行仍为 macOS arm64、ad-hoc、未公证；没有新增收费签名或自动更新。
+
+发布先创建固定 SHA 的新 tag 和 Draft Release，逐项上传并核对服务器 SHA-256 后才公开。若中途失败，新建 draft/tag 保留供人工核查，后续运行会拒绝冲突，不自动删除、覆盖或重试发布。Release 使用 [GitHub 官方 REST 接口](https://docs.github.com/en/rest/releases/releases)，未引入第三方发布框架。本地静态／契约检查不认证首次 GitHub macOS 冷构建或真实安装。
