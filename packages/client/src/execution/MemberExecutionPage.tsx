@@ -34,6 +34,7 @@ function MemberWork({
   registerLeaveGuard,
   registerWorkspaceDirectory,
   openModelSettings,
+  nativeExecution,
 }: {
   fetcher: typeof fetch;
   accountId: string;
@@ -43,6 +44,7 @@ function MemberWork({
   appearance?: AppearanceStore;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
   openModelSettings?: (() => void) | undefined;
+  nativeExecution: boolean;
   view: 'catalog' | 'work';
   openWork?: (() => void) | undefined;
   registerLeaveGuard?:
@@ -153,7 +155,7 @@ function MemberWork({
             api={workbench}
             initialSection="tasks"
             appearance={appearance}
-            nativeRun={nativeRun}
+            {...(nativeExecution ? { nativeRun } : {})}
             projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}
           />
@@ -163,7 +165,11 @@ function MemberWork({
           <h1>我的工作</h1>
           <div className="zm-execution-workspace">
             <StartablePlansPanel api={api} onStarted={started} />
-            <ExecutionWorkspace api={api} refreshKey={refreshKey} nativeRun={nativeRun} />
+            <ExecutionWorkspace
+              api={api}
+              refreshKey={refreshKey}
+              {...(nativeExecution ? { nativeRun } : {})}
+            />
           </div>
         </main>
       )}
@@ -182,6 +188,7 @@ export function MemberExecutionPage({
   openWork,
   registerWorkspaceDirectory,
   openModelSettings,
+  nativeExecution = true,
 }: {
   fetcher?: typeof fetch;
   shell?: MemberShell;
@@ -190,6 +197,8 @@ export function MemberExecutionPage({
   openWork?: () => void;
   registerWorkspaceDirectory?: RegisterWorkspaceDirectory | undefined;
   openModelSettings?: (() => void) | undefined;
+  /** Web members do not implicitly run an Agent on the backend machine. */
+  nativeExecution?: boolean;
 }) {
   const snapshot = useSyncExternalStore(
     shell?.subscribe ?? noSubscription,
@@ -265,6 +274,7 @@ export function MemberExecutionPage({
                 registerLeaveGuard={shell ? registerLeaveGuard : undefined}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
                 openModelSettings={openModelSettings}
+                nativeExecution={nativeExecution}
                 {...(workbenchAppearance ? { appearance: workbenchAppearance } : {})}
               />
             )}

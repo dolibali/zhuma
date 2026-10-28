@@ -115,6 +115,21 @@ if (hostOnly) {
     await readFile(resolve(out, name));
   console.log('Built Host only in .build/workbench; existing Client and legal files retained.');
 } else {
+  const memberWebBuild = await build({
+    absWorkingDir: root,
+    entryPoints: ['packages/client/src/web/entry.tsx'],
+    outfile: resolve(out, 'member-web.js'),
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    metafile: true,
+    target: 'es2022',
+    loader: { '.css': 'text' },
+    minify: true,
+    define: { 'process.env.NODE_ENV': '"production"' },
+  });
+  if (Object.keys(memberWebBuild.metafile.inputs).some((name) => name.includes('@deepseek-ai')))
+    throw new Error('Member Web must not bundle SDK owner/runtime modules.');
   const clientBuild = await build({
     absWorkingDir: root,
     entryPoints: ['packages/client/src/workbench/plugin.tsx'],
@@ -183,6 +198,7 @@ if (hostOnly) {
   for (const input of [
     ...Object.keys(hostBuild.metafile.inputs),
     ...Object.keys(clientBuild.metafile.inputs),
+    ...Object.keys(memberWebBuild.metafile.inputs),
   ]) {
     if (!input.includes('node_modules/')) continue;
     let directory = dirname(resolve(root, input));

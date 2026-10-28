@@ -24,6 +24,8 @@ import { hostTeamCatalogGrantsSchema } from './host-team-catalog.js';
 import { openHostLocalSetup } from './host-local-setup.js';
 import { openHostLocalSetupHttp } from './host-local-setup-http.js';
 import { nativeWorkSessionInject } from './native-work-session-storage.js';
+import { enableMemberWeb } from './member-web-transport.js';
+import { openMemberWebEntry } from './member-web-entry.js';
 import {
   applySpaceDirectory,
   spaceDirectoryFor,
@@ -52,6 +54,7 @@ export const Config = z.strictObject({
   localExecution: hostLocalExecutionSchema.optional(),
   teamCatalog: hostTeamCatalogGrantsSchema.optional(),
   localSetup: z.boolean().optional(),
+  memberWeb: z.boolean().optional(),
   bodyBytes: z
     .number()
     .int()
@@ -135,7 +138,13 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   const config = Config.parse(rawConfig);
   if (config.localSetup && config.deploymentMode !== 'multi-member')
     throw new Error('Local member setup requires explicit multi-member mode.');
+  if (config.memberWeb && config.deploymentMode !== 'multi-member')
+    throw new Error('Member Web requires explicit multi-member mode.');
   configureDeploymentMode(ctx, config.deploymentMode);
+  if (config.memberWeb) {
+    enableMemberWeb(ctx);
+    openMemberWebEntry(ctx);
+  }
   // Public boot presentation only. Authorization continues to use the Host's own configuration.
   ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
     table.push({
