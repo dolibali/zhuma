@@ -199,12 +199,12 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   let localSetup: ReturnType<typeof openHostLocalSetup> | undefined;
   let localSetupHttp: ReturnType<typeof openHostLocalSetupHttp> | undefined;
   let runClosing: Promise<void> | undefined;
+  let runsClosed = false;
   const sessionAdmission =
     config.deploymentMode === 'multi-member'
       ? openHostSessionAdmission(ctx, () => (closed || runsClosed ? undefined : runOwner))
       : undefined;
   const runLifetime = new AbortController();
-  let runsClosed = false;
   function closeRunBridge(): Promise<void> {
     if (runClosing) return runClosing;
     runsClosed = true;
@@ -424,6 +424,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
               readWorkbench: workbench.readWorkbench,
               skillPolicies: workbench.createRunSkillPolicies(service),
               localExecution: config.localExecution,
+              remoteOnly: config.remoteExecution === true,
             });
             const opened = await runOpening;
             if (closed || runsClosed) {

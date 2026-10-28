@@ -1781,7 +1781,7 @@ diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-mana
 +    mkdirSync(projectDir, { recursive: true, mode: 0o700 })
 +    // Write the selection before the manifest: a failed init can retry without
 +    // falling back to an inherited legacy default or replacing an existing patch.
-+    writeFileSync(patch, '# Zhuma first profile: explicit member setup.\n- id: zhuma-workbench\n  config:\n    deploymentMode: multi-member\n    localSetup: true\n', { flag: 'wx', mode: 0o600 })
++    writeFileSync(patch, '# Zhuma first profile: explicit member setup.\n- id: typert-gateway\n  config:\n    sessionAdmissionRequired: true\n- id: zhuma-workbench\n  config:\n    deploymentMode: multi-member\n    localSetup: true\n', { flag: 'wx', mode: 0o600 })
 +  }
    initProfile(projectDir, WEB_PROFILE.bundles)
  }
