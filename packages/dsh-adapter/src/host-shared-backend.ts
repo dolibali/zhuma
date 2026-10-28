@@ -155,7 +155,7 @@ const descriptors = {
     schema: identityRegistrationSchema,
     path: '/zhuma-id/register',
     verb: 'POST',
-    auth: true,
+    auth: false,
   },
   'identity.password': {
     schema: identityPasswordChangeSchema,
@@ -512,7 +512,11 @@ export class HostSharedBackend {
           throw new SharedBackendError('changed');
         return { ...latest, authAttempt: randomUUID() };
       });
-    else if (row.cookie && !(await this.info(row, signal)))
+    else if (
+      row.cookie &&
+      input.operation !== 'identity.register' &&
+      !(await this.info(row, signal))
+    )
       return {
         connectionId: row.connectionId,
         status: 401,

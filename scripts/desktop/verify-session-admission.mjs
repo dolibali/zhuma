@@ -2,7 +2,7 @@
 /** Focused original SDK Gateway dispatch contracts. No profile, model or GUI. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, cp, symlink, writeFile, rm, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, cp, symlink, writeFile, rm, readFile, mkdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const { values } = parseArgs({ options: { sdk: { type: 'string' } } });
+const { values } = parseArgs({ options: { sdk: { type: 'string' }, output: { type: 'string' } } });
 if (!values.sdk) throw new Error('Pass --sdk with the built fixed public SDK');
 const sdk = resolve(values.sdk),
   source = join(root, 'upstream/deepseek-harness');
@@ -126,6 +126,11 @@ console.log(JSON.stringify({ checks: ['required-before-registration', 'ten-unary
     timeout: 30_000,
   });
   const result = JSON.parse(output.trim().split('\n').at(-1));
+  if (values.output) {
+    const output = resolve(values.output);
+    await mkdir(output, { recursive: true });
+    await copyFile(join(directory, 'gateway.mjs'), join(output, 'index.js'));
+  }
   const report = {
     scope: 'actual-patched-sdk-gateway-dispatch-contract-no-native-agent-model-gui',
     ...result,

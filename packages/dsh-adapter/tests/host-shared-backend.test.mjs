@@ -39,6 +39,18 @@ async function fixture(t) {
         { headers: { 'set-cookie': `${cookie}; HttpOnly; SameSite=Strict; Path=/` } },
       );
     }
+    if (url.pathname === '/zhuma-id/register')
+      return Response.json(
+        {
+          ok: true,
+          value: {
+            accountId: body.accountId,
+            personalSpaceId: `personal-${body.accountId}`,
+            disposition: 'created',
+          },
+        },
+        { status: 201 },
+      );
     const actorId = expired ? undefined : cookies.get(headers.get('cookie'));
     if (!actorId) return Response.json({ ok: false }, { status: 401 });
     if (url.pathname === '/api/zhuma-remote-run/info')
@@ -200,6 +212,21 @@ test('shared backend rejects arbitrary routes, actor injection and malformed ori
       ),
     );
   assert.equal(h.calls.length, 0);
+});
+
+test('shared backend registration preserves the original separate registration then login flow without requiring Set-Cookie', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  const registered = await h.request(selection, 'identity.register', {
+    requestId: randomUUID(),
+    accountId: 'ann',
+    password: 'synthetic-only',
+  });
+  assert.equal(registered.status, 201);
+  assert.equal(registered.body.value.accountId, 'ann');
+  assert.equal((await h.owner.status()).actorId, null);
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  assert.equal((await h.owner.status()).actorId, 'ann');
 });
 
 test('shared backend fences late login after connection replacement and never stores its Cookie', async (t) => {
