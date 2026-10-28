@@ -117,6 +117,29 @@ test('member-local secrets: backend/account switches cannot reuse a private devi
   assert.notEqual(a.deviceId, b.deviceId);
   assert.notEqual(a.deviceId, c.deviceId);
 });
+test('member-local secrets: cold exact lookup never creates or rotates an accept intent', async () => {
+  const h = fixture(),
+    owner = new MemberLocalExecutionSecrets(h.store),
+    backend = '00000000-0000-4000-8000-000000000001',
+    request = '00000000-0000-4000-8000-000000000003',
+    device = await owner.device(backend, 'ann');
+  assert.equal(await owner.recoverAccept(device, request), undefined);
+  assert.equal(h.rows.size, 1);
+  const first = await owner.accept(device, request, 'a'.repeat(64)),
+    before = structuredClone([...h.rows.values()]),
+    cold = new MemberLocalExecutionSecrets(h.store),
+    identity = await cold.device(backend, 'ann'),
+    recovered = await cold.recoverAccept(identity, request);
+  assert.deepEqual(recovered.drive, first.drive);
+  assert.deepEqual(recovered.cleanup, first.cleanup);
+  assert.equal(recovered.intentFingerprint, first.intentFingerprint);
+  assert.deepEqual([...h.rows.values()], before);
+  await assert.rejects(cold.recoverAccept({ ...identity }, request), { code: 'invalid' });
+  await assert.rejects(cold.recoverAccept(identity, request, AbortSignal.abort()), {
+    code: 'cancelled',
+  });
+  assert.deepEqual([...h.rows.values()], before);
+});
 test('member-local secrets: a failed durable reply does not leak a handle and reopening recovers the stored intent', async () => {
   const h = fixture(),
     owner = new MemberLocalExecutionSecrets(h.store),

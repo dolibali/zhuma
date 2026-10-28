@@ -8,11 +8,14 @@ import {
   type RemoteRunEvent,
   type RemoteRunView,
   type RemoteResultReceipt,
+  type RemoteResultDeclaration,
+  type RemoteResultDraft,
 } from '@zhuma/agent-core';
 import {
   MemberLocalExecutionProtocol,
   MemberLocalProtocolError,
   type MemberLocalAcceptedRun,
+  type MemberLocalRunHandle,
 } from './member-local-execution-protocol.js';
 import { openNativeWorkSessions } from './native-work-session-storage.js';
 import {
@@ -38,6 +41,7 @@ import {
   type FrozenMcpResource,
 } from './execution-run-resources.js';
 import { observeHostNativeRun } from './host-run-observation.js';
+import { registerMemberLocalAcceptedInputs } from './member-local-execution-inputs.js';
 
 export interface MemberLocalOwnerOptions {
   readonly protocol: MemberLocalExecutionProtocol;
@@ -53,7 +57,8 @@ type Phase =
 type Observation = ReturnType<typeof observeHostNativeRun>;
 type NativeOwner = Awaited<ReturnType<typeof openNativeWorkSessions>>;
 interface Owned {
-  readonly run: MemberLocalAcceptedRun;
+  readonly run: MemberLocalRunHandle;
+  readonly role: 'drive' | 'result-only';
   readonly scope: NativeWorkScope;
   readonly abort: AbortController;
   readonly grant: NativeWorkGrant;
@@ -113,7 +118,9 @@ export class MemberLocalExecutionOwner {
       state.abort.signal.aborted ||
       performance.now() >= state.deadline ||
       state.view.stopRequested ||
-      state.view.authority !== 'drive' ||
+      (state.role === 'drive'
+        ? state.view.authority !== 'drive'
+        : state.view.authority !== 'commit-only' || !['open', 'history'].includes(action)) ||
       (state.phase !== 'working' &&
         state.phase !== 'dispatching' &&
         !['open', 'history', 'follow'].includes(action))
@@ -156,6 +163,15 @@ export class MemberLocalExecutionOwner {
           const state = this.state(grant),
             snapshot = state.run.composition;
           this.check(state, 'send');
+          const input = await registerMemberLocalAcceptedInputs(
+            agentCtx,
+            binding,
+            grant,
+            this.native.service,
+            this.options.protocol,
+            state.run,
+          );
+          this.check(state, 'send');
           await this.options.assertModel(binding.selection, grant.signal);
           this.check(state, 'send');
           const extra = this.options.native
@@ -195,6 +211,7 @@ export class MemberLocalExecutionOwner {
           if (
             canonicalPayload([
               ...extra.toolAllowlist,
+              ...input.toolAllowlist,
               ...result.toolAllowlist,
               ...state.resources.toolAllowlist,
             ]) !== canonicalPayload(snapshot.payload.toolAllowlist)
@@ -239,7 +256,10 @@ export class MemberLocalExecutionOwner {
     );
     this.results.onReady((grant, ref) => {
       const state = this.grants.get(grant);
-      if (state) void this.collect(state, ref).catch(() => this.fence(state));
+      if (state)
+        void (
+          state.role === 'result-only' ? this.continueFixed(state, ref) : this.collect(state, ref)
+        ).catch(() => this.fence(state));
     });
     this.heartbeat = setInterval(() => {
       for (const state of this.states.values()) {
@@ -267,7 +287,9 @@ export class MemberLocalExecutionOwner {
     state.deadline = before + Math.min(ttl, REMOTE_RUN_LIMITS.driveTtlMs);
     state.cleanupDeadline = before + Math.min(cleanupTtl, REMOTE_RUN_LIMITS.cleanupTtlMs);
     if (state.timer) clearTimeout(state.timer);
-    if (view.authority !== 'drive' || view.stopRequested || ttl <= 0) {
+    const granted =
+      state.role === 'drive' ? view.authority === 'drive' : view.authority === 'commit-only';
+    if (!granted || view.stopRequested || ttl <= 0) {
       if (state.phase !== 'fixed' && state.phase !== 'submitted') this.fence(state);
     } else {
       state.timer = setTimeout(
@@ -293,6 +315,7 @@ export class MemberLocalExecutionOwner {
    * Opening old persisted native work never silently resumes or creates an Agent. */
   async start(run: MemberLocalAcceptedRun): Promise<MemberLocalOwnerView> {
     if (this.lifetime.signal.aborted) throw new NativeWorkError('unavailable');
+    this.options.protocol.assertStartHandle(run);
     const before = performance.now(),
       view = await this.options.protocol.status(run),
       { backendId: _backendId, ...scope } = view.scope,
@@ -309,36 +332,14 @@ export class MemberLocalExecutionOwner {
       snapshot.payload.resultIntentTool?.sourceVersion !== 'zhuma-native-result-intent@1' ||
       snapshot.payload.outputFilePublisherTool ||
       snapshot.payload.acceptedFileReader ||
-      (snapshot.payload.tools.kind !== 'text-only' && !this.options.native) ||
+      (snapshot.payload.tools.kind === 'local-tools' && !this.options.native) ||
       (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
     )
       throw new NativeWorkError('configuration-mismatch');
-    const abort = new AbortController(),
-      grant: NativeWorkGrant = Object.freeze({
-        scope: Object.freeze(structuredClone(scope)),
-        signal: abort.signal,
-        assertCurrent: (action: NativeWorkAction) => this.check(this.state(grant), action),
-      }),
-      state: Owned = {
-        run,
-        scope: grant.scope,
-        abort,
-        grant,
-        view,
-        deadline: before,
-        cleanupDeadline: before,
-        phase: 'dispatching',
-        sequence: view.nextSequence,
-        queue: Promise.resolve(),
-        received: false,
-        accepted: false,
-      };
-    this.states.set(address(scope), state);
-    this.grants.set(grant, state);
-    this.update(state, view, before);
+    const state = this.retain(run, view, before, 'drive');
     try {
       this.check(state, 'open');
-      if (this.native.service.open(grant)) throw new NativeWorkError('scope-mismatch');
+      if (this.native.service.open(state.grant)) throw new NativeWorkError('scope-mismatch');
       state.dispatch = this.track(this.dispatch(state));
       await state.dispatch;
     } catch (error) {
@@ -346,6 +347,45 @@ export class MemberLocalExecutionOwner {
       throw error;
     }
     return this.read(run);
+  }
+  private retain(
+    run: MemberLocalRunHandle,
+    view: RemoteRunView,
+    before: number,
+    role: Owned['role'],
+  ): Owned {
+    const { backendId: _backendId, ...scope } = view.scope,
+      abort = new AbortController(),
+      grant: NativeWorkGrant = Object.freeze({
+        scope: Object.freeze(structuredClone(scope)),
+        signal: abort.signal,
+        assertCurrent: (action: NativeWorkAction) => this.check(this.state(grant), action),
+      }),
+      state: Owned = {
+        run,
+        role,
+        scope: grant.scope,
+        abort,
+        grant,
+        view,
+        deadline: before,
+        cleanupDeadline: before,
+        phase: role === 'drive' ? 'dispatching' : 'fixed',
+        sequence: view.nextSequence,
+        queue: Promise.resolve(),
+        received: false,
+        accepted: false,
+      };
+    const previous = this.states.get(address(scope));
+    if (previous) {
+      if (previous.timer) clearTimeout(previous.timer);
+      previous.abort.abort();
+      previous.observation?.close();
+    }
+    this.states.set(address(scope), state);
+    this.grants.set(grant, state);
+    this.update(state, view, before);
+    return state;
   }
   private async dispatch(state: Owned): Promise<void> {
     const { firstMessage, selection } = executionRunCompositionRequest(state.run.composition);
@@ -436,22 +476,95 @@ export class MemberLocalExecutionOwner {
           resourcesSettled: true,
           result,
         });
-        const submitted = await this.enqueue(state, () =>
-          this.options.protocol.command(state.run, {
-            operation: 'submit-result',
-            requestId: result.requestId,
-            payload: { expectedNodeVersion: state.view.nodeVersion, result, draft },
-          }),
-        );
+        await this.commit(state, result, draft);
+      } finally {
+        lease.release();
+      }
+    });
+    state.collecting = this.track(
+      work.finally(() => {
+        delete state.collecting;
+      }),
+    );
+    return state.collecting;
+  }
+  private async commit(
+    state: Owned,
+    result: RemoteResultDeclaration,
+    draft: RemoteResultDraft,
+  ): Promise<void> {
+    const submitted = await this.enqueue(state, () =>
+      this.options.protocol.command(state.run, {
+        operation: 'submit-result',
+        requestId: result.requestId,
+        payload: { expectedNodeVersion: state.view.nodeVersion, result, draft },
+      }),
+    );
+    if (
+      submitted.receipt.requestId !== result.requestId ||
+      submitted.receipt.digest !== result.digest ||
+      submitted.receipt.artifactDigest !== result.artifactDigest
+    )
+      throw new MemberLocalProtocolError('local-mismatch');
+    state.receipt = Object.freeze(structuredClone(submitted.receipt));
+    state.phase = 'submitted';
+    if (state.timer) clearTimeout(state.timer);
+  }
+  /** Explicit same-result continuation. It cannot call send, factory create/
+   * resume, register tools or issue a new completion declaration. */
+  async continueResult(run: MemberLocalRunHandle): Promise<MemberLocalOwnerView> {
+    if (this.lifetime.signal.aborted) throw new NativeWorkError('unavailable');
+    const before = performance.now(),
+      view = await this.options.protocol.status(run),
+      { backendId: _backendId, ...scope } = view.scope,
+      prior = this.states.get(address(scope));
+    if (
+      view.authority !== 'commit-only' ||
+      view.runStatus !== 'completed' ||
+      view.resources !== 'settled' ||
+      view.stopRequested ||
+      !view.result ||
+      view.result.source.toolVersion !== 'zhuma-native-result-intent@1'
+    )
+      throw new MemberLocalProtocolError('remote-recovery-required');
+    if (prior?.collecting || (prior && !prior.abort.signal.aborted && prior.phase !== 'fixed'))
+      throw new NativeWorkError('unavailable');
+    if (prior?.retirement) await prior.retirement;
+    const state = this.retain(run, view, before, 'result-only');
+    try {
+      await this.continueFixed(state);
+    } catch (error) {
+      this.fence(state);
+      throw error;
+    }
+    return this.read(run);
+  }
+  private continueFixed(state: Owned, ref?: NativeFixedResultRef): Promise<void> {
+    if (state.collecting) return state.collecting;
+    if (state.role !== 'result-only' || state.phase !== 'fixed') return Promise.resolve();
+    const work = Promise.resolve().then(async () => {
+      this.checkResult(state.grant);
+      const declared = state.view.result;
+      if (!declared) throw new NativeWorkError('scope-mismatch');
+      const prepared = ref
+        ? { status: 'ready' as const, ref }
+        : await this.results.prepareFixedResult(state.grant, state.grant.signal);
+      if (prepared.status !== 'ready') return;
+      const lease = await this.results.readFixedResult(
+        state.grant,
+        prepared.ref,
+        state.grant.signal,
+      );
+      try {
+        lease.check();
+        const draft = remoteResultDigestInput({ ...lease.content, files: [] });
         if (
-          submitted.receipt.requestId !== result.requestId ||
-          submitted.receipt.digest !== result.digest ||
-          submitted.receipt.artifactDigest !== result.artifactDigest
+          canonicalPayload(lease.source) !== canonicalPayload(declared.source) ||
+          lease.digest !== declared.digest ||
+          hash(draft) !== declared.artifactDigest
         )
           throw new MemberLocalProtocolError('local-mismatch');
-        state.receipt = Object.freeze(structuredClone(submitted.receipt));
-        state.phase = 'submitted';
-        if (state.timer) clearTimeout(state.timer);
+        await this.commit(state, declared, draft);
       } finally {
         lease.release();
       }
@@ -515,7 +628,7 @@ export class MemberLocalExecutionOwner {
       if (state.phase === 'retiring') state.phase = 'recovery-required';
     }
   }
-  read(run: MemberLocalAcceptedRun): MemberLocalOwnerView {
+  read(run: MemberLocalRunHandle): MemberLocalOwnerView {
     const { backendId: _backendId, ...scope } = run.value.scope,
       state = this.states.get(address(scope));
     if (!state || state.run !== run) throw new NativeWorkError('scope-mismatch');
@@ -543,7 +656,7 @@ export class MemberLocalExecutionOwner {
       await this.native.close();
     })());
   }
-  async refresh(run: MemberLocalAcceptedRun): Promise<MemberLocalOwnerView> {
+  async refresh(run: MemberLocalRunHandle): Promise<MemberLocalOwnerView> {
     const { backendId: _backendId, ...scope } = run.value.scope,
       state = this.states.get(address(scope));
     if (!state || state.run !== run) throw new NativeWorkError('scope-mismatch');
@@ -559,7 +672,7 @@ export class MemberLocalExecutionOwner {
     return this.read(run);
   }
   async send(
-    run: MemberLocalAcceptedRun,
+    run: MemberLocalRunHandle,
     input: Omit<Parameters<NativeOwner['service']['send']>[1], 'selection'>,
   ) {
     await this.refresh(run);

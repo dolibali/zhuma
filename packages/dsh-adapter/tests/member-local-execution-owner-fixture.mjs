@@ -21,6 +21,9 @@ import { ScriptedAdapter } from './native-work-session-fixture.mjs';
 export { response } from './native-work-session-fixture.mjs';
 export { toolResponse } from './native-work-session-input-fixture.mjs';
 export { fixture } from './member-local-execution-protocol-fixture.mjs';
+export { MemberLocalExecutionProtocol } from '../dist/member-local-execution-protocol.js';
+export { MemberLocalExecutionSecrets } from '../dist/member-local-execution-secrets.js';
+export { acceptedInputRef } from '../dist/native-work-session-input-tool.js';
 
 /** Actual original SDK Host/profile; provider output is scripted, backend authority
  * is separately labelled a contract. No alternative Agent factory is installed. */

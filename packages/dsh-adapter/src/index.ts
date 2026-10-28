@@ -343,6 +343,8 @@ export {
 export type {
   MemberLocalProtocolOptions,
   MemberLocalAcceptedRun,
+  MemberLocalRunHandle,
+  MemberLocalRecoveryInput,
   MemberLocalPreparedAccept,
   MemberLocalAcceptInput,
 } from './member-local-execution-protocol.js';

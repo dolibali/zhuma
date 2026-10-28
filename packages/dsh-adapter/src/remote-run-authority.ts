@@ -4,11 +4,13 @@ import {
   isTerminalRunStatus,
   requestRunStop,
   REMOTE_RUN_LIMITS,
+  REMOTE_RUN_RESOURCE_SOURCE_VERSION,
   remoteDeviceSigningInput,
   remotePermitHashInput,
   remoteRunRequestSchema,
   remoteRunResponseSchema,
   remoteRunSharedSnapshotSchema,
+  remoteAcceptValueSchema,
   remoteResultDigestInput,
   submitDelivery,
   submitExpertDelivery,
@@ -21,7 +23,10 @@ import {
   type RemoteAcceptValue,
   type RemoteRunScope,
   type RemoteRunErrorCode,
+  type RemoteInputDescriptor,
+  type RemoteReconcileValue,
 } from '@zhuma/agent-core';
+import type { UpstreamContentValue } from './execution-service.js';
 import { memberSessionId, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
 import {
@@ -44,6 +49,13 @@ import type { RemoteRunBinding, RemoteBackendRegistry } from './remote-run-autho
 import type { FrozenExecutionRunComposition } from './execution-run-composition.js';
 import { executionRunCompositionRequest } from './execution-run-composition.js';
 import { nativeResultDigest } from './native-work-session-result-source.js';
+import {
+  withExecutionInitialResourceQualification,
+  ExecutionRunResourceQualificationCloseError,
+  type ExecutionInitialResourceVerification,
+  type ExecutionRunResourceCatalogHost,
+} from './execution-run-resource-qualification.js';
+import type { ExecutionRunResourceCatalog } from './execution-run-resource-snapshot.js';
 
 type Accept = Extract<RemoteRunRequest, { operation: 'accept' }>;
 type Target = Accept['payload']['target'];
@@ -65,6 +77,8 @@ const supported = [
   'reconcile',
   'submit-result',
   'result-status',
+  'input-list',
+  'input-read',
 ] satisfies RemoteRunOperation[];
 const hash = (value: unknown) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
 const same = (left: unknown, right: unknown) => canonicalPayload(left) === canonicalPayload(right);
@@ -86,6 +100,7 @@ function deny(code: RemoteRunErrorCode): never {
 /** Private original-service ports. A wire DTO never supplies any of these assertions. */
 export interface RemoteRunAuthoritySource {
   readonly signal: AbortSignal;
+  readonly resourceHost?: ExecutionRunResourceCatalogHost;
   enqueue<T>(work: () => Promise<T>): Promise<T>;
   memberLease(request: MemberRequest): Promise<ExecutionMemberLease>;
   readGlobal(): unknown;
@@ -93,6 +108,13 @@ export interface RemoteRunAuthoritySource {
   readNode(target: Target): ExecutionNodeRecord | undefined;
   listNodes(): readonly ExecutionNodeRecord[];
   writeNode(next: ExecutionNodeRecord): Promise<void>;
+  readInput(
+    actorId: string,
+    spaceId: string,
+    downstream: ExecutionNodeRecord,
+    sourceNodeId: string,
+    artifactVersionId: string,
+  ): UpstreamContentValue | undefined;
   prepareDelivery(record: ExecutionNodeRecord, actorId: string): ExecutionNodeRecord;
   afterDelivery(record: ExecutionNodeRecord): Promise<void>;
   /** Current membership/project/assignment AND the unique latest applied plan. */
@@ -102,6 +124,7 @@ export interface RemoteRunAuthoritySource {
     request: Accept,
     node: ExecutionNodeRecord,
     scope: Omit<RemoteRunScope, 'backendId'>,
+    resources?: ExecutionRunResourceCatalog,
   ): FrozenExecutionRunComposition;
   now?(): number;
 }
@@ -119,6 +142,9 @@ export class RemoteRunAuthorities {
   >();
   private readonly inFlight = new Map<string, number>();
   private closed = false;
+  private readonly operations = new Set<Promise<RemoteRunResponse<unknown>>>();
+  private preparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
+  private releaseFailed = false;
   constructor(private readonly source: RemoteRunAuthoritySource) {
     source.signal.addEventListener('abort', () => this.fence(), { once: true });
   }
@@ -153,12 +179,19 @@ export class RemoteRunAuthorities {
     try {
       value.lease.release();
     } catch {
+      this.releaseFailed = true;
       this.closed = true;
     }
   }
   fence(): void {
     this.closed = true;
     for (const id of this.active.keys()) this.release(id);
+  }
+  async close(): Promise<void> {
+    this.fence();
+    while (this.operations.size) await Promise.allSettled([...this.operations]);
+    if (this.preparationFailure) throw this.preparationFailure;
+    if (this.releaseFailed) throw new RemoteRunError('remote-unavailable');
   }
   private retain(
     runId: string,
@@ -171,7 +204,17 @@ export class RemoteRunAuthorities {
     timer.unref();
     this.active.set(runId, { lease, sessionHash, timer });
   }
-  async handle(
+  handle(
+    request: MemberRequest,
+    raw: unknown,
+    privatePermit?: string,
+  ): Promise<RemoteRunResponse<unknown>> {
+    const operation = Promise.resolve().then(() => this.handleNow(request, raw, privatePermit));
+    this.operations.add(operation);
+    void operation.finally(() => this.operations.delete(operation)).catch(() => undefined);
+    return operation;
+  }
+  private async handleNow(
     request: MemberRequest,
     raw: unknown,
     privatePermit?: string,
@@ -198,6 +241,7 @@ export class RemoteRunAuthorities {
           deny('remote-unauthenticated');
         }
         if (lease.signal.aborted || lease.expiresAt <= this.now()) deny('remote-unauthenticated');
+        if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
       }
       if ('deviceId' in body) {
         const pending = this.inFlight.get(body.deviceId) ?? 0;
@@ -208,69 +252,111 @@ export class RemoteRunAuthorities {
       const session = lease && memberSessionId(request.headers.cookie);
       if (lease && !session) deny('remote-unauthenticated');
       const sessionHash = session ? hash(session) : '';
-      const response = await this.source.enqueue(async () => {
-        const registry = this.registry();
-        if (body.operation !== 'info' && body.backendId !== registry.backendId)
-          deny('remote-scope-mismatch');
-        if (lease && (lease.signal.aborted || lease.expiresAt <= this.now()))
-          deny('remote-unauthenticated');
-        if (body.operation === 'info')
-          return {
-            protocolVersion: 1,
-            backendId: registry.backendId,
-            actorId: lease!.memberId,
-            serverTime: this.now(),
-            purposes: ['work'],
-            operations: supported,
-          };
-        if (body.operation === 'register-device') return this.register(body, lease!);
-        if (body.operation === 'cleanup') return this.cleanup(body, privatePermit);
-        if (body.operation === 'accept') {
-          const value = await this.accept(body, lease!, sessionHash);
-          if (value.disposition === 'accepted') {
-            this.retain(value.scope.runId, lease!, sessionHash, value.permit.expiresAt);
-            retained = true;
-            return { ...value, ...this.view(this.load(value.scope)) };
-          }
-          return value;
-        }
-        if (body.operation === 'stop') return this.stop(body, lease!);
-        this.checkDevice(body, lease!.memberId);
-        if (body.operation === 'reconcile')
-          return this.reconcile(body, lease!, privatePermit, sessionHash);
-        const target = body.payload.scope;
-        const loaded = this.load(target);
-        this.authorize(loaded, lease!);
-        this.checkBinding(body, loaded);
-        this.checkPermit(body.payload.permit, privatePermit, loaded.remote.drive);
-        const mutable = body.operation !== 'status' && body.operation !== 'result-status';
-        this.checkLive(loaded, lease!, sessionHash, mutable);
-        switch (body.operation) {
-          case 'status':
-            return this.view(loaded, false, loaded.remote.memberSessionHash === sessionHash);
-          case 'renew':
-            return this.renew(body, loaded);
-          case 'event':
-            return this.event(body, loaded);
-          case 'submit-result':
-            return this.submit(body, loaded);
-          case 'result-status': {
-            const receipt = loaded.remote.receipt;
-            if (receipt && receipt.requestId !== body.payload.resultRequestId)
-              deny('remote-idempotency-mismatch');
+      const execute = (qualification?: ExecutionInitialResourceVerification) =>
+        this.source.enqueue(async () => {
+          if (body.operation !== 'cleanup' && (this.closed || this.source.signal.aborted))
+            deny('remote-unavailable');
+          const registry = this.registry();
+          if (body.operation !== 'info' && body.backendId !== registry.backendId)
+            deny('remote-scope-mismatch');
+          if (lease && (lease.signal.aborted || lease.expiresAt <= this.now()))
+            deny('remote-unauthenticated');
+          if (body.operation === 'info')
             return {
-              scope: target,
-              status: receipt ? 'committed' : 'none',
-              ...(receipt ? { receipt } : {}),
+              protocolVersion: 1,
+              backendId: registry.backendId,
+              actorId: lease!.memberId,
+              serverTime: this.now(),
+              purposes: ['work'],
+              operations: supported,
             };
+          if (body.operation === 'register-device') return this.register(body, lease!);
+          if (body.operation === 'cleanup') return this.cleanup(body, privatePermit);
+          if (body.operation === 'accept') {
+            return this.accept(body, lease!, sessionHash, qualification);
           }
-          default:
-            return deny('remote-protocol-unsupported');
-        }
-      });
+          if (body.operation === 'stop') return this.stop(body, lease!);
+          this.checkDevice(body, lease!.memberId);
+          if (body.operation === 'reconcile')
+            return this.reconcile(body, lease!, privatePermit, sessionHash);
+          const target = body.payload.scope;
+          const loaded = this.load(target);
+          this.authorize(loaded, lease!);
+          this.checkBinding(body, loaded);
+          this.checkPermit(body.payload.permit, privatePermit, loaded.remote.drive);
+          const mutable = body.operation !== 'status' && body.operation !== 'result-status';
+          this.checkLive(loaded, lease!, sessionHash, mutable);
+          switch (body.operation) {
+            case 'status':
+              return this.view(loaded, false, loaded.remote.memberSessionHash === sessionHash);
+            case 'renew':
+              return this.renew(body, loaded);
+            case 'event':
+              return this.event(body, loaded);
+            case 'submit-result':
+              return this.submit(body, loaded);
+            case 'result-status': {
+              const receipt = loaded.remote.receipt;
+              if (receipt && receipt.requestId !== body.payload.resultRequestId)
+                deny('remote-idempotency-mismatch');
+              return {
+                scope: target,
+                status: receipt ? 'committed' : 'none',
+                ...(receipt ? { receipt } : {}),
+              };
+            }
+            case 'input-list':
+              this.requireInputDrive(loaded);
+              this.assertInputCatalog(loaded);
+              return { scope: target, items: loaded.remote.inputs };
+            case 'input-read':
+              return this.readInput(body, loaded);
+            default:
+              return deny('remote-protocol-unsupported');
+          }
+        });
+      const response =
+        body.operation === 'accept'
+          ? await this.prepareAcceptResources(request, body, lease!, execute)
+          : await execute();
+      // Only after actual metadata release may this request acquire drive. A
+      // release failure leaves a durable reserved Run, never a usable new owner.
+      const projected =
+        body.operation === 'accept'
+          ? await this.source.enqueue(async () => {
+              if (
+                this.closed ||
+                this.source.signal.aborted ||
+                lease!.signal.aborted ||
+                lease!.expiresAt <= this.now()
+              )
+                deny('remote-unavailable');
+              const accepted = remoteAcceptValueSchema.parse(response);
+              const current = this.load(accepted.scope);
+              this.authorize(current, lease!);
+              if (
+                accepted.disposition === 'accepted' &&
+                !current.remote.stopRequested &&
+                current.run.attempt.stopPhase === 'none' &&
+                !isTerminalRunStatus(current.run.attempt.status)
+              ) {
+                this.retain(
+                  accepted.scope.runId,
+                  lease!,
+                  sessionHash,
+                  current.remote.drive.expiresAt,
+                );
+                retained = true;
+              }
+              return {
+                ...accepted,
+                ...this.view(current, false, current.remote.memberSessionHash === sessionHash),
+              };
+            })
+          : response;
       const result = remoteRunResponseSchema(body.operation).safeParse({
         ok: true,
-        value: response,
+        value: projected,
       });
       if (!result.success) deny('remote-unavailable');
       return result.data;
@@ -281,9 +367,11 @@ export class RemoteRunAuthorities {
           : error instanceof ExecutionRunError
             ? error.code === 'run-active' || error.code === 'run-workspace-busy'
               ? 'remote-resource-held'
-              : error.code === 'run-conflict'
-                ? 'remote-conflict'
-                : 'remote-forbidden'
+              : error.code === 'run-authority-unavailable'
+                ? 'remote-unavailable'
+                : error.code === 'run-conflict'
+                  ? 'remote-conflict'
+                  : 'remote-forbidden'
             : 'remote-unavailable';
       return { ok: false, error: { code } };
     } finally {
@@ -296,9 +384,54 @@ export class RemoteRunAuthorities {
         try {
           lease.release();
         } catch {
+          this.releaseFailed = true;
           this.fence();
         }
       }
+    }
+  }
+  private async prepareAcceptResources<T>(
+    request: MemberRequest,
+    body: Accept,
+    lease: ExecutionMemberLease,
+    work: (verification?: ExecutionInitialResourceVerification) => Promise<T>,
+  ): Promise<T> {
+    const needed = await this.source.enqueue(async () => {
+      if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
+      if (body.backendId !== this.registry().backendId) deny('remote-scope-mismatch');
+      this.checkDevice(body, lease.memberId);
+      lease.assertCurrent(body.payload.target.spaceId);
+      const node = this.source.readNode(body.payload.target);
+      if (!node) deny('remote-not-found');
+      this.source.assertTarget(lease.memberId, body.payload.target, node);
+      if (
+        node.handoff.skillRefs.length &&
+        body.payload.capabilities.resources !== REMOTE_RUN_RESOURCE_SOURCE_VERSION
+      )
+        deny('remote-protocol-unsupported');
+      const prior = readExecutionRunState(node)?.runs.some(
+        (run) => run.remote?.acceptRequestId === body.requestId,
+      );
+      return !prior && node.handoff.skillRefs.length > 0;
+    });
+    if (!needed) return work();
+    if (this.preparationFailure) deny('remote-unavailable');
+    const host = this.source.resourceHost;
+    if (!host) deny('remote-unavailable');
+    try {
+      return await withExecutionInitialResourceQualification(
+        {
+          host,
+          ownerSignal: AbortSignal.any([this.source.signal, lease.signal]),
+          originalRequest: request,
+          locator: body.payload.target,
+        },
+        work,
+      );
+    } catch (error) {
+      if (error instanceof ExecutionRunResourceQualificationCloseError)
+        this.preparationFailure ??= error;
+      throw error;
     }
   }
   private proof(body: RemoteDeviceRequest, publicKey: string): void {
@@ -520,31 +653,113 @@ export class RemoteRunAuthorities {
     await this.source.writeNode(next);
     return this.load({ ...executionRunScope(next, run), backendId: run.remote!.backendId });
   }
-  private acceptValue(
-    value: Loaded,
-    disposition: 'accepted' | 'replayed',
-    sessionCurrent = true,
-  ): RemoteAcceptValue {
+  private savedSnapshot(value: Loaded) {
     const composition = value.run.composition;
     if (!composition) deny('remote-unavailable');
     const shared = remoteRunSharedSnapshotSchema.parse({
       configurationId: composition.configurationId,
       composition,
       context: composition.payload.context,
-      handoff: value.node.handoff,
+      handoff: composition.payload.handoff,
       inputs: value.remote.inputs,
     });
+    return { selection: value.run.selection, shared };
+  }
+  private acceptValue(
+    value: Loaded,
+    disposition: 'accepted' | 'replayed',
+    sessionCurrent = true,
+  ): RemoteAcceptValue {
     return {
       ...this.view(value, false, sessionCurrent),
+      ...this.savedSnapshot(value),
       disposition,
-      selection: value.run.selection,
-      shared,
+    };
+  }
+  private reconcileValue(value: Loaded, sessionCurrent = true): RemoteReconcileValue {
+    const view = this.view(value, false, sessionCurrent);
+    return {
+      ...view,
+      ...this.savedSnapshot(value),
+      authority: view.authority === 'drive' ? 'recovery-required' : view.authority,
+    };
+  }
+  private inputSnapshot(
+    scope: RemoteRunScope,
+    node: ExecutionNodeRecord,
+    sourceNodeId: string,
+    artifactVersionId: string,
+  ) {
+    const content = this.source.readInput(
+      scope.actorId,
+      scope.spaceId,
+      node,
+      sourceNodeId,
+      artifactVersionId,
+    );
+    if (!content) deny('remote-input-stale');
+    const data = Buffer.from(canonicalPayload(content), 'utf8');
+    // Original bounded accepted text/links JSON, never a transcript, link fetch or file body.
+    if (data.byteLength > 1024 * 1024) deny('remote-quota');
+    const descriptor: RemoteInputDescriptor = {
+      slotId: `input_${hash({ scope, sourceNodeId, artifactVersionId })}`,
+      kind: 'text',
+      name: `${sourceNodeId} · 第 ${content.version.version} 版`,
+      sourceNodeId,
+      artifactVersionId,
+      byteSize: data.byteLength,
+      sha256: createHash('sha256').update(data).digest('hex'),
+    };
+    return { descriptor, data };
+  }
+  private inputCatalog(scope: RemoteRunScope, node: ExecutionNodeRecord) {
+    return node.handoff.inputRefs.map(
+      (ref) => this.inputSnapshot(scope, node, ref.sourceNodeId, ref.artifactVersionId).descriptor,
+    );
+  }
+  private requireInputDrive(value: Loaded): void {
+    if (isTerminalRunStatus(value.run.attempt.status) || value.run.resources !== 'held')
+      deny('remote-permit-revoked');
+  }
+  private assertInputCatalog(value: Loaded): void {
+    const scope = {
+      ...executionRunScope(value.node, value.run),
+      backendId: value.remote.backendId,
+    };
+    if (!same(this.inputCatalog(scope, value.node), value.remote.inputs))
+      deny('remote-input-stale');
+  }
+  private readInput(body: Extract<RemoteRunRequest, { operation: 'input-read' }>, value: Loaded) {
+    this.requireInputDrive(value);
+    const slot = value.remote.inputs.find((item) => item.slotId === body.payload.slotId);
+    if (!slot?.sourceNodeId || !slot.artifactVersionId || slot.kind !== 'text')
+      deny('remote-input-stale');
+    const current = this.inputSnapshot(
+      body.payload.scope,
+      value.node,
+      slot.sourceNodeId,
+      slot.artifactVersionId,
+    );
+    if (!same(current.descriptor, slot)) deny('remote-input-stale');
+    const offset = body.payload.offset;
+    if (offset > current.data.byteLength) deny('remote-validation');
+    const chunk = current.data.subarray(offset, offset + body.payload.maximumBytes);
+    return {
+      scope: body.payload.scope,
+      slotId: slot.slotId,
+      offset,
+      byteSize: chunk.byteLength,
+      totalBytes: current.data.byteLength,
+      sha256: slot.sha256,
+      base64: chunk.toString('base64'),
+      eof: offset + chunk.byteLength === current.data.byteLength,
     };
   }
   private async accept(
     body: Accept,
     lease: ExecutionMemberLease,
     sessionHash: string,
+    qualification?: ExecutionInitialResourceVerification,
   ): Promise<RemoteAcceptValue> {
     const device = this.checkDevice(body, lease.memberId);
     const payload = body.payload;
@@ -580,13 +795,16 @@ export class RemoteRunAuthorities {
       payload.capabilities.resultIntent !== 'zhuma-native-result-intent@1' ||
       payload.capabilities.outputFile ||
       payload.capabilities.acceptedFile ||
-      payload.capabilities.acceptedInput ||
       payload.capabilities.localTools.length ||
       payload.workspace.kind !== 'text-only' ||
-      node.handoff.inputRefs.length ||
-      node.handoff.skillRefs.length ||
       node.handoff.mcpRefs.length
     )
+      deny('remote-protocol-unsupported');
+    if (node.handoff.skillRefs.length && !qualification) deny('remote-unavailable');
+    if (qualification?.actorId !== undefined && qualification.actorId !== lease.memberId)
+      deny('remote-forbidden');
+    qualification?.assertCurrent();
+    if (node.handoff.inputRefs.length && payload.capabilities.acceptedInput !== '1')
       deny('remote-protocol-unsupported');
     if (
       payload.credentials.drive.id === payload.credentials.cleanup.id ||
@@ -600,7 +818,15 @@ export class RemoteRunAuthorities {
       generation: (state?.runs.length ?? 0) + 1,
       segmentId: randomUUID(),
     };
-    const composition = this.source.compose(lease.memberId, body, node, scope);
+    const composition = this.source.compose(
+      lease.memberId,
+      body,
+      node,
+      scope,
+      qualification?.catalog,
+    );
+    qualification?.assertCurrent();
+    const inputs = this.inputCatalog({ ...scope, backendId: body.backendId }, node);
     const projected = executionRunCompositionRequest(composition);
     const decision = beginExecutionRun(
       node,
@@ -633,7 +859,7 @@ export class RemoteRunAuthorities {
       acceptFingerprint: fingerprint,
       memberSessionHash: sessionHash,
       stopRequested: false,
-      inputs: [],
+      inputs,
       controls: [],
       drive: {
         ...payload.credentials.drive,
@@ -653,7 +879,9 @@ export class RemoteRunAuthorities {
     });
     lease.assertCurrent(payload.target.spaceId);
     this.source.assertTarget(lease.memberId, payload.target, this.source.readNode(payload.target)!);
+    qualification?.assertCurrent();
     await this.source.writeNode(next);
+    qualification?.assertCurrent();
     return this.acceptValue(this.load({ ...scope, backendId: body.backendId }), 'accepted');
   }
   private async renew(body: Extract<RemoteRunRequest, { operation: 'renew' }>, value: Loaded) {
@@ -951,9 +1179,9 @@ export class RemoteRunAuthorities {
           },
         },
       });
-      return this.view(next);
+      return this.reconcileValue(next);
     }
-    return this.view(value, false, value.remote.memberSessionHash === sessionHash);
+    return this.reconcileValue(value, value.remote.memberSessionHash === sessionHash);
   }
   private async submit(
     body: Extract<RemoteRunRequest, { operation: 'submit-result' }>,

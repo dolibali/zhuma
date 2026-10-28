@@ -57,10 +57,18 @@ export class MemberLocalProtocolError extends Error {
     super('成员本机执行尚未确认。');
   }
 }
-export interface MemberLocalAcceptedRun {
-  readonly value: RemoteAcceptValue;
+export interface MemberLocalRunHandle {
+  readonly value: RemoteRunView & Pick<RemoteAcceptValue, 'selection' | 'shared'>;
   readonly composition: FrozenExecutionRunComposition;
 }
+export interface MemberLocalAcceptedRun extends MemberLocalRunHandle {
+  readonly value: RemoteAcceptValue;
+}
+type ReconcilePayload = Extract<RemoteRunRequest, { operation: 'reconcile' }>['payload'];
+export type MemberLocalRecoveryInput = Omit<
+  Extract<ReconcilePayload, { target: unknown }>,
+  'permit'
+>;
 export interface MemberLocalPreparedAccept {
   readonly requestId: string;
   /** Retry explicitly with this same durable intent; never rotate credentials on lost ACK. */
@@ -79,7 +87,8 @@ function freeze<T>(value: T): T {
  * grant. Only verified responses from this connection enter the private map. */
 export class MemberLocalExecutionProtocol {
   private readonly transport: MemberLocalExecutionClient;
-  private readonly accepted = new WeakMap<MemberLocalAcceptedRun, MemberLocalAcceptSecrets>();
+  private readonly accepted = new WeakMap<MemberLocalRunHandle, MemberLocalAcceptSecrets>();
+  private readonly starts = new WeakSet<MemberLocalRunHandle>();
   private readonly lifetime = new AbortController();
   private device?: MemberLocalDeviceIdentity;
   private clock?: { readonly serverTime: number; readonly sampledAt: number };
@@ -182,8 +191,14 @@ export class MemberLocalExecutionProtocol {
     request: Request,
     secret?: string,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<RemoteRunOperationValue<Request['operation']>>;
-  private async signed(request: Unsigned, secret?: string, signal?: AbortSignal): Promise<unknown> {
+  private async signed(
+    request: Unsigned,
+    secret?: string,
+    signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
+  ): Promise<unknown> {
     const device = this.identity(),
       parsed = remoteRunRequestSchema.parse({
         ...request,
@@ -198,17 +213,20 @@ export class MemberLocalExecutionProtocol {
       remoteRunRequestSchema.parse({ ...parsed, proof: { ...parsed.proof, signature } }),
       secret,
       signal,
+      options,
     );
   }
   private call<Request extends RemoteRunRequest>(
     request: Request,
     secret?: string,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<RemoteRunOperationValue<Request['operation']>>;
   private async call(
     request: RemoteRunRequest,
     secret?: string,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<unknown> {
     if (this.lifetime.signal.aborted) throw new MemberLocalProtocolError('local-closed');
     const parsed = remoteRunRequestSchema.parse(request),
@@ -221,6 +239,7 @@ export class MemberLocalExecutionProtocol {
       (raw) => remoteRunResponseSchema(parsed.operation).parse(raw),
       AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]),
       secret === undefined ? undefined : { [REMOTE_RUN_PERMIT_HEADER]: secret },
+      options,
     );
     if (!response.ok) throw new MemberLocalProtocolError(response.error.code);
     return response.value;
@@ -253,6 +272,7 @@ export class MemberLocalExecutionProtocol {
           composition = this.qualifyAccept(value, parsed, secrets),
           handle = Object.freeze({ value: freeze(structuredClone(value)), composition });
         this.accepted.set(handle, secrets);
+        this.starts.add(handle);
         return handle;
       },
     });
@@ -262,28 +282,10 @@ export class MemberLocalExecutionProtocol {
     request: RemoteAcceptRequest,
     secrets: MemberLocalAcceptSecrets,
   ): FrozenExecutionRunComposition {
-    const device = this.identity(),
-      { backendId, ...scope } = value.scope,
-      { configurationId, ...model } = value.selection,
-      target = request.payload.target;
+    const composition = this.qualifyShared(value, request.payload.target, secrets),
+      { configurationId: _configurationId, ...model } = value.selection;
     if (
-      backendId !== device.backendId ||
-      scope.actorId !== device.actorId ||
-      value.deviceId !== device.deviceId ||
-      Object.entries(target).some(([key, expected]) => Reflect.get(scope, key) !== expected) ||
-      value.permit.id !== secrets.drive.id ||
-      value.cleanup.id !== secrets.cleanup.id ||
-      configurationId !== value.shared.configurationId ||
-      canonicalPayload(model) !== canonicalPayload(request.payload.model)
-    )
-      throw new MemberLocalProtocolError('local-mismatch');
-    const composition = readExecutionRunComposition(value.shared.composition);
-    if (
-      composition.configurationId !== configurationId ||
-      canonicalPayload(composition.payload.scope) !== canonicalPayload(scope) ||
-      canonicalPayload(composition.payload.model) !== canonicalPayload(model) ||
-      canonicalPayload(composition.payload.handoff) !== canonicalPayload(value.shared.handoff) ||
-      composition.payload.context !== value.shared.context ||
+      canonicalPayload(model) !== canonicalPayload(request.payload.model) ||
       composition.payload.executor.kind !== request.payload.executor.kind ||
       (composition.payload.executor.kind === 'plan-expert' &&
         (request.payload.executor.kind !== 'plan-expert' ||
@@ -312,14 +314,75 @@ export class MemberLocalExecutionProtocol {
       throw new MemberLocalProtocolError('local-mismatch');
     return composition;
   }
+  private qualifyShared(
+    value: MemberLocalRunHandle['value'],
+    target: RemoteAcceptRequest['payload']['target'],
+    secrets: MemberLocalAcceptSecrets,
+  ): FrozenExecutionRunComposition {
+    const device = this.identity(),
+      { backendId, ...scope } = value.scope,
+      { configurationId, ...model } = value.selection;
+    if (
+      backendId !== device.backendId ||
+      scope.actorId !== device.actorId ||
+      value.deviceId !== device.deviceId ||
+      Object.entries(target).some(([key, expected]) => Reflect.get(scope, key) !== expected) ||
+      value.permit.id !== secrets.drive.id ||
+      value.cleanup.id !== secrets.cleanup.id ||
+      configurationId !== value.shared.configurationId
+    )
+      throw new MemberLocalProtocolError('local-mismatch');
+    const composition = readExecutionRunComposition(value.shared.composition);
+    if (
+      composition.configurationId !== configurationId ||
+      canonicalPayload(composition.payload.scope) !== canonicalPayload(scope) ||
+      canonicalPayload(composition.payload.model) !== canonicalPayload(model) ||
+      canonicalPayload(composition.payload.handoff) !== canonicalPayload(value.shared.handoff) ||
+      composition.payload.context !== value.shared.context
+    )
+      throw new MemberLocalProtocolError('local-mismatch');
+    return composition;
+  }
+  /** Cold read of the original Run only. No accept is replayed or new secret
+   * generated, and its handle cannot be used to start/resume an Agent. */
+  async recover(
+    input: MemberLocalRecoveryInput,
+    signal?: AbortSignal,
+  ): Promise<MemberLocalRunHandle> {
+    const recovery = structuredClone(input),
+      secrets = await this.options.secrets.recoverAccept(
+        this.identity(),
+        recovery.acceptRequestId,
+        signal,
+      );
+    if (!secrets) throw new MemberLocalProtocolError('remote-recovery-required');
+    const value = await secrets.withDriveSecret((secret) =>
+      this.signed(
+        {
+          ...this.header(),
+          operation: 'reconcile',
+          payload: { ...recovery, permit: secrets.drive },
+        },
+        secret,
+        signal,
+      ),
+    );
+    const composition = this.qualifyShared(value, recovery.target, secrets),
+      handle = Object.freeze({ value: freeze(structuredClone(value)), composition });
+    this.accepted.set(handle, secrets);
+    return handle;
+  }
+  assertStartHandle(run: MemberLocalAcceptedRun): void {
+    if (!this.starts.has(run)) throw new MemberLocalProtocolError('remote-recovery-required');
+  }
   /** The connection's own issued handle is required; matching JSON is rejected.
    * This performs a fresh server request, not a cached local ACL decision. */
-  async status(run: MemberLocalAcceptedRun, signal?: AbortSignal) {
+  async status(run: MemberLocalRunHandle, signal?: AbortSignal) {
     const value = await this.command(run, { operation: 'status', payload: {} }, signal);
     this.qualifyView(run, value);
     return value;
   }
-  private qualifyView(run: MemberLocalAcceptedRun, value: RemoteRunView): void {
+  private qualifyView(run: MemberLocalRunHandle, value: RemoteRunView): void {
     if (
       canonicalPayload(run.value.scope) !== canonicalPayload(value.scope) ||
       value.deviceId !== this.identity().deviceId ||
@@ -331,17 +394,29 @@ export class MemberLocalExecutionProtocol {
   /** Private Local Host callers only. This bridge does not turn an event body
    * into native evidence: the native owner must collect its original SDK facts. */
   command<Command extends RunCommand>(
-    run: MemberLocalAcceptedRun,
+    run: MemberLocalRunHandle,
     command: Command,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<RemoteRunOperationValue<Command['operation']>>;
   async command(
-    run: MemberLocalAcceptedRun,
+    run: MemberLocalRunHandle,
     command: RunCommand,
     signal?: AbortSignal,
+    options?: { readonly waitForSourceSettlement: true },
   ): Promise<unknown> {
     const secrets = this.accepted.get(run);
     if (!secrets) throw new MemberLocalProtocolError('local-mismatch');
+    if (
+      !this.starts.has(run) &&
+      ![
+        'status',
+        'cleanup',
+        'result-status',
+        ...(run.value.authority === 'commit-only' ? ['submit-result'] : []),
+      ].includes(command.operation)
+    )
+      throw new MemberLocalProtocolError('remote-recovery-required');
     const cleanup = command.operation === 'cleanup',
       request = remoteRunRequestSchema.parse({
         ...this.header(command.requestId),
@@ -356,7 +431,7 @@ export class MemberLocalExecutionProtocol {
     if (request.operation === 'info' || request.operation === 'stop')
       throw new MemberLocalProtocolError('local-mismatch');
     const { proof: _proof, ...unsigned } = request,
-      send = (secret: string) => this.signed(unsigned, secret, signal),
+      send = (secret: string) => this.signed(unsigned, secret, signal, options),
       value = await (cleanup ? secrets.withCleanupSecret(send) : secrets.withDriveSecret(send));
     if ('scope' in value && canonicalPayload(value.scope) !== canonicalPayload(run.value.scope))
       throw new MemberLocalProtocolError('local-mismatch');
