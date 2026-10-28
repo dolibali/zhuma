@@ -14,6 +14,8 @@ const memberTransport = join(root, 'packages/dsh-adapter/src/desktop-member-cook
 const stagedMemberTransport = join(stage, 'apps/desktop/src/zhuma-member-cookie.ts');
 const sourceVerifier = join(root, 'scripts/desktop/verify-build-source-paths.ts');
 const stagedSourceVerifier = join(stage, 'scripts/zhuma-verify-build-source-paths.ts');
+const runtimeVerifier = join(root, 'scripts/desktop/verify-runtime-privacy.ts');
+const stagedRuntimeVerifier = join(stage, 'scripts/zhuma-verify-runtime-privacy.ts');
 const pinned = JSON.parse(readFileSync(join(root, 'runtime.lock.json'), 'utf8')).upstreams
   .deepseekHarness.commit;
 const stampPath = join(stage, '.zhuma-prepared.json');
@@ -39,6 +41,7 @@ const digest = sha256(
     readFileSync(patchPath),
     readFileSync(memberTransport),
     readFileSync(sourceVerifier),
+    readFileSync(runtimeVerifier),
     readFileSync(join(root, 'branding/default/icon-manifest.json')),
     readFileSync(fileURLToPath(import.meta.url)),
     readFileSync(join(root, 'scripts/desktop/icon-assets.mjs')),
@@ -62,6 +65,13 @@ if (existsSync(stampPath)) {
     throw new Error(
       'Prepared build source verifier differs; inspect the owned build tree before resetting.',
     );
+  if (
+    !existsSync(stagedRuntimeVerifier) ||
+    sha256(readFileSync(stagedRuntimeVerifier)) !== sha256(readFileSync(runtimeVerifier))
+  )
+    throw new Error(
+      'Prepared runtime verifier differs; inspect the owned build tree before resetting.',
+    );
   if (stamp.digest === digest && !refresh) {
     console.log(`Zhuma desktop already prepared: ${stage}`);
     process.exit(0);
@@ -80,6 +90,7 @@ if (existsSync(stampPath)) {
   run('git', ['-C', stage, 'apply', patchPath]);
   copyFileSync(memberTransport, stagedMemberTransport);
   copyFileSync(sourceVerifier, stagedSourceVerifier);
+  copyFileSync(runtimeVerifier, stagedRuntimeVerifier);
   writeFileSync(
     join(stage, 'scripts/install-lefthook.mjs'),
     '// Zhuma isolated build: do not change hooks in the upstream repository.\n',

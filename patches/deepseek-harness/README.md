@@ -17,6 +17,14 @@
 
 定向契约为 `node --test packages/dsh-adapter/tests/desktop-build-source-paths.test.mjs`。另将 `ZHUMA_DESKTOP_SOURCE_TOOLCHAIN` 显式指向已安装依赖的固定 SDK，可运行 tsdown、Vite、Vite 原 Oxc 压缩三个离线四类 CSS 虚拟 ID 探针：旧配置确实泄漏，原开关移除标签，法律注释策略、非注释 token、执行结果和有效映射保持；不同构建根下的生成 JS 相同。缺少该工具链时只跳过这三个编译探针，源码／门禁契约仍执行。升级固定工具链须更新并重验探针；最终重封包的 ASAR／DMG 全文件扫描仍须独立完成，契约通过不代表发行隐私已验收。
 
+## Python 构建冒烟与缓存
+
+原 `smoke.py` 的 venv／ensurepip 子进程不继承父解释器的 `-B`。仅在原发行 smoke 的子进程 `env` 强制 `PYTHONDONTWRITEBYTECODE=1`，由其后代继承；不修改全局环境、成品默认运行环境或原五类功能检查。不删除、重编或字符串替换字节码，保留固定归档的原始 payload 基线，不能据此声称问题 App 或最终安装包的字节不变。
+
+`verify-runtime-privacy.ts` 随原 prepare recipe 精确复制并纳入摘要。它只读校验当前固定 CPython 3.12 缓存标签／头、对应常规 `.py` 及路径／原字节 SHA 集合，未知、无源、异常链接和读取失败均拒绝。复制后、原 smoke 前后以及 runtime 签名／清单／完整性描述前核验；完整准备运行时若含实际逻辑／物理准备根的 UTF-8 或 UTF-16LE 字节则拒绝，不打印其值。解释器或缓存格式升级须重新核对，未建立新的持久清单或锁机制。
+
+定向契约为 `node --test packages/dsh-adapter/tests/desktop-python-runtime-privacy.test.mjs`；这些契约不冒充原解释器运行。实际资格需使用校验过的离线原归档，在独立副本执行原准备与完整 smoke，核对原缓存不变、源／依赖元数据／许可保留，并由最终 cut 的独立整 App／DMG 扫描补齐发行证据，不要求重跑已验证的整套安装功能。
+
 侧栏修改的独立官方桌面验证、前后截图及未验收项见 [桌面外壳记录](../../docs/review/desktop-shell/README.md)。原生拖窗、真实系统浅色矩阵和安装包不因该记录自动通过。上游若提供可配置的中性侧栏，优先改用其公开配置并删除对应 CSS 补丁。
 
 确需改动时，以固定版本生成最小补丁，记录目的、上游提交、修改文件、验证与退出条件。按明确顺序应用到 `.build/` 临时工作树，应用失败立即停止，不静默跳过。
