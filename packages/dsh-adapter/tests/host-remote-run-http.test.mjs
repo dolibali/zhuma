@@ -11,6 +11,11 @@ import {
   MEMBER_LOCAL_REMOTE_METHODS,
 } from '../dist/host-remote-run-http.js';
 import { installMemberResolver, memberCredential } from '../dist/member-session.js';
+import {
+  REMOTE_RUN_UPLOAD_MEDIA_TYPE,
+  encodeRemoteRunUploadPrefix,
+} from '../dist/remote-run-file-transport.js';
+import { publicationEnvelope } from './remote-run-file-transport-fixture.mjs';
 async function host() {
   const routes = new Map(),
     effects = [],
@@ -49,9 +54,12 @@ async function host() {
     admitOwner: () => false,
   });
   let available = true;
+  let consume;
   const service = {
-    async remoteRun(request, body, permit) {
-      calls.push({ request, body, permit });
+    async remoteRun(request, body, permit, upload) {
+      const call = { request, body, permit, upload };
+      calls.push(call);
+      if (consume) await consume(call);
       return { ok: false, error: { code: 'remote-protocol-unsupported' } };
     },
   };
@@ -71,6 +79,9 @@ async function host() {
     cookie,
     base,
     handle,
+    consumeUpload: (handler) => {
+      consume = handler;
+    },
     unavailable: () => {
       available = false;
     },
@@ -106,6 +117,7 @@ const info = () => ({
   operation: 'info',
   payload: {},
 });
+
 const cleanup = () => ({
   protocolVersion: 1,
   requestId: randomUUID(),
@@ -165,6 +177,102 @@ test('remote HTTP mounts all actual operation paths and requires a member before
     await h.close();
   }
 });
+
+test('publish HTTP delegates raw file bytes after member/framing gates and keeps early replies intact', async () => {
+  const h = await host();
+  try {
+    const bytes = Buffer.from([0, 255, 128, 10, 13]),
+      envelope = publicationEnvelope(bytes);
+    const url = `${h.base}/api/${MEMBER_LOCAL_REMOTE_METHODS['publish-file']}`;
+    const headers = {
+      'content-type': REMOTE_RUN_UPLOAD_MEDIA_TYPE,
+      [REMOTE_RUN_PERMIT_HEADER]: 'private-proof',
+    };
+    const framed = Buffer.concat([encodeRemoteRunUploadPrefix(envelope), bytes]);
+    assert.equal((await fetch(url, { method: 'POST', headers, body: framed })).status, 401);
+    assert.equal(h.calls.length, 0);
+    let actual;
+    h.consumeUpload(async ({ upload, body, permit }) => {
+      assert.equal(body.operation, 'publish-file');
+      assert.equal(body.payload.mode, 'publish');
+      assert.equal(permit, 'private-proof');
+      const chunks = [];
+      for await (const value of upload.data) chunks.push(value);
+      actual = Buffer.concat(chunks);
+    });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { ...headers, cookie: h.cookie },
+      body: framed,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(actual, bytes);
+    assert.equal((await response.json()).rpcId, envelope.rpcId);
+    // Original domain may answer a replay/error without consuming the body.
+    h.consumeUpload(() => {});
+    const early = await fetch(url, {
+      method: 'POST',
+      headers: { ...headers, cookie: h.cookie },
+      body: framed,
+    });
+    assert.equal(early.status, 200);
+    assert.equal((await early.json()).result.error.code, 'remote-protocol-unsupported');
+    // A transport interrupt while a client is still sending a large body is an
+    // unknown ACK, never evidence that the domain did not receive the command.
+    const bulk = await fetch(url, {
+      method: 'POST',
+      headers: { ...headers, cookie: h.cookie },
+      body: Buffer.concat([encodeRemoteRunUploadPrefix(envelope), Buffer.alloc(2 * 1024 * 1024)]),
+    }).then(
+      async (response) => ({ status: response.status, result: await response.json() }),
+      (error) => {
+        assert.ok(error instanceof TypeError);
+        return { unknown: true };
+      },
+    );
+    if (!bulk.unknown) {
+      assert.equal(bulk.status, 200);
+      assert.equal(bulk.result.result.error.code, 'remote-protocol-unsupported');
+    }
+  } finally {
+    await h.close();
+  }
+});
+
+test('publish HTTP rejects malformed/wrong-operation frames before domain or file consumer', async () => {
+  const h = await host();
+  try {
+    const envelope = publicationEnvelope();
+    const url = `${h.base}/api/${MEMBER_LOCAL_REMOTE_METHODS['publish-file']}`;
+    const raw = { ...envelope, method: 'zhuma-remote-run/info' },
+      data = Buffer.from(JSON.stringify(raw)),
+      size = Buffer.alloc(4);
+    size.writeUInt32BE(data.byteLength);
+    for (const body of [Buffer.alloc(4), Buffer.from([0, 0]), Buffer.concat([size, data])]) {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { cookie: h.cookie, 'content-type': REMOTE_RUN_UPLOAD_MEDIA_TYPE },
+        body,
+      });
+      assert.equal(response.status, 400);
+    }
+    assert.equal((await h.post('publish-file', envelope.payload, { member: true })).status, 400);
+    assert.equal(
+      (
+        await fetch(`${h.base}/api/${MEMBER_LOCAL_REMOTE_METHODS.info}`, {
+          method: 'POST',
+          headers: { cookie: h.cookie, 'content-type': REMOTE_RUN_UPLOAD_MEDIA_TYPE },
+          body: new Uint8Array([1]),
+        })
+      ).status,
+      415,
+    );
+    assert.equal(h.calls.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
 test('cleanup is the sole no-cookie path, cannot smuggle an ordinary operation and still invokes domain proof validation', async () => {
   const h = await host();
   try {

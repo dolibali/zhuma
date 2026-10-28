@@ -71,6 +71,7 @@ export const Config = z.strictObject({
   localSetup: z.boolean().optional(),
   memberWeb: z.boolean().optional(),
   remoteExecution: z.boolean().optional(),
+  remoteFileUploads: z.literal(true).optional(),
   bodyBytes: z
     .number()
     .int()
@@ -165,6 +166,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     throw new Error('Member Web requires explicit multi-member mode.');
   if (config.remoteExecution && config.deploymentMode !== 'multi-member')
     throw new Error('Remote execution requires explicit multi-member mode.');
+  if (config.remoteFileUploads && !config.remoteExecution)
+    throw new Error('Remote file uploads require the explicit shared execution backend.');
   configureDeploymentMode(ctx, config.deploymentMode);
   if (config.deploymentMode === 'multi-member' && config.localSetup && !config.remoteExecution)
     mountHostSharedBackend(ctx);
@@ -459,7 +462,9 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             }
             if (config.remoteExecution) {
               try {
-                await service.enableRemoteRuns();
+                await service.enableRemoteRuns(
+                  config.remoteFileUploads ? { fileUploads: true } : {},
+                );
               } catch (error) {
                 await opened.close();
                 throw error;

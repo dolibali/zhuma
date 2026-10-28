@@ -7,7 +7,14 @@ import { snapshotServerPlugin } from './plugin-snapshot.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 
 /** Start the pinned official CLI with product plugins and an explicit, owned data directory. */
-export async function startLocalServer({ sdk, data, plugin, host = '127.0.0.1', port = 3080 }) {
+export async function startLocalServer({
+  sdk,
+  data,
+  plugin,
+  fileUploads = false,
+  host = '127.0.0.1',
+  port = 3080,
+}) {
   const sdkRoot = resolve(sdk);
   const dataRoot = resolve(data);
   const lock = JSON.parse(await readFile(join(root, 'runtime.lock.json'), 'utf8'));
@@ -50,6 +57,7 @@ export async function startLocalServer({ sdk, data, plugin, host = '127.0.0.1', 
               localSetup: true,
               memberWeb: true,
               remoteExecution: true,
+              ...(fileUploads ? { remoteFileUploads: true } : {}),
             },
           },
         ],

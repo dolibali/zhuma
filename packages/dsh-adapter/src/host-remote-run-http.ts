@@ -12,6 +12,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ExecutionService } from './execution-service.js';
 import { resolveMember } from './member-session.js';
 import { readWorkbenchBody, WorkbenchBodyError } from './workbench-http.js';
+import {
+  REMOTE_RUN_UPLOAD_MEDIA_TYPE,
+  RemoteRunUploadReader,
+  RemoteRunUploadFramingError,
+} from './remote-run-file-transport.js';
 
 /** One compiled map shared with the outgoing local Host; no guessed method URLs. */
 export const MEMBER_LOCAL_REMOTE_METHODS = Object.freeze(
@@ -51,6 +56,7 @@ export function openHostRemoteRunHttp(
   });
   async function handle(operation: RemoteRunOperation, req: IncomingMessage, res: ServerResponse) {
     let rpcId = '';
+    let upload: RemoteRunUploadReader | undefined;
     const disconnected = new AbortController();
     const onClose = () => {
       if (!res.writableEnded) disconnected.abort();
@@ -76,8 +82,9 @@ export function openHostRemoteRunHttp(
         res.setHeader('allow', 'POST');
         return fail('remote-validation', 405);
       }
-      if (req.headers['content-type']?.split(';')[0] !== 'application/json')
-        return fail('remote-validation', 415);
+      const contentType = req.headers['content-type']?.split(';')[0];
+      const bytes = operation === 'publish-file' && contentType === REMOTE_RUN_UPLOAD_MEDIA_TYPE;
+      if (!bytes && contentType !== 'application/json') return fail('remote-validation', 415);
       if (operation !== 'cleanup') {
         const member = await resolveMember(ctx, req);
         signal.throwIfAborted();
@@ -94,27 +101,37 @@ export function openHostRemoteRunHttp(
         duplex: 'half',
         signal,
       } as RequestInit & { duplex: 'half' });
+      if (bytes) upload = new RemoteRunUploadReader(request.body!, signal);
       const envelope = clientRequestSchema.safeParse(
-        await readWorkbenchBody(
-          request,
-          {
-            bodyBytes: REMOTE_RUN_LIMITS.requestBytes,
-            bodyTimeoutMs: REMOTE_RUN_LIMITS.httpTimeoutMs,
-          },
-          signal,
-        ),
+        upload
+          ? await upload.metadata()
+          : await readWorkbenchBody(
+              request,
+              {
+                bodyBytes: REMOTE_RUN_LIMITS.requestBytes,
+                bodyTimeoutMs: REMOTE_RUN_LIMITS.httpTimeoutMs,
+              },
+              signal,
+            ),
       );
       if (!envelope.success || envelope.data.method !== MEMBER_LOCAL_REMOTE_METHODS[operation])
         return fail('remote-validation', 400);
       rpcId = envelope.data.rpcId;
       const body = remoteRunRequestSchema.safeParse(envelope.data.payload);
       if (!body.success || body.data.operation !== operation) return fail('remote-validation', 400);
+      if (body.data.operation === 'publish-file' && body.data.payload.mode === 'publish' && !upload)
+        return fail('remote-validation', 400);
       signal.throwIfAborted();
       const service = current();
       if (!service) return fail('remote-unavailable', 503);
       const permit = req.headers[REMOTE_RUN_PERMIT_HEADER];
       if (permit !== undefined && typeof permit !== 'string') return fail('remote-validation', 400);
-      const result = await service.remoteRun(req, body.data, permit);
+      const result = await service.remoteRun(
+        req,
+        body.data,
+        permit,
+        upload ? { data: upload.data, signal } : undefined,
+      );
       // A disconnected/aborted wait cannot undo a durable D operation. No
       // synthetic rollback or success is inferred from transport cancellation.
       signal.throwIfAborted();
@@ -122,9 +139,28 @@ export function openHostRemoteRunHttp(
     } catch (error) {
       if (error instanceof WorkbenchBodyError)
         return fail(error.status === 413 ? 'remote-quota' : 'remote-validation', error.status);
+      if (error instanceof RemoteRunUploadFramingError)
+        return fail(error.status === 413 ? 'remote-quota' : 'remote-validation', error.status);
       if (!res.headersSent) fail('remote-unavailable', 503);
       else if (!res.writableEnded) res.destroy();
     } finally {
+      if (upload) {
+        // Preserve an early idempotent/error reply before cancelling unread
+        // incoming bytes. A socket close still aborts the actual reader at once.
+        if (!res.writableFinished && !res.destroyed && res.writableEnded) {
+          await new Promise<void>((done) => {
+            const finish = () => {
+              res.off('finish', finish);
+              res.off('close', finish);
+              done();
+            };
+            res.once('finish', finish);
+            res.once('close', finish);
+            if (res.writableFinished || res.destroyed) finish();
+          });
+        }
+        await upload.close();
+      }
       res.off('close', onClose);
     }
   }

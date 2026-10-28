@@ -366,3 +366,9 @@ export type {
 } from './member-local-execution-secrets.js';
 export { createMemberLocalPrivateStore } from './host-member-local-credentials.js';
 export { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';
+export {
+  REMOTE_RUN_UPLOAD_MEDIA_TYPE,
+  REMOTE_RUN_UPLOAD_METHOD,
+  encodeRemoteRunUploadPrefix,
+} from './remote-run-file-transport.js';
+export type { RemoteRunUpload } from './remote-run-files.js';

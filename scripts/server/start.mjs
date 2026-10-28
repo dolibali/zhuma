@@ -7,6 +7,7 @@ const { values } = parseArgs({
   options: {
     sdk: { type: 'string' },
     plugin: { type: 'string' },
+    'file-uploads': { type: 'boolean', default: false },
     data: { type: 'string' },
     host: { type: 'string', default: '127.0.0.1' },
     port: { type: 'string', default: '3080' },
@@ -18,6 +19,7 @@ const operatorFile = join(resolve(values.data), 'operator-url.txt');
 const child = await startLocalServer({
   sdk: values.sdk,
   plugin: values.plugin,
+  fileUploads: values['file-uploads'],
   data: values.data,
   host: values.host,
   port: Number(values.port),
