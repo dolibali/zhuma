@@ -1,8 +1,11 @@
-import type { Context } from '@deepseek-ai/cordis';
+import { symbols, type Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client';
 import type {} from '@deepseek-ai/dsh-api-workspace-controller/client';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { RegisterWorkspaceDirectory } from './workspace-approvals.js';
+
+const original = (value: unknown): unknown =>
+  value && typeof value === 'object' ? (Reflect.get(value, symbols.original) ?? value) : value;
 
 export interface LocalWorkspaceDirectory {
   /** Current official local registry only; a row is never execution authority. */
@@ -37,7 +40,7 @@ export function createLocalWorkspaceDirectory(ctx: Context): LocalWorkspaceDirec
     await assertCurrentMember();
     signal.throwIfAborted();
     ctx.fiber.assertActive();
-    if (ctx.get('workspaces') !== workspaces)
+    if (original(ctx.get('workspaces')) !== original(workspaces))
       throw new DOMException('Workspace service changed', 'AbortError');
     const snapshot = workspaces.list.getSnapshot();
     if (snapshot.state === 'error')
@@ -63,7 +66,10 @@ export function createLocalWorkspaceDirectory(ctx: Context): LocalWorkspaceDirec
       await assertCurrentMember();
       signal.throwIfAborted();
       ctx.fiber.assertActive();
-      if (ctx.get('uiWorkspace') !== navigation || ctx.get('workspaces') !== source)
+      if (
+        original(ctx.get('uiWorkspace')) !== original(navigation) ||
+        original(ctx.get('workspaces')) !== original(source)
+      )
         throw new DOMException('Workspace navigation changed', 'AbortError');
       const latest = source?.list.getSnapshot();
       if (
@@ -89,7 +95,10 @@ export function createWorkspaceDirectoryRegistrar(ctx: Context): RegisterWorkspa
     const current = () => {
       signal.throwIfAborted();
       ctx.fiber.assertActive();
-      if (ctx.get('uiWorkspace') !== picker || ctx.get('workspaces') !== workspaces)
+      if (
+        original(ctx.get('uiWorkspace')) !== original(picker) ||
+        original(ctx.get('workspaces')) !== original(workspaces)
+      )
         throw new DOMException('Workspace service changed', 'AbortError');
     };
     const path = await picker.pickDirectory();

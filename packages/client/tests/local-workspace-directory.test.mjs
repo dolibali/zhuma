@@ -152,3 +152,37 @@ test('task navigation revalidates the exact original member Run before exposing 
     );
   }
 });
+
+test('original SDK scope proxies preserve workspace selection/navigation identity', async () => {
+  const { symbols } = await import('@deepseek-ai/cordis');
+  const opened = [];
+  const services = {
+    workspaces: {
+      list: {
+        getSnapshot: () => ({
+          phase: 'ready',
+          state: 'idle',
+          items: [
+            { workspaceId: 'local', title: 'Existing', path: '/local', sessionIds: ['native'] },
+          ],
+        }),
+      },
+    },
+    uiWorkspace: { openSession: (id) => opened.push(id) },
+  };
+  const ctx = {
+    fiber: { assertActive() {} },
+    get(name) {
+      return new Proxy(services[name], {
+        get(target, key) {
+          return key === symbols.original ? target : Reflect.get(target, key);
+        },
+      });
+    },
+  };
+  assert.notEqual(ctx.get('workspaces'), ctx.get('workspaces'));
+  const directory = createLocalWorkspaceDirectory(ctx);
+  assert.equal((await directory.read(signal(), async () => {}))[0].id, 'local');
+  await directory.openSession('native', signal(), async () => {});
+  assert.deepEqual(opened, ['native']);
+});
