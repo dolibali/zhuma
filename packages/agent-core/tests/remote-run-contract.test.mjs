@@ -409,3 +409,51 @@ test('remote HTTP response codecs: terminal state cannot regain drive; accept ca
     false,
   );
 });
+
+test('remote migration projection: bounded predecessor facts are optional data, with no workspace, proof or permission fields', () => {
+  const current = scope(),
+    previous = { ...current, generation: 1, runId: randomUUID(), segmentId: randomUUID() };
+  current.generation = 3;
+  const value = {
+    scope: current,
+    deviceId: randomUUID(),
+    serverTime: Date.now(),
+    authority: 'drive',
+    permit: { id: randomUUID(), epoch: randomUUID(), expiresAt: Date.now() + 1000 },
+    cleanup: { id: randomUUID(), epoch: randomUUID(), expiresAt: Date.now() + 2000 },
+    nodeVersion: 1,
+    runVersion: 1,
+    nextSequence: 1,
+    stopRequested: false,
+    resources: 'held',
+    runStatus: 'requested',
+    migration: {
+      requestId: randomUUID(),
+      inputFingerprint: sha,
+      predecessors: [
+        {
+          scope: previous,
+          deviceId: randomUUID(),
+          keyEpoch: 1,
+          selection: {
+            provider: 'contract',
+            model: 'local',
+            maxTokens: 1000,
+            configurationId: 'fixed',
+          },
+          runStatus: 'cancelled',
+          resources: 'settled',
+          dispatch: 'reserved',
+          acknowledged: false,
+        },
+      ],
+    },
+  };
+  remoteRunViewSchema.parse(value);
+  const held = structuredClone(value);
+  held.migration.predecessors[0].resources = 'held';
+  assert.equal(remoteRunViewSchema.safeParse(held).success, false);
+  const extra = structuredClone(value);
+  extra.migration.predecessors[0].workspace = { kind: 'local', path: '/not-a-wire-field' };
+  assert.equal(remoteRunViewSchema.safeParse(extra).success, false);
+});
