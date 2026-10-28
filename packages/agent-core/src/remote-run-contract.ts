@@ -343,13 +343,20 @@ const cleanup = z.strictObject({
 const reconcile = z.strictObject({
   ...deviceHeader,
   operation: z.literal('reconcile'),
-  payload: z.strictObject({
-    scope: remoteRunScopeSchema,
-    lastSequence: natural,
-    resultRequestId: z.uuid().optional(),
-    nativeSessionId: id.optional(),
-    nativeAgentId: id.optional(),
-  }),
+  payload: z.union([
+    z.strictObject({
+      ...authorized,
+      lastSequence: natural,
+      resultRequestId: z.uuid().optional(),
+      nativeSessionId: id.optional(),
+      nativeAgentId: id.optional(),
+    }),
+    z.strictObject({
+      target: remoteNodeTargetSchema,
+      acceptRequestId: z.uuid(),
+      permit: remotePermitDeclarationSchema,
+    }),
+  ]),
 });
 const result = z.strictObject({
   ...deviceHeader,
@@ -527,6 +534,7 @@ export interface RemoteRunView {
   readonly runVersion: number;
   readonly nextSequence: number;
   readonly stopRequested: boolean;
+  readonly cleanupPhase?: 'stop-received' | 'retiring' | 'unknown' | 'drained' | undefined;
   readonly resources: 'held' | 'settled';
   readonly runStatus:
     'requested' | 'running' | 'waiting-for-input' | 'completed' | 'failed' | 'cancelled';
@@ -654,6 +662,7 @@ export const remoteRunViewSchema = z
     runVersion: positive,
     nextSequence: positive,
     stopRequested: z.boolean(),
+    cleanupPhase: z.enum(['stop-received', 'retiring', 'unknown', 'drained']).optional(),
     resources: z.enum(['held', 'settled']),
     runStatus: z.enum([
       'requested',

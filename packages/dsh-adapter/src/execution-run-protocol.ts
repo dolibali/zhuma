@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  remoteBackendRegistrySchema,
+  type RemoteBackendRegistry,
+} from './remote-run-authority-state.js';
 
 /** Existing v1 globals remain readable. Once native writers are installed, an explicit
  * durable marker makes the old Host's strict {schemaVersion:1} schema reject reopening.
@@ -10,15 +14,21 @@ export const executionRunGlobalSchema = z
     nativeExecutionWriter: z.literal(1).optional(),
     nativeReviewWriter: z.literal(1).optional(),
     workspaceApprovalWriter: z.literal(1).optional(),
+    remoteExecutionWriter: z.literal(1).optional(),
+    remoteExecution: remoteBackendRegistrySchema.optional(),
   })
   .refine((value) => value.nativeReviewWriter !== 1 || value.nativeExecutionWriter === 1)
-  .refine((value) => value.workspaceApprovalWriter !== 1 || value.nativeExecutionWriter === 1);
+  .refine((value) => value.workspaceApprovalWriter !== 1 || value.nativeExecutionWriter === 1)
+  .refine((value) => (value.remoteExecutionWriter === 1) === (value.remoteExecution !== undefined))
+  .refine((value) => value.remoteExecutionWriter !== 1 || value.nativeExecutionWriter === 1);
 
 export type ExecutionWriterGlobal = {
   schemaVersion: 1;
   nativeExecutionWriter: 1;
   nativeReviewWriter?: 1;
   workspaceApprovalWriter?: 1;
+  remoteExecutionWriter?: 1;
+  remoteExecution?: RemoteBackendRegistry;
 };
 
 export class ExecutionRunProtocolError extends Error {
@@ -45,6 +55,9 @@ export function prepareExecutionRunWriter(global: unknown): ExecutionWriterGloba
     nativeExecutionWriter: 1,
     ...(parsed.data.nativeReviewWriter === 1 ? { nativeReviewWriter: 1 } : {}),
     ...(parsed.data.workspaceApprovalWriter === 1 ? { workspaceApprovalWriter: 1 } : {}),
+    ...(parsed.data.remoteExecutionWriter === 1
+      ? { remoteExecutionWriter: 1, remoteExecution: parsed.data.remoteExecution! }
+      : {}),
   };
 }
 
@@ -84,6 +97,20 @@ export function assertExecutionRunStoreCompatibility(
 ): void {
   if (!executionRunGlobalSchema.safeParse(global).success)
     throw new ExecutionRunProtocolError('run-writer-incompatible');
+  const registry = executionRunGlobalSchema.parse(global).remoteExecution;
+  for (const node of nodes) {
+    const raw = (node as { nativeExecution?: { runs?: { remote?: { backendId?: unknown } }[] } })
+      .nativeExecution;
+    if (
+      Array.isArray(raw?.runs) &&
+      raw.runs.some(
+        (run) =>
+          Object.hasOwn(run, 'remote') &&
+          (!registry || run.remote?.backendId !== registry.backendId),
+      )
+    )
+      throw new ExecutionRunProtocolError('run-writer-incompatible');
+  }
   if (nodes.some((node) => Object.hasOwn(node, 'nativeExecution')))
     requireExecutionRunWriter(global);
   if (
