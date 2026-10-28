@@ -1,0 +1,113 @@
+{
+  "format": "zhuma-workflow-template",
+  "schemaVersion": 1,
+  "roles": [
+    {
+      "id": "analyst",
+      "name": "需求分析者",
+      "preferredKind": "expert",
+      "capabilities": ["需求澄清", "验收标准"]
+    },
+    {
+      "id": "planner",
+      "name": "拆解规划者",
+      "preferredKind": "expert",
+      "capabilities": ["工作拆解", "依赖分析"]
+    },
+    {
+      "id": "test-designer",
+      "name": "测试设计者",
+      "preferredKind": "expert",
+      "capabilities": ["业务用例", "边界分析"]
+    },
+    {
+      "id": "independent-reviewer",
+      "name": "独立验收评审者",
+      "preferredKind": "any",
+      "capabilities": ["需求与用例评审", "固定版本评审"]
+    }
+  ],
+  "resources": [
+    {
+      "id": "requirements-analysis",
+      "name": "需求分析",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-requirements-analysis"
+    },
+    {
+      "id": "delivery-plan",
+      "name": "工作拆解与计划",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-delivery-plan"
+    },
+    {
+      "id": "test-design",
+      "name": "业务测试设计",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-test-design"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "requirements-to-test",
+      "name": "需求到测试设计",
+      "parentNodeId": null,
+      "nodes": [
+        {
+          "id": "analyze",
+          "title": "需求分析",
+          "description": "澄清业务结果与边界，保留事实、假设、建议的区别。",
+          "assigneeId": "analyst",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": [],
+          "skillIds": ["requirements-analysis"],
+          "mcpIds": [],
+          "input": "当前任务目标、已确认约束及用户指定的有权资料；缺口不得自动推断为事实。",
+          "output": "需求说明、可观察验收条目、来源与待决策事项。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 0,
+            "y": 80
+          }
+        },
+        {
+          "id": "decompose",
+          "title": "工作拆解",
+          "description": "按可独立交付的用户结果拆分，简单需求保持短计划。",
+          "assigneeId": "planner",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": ["analyze"],
+          "skillIds": ["delivery-plan"],
+          "mcpIds": [],
+          "input": "需求分析节点已接受的固定版本。",
+          "output": "工作项清单、每项输入／交付／负责人角色、真实依赖及风险。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 420,
+            "y": 80
+          }
+        },
+        {
+          "id": "test-design",
+          "title": "测试设计与独立评审",
+          "description": "设计针对业务功能的正常、失败及边界用例。最多一轮作者自检，正式评审由独立角色处理。",
+          "assigneeId": "test-designer",
+          "reviewerIds": ["independent-reviewer"],
+          "reviewRequired": true,
+          "dependsOn": ["analyze", "decompose"],
+          "skillIds": ["test-design"],
+          "mcpIds": [],
+          "input": "需求分析与工作拆解两个节点已接受的固定版本；按需读取，不替换为最新候选。",
+          "output": "业务测试用例、验收覆盖表、未执行或环境缺口；交独立评审者评审本轮固定版本。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 840,
+            "y": 80
+          }
+        }
+      ]
+    }
+  ]
+}
