@@ -550,6 +550,7 @@ export interface RemoteAcceptValue extends RemoteRunView {
 }
 /** Exact saved snapshot for recovery; this is neither a new accept nor drive permission. */
 export interface RemoteReconcileValue extends RemoteRunView {
+  readonly authority: 'commit-only' | 'cleanup-only' | 'recovery-required';
   readonly shared: RemoteRunSharedSnapshot;
   readonly selection: RemoteAcceptValue['selection'];
 }
@@ -706,6 +707,7 @@ export const remoteAcceptValueSchema = remoteRunViewSchema.safeExtend({
   selection: remoteModelSelectionSchema.extend({ configurationId: id }),
 });
 export const remoteReconcileValueSchema = remoteRunViewSchema.safeExtend({
+  authority: z.enum(['commit-only', 'cleanup-only', 'recovery-required']),
   shared: remoteRunSharedSnapshotSchema,
   selection: remoteAcceptValueSchema.shape.selection,
 });

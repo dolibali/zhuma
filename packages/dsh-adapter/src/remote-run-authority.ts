@@ -22,6 +22,7 @@ import {
   type RemoteRunScope,
   type RemoteRunErrorCode,
   type RemoteInputDescriptor,
+  type RemoteReconcileValue,
 } from '@zhuma/agent-core';
 import type { UpstreamContentValue } from './execution-service.js';
 import { memberSessionId, type MemberRequest } from './member-session.js';
@@ -560,8 +561,13 @@ export class RemoteRunAuthorities {
       disposition,
     };
   }
-  private reconcileValue(value: Loaded, sessionCurrent = true) {
-    return { ...this.view(value, false, sessionCurrent), ...this.savedSnapshot(value) };
+  private reconcileValue(value: Loaded, sessionCurrent = true): RemoteReconcileValue {
+    const view = this.view(value, false, sessionCurrent);
+    return {
+      ...view,
+      ...this.savedSnapshot(value),
+      authority: view.authority === 'drive' ? 'recovery-required' : view.authority,
+    };
   }
   private inputSnapshot(
     scope: RemoteRunScope,

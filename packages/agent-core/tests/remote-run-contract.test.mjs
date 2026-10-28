@@ -358,8 +358,13 @@ test('remote HTTP response codecs: terminal state cannot regain drive; accept ca
     },
   };
   remoteAcceptValueSchema.parse(accepted);
-  const { disposition: _accepted, ...recovered } = accepted;
+  const { disposition: _accepted, ...live } = accepted;
+  const recovered = { ...live, authority: 'recovery-required' };
   remoteRunResponseSchema('reconcile').parse({ ok: true, value: recovered });
+  assert.equal(
+    remoteRunResponseSchema('reconcile').safeParse({ ok: true, value: live }).success,
+    false,
+  );
   assert.equal(remoteRunResponseSchema('reconcile').safeParse({ ok: true, value }).success, false);
   assert.equal(
     remoteRunResponseSchema('reconcile').safeParse({ ok: true, value: accepted }).success,
