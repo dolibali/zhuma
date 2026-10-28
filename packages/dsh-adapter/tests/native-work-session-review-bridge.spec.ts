@@ -721,3 +721,79 @@ test('original SDK prepared metadata: only a revoked genuine claim and exact nev
   assert.equal(h.d.read().rounds[0].ballots.length, 0);
   assert.equal(h.adapter.requests.length, 0);
 });
+
+test('original SDK review target: an authenticated fixed-body read does not depend on the navigation status query', async (t) => {
+  const activeReads = new Set(),
+    returned = Promise.withResolvers();
+  let navigationReads = 0,
+    readMetrics;
+  const h = await setup(t, {
+    file: false,
+    productionHost: true,
+    afterNative({ native, hostMetrics }) {
+      let before;
+      const status = native.runtime.status.bind(native.runtime);
+      native.runtime.status = (sessionId) => {
+        if (activeReads.size) {
+          navigationReads++;
+          throw Error('SYNTHETIC_NAVIGATION_STATUS_UNAVAILABLE_DURING_BODY_READ');
+        }
+        return status(sessionId);
+      };
+      native.ctx.on(
+        'tools/pre-execute',
+        async (exec, next) => {
+          if (exec.name === 'read_review_target') {
+            activeReads.add(exec.token);
+            before = { ...hostMetrics, at: performance.now() };
+          }
+          return next();
+        },
+        { global: true },
+      );
+      native.ctx.on(
+        'tools/post-execute',
+        async (exec, result, next) => {
+          if (exec.name === 'read_review_target') {
+            activeReads.delete(exec.token);
+            readMetrics = {
+              elapsedMs: performance.now() - before.at,
+              hostChecks: hostMetrics.checks - before.checks,
+              workbenchReads: hostMetrics.workbenchReads - before.workbenchReads,
+              hostElapsedMs: hostMetrics.elapsedMs - before.elapsedMs,
+            };
+            returned.resolve(result.value);
+          }
+          return next();
+        },
+        { global: true },
+      );
+    },
+  });
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  try {
+    const page = await returned.promise;
+    assert.equal(page.ok, true);
+    assert.match(page.readRef, /^review_read_[a-f0-9]{64}$/u);
+    assert.equal(navigationReads, 0);
+    assert.ok(readMetrics.hostChecks > 0);
+    console.info('C_SDK_REVIEW_READ_METRICS ' + JSON.stringify(readMetrics));
+    await h.waitFor(() => h.d.read().command.status === 'completed');
+    await h.bridge.whenIdle();
+    const attempt = readExecutionReviewState(h.d.read()).attempts[0];
+    assert.equal(navigationReads, 0);
+    assert.equal(h.reads.length, 1);
+    assert.equal(h.d.read().rounds[0].ballots.length, 1);
+    assert.equal(attempt.resources, 'settled');
+    assert.equal(h.d.read('consume').command.status, 'ready');
+    assert.equal(h.adapter.requests.length, 2);
+  } finally {
+    if (h.d.read().command.status !== 'completed')
+      await h.d.service.stopWorkflowExecution(h.d.request, {
+        ...h.location,
+        requestId: 'stop-status-query-read-counterexample',
+        intentId: h.view.intent.intentId,
+        generation: h.view.intent.generation,
+      });
+  }
+});

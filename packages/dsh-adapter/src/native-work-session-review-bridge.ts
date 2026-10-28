@@ -573,7 +573,7 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
         selection: projected.selection,
       });
       current(state);
-      state.binding = bound().service.open(state.grant)?.binding ?? failure();
+      state.binding = bound().service.readBinding(state.grant) ?? failure();
       if (
         !['received', 'claimed'].includes(receipt.status) ||
         receipt.fingerprint !== projected.firstMessage.inputFingerprint
@@ -622,7 +622,7 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
       );
       try {
         const grant = bound().service.reviewGrant(original),
-          binding = bound().service.open(grant)?.binding ?? failure();
+          binding = bound().service.readBinding(grant) ?? failure();
         return {
           source: {
             context: nativeReviewContextFromScope(actual.scope),

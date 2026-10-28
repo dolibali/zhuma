@@ -1134,9 +1134,14 @@ export class NativeWorkSessionService {
     return value;
   }
 
+  /** Authenticated binding metadata; reading it does not query the live Agent's status. */
+  readBinding(grant: NativeWorkGrant): NativeSessionBinding | undefined {
+    return this.read(grant, 'open');
+  }
+
   /** Read-only navigation: never creates, resumes, wakes or replays native work. */
   open(grant: NativeWorkGrant) {
-    const binding = this.read(grant, 'open');
+    const binding = this.readBinding(grant);
     return binding === undefined
       ? undefined
       : {
