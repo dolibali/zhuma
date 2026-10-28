@@ -41,6 +41,69 @@ async function until(read, accept, timeout = 10_000) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+test('backend switch fence: original owner distinguishes held idle work, fixed settlement and retained cold reads without side effects', async (t) => {
+  let authentication;
+  const h = await setup(t, {
+    remote: { beforeAuthentication: () => authentication?.promise },
+    workspace: true,
+    script: [
+      'An idle turn still owns the unfinished work.',
+      toolResponse({ text: 'Fixed result.', links: [] }, 'switch-complete', 'complete_work'),
+    ],
+  });
+  assert.equal(h.owner.canSwitchBackend(), true);
+  await h.owner.start(h.run);
+  assert.equal(h.adapter.requests.length, 1);
+  assert.equal(h.owner.canSwitchBackend(), false, 'an idle native turn is still held work');
+  await h.owner.send(h.run, {
+    requestId: randomUUID(),
+    text: 'Finish the work.',
+    mode: 'followup',
+  });
+  await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'submitted',
+  );
+  await until(() => h.owner.canSwitchBackend(), Boolean);
+  const sid = h.owner.read(h.run).native.binding.nativeSessionId;
+  await h.close();
+  await h.protocol.close();
+  const coldProtocol = await MemberLocalExecutionProtocol.open({
+    ...h.remote.protocolOptions,
+    secrets: new MemberLocalExecutionSecrets(h.remote.store),
+  });
+  t.onTestFinished(() => coldProtocol.close());
+  const cold = await bootLocalOwner(h.root, coldProtocol, {
+    workspace: h.workspace.id,
+    assertModel: () => assert.fail('cold history cannot resolve a model'),
+  });
+  t.onTestFinished(() => cold.close());
+  const opened = await cold.owner.openSession(sid),
+    path = join(h.root, 'domains', 'zhuma_native_work_sessions.json'),
+    before = await readFile(path, 'utf8'),
+    rows = structuredClone([...h.remote.rows]),
+    cut = h.remote.seen.length;
+  assert.equal(cold.owner.canSwitchBackend(), true);
+  authentication = Promise.withResolvers();
+  const reading = cold.owner.history(opened.run);
+  try {
+    assert.equal(cold.owner.canSwitchBackend(), false, 'unfinished original read is retained');
+    for (let index = 0; index < 20; index++) assert.equal(cold.owner.canSwitchBackend(), false);
+    assert.equal(h.remote.seen.length, cut, 'pure checks issue no HTTP requests');
+  } finally {
+    authentication.resolve();
+    authentication = undefined;
+  }
+  assert((await reading).events.length > 0);
+  await until(() => cold.owner.canSwitchBackend(), Boolean);
+  const afterRead = h.remote.seen.length;
+  for (let index = 0; index < 20; index++) assert.equal(cold.owner.canSwitchBackend(), true);
+  assert.equal(h.remote.seen.length, afterRead);
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(cold.ctx.agents.list().length, 0);
+  assert.deepEqual([...h.remote.rows], rows);
+  assert.equal(await readFile(path, 'utf8'), before);
+});
 test('original owner replay: two actually issued accept handles address the same live native work', async (t) => {
   const h = await setup(t, {
     script: ['First response.', 'Second explicit followup.', 'Same active session from workspace.'],

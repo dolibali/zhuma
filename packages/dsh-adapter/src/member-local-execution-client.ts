@@ -49,6 +49,9 @@ export class MemberLocalExecutionClient {
   private readonly pending = new Set<Promise<unknown>>();
   private readonly timeoutMs: number;
   private closing?: Promise<void>;
+  get hasPendingWork(): boolean {
+    return this.pending.size > 0;
+  }
   constructor(private readonly options: MemberLocalClientOptions) {
     try {
       const url = new URL(options.origin);
