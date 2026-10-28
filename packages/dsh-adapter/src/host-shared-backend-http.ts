@@ -6,6 +6,7 @@ import {
   SharedBackendError,
   sharedBackendRequestSchema,
   sharedBackendSelectionSchema,
+  SHARED_BACKEND_BODY_BYTE_LIMIT,
 } from './host-shared-backend.js';
 import { readWorkbenchBody, WorkbenchBodyError } from './workbench-http.js';
 
@@ -29,7 +30,7 @@ export function mountHostSharedBackend(ctx: Context): void {
             let raw: unknown;
             try {
               raw = await readWorkbenchBody(request, {
-                bodyBytes: 1200 * 1024,
+                bodyBytes: SHARED_BACKEND_BODY_BYTE_LIMIT,
                 bodyTimeoutMs: 5000,
               });
             } catch (error) {

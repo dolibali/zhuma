@@ -27,6 +27,11 @@ import { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';
 import { MEMBER_COOKIE_NAME } from './member-session.js';
 import { taskProgressQuerySchema } from './execution-task-progress-contract.js';
 import { projectArtifactsQuerySchema } from './execution-project-artifacts-contract.js';
+import { executionMemberRequestSchemas } from './execution-service.js';
+import { EXECUTION_BODY_BYTE_LIMIT } from './execution-plugin.js';
+
+/** The existing execution carrier's legal text/draft budget, not a file stream. */
+export const SHARED_BACKEND_BODY_BYTE_LIMIT = EXECUTION_BODY_BYTE_LIMIT;
 
 const id = z
   .string()
@@ -59,6 +64,12 @@ export const SHARED_BACKEND_OPERATIONS = [
   'execution.startable',
   'execution.task-progress',
   'execution.project-artifacts',
+  'execution.start-plan',
+  'execution.submit',
+  'execution.ballot',
+  'execution.revision',
+  'execution.upstream-content',
+  'execution.draft',
 ] as const;
 export type SharedBackendOperation = (typeof SHARED_BACKEND_OPERATIONS)[number];
 export const sharedBackendRequestSchema = z.strictObject({
@@ -272,7 +283,54 @@ const descriptors = {
     verb: 'POST',
     auth: false,
   },
+  'execution.start-plan': {
+    schema: executionMemberRequestSchemas.startPlan,
+    path: '/api/zhuma-exec/start-plan',
+    verb: 'POST',
+    auth: false,
+  },
+  'execution.submit': {
+    schema: executionMemberRequestSchemas.submit,
+    path: '/api/zhuma-exec/submit',
+    verb: 'POST',
+    auth: false,
+  },
+  'execution.ballot': {
+    schema: executionMemberRequestSchemas.ballot,
+    path: '/api/zhuma-exec/ballot',
+    verb: 'POST',
+    auth: false,
+  },
+  'execution.revision': {
+    schema: executionMemberRequestSchemas.revision,
+    path: '/api/zhuma-exec/revision',
+    verb: 'POST',
+    auth: false,
+  },
+  'execution.upstream-content': {
+    schema: executionMemberRequestSchemas.upstreamContent,
+    path: '/api/zhuma-exec/upstream-content',
+    verb: 'POST',
+    auth: false,
+  },
+  'execution.draft': {
+    schema: z.union([
+      executionMemberRequestSchemas.draftRead,
+      executionMemberRequestSchemas.draftWrite,
+    ]),
+    path: '/api/zhuma-exec/draft',
+    verb: 'POST',
+    auth: false,
+  },
 } as const;
+const manualOperations = new Set<SharedBackendOperation>([
+  'execution.start-plan',
+  'execution.submit',
+  'execution.ballot',
+  'execution.revision',
+  'execution.upstream-content',
+  'execution.draft',
+]);
 
 /** One exact original Credentials record, never a profile/cookie/token export.
  * The local owner authorizes settings/transport; only the remote member Cookie
@@ -392,7 +450,11 @@ export class HostSharedBackend {
       }),
     );
   }
-  private async json(response: Response, signal: AbortSignal): Promise<unknown> {
+  private async json(
+    response: Response,
+    signal: AbortSignal,
+    maxBytes = 1024 * 1024,
+  ): Promise<unknown> {
     const reader = response.body?.getReader();
     if (!reader) throw new SharedBackendError('unavailable');
     const parts: Uint8Array[] = [];
@@ -407,7 +469,7 @@ export class HostSharedBackend {
         const next = await reader.read();
         if (next.done) break;
         size += next.value.byteLength;
-        if (size > 1024 * 1024) throw new SharedBackendError('unavailable');
+        if (size > maxBytes) throw new SharedBackendError('unavailable');
         parts.push(next.value);
       }
     } finally {
@@ -496,6 +558,11 @@ export class HostSharedBackend {
     const input = sharedBackendRequestSchema.parse(raw),
       entry = descriptors[input.operation],
       payload = entry.schema.parse(input.payload);
+    const requestLimit = manualOperations.has(input.operation)
+      ? EXECUTION_BODY_BYTE_LIMIT
+      : 1200 * 1024;
+    if (Buffer.byteLength(JSON.stringify(input)) > requestLimit)
+      throw new SharedBackendError('invalid');
     const rpc = entry.path.startsWith('/api/');
     if (rpc !== (input.rpcId !== undefined)) throw new SharedBackendError('invalid');
     let row = await this.read();
@@ -554,7 +621,11 @@ export class HostSharedBackend {
     }
     if (response.headers.get('content-type')?.split(';')[0] !== 'application/json')
       throw new SharedBackendError('invalid-response');
-    const value = await this.json(response, signal);
+    const value = await this.json(
+      response,
+      signal,
+      manualOperations.has(input.operation) ? EXECUTION_BODY_BYTE_LIMIT : undefined,
+    );
     await this.assertCurrent(row, signal, entry.auth);
     if (entry.auth && response.ok) {
       const logout =

@@ -5,6 +5,8 @@ import { emptyWorkbench } from '@zhuma/agent-core';
 import { createSharedBackendClient } from '../dist/identity/shared-backend.js';
 import { createIdentityApi } from '../dist/identity/api.js';
 import { createMemberWorkbenchApi } from '../dist/workbench/member-api.js';
+import { createExecutionHttpApi } from '../dist/execution/http.js';
+import { reviewNode } from './browser/execution-fixture.mjs';
 const remote = () => ({
   origin: 'http://backend.example:3080',
   connectionId: crypto.randomUUID(),
@@ -68,6 +70,143 @@ function fixture(selection = remote()) {
   );
   return { client, rpc, calls, selection, changes: () => changes, local: () => local };
 }
+
+test('shared renderer carries original manual editor, ballot and fixed-content APIs through exact product operations', async () => {
+  const selection = remote(),
+    calls = [];
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, endpoint, request) {
+        if (endpoint === 'zhuma-backend/status') return { ok: true, value: selection };
+        calls.push(request);
+        if (request.operation === 'identity.session')
+          return {
+            ok: true,
+            value: {
+              connectionId: selection.connectionId,
+              status: 200,
+              body: {
+                ok: true,
+                accountId: 'ann',
+                principal: { kind: 'zhuma-member', memberId: 'ann' },
+                peerId: 'synthetic',
+                spaces: [{ id: 'north', kind: 'team', name: '研发' }],
+              },
+            },
+          };
+        const payload = request.payload;
+        let value;
+        if (request.operation === 'execution.draft')
+          value = {
+            version: payload.expectedVersion === undefined ? 0 : payload.expectedVersion + 1,
+            text: payload.text ?? '',
+            links: [],
+            files: [],
+          };
+        else if (request.operation === 'execution.revision') value = { view: { notes: [] } };
+        else if (request.operation === 'execution.upstream-content')
+          value = {
+            actorId: 'ann',
+            spaceId: 'north',
+            downstream: {
+              taskId: payload.taskId,
+              planId: payload.planId,
+              revision: payload.revision,
+              nodeId: payload.nodeId,
+            },
+            source: {
+              taskId: payload.taskId,
+              planId: payload.planId,
+              revision: payload.revision,
+              nodeId: payload.sourceNodeId,
+            },
+            version: { id: payload.artifactVersionId, version: 1 },
+            content: { text: 'accepted body', links: [], files: [] },
+          };
+        else if (request.operation === 'execution.start-plan')
+          value = { disposition: 'applied', reports: [] };
+        else value = { node: reviewNode };
+        return {
+          ok: true,
+          value: {
+            connectionId: selection.connectionId,
+            status: 200,
+            body: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } },
+          },
+        };
+      },
+    },
+    () => {},
+  );
+  await client.refresh();
+  // Scope authorization is separately covered by the real HTTP API contracts;
+  // this contract exercises its original encoders/decoders over the proxy.
+  const api = createExecutionHttpApi(client.fetcher);
+  const target = {
+    taskId: reviewNode.taskId,
+    planId: reviewNode.planId,
+    revision: reviewNode.revision,
+    nodeId: reviewNode.nodeId,
+  };
+  const command = {
+    ...target,
+    expectedVersion: 2,
+    idempotencyKey: 'same-intent',
+    text: 'edited text',
+  };
+  assert.equal(
+    (await api.startPlan({ ...target, idempotencyKey: 'start' })).disposition,
+    'applied',
+  );
+  assert.equal((await api.readDeliveryDraft(target)).version, 0);
+  assert.equal((await api.saveDeliveryDraft(command)).text, 'edited text');
+  assert.equal((await api.submit(command)).nodeId, target.nodeId);
+  assert.equal(
+    (
+      await api.ballot({
+        ...command,
+        roundId: 'round-1',
+        artifactVersionId: 'artifact-1',
+        action: 'request-changes',
+        comment: 'edit this section',
+      })
+    ).nodeId,
+    target.nodeId,
+  );
+  assert.deepEqual((await api.revision(target)).notes, []);
+  const scoped = createExecutionHttpApi(client.fetcher, () => {}, 'ann', {
+    spaceId: 'north',
+    onUnavailable() {},
+    isCurrent: () => true,
+  });
+  const upstream = await scoped.upstreamContent({
+    ...target,
+    sourceNodeId: 'source',
+    artifactVersionId: 'accepted-v1',
+    expectedArtifactVersion: 1,
+  });
+  assert.equal(upstream.content.text, 'accepted body');
+  assert.equal(upstream.version.id, 'accepted-v1');
+  assert.deepEqual(
+    calls.filter((item) => item.operation.startsWith('execution.')).map((item) => item.operation),
+    [
+      'execution.start-plan',
+      'execution.draft',
+      'execution.draft',
+      'execution.submit',
+      'execution.ballot',
+      'execution.revision',
+      'execution.upstream-content',
+    ],
+  );
+  for (const request of calls) {
+    assert.equal('actorId' in request.payload, false);
+    assert.equal('reviewerId' in request.payload, false);
+    assert.equal('headers' in request, false);
+    assert.equal('route' in request, false);
+  }
+  client.close();
+});
 test('shared renderer uses fixed operations and original member codecs without Cookie/header/route exposure', async () => {
   const f = fixture();
   await f.client.refresh();

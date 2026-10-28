@@ -35,6 +35,7 @@ const permit = remotePermitDeclarationSchema.extend({ epoch: z.uuid(), expiresAt
 export const remoteRunBindingSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
+    files: z.literal('zhuma-native-output-file@1').optional(),
     backendId: z.uuid(),
     deviceId: z.uuid(),
     publicKey: z.string().min(40).max(128),

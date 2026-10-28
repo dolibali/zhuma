@@ -214,6 +214,83 @@ test('shared backend rejects arbitrary routes, actor injection and malformed ori
   assert.equal(h.calls.length, 0);
 });
 
+test('shared backend carries original manual submission, draft, review and accepted-input requests without authority overrides', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const target = { taskId: 'task', planId: 'plan', revision: 1, nodeId: 'write' };
+  const command = { ...target, expectedVersion: 0, idempotencyKey: 'same-intent' };
+  const cases = [
+    [
+      'start-plan',
+      { taskId: 'task', planId: 'plan', revision: 1, idempotencyKey: 'start', spaceId: 'north' },
+    ],
+    ['submit', { ...command, text: 'fixed text', links: [], files: [] }],
+    [
+      'ballot',
+      {
+        ...command,
+        roundId: 'round',
+        artifactVersionId: 'artifact',
+        action: 'request-changes',
+        comment: 'revise this section',
+      },
+    ],
+    ['revision', target],
+    [
+      'upstream-content',
+      { ...target, spaceId: 'north', sourceNodeId: 'source', artifactVersionId: 'accepted-v1' },
+    ],
+    ['draft', target],
+    ['draft', { ...command, text: 'retained draft', links: [], files: [] }],
+  ];
+  for (const [endpoint, payload] of cases) {
+    const rpcId = randomUUID();
+    const result = await h.request(selection, `execution.${endpoint}`, payload, { rpcId });
+    assert.deepEqual(result.body.result.value.echo, payload);
+    assert.equal(result.body.rpcId, rpcId);
+    const call = h.calls.at(-1);
+    assert.equal(call.url, `http://backend.example:3080/api/zhuma-exec/${endpoint}`);
+    assert.equal(call.body.method, `zhuma-exec/${endpoint}`);
+    for (const field of ['actorId', 'memberId', 'reviewerId', 'route', 'headers']) {
+      const before = h.calls.length;
+      await assert.rejects(
+        h.request(selection, `execution.${endpoint}`, { ...payload, [field]: 'forged' }, { rpcId }),
+      );
+      assert.equal(h.calls.length, before, 'original strict schema rejects before remote dispatch');
+    }
+  }
+});
+
+test('shared manual draft carrier retains the original encoded text budget without a one-mebibyte response truncation', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  // Original strict-schema envelope budget only. The actual backend still owns
+  // file existence, metadata and draft-total semantic checks.
+  const payload = {
+    taskId: 'task',
+    planId: 'plan',
+    revision: 1,
+    nodeId: 'write',
+    expectedVersion: 0,
+    idempotencyKey: 'retained-encoded-draft',
+    text: '\u0001'.repeat(100_000),
+    links: [],
+    files: Array.from({ length: 20 }, (_, index) => ({
+      id: String(index) + '\u0001'.repeat(1500),
+      mediaType: '\u0001'.repeat(1500),
+      byteSize: 0,
+      checksum: '\u0001'.repeat(1500),
+      accessPolicyId: '\u0001'.repeat(1500),
+      uploadComplete: false,
+    })),
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) > 1024 * 1024);
+  const value = await h.request(selection, 'execution.draft', payload, { rpcId: randomUUID() });
+  assert.deepEqual(value.body.result.value.echo, payload);
+});
+
 test('shared backend registration preserves the original separate registration then login flow without requiring Set-Cookie', async (t) => {
   const h = await fixture(t),
     selection = await h.selected();

@@ -207,16 +207,16 @@ try {
   assert.deepEqual((await bob.lifecycle.teams(signal())).teams, []);
   checks.push('official-cli-cold-restart-account-team-password-membership-and-project-persistence');
   const sha = (file) =>
-    readFile(join(root, '.build/workbench', file)).then((data) =>
-      createHash('sha256').update(data).digest('hex'),
-    );
+    readFile(
+      join(values.plugin ? resolve(values.plugin) : join(root, '.build/workbench'), file),
+    ).then((data) => createHash('sha256').update(data).digest('hex'));
   const report = {
     scope: 'real-official-cli-member-http-public-client-no-owner-no-model',
     checks,
     artifacts: { host: await sha('index.js'), memberWeb: await sha('member-web.js') },
     limits: [
       'No browser/model/installation acceptance',
-      'Cross-device Agent execution not implemented',
+      'Does not exercise cross-device Agent execution',
     ],
   };
   await mkdir(join(root, '.artifacts/server'), { recursive: true });

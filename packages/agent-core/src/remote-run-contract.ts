@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { readNodeHandoff, type NodeHandoff, type NodeHandoffInput } from './handoff.js';
 import { validateDeliveryContent } from './delivery.js';
+import { canonicalPayload } from './concurrency.js';
+import { REVIEW_ACTIONS } from './review.js';
 
 /** Portable data only. A decoded object is never member, device or native authority. */
 export const REMOTE_RUN_PROTOCOL_VERSION = 1 as const;
@@ -151,6 +153,54 @@ export const remoteResultSourceSchema = z
     )
       context.addIssue({ code: 'custom', message: 'Native result source version mismatch.' });
   });
+/** Original native publisher provenance; paths and private publication grants never cross the wire. */
+export const remoteNativeOutputFileSourceSchema = z.strictObject({
+  scope: remoteRunScopeSchema.omit({ backendId: true }),
+  nativeSessionId: id,
+  nativeAgentId: id,
+  configurationId: id,
+  expertVersionId: id,
+  toolVersion: z.literal('zhuma-native-output-file@1'),
+  callId: id,
+});
+export const remoteNativePublicationEvidenceSchema = z
+  .strictObject({
+    publicationId: id,
+    source: remoteNativeOutputFileSourceSchema,
+    callSeq: natural,
+    resultSeq: natural,
+    selectorFingerprint: digest,
+    name: z.string().min(1).max(255),
+    mediaType: z.string().min(1).max(200),
+    byteSize: natural.max(20 * 1024 * 1024),
+    sha256: digest,
+  })
+  .refine((value) => value.callSeq < value.resultSeq);
+/** Copied only from the original private completed native-output ledger, never reconstructed by C. */
+export const remoteCompletedNativeFileRecordSchema = z.strictObject({
+  uploadId: id,
+  attachmentId: id,
+  name: z.string().min(1).max(255),
+  mediaType: z.string().min(1).max(200),
+  byteSize: natural.max(20 * 1024 * 1024),
+  sha256: digest,
+  spaceId: id,
+  taskId: id,
+  planId: id,
+  revision: positive,
+  nodeId: id,
+  uploadedBy: id,
+  idempotencyKey: id,
+  state: z.literal('completed'),
+  uploadedAt: z.string().max(1000),
+  producer: z.strictObject({
+    kind: z.literal('native-run-output'),
+    version: z.literal(1),
+    source: remoteNativeOutputFileSourceSchema,
+    selectorFingerprint: digest,
+  }),
+});
+export type RemoteCompletedNativeFileRecord = z.infer<typeof remoteCompletedNativeFileRecordSchema>;
 export const remoteResultDeclarationSchema = z
   .strictObject({
     requestId: z.uuid(),
@@ -160,16 +210,7 @@ export const remoteResultDeclarationSchema = z
     artifactDigest: digest,
     source: remoteResultSourceSchema,
     /** Ordered original v2 selectors, attested by the registered local native owner. */
-    publications: z
-      .array(
-        z.strictObject({
-          publicationId: id,
-          sha256: digest,
-          byteSize: natural.max(20 * 1024 * 1024),
-        }),
-      )
-      .max(20)
-      .optional(),
+    publications: z.array(remoteNativePublicationEvidenceSchema).max(20).optional(),
   })
   .superRefine((value, context) => {
     if (
@@ -184,6 +225,26 @@ export const remoteResultDeclarationSchema = z
         value.publications.length
     )
       context.addIssue({ code: 'custom', message: 'Duplicate native publications.' });
+    if (
+      value.publications &&
+      value.publications.reduce((sum, item) => sum + item.byteSize, 0) > 100 * 1024 * 1024
+    )
+      context.addIssue({ code: 'custom', message: 'Original native node file budget exceeded.' });
+    if (
+      value.publications?.some(
+        (item) =>
+          canonicalPayload(item.source.scope) !== canonicalPayload(value.source.scope) ||
+          item.source.nativeSessionId !== value.source.nativeSessionId ||
+          item.source.nativeAgentId !== value.source.nativeAgentId ||
+          item.source.configurationId !== value.source.configurationId ||
+          item.source.expertVersionId !== value.source.expertVersionId ||
+          item.resultSeq >= value.source.cut.callSeq,
+      )
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication must precede the same original fixed completion.',
+      });
   });
 export type RemoteResultDeclaration = z.infer<typeof remoteResultDeclarationSchema>;
 const artifactFile = z.strictObject({
@@ -393,26 +454,55 @@ const input = z.strictObject({
 const publication = z.strictObject({
   ...deviceHeader,
   operation: z.literal('publish-file'),
-  payload: z.strictObject({
-    ...authorized,
-    idempotencyKey: id,
-    declare: z.strictObject({
+  payload: z.discriminatedUnion('mode', [
+    z.strictObject({
+      ...authorized,
+      mode: z.literal('lookup'),
+      idempotencyKey: id,
+      source: remoteNativeOutputFileSourceSchema,
+      selectorFingerprint: digest,
       name: z.string().min(1).max(255),
-      mediaType: z.string().min(1).max(200),
-      byteSize: natural.max(20 * 1024 * 1024),
-      sha256: digest,
     }),
-  }),
+    z.strictObject({
+      ...authorized,
+      mode: z.literal('reserve'),
+      idempotencyKey: id,
+      source: remoteNativeOutputFileSourceSchema,
+      selectorFingerprint: digest,
+      name: z.string().min(1).max(255),
+      maximumBytes: natural.max(20 * 1024 * 1024),
+    }),
+    z.strictObject({
+      ...authorized,
+      mode: z.literal('publish'),
+      reservationId: z.uuid(),
+      declare: z.strictObject({
+        name: z.string().min(1).max(255),
+        mediaType: z.string().min(1).max(200),
+        byteSize: natural.max(20 * 1024 * 1024),
+        sha256: digest,
+      }),
+    }),
+  ]),
 });
 const fileStatus = z.strictObject({
   ...deviceHeader,
   operation: z.literal('file-status'),
-  payload: z.strictObject({ ...authorized, idempotencyKey: id }),
+  payload: z.union([
+    z.strictObject({ ...authorized, idempotencyKey: id }),
+    z.strictObject({
+      ...authorized,
+      source: remoteNativeOutputFileSourceSchema,
+      publicationId: id,
+    }),
+    z.strictObject({ ...authorized, reservationId: z.uuid() }),
+  ]),
 });
 const abandonFile = z.strictObject({
   ...deviceHeader,
   operation: z.literal('abandon-file'),
-  payload: z.strictObject({ ...authorized, uploadId: id }),
+  /** C sends only after its original releaseAfter drain; this does not revoke a completed ledger row. */
+  payload: z.strictObject({ ...authorized, reservationId: z.uuid() }),
 });
 export const remoteRunRequestSchema = z.discriminatedUnion('operation', [
   info,
@@ -571,13 +661,9 @@ export interface RemoteDeviceValue {
   readonly disposition: 'enrolled' | 'replayed';
   readonly serverTime: number;
 }
-export interface RemoteFileValue {
-  readonly scope: RemoteRunScope;
-  readonly uploadId: string;
-  readonly idempotencyKey: string;
-  readonly status: 'pending' | 'completed' | 'abandoned';
-  readonly file?: z.infer<typeof artifactFile> | undefined;
-}
+export type RemoteFileValue = z.infer<typeof remoteFileValueSchema>;
+/** Private process-owned I/O reservation, never an upload/publication receipt. */
+export type RemoteFileReservationValue = z.infer<typeof remoteFileReservationValueSchema>;
 export interface RemoteRunOperationValues {
   readonly info: RemoteBackendInfo;
   readonly 'register-device': RemoteDeviceValue;
@@ -602,9 +688,9 @@ export interface RemoteRunOperationValues {
     readonly base64: string;
     readonly eof: boolean;
   };
-  readonly 'publish-file': RemoteFileValue;
-  readonly 'file-status': RemoteFileValue;
-  readonly 'abandon-file': RemoteFileValue;
+  readonly 'publish-file': z.infer<(typeof remoteRunValueSchemas)['publish-file']>;
+  readonly 'file-status': z.infer<(typeof remoteRunValueSchemas)['file-status']>;
+  readonly 'abandon-file': z.infer<(typeof remoteRunValueSchemas)['abandon-file']>;
   readonly 'submit-result': {
     readonly scope: RemoteRunScope;
     readonly disposition: 'committed' | 'replayed';
@@ -716,13 +802,68 @@ export const remoteReconcileValueSchema = remoteRunViewSchema.safeExtend({
 const changedView = remoteRunViewSchema.safeExtend({
   disposition: z.enum(['applied', 'replayed']),
 });
-export const remoteFileValueSchema = z.strictObject({
+export const remoteFileValueSchema = z
+  .strictObject({
+    scope: remoteRunScopeSchema,
+    uploadId: id,
+    idempotencyKey: id,
+    status: z.enum(['pending', 'completed', 'abandoned']),
+    file: artifactFile.optional(),
+    record: remoteCompletedNativeFileRecordSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.status !== 'completed') {
+      if (value.file || value.record)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Only a completed upload returns a native record.',
+        });
+      return;
+    }
+    const file = value.file,
+      record = value.record;
+    const { backendId: _backend, ...scope } = value.scope;
+    if (
+      !file ||
+      !record ||
+      file.id !== record.uploadId ||
+      value.uploadId !== record.uploadId ||
+      value.idempotencyKey !== record.idempotencyKey ||
+      record.attachmentId !== `sha256:${record.sha256}` ||
+      record.uploadedBy !== scope.actorId ||
+      record.spaceId !== scope.spaceId ||
+      record.taskId !== scope.taskId ||
+      record.planId !== scope.planId ||
+      record.revision !== scope.revision ||
+      record.nodeId !== scope.nodeId ||
+      canonicalPayload(record.producer.source.scope) !== canonicalPayload(scope) ||
+      file.mediaType !== record.mediaType ||
+      file.byteSize !== record.byteSize ||
+      file.checksum !== record.sha256 ||
+      file.accessPolicyId !== `space:${scope.spaceId}`
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'The actual native receipt and file reference must agree.',
+      });
+  });
+export const remoteFileReservationValueSchema = z.strictObject({
   scope: remoteRunScopeSchema,
-  uploadId: id,
+  reservationId: z.uuid(),
   idempotencyKey: id,
-  status: z.enum(['pending', 'completed', 'abandoned']),
-  file: artifactFile.optional(),
+  status: z.enum(['reserved', 'released']),
+  maximumBytes: natural.max(20 * 1024 * 1024),
 });
+export const remoteFileLookupValueSchema = z.strictObject({
+  scope: remoteRunScopeSchema,
+  idempotencyKey: id,
+  status: z.literal('absent'),
+});
+const publicationValue = z.union([
+  remoteFileValueSchema,
+  remoteFileReservationValueSchema,
+  remoteFileLookupValueSchema,
+]);
 const resultValue = z.strictObject({
   scope: remoteRunScopeSchema,
   disposition: z.enum(['committed', 'replayed']),
@@ -765,9 +906,9 @@ export const remoteRunValueSchemas = Object.freeze({
   reconcile: remoteReconcileValueSchema,
   'input-list': inputListValue,
   'input-read': inputReadValue,
-  'publish-file': remoteFileValueSchema,
-  'file-status': remoteFileValueSchema,
-  'abandon-file': remoteFileValueSchema,
+  'publish-file': publicationValue,
+  'file-status': publicationValue,
+  'abandon-file': remoteFileReservationValueSchema.extend({ status: z.literal('released') }),
   'submit-result': resultValue,
   'result-status': resultStatusValue,
 });
@@ -778,6 +919,599 @@ export const remoteRunErrorSchema = z.strictObject({
 export function remoteRunResponseSchema(operation: RemoteRunOperation) {
   return z.union([
     z.strictObject({ ok: z.literal(true), value: remoteRunValueSchemas[operation] }),
+    remoteRunErrorSchema,
+  ]);
+}
+
+/** Independent review carriers mirror the original fixed-target/reviewer/cut data.
+ * Their purpose marker is signed. None can be promoted to an author grant. */
+export const REMOTE_REVIEW_WIRE_LIMITS = Object.freeze({
+  reads: 16,
+  readBytes: 65_536,
+  pageBytes: 8192,
+  resources: 64,
+  anchors: 50,
+  argumentBytes: 120_000,
+  publicFrameBytes: 262_144,
+  frameEnvelopeBytes: 16_384,
+});
+const reviewId = id.refine((value) => value.trim() === value);
+const reviewArtifactId = z
+  .string()
+  .min(1)
+  .max(1000)
+  .refine((value) => value.trim() === value);
+export const remoteReviewTargetSchema = remoteNodeTargetSchema.extend({
+  spaceId: reviewId,
+  taskId: reviewId,
+  planId: reviewId,
+  nodeId: reviewId,
+  roundId: reviewArtifactId,
+  artifactVersionId: reviewArtifactId,
+  artifactFingerprint: digest,
+});
+export const remoteReviewPrincipalSchema = z.strictObject({
+  kind: z.literal('expert'),
+  controllerMemberId: reviewId,
+  reviewerRef: z.strictObject({ id: reviewId, version: reviewId, digest }),
+});
+export const remoteReviewBindingSchema = z.strictObject({
+  target: remoteReviewTargetSchema,
+  principal: remoteReviewPrincipalSchema,
+});
+function reviewBindingMatches(
+  scope: Omit<RemoteRunScope, 'backendId'>,
+  binding: z.infer<typeof remoteReviewBindingSchema>,
+): boolean {
+  return (
+    scope.actorId === binding.principal.controllerMemberId &&
+    scope.spaceId === binding.target.spaceId &&
+    scope.taskId === binding.target.taskId &&
+    scope.planId === binding.target.planId &&
+    scope.revision === binding.target.revision &&
+    scope.nodeId === binding.target.nodeId &&
+    binding.principal.reviewerRef.version === scope.planId
+  );
+}
+export const remoteReviewScopeSchema = remoteRunScopeSchema
+  .extend({ review: remoteReviewBindingSchema })
+  .refine((scope) => reviewBindingMatches(scope, scope.review));
+export type RemoteReviewScope = z.infer<typeof remoteReviewScopeSchema>;
+function reviewSourceMatches(
+  scope: RemoteReviewScope,
+  source: {
+    context: {
+      scope: Omit<RemoteRunScope, 'backendId'>;
+      review: z.infer<typeof remoteReviewBindingSchema>;
+    };
+  },
+): boolean {
+  const { backendId: _backend, review, ...nativeScope } = scope;
+  return (
+    canonicalPayload(source.context.scope) === canonicalPayload(nativeScope) &&
+    canonicalPayload(source.context.review) === canonicalPayload(review)
+  );
+}
+export const remoteNativeReviewContextSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    role: z.literal('review'),
+    scope: remoteRunScopeSchema.omit({ backendId: true }),
+    review: remoteReviewBindingSchema,
+  })
+  .refine((value) => reviewBindingMatches(value.scope, value.review));
+export const remoteNativeReviewRunSourceSchema = z
+  .strictObject({
+    context: remoteNativeReviewContextSchema,
+    nativeSessionId: reviewId,
+    nativeAgentId: reviewId,
+    configurationId: reviewId,
+  })
+  .refine((source) => source.nativeSessionId === source.nativeAgentId);
+export const remoteNativeReviewReadSourceSchema = remoteNativeReviewRunSourceSchema.safeExtend({
+  resourceRef: reviewId,
+  resourceFingerprint: digest,
+});
+export const remoteNativeReviewRangeSchema = z
+  .strictObject({
+    offset: natural,
+    length: natural.max(REMOTE_REVIEW_WIRE_LIMITS.pageBytes),
+    total: natural,
+  })
+  .refine(
+    (range) =>
+      range.offset <= range.total &&
+      range.length <= range.total - range.offset &&
+      Number.isSafeInteger(range.offset + range.length),
+  );
+const reviewReadRef = z.string().regex(/^review_read_[a-f0-9]{64}$/u);
+export const remoteNativeReviewReadEvidenceSchema = z
+  .strictObject({
+    readRef: reviewReadRef,
+    source: remoteNativeReviewReadSourceSchema,
+    callId: reviewId,
+    callSeq: natural,
+    resultSeq: natural,
+    range: remoteNativeReviewRangeSchema,
+    encoding: z.literal('utf-8'),
+    sha256: digest,
+  })
+  .refine((value) => value.callSeq < value.resultSeq && value.range.length > 0);
+export const remoteNativeReviewReadManifestSchema = z
+  .strictObject({
+    reads: z
+      .array(remoteNativeReviewReadEvidenceSchema)
+      .min(1)
+      .max(REMOTE_REVIEW_WIRE_LIMITS.reads),
+    unavailableRequired: z
+      .array(
+        z.strictObject({
+          resourceRef: reviewId,
+          code: z.enum(['review-unsupported-material', 'review-unavailable']),
+        }),
+      )
+      .max(REMOTE_REVIEW_WIRE_LIMITS.resources),
+  })
+  .superRefine((value, ctx) => {
+    const origin = (source: z.infer<typeof remoteNativeReviewReadSourceSchema>) =>
+      canonicalPayload({
+        context: source.context,
+        nativeSessionId: source.nativeSessionId,
+        nativeAgentId: source.nativeAgentId,
+        configurationId: source.configurationId,
+      });
+    const first = value.reads[0]!;
+    const resources = new Map<string, string>();
+    let mixed = false;
+    for (const item of value.reads) {
+      const identity = canonicalPayload([item.source.resourceFingerprint, item.range.total]);
+      const previous = resources.get(item.source.resourceRef);
+      if (previous !== undefined && previous !== identity) mixed = true;
+      resources.set(item.source.resourceRef, identity);
+    }
+    if (
+      mixed ||
+      new Set(value.reads.map((item) => item.readRef)).size !== value.reads.length ||
+      new Set(value.reads.map((item) => item.callId)).size !== value.reads.length ||
+      value.reads.some(
+        (item, index) =>
+          origin(item.source) !== origin(first.source) ||
+          (index > 0 && item.callSeq <= value.reads[index - 1]!.callSeq),
+      ) ||
+      value.reads.reduce((sum, item) => sum + item.range.length, 0) >
+        REMOTE_REVIEW_WIRE_LIMITS.readBytes ||
+      new Set(value.unavailableRequired.map((item) => item.resourceRef)).size !==
+        value.unavailableRequired.length
+    )
+      ctx.addIssue({ code: 'custom', message: 'Inconsistent original review read manifest.' });
+  });
+const reviewAnchor = z
+  .strictObject({
+    resourceRef: reviewId,
+    offset: natural,
+    length: positive.max(REMOTE_REVIEW_WIRE_LIMITS.readBytes),
+  })
+  .refine((value) => Number.isSafeInteger(value.offset + value.length));
+export const remoteNativeReviewContentSchema = z.preprocess(
+  (raw, ctx) => {
+    try {
+      const serialized = JSON.stringify(raw);
+      if (
+        serialized === undefined ||
+        remoteJsonBytes(raw) > REMOTE_REVIEW_WIRE_LIMITS.argumentBytes ||
+        remoteJsonBytes({ arguments: serialized }) + REMOTE_REVIEW_WIRE_LIMITS.frameEnvelopeBytes >
+          REMOTE_REVIEW_WIRE_LIMITS.publicFrameBytes
+      )
+        throw new Error('budget');
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'Over-budget original review arguments.' });
+      return z.NEVER;
+    }
+    return raw;
+  },
+  z
+    .strictObject({
+      conclusion: z.enum(REVIEW_ACTIONS),
+      rationale: z.string().trim().min(1).max(REMOTE_RUN_LIMITS.resultCharacters),
+      anchors: z.array(reviewAnchor).max(REMOTE_REVIEW_WIRE_LIMITS.anchors),
+      evidenceRefs: z.array(reviewReadRef).min(1).max(REMOTE_REVIEW_WIRE_LIMITS.reads),
+    })
+    .refine((value) => new Set(value.evidenceRefs).size === value.evidenceRefs.length),
+);
+export const remoteNativeFixedReviewSourceSchema = remoteNativeReviewRunSourceSchema.safeExtend({
+  toolVersion: z.literal('zhuma-native-review-intent@1'),
+  intentId: reviewId,
+  callId: reviewId,
+  cut,
+  readManifestDigest: digest,
+});
+export const remoteReviewResultDeclarationSchema = z
+  .strictObject({
+    requestId: z.uuid(),
+    source: remoteNativeFixedReviewSourceSchema,
+    digest,
+    readManifestDigest: digest,
+    provenanceFingerprint: digest,
+  })
+  .refine((value) => value.source.readManifestDigest === value.readManifestDigest);
+export const remoteNativeFixedReviewFactsSchema = z
+  .strictObject({
+    source: remoteNativeFixedReviewSourceSchema,
+    content: remoteNativeReviewContentSchema,
+    readManifest: remoteNativeReviewReadManifestSchema,
+    readManifestDigest: digest,
+    digest,
+    provenanceFingerprint: digest,
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.source.readManifestDigest !== value.readManifestDigest ||
+      value.readManifest.reads.some(
+        (read) =>
+          canonicalPayload(read.source.context) !== canonicalPayload(value.source.context) ||
+          read.source.nativeSessionId !== value.source.nativeSessionId ||
+          read.source.nativeAgentId !== value.source.nativeAgentId ||
+          read.source.configurationId !== value.source.configurationId ||
+          read.resultSeq >= value.source.cut.callSeq,
+      )
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Review reads must precede the same original completion cut.',
+      });
+  });
+export type RemoteNativeFixedReviewFacts = z.infer<typeof remoteNativeFixedReviewFactsSchema>;
+export const remoteReviewReceiptSchema = z.strictObject({
+  protocolVersion: z.literal(1),
+  requestId: reviewId,
+  fingerprint: digest,
+  source: remoteNativeFixedReviewSourceSchema,
+  digest,
+  provenanceFingerprint: digest,
+  action: z.enum(REVIEW_ACTIONS),
+  anchors: z.array(reviewAnchor).max(50),
+  evidenceRefs: z.array(reviewReadRef).max(16),
+  commentId: reviewId,
+});
+export const remoteReviewFailureSchema = z.strictObject({
+  protocolVersion: z.literal(1),
+  requestId: reviewId,
+  code: z.enum([
+    'review-read-required',
+    'review-unsupported-material',
+    'review-read-budget-exceeded',
+    'output-too-large',
+    'review-result-rejected',
+  ]),
+  resourceRefs: z.array(reviewId).max(64),
+  fingerprint: digest,
+});
+export const remoteReviewResourceSchema = z.strictObject({
+  resourceRef: reviewId,
+  kind: z.enum(['text', 'file', 'external-reference']),
+  required: z.literal(true),
+  mediaType: z.string().min(1).max(200),
+  bytes: natural,
+  resourceFingerprint: digest,
+});
+const reviewDeviceHeader = { ...deviceHeader, purpose: z.literal('review') };
+const reviewAuthorized = { scope: remoteReviewScopeSchema, permit: remotePermitDeclarationSchema };
+const reviewLocation = { sequence: positive };
+export const remoteReviewEventSchema = z.discriminatedUnion('kind', [
+  z
+    .strictObject({
+      ...reviewLocation,
+      kind: z.literal('received'),
+      nativeSessionId: reviewId,
+      nativeAgentId: reviewId,
+    })
+    .refine((value) => value.nativeSessionId === value.nativeAgentId),
+  z
+    .strictObject({
+      ...reviewLocation,
+      kind: z.literal('accepted'),
+      nativeSessionId: reviewId,
+      nativeAgentId: reviewId,
+    })
+    .refine((value) => value.nativeSessionId === value.nativeAgentId),
+  z.strictObject({ ...reviewLocation, kind: z.literal('dispatch-unknown') }),
+  z.strictObject({ ...reviewLocation, kind: z.literal('idle') }),
+  z.strictObject({ ...reviewLocation, kind: z.literal('stop-received') }),
+  z.strictObject({ ...reviewLocation, kind: z.literal('retiring') }),
+  // Seal is transport metadata only: the original review remains running/held
+  // until commitExecutionReviewFixedResult atomically completes AND casts its ballot.
+  z.strictObject({
+    ...reviewLocation,
+    kind: z.literal('sealed'),
+    ...drained,
+    result: remoteReviewResultDeclarationSchema,
+  }),
+  z.strictObject({
+    ...reviewLocation,
+    kind: z.literal('failed'),
+    resourcesSettled: z.literal(false),
+    failure: remoteReviewFailureSchema.pick({ code: true, resourceRefs: true }).optional(),
+  }),
+]);
+const reviewAccept = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('accept'),
+  payload: z
+    .strictObject({
+      target: remoteReviewTargetSchema,
+      expectedReviewVersion: natural,
+      reviewerRef: remoteReviewPrincipalSchema.shape.reviewerRef.omit({ digest: true }),
+      model: remoteModelSelectionSchema,
+      workspace: z.strictObject({ kind: z.literal('text-only') }),
+      capabilities: z.strictObject({
+        resources: z.literal(REMOTE_RUN_RESOURCE_SOURCE_VERSION).optional(),
+        reader: z.literal('zhuma-native-review-read@1'),
+        resultIntent: z.literal('zhuma-native-review-intent@1'),
+      }),
+      credentials: z.strictObject({
+        drive: remotePermitDeclarationSchema,
+        cleanup: remotePermitDeclarationSchema,
+      }),
+    })
+    .refine((value) => value.reviewerRef.version === value.target.planId),
+});
+const reviewStatus = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('status'),
+  payload: z.strictObject(reviewAuthorized),
+});
+const reviewRenew = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('renew'),
+  payload: z.strictObject(reviewAuthorized),
+});
+const reviewEvent = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('event'),
+  payload: z
+    .strictObject({ ...reviewAuthorized, event: remoteReviewEventSchema })
+    .refine(
+      (value) =>
+        value.event.kind !== 'sealed' ||
+        reviewSourceMatches(value.scope, value.event.result.source),
+    ),
+});
+const reviewStop = z.strictObject({
+  ...header,
+  purpose: z.literal('review'),
+  backendId: z.uuid(),
+  operation: z.literal('stop'),
+  payload: z.strictObject({ scope: remoteReviewScopeSchema, expectedAttemptVersion: positive }),
+});
+const reviewCleanup = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('cleanup'),
+  payload: z.strictObject({ ...reviewAuthorized, observation: remoteCleanupObservationSchema }),
+});
+const reviewReconcile = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('reconcile'),
+  payload: z.union([
+    z.strictObject({
+      ...reviewAuthorized,
+      lastSequence: natural,
+      resultRequestId: z.uuid().optional(),
+      nativeSessionId: reviewId.optional(),
+      nativeAgentId: reviewId.optional(),
+    }),
+    z.strictObject({
+      target: remoteReviewTargetSchema,
+      reviewerRef: remoteReviewPrincipalSchema.shape.reviewerRef.omit({ digest: true }),
+      acceptRequestId: z.uuid(),
+      permit: remotePermitDeclarationSchema,
+    }),
+  ]),
+});
+const reviewInputList = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('input-list'),
+  payload: z.strictObject(reviewAuthorized),
+});
+const reviewInputRead = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('input-read'),
+  payload: z
+    .strictObject({
+      ...reviewAuthorized,
+      resourceRef: reviewId,
+      offset: natural,
+      length: positive.max(REMOTE_REVIEW_WIRE_LIMITS.pageBytes),
+    })
+    .refine((value) => Number.isSafeInteger(value.offset + value.length)),
+});
+const reviewSubmit = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('submit-result'),
+  payload: z
+    .strictObject({
+      ...reviewAuthorized,
+      result: remoteReviewResultDeclarationSchema,
+      fixed: remoteNativeFixedReviewFactsSchema,
+    })
+    .refine(
+      (value) =>
+        reviewSourceMatches(value.scope, value.result.source) &&
+        canonicalPayload(value.result.source) === canonicalPayload(value.fixed.source) &&
+        value.result.digest === value.fixed.digest &&
+        value.result.readManifestDigest === value.fixed.readManifestDigest &&
+        value.result.provenanceFingerprint === value.fixed.provenanceFingerprint,
+    ),
+});
+const reviewResultStatus = z.strictObject({
+  ...reviewDeviceHeader,
+  operation: z.literal('result-status'),
+  payload: z.strictObject({ ...reviewAuthorized, resultRequestId: z.uuid() }),
+});
+export const remoteReviewRequestSchema = z.discriminatedUnion('operation', [
+  reviewAccept,
+  reviewStatus,
+  reviewRenew,
+  reviewEvent,
+  reviewStop,
+  reviewCleanup,
+  reviewReconcile,
+  reviewInputList,
+  reviewInputRead,
+  reviewSubmit,
+  reviewResultStatus,
+]);
+export type RemoteReviewRequest = z.infer<typeof remoteReviewRequestSchema>;
+export type RemoteReviewAcceptRequest = Extract<RemoteReviewRequest, { operation: 'accept' }>;
+export type RemoteReviewDeviceRequest = Exclude<RemoteReviewRequest, { operation: 'stop' }>;
+export function remoteReviewDeviceSigningInput(
+  request: Omit<RemoteReviewDeviceRequest, 'proof'> & {
+    readonly proof: {
+      readonly issuedAt: number;
+      readonly nonce: string;
+      readonly signature?: string | undefined;
+    };
+  },
+) {
+  const { signature: _signature, ...proof } = request.proof;
+  return { ...request, proof };
+}
+export const remoteExecutionRequestSchema = z.union([
+  remoteRunRequestSchema,
+  remoteReviewRequestSchema,
+]);
+export const remoteReviewSharedSnapshotSchema = z.strictObject({
+  configurationId: reviewId,
+  /** The original FrozenExecutionReviewComposition, validated again by its original C/D decoder. */
+  composition: z
+    .record(z.string(), z.json())
+    .refine((value) => remoteJsonBytes(value) <= REMOTE_RUN_LIMITS.snapshotBytes),
+  resources: z.array(remoteReviewResourceSchema).max(REMOTE_REVIEW_WIRE_LIMITS.resources),
+});
+export const remoteReviewRunViewSchema = z
+  .strictObject({
+    purpose: z.literal('review'),
+    scope: remoteReviewScopeSchema,
+    deviceId: z.uuid(),
+    serverTime: natural,
+    authority: z.enum(['drive', 'commit-only', 'cleanup-only', 'recovery-required']),
+    permit: remotePermitViewSchema,
+    cleanup: remotePermitViewSchema,
+    nodeVersion: natural,
+    reviewVersion: positive,
+    attemptVersion: positive,
+    nextSequence: positive,
+    stopRequested: z.boolean(),
+    resources: z.enum(['held', 'settled']),
+    runStatus: z.enum(['requested', 'running', 'completed', 'failed', 'cancelled']),
+    cleanupPhase: z.enum(['stop-received', 'retiring', 'unknown', 'drained']).optional(),
+    result: remoteReviewResultDeclarationSchema.optional(),
+    receipt: remoteReviewReceiptSchema.optional(),
+    failure: remoteReviewFailureSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      (value.result && !reviewSourceMatches(value.scope, value.result.source)) ||
+      (value.receipt && !reviewSourceMatches(value.scope, value.receipt.source))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Review result belongs to a different fixed target or reviewer.',
+      });
+    if (
+      value.authority === 'drive' &&
+      (value.stopRequested ||
+        value.resources !== 'held' ||
+        value.result ||
+        !['requested', 'running'].includes(value.runStatus))
+    )
+      ctx.addIssue({ code: 'custom', message: 'A sealed or fenced reviewer cannot drive.' });
+    if (
+      value.authority === 'commit-only' &&
+      (value.stopRequested ||
+        !value.result ||
+        !(
+          (value.runStatus === 'running' && value.resources === 'held') ||
+          (value.runStatus === 'completed' && value.resources === 'settled' && value.receipt)
+        ))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Review continuation commits only its original sealed cut.',
+      });
+  });
+export const remoteReviewAcceptValueSchema = remoteReviewRunViewSchema.safeExtend({
+  disposition: z.enum(['accepted', 'replayed']),
+  shared: remoteReviewSharedSnapshotSchema,
+  selection: remoteAcceptValueSchema.shape.selection,
+});
+export const remoteReviewReconcileValueSchema = remoteReviewRunViewSchema.safeExtend({
+  authority: z.enum(['commit-only', 'cleanup-only', 'recovery-required']),
+  shared: remoteReviewSharedSnapshotSchema,
+  selection: remoteAcceptValueSchema.shape.selection,
+});
+export type RemoteReviewView = z.infer<typeof remoteReviewRunViewSchema>;
+export type RemoteReviewAcceptValue = z.infer<typeof remoteReviewAcceptValueSchema>;
+export type RemoteReviewReconcileValue = z.infer<typeof remoteReviewReconcileValueSchema>;
+const reviewChanged = remoteReviewRunViewSchema.safeExtend({
+  disposition: z.enum(['applied', 'replayed']),
+});
+const reviewResultValue = z.strictObject({
+  purpose: z.literal('review'),
+  scope: remoteReviewScopeSchema,
+  status: z.enum(['committed', 'confirmed']),
+  receipt: remoteReviewReceiptSchema,
+});
+const reviewResultStatusValue = z.discriminatedUnion('status', [
+  z.strictObject({
+    purpose: z.literal('review'),
+    scope: remoteReviewScopeSchema,
+    status: z.literal('none'),
+  }),
+  z.strictObject({
+    purpose: z.literal('review'),
+    scope: remoteReviewScopeSchema,
+    status: z.literal('committed'),
+    receipt: remoteReviewReceiptSchema,
+  }),
+  z.strictObject({
+    purpose: z.literal('review'),
+    scope: remoteReviewScopeSchema,
+    status: z.literal('needs-attention'),
+    failure: remoteReviewFailureSchema,
+  }),
+]);
+export const remoteReviewValueSchemas = Object.freeze({
+  accept: remoteReviewAcceptValueSchema,
+  status: remoteReviewRunViewSchema,
+  renew: remoteReviewRunViewSchema,
+  event: reviewChanged,
+  stop: reviewChanged,
+  cleanup: reviewChanged.refine((value) => !value.result && !value.receipt && !value.failure),
+  reconcile: remoteReviewReconcileValueSchema,
+  'input-list': z.strictObject({
+    purpose: z.literal('review'),
+    scope: remoteReviewScopeSchema,
+    resources: z.array(remoteReviewResourceSchema).max(REMOTE_REVIEW_WIRE_LIMITS.resources),
+  }),
+  'input-read': z.strictObject({
+    purpose: z.literal('review'),
+    scope: remoteReviewScopeSchema,
+    source: remoteNativeReviewReadSourceSchema,
+    range: remoteNativeReviewRangeSchema,
+    encoding: z.enum(['utf-8', 'binary']),
+    sha256: digest,
+    base64: z.string().max(4 * Math.ceil(REMOTE_REVIEW_WIRE_LIMITS.pageBytes / 3)),
+  }),
+  'submit-result': reviewResultValue,
+  'result-status': reviewResultStatusValue,
+});
+export type RemoteReviewOperation = RemoteReviewRequest['operation'];
+export type RemoteReviewOperationValue<Operation extends RemoteReviewOperation> = z.infer<
+  (typeof remoteReviewValueSchemas)[Operation]
+>;
+export function remoteReviewResponseSchema(operation: RemoteReviewOperation) {
+  return z.union([
+    z.strictObject({ ok: z.literal(true), value: remoteReviewValueSchemas[operation] }),
     remoteRunErrorSchema,
   ]);
 }

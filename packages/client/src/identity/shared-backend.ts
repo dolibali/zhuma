@@ -72,6 +72,12 @@ const targets = {
   '/api/zhuma-exec/startable': ['POST', 'execution.startable'],
   '/api/zhuma-exec/task-progress': ['POST', 'execution.task-progress'],
   '/api/zhuma-exec/project-artifacts': ['POST', 'execution.project-artifacts'],
+  '/api/zhuma-exec/start-plan': ['POST', 'execution.start-plan'],
+  '/api/zhuma-exec/submit': ['POST', 'execution.submit'],
+  '/api/zhuma-exec/ballot': ['POST', 'execution.ballot'],
+  '/api/zhuma-exec/revision': ['POST', 'execution.revision'],
+  '/api/zhuma-exec/upstream-content': ['POST', 'execution.upstream-content'],
+  '/api/zhuma-exec/draft': ['POST', 'execution.draft'],
 } as const;
 function target(path: string, method: string): readonly [string, string] {
   if (path === '/zhuma-id/teams')
