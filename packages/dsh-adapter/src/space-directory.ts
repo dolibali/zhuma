@@ -38,6 +38,14 @@ const SpaceSchema = z.strictObject({
   id: z.string().min(1).max(ID_MAX).regex(ID_PATTERN),
   kind: z.enum(['personal', 'team']),
   name: z.string().min(1).max(NAME_MAX),
+  /** Only new member-created spaces carry management authority. Legacy seeds do not. */
+  management: z
+    .strictObject({
+      requestId: z.uuid(),
+      administratorId: z.string().min(1).max(64).regex(ID_PATTERN),
+      phase: z.enum(['pending', 'ready']),
+    })
+    .optional(),
 });
 
 const MembershipSchema = z.strictObject({
@@ -443,6 +451,7 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
     this.available();
     const list: AuthorizedSpace[] = [];
     for (const [, record] of this.domain.table('spaces').entries()) {
+      if (record.management?.phase === 'pending') continue;
       list.push({ id: record.id, kind: record.kind, name: record.name });
     }
     return list.sort((a, b) => a.id.localeCompare(b.id));
@@ -451,13 +460,119 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
   space(spaceId: string): AuthorizedSpace | undefined {
     this.available();
     const record = this.domain.table('spaces').get(spaceId);
-    if (record === undefined) return undefined;
+    if (record === undefined || record.management?.phase === 'pending') return undefined;
     return { id: record.id, kind: record.kind, name: record.name };
   }
 
   isMember(spaceId: string, accountId: string): boolean {
     this.available();
-    return this.domain.table('memberships').get(membershipKey(spaceId, accountId)) !== undefined;
+    return (
+      this.space(spaceId) !== undefined &&
+      this.domain.table('memberships').get(membershipKey(spaceId, accountId)) !== undefined
+    );
+  }
+
+  administratorForSpace(spaceId: string): string | undefined {
+    if (!this.space(spaceId)) return undefined;
+    return this.domain.table('spaces').get(spaceId)?.management?.administratorId;
+  }
+
+  memberIdsForSpace(spaceId: string): readonly string[] {
+    if (!this.space(spaceId)) return [];
+    return [...this.domain.table('memberships').entries()]
+      .map(([, row]) => row)
+      .filter((row) => row.spaceId === spaceId)
+      .map((row) => row.accountId)
+      .sort();
+  }
+
+  /** A recoverable original-directory write; partial spaces are invisible to all read grants. */
+  async provisionMemberSpace(
+    space: AuthorizedSpace,
+    administratorId: string,
+    requestId: string,
+    assertCurrent: () => void,
+  ): Promise<void> {
+    const input = SpaceSchema.parse({
+      ...space,
+      management: { administratorId, requestId, phase: 'pending' },
+    });
+    await this.exclusive(async () => {
+      const check = () => {
+        this.available();
+        assertCurrent();
+      };
+      check();
+      const spaces = this.domain.table('spaces'),
+        members = this.domain.table('memberships');
+      const prior = spaces.get(space.id),
+        key = membershipKey(space.id, administratorId);
+      if (
+        prior &&
+        (!sameSpace(prior, input) ||
+          prior.management?.administratorId !== administratorId ||
+          prior.management.requestId !== requestId)
+      )
+        throw new WorkbenchError('conflict', '空间创建意图与已有记录不一致。');
+      if (prior?.management?.phase === 'ready') {
+        if (!members.get(key)) throw new WorkbenchError('conflict', '已创建空间的成员发生变化。');
+        return;
+      }
+      if (
+        (!prior && spaces.size >= SPACE_DIRECTORY_SPACE_LIMIT) ||
+        (!members.get(key) && members.size >= SPACE_DIRECTORY_MEMBERSHIP_LIMIT)
+      )
+        throw invalid('空间目录超过上限。');
+      // Mark writer ownership before its first row, including a failed first registration.
+      await this.noteWriter();
+      check();
+      if (!prior) {
+        await spaces.put(space.id, input);
+        check();
+      }
+      if (!members.get(key)) {
+        await members.put(key, { spaceId: space.id, accountId: administratorId });
+        check();
+      }
+      await spaces.put(space.id, {
+        ...input,
+        management: { ...input.management!, phase: 'ready' },
+      });
+      check();
+    });
+  }
+
+  /** Checks the ORIGINAL member capability inside the same directory writer queue. */
+  async setManagedMembership(
+    spaceId: string,
+    accountId: string,
+    action: 'add' | 'remove',
+    administratorId: string,
+    assertCurrent: () => void,
+  ): Promise<void> {
+    const input = MembershipSchema.parse({ spaceId, accountId });
+    await this.exclusive(async () => {
+      this.available();
+      assertCurrent();
+      if (
+        this.space(spaceId)?.kind !== 'team' ||
+        this.administratorForSpace(spaceId) !== administratorId ||
+        !this.isMember(spaceId, administratorId) ||
+        (action === 'remove' && accountId === administratorId)
+      )
+        throw new WorkbenchError('forbidden', '仅创建管理员可以管理团队成员。');
+      const members = this.domain.table('memberships'),
+        key = membershipKey(spaceId, accountId);
+      if (action === 'add') {
+        if (!members.get(key)) {
+          if (members.size >= SPACE_DIRECTORY_MEMBERSHIP_LIMIT)
+            throw invalid('空间成员记录超过上限。');
+          await members.put(key, input);
+        }
+      } else if (members.get(key)) await members.delete(key);
+      this.available();
+      assertCurrent();
+    });
   }
 
   spacesForMember(accountId: string): readonly AuthorizedSpace[] {
@@ -566,6 +681,21 @@ class OpenedSpaceDirectory implements SpaceDirectory, SpaceDirectoryWriter {
 
 export interface OpenedSpaceDirectoryHandle extends SpaceDirectory, SpaceDirectoryWriter {
   readonly signal: AbortSignal;
+  administratorForSpace(spaceId: string): string | undefined;
+  memberIdsForSpace(spaceId: string): readonly string[];
+  provisionMemberSpace(
+    space: AuthorizedSpace,
+    administratorId: string,
+    requestId: string,
+    assertCurrent: () => void,
+  ): Promise<void>;
+  setManagedMembership(
+    spaceId: string,
+    accountId: string,
+    action: 'add' | 'remove',
+    administratorId: string,
+    assertCurrent: () => void,
+  ): Promise<void>;
   initializationStatus(): SpaceDirectoryInitializationStatus;
   initializeImport(
     imported: SpaceDirectoryImport,
