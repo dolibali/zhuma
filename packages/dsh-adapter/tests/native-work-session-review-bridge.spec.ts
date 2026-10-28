@@ -527,7 +527,7 @@ test('original SDK review truncation: actual Stop before a held model response k
   assert.equal((await h.bridge.closeBeforeNative()).status, 'settled');
 });
 
-async function coldStoppedReview(t) {
+async function coldStoppedReview(t, { resumeBeforeCold = false } = {}) {
   const warm = await setup(t, { file: false, finishReason: 'stop' });
   warm.bridge.consumeClaim(warm.d.request, warm.claim);
   await warm.bridge.whenIdle();
@@ -548,6 +548,17 @@ async function coldStoppedReview(t) {
     () => readExecutionReviewState(warm.d.read())?.attempts[0]?.resources === 'settled',
   );
   await warm.bridge.whenIdle();
+  if (resumeBeforeCold) {
+    const resumed = await warm.d.service.resumeWorkflowExecution(warm.d.request, {
+      ...warm.location,
+      requestId: 'resume-stopped-review-before-cold-owner',
+      intentId: stopped.value.intent.intentId,
+      generation: stopped.value.intent.generation,
+      expectedVersion: stopped.value.intent.version,
+    });
+    assert.equal(resumed.ok, true);
+    assert.equal(resumed.value.intent.status, 'running');
+  }
   const cold = await reopenStoppedReviewBridge(warm, (close) => t.onTestFinished(close));
   assert.throws(
     () => cold.d.service.assertExpertReviewDrained(scope),
@@ -555,6 +566,25 @@ async function coldStoppedReview(t) {
   );
   return { warm, cold, scope };
 }
+
+test('original SDK cold review: a normally resumed workflow can recover its stopped historical scope without another Stop or model', async (t) => {
+  const { cold, scope } = await coldStoppedReview(t, { resumeBeforeCold: true });
+  const before = structuredClone(cold.d.read());
+  const result = await cold.bridge.recoverStopped(scope);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.value.status, 'settled');
+  cold.d.service.assertExpertReviewDrained(scope);
+  assert.deepEqual(cold.d.read(), before);
+  assert.equal(cold.adapter.requests.length, 0);
+  const attempt = readExecutionReviewState(cold.d.read()).attempts[0];
+  assert.equal(
+    cold.native.runtime.migrationDrain(attempt.nativeSessionId).basis,
+    'flushed-and-closed',
+  );
+  assert.equal(cold.native.ctx.agents.get(attempt.nativeAgentId), undefined);
+  assert.equal(cold.d.read().rounds[0].ballots.length, 0);
+  assert.equal(cold.d.read('consume').command.status, 'blocked');
+});
 
 test('original SDK cold review: committed Stop and exact persisted scope restore a genuine physical drain with empty bridge state', async (t) => {
   const { cold, scope } = await coldStoppedReview(t);

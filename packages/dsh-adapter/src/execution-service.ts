@@ -2087,16 +2087,28 @@ export class ExecutionService {
           const receipt = readExecutionReviewState(node)!.receipts.find(
             (item) => item.runId === scope.runId,
           );
+          const stoppedGeneration = parsed.success
+            ? stoppedWorkflowReviewGeneration(node, parsed.data, attempt)
+            : undefined;
+          // Resume preserves terminal history but a cold owner loses its live
+          // drain. Rebuild only that stopped history, never a new driving scope.
+          const historicalStop =
+            parsed.success &&
+            parsed.data.status === 'running' &&
+            stoppedGeneration !== undefined &&
+            stoppedGeneration < parsed.data.generation &&
+            isStoppedReviewHistory(attempt);
           if (
             !parsed.success ||
             node.ownerId !== scope.actorId ||
             !plan?.nodeIds.includes(scope.nodeId) ||
-            parsed.data.status !== 'stopping' ||
+            (!historicalStop &&
+              (parsed.data.status !== 'stopping' ||
+                !hasCommittedWorkflowStop(node, parsed.data, parsed.data.generation))) ||
             parsed.data.actorId !== scope.actorId ||
             parsed.data.spaceId !== scope.spaceId ||
-            !hasCommittedWorkflowStop(node, parsed.data, parsed.data.generation) ||
             !receipt ||
-            stoppedWorkflowReviewGeneration(node, parsed.data, attempt) === undefined
+            stoppedGeneration === undefined
           )
             throw new ExecutionReviewReadError('review-authority-denied');
           if (attempt.stopPhase === 'none' && ['requested', 'running'].includes(attempt.status)) {

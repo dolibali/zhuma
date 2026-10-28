@@ -1162,3 +1162,181 @@ test('review cleanup: dispatch fencing leaves only the original cleanup lane ope
     'run-authority-unavailable',
   );
 });
+
+test('review cleanup: resumed cold history recovers exact stopped scopes while keeping the prepared reservation and peer vote', async (t) => {
+  const h = await nativeReviewHost(t, { workflow: {}, reviewerIds: ['qa', 'outside'] });
+  const firstScope = h.drive.grant.scope;
+  const stop = async (view, key) =>
+    checked(await h.service.stopWorkflowExecution(h.request, control(h, key, view)));
+  const resume = async (view, key) =>
+    checked(
+      await h.service.resumeWorkflowExecution(h.request, {
+        ...control(h, key, view),
+        expectedVersion: view.intent.version,
+      }),
+    );
+  const one = await stop(h.workflowView, 'history-stop-one');
+  checked(await h.service.recoverStoppedWorkflowReviewCleanup(firstScope));
+  const oldRound = h.read().rounds[0];
+  checked(
+    await h.service.ballot(caller('outside'), {
+      ...h.human('produce', 'return-old-target'),
+      roundId: oldRound.id,
+      artifactVersionId: oldRound.artifactVersionId,
+      action: 'request-changes',
+      comment: 'Revise the fixed target.',
+    }),
+  );
+  checked(
+    await h.service.submit(caller(), {
+      ...h.human('produce', 'submit-new-target'),
+      text: 'Revised fixed body.',
+    }),
+  );
+  const two = await resume(one, 'history-resume-two');
+  const prepared = await reserveCandidate(h, checked(await claim(h, two)));
+  const stopTwo = await stop(two, 'history-stop-two');
+  const three = await resume(stopTwo, 'history-resume-three');
+  const fresh = await reserveCandidate(h, checked(await claim(h, three)));
+  checked(await h.service.admitExpertReview(h.request, fresh.command));
+  const drive = checked(
+    await h.service.openExpertReviewDrive(h.request, {
+      ...h.locate(),
+      spaceId: 'north',
+      runId: fresh.prepared.attempt.scope.runId,
+    }),
+  );
+  t.after(() => drive.dispose());
+  checked(
+    await h.service.recordNativeReviewEvent(drive.grant, {
+      scope: drive.grant.scope,
+      kind: 'accepted',
+      sequence: 1,
+      nativeSessionId: 'third-contract-native',
+      nativeAgentId: 'third-contract-native',
+    }),
+  );
+  const { review: _review, ...thirdScope } = drive.grant.scope;
+  const thirdBinding = {
+    scope: thirdScope,
+    nativeSessionId: 'third-contract-native',
+    nativeAgentId: 'third-contract-native',
+    selection: drive.grant.selection,
+  };
+  const bindings = new Map([
+    [firstScope.runId, h.binding],
+    [thirdScope.runId, thirdBinding],
+  ]);
+  h.hooks.retire = (authority) => ({
+    status: 'retired',
+    binding: bindings.get(authority.scope.runId),
+    drain: {
+      basis: 'flushed-and-closed',
+      signal: new AbortController().signal,
+      assertCurrent() {
+        h.service.assertExpertReviewCleanupAuthority(authority);
+      },
+    },
+  });
+  const peerRound = h.read().rounds.at(-1);
+  checked(
+    await h.service.ballot(caller('outside'), {
+      ...h.human('produce', 'peer-approve-new-target'),
+      roundId: peerRound.id,
+      artifactVersionId: peerRound.artifactVersionId,
+      action: 'approve',
+      comment: 'Peer accepted this version.',
+    }),
+  );
+  const stopThree = await stop(three, 'history-stop-three');
+  checked(await h.service.recoverStoppedWorkflowReviewCleanup(drive.grant.scope));
+  const four = await resume(stopThree, 'history-resume-four');
+  const before = JSON.stringify(h.read()),
+    old = readExecutionReviewState(h.read());
+  assert.deepEqual(
+    old.attempts.map((a) => [a.status, a.resources]),
+    [
+      ['cancelled', 'settled'],
+      ['prepared', 'held'],
+      ['cancelled', 'settled'],
+    ],
+  );
+  assert.notDeepEqual(old.attempts[0].scope.review.target, old.attempts[2].scope.review.target);
+  assert.deepEqual(old.attempts[1].scope.review.target, old.attempts[2].scope.review.target);
+  await h.close();
+  const cold = await open(h.root, {
+    seed: false,
+    workbench: h.snapshot,
+    assertReviewConfiguration() {},
+  });
+  t.after(() => cold.close());
+  const calls = [];
+  const no = () => {
+    throw Error('no model/drive/read');
+  };
+  cold.service.installNativeReviewPorts({
+    issuer: {
+      registerNativeReviewTools: no,
+      prepareFixedReview: no,
+      assertFixedReview: no,
+      readFixedReview: no,
+    },
+    grantFor: no,
+    async retireForCleanup(authority) {
+      calls.push(authority.scope.runId);
+      cold.service.assertExpertReviewCleanupAuthority(authority);
+      return {
+        status: 'retired',
+        binding: bindings.get(authority.scope.runId),
+        drain: {
+          basis: 'flushed-and-closed',
+          signal: new AbortController().signal,
+          assertCurrent() {
+            cold.service.assertExpertReviewCleanupAuthority(authority);
+          },
+        },
+      };
+    },
+  });
+  refused(
+    await cold.service.recoverStoppedWorkflowReviewCleanup(prepared.prepared.attempt.scope),
+    'review-result-not-running',
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(four.intent.status, 'running');
+  assert.throws(() => cold.service.assertExpertReviewDrained(firstScope));
+  const [planKey, savedPlan] = [...cold.domain.table('plans').entries()][0];
+  const changedPlan = structuredClone(savedPlan);
+  changedPlan.workflowExecution.commandReceipts =
+    changedPlan.workflowExecution.commandReceipts.filter(
+      (receipt) => !(receipt.kind === 'stop' && receipt.generation === three.intent.generation),
+    );
+  await cold.domain.table('plans').put(planKey, changedPlan);
+  refused(
+    await cold.service.recoverStoppedWorkflowReviewCleanup(drive.grant.scope),
+    'review-authority-denied',
+  );
+  assert.deepEqual(calls, [], 'an unrelated older Stop cannot authorize this history');
+  await cold.domain.table('plans').put(planKey, savedPlan);
+  checked(await cold.service.recoverStoppedWorkflowReviewCleanup(firstScope));
+  checked(await cold.service.recoverStoppedWorkflowReviewCleanup(drive.grant.scope));
+  assert.equal(JSON.stringify(cold.read()), before);
+  assert.deepEqual(calls, [firstScope.runId, thirdScope.runId]);
+  assert.deepEqual(readExecutionReviewState(cold.read()).attempts[1], old.attempts[1]);
+  assert.equal(cold.read().rounds.at(-1).ballots[0].reviewerId, 'outside');
+  assert.equal(cold.read().rounds.at(-1).ballots[0].action, 'approve');
+  const next = checked(
+    await cold.service.resumeWorkflowExecution(cold.request, {
+      ...control(h, 'cold-resume-five', four),
+      expectedVersion: four.intent.version,
+    }),
+  );
+  const retained = checked(
+    await cold.service.claimWorkflowExecution(cold.request, {
+      ...h.workflowLocation,
+      intentId: next.intent.intentId,
+      generation: next.intent.generation,
+    }),
+  );
+  assert.equal(retained.reviewCandidates.length, 1);
+});
