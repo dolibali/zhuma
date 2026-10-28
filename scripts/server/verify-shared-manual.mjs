@@ -6,8 +6,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { Context } from '@deepseek-ai/cordis';
-import Credentials from '@deepseek-ai/dsh-credentials-local';
+import { pathToFileURL } from 'node:url';
 import { startLocalServer, stopLocalServer } from './runtime.mjs';
 import { HostSharedBackend } from '../../packages/dsh-adapter/dist/host-shared-backend.js';
 import { createSharedBackendClient } from '../../packages/client/dist/identity/shared-backend.js';
@@ -20,6 +19,11 @@ const { values } = parseArgs({
   options: { sdk: { type: 'string' }, plugin: { type: 'string' } },
 });
 if (!values.sdk || !values.plugin) throw new Error('Pass explicit --sdk and frozen --plugin');
+const sdk = resolve(values.sdk);
+const { Context } = await import(pathToFileURL(join(sdk, 'vendor/cordis/lib/index.js')).href);
+const { default: Credentials } = await import(
+  pathToFileURL(join(sdk, 'packages/credentials/credentials-local/lib/index.js')).href
+);
 const directory = await mkdtemp(join(tmpdir(), 'zhuma-shared-manual-'));
 const members = [],
   checks = [];
