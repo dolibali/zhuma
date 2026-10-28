@@ -1,0 +1,83 @@
+{
+  "format": "zhuma-workflow-template",
+  "schemaVersion": 1,
+  "roles": [
+    {
+      "id": "designer",
+      "name": "方案设计者",
+      "preferredKind": "expert",
+      "capabilities": ["方案设计", "接口与失败分析"]
+    },
+    {
+      "id": "planner",
+      "name": "实施规划者",
+      "preferredKind": "expert",
+      "capabilities": ["工作拆解", "交付计划"]
+    },
+    {
+      "id": "independent-reviewer",
+      "name": "独立可行性与验收评审者",
+      "preferredKind": "any",
+      "capabilities": ["方案可行性", "验收与计划评审"]
+    }
+  ],
+  "resources": [
+    {
+      "id": "solution-design",
+      "name": "有界方案设计",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-solution-design"
+    },
+    {
+      "id": "delivery-plan",
+      "name": "工作拆解与计划",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-delivery-plan"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "design-to-plan",
+      "name": "方案到实施计划",
+      "parentNodeId": null,
+      "nodes": [
+        {
+          "id": "design",
+          "title": "方案与可行性评审",
+          "description": "优先复用现有能力；设计不自动实施或授予执行权限。",
+          "assigneeId": "designer",
+          "reviewerIds": ["independent-reviewer"],
+          "reviewRequired": true,
+          "dependsOn": [],
+          "skillIds": ["solution-design"],
+          "mcpIds": [],
+          "input": "当前任务目标、指定的已接受需求或资料、授权实现基线和约束。",
+          "output": "有界方案、关键取舍、接口、失败恢复与可观察验收；由独立评审者核对可行性和验收覆盖。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 0,
+            "y": 80
+          }
+        },
+        {
+          "id": "plan",
+          "title": "实施计划与评审",
+          "description": "把已接受方案转换为可编辑计划，不重选方案，不自动确认或执行。",
+          "assigneeId": "planner",
+          "reviewerIds": ["independent-reviewer"],
+          "reviewRequired": true,
+          "dependsOn": ["design"],
+          "skillIds": ["delivery-plan"],
+          "mcpIds": [],
+          "input": "方案节点经正式评审接受的准确版本，以及当前任务允许的参与者与能力。",
+          "output": "可执行工作项、分工、依赖、完成证据和风险；交独立角色评审固定计划版本。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 420,
+            "y": 80
+          }
+        }
+      ]
+    }
+  ]
+}

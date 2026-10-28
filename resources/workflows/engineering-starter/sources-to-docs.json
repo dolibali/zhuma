@@ -1,0 +1,83 @@
+{
+  "format": "zhuma-workflow-template",
+  "schemaVersion": 1,
+  "roles": [
+    {
+      "id": "curator",
+      "name": "资料整理者",
+      "preferredKind": "expert",
+      "capabilities": ["来源索引", "版本与冲突整理"]
+    },
+    {
+      "id": "writer",
+      "name": "文档编写者",
+      "preferredKind": "expert",
+      "capabilities": ["面向读者写作", "可追溯引用"]
+    },
+    {
+      "id": "independent-reviewer",
+      "name": "独立内容评审者",
+      "preferredKind": "any",
+      "capabilities": ["内容核对", "来源与可操作性"]
+    }
+  ],
+  "resources": [
+    {
+      "id": "source-curation",
+      "name": "资料整理与来源索引",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-source-curation"
+    },
+    {
+      "id": "engineering-writing",
+      "name": "工程文档编写",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-engineering-writing"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "sources-to-docs",
+      "name": "资料到可用文档",
+      "parentNodeId": null,
+      "nodes": [
+        {
+          "id": "curate",
+          "title": "资料整理",
+          "description": "先列轻量索引再按需读取，不扫描账号或共享空间，不创建知识库。",
+          "assigneeId": "curator",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": [],
+          "skillIds": ["source-curation"],
+          "mcpIds": [],
+          "input": "当前任务的读者目标、指定资料、明确有权读取的链接或固定产物引用。",
+          "output": "来源索引、主题整理、必要片段、版本与缺口；仅涵盖实际已读材料。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 0,
+            "y": 80
+          }
+        },
+        {
+          "id": "write",
+          "title": "文档生成与内容评审",
+          "description": "生成可用正文，不默认写本机文件、发布网页或回写外部资料；最多一轮作者自检。",
+          "assigneeId": "writer",
+          "reviewerIds": ["independent-reviewer"],
+          "reviewRequired": true,
+          "dependsOn": ["curate"],
+          "skillIds": ["engineering-writing"],
+          "mcpIds": [],
+          "input": "资料整理节点已接受的准确版本和当前任务读者／交付要求；原文按需授权读取。",
+          "output": "面向读者的文档正文、准确引用与未验证边界；交独立角色评审本轮固定版本。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 420,
+            "y": 80
+          }
+        }
+      ]
+    }
+  ]
+}
