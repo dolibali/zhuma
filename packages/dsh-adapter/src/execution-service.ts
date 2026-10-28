@@ -2247,16 +2247,22 @@ export class ExecutionService {
     const current = this.workflows().assertClaim(bound.original, bound.claim);
     if (
       receipt.requestId !==
-        workflowReviewRequestId(
-          current.intent,
-          attempt.scope.review.target,
-          attempt.scope.review.principal.reviewerRef.id,
-        ) ||
-      (composition &&
-        canonicalPayload(composition.payload.model) !==
-          canonicalPayload(current.intent.defaults.model))
+      workflowReviewRequestId(
+        current.intent,
+        attempt.scope.review.target,
+        attempt.scope.review.principal.reviewerRef.id,
+      )
     )
       throw new ExecutionWorkflowError('workflow-authority-denied');
+    if (composition) {
+      // The original Host freezes the independent review budget in the prepared
+      // configuration ID. Keep its source assertion and exact admission binding;
+      // only the route/reasoning selection is shared with the author's defaults.
+      const { maxTokens: _reviewBudget, ...reviewModel } = composition.payload.model;
+      const { maxTokens: _authorBudget, ...workflowModel } = current.intent.defaults.model;
+      if (canonicalPayload(reviewModel) !== canonicalPayload(workflowModel))
+        throw new ExecutionWorkflowError('workflow-authority-denied');
+    }
   }
 
   /** Install views/adapters of A's one original C owner. No Client transport or

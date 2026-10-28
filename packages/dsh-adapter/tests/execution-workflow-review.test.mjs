@@ -60,21 +60,138 @@ test('workflow review: only the original retained claim/request can reserve auto
   assert.equal(h.read().rounds[0].ballots.length, 0);
 });
 
-test('workflow review: independent composition must use the same explicit workflow model budget', async (t) => {
-  const h = await nativeReviewHost(t, {
-    workflow: {},
-    prepareOnly: true,
-    model: { provider: 'contract', model: 'different-model', maxTokens: 1000 },
+test('workflow review: the original Host qualifies an independent review budget while the author selection stays frozen', async (t) => {
+  let qualifications = 0;
+  const h = await host(t, {
+    reviewerIds: ['qa'],
+    assertReviewConfiguration(_memberId, _spaceId, _node, composition) {
+      qualifications++;
+      assert.equal(composition.payload.model.provider, 'contract');
+      assert.equal(composition.payload.model.model, 'review-contract');
+      // Explicit source contract, not real Host/model/runtime qualification.
+      return undefined;
+    },
   });
+  const location = { ...h.locate(), spaceId: 'north' };
+  delete location.nodeId;
+  const authorModel = { provider: 'contract', model: 'review-contract', maxTokens: 4096 };
+  const view = checked(
+    await h.service.startWorkflowExecution(h.request, {
+      ...location,
+      requestId: 'start-independent-review-budget',
+      defaults: { model: authorModel, tools: 'text-only', workspace: { kind: 'text-only' } },
+      budget: { concurrent: 1, automaticAttemptsPerNode: 1, automaticRevisions: 0 },
+    }),
+  );
+  const retained = checked(
+    await h.service.claimWorkflowExecution(h.request, {
+      ...location,
+      intentId: view.intent.intentId,
+      generation: view.intent.generation,
+    }),
+  );
+  const query = retained.reviewCandidates[0];
+  const preparation = checked(await h.service.readExpertReviewPreparation(h.request, query));
+  const composition = freezeExecutionReviewComposition({
+    ...preparation,
+    model: { ...authorModel, maxTokens: 16_384 },
+    tools: {
+      readTarget: reviewDescriptors.readTarget,
+      completeReview: reviewDescriptors.completeReview,
+    },
+  });
+  const { attempt } = checked(
+    await h.service.prepareExpertReview(
+      h.request,
+      { ...query, configurationId: composition.configurationId },
+      retained,
+    ),
+  );
+  const frozen = JSON.stringify(composition);
+  const substituted = freezeExecutionReviewComposition({
+    ...preparation,
+    model: { ...authorModel, maxTokens: 8192 },
+    tools: {
+      readTarget: reviewDescriptors.readTarget,
+      completeReview: reviewDescriptors.completeReview,
+    },
+  });
+  assert.notEqual(substituted.configurationId, composition.configurationId);
+  h.resetCounts();
   refused(
     await h.service.admitExpertReview(h.request, {
-      ...h.locator,
-      expectedAttemptVersion: h.attempt.version,
-      composition: h.composition,
+      ...h.locate(),
+      spaceId: 'north',
+      runId: attempt.scope.runId,
+      expectedAttemptVersion: attempt.version,
+      composition: substituted,
     }),
-    'workflow-authority-denied',
+    'review-target-stale',
   );
   assert.equal(readExecutionReviewState(h.read()).attempts[0].status, 'prepared');
+  assert.equal(
+    readExecutionReviewState(h.read()).attempts[0].configurationId,
+    composition.configurationId,
+  );
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  refused(
+    await h.service.admitExpertReview(h.request, {
+      ...h.locate(),
+      spaceId: 'north',
+      runId: attempt.scope.runId,
+      expectedAttemptVersion: attempt.version + 1,
+      composition,
+    }),
+    'review-conflict',
+  );
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  qualifications = 0;
+  h.resetCounts();
+  const admitted = checked(
+    await h.service.admitExpertReview(h.request, {
+      ...h.locate(),
+      spaceId: 'north',
+      runId: attempt.scope.runId,
+      expectedAttemptVersion: attempt.version,
+      composition,
+    }),
+  );
+  assert.equal(admitted.attempt.status, 'requested');
+  assert.equal(admitted.attempt.composition.payload.model.maxTokens, 16_384);
+  assert.equal(qualifications, 1);
+  assert.deepEqual(h.counters, { global: 0, nodes: 1, plans: 0 });
+  assert.deepEqual(
+    checked(await h.service.readWorkflowExecution(h.request, location)).intent.defaults.model,
+    authorModel,
+  );
+  assert.equal(h.read().rounds[0].ballots.length, 0);
+  assert.equal(admitted.attempt.nativeSessionId, undefined);
+  assert.equal(JSON.stringify(composition), frozen);
+});
+
+test('workflow review: independent composition must use the same explicit workflow model selection', async (t) => {
+  for (const change of [
+    { provider: 'different-provider' },
+    { model: 'different-model' },
+    { reasoningEffort: 'different-reasoning' },
+  ]) {
+    const h = await nativeReviewHost(t, {
+      workflow: {},
+      prepareOnly: true,
+      model: { provider: 'contract', model: 'review-contract', maxTokens: 16_384, ...change },
+    });
+    h.resetCounts();
+    refused(
+      await h.service.admitExpertReview(h.request, {
+        ...h.locator,
+        expectedAttemptVersion: h.attempt.version,
+        composition: h.composition,
+      }),
+      'workflow-authority-denied',
+    );
+    assert.equal(readExecutionReviewState(h.read()).attempts[0].status, 'prepared');
+    assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  }
 });
 
 test('workflow review: original wakeup projects metadata candidates while author IDs remain unchanged', async (t) => {
