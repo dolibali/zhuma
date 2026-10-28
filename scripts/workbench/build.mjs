@@ -5,6 +5,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publicTeamStarterPackages } from '../lib/team-starter-packages.mjs';
 import { publicMemberTemplates } from '../lib/member-template-defaults.mjs';
+import { publicMemberEngineeringSkills } from '../lib/member-engineering-skills.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const hostOnly = process.argv.slice(2).includes('--host-only');
@@ -25,6 +26,7 @@ const compile = spawnSync(
 if (compile.error || compile.status !== 0) throw new Error('Workbench type build failed.');
 const out = resolve(root, '.build/workbench');
 await mkdir(out, { recursive: true });
+const engineeringSkills = await publicMemberEngineeringSkills();
 // The official Web bundle exposes Connection to this plugin, not every SDK
 // peer of its base bundle. Bundle only the pure definition/key helpers; live
 // services and Cordis must continue to come from the official Host instance.
@@ -50,6 +52,7 @@ const hostBuild = await build({
   define: {
     ZHUMA_PUBLIC_TEAM_PACKAGES: JSON.stringify(await publicTeamStarterPackages()),
     ZHUMA_PUBLIC_MEMBER_TEMPLATES: JSON.stringify(await publicMemberTemplates()),
+    ZHUMA_PUBLIC_ENGINEERING_SKILLS: JSON.stringify(engineeringSkills.bundle),
   },
   // Bundled ZIP dependencies are CommonJS and use Node built-ins. Keep their
   // require calls valid in the official Host's ESM plugin, without runtime installs.
@@ -119,6 +122,9 @@ if (hostOnly) {
     throw new Error('Host SDK peers changed; run the complete workbench build first.');
   for (const name of ['client.js', 'LICENSE', 'THIRD_PARTY_LICENSES.txt'])
     await readFile(resolve(out, name));
+  const retainedLicenses = await readFile(resolve(out, 'THIRD_PARTY_LICENSES.txt'), 'utf8');
+  if (engineeringSkills.licenses.some(({ text }) => !retainedLicenses.includes(text)))
+    throw new Error('Engineering Skill licenses changed; run the complete workbench build.');
   console.log('Built Host only in .build/workbench; existing Client and legal files retained.');
 } else {
   const memberWebBuild = await build({
@@ -205,6 +211,8 @@ if (hostOnly) {
     'Zhuma engineering workflow sources',
     await readFile(resolve(root, 'resources/workflows/engineering-starter/LICENSE.txt'), 'utf8'),
   );
+  for (const { name, text } of engineeringSkills.licenses)
+    licenses.set(`Zhuma engineering Skill ${name}`, `${name}\n${text}`);
   for (const input of [
     ...Object.keys(hostBuild.metafile.inputs),
     ...Object.keys(clientBuild.metafile.inputs),

@@ -10,13 +10,20 @@ import { createIdentityLifecycleApi } from '../../packages/client/dist/identity/
 import { createIdentityApi } from '../../packages/client/dist/identity/api.js';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const { values } = parseArgs({ options: { sdk: { type: 'string' } } });
+const { values } = parseArgs({
+  options: { sdk: { type: 'string' }, plugin: { type: 'string' } },
+});
 if (!values.sdk) throw new Error('Pass --sdk with the built pinned SDK');
 const directory = await mkdtemp(join(tmpdir(), 'zhuma-member-lifecycle-'));
 let child, base;
 const checks = [];
 async function boot() {
-  child = await startLocalServer({ sdk: resolve(values.sdk), data: directory, port: 0 });
+  child = await startLocalServer({
+    sdk: resolve(values.sdk),
+    plugin: values.plugin,
+    data: directory,
+    port: 0,
+  });
   const current = child;
   let diagnostics = '';
   base = await new Promise((done, fail) => {

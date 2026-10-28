@@ -14,8 +14,10 @@ import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js'
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
 import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
 import { defaultMemberTemplates } from './member-template-catalog.js';
+import { mergeDefaultMemberEngineeringSkills } from './member-engineering-skill-catalog.js';
 
 declare const ZHUMA_PUBLIC_MEMBER_TEMPLATES: unknown;
+declare const ZHUMA_PUBLIC_ENGINEERING_SKILLS: unknown;
 import { openMemberWorkbenchOperations } from './member-workbench-operation.js';
 import { apply as applyExecution, inject as executionInject } from './execution-plugin.js';
 import { openHostRunHttp } from './host-run-http.js';
@@ -389,7 +391,14 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             : defaultMemberTemplates(ZHUMA_PUBLIC_MEMBER_TEMPLATES);
         const catalog = async (spaceId: string) => {
           const resources = (await resourceCatalog?.(spaceId)) ?? { experts: [], assets: [] };
-          return { experts: resources.experts, assets: [...resources.assets, ...templates] };
+          const assets =
+            typeof ZHUMA_PUBLIC_ENGINEERING_SKILLS === 'undefined'
+              ? resources.assets
+              : mergeDefaultMemberEngineeringSkills(
+                  resources.assets,
+                  ZHUMA_PUBLIC_ENGINEERING_SKILLS,
+                );
+          return { experts: resources.experts, assets: [...assets, ...templates] };
         };
         if (closed) {
           await operations?.close();

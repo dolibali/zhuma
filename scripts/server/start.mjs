@@ -6,6 +6,7 @@ import { startLocalServer, stopLocalServer } from './runtime.mjs';
 const { values } = parseArgs({
   options: {
     sdk: { type: 'string' },
+    plugin: { type: 'string' },
     data: { type: 'string' },
     host: { type: 'string', default: '127.0.0.1' },
     port: { type: 'string', default: '3080' },
@@ -16,6 +17,7 @@ if (!/^\d+$/u.test(values.port) || Number(values.port) > 65535) throw new Error(
 const operatorFile = join(resolve(values.data), 'operator-url.txt');
 const child = await startLocalServer({
   sdk: values.sdk,
+  plugin: values.plugin,
   data: values.data,
   host: values.host,
   port: Number(values.port),

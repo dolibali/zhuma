@@ -1,35 +1,26 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile, access, symlink, realpath, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access, symlink, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { snapshotServerPlugin } from './plugin-snapshot.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 
 /** Start the pinned official CLI with product plugins and an explicit, owned data directory. */
-export async function startLocalServer({ sdk, data, host = '127.0.0.1', port = 3080 }) {
+export async function startLocalServer({ sdk, data, plugin, host = '127.0.0.1', port = 3080 }) {
   const sdkRoot = resolve(sdk);
   const dataRoot = resolve(data);
   const lock = JSON.parse(await readFile(join(root, 'runtime.lock.json'), 'utf8'));
   const pin = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sdkRoot, encoding: 'utf8' }).trim();
   if (pin !== lock.upstreams.deepseekHarness.commit) throw new Error('Unexpected SDK revision');
-  // Code snapshots are separate from profile/data and from another SDK cut.
-  // Rebuilding A's bundle must not rewrite the files a running C probe loaded.
-  const codeDigest = createHash('sha256').update(sdkRoot);
-  for (const file of ['index.js', 'member-web.js', 'client.js'])
-    codeDigest.update(await readFile(join(root, '.build/workbench', file)));
-  const runtime = join(root, '.build/server-runtime', codeDigest.digest('hex'));
-  await mkdir(runtime, { recursive: true });
-  for (const file of [
-    'index.js',
-    'member-web.js',
-    'client.js',
-    'package.json',
-    'LICENSE',
-    'THIRD_PARTY_LICENSES.txt',
-  ])
-    await copyFile(join(root, '.build/workbench', file), join(runtime, file));
-  const plugin = join(runtime, 'index.js');
+  const runtime = await snapshotServerPlugin({
+    source: plugin ? resolve(plugin) : join(root, '.build/workbench'),
+    sdkRoot,
+    pin,
+    outputRoot: join(root, '.build/server-runtime'),
+    frozen: plugin !== undefined,
+  });
+  const pluginEntry = join(runtime, 'index.js');
   const cli = join(sdkRoot, 'apps/cli/lib/bin.js');
   await access(cli);
   const publicModules = join(sdkRoot, 'packages/bundle/web-app/node_modules');
@@ -53,7 +44,7 @@ export async function startLocalServer({ sdk, data, host = '127.0.0.1', port = 3
         insert: [
           {
             id: 'zhuma-member-workbench',
-            name: plugin,
+            name: pluginEntry,
             config: {
               deploymentMode: 'multi-member',
               localSetup: true,
