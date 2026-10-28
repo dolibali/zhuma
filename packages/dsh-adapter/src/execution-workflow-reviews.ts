@@ -93,20 +93,62 @@ export function stoppedPreparedWorkflowReviewRunIds(
   if (!state?.attempts.some((attempt) => attempt.status === 'prepared')) return result;
   const target = executionReviewTarget(node, intent.spaceId);
   const round = node.rounds.find((item) => item.id === target.roundId)!;
-  for (const attempt of state.attempts) {
+  const stopped = stoppedPreparedReservations(node, intent);
+  for (const attempt of state?.attempts ?? []) {
+    if (
+      stopped.has(attempt.scope.runId) &&
+      canonicalPayload(attempt.scope.review.target) === canonicalPayload(target) &&
+      !round.ballots.some(
+        (ballot) => ballot.reviewerId === attempt.scope.review.principal.reviewerRef.id,
+      )
+    )
+      result.add(attempt.scope.runId);
+  }
+  return result;
+}
+
+/** Logical reservations on closed targets only. The author Service must still
+ * validate its returned round, member, writer and old native author drain. This
+ * neither changes the retained prepared/held record nor certifies native drain. */
+export function stoppedPreparedWorkflowReviewRunIdsForRevision(
+  node: ExecutionNodeRecord,
+  intent: WorkflowExecutionIntent,
+): ReadonlySet<string> {
+  if (
+    node.command.status !== 'needs-revision' ||
+    node.rounds.find((round) => round.id === node.currentRoundId)?.status !== 'changes-requested'
+  )
+    return new Set<string>();
+  const stopped = stoppedPreparedReservations(node, intent);
+  return new Set(
+    (readExecutionReviewState(node)?.attempts ?? [])
+      .filter(
+        (attempt) =>
+          stopped.has(attempt.scope.runId) &&
+          node.rounds.find((round) => round.id === attempt.scope.review.target.roundId)?.status !==
+            'open',
+      )
+      .map((attempt) => attempt.scope.runId),
+  );
+}
+
+function stoppedPreparedReservations(
+  node: ExecutionNodeRecord,
+  intent: WorkflowExecutionIntent,
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  const state = readExecutionReviewState(node);
+  for (const attempt of state?.attempts ?? []) {
     if (
       attempt.status !== 'prepared' ||
       attempt.version !== 1 ||
       attempt.dispatch !== 'reserved' ||
       attempt.resources !== 'held' ||
-      !/^review_composition_[a-f0-9]{64}$/u.test(attempt.configurationId) ||
-      canonicalPayload(attempt.scope.review.target) !== canonicalPayload(target) ||
-      round.ballots.some(
-        (ballot) => ballot.reviewerId === attempt.scope.review.principal.reviewerRef.id,
-      )
+      !/^review_composition_[a-f0-9]{64}$/u.test(attempt.configurationId)
     )
       continue;
-    const receipt = state.receipts.find((item) => item.runId === attempt.scope.runId)!;
+    const target = attempt.scope.review.target;
+    const receipt = state!.receipts.find((item) => item.runId === attempt.scope.runId)!;
     const reservation = hash({
       location: target,
       controllerMemberId: attempt.scope.actorId,

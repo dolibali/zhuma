@@ -57,6 +57,7 @@ export async function host(
     file,
     links = [],
     assertReviewConfiguration,
+    migrationDrain,
     reviewerIds,
     parallelExpert,
     text = 'POST /login requires a valid challenge.',
@@ -71,7 +72,12 @@ export async function host(
     await media;
     attachments = ctx.attachments;
   }
-  const h = await open(root, { workbench: snapshot, attachments, assertReviewConfiguration });
+  const h = await open(root, {
+    workbench: snapshot,
+    attachments,
+    assertReviewConfiguration,
+    migrationDrain,
+  });
   t.after(async () => {
     await h.close();
     await media?.dispose();

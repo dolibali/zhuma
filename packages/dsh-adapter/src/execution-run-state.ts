@@ -430,6 +430,7 @@ export function beginExecutionRun(
     readonly expertEnabled: boolean;
     readonly executorConnected: boolean;
     readonly writerState: unknown;
+    readonly stoppedPreparedReviewRunIds?: ReadonlySet<string>;
   },
 ): ExecutionRunDecision {
   requireExecutionRunWriter(availability.writerState);
@@ -444,7 +445,11 @@ export function validateExecutionRunBegin(
   record: ExecutionNodeRecord,
   input: unknown,
   peers: readonly ExecutionNodeRecord[],
-  availability: { readonly expertEnabled: boolean; readonly executorConnected: boolean },
+  availability: {
+    readonly expertEnabled: boolean;
+    readonly executorConnected: boolean;
+    readonly stoppedPreparedReviewRunIds?: ReadonlySet<string>;
+  },
 ): undefined {
   decideExecutionRunBegin(record, input, peers, availability);
   return undefined;
@@ -454,7 +459,11 @@ function decideExecutionRunBegin(
   record: ExecutionNodeRecord,
   input: unknown,
   peers: readonly ExecutionNodeRecord[],
-  availability: { readonly expertEnabled: boolean; readonly executorConnected: boolean },
+  availability: {
+    readonly expertEnabled: boolean;
+    readonly executorConnected: boolean;
+    readonly stoppedPreparedReviewRunIds?: ReadonlySet<string>;
+  },
 ): ExecutionRunDecision {
   const request = parsed(beginExecutionRunSchema, input);
   if (!canDrive(record, request.actorId)) refuse('run-not-controller');
@@ -495,7 +504,18 @@ function decideExecutionRunBegin(
   )
     refuse('run-capacity');
   assertExecutionRunQuiescent(record);
-  if (review?.attempts.some((attempt) => attempt.resources === 'held')) refuse('run-active');
+  if (
+    review?.attempts.some(
+      (attempt) =>
+        attempt.resources === 'held' &&
+        !(
+          attempt.status === 'prepared' &&
+          attempt.version === 1 &&
+          availability.stoppedPreparedReviewRunIds?.has(attempt.scope.runId)
+        ),
+    )
+  )
+    refuse('run-active');
   if (
     review?.attempts.some(
       (attempt) =>
