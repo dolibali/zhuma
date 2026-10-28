@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { host } from './execution-review-service-fixture.mjs';
 import { checked } from './execution-service-run-fixture.mjs';
-import { boot, ScriptedAdapter } from './native-work-session-fixture.mjs';
+import { boot, ScriptedAdapter, response } from './native-work-session-fixture.mjs';
 import { toolResponse } from './native-work-session-input-fixture.mjs';
 import { createNativeReviewBridge } from '../dist/native-work-session-review-bridge.js';
 import { createNativeFixedResultIssuer } from '../dist/native-work-session-result.js';
@@ -94,6 +94,13 @@ export async function bootReviewBridge(root, after, options = {}) {
             options.omitFile ? 1 : saved.payload.targetResources.length,
           );
           await options.beforeCompletion?.();
+          if (options.finishReason)
+            return response('Synthetic review response without a completion declaration.').map(
+              (chunk) =>
+                chunk.type === 'finish'
+                  ? { ...chunk, reason: { kind: options.finishReason } }
+                  : chunk,
+            );
           return toolResponse(
             {
               conclusion: 'approve',
