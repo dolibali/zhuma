@@ -7,6 +7,10 @@ import {
   WorkbenchError,
   WorkbenchSchema,
   validateWorkTask,
+  instantiateWorkflowTemplate,
+  captureWorkflowTemplate,
+  canonicalPayload,
+  type TeamAsset,
   type Participant,
   type Project,
   type Workbench,
@@ -23,6 +27,7 @@ import {
   type MemberWorkbenchSnapshot,
 } from './member-workbench-dto.js';
 import { WorkbenchService } from './workbench-service.js';
+import { ownedMemberTemplates } from './member-template-catalog.js';
 import {
   memberWorkbenchOperationKey,
   type MemberWorkbenchIntent,
@@ -79,11 +84,45 @@ export class MemberWorkbenchService {
       this.options.catalog ? await this.options.catalog(spaceId) : { experts: [], assets: [] },
     );
     if (!catalogData.success) fail('unavailable', '授权资源目录暂不可用。');
-    const catalog = catalogData.data;
+    // Resolve identity after the yielding catalog read, before using a possibly retired directory.
+    const current = await this.options.resolve();
+    if (!current.ok || current.memberId !== member.memberId)
+      fail('unauthenticated', '当前登录身份已经变化。');
+    if (!current.spaceIds.includes(spaceId) || !directory.isMember(spaceId, current.memberId))
+      fail('not-found', '空间不可用。');
+    const space = directory.space(spaceId);
+    if (!space) fail('not-found', '空间不可用。');
+    const state = this.workbench.snapshot();
+    const personalOwner =
+      space.kind === 'personal' ? directory.administratorForSpace?.(spaceId) : undefined;
+    if (
+      space.kind === 'personal' &&
+      (state.assets.some((asset) => asset.memberTemplate?.spaceId === spaceId) ||
+        catalogData.data.assets.some((asset) => asset.kind === 'template'))
+    ) {
+      if (!personalOwner) fail('unavailable', '个人工作流归属暂不可用。');
+      if (personalOwner !== member.memberId) fail('not-found', '空间不可用。');
+    }
+    // Static grants are Host-owned. Member ownership comes only from the original asset row.
+    if (catalogData.data.assets.some((asset) => asset.memberTemplate))
+      fail('unavailable', '成员工作流目录来源不可用。');
+    const catalog: MemberWorkbenchCatalog = {
+      experts: catalogData.data.experts,
+      assets: [
+        ...catalogData.data.assets,
+        ...ownedMemberTemplates(state.assets, {
+          spaceId,
+          actorId: member.memberId,
+          kind: space.kind,
+          ...(personalOwner ? { personalOwner } : {}),
+        }),
+      ],
+    };
     // The catalog itself is trusted injection; references and collisions still fail closed.
     const allIds = [...members.map((m) => m.id), ...catalog.experts.map((p) => p.id)];
     if (
       new Set(allIds).size !== allIds.length ||
+      catalog.assets.length > 100 ||
       new Set(catalog.assets.map((a) => a.id)).size !== catalog.assets.length
     )
       fail('unavailable', '授权目录存在标识冲突。');
@@ -100,12 +139,8 @@ export class MemberWorkbenchService {
           fail('resource-unavailable', '专家引用的资源不可用。');
       }
     }
-    // A catalog read may yield; revocation during that read must suppress both content and writes.
-    const current = await this.options.resolve();
-    if (!current.ok || current.memberId !== member.memberId)
-      fail('unauthenticated', '当前登录身份已经变化。');
-    if (!current.spaceIds.includes(spaceId) || !directory.isMember(spaceId, current.memberId))
-      fail('not-found', '空间不可用。');
+    if (personalOwner && directory.administratorForSpace?.(spaceId) !== personalOwner)
+      fail('not-found', '个人空间归属已变化。');
     const participants: Participant[] = members
       .filter((m) => directory.isMember(spaceId, m.id))
       .map((m) => ({
@@ -169,7 +204,11 @@ export class MemberWorkbenchService {
         if (
           ids.some(
             (id) =>
-              !scope.catalog.assets.some((a) => a.id === id && a.kind === kind && a.available),
+              !scope.catalog.assets.some((a) => a.id === id && a.kind === kind && a.available) &&
+              !(
+                task.status === 'draft' &&
+                task.templateSource?.pendingAssets.some((a) => a.id === id && a.kind === kind)
+              ),
           )
         )
           fail('resource-unavailable', '工作节点引用的资源不可用。');
@@ -202,6 +241,124 @@ export class MemberWorkbenchService {
       )
     )
       fail('resource-unavailable', '项目引用了未授权的成员或资源。');
+  }
+
+  private templateSpace(scope: Scope): void {
+    const space = scope.directory.space(scope.spaceId);
+    if (!space) fail('not-found', '空间不可用。');
+    if (space.kind !== 'personal') return;
+    const owner = scope.directory.administratorForSpace?.(scope.spaceId);
+    if (!owner) fail('unavailable', '个人工作流归属暂不可用。');
+    if (owner !== scope.actorId) fail('not-found', '空间不可用。');
+  }
+
+  private async sourceScope(scope: Scope, sourceSpaceId?: string): Promise<Scope> {
+    this.templateSpace(scope);
+    const source =
+      !sourceSpaceId || sourceSpaceId === scope.spaceId
+        ? scope
+        : await this.scope(sourceSpaceId, scope.actorId);
+    this.templateSpace(source);
+    return source;
+  }
+
+  private async templateInput(
+    state: Workbench,
+    scope: Scope,
+    command: Extract<MemberWorkbenchCommand['command'], { type: 'instantiate-template' }>,
+  ) {
+    const source = await this.sourceScope(scope, command.input.sourceSpaceId);
+    const asset = source.catalog.assets.find(
+      (item) => item.id === command.input.templateId && item.kind === 'template' && item.available,
+    );
+    if (!asset) fail('template-unavailable', '该工作流模板已不可用，请重新选择。');
+    const target = this.catalogState(state, scope);
+    // Only the selected template structure crosses scopes; no source expert/Skill grants.
+    target.assets = [
+      ...target.assets.filter((item) => item.id !== asset.id),
+      structuredClone(asset),
+    ];
+    const { sourceSpaceId: _source, ...input } = command.input;
+    return {
+      state: target,
+      input: {
+        ...input,
+        task: {
+          ...input.task,
+          updatedAt: (this.options.now ?? (() => new Date().toISOString()))(),
+        },
+      },
+    };
+  }
+
+  private async savedTemplate(
+    state: Workbench,
+    scope: Scope,
+    command: Extract<MemberWorkbenchCommand['command'], { type: 'save-template' }>,
+    sourceWorkbenchRevision: number,
+  ): Promise<TeamAsset> {
+    const previous = state.assets.find((asset) => asset.id === command.input.templateId);
+    if (previous) {
+      if (!previous.memberTemplate || previous.kind !== 'template')
+        fail('conflict', '资产标识已存在。');
+      if (previous.memberTemplate.spaceId !== scope.spaceId) fail('not-found', '工作流不可用。');
+      if (previous.memberTemplate.ownerId !== scope.actorId)
+        fail('forbidden', '仅工作流作者可以更新。');
+    }
+    const source = await this.sourceScope(scope, command.input.sourceSpaceId);
+    const task = this.task(state, source, command.input.sourceTaskId, true);
+    await this.project(source, task.projectId);
+    const definition = captureWorkflowTemplate(task, this.catalogState(state, source));
+    return AssetSchema.parse({
+      id: command.input.templateId,
+      name: command.input.name,
+      description: command.input.description,
+      kind: 'template',
+      available: true,
+      content: JSON.stringify(definition),
+      memberTemplate: {
+        schemaVersion: 1,
+        spaceId: scope.spaceId,
+        ownerId: scope.actorId,
+        sourceTaskId: task.id,
+        sourceWorkbenchRevision,
+      },
+    });
+  }
+
+  private async commandTask(
+    state: Workbench,
+    scope: Scope,
+    command: MemberWorkbenchCommand['command'],
+  ): Promise<WorkTask | undefined> {
+    if (
+      command.type === 'create-project' ||
+      command.type === 'update-project' ||
+      command.type === 'save-template'
+    )
+      return undefined;
+    if (command.type === 'confirm-task')
+      return state.tasks.find((task) => task.id === command.taskId);
+    const updatedAt = (this.options.now ?? (() => new Date().toISOString()))();
+    if (command.type === 'instantiate-template') {
+      // Original receipts handle retries. Pure construction can validate the same
+      // request again without overwriting the existing task on the replay path.
+      const prepared = await this.templateInput(
+        { ...state, tasks: state.tasks.filter((task) => task.id !== command.input.task.id) },
+        scope,
+        command,
+      );
+      return instantiateWorkflowTemplate(prepared.state, prepared.input);
+    }
+    const previous = state.tasks.find((task) => task.id === command.task.id);
+    return {
+      ...command.task,
+      status: 'draft',
+      updatedAt,
+      ...(command.type === 'update-task' && previous?.templateSource
+        ? { templateSource: structuredClone(previous.templateSource) }
+        : {}),
+    };
   }
 
   private mergeCatalog(state: Workbench, scope: Scope): Workbench {
@@ -329,13 +486,85 @@ export class MemberWorkbenchService {
     const initial = await this.scope(request.spaceId);
     const journal = this.options.operations;
     if (!journal) fail('unavailable', '成员操作恢复存储尚未接入。');
+    const command = request.command;
+    // Preserve every historical command fingerprint; map key order is immaterial in new template requests.
+    const bodyFingerprint =
+      command.type === 'save-template' || command.type === 'instantiate-template'
+        ? digest(canonicalPayload([initial.actorId, request]))
+        : digest([initial.actorId, request]);
+    const saved =
+      command.type === 'save-template'
+        ? await this.savedTemplate(
+            this.workbench.snapshot(),
+            initial,
+            command,
+            request.expectedRevision,
+          )
+        : undefined;
+    const pins =
+      command.type === 'save-template' && saved
+        ? (journal.templatePins({
+            actorId: initial.actorId,
+            spaceId: request.spaceId,
+            requestId: request.requestId,
+            fingerprint: bodyFingerprint,
+          }) ?? {
+            templatePriorFingerprint: (() => {
+              const prior = this.workbench
+                .snapshot()
+                .assets.find((asset) => asset.id === command.input.templateId);
+              return prior ? digest(prior) : null;
+            })(),
+            templateResultFingerprint: digest(saved),
+          })
+        : undefined;
+    if (saved && pins?.templateResultFingerprint !== digest(saved))
+      fail('context-changed', '模板来源已变化，请核对原操作。');
     // apply merges this authorized catalog and freezes its actual definitions, not only their IDs.
     const definitionFingerprint = (scope: Scope) =>
       digest([
         [...scope.participants].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
-        [...scope.catalog.assets].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+        command.type !== 'save-template'
+          ? [...scope.catalog.assets].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+          : scope.catalog.assets
+              .flatMap((asset) => {
+                const hash = digest(asset);
+                if (
+                  asset.id === command.input.templateId &&
+                  hash === pins?.templateResultFingerprint
+                )
+                  return pins.templatePriorFingerprint
+                    ? [[asset.id, pins.templatePriorFingerprint]]
+                    : [];
+                return [[asset.id, hash]];
+              })
+              .sort((a, b) => (a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : 0)),
       ]);
-    const contextFingerprint = definitionFingerprint(initial);
+    const context = async (scope: Scope): Promise<string> => {
+      if (command.type !== 'save-template' && command.type !== 'instantiate-template')
+        return definitionFingerprint(scope);
+      const source = await this.sourceScope(scope, command.input.sourceSpaceId);
+      return digest([
+        definitionFingerprint(scope),
+        source.spaceId === scope.spaceId ? null : definitionFingerprint(source),
+        command.type === 'save-template'
+          ? [
+              digest(
+                this.task(this.workbench.snapshot(), source, command.input.sourceTaskId, true),
+              ),
+              digest(
+                await this.savedTemplate(
+                  this.workbench.snapshot(),
+                  scope,
+                  command,
+                  request.expectedRevision,
+                ),
+              ),
+            ]
+          : null,
+      ]);
+    };
+    const contextFingerprint = await context(initial);
     const pinnedScope = async () => {
       let scope: Scope;
       try {
@@ -345,11 +574,10 @@ export class MemberWorkbenchService {
           fail('context-changed', '授权定义已变化，请刷新后核对原操作。');
         throw error;
       }
-      if (definitionFingerprint(scope) !== contextFingerprint)
+      if ((await context(scope)) !== contextFingerprint)
         fail('context-changed', '授权定义已变化，请刷新后核对原操作。');
       return scope;
     };
-    const command = request.command;
     const intent: MemberWorkbenchIntent = {
       actorId: initial.actorId,
       spaceId: request.spaceId,
@@ -359,11 +587,16 @@ export class MemberWorkbenchService {
           ? command.taskId
           : command.type === 'create-project' || command.type === 'update-project'
             ? command.project.id
-            : command.task.id,
+            : command.type === 'save-template'
+              ? command.input.templateId
+              : command.type === 'instantiate-template'
+                ? command.input.task.id
+                : command.task.id,
       commandType: command.type,
       expectedRevision: request.expectedRevision,
-      fingerprint: digest([initial.actorId, request]),
+      fingerprint: bodyFingerprint,
       contextFingerprint,
+      ...pins,
     };
     // Compare an interrupted operation's durable pin before considering the current catalog.
     journal.inspect(intent);
@@ -371,34 +604,48 @@ export class MemberWorkbenchService {
       const scope = await pinnedScope();
       const state = this.workbench.snapshot();
       const command = request.command;
-      if (command.type === 'create-project' || command.type === 'update-project') {
+      if (command.type === 'save-template') {
+        const asset = await this.savedTemplate(state, scope, command, request.expectedRevision);
+        applyWorkbenchCommand(this.mergeCatalog(state, scope), { type: 'save-asset', asset });
+      } else if (command.type === 'create-project' || command.type === 'update-project') {
         this.validateProject(command.project, scope);
         if (state.projects.some((p) => p.id === command.project.id))
           await this.project(scope, command.project.id);
       } else {
-        const taskId = command.type === 'confirm-task' ? command.taskId : command.task.id;
+        const taskId =
+          command.type === 'confirm-task'
+            ? command.taskId
+            : command.type === 'instantiate-template'
+              ? command.input.task.id
+              : command.task.id;
         const existing = state.tasks.find((t) => t.id === taskId);
         if (existing) {
-          this.task(state, scope, taskId, command.type !== 'create-task');
+          this.task(
+            state,
+            scope,
+            taskId,
+            command.type !== 'create-task' && command.type !== 'instantiate-template',
+          );
           await this.project(scope, existing.projectId);
         }
         if (command.type !== 'confirm-task') {
-          await this.project(scope, command.task.projectId);
-          this.validateTask(
-            { ...command.task, status: 'draft', updatedAt: new Date().toISOString() },
-            state,
+          await this.project(
             scope,
+            command.type === 'instantiate-template'
+              ? command.input.task.projectId
+              : command.task.projectId,
           );
+          const task = (await this.commandTask(state, scope, command))!;
+          this.validateTask(task, state, scope);
         } else if (existing) this.validateTask(existing, state, scope);
       }
       const fresh = await pinnedScope();
-      if (command.type === 'create-project' || command.type === 'update-project')
+      if (command.type === 'save-template') {
+        await this.savedTemplate(state, fresh, command, request.expectedRevision);
+      } else if (command.type === 'create-project' || command.type === 'update-project')
         this.validateProject(command.project, fresh);
       else {
-        const task =
-          command.type === 'confirm-task'
-            ? state.tasks.find((t) => t.id === command.taskId)
-            : { ...command.task, status: 'draft' as const, updatedAt: new Date().toISOString() };
+        const task = await this.commandTask(state, fresh, command);
         if (task) this.validateTask(task, state, fresh);
       }
     };
@@ -439,6 +686,15 @@ export class MemberWorkbenchService {
     begin: () => Promise<void>,
     reauthorize: () => Promise<void>,
   ): Promise<Workbench> {
+    if (command.type === 'save-template') {
+      const asset = await this.savedTemplate(state, scope, command, state.revision);
+      const next = applyWorkbenchCommand(this.mergeCatalog(state, scope), {
+        type: 'save-asset',
+        asset,
+      });
+      await begin();
+      return next;
+    }
     if (command.type === 'create-project' || command.type === 'update-project') {
       const exists = state.projects.some((p) => p.id === command.project.id);
       if (command.type === 'create-project' && exists) fail('conflict', '项目标识已存在。');
@@ -480,14 +736,27 @@ export class MemberWorkbenchService {
       }
       return next;
     }
-    const isCreate = command.type === 'create-task';
-    const taskId = command.type === 'confirm-task' ? command.taskId : command.task.id;
+    const isCreate = command.type === 'create-task' || command.type === 'instantiate-template';
+    const taskId =
+      command.type === 'confirm-task'
+        ? command.taskId
+        : command.type === 'instantiate-template'
+          ? command.input.task.id
+          : command.task.id;
     const previous = state.tasks.find((t) => t.id === taskId);
     if (isCreate && previous) fail('conflict', '任务标识已存在。');
     if (!isCreate) {
       this.task(state, scope, taskId, true);
       if (previous!.status !== 'draft') fail('confirmed-plan', '已确认计划不可直接修改。');
     }
+    await this.project(
+      scope,
+      command.type === 'confirm-task'
+        ? previous!.projectId
+        : command.type === 'instantiate-template'
+          ? command.input.task.projectId
+          : command.task.projectId,
+    );
     const task: WorkTask =
       command.type === 'confirm-task'
         ? {
@@ -495,19 +764,22 @@ export class MemberWorkbenchService {
             status: 'ready',
             updatedAt: (this.options.now ?? (() => new Date().toISOString()))(),
           }
-        : {
-            ...command.task,
-            status: 'draft',
-            updatedAt: (this.options.now ?? (() => new Date().toISOString()))(),
-          };
+        : (await this.commandTask(state, scope, command))!;
     if (previous && previous.projectId !== task.projectId)
       fail('validation', '任务不能通过编辑移动到其他项目。');
-    await this.project(scope, task.projectId);
     this.validateTask(task, state, scope);
-    const next = applyWorkbenchCommand(this.catalogState(state, scope), {
-      type: 'save-task',
-      task,
-    });
+    // Only the original template command may introduce a source snapshot. Ordinary
+    // save-task deliberately rejects a new or changed templateSource.
+    const prepared =
+      command.type === 'instantiate-template'
+        ? await this.templateInput(state, scope, command)
+        : undefined;
+    const next = prepared
+      ? applyWorkbenchCommand(prepared.state, {
+          type: 'instantiate-template',
+          input: prepared.input,
+        })
+      : applyWorkbenchCommand(this.catalogState(state, scope), { type: 'save-task', task });
     const merged = this.mergeCatalog(state, scope);
     const validated = WorkbenchSchema.parse({
       ...next,
