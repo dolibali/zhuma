@@ -13,6 +13,7 @@ import {
 import { ACCEPTED_INPUT_TOOL, acceptedInputRef } from './native-work-session-input-tool.js';
 import type { NativeSessionSelection, NativeWorkScope } from './native-work-session-contract.js';
 import type { UpstreamInputView } from './upstream-inputs.js';
+import type { MemberKnowledgeToolDefinition } from './member-knowledge-tool.js';
 import {
   executionRunResourcesSchema,
   executionResourceToolNames,
@@ -149,6 +150,16 @@ const outputFilePublisherToolSchema = toolSchema
   .refine(
     (value) => hash(value) === '9396477fb52178087d78975767bf745c6d57d9061f2b3bc7aeaf8ea5d25a9edd',
   );
+// Exact registered E descriptor from describeMemberKnowledgeTool. This snapshot
+// neither selects a library nor grants search/read/draft or publication authority.
+const knowledgeToolSchema = toolSchema
+  .extend({
+    name: z.literal('knowledge'),
+    sourceVersion: z.literal('zhuma-native-knowledge@1'),
+  })
+  .refine(
+    (value) => hash(value) === '005acfb58f64dba6f5aa422578ddb811cbbd32d3d7b7d475c63def1b7494cd51',
+  );
 export type LocalFileToolName = 'read' | 'write' | 'edit';
 export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
   readonly name: LocalFileToolName;
@@ -272,6 +283,7 @@ const extendedFields = {
   acceptedFileReader: acceptedFileToolSchema.optional(),
   resultIntentTool: resultIntentToolSchema.optional(),
   outputFilePublisherTool: outputFilePublisherToolSchema.optional(),
+  knowledgeTool: knowledgeToolSchema.optional(),
 };
 const extendedSourceSchema = sourceSchema.extend(extendedFields);
 type Source = z.infer<typeof extendedSourceSchema>;
@@ -328,6 +340,8 @@ export interface ExecutionRunCompositionInput {
   readonly resultIntentTool?: ResultIntentToolDefinition;
   /** Explicit new-Run metadata from C's getter. This is not filesystem/publication authority. */
   readonly outputFilePublisherTool?: OutputFilePublisherToolDefinition;
+  /** E's exact getter only; the actual local port and same-Run consent remain separate. */
+  readonly knowledgeTool?: MemberKnowledgeToolDefinition;
   /** Qualified metadata only; absence preserves legacy refusal and exact schema-1 replay. */
   readonly resourceCatalog?: ExecutionRunResourceCatalog;
 }
@@ -383,6 +397,7 @@ function derive(source: Source) {
     acceptedFileReader,
     resultIntentTool,
     outputFilePublisherTool,
+    knowledgeTool,
   } = source;
   if (
     plan.ref.taskId !== scope.taskId ||
@@ -507,6 +522,7 @@ function derive(source: Source) {
       ...(acceptedFileReader ? [acceptedFileToolName] : []),
       ...(outputFilePublisherTool ? [outputFilePublisherToolName] : []),
       ...(resultIntentTool ? [resultIntentToolName] : []),
+      ...(knowledgeTool ? ['knowledge'] : []),
       ...(resources ? executionResourceToolNames(resources) : []),
     ],
   };
@@ -530,6 +546,7 @@ export const executionRunCompositionSchema = z.preprocess(
         !value.payload.acceptedFileReader &&
         !value.payload.resultIntentTool &&
         !value.payload.outputFilePublisherTool &&
+        !value.payload.knowledgeTool &&
         !value.payload.returnedRevision
       )
         throw Error();
@@ -684,7 +701,8 @@ function freezeForRevisionRound(
       resources !== undefined ||
       input.acceptedFileReader !== undefined ||
       input.resultIntentTool !== undefined ||
-      input.outputFilePublisherTool !== undefined;
+      input.outputFilePublisherTool !== undefined ||
+      input.knowledgeTool !== undefined;
     const source = checked(extended ? extendedSourceSchema : sourceSchema, {
       scope,
       plan: {
@@ -712,6 +730,7 @@ function freezeForRevisionRound(
       ...(input.outputFilePublisherTool !== undefined
         ? { outputFilePublisherTool: input.outputFilePublisherTool }
         : {}),
+      ...(input.knowledgeTool !== undefined ? { knowledgeTool: input.knowledgeTool } : {}),
     });
     const payload = derive(source);
     return readExecutionRunComposition({

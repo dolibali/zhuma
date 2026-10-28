@@ -17,6 +17,7 @@ import { freezeExecutionRunComposition } from './execution-run-composition.js';
 import { describeNativeResultTool } from './native-work-session-result-tool.js';
 import { describeNativeResultPublicationsTool } from './native-work-session-result-publications-tool.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
+import { describeMemberKnowledgeTool } from './member-knowledge-tool.js';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -1850,6 +1851,9 @@ export class ExecutionService {
               ),
             },
             tools,
+            ...(request.payload.capabilities.knowledge
+              ? { knowledgeTool: describeMemberKnowledgeTool() }
+              : {}),
             ...(request.payload.capabilities.acceptedFile
               ? {
                   acceptedFileReader: {

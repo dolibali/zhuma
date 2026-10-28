@@ -121,6 +121,7 @@ export const remoteLocalCapabilitiesSchema = z.strictObject({
   acceptedFile: z.literal('zhuma-accepted-files@2').optional(),
   resultIntent: z.enum(['zhuma-native-result-intent@1', 'zhuma-native-result-intent@2']),
   outputFile: z.literal('zhuma-native-output-file@1').optional(),
+  knowledge: z.literal('zhuma-native-knowledge@1').optional(),
   localTools: z.array(localTool).max(4),
 });
 const cut = z

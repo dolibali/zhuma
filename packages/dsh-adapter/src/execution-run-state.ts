@@ -245,6 +245,9 @@ export function readExecutionRunState(record: ExecutionNodeRecord): ExecutionRun
           fileConfiguration?.acceptedFileReader?.sourceVersion !== remote.acceptedFiles) ||
         (fileConfiguration?.acceptedFileReader !== undefined) !==
           (remote.acceptedFiles !== undefined) ||
+        (remote.knowledge !== undefined &&
+          fileConfiguration?.knowledgeTool?.sourceVersion !== remote.knowledge) ||
+        (fileConfiguration?.knowledgeTool !== undefined) !== (remote.knowledge !== undefined) ||
         (source?.toolVersion === 'zhuma-native-result-intent@2' && remote.files === undefined) ||
         (source &&
           (canonicalPayload(source.scope) !== canonicalPayload(executionRunScope(record, run)) ||
