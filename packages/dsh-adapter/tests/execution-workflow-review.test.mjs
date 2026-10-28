@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
-import { checked, refused, open } from './execution-service-run-fixture.mjs';
+import { caller, checked, refused, open } from './execution-service-run-fixture.mjs';
 import { nativeReviewHost } from './execution-review-native-fixture.mjs';
 import { host } from './execution-review-service-fixture.mjs';
 import { freezeExecutionReviewComposition } from '../dist/execution-review-composition.js';
 import { reviewDescriptors } from './execution-review-composition-fixture.mjs';
 import { workflowReviewRequestId } from '../dist/execution-workflow-reviews.js';
 import { readExecutionReviewState } from '../dist/execution-review-state.js';
+import { nodeRecordKey } from '@zhuma/agent-core';
 
 // Real original Service, queue and DSH JSON. Member, model, issuer/cut/drain
 // remain explicit contracts; these tests do not run A's automatic pump or SDK.
@@ -22,6 +23,38 @@ function control(h, requestId, view = h.workflowView) {
 function claim(h, view = h.workflowView) {
   const { requestId: _request, ...body } = control(h, 'unused', view);
   return h.service.claimWorkflowExecution(h.request, body);
+}
+async function reserveCandidate(h, retained) {
+  const query = retained.reviewCandidates[0];
+  assert.ok(query);
+  const facts = checked(await h.service.readExpertReviewPreparation(h.request, query));
+  const composition = freezeExecutionReviewComposition({
+    ...facts,
+    model: { ...retained.view.intent.defaults.model, maxTokens: 16_384 },
+    tools: {
+      readTarget: reviewDescriptors.readTarget,
+      completeReview: reviewDescriptors.completeReview,
+    },
+  });
+  const prepared = checked(
+    await h.service.prepareExpertReview(
+      h.request,
+      { ...query, configurationId: composition.configurationId },
+      retained,
+    ),
+  );
+  return {
+    query,
+    composition,
+    prepared,
+    command: {
+      ...h.locate(),
+      spaceId: 'north',
+      runId: prepared.attempt.scope.runId,
+      expectedAttemptVersion: prepared.attempt.version,
+      composition,
+    },
+  };
 }
 test('workflow review: only the original retained claim/request can reserve automatic review; old manual API stays independent', async (t) => {
   const h = await nativeReviewHost(t, { workflow: {} });
@@ -404,20 +437,39 @@ test('workflow review: author admission and review preparation share the origina
   assert.equal(full.reviewCandidates.length, 0, 'prepared review also retains the shared slot');
 });
 
-test('workflow review: a stopped unadmitted reservation needs explicit attention rather than reviving the old target or inventing a retry', async (t) => {
+test('workflow review: explicit Stop and Resume keep an unadmitted marker intact and admit only one new-generation scope', async (t) => {
   const h = await nativeReviewHost(t, { workflow: {}, prepareOnly: true });
+  const old = JSON.stringify(h.read().nativeExecution.review);
+  const before = checked(await h.service.readWorkflowExecution(h.request, h.workflowLocation));
+  refused(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...control(h, 'resume-without-stop', before),
+      expectedVersion: before.intent.version,
+    }),
+    'workflow-review-attention-required',
+  );
   const stopped = checked(
     await h.service.stopWorkflowExecution(h.request, control(h, 'stop-before-admit')),
   );
   assert.equal(stopped.state, 'paused', 'no native admission exists to drain');
-  assert.equal(stopped.reviewAttention[0].code, 'review-attempt-reserved');
+  assert.equal(h.workflowClaim.signal.aborted, true);
+  assert.deepEqual(stopped.reviewAttention ?? [], []);
+  assert.equal(JSON.stringify(h.read().nativeExecution.review), old);
   refused(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...control(h, 'resume-wrong-version', stopped),
+      expectedVersion: stopped.intent.version + 1,
+    }),
+    'workflow-conflict',
+  );
+  const resumed = checked(
     await h.service.resumeWorkflowExecution(h.request, {
       ...control(h, 'resume-stopped-reservation', stopped),
       expectedVersion: stopped.intent.version,
     }),
-    'workflow-review-attention-required',
   );
+  assert.equal(resumed.intent.generation, stopped.intent.generation + 1);
+  assert.equal(JSON.stringify(h.read().nativeExecution.review), old);
   refused(
     await h.service.admitExpertReview(h.request, {
       ...h.locator,
@@ -426,7 +478,168 @@ test('workflow review: a stopped unadmitted reservation needs explicit attention
     }),
     'workflow-authority-denied',
   );
+  refused(await h.service.openExpertReviewDrive(h.request, h.locator), 'review-authority-denied');
+  const retained = checked(await claim(h, resumed));
+  assert.equal(retained.reviewCandidates.length, 1);
+  assert.notEqual(retained.reviewCandidates[0].requestId, h.query.requestId);
+  refused(
+    await h.service.prepareExpertReview(
+      h.request,
+      {
+        ...h.query,
+        configurationId: h.composition.configurationId,
+        stoppedPreparedRunIds: [h.attempt.scope.runId],
+      },
+      retained,
+    ),
+    'unknown-field',
+  );
+  refused(
+    await h.service.prepareExpertReview(
+      h.request,
+      { ...h.query, configurationId: h.composition.configurationId },
+      retained,
+    ),
+    'workflow-authority-denied',
+  );
+  const fresh = await reserveCandidate(h, retained);
+  assert.notEqual(fresh.prepared.attempt.scope.runId, h.attempt.scope.runId);
+  assert.notEqual(fresh.prepared.attempt.scope.segmentId, h.attempt.scope.segmentId);
+  assert.equal(checked(await claim(h, resumed)).reviewCandidates.length, 0);
+  const replayed = checked(
+    await h.service.prepareExpertReview(
+      h.request,
+      { ...fresh.query, configurationId: fresh.composition.configurationId },
+      retained,
+    ),
+  );
+  assert.equal(replayed.disposition, 'replayed');
+  assert.equal(
+    checked(await h.service.admitExpertReview(h.request, fresh.command)).disposition,
+    'applied',
+  );
+  assert.equal(
+    checked(await h.service.admitExpertReview(h.request, fresh.command)).disposition,
+    'replayed',
+  );
+  const state = readExecutionReviewState(h.read());
+  const original = JSON.parse(old);
+  assert.deepEqual(state.attempts[0], original.attempts[0]);
+  assert.deepEqual(state.receipts[0], original.receipts[0]);
+  assert.equal(state.attempts.length, 2);
+  assert.equal(state.attempts[0].resources, 'held');
+  assert.equal(state.attempts[1].status, 'requested');
+  assert.equal(state.attempts[1].nativeSessionId, undefined);
   assert.equal(h.read().rounds[0].ballots.length, 0);
+});
+
+test('workflow review: cold metadata alone never retries; the new original writer requires explicit valid Stop before a new scope', async (t) => {
+  const h = await nativeReviewHost(t, { workflow: {}, prepareOnly: true });
+  const old = JSON.stringify(h.read().nativeExecution.review);
+  await h.close();
+  assert.equal(h.workflowClaim.signal.aborted, true);
+  const cold = await open(h.root, {
+    seed: false,
+    workbench: h.snapshot,
+    assertReviewConfiguration() {},
+  });
+  t.after(() => cold.close());
+  const view = checked(await cold.service.readWorkflowExecution(cold.request, h.workflowLocation));
+  assert.equal(view.requiresResume, true);
+  assert.equal(view.reviewAttention[0].code, 'review-attempt-reserved');
+  assert.equal(JSON.stringify(cold.read().nativeExecution.review), old);
+  assert.equal(cold.counters.nodes, 0);
+  const stopped = checked(
+    await cold.service.stopWorkflowExecution(cold.request, control(h, 'cold-stop', view)),
+  );
+  const resumed = checked(
+    await cold.service.resumeWorkflowExecution(cold.request, {
+      ...control(h, 'cold-resume', stopped),
+      expectedVersion: stopped.intent.version,
+    }),
+  );
+  const retained = checked(
+    await cold.service.claimWorkflowExecution(cold.request, {
+      ...h.workflowLocation,
+      intentId: resumed.intent.intentId,
+      generation: resumed.intent.generation,
+    }),
+  );
+  const fresh = await reserveCandidate(cold, retained);
+  checked(await cold.service.admitExpertReview(cold.request, fresh.command));
+  assert.deepEqual(readExecutionReviewState(cold.read()).attempts[0], JSON.parse(old).attempts[0]);
+  assert.equal(readExecutionReviewState(cold.read()).attempts.length, 2);
+  assert.equal(cold.read('consume').command.status, 'blocked');
+});
+
+test('workflow review: forged Stop facts and non-v1 reservations cannot create the internal retry exception', async (t) => {
+  for (const fault of ['stop-fingerprint', 'stop-generation', 'prepared-version']) {
+    const h = await nativeReviewHost(t, { workflow: {}, prepareOnly: true });
+    const stopped = checked(
+      await h.service.stopWorkflowExecution(h.request, control(h, `stop-${fault}`)),
+    );
+    if (fault === 'prepared-version') {
+      const row = h.read();
+      row.nativeExecution.review.attempts[0].version = 2;
+      await h.domain.table('nodes').put(nodeRecordKey(row), row);
+    } else {
+      const [key, plan] = [...h.domain.table('plans').entries()][0];
+      const row = structuredClone(plan);
+      const stop = row.workflowExecution.commandReceipts.find((item) => item.kind === 'stop');
+      if (fault === 'stop-fingerprint') stop.fingerprint = '0'.repeat(64);
+      else stop.generation++;
+      await h.domain.table('plans').put(key, row);
+    }
+    h.resetCounts();
+    refused(
+      await h.service.resumeWorkflowExecution(h.request, {
+        ...control(h, `resume-${fault}`, stopped),
+        expectedVersion: stopped.intent.version,
+      }),
+      'workflow-review-attention-required',
+    );
+    assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+    assert.equal(readExecutionReviewState(h.read()).attempts.length, 1);
+  }
+});
+
+test('workflow review: Stop waits for an in-flight admission and cannot reclassify its persisted requested record as never admitted', async (t) => {
+  const h = await nativeReviewHost(t, { workflow: {}, prepareOnly: true });
+  let release, entered;
+  const waiting = new Promise((resolve) => {
+    entered = resolve;
+  });
+  h.faults.afterNodeWrite = async (row) => {
+    if (row.nativeExecution?.review?.attempts[0]?.status === 'requested') {
+      entered();
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+    }
+  };
+  const pending = h.service.admitExpertReview(h.request, {
+    ...h.locator,
+    expectedAttemptVersion: h.attempt.version,
+    composition: h.composition,
+  });
+  await waiting;
+  const stopping = h.service.stopWorkflowExecution(h.request, control(h, 'stop-during-admit'));
+  while (!h.workflowClaim.signal.aborted) await setImmediate();
+  release();
+  checked(await pending);
+  delete h.faults.afterNodeWrite;
+  const stopped = checked(await stopping);
+  assert.equal(stopped.state, 'stopping');
+  assert.equal(stopped.reviewResources[0].status, 'requested');
+  refused(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...control(h, 'resume-after-inflight-admit', stopped),
+      expectedVersion: stopped.intent.version,
+    }),
+    'workflow-recovery-required',
+  );
+  assert.equal(readExecutionReviewState(h.read()).attempts.length, 1);
+  assert.equal(readExecutionReviewState(h.read()).attempts[0].resources, 'held');
 });
 
 test('workflow review: Stop during the original result read aborts admission and final voting before the queued durable stop', async (t) => {
@@ -589,6 +802,103 @@ test('review cleanup: a cold committed workflow Stop qualifies only its exact au
   assert.equal(retire, 1);
   assert.equal(readExecutionReviewState(cold.read()).attempts[0].status, 'cancelled');
   assert.equal(cold.read().rounds[0].ballots.length, 0);
+});
+
+test('review cleanup: a later workflow Stop retains the actual historical receipt generation and still requires original retirement', async (t) => {
+  const h = await nativeReviewHost(t, { workflow: {}, reviewerIds: ['qa', 'outside'] });
+  const scope = h.drive.grant.scope;
+  const first = checked(
+    await h.service.stopWorkflowExecution(h.request, control(h, 'first-review-stop')),
+  );
+  checked(await h.service.recoverStoppedWorkflowReviewCleanup(scope));
+  const round = h.read().rounds[0];
+  checked(
+    await h.service.ballot(caller('outside'), {
+      ...h.human('produce', 'return-historical-round'),
+      roundId: round.id,
+      artifactVersionId: round.artifactVersionId,
+      action: 'request-changes',
+      comment: 'Revise this fixed version.',
+    }),
+  );
+  const second = checked(
+    await h.service.resumeWorkflowExecution(h.request, {
+      ...control(h, 'resume-second-generation', first),
+      expectedVersion: first.intent.version,
+    }),
+  );
+  const stopped = checked(
+    await h.service.stopWorkflowExecution(h.request, control(h, 'second-review-stop', second)),
+  );
+  assert.equal(stopped.intent.generation, 2);
+  assert.equal(scope.generation, 1);
+  await h.close();
+  const cold = await open(h.root, { seed: false, workbench: h.snapshot });
+  t.after(() => cold.close());
+  let retires = 0;
+  cold.service.installNativeReviewPorts({
+    issuer: {
+      registerNativeReviewTools() {
+        throw Error('no dispatch');
+      },
+      prepareFixedReview() {
+        throw Error('no dispatch');
+      },
+      assertFixedReview() {
+        throw Error('no read');
+      },
+      readFixedReview() {
+        throw Error('no read');
+      },
+    },
+    grantFor() {
+      throw Error('no drive');
+    },
+    async retireForCleanup(authority) {
+      retires++;
+      cold.service.assertExpertReviewCleanupAuthority(authority);
+      assert.deepEqual(authority.scope, scope);
+      return {
+        status: 'retired',
+        binding: h.binding,
+        drain: {
+          basis: 'flushed-and-closed',
+          signal: new AbortController().signal,
+          assertCurrent() {
+            cold.service.assertExpertReviewCleanupAuthority(authority);
+          },
+        },
+      };
+    },
+  });
+  assert.throws(() => cold.service.assertExpertReviewDrained(scope));
+  const [key, saved] = [...cold.domain.table('plans').entries()][0];
+  const forged = structuredClone(saved);
+  forged.workflowExecution.commandReceipts = forged.workflowExecution.commandReceipts.filter(
+    (receipt) => !(receipt.kind === 'stop' && receipt.generation === 1),
+  );
+  await cold.domain.table('plans').put(key, forged);
+  refused(await cold.service.recoverStoppedWorkflowReviewCleanup(scope), 'review-authority-denied');
+  assert.equal(
+    retires,
+    0,
+    'a current-generation Stop cannot substitute for the original receipt generation',
+  );
+  await cold.domain.table('plans').put(key, saved);
+  const wrong = structuredClone(scope);
+  wrong.review.target.roundId = 'foreign-round';
+  refused(await cold.service.recoverStoppedWorkflowReviewCleanup(wrong), 'review-authority-denied');
+  assert.equal(retires, 0);
+  const before = JSON.stringify(cold.read().nativeExecution.review);
+  cold.resetCounts();
+  assert.equal(
+    checked(await cold.service.recoverStoppedWorkflowReviewCleanup(scope)).status,
+    'settled',
+  );
+  assert.equal(retires, 1);
+  assert.equal(cold.service.assertExpertReviewDrained(scope), undefined);
+  assert.equal(JSON.stringify(cold.read().nativeExecution.review), before);
+  assert.deepEqual(cold.counters, { global: 0, nodes: 0, plans: 0 });
 });
 
 test('review cleanup: a cold running intent without a committed Stop cannot manufacture cleanup from known scope metadata', async (t) => {

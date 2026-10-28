@@ -260,6 +260,9 @@ import {
   WORKFLOW_REVIEW_REQUEST_PREFIX,
   workflowReviewRequestId,
   workflowReviewCandidates,
+  hasCommittedWorkflowStop,
+  stoppedWorkflowReviewGeneration,
+  stoppedPreparedWorkflowReviewRunIds,
 } from './execution-workflow-reviews.js';
 import {
   ExecutionWorkflowError,
@@ -1453,6 +1456,8 @@ export class ExecutionService {
                 ),
             )
             .map((expert) => expert.id);
+          if (nodes.some((node) => readExecutionReviewState(node)))
+            requireExecutionReviewWriter(this.readRunGlobal());
           return { receipt: receipt && structuredClone(receipt), nodes, availableExpertIds };
         };
         return {
@@ -2088,33 +2093,9 @@ export class ExecutionService {
             parsed.data.status !== 'stopping' ||
             parsed.data.actorId !== scope.actorId ||
             parsed.data.spaceId !== scope.spaceId ||
-            !parsed.data.commandReceipts.some(
-              (item) =>
-                item.kind === 'stop' &&
-                item.generation === parsed.data.generation &&
-                item.fingerprint ===
-                  createHash('sha256')
-                    .update(
-                      canonicalPayload({
-                        kind: 'stop',
-                        memberId: scope.actorId,
-                        spaceId: scope.spaceId,
-                        taskId: scope.taskId,
-                        planId: scope.planId,
-                        revision: scope.revision,
-                        requestId: item.requestId,
-                        intentId: parsed.data.intentId,
-                        generation: parsed.data.generation,
-                      }),
-                    )
-                    .digest('hex'),
-            ) ||
-            receipt?.requestId !==
-              workflowReviewRequestId(
-                parsed.data,
-                scope.review.target,
-                scope.review.principal.reviewerRef.id,
-              )
+            !hasCommittedWorkflowStop(node, parsed.data, parsed.data.generation) ||
+            !receipt ||
+            stoppedWorkflowReviewGeneration(node, parsed.data, attempt) === undefined
           )
             throw new ExecutionReviewReadError('review-authority-denied');
           if (attempt.stopPhase === 'none' && ['requested', 'running'].includes(attempt.status)) {
@@ -4025,17 +4006,33 @@ export class ExecutionService {
     const state = readExecutionReviewState(node);
     const receipt = state?.receipts.find((item) => item.requestId === input.requestId);
     const prior = receipt && state?.attempts.find((item) => item.scope.runId === receipt.runId);
-    const prepared = prepareExecutionReview(node, applied, {
-      requestId: input.requestId,
-      expectedReviewVersion: input.expectedReviewVersion,
-      target: input.target,
-      reviewerId: input.reviewerRef.id,
-      controllerMemberId: lease.memberId,
-      configurationId:
-        input.configurationId ?? (prior ? prior.configurationId : 'review-preparation-only'),
-      newRunId: `review-run-${reservation}`,
-      newSegmentId: `review-segment-${reservation}`,
-    });
+    const plan = this.storage.readPlan(planKey(node.taskId, node.planId, node.revision));
+    const workflow = workflowExecutionIntentSchema.safeParse(plan?.workflowExecution);
+    // Only this Service's original writer/queue derives the exception. It is
+    // never a caller field; actual automatic preparation still needs its claim.
+    const stopped =
+      workflow.success &&
+      workflow.data.status === 'running' &&
+      input.requestId === workflowReviewRequestId(workflow.data, input.target, input.reviewerRef.id)
+        ? stoppedPreparedWorkflowReviewRunIds(node, workflow.data)
+        : new Set<string>();
+    if (stopped.size) requireExecutionReviewWriter(this.readRunGlobal());
+    const prepared = prepareExecutionReview(
+      node,
+      applied,
+      {
+        requestId: input.requestId,
+        expectedReviewVersion: input.expectedReviewVersion,
+        target: input.target,
+        reviewerId: input.reviewerRef.id,
+        controllerMemberId: lease.memberId,
+        configurationId:
+          input.configurationId ?? (prior ? prior.configurationId : 'review-preparation-only'),
+        newRunId: `review-run-${reservation}`,
+        newSegmentId: `review-segment-${reservation}`,
+      },
+      stopped,
+    );
     return { node, applied, prepared };
   }
 

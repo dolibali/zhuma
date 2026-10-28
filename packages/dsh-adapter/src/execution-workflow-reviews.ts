@@ -15,6 +15,114 @@ export function workflowReviewRequestId(
     .update(canonicalPayload([intent.intentId, intent.generation, target, reviewerId]))
     .digest('hex')}`;
 }
+const hash = (value: unknown) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
+
+/** Original durable Stop facts, not a native drain or driving authority. The
+ * Service checks them only under its original writer/member/queue gates. */
+export function hasCommittedWorkflowStop(
+  node: ExecutionNodeRecord,
+  intent: WorkflowExecutionIntent,
+  generation: number,
+): boolean {
+  return intent.commandReceipts.some(
+    (receipt) =>
+      receipt.kind === 'stop' &&
+      receipt.generation === generation &&
+      receipt.fingerprint ===
+        hash({
+          kind: 'stop',
+          memberId: intent.actorId,
+          spaceId: intent.spaceId,
+          taskId: node.taskId,
+          planId: node.planId,
+          revision: node.revision,
+          requestId: receipt.requestId,
+          intentId: intent.intentId,
+          generation,
+        }),
+  );
+}
+
+/** Review attempt generations count attempts, not workflow generations. Locate
+ * the actual automatic receipt's generation and its original committed Stop. */
+export function stoppedWorkflowReviewGeneration(
+  node: ExecutionNodeRecord,
+  intent: WorkflowExecutionIntent,
+  attempt: ExecutionReviewAttempt,
+): number | undefined {
+  const { scope } = attempt;
+  if (
+    node.ownerId !== intent.actorId ||
+    scope.actorId !== intent.actorId ||
+    scope.spaceId !== intent.spaceId ||
+    scope.taskId !== node.taskId ||
+    scope.planId !== node.planId ||
+    scope.revision !== node.revision ||
+    scope.nodeId !== node.nodeId
+  )
+    return undefined;
+  const receipt = readExecutionReviewState(node)?.receipts.find(
+    (item) => item.runId === scope.runId,
+  );
+  return intent.commandReceipts.find(
+    (stop) =>
+      stop.kind === 'stop' &&
+      stop.generation <= intent.generation &&
+      receipt?.requestId ===
+        workflowReviewRequestId(
+          { ...intent, generation: stop.generation },
+          scope.review.target,
+          scope.review.principal.reviewerRef.id,
+        ) &&
+      hasCommittedWorkflowStop(node, intent, stop.generation),
+  )?.generation;
+}
+
+/** Exact logical reservations fenced before native admission. A committed Stop
+ * is written after the original queue barrier: earlier successful admission is
+ * then no longer prepared, and the fenced claim cannot admit later. Keep all
+ * metadata/held labels; this set never asserts physical retirement. */
+export function stoppedPreparedWorkflowReviewRunIds(
+  node: ExecutionNodeRecord,
+  intent: WorkflowExecutionIntent,
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  if (node.command.status !== 'in-review') return result;
+  const state = readExecutionReviewState(node);
+  if (!state?.attempts.some((attempt) => attempt.status === 'prepared')) return result;
+  const target = executionReviewTarget(node, intent.spaceId);
+  const round = node.rounds.find((item) => item.id === target.roundId)!;
+  for (const attempt of state.attempts) {
+    if (
+      attempt.status !== 'prepared' ||
+      attempt.version !== 1 ||
+      attempt.dispatch !== 'reserved' ||
+      attempt.resources !== 'held' ||
+      !/^review_composition_[a-f0-9]{64}$/u.test(attempt.configurationId) ||
+      canonicalPayload(attempt.scope.review.target) !== canonicalPayload(target) ||
+      round.ballots.some(
+        (ballot) => ballot.reviewerId === attempt.scope.review.principal.reviewerRef.id,
+      )
+    )
+      continue;
+    const receipt = state.receipts.find((item) => item.runId === attempt.scope.runId)!;
+    const reservation = hash({
+      location: target,
+      controllerMemberId: attempt.scope.actorId,
+      requestId: receipt.requestId,
+    });
+    const generation = stoppedWorkflowReviewGeneration(node, intent, attempt);
+    if (
+      generation === undefined ||
+      (generation === intent.generation && intent.status !== 'stopping') ||
+      attempt.scope.runId !== `review-run-${reservation}` ||
+      attempt.scope.segmentId !== `review-segment-${reservation}`
+    )
+      continue;
+    result.add(attempt.scope.runId);
+  }
+  return result;
+}
 export type WorkflowReviewResource = Exclude<ExecutionReviewAttempt, { status: 'prepared' }>;
 /** Original attempt metadata, not native readiness, a drive or a drain. */
 export function workflowReviewResources(nodes: readonly ExecutionNodeRecord[]) {
@@ -67,14 +175,17 @@ export interface WorkflowReviewAttention {
 }
 export function workflowReviewAttention(
   nodes: readonly ExecutionNodeRecord[],
+  intent?: WorkflowExecutionIntent,
 ): WorkflowReviewAttention[] {
   return nodes.flatMap((node) => {
     if (node.command.status !== 'in-review') return [];
+    const stopped = intent ? stoppedPreparedWorkflowReviewRunIds(node, intent) : new Set<string>();
     return (readExecutionReviewState(node)?.attempts ?? []).flatMap(
       (attempt): WorkflowReviewAttention[] => {
         const { target, principal } = attempt.scope.review;
         const round = node.rounds.find((round) => round.id === target.roundId);
         if (round?.status !== 'open') return [];
+        if (stopped.has(attempt.scope.runId)) return [];
         const code =
           attempt.status === 'prepared'
             ? 'review-attempt-reserved'
@@ -115,10 +226,12 @@ export function workflowReviewCandidates(
     )
       continue;
     const target = executionReviewTarget(node, intent.spaceId);
+    const stopped = stoppedPreparedWorkflowReviewRunIds(node, intent);
     if (
       state?.attempts.some(
         (attempt) =>
           attempt.status === 'prepared' &&
+          !stopped.has(attempt.scope.runId) &&
           attempt.scope.review.target.roundId === target.roundId &&
           attempt.scope.review.target.artifactVersionId === target.artifactVersionId,
       )
@@ -135,6 +248,7 @@ export function workflowReviewCandidates(
         round.ballots.some((ballot) => ballot.reviewerId === reviewerId) ||
         state?.attempts.some(
           (attempt) =>
+            !stopped.has(attempt.scope.runId) &&
             attempt.scope.review.target.roundId === target.roundId &&
             attempt.scope.review.target.artifactVersionId === target.artifactVersionId &&
             attempt.scope.review.principal.reviewerRef.id === reviewerId,
