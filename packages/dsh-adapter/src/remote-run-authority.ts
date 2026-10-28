@@ -69,6 +69,11 @@ import {
   type UploadFileRecord,
 } from './artifact-files.js';
 import type { ExecutionOutputFilePort } from './execution-output-file-port.js';
+import type { ExecutionAcceptedFilePort } from './execution-accepted-file-port.js';
+import type {
+  NativeRunFileSource,
+  NativeRunFileInfo,
+} from './native-work-session-files-contract.js';
 import {
   nativeResultManifestRecords,
   nativeManifestResultDigest,
@@ -127,6 +132,11 @@ export interface RemoteRunAuthoritySource {
   filesEnabled?(): boolean;
   outputFiles?(issuer: RemoteRunAuthorities): ExecutionOutputFilePort<RemoteRunFileGrant>;
   readNativeFile?(idOrKey: string): UploadFileRecord | undefined;
+  acceptedFiles?(issuer: RemoteRunAuthorities): ExecutionAcceptedFilePort<RemoteRunFileGrant>;
+  inputFiles?(
+    scope: RemoteRunFileGrant['scope'],
+    composition: FrozenExecutionRunComposition,
+  ): readonly (NativeRunFileSource & { readonly files: readonly NativeRunFileInfo[] })[];
   verifyOutputFiles?(
     records: readonly UploadFileRecord[],
     signal: AbortSignal,
@@ -177,6 +187,11 @@ export class RemoteRunAuthorities {
   private preparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private releaseFailed = false;
   private files: RemoteRunFiles | undefined;
+  /** Ephemeral backend IO only; no permission cache or accepted-file fact store. */
+  private readonly inputReads = new Map<
+    string,
+    Set<{ readonly runId: string; cancel(): void; drain: Promise<void> }>
+  >();
   private readonly fileGrants = new WeakMap<
     RemoteRunFileGrant,
     {
@@ -196,7 +211,11 @@ export class RemoteRunAuthorities {
       if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
       const raw = executionRunGlobalSchema.safeParse(this.source.readGlobal());
       if (!raw.success) deny('remote-unavailable');
-      if (raw.data.remoteExecutionFileWriter === 1 && !this.source.filesEnabled?.())
+      if (
+        (raw.data.remoteExecutionFileWriter === 1 ||
+          raw.data.remoteExecutionAcceptedFileWriter === 1) &&
+        !this.source.filesEnabled?.()
+      )
         deny('remote-protocol-unsupported');
       if (
         this.source.filesEnabled?.() &&
@@ -228,6 +247,8 @@ export class RemoteRunAuthorities {
     );
   }
   private release(runId: string): void {
+    for (const entries of this.inputReads.values())
+      for (const entry of entries) if (entry.runId === runId) entry.cancel();
     const value = this.active.get(runId);
     if (!value) return;
     this.active.delete(runId);
@@ -242,6 +263,7 @@ export class RemoteRunAuthorities {
   fence(): void {
     this.closed = true;
     this.files?.fence();
+    for (const entries of this.inputReads.values()) for (const entry of entries) entry.cancel();
     for (const id of this.active.keys()) this.release(id);
   }
   async close(): Promise<void> {
@@ -290,7 +312,8 @@ export class RemoteRunAuthorities {
     const global = executionRunGlobalSchema.safeParse(this.source.readGlobal());
     if (
       global.success &&
-      global.data.remoteExecutionFileWriter === 1 &&
+      (global.data.remoteExecutionFileWriter === 1 ||
+        global.data.remoteExecutionAcceptedFileWriter === 1) &&
       !this.filesEnabled() &&
       body.operation !== 'cleanup'
     )
@@ -371,10 +394,11 @@ export class RemoteRunAuthorities {
             if (
               isNew &&
               (event.kind === 'completed' || event.kind === 'stopped') &&
-              this.files?.hasHeld(target)
+              (this.files?.hasHeld(target) || this.inputReads.has(hash(target)))
             )
               return new RemoteFileOperation(async () => {
-                await this.files!.releaseDrained(target);
+                await this.retireInputReads(target);
+                await this.files?.releaseDrained(target);
                 return execute();
               });
           }
@@ -445,8 +469,12 @@ export class RemoteRunAuthorities {
               this.requireInputDrive(loaded);
               this.assertInputCatalog(loaded);
               return { scope: target, items: loaded.remote.inputs };
-            case 'input-read':
-              return this.readInput(body, loaded);
+            case 'input-read': {
+              const slot = loaded.remote.inputs.find((item) => item.slotId === body.payload.slotId);
+              return slot?.kind === 'file'
+                ? this.readAcceptedInput(body, loaded, lease!, sessionHash, privatePermit)
+                : this.readInput(body, loaded);
+            }
             default:
               return deny('remote-protocol-unsupported');
           }
@@ -552,7 +580,9 @@ export class RemoteRunAuthorities {
   private fileGrant(
     body: Extract<
       RemoteRunRequest,
-      { operation: 'publish-file' | 'file-status' | 'abandon-file' | 'submit-result' }
+      {
+        operation: 'publish-file' | 'file-status' | 'abandon-file' | 'submit-result' | 'input-read';
+      }
     >,
     value: Loaded,
     lease: ExecutionMemberLease,
@@ -560,7 +590,12 @@ export class RemoteRunAuthorities {
     rawPermit: unknown,
     action: 'history' | 'send',
   ): RemoteRunFileGrant {
-    if (value.remote.files !== 'zhuma-native-output-file@1') deny('remote-protocol-unsupported');
+    if (
+      body.operation === 'input-read'
+        ? value.remote.acceptedFiles !== 'zhuma-accepted-files@2'
+        : value.remote.files !== 'zhuma-native-output-file@1'
+    )
+      deny('remote-protocol-unsupported');
     const owner = action === 'send' ? this.active.get(value.run.attempt.id)?.lease : lease;
     if (!owner) deny('remote-recovery-required');
     const remoteScope = Object.freeze({ ...body.payload.scope });
@@ -1008,10 +1043,153 @@ export class RemoteRunAuthorities {
     };
     return { descriptor, data };
   }
-  private inputCatalog(scope: RemoteRunScope, node: ExecutionNodeRecord) {
-    return node.handoff.inputRefs.map(
+  private inputCatalog(
+    scope: RemoteRunScope,
+    node: ExecutionNodeRecord,
+    composition?: FrozenExecutionRunComposition,
+    acceptedFiles = false,
+  ) {
+    const inputs = node.handoff.inputRefs.map(
       (ref) => this.inputSnapshot(scope, node, ref.sourceNodeId, ref.artifactVersionId).descriptor,
     );
+    if (acceptedFiles) {
+      if (
+        !this.filesEnabled() ||
+        !composition ||
+        !this.source.inputFiles ||
+        !this.source.acceptedFiles
+      )
+        deny('remote-protocol-unsupported');
+      const { backendId: _backend, ...nativeScope } = scope;
+      let sources: ReturnType<NonNullable<RemoteRunAuthoritySource['inputFiles']>>;
+      try {
+        sources = this.source.inputFiles(nativeScope, composition);
+      } catch (error) {
+        if (error instanceof ArtifactUploadError && error.code === 'not-found')
+          deny('remote-input-stale');
+        throw error;
+      }
+      for (const source of sources)
+        for (const file of source.files)
+          inputs.push({
+            slotId: `input_${hash({ scope, inputRef: source.inputRef, fileId: file.fileId })}`,
+            kind: 'file',
+            name: file.name,
+            sourceNodeId: source.sourceNodeId,
+            artifactVersionId: source.artifactVersionId,
+            resourceRef: { id: source.inputRef, version: source.artifactVersionId },
+            fileId: file.fileId,
+            byteSize: file.bytes,
+            sha256: file.sha256,
+          });
+    }
+    if (inputs.length > REMOTE_RUN_LIMITS.inputs) deny('remote-quota');
+    return inputs;
+  }
+  private cancelInputReads(scope: RemoteRunScope): void {
+    for (const entry of this.inputReads.get(hash(scope)) ?? []) entry.cancel();
+  }
+  private async retireInputReads(scope: RemoteRunScope): Promise<void> {
+    const entries = this.inputReads.get(hash(scope));
+    if (!entries) return;
+    for (const entry of entries) entry.cancel();
+    await Promise.all([...entries].map((entry) => entry.drain));
+  }
+  private readAcceptedInput(
+    body: Extract<RemoteRunRequest, { operation: 'input-read' }>,
+    value: Loaded,
+    lease: ExecutionMemberLease,
+    sessionHash: string,
+    rawPermit: unknown,
+  ): RemoteFileOperation {
+    this.requireInputDrive(value);
+    this.assertInputCatalog(value);
+    const slot = value.remote.inputs.find((item) => item.slotId === body.payload.slotId);
+    if (
+      !slot ||
+      slot.kind !== 'file' ||
+      !slot.resourceRef ||
+      !slot.fileId ||
+      !this.source.acceptedFiles
+    )
+      deny('remote-input-stale');
+    if (body.payload.offset > slot.byteSize) deny('remote-validation');
+    const inputRef = slot.resourceRef.id;
+    const port = this.source.acceptedFiles(this);
+    const grant = this.fileGrant(body, value, lease, sessionHash, rawPermit, 'send');
+    const key = hash(body.payload.scope);
+    let resolveDrain!: () => void;
+    const entry = {
+      runId: body.payload.scope.runId,
+      cancel: grant.cancel,
+      drain: new Promise<void>((resolve) => {
+        resolveDrain = resolve;
+      }),
+    };
+    const entries = this.inputReads.get(key) ?? new Set<typeof entry>();
+    entries.add(entry);
+    this.inputReads.set(key, entries);
+    return new RemoteFileOperation(async () => {
+      let page: Awaited<ReturnType<typeof port.read>> | undefined;
+      const timer = setTimeout(grant.cancel, 5000);
+      timer.unref();
+      try {
+        grant.check();
+        page = await port.read(
+          grant,
+          {
+            inputRef,
+            fileId: slot.fileId,
+            offset: body.payload.offset,
+            length: Math.min(body.payload.maximumBytes, 16_384),
+          },
+          grant.signal,
+        );
+        page.check();
+        grant.check();
+        this.assertInputCatalog(this.load(body.payload.scope));
+        if (
+          !same(page.source.scope, grant.scope) ||
+          page.source.inputRef !== inputRef ||
+          page.source.sourceNodeId !== slot.sourceNodeId ||
+          page.source.artifactVersionId !== slot.artifactVersionId ||
+          page.source.file.fileId !== slot.fileId ||
+          page.source.file.sha256 !== slot.sha256 ||
+          page.range.total !== slot.byteSize ||
+          page.range.offset !== body.payload.offset ||
+          page.bytes.byteLength !== page.range.length ||
+          page.range.length > body.payload.maximumBytes
+        )
+          deny('remote-input-stale');
+        // The original reader classifies the entire verified object, not this
+        // page. Binary/invalid UTF-8 may be catalogued but cannot become model text.
+        if (page.encoding !== 'utf-8') deny('remote-protocol-unsupported');
+        const response = {
+          scope: body.payload.scope,
+          slotId: slot.slotId,
+          offset: page.range.offset,
+          byteSize: page.bytes.byteLength,
+          totalBytes: page.range.total,
+          sha256: slot.sha256,
+          base64: Buffer.from(page.bytes).toString('base64'),
+          eof: page.range.offset + page.bytes.byteLength === page.range.total,
+        };
+        // A copied page is not evidence that the SDK stream has physically drained.
+        page.release();
+        await page.drain;
+        grant.check();
+        this.assertInputCatalog(this.load(body.payload.scope));
+        return response;
+      } finally {
+        clearTimeout(timer);
+        page?.release();
+        if (page) await page.drain;
+        grant.cancel();
+        entries.delete(entry);
+        if (!entries.size) this.inputReads.delete(key);
+        resolveDrain();
+      }
+    });
   }
   private requireInputDrive(value: Loaded): void {
     if (isTerminalRunStatus(value.run.attempt.status) || value.run.resources !== 'held')
@@ -1022,7 +1200,17 @@ export class RemoteRunAuthorities {
       ...executionRunScope(value.node, value.run),
       backendId: value.remote.backendId,
     };
-    if (!same(this.inputCatalog(scope, value.node), value.remote.inputs))
+    if (
+      !same(
+        this.inputCatalog(
+          scope,
+          value.node,
+          value.run.composition,
+          value.remote.acceptedFiles !== undefined,
+        ),
+        value.remote.inputs,
+      )
+    )
       deny('remote-input-stale');
   }
   private readInput(body: Extract<RemoteRunRequest, { operation: 'input-read' }>, value: Loaded) {
@@ -1098,7 +1286,11 @@ export class RemoteRunAuthorities {
         : payload.capabilities.outputFile ||
           payload.capabilities.localTools.length ||
           payload.workspace.kind !== 'text-only') ||
-      payload.capabilities.acceptedFile ||
+      (payload.capabilities.acceptedFile &&
+        (!this.filesEnabled() ||
+          !this.source.acceptedFiles ||
+          !this.source.inputFiles ||
+          !node.handoff.inputRefs.length)) ||
       new Set(payload.capabilities.localTools.map((tool) => tool.name)).size !==
         payload.capabilities.localTools.length ||
       node.handoff.mcpRefs.length
@@ -1130,7 +1322,13 @@ export class RemoteRunAuthorities {
       qualification?.catalog,
     );
     qualification?.assertCurrent();
-    const inputs = this.inputCatalog({ ...scope, backendId: body.backendId }, node);
+    const inputs = this.inputCatalog(
+      { ...scope, backendId: body.backendId },
+      node,
+      composition,
+      payload.capabilities.acceptedFile !== undefined,
+    );
+    if (payload.capabilities.acceptedFile) this.source.acceptedFiles!(this);
     const projected = executionRunCompositionRequest(composition);
     const decision = beginExecutionRun(
       node,
@@ -1159,6 +1357,9 @@ export class RemoteRunAuthorities {
     const remote: RemoteRunBinding = {
       protocolVersion: 1,
       ...(files ? { files: 'zhuma-native-output-file@1' as const } : {}),
+      ...(payload.capabilities.acceptedFile
+        ? { acceptedFiles: payload.capabilities.acceptedFile }
+        : {}),
       backendId: body.backendId,
       deviceId: device.deviceId,
       publicKey: device.publicKey,
@@ -1188,20 +1389,30 @@ export class RemoteRunAuthorities {
     lease.assertCurrent(payload.target.spaceId);
     this.source.assertTarget(lease.memberId, payload.target, this.source.readNode(payload.target)!);
     qualification?.assertCurrent();
-    if (files) {
+    if (files || payload.capabilities.acceptedFile) {
       // Qualify the actual original attachment port BEFORE changing the format.
-      this.fileManager();
+      if (files) this.fileManager();
       const global = executionRunGlobalSchema.parse(this.source.readGlobal());
-      if (global.remoteExecutionFileWriter !== 1) {
+      if (
+        (files && global.remoteExecutionFileWriter !== 1) ||
+        (payload.capabilities.acceptedFile && global.remoteExecutionAcceptedFileWriter !== 1)
+      ) {
         // Original storage has no cross-row transaction. This durable barrier
         // precedes the first node put in the SAME writer queue. A failed node
         // put deliberately retains marker-only state; it grants no drive.
         await this.source.writeGlobal({
           ...prepareExecutionRunWriter(global),
-          remoteExecutionFileWriter: 1,
+          ...(files ? { remoteExecutionFileWriter: 1 as const } : {}),
+          ...(payload.capabilities.acceptedFile
+            ? { remoteExecutionAcceptedFileWriter: 1 as const }
+            : {}),
         });
       }
-      if (executionRunGlobalSchema.parse(this.source.readGlobal()).remoteExecutionFileWriter !== 1)
+      const marked = executionRunGlobalSchema.parse(this.source.readGlobal());
+      if (
+        (files && marked.remoteExecutionFileWriter !== 1) ||
+        (payload.capabilities.acceptedFile && marked.remoteExecutionAcceptedFileWriter !== 1)
+      )
         deny('remote-unavailable');
       lease.assertCurrent(payload.target.spaceId);
       this.source.assertTarget(
@@ -1359,6 +1570,7 @@ export class RemoteRunAuthorities {
       },
       node,
     );
+    this.cancelInputReads(body.payload.scope);
     this.release(run.attempt.id);
     return { ...this.view(next), disposition: 'applied' };
   }
@@ -1379,18 +1591,27 @@ export class RemoteRunAuthorities {
     let node = value.node,
       run = value.run;
     if (observation.kind === 'drained') {
+      const unadmitted =
+        run.dispatch === 'reserved' &&
+        !run.attempt.sessionId &&
+        !run.attempt.executorRunId &&
+        !run.attempt.acknowledged;
       if (observation.evidence.basis === 'absent-unadmitted') {
-        if (run.dispatch !== 'reserved' || run.attempt.sessionId || run.attempt.acknowledged)
-          deny('remote-conflict');
+        if (!unadmitted) deny('remote-conflict');
       } else if (
-        observation.evidence.nativeSessionId !== run.attempt.sessionId ||
-        (run.attempt.executorRunId &&
-          observation.evidence.nativeAgentId !== run.attempt.executorRunId)
+        !unadmitted &&
+        (observation.evidence.nativeSessionId !== run.attempt.sessionId ||
+          (run.attempt.executorRunId &&
+            observation.evidence.nativeAgentId !== run.attempt.executorRunId))
       )
         deny('remote-scope-mismatch');
-      if (this.files?.hasHeld(body.payload.scope))
+      // A real local SDK scope can close before its first received ACK. Its
+      // signed close report only retires that reserved scope; never adopt IDs,
+      // fabricate an accepted event or grant drive from this evidence.
+      if (this.files?.hasHeld(body.payload.scope) || this.inputReads.has(hash(body.payload.scope)))
         return new RemoteFileOperation(async () => {
-          await this.files!.releaseDrained(body.payload.scope);
+          await this.retireInputReads(body.payload.scope);
+          await this.files?.releaseDrained(body.payload.scope);
           return this.source.enqueue(() => this.cleanup(body, rawPermit, true));
         });
       if (!isTerminalRunStatus(run.attempt.status)) {

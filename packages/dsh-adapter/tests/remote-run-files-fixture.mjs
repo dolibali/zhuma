@@ -35,7 +35,7 @@ const credential = () => {
 
 export async function fileHost(
   t,
-  { expert = false, enabled = true, seed = true, root: existingRoot, identity } = {},
+  { expert = false, enabled = true, seed = true, root: existingRoot, identity, expertNode } = {},
 ) {
   const root = existingRoot ?? (await mkdtemp(join(tmpdir(), 'zhuma-remote-files-')));
   const ctx = new Context();
@@ -56,7 +56,7 @@ export async function fileHost(
   };
   const h = await open(join(root, 'service'), {
     attachments,
-    expertNode: expert ? 'produce' : undefined,
+    expertNode: expertNode ?? (expert ? 'produce' : undefined),
     seed,
   });
   let closed = false;
@@ -145,9 +145,10 @@ export async function fileHost(
         generation: 1,
         access: 'read',
       },
-      executor: expert
-        ? { kind: 'plan-expert', ref: h.read(nodeId).handoff.expertRef }
-        : { kind: 'builtin' },
+      executor:
+        h.read(nodeId).handoff.assignee.kind === 'expert'
+          ? { kind: 'plan-expert', ref: h.read(nodeId).handoff.expertRef }
+          : { kind: 'builtin' },
       capabilities: {
         resultIntent: 'zhuma-native-result-intent@2',
         outputFile: 'zhuma-native-output-file@1',

@@ -60,6 +60,8 @@ import {
 } from './execution-run-resources.js';
 import { observeHostNativeRun } from './host-run-observation.js';
 import { registerMemberLocalAcceptedInputs } from './member-local-execution-inputs.js';
+import { registerMemberLocalAcceptedFiles } from './member-local-execution-accepted-files.js';
+import { NATIVE_ACCEPTED_FILE_TOOL_VERSION } from './native-work-session-files-tool.js';
 import { MemberLocalExecutionHistory } from './member-local-execution-history.js';
 import type { ExecutionService } from './execution-service.js';
 
@@ -140,6 +142,11 @@ export class MemberLocalExecutionOwner {
     return this.publications && this.options.protocol.supportsFilePublishing
       ? NATIVE_OUTPUT_FILE_VERSION
       : undefined;
+  }
+  /** Local original-reader support only. The backend must separately accept
+   * this capability and freeze its exact file slots before any model starts. */
+  get acceptedFileSource(): typeof NATIVE_ACCEPTED_FILE_TOOL_VERSION | undefined {
+    return this.lifetime.signal.aborted ? undefined : NATIVE_ACCEPTED_FILE_TOOL_VERSION;
   }
   /** Read-only local SDK availability for the accept capability declaration.
    * Actual frozen resources are still adopted and checked in the unpublished
@@ -263,6 +270,16 @@ export class MemberLocalExecutionOwner {
             this.workRun(state),
           );
           this.check(state, 'send');
+          const files = await registerMemberLocalAcceptedFiles(
+            agentCtx,
+            binding,
+            grant,
+            this.native.service,
+            this.options.protocol,
+            this.workRun(state),
+            (grant) => this.admission(grant),
+          );
+          this.check(state, 'send');
           await this.options.assertModel(binding.selection, grant.signal);
           this.check(state, 'send');
           const extra = this.options.native
@@ -308,6 +325,7 @@ export class MemberLocalExecutionOwner {
             canonicalPayload([
               ...extra.toolAllowlist,
               ...input.toolAllowlist,
+              ...files.toolAllowlist,
               ...output.toolAllowlist,
               ...result.toolAllowlist,
               ...state.resources.toolAllowlist,
@@ -359,13 +377,7 @@ export class MemberLocalExecutionOwner {
               this.options.protocol,
               source,
               (grant) => this.workRun(this.state(grant)),
-              async (grant) => {
-                const state = this.state(grant);
-                await state.dispatch;
-                await this.acceptClaim(state);
-                this.check(state, 'send');
-                if (!state.accepted) throw new NativeWorkError('unavailable');
-              },
+              (grant) => this.admission(grant),
             );
           },
         },
@@ -484,7 +496,6 @@ export class MemberLocalExecutionOwner {
       (snapshot.payload.resultIntentTool?.sourceVersion === 'zhuma-native-result-intent@2' &&
         !this.publicationResults) ||
       (snapshot.payload.outputFilePublisherTool && !this.outputFileSource) ||
-      snapshot.payload.acceptedFileReader ||
       (snapshot.payload.tools.kind === 'local-tools' && !this.options.native) ||
       (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
     )
@@ -588,6 +599,13 @@ export class MemberLocalExecutionOwner {
       this.update(state, view, before);
       state.accepted = true;
     });
+  }
+  private async admission(grant: NativeWorkGrant): Promise<void> {
+    const state = this.state(grant);
+    await state.dispatch;
+    await this.acceptClaim(state);
+    this.check(state, 'send');
+    if (!state.accepted) throw new NativeWorkError('unavailable');
   }
   private emit(state: Owned, event: RemoteRunEvent): Promise<void> {
     return this.enqueue(state, async () => {

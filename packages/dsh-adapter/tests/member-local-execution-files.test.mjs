@@ -219,6 +219,10 @@ test('member-local files contract: completed replay/cold status keeps original l
   );
   assert.deepEqual(saved.record, h.record);
   saved.check();
+  saved.record.name = 'mutated.bin';
+  assert.throws(() => saved.check(), { code: 'publication-unavailable' });
+  saved.record.name = h.record.name;
+  saved.check();
   assert(!h.seen.some((x) => x[0] === 'raw-publish'));
   await assert.rejects(
     h.files.readCompleted(

@@ -69,9 +69,12 @@ export function createMemberLocalOutputFiles(
       const saved = record(value, source, keyFor(source));
       if (saved.uploadId !== request.publicationId)
         throw new ArtifactUploadError('publication-denied');
+      const fingerprint = canonicalPayload({ source, record: saved });
       const check = (): undefined => {
         signal.throwIfAborted();
         run(grant, 'history');
+        if (canonicalPayload({ source, record: saved }) !== fingerprint)
+          throw new ArtifactUploadError('publication-unavailable');
         return undefined;
       };
       check();
