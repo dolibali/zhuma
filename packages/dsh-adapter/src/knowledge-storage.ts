@@ -31,6 +31,23 @@ export const KnowledgePublishedSchema = z.strictObject({
   publishedAt: z.iso.datetime(),
 });
 export type KnowledgePublished = z.infer<typeof KnowledgePublishedSchema>;
+export const KnowledgeDraftRecordSchema = z.strictObject({
+  title: z.string().trim().min(1).max(200),
+  format: KnowledgeFormatSchema,
+  body: KnowledgeBlobSchema,
+  original: KnowledgeBlobSchema.optional(),
+  sources: z.array(KnowledgeVersionRefSchema).max(KNOWLEDGE_LIMITS.sourcesPerVersion),
+  authorship: z.enum(['member', 'agent']),
+  savedAt: z.iso.datetime(),
+});
+export const KnowledgeWriteReceiptSchema = z.strictObject({
+  key: id,
+  operation: z.enum(['save-draft', 'publish']),
+  fingerprint: KnowledgeVersionRefSchema.shape.checksum,
+  pageRevision: positive,
+  reference: KnowledgeVersionRefSchema.optional(),
+});
+export type KnowledgeWriteReceipt = z.infer<typeof KnowledgeWriteReceiptSchema>;
 export const KnowledgePageRecordSchema = z
   .strictObject({
     schemaVersion: z.literal(1),
@@ -40,12 +57,32 @@ export const KnowledgePageRecordSchema = z
     ownerActorId: id,
     version: positive,
     versions: z.array(KnowledgePublishedSchema).max(KNOWLEDGE_LIMITS.versionsPerPage),
+    draft: KnowledgeDraftRecordSchema.optional(),
+    receipts: z
+      .array(KnowledgeWriteReceiptSchema)
+      .max(KNOWLEDGE_LIMITS.receiptsPerPage)
+      .default([]),
   })
   .superRefine((page, context) => {
     if (
       page.libraryId !== page.spaceId ||
       page.version < page.versions.length ||
-      page.versions.some((version, index) => version.version !== index + 1)
+      page.versions.some((version, index) => version.version !== index + 1) ||
+      new Set(page.receipts.map((receipt) => receipt.key)).size !== page.receipts.length ||
+      page.receipts.some((receipt) => {
+        if (receipt.pageRevision > page.version) return true;
+        const ref = receipt.reference;
+        if (receipt.operation === 'save-draft') return ref !== undefined;
+        return (
+          !ref ||
+          ref.spaceId !== page.spaceId ||
+          ref.libraryId !== page.libraryId ||
+          ref.pageId !== page.pageId ||
+          !page.versions.some(
+            (version) => version.version === ref.version && version.body.checksum === ref.checksum,
+          )
+        );
+      })
     )
       context.addIssue({ code: 'custom', message: 'Invalid knowledge version history.' });
   });
@@ -69,7 +106,14 @@ export function knowledgePageKey(spaceId: string, pageId: string): string {
 /** One authoritative metadata record per page. Body bytes live in the original
  * DSH attachment provider; no task/Run/artifact facts are copied into this domain. */
 export class KnowledgeStorage {
+  private writes: Promise<unknown> = Promise.resolve();
   constructor(private readonly domain: KnowledgeDomain) {}
+  /** One service/store handle per mounted Host; CAS and receipt checks share this queue. */
+  exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const operation = this.writes.then(work);
+    this.writes = operation.catch(() => undefined);
+    return operation;
+  }
   get(spaceId: string, pageId: string): KnowledgePageRecord | undefined {
     const row = this.domain.table('pages').get(knowledgePageKey(spaceId, pageId));
     return row && structuredClone(row);
@@ -136,6 +180,48 @@ export class KnowledgeBytes {
       // Validate complete UTF-8 before any range or snippet is delivered.
       new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
       return bytes;
+    } finally {
+      stream.finish();
+      this.retain(stream.drain());
+    }
+  }
+  async save(
+    text: string,
+    format: 'text' | 'markdown',
+    original: boolean,
+    signal: AbortSignal,
+    check: () => void,
+  ): Promise<KnowledgeBlob> {
+    check();
+    const data = new TextEncoder().encode(text);
+    if (data.byteLength > KNOWLEDGE_LIMITS.bodyBytes) throw new Error('Knowledge byte limit');
+    // Reject unpaired UTF-16 surrogates rather than silently changing submitted text.
+    if (new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data) !== text)
+      throw new Error('Invalid knowledge text');
+    const name =
+      `${original ? 'original' : 'knowledge'}.${format === 'text' ? 'txt' : 'md'}` as const;
+    const checksum = createHash('sha256').update(data).digest('hex');
+    const source = (async function* () {
+      yield data;
+    })();
+    const stream = new ArtifactUploadStream(
+      source,
+      { name, mediaType: 'text/plain', byteSize: data.byteLength, sha256: checksum },
+      signal,
+      check,
+    );
+    try {
+      const stored = await stream.wait(
+        this.attachments.saveFileStream({ data: stream, name, signal: stream.signal }),
+      );
+      stream.check();
+      if (!stream.verified || stored.bytes !== data.byteLength || stored.name !== name)
+        throw new Error('Invalid knowledge receipt');
+      const blob = KnowledgeBlobSchema.parse({ ...stored, checksum });
+      // The provider receipt alone does not certify actual bytes.
+      await this.read(blob, signal, check);
+      check();
+      return blob;
     } finally {
       stream.finish();
       this.retain(stream.drain());

@@ -5,6 +5,8 @@ import {
   KnowledgeSearchRequestSchema,
   KnowledgeListRequestSchema,
   KnowledgeReadValueSchema,
+  KnowledgeSaveDraftRequestSchema,
+  KnowledgePublishRequestSchema,
 } from '../dist/knowledge-contract.js';
 
 test('knowledge DTO: scoped fixed reads never accept an actor, implicit latest or a path', () => {
@@ -18,6 +20,40 @@ test('knowledge DTO: scoped fixed reads never accept an actor, implicit latest o
     { version: 0 },
   ])
     assert.equal(KnowledgeReadRequestSchema.safeParse({ ...request, ...patch }).success, false);
+});
+
+test('knowledge DTO: draft byte budget, valid Unicode and compare-and-publish are explicit', () => {
+  const request = {
+    spaceId: 'north',
+    libraryId: 'north',
+    pageId: 'guide',
+    expectedVersion: 0,
+    idempotencyKey: 'draft-one',
+    content: { title: '说明', format: 'markdown', text: '中😀' },
+  };
+  assert.equal(KnowledgeSaveDraftRequestSchema.parse(request).content.sources.length, 0);
+  assert.equal(
+    KnowledgeSaveDraftRequestSchema.safeParse({ ...request, actorId: 'other' }).success,
+    false,
+  );
+  for (const text of ['中'.repeat(22_000), '\ud800'])
+    assert.equal(
+      KnowledgeSaveDraftRequestSchema.safeParse({
+        ...request,
+        content: { ...request.content, text },
+      }).success,
+      false,
+    );
+  assert.equal(
+    KnowledgePublishRequestSchema.safeParse({
+      spaceId: 'north',
+      libraryId: 'north',
+      pageId: 'guide',
+      expectedVersion: 0,
+      idempotencyKey: 'publish-one',
+    }).success,
+    false,
+  );
 });
 
 test('knowledge DTO: search scopes are explicit, unique and bounded; empty search is not a whole-library dump', () => {

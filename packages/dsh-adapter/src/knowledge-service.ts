@@ -8,6 +8,9 @@ import {
   KnowledgeListRequestSchema,
   KnowledgeSearchRequestSchema,
   KnowledgeReadRequestSchema,
+  KnowledgeDraftRequestSchema,
+  KnowledgeSaveDraftRequestSchema,
+  KnowledgePublishRequestSchema,
   type KnowledgeErrorCode,
   type KnowledgeResult,
   type KnowledgeLibrary,
@@ -17,6 +20,8 @@ import {
   type KnowledgeReadValue,
   type KnowledgePageSummary,
   type KnowledgeVersionRef,
+  type KnowledgeDraftValue,
+  type KnowledgeWriteValue,
 } from '@zhuma/agent-core';
 import { openExecutionMemberLease, type MemberRequest } from './member-session.js';
 import { scanActorField } from './execution-identity.js';
@@ -28,6 +33,7 @@ import {
   type KnowledgeStorage,
   type KnowledgePageRecord,
   type KnowledgePublished,
+  type KnowledgeWriteReceipt,
 } from './knowledge-storage.js';
 
 export class KnowledgeError extends Error {
@@ -410,6 +416,262 @@ export class KnowledgeService {
         sources: version.sources,
       };
     });
+  }
+
+  private owned(access: Access, libraryId: string, pageId: string): KnowledgePageRecord {
+    const page = this.page(access, libraryId, pageId);
+    if (page.ownerActorId !== access.actorId) throw new KnowledgeError('not-found');
+    return page;
+  }
+  private checkSources(access: Access, sources: readonly KnowledgeVersionRef[]): void {
+    const seen = new Set<string>();
+    for (const source of sources) {
+      const key = canonicalPayload(source);
+      if (seen.has(key)) throw new KnowledgeError('invalid');
+      seen.add(key);
+      this.fixed(access, source);
+    }
+  }
+  private writeValue(
+    access: Access,
+    page: KnowledgePageRecord,
+    receipt: KnowledgeWriteReceipt,
+    disposition: KnowledgeWriteValue['disposition'],
+  ): KnowledgeWriteValue {
+    return {
+      actorId: access.actorId,
+      spaceId: access.spaceId,
+      libraryId: page.libraryId,
+      pageId: page.pageId,
+      pageRevision: receipt.pageRevision,
+      operation: receipt.operation,
+      disposition,
+      ...(receipt.reference ? { reference: receipt.reference } : {}),
+    };
+  }
+  private replay(
+    access: Access,
+    page: KnowledgePageRecord | undefined,
+    key: string,
+    operation: KnowledgeWriteReceipt['operation'],
+    fingerprint: string,
+  ): KnowledgeWriteValue | undefined {
+    const receipt = page?.receipts.find((item) => item.key === key);
+    if (!page || !receipt) return undefined;
+    if (receipt.operation !== operation || receipt.fingerprint !== fingerprint)
+      throw new KnowledgeError('conflict');
+    return this.writeValue(access, page, receipt, 'replayed');
+  }
+  private writeBudget(page: KnowledgePageRecord | undefined, expectedVersion: number): void {
+    if ((page?.version ?? 0) !== expectedVersion) throw new KnowledgeError('conflict');
+    if (
+      (page?.receipts.length ?? 0) >= KNOWLEDGE_LIMITS.receiptsPerPage ||
+      !Number.isSafeInteger(expectedVersion + 1)
+    )
+      throw new KnowledgeError('limit');
+  }
+
+  draft(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeDraftValue>> {
+    return this.run(request, raw, signal, async (access) => {
+      const input = KnowledgeDraftRequestSchema.parse(raw),
+        page = this.owned(access, input.libraryId, input.pageId),
+        pending = page.draft,
+        published = page.versions.at(-1);
+      const check = () => {
+        access.check();
+        const current = this.owned(access, input.libraryId, input.pageId);
+        if (
+          current.version !== page.version ||
+          digest(current.draft ?? null) !== digest(pending ?? null)
+        )
+          throw new KnowledgeError('conflict');
+        if (pending) this.checkSources(access, pending.sources);
+      };
+      check();
+      const body = pending && decode(await this.bytes.read(pending.body, access.signal, check));
+      const original =
+        pending?.original && decode(await this.bytes.read(pending.original, access.signal, check));
+      check();
+      return {
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        libraryId: input.libraryId,
+        pageId: input.pageId,
+        ownerActorId: page.ownerActorId,
+        pageRevision: page.version,
+        draft: pending
+          ? {
+              title: pending.title,
+              format: pending.format,
+              text: body!,
+              authorship: pending.authorship,
+              ...(original === undefined ? {} : { originalText: original }),
+              sources: pending.sources,
+            }
+          : null,
+        published: published ? reference(page, published) : null,
+      };
+    });
+  }
+
+  saveDraft(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeWriteValue>> {
+    return this.save(request, raw, 'member', signal);
+  }
+  /** Host-only Agent tool entry. It can propose an owned draft, never publish. */
+  proposeDraft(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeWriteValue>> {
+    return this.save(request, raw, 'agent', signal);
+  }
+  private save(
+    request: MemberRequest,
+    raw: unknown,
+    authorship: 'member' | 'agent',
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeWriteValue>> {
+    return this.run(request, raw, signal, (access) =>
+      this.store.exclusive(async () => {
+        const input = KnowledgeSaveDraftRequestSchema.parse(raw);
+        this.library(access, input.libraryId);
+        const previous = this.store.get(access.spaceId, input.pageId);
+        if (previous) this.owned(access, input.libraryId, input.pageId);
+        const fingerprint = digest({
+          operation: 'save-draft',
+          actorId: access.actorId,
+          authorship,
+          input,
+        });
+        const replayed = this.replay(
+          access,
+          previous,
+          input.idempotencyKey,
+          'save-draft',
+          fingerprint,
+        );
+        if (replayed) return replayed;
+        this.writeBudget(previous, input.expectedVersion);
+        if (
+          !previous &&
+          this.store.pages(access.spaceId).length >= KNOWLEDGE_LIMITS.pagesPerLibrary
+        )
+          throw new KnowledgeError('limit');
+        this.checkSources(access, input.content.sources);
+        const body = await this.bytes.save(
+          input.content.text,
+          input.content.format,
+          false,
+          access.signal,
+          () => access.check(),
+        );
+        const original =
+          input.content.originalText === undefined
+            ? undefined
+            : await this.bytes.save(
+                input.content.originalText,
+                input.content.format,
+                true,
+                access.signal,
+                () => access.check(),
+              );
+        this.checkSources(access, input.content.sources);
+        const revision = input.expectedVersion + 1;
+        const receipt: KnowledgeWriteReceipt = {
+          key: input.idempotencyKey,
+          operation: 'save-draft',
+          fingerprint,
+          pageRevision: revision,
+        };
+        const page: KnowledgePageRecord = {
+          schemaVersion: 1,
+          spaceId: access.spaceId,
+          libraryId: input.libraryId,
+          pageId: input.pageId,
+          ownerActorId: access.actorId,
+          version: revision,
+          versions: previous?.versions ?? [],
+          draft: {
+            title: input.content.title,
+            format: input.content.format,
+            body,
+            ...(original ? { original } : {}),
+            sources: input.content.sources,
+            authorship,
+            savedAt: new Date().toISOString(),
+          },
+          receipts: [...(previous?.receipts ?? []), receipt],
+        };
+        access.check();
+        await this.store.put(page);
+        access.check();
+        return this.writeValue(access, page, receipt, 'saved');
+      }),
+    );
+  }
+
+  publish(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeWriteValue>> {
+    return this.run(request, raw, signal, (access) =>
+      this.store.exclusive(async () => {
+        const input = KnowledgePublishRequestSchema.parse(raw),
+          page = this.owned(access, input.libraryId, input.pageId),
+          fingerprint = digest({ operation: 'publish', actorId: access.actorId, input });
+        const replayed = this.replay(access, page, input.idempotencyKey, 'publish', fingerprint);
+        if (replayed) return replayed;
+        this.writeBudget(page, input.expectedVersion);
+        const pending = page.draft;
+        if (!pending || pending.body.bytes === 0) throw new KnowledgeError('invalid');
+        if (page.versions.length >= KNOWLEDGE_LIMITS.versionsPerPage)
+          throw new KnowledgeError('limit');
+        const check = () => {
+          access.check();
+          this.checkSources(access, pending.sources);
+        };
+        check();
+        await this.bytes.read(pending.body, access.signal, check);
+        if (pending.original) await this.bytes.read(pending.original, access.signal, check);
+        check();
+        const published: KnowledgePublished = {
+          version: page.versions.length + 1,
+          title: pending.title,
+          format: pending.format,
+          body: pending.body,
+          ...(pending.original ? { original: pending.original } : {}),
+          sources: pending.sources,
+          publishedAt: new Date().toISOString(),
+        };
+        const receipt: KnowledgeWriteReceipt = {
+          key: input.idempotencyKey,
+          operation: 'publish',
+          fingerprint,
+          pageRevision: page.version + 1,
+          reference: reference(page, published),
+        };
+        const next: KnowledgePageRecord = {
+          ...page,
+          version: receipt.pageRevision,
+          versions: [...page.versions, published],
+          receipts: [...page.receipts, receipt],
+        };
+        delete next.draft;
+        access.check();
+        await this.store.put(next);
+        access.check();
+        return this.writeValue(access, next, receipt, 'published');
+      }),
+    );
   }
 
   private issueCursor(binding: object, offset: number): string {
