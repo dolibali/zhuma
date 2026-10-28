@@ -1025,7 +1025,9 @@ export class MemberLocalExecutionOwner {
       this.lifetime.abort();
       await this.historyReader.close();
       for (const state of this.states.values()) this.fence(state);
-      await Promise.allSettled([...this.jobs]);
+      // A first joins every already-sent accept and hands late issued handles
+      // to stop(). Drain tasks may themselves enqueue their original events.
+      while (this.jobs.size) await Promise.allSettled([...this.jobs]);
       await this.results.close();
       await this.publications?.close();
       await this.native.close();

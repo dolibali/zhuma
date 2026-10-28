@@ -401,8 +401,8 @@ export async function fixture(t, options = {}) {
     origin: `http://127.0.0.1:${server.address().port}`,
     methods,
     expectedActorId: 'chen',
-    authentication: async (signal) => {
-      await options.beforeAuthentication?.(signal);
+    authentication: async (signal, context) => {
+      await options.beforeAuthentication?.(signal, context);
       return { cookie: 'synthetic-original-member' };
     },
     secrets: new MemberLocalExecutionSecrets(store),

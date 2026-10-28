@@ -19,6 +19,7 @@ import {
 } from '@zhuma/agent-core';
 import {
   MemberLocalExecutionClient,
+  type MemberLocalClientOptions,
   type MemberLocalSourceOptions,
 } from './member-local-execution-client.js';
 import {
@@ -51,7 +52,7 @@ export interface MemberLocalProtocolOptions {
   readonly origin: string;
   /** A supplies actual compiled Host mount names, never a renderer/model URL. */
   readonly methods: Readonly<Record<RemoteRunOperation, string>>;
-  readonly authentication: (signal: AbortSignal) => HeadersInit | Promise<HeadersInit>;
+  readonly authentication: MemberLocalClientOptions['authentication'];
   readonly secrets: MemberLocalExecutionSecrets;
   readonly expectedActorId: string;
 }

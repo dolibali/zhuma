@@ -22,7 +22,10 @@ export interface MemberLocalClientOptions {
   /** Exact compiled operation names from D's single remote-run contract. */
   readonly methods: readonly string[];
   /** Original Host credential owner; secrets never enter ordinary metadata. */
-  readonly authentication: (signal: AbortSignal) => HeadersInit | Promise<HeadersInit>;
+  readonly authentication: (
+    signal: AbortSignal,
+    context: { readonly method: string },
+  ) => HeadersInit | Promise<HeadersInit>;
   /** Compiled private application headers from the authoritative contract. */
   readonly privateHeaderNames?: readonly string[];
   readonly timeoutMs?: number;
@@ -111,7 +114,7 @@ export class MemberLocalExecutionClient {
         envelope = clientRequestSchema.parse({ type: 'client-request', method, rpcId, payload }),
         body = JSON.stringify(envelope);
       if (Buffer.byteLength(body) > RESPONSE_BYTES) throw new MemberLocalTransportError('limit');
-      const authorization = await this.options.authentication(bounded);
+      const authorization = await this.options.authentication(bounded, Object.freeze({ method }));
       bounded.throwIfAborted();
       const headers = new Headers(authorization);
       for (const [name, value] of scopedHeaders) headers.set(name, value);
