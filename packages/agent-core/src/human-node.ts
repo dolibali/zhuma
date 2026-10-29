@@ -688,6 +688,17 @@ export function unlockDownstream(input: {
   const refsFilled =
     dependencies.satisfied &&
     canonicalPayload(input.record.handoff.inputRefs) !== canonicalPayload(handoff.inputRefs);
+  // A late repair from another already accepted predecessor is not a new
+  // upstream change. Keep validation/replay checks above, and retain any flag
+  // already recorded for a genuine change; do not persist this synthetic mark.
+  if (
+    dependencies.satisfied &&
+    !refsFilled &&
+    outcome.decision.status === 'applied' &&
+    outcome.decision.result.effects.length === 1 &&
+    outcome.decision.result.effects[0] === 'mark-upstream-affected'
+  )
+    return { ok: true, disposition: 'ignored', record: input.record };
   if (outcome.decision.status === 'applied') {
     return {
       ok: true,
