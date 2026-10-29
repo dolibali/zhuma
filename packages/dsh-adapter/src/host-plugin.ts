@@ -40,6 +40,7 @@ import { mountHostSharedBackend } from './host-shared-backend-http.js';
 import { openHostMemberLocalOptionsHttp } from './host-member-local-options-http.js';
 import {
   createHostNativeOwnerLifecycle,
+  HostNativeOpenRefusal,
   type HostNativeChild,
 } from './host-native-owner-lifecycle.js';
 import { HostSharedBackend, SharedBackendError } from './host-shared-backend.js';
@@ -707,7 +708,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         };
       } catch (error) {
         await mount.dispose();
-        throw error;
+        throw new HostNativeOpenRefusal(error);
       }
     }
     try {

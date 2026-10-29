@@ -155,6 +155,8 @@ test('shared file carrier: logout cancels a live reader; corrupt bytes cannot fi
   const response = await h.owner.file('file', fileRequest(selected));
   const reader = response.body.getReader();
   assert.deepEqual(Buffer.from((await reader.read()).value), bytes);
+  await h.request(selected, 'identity.session');
+  assert.equal(cancelled, 0, 'A verified member session must not revoke a live file reader');
   const pending = reader.read();
   const rejected = assert.rejects(pending);
   await h.request(selected, 'identity.logout');
@@ -163,6 +165,22 @@ test('shared file carrier: logout cancels a live reader; corrupt bytes cannot fi
   corrupt = true;
   await h.request(selected, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
   await assert.rejects((await h.owner.file('file', fileRequest(selected))).arrayBuffer());
+});
+
+test('shared backend reconnect signal: only an originally verified member session publishes verification', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const events = [];
+  const off = h.owner.onNativeAuthenticationChanged((kind) => events.push(kind));
+  await h.request(selection, 'member.snapshot', { spaceId: 'north' }, { rpcId: randomUUID() });
+  assert.deepEqual(events, []);
+  await h.request(selection, 'identity.session');
+  assert.deepEqual(events, ['verified']);
+  h.replaceBackend();
+  await assert.rejects(h.request(selection, 'identity.session'), { code: 'identity-changed' });
+  assert.deepEqual(events, ['verified'], 'A different backend identity cannot restore an owner');
+  off();
 });
 
 async function fixture(t, fileHandler, businessHandler) {
