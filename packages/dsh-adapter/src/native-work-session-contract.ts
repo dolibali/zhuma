@@ -191,7 +191,24 @@ export interface NativeAssistantSnapshot {
 }
 
 /** Whitelisted presentation only. No raw events, reasoning, tool arguments or replay data. */
+export const NATIVE_TURN_END_KINDS = Object.freeze([
+  'completed',
+  'blocked',
+  'max-tokens',
+  'error',
+  'aborted',
+  'interrupted',
+  'forked',
+] as const);
+export type NativeTurnEndKind = (typeof NATIVE_TURN_END_KINDS)[number] | 'unknown';
 export type NativeConversationFrame =
+  | {
+      readonly type: 'turn-end';
+      readonly seq: number;
+      readonly time: number;
+      readonly turn: number;
+      readonly reason: { readonly kind: NativeTurnEndKind };
+    }
   | {
       readonly type: 'message';
       readonly seq: number;

@@ -100,6 +100,27 @@ export function readConversationFrame(
 ): NativeConversationFrame {
   const value = envelope(raw, run, spaceId);
   if (value.type === 'ready') return { type: 'ready' };
+  if (value.type === 'turn-end') {
+    const reason = object(value.reason);
+    return {
+      type: 'turn-end',
+      seq: number(value.seq),
+      time: number(value.time),
+      turn: number(value.turn, 1),
+      reason: {
+        kind: oneOf(reason.kind, [
+          'completed',
+          'blocked',
+          'max-tokens',
+          'error',
+          'aborted',
+          'interrupted',
+          'forked',
+          'unknown',
+        ]),
+      },
+    };
+  }
   if (value.type === 'message') {
     const seq = number(value.seq);
     return {

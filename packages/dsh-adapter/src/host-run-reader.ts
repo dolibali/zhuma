@@ -150,6 +150,14 @@ export function conversationTarget(
 /** Project exact known fields, even if a future native version adds private fields. */
 export function publicFrame(value: NativeConversationFrame): NativeConversationFrame {
   switch (value.type) {
+    case 'turn-end':
+      return {
+        type: value.type,
+        seq: value.seq,
+        time: value.time,
+        turn: value.turn,
+        reason: { kind: value.reason.kind },
+      };
     case 'message':
       return {
         type: value.type,
