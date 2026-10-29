@@ -25,6 +25,10 @@ import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
 import { ControlIcon } from './ControlIcon.js';
 import { TaskBoard } from './TaskBoard.js';
+import { taskBoardColumn, taskBoardColumns } from './task-board.js';
+import { emptyTaskFilters, taskFilterCandidates } from './task-filters.js';
+import { useTaskFilters } from './useTaskFilters.js';
+import { PlanningReadiness, usePlanningReadiness } from './PlanningReadiness.js';
 import {
   latestTaskPlan,
   useTaskProgress,
@@ -111,6 +115,7 @@ export function WorkbenchPage({
   } | null>(null);
   const member = api.member;
   const capabilities = member?.capabilities();
+  const planningReadiness = usePlanningReadiness(api, model);
   const dialogBaseline = useRef('');
   const [saving, setSaving] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -142,7 +147,16 @@ export function WorkbenchPage({
     }
   }, [assetContent]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  const [taskView, setTaskView] = useState<'list' | 'board'>('list');
+  const [taskFilters, setTaskFilters] = useTaskFilters(
+    member && projectExecution
+      ? {
+          accountId: member.actorId,
+          spaceId: projectExecution.spaceId,
+        }
+      : undefined,
+  );
+  const taskView = taskFilters.view;
+  const setTaskView = (view: 'list' | 'board') => setTaskFilters({ ...taskFilters, view });
   const [initialPlanning, setInitialPlanning] = useState<InitialPlanning | null>(null);
   const submitting = useRef(false);
   const pageGeneration = useRef(0);
@@ -153,7 +167,15 @@ export function WorkbenchPage({
     [],
   );
   useEffect(() => () => initialPlanning?.controller.abort(), [initialPlanning]);
-  const [projectFilter, setProjectFilter] = useState('');
+  const projectFilter = state.projects.some((project) => project.id === taskFilters.projectId)
+    ? taskFilters.projectId
+    : '';
+  const participantFilter = state.participants.some(
+    (person) => person.id === taskFilters.participantId,
+  )
+    ? taskFilters.participantId
+    : '';
+  const setProjectFilter = (projectId: string) => setTaskFilters({ ...taskFilters, projectId });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [projectTab, setProjectTab] = useState<ProjectTab>('overview');
   const activeProject =
@@ -573,11 +595,11 @@ export function WorkbenchPage({
           ? state.assets
           : state.tasks
     ).some((item) => item.id === dialog.value.id);
-  const tasks = state.tasks
-    .filter(
-      (t) => (!projectFilter || t.projectId === projectFilter) && matches(`${t.title} ${t.goal}`),
-    )
-    .reverse();
+  const taskCandidates = taskFilterCandidates(state.tasks, {
+    ...taskFilters,
+    projectId: projectFilter,
+    participantId: participantFilter,
+  });
   const progressTasks = activeTask
     ? [activeTask]
     : activeProject && ['overview', 'work'].includes(projectTab)
@@ -586,7 +608,7 @@ export function WorkbenchPage({
           .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
           .slice(0, projectTab === 'overview' ? 5 : undefined)
       : section === 'tasks'
-        ? tasks
+        ? taskCandidates
         : [];
   const progressPlans = progressTasks.flatMap((task) => {
     const plan = latestTaskPlan(state.appliedPlans, task.id);
@@ -604,6 +626,16 @@ export function WorkbenchPage({
       return { state: 'error', message: '当前确认计划不唯一，请刷新。' };
     return progress.get(taskId);
   }
+  const stageFor = (task: WorkTask) =>
+    taskBoardColumn(
+      task,
+      state.appliedPlans.some((plan) => plan.taskId === task.id),
+      progressFor(task.id),
+    );
+  const tasks = taskCandidates.filter(
+    (task) => !taskFilters.stage || stageFor(task) === taskFilters.stage,
+  );
+  const stageLoading = taskCandidates.some((task) => progressFor(task.id)?.state === 'loading');
   if (loading)
     return (
       <div className="zhuma zm-loading" role="status">
@@ -691,7 +723,7 @@ export function WorkbenchPage({
           <p className="zm-mode-notice">当前保留单人模式；已有资料不会自动迁入团队。</p>
         )}
         {!expertLibrary && (
-          <div className="zm-page-bar">
+          <div className={`zm-page-bar${section === 'tasks' ? ' zm-task-page-bar' : ''}`}>
             <nav className="zm-tabs" aria-label="工作台导航">
               {(Object.keys(labels) as Section[])
                 .filter((s) =>
@@ -728,12 +760,61 @@ export function WorkbenchPage({
                 ))}
             </nav>
             {section === 'tasks' && (
-              <div className="zm-filter">
+              <div className="zm-task-view" role="group" aria-label="任务显示方式">
+                <Button
+                  variant="quiet"
+                  aria-pressed={taskView === 'list'}
+                  onClick={() => setTaskView('list')}
+                >
+                  列表
+                </Button>
+                <Button
+                  variant="quiet"
+                  aria-pressed={taskView === 'board'}
+                  onClick={() => setTaskView('board')}
+                >
+                  看板
+                </Button>
+              </div>
+            )}
+            {section === 'tasks' && (
+              <div className="zm-filter zm-task-filters">
                 <input
                   aria-label="搜索任务"
                   placeholder="搜索任务…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  maxLength={200}
+                  value={taskFilters.search}
+                  onChange={(e) => setTaskFilters({ ...taskFilters, search: e.target.value })}
+                />
+                <SingleSelect
+                  label="筛选参与者"
+                  value={participantFilter}
+                  popupMinWidth={240}
+                  onValueChange={(participantId) =>
+                    setTaskFilters({ ...taskFilters, participantId })
+                  }
+                  options={[
+                    { value: '', label: '所有参与者' },
+                    ...state.participants.map((person) => ({
+                      value: person.id,
+                      label: `${person.name} · ${person.kind === 'expert' ? 'Agent 专家' : '成员'}`,
+                    })),
+                  ]}
+                />
+                <SingleSelect
+                  label="筛选阶段"
+                  value={taskFilters.stage}
+                  popupMinWidth={200}
+                  onValueChange={(stage) =>
+                    setTaskFilters({ ...taskFilters, stage: stage as typeof taskFilters.stage })
+                  }
+                  options={[
+                    { value: '', label: '所有阶段' },
+                    ...taskBoardColumns.map((column) => ({
+                      value: column.id,
+                      label: `${column.label} · ${taskCandidates.filter((task) => stageFor(task) === column.id).length}`,
+                    })),
+                  ]}
                 />
                 <SingleSelect
                   label="筛选项目"
@@ -744,21 +825,22 @@ export function WorkbenchPage({
                     ...state.projects.map((p) => ({ value: p.id, label: p.name })),
                   ]}
                 />
-                <div className="zm-task-view" role="group" aria-label="任务显示方式">
-                  <Button
-                    variant="quiet"
-                    aria-pressed={taskView === 'list'}
-                    onClick={() => setTaskView('list')}
-                  >
-                    列表
-                  </Button>
-                  <Button
-                    variant="quiet"
-                    aria-pressed={taskView === 'board'}
-                    onClick={() => setTaskView('board')}
-                  >
-                    看板
-                  </Button>
+                <div className="zm-task-filter-summary" role="status">
+                  <span>
+                    {tasks.length} / {state.tasks.length} 项任务
+                    {stageLoading ? ' · 正在读取阶段…' : ''}
+                  </span>
+                  {(projectFilter ||
+                    participantFilter ||
+                    taskFilters.stage ||
+                    taskFilters.search) && (
+                    <Button
+                      variant="quiet"
+                      onClick={() => setTaskFilters({ ...emptyTaskFilters, view: taskView })}
+                    >
+                      清除筛选
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
@@ -995,22 +1077,19 @@ export function WorkbenchPage({
             )}
             {!tasks.length && (
               <div className="zm-empty">
-                <h3>{search ? '没有匹配的任务' : '开始下一项工作'}</h3>
+                <h3>
+                  {stageLoading
+                    ? '正在读取任务阶段…'
+                    : state.tasks.length
+                      ? '没有匹配的任务'
+                      : '开始下一项工作'}
+                </h3>
                 <p>
-                  {search
+                  {state.tasks.length
                     ? '换个关键词，或清除筛选查看全部任务。'
                     : '创建任务后，选择参与者，再由 AI 或你自己编排工作流。'}
                 </p>
-                {search ? (
-                  <button
-                    onClick={() => {
-                      setSearch('');
-                      setProjectFilter('');
-                    }}
-                  >
-                    清除筛选
-                  </button>
-                ) : (
+                {!state.tasks.length && (
                   <button onClick={() => newTask()} className="primary" disabled={!canCreate}>
                     创建任务
                   </button>
@@ -1522,6 +1601,7 @@ export function WorkbenchPage({
                         />
                       </div>
                     </div>
+                    {member && <PlanningReadiness value={planningReadiness} />}
                     <fieldset className="zm-create-modes">
                       <legend>规划方式</legend>
                       <label>
