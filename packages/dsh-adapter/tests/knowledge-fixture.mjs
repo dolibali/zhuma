@@ -103,6 +103,7 @@ export async function knowledgeHost(t, options = {}) {
   // Synthetic Host-owned personal ownership facts, separate from memberships.
   const personalOwners = new Map([['personal-ann', 'ann']]);
   const service = await openKnowledgeService(ctx, {
+    ...(options.readWorkbench ? { readWorkbench: options.readWorkbench } : {}),
     ...(options.omitPersonalOwner
       ? {}
       : {
