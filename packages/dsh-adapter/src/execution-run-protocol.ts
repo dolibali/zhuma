@@ -19,6 +19,7 @@ export const executionRunGlobalSchema = z
     remoteExecutionAcceptedFileWriter: z.literal(1).optional(),
     remoteExecutionReviewWriter: z.literal(1).optional(),
     remoteExecutionKnowledgeWriter: z.literal(1).optional(),
+    remoteWorkflowWriter: z.literal(1).optional(),
     remoteExecution: remoteBackendRegistrySchema.optional(),
   })
   .refine((value) => value.nativeReviewWriter !== 1 || value.nativeExecutionWriter === 1)
@@ -36,7 +37,8 @@ export const executionRunGlobalSchema = z
       value.remoteExecutionReviewWriter !== 1 ||
       (value.remoteExecutionWriter === 1 && value.nativeReviewWriter === 1),
   )
-  .refine((value) => value.remoteExecutionWriter !== 1 || value.nativeExecutionWriter === 1);
+  .refine((value) => value.remoteExecutionWriter !== 1 || value.nativeExecutionWriter === 1)
+  .refine((value) => value.remoteWorkflowWriter !== 1 || value.remoteExecutionWriter === 1);
 
 export type ExecutionWriterGlobal = {
   schemaVersion: 1;
@@ -48,6 +50,7 @@ export type ExecutionWriterGlobal = {
   remoteExecutionAcceptedFileWriter?: 1;
   remoteExecutionReviewWriter?: 1;
   remoteExecutionKnowledgeWriter?: 1;
+  remoteWorkflowWriter?: 1;
   remoteExecution?: RemoteBackendRegistry;
 };
 
@@ -74,6 +77,7 @@ export function prepareExecutionRunWriter(global: unknown): ExecutionWriterGloba
     schemaVersion: 1,
     nativeExecutionWriter: 1,
     ...(parsed.data.nativeReviewWriter === 1 ? { nativeReviewWriter: 1 } : {}),
+    ...(parsed.data.remoteWorkflowWriter === 1 ? { remoteWorkflowWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionReviewWriter === 1 ? { remoteExecutionReviewWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionKnowledgeWriter === 1
       ? { remoteExecutionKnowledgeWriter: 1 }
@@ -137,12 +141,18 @@ export function assertExecutionRunStoreCompatibility(
               files?: unknown;
               acceptedFiles?: unknown;
               knowledge?: unknown;
+              workflow?: unknown;
             };
             composition?: { payload?: { knowledgeTool?: unknown } };
           }[];
         };
       }
     ).nativeExecution;
+    if (
+      raw?.runs?.some((run) => run.remote?.workflow !== undefined) &&
+      parsed.remoteWorkflowWriter !== 1
+    )
+      throw new ExecutionRunProtocolError('run-writer-incompatible');
     const review = (
       node as {
         nativeExecution?: { review?: { attempts?: { remote?: { backendId?: unknown } }[] } };
