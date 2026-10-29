@@ -15,6 +15,8 @@ export const KNOWLEDGE_LIMITS = {
   versionsPerPage: 32,
   sourcesPerVersion: 20,
   receiptsPerPage: 128,
+  projectLinks: 20,
+  receiptsPerProject: 128,
 } as const;
 
 const id = z
@@ -34,6 +36,67 @@ export const KnowledgeVersionRefSchema = z.strictObject({
   checksum: digest,
 });
 export type KnowledgeVersionRef = z.infer<typeof KnowledgeVersionRefSchema>;
+
+/** Project configuration references the original published content, never a copy. */
+export const KnowledgeProjectLinkSchema = z.strictObject({
+  reference: KnowledgeVersionRefSchema,
+  required: z.boolean(),
+});
+export type KnowledgeProjectLink = z.infer<typeof KnowledgeProjectLinkSchema>;
+export const KnowledgeProjectLinksSchema = z
+  .array(KnowledgeProjectLinkSchema)
+  .max(KNOWLEDGE_LIMITS.projectLinks)
+  .refine(
+    (links) =>
+      new Set(
+        links.map(({ reference: ref }) => JSON.stringify([ref.spaceId, ref.libraryId, ref.pageId])),
+      ).size === links.length,
+    'Each knowledge page can have only one project reference.',
+  );
+export const KnowledgeProjectLinksRequestSchema = z.strictObject({ spaceId: id, projectId: id });
+export const KnowledgeSaveProjectLinksRequestSchema = KnowledgeProjectLinksRequestSchema.extend({
+  expectedVersion: natural,
+  idempotencyKey: id,
+  links: KnowledgeProjectLinksSchema,
+});
+/** Portable source facts only. A snapshot is not node, Run or read authority. */
+export const KnowledgeProjectSnapshotSchema = z
+  .strictObject({
+    sourceVersion: z.literal('zhuma-project-knowledge@1'),
+    spaceId: id,
+    projectId: id,
+    relationshipVersion: natural,
+    links: KnowledgeProjectLinksSchema,
+    checksum: digest,
+  })
+  .refine((value) => value.links.every((link) => link.reference.spaceId === value.spaceId));
+export type KnowledgeProjectSnapshot = z.infer<typeof KnowledgeProjectSnapshotSchema>;
+export const KnowledgeProjectLinksValueSchema = KnowledgeProjectLinksRequestSchema.extend({
+  actorId: id,
+  relationshipVersion: natural,
+  links: z
+    .array(
+      KnowledgeProjectLinkSchema.extend({
+        title: z.string().min(1).max(200),
+        format: z.enum(['text', 'markdown']),
+        bytes: natural.max(KNOWLEDGE_LIMITS.bodyBytes),
+        hasUpdate: z.boolean(),
+      }),
+    )
+    .max(KNOWLEDGE_LIMITS.projectLinks),
+  snapshot: KnowledgeProjectSnapshotSchema,
+});
+export const KnowledgeProjectLinksWriteValueSchema = KnowledgeProjectLinksRequestSchema.extend({
+  actorId: id,
+  relationshipVersion: positive,
+  disposition: z.enum(['saved', 'replayed']),
+});
+export type KnowledgeProjectLinksRequest = z.input<typeof KnowledgeProjectLinksRequestSchema>;
+export type KnowledgeSaveProjectLinksRequest = z.input<
+  typeof KnowledgeSaveProjectLinksRequestSchema
+>;
+export type KnowledgeProjectLinksValue = z.infer<typeof KnowledgeProjectLinksValueSchema>;
+export type KnowledgeProjectLinksWriteValue = z.infer<typeof KnowledgeProjectLinksWriteValueSchema>;
 
 export const KnowledgeLibrarySchema = z.strictObject({
   id,
