@@ -299,10 +299,12 @@
 }
 .zhuma .zm-login-entry {
   display: grid;
-  align-content: start;
+  align-content: safe center;
   justify-items: center;
   flex: 1;
-  padding: clamp(56px, 8vh, 80px) 24px 32px;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
 }
 .zhuma .zm-login-card {
   display: grid;
