@@ -4,6 +4,7 @@ import { Button } from '../workbench/Button.js';
 import { Modal } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import type { NativeReviewApi, NativeReviewState, NativeReviewHistoryPage } from './review-api.js';
+import { ReviewOutcomeRead } from './ReviewOutcome.js';
 
 type Props = { api: NativeReviewApi; target: LocalReviewOptionsQuery };
 type Catalog = Awaited<ReturnType<NativeReviewApi['options']>>;
@@ -28,15 +29,17 @@ export function NativeReviewLauncher({ api, target }: Props) {
   return (
     <>
       <Button id={triggerId} onClick={() => setOpen(true)}>
-        Agent 评审
+        查看评审
       </Button>
       {open && (
         <Modal
-          title="Agent 评审"
+          title="评审意见"
           close={() => setOpen(false)}
           restoreFocus={() => document.getElementById(triggerId)?.focus()}
         >
-          <ReviewForm key={signature} api={api} target={fixed} />
+          <div className="zm-form-body" role="region" aria-label="评审内容" tabIndex={0}>
+            <ReviewForm key={signature} api={api} target={fixed} />
+          </div>
         </Modal>
       )}
     </>
@@ -114,6 +117,7 @@ export function NativeReviewHistory({
         <h2>Agent 评审记录</h2>
         <Button onClick={close}>关闭</Button>
       </header>
+      <ReviewOutcomeRead api={api} target={target} />
       {error && (
         <p className="zm-error" role="alert">
           {error}
@@ -168,6 +172,15 @@ export function NativeReviewHistory({
   );
 }
 function ReviewForm({ api, target }: Props) {
+  return (
+    <ReviewOutcomeRead
+      api={api}
+      target={target}
+      openControls={<OpenReviewForm api={api} target={target} />}
+    />
+  );
+}
+function OpenReviewForm({ api, target }: Props) {
   const [catalog, setCatalog] = useState<Catalog>();
   const [run, setRun] = useState<NativeReviewState>();
   const [modelId, setModelId] = useState('');

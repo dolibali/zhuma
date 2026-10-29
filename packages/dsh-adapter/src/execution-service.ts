@@ -25,6 +25,9 @@ import {
   localReviewOptionsSchema,
   localReviewUnavailableReasonSchema,
   type LocalReviewOptions,
+  reviewOutcomeQuerySchema,
+  reviewOutcomeSchema,
+  type ReviewOutcomeView,
   completionSource,
   createExecutionHandoff,
   createNodeHandoffs,
@@ -196,6 +199,7 @@ import {
 } from './execution-review-contract.js';
 import {
   executionReviewTarget,
+  executionReviewArtifactFingerprint,
   prepareExecutionReview,
   readExecutionReviewState,
 } from './execution-review-state.js';
@@ -2147,6 +2151,86 @@ export class ExecutionService {
           };
         },
         true,
+        'review',
+      );
+    });
+  }
+
+  /** Copy persisted fixed-round facts without repairing nodes or admitting review work. */
+  readReviewOutcome(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<ReviewOutcomeView>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(reviewOutcomeQuerySchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      return this.withRunMember(
+        original,
+        input,
+        async (host, lease, node) => {
+          const workbench = this.workbench.readWorkbench();
+          const plans = workbench.appliedPlans.filter((plan) => plan.taskId === node.taskId);
+          const latest = Math.max(...plans.map((plan) => plan.revision));
+          const selected = plans.filter((plan) => plan.revision === latest);
+          const round = node.rounds.find((item) => item.id === input.roundId);
+          const artifact = node.artifactVersions.find(
+            (item) => item.id === input.artifactVersionId,
+          );
+          if (
+            selected.length !== 1 ||
+            selected[0]!.id !== node.planId ||
+            latest !== node.revision ||
+            !node.handoff.reviewRequired ||
+            !round ||
+            round.artifactVersionId !== input.artifactVersionId ||
+            !artifact ||
+            artifact.nodeId !== node.nodeId
+          )
+            throw new ExecutionReviewError('review-target-stale');
+          const applied = createExecutionHandoff(node, workbench);
+          const ballots = round.ballots.map((ballot) => {
+            const reviewer = applied.participants.find((item) => item.id === ballot.reviewerId);
+            if (!reviewer || !round.reviewerIds.includes(reviewer.id))
+              throw new ExecutionReviewError('review-plan-mismatch');
+            return { ...ballot, reviewerName: reviewer.name };
+          });
+          const cited = new Set(
+            round.ballots.flatMap((ballot) => ballot.unresolvedCommentIds ?? []),
+          );
+          const value = reviewOutcomeSchema.parse({
+            controllerMemberId: lease.memberId,
+            target: { ...input, artifactFingerprint: executionReviewArtifactFingerprint(artifact) },
+            nodeStatus: node.command.status,
+            artifact: {
+              id: artifact.id,
+              version: artifact.version,
+              ...(artifact.text === undefined ? {} : { text: artifact.text }),
+              links: artifact.links,
+              files: artifact.files.map(({ id, mediaType, byteSize }) => ({
+                id,
+                mediaType,
+                byteSize,
+              })),
+            },
+            round: { ...round, ballots },
+            comments: node.comments.filter(
+              (comment) =>
+                (comment.versionId === undefined || comment.versionId === artifact.id) &&
+                (comment.targetId === undefined || comment.targetId === artifact.id) &&
+                (comment.versionId === artifact.id ||
+                  comment.targetId === artifact.id ||
+                  cited.has(comment.id)),
+            ),
+          });
+          this.assertRunNodeAccess(host, lease.memberId, input.spaceId, node);
+          this.assertReviewController(lease.memberId, node);
+          lease.assertCurrent(input.spaceId);
+          return { ok: true, value: structuredClone(value) };
+        },
+        false,
         'review',
       );
     });

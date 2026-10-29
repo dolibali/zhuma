@@ -8,6 +8,7 @@ import { reviewIdentity, useExecutionCommand, useFormKey } from './interaction.j
 import { createExecutionGoalView } from '../execution-view.js';
 import type { NativeReviewApi } from '../run/review-api.js';
 import { NativeReviewLauncher } from '../run/NativeReviewWorkspace.js';
+import { ReviewBallots } from './ReviewBallots.js';
 
 type Props = {
   api: ExecutionApi;
@@ -121,21 +122,7 @@ function ReviewForm({ api, node, onSubmitted, nativeReview }: Props) {
           />
         )}
       </article>
-      {!!round?.ballots.length && (
-        <div className="zm-execution-ballots" aria-label="本轮意见">
-          {round.ballots.map((ballot, index) => (
-            <p key={index}>
-              <strong>{ballot.reviewerId}</strong> ·{' '}
-              {ballot.action === 'approve'
-                ? '通过'
-                : ballot.action === 'request-changes'
-                  ? '退回修改'
-                  : '评论'}
-              {ballot.comment && <span className="zm-execution-text">{ballot.comment}</span>}
-            </p>
-          ))}
-        </div>
-      )}
+      <ReviewBallots ballots={round?.ballots ?? []} />
       <Field label="评审意见">
         <textarea
           rows={4}

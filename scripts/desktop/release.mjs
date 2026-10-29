@@ -239,7 +239,7 @@ export async function publish(context, directory, api) {
 1. 下载 DMG、SOURCE.json、SHA256SUMS 和两个 packaged-backend 启动文件，放在同一目录，执行 shasum -a 256 -c SHA256SUMS 核验。
 2. 打开 DMG，将 Zhuma 拖入 Applications。首次被系统拦截时，核对来源后按 [macOS 正常允许打开流程](https://support.apple.com/zh-cn/102445)操作；不要全局关闭系统保护。
 3. 首次使用自行配置模型供应商与凭据，模型调用费用由供应商计费。
-4. 需要共享后端时，用同目录脚本运行 sh packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data；文件交付另加 --file-uploads。保留两个启动文件同目录，使用本版 App；成员在桌面选择该后端并正常登录。
+4. 需要共享后端时，用同目录脚本运行 sh packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data --file-uploads --independent-reviews，启用文件交付和独立 Agent 评审。保留两个启动文件同目录，使用本版 App；成员在桌面选择该后端并正常登录。
 
 ## 支持与边界
 仅 macOS Apple Silicon（arm64）；ad-hoc 签名、未公证，无自动更新。Intel Mac、Windows、Linux 尚未认证。

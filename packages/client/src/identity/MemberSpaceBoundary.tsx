@@ -135,6 +135,7 @@ export function MemberSpaceBoundary({
           <SingleSelect
             id={pickerId}
             label="当前空间"
+            popupMinWidth={260}
             className="zm-space-switcher"
             title={options.find((option) => option.value === selected)?.label ?? caption}
             value={selected}
