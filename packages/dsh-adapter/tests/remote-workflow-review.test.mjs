@@ -317,11 +317,29 @@ test('remote workflow review: two fixed request-changes rounds carry original ci
         'rework-budget-exhausted',
       );
       const stopped = ok(await h.send(control(h, 'workflow-stop', intent)));
+      const stoppedNode = structuredClone(h.read());
       intent = ok(
         await h.send(
-          control(h, 'workflow-resume', stopped, { expectedVersion: stopped.intent.version }),
+          control(h, 'workflow-resume', stopped, {
+            expectedVersion: stopped.intent.version,
+            defaults: {
+              ...stopped.intent.defaults,
+              workspace: {
+                kind: 'local',
+                rootId: 'opaque-local-root',
+                access: 'write',
+                publish: [{ kind: 'directory', path: 'deliverables' }],
+              },
+            },
+          }),
         ),
       );
+      assert.equal(intent.intent.intentId, stopped.intent.intentId);
+      assert.deepEqual(intent.intent.budget, stopped.intent.budget);
+      assert.deepEqual(intent.intent.defaults.workspace.publish, [
+        { kind: 'directory', path: 'deliverables' },
+      ]);
+      assert.deepEqual(h.read(), stoppedNode);
       assert.equal(
         ok(await h.send(control(h, 'workflow-next', intent))).candidates.some(
           (item) => item.target.nodeId === 'produce',

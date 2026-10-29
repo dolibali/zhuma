@@ -146,9 +146,38 @@ export const REMOTE_WORKFLOW_LIMITS = Object.freeze({
   armTtlMs: 60_000,
   concurrent: 4,
 });
+const workflowPublishRange = z.strictObject({
+  kind: z.enum(['file', 'directory']),
+  path: z
+    .string()
+    .min(1)
+    .max(512)
+    .refine(
+      (value) =>
+        !value.startsWith('/') &&
+        !/[\\\u0000-\u001f\u007f]/u.test(value) &&
+        !/^[a-z]:/iu.test(value) &&
+        !value.includes('://') &&
+        value.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
+    ),
+});
+const workflowPublishRanges = z
+  .array(workflowPublishRange)
+  .max(16)
+  .refine(
+    (value) =>
+      new Set(value.map((item) => `${item.kind}:${item.path}`)).size === value.length &&
+      remoteJsonBytes(value) <= 4096,
+  );
 export const remoteWorkflowWorkspaceSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('text-only') }),
-  z.strictObject({ kind: z.literal('local'), rootId: id, access: z.enum(['read', 'write']) }),
+  z.strictObject({
+    kind: z.literal('local'),
+    rootId: id,
+    access: z.enum(['read', 'write']),
+    // Absence preserves existing signed intents; only explicit choices freeze ranges.
+    publish: workflowPublishRanges.optional(),
+  }),
 ]);
 export const remoteWorkflowDefaultsSchema = z.strictObject({
   model: remoteModelSelectionSchema,
