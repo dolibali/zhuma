@@ -34,13 +34,16 @@ type PublicWorkspace = z.infer<typeof publicWorkspace> | { readonly kind: 'unava
 export interface HostWorkflowView {
   readonly target: WorkflowLocation;
   readonly title: string;
-  readonly state: WorkflowExecutionView['state'];
+  readonly state: WorkflowExecutionView['state'] | 'waiting';
   readonly planStarted: boolean;
   readonly requiresResume: boolean;
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
+  readonly controlledNodeCount?: number;
   /** Optional for older clients. Assignment count retains its original meaning. */
   readonly expertReviewRequired?: boolean;
+  readonly automaticReview?: boolean;
+  readonly attention?: string;
   readonly intent: {
     readonly intentId: string;
     readonly generation: number;
@@ -52,6 +55,7 @@ export interface HostWorkflowView {
 export interface HostWorkflowOptions extends HostWorkflowView {
   readonly models: HostRunModels;
   readonly workspaces: readonly HostWorkspaceChoice[];
+  readonly maxConcurrent?: number;
 }
 export interface HostWorkflowOperations {
   options(

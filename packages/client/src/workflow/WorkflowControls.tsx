@@ -23,6 +23,7 @@ type Props = {
 const labels: Record<WorkflowView['state'], string> = {
   inactive: '尚未运行',
   running: '运行中',
+  waiting: '等待工作就绪',
   stopping: '正在停止',
   paused: '已停止',
   completed: '已完成',
@@ -114,7 +115,13 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
   }, [refresh]);
   // This is a passive fact read, never an implicit start or resume on refresh.
   useEffect(() => {
-    if (!view || open || command.pending || !['running', 'stopping'].includes(view.state)) return;
+    if (
+      !view ||
+      open ||
+      command.pending ||
+      !['running', 'waiting', 'stopping'].includes(view.state)
+    )
+      return;
     const timer = setInterval(() => {
       if (!document.hidden) void refresh();
     }, 2500);
@@ -199,7 +206,11 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
   const canResume = recovering || view?.state === 'paused' || view?.state === 'requires-resume';
   const resumeLabel = recovering ? '恢复工作流' : '继续工作流';
   const canStart =
-    view?.state === 'inactive' && (view.expertNodeCount > 0 || view.expertReviewRequired === true);
+    view?.state === 'inactive' &&
+    (view.controlledNodeCount === undefined
+      ? view.expertNodeCount > 0 ||
+        (view.expertReviewRequired === true && view.automaticReview !== false)
+      : view.controlledNodeCount > 0);
   const selected =
     choices?.models.kind === 'ready' && choices.models.items.some((item) => item.id === modelId);
   const workspaceUnavailable =
@@ -238,7 +249,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
           {canResume ? resumeLabel : '运行工作流'}
         </Button>
       )}
-      {view?.state === 'running' && (
+      {view && ['running', 'waiting'].includes(view.state) && (
         <Button
           disabled={command.pending}
           busy={command.pending}
@@ -268,6 +279,11 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
           {error || command.error}
         </span>
       )}
+      {view?.attention && !open && (
+        <span role="status" className="zm-muted">
+          {view.attention}
+        </span>
+      )}
       {open && !workspaceOpen && (
         <Modal
           title={view?.intent ? resumeLabel : '运行工作流'}
@@ -286,7 +302,14 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
               commit();
             }}
           >
-            <p className="zm-muted">Agent 按依赖执行，人工节点进入负责人的待办。</p>
+            <p className="zm-muted">
+              {view?.controlledNodeCount === undefined
+                ? 'Agent 按依赖执行，人工节点进入负责人的待办。'
+                : 'Agent 接续处理你负责的节点；其他成员从各自待办开始。'}
+            </p>
+            {view?.automaticReview === false && view.expertReviewRequired && (
+              <p className="zm-muted">专家评审需在待办中手动启动。</p>
+            )}
             {loading && !choices ? (
               <p role="status">正在读取可用模型和工作区…</p>
             ) : (
@@ -425,10 +448,12 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                           value={String(concurrent)}
                           disabled={command.pending}
                           onValueChange={(value) => setConcurrent(Number(value))}
-                          options={[1, 2, 3, 4].map((value) => ({
-                            value: String(value),
-                            label: String(value),
-                          }))}
+                          options={[1, 2, 3, 4]
+                            .filter((value) => value <= (choices.maxConcurrent ?? 4))
+                            .map((value) => ({
+                              value: String(value),
+                              label: String(value),
+                            }))}
                         />
                       </label>
                     </>

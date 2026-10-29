@@ -92,7 +92,7 @@ test('member native private HTTP: original SDK owner required before any body re
   const reply = await h.routes.get('/api/zhuma-member-native/begin').fetch(request);
   assert.equal(reply.status, 403);
   assert.equal(h.calls(), 0);
-  assert.equal(h.routes.size, 16);
+  assert.equal(h.routes.size, 21);
   for (const endpoint of [
     'review-options',
     'review-start',
@@ -101,6 +101,11 @@ test('member native private HTTP: original SDK owner required before any body re
     'review-session',
     'review-recover',
     'review-session-stop',
+    'workflow-options',
+    'workflow-read',
+    'workflow-start',
+    'workflow-resume',
+    'workflow-stop',
   ]) {
     const response = await h.routes
       .get(`/api/zhuma-member-native/${endpoint}`)

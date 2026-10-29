@@ -17,6 +17,11 @@ const endpoints = new Set([
   'review-session',
   'review-recover',
   'review-session-stop',
+  'workflow-options',
+  'workflow-read',
+  'workflow-start',
+  'workflow-resume',
+  'workflow-stop',
 ]);
 /** Local transport selection only. Original remote identity/business calls use
  * their fixed proxy; native calls stay on this device's SDK owner HTTP. */
@@ -66,13 +71,17 @@ export function createMemberNativeClient(
       fetcher: (async (input, init) => {
         if (
           typeof input !== 'string' ||
-          (!input.startsWith('/api/zhuma-run/') && !input.startsWith('/api/zhuma-review/'))
+          (!input.startsWith('/api/zhuma-run/') &&
+            !input.startsWith('/api/zhuma-review/') &&
+            !input.startsWith('/api/zhuma-workflow/'))
         )
           return backend.fetcher(input, init);
         current();
         const review = input.startsWith('/api/zhuma-review/');
-        const name = input.slice((review ? '/api/zhuma-review/' : '/api/zhuma-run/').length);
-        const endpoint = review ? `review-${name}` : name;
+        const workflow = input.startsWith('/api/zhuma-workflow/');
+        const prefix = review ? 'review' : workflow ? 'workflow' : 'run';
+        const name = input.slice(`/api/zhuma-${prefix}/`.length);
+        const endpoint = prefix === 'run' ? name : `${prefix}-${name}`;
         if (!endpoints.has(endpoint) || init?.method !== 'POST' || typeof init.body !== 'string')
           throw new TypeError('Unsupported native request');
         const wire: unknown = JSON.parse(init.body);
@@ -84,7 +93,7 @@ export function createMemberNativeClient(
           !('type' in wire) ||
           wire.type !== 'client-request' ||
           !('method' in wire) ||
-          wire.method !== `${review ? 'zhuma-review' : 'zhuma-run'}/${name}` ||
+          wire.method !== `zhuma-${prefix}/${name}` ||
           !('rpcId' in wire) ||
           typeof wire.rpcId !== 'string' ||
           !('payload' in wire)

@@ -481,6 +481,31 @@ export function createHostMemberNativeWorkspaces(
   };
   return {
     ready: whenReady,
+    /** Metadata for the workflow ceiling only; every node still needs prepare/bind. */
+    workflowWorkspace(raw: unknown) {
+      const input = memberNativeWorkspaceSchema.parse(raw);
+      if (input.kind === 'text-only')
+        return { workspace: { kind: 'text-only' as const }, localTools: [] };
+      const choice = choices().find((item) => item.id === input.id);
+      if (!choice) denied();
+      return {
+        workspace: { kind: 'local' as const, rootId: choice.source.id, access: choice.access },
+        localTools: tools().describe(
+          choice.access === 'write' ? ['read', 'write', 'edit'] : ['read'],
+        ),
+      };
+    },
+    workflowSelection(
+      workspace:
+        { kind: 'text-only' } | { kind: 'local'; rootId: string; access: 'read' | 'write' },
+    ) {
+      if (workspace.kind === 'text-only') return { kind: 'text-only' as const };
+      const choice = choices().find(
+        (item) => item.source.id === workspace.rootId && item.access === workspace.access,
+      );
+      if (!choice) denied();
+      return { kind: 'local' as const, id: choice.id };
+    },
     choices() {
       try {
         tools();

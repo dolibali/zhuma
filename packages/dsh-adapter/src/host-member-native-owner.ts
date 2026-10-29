@@ -5,13 +5,16 @@ import {
   canonicalPayload,
   remoteRunScopeSchema,
   remoteLocalCapabilitiesSchema,
+  type RemoteWorkflowRef,
 } from '@zhuma/agent-core';
 import { HostSharedBackend, SharedBackendError } from './host-shared-backend.js';
 import {
   MemberLocalExecutionProtocol,
   type MemberLocalAcceptedRun,
+  type MemberLocalAcceptInput,
 } from './member-local-execution-protocol.js';
 import { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
+import { createHostMemberNativeWorkflow } from './host-member-native-workflow.js';
 import { MemberLocalReviewProtocol } from './member-local-review-protocol.js';
 import { createHostMemberNativeReviews } from './host-member-native-review.js';
 import {
@@ -381,9 +384,106 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     void work.finally(() => jobs.delete(work)).catch(() => undefined);
     return work;
   };
+  /** Same preparation for explicit node work and automatic candidates. A
+   * workflow default is a ceiling, never this node's input/tool authority. */
+  async function prepareRun(
+    input: Omit<z.infer<typeof memberBeginRequest>, 'newRunId' | 'newSegmentId'> & {
+      workflow?: RemoteWorkflowRef;
+    },
+    wait: AbortSignal,
+  ): Promise<MemberLocalAcceptInput> {
+    const local = input.workspace.kind === 'local';
+    if (local !== (input.tools === 'local-tools') || (local && !native.outputFileSource))
+      throw new ExecutionRunError('run-authority-unavailable');
+    const target = hostRunOptionsQuerySchema.parse({
+      spaceId: input.spaceId,
+      taskId: input.taskId,
+      planId: input.planId,
+      revision: input.revision,
+      nodeId: input.nodeId,
+    });
+    const value = await facts(target, wait);
+    const knowledgeChoice = await knowledge.prepare(
+      input.requestId,
+      target.spaceId,
+      input.knowledge,
+      wait,
+    );
+    if (knowledgeChoice && !native.knowledgeSource)
+      throw new ExecutionRunError('run-authority-unavailable');
+    const selected = workspaces.prepare(input.requestId, target, input.workspace);
+    const acceptedInput = value.tools === 'accepted-input-reader';
+    const resources = MemberLocalExecutionOwner.resourceSource(ctx);
+    const needsResources = value.resources.some(
+      (resource) => z.object({ kind: z.string() }).parse(resource).kind !== 'input',
+    );
+    return {
+      target,
+      purpose: 'work',
+      mode: input.mode,
+      expectedNodeVersion: input.expectedNodeVersion,
+      expectedRunVersion: input.expectedRunVersion,
+      model: input.model,
+      executor: input.executor,
+      workspace: selected?.workspace ?? { kind: 'text-only' },
+      ...(input.workflow ? { workflow: input.workflow } : {}),
+      capabilities: {
+        ...(knowledgeChoice ? { knowledge: native.knowledgeSource! } : {}),
+        ...(needsResources && resources ? { resources } : {}),
+        ...(acceptedInput ? { acceptedInput: '1' as const } : {}),
+        ...(acceptedInput && protocol.supportsFilePublishing && native.acceptedFileSource
+          ? { acceptedFile: native.acceptedFileSource }
+          : {}),
+        ...(selected ? { outputFile: native.outputFileSource! } : {}),
+        resultIntent: selected ? 'zhuma-native-result-intent@2' : 'zhuma-native-result-intent@1',
+        localTools: selected
+          ? remoteLocalCapabilitiesSchema.shape.localTools.parse(workspaces.describe(selected))
+          : [],
+      },
+    };
+  }
+  const workflows = createHostMemberNativeWorkflow(ctx, {
+    backend,
+    connectionId: connection.connectionId,
+    actorId: connection.actorId,
+    protocol,
+    native,
+    workspaces,
+    signal: lifetime.signal,
+    current: assertCurrent,
+    hooks: {
+      async prepareWork({ requestId, candidate, workflow, signal }) {
+        if (!workflow.intent) throw new ExecutionRunError('run-authority-unavailable');
+        const workspace = workspaces.workflowSelection(workflow.intent.defaults.workspace);
+        const value = await facts(candidate.target, signal);
+        return prepareRun(
+          {
+            ...candidate.target,
+            requestId,
+            mode: candidate.mode,
+            expectedNodeVersion: candidate.expectedNodeVersion,
+            expectedRunVersion: candidate.expectedRunVersion,
+            model: workflow.intent.defaults.model,
+            executor: candidate.executor,
+            workspace: memberNativeWorkspaceSchema.parse(workspace),
+            tools: workspace.kind === 'local' ? 'local-tools' : value.tools,
+            workflow: candidate.workflow,
+          },
+          signal,
+        );
+      },
+      workAccepted({ requestId, signal }, accepted) {
+        acceptedRuns.add(accepted);
+        admit(signal);
+        knowledge.bind(requestId, accepted);
+        workspaces.bind(requestId, accepted);
+      },
+    },
+  });
   async function handle(endpoint: string, raw: unknown, wait: AbortSignal): Promise<unknown> {
     wait = AbortSignal.any([wait, admission.signal]);
     await assertCurrent(wait);
+    if (endpoint.startsWith('workflow-')) return workflows.handle(endpoint, raw, wait);
     if (endpoint.startsWith('review-')) {
       if (!reviews) throw new ExecutionRunError('run-authority-unavailable');
       return reviews.handle(endpoint, raw, wait);
@@ -455,9 +555,6 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     }
     if (endpoint === 'begin') {
       const input = memberBeginRequest.parse(raw);
-      const local = input.workspace.kind === 'local';
-      if (local !== (input.tools === 'local-tools') || (local && !native.outputFileSource))
-        throw new ExecutionRunError('run-authority-unavailable');
       const target = hostRunOptionsQuerySchema.parse({
         spaceId: input.spaceId,
         taskId: input.taskId,
@@ -465,47 +562,9 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         revision: input.revision,
         nodeId: input.nodeId,
       });
-      const value = await facts(target, wait);
-      const knowledgeChoice = await knowledge.prepare(
-        input.requestId,
-        target.spaceId,
-        input.knowledge,
-        wait,
-      );
-      if (knowledgeChoice && !native.knowledgeSource)
-        throw new ExecutionRunError('run-authority-unavailable');
-      const selected = workspaces.prepare(input.requestId, target, input.workspace);
-      const acceptedInput =
-        input.tools === 'accepted-input-reader' ||
-        (local && value.tools === 'accepted-input-reader');
-      const resources = MemberLocalExecutionOwner.resourceSource(ctx);
       const prepared = await protocol.prepareAccept(
         input.requestId,
-        {
-          target,
-          purpose: 'work',
-          mode: input.mode,
-          expectedNodeVersion: input.expectedNodeVersion,
-          expectedRunVersion: input.expectedRunVersion,
-          model: input.model,
-          executor: input.executor,
-          workspace: selected?.workspace ?? { kind: 'text-only' },
-          capabilities: {
-            ...(knowledgeChoice ? { knowledge: native.knowledgeSource! } : {}),
-            ...(resources ? { resources } : {}),
-            ...(acceptedInput ? { acceptedInput: '1' as const } : {}),
-            ...(acceptedInput && protocol.supportsFilePublishing && native.acceptedFileSource
-              ? { acceptedFile: native.acceptedFileSource }
-              : {}),
-            ...(selected ? { outputFile: native.outputFileSource! } : {}),
-            resultIntent: selected
-              ? 'zhuma-native-result-intent@2'
-              : 'zhuma-native-result-intent@1',
-            localTools: selected
-              ? remoteLocalCapabilitiesSchema.shape.localTools.parse(workspaces.describe(selected))
-              : [],
-          },
-        },
+        await prepareRun(input, wait),
         wait,
       );
       // Preparing private retry material is not permission to send after close.
@@ -649,6 +708,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     canSwitchBackend: () =>
       !closed &&
       !jobs.size &&
+      workflows.canSwitchBackend() &&
       (!reviews || reviews.canSwitchBackend()) &&
       (
         native as MemberLocalExecutionOwner & { canSwitchBackend?: () => boolean }
@@ -677,12 +737,14 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       if (!closing) {
         closed = true;
         admission.abort();
+        workflows.fence();
         reviews?.fence();
         knowledge.fence();
         // Native close owns physical cleanup before its original private
         // outgoing protocol or credentials adapter is sealed.
         closing = (async () => {
           workspaces.fence();
+          await workflows.whenAdmissionsIdle();
           pruneAccepted();
           // stop fences each existing drive synchronously; its business ACK
           // may fail after logout while original private cleanup still drains.
@@ -692,6 +754,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
           await Promise.allSettled(stopping);
           await reviewStopping;
           await native.close();
+          await workflows.close();
           await workspaces.close();
           // Unknown accepts or unsettled original resources retain this closed
           // owner/protocol for recovery. Never report a successful replacement.

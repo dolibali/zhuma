@@ -433,7 +433,7 @@ test(
       changed() {},
     };
     const h = await mount(t, WorkspaceApprovalDialog, props);
-    assert.equal(button(h, '选择本机目录').disabled, true);
+    assert.equal(button(h, '添加本机工作区').disabled, true);
     await h.update({
       ...props,
       api: {
@@ -448,7 +448,7 @@ test(
       await tick();
     });
     assert.doesNotMatch(h.container.textContent, /private old project/);
-    assert.equal(button(h, '选择本机目录').disabled, true);
+    assert.equal(button(h, '添加本机工作区').disabled, true);
   },
 );
 test(

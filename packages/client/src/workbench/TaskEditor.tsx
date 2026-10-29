@@ -829,7 +829,11 @@ export function TaskEditor({
         </details>
       </div>
       {nativeRun?.api.workflow &&
-        api.member?.actorId === task.ownerId &&
+        api.member &&
+        (api.member.actorId === task.ownerId ||
+          task.workflows.some((flow) =>
+            flow.nodes.some((node) => node.assigneeId === api.member?.actorId),
+          )) &&
         task.status === 'ready' &&
         applied &&
         !dirty && (

@@ -69,6 +69,25 @@ test('workflow Client contract: passive read shares member Run fences and never 
   );
   assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-workflow/read']);
 });
+
+test('workflow Client contract: member waiting facts preserve real control count, review availability and concurrency', async () => {
+  const h = transport({
+    ...started(),
+    state: 'waiting',
+    controlledNodeCount: 1,
+    automaticReview: false,
+    attention: '等待上游工作完成。',
+    maxConcurrent: 1,
+    models: { kind: 'ready', items: [] },
+    workspaces: [],
+  });
+  const view = await h.api.options(target, signal());
+  assert.equal(view.state, 'waiting');
+  assert.equal(view.controlledNodeCount, 1);
+  assert.equal(view.automaticReview, false);
+  assert.equal(view.maxConcurrent, 1);
+  assert.equal(view.attention, '等待上游工作完成。');
+});
 test('workflow Client contract: a changed account cannot send a workflow command', async () => {
   const hooks = { accountId: 'outside' },
     h = transport(initial(), hooks);

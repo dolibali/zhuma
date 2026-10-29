@@ -90,8 +90,8 @@ test('remote recovery contract: signed permit binds known scope or exact committ
 });
 
 test('remote protocol data contract: one exact operation inventory, including cleanup, is distinct from a capability', () => {
-  assert.equal(REMOTE_RUN_OPERATIONS.length, 16);
-  assert.equal(new Set(REMOTE_RUN_OPERATIONS).size, 16);
+  assert.equal(REMOTE_RUN_OPERATIONS.length, 21);
+  assert.equal(new Set(REMOTE_RUN_OPERATIONS).size, 21);
   assert.deepEqual(
     [...REMOTE_RUN_EVENT_KINDS].sort(),
     [

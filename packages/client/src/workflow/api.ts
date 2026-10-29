@@ -16,12 +16,16 @@ export type WorkflowWorkspace =
 export interface WorkflowView {
   readonly target: WorkflowLocation;
   readonly title: string;
-  readonly state: 'inactive' | 'running' | 'stopping' | 'paused' | 'completed' | 'requires-resume';
+  readonly state:
+    'inactive' | 'running' | 'waiting' | 'stopping' | 'paused' | 'completed' | 'requires-resume';
   readonly planStarted: boolean;
   readonly requiresResume: boolean;
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
+  readonly controlledNodeCount?: number;
   readonly expertReviewRequired?: boolean;
+  readonly automaticReview?: boolean;
+  readonly attention?: string;
   readonly intent: {
     readonly intentId: string;
     readonly generation: number;
@@ -38,6 +42,7 @@ export interface WorkflowOptions extends WorkflowView {
     | { readonly kind: 'ready'; readonly items: readonly NativeRunModelChoice[] }
     | { readonly kind: 'unavailable'; readonly message: string };
   readonly workspaces: readonly NativeRunWorkspaceChoice[];
+  readonly maxConcurrent?: number;
 }
 export type WorkflowStart = WorkflowTarget & {
   readonly requestId: string;
@@ -130,6 +135,7 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
   const state = oneOf(item.state, [
     'inactive',
     'running',
+    'waiting',
     'stopping',
     'paused',
     'completed',
@@ -149,9 +155,16 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
     requiresResume,
     activeRunCount: integer(item.activeRunCount, 0, 512),
     expertNodeCount: integer(item.expertNodeCount, 0, 1000),
+    ...(item.controlledNodeCount === undefined
+      ? {}
+      : { controlledNodeCount: integer(item.controlledNodeCount, 0, 1000) }),
     ...(item.expertReviewRequired === undefined
       ? {}
       : { expertReviewRequired: boolean(item.expertReviewRequired) }),
+    ...(item.automaticReview === undefined
+      ? {}
+      : { automaticReview: boolean(item.automaticReview) }),
+    ...(item.attention === undefined ? {} : { attention: string(item.attention, 500) }),
     intent: intent
       ? {
           intentId: string(intent.intentId),
@@ -170,6 +183,9 @@ function options(value: unknown, expected: WorkflowLocation): WorkflowOptions {
     models = object(item.models);
   return {
     ...view(item, expected),
+    ...(item.maxConcurrent === undefined
+      ? {}
+      : { maxConcurrent: integer(item.maxConcurrent, 1, 4) }),
     models:
       models.kind === 'ready'
         ? {

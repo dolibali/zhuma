@@ -178,6 +178,25 @@ test('member Workspace contract: opaque explicit selectors bind once per request
   assert.equal(choices.length, 2);
   assert.equal(JSON.stringify(choices).includes(h.root), false);
   assert.equal(JSON.stringify(h.selected.workspace).includes(h.root), false);
+  const defaults = h.helper.workflowWorkspace(h.input);
+  assert.equal(defaults.workspace.rootId, h.selected.workspace.rootId);
+  assert.equal(
+    Object.hasOwn(defaults.workspace, 'grantId'),
+    false,
+    'A workflow ceiling has no per-node IO grant',
+  );
+  assert.equal(Object.hasOwn(defaults.workspace, 'generation'), false);
+  const choice = h.helper.workflowSelection(defaults.workspace);
+  assert.deepEqual(choice, { kind: 'local', id: h.choice.id });
+  const next = h.helper.prepare('next-node-request', { ...h.target, nodeId: 'next-node' }, choice);
+  assert.notEqual(
+    next.workspace.grantId,
+    h.selected.workspace.grantId,
+    'Every actual node obtains its own original grant',
+  );
+  assert.throws(() =>
+    h.helper.workflowSelection({ ...defaults.workspace, rootId: 'foreign-root' }),
+  );
   assert.equal(h.helper.prepare('accept-request', h.target, h.input), h.selected);
   assert.throws(
     () =>
