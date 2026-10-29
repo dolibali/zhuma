@@ -1,10 +1,12 @@
 /** Host identity/model/tool producer facts are contracts; plan/node mapping is real core. */
 import {
+  canonicalPayload,
   applyWorkbenchCommand,
   startAppliedPlan,
   submitDelivery,
   unlockDownstream,
 } from '@zhuma/agent-core';
+import { createHash } from 'node:crypto';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { upstreamInputsFor } from '../dist/upstream-inputs.js';
 import { ACCEPTED_INPUT_TOOL } from '../dist/native-work-session-input-tool.js';
@@ -115,4 +117,20 @@ export function compositionFacts({ upstream = false, expert = false } = {}) {
     },
     tools: upstream ? structuredClone(reader) : { kind: 'text-only' },
   };
+}
+
+// Historical message recipe from bf147. Existing JSON fixtures/golden hashes
+// retain their versions; a new freeze may use newer completion guidance.
+export function legacyCompletionText(payload) {
+  return `执行当前节点：${payload.handoff.goal}\n预期产物：${payload.handoff.expectedOutput}\n节点输入说明：${payload.handoff.inputNote}\n按固定输入清单处理，返回产物草稿与必要说明。${payload.returnedRevision ? '\n按固定的本轮退回意见修改并提交新版本，保留旧产物和评审记录。' : ''}`;
+}
+export function legacyCompletionFixture(snapshot) {
+  const saved = structuredClone(snapshot);
+  const sha = (value) => createHash('sha256').update(value).digest('hex');
+  saved.payload.firstMessage.text = legacyCompletionText(saved.payload);
+  saved.payload.firstMessage.inputFingerprint = sha(
+    JSON.stringify(['followup', saved.payload.firstMessage.text]),
+  );
+  saved.configurationId = `composition_${sha(canonicalPayload(saved.payload))}`;
+  return saved;
 }
