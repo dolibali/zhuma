@@ -47,6 +47,41 @@ const { NativeRunPanel } = await import('../dist/run/NativeRunPanel.js');
 const { NativeReviewLauncher, NativeReviewHistory } =
   await import('../dist/run/NativeReviewWorkspace.js');
 
+function reviewOutcome(query, status = 'open') {
+  return {
+    target: { ...query, artifactFingerprint: 'a'.repeat(64) },
+    controllerMemberId: 'member',
+    nodeStatus: status === 'approved' ? 'completed' : 'needs-revision',
+    artifact: {
+      id: query.artifactVersionId,
+      version: 2,
+      text: '固定第二版正文',
+      links: [],
+      files: [],
+    },
+    round: {
+      id: query.roundId,
+      artifactVersionId: query.artifactVersionId,
+      status,
+      reviewerIds: ['one'],
+      ballots:
+        status === 'open'
+          ? []
+          : [
+              {
+                reviewerId: 'one',
+                reviewerName: '独立评审专家',
+                roundId: query.roundId,
+                artifactVersionId: query.artifactVersionId,
+                action: status === 'approved' ? 'approve' : 'request-changes',
+                comment: '已核对固定版本的具体意见 <literal>',
+              },
+            ],
+    },
+    comments: [],
+  };
+}
+
 test(
   'DOM contract: a settled first expert can yield to the next eligible reviewer without restarting itself',
   { skip: !domModule },
@@ -58,6 +93,7 @@ test(
     let reads = 0,
       starts = 0;
     const api = {
+      outcome: async (query) => reviewOutcome(query),
       options: async () => {
         reads++;
         return {
@@ -106,7 +142,7 @@ test(
       await act(async () =>
         root.render(createElement(NativeReviewLauncher, { api, target: query })),
       );
-      await click('Agent 评审');
+      await click('查看评审');
       assert.equal(
         [...document.querySelectorAll('button')].some(
           (button) => button.querySelector('.zm-button-label')?.textContent.trim() === '开始评审',
@@ -138,6 +174,7 @@ test(
     const root = createRoot(host),
       keys = [];
     const api = {
+      outcome: async (query) => reviewOutcome(query),
       session: async () => ({
         nextAfter: -1,
         messages: [],
@@ -192,6 +229,85 @@ test(
     } finally {
       await act(async () => root.unmount());
       host.remove();
+    }
+  },
+);
+
+test(
+  'DOM contract: closed decisions reopen from task and native history with specific fixed feedback and no writes',
+  { skip: !domModule },
+  async () => {
+    const { createRoot } = await import('react-dom/client');
+    const query = {
+      spaceId: 'space',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      roundId: 'old-round',
+      artifactVersionId: 'old-artifact',
+    };
+    for (const status of ['approved', 'changes-requested']) {
+      const seen = [];
+      const api = {
+        outcome: async (target) => {
+          seen.push(structuredClone(target));
+          return reviewOutcome(target, status);
+        },
+        options: () => assert.fail('Closed feedback must not query open-round options'),
+        start: () => assert.fail('No start from read-only feedback'),
+        recover: () => assert.fail('No automatic recovery'),
+        session: async () => ({
+          run: { resources: 'settled', receipt: { action: 'approve' } },
+          messages: [],
+          nextAfter: -1,
+        }),
+      };
+      for (const history of [false, true]) {
+        const host = document.createElement('div');
+        document.body.append(host);
+        const root = createRoot(host);
+        try {
+          await act(async () => {
+            root.render(
+              history
+                ? createElement(NativeReviewHistory, {
+                    api,
+                    target: query,
+                    sessionId: 'original-review',
+                    close() {},
+                  })
+                : createElement(NativeReviewLauncher, { api, target: query }),
+            );
+            await new Promise(setImmediate);
+          });
+          if (!history)
+            await act(async () => {
+              [...host.querySelectorAll('button')]
+                .find((button) => button.textContent.includes('查看评审'))
+                .click();
+              await new Promise(setImmediate);
+            });
+          const text = document.body.textContent;
+          assert.ok(text.includes('独立评审专家'));
+          assert.ok(text.includes('已核对固定版本的具体意见 <literal>'));
+          assert.ok(text.includes('固定第二版正文'));
+          assert.ok(text.includes('第 2 版'));
+          assert.ok(text.includes(status === 'approved' ? '评审已通过' : '已退回修改'));
+          assert.equal(
+            [...document.querySelectorAll('button')].some((button) =>
+              button.textContent.includes('开始评审'),
+            ),
+            false,
+          );
+        } finally {
+          await act(async () => root.unmount());
+          host.remove();
+        }
+      }
+      assert.equal(seen.length, 2, 'Each cold view reads the actual persisted outcome');
+      for (const target of seen)
+        assert.deepEqual(target, query, 'Old round remains exact; never replace with latest');
     }
   },
 );

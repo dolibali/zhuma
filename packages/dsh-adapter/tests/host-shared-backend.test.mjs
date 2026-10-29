@@ -446,6 +446,10 @@ test('shared backend carries original manual submission, draft, review and accep
     ],
     ['revision', target],
     [
+      'review-outcome',
+      { ...target, spaceId: 'north', roundId: 'round', artifactVersionId: 'artifact' },
+    ],
+    [
       'upstream-content',
       { ...target, spaceId: 'north', sourceNodeId: 'source', artifactVersionId: 'accepted-v1' },
     ],

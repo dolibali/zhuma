@@ -64,11 +64,8 @@ export function SharedBackendBoundary({
     }, active.signal);
   }
   return (
-    <div className="zhuma">
-      <div
-        className="zm-actions"
-        style={{ padding: '8px 24px', justifyContent: 'flex-end', minHeight: 44 }}
-      >
+    <div className="zhuma zm-shared-backend">
+      <div className="zm-backend-bar" aria-label="服务连接">
         <Button
           variant="quiet"
           disabled={busy}

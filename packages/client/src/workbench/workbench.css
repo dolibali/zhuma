@@ -299,9 +299,10 @@
 }
 .zhuma .zm-login-entry {
   display: grid;
-  place-items: center;
+  align-content: start;
+  justify-items: center;
   flex: 1;
-  padding: 32px 16px;
+  padding: clamp(56px, 8vh, 80px) 24px 32px;
 }
 .zhuma .zm-login-card {
   display: grid;
@@ -527,7 +528,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 24px;
+  padding: 6px 24px;
   border-bottom: 1px solid var(--zm-line);
 }
 .zhuma .zm-space-bar .zm-single-select {
@@ -1024,6 +1025,45 @@ body[data-ds-dark-theme] {
   flex: 1;
   min-height: 0;
 }
+.zhuma.zm-shared-backend {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.zm-shared-backend > .zm-shell-panel {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+/* Connection and space controls share one row below the original window strip. */
+.zm-shared-backend .zm-backend-bar {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 44px;
+  max-width: min(42%, 300px);
+}
+html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
+  top: var(--dsh-frame-top-clearance, 0px);
+}
+.zm-shared-backend .zm-backend-bar .zm-button {
+  min-width: 0;
+  max-width: 100%;
+}
+.zm-shared-backend .zm-backend-bar .zm-button-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.zm-shared-backend .zm-space-bar {
+  padding-right: calc(min(42%, 300px) + 36px);
+}
 .zm-member-work {
   display: flex;
   flex-direction: column;
@@ -1041,6 +1081,18 @@ body[data-ds-dark-theme] {
   margin: 0 auto;
   min-height: 0;
   overflow: auto;
+  padding-top: 20px;
+}
+.zm-member-work > .zm-page > h1 {
+  margin: 0 0 20px;
+}
+.zm-member-work .zm-execution-workspace > section > .zm-page-heading {
+  margin-bottom: 12px;
+}
+.zm-member-work .zm-execution-workspace > section > .zm-empty {
+  margin: 0;
+  padding: 12px 0;
+  text-align: left;
 }
 .zm-shell-chrome {
   flex: none;

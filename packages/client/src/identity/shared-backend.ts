@@ -79,6 +79,7 @@ const targets = {
   '/api/zhuma-exec/submit': ['POST', 'execution.submit'],
   '/api/zhuma-exec/ballot': ['POST', 'execution.ballot'],
   '/api/zhuma-exec/revision': ['POST', 'execution.revision'],
+  '/api/zhuma-exec/review-outcome': ['POST', 'execution.review-outcome'],
   '/api/zhuma-exec/upstream-content': ['POST', 'execution.upstream-content'],
   '/api/zhuma-exec/draft': ['POST', 'execution.draft'],
 } as const;

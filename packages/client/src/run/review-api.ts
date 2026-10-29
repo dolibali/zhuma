@@ -7,13 +7,17 @@ import {
   remoteReviewRunViewSchema,
   remoteReviewReceiptSchema,
   remoteReviewFailureSchema,
+  reviewOutcomeQuerySchema,
+  reviewOutcomeSchema,
+  type ReviewOutcomeView,
   type LocalReviewOptions,
   type LocalReviewOptionsQuery,
   type RemoteReviewView,
 } from '@zhuma/agent-core';
 import { createIdentityApi } from '../identity/api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
-import type { MemberExecutionScope } from '../execution/http.js';
+import { createExecutionHttpApi, type MemberExecutionScope } from '../execution/http.js';
+import type { ExecutionApi } from '../execution/ExecutionApi.js';
 import type { NativeRunModel, NativeRunPanelView } from './native-run-contract.js';
 import { projectNativeRunMessages } from './api.js';
 import type { NativeRunMessage } from './native-run-contract.js';
@@ -31,6 +35,8 @@ export interface NativeReviewState {
   readonly failure?: Pick<NonNullable<RemoteReviewView['failure']>, 'code'>;
 }
 export interface NativeReviewApi {
+  readonly files?: NonNullable<ExecutionApi['files']>;
+  outcome(query: LocalReviewOptionsQuery, signal: AbortSignal): Promise<ReviewOutcomeView>;
   stopSession(
     query: LocalReviewOptionsQuery,
     sessionId: string,
@@ -120,7 +126,9 @@ export function createNativeReviewApi(
     try {
       await authorize(signal);
       const rpcId = crypto.randomUUID();
-      const response = await fetcher(`/api/zhuma-review/${endpoint}`, {
+      const method =
+        endpoint === 'review-outcome' ? 'zhuma-exec/review-outcome' : `zhuma-review/${endpoint}`;
+      const response = await fetcher(`/api/${method}`, {
         method: 'POST',
         credentials: 'same-origin',
         redirect: 'error',
@@ -130,7 +138,7 @@ export function createNativeReviewApi(
         body: JSON.stringify({
           type: 'client-request',
           rpcId,
-          method: `zhuma-review/${endpoint}`,
+          method,
           payload,
         }),
       });
@@ -216,7 +224,29 @@ export function createNativeReviewApi(
       nextAfter: previous,
     };
   }
+  const files = createExecutionHttpApi(fetcher, onUnauthenticated, accountId, scope).files;
   return {
+    ...(files ? { files } : {}),
+    async outcome(raw, signal) {
+      const expected = reviewOutcomeQuerySchema.parse(query(raw));
+      const value = reviewOutcomeSchema.parse(await call('review-outcome', expected, signal));
+      const { artifactFingerprint: _fingerprint, ...target } = value.target;
+      if (
+        value.controllerMemberId !== accountId ||
+        canonicalPayload(target) !== canonicalPayload(expected) ||
+        value.artifact.id !== expected.artifactVersionId ||
+        value.round.id !== expected.roundId ||
+        value.round.artifactVersionId !== expected.artifactVersionId ||
+        value.round.ballots.some(
+          (ballot) =>
+            ballot.roundId !== expected.roundId ||
+            ballot.artifactVersionId !== expected.artifactVersionId ||
+            !value.round.reviewerIds.includes(ballot.reviewerId),
+        )
+      )
+        invalid();
+      return value;
+    },
     stopSession: (query, sessionId, run, requestId, signal) =>
       history('session-stop', query, sessionId, signal, -1, {
         requestId,

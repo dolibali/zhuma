@@ -178,33 +178,34 @@ export function installMemberNativeNavigation(
     const location = found.target;
     let active = true;
     let acceptedEpoch = -1;
+    const nativeScope = {
+      spaceId: location.spaceId,
+      isCurrent: () => {
+        const now = options.shell.session.getSnapshot();
+        return (
+          active &&
+          acceptedEpoch === epoch &&
+          now.status === 'authenticated' &&
+          now.epoch === member.epoch &&
+          options.backend.getSnapshot().selection?.connectionId === selected.connectionId
+        );
+      },
+      onUnavailable: close,
+    };
+    const review = createNativeReviewApi(
+      options.native.scoped(member.session.accountId, location.spaceId).fetcher,
+      member.session.accountId,
+      nativeScope,
+      () => options.shell.session.invalidate(member.epoch),
+    );
     if (found.kind === 'review') {
-      const api = createNativeReviewApi(
-        options.native.scoped(member.session.accountId, location.spaceId).fetcher,
-        member.session.accountId,
-        {
-          spaceId: location.spaceId,
-          isCurrent: () => {
-            const now = options.shell.session.getSnapshot();
-            return (
-              active &&
-              acceptedEpoch === epoch &&
-              now.status === 'authenticated' &&
-              now.epoch === member.epoch &&
-              options.backend.getSnapshot().selection?.connectionId === selected.connectionId
-            );
-          },
-          onUnavailable: close,
-        },
-        () => options.shell.session.invalidate(member.epoch),
-      );
       const accepted = await ask(() => {
         acceptedEpoch = ++epoch;
         entryBinding = { member: member.epoch, connection: selected.connectionId };
         const { runId: _runId, ...query } = found.target;
         entry = {
           kind: 'review',
-          api,
+          api: review,
           query,
           sessionId,
           target: {
@@ -224,20 +225,7 @@ export function installMemberNativeNavigation(
     const api = createNativeRunApi(
       options.native.scoped(member.session.accountId, location.spaceId, location.runId).fetcher,
       member.session.accountId,
-      {
-        spaceId: location.spaceId,
-        isCurrent: () => {
-          const now = options.shell.session.getSnapshot();
-          return (
-            active &&
-            acceptedEpoch === epoch &&
-            now.status === 'authenticated' &&
-            now.epoch === member.epoch &&
-            options.backend.getSnapshot().selection?.connectionId === selected.connectionId
-          );
-        },
-        onUnavailable: close,
-      },
+      nativeScope,
       () => options.shell.session.invalidate(member.epoch),
       undefined,
       options.openModelSettings,
@@ -250,7 +238,7 @@ export function installMemberNativeNavigation(
       entryBinding = { member: member.epoch, connection: selected.connectionId };
       entry = {
         kind: 'work',
-        api: selected.origin ? remoteApi : api,
+        api: { ...(selected.origin ? remoteApi : api), review },
         target: {
           spaceId: location.spaceId,
           taskId: location.taskId,
