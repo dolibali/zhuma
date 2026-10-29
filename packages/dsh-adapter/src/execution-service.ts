@@ -28,6 +28,7 @@ import {
   localReviewUnavailableReasonSchema,
   type LocalReviewOptions,
   type RemoteWorkflowIntent,
+  type KnowledgeProjectSnapshot,
   type RemoteWorkflowCandidate,
   reviewOutcomeQuerySchema,
   reviewOutcomeSchema,
@@ -513,6 +514,14 @@ export interface ExecutionRunHostPorts
     ExecutionRunResourceCatalogHost {
   /** Current authoritative mapping (and its source lifetime), not a browser-selected space. */
   assertProjectSpace(projectId: string, spaceId: string): undefined;
+  /** Same mounted knowledge Service, original request/space/project authorization.
+   * Awaited outside this Service's queue. Failure must reject, never become an empty snapshot.
+   * Optional only for legacy Hosts; references do not certify body reads. */
+  prepareProjectKnowledge?(
+    request: MemberRequest,
+    query: { readonly spaceId: string; readonly projectId: string },
+    signal: AbortSignal,
+  ): Promise<KnowledgeProjectSnapshot>;
   /** Verify the exact frozen expert/input/model/tool composition and executor readiness. */
   assertConfiguration(
     memberId: string,
@@ -1961,7 +1970,31 @@ export class ExecutionService {
           )
             throw new RemoteRunError('remote-stale-plan');
         },
-        compose: (actorId, request, node, scope, resourceCatalog) => {
+        ...(host.prepareProjectKnowledge
+          ? {
+              prepareProjectKnowledge: async (
+                request: MemberRequest,
+                target: { spaceId: string; taskId: string; planId: string; revision: number },
+                signal: AbortSignal,
+              ) => {
+                const prepare = host.prepareProjectKnowledge!;
+                const applied = createExecutionHandoff(target, this.workbench.readWorkbench());
+                const query = { spaceId: target.spaceId, projectId: applied.task.projectId };
+                if (host !== this.requireRunHost() || host.signal.aborted || signal.aborted)
+                  throw new RemoteRunError('remote-unavailable');
+                const snapshot = await prepare.call(host, request, query, signal);
+                if (
+                  host !== this.requireRunHost() ||
+                  host.prepareProjectKnowledge !== prepare ||
+                  host.signal.aborted ||
+                  signal.aborted
+                )
+                  throw new RemoteRunError('remote-unavailable');
+                return snapshot;
+              },
+            }
+          : {}),
+        compose: (actorId, request, node, scope, resourceCatalog, projectKnowledge) => {
           const files =
             request.payload.capabilities.resultIntent === 'zhuma-native-result-intent@2';
           const descriptor = files
@@ -2017,6 +2050,7 @@ export class ExecutionService {
             model: request.payload.model,
             executor: request.payload.executor,
             ...(resourceCatalog ? { resourceCatalog } : {}),
+            ...(projectKnowledge ? { projectKnowledge } : {}),
             inputs: {
               actorId,
               ...request.payload.target,
