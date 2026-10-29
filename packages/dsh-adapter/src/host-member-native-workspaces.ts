@@ -489,7 +489,12 @@ export function createHostMemberNativeWorkspaces(
       const choice = choices().find((item) => item.id === input.id);
       if (!choice) denied();
       return {
-        workspace: { kind: 'local' as const, rootId: choice.source.id, access: choice.access },
+        workspace: {
+          kind: 'local' as const,
+          rootId: choice.source.id,
+          access: choice.access,
+          ...(input.publish.length ? { publish: structuredClone(input.publish) } : {}),
+        },
         localTools: tools().describe(
           choice.access === 'write' ? ['read', 'write', 'edit'] : ['read'],
         ),
@@ -497,14 +502,26 @@ export function createHostMemberNativeWorkspaces(
     },
     workflowSelection(
       workspace:
-        { kind: 'text-only' } | { kind: 'local'; rootId: string; access: 'read' | 'write' },
+        | { kind: 'text-only' }
+        | {
+            kind: 'local';
+            rootId: string;
+            access: 'read' | 'write';
+            publish?: z.infer<typeof memberNativePublishRanges> | undefined;
+          },
     ) {
       if (workspace.kind === 'text-only') return { kind: 'text-only' as const };
       const choice = choices().find(
         (item) => item.source.id === workspace.rootId && item.access === workspace.access,
       );
       if (!choice) denied();
-      return { kind: 'local' as const, id: choice.id };
+      return {
+        kind: 'local' as const,
+        id: choice.id,
+        ...(workspace.publish === undefined
+          ? {}
+          : { publish: memberNativePublishRanges.parse(workspace.publish) }),
+      };
     },
     choices() {
       try {

@@ -3,6 +3,7 @@ import { Button } from '../workbench/Button.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { ControlIcon } from '../workbench/ControlIcon.js';
 import { workspacePublishRanges, type WorkspacePublishRange } from './workspace-approvals.js';
+import { WorkspacePublishRanges } from './WorkspacePublishRanges.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type {
   NativeRunAction,
@@ -501,65 +502,12 @@ function Selection({
               {publishRanges.length || '未授权'}
             </span>
           </summary>
-          <div className="zm-workspace-publish">
-            {!publicationValid && (
-              <p role="alert">请填写工作区内的相对路径，例如 deliverables/report.md。</p>
-            )}
-            {!publishRanges.length && (
-              <p className="zm-muted">添加相对路径后，Agent 才能把这些本机文件提交给团队。</p>
-            )}
-            {publishRanges.map((range, index) => (
-              <div className="zm-workspace-publish-row" key={index}>
-                <SingleSelect
-                  label={`第 ${index + 1} 项交付范围类型`}
-                  value={range.kind}
-                  disabled={disabled}
-                  options={[
-                    { value: 'file', label: '文件' },
-                    { value: 'directory', label: '目录' },
-                  ]}
-                  onValueChange={(kind) =>
-                    changePublication(
-                      publishRanges.map((item, at) =>
-                        at === index
-                          ? { ...item, kind: kind === 'directory' ? 'directory' : 'file' }
-                          : item,
-                      ),
-                    )
-                  }
-                />
-                <input
-                  aria-label={`第 ${index + 1} 项相对路径`}
-                  value={range.path}
-                  disabled={disabled}
-                  placeholder="例如 deliverables/report.md"
-                  maxLength={512}
-                  onChange={(event) =>
-                    changePublication(
-                      publishRanges.map((item, at) =>
-                        at === index ? { ...item, path: event.currentTarget.value } : item,
-                      ),
-                    )
-                  }
-                />
-                {!disabled && (
-                  <Button
-                    onClick={() => changePublication(publishRanges.filter((_, at) => at !== index))}
-                  >
-                    移除
-                  </Button>
-                )}
-              </div>
-            ))}
-            {!disabled && (
-              <Button
-                disabled={publishRanges.length >= 16}
-                onClick={() => changePublication([...publishRanges, { kind: 'file', path: '' }])}
-              >
-                添加范围
-              </Button>
-            )}
-          </div>
+          <WorkspacePublishRanges
+            ranges={publishRanges}
+            disabled={disabled}
+            valid={publicationValid}
+            onChange={changePublication}
+          />
         </details>
       )}
       {!!view.resources.length && (

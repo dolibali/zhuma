@@ -61,6 +61,70 @@ function transport(value = initial(), hooks = {}) {
   return { api, calls };
 }
 const signal = () => new AbortController().signal;
+test('workflow publication wire: explicit start and Resume carry only selected relative ranges; ordinary Continue does not change defaults', async () => {
+  const workspace = {
+    kind: 'local',
+    id: 'local-root',
+    publish: [{ kind: 'directory', path: 'outputs' }],
+  };
+  const state = started();
+  state.selection.workspace = workspace;
+  const hooks = {},
+    h = transport(state, hooks);
+  const start = {
+    ...target,
+    requestId: 'start',
+    model: state.selection.model,
+    workspace,
+    concurrent: 1,
+  };
+  assert.deepEqual((await h.api.start(start, signal())).selection.workspace, workspace);
+  assert.deepEqual(hooks.payload.workspace, workspace);
+  state.intent.generation = 2;
+  const resume = {
+    ...target,
+    requestId: 'resume',
+    intentId: 'intent',
+    generation: 1,
+    expectedVersion: 1,
+  };
+  await h.api.resume({ ...resume, workspace }, signal());
+  assert.deepEqual(hooks.payload.workspace, workspace);
+  assert.equal(
+    'defaults' in hooks.payload,
+    false,
+    'Renderer never supplies remote capabilities or root grants',
+  );
+  state.intent.generation = 3;
+  await h.api.resume({ ...resume, generation: 2 }, signal());
+  assert.equal('workspace' in hooks.payload, false);
+});
+
+test('workflow publication wire: invalid relative paths and oversized scopes are rejected before transport', async () => {
+  for (const publish of [
+    [{ kind: 'directory', path: '../private' }],
+    [{ kind: 'file', path: '/absolute' }],
+    [{ kind: 'directory', path: '.' }],
+    Array.from({ length: 16 }, (_, i) => ({ kind: 'file', path: `${i}${'x'.repeat(300)}` })),
+  ]) {
+    const h = transport(started());
+    await assert.rejects(
+      h.api.resume(
+        {
+          ...target,
+          requestId: 'scope',
+          intentId: 'intent',
+          generation: 1,
+          expectedVersion: 1,
+          workspace: { kind: 'local', id: 'local-root', publish },
+        },
+        signal(),
+      ),
+    );
+    assert.deepEqual(h.calls, []);
+  }
+});
+
 test('workflow Client contract: passive read shares member Run fences and never starts a plan', async () => {
   const h = transport();
   assert.deepEqual(

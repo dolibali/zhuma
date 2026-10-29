@@ -535,7 +535,12 @@ test('remote workflow: each Run may narrow armed workspace access and local tool
   };
   const config = {
     model: defaults().model,
-    workspace: { kind: 'local', rootId: 'opaque-local-root', access: 'write' },
+    workspace: {
+      kind: 'local',
+      rootId: 'opaque-local-root',
+      access: 'write',
+      publish: [{ kind: 'directory', path: 'deliverables' }],
+    },
     capabilities: {
       resultIntent: 'zhuma-native-result-intent@2',
       outputFile: 'zhuma-native-output-file@1',
@@ -591,6 +596,85 @@ test('remote workflow: each Run may narrow armed workspace access and local tool
   assert.equal(accepted.scope.nodeId, candidate.target.nodeId);
   assert.equal(currentExecutionRun(h.read()).workspace.access, 'read');
   assert(!currentExecutionRun(h.read()).composition.payload.toolAllowlist.includes('read'));
+});
+
+test('remote workflow: only explicit signed Resume changes publication defaults, preserving the original intent and receipts', async (t) => {
+  const h = await fileHost(t, { workbench: workbench() });
+  const config = {
+    ...defaults(),
+    workspace: { kind: 'local', rootId: 'opaque-local-root', access: 'write' },
+  };
+  const command = h.envelope('workflow-start', {
+    target: target(h),
+    defaults: config,
+    budget: { concurrent: 1, automaticRevisions: 2 },
+  });
+  const armed = ok(await h.send(command));
+  assert.equal(Object.hasOwn(armed.intent.defaults.workspace, 'publish'), false);
+  assert.deepEqual(ok(await h.send(command)).intent, armed.intent);
+  const publish = [{ kind: 'directory', path: 'deliverables' }];
+  const nextDefaults = { ...config, workspace: { ...config.workspace, publish } };
+  const before = snapshot(h);
+  no(
+    await h.send(
+      h.envelope(
+        'workflow-start',
+        { ...command.payload, defaults: nextDefaults },
+        command.requestId,
+      ),
+    ),
+    'remote-idempotency-mismatch',
+  );
+  no(
+    await h.send(h.envelope('workflow-start', { ...command.payload, defaults: nextDefaults })),
+    'remote-conflict',
+  );
+  assert.equal(snapshot(h), before);
+  const stopped = ok(await h.send(control(h, 'workflow-stop', armed)));
+  const unchanged = ok(
+    await h.send(
+      control(h, 'workflow-resume', stopped, {
+        expectedVersion: stopped.intent.version,
+      }),
+    ),
+  );
+  assert.equal(unchanged.intent.intentId, armed.intent.intentId);
+  assert.deepEqual(unchanged.intent.defaults, armed.intent.defaults);
+  const paused = ok(await h.send(control(h, 'workflow-stop', unchanged)));
+  const resume = control(h, 'workflow-resume', paused, {
+    expectedVersion: paused.intent.version,
+    defaults: nextDefaults,
+  });
+  const resumed = ok(await h.send(resume));
+  assert.equal(resumed.intent.intentId, armed.intent.intentId);
+  assert.equal(resumed.intent.generation, paused.intent.generation + 1);
+  assert.deepEqual(resumed.intent.defaults.workspace.publish, publish);
+  assert.deepEqual(resumed.intent.budget, armed.intent.budget);
+  assert.deepEqual(resumed.intent.nodeIds, armed.intent.nodeIds);
+  assert.deepEqual(resumed.intent.commandReceipts.slice(0, -1), paused.intent.commandReceipts);
+  assert.deepEqual(ok(await h.send(resume)).intent, resumed.intent);
+  const fixed = snapshot(h);
+  no(
+    await h.send(
+      h.envelope(
+        'workflow-resume',
+        {
+          ...resume.payload,
+          defaults: {
+            ...nextDefaults,
+            workspace: {
+              ...nextDefaults.workspace,
+              publish: [{ kind: 'directory', path: 'other' }],
+            },
+          },
+        },
+        resume.requestId,
+      ),
+    ),
+    'remote-idempotency-mismatch',
+  );
+  assert.equal(snapshot(h), fixed);
+  assert.equal(h.read().nativeExecution, undefined);
 });
 
 test('remote workflow: a full control budget reserves durable Stop and rejected resume never fences the usable device arm', async (t) => {

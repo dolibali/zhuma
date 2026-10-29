@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { createHostMemberNativeWorkflow } from '../dist/host-member-native-workflow.js';
+import { memberNativeWorkspaceSchema } from '../dist/host-member-native-workspaces.js';
 
 const target = { spaceId: 'north', taskId: 'task', planId: 'plan', revision: 1 };
 const model = { provider: 'synthetic', model: 'not-called', maxTokens: 4096 };
@@ -21,6 +22,8 @@ function setup(
     assignee = 'ann',
     knowledge = false,
     failPendingOnce = false,
+    workspaces,
+    filePublishing = false,
   } = {},
 ) {
   const writes = [],
@@ -44,7 +47,7 @@ function setup(
   };
   const ctx = { llm, get: (name) => (name === 'llm' ? llm : undefined) };
   const protocol = {
-    supportsFilePublishing: false,
+    supportsFilePublishing: filePublishing,
     canSwitchBackend: () => true,
     async negotiateWorkflow() {
       return available;
@@ -96,21 +99,24 @@ function setup(
       calls.push(['resume', requestId, structuredClone(input)]);
       remote.intent.generation++;
       remote.intent.version++;
+      if (input.defaults !== undefined) remote.intent.defaults = structuredClone(input.defaults);
       remote.state = 'waiting';
       remote.requiresResume = false;
       return structuredClone(remote);
     },
   };
+  const native = {
+    canSwitchBackend: () => true,
+    ...(knowledge ? { knowledgeSource: 'zhuma-native-knowledge@1' } : {}),
+    ...(filePublishing ? { outputFileSource: 'zhuma-native-output-file@1' } : {}),
+  };
   const helper = createHostMemberNativeWorkflow(ctx, {
     protocol,
     connectionId: 'connection',
     actorId: 'ann',
-    native: {
-      canSwitchBackend: () => true,
-      ...(knowledge ? { knowledgeSource: 'zhuma-native-knowledge@1' } : {}),
-    },
+    native,
     ...(review ? { review: { canSwitchBackend: () => true } } : {}),
-    workspaces: {
+    workspaces: workspaces ?? {
       workflowWorkspace: () => ({ workspace: { kind: 'text-only' }, localTools: [] }),
       workflowSelection: () => ({ kind: 'text-only' }),
       choices: () => [],
@@ -158,8 +164,150 @@ function setup(
     await helper.whenAdmissionsIdle();
     await helper.close();
   });
-  return { helper, calls, writes, remote: () => remote };
+  return { helper, calls, writes, native, remote: () => remote };
 }
+
+test('member workflow publication: new Start freezes ranges and explicit Resume changes only future workspace defaults on the same intent', async (t) => {
+  const workspaces = {
+    workflowWorkspace(raw) {
+      const input = memberNativeWorkspaceSchema.parse(raw);
+      return input.kind === 'text-only'
+        ? { workspace: input, localTools: [] }
+        : {
+            workspace: {
+              kind: 'local',
+              rootId: 'original-root',
+              access: 'write',
+              ...(input.publish.length ? { publish: input.publish } : {}),
+            },
+            localTools: [],
+          };
+    },
+    workflowSelection(workspace) {
+      return workspace.kind === 'text-only'
+        ? workspace
+        : {
+            kind: 'local',
+            id: 'local-root',
+            ...(workspace.publish === undefined
+              ? {}
+              : { publish: structuredClone(workspace.publish) }),
+          };
+    },
+    choices: () => [
+      {
+        id: 'local-root',
+        label: 'Original root',
+        access: 'write',
+        publish: false,
+        publication: 'per-run',
+      },
+    ],
+  };
+  const h = setup(t, { workspaces, filePublishing: true, review: true });
+  const start = await h.helper.handle(
+    'workflow-start',
+    {
+      ...target,
+      requestId: randomUUID(),
+      model,
+      workspace: {
+        kind: 'local',
+        id: 'local-root',
+        publish: [{ kind: 'directory', path: 'outputs' }],
+      },
+      concurrent: 1,
+      automaticRevisions: 1,
+    },
+    wait(),
+  );
+  assert.deepEqual(h.remote().intent.defaults.workspace.publish, [
+    { kind: 'directory', path: 'outputs' },
+  ]);
+  assert.deepEqual(start.selection.workspace.publish, [{ kind: 'directory', path: 'outputs' }]);
+  h.remote().revisions = [{ nodeId: 'node-1', used: 1, limit: 1 }];
+  const pause = () =>
+    h.helper.handle(
+      'workflow-stop',
+      {
+        ...target,
+        requestId: randomUUID(),
+        intentId: h.remote().intent.intentId,
+        generation: h.remote().intent.generation,
+      },
+      wait(),
+    );
+  await pause();
+  h.native.knowledgeSource = 'zhuma-native-knowledge@1';
+  const resume = {
+    ...target,
+    requestId: randomUUID(),
+    intentId: h.remote().intent.intentId,
+    generation: h.remote().intent.generation,
+    expectedVersion: h.remote().intent.version,
+  };
+  const updated = await h.helper.handle(
+    'workflow-resume',
+    {
+      ...resume,
+      workspace: {
+        kind: 'local',
+        id: 'local-root',
+        publish: [{ kind: 'file', path: 'outputs/report.txt' }],
+      },
+    },
+    wait(),
+  );
+  const signed = h.calls.filter((row) => row[0] === 'resume').at(-1)[2];
+  assert.deepEqual(signed.defaults.workspace.publish, [
+    { kind: 'file', path: 'outputs/report.txt' },
+  ]);
+  assert.equal(
+    'knowledge' in signed.defaults.capabilities,
+    false,
+    'Changing a file grant cannot add a newly available knowledge ceiling',
+  );
+  assert.equal('budget' in signed, false);
+  assert.equal(updated.intent.intentId, start.intent.intentId);
+  assert.equal(updated.intent.automaticRevisions, 1);
+  assert.deepEqual(updated.revisions, [{ nodeId: 'node-1', used: 1, limit: 1 }]);
+  await pause();
+  await h.helper.handle(
+    'workflow-resume',
+    {
+      ...resume,
+      requestId: randomUUID(),
+      generation: h.remote().intent.generation,
+      expectedVersion: h.remote().intent.version,
+    },
+    wait(),
+  );
+  assert.equal('defaults' in h.calls.filter((row) => row[0] === 'resume').at(-1)[2], false);
+  assert.deepEqual(h.remote().intent.defaults.workspace.publish, [
+    { kind: 'file', path: 'outputs/report.txt' },
+  ]);
+  await assert.rejects(
+    h.helper.handle(
+      'workflow-resume',
+      {
+        ...resume,
+        workspace: {
+          kind: 'local',
+          id: 'local-root',
+          publish: [{ kind: 'directory', path: '../private' }],
+        },
+      },
+      wait(),
+    ),
+  );
+  h.remote().state = 'stopping';
+  const writes = h.calls.filter((row) => row[0] === 'resume').length;
+  await assert.rejects(
+    h.helper.handle('workflow-resume', { ...resume, workspace: { kind: 'text-only' } }, wait()),
+    { code: 'run-authority-unavailable' },
+  );
+  assert.equal(h.calls.filter((row) => row[0] === 'resume').length, writes);
+});
 
 test('member workflow Host composition: passive discovery creates no plan or consumer drive and advertises only the implemented lane', async (t) => {
   const h = setup(t);

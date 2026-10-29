@@ -10,6 +10,7 @@ import {
   remoteBackendInfoSchema,
   REMOTE_RUN_OPERATIONS,
 } from '../dist/remote-run-contract.js';
+import { canonicalPayload } from '../dist/concurrency.js';
 
 const target = { spaceId: 'team', taskId: 'task', planId: 'plan', revision: 1 };
 const defaults = () => ({
@@ -149,6 +150,101 @@ test('workflow DTO: explicit bounded defaults freeze a workspace selection, neve
       remoteRunRequestSchema.safeParse({ ...raw, payload: { ...raw.payload, budget } }).success,
       false,
     );
+});
+test('workflow DTO: publication ranges are explicit signed defaults and preserve legacy absent bytes', () => {
+  const raw = request('workflow-start', {
+    target,
+    defaults: {
+      ...defaults(),
+      workspace: { kind: 'local', rootId: 'chosen-root', access: 'write' },
+    },
+    budget: { concurrent: 1, automaticRevisions: 2 },
+  });
+  const legacy = remoteRunRequestSchema.parse(raw);
+  assert.deepEqual(legacy, raw);
+  assert.equal(Object.hasOwn(legacy.payload.defaults.workspace, 'publish'), false);
+  const signed = canonicalPayload(remoteDeviceSigningInput(legacy));
+  const { signature: _signature, ...proof } = raw.proof;
+  assert.equal(signed, canonicalPayload({ ...raw, proof }));
+  for (const publish of [[], [{ kind: 'directory', path: 'deliverables' }]]) {
+    const explicit = remoteRunRequestSchema.parse({
+      ...raw,
+      payload: {
+        ...raw.payload,
+        defaults: {
+          ...raw.payload.defaults,
+          workspace: { ...raw.payload.defaults.workspace, publish },
+        },
+      },
+    });
+    assert.deepEqual(explicit.payload.defaults.workspace.publish, publish);
+    assert.notEqual(canonicalPayload(remoteDeviceSigningInput(explicit)), signed);
+    const value = intent();
+    value.defaults = explicit.payload.defaults;
+    assert.deepEqual(remoteWorkflowIntentSchema.parse(value).defaults, explicit.payload.defaults);
+  }
+});
+test('workflow DTO: publication paths match original per-run bounds and cannot grant a workspace root', () => {
+  const valid = (publish) =>
+    remoteRunRequestSchema.safeParse(
+      request('workflow-start', {
+        target,
+        defaults: {
+          ...defaults(),
+          workspace: { kind: 'local', rootId: 'chosen-root', access: 'write', publish },
+        },
+      }),
+    ).success;
+  for (const path of ['deliverables/report.md', '交付/结果.txt', 'a'.repeat(512)])
+    assert.equal(valid([{ kind: 'file', path }]), true, path);
+  for (const path of [
+    '',
+    '/',
+    '/tmp/report',
+    '.',
+    '..',
+    './report',
+    '../report',
+    'out/../report',
+    'out/./report',
+    'out//report',
+    'out/',
+    'C:/report',
+    'C:report',
+    '\\server\\share',
+    'out\\report',
+    'https://example.test/report',
+    'out\0report',
+    'out\nreport',
+    'out\u007freport',
+    'a'.repeat(513),
+  ])
+    assert.equal(valid([{ kind: 'file', path }]), false, JSON.stringify(path));
+  assert.equal(
+    valid(Array.from({ length: 16 }, (_, index) => ({ kind: 'file', path: `out/${index}` }))),
+    true,
+  );
+  assert.equal(
+    valid(Array.from({ length: 17 }, (_, index) => ({ kind: 'file', path: `out/${index}` }))),
+    false,
+  );
+  assert.equal(
+    valid([
+      { kind: 'file', path: 'report' },
+      { kind: 'file', path: 'report' },
+    ]),
+    false,
+  );
+  assert.equal(
+    valid(
+      Array.from({ length: 16 }, (_, index) => ({
+        kind: 'file',
+        path: `${index}/${'a'.repeat(300)}`,
+      })),
+    ),
+    false,
+  );
+  assert.equal(valid([{ kind: 'all', path: 'report' }]), false);
 });
 test('workflow DTO: original info stays valid and explicit workflow negotiation cannot introduce secrets or arbitrary features', () => {
   const header = { protocolVersion: 1, operation: 'info', requestId: randomUUID() };

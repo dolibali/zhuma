@@ -285,6 +285,41 @@ test('member Workspace contract: write access never grants publication; explicit
   }
 });
 
+test('member Workspace workflow ceiling: explicit ranges survive selection into each distinct original node grant without backfilling old grants', async (t) => {
+  const h = await setup(t);
+  const input = {
+    kind: 'local',
+    id: h.choice.id,
+    publish: [{ kind: 'directory', path: 'outputs' }],
+  };
+  const frozen = h.helper.workflowWorkspace(input);
+  input.publish[0].path = 'private';
+  assert.deepEqual(frozen.workspace.publish, [{ kind: 'directory', path: 'outputs' }]);
+  const selected = h.helper.workflowSelection(frozen.workspace);
+  const first = h.helper.prepare('workflow-node-1', h.target, selected);
+  const second = h.helper.prepare(
+    'workflow-node-2',
+    { ...h.target, nodeId: 'second-node' },
+    selected,
+  );
+  assert.deepEqual(first.paths, [{ kind: 'directory', path: 'outputs' }]);
+  assert.deepEqual(second.paths, first.paths);
+  assert.notEqual(first.workspace.grantId, second.workspace.grantId);
+  assert.deepEqual(
+    h.selected.paths,
+    [],
+    'Existing Run IO manifest cannot gain later workflow permissions',
+  );
+  await h.compose();
+  assert.throws(
+    () =>
+      h.helper
+        .output(h.binding, h.grant)
+        .authorize(h.grant, h.composition.configurationId, 'report.txt'),
+    { code: 'publication-denied' },
+  );
+});
+
 test('member Workspace contract: original read-only policy removes write; permission never survives cold reconstruction', async (t) => {
   const h = await setup(t, { readOnly: true });
   assert.deepEqual(

@@ -155,6 +155,165 @@ test('workspace scope labels come from the original guarded member snapshot, not
 });
 const dom = { skip: !domModule && 'set ZHUMA_NATIVE_PANEL_DOM_MODULE for in-memory DOM contracts' };
 
+async function fillPublication(h, value) {
+  const input = h.container.querySelector('[aria-label="第 1 项相对路径"]');
+  assert.ok(input);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(
+      input,
+      value,
+    );
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await tick();
+  });
+}
+const publicationChoices = [
+  { id: 'root-a', label: '目录一', access: 'write', publish: false, publication: 'per-run' },
+  { id: 'root-b', label: '目录二', access: 'write', publish: false, publication: 'per-run' },
+];
+
+test(
+  'workflow publication DOM: Start requires explicit ranges, blocks invalid paths and clears ranges when changing directory',
+  dom,
+  async (t) => {
+    const model = { provider: 'contract', model: 'configured', maxTokens: 4096 };
+    let started;
+    const current = { ...view, controlledNodeCount: 1 };
+    const h = await mount(t, WorkflowControls, {
+      target,
+      api: {
+        read: async () => current,
+        options: async () => ({
+          ...options,
+          ...current,
+          maxConcurrent: 1,
+          workspaces: publicationChoices,
+          models: { kind: 'ready', items: [{ id: 'model', label: 'Model', value: model }] },
+        }),
+        start: async (input) => {
+          started = input;
+          return {
+            ...current,
+            state: 'waiting',
+            planStarted: true,
+            intent: { intentId: 'intent', generation: 1, version: 1, concurrent: 1 },
+            selection: { model, workspace: input.workspace },
+          };
+        },
+      },
+    });
+    await click(button(h, '运行工作流'));
+    await choose(h.container.querySelector('[aria-label="模型"]'), 'Model');
+    await choose(h.container.querySelector('[aria-label="工作目录"]'), '目录一 · 读写');
+    assert.equal(h.container.querySelectorAll('[aria-label="第 1 项相对路径"]').length, 0);
+    await click(button(h, '添加范围'));
+    await fillPublication(h, '../private');
+    assert.equal(button(h, '确认运行').disabled, true);
+    await fillPublication(h, 'outputs');
+    assert.equal(button(h, '确认运行').disabled, false);
+    await choose(h.container.querySelector('[aria-label="工作目录"]'), '目录二 · 读写');
+    assert.equal(h.container.querySelectorAll('[aria-label="第 1 项相对路径"]').length, 0);
+    await click(button(h, '添加范围'));
+    await fillPublication(h, 'outputs');
+    assert.equal(started, undefined);
+    await click(button(h, '确认运行'));
+    assert.deepEqual(started.workspace, {
+      kind: 'local',
+      id: 'root-b',
+      publish: [{ kind: 'directory', path: 'outputs' }],
+    });
+  },
+);
+
+test(
+  'workflow publication DOM: a stopped intent explicitly changes future file authorization through Resume and preserves the frozen budget',
+  dom,
+  async (t) => {
+    const model = { provider: 'contract', model: 'configured', maxTokens: 4096 },
+      resumed = [];
+    let current = {
+      ...view,
+      controlledNodeCount: 1,
+      state: 'paused',
+      planStarted: true,
+      intent: {
+        intentId: 'original-intent',
+        generation: 1,
+        version: 1,
+        concurrent: 1,
+        automaticRevisions: 1,
+      },
+      selection: { model, workspace: { kind: 'local', id: 'root-a' } },
+      revisions: [{ nodeId: 'node', used: 1, limit: 1 }],
+    };
+    const h = await mount(t, WorkflowControls, {
+      target,
+      api: {
+        read: async () => current,
+        options: async () => ({
+          ...options,
+          ...current,
+          maxConcurrent: 1,
+          workspaces: publicationChoices,
+          models: { kind: 'ready', items: [{ id: 'model', label: 'Model', value: model }] },
+        }),
+        resume: async (input) => {
+          resumed.push(structuredClone(input));
+          current = {
+            ...current,
+            state: 'waiting',
+            intent: {
+              ...current.intent,
+              generation: current.intent.generation + 1,
+              version: current.intent.version + 1,
+            },
+            selection: { model, workspace: input.workspace ?? current.selection.workspace },
+          };
+          return current;
+        },
+        stop: async () =>
+          (current = {
+            ...current,
+            state: 'paused',
+            intent: { ...current.intent, version: current.intent.version + 1 },
+          }),
+      },
+    });
+    await click(button(h, '继续工作流'));
+    await click(button({ container: h.container.querySelector('form') }, '继续工作流'));
+    assert.equal('workspace' in resumed[0], false, 'Ordinary Continue must not add file authority');
+    await click(button(h, '停止工作流'));
+    await click(button(h, '继续工作流'));
+    await click(button(h, '修改工作区与文件交付授权'));
+    assert.match(h.container.querySelector('[aria-label="工作目录"]').textContent, /目录一/u);
+    await click(button(h, '添加范围'));
+    await fillPublication(h, 'outputs');
+    assert.match(h.container.textContent, /1 轮（继续运行不重置）/u);
+    assert.equal(resumed.length, 1);
+    await click(button(h, '确认授权并继续'));
+    assert.deepEqual(resumed[1].workspace, {
+      kind: 'local',
+      id: 'root-a',
+      publish: [{ kind: 'directory', path: 'outputs' }],
+    });
+    assert.equal(resumed[1].intentId, 'original-intent');
+    assert.equal(resumed[1].generation, 2);
+    assert.equal(resumed[1].expectedVersion, 3);
+    assert.equal('automaticRevisions' in resumed[1], false);
+    assert.deepEqual(current.revisions, [{ nodeId: 'node', used: 1, limit: 1 }]);
+    await click(button(h, '停止工作流'));
+    await click(button(h, '继续工作流'));
+    await click(button(h, '修改工作区与文件交付授权'));
+    assert.equal(h.container.querySelector('[aria-label="第 1 项相对路径"]').value, 'outputs');
+    await click(button({ container: h.container.querySelector('form') }, '继续工作流'));
+    assert.equal(
+      'workspace' in resumed[2],
+      false,
+      'Unchanged explicit editor still preserves the existing default',
+    );
+  },
+);
+
 test(
   'workflow budget DOM: explicit start sends the chosen limit and Resume shows its frozen value without resetting it',
   dom,

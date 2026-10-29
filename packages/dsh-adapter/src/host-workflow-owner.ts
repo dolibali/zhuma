@@ -30,7 +30,12 @@ const publicStart = workflowLocationSchema.extend({
   workspace: publicWorkspace,
   concurrent: z.number().int().min(1).max(4).default(1),
 });
-type PublicWorkspace = z.infer<typeof publicWorkspace> | { readonly kind: 'unavailable' };
+type PublicWorkspace =
+  | Extract<z.infer<typeof publicWorkspace>, { kind: 'text-only' }>
+  | (Extract<z.infer<typeof publicWorkspace>, { kind: 'local' }> & {
+      readonly publish?: readonly { readonly kind: 'file' | 'directory'; readonly path: string }[];
+    })
+  | { readonly kind: 'unavailable' };
 export interface HostWorkflowView {
   readonly target: WorkflowLocation;
   readonly title: string;

@@ -1,4 +1,5 @@
 import { ExecutionError } from '../execution/ExecutionApi.js';
+import { workspacePublishRanges, type WorkspacePublishRange } from '../run/workspace-approvals.js';
 import type {
   NativeRunModel,
   NativeRunModelChoice,
@@ -12,7 +13,12 @@ export type WorkflowTarget = {
 };
 export type WorkflowLocation = WorkflowTarget & { readonly spaceId: string };
 export type WorkflowWorkspace =
-  { readonly kind: 'text-only' } | { readonly kind: 'local'; readonly id: string };
+  | { readonly kind: 'text-only' }
+  | {
+      readonly kind: 'local';
+      readonly id: string;
+      readonly publish?: readonly WorkspacePublishRange[];
+    };
 export interface WorkflowView {
   readonly target: WorkflowLocation;
   readonly title: string;
@@ -68,7 +74,10 @@ export interface WorkflowApi {
   read(target: WorkflowTarget, signal: AbortSignal): Promise<WorkflowView>;
   start(input: WorkflowStart, signal: AbortSignal): Promise<WorkflowView>;
   resume(
-    input: WorkflowControl & { readonly expectedVersion: number },
+    input: WorkflowControl & {
+      readonly expectedVersion: number;
+      readonly workspace?: WorkflowWorkspace;
+    },
     signal: AbortSignal,
   ): Promise<WorkflowView>;
   stop(input: WorkflowControl, signal: AbortSignal): Promise<WorkflowView>;
@@ -113,7 +122,11 @@ function workspace(value: unknown): WorkflowWorkspace | { readonly kind: 'unavai
   const item = object(value);
   switch (item.kind) {
     case 'local':
-      return { kind: 'local', id: string(item.id) };
+      return {
+        kind: 'local',
+        id: string(item.id),
+        ...(item.publish === undefined ? {} : { publish: workflowPublishRanges(item.publish) }),
+      };
     case 'text-only':
       return { kind: 'text-only' };
     case 'unavailable':
@@ -121,6 +134,16 @@ function workspace(value: unknown): WorkflowWorkspace | { readonly kind: 'unavai
     default:
       return invalid();
   }
+}
+export function workflowPublishRanges(raw: unknown): WorkspacePublishRange[] {
+  const ranges = workspacePublishRanges(raw);
+  if (new TextEncoder().encode(JSON.stringify(ranges)).byteLength > 4096) invalid();
+  return ranges;
+}
+function selectedWorkspace(raw: WorkflowWorkspace): WorkflowWorkspace {
+  const value = workspace(raw);
+  if (value.kind === 'unavailable') return invalid();
+  return value;
 }
 function view(value: unknown, expected: WorkflowLocation): WorkflowView {
   const item = object(value),
@@ -240,6 +263,9 @@ function options(value: unknown, expected: WorkflowLocation): WorkflowOptions {
         label: string(choice.label),
         access: oneOf(choice.access, ['read', 'write']),
         publish: boolean(choice.publish),
+        ...(choice.publication === undefined
+          ? {}
+          : { publication: oneOf(choice.publication, ['per-run']) }),
       };
     }),
   };
@@ -278,7 +304,7 @@ export function createWorkflowApi(
             ...target,
             requestId: input.requestId,
             model: input.model,
-            workspace: input.workspace,
+            workspace: selectedWorkspace(input.workspace),
             concurrent: input.concurrent,
             ...(input.automaticRevisions === undefined
               ? {}
@@ -293,7 +319,17 @@ export function createWorkflowApi(
     },
     async resume(input, signal) {
       const next = view(
-        await call('resume', { ...control(input), expectedVersion: input.expectedVersion }, signal),
+        await call(
+          'resume',
+          {
+            ...control(input),
+            expectedVersion: input.expectedVersion,
+            ...(input.workspace === undefined
+              ? {}
+              : { workspace: selectedWorkspace(input.workspace) }),
+          },
+          signal,
+        ),
         location(input),
       );
       if (

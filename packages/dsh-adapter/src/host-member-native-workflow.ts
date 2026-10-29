@@ -24,7 +24,10 @@ import {
 } from './execution-workflow-contract.js';
 import { readHostRunModels } from './host-run-models.js';
 import type { HostWorkflowView } from './host-workflow-owner.js';
-import type { createHostMemberNativeWorkspaces } from './host-member-native-workspaces.js';
+import {
+  memberNativeWorkspaceSchema,
+  type createHostMemberNativeWorkspaces,
+} from './host-member-native-workspaces.js';
 import { ExecutionRunError } from './execution-run-state.js';
 
 const natural = z.number().int().nonnegative().refine(Number.isSafeInteger);
@@ -41,12 +44,12 @@ const metadataSchema = z.object({
 const startSchema = workflowLocationSchema.extend({
   requestId: z.string().min(1).max(200),
   model: remoteWorkflowDefaultsSchema.shape.model,
-  workspace: z.discriminatedUnion('kind', [
-    z.strictObject({ kind: z.literal('text-only') }),
-    z.strictObject({ kind: z.literal('local'), id: z.string().min(1).max(200) }),
-  ]),
+  workspace: memberNativeWorkspaceSchema,
   concurrent: z.literal(1).default(1),
   automaticRevisions: natural.max(2).default(0),
+});
+const resumeSchema = workflowResumeSchema.extend({
+  workspace: memberNativeWorkspaceSchema.optional(),
 });
 
 /** Same backend facts, original device protocol and C consumer. This owns only
@@ -344,10 +347,39 @@ export function createHostMemberNativeWorkflow(
           : await options.protocol.workflowStatus({ target }, signal)
         : undefined;
       if (endpoint === 'workflow-resume') {
-        const input = workflowResumeSchema.parse(raw);
+        const input = resumeSchema.parse(raw);
         if (!remote?.intent) throw new ExecutionRunError('run-authority-denied');
         await modelAvailable(remote.intent.defaults.model, signal);
-        options.workspaces.workflowSelection(remote.intent.defaults.workspace);
+        let defaults: z.infer<typeof remoteWorkflowDefaultsSchema> | undefined;
+        if (input.workspace !== undefined) {
+          if (remote.state === 'stopping') throw new ExecutionRunError('run-authority-unavailable');
+          const choice = options.workspaces.workflowWorkspace(input.workspace);
+          if (choice.workspace.kind === 'local' && !options.native.outputFileSource)
+            throw new ExecutionRunError('run-authority-unavailable');
+          const {
+            outputFile: _output,
+            resultIntent: _result,
+            localTools: _tools,
+            ...ceiling
+          } = remote.intent.defaults.capabilities;
+          defaults = remoteWorkflowDefaultsSchema.parse({
+            ...remote.intent.defaults,
+            workspace: choice.workspace,
+            capabilities: {
+              ...ceiling,
+              localTools: choice.localTools,
+              resultIntent:
+                choice.workspace.kind === 'local'
+                  ? 'zhuma-native-result-intent@2'
+                  : 'zhuma-native-result-intent@1',
+              ...(choice.workspace.kind === 'local'
+                ? { outputFile: options.native.outputFileSource }
+                : {}),
+            },
+          });
+        } else {
+          options.workspaces.workflowSelection(remote.intent.defaults.workspace);
+        }
         const identity = key(target),
           old = consumers.get(identity);
         if (old) {
@@ -361,6 +393,7 @@ export function createHostMemberNativeWorkflow(
             target,
             workflow: { intentId: input.intentId, generation: input.generation },
             expectedVersion: input.expectedVersion,
+            ...(defaults ? { defaults } : {}),
           },
           signal,
         );

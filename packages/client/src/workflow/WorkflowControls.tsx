@@ -5,11 +5,20 @@ import { SingleSelect } from '../workbench/SingleSelect.js';
 import { Modal } from '../workbench/controls.js';
 import { executionErrorMessage } from '../execution/ExecutionApi.js';
 import { useExecutionCommand } from '../execution/interaction.js';
-import type { WorkflowApi, WorkflowOptions, WorkflowTarget, WorkflowView } from './api.js';
+import {
+  workflowPublishRanges,
+  type WorkflowApi,
+  type WorkflowOptions,
+  type WorkflowTarget,
+  type WorkflowView,
+  type WorkflowWorkspace,
+} from './api.js';
 import { WorkspaceApprovalDialog } from '../run/WorkspaceApprovalDialog.js';
+import { WorkspacePublishRanges } from '../run/WorkspacePublishRanges.js';
 import type {
   WorkspaceApprovalApi,
   WorkspaceApprovalLocation,
+  WorkspacePublishRange,
 } from '../run/workspace-approvals.js';
 
 type Props = {
@@ -78,6 +87,8 @@ function Controls({
   const [choices, setChoices] = useState<WorkflowOptions>();
   const [modelId, setModelId] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
+  const [publish, setPublish] = useState<WorkspacePublishRange[]>([]);
+  const [editingWorkspace, setEditingWorkspace] = useState(false);
   const [concurrent, setConcurrent] = useState(1);
   const [automaticRevisions, setAutomaticRevisions] = useState(0);
   const reader = useRef<AbortController | undefined>(undefined);
@@ -138,11 +149,13 @@ function Controls({
   }, [view?.state, refresh, open, command.pending]);
   function prepare() {
     setOpen(true);
+    setEditingWorkspace(false);
     returnToRun.current = false;
     returnToDirectory.current = false;
     if (!choices) {
       setModelId('');
       setWorkspaceId('');
+      setPublish([]);
       setConcurrent(1);
       setAutomaticRevisions(0);
     }
@@ -151,7 +164,8 @@ function Controls({
   }
   function commit() {
     if (!canCommit) {
-      if (workspaceUnavailable && !view?.intent) command.setError(invalidWorkspaceMessage);
+      if (workspaceUnavailable && (!view?.intent || editingWorkspace))
+        command.setError(invalidWorkspaceMessage);
       return;
     }
     if (!choices || !view || loading) return;
@@ -166,6 +180,7 @@ function Controls({
         intentId: view.intent.intentId,
         generation: view.intent.generation,
         expectedVersion: view.intent.version,
+        ...(workspaceChanged ? { workspace: draftWorkspace } : {}),
       };
       void command.run(
         { mode: 'resume', ...input },
@@ -185,9 +200,7 @@ function Controls({
       const input = {
         ...fixedTarget,
         model,
-        workspace: workspace
-          ? { kind: 'local' as const, id: workspace.id }
-          : { kind: 'text-only' as const },
+        workspace: draftWorkspace,
         concurrent,
         ...(choices.automaticReview ? { automaticRevisions } : {}),
       };
@@ -229,6 +242,30 @@ function Controls({
     !!choices && !!workspaceId && !choices.workspaces.some((item) => item.id === workspaceId);
   const savedModel = view?.selection?.model;
   const frozenWorkspace = view?.selection?.workspace;
+  const perRunPublication =
+    choices?.workspaces.find((item) => item.id === workspaceId)?.publication === 'per-run';
+  let publicationValid = true;
+  try {
+    if (perRunPublication) workflowPublishRanges(publish);
+  } catch {
+    publicationValid = false;
+  }
+  const draftWorkspace: WorkflowWorkspace = workspaceId
+    ? {
+        kind: 'local',
+        id: workspaceId,
+        ...(perRunPublication && publish.length ? { publish } : {}),
+      }
+    : { kind: 'text-only' };
+  const normalizedWorkspace = (value: WorkflowWorkspace | { kind: 'unavailable' } | undefined) =>
+    value?.kind === 'local' ? { ...value, publish: value.publish ?? [] } : value;
+  const workspaceChanged =
+    editingWorkspace &&
+    JSON.stringify(normalizedWorkspace(draftWorkspace)) !==
+      JSON.stringify(normalizedWorkspace(frozenWorkspace));
+  const memberWorkspace =
+    choices?.controlledNodeCount !== undefined ||
+    choices?.workspaces.some((item) => item.publication === 'per-run');
   const modelPresent =
     savedModel &&
     choices?.models.kind === 'ready' &&
@@ -241,8 +278,82 @@ function Controls({
     !loading &&
     !command.pending &&
     (view?.intent
-      ? canResume && !!modelPresent && frozenWorkspace?.kind !== 'unavailable'
-      : canStart && !!selected && !workspaceUnavailable);
+      ? canResume &&
+        !!modelPresent &&
+        (editingWorkspace
+          ? !workspaceUnavailable && publicationValid
+          : frozenWorkspace?.kind !== 'unavailable')
+      : canStart && !!selected && !workspaceUnavailable && publicationValid);
+  function workspaceFields() {
+    return (
+      <>
+        <div className="zm-field">
+          <div className="zm-workflow-field-heading">
+            <label htmlFor={directoryId}>工作目录</label>
+            {workspaceApprovals && (
+              <Button
+                id={manageId}
+                variant="quiet"
+                disabled={command.pending || loading}
+                onClick={() => {
+                  returnToDirectory.current = true;
+                  setWorkspaceOpen(true);
+                }}
+              >
+                管理授权
+              </Button>
+            )}
+          </div>
+          <SingleSelect
+            id={directoryId}
+            label="工作目录"
+            aria-invalid={workspaceUnavailable || undefined}
+            aria-describedby={workspaceUnavailable ? workspaceErrorId : undefined}
+            value={workspaceId}
+            disabled={command.pending}
+            onValueChange={(value) => {
+              if (value !== workspaceId) setPublish([]);
+              setWorkspaceId(value);
+              command.setError('');
+            }}
+            options={[
+              ...(workspaceUnavailable
+                ? [
+                    {
+                      value: workspaceId,
+                      label: '所选工作目录已失效',
+                      disabled: true,
+                    },
+                  ]
+                : []),
+              { value: '', label: '仅处理任务资料' },
+              ...(choices?.workspaces ?? []).map((item) => ({
+                value: item.id,
+                label: `${item.label} · ${item.access === 'write' ? '读写' : '只读'}${item.publish ? ' · 可发布文件' : ''}`,
+              })),
+            ]}
+          />
+          {workspaceUnavailable && (
+            <p id={workspaceErrorId} className="zm-error" role="alert">
+              {invalidWorkspaceMessage}
+            </p>
+          )}
+        </div>
+        {perRunPublication && (
+          <section className="zm-field" aria-label="文件交付范围">
+            <strong>文件交付范围</strong>
+            <WorkspacePublishRanges
+              ranges={publish}
+              disabled={command.pending}
+              valid={publicationValid}
+              onChange={setPublish}
+              defaultKind="directory"
+            />
+          </section>
+        )}
+      </>
+    );
+  }
   return (
     <div className="zm-workflow-controls" aria-label="工作流执行">
       {view && (
@@ -344,32 +455,75 @@ function Controls({
               choices && (
                 <>
                   {view?.intent && view.selection ? (
-                    <div className="zm-workflow-frozen">
-                      <span>模型</span>
-                      <strong>
-                        {view.selection.model.provider} / {view.selection.model.model}
-                      </strong>
-                      <span>工作区</span>
-                      <strong>
-                        {frozenWorkspace?.kind === 'local'
-                          ? (choices.workspaces.find((item) => item.id === frozenWorkspace.id)
-                              ?.label ?? '原工作区')
-                          : frozenWorkspace?.kind === 'unavailable'
-                            ? '原工作区不可用'
-                            : '仅处理任务资料'}
-                      </strong>
-                      <span>并行数量</span>
-                      <strong>{view.intent.concurrent}</strong>
-                      {view.intent.automaticRevisions !== undefined && (
+                    <>
+                      <div className="zm-workflow-frozen">
+                        <span>模型</span>
+                        <strong>
+                          {view.selection.model.provider} / {view.selection.model.model}
+                        </strong>
+                        <span>工作区</span>
+                        <strong>
+                          {frozenWorkspace?.kind === 'local'
+                            ? (choices.workspaces.find((item) => item.id === frozenWorkspace.id)
+                                ?.label ?? '原工作区')
+                            : frozenWorkspace?.kind === 'unavailable'
+                              ? '原工作区不可用'
+                              : '仅处理任务资料'}
+                        </strong>
+                        <span>并行数量</span>
+                        <strong>{view.intent.concurrent}</strong>
+                        {view.intent.automaticRevisions !== undefined && (
+                          <>
+                            <span>自动返工上限</span>
+                            <strong>{view.intent.automaticRevisions} 轮（继续运行不重置）</strong>
+                          </>
+                        )}
+                        {memberWorkspace && frozenWorkspace?.kind === 'local' && (
+                          <>
+                            <span>文件交付范围</span>
+                            <strong>
+                              {frozenWorkspace.publish?.map((range) => range.path).join('、') ||
+                                '未授权'}
+                            </strong>
+                          </>
+                        )}
+                        {!modelPresent && (
+                          <p className="zm-error">原模型当前不可用，请先恢复模型连接。</p>
+                        )}
+                      </div>
+                      {memberWorkspace && !recovering && !editingWorkspace && (
+                        <Button
+                          variant="quiet"
+                          disabled={command.pending || !canResume}
+                          onClick={() => {
+                            setWorkspaceId(
+                              frozenWorkspace?.kind === 'local' ? frozenWorkspace.id : '',
+                            );
+                            setPublish(
+                              frozenWorkspace?.kind === 'local'
+                                ? (frozenWorkspace.publish ?? []).map((range) => ({ ...range }))
+                                : [],
+                            );
+                            setEditingWorkspace(true);
+                            command.setError('');
+                          }}
+                        >
+                          修改工作区与文件交付授权
+                        </Button>
+                      )}
+                      {editingWorkspace && (
                         <>
-                          <span>自动返工上限</span>
-                          <strong>{view.intent.automaticRevisions} 轮（继续运行不重置）</strong>
+                          {workspaceFields()}
+                          <Button
+                            variant="quiet"
+                            disabled={command.pending}
+                            onClick={() => setEditingWorkspace(false)}
+                          >
+                            取消修改
+                          </Button>
                         </>
                       )}
-                      {!modelPresent && (
-                        <p className="zm-error">原模型当前不可用，请先恢复模型连接。</p>
-                      )}
-                    </div>
+                    </>
                   ) : (
                     <>
                       <label className="zm-field">
@@ -440,57 +594,7 @@ function Controls({
                           )}
                         </div>
                       )}
-                      <div className="zm-field">
-                        <div className="zm-workflow-field-heading">
-                          <label htmlFor={directoryId}>工作目录</label>
-                          {workspaceApprovals && (
-                            <Button
-                              id={manageId}
-                              variant="quiet"
-                              disabled={command.pending || loading}
-                              onClick={() => {
-                                returnToDirectory.current = true;
-                                setWorkspaceOpen(true);
-                              }}
-                            >
-                              管理授权
-                            </Button>
-                          )}
-                        </div>
-                        <SingleSelect
-                          id={directoryId}
-                          label="工作目录"
-                          aria-invalid={workspaceUnavailable || undefined}
-                          aria-describedby={workspaceUnavailable ? workspaceErrorId : undefined}
-                          value={workspaceId}
-                          disabled={command.pending}
-                          onValueChange={(value) => {
-                            setWorkspaceId(value);
-                            command.setError('');
-                          }}
-                          options={[
-                            ...(workspaceUnavailable
-                              ? [
-                                  {
-                                    value: workspaceId,
-                                    label: '所选工作目录已失效',
-                                    disabled: true,
-                                  },
-                                ]
-                              : []),
-                            { value: '', label: '仅处理任务资料' },
-                            ...choices.workspaces.map((item) => ({
-                              value: item.id,
-                              label: `${item.label} · ${item.access === 'write' ? '读写' : '只读'}${item.publish ? ' · 可发布文件' : ''}`,
-                            })),
-                          ]}
-                        />
-                        {workspaceUnavailable && (
-                          <p id={workspaceErrorId} className="zm-error" role="alert">
-                            {invalidWorkspaceMessage}
-                          </p>
-                        )}
-                      </div>
+                      {workspaceFields()}
                       <label className="zm-field">
                         同时运行的 Agent
                         <SingleSelect
@@ -534,7 +638,7 @@ function Controls({
                 busy={command.pending}
                 busyLabel="正在确认…"
               >
-                {view?.intent ? resumeLabel : '确认运行'}
+                {view?.intent ? (workspaceChanged ? '确认授权并继续' : resumeLabel) : '确认运行'}
               </Button>
             </footer>
           </form>
