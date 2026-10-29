@@ -23,6 +23,7 @@ import type {
   NativePublishedFileLease,
   NativeRunOutputFiles,
   NativeCompletedPublicationLease,
+  NativeOutputFileResourceSource,
 } from './native-work-session-output-file-contract.js';
 import {
   NativeOutputFileByteProducer,
@@ -73,7 +74,13 @@ const ackFor = (record: UploadFileRecord): PublicationAck => {
   };
 };
 const blocks = (value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }];
-type Execution = Pick<ExecutionService, 'createRunOutputFiles' | 'readRunComposition'>;
+type OutputAuthority = Pick<ExecutionRunAuthorities, 'assertGrant'>;
+type Execution = Pick<ExecutionService, 'readRunComposition'> & {
+  createRunOutputFiles(
+    authority: OutputAuthority,
+    source: NativeOutputFileResourceSource,
+  ): NativeRunOutputFiles;
+};
 type ResolveBytes = (
   binding: NativeSessionBinding,
   grant: NativeWorkGrant,
@@ -100,7 +107,7 @@ export interface NativeOutputFileIssuer {
 export function createNativeOutputFileIssuer(
   ctx: Context,
   sessions: NativeWorkSessionService,
-  authority: ExecutionRunAuthorities,
+  authority: OutputAuthority,
   execution: Execution,
   resolveBytes: ResolveBytes,
 ): NativeOutputFileIssuer {
@@ -141,7 +148,7 @@ class OutputFileOwner implements NativeOutputFileIssuer {
   constructor(
     private readonly ctx: Context,
     private readonly sessions: NativeWorkSessionService,
-    private readonly authority: ExecutionRunAuthorities,
+    private readonly authority: OutputAuthority,
     private readonly execution: Execution,
     private readonly resolveBytes: ResolveBytes,
   ) {
@@ -391,7 +398,7 @@ class OutputFileOwner implements NativeOutputFileIssuer {
       reading.check();
       permit.check();
       const record = await permit.publish({
-        mediaType: 'application/octet-stream',
+        mediaType: content.mediaType ?? 'application/octet-stream',
         byteSize: content.bytes.byteLength,
         sha256: content.sha256,
         data: {

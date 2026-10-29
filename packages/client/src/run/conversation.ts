@@ -93,6 +93,31 @@ export function readNativeInbox(
     invalid();
   return { asOfSeq: number(value.asOfSeq, -1), receipts, items };
 }
+export function readNativeTurnEnd(
+  raw: unknown,
+): Extract<NativeConversationFrame, { type: 'turn-end' }> {
+  const value = object(raw),
+    reason = object(value.reason);
+  return {
+    type: 'turn-end',
+    seq: number(value.seq),
+    time: number(value.time),
+    turn: number(value.turn, 1),
+    reason: {
+      kind: oneOf(reason.kind, [
+        'completed',
+        'blocked',
+        'max-tokens',
+        'error',
+        'aborted',
+        'interrupted',
+        'forked',
+        'unknown',
+      ]),
+    },
+  };
+}
+
 export function readConversationFrame(
   raw: unknown,
   run: NativeRunSummary,
@@ -100,6 +125,7 @@ export function readConversationFrame(
 ): NativeConversationFrame {
   const value = envelope(raw, run, spaceId);
   if (value.type === 'ready') return { type: 'ready' };
+  if (value.type === 'turn-end') return readNativeTurnEnd(value);
   if (value.type === 'message') {
     const seq = number(value.seq);
     return {

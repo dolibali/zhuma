@@ -18,6 +18,7 @@ import {
 const root = fileURLToPath(new URL('../../..', import.meta.url));
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const context = {
+  root,
   source: 'a'.repeat(40),
   tree: 'b'.repeat(40),
   repository: 'example/product',
@@ -41,7 +42,7 @@ function fakeApi(options = {}) {
         object: {
           sha:
             options.main ??
-            (options.moveAfterUpload && uploads.length === 3 ? 'f'.repeat(40) : context.source),
+            (options.moveAfterUpload && uploads.length === 5 ? 'f'.repeat(40) : context.source),
         },
       };
     if (path.includes('/actions/workflows/ci.yml/runs?'))
@@ -81,7 +82,13 @@ function fakeApi(options = {}) {
       };
     }
     if (path.endsWith('/releases/9') && method === 'PATCH') {
-      assert.deepEqual(uploads, [context.filename, 'SOURCE.json', 'SHA256SUMS']);
+      assert.deepEqual(uploads, [
+        context.filename,
+        'SOURCE.json',
+        'SHA256SUMS',
+        'packaged-backend.sh',
+        'packaged-backend.mjs',
+      ]);
       return {
         draft: false,
         tag_name: context.tag,
@@ -96,6 +103,13 @@ async function artifacts(t) {
   const directory = await mkdtemp(join(tmpdir(), 'zhuma-release-contract-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const dmg = Buffer.from('SYNTHETIC_DMG_CONTRACT_ONLY');
+  const launchers = await Promise.all(
+    ['packaged-backend.sh', 'packaged-backend.mjs'].map(async (name) => {
+      const bytes = await readFile(join(root, 'scripts/server', name));
+      await writeFile(join(directory, name), bytes);
+      return { name, bytes: bytes.length, sha256: sha(bytes) };
+    }),
+  );
   const manifest = Buffer.from(
     JSON.stringify({
       sourceCommit: context.source,
@@ -107,14 +121,18 @@ async function artifacts(t) {
       locks: { workspace: context.rootLockSha256 },
       workflow: { runId: context.runId, runAttempt: context.runAttempt },
       target: { platform: 'darwin', arch: 'arm64', signature: 'ad-hoc', notarized: false },
-      artifacts: { dmg: { name: context.filename, bytes: dmg.length, sha256: sha(dmg) } },
+      artifacts: {
+        dmg: { name: context.filename, bytes: dmg.length, sha256: sha(dmg) },
+        backendLaunchers: launchers,
+      },
     }),
   );
   await writeFile(join(directory, context.filename), dmg);
   await writeFile(join(directory, 'SOURCE.json'), manifest);
   await writeFile(
     join(directory, 'SHA256SUMS'),
-    `${sha(dmg)}  ${context.filename}\n${sha(manifest)}  SOURCE.json\n`,
+    `${sha(dmg)}  ${context.filename}\n${sha(manifest)}  SOURCE.json\n` +
+      launchers.map((item) => `${item.sha256}  ${item.name}\n`).join(''),
   );
   return directory;
 }
@@ -201,7 +219,7 @@ test('release contracts: publish verifies provenance/checksums and all remote as
     'https://github.com/example/product/releases/tag/v1.0.0',
   );
   const writes = h.calls.filter((call) => call.method !== 'GET');
-  assert.equal(writes.length, 6);
+  assert.equal(writes.length, 8);
   assert.equal(writes[0].path, 'repos/example/product/git/refs');
   assert.equal(writes.at(-1).method, 'PATCH');
   assert.equal(
@@ -243,4 +261,28 @@ test('release workflow contract: manual default artifact build, fixed actions, a
   assert(runs.includes('test "$(uname -m)" = arm64'));
   assert(runs.includes('pnpm desktop:package:mac'));
   assert.equal(runs.includes('pnpm check'), false);
+});
+
+test('release contracts: self-consistent changed backend launcher bytes still refuse before any remote write', async (t) => {
+  const directory = await artifacts(t),
+    h = fakeApi();
+  const file = join(directory, 'packaged-backend.mjs');
+  const changed = Buffer.from('SYNTHETIC_CHANGED_LAUNCHER');
+  await writeFile(file, changed);
+  const manifest = JSON.parse(await readFile(join(directory, 'SOURCE.json'), 'utf8'));
+  const item = manifest.artifacts.backendLaunchers.find(
+    (item) => item.name === 'packaged-backend.mjs',
+  );
+  item.bytes = changed.length;
+  item.sha256 = sha(changed);
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  await writeFile(join(directory, 'SOURCE.json'), bytes);
+  const dmg = await readFile(join(directory, context.filename));
+  await writeFile(
+    join(directory, 'SHA256SUMS'),
+    `${sha(dmg)}  ${context.filename}\n${sha(bytes)}  SOURCE.json\n` +
+      manifest.artifacts.backendLaunchers.map((item) => `${item.sha256}  ${item.name}\n`).join(''),
+  );
+  await assert.rejects(publish(context, directory, h.api), /exact checked-out release source/);
+  assert.equal(h.calls.length, 0);
 });

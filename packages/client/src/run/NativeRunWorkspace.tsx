@@ -3,6 +3,7 @@ import { Button } from '../workbench/Button.js';
 import { Modal } from '../workbench/controls.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { NativeRunPanel } from './NativeRunPanel.js';
+import { NativeReviewLauncher } from './NativeReviewWorkspace.js';
 import { createNativeRunController } from './controller.js';
 import type { NativeRunApi } from './api.js';
 import type { NativeRunTarget } from './native-run-contract.js';
@@ -31,11 +32,17 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
   const fixedTarget = useRef(target).current;
   const [controller, setController] = useState<ReturnType<typeof createNativeRunController>>();
   const [approvalLocation, setApprovalLocation] = useState<WorkspaceApprovalLocation>();
+  const navigation = useRef<AbortController>();
   useEffect(() => {
+    const lifetime = new AbortController();
+    navigation.current = lifetime;
     const current = createNativeRunController(api, fixedTarget);
     setController(current);
     void current.refresh().catch(() => undefined);
-    return () => current.dispose();
+    return () => {
+      lifetime.abort();
+      current.dispose();
+    };
   }, [api, fixedTarget]);
   const state = useSyncExternalStore(
     controller?.subscribe ?? subscribeNone,
@@ -58,8 +65,33 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
         view={state.view}
         busy={state.busy}
         error={state.error}
+        reviewAction={
+          api.review && run?.submission?.roundId ? (
+            <NativeReviewLauncher
+              api={api.review}
+              target={{
+                spaceId: target.spaceId,
+                taskId: target.taskId,
+                planId: target.planId,
+                revision: target.revision,
+                nodeId: target.nodeId,
+                roundId: run.submission.roundId,
+                artifactVersionId: run.submission.artifactVersionId,
+              }}
+            />
+          ) : undefined
+        }
         onDirtyChange={onDirtyChange}
         onClose={onClose}
+        onOpenSession={
+          api.openNativeSession && run?.native
+            ? async () => {
+                const lifetime = navigation.current;
+                if (!lifetime) throw new DOMException('View changed', 'AbortError');
+                await api.openNativeSession!(run, lifetime.signal);
+              }
+            : undefined
+        }
         onManageWorkspaces={
           api.workspaceApprovals && state.view.kind === 'ready' && state.view.workspaceApprovalScope
             ? () => {

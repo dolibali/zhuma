@@ -11,6 +11,7 @@ export function createConversationState() {
   let streamRevision = -1;
   let streamAttempt: { id: string; index: number } | undefined;
   let inbox: NativeRunInbox | undefined;
+  let lastTurn: Extract<NativeConversationFrame, { type: 'turn-end' }> | undefined;
   let partial:
     | {
         id: string;
@@ -30,9 +31,13 @@ export function createConversationState() {
       partial = undefined;
       streamRevision = -1;
       streamAttempt = undefined;
+      lastTurn = undefined;
     },
     disconnect() {
       partial = undefined;
+    },
+    turnEnd() {
+      return lastTurn ? structuredClone(lastTurn) : undefined;
     },
     inbox(value: NativeRunInbox) {
       inbox = value;
@@ -47,6 +52,10 @@ export function createConversationState() {
     },
     /** true requests a fresh read from the last locally scanned durable cursor. */
     frame(value: NativeConversationFrame): boolean {
+      if (value.type === 'turn-end') {
+        if (!lastTurn || value.seq > lastTurn.seq) lastTurn = structuredClone(value);
+        return false;
+      }
       if (value.type === 'gap') {
         partial = undefined;
         return true;

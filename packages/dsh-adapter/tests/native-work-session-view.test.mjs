@@ -14,6 +14,69 @@ const chunk = (index, revision, content, attemptId = 'attempt-1') =>
     chunk: content,
   });
 
+test('view contract: durable turn end exposes only a fixed reason kind and never private failure or cancellation details', () => {
+  for (const kind of [
+    'completed',
+    'blocked',
+    'max-tokens',
+    'error',
+    'aborted',
+    'interrupted',
+    'forked',
+  ]) {
+    const view = new NativeConversationProjection('session');
+    const frame = view.push({
+      type: 'event',
+      event: {
+        seq: 12,
+        time: 17,
+        type: 'turn/end',
+        data: {
+          turn: 2,
+          reason: {
+            kind,
+            error: { message: 'private-provider-key-or-path', code: 'private-code' },
+            reason: { kind: 'hook', reason: 'private-hook-path' },
+            replayState: 'private-replay',
+          },
+          request: 'private-request',
+        },
+      },
+    });
+    assert.deepEqual(frame, { type: 'turn-end', seq: 12, time: 17, turn: 2, reason: { kind } });
+    assert.equal(JSON.stringify(frame).includes('private'), false);
+  }
+});
+
+test('view contract: unknown turn reasons are coarse and malformed boundaries are never guessed as completed', () => {
+  const event = {
+    seq: 1,
+    time: 2,
+    type: 'turn/end',
+    data: { turn: 1, reason: { kind: 'private-new-provider-reason' } },
+  };
+  assert.deepEqual(new NativeConversationProjection('session').push({ type: 'event', event }), {
+    type: 'turn-end',
+    seq: 1,
+    time: 2,
+    turn: 1,
+    reason: { kind: 'unknown' },
+  });
+  for (const data of [
+    { turn: 0 },
+    { turn: 1.5 },
+    { turn: Number.MAX_SAFE_INTEGER + 1 },
+    { reason: { kind: 'completed' } },
+  ])
+    assert.equal(
+      new NativeConversationProjection('session').push({
+        type: 'event',
+        event: { ...event, data },
+      }),
+      undefined,
+    );
+});
+
 test('view contract: only textual body and necessary tool names cross the stream projection', () => {
   const view = new NativeConversationProjection('native-session');
   const frames = [view.push(start())];

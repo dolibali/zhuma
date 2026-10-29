@@ -50,20 +50,41 @@ export async function readHostRunModels(
       ]);
       active(signal);
       if (catalogs.flat().length > 256) throw Error('Model catalog exceeds projection limit');
+      const items = await Promise.race([
+        Promise.all(
+          catalogs.flat().map(async (model) => {
+            const provider = id.parse(model.provider),
+              selected = id.parse(model.id);
+            let maxTokens = 4096; // Unknown routes keep the existing conservative budget.
+            if (typeof llm.resolveModelInfo === 'function') {
+              const resolved = await llm.resolveModelInfo(provider, selected, deadline);
+              if (resolved.provider !== provider || resolved.id !== selected)
+                throw Error('Model route changed');
+              const configured = resolved.defaultMaxTokens;
+              if (
+                typeof configured === 'number' &&
+                Number.isSafeInteger(configured) &&
+                configured > 0
+              ) {
+                maxTokens = Math.min(16_384, configured);
+                const context = resolved.context?.contextWindow;
+                if (typeof context === 'number' && Number.isSafeInteger(context) && context > 0)
+                  maxTokens = Math.min(maxTokens, context);
+              }
+            }
+            return {
+              id: JSON.stringify([provider, selected]),
+              label: `${model.name.slice(0, 160)} · ${provider.slice(0, 100)}`,
+              value: { provider, model: selected, maxTokens },
+            };
+          }),
+        ),
+        cancelled,
+      ]);
+      active(signal);
       models = {
         kind: 'ready',
-        items: catalogs.flatMap((catalog) =>
-          catalog.map((model) => ({
-            id: JSON.stringify([model.provider, model.id]),
-            label: `${model.name.slice(0, 160)} · ${model.provider.slice(0, 100)}`,
-            // Explicit application output budget, never a guessed provider default.
-            value: {
-              provider: id.parse(model.provider),
-              model: id.parse(model.id),
-              maxTokens: 4096,
-            },
-          })),
-        ),
+        items,
       };
     } catch {
       active(signal);

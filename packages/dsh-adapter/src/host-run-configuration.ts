@@ -102,6 +102,7 @@ const reviewRequest = z.strictObject({
   reviewerRef: z.strictObject({ id, version: id }),
   model: beginRequest.shape.model.extend({ maxTokens: positive.max(65_536).default(16_384) }),
 });
+export const hostRunBeginRequestSchema = beginRequest;
 const reviewTools = () => ({
   readTarget: describeNativeReviewReadTool(),
   completeReview: describeNativeReviewTool(),

@@ -15,10 +15,28 @@ import {
 import { createIdentityApi, IdentityApiError, type MemberSpace } from '../identity/api.js';
 
 export type MemberTaskInput = Omit<WorkTask, 'status' | 'updatedAt' | 'templateSource'>;
+export interface MemberTemplateSaveInput {
+  readonly templateId: string;
+  readonly sourceTaskId: string;
+  readonly sourceSpaceId?: string | undefined;
+  readonly name: string;
+  readonly description: string;
+}
 export type MemberWorkbenchCommand =
   | { readonly type: 'create-project' | 'update-project'; readonly project: Project }
   | { readonly type: 'create-task' | 'update-task'; readonly task: MemberTaskInput }
-  | { readonly type: 'confirm-task'; readonly taskId: string };
+  | { readonly type: 'confirm-task'; readonly taskId: string }
+  | {
+      readonly type: 'instantiate-template';
+      readonly input: {
+        readonly templateId: string;
+        readonly sourceSpaceId?: string | undefined;
+        readonly task: Omit<MemberTaskInput, 'workflows'>;
+        readonly roleBindings: Record<string, string | null>;
+        readonly resourceBindings: Record<string, string | null>;
+      };
+    }
+  | { readonly type: 'save-template'; readonly input: MemberTemplateSaveInput };
 export interface MemberWorkbenchCommandInput {
   readonly requestId: string;
   readonly expectedRevision: number;
@@ -87,10 +105,32 @@ function bool(value: unknown): boolean {
   if (typeof value !== 'boolean') invalid();
   return value;
 }
+function identifier(value: unknown): string {
+  return ProjectSchema.shape.id.parse(value);
+}
+function uuid(value: unknown): string {
+  const id = text(value);
+  if (
+    !/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/iu.test(
+      id,
+    )
+  )
+    throw new Error('invalid UUID');
+  return id;
+}
+function bindings(value: unknown): Record<string, string | null> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid();
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      identifier(key),
+      entry === null ? null : identifier(entry),
+    ]),
+  );
+}
 function commandInput(input: MemberWorkbenchCommandInput): MemberWorkbenchCommandInput {
   try {
     const request = record(input, ['requestId', 'expectedRevision', 'command']);
-    const command = record(request.command, ['type', 'project', 'task', 'taskId']);
+    const command = record(request.command, ['type', 'project', 'task', 'taskId', 'input']);
     let parsed: MemberWorkbenchCommand;
     switch (command.type) {
       case 'create-project':
@@ -108,6 +148,61 @@ function commandInput(input: MemberWorkbenchCommandInput): MemberWorkbenchComman
         const taskId = text(command.taskId);
         if (!/^[\w-]{1,100}$/u.test(taskId)) throw new Error('invalid task');
         parsed = { type: 'confirm-task', taskId };
+        break;
+      }
+      case 'instantiate-template': {
+        record(command, ['type', 'input']);
+        const source = record(command.input, [
+          'templateId',
+          'sourceSpaceId',
+          'task',
+          'roleBindings',
+          'resourceBindings',
+        ]);
+        const task = taskInputSchema.omit({ workflows: true }).parse(source.task);
+        uuid(task.id);
+        parsed = {
+          type: command.type,
+          input: {
+            templateId: identifier(source.templateId),
+            ...(source.sourceSpaceId === undefined
+              ? {}
+              : { sourceSpaceId: identifier(source.sourceSpaceId) }),
+            task,
+            roleBindings: bindings(source.roleBindings),
+            resourceBindings: bindings(source.resourceBindings),
+          },
+        };
+        break;
+      }
+      case 'save-template': {
+        record(command, ['type', 'input']);
+        const source = record(command.input, [
+          'templateId',
+          'sourceTaskId',
+          'sourceSpaceId',
+          'name',
+          'description',
+        ]);
+        const name = text(source.name).trim();
+        if (
+          name.length > 160 ||
+          typeof source.description !== 'string' ||
+          source.description.length > 8000
+        )
+          throw new Error('invalid template metadata');
+        parsed = {
+          type: command.type,
+          input: {
+            templateId: uuid(source.templateId),
+            sourceTaskId: identifier(source.sourceTaskId),
+            ...(source.sourceSpaceId === undefined
+              ? {}
+              : { sourceSpaceId: identifier(source.sourceSpaceId) }),
+            name,
+            description: source.description,
+          },
+        };
         break;
       }
       default:

@@ -1,6 +1,7 @@
 import type { NativeRunApi, NativeRunBegin, NativeRunOptions, NativeRunRead } from './api.js';
 import { createConversationState } from './conversation-state.js';
 import { canonicalPayload } from '@zhuma/agent-core';
+import { workspacePublishRanges } from './workspace-approvals.js';
 import type {
   NativeRunPanelProps,
   NativeRunPanelView,
@@ -22,6 +23,13 @@ const runIdentity = (run: NativeRunRead | null) =>
   run ? JSON.stringify([run.runId, run.generation, run.segmentId]) : undefined;
 const conversationIdentity = (run: NativeRunRead | null) =>
   run ? JSON.stringify([runIdentity(run), run.native?.sessionId, run.native?.agentId]) : undefined;
+const isMessageTransportUnavailable = (error: unknown) => {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  if (code !== undefined) return code === 'unavailable';
+  return (
+    error instanceof TypeError || (error instanceof DOMException && error.name === 'TimeoutError')
+  );
+};
 
 /** Ephemeral view state only. No persistence, authority, native handle or execution facts. */
 export function createNativeRunController(api: NativeRunApi, target: NativeRunTarget) {
@@ -88,8 +96,10 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         run,
         messages: transcript.messages(),
         hasEarlier: false,
+        ...(transcript.turnEnd() ? { turnEnd: transcript.turnEnd()! } : {}),
         selection: held ? options.selection : selection,
         models: options.models,
+        ...(options.knowledgeLibraries ? { knowledgeLibraries: options.knowledgeLibraries } : {}),
         experts: { kind: 'ready', items: options.experts },
         resources: options.resources,
         ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
@@ -178,6 +188,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     const valid = () => current() && reading === request && !signal.aborted;
     publish({ error: undefined });
     publishBusy();
+    let adopted = false;
     try {
       const next = !catalog && options ? options : await api.options(target, signal);
       if (!valid()) return;
@@ -188,20 +199,6 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         run?.generation !== nextRun?.generation ||
         run?.segmentId !== nextRun?.segmentId;
       if (changed) stopObserving();
-      let page: Awaited<ReturnType<NativeRunApi['history']>> | undefined;
-      let inbox: Awaited<ReturnType<NonNullable<NativeRunApi['inbox']>>> | undefined;
-      let nextCursor = changed ? -1 : cursor;
-      // Forward-only SDK history: retain the transcript and advance the real seq
-      // cursor. Never call this "older messages" or infer missing events.
-      if (nextRun?.native) {
-        page = await api.history(target, nextRun.runId, nextCursor, signal);
-        if (!valid()) return;
-        nextCursor = page.nextAfter;
-        if (api.inbox) {
-          inbox = await api.inbox(nextRun, signal);
-          if (!valid()) return;
-        }
-      }
       options = next;
       run = nextRun;
       if (changed) epoch++;
@@ -215,18 +212,44 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         stopFence = undefined;
       if (next.selection) selection = next.selection;
       else if (changed) selection = null;
-      if (changed) transcript.clear();
-      if (page) transcript.history(page.messages, page.nextAfter);
-      if (inbox) transcript.inbox(inbox);
-      cursor = nextCursor;
+      if (changed) {
+        transcript.clear();
+        cursor = -1;
+      }
+      // The authoritative status is independent of the historical reader's
+      // lifetime. A retired Session reader must not hide a fresh settled Run.
+      adopted = true;
       ready();
+      // Forward-only SDK history: retain the transcript and advance the real seq
+      // cursor. Never call this "older messages" or infer missing events.
+      if (nextRun?.native) {
+        const page = await api.history(target, nextRun.runId, cursor, signal);
+        if (!valid()) return;
+        transcript.history(page.messages, page.nextAfter);
+        if (page.turnEnd) transcript.frame(page.turnEnd);
+        cursor = page.nextAfter;
+        ready();
+        if (api.inbox) {
+          const inbox = await api.inbox(nextRun, signal);
+          if (!valid()) return;
+          transcript.inbox(inbox);
+          ready();
+        }
+      }
       observe();
     } catch (error) {
-      if (valid()) stopObserving();
-      if (valid())
-        publish({
-          view: { kind: 'unavailable', message: '暂时无法读取这个工作节点，请刷新或重新进入。' },
-        });
+      if (valid()) {
+        if (adopted && isMessageTransportUnavailable(error)) {
+          ready();
+          publish({ error: '运行状态已更新，部分会话消息暂未同步，请刷新重试。' });
+          observe();
+        } else {
+          stopObserving();
+          publish({
+            view: { kind: 'unavailable', message: '暂时无法读取这个工作节点，请刷新或重新进入。' },
+          });
+        }
+      }
       throw error;
     } finally {
       if (reading === request) {
@@ -314,11 +337,27 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
           throw Error('Selection changed');
         const chosenWorkspace = next.workspace;
         if (
+          next.knowledge &&
+          (options.knowledgeLibraries?.kind !== 'ready' ||
+            !options.knowledgeLibraries.items.some(
+              (library) => library.id === next.knowledge!.libraryId,
+            ))
+        )
+          throw Error('Knowledge library changed');
+        if (
           chosenWorkspace?.kind === 'unavailable' ||
           (chosenWorkspace?.kind === 'local' &&
             !options.workspaces?.some((item) => item.id === chosenWorkspace.id))
         )
           throw Error('Workspace changed');
+        if (chosenWorkspace?.kind === 'local' && chosenWorkspace.publish !== undefined) {
+          if (
+            options.workspaces?.find((item) => item.id === chosenWorkspace.id)?.publication !==
+            'per-run'
+          )
+            throw Error('Workspace changed');
+          workspacePublishRanges(chosenWorkspace.publish);
+        }
         const content = {
           spaceId: target.spaceId,
           taskId: target.taskId,
@@ -329,6 +368,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
           expectedRunVersion: options.runVersion,
           mode: options.start.mode,
           model: next.model,
+          ...(next.knowledge ? { knowledge: next.knowledge } : {}),
           executor: next.executor,
           tools: chosenWorkspace?.kind === 'local' ? ('local-tools' as const) : options.tools,
           workspace: chosenWorkspace ?? { kind: 'text-only' as const },

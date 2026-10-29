@@ -78,6 +78,8 @@ async function checkComposition({
     module,
     exports: module.exports,
     require,
+    TextEncoder,
+    TextDecoder,
     window: {},
     ...(omitBoot ? {} : { __ZHUMA_WORKBENCH_BOOT__: boot }),
     navigator: { userAgent: 'Node contract' },

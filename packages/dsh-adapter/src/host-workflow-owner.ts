@@ -86,6 +86,8 @@ export function createHostWorkflowOwner(
   ctx: Context,
   options: {
     readonly execution: ExecutionService;
+    /** Preserve projections without registering any native/automatic consumer. */
+    readonly remoteOnly?: boolean;
     readonly runs: NativeWorkflowRunPort;
     readonly workspaces: ReturnType<typeof createHostRunWorkspaces>;
     readonly signal: AbortSignal;
@@ -99,12 +101,14 @@ export function createHostWorkflowOwner(
   },
 ) {
   const { execution, signal, workspaces } = options;
-  const bridge = createNativeWorkflowBridge({
-    execution,
-    runs: options.runs,
-    signal,
-    ...(options.consumeClaim ? { consumeClaim: options.consumeClaim } : {}),
-  });
+  const bridge = options.remoteOnly
+    ? undefined
+    : createNativeWorkflowBridge({
+        execution,
+        runs: options.runs,
+        signal,
+        ...(options.consumeClaim ? { consumeClaim: options.consumeClaim } : {}),
+      });
   const active = (wait?: AbortSignal) => {
     signal.throwIfAborted();
     wait?.throwIfAborted();
@@ -240,6 +244,7 @@ export function createHostWorkflowOwner(
       return current(original, parse(workflowLocationSchema, payload), wait);
     },
     async start(original, payload, wait) {
+      if (!bridge) throw new ExecutionWorkflowError('workflow-member-device-required');
       const input = parse(publicStart, payload);
       const { spaceId, taskId, planId, revision } = input;
       const location = { spaceId, taskId, planId, revision };
@@ -287,6 +292,7 @@ export function createHostWorkflowOwner(
       return current(original, location);
     },
     async resume(original, payload, wait) {
+      if (!bridge) throw new ExecutionWorkflowError('workflow-member-device-required');
       active(wait);
       const input = parse(workflowResumeSchema, payload);
       const facts = await context(
@@ -324,6 +330,7 @@ export function createHostWorkflowOwner(
       return current(original, resumed.value.location);
     },
     async stop(original, payload, wait) {
+      if (!bridge) throw new ExecutionWorkflowError('workflow-member-device-required');
       active(wait);
       const input = parse(workflowControlSchema, payload);
       const stopped = await bridge.stop(original, input);
@@ -331,5 +338,13 @@ export function createHostWorkflowOwner(
       return current(original, stopped.value.location);
     },
   };
-  return { operations, fence: bridge.fence, close: bridge.close };
+  return {
+    operations,
+    canSwitchBackend: () =>
+      !bridge ||
+      (bridge as typeof bridge & { canSwitchBackend?: () => boolean }).canSwitchBackend?.() ===
+        true,
+    fence: () => bridge?.fence(),
+    close: () => bridge?.close() ?? Promise.resolve(),
+  };
 }

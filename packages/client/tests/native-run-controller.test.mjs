@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createNativeRunController } from '../dist/run/controller.js';
 import { createNativeRunApi, projectNativeRunMessages } from '../dist/run/api.js';
+import { ExecutionError } from '../dist/execution/ExecutionApi.js';
 
 // Pure view/transport contracts: these fixtures do not establish Host authorization.
 const target = {
@@ -93,6 +94,28 @@ test('Run view contract: initial mount and repeated refresh only read, never sel
   assert.equal(input.expectedNodeVersion, 1);
   assert.equal(input.expectedRunVersion, 0);
   assert.equal(input.mode, 'begin');
+  h.controller.dispose();
+});
+
+test('Run knowledge selection is explicit, same-start frozen, and a foreign library cannot be sent', async () => {
+  const h = setup({
+    options: async () => ({
+      ...options(),
+      knowledgeLibraries: { kind: 'ready', items: [{ id: 'north', label: '研发知识' }] },
+    }),
+  });
+  await h.controller.refresh();
+  assert.equal(h.controller.getSnapshot().view.selection, null);
+  await assert.rejects(
+    h.controller.start({ ...selection, knowledge: { libraryId: 'foreign', allowDrafts: true } }),
+    /library changed/,
+  );
+  assert.equal(h.calls.some(Array.isArray), false);
+  await h.controller.start({ ...selection, knowledge: { libraryId: 'north', allowDrafts: false } });
+  assert.deepEqual(h.calls.find(Array.isArray)[1].knowledge, {
+    libraryId: 'north',
+    allowDrafts: false,
+  });
   h.controller.dispose();
 });
 
@@ -368,7 +391,7 @@ test('Run refresh priority contract: passive reads do not cancel each other and 
   assert.equal(h.calls.some(Array.isArray), false);
 });
 
-test('Run refresh priority contract: genuine catalog and history failures still reject and publish the unavailable view', async (t) => {
+test('Run refresh priority contract: catalog failures close the view while history failures preserve fresh status', async (t) => {
   for (const stage of ['options', 'history']) {
     const failure = Object.assign(new Error('Synthetic read failure'), { code: 'unavailable' });
     let armed = false;
@@ -386,10 +409,72 @@ test('Run refresh priority contract: genuine catalog and history failures still 
     await h.controller.refresh();
     armed = true;
     await assert.rejects(h.controller.refresh(), (error) => error === failure);
-    assert.equal(h.controller.getSnapshot().view.kind, 'unavailable');
-    assert.match(h.controller.getSnapshot().view.message, /暂时无法读取/);
+    assert.equal(
+      h.controller.getSnapshot().view.kind,
+      stage === 'options' ? 'unavailable' : 'ready',
+    );
+    if (stage === 'options') assert.match(h.controller.getSnapshot().view.message, /暂时无法读取/);
+    else assert.match(h.controller.getSnapshot().error, /运行状态已更新/);
     assert.equal(h.controller.getSnapshot().busy, undefined);
     assert.equal(h.calls.some(Array.isArray), false);
+  }
+});
+
+test('Run refresh contract: settled status is visible before blocked history and survives inbox failure', async (t) => {
+  let completed = false;
+  const held = heldRead();
+  const settled = {
+    ...summary,
+    status: 'completed',
+    resources: 'settled',
+    runVersion: 4,
+    nodeVersion: 4,
+  };
+  const h = setup({
+    options: async () => runningOptions(),
+    read: async () => (completed ? settled : summary),
+    history: async (_target, _run, after, signal) => {
+      if (completed) await held.wait(signal);
+      return { messages: [], nextAfter: after };
+    },
+    inbox: async () => {
+      if (completed) throw new ExecutionError('unavailable', 'Retired inbox reader');
+      return { asOfSeq: -1, receipts: [], items: [] };
+    },
+  });
+  t.after(() => h.controller.dispose());
+  await h.controller.refresh();
+  completed = true;
+  const refresh = h.controller.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.controller.getSnapshot().view.run.resources, 'settled');
+  assert.equal(h.controller.getSnapshot().view.run.status, 'completed');
+  held.resolve();
+  await assert.rejects(refresh, /Retired inbox reader/);
+  assert.equal(h.controller.getSnapshot().view.kind, 'ready');
+  assert.deepEqual(h.controller.getSnapshot().view.run, settled);
+  assert.equal(h.controller.getSnapshot().view.actions.stop.kind, 'unavailable');
+});
+
+test('Run refresh contract: explicit history authority or target refusals close actions after a fresh status read', async (t) => {
+  for (const code of [
+    'run-authority-denied',
+    'unauthenticated',
+    'space-unavailable',
+    'run-scope-mismatch',
+    'validation',
+  ]) {
+    const h = setup({
+      options: async () => runningOptions(),
+      read: async () => ({ ...summary, status: 'completed', resources: 'settled' }),
+      history: async () => {
+        throw new ExecutionError(code, 'Original refusal');
+      },
+    });
+    t.after(() => h.controller.dispose());
+    await assert.rejects(h.controller.refresh(), (error) => error.code === code);
+    assert.equal(h.controller.getSnapshot().view.kind, 'unavailable', code);
+    await assert.rejects(h.controller.start(selection), /not ready/);
   }
 });
 
@@ -1060,4 +1145,33 @@ test('Run stream transport contract: exact same-origin member endpoint validates
   );
   assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-run/observe']);
   assert.equal(cancelled, 1);
+});
+
+test('Run publication contract: only explicit per-Run ranges enter the start intent and malformed ranges never call the Host', async () => {
+  const choice = {
+    id: 'current-workspace',
+    label: 'Workspace',
+    access: 'write',
+    publish: false,
+    publication: 'per-run',
+  };
+  const h = setup({
+    async options() {
+      return { ...options(), workspaces: [choice] };
+    },
+  });
+  await h.controller.refresh();
+  const publish = [{ kind: 'file', path: 'deliverables/report.md' }];
+  await h.controller.start({ ...selection, workspace: { kind: 'local', id: choice.id, publish } });
+  const begun = h.calls.find((item) => Array.isArray(item) && item[0] === 'begin');
+  assert.deepEqual(begun[1].workspace, { kind: 'local', id: choice.id, publish });
+  const count = h.calls.filter((item) => Array.isArray(item) && item[0] === 'begin').length;
+  await assert.rejects(
+    h.controller.start({
+      ...selection,
+      workspace: { kind: 'local', id: choice.id, publish: [{ kind: 'file', path: '../private' }] },
+    }),
+  );
+  assert.equal(h.calls.filter((item) => Array.isArray(item) && item[0] === 'begin').length, count);
+  h.controller.dispose();
 });

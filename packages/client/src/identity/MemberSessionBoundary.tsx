@@ -11,12 +11,15 @@ import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import type { IdentityApi, LoginCredentials, MemberSession } from './api.js';
 import { createMemberSessionController, type MemberSessionState } from './session.js';
+import { RegistrationForm } from './RegistrationForm.js';
+import type { RegisterAccount } from './lifecycle-api.js';
 import type { MemberSessionController } from './shell.js';
 
 export interface MemberSessionBoundaryProps {
   readonly api: IdentityApi;
   readonly controller?: MemberSessionController | undefined;
   readonly showAccountHeader?: boolean;
+  readonly registerAccount?: RegisterAccount | undefined;
   /** Consumers must abort their own requests on unmount and report member 401 responses. */
   readonly children: (
     session: MemberSession,
@@ -28,9 +31,11 @@ export interface MemberSessionBoundaryProps {
 function LoginForm({
   state,
   login,
+  register,
 }: {
   state: Extract<MemberSessionState, { status: 'signed-out' | 'signing-in' }>;
   login(credentials: LoginCredentials): void;
+  register?: (() => void) | undefined;
 }) {
   const [accountId, setAccountId] = useState('');
   const [password, setPassword] = useState('');
@@ -108,6 +113,11 @@ function LoginForm({
       <Button type="submit" variant="primary" busy={busy} busyLabel="正在登录…">
         登录
       </Button>
+      {register && (
+        <Button variant="quiet" disabled={busy} onClick={register}>
+          创建账号
+        </Button>
+      )}
     </form>
   );
 }
@@ -120,6 +130,7 @@ export function MemberSessionView({
   logout,
   children,
   showAccountHeader = true,
+  register,
 }: {
   readonly state: MemberSessionState;
   login(credentials: LoginCredentials): void;
@@ -127,6 +138,7 @@ export function MemberSessionView({
   logout(): void;
   readonly children?: ReactNode;
   readonly showAccountHeader?: boolean;
+  readonly register?: (() => void) | undefined;
 }) {
   return (
     <div className="zhuma zm-member-session">
@@ -153,7 +165,7 @@ export function MemberSessionView({
       ) : (
         <main className="zm-login-entry">
           {state.status === 'signed-out' || state.status === 'signing-in' ? (
-            <LoginForm state={state} login={login} />
+            <LoginForm state={state} login={login} register={register} />
           ) : (
             <section
               className="zm-login-card"
@@ -200,7 +212,9 @@ export function MemberSessionBoundary({
   children,
   controller: provided,
   showAccountHeader = true,
+  registerAccount,
 }: MemberSessionBoundaryProps) {
+  const [registerOpen, setRegisterOpen] = useState(false);
   const controller = useMemo(() => provided ?? createMemberSessionController(api), [api, provided]);
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -212,10 +226,22 @@ export function MemberSessionBoundary({
     void controller.restore();
     return () => controller.dispose();
   }, [controller, provided]);
+  if (registerOpen && registerAccount && state.status === 'signed-out')
+    return (
+      <RegistrationForm
+        register={registerAccount}
+        cancel={() => setRegisterOpen(false)}
+        complete={(credentials) => {
+          setRegisterOpen(false);
+          void controller.login(credentials);
+        }}
+      />
+    );
   return (
     <MemberSessionView
       state={state}
       showAccountHeader={showAccountHeader}
+      register={registerAccount ? () => setRegisterOpen(true) : undefined}
       login={(credentials) => {
         void controller.login(credentials);
       }}

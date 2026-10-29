@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 /** Member-authorized projections only. These view hints never grant execution permission. */
 export interface NativeRunTarget {
   readonly spaceId: string;
@@ -23,9 +24,17 @@ export type NativeRunExecutor =
 export interface NativeRunSelection {
   readonly model: NativeRunModel;
   readonly executor: NativeRunExecutor;
+  readonly knowledge?: { readonly libraryId: string; readonly allowDrafts: boolean };
   readonly workspace?:
     | { readonly kind: 'text-only' }
-    | { readonly kind: 'local'; readonly id: string }
+    | {
+        readonly kind: 'local';
+        readonly id: string;
+        readonly publish?: readonly {
+          readonly kind: 'file' | 'directory';
+          readonly path: string;
+        }[];
+      }
     | { readonly kind: 'unavailable' };
 }
 export interface NativeRunWorkspaceChoice {
@@ -33,6 +42,7 @@ export interface NativeRunWorkspaceChoice {
   readonly label: string;
   readonly access: 'read' | 'write';
   readonly publish: boolean;
+  readonly publication?: 'per-run';
 }
 export interface NativeRunModelChoice {
   readonly id: string;
@@ -78,6 +88,8 @@ export interface NativeRunSummary {
   readonly generation: number;
   readonly segmentId: string;
   readonly nodeVersion: number;
+  /** Only the original remote result receipt; no locally invented delivery version. */
+  readonly submission?: { readonly artifactVersionId: string; readonly roundId?: string };
   readonly runVersion: number;
   readonly status:
     'requested' | 'running' | 'waiting-for-input' | 'completed' | 'failed' | 'cancelled';
@@ -117,8 +129,13 @@ export type NativeRunPanelView =
       readonly run: NativeRunSummary | null;
       readonly messages: readonly NativeRunMessage[];
       readonly hasEarlier: boolean;
+      readonly turnEnd?: Extract<NativeConversationFrame, { type: 'turn-end' }>;
       readonly selection: NativeRunSelection | null;
       readonly models: NativeRunChoices<NativeRunModelChoice>;
+      readonly knowledgeLibraries?: NativeRunChoices<{
+        readonly id: string;
+        readonly label: string;
+      }>;
       readonly experts: NativeRunChoices<NativeRunExpertChoice>;
       readonly resources: readonly NativeRunResource[];
       readonly workspaces?: readonly NativeRunWorkspaceChoice[];
@@ -136,15 +153,18 @@ export type NativeRunPanelView =
  * No handler exposes raw owner RPC, grants, filesystem paths or SDK methods.
  */
 export interface NativeRunPanelProps {
+  readonly reviewAction?: ReactNode;
   readonly target: NativeRunTarget;
   readonly view: NativeRunPanelView;
-  readonly busy?: 'start' | 'send' | 'stop' | 'refresh' | 'history' | undefined;
+  readonly busy?: 'start' | 'send' | 'stop' | 'refresh' | 'history' | 'open' | undefined;
   readonly error?: string | undefined;
   /** Ephemeral unsent-input presence only. No draft text or persistence crosses this seam. */
   onDirtyChange?: ((dirty: boolean) => void) | undefined;
   /** Embedded workspaces can place their close action beside the node title. */
   onClose?: (() => void) | undefined;
   onManageWorkspaces?: (() => void) | undefined;
+  /** Explicit navigation to the same authorized native Session, never a start. */
+  onOpenSession?: (() => Promise<void>) | undefined;
   onSelectionChange(selection: NativeRunSelection): void;
   onStart(selection: NativeRunSelection): Promise<void>;
   onSend(text: string, mode: NativeRunSendMode): Promise<void>;
@@ -177,6 +197,23 @@ export interface NativeRunInbox {
   }[];
 }
 export type NativeConversationFrame =
+  | {
+      readonly type: 'turn-end';
+      readonly seq: number;
+      readonly time: number;
+      readonly turn: number;
+      readonly reason: {
+        readonly kind:
+          | 'completed'
+          | 'blocked'
+          | 'max-tokens'
+          | 'error'
+          | 'aborted'
+          | 'interrupted'
+          | 'forked'
+          | 'unknown';
+      };
+    }
   | { readonly type: 'ready' }
   | {
       readonly type: 'message';

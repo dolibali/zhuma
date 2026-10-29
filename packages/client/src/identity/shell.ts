@@ -120,19 +120,35 @@ export function createMemberShell(
       leaveGuard = undefined;
       publish();
     },
-    isPageCurrent(epoch: number) {
-      return pageActive && pageEpoch === epoch;
+    isPageCurrent(epoch: number, expectedKey?: string) {
+      return (
+        pageActive && pageEpoch === epoch && (expectedKey === undefined || pageKey === expectedKey)
+      );
     },
-    registerSpaceGuard(epoch: number, select: SpaceSwitch) {
-      if (!pageActive || epoch !== pageEpoch) return () => {};
+    registerSpaceGuard(epoch: number, select: SpaceSwitch, expectedKey?: string) {
+      if (
+        !pageActive ||
+        epoch !== pageEpoch ||
+        (expectedKey !== undefined && pageKey !== expectedKey)
+      )
+        return () => {};
       const current = { epoch, select };
       guard = current;
       return () => {
         if (guard === current) guard = undefined;
       };
     },
-    registerLeaveGuard(epoch: number, leave: (proceed: () => void, signal?: AbortSignal) => void) {
-      if (!pageActive || epoch !== pageEpoch) return () => {};
+    registerLeaveGuard(
+      epoch: number,
+      leave: (proceed: () => void, signal?: AbortSignal) => void,
+      expectedKey?: string,
+    ) {
+      if (
+        !pageActive ||
+        epoch !== pageEpoch ||
+        (expectedKey !== undefined && pageKey !== expectedKey)
+      )
+        return () => {};
       const current = { epoch, leave };
       leaveGuard = current;
       return () => {
@@ -150,7 +166,15 @@ export function createMemberShell(
         }, signal);
       } else proceed();
     },
-    requestSpace(id: string, restoreFocus?: () => void) {
+    requestSpace(id: string, restoreFocus?: () => void, expectedMemberEpoch?: number) {
+      const current = session.getSnapshot();
+      // A delayed menu event must not apply the former account's choice to
+      // the newly mounted member controller, even when the page is unchanged.
+      if (
+        current.status !== 'authenticated' ||
+        (expectedMemberEpoch !== undefined && current.epoch !== expectedMemberEpoch)
+      )
+        return;
       if (guard && pageActive && guard.epoch === pageEpoch) guard.select(id, restoreFocus);
       else void space?.select(id);
     },

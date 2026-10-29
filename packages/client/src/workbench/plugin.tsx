@@ -17,18 +17,33 @@ import { LocalSetupBoundary, enterTeamAfterLocalSetup } from '../identity/LocalS
 import workbenchStyles from './workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 import nativeRunStyles from '../run/NativeRunPanel.css';
-import { createWorkspaceDirectoryRegistrar } from '../run/workspace-directory.js';
+import {
+  createLocalWorkspaceDirectory,
+  createWorkspaceDirectoryRegistrar,
+} from '../run/workspace-directory.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
+import { createSharedBackendClient } from '../identity/shared-backend.js';
+import { SharedBackendBoundary } from '../identity/SharedBackendBoundary.js';
+import { createMemberNativeClient } from '../run/member-native.js';
+import { installMemberNativeNavigation } from '../run/MemberNativeNavigation.js';
 
-export const inject = ['slots', 'layout', 'connection', 'theme'];
+export const inject = ['slots', 'layout', 'connection', 'theme', 'uiWorkspace'];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
   const boot = (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: unknown }).__ZHUMA_WORKBENCH_BOOT__;
   if (
     typeof boot === 'object' &&
     boot !== null &&
     !Array.isArray(boot) &&
-    (Object.keys(boot).length === 2 ||
-      (Object.keys(boot).length === 3 && 'localSetup' in boot && boot.localSetup === true)) &&
+    Object.keys(boot).every((key) =>
+      ['version', 'deploymentMode', 'localSetup', 'sharedBackend'].includes(key),
+    ) &&
+    (!('localSetup' in boot) || boot.localSetup === true) &&
+    (!('sharedBackend' in boot) ||
+      (boot.sharedBackend === true &&
+        'localSetup' in boot &&
+        boot.localSetup === true &&
+        'deploymentMode' in boot &&
+        boot.deploymentMode === 'multi-member')) &&
     'version' in boot &&
     boot.version === 1 &&
     'deploymentMode' in boot &&
@@ -54,8 +69,33 @@ export function apply(ctx: Context): void {
     'connection',
   ) as import('@deepseek-ai/dsh-client-connection/client').ConnectionHandle;
   const api = createWorkbenchApi(connection.rpc);
-  const memberShell = createMemberShell(createIdentityApi());
+  let memberShell: ReturnType<typeof createMemberShell>;
+  const restoreBackendMember = () => {
+    memberShell.session.invalidate();
+    const active = ctx.layout.panelInfo.getSnapshot().activePanelId;
+    const memberPage = active === 'zhuma-my-work' || active === 'zhuma-workbench';
+    memberShell.setPageActive(false);
+    memberShell.setPageActive(memberPage, memberPage ? active : undefined);
+    void memberShell.session.restore();
+  };
+  const sharedBackend =
+    localSetup &&
+    (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: { sharedBackend?: unknown } })
+      .__ZHUMA_WORKBENCH_BOOT__?.sharedBackend === true
+      ? createSharedBackendClient(connection.rpc, restoreBackendMember)
+      : undefined;
+  const memberFetch = sharedBackend?.fetcher ?? globalThis.fetch;
+  const memberNative = sharedBackend ? createMemberNativeClient(sharedBackend) : undefined;
+  memberShell = createMemberShell(createIdentityApi(memberFetch));
+  if (sharedBackend) ctx.effect(() => () => sharedBackend.close());
   const registerWorkspaceDirectory = createWorkspaceDirectoryRegistrar(ctx);
+  const originalLocalDirectory = createLocalWorkspaceDirectory(ctx);
+  // Native task Sessions require C's scoped continuation registration before
+  // exposing ordinary Conversation navigation. The existing directory reader
+  // is safe independently: selection never registers a directory or starts work.
+  const localDirectory = sharedBackend
+    ? originalLocalDirectory
+    : { read: originalLocalDirectory.read };
   let settingsLauncher: (() => void) | undefined;
   const bindSettingsLauncher = (open: () => void) => {
     settingsLauncher = open;
@@ -69,6 +109,14 @@ export function apply(ctx: Context): void {
       throw new ExecutionError('unavailable', '设置入口暂不可用，请稍后重试。');
     settingsLauncher();
   };
+  if (sharedBackend && memberNative)
+    installMemberNativeNavigation(ctx, {
+      shell: memberShell,
+      backend: sharedBackend,
+      native: memberNative,
+      directory: originalLocalDirectory,
+      openModelSettings,
+    });
   const executionPanel = 'zhuma-my-work' as MainPanelId;
   const workbenchPanel = 'zhuma-workbench' as MainPanelId;
   ctx.effect(() => {
@@ -188,12 +236,19 @@ export function apply(ctx: Context): void {
       const dispose = ctx.slots.register(
         { name: 'main', key: panel.id, inject: () => ({}) },
         () => {
-          const content = (
+          const content = (remote: boolean) => (
             <div className="zm-shell-panel">
               <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
               <MemberExecutionPage
+                key={sharedBackend?.getSnapshot().selection?.connectionId ?? 'local'}
+                fetcher={memberFetch}
                 shell={memberShell}
+                pageKey={panel.id}
+                nativeExecution={!remote || !!memberNative}
+                memberNative={remote ? memberNative : undefined}
+                allowRegistration={mode === 'multi-member'}
                 registerWorkspaceDirectory={registerWorkspaceDirectory}
+                localDirectory={localDirectory}
                 openModelSettings={openModelSettings}
                 view={panel.view}
                 openWork={() => ctx.layout.selectPanel(executionPanel)}
@@ -201,16 +256,39 @@ export function apply(ctx: Context): void {
               />
             </div>
           );
-          return localSetup ? (
-            <LocalSetupBoundary
-              onInitialized={(credentials, team, signal) =>
-                enterTeamAfterLocalSetup(memberShell, credentials, team, signal)
+          const setup = (remote: boolean) =>
+            localSetup && !remote ? (
+              <LocalSetupBoundary
+                onInitialized={(credentials, team, signal) =>
+                  enterTeamAfterLocalSetup(memberShell, credentials, team, signal)
+                }
+              >
+                {content(false)}
+              </LocalSetupBoundary>
+            ) : (
+              content(remote)
+            );
+          return sharedBackend ? (
+            <SharedBackendBoundary
+              client={sharedBackend}
+              refreshed={restoreBackendMember}
+              requestChange={(work, signal) =>
+                memberShell.requestLeave(() => {
+                  memberShell.session.invalidate();
+                  memberShell.setPageActive(false);
+                  void work()
+                    .finally(() => {
+                      if (!signal.aborted && sharedBackend.getSnapshot().phase !== 'ready')
+                        restoreBackendMember();
+                    })
+                    .catch(() => undefined);
+                }, signal)
               }
             >
-              {content}
-            </LocalSetupBoundary>
+              {setup}
+            </SharedBackendBoundary>
           ) : (
-            content
+            setup(false)
           );
         },
       );
@@ -263,6 +341,8 @@ export function apply(ctx: Context): void {
         name: 'settings.launcher',
         inject: () => ({
           shell: memberShell,
+          memberLifecycle: mode === 'multi-member',
+          fetcher: memberFetch,
           bindSettingsLauncher,
           openWork: () => {
             if (ctx.layout.panelInfo.getSnapshot().activePanelId !== executionPanel)

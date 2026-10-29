@@ -56,8 +56,20 @@ export function createMemberWorkbenchAdapter(
         if (!saved || JSON.stringify(taskInput(saved)) !== JSON.stringify(taskInput(command.task)))
           throw new WorkbenchError('draft-not-saved', '请先保存修改，再确认工作流。');
         mapped = { type: 'confirm-task', taskId: saved.id };
+      } else if (command.type === 'instantiate-template' && intent === 'create-task') {
+        const { updatedAt: _updatedAt, ...task } = command.input.task;
+        mapped = { type: 'instantiate-template', input: { ...command.input, task } };
       } else unsupported();
       return accept(await api.command({ expectedRevision, requestId, command: mapped }));
+    },
+    async saveTemplate(expectedRevision, input, requestId) {
+      return accept(
+        await api.command({
+          expectedRevision,
+          requestId,
+          command: { type: 'save-template', input },
+        }),
+      );
     },
     async plan(taskId, expectedRevision, instruction, signal, baseProposalId, adjustment) {
       const value = await api.plan(

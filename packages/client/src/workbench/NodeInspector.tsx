@@ -66,8 +66,8 @@ export function NodeInspector({
           </section>
         )}
         <section>
-          <h4>评审</h4>
-          <p>{node.reviewRequired ? `${names(node.reviewerIds)} · 全部通过` : '无需评审'}</p>
+          <h4>评审要求</h4>
+          <p>{node.reviewRequired ? `${names(node.reviewerIds)} · 需全员通过` : '无需评审'}</p>
         </section>
         {!!(node.skillIds.length + node.mcpIds.length) && (
           <section>

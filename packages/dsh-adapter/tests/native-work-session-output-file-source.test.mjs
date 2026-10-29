@@ -131,9 +131,49 @@ test('output source contract: original local FS preserves non-UTF8 bytes and has
     assert.deepEqual(Buffer.from(result.bytes), h.binary);
     assert.equal(result.sha256, createHash('sha256').update(h.binary).digest('hex'));
     assert.equal(read.maximumBytes, h.binary.length);
+    assert.equal(result.mediaType, 'application/octet-stream');
   } finally {
     read.close();
     await read.drain();
+  }
+});
+
+test('output source contract: passive text MIME shares the exact hash/read pass and validates UTF8 across chunk boundaries', async (t) => {
+  const h = await setup(t);
+  const rows = [
+    ['cjk.md', Buffer.from('a'.repeat(65535) + '中文\n'), 'text/plain'],
+    ['code.tsx', Buffer.from('const label = "工作流";\n'), 'text/plain'],
+    ['config.YAML', Buffer.from('name: 工作流\n'), 'text/plain'],
+    ['empty.txt', Buffer.alloc(0), 'text/plain'],
+    [
+      'tail.md',
+      Buffer.concat([Buffer.alloc(65535, 97), Buffer.from([0xe4, 0xb8])]),
+      'application/octet-stream',
+    ],
+    ['nul.json', Buffer.from([123, 0, 125]), 'application/octet-stream'],
+    ['binary.txt', h.binary, 'application/octet-stream'],
+    [
+      'passive.bin',
+      Buffer.from('valid UTF8 remains binary without an allowed suffix'),
+      'application/octet-stream',
+    ],
+    ['page.html', Buffer.from('<script>irrelevant()</script>'), 'application/octet-stream'],
+    ['image.svg', Buffer.from('<svg/>'), 'application/octet-stream'],
+  ];
+  for (const [name, bytes, mediaType] of rows) {
+    await writeFile(join(h.root, 'outputs', name), bytes);
+    const before = h.ctx.fs.reads,
+      reading = await h.inspect(`outputs/${name}`);
+    try {
+      const adopted = await reading.read();
+      assert.equal(adopted.mediaType, mediaType, name);
+      assert.deepEqual(Buffer.from(adopted.bytes), bytes, name);
+      assert.equal(adopted.sha256, createHash('sha256').update(bytes).digest('hex'), name);
+      assert.equal(h.ctx.fs.reads - before, 1, 'classification must not read again');
+    } finally {
+      reading.close();
+      await reading.drain();
+    }
   }
 });
 

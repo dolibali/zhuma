@@ -45,6 +45,7 @@ export function memberWorkbenchDirectoryFor(ctx: Context): MemberWorkbenchDirect
       space: (id) => read(() => spaces.space(id)),
       isMember: (space, account) => read(() => spaces.isMember(space, account)),
       spacesForMember: (account) => read(() => spaces.spacesForMember(account)),
+      administratorForSpace: (spaceId) => read(() => spaces.administratorForSpace(spaceId)),
       spaceForProject: async (id) => {
         try {
           current();

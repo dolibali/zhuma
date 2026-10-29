@@ -38,7 +38,11 @@ export interface NativeOutputFileRead {
   readonly maximumBytes: number;
   readonly signal: AbortSignal;
   check(): undefined;
-  read(): Promise<{ readonly bytes: Uint8Array; readonly sha256: string }>;
+  read(): Promise<{
+    readonly bytes: Uint8Array;
+    readonly sha256: string;
+    readonly mediaType?: 'text/plain' | 'application/octet-stream';
+  }>;
   close(): void;
   drain(): Promise<void>;
 }
@@ -241,7 +245,39 @@ export class NativeOutputFileByteProducer {
         check();
         if (!(bytes instanceof Uint8Array) || bytes.byteLength !== info.size)
           throw new ArtifactUploadError('source-changed');
-        return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') };
+        // Classify only a small set of passive text/code extensions. Share the
+        // existing exact-object hash pass and original buffer; no extra FS read
+        // or accumulated decoded document. A suffix alone never makes bytes text.
+        const decoder = /\.(?:txt|md|json|csv|tsx?|jsx?|py|ya?ml)$/iu.test(path)
+          ? new TextDecoder('utf-8', { fatal: true })
+          : undefined;
+        let plain = decoder !== undefined;
+        const digest = createHash('sha256');
+        for (let offset = 0; offset < bytes.byteLength; offset += 65536) {
+          const chunk = bytes.subarray(offset, offset + 65536);
+          digest.update(chunk);
+          if (plain && decoder) {
+            try {
+              if (chunk.includes(0)) plain = false;
+              else decoder.decode(chunk, { stream: true });
+            } catch {
+              plain = false;
+            }
+          }
+        }
+        if (plain && decoder) {
+          try {
+            decoder.decode();
+          } catch {
+            plain = false;
+          }
+        }
+        check();
+        return {
+          bytes,
+          sha256: digest.digest('hex'),
+          mediaType: plain ? 'text/plain' : 'application/octet-stream',
+        };
       },
       close: () => lifetime.abort(),
       drain: async () => {

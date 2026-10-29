@@ -107,7 +107,7 @@
 }
 .zm-native-run .zm-native-run__config {
   flex: 0 0 auto;
-  max-height: 35vh;
+  max-height: min(46vh, 420px);
   overflow: auto;
   padding-block: 8px;
   font-size: 12px;
@@ -142,8 +142,9 @@
 }
 .zm-native-run .zm-native-run__choice {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  flex: 1 1 220px;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
   min-width: 0;
   max-width: 100%;
@@ -160,6 +161,7 @@
   overflow-wrap: anywhere;
 }
 .zm-native-run .zm-single-select {
+  width: 100%;
   min-width: 0;
   max-width: 100%;
 }

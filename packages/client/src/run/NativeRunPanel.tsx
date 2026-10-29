@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { Button } from '../workbench/Button.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { ControlIcon } from '../workbench/ControlIcon.js';
+import { workspacePublishRanges, type WorkspacePublishRange } from './workspace-approvals.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type {
   NativeRunAction,
@@ -16,6 +17,14 @@ import type {
 type ReadyView = Extract<NativeRunPanelView, { kind: 'ready' }>;
 type Operation = NonNullable<NativeRunPanelProps['busy']>;
 const TEXT_LIMIT = 16_384;
+function validPublication(ranges: unknown) {
+  try {
+    workspacePublishRanges(ranges);
+    return true;
+  } catch {
+    return false;
+  }
+}
 const modes: readonly NativeRunSendMode[] = ['followup', 'steer', 'queue'];
 const modeLabels = { followup: '发送消息', steer: '补充当前运行', queue: '下一轮处理' };
 const operationErrors: Record<Operation, string> = {
@@ -24,6 +33,7 @@ const operationErrors: Record<Operation, string> = {
   stop: '未确认停止结果，请刷新状态。',
   refresh: '刷新失败，请重试。',
   history: '较早消息暂未加载，请重试。',
+  open: '工作区会话暂未打开，请刷新状态后重试。',
 };
 const modelKey = (selection: NativeRunSelection['model']) =>
   JSON.stringify([
@@ -63,26 +73,71 @@ function RunIcon({ kind }: { kind: 'refresh' | 'send' | 'stop' | 'agent' | 'clos
   );
 }
 
-function RunState({ run }: { run: NativeRunSummary | null }) {
+type TurnEnd = NonNullable<ReadyView['turnEnd']>;
+function RunState({
+  run,
+  turnEnd,
+}: {
+  run: NativeRunSummary | null;
+  turnEnd?: TurnEnd | undefined;
+}) {
   if (!run) return <span className="zm-native-run__status">尚未开始</span>;
-  const label = {
-    requested: '正在启动',
-    running: '运行中',
-    'waiting-for-input': '等待补充',
-    completed:
-      run.resultDelivery?.kind === 'delivered'
-        ? run.resultDelivery.roundId
-          ? '已提交评审'
-          : '产物已提交'
-        : '本轮已结束',
-    failed: '运行失败',
-    cancelled: run.stopPhase === 'confirmed' ? '已停止' : '运行已取消',
-  }[run.status];
+  const label =
+    run.status === 'running' && run.native?.status === 'idle' && turnEnd
+      ? ['completed', 'forked'].includes(turnEnd.reason.kind)
+        ? '等待继续'
+        : '需要处理'
+      : {
+          requested: '正在启动',
+          running: '运行中',
+          'waiting-for-input': '等待补充',
+          completed:
+            run.submission || run.resultDelivery?.kind === 'delivered'
+              ? (run.submission?.roundId ??
+                (run.resultDelivery?.kind === 'delivered' ? run.resultDelivery.roundId : undefined))
+                ? '已提交评审'
+                : '产物已提交'
+              : '本轮已结束',
+          failed: '运行失败',
+          cancelled: run.stopPhase === 'confirmed' ? '已停止' : '运行已取消',
+        }[run.status];
   return (
     <span className="zm-native-run__status" data-state={run.status}>
       <span className="zm-native-run__dot" aria-hidden="true" />
       {label}
     </span>
+  );
+}
+
+function TurnNotice({
+  run,
+  turnEnd,
+}: {
+  run: NativeRunSummary | null;
+  turnEnd?: TurnEnd | undefined;
+}) {
+  if (
+    !turnEnd ||
+    !run ||
+    run.native?.status !== 'idle' ||
+    run.resultDelivery ||
+    run.stopPhase !== 'none'
+  )
+    return null;
+  const text = {
+    completed: '本轮回复已结束，尚未提交产物。可补充要求后继续。',
+    blocked: '本轮执行受阻，可补充信息后继续。',
+    'max-tokens': '本轮达到输出上限，尚未提交产物。可发送消息继续。',
+    error: '本轮执行失败，可查看会话后重试。',
+    aborted: '本轮已中止，尚未提交产物。',
+    interrupted: '本轮已中断，尚未提交产物。',
+    forked: '本轮会话已分支，尚未提交产物。',
+    unknown: '本轮已结束，尚未提交产物。',
+  }[turnEnd.reason.kind];
+  return (
+    <p className="zm-native-run__notice" role="status">
+      {text}
+    </p>
   );
 }
 
@@ -170,7 +225,7 @@ function Message({ message }: { message: NativeRunMessage }) {
 function Selection({
   view,
   disabled,
-  onChange,
+  onChange: publishSelection,
 }: {
   view: ReadyView;
   disabled: boolean;
@@ -182,6 +237,34 @@ function Selection({
   const [partialExecutor, setPartialExecutor] = useState<NativeRunSelection['executor']>();
   const [partialWorkspace, setPartialWorkspace] = useState<NativeRunSelection['workspace']>();
   const chosenWorkspace = selected?.workspace ?? partialWorkspace;
+  const [partialKnowledge, setPartialKnowledge] = useState<
+    NativeRunSelection['knowledge'] | null
+  >();
+  const chosenKnowledge =
+    partialKnowledge === undefined ? selected?.knowledge : (partialKnowledge ?? undefined);
+  const onChange = (next: NativeRunSelection) =>
+    publishSelection({ ...next, ...(chosenKnowledge ? { knowledge: chosenKnowledge } : {}) });
+  function changeKnowledge(next: NativeRunSelection['knowledge']) {
+    setPartialKnowledge(next ?? null);
+    if (model && expert)
+      publishSelection({
+        model: model.value,
+        executor: expert.value,
+        ...(chosenWorkspace ? { workspace: chosenWorkspace } : {}),
+        ...(next ? { knowledge: next } : {}),
+      });
+  }
+  const perRunPublication =
+    chosenWorkspace?.kind === 'local' &&
+    view.workspaces?.find((item) => item.id === chosenWorkspace.id)?.publication === 'per-run';
+  const publishRanges = chosenWorkspace?.kind === 'local' ? (chosenWorkspace.publish ?? []) : [];
+  const publicationValid = validPublication(publishRanges);
+  function changePublication(publish: readonly WorkspacePublishRange[]) {
+    if (disabled || chosenWorkspace?.kind !== 'local') return;
+    const workspace = { ...chosenWorkspace, publish };
+    setPartialWorkspace(workspace);
+    if (model && expert) onChange({ model: model.value, executor: expert.value, workspace });
+  }
   const chosenModel = selected?.model ?? partialModel;
   const chosenExecutor = selected?.executor ?? partialExecutor;
   const model =
@@ -221,6 +304,7 @@ function Selection({
           ) : (
             <SingleSelect
               label="选择模型"
+              popupMinWidth={320}
               value={model?.id ?? ''}
               disabled={view.models.kind !== 'ready' || !view.models.items.length}
               triggerContent={
@@ -269,6 +353,7 @@ function Selection({
           ) : (
             <SingleSelect
               label="选择执行者"
+              popupMinWidth={280}
               value={expert?.id ?? ''}
               disabled={view.experts.kind !== 'ready' || !view.experts.items.length}
               triggerContent={
@@ -319,6 +404,7 @@ function Selection({
             ) : (
               <SingleSelect
                 label="执行范围"
+                popupMinWidth={320}
                 value={
                   chosenWorkspace?.kind === 'unavailable'
                     ? 'unavailable'
@@ -352,8 +438,130 @@ function Selection({
             )}
           </div>
         )}
+        {view.knowledgeLibraries && (
+          <div className="zm-native-run__choice">
+            <span>知识库</span>
+            {disabled ? (
+              <strong>
+                {chosenKnowledge
+                  ? view.knowledgeLibraries.kind === 'ready'
+                    ? (view.knowledgeLibraries.items.find(
+                        (item) => item.id === chosenKnowledge.libraryId,
+                      )?.label ?? '本轮知识库')
+                    : '本轮知识库'
+                  : '未使用'}
+              </strong>
+            ) : (
+              <SingleSelect
+                label="选择本轮知识库"
+                popupMinWidth={320}
+                value={chosenKnowledge?.libraryId ?? ''}
+                options={[
+                  { value: '', label: '不使用知识库' },
+                  ...(view.knowledgeLibraries.kind === 'ready'
+                    ? view.knowledgeLibraries.items.map((item) => ({
+                        value: item.id,
+                        label: item.label,
+                      }))
+                    : []),
+                ]}
+                onValueChange={(libraryId) =>
+                  changeKnowledge(libraryId ? { libraryId, allowDrafts: false } : undefined)
+                }
+              />
+            )}
+            {chosenKnowledge && (
+              <label className="zm-checkbox">
+                <input
+                  type="checkbox"
+                  checked={chosenKnowledge.allowDrafts}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    changeKnowledge({ ...chosenKnowledge, allowDrafts: event.target.checked })
+                  }
+                />
+                允许 Agent 创建知识草稿
+              </label>
+            )}
+            {!disabled && view.knowledgeLibraries.kind !== 'ready' && (
+              <small>{view.knowledgeLibraries.message}</small>
+            )}
+          </div>
+        )}
         {disabled && <span className="zm-native-run__fixed">本轮配置已固定</span>}
       </div>
+      {perRunPublication && (
+        <details className="zm-native-run__resources zm-native-run__disclosure">
+          <summary>
+            <span className="zm-native-run__disclosure-icon">
+              <ControlIcon direction="right" />
+            </span>
+            <span className="zm-native-run__disclosure-label">文件交付范围</span>
+            <span className="zm-native-run__resource-count">
+              {publishRanges.length || '未授权'}
+            </span>
+          </summary>
+          <div className="zm-workspace-publish">
+            {!publicationValid && (
+              <p role="alert">请填写工作区内的相对路径，例如 deliverables/report.md。</p>
+            )}
+            {!publishRanges.length && (
+              <p className="zm-muted">添加相对路径后，Agent 才能把这些本机文件提交给团队。</p>
+            )}
+            {publishRanges.map((range, index) => (
+              <div className="zm-workspace-publish-row" key={index}>
+                <SingleSelect
+                  label={`第 ${index + 1} 项交付范围类型`}
+                  value={range.kind}
+                  disabled={disabled}
+                  options={[
+                    { value: 'file', label: '文件' },
+                    { value: 'directory', label: '目录' },
+                  ]}
+                  onValueChange={(kind) =>
+                    changePublication(
+                      publishRanges.map((item, at) =>
+                        at === index
+                          ? { ...item, kind: kind === 'directory' ? 'directory' : 'file' }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+                <input
+                  aria-label={`第 ${index + 1} 项相对路径`}
+                  value={range.path}
+                  disabled={disabled}
+                  placeholder="例如 deliverables/report.md"
+                  maxLength={512}
+                  onChange={(event) =>
+                    changePublication(
+                      publishRanges.map((item, at) =>
+                        at === index ? { ...item, path: event.currentTarget.value } : item,
+                      ),
+                    )
+                  }
+                />
+                {!disabled && (
+                  <Button
+                    onClick={() => changePublication(publishRanges.filter((_, at) => at !== index))}
+                  >
+                    移除
+                  </Button>
+                )}
+              </div>
+            ))}
+            {!disabled && (
+              <Button
+                disabled={publishRanges.length >= 16}
+                onClick={() => changePublication([...publishRanges, { kind: 'file', path: '' }])}
+              >
+                添加范围
+              </Button>
+            )}
+          </div>
+        </details>
+      )}
       {!!view.resources.length && (
         <details className="zm-native-run__resources zm-native-run__disclosure">
           <summary>
@@ -430,6 +638,12 @@ function RunPanel(props: NativeRunPanelProps) {
     };
   }, []);
   const lastMessage = view.kind === 'ready' ? view.messages.at(-1) : undefined;
+  const turnEnd =
+    view.kind === 'ready' &&
+    view.turnEnd &&
+    !view.messages.some((message) => message.sequence > view.turnEnd!.seq)
+      ? view.turnEnd
+      : undefined;
   useEffect(() => {
     if (following.current && timeline.current)
       timeline.current.scrollTop = timeline.current.scrollHeight;
@@ -478,8 +692,15 @@ function RunPanel(props: NativeRunPanelProps) {
     ready && matching ? modes.filter((mode) => ready.actions.send[mode].kind === 'available') : [];
   const mode = availableModes.includes(selectedMode) ? selectedMode : availableModes[0];
   const selectedWorkspace = ready?.selection?.workspace;
+  const publicationReady =
+    selectedWorkspace?.kind !== 'local' ||
+    selectedWorkspace.publish === undefined ||
+    (ready?.workspaces?.find((item) => item.id === selectedWorkspace.id)?.publication ===
+      'per-run' &&
+      validPublication(selectedWorkspace.publish));
   const selectionReady =
     !!ready?.selection &&
+    publicationReady &&
     selectedWorkspace?.kind !== 'unavailable' &&
     (selectedWorkspace?.kind !== 'local' ||
       !!ready.workspaces?.some((item) => item.id === selectedWorkspace.id)) &&
@@ -541,7 +762,7 @@ function RunPanel(props: NativeRunPanelProps) {
   const submittedReadOnly =
     run?.status === 'completed' &&
     run.resources === 'settled' &&
-    run.resultDelivery?.kind === 'delivered' &&
+    (run.resultDelivery?.kind === 'delivered' || !!run.submission) &&
     ready?.actions.start.kind !== 'available';
   const inactiveHint = !ready
     ? ''
@@ -577,7 +798,17 @@ function RunPanel(props: NativeRunPanelProps) {
           <h2 id={`${id}-title`}>{target.title}</h2>
         </div>
         <div className="zm-native-run__header-actions">
-          {ready && matching && <RunState run={run} />}
+          {ready && matching && <RunState run={run} turnEnd={turnEnd} />}
+          {ready && matching && run?.native && props.onOpenSession && (
+            <Button
+              variant="quiet"
+              busy={running('open')}
+              busyLabel="正在打开…"
+              onClick={() => void command('open', props.onOpenSession!)}
+            >
+              在工作区中打开
+            </Button>
+          )}
           {ready && matching && props.onManageWorkspaces && (
             <Button variant="quiet" onClick={props.onManageWorkspaces}>
               管理目录授权
@@ -632,6 +863,8 @@ function RunPanel(props: NativeRunPanelProps) {
             onChange={props.onSelectionChange}
           />
           <Receipt run={run} />
+          <TurnNotice run={run} turnEnd={turnEnd} />
+          {props.reviewAction}
           <div
             className="zm-native-run__timeline"
             ref={timeline}

@@ -4,6 +4,8 @@ import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publicTeamStarterPackages } from '../lib/team-starter-packages.mjs';
+import { publicMemberTemplates } from '../lib/member-template-defaults.mjs';
+import { publicMemberEngineeringSkills } from '../lib/member-engineering-skills.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const hostOnly = process.argv.slice(2).includes('--host-only');
@@ -24,10 +26,13 @@ const compile = spawnSync(
 if (compile.error || compile.status !== 0) throw new Error('Workbench type build failed.');
 const out = resolve(root, '.build/workbench');
 await mkdir(out, { recursive: true });
+const engineeringSkills = await publicMemberEngineeringSkills();
 // The official Web bundle exposes Connection to this plugin, not every SDK
 // peer of its base bundle. Bundle only the pure definition/key helpers; live
 // services and Cordis must continue to come from the official Host instance.
 const bundledSdkHelpers = new Set([
+  // Only AttachmentId's pure string brand; the live provider stays ctx.attachments.
+  '@deepseek-ai/dsh-attachment',
   '@deepseek-ai/dsh-credentials',
   '@deepseek-ai/dsh-brand',
   '@deepseek-ai/dsh-storage-domain',
@@ -44,7 +49,11 @@ const hostBuild = await build({
   target: 'node24',
   sourcemap: false,
   // Derived from the original public source files; no runtime repo/profile path.
-  define: { ZHUMA_PUBLIC_TEAM_PACKAGES: JSON.stringify(await publicTeamStarterPackages()) },
+  define: {
+    ZHUMA_PUBLIC_TEAM_PACKAGES: JSON.stringify(await publicTeamStarterPackages()),
+    ZHUMA_PUBLIC_MEMBER_TEMPLATES: JSON.stringify(await publicMemberTemplates()),
+    ZHUMA_PUBLIC_ENGINEERING_SKILLS: JSON.stringify(engineeringSkills.bundle),
+  },
   // Bundled ZIP dependencies are CommonJS and use Node built-ins. Keep their
   // require calls valid in the official Host's ESM plugin, without runtime installs.
   banner: {
@@ -93,7 +102,7 @@ if (
   throw new Error('Workbench Host gained an unverified external SDK dependency.');
 const hostCode = await readFile(resolve(out, 'index.js'), 'utf8');
 if (
-  /\b(?:class\s+(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)|(?:CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)(?:\d+)?\s*=\s*class)\b/u.test(
+  /\b(?:class\s+(?:AttachmentStore|CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)|(?:AttachmentStore|CredentialProvider|Storage|BackendRegistry|DomainFacility|DomainImpl|JsonStorageBackend)(?:\d+)?\s*=\s*class)\b/u.test(
     hostCode,
   )
 )
@@ -113,8 +122,26 @@ if (hostOnly) {
     throw new Error('Host SDK peers changed; run the complete workbench build first.');
   for (const name of ['client.js', 'LICENSE', 'THIRD_PARTY_LICENSES.txt'])
     await readFile(resolve(out, name));
+  const retainedLicenses = await readFile(resolve(out, 'THIRD_PARTY_LICENSES.txt'), 'utf8');
+  if (engineeringSkills.licenses.some(({ text }) => !retainedLicenses.includes(text)))
+    throw new Error('Engineering Skill licenses changed; run the complete workbench build.');
   console.log('Built Host only in .build/workbench; existing Client and legal files retained.');
 } else {
+  const memberWebBuild = await build({
+    absWorkingDir: root,
+    entryPoints: ['packages/client/src/web/entry.tsx'],
+    outfile: resolve(out, 'member-web.js'),
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    metafile: true,
+    target: 'es2022',
+    loader: { '.css': 'text' },
+    minify: true,
+    define: { 'process.env.NODE_ENV': '"production"' },
+  });
+  if (Object.keys(memberWebBuild.metafile.inputs).some((name) => name.includes('@deepseek-ai')))
+    throw new Error('Member Web must not bundle SDK owner/runtime modules.');
   const clientBuild = await build({
     absWorkingDir: root,
     entryPoints: ['packages/client/src/workbench/plugin.tsx'],
@@ -166,6 +193,7 @@ if (hostOnly) {
               '@deepseek-ai/dsh-client-ui-sidebar',
               '@deepseek-ai/dsh-client-ui-renderer',
               '@deepseek-ai/dsh-client-ui-theme',
+              '@deepseek-ai/dsh-client-ui-workspace',
               '@deepseek-ai/dsh-client-connection',
             ],
           },
@@ -180,9 +208,16 @@ if (hostOnly) {
   await writeFile(resolve(out, 'LICENSE'), await readFile(resolve(root, 'LICENSE')));
   // Preserve the full license text for every bundled dependency, including transitive modules.
   const licenses = new Map();
+  licenses.set(
+    'Zhuma engineering workflow sources',
+    await readFile(resolve(root, 'resources/workflows/engineering-starter/LICENSE.txt'), 'utf8'),
+  );
+  for (const { name, text } of engineeringSkills.licenses)
+    licenses.set(`Zhuma engineering Skill ${name}`, `${name}\n${text}`);
   for (const input of [
     ...Object.keys(hostBuild.metafile.inputs),
     ...Object.keys(clientBuild.metafile.inputs),
+    ...Object.keys(memberWebBuild.metafile.inputs),
   ]) {
     if (!input.includes('node_modules/')) continue;
     let directory = dirname(resolve(root, input));
