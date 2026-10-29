@@ -622,3 +622,67 @@ test('remote workflow: a full control budget reserves durable Stop and rejected 
   assert.equal(currentExecutionRun(h.read()).remote.stopRequested, true);
   assert.equal(currentExecutionRun(h.read()).resources, 'held');
 });
+
+test('remote workflow: failed original release remains sticky held and cannot become paused or rearmed without cleanup confirmation', async (t) => {
+  const entered = Promise.withResolvers(),
+    proceed = Promise.withResolvers();
+  let releases = 0;
+  const h = await fileHost(t, {
+    workbench: workbench({ skill: true }),
+    beforeRemoteEnable(base) {
+      base.service.runHost.prepareInitialResourceCatalog = async () => {
+        entered.resolve();
+        await proceed.promise;
+        return {
+          actorId: 'chen',
+          catalog: { sourceVersion: REMOTE_RUN_RESOURCE_SOURCE_VERSION, mcp: [] },
+          signal: new AbortController().signal,
+          assertCurrent() {
+            return undefined;
+          },
+          release() {
+            releases++;
+            throw Error('CONTRACT_RELEASE_UNKNOWN');
+          },
+        };
+      };
+    },
+  });
+  t.after(() => proceed.resolve());
+  const config = defaults();
+  config.capabilities.resources = REMOTE_RUN_RESOURCE_SOURCE_VERSION;
+  const armed = ok(
+    await h.send(
+      h.envelope('workflow-start', {
+        target: target(h),
+        defaults: config,
+        budget: { concurrent: 1, automaticRevisions: 2 },
+      }),
+    ),
+  );
+  const candidate = ok(await h.send(control(h, 'workflow-next', armed))).candidates[0];
+  const pending = h.send(
+    h.accept({
+      workflow: candidate.workflow,
+      workspace: { kind: 'text-only' },
+      capabilities: config.capabilities,
+    }),
+  );
+  await entered.promise;
+  const stopped = ok(await h.send(control(h, 'workflow-stop', armed)));
+  assert.equal(stopped.state, 'stopping');
+  proceed.resolve();
+  no(await pending);
+  assert.equal(releases, 1);
+  assert.equal(h.read().nativeExecution, undefined);
+  const unknown = ok(await h.send(control(h, 'workflow-status', stopped)));
+  assert.equal(unknown.state, 'stopping');
+  no(
+    await h.send(
+      control(h, 'workflow-resume', unknown, { expectedVersion: unknown.intent.version }),
+    ),
+    'remote-resource-held',
+  );
+  assert.deepEqual(ok(await h.send(control(h, 'workflow-next', unknown))).candidates, []);
+  assert.equal(h.read().nativeExecution, undefined);
+});
