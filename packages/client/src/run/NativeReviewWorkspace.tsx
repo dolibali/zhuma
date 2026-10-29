@@ -37,7 +37,9 @@ export function NativeReviewLauncher({ api, target }: Props) {
           close={() => setOpen(false)}
           restoreFocus={() => document.getElementById(triggerId)?.focus()}
         >
-          <ReviewForm key={signature} api={api} target={fixed} />
+          <div className="zm-form-body" role="region" aria-label="评审内容" tabIndex={0}>
+            <ReviewForm key={signature} api={api} target={fixed} />
+          </div>
         </Modal>
       )}
     </>

@@ -48,7 +48,7 @@ function OutcomeRead({ api, target, openControls }: Props) {
   return (
     <section className="zm-config-form zm-execution-detail" aria-label="固定版本评审意见">
       <div className="zm-page-heading">
-        <h2>评审意见</h2>
+        <h3>本轮意见</h3>
         <Button busy={reading.kind === 'loading'} onClick={() => void load()}>
           刷新意见
         </Button>

@@ -288,6 +288,12 @@ test(
                 .click();
               await new Promise(setImmediate);
             });
+          if (!history) {
+            const scroller = document.querySelector('dialog > .zm-form-body');
+            assert.ok(scroller, 'Long fixed content uses the existing dialog scroll body');
+            assert.equal(scroller.tabIndex, 0, 'The scroll body is keyboard reachable');
+            assert.equal(document.querySelectorAll('dialog > header h2').length, 1);
+          }
           const text = document.body.textContent;
           assert.ok(text.includes('独立评审专家'));
           assert.ok(text.includes('已核对固定版本的具体意见 <literal>'));
