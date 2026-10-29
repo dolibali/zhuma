@@ -207,3 +207,65 @@ test('member workflow contract: current auth closure cannot block the original c
   await closing;
   assert.equal(h.consumer.canSwitchBackend(), true);
 });
+
+for (const other of [undefined, 'scope', 'device'])
+  test(`member workflow derive contract: same-scope owner cleanup retires only its tracked Stop projection; other held scope=${other}`, async () => {
+    const h = fixture(),
+      issued = Promise.withResolvers(),
+      reply = Promise.withResolvers();
+    const scope = {
+        ...target,
+        actorId: 'member',
+        backendId: randomUUID(),
+        nodeId: 'node-0',
+        runId: randomUUID(),
+        generation: 1,
+        segmentId: randomUUID(),
+      },
+      deviceId = randomUUID();
+    const held = { scope, deviceId, resources: 'held' };
+    h.protocol.workflowStop = async () => ({
+      ...(await h.protocol.workflowStatus()),
+      state: 'stopping',
+      candidates: [],
+      activeWork: [
+        held,
+        ...(other
+          ? [
+              {
+                ...held,
+                ...(other === 'device'
+                  ? { deviceId: randomUUID() }
+                  : { scope: { ...scope, runId: randomUUID() } }),
+              },
+            ]
+          : []),
+      ],
+    });
+    h.protocol.prepareAccept = async () => ({
+      send: async () => {
+        issued.resolve();
+        return reply.promise;
+      },
+    });
+    h.native.start = async () => assert.fail('Stop closed admission');
+    h.native.read = () => ({
+      phase: h.state.resources === 'settled' ? 'retired' : 'retiring',
+      remote: { scope, deviceId, resources: h.state.resources },
+    });
+    await h.consumer.start(randomUUID(), { target, defaults });
+    await issued.promise;
+    await h.consumer.stop(randomUUID());
+    reply.resolve({ value: { scope, deviceId, resources: 'held', nodeVersion: 1, runVersion: 1 } });
+    await h.consumer.close();
+    assert.equal(
+      h.consumer.view().remote.activeWork[0].resources,
+      'held',
+      'Original server snapshot is not forged',
+    );
+    assert.equal(
+      h.consumer.canSwitchBackend(),
+      !other,
+      'Only exact scope/device cleanup can retire a stale projection',
+    );
+  });

@@ -82,6 +82,8 @@ export class NativeMemberWorkflowConsumer {
   private life = new NativeWorkflowConsumerLifetime();
   private readonly cleanup = new AbortController();
   private readonly seen = new Set<string>();
+  /** Exact original owner cleanup acknowledgments, never a workflow authority. */
+  private readonly settledScopes = new Set<string>();
   private remote?: RemoteWorkflowView;
   private pending?: Pending;
   private blocked?: string;
@@ -421,6 +423,15 @@ export class NativeMemberWorkflowConsumer {
             // Fresh business authentication may already be closed. Settlement
             // still comes only from the original owner's actual cleanup reply.
             if (value.remote.resources === 'settled') {
+              const actual = value.remote,
+                original = run.value;
+              if (actual.scope && original.scope) {
+                if (!same(actual.scope, original.scope) || actual.deviceId !== original.deviceId)
+                  throw new NativeWorkError('scope-mismatch');
+                this.settledScopes.add(
+                  key({ kind: this.pending.kind, scope: actual.scope, deviceId: actual.deviceId }),
+                );
+              }
               delete this.pending;
               break;
             }
@@ -434,13 +445,20 @@ export class NativeMemberWorkflowConsumer {
     return this.closing;
   }
   canSwitchBackend(): boolean {
+    const retired = (
+      kind: 'work' | 'review',
+      value: { resources: string; scope: unknown; deviceId: string },
+    ) =>
+      value.resources === 'settled' ||
+      (!!value.scope &&
+        !!value.deviceId &&
+        this.settledScopes.has(key({ kind, scope: value.scope, deviceId: value.deviceId })));
     return (
       this.life.canSwitchBackend() &&
       !this.pending &&
       !this.pumping &&
-      ![...(this.remote?.activeWork ?? []), ...(this.remote?.activeReviews ?? [])].some(
-        (value) => value.resources !== 'settled',
-      )
+      (this.remote?.activeWork ?? []).every((value) => retired('work', value)) &&
+      (this.remote?.activeReviews ?? []).every((value) => retired('review', value))
     );
   }
 }
