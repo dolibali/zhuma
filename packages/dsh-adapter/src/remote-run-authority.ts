@@ -30,7 +30,12 @@ import {
   type RemoteInputDescriptor,
   type RemoteRunMigration,
   type RemoteReconcileValue,
+  REMOTE_WORKFLOW_OPERATIONS,
 } from '@zhuma/agent-core';
+import {
+  RemoteWorkflowIntents,
+  type RemoteWorkflowIntentSource,
+} from './execution-workflow-intent.js';
 import {
   RemoteReviewAuthorities,
   type RemoteReviewAuthoritySource,
@@ -136,6 +141,7 @@ function deny(code: RemoteRunErrorCode): never {
 
 /** Private original-service ports. A wire DTO never supplies any of these assertions. */
 export interface RemoteRunAuthoritySource {
+  readonly workflow?: Pick<RemoteWorkflowIntentSource, 'facts' | 'write'>;
   readonly signal: AbortSignal;
   readonly review?: RemoteReviewAuthoritySource;
   readonly resourceHost?: ExecutionRunResourceCatalogHost;
@@ -182,6 +188,7 @@ export interface RemoteRunAuthoritySource {
 
 /** Owns no parallel task store. Durable metadata lives only in original global/Run rows. */
 export class RemoteRunAuthorities {
+  private workflowIntents: RemoteWorkflowIntents | undefined;
   private readonly epoch = randomUUID();
   private readonly active = new Map<
     string,
@@ -259,6 +266,8 @@ export class RemoteRunAuthorities {
       if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
       const raw = executionRunGlobalSchema.safeParse(this.source.readGlobal());
       if (!raw.success) deny('remote-unavailable');
+      if (raw.data.remoteWorkflowWriter === 1 && !this.source.workflow)
+        deny('remote-protocol-unsupported');
       if (
         (raw.data.remoteExecutionFileWriter === 1 ||
           raw.data.remoteExecutionAcceptedFileWriter === 1) &&
@@ -296,6 +305,66 @@ export class RemoteRunAuthorities {
       !!this.source.verifyOutputFiles
     );
   }
+  private workflows(): RemoteWorkflowIntents {
+    const source = this.source.workflow;
+    if (!source) deny('remote-protocol-unsupported');
+    this.workflowIntents ??= new RemoteWorkflowIntents({
+      ...source,
+      deny,
+      now: () => this.now(),
+      beforeWrite: async () => {
+        const global = executionRunGlobalSchema.parse(this.source.readGlobal());
+        if (global.remoteWorkflowWriter !== 1)
+          await this.source.writeGlobal({
+            ...prepareExecutionRunWriter(global),
+            remoteWorkflowWriter: 1,
+          });
+        if (executionRunGlobalSchema.parse(this.source.readGlobal()).remoteWorkflowWriter !== 1)
+          deny('remote-unavailable');
+      },
+      runView: (node, run) => {
+        if (!run.remote) deny('remote-scope-mismatch');
+        return this.view({ node, run, state: readExecutionRunState(node)!, remote: run.remote });
+      },
+      stop: async (lease, target, intent, requestId) => {
+        for (const node of source.facts(lease, target).nodes) {
+          for (const original of readExecutionRunState(node)?.runs ?? []) {
+            if (
+              original.remote?.workflow?.intentId !== intent.intentId ||
+              original.remote.deviceId !== intent.deviceId ||
+              original.actorId !== intent.actorId ||
+              original.resources === 'settled' ||
+              original.remote.stopRequested ||
+              original.remote.receipt
+            )
+              continue;
+            const current = this.load({
+              ...executionRunScope(node, original),
+              backendId: original.remote.backendId,
+            });
+            await this.stop(
+              {
+                protocolVersion: 1,
+                backendId: current.remote.backendId,
+                requestId,
+                operation: 'stop',
+                payload: {
+                  scope: {
+                    ...executionRunScope(current.node, current.run),
+                    backendId: current.remote.backendId,
+                  },
+                  expectedNodeVersion: current.node.command.version,
+                  expectedRunVersion: current.state.version,
+                },
+              },
+              lease,
+            );
+          }
+        }
+      },
+    });
+    return this.workflowIntents;
+  }
   ownsReview(issuer: RemoteReviewAuthorities): boolean {
     return this.reviews === issuer;
   }
@@ -330,6 +399,7 @@ export class RemoteRunAuthorities {
   }
   fence(): void {
     this.closed = true;
+    this.workflowIntents?.close();
     this.files?.fence();
     this.reviews?.fence();
     for (const entries of this.inputReads.values()) for (const entry of entries) entry.cancel();
@@ -399,9 +469,11 @@ export class RemoteRunAuthorities {
       body.operation !== 'cleanup'
     )
       return { ok: false, error: { code: 'remote-protocol-unsupported' } };
-    const operations: readonly RemoteRunOperation[] = this.filesEnabled()
-      ? [...supported, ...fileOperations]
-      : supported;
+    const operations: readonly RemoteRunOperation[] = [
+      ...supported,
+      ...(this.filesEnabled() ? fileOperations : []),
+      ...(this.source.workflow ? REMOTE_WORKFLOW_OPERATIONS : []),
+    ];
     if (!operations.includes(body.operation))
       return { ok: false, error: { code: 'remote-protocol-unsupported' } };
     let lease: ExecutionMemberLease | undefined;
@@ -446,12 +518,12 @@ export class RemoteRunAuthorities {
               actorId: lease!.memberId,
               serverTime: this.now(),
               purposes: this.reviews?.ready() ? ['work', 'review'] : ['work'],
-              operations,
+              operations: body.payload.workflow
+                ? operations
+                : operations.filter((operation) => !operation.startsWith('workflow-')),
             };
           if (body.operation === 'register-device') return this.register(body, lease!);
           if (body.operation === 'cleanup') return this.cleanup(body, privatePermit);
-          // Portable workflow contracts precede their original-queue consumer.
-          // Never interpret a new automation command as an ordinary Run request.
           if (
             body.operation === 'workflow-start' ||
             body.operation === 'workflow-status' ||
@@ -459,7 +531,12 @@ export class RemoteRunAuthorities {
             body.operation === 'workflow-resume' ||
             body.operation === 'workflow-stop'
           )
-            deny('remote-protocol-unsupported');
+            return this.workflows().command(
+              body,
+              lease!,
+              this.checkDevice(body, lease!.memberId),
+              sessionHash,
+            );
           if (body.operation === 'accept') {
             return this.accept(body, lease!, sessionHash, qualification);
           }
@@ -1014,6 +1091,14 @@ export class RemoteRunAuthorities {
   ): void {
     const remote = value.remote;
     if (!mutation) return;
+    if (remote.workflow)
+      this.workflows().assertExisting(
+        lease,
+        { ...executionRunScope(value.node, value.run), backendId: remote.backendId },
+        remote.workflow,
+        remote.deviceId,
+        remote.keyEpoch,
+      );
     if (remote.stopRequested || value.run.attempt.stopPhase !== 'none')
       deny('remote-permit-revoked');
     if (remote.drive.epoch !== this.epoch || remote.drive.expiresAt <= this.now())
@@ -1426,7 +1511,6 @@ export class RemoteRunAuthorities {
   ): Promise<RemoteAcceptValue> {
     const device = this.checkDevice(body, lease.memberId);
     const payload = body.payload;
-    if (payload.workflow) deny('remote-protocol-unsupported');
     lease.assertCurrent(payload.target.spaceId);
     const node = this.source.readNode(payload.target);
     if (!node) deny('remote-not-found');
@@ -1445,6 +1529,9 @@ export class RemoteRunAuthorities {
       this.authorize(loaded, lease);
       return this.acceptValue(loaded, 'replayed', loaded.remote.memberSessionHash === sessionHash);
     }
+    const workflow = payload.workflow
+      ? this.workflows().assertAccept(body, lease, sessionHash, device.keyEpoch)
+      : undefined;
     if (
       this.active.size >= REMOTE_RUN_LIMITS.activeAuthorities ||
       this.heldCount() >= REMOTE_RUN_LIMITS.activeAuthorities
@@ -1532,6 +1619,7 @@ export class RemoteRunAuthorities {
     );
     const remote: RemoteRunBinding = {
       protocolVersion: 1,
+      ...(workflow ? { workflow } : {}),
       ...(files ? { files: 'zhuma-native-output-file@1' as const } : {}),
       ...(payload.capabilities.acceptedFile
         ? { acceptedFiles: payload.capabilities.acceptedFile }
@@ -1604,6 +1692,7 @@ export class RemoteRunAuthorities {
       if (!same(this.source.readNode(payload.target), node)) deny('remote-conflict');
       qualification?.assertCurrent();
     }
+    if (payload.workflow) this.workflows().assertAccept(body, lease, sessionHash, device.keyEpoch);
     await this.source.writeNode(next);
     qualification?.assertCurrent();
     return this.acceptValue(this.load({ ...scope, backendId: body.backendId }), 'accepted');
