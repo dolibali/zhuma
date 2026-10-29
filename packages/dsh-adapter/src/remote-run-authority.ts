@@ -649,7 +649,7 @@ export class RemoteRunAuthorities {
         });
       let response: unknown =
         body.operation === 'accept'
-          ? await this.prepareAcceptResources(request, body, lease!, execute)
+          ? await this.prepareAcceptResources(request, body, lease!, execute, sessionHash)
           : await execute();
       while (response instanceof RemoteFileOperation) response = await response.run();
       // Only after actual metadata release may this request acquire drive. A
@@ -889,43 +889,55 @@ export class RemoteRunAuthorities {
     body: Accept,
     lease: ExecutionMemberLease,
     work: (verification?: ExecutionInitialResourceVerification) => Promise<T>,
+    sessionHash: string,
   ): Promise<T> {
-    const needed = await this.source.enqueue(async () => {
-      if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
-      if (body.backendId !== this.registry().backendId) deny('remote-scope-mismatch');
-      this.checkDevice(body, lease.memberId);
-      lease.assertCurrent(body.payload.target.spaceId);
-      const node = this.source.readNode(body.payload.target);
-      if (!node) deny('remote-not-found');
-      this.source.assertTarget(lease.memberId, body.payload.target, node);
-      if (
-        node.handoff.skillRefs.length &&
-        body.payload.capabilities.resources !== REMOTE_RUN_RESOURCE_SOURCE_VERSION
-      )
-        deny('remote-protocol-unsupported');
-      const prior = readExecutionRunState(node)?.runs.some(
-        (run) => run.remote?.acceptRequestId === body.requestId,
-      );
-      return !prior && node.handoff.skillRefs.length > 0;
-    });
-    if (!needed) return work();
-    if (this.preparationFailure) deny('remote-unavailable');
-    const host = this.source.resourceHost;
-    if (!host) deny('remote-unavailable');
+    let preparation: { readonly signal: AbortSignal; finish(): void } | undefined;
     try {
-      return await withExecutionInitialResourceQualification(
-        {
-          host,
-          ownerSignal: AbortSignal.any([this.source.signal, lease.signal]),
-          originalRequest: request,
-          locator: body.payload.target,
-        },
-        work,
-      );
-    } catch (error) {
-      if (error instanceof ExecutionRunResourceQualificationCloseError)
-        this.preparationFailure ??= error;
-      throw error;
+      const needed = await this.source.enqueue(async () => {
+        if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
+        if (body.backendId !== this.registry().backendId) deny('remote-scope-mismatch');
+        const device = this.checkDevice(body, lease.memberId);
+        lease.assertCurrent(body.payload.target.spaceId);
+        const node = this.source.readNode(body.payload.target);
+        if (!node) deny('remote-not-found');
+        this.source.assertTarget(lease.memberId, body.payload.target, node);
+        if (
+          node.handoff.skillRefs.length &&
+          body.payload.capabilities.resources !== REMOTE_RUN_RESOURCE_SOURCE_VERSION
+        )
+          deny('remote-protocol-unsupported');
+        const prior = readExecutionRunState(node)?.runs.some(
+          (run) => run.remote?.acceptRequestId === body.requestId,
+        );
+        if (!prior && body.payload.workflow)
+          preparation = this.workflows().preparing(body, lease, sessionHash, device.keyEpoch);
+        return !prior && node.handoff.skillRefs.length > 0;
+      });
+      if (!needed) return await work();
+      if (this.preparationFailure) deny('remote-unavailable');
+      const host = this.source.resourceHost;
+      if (!host) deny('remote-unavailable');
+      try {
+        return await withExecutionInitialResourceQualification(
+          {
+            host,
+            ownerSignal: AbortSignal.any([
+              this.source.signal,
+              lease.signal,
+              ...(preparation ? [preparation.signal] : []),
+            ]),
+            originalRequest: request,
+            locator: body.payload.target,
+          },
+          work,
+        );
+      } catch (error) {
+        if (error instanceof ExecutionRunResourceQualificationCloseError)
+          this.preparationFailure ??= error;
+        throw error;
+      }
+    } finally {
+      preparation?.finish();
     }
   }
   private proof(body: RemoteDeviceRequest | RemoteReviewDeviceRequest, publicKey: string): void {

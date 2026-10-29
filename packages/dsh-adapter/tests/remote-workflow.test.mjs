@@ -13,6 +13,7 @@ import { installMemberResolver, memberCredential, resolveMember } from '../dist/
 import {
   applyWorkbenchCommand,
   canonicalPayload,
+  REMOTE_RUN_RESOURCE_SOURCE_VERSION,
   remoteResultDigestInput,
   remoteWorkflowViewSchema,
 } from '@zhuma/agent-core';
@@ -21,7 +22,7 @@ import { fileHost, ok, no } from './remote-run-files-fixture.mjs';
 import { currentExecutionRun } from '../dist/execution-run-state.js';
 import { nativeResultDigest } from '../dist/native-work-session-result-source.js';
 const hash = (value) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
-function workbench() {
+function workbench({ skill = false } = {}) {
   const { state, task, node } = fixture();
   return applyWorkbenchCommand(state, {
     type: 'save-task',
@@ -33,7 +34,13 @@ function workbench() {
         {
           ...task.workflows[0],
           nodes: [
-            { ...node, id: 'produce', skillIds: [], reviewRequired: false, reviewerIds: [] },
+            {
+              ...node,
+              id: 'produce',
+              skillIds: skill ? ['api-skill'] : [],
+              reviewRequired: false,
+              reviewerIds: [],
+            },
             {
               ...node,
               id: 'consume',
@@ -443,4 +450,175 @@ test('remote workflow HTTP: exact production routes carry fixed accepted text th
   assert.equal(ok(await wire(control(h, 'workflow-status', intent))).state, 'completed');
   assert.equal(h.read().artifactVersions[0].text, 'HTTP fixed produce.');
   assert.equal(h.read('consume').artifactVersions[0].text, 'HTTP fixed consume.');
+});
+
+test('remote workflow: Stop aborts qualification and cannot pause/resume until its original resource release actually finishes', async (t) => {
+  const entered = Promise.withResolvers(),
+    proceed = Promise.withResolvers();
+  let waitSignal,
+    releases = 0;
+  const life = new AbortController();
+  const h = await fileHost(t, {
+    workbench: workbench({ skill: true }),
+    beforeRemoteEnable(base) {
+      base.service.runHost.prepareInitialResourceCatalog = async (_request, _target, signal) => {
+        waitSignal = signal;
+        entered.resolve();
+        await proceed.promise;
+        return {
+          actorId: 'chen',
+          catalog: { sourceVersion: REMOTE_RUN_RESOURCE_SOURCE_VERSION, mcp: [] },
+          signal: life.signal,
+          assertCurrent() {
+            life.signal.throwIfAborted();
+            return undefined;
+          },
+          release() {
+            releases++;
+            life.abort();
+          },
+        };
+      };
+    },
+  });
+  t.after(() => {
+    proceed.resolve();
+    life.abort();
+  });
+  const config = defaults();
+  config.capabilities.resources = REMOTE_RUN_RESOURCE_SOURCE_VERSION;
+  const armed = ok(
+    await h.send(
+      h.envelope('workflow-start', {
+        target: target(h),
+        defaults: config,
+        budget: { concurrent: 1, automaticRevisions: 2 },
+      }),
+    ),
+  );
+  const candidate = ok(await h.send(control(h, 'workflow-next', armed))).candidates[0];
+  const pending = h.send(
+    h.accept({
+      workflow: candidate.workflow,
+      workspace: { kind: 'text-only' },
+      capabilities: config.capabilities,
+    }),
+  );
+  await entered.promise;
+  const stopped = ok(await h.send(control(h, 'workflow-stop', armed)));
+  assert.equal(waitSignal.aborted, true);
+  assert.equal(stopped.state, 'stopping');
+  assert.deepEqual(stopped.activeWork, []);
+  no(
+    await h.send(
+      control(h, 'workflow-resume', stopped, { expectedVersion: stopped.intent.version }),
+    ),
+    'remote-resource-held',
+  );
+  assert.equal(h.read().nativeExecution, undefined);
+  proceed.resolve();
+  no(await pending);
+  assert.equal(releases, 1);
+  const paused = ok(await h.send(control(h, 'workflow-status', stopped)));
+  assert.equal(paused.state, 'paused');
+  assert.equal(h.read().nativeExecution, undefined);
+});
+
+test('remote workflow: each Run may narrow armed workspace access and local tools but cannot expand either', async (t) => {
+  const h = await fileHost(t, { workbench: workbench() });
+  const read = {
+    name: 'read',
+    description: 'Read contract material.',
+    parameters: { type: 'object', properties: {} },
+    outputSchema: { type: 'object' },
+    sourceVersion: 'contract-read@1',
+  };
+  const config = {
+    model: defaults().model,
+    workspace: { kind: 'local', rootId: 'opaque-local-root', access: 'write' },
+    capabilities: {
+      resultIntent: 'zhuma-native-result-intent@2',
+      outputFile: 'zhuma-native-output-file@1',
+      localTools: [read],
+    },
+  };
+  const armed = ok(
+    await h.send(
+      h.envelope('workflow-start', {
+        target: target(h),
+        defaults: config,
+        budget: { concurrent: 1, automaticRevisions: 2 },
+      }),
+    ),
+  );
+  const candidate = ok(await h.send(control(h, 'workflow-next', armed))).candidates[0];
+  h.resetCounts();
+  const before = snapshot(h);
+  no(
+    await h.send(
+      h.accept({
+        workflow: candidate.workflow,
+        capabilities: { ...config.capabilities, localTools: [{ ...read, name: 'write' }] },
+      }),
+    ),
+    'remote-forbidden',
+  );
+  no(
+    await h.send(
+      h.accept({
+        workflow: candidate.workflow,
+        workspace: {
+          kind: 'local',
+          rootId: 'another-root',
+          access: 'read',
+          grantId: 'per-run',
+          generation: 1,
+        },
+        capabilities: { ...config.capabilities, localTools: [] },
+      }),
+    ),
+    'remote-forbidden',
+  );
+  assert.equal(snapshot(h), before);
+  const accepted = ok(
+    await h.send(
+      h.accept({
+        workflow: candidate.workflow,
+        capabilities: { ...config.capabilities, localTools: [] },
+      }),
+    ),
+  );
+  assert.equal(accepted.scope.nodeId, candidate.target.nodeId);
+  assert.equal(currentExecutionRun(h.read()).workspace.access, 'read');
+  assert(!currentExecutionRun(h.read()).composition.payload.toolAllowlist.includes('read'));
+});
+
+test('remote workflow: a full control budget reserves durable Stop and rejected resume never fences the usable device arm', async (t) => {
+  const h = await fileHost(t, { workbench: workbench() });
+  let value = ok(await h.send(start(h))),
+    lastResume;
+  while (value.intent.commandReceipts.length < 127) {
+    lastResume = control(h, 'workflow-resume', value, { expectedVersion: value.intent.version });
+    value = ok(await h.send(lastResume));
+  }
+  assert.equal(value.intent.commandReceipts.length, 127);
+  h.resetCounts();
+  const before = snapshot(h);
+  assert.equal(ok(await h.send(lastResume)).disposition, 'replayed');
+  no(
+    await h.send(control(h, 'workflow-resume', value, { expectedVersion: value.intent.version })),
+    'remote-quota',
+  );
+  assert.equal(snapshot(h), before);
+  assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
+  const available = ok(await h.send(control(h, 'workflow-next', value)));
+  assert.equal(available.requiresResume, false);
+  assert.equal(available.candidates.length, 1);
+  ok(await accepted(h, available.candidates[0]));
+  const stopped = ok(await h.send(control(h, 'workflow-stop', value)));
+  assert.equal(stopped.intent.commandReceipts.length, 128);
+  assert.equal(stopped.intent.status, 'stopping');
+  assert.equal(stopped.state, 'stopping');
+  assert.equal(currentExecutionRun(h.read()).remote.stopRequested, true);
+  assert.equal(currentExecutionRun(h.read()).resources, 'held');
 });
