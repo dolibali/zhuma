@@ -386,7 +386,31 @@ function bound(value: unknown, max: number): void {
     fail('composition-invalid');
   }
 }
-function derive(source: Source) {
+function legacyFirstMessage(source: Source): string {
+  const { handoff } = source;
+  return `执行当前节点：${handoff.goal}\n预期产物：${handoff.expectedOutput}\n节点输入说明：${handoff.inputNote}\n按固定输入清单处理，返回产物草稿与必要说明。${source.returnedRevision ? '\n按固定的本轮退回意见修改并提交新版本，保留旧产物和评审记录。' : ''}`;
+}
+function firstMessage(source: Source, completionGuidance: boolean): string {
+  const original = legacyFirstMessage(source);
+  const result = source.resultIntentTool;
+  if (!completionGuidance || !result) return original;
+  const publications = result.sourceVersion === 'zhuma-native-result-intent@2';
+  const publisher = publications ? source.outputFilePublisherTool : undefined;
+  const writer =
+    source.tools.kind === 'local-tools'
+      ? source.tools.definitions.find((tool) => tool.name === 'write')
+      : undefined;
+  return `${original}\n完成与交付：满足当前节点要求后，必须调用本轮 ${result.name} 声明固定结果，不能只发一句最终聊天或把会话 idle 当作完成。text 填写实际最终正文，links 填真实 HTTP(S) 链接，无链接时为 []。${
+    publications
+      ? '参数还必须包含 publications：纯正文/链接结果使用 []；文件结果只传本轮成功发布回执中的 {publicationId}，不传路径、文件字节或自行填写的元数据。'
+      : '本轮结果参数仅为 text、links，不支持文件引用。'
+  }\n${
+    publisher
+      ? `仅当任务要求真实文件且路径已获授权时，${writer ? `先用本轮 ${writer.name} 按其参数说明写入实际文件，再用` : '对已经实际存在的文件使用'}本轮 ${publisher.name} 发布；参数 path 为授权工作区内的相对路径，name 为可选显示名称。必须等到 ok=true、phase=published 的真实回执，再将其 publicationId 放入 ${result.name} 的 publications。${writer ? '' : '本轮没有文件写入工具；文件尚不存在时应报告缺少能力并等待补充。'}`
+      : '若任务必须交付真实文件，本轮没有可用于固定文件引用的完整工具链，应报告缺少能力并等待补充，不能将聊天中的文件路径当作已提交文件。'
+  }\n不是每个任务都需要文件，不要为纯正文任务额外造文件。必需输入尚未读取、文件/工具失败或权限不足时，明确报告阻塞并等待补充，不得跳过必需工作、伪造工具结果/上传完成标记/来源或自行扩大权限，也不要自动重试模型。${result.name} 成功声明后停止追加工作；平台仍须按原流程核验、排空并固定提交，声明不代表已通过评审或下游已完成。`;
+}
+function derive(source: Source, completionGuidance = true) {
   const {
     scope,
     handoff,
@@ -497,7 +521,7 @@ function derive(source: Source) {
     Buffer.byteLength(context, 'utf8') > EXECUTION_COMPOSITION_LIMITS.contextBytes
   )
     fail('composition-budget');
-  const text = `执行当前节点：${handoff.goal}\n预期产物：${handoff.expectedOutput}\n节点输入说明：${handoff.inputNote}\n按固定输入清单处理，返回产物草稿与必要说明。${source.returnedRevision ? '\n按固定的本轮退回意见修改并提交新版本，保留旧产物和评审记录。' : ''}`;
+  const text = firstMessage(source, completionGuidance);
   return {
     ...source,
     context,
@@ -559,7 +583,12 @@ export const executionRunCompositionSchema = z.preprocess(
           ]),
         ),
       );
-      const derived = derive(source);
+      // Keep exact historical first-message bytes/fingerprints. The only other
+      // accepted recipe is current guidance from these same frozen descriptors.
+      const derived = derive(
+        source,
+        value.payload.firstMessage.text !== legacyFirstMessage(source),
+      );
       const canonical = canonicalPayload(derived);
       if (
         canonical !== canonicalPayload(value.payload) ||
@@ -585,6 +614,7 @@ export function freezeExecutionRunComposition(
 function freezeForRevisionRound(
   input: ExecutionRunCompositionInput,
   roundId: string | null,
+  completionGuidance = true,
 ): FrozenExecutionRunComposition {
   try {
     const scope = checked(scopeSchema, input.scope);
@@ -732,7 +762,7 @@ function freezeForRevisionRound(
         : {}),
       ...(input.knowledgeTool !== undefined ? { knowledgeTool: input.knowledgeTool } : {}),
     });
-    const payload = derive(source);
+    const payload = derive(source, completionGuidance);
     return readExecutionRunComposition({
       schemaVersion: extended ? 2 : 1,
       configurationId: `composition_${hash(payload)}`,
@@ -805,7 +835,11 @@ export function assertExecutionRunComposition(
   // Replay verifies the original historical target, never silently rebinds to latest.
   const returnedRevision =
     snapshot.schemaVersion === 2 ? snapshot.payload.returnedRevision : undefined;
-  const expected = freezeForRevisionRound(current, returnedRevision?.roundId ?? null);
+  const expected = freezeForRevisionRound(
+    current,
+    returnedRevision?.roundId ?? null,
+    snapshot.payload.firstMessage.text !== legacyFirstMessage(snapshot.payload),
+  );
   const projected = projectExecutionRunComposition(snapshot);
   if (
     canonicalPayload(snapshot) !== canonicalPayload(expected) ||
