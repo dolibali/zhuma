@@ -1053,6 +1053,7 @@ body[data-ds-dark-theme] {
 }
 html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
   height: var(--dsh-frame-top-clearance, 48px);
+  padding-top: 2px;
 }
 .zm-shared-backend .zm-backend-bar .zm-button {
   min-width: 0;
@@ -1108,6 +1109,7 @@ html[data-platform='darwin'] .zm-shell-panel:has(.zm-space-bar) > .zm-shell-chro
 }
 html[data-platform='darwin'] .zhuma .zm-space-bar {
   min-height: var(--dsh-frame-top-clearance, 48px);
+  padding-block: 8px 5px;
   padding-inline-start: max(24px, var(--dsh-frame-leading-clearance, 0px));
 }
 /* Action hierarchy: primary, secondary (default), quiet, danger. */
