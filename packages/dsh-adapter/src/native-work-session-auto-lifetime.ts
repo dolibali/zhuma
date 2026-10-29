@@ -57,6 +57,10 @@ export class NativeWorkflowConsumerLifetime {
     );
     return source;
   }
+  /** Join actual issued effects without closing their original native owner. */
+  async whenIdle(): Promise<void> {
+    while (this.jobs.size) await Promise.allSettled([...this.jobs]);
+  }
   /** Synchronous: Stop/identity revocation closes admissions before any await. */
   fence(): void {
     if (this.phase === 'closed') return;

@@ -381,6 +381,14 @@ export class NativeMemberWorkflowConsumer {
       }
     }
   }
+  /** Fence first; join every actually issued accept before shared Owner.close. */
+  fence(): void {
+    this.life.fence();
+    if (this.timer) clearTimeout(this.timer);
+  }
+  whenAdmissionsIdle(): Promise<void> {
+    return this.life.whenIdle();
+  }
   async stop(requestId: string, signal?: AbortSignal) {
     this.life.fence();
     if (this.timer) clearTimeout(this.timer);
@@ -408,15 +416,11 @@ export class NativeMemberWorkflowConsumer {
             if (!run) throw new NativeWorkError('unavailable');
             const value =
               this.pending.kind === 'work'
-                ? await this.options.protocol.status(
-                    run as MemberLocalReadHandle,
-                    this.cleanup.signal,
-                  )
-                : await this.options.review!.status(
-                    run as MemberLocalReviewReadHandle,
-                    this.cleanup.signal,
-                  );
-            if (value.resources === 'settled') {
+                ? this.options.native.read(run as MemberLocalReadHandle)
+                : this.options.native.readReview(run as MemberLocalReviewReadHandle);
+            // Fresh business authentication may already be closed. Settlement
+            // still comes only from the original owner's actual cleanup reply.
+            if (value.remote.resources === 'settled') {
               delete this.pending;
               break;
             }

@@ -59,6 +59,10 @@ const fixture = () => {
       state.events.push('native:' + state.done);
       state.done++;
     },
+    read: () => ({
+      phase: state.resources === 'settled' ? 'retired' : 'retiring',
+      remote: { resources: state.resources },
+    }),
     refresh: async () => ({
       phase: 'submitted',
       remote: { resources: 'settled', runStatus: 'completed', receipt: {} },
@@ -159,4 +163,45 @@ test('member workflow contract: Stop receives the late genuine source handle and
   assert.equal(h.consumer.canSwitchBackend(), true);
   assert.equal(h.state.events.filter((v) => v === 'original-stop').length, 1);
   assert.equal(h.state.events.includes('bind'), false);
+});
+
+test('member workflow contract: current auth closure cannot block the original cleanup after all late accepts are joined', async () => {
+  const h = fixture(),
+    issued = Promise.withResolvers(),
+    reply = Promise.withResolvers(),
+    drain = Promise.withResolvers();
+  h.protocol.prepareAccept = async () => ({
+    send: async () => {
+      issued.resolve();
+      return reply.promise;
+    },
+  });
+  h.native.start = async () => assert.fail('closed admission');
+  h.protocol.status = async () => {
+    throw Error('CONTRACT_CURRENT_AUTH_CLOSED');
+  };
+  h.native.stop = async () => {
+    h.state.events.push('cleanup-started');
+    void drain.promise.then(() => {
+      h.state.resources = 'settled';
+    });
+    throw Error('CONTRACT_STOP_AUTH_CLOSED');
+  };
+  await h.consumer.start(randomUUID(), { target, defaults });
+  await issued.promise;
+  h.consumer.fence();
+  let joined = false;
+  const joining = h.consumer.whenAdmissionsIdle().then(() => {
+    joined = true;
+  });
+  const closing = h.consumer.close();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(joined, false);
+  reply.resolve({ value: { resources: 'held', nodeVersion: 1, runVersion: 1 } });
+  await joining;
+  await until(() => h.state.events.includes('cleanup-started'));
+  assert.equal(h.consumer.canSwitchBackend(), false);
+  drain.resolve();
+  await closing;
+  assert.equal(h.consumer.canSwitchBackend(), true);
 });
