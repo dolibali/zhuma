@@ -125,6 +125,7 @@ export type NativeRunPanelView =
       readonly run: NativeRunSummary | null;
       readonly messages: readonly NativeRunMessage[];
       readonly hasEarlier: boolean;
+      readonly turnEnd?: Extract<NativeConversationFrame, { type: 'turn-end' }>;
       readonly selection: NativeRunSelection | null;
       readonly models: NativeRunChoices<NativeRunModelChoice>;
       readonly experts: NativeRunChoices<NativeRunExpertChoice>;

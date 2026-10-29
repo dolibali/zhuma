@@ -23,6 +23,13 @@ const runIdentity = (run: NativeRunRead | null) =>
   run ? JSON.stringify([run.runId, run.generation, run.segmentId]) : undefined;
 const conversationIdentity = (run: NativeRunRead | null) =>
   run ? JSON.stringify([runIdentity(run), run.native?.sessionId, run.native?.agentId]) : undefined;
+const isMessageTransportUnavailable = (error: unknown) => {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  if (code !== undefined) return code === 'unavailable';
+  return (
+    error instanceof TypeError || (error instanceof DOMException && error.name === 'TimeoutError')
+  );
+};
 
 /** Ephemeral view state only. No persistence, authority, native handle or execution facts. */
 export function createNativeRunController(api: NativeRunApi, target: NativeRunTarget) {
@@ -89,6 +96,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         run,
         messages: transcript.messages(),
         hasEarlier: false,
+        ...(transcript.turnEnd() ? { turnEnd: transcript.turnEnd()! } : {}),
         selection: held ? options.selection : selection,
         models: options.models,
         experts: { kind: 'ready', items: options.experts },
@@ -217,6 +225,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         const page = await api.history(target, nextRun.runId, cursor, signal);
         if (!valid()) return;
         transcript.history(page.messages, page.nextAfter);
+        if (page.turnEnd) transcript.frame(page.turnEnd);
         cursor = page.nextAfter;
         ready();
         if (api.inbox) {
@@ -229,7 +238,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       observe();
     } catch (error) {
       if (valid()) {
-        if (adopted) {
+        if (adopted && isMessageTransportUnavailable(error)) {
           ready();
           publish({ error: '运行状态已更新，部分会话消息暂未同步，请刷新重试。' });
           observe();

@@ -28,9 +28,11 @@ import { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';
 import { MEMBER_COOKIE_NAME } from './member-session.js';
 import { taskProgressQuerySchema } from './execution-task-progress-contract.js';
 import { projectArtifactsQuerySchema } from './execution-project-artifacts-contract.js';
-import { executionMemberRequestSchemas } from './execution-service.js';
+import { executionMemberRequestSchemas, fileReadSchema } from './execution-service.js';
 import { EXECUTION_BODY_BYTE_LIMIT } from './execution-plugin.js';
 import { hostRunOptionsQuerySchema } from './host-run-options.js';
+import { ARTIFACT_FILE_LIMITS, artifactUploadOptionsSchema } from './artifact-files.js';
+import { guardSharedFileStream } from './host-shared-backend-file-stream.js';
 
 /** The existing execution carrier's legal text/draft budget, not a file stream. */
 export const SHARED_BACKEND_BODY_BYTE_LIMIT = EXECUTION_BODY_BYTE_LIMIT;
@@ -616,6 +618,195 @@ export class HostSharedBackend {
     );
     this.jobs.add(work);
     void work.finally(() => this.jobs.delete(work)).catch(() => undefined);
+    return work;
+  }
+  /** Exact original file carriers only. Bytes never enter RPC/JSON and the
+   * renderer cannot select a remote URL, Cookie or authorization header. */
+  file(endpoint: 'file' | 'upload-file', request: Request): Promise<Response> {
+    const changed = new AbortController();
+    const revoke = () => changed.abort();
+    const signal = AbortSignal.any([
+      request.signal,
+      this.lifetime.signal,
+      changed.signal,
+      AbortSignal.timeout(65_000),
+    ]);
+    this.nativeListeners.add(revoke);
+    let opening = true,
+      streams = 0;
+    const release = () => {
+      if (!opening && streams === 0) this.nativeListeners.delete(revoke);
+    };
+    const retain = (stream: ReturnType<typeof guardSharedFileStream>) => {
+      streams++;
+      this.jobs.add(stream.settled);
+      void stream.settled.finally(() => {
+        streams--;
+        this.jobs.delete(stream.settled);
+        release();
+      });
+      return stream;
+    };
+    const work = (async () => {
+      const input = new URL(request.url);
+      if (input.search.length > 12_000) throw new SharedBackendError('invalid');
+      const connectionId = z
+        .uuid()
+        .parse(
+          endpoint === 'file'
+            ? input.searchParams.get('connectionId')
+            : request.headers.get('x-zhuma-backend-connection'),
+        );
+      const row = await this.read();
+      if (!row?.origin || !row.cookie || row.connectionId !== connectionId)
+        throw new SharedBackendError('changed');
+      if (!(await this.info(row, signal))) throw new SharedBackendError('identity-changed');
+      const check = () => this.assertCurrent(row, signal);
+      await check();
+      const url = new URL(`/api/zhuma-exec/${endpoint}`, row.origin);
+      const headers = new Headers({ origin: row.origin, cookie: row.cookie });
+      let upload: ReturnType<typeof guardSharedFileStream> | undefined;
+      if (endpoint === 'file') {
+        if (request.method !== 'GET') throw new SharedBackendError('invalid');
+        const query: Record<string, unknown> = {};
+        for (const [key, value] of input.searchParams) {
+          if (key === 'connectionId') continue;
+          if (Object.hasOwn(query, key)) throw new SharedBackendError('invalid');
+          query[key] = key === 'revision' ? Number(value) : value;
+        }
+        if (input.searchParams.getAll('connectionId').length !== 1)
+          throw new SharedBackendError('invalid');
+        const parsed = fileReadSchema.parse(query);
+        for (const [key, value] of Object.entries(parsed)) url.searchParams.set(key, String(value));
+      } else {
+        if (
+          request.method !== 'POST' ||
+          input.search ||
+          !request.body ||
+          request.headers.get('content-type')?.split(';')[0] !== 'application/octet-stream'
+        )
+          throw new SharedBackendError('invalid');
+        const h = request.headers;
+        const declaration = artifactUploadOptionsSchema.parse({
+          taskId: h.get('x-zhuma-task'),
+          planId: h.get('x-zhuma-plan'),
+          revision: Number(h.get('x-zhuma-revision')),
+          nodeId: h.get('x-zhuma-node'),
+          spaceId: h.get('x-zhuma-space'),
+          idempotencyKey: h.get('x-zhuma-idempotency-key'),
+          declare: {
+            name: decodeURIComponent(h.get('x-zhuma-file-name') ?? ''),
+            mediaType: h.get('x-zhuma-file-type'),
+            byteSize: Number(h.get('x-zhuma-file-size')),
+            sha256: h.get('x-zhuma-file-sha256'),
+          },
+        });
+        if (
+          !h.has('x-zhuma-file-size') ||
+          declaration.declare.byteSize > ARTIFACT_FILE_LIMITS.maxFileBytes
+        )
+          throw new SharedBackendError('invalid');
+        for (const name of [
+          'content-type',
+          'x-zhuma-file-name',
+          'x-zhuma-file-type',
+          'x-zhuma-file-size',
+          'x-zhuma-file-sha256',
+          'x-zhuma-space',
+          'x-zhuma-task',
+          'x-zhuma-plan',
+          'x-zhuma-revision',
+          'x-zhuma-node',
+          'x-zhuma-idempotency-key',
+        ])
+          headers.set(name, h.get(name)!);
+        upload = retain(
+          guardSharedFileStream(request.body, {
+            signal,
+            check,
+            maxBytes: ARTIFACT_FILE_LIMITS.maxFileBytes,
+            expectedBytes: declaration.declare.byteSize,
+            sha256: declaration.declare.sha256,
+          }),
+        );
+      }
+      let response: Response;
+      try {
+        response = await this.fetcher(url, {
+          method: request.method,
+          headers,
+          redirect: 'error',
+          cache: 'no-store',
+          signal,
+          ...(upload ? { body: upload.body, duplex: 'half' as const } : {}),
+        });
+      } finally {
+        await upload?.cancel();
+      }
+      try {
+        await check();
+        const type = response.headers.get('content-type') ?? '';
+        const json = type.split(';')[0] === 'application/json';
+        if (
+          !response.body ||
+          (!json && !['application/octet-stream', 'text/plain; charset=utf-8'].includes(type))
+        )
+          throw new SharedBackendError('invalid-response');
+        if (response.status === 401) this.nativeChanged('revoking');
+        const encoding = response.headers.get('content-encoding');
+        const length =
+          !encoding || encoding === 'identity' ? response.headers.get('content-length') : null;
+        const expectedBytes = length === null ? undefined : Number(length);
+        const sha256 = json ? undefined : (response.headers.get('x-zhuma-file-sha256') ?? '');
+        const maxBytes = json ? 32768 : ARTIFACT_FILE_LIMITS.maxFileBytes;
+        if (
+          (expectedBytes !== undefined &&
+            (!Number.isSafeInteger(expectedBytes) ||
+              expectedBytes < 0 ||
+              expectedBytes > maxBytes)) ||
+          (sha256 !== undefined && !/^[a-f0-9]{64}$/u.test(sha256))
+        )
+          throw new SharedBackendError('invalid-response');
+        const output = new Headers({
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; sandbox",
+          'x-zhuma-backend-connection': row.connectionId,
+        });
+        for (const name of [
+          'content-type',
+          'content-disposition',
+          'x-zhuma-file-context',
+          'x-zhuma-file-sha256',
+          'x-zhuma-file-upload-id',
+        ]) {
+          const value = response.headers.get(name);
+          if (value !== null) output.set(name, value);
+        }
+        if (expectedBytes !== undefined) output.set('content-length', String(expectedBytes));
+        const stream = retain(
+          guardSharedFileStream(response.body, {
+            signal,
+            check,
+            maxBytes,
+            ...(expectedBytes === undefined ? {} : { expectedBytes }),
+            ...(sha256 === undefined ? {} : { sha256 }),
+          }),
+        );
+        return new Response(stream.body, { status: response.status, headers: output });
+      } catch (error) {
+        await response.body?.cancel().catch(() => undefined);
+        throw error;
+      }
+    })();
+    this.jobs.add(work);
+    void work
+      .finally(() => {
+        opening = false;
+        this.jobs.delete(work);
+        release();
+      })
+      .catch(() => undefined);
     return work;
   }
   private async perform(

@@ -192,6 +192,63 @@ export function createSharedBackendClient(
     const url = new URL(input, 'http://zhuma.invalid'),
       method = init?.method ?? 'GET';
     if (!['GET', 'POST'].includes(method)) throw new TypeError('不支持的共享服务方法。');
+    if (url.pathname === '/api/zhuma-exec/file' || url.pathname === '/api/zhuma-exec/upload-file') {
+      const reading = url.pathname === '/api/zhuma-exec/file';
+      if (
+        !selection.connectionId ||
+        url.hash ||
+        (reading ? method !== 'GET' : method !== 'POST' || !!url.search)
+      )
+        throw new TypeError('文件请求无效。');
+      const headers = new Headers();
+      if (reading) {
+        if (url.searchParams.has('connectionId')) throw new TypeError('文件请求无效。');
+        url.searchParams.set('connectionId', selection.connectionId);
+      } else {
+        const original = new Headers(init?.headers);
+        for (const name of [
+          'content-type',
+          'x-zhuma-file-name',
+          'x-zhuma-file-type',
+          'x-zhuma-file-size',
+          'x-zhuma-file-sha256',
+          'x-zhuma-space',
+          'x-zhuma-task',
+          'x-zhuma-plan',
+          'x-zhuma-revision',
+          'x-zhuma-node',
+          'x-zhuma-idempotency-key',
+        ]) {
+          const value = original.get(name);
+          if (value !== null) headers.set(name, value);
+        }
+        headers.set('x-zhuma-backend-connection', selection.connectionId);
+      }
+      const response = await localFetch(
+        `/api/zhuma-backend/${reading ? 'file' : 'upload-file'}${url.search}`,
+        {
+          method,
+          credentials: 'same-origin',
+          cache: 'no-store',
+          redirect: 'error',
+          headers,
+          signal: AbortSignal.any([lifetime.signal, ...(init?.signal ? [init.signal] : [])]),
+          ...(!reading && init?.body ? { body: init.body } : {}),
+        },
+      );
+      try {
+        current(attempt, init?.signal ?? undefined);
+        if (
+          response.headers.get('x-zhuma-backend-connection') !== selection.connectionId &&
+          response.ok
+        )
+          throw new TypeError('文件连接已发生变化，请重试。');
+        return response;
+      } catch (error) {
+        await response.body?.cancel();
+        throw error;
+      }
+    }
     const [, operation] = target(url.pathname, method);
     let payload: unknown =
       method === 'POST' ? JSON.parse(typeof init?.body === 'string' ? init.body : '') : {};

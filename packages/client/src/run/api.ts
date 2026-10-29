@@ -1,4 +1,9 @@
-import { conversationLines, readConversationFrame, readNativeInbox } from './conversation.js';
+import {
+  conversationLines,
+  readConversationFrame,
+  readNativeInbox,
+  readNativeTurnEnd,
+} from './conversation.js';
 import { createIdentityApi } from '../identity/api.js';
 import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
@@ -82,6 +87,7 @@ export interface NativeRunApi {
   ): Promise<{
     messages: readonly NativeRunMessage[];
     nextAfter: number;
+    turnEnd?: Extract<NativeConversationFrame, { type: 'turn-end' }>;
   }>;
   begin(input: NativeRunBegin, signal: AbortSignal): Promise<void>;
   send(
@@ -669,7 +675,24 @@ export function createNativeRunApi(
       }
       const nextAfter = integer(value.nextAfter, -1);
       if (nextAfter !== previous) invalid();
-      return { messages: projectNativeRunMessages(events), nextAfter };
+      let boundary: unknown;
+      for (const event of events) if (object(event).type === 'turn/end') boundary = event;
+      let turnEnd: Extract<NativeConversationFrame, { type: 'turn-end' }> | undefined;
+      if (boundary) {
+        const event = object(boundary),
+          data = object(event.data);
+        turnEnd = readNativeTurnEnd({
+          seq: event.seq,
+          time: event.time,
+          turn: data.turn,
+          reason: data.reason,
+        });
+      }
+      return {
+        messages: projectNativeRunMessages(events),
+        nextAfter,
+        ...(turnEnd ? { turnEnd } : {}),
+      };
     },
     async begin(input, signal) {
       if (input.spaceId !== scope.spaceId) invalid();

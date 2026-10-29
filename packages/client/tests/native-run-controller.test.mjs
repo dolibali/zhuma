@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createNativeRunController } from '../dist/run/controller.js';
 import { createNativeRunApi, projectNativeRunMessages } from '../dist/run/api.js';
+import { ExecutionError } from '../dist/execution/ExecutionApi.js';
 
 // Pure view/transport contracts: these fixtures do not establish Host authorization.
 const target = {
@@ -415,8 +416,8 @@ test('Run refresh contract: settled status is visible before blocked history and
       return { messages: [], nextAfter: after };
     },
     inbox: async () => {
-      if (completed) throw Error('Retired inbox reader');
-      return [];
+      if (completed) throw new ExecutionError('unavailable', 'Retired inbox reader');
+      return { asOfSeq: -1, receipts: [], items: [] };
     },
   });
   t.after(() => h.controller.dispose());
@@ -431,6 +432,28 @@ test('Run refresh contract: settled status is visible before blocked history and
   assert.equal(h.controller.getSnapshot().view.kind, 'ready');
   assert.deepEqual(h.controller.getSnapshot().view.run, settled);
   assert.equal(h.controller.getSnapshot().view.actions.stop.kind, 'unavailable');
+});
+
+test('Run refresh contract: explicit history authority or target refusals close actions after a fresh status read', async (t) => {
+  for (const code of [
+    'run-authority-denied',
+    'unauthenticated',
+    'space-unavailable',
+    'run-scope-mismatch',
+    'validation',
+  ]) {
+    const h = setup({
+      options: async () => runningOptions(),
+      read: async () => ({ ...summary, status: 'completed', resources: 'settled' }),
+      history: async () => {
+        throw new ExecutionError(code, 'Original refusal');
+      },
+    });
+    t.after(() => h.controller.dispose());
+    await assert.rejects(h.controller.refresh(), (error) => error.code === code);
+    assert.equal(h.controller.getSnapshot().view.kind, 'unavailable', code);
+    await assert.rejects(h.controller.start(selection), /not ready/);
+  }
 });
 
 test('Run refresh priority contract: Stop, a replacement generation and scope disposal still cancel an in-flight foreground read', async (t) => {

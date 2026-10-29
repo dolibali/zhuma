@@ -73,26 +73,70 @@ function RunIcon({ kind }: { kind: 'refresh' | 'send' | 'stop' | 'agent' | 'clos
   );
 }
 
-function RunState({ run }: { run: NativeRunSummary | null }) {
+type TurnEnd = NonNullable<ReadyView['turnEnd']>;
+function RunState({
+  run,
+  turnEnd,
+}: {
+  run: NativeRunSummary | null;
+  turnEnd?: TurnEnd | undefined;
+}) {
   if (!run) return <span className="zm-native-run__status">尚未开始</span>;
-  const label = {
-    requested: '正在启动',
-    running: '运行中',
-    'waiting-for-input': '等待补充',
-    completed:
-      run.resultDelivery?.kind === 'delivered'
-        ? run.resultDelivery.roundId
-          ? '已提交评审'
-          : '产物已提交'
-        : '本轮已结束',
-    failed: '运行失败',
-    cancelled: run.stopPhase === 'confirmed' ? '已停止' : '运行已取消',
-  }[run.status];
+  const label =
+    run.status === 'running' && run.native?.status === 'idle' && turnEnd
+      ? ['completed', 'forked'].includes(turnEnd.reason.kind)
+        ? '等待继续'
+        : '需要处理'
+      : {
+          requested: '正在启动',
+          running: '运行中',
+          'waiting-for-input': '等待补充',
+          completed:
+            run.resultDelivery?.kind === 'delivered'
+              ? run.resultDelivery.roundId
+                ? '已提交评审'
+                : '产物已提交'
+              : '本轮已结束',
+          failed: '运行失败',
+          cancelled: run.stopPhase === 'confirmed' ? '已停止' : '运行已取消',
+        }[run.status];
   return (
     <span className="zm-native-run__status" data-state={run.status}>
       <span className="zm-native-run__dot" aria-hidden="true" />
       {label}
     </span>
+  );
+}
+
+function TurnNotice({
+  run,
+  turnEnd,
+}: {
+  run: NativeRunSummary | null;
+  turnEnd?: TurnEnd | undefined;
+}) {
+  if (
+    !turnEnd ||
+    !run ||
+    run.native?.status !== 'idle' ||
+    run.resultDelivery ||
+    run.stopPhase !== 'none'
+  )
+    return null;
+  const text = {
+    completed: '本轮回复已结束，尚未提交产物。可补充要求后继续。',
+    blocked: '本轮执行受阻，可补充信息后继续。',
+    'max-tokens': '本轮达到输出上限，尚未提交产物。可发送消息继续。',
+    error: '本轮执行失败，可查看会话后重试。',
+    aborted: '本轮已中止，尚未提交产物。',
+    interrupted: '本轮已中断，尚未提交产物。',
+    forked: '本轮会话已分支，尚未提交产物。',
+    unknown: '本轮已结束，尚未提交产物。',
+  }[turnEnd.reason.kind];
+  return (
+    <p className="zm-native-run__notice" role="status">
+      {text}
+    </p>
   );
 }
 
@@ -526,6 +570,12 @@ function RunPanel(props: NativeRunPanelProps) {
     };
   }, []);
   const lastMessage = view.kind === 'ready' ? view.messages.at(-1) : undefined;
+  const turnEnd =
+    view.kind === 'ready' &&
+    view.turnEnd &&
+    !view.messages.some((message) => message.sequence > view.turnEnd!.seq)
+      ? view.turnEnd
+      : undefined;
   useEffect(() => {
     if (following.current && timeline.current)
       timeline.current.scrollTop = timeline.current.scrollHeight;
@@ -680,7 +730,7 @@ function RunPanel(props: NativeRunPanelProps) {
           <h2 id={`${id}-title`}>{target.title}</h2>
         </div>
         <div className="zm-native-run__header-actions">
-          {ready && matching && <RunState run={run} />}
+          {ready && matching && <RunState run={run} turnEnd={turnEnd} />}
           {ready && matching && run?.native && props.onOpenSession && (
             <Button
               variant="quiet"
@@ -745,6 +795,7 @@ function RunPanel(props: NativeRunPanelProps) {
             onChange={props.onSelectionChange}
           />
           <Receipt run={run} />
+          <TurnNotice run={run} turnEnd={turnEnd} />
           <div
             className="zm-native-run__timeline"
             ref={timeline}

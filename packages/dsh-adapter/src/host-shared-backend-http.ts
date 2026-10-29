@@ -10,7 +10,7 @@ import {
 } from './host-shared-backend.js';
 import { readWorkbenchBody, WorkbenchBodyError } from './workbench-http.js';
 
-/** All three exact routes retain the ORIGINAL local Connection owner policy.
+/** Exact routes retain the ORIGINAL local Connection owner policy.
  * They are intentionally never registered as public member Web routes. */
 export function mountHostSharedBackend(
   ctx: Context,
@@ -84,6 +84,34 @@ export function mountHostSharedBackend(
               { type: 'server-response', rpcId: envelope.data.rpcId, result },
               { headers: { 'cache-control': 'no-store' } },
             );
+          },
+        });
+      }
+      for (const endpoint of ['file', 'upload-file'] as const) {
+        child.connection.fetch.register({
+          path: `/api/zhuma-backend/${endpoint}`,
+          methods: [endpoint === 'file' ? 'GET' : 'POST'],
+          requestBody: 'streaming',
+          async fetch(request) {
+            const rejected = child.connection.requestRejection({ headers: request.headers });
+            if (rejected) return new Response(null, { status: rejected });
+            const admitted = child.connection.admit({ headers: request.headers });
+            if ('rejection' in admitted || admitted.peer.principal.kind !== 'owner')
+              return new Response(null, { status: 403 });
+            try {
+              return await owner.file(endpoint, request);
+            } catch (error) {
+              return Response.json(
+                {
+                  ok: false,
+                  error: { code: error instanceof z.ZodError ? 'validation' : 'unavailable' },
+                },
+                {
+                  status: error instanceof z.ZodError ? 400 : 409,
+                  headers: { 'cache-control': 'no-store' },
+                },
+              );
+            }
           },
         });
       }

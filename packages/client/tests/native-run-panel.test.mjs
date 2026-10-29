@@ -57,6 +57,27 @@ const target = {
   nodeId: 'node',
   title: '实现任务状态筛选',
 };
+
+test('native turn outcome is a safe reason, never an artifact receipt or a later turn status', () => {
+  const ended = { type: 'turn-end', seq: 7, time: 1, turn: 1, reason: { kind: 'max-tokens' } };
+  const current = view({ run, turnEnd: ended });
+  const html = renderToStaticMarkup(createElement(NativeRunPanel, props({ view: current })));
+  assert.match(html, /达到输出上限/);
+  assert.match(html, /尚未提交产物/);
+  assert.match(html, /需要处理/);
+  const next = renderToStaticMarkup(
+    createElement(
+      NativeRunPanel,
+      props({
+        view: {
+          ...current,
+          messages: [{ id: 'later', role: 'user', sequence: 8, text: 'continue' }],
+        },
+      }),
+    ),
+  );
+  assert.doesNotMatch(next, /达到输出上限/);
+});
 const run = {
   ...target,
   runId: 'run',

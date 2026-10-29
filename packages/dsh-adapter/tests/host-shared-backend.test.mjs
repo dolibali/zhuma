@@ -4,7 +4,7 @@ import test from 'node:test';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Context } from '@deepseek-ai/cordis';
 import Credentials from '@deepseek-ai/dsh-credentials-local';
 import WebServer from '@deepseek-ai/dsh-host-webserver';
@@ -13,7 +13,158 @@ import RemoteAccess from '@deepseek-ai/dsh-api-remote-access';
 import { HostSharedBackend, SharedBackendError } from '../dist/host-shared-backend.js';
 import { mountHostSharedBackend } from '../dist/host-shared-backend-http.js';
 
-async function fixture(t) {
+const fileQuery = {
+  spaceId: 'north',
+  taskId: 'task',
+  planId: 'plan',
+  revision: 1,
+  nodeId: 'node',
+  uploadId: 'upload',
+  purpose: 'accepted',
+  projectId: 'project',
+  artifactVersionId: 'artifact',
+  mode: 'download',
+};
+const fileRequest = (selection, query = fileQuery) =>
+  new Request(
+    `http://local.invalid/api/zhuma-backend/file?${new URLSearchParams({ connectionId: selection.connectionId, ...query })}`,
+  );
+const fileHash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+test('shared file carrier: private original member identity, exact query and unchanged bounded bytes', async (t) => {
+  const data = Buffer.alloc(256 * 1024, 'native file data');
+  let fileCalls = 0;
+  const h = await fixture(t, async (url, init) => {
+    fileCalls++;
+    assert.equal(init.method, 'GET');
+    assert.equal(init.headers.get('x-injected'), null);
+    assert.equal(url.searchParams.get('projectId'), 'project');
+    assert.equal(url.searchParams.has('connectionId'), false);
+    if (url.searchParams.get('mode') === 'metadata')
+      return Response.json({ ok: true, value: { contract: true } });
+    return new Response(data, {
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-length': String(data.length),
+        'content-disposition': 'attachment; filename="file"',
+        'x-zhuma-file-sha256': fileHash(data),
+        'x-zhuma-file-upload-id': 'upload',
+        'set-cookie': 'must-never-leave-host=private',
+      },
+    });
+  });
+  const selected = await h.selected();
+  await h.request(selected, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const metadata = await h.owner.file(
+    'file',
+    fileRequest(selected, { ...fileQuery, mode: 'metadata' }),
+  );
+  assert.deepEqual(await metadata.json(), { ok: true, value: { contract: true } });
+  for (const mode of ['preview', 'download']) {
+    const response = await h.owner.file('file', fileRequest(selected, { ...fileQuery, mode }));
+    assert.equal(response.headers.get('x-zhuma-backend-connection'), selected.connectionId);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(response.headers.get('content-disposition'), 'attachment; filename="file"');
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), data);
+  }
+  const before = fileCalls;
+  await assert.rejects(
+    h.owner.file('file', fileRequest(selected, { ...fileQuery, url: 'http://elsewhere.invalid' })),
+  );
+  await assert.rejects(
+    h.owner.file('file', fileRequest({ ...selected, connectionId: randomUUID() })),
+  );
+  assert.equal(
+    fileCalls,
+    before,
+    'strict original query and connection reject before file dispatch',
+  );
+  assert.equal(JSON.stringify(await h.owner.status()).includes('synthetic-'), false);
+});
+
+test('shared file carrier: member upload stays an original raw stream and rejects an incomplete or wrong digest', async (t) => {
+  const bytes = Buffer.from('manual delivery text');
+  let publications = 0;
+  const h = await fixture(t, async (url, init) => {
+    assert.equal(url.pathname, '/api/zhuma-exec/upload-file');
+    assert.equal(init.duplex, 'half');
+    assert.equal(init.headers.get('x-zhuma-backend-connection'), null);
+    assert.deepEqual(Buffer.from(await new Response(init.body).arrayBuffer()), bytes);
+    publications++;
+    return Response.json({ ok: true, value: { originalReceipt: publications } });
+  });
+  const selected = await h.selected();
+  await h.request(selected, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const upload = (sha256 = fileHash(bytes), size = bytes.length) =>
+    new Request('http://local.invalid/api/zhuma-backend/upload-file', {
+      method: 'POST',
+      body: bytes,
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-zhuma-backend-connection': selected.connectionId,
+        'x-zhuma-file-name': encodeURIComponent('交付.txt'),
+        'x-zhuma-file-type': 'text/plain',
+        'x-zhuma-file-size': String(size),
+        'x-zhuma-file-sha256': sha256,
+        'x-zhuma-space': 'north',
+        'x-zhuma-task': 'task',
+        'x-zhuma-plan': 'plan',
+        'x-zhuma-revision': '1',
+        'x-zhuma-node': 'node',
+        'x-zhuma-idempotency-key': 'manual-upload',
+      },
+    });
+  assert.deepEqual(await (await h.owner.file('upload-file', upload())).json(), {
+    ok: true,
+    value: { originalReceipt: 1 },
+  });
+  await assert.rejects(h.owner.file('upload-file', upload('a'.repeat(64))));
+  await assert.rejects(h.owner.file('upload-file', upload(fileHash(bytes), bytes.length + 1)));
+  assert.equal(publications, 1);
+});
+
+test('shared file carrier: logout cancels a live reader; corrupt bytes cannot finish successfully', async (t) => {
+  let cancelled = 0,
+    corrupt = false;
+  const bytes = Buffer.from('first chunk');
+  const h = await fixture(
+    t,
+    async () =>
+      new Response(
+        corrupt
+          ? bytes
+          : new ReadableStream({
+              start(controller) {
+                controller.enqueue(bytes);
+              },
+              cancel() {
+                cancelled++;
+              },
+            }),
+        {
+          headers: {
+            'content-type': 'application/octet-stream',
+            'x-zhuma-file-sha256': 'a'.repeat(64),
+          },
+        },
+      ),
+  );
+  const selected = await h.selected();
+  await h.request(selected, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const response = await h.owner.file('file', fileRequest(selected));
+  const reader = response.body.getReader();
+  assert.deepEqual(Buffer.from((await reader.read()).value), bytes);
+  const pending = reader.read();
+  const rejected = assert.rejects(pending);
+  await h.request(selected, 'identity.logout');
+  await rejected;
+  assert.equal(cancelled, 1);
+  corrupt = true;
+  await h.request(selected, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  await assert.rejects((await h.owner.file('file', fileRequest(selected))).arrayBuffer());
+});
+
+async function fixture(t, fileHandler) {
   const directory = await mkdtemp(join(tmpdir(), 'zhuma-backend-private-'));
   const filename = join(directory, 'synthetic.yaml'),
     calls = [];
@@ -25,7 +176,7 @@ async function fixture(t) {
   const remote = async (input, init) => {
     const url = new URL(input),
       headers = new Headers(init.headers),
-      body = init.body && JSON.parse(init.body);
+      body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
     calls.push({ url: url.href, headers, init, body });
     assert.equal(init.redirect, 'error');
     assert.equal(headers.get('origin'), url.origin);
@@ -70,6 +221,11 @@ async function fixture(t) {
           },
         },
       });
+    if (
+      fileHandler &&
+      ['/api/zhuma-exec/file', '/api/zhuma-exec/upload-file'].includes(url.pathname)
+    )
+      return fileHandler(url, init);
     if (url.pathname === '/zhuma-id/session')
       return Response.json({
         ok: true,
@@ -474,6 +630,11 @@ test('shared backend exact HTTP routes retain actual SDK local owner admission a
       redirect: 'error',
     });
   assert.equal((await call(undefined, 'status', {})).status, 401);
+  assert.equal((await fetch(`${origin}/api/zhuma-backend/file`)).status, 401);
+  assert.equal(
+    (await fetch(`${origin}/api/zhuma-backend/upload-file`, { method: 'POST' })).status,
+    401,
+  );
   assert.equal((await call('zhuma-member=synthetic-not-owner', 'status', {})).status, 401);
   // Local owner bootstrap only; there is no remote owner exchange in this path.
   const exchange = await fetch(ctx.connection.authenticatedUrl(origin), { redirect: 'manual' });

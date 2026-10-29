@@ -14,6 +14,64 @@ const remote = () => ({
   actorId: 'ann',
 });
 
+test('shared file transport keeps raw bytes and exact file routes on the local owner carrier', async () => {
+  const selection = remote(),
+    calls = [],
+    bytes = new Uint8Array([0, 1, 127, 255]);
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, method) {
+        assert.equal(method, 'zhuma-backend/status');
+        return { ok: true, value: selection };
+      },
+    },
+    () => {},
+    async (input, init) => {
+      calls.push({ input, init });
+      return new Response(bytes, {
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-zhuma-backend-connection': selection.connectionId,
+        },
+      });
+    },
+  );
+  await client.refresh();
+  const response = await client.fetcher(
+    '/api/zhuma-exec/file?spaceId=north&purpose=accepted&mode=download',
+    { headers: { authorization: 'must-not-forward' } },
+  );
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+  const url = new URL(calls[0].input, 'http://local.invalid');
+  assert.equal(url.pathname, '/api/zhuma-backend/file');
+  assert.equal(url.searchParams.get('connectionId'), selection.connectionId);
+  assert.equal(calls[0].init.headers.has('authorization'), false);
+  assert.equal(calls[0].init.redirect, 'error');
+  const blob = new Blob([bytes]);
+  const upload = await client.fetcher('/api/zhuma-exec/upload-file', {
+    method: 'POST',
+    body: blob,
+    headers: {
+      'content-type': 'application/octet-stream',
+      'x-zhuma-file-size': '4',
+      cookie: 'must-not-forward',
+    },
+  });
+  await upload.arrayBuffer();
+  assert.equal(calls[1].input, '/api/zhuma-backend/upload-file');
+  assert.equal(calls[1].init.body, blob);
+  assert.equal(calls[1].init.headers.get('x-zhuma-backend-connection'), selection.connectionId);
+  assert.equal(calls[1].init.headers.has('cookie'), false);
+  await assert.rejects(client.fetcher('/api/zhuma-exec/file?connectionId=forged'));
+  await assert.rejects(
+    client.fetcher('/api/zhuma-exec/upload-file?url=http://elsewhere.invalid', {
+      method: 'POST',
+      body: blob,
+    }),
+  );
+  client.close();
+});
+
 test('shared backend busy refusal keeps the original ready connection so the user can still stop current work', async () => {
   const selected = remote();
   let changes = 0;

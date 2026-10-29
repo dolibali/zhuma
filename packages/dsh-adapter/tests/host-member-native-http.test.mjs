@@ -4,6 +4,26 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { openHostMemberNativeHttp } from '../dist/host-member-native-http.js';
 import { publicMemberNativeHistory } from '../dist/host-member-native-owner.js';
+
+test('member history retains the original safe turn boundary without provider or hook details', () => {
+  const value = publicMemberNativeHistory({
+    seq: 10,
+    time: 20,
+    type: 'turn/end',
+    data: {
+      turn: 2,
+      reason: { kind: 'max-tokens', provider: 'private', error: 'private' },
+      internal: 'private',
+    },
+  });
+  assert.deepEqual(value, {
+    seq: 10,
+    time: 20,
+    type: 'turn/end',
+    data: { turn: 2, reason: { kind: 'max-tokens' } },
+  });
+  assert.equal(JSON.stringify(value).includes('private'), false);
+});
 function setup() {
   const routes = new Map();
   let principal = 'owner',

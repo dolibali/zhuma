@@ -22,6 +22,7 @@ import { readHostRunModels } from './host-run-models.js';
 import { publicFrame, conversationTarget, type HostRunFrameSink } from './host-run-reader.js';
 import { ExecutionRunError } from './execution-run-state.js';
 import type { NativeHistoryEvent } from './native-work-session-contract.js';
+import { NativeConversationProjection } from './native-work-session-view.js';
 import {
   createHostMemberNativeWorkspaces,
   memberNativeWorkspaceSchema,
@@ -93,6 +94,11 @@ export function publicMemberNativeHistory(event: NativeHistoryEvent): NativeHist
   const record = (v: unknown): Record<string, unknown> | undefined =>
     v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
   const data = record(event.data);
+  if (event.type === 'turn/end') {
+    const frame = new NativeConversationProjection('public-history').push({ type: 'event', event });
+    if (frame?.type === 'turn-end')
+      return { ...base, type: 'turn/end', data: { turn: frame.turn, reason: frame.reason } };
+  }
   if (event.type === 'tool/call' && typeof data?.name === 'string')
     return { ...base, type: 'tool/call', data: { name: data.name.slice(0, 200) } };
   if (event.type === 'user/message' || event.type === 'assistant/message') {
