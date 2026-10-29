@@ -1113,6 +1113,10 @@ export class RemoteWorkflowIntents {
           return (
             predecessor?.command.status !== 'completed' ||
             !predecessor.acceptedArtifactVersionId ||
+            readExecutionRunState(predecessor)?.runs.some((run) => run.resources !== 'settled') ||
+            readExecutionReviewState(predecessor)?.attempts.some(
+              (review) => review.resources !== 'settled',
+            ) ||
             !node.handoff.inputRefs.some(
               (ref) =>
                 ref.sourceNodeId === id &&
@@ -1241,6 +1245,16 @@ export class RemoteWorkflowIntents {
       activeReviews,
       candidates,
       attention,
+      revisions: intent.nodeIds.map((nodeId) => ({
+        nodeId,
+        used: Math.max(
+          0,
+          ...owned
+            .filter((item) => item.node.nodeId === nodeId)
+            .map(({ run }) => run.remote!.workflow!.repairIndex),
+        ),
+        limit: intent.budget.automaticRevisions,
+      })),
     });
   }
   private replay(intent: RemoteWorkflowIntent, requestId: string, fingerprint: string): boolean {
