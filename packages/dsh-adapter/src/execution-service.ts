@@ -25,6 +25,7 @@ import {
   localReviewOptionsSchema,
   localReviewUnavailableReasonSchema,
   type LocalReviewOptions,
+  type RemoteWorkflowIntent,
   reviewOutcomeQuerySchema,
   reviewOutcomeSchema,
   type ReviewOutcomeView,
@@ -182,6 +183,7 @@ import {
   assertExecutionRunStoreCompatibility,
   enableExecutionRunWriter,
   ExecutionRunProtocolError,
+  executionRunGlobalSchema,
   requireExecutionRunWriter,
   enableExecutionReviewWriter,
   requireExecutionReviewWriter,
@@ -643,6 +645,7 @@ export interface PlanReceipt {
   readonly fingerprint: string;
   readonly nodeIds: readonly string[];
   readonly workflowExecution?: WorkflowExecutionIntent | undefined;
+  readonly remoteWorkflows?: RemoteWorkflowIntent[] | undefined;
 }
 
 export interface ExecutionStorage {
@@ -1625,6 +1628,86 @@ export class ExecutionService {
     if (!this.remoteRunAuthorities) {
       this.remoteRunAuthorities = new RemoteRunAuthorities({
         signal: this.runLifetime.signal,
+        workflow: {
+          facts: (lease, target) => {
+            if (host !== this.requireRunHost() || host.signal.aborted)
+              throw new RemoteRunError('remote-unavailable');
+            lease.assertCurrent(target.spaceId);
+            const workbench = this.workbench.readWorkbench();
+            const task = workbench.tasks.find((item) => item.id === target.taskId);
+            if (
+              !task ||
+              planMembership(workbench, target.taskId, lease.memberId) !== 'allowed' ||
+              !workbench.participants.some(
+                (item) => item.id === lease.memberId && item.kind === 'human' && item.available,
+              )
+            )
+              throw new RemoteRunError('remote-forbidden');
+            const plans = workbench.appliedPlans.filter((plan) => plan.taskId === target.taskId);
+            const latest = Math.max(...plans.map((plan) => plan.revision));
+            const selected = plans.filter((plan) => plan.revision === latest);
+            if (
+              selected.length !== 1 ||
+              selected[0]!.id !== target.planId ||
+              latest !== target.revision
+            )
+              throw new RemoteRunError('remote-stale-plan');
+            const applied = createExecutionHandoff(target, workbench);
+            const receipt = this.storage.readPlan(
+              planKey(target.taskId, target.planId, target.revision),
+            );
+            if (!receipt) throw new RemoteRunError('remote-not-found');
+            if (
+              receipt.remoteWorkflows?.length &&
+              executionRunGlobalSchema.parse(this.readRunGlobal()).remoteWorkflowWriter !== 1
+            )
+              throw new RemoteRunError('remote-unavailable');
+            const nodes = createNodeHandoffs(applied).map((handoff) => {
+              const node = this.readRunNode({ ...target, nodeId: handoff.nodeId });
+              if (!node) throw new RemoteRunError('remote-not-found');
+              return node;
+            });
+            if (!nodes.length) throw new RemoteRunError('remote-not-found');
+            this.assertRunNodeAccess(host, lease.memberId, target.spaceId, nodes[0]!);
+            const controlledNodeIds = nodes
+              .filter((node) =>
+                node.handoff.assignee.kind === 'human'
+                  ? node.handoff.assignee.id === lease.memberId
+                  : node.handoff.assignee.kind === 'expert' &&
+                    node.ownerId === lease.memberId &&
+                    task.ownerId === lease.memberId,
+              )
+              .map((node) => node.nodeId);
+            const availableExpertIds = applied.participants
+              .filter(
+                (item) =>
+                  item.kind === 'expert' &&
+                  item.available &&
+                  item.instructions.trim() &&
+                  !item.origin?.missing.length &&
+                  workbench.participants.some(
+                    (current) =>
+                      current.id === item.id && current.kind === 'expert' && current.available,
+                  ),
+              )
+              .map((item) => item.id);
+            const allNodes = this.storage.listNodes().map((node) => {
+              const current = this.readRunNode(node);
+              if (!current) throw new RemoteRunError('remote-unavailable');
+              return current;
+            });
+            lease.assertCurrent(target.spaceId);
+            return {
+              receipt: structuredClone(receipt),
+              nodes,
+              allNodes,
+              controlledNodeIds,
+              availableExpertIds,
+            };
+          },
+          write: (target, receipt) =>
+            this.storage.writePlan(planKey(target.taskId, target.planId, target.revision), receipt),
+        },
         resourceHost: host,
         review: {
           signal: this.runLifetime.signal,

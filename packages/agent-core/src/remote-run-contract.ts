@@ -1113,7 +1113,10 @@ const remoteWorkflowActiveViewSchema = z
           candidate.workflow.generation === value.intent.generation,
       ) &&
       [...value.activeWork, ...value.activeReviews].every(
-        (item) => sameTarget(item.scope) && item.scope.actorId === value.scope.actorId,
+        (item) =>
+          sameTarget(item.scope) &&
+          item.scope.actorId === value.scope.actorId &&
+          item.deviceId === value.scope.deviceId,
       )
     );
   });
