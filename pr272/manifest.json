@@ -1,0 +1,70 @@
+{
+  "purpose": "Coordinator-operated and personally visually inspected isolated fictional member UI evidence for PR272",
+  "clientSource": "834b8e96e3f3c36596f58afe458558fc9de8fa1a",
+  "backendSources": [
+    "a12e24cf6e3d6f673f1b4358032c0a5ee43785ef",
+    "a304d2d08ea439af01178ffb844aaa2af9beb8f5"
+  ],
+  "boundaries": [
+    "Official desktop and original Workspace sidebar; real local shared backend, normal registration/team/template/knowledge/list-board operations.",
+    "New v1.1 pages have no v1.0 counterpart. Light/dark board uses same task/data/state/viewport; not a fabricated before-after.",
+    "Not native Agent, model, file, review or final candidate acceptance; those require separate current-source proof.",
+    "No user attachment, native OS chooser, real user credential, private path or internal material."
+  ],
+  "files": [
+    {
+      "name": "team-admin-a12-light-1440.png",
+      "sha256": "bbdd4c28b5d016742409af059dbb82f5f49cd4f04f30da18b455a74b4d728910",
+      "bytes": 78106,
+      "dimensions": [
+        1440,
+        900
+      ]
+    },
+    {
+      "name": "knowledge-personal-v1-space-menu-light-1440.png",
+      "sha256": "402039193205c891561e8dcea4caa082a94ca43435d37811e57f627d26b40627",
+      "bytes": 81306,
+      "dimensions": [
+        1440,
+        900
+      ]
+    },
+    {
+      "name": "task-board-light-1440.png",
+      "sha256": "a13c211ea7d4058288754b8742a06c17a99a14bc6f85082bd0857edfe931cacc",
+      "bytes": 61652,
+      "dimensions": [
+        1440,
+        900
+      ]
+    },
+    {
+      "name": "task-board-dark-1440.png",
+      "sha256": "fd248cd4c6d09389154fc42e125b19d58d8de1c4801d58e1d3ceae42eabab414",
+      "bytes": 61487,
+      "dimensions": [
+        1440,
+        900
+      ]
+    },
+    {
+      "name": "personal-template-picker-dark-1440.png",
+      "sha256": "a61d8486d6bc4a59c30ba627746fbc092185328ab54ac78ae52e67391eab46cc",
+      "bytes": 135131,
+      "dimensions": [
+        1440,
+        900
+      ]
+    },
+    {
+      "name": "qiu-team-knowledge-read-dark-1440.png",
+      "sha256": "da5d8332aaebe3447de8a87e8f891cb3cf73501ca72dd120f2b8f9e7925d278f",
+      "bytes": 68250,
+      "dimensions": [
+        1440,
+        900
+      ]
+    }
+  ]
+}
