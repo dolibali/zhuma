@@ -153,6 +153,7 @@ export type ExecutionEndpoints = readonly [
   'settle',
   'report',
   'revision',
+  'review-outcome',
   'draft',
   'upstream-content',
   'project-artifacts',

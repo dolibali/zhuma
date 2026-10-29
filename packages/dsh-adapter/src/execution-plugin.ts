@@ -38,6 +38,7 @@ const ENDPOINTS = [
   'settle',
   'report',
   'revision',
+  'review-outcome',
   'draft',
   'upstream-content',
   'project-artifacts',
@@ -456,6 +457,7 @@ function run(
   endpoint: Endpoint,
   member: Awaited<ReturnType<typeof resolveMember>>,
   payload: unknown,
+  original: MemberRequest,
   fileAuthority?: ExecutionFileAuthoritySource,
 ) {
   const caller = { member };
@@ -476,6 +478,8 @@ function run(
       return service.report(caller, payload);
     case 'revision':
       return service.revision(caller, payload);
+    case 'review-outcome':
+      return service.readReviewOutcome(original, payload);
     case 'upstream-content':
       return service.upstreamContent(caller, payload);
     case 'project-artifacts':
@@ -622,7 +626,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
           }
           rpcId = envelope.data.rpcId;
           if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-          const result = await run(service, endpoint, member, envelope.data.payload, () =>
+          const result = await run(service, endpoint, member, envelope.data.payload, original, () =>
             openFileAuthority(ctx, original, signal),
           );
           return Response.json({ type: 'server-response', rpcId, result });

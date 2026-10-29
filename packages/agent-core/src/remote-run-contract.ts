@@ -3,6 +3,7 @@ import { readNodeHandoff, type NodeHandoff, type NodeHandoffInput } from './hand
 import { validateDeliveryContent } from './delivery.js';
 import { canonicalPayload } from './concurrency.js';
 import { REVIEW_ACTIONS } from './review.js';
+import { NODE_STATUSES } from './node-status.js';
 
 /** Portable data only. A decoded object is never member, device or native authority. */
 export const REMOTE_RUN_PROTOCOL_VERSION = 1 as const;
@@ -1014,6 +1015,77 @@ export const localReviewOptionsQuerySchema = remoteReviewTargetSchema.omit({
   artifactFingerprint: true,
 });
 export type LocalReviewOptionsQuery = z.infer<typeof localReviewOptionsQuerySchema>;
+/** Passive fixed-round facts, including closed rounds; never review admission. */
+export const reviewOutcomeQuerySchema = localReviewOptionsQuerySchema;
+export type ReviewOutcomeQuery = z.infer<typeof reviewOutcomeQuerySchema>;
+export const reviewOutcomeSchema = z
+  .strictObject({
+    controllerMemberId: reviewId,
+    target: remoteReviewTargetSchema,
+    nodeStatus: z.enum(NODE_STATUSES),
+    artifact: z.strictObject({
+      id: reviewId,
+      version: positive,
+      text: z.string().optional(),
+      links: z.array(z.string()),
+      files: z.array(z.strictObject({ id: reviewId, mediaType: z.string(), byteSize: natural })),
+    }),
+    round: z.strictObject({
+      id: reviewId,
+      artifactVersionId: reviewId,
+      status: z.enum(['open', 'approved', 'changes-requested', 'voided']),
+      reviewerIds: z.array(reviewId),
+      ballots: z.array(
+        z.strictObject({
+          reviewerId: reviewId,
+          reviewerName: z.string().min(1),
+          roundId: reviewId,
+          artifactVersionId: reviewId,
+          action: z.enum(REVIEW_ACTIONS),
+          comment: z.string().optional(),
+          unresolvedCommentIds: z.array(reviewId).optional(),
+          availability: z.enum(['active', 'unavailable', 'timed-out']).optional(),
+        }),
+      ),
+    }),
+    comments: z.array(
+      z.strictObject({
+        id: reviewId,
+        status: z.enum(['open', 'resolved']),
+        versionId: reviewId.optional(),
+        targetId: reviewId.optional(),
+        targetType: z.enum(['workflow-version', 'node', 'artifact-version']).optional(),
+        anchor: z
+          .strictObject({
+            kind: z.enum(['text', 'image-region', 'pdf-page', 'file', 'original-version']),
+            quote: z.string().optional(),
+            locator: z.string().optional(),
+          })
+          .optional(),
+        threadId: reviewId.optional(),
+        authorId: reviewId.optional(),
+        body: z.string().optional(),
+      }),
+    ),
+  })
+  .refine(
+    (value) =>
+      value.artifact.id === value.target.artifactVersionId &&
+      value.round.id === value.target.roundId &&
+      value.round.artifactVersionId === value.artifact.id &&
+      value.round.ballots.every(
+        (ballot) =>
+          ballot.roundId === value.round.id &&
+          ballot.artifactVersionId === value.artifact.id &&
+          value.round.reviewerIds.includes(ballot.reviewerId),
+      ) &&
+      value.comments.every(
+        (comment) =>
+          (!comment.versionId || comment.versionId === value.artifact.id) &&
+          (!comment.targetId || comment.targetId === value.artifact.id),
+      ),
+  );
+export type ReviewOutcomeView = z.infer<typeof reviewOutcomeSchema>;
 export const localReviewUnavailableReasonSchema = z.enum([
   'review-expert-unavailable',
   'review-not-assigned',
