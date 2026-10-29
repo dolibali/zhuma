@@ -227,7 +227,9 @@ export function createSharedBackendClient(
       const response = await localFetch(
         `/api/zhuma-backend/${reading ? 'file' : 'upload-file'}${url.search}`,
         {
-          method,
+          // The official local owner carrier requires Origin. Browser POST
+          // supplies it naturally; the original remote file remains a GET.
+          method: reading ? 'POST' : method,
           credentials: 'same-origin',
           cache: 'no-store',
           redirect: 'error',

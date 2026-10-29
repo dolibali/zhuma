@@ -112,6 +112,34 @@ const task = {
     segmentId: 'segment',
   },
 };
+test('original review Session opens its read-only purpose view with no work/model API call', async () => {
+  const h = setup();
+  h.setLookup(async () => ({
+    kind: 'review',
+    sessionId: 'review-session',
+    runId: 'review-run',
+    target: {
+      spaceId: 'team',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      roundId: 'round',
+      artifactVersionId: 'artifact',
+    },
+  }));
+  assert.equal(await h.guard('review-session', new AbortController().signal), false);
+  const entry = h.state.getSnapshot();
+  assert.equal(entry.kind, 'review');
+  assert.equal(entry.sessionId, 'review-session');
+  assert.equal(entry.query.roundId, 'round');
+  assert.equal(
+    'start' in entry.api,
+    true,
+    'the purpose API is separate; navigation itself calls none of it',
+  );
+  h.close();
+});
 test('Workspace task navigation opens the same controlled Run without returning ordinary-retain permission or starting work', async () => {
   const h = setup();
   h.setLookup(async () => task);

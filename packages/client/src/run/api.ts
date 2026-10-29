@@ -10,6 +10,7 @@ import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
 import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
 import type { LocalWorkspaceDirectory } from './workspace-directory.js';
+import type { NativeReviewApi } from './review-api.js';
 import { workspacePublishRanges, type WorkspacePublishRange } from './workspace-approvals.js';
 import {
   createWorkspaceApprovalApi,
@@ -47,6 +48,7 @@ export type NativeRunOptions = {
   tools: 'text-only' | 'accepted-input-reader';
   workspaces?: readonly NativeRunWorkspaceChoice[];
   workspaceApprovalScope?: { readonly spaceId: string; readonly projectId: string };
+  knowledgeLibraries?: Extract<NativeRunPanelView, { kind: 'ready' }>['knowledgeLibraries'];
 };
 export type NativeRunRead = NativeRunSummary & {
   sendCapabilities: Readonly<Record<NativeRunSendMode, NativeRunAction>>;
@@ -60,6 +62,7 @@ export type NativeRunBegin = NativeRunLocator & {
   expectedRunVersion: number;
   mode: 'begin' | 'retry' | 'restart';
   model: NativeRunSelection['model'];
+  knowledge?: NativeRunSelection['knowledge'];
   executor: NativeRunSelection['executor'];
   tools: 'text-only' | 'accepted-input-reader' | 'local-tools';
   workspace:
@@ -67,6 +70,7 @@ export type NativeRunBegin = NativeRunLocator & {
     | { kind: 'local'; id: string; publish?: readonly WorkspacePublishRange[] };
 };
 export interface NativeRunApi {
+  readonly review?: NativeReviewApi;
   openNativeSession?: ((run: NativeRunSummary, signal: AbortSignal) => Promise<void>) | undefined;
   readonly workflow?: WorkflowApi;
   readonly workspaceApprovals?: WorkspaceApprovalApi;
@@ -147,6 +151,7 @@ function selection(value: unknown): NativeRunSelection {
   return {
     model: model(row.model),
     executor: executor(row.executor),
+    ...(row.knowledge === undefined ? {} : { knowledge: knowledge(row.knowledge) }),
     ...(row.workspace === undefined
       ? {}
       : {
@@ -156,6 +161,10 @@ function selection(value: unknown): NativeRunSelection {
               : workspace(row.workspace),
         }),
   };
+}
+function knowledge(value: unknown): NonNullable<NativeRunSelection['knowledge']> {
+  const row = object(value);
+  return { libraryId: string(row.libraryId, 100), allowDrafts: boolean(row.allowDrafts) };
 }
 function workspace(value: unknown): NativeRunBegin['workspace'] {
   const row = object(value);
@@ -219,6 +228,23 @@ function optionsView(
     currentRunId: row.currentRunId === null ? null : string(row.currentRunId),
     selection: row.selection === null ? null : selection(row.selection),
     models,
+    ...(row.knowledgeLibraries === undefined
+      ? {}
+      : {
+          knowledgeLibraries:
+            object(row.knowledgeLibraries).kind === 'ready'
+              ? {
+                  kind: 'ready' as const,
+                  items: array(object(row.knowledgeLibraries).items, 100).map((value) => {
+                    const item = object(value);
+                    return { id: string(item.id, 100), label: string(item.label, 200) };
+                  }),
+                }
+              : {
+                  kind: 'unavailable' as const,
+                  message: string(object(row.knowledgeLibraries).message),
+                },
+        }),
     experts: array(row.experts, 100).map((raw) => {
       const item = object(raw);
       return {
@@ -347,6 +373,16 @@ function readView(value: unknown, expected: NativeRunLocator, runId: string): Na
     acknowledged: boolean(row.acknowledged),
     stopPhase: oneOf(row.stopPhase, ['none', 'requested', 'confirmed', 'receipt-rejected']),
     ...(delivery ? { resultDelivery: delivery } : {}),
+    ...(row.submission === undefined
+      ? {}
+      : {
+          submission: {
+            artifactVersionId: string(object(row.submission).artifactVersionId, 1000),
+            ...(object(row.submission).roundId === undefined
+              ? {}
+              : { roundId: string(object(row.submission).roundId, 1000) }),
+          },
+        }),
     native: native
       ? {
           sessionId: string(native.sessionId),
@@ -709,6 +745,7 @@ export function createNativeRunApi(
             expectedRunVersion: input.expectedRunVersion,
             mode: input.mode,
             model: model(input.model),
+            ...(input.knowledge ? { knowledge: knowledge(input.knowledge) } : {}),
             executor: executor(input.executor),
             tools: input.tools,
             workspace: workspace(input.workspace),

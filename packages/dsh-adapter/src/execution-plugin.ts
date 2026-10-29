@@ -17,6 +17,7 @@ import {
 import { openExecutionMemberLease, resolveMember, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
 import { spaceDirectoryFor } from './space-directory.js';
+import type { MemberWorkbenchDirectory } from './member-workbench-dto.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import { executionRunGlobalSchema } from './execution-run-protocol.js';
@@ -110,6 +111,8 @@ export const inject = ['connection', 'storageDomain'] as const;
 /** Reads the workbench A already opened. The member comes from `resolveMember`. */
 export interface ExecutionPluginConfig {
   readWorkbench(): Workbench;
+  /** Host-only live account/space facts, never a browser DTO or a cached roster. */
+  memberDirectory?(): MemberWorkbenchDirectory | undefined;
   /**
    * Directory A injects at the Host. B delivers the formal catalog on #29.
    * Omission rejects every project. This plugin does not store the mapping
@@ -570,7 +573,18 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   if (lifetime.signal.aborted) throw new Error('Execution plugin disposed during startup.');
   const service = new ExecutionService(
     storage,
-    { readWorkbench: () => config.readWorkbench() },
+    {
+      readWorkbench: () => config.readWorkbench(),
+      ...('memberDirectory' in config
+        ? {
+            memberDirectory: () => {
+              if (typeof config.memberDirectory !== 'function')
+                throw new WorkbenchError('unavailable', '成员目录暂不可用。');
+              return config.memberDirectory();
+            },
+          }
+        : {}),
+    },
     projectSpaces,
     attachments,
     fileStore,

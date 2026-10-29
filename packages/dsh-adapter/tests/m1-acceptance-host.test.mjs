@@ -594,8 +594,12 @@ test(
       // Unauthorized member: no discovery, no start, no read — nothing leaks.
       const beforeRefusal = await executionText(directory);
       const outsideStartable = await host.exec('startable', {}, outside);
-      assert.equal(outsideStartable.result.ok, true);
-      assert.deepEqual(outsideStartable.result.value.plans, []);
+      assert.equal(outsideStartable.result.ok, false);
+      assert.equal(
+        outsideStartable.result.value,
+        undefined,
+        'unlisted member cannot discover any task metadata',
+      );
       const outsideStart = await host.exec(
         'start-plan',
         {

@@ -97,6 +97,28 @@ test('Run view contract: initial mount and repeated refresh only read, never sel
   h.controller.dispose();
 });
 
+test('Run knowledge selection is explicit, same-start frozen, and a foreign library cannot be sent', async () => {
+  const h = setup({
+    options: async () => ({
+      ...options(),
+      knowledgeLibraries: { kind: 'ready', items: [{ id: 'north', label: '研发知识' }] },
+    }),
+  });
+  await h.controller.refresh();
+  assert.equal(h.controller.getSnapshot().view.selection, null);
+  await assert.rejects(
+    h.controller.start({ ...selection, knowledge: { libraryId: 'foreign', allowDrafts: true } }),
+    /library changed/,
+  );
+  assert.equal(h.calls.some(Array.isArray), false);
+  await h.controller.start({ ...selection, knowledge: { libraryId: 'north', allowDrafts: false } });
+  assert.deepEqual(h.calls.find(Array.isArray)[1].knowledge, {
+    libraryId: 'north',
+    allowDrafts: false,
+  });
+  h.controller.dispose();
+});
+
 test('Run view contract: a settled submitted read cannot reuse pre-settlement start capabilities', async () => {
   let completed = false;
   const h = setup({

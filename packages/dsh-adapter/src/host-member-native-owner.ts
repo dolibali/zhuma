@@ -12,6 +12,12 @@ import {
   type MemberLocalAcceptedRun,
 } from './member-local-execution-protocol.js';
 import { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
+import { MemberLocalReviewProtocol } from './member-local-review-protocol.js';
+import { createHostMemberNativeReviews } from './host-member-native-review.js';
+import {
+  createHostMemberNativeKnowledge,
+  memberNativeKnowledgeChoiceSchema,
+} from './host-member-native-knowledge.js';
 import { MemberLocalExecutionSecrets } from './member-local-execution-secrets.js';
 import { createMemberLocalPrivateStore } from './host-member-local-credentials.js';
 import { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';
@@ -30,6 +36,7 @@ import {
 
 const memberBeginRequest = hostRunBeginRequestSchema.extend({
   workspace: memberNativeWorkspaceSchema,
+  knowledge: memberNativeKnowledgeChoiceSchema.optional(),
 });
 
 const id = z.string().min(1).max(200);
@@ -145,28 +152,42 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     signal.throwIfAborted();
   }
   const connection = await backend.nativeConnection(lifetime.signal);
-  const protocol = await MemberLocalExecutionProtocol.open(
-    {
-      origin: connection.origin,
-      methods: MEMBER_LOCAL_REMOTE_METHODS,
-      authentication: async (active, request?: { readonly method: string }) => {
-        lifetime.signal.throwIfAborted();
-        active.throwIfAborted();
-        // Only C's actual allowlisted outgoing method can select this lane.
-        // D authenticates its original independent signed cleanup permit;
-        // cleanup neither needs nor receives a product member Cookie.
-        if (request?.method === MEMBER_LOCAL_REMOTE_METHODS.cleanup)
-          return { origin: connection.origin };
-        admit(active);
-        const headers = await connection.authentication(active);
-        admit(active);
-        return headers;
-      },
-      expectedActorId: connection.actorId,
-      secrets: new MemberLocalExecutionSecrets(createMemberLocalPrivateStore(ctx, lifetime.signal)),
+  const protocolOptions = {
+    origin: connection.origin,
+    methods: MEMBER_LOCAL_REMOTE_METHODS,
+    authentication: async (active: AbortSignal, request?: { readonly method: string }) => {
+      lifetime.signal.throwIfAborted();
+      active.throwIfAborted();
+      // Only C's actual allowlisted outgoing method can select this lane.
+      // D authenticates its original independent signed cleanup permit;
+      // cleanup neither needs nor receives a product member Cookie.
+      if (request?.method === MEMBER_LOCAL_REMOTE_METHODS.cleanup)
+        return { origin: connection.origin };
+      admit(active);
+      const headers = await connection.authentication(active);
+      admit(active);
+      return headers;
     },
-    lifetime.signal,
-  );
+    expectedActorId: connection.actorId,
+    secrets: new MemberLocalExecutionSecrets(createMemberLocalPrivateStore(ctx, lifetime.signal)),
+  };
+  const protocol = await MemberLocalExecutionProtocol.open(protocolOptions, lifetime.signal);
+  let reviewProtocol: MemberLocalReviewProtocol | undefined;
+  try {
+    if (protocol.supportsIndependentReviews) {
+      reviewProtocol = await MemberLocalReviewProtocol.open(protocolOptions, lifetime.signal);
+      if (
+        reviewProtocol.backendId !== protocol.backendId ||
+        reviewProtocol.actorId !== protocol.actorId ||
+        reviewProtocol.deviceId !== protocol.deviceId
+      )
+        throw new SharedBackendError('identity-changed');
+    }
+  } catch (error) {
+    await reviewProtocol?.close();
+    await protocol.close();
+    throw error;
+  }
   const assertCurrent = async (signal: AbortSignal) => {
     admit(signal);
     const current = await backend.nativeConnection(signal);
@@ -180,6 +201,14 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     await connection.authentication(signal);
     admit(signal);
   };
+  const knowledge = createHostMemberNativeKnowledge({
+    backend,
+    connectionId: connection.connectionId,
+    actorId: connection.actorId,
+    lifetime: lifetime.signal,
+    current: assertCurrent,
+    admit,
+  });
   const workspaces = createHostMemberNativeWorkspaces(ctx, {
     connectionId: connection.connectionId,
     backendId: protocol.backendId,
@@ -191,6 +220,8 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
   try {
     native = await MemberLocalExecutionOwner.open(ctx, {
       protocol,
+      ...(reviewProtocol ? { review: { protocol: reviewProtocol } } : {}),
+      knowledge: { create: knowledge.create },
       native: workspaces.native,
       ...(protocol.supportsFilePublishing
         ? { outputFiles: { resolveBytes: workspaces.output } }
@@ -211,11 +242,26 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
   } catch (error) {
     await workspaces.close();
     await protocol.close();
+    await reviewProtocol?.close();
     throw error;
   }
   const jobs = new Set<Promise<unknown>>();
   const accepting = new Set<Promise<unknown>>();
   const acceptedRuns = new Set<MemberLocalAcceptedRun>();
+  const reviews = reviewProtocol
+    ? createHostMemberNativeReviews(ctx, {
+        backend,
+        connectionId: connection.connectionId,
+        actorId: protocol.actorId,
+        native,
+        protocol: reviewProtocol,
+        lifetime: lifetime.signal,
+        accepting,
+        current: assertCurrent,
+        admit,
+        publicHistory: publicMemberNativeHistory,
+      })
+    : undefined;
   const stops = new WeakMap<MemberLocalAcceptedRun, Promise<unknown>>();
   function pruneAccepted() {
     for (const run of acceptedRuns) {
@@ -320,6 +366,14 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         steer: live ? { kind: 'available' } : denied,
         queue: live ? { kind: 'available' } : denied,
       },
+      ...(view.remote.receipt
+        ? {
+            submission: {
+              artifactVersionId: view.remote.receipt.artifactVersionId,
+              ...(view.remote.receipt.roundId ? { roundId: view.remote.receipt.roundId } : {}),
+            },
+          }
+        : {}),
     };
   }
   const track = <T>(work: Promise<T>) => {
@@ -330,26 +384,70 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
   async function handle(endpoint: string, raw: unknown, wait: AbortSignal): Promise<unknown> {
     wait = AbortSignal.any([wait, admission.signal]);
     await assertCurrent(wait);
+    if (endpoint.startsWith('review-')) {
+      if (!reviews) throw new ExecutionRunError('run-authority-unavailable');
+      return reviews.handle(endpoint, raw, wait);
+    }
     if (endpoint === 'options') {
       const target = hostRunOptionsQuerySchema.parse(raw);
       await facts(target, wait);
       const models = await readHostRunModels(ctx, wait);
+      let knowledgeLibraries;
+      if (native.knowledgeSource) {
+        try {
+          knowledgeLibraries = {
+            kind: 'ready' as const,
+            items: (await knowledge.libraries(target.spaceId, wait)).map((library) => ({
+              id: library.id,
+              label: library.name,
+            })),
+          };
+        } catch {
+          await assertCurrent(wait);
+          knowledgeLibraries = {
+            kind: 'unavailable' as const,
+            message: '知识库暂不可用，可稍后重试。',
+          };
+        }
+      }
       const value = await facts(target, wait);
       return {
         ...value,
         models,
+        ...(knowledgeLibraries ? { knowledgeLibraries } : {}),
         workspaces: native.outputFileSource ? workspaces.choices() : [],
-        ...(value.selection?.workspace && value.currentRun
+        ...(value.selection && value.currentRun
           ? {
               selection: {
                 ...value.selection,
-                workspace: workspaces.selection({
+                ...(value.selection.workspace
+                  ? {
+                      workspace: workspaces.selection({
+                        ...value.target,
+                        actorId: protocol.actorId,
+                        runId: value.currentRun.runId,
+                        generation: value.currentRun.generation,
+                        segmentId: value.currentRun.segmentId,
+                      }),
+                    }
+                  : {}),
+                ...(knowledge.selection({
                   ...value.target,
                   actorId: protocol.actorId,
                   runId: value.currentRun.runId,
                   generation: value.currentRun.generation,
                   segmentId: value.currentRun.segmentId,
-                }),
+                })
+                  ? {
+                      knowledge: knowledge.selection({
+                        ...value.target,
+                        actorId: protocol.actorId,
+                        runId: value.currentRun.runId,
+                        generation: value.currentRun.generation,
+                        segmentId: value.currentRun.segmentId,
+                      }),
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -368,6 +466,14 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         nodeId: input.nodeId,
       });
       const value = await facts(target, wait);
+      const knowledgeChoice = await knowledge.prepare(
+        input.requestId,
+        target.spaceId,
+        input.knowledge,
+        wait,
+      );
+      if (knowledgeChoice && !native.knowledgeSource)
+        throw new ExecutionRunError('run-authority-unavailable');
       const selected = workspaces.prepare(input.requestId, target, input.workspace);
       const acceptedInput =
         input.tools === 'accepted-input-reader' ||
@@ -385,6 +491,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
           executor: input.executor,
           workspace: selected?.workspace ?? { kind: 'text-only' },
           capabilities: {
+            ...(knowledgeChoice ? { knowledge: native.knowledgeSource! } : {}),
             ...(resources ? { resources } : {}),
             ...(acceptedInput ? { acceptedInput: '1' as const } : {}),
             ...(acceptedInput && protocol.supportsFilePublishing && native.acceptedFileSource
@@ -414,6 +521,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
             await stopAccepted(accepted).catch(() => undefined);
             throw new SharedBackendError('unavailable');
           }
+          knowledge.bind(input.requestId, accepted);
           workspaces.bind(input.requestId, accepted);
           await native.start(accepted);
           await assertCurrent(lifetime.signal);
@@ -522,6 +630,13 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       const { sessionId } = z.strictObject({ sessionId: id }).parse(raw);
       const found = native.lookupNativeSession(sessionId);
       if (found === null) return { kind: 'ordinary' };
+      if (found.role === 'review') {
+        const opened = await native.openReviewSession(sessionId, wait);
+        await assertCurrent(wait);
+        const { artifactFingerprint: _fingerprint, ...target } =
+          opened.view.remote.scope.review.target;
+        return { kind: 'review', target, sessionId, runId: opened.view.remote.scope.runId };
+      }
       const result = await native.openSession(sessionId, wait);
       await assertCurrent(wait);
       return { kind: 'task', target: result.view.remote.scope, sessionId };
@@ -534,6 +649,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     canSwitchBackend: () =>
       !closed &&
       !jobs.size &&
+      (!reviews || reviews.canSwitchBackend()) &&
       (
         native as MemberLocalExecutionOwner & { canSwitchBackend?: () => boolean }
       ).canSwitchBackend?.() === true,
@@ -561,6 +677,8 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       if (!closing) {
         closed = true;
         admission.abort();
+        reviews?.fence();
+        knowledge.fence();
         // Native close owns physical cleanup before its original private
         // outgoing protocol or credentials adapter is sealed.
         closing = (async () => {
@@ -569,14 +687,17 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
           // stop fences each existing drive synchronously; its business ACK
           // may fail after logout while original private cleanup still drains.
           const stopping = [...acceptedRuns].map(stopAccepted);
+          const reviewStopping = reviews?.stopAccepted();
           while (accepting.size) await Promise.allSettled([...accepting]);
           await Promise.allSettled(stopping);
+          await reviewStopping;
           await native.close();
           await workspaces.close();
           // Unknown accepts or unsettled original resources retain this closed
           // owner/protocol for recovery. Never report a successful replacement.
           if (
             !protocol.canSwitchBackend() ||
+            (reviews && !reviews.canSwitchBackend()) ||
             [...acceptedRuns].some((run) => {
               try {
                 return native.read(run).remote.resources !== 'settled';
@@ -589,6 +710,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
           lifetime.abort();
           await Promise.allSettled([...jobs]);
           await protocol.close();
+          await reviewProtocol?.close();
         })();
       }
       return closing;

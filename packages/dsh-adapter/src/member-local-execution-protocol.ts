@@ -115,6 +115,7 @@ export class MemberLocalExecutionProtocol {
   private device?: MemberLocalDeviceIdentity;
   private clock?: { readonly serverTime: number; readonly sampledAt: number };
   private operations = new Set<RemoteRunOperation>();
+  private independentReviews = false;
   private activities = 0;
   private readonly uncertainAccepts = new Set<string>();
   canSwitchBackend(): boolean {
@@ -172,6 +173,10 @@ export class MemberLocalExecutionProtocol {
       this.operations.has(operation as RemoteRunOperation),
     );
   }
+  get supportsIndependentReviews(): boolean {
+    this.identity();
+    return this.independentReviews;
+  }
   /** Monotonic estimate sampled from this backend; never a new authority. */
   get serverTime(): number {
     this.identity();
@@ -222,6 +227,7 @@ export class MemberLocalExecutionProtocol {
       throw new MemberLocalProtocolError('local-mismatch');
     this.clock = { serverTime: info.serverTime, sampledAt: performance.now() };
     this.operations = new Set(info.operations);
+    this.independentReviews = info.purposes.includes('review');
     this.device = await this.options.secrets.device(info.backendId, info.actorId, signal);
     const registered = await this.signed(
       {

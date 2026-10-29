@@ -82,12 +82,33 @@ test('packaged backend args: explicit app/data, normal local defaults and fixed 
     host: '127.0.0.1',
     port: 3080,
     fileUploads: false,
+    independentReviews: false,
   });
   const lock = JSON.parse(
     await readFile(new URL('../../../runtime.lock.json', import.meta.url), 'utf8'),
   );
   assert.equal(PACKAGED_SDK_PIN, lock.upstreams.deepseekHarness.commit);
   assert.deepEqual(parseBackendArgs(['--help']), { help: true });
+  assert.throws(() =>
+    parseBackendArgs([
+      '--app',
+      '/Apps/Zhuma.app',
+      '--data',
+      '/data/backend',
+      '--independent-reviews',
+    ]),
+  );
+  assert.equal(
+    parseBackendArgs([
+      '--app',
+      '/Apps/Zhuma.app',
+      '--data',
+      '/data/backend',
+      '--file-uploads',
+      '--independent-reviews',
+    ]).independentReviews,
+    true,
+  );
   assert.equal(
     parseBackendArgs([
       '--app=/Apps/Zhuma.app',

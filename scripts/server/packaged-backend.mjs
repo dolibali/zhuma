@@ -13,6 +13,7 @@ export const HELP = `用法：packaged-backend.sh --app /Applications/Zhuma.app 
   --host <IP>       具体监听地址，默认 127.0.0.1，不接受通配地址
   --port <端口>     默认 3080（1–65535）
   --file-uploads    显式启用已装配的真实文件协议，默认关闭
+  --independent-reviews  显式启用独立 Agent 评审，需同时指定 --file-uploads
   --help           显示帮助，不启动 profile
 需要同目录的两个启动文件，以及包含成员 Web 和共享后端的新版 Zhuma App。
 数据和新 profile 仅写入显式 --data；不会导入其他安装的凭据或会话。`;
@@ -34,6 +35,7 @@ export function parseBackendArgs(argv) {
         host: { type: 'string', default: '127.0.0.1' },
         port: { type: 'string', default: '3080' },
         'file-uploads': { type: 'boolean', default: false },
+        'independent-reviews': { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
       },
     });
@@ -49,6 +51,8 @@ export function parseBackendArgs(argv) {
   const value = parsed.values;
   if (value.help) return { help: true };
   if (!value.app?.trim() || !value.data?.trim()) refuse('必须显式指定 --app 和独立 --data。');
+  if (value['independent-reviews'] && !value['file-uploads'])
+    refuse('独立评审需要同时指定 --file-uploads。');
   if (!isIP(value.host) || ['0.0.0.0', '::'].includes(value.host))
     refuse('--host 必须是具体 IP 地址。');
   if (!/^\d+$/u.test(value.port) || Number(value.port) < 1 || Number(value.port) > 65535)
@@ -64,6 +68,7 @@ export function parseBackendArgs(argv) {
     host: value.host,
     port: Number(value.port),
     fileUploads: value['file-uploads'],
+    independentReviews: value['independent-reviews'],
   };
 }
 
@@ -164,6 +169,7 @@ export function backendLaunchPlan(app, options, path = process.env.PATH ?? '/usr
               memberWeb: true,
               remoteExecution: true,
               ...(options.fileUploads ? { remoteFileUploads: true } : {}),
+              ...(options.independentReviews ? { remoteIndependentReviews: true } : {}),
             },
           },
         ],

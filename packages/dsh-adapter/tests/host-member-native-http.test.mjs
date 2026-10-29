@@ -92,7 +92,21 @@ test('member native private HTTP: original SDK owner required before any body re
   const reply = await h.routes.get('/api/zhuma-member-native/begin').fetch(request);
   assert.equal(reply.status, 403);
   assert.equal(h.calls(), 0);
-  assert.equal(h.routes.size, 9);
+  assert.equal(h.routes.size, 15);
+  for (const endpoint of [
+    'review-options',
+    'review-start',
+    'review-read',
+    'review-stop',
+    'review-session',
+    'review-recover',
+  ]) {
+    const response = await h.routes
+      .get(`/api/zhuma-member-native/${endpoint}`)
+      .fetch(h.request(endpoint));
+    assert.equal(response.status, 403);
+  }
+  assert.equal(h.calls(), 0);
   await h.opened.close();
 });
 test('member native private HTTP: connection/actor and exact space envelope are checked before dispatch', async () => {

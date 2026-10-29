@@ -366,6 +366,31 @@ export type {
 } from './member-local-execution-secrets.js';
 export { createMemberLocalPrivateStore } from './host-member-local-credentials.js';
 export { MEMBER_LOCAL_REMOTE_METHODS } from './host-remote-run-http.js';
+export { MemberLocalReviewProtocol } from './member-local-review-protocol.js';
+export type {
+  MemberLocalReviewAcceptInput,
+  MemberLocalReviewRecoveryInput,
+  MemberLocalReviewReconcileInput,
+  MemberLocalReviewStopInput,
+  MemberLocalReviewReadHandle,
+  MemberLocalReviewRunHandle,
+  MemberLocalAcceptedReview,
+  MemberLocalPreparedReviewAccept,
+} from './member-local-review-protocol.js';
+export type { MemberLocalReviewView } from './member-local-execution-review.js';
+export {
+  MEMBER_KNOWLEDGE_TOOL,
+  describeMemberKnowledgeTool,
+  registerMemberKnowledgeTool,
+} from './member-knowledge-tool.js';
+export type {
+  MemberKnowledgeToolDefinition,
+  MemberKnowledgePortRequest,
+  MemberKnowledgePortResult,
+  MemberKnowledgeToolPorts,
+} from './member-knowledge-tool.js';
+export { RemoteRunMigrationAuthorities } from './remote-run-migration-authority.js';
+export type { RemoteRunMigrationSource } from './remote-run-migration-authority.js';
 export {
   REMOTE_RUN_UPLOAD_MEDIA_TYPE,
   REMOTE_RUN_UPLOAD_METHOD,

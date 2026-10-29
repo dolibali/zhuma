@@ -667,7 +667,7 @@ export class HostSharedBackend {
       const headers = new Headers({ origin: row.origin, cookie: row.cookie });
       let upload: ReturnType<typeof guardSharedFileStream> | undefined;
       if (endpoint === 'file') {
-        if (request.method !== 'GET') throw new SharedBackendError('invalid');
+        if (request.method !== 'POST') throw new SharedBackendError('invalid');
         const query: Record<string, unknown> = {};
         for (const [key, value] of input.searchParams) {
           if (key === 'connectionId') continue;
@@ -733,7 +733,7 @@ export class HostSharedBackend {
       let response: Response;
       try {
         response = await this.fetcher(url, {
-          method: request.method,
+          method: endpoint === 'file' ? 'GET' : 'POST',
           headers,
           redirect: 'error',
           cache: 'no-store',

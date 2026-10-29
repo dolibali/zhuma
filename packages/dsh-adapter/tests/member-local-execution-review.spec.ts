@@ -1,7 +1,7 @@
 /** Actual original SDK reviewer/cuts/read ledger over real HTTP and Service.
  * Synthetic member leases/HTTP mount; no real model, GUI or two App proof. */
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -46,6 +46,28 @@ function find(value, predicate) {
     } catch {}
   }
 }
+function approve(h, run, prefix) {
+  for (const r of run.composition.payload.targetResources)
+    h.adapter.script.push(
+      toolResponse(
+        { resourceRef: r.resourceRef, offset: 0, length: r.bytes },
+        `${prefix}-${r.resourceRef}`,
+        'read_review_target',
+      ),
+    );
+  h.adapter.script.push((request) =>
+    toolResponse(
+      {
+        conclusion: 'approve',
+        rationale: 'Read the fixed delivery.',
+        anchors: [],
+        evidenceRefs: [...new Set(JSON.stringify(request).match(/review_read_[a-f0-9]{64}/gu))],
+      },
+      `${prefix}-complete`,
+      'complete_review',
+    )(),
+  );
+}
 test('member native review: same original owner reads fixed text/file, seals without voting, then commits one ballot and independently drains', async (t) => {
   const heldSeal = Promise.withResolvers(),
     releaseSeal = Promise.withResolvers();
@@ -57,6 +79,7 @@ test('member native review: same original owner reads fixed text/file, seals wit
       }
     },
   });
+  assert.equal(h.protocol.supportsIndependentReviews, true);
   const run = await (await h.review.prepareAccept(randomUUID(), h.input)).send();
   await assert.rejects(h.owner.startReview({ ...run }));
   assert.equal(h.adapter.requests.length, 0);
@@ -217,4 +240,149 @@ test('member native review: an omitted required file records the original fixed-
   assert.equal(failed.result.value.status, 'needs-attention');
   assert.equal(failed.result.value.failure.code, 'review-read-required');
   assert.equal(h.ctx.agents.list().length, 0);
+});
+
+test('member native review cold history: original review SID locates the exact purpose and reads its existing log without an Agent, new drive or metadata writes', async (t) => {
+  const h = await setup(t),
+    run = await (await h.review.prepareAccept(randomUUID(), h.input)).send();
+  for (const r of run.composition.payload.targetResources)
+    h.adapter.script.push(
+      toolResponse(
+        { resourceRef: r.resourceRef, offset: 0, length: r.bytes },
+        `cold-read-${r.resourceRef}`,
+        'read_review_target',
+      ),
+    );
+  h.adapter.script.push((request) =>
+    toolResponse(
+      {
+        conclusion: 'approve',
+        rationale: 'Fixed body and file read.',
+        anchors: [],
+        evidenceRefs: [...new Set(JSON.stringify(request).match(/review_read_[a-f0-9]{64}/gu))],
+      },
+      'cold-review-complete',
+      'complete_review',
+    )(),
+  );
+  await h.owner.startReview(run);
+  const done = await until(
+      () => h.owner.readReview(run),
+      (v) => v.phase === 'submitted',
+    ),
+    sid = done.binding.nativeSessionId,
+    cold = await h.reopen(),
+    path = join(h.root, 'domains', 'zhuma_native_work_sessions.json'),
+    before = await readFile(path, 'utf8'),
+    business = structuredClone([h.backend.read(), h.backend.read('consume')]),
+    cut = h.seen.length;
+  const found = cold.owner.lookupSession(sid);
+  assert.equal(found.role, 'review');
+  assert.deepEqual(found.reviewContext.review, run.value.scope.review);
+  const opened = await cold.owner.openReviewSession(sid);
+  assert.equal(opened.view.access, 'history');
+  assert.equal(opened.view.phase, 'submitted');
+  assert.equal(opened.view.receipt.commentId, done.receipt.commentId);
+  assert((await cold.owner.historyReview(opened.run)).events.length > 0);
+  await assert.rejects(cold.owner.startReview(opened.run));
+  const abort = new AbortController(),
+    stream = cold.owner.observeReview(opened.run, -1, abort.signal);
+  assert.equal((await stream.next()).done, false);
+  assert.equal(cold.owner.canSwitchBackend(), false);
+  abort.abort();
+  await stream.return();
+  await until(() => cold.owner.canSwitchBackend(), Boolean);
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(cold.ctx.agents.list().length, 0);
+  assert(h.seen.slice(cut).every((v) => v.operation === 'status'));
+  assert.deepEqual([h.backend.read(), h.backend.read('consume')], business);
+  assert.equal(await readFile(path, 'utf8'), before);
+});
+
+test('member native review recovery: a lost original ballot reply is confirmed cold without a model, resubmission or second vote', async (t) => {
+  let lostCommit = true,
+    lostStatus = true;
+  const h = await setup(t, {
+      beforeReply(body) {
+        if (body.operation === 'submit-result' && lostCommit) {
+          lostCommit = false;
+          throw Error('CONTRACT_LOST_COMMIT_REPLY');
+        }
+        if (body.operation === 'result-status' && lostStatus) {
+          lostStatus = false;
+          throw Error('CONTRACT_LOST_STATUS_REPLY');
+        }
+      },
+    }),
+    run = await (await h.review.prepareAccept(randomUUID(), h.input)).send();
+  approve(h, run, 'lost-ballot');
+  await h.owner.startReview(run);
+  await until(
+    () => h.seen.filter((v) => v.operation === 'result-status').length,
+    (n) => n === 1,
+  );
+  const held = h.owner.readReview(run),
+    sid = held.binding.nativeSessionId;
+  assert.equal(held.phase, 'fixed');
+  assert.equal(h.backend.read().rounds[0].ballots.length, 1);
+  const cold = await h.reopen(),
+    opened = await cold.owner.openReviewSession(sid),
+    cut = h.seen.length;
+  const recovered = await cold.owner.recoverReview(opened.run);
+  assert.equal(recovered.confirmation.status, 'committed');
+  assert.equal(recovered.view.remote.resources, 'settled');
+  assert.equal(recovered.view.phase, 'submitted');
+  assert.equal(h.backend.read().rounds[0].ballots.length, 1);
+  assert.equal(
+    h.seen
+      .slice(cut)
+      .some((v) => ['accept', 'submit-result', 'event', 'input-read'].includes(v.operation)),
+    false,
+  );
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(cold.ctx.agents.list().length, 0);
+  await assert.rejects(cold.owner.startReview(recovered.run));
+});
+
+test('member native review recovery: a sealed result with no authoritative receipt stays held and never resumes a model or invents a vote', async (t) => {
+  let attempts = 0;
+  const h = await setup(t, {
+      beforeRequest(body) {
+        if (body.operation === 'submit-result') {
+          attempts++;
+          throw Error('CONTRACT_REQUEST_DID_NOT_REACH_RECEIVER');
+        }
+      },
+    }),
+    run = await (await h.review.prepareAccept(randomUUID(), h.input)).send();
+  approve(h, run, 'unknown-ballot');
+  await h.owner.startReview(run);
+  await until(
+    () => h.seen.filter((v) => v.operation === 'result-status').length,
+    (n) => n === 1,
+  );
+  const held = h.owner.readReview(run),
+    cold = await h.reopen(),
+    opened = await cold.owner.openReviewSession(held.binding.nativeSessionId);
+  const recovered = await cold.owner.recoverReview(opened.run);
+  assert.equal(recovered.confirmation.status, 'none');
+  assert.equal(recovered.view.remote.resources, 'held');
+  assert.equal(recovered.view.phase, 'recovery-required');
+  assert.equal(cold.owner.canSwitchBackend(), false);
+  assert.equal(h.backend.read().rounds[0].ballots.length, 0);
+  assert.equal(attempts, 1);
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(cold.ctx.agents.list().length, 0);
+  await assert.rejects(cold.owner.startReview(recovered.run));
+  // A may expose the original explicit human Stop, then ask this same owner
+  // to physically clean its exact old scope. It is not an automatic retry.
+  await cold.review.stop(opened.run, {
+    requestId: randomUUID(),
+    expectedAttemptVersion: recovered.view.remote.attemptVersion,
+  });
+  const stopped = await cold.owner.recoverReview(opened.run);
+  assert.equal(stopped.view.remote.resources, 'settled');
+  assert.equal(stopped.view.phase, 'retired');
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(h.backend.read().rounds[0].ballots.length, 0);
 });

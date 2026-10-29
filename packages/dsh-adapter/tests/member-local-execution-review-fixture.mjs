@@ -36,6 +36,7 @@ export async function bootMemberLocalReview(root, after, options = {}) {
         body = remoteExecutionRequestSchema.parse(envelope.payload);
       assert.equal(request.url, `/api/${methods[body.operation]}`);
       assert.equal(request.headers.cookie, backend.request.headers.cookie);
+      await options.beforeRequest?.(body);
       const result = await backend.service.remoteRun(
         backend.request,
         body,
@@ -79,5 +80,18 @@ export async function bootMemberLocalReview(root, after, options = {}) {
     await credentials.fiber.dispose();
   });
   const { credentials: _credentials, ...input } = backend.accept().payload;
-  return { ...h, backend, protocol, review, input, seen };
+  const reopen = async () => {
+    await h.close();
+    const coldReview = await MemberLocalReviewProtocol.open(config);
+    const cold = await bootLocalOwner(root, protocol, {
+      review: { protocol: coldReview },
+      assertModel: () => assert.fail('cold history cannot resolve a model'),
+    });
+    after(async () => {
+      await cold.close();
+      await coldReview.close();
+    });
+    return { ...cold, review: coldReview };
+  };
+  return { ...h, root, backend, protocol, review, input, seen, reopen };
 }

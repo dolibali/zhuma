@@ -25,6 +25,7 @@ import type { RegisterWorkspaceDirectory } from '../run/workspace-approvals.js';
 import type { LocalWorkspaceDirectory } from '../run/workspace-directory.js';
 import { createKnowledgeApi } from '../knowledge/api.js';
 import type { MemberNativeClient } from '../run/member-native.js';
+import { createNativeReviewApi } from '../run/review-api.js';
 
 function MemberWork({
   fetcher,
@@ -137,8 +138,9 @@ function MemberWork({
     [projectExecution, spaceId],
   );
   const nativeApi = useMemo(() => {
+    const nativeFetcher = memberNative?.scoped(accountId, spaceId).fetcher ?? fetcher;
     const api = createNativeRunApi(
-      memberNative?.scoped(accountId, spaceId).fetcher ?? fetcher,
+      nativeFetcher,
       accountId,
       {
         spaceId,
@@ -153,7 +155,19 @@ function MemberWork({
     );
     if (!memberNative) return api;
     const { workspaceApprovals: _approvals, workflow: _workflow, ...localNativeApi } = api;
-    return localNativeApi;
+    return {
+      ...localNativeApi,
+      review: createNativeReviewApi(
+        nativeFetcher,
+        accountId,
+        {
+          spaceId,
+          isCurrent: () => alive.current && currentLifetime.current.isCurrent(),
+          onUnavailable: () => currentSpaceUnavailable.current(),
+        },
+        () => currentLifetime.current.onUnauthenticated(),
+      ),
+    };
   }, [
     fetcher,
     accountId,

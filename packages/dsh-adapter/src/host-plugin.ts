@@ -80,6 +80,7 @@ export const Config = z.strictObject({
   memberWeb: z.boolean().optional(),
   remoteExecution: z.boolean().optional(),
   remoteFileUploads: z.literal(true).optional(),
+  remoteIndependentReviews: z.literal(true).optional(),
   bodyBytes: z
     .number()
     .int()
@@ -186,6 +187,8 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     throw new Error('Remote execution requires explicit multi-member mode.');
   if (config.remoteFileUploads && !config.remoteExecution)
     throw new Error('Remote file uploads require the explicit shared execution backend.');
+  if (config.remoteIndependentReviews && !config.remoteFileUploads)
+    throw new Error('Independent shared review requires the original file/resource backend.');
   configureDeploymentMode(ctx, config.deploymentMode);
   if (config.memberWeb) {
     enableMemberWeb(ctx);
@@ -548,6 +551,9 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       let nativeFailedAndDisposed = false;
       const mount = ctx.plugin(executionPlugin, {
         readWorkbench: workbench.readWorkbench,
+        ...(config.deploymentMode === 'multi-member'
+          ? { memberDirectory: () => memberWorkbenchDirectoryFor(ctx) }
+          : {}),
         publishRunService(service) {
           nativeMount = ctx.plugin(nativeRunPlugin, {
             async open(nativeCtx: Context) {
@@ -575,9 +581,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
               }
               try {
                 if (config.remoteExecution) {
-                  await service.enableRemoteRuns(
-                    config.remoteFileUploads ? { fileUploads: true } : {},
-                  );
+                  await service.enableRemoteRuns({
+                    ...(config.remoteFileUploads ? { fileUploads: true } : {}),
+                    ...(config.remoteIndependentReviews ? { independentReviews: true } : {}),
+                  });
                   if (closed || runsClosed || lifetime.signal.aborted)
                     throw new SharedBackendError('unavailable');
                   remoteExecution = service;

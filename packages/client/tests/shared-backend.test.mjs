@@ -47,6 +47,11 @@ test('shared file transport keeps raw bytes and exact file routes on the local o
   assert.equal(url.searchParams.get('connectionId'), selection.connectionId);
   assert.equal(calls[0].init.headers.has('authorization'), false);
   assert.equal(calls[0].init.redirect, 'error');
+  assert.equal(
+    calls[0].init.method,
+    'POST',
+    'browser supplies the original owner Origin on this local carrier',
+  );
   const blob = new Blob([bytes]);
   const upload = await client.fetcher('/api/zhuma-exec/upload-file', {
     method: 'POST',

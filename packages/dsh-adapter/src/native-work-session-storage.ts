@@ -159,6 +159,9 @@ export async function openNativeWorkSessions(
         if (!currentNamespace) throw new NativeWorkError('scope-mismatch');
         matches.push({
           role: parsed.data.schemaVersion === 3 ? ('review' as const) : ('work' as const),
+          ...(parsed.data.schemaVersion === 3
+            ? { reviewContext: structuredClone(parsed.data.context) }
+            : {}),
           ...(backendId === undefined ? {} : { backendId }),
           binding: structuredClone({
             scope: binding.scope,

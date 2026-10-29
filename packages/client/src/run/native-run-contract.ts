@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 /** Member-authorized projections only. These view hints never grant execution permission. */
 export interface NativeRunTarget {
   readonly spaceId: string;
@@ -23,6 +24,7 @@ export type NativeRunExecutor =
 export interface NativeRunSelection {
   readonly model: NativeRunModel;
   readonly executor: NativeRunExecutor;
+  readonly knowledge?: { readonly libraryId: string; readonly allowDrafts: boolean };
   readonly workspace?:
     | { readonly kind: 'text-only' }
     | {
@@ -86,6 +88,8 @@ export interface NativeRunSummary {
   readonly generation: number;
   readonly segmentId: string;
   readonly nodeVersion: number;
+  /** Only the original remote result receipt; no locally invented delivery version. */
+  readonly submission?: { readonly artifactVersionId: string; readonly roundId?: string };
   readonly runVersion: number;
   readonly status:
     'requested' | 'running' | 'waiting-for-input' | 'completed' | 'failed' | 'cancelled';
@@ -128,6 +132,10 @@ export type NativeRunPanelView =
       readonly turnEnd?: Extract<NativeConversationFrame, { type: 'turn-end' }>;
       readonly selection: NativeRunSelection | null;
       readonly models: NativeRunChoices<NativeRunModelChoice>;
+      readonly knowledgeLibraries?: NativeRunChoices<{
+        readonly id: string;
+        readonly label: string;
+      }>;
       readonly experts: NativeRunChoices<NativeRunExpertChoice>;
       readonly resources: readonly NativeRunResource[];
       readonly workspaces?: readonly NativeRunWorkspaceChoice[];
@@ -145,6 +153,7 @@ export type NativeRunPanelView =
  * No handler exposes raw owner RPC, grants, filesystem paths or SDK methods.
  */
 export interface NativeRunPanelProps {
+  readonly reviewAction?: ReactNode;
   readonly target: NativeRunTarget;
   readonly view: NativeRunPanelView;
   readonly busy?: 'start' | 'send' | 'stop' | 'refresh' | 'history' | 'open' | undefined;

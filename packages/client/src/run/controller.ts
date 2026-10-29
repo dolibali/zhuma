@@ -99,6 +99,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         ...(transcript.turnEnd() ? { turnEnd: transcript.turnEnd()! } : {}),
         selection: held ? options.selection : selection,
         models: options.models,
+        ...(options.knowledgeLibraries ? { knowledgeLibraries: options.knowledgeLibraries } : {}),
         experts: { kind: 'ready', items: options.experts },
         resources: options.resources,
         ...(options.workspaces === undefined ? {} : { workspaces: options.workspaces }),
@@ -336,6 +337,14 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
           throw Error('Selection changed');
         const chosenWorkspace = next.workspace;
         if (
+          next.knowledge &&
+          (options.knowledgeLibraries?.kind !== 'ready' ||
+            !options.knowledgeLibraries.items.some(
+              (library) => library.id === next.knowledge!.libraryId,
+            ))
+        )
+          throw Error('Knowledge library changed');
+        if (
           chosenWorkspace?.kind === 'unavailable' ||
           (chosenWorkspace?.kind === 'local' &&
             !options.workspaces?.some((item) => item.id === chosenWorkspace.id))
@@ -359,6 +368,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
           expectedRunVersion: options.runVersion,
           mode: options.start.mode,
           model: next.model,
+          ...(next.knowledge ? { knowledge: next.knowledge } : {}),
           executor: next.executor,
           tools: chosenWorkspace?.kind === 'local' ? ('local-tools' as const) : options.tools,
           workspace: chosenWorkspace ?? { kind: 'text-only' as const },

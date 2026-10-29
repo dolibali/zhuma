@@ -12,9 +12,12 @@ export async function startLocalServer({
   data,
   plugin,
   fileUploads = false,
+  independentReviews = false,
   host = '127.0.0.1',
   port = 3080,
 }) {
+  if (independentReviews && !fileUploads)
+    throw new Error('Independent review requires --file-uploads');
   const sdkRoot = resolve(sdk);
   const dataRoot = resolve(data);
   const lock = JSON.parse(await readFile(join(root, 'runtime.lock.json'), 'utf8'));
@@ -58,6 +61,7 @@ export async function startLocalServer({
               memberWeb: true,
               remoteExecution: true,
               ...(fileUploads ? { remoteFileUploads: true } : {}),
+              ...(independentReviews ? { remoteIndependentReviews: true } : {}),
             },
           },
         ],

@@ -92,8 +92,9 @@ function RunState({
           running: '运行中',
           'waiting-for-input': '等待补充',
           completed:
-            run.resultDelivery?.kind === 'delivered'
-              ? run.resultDelivery.roundId
+            run.submission || run.resultDelivery?.kind === 'delivered'
+              ? (run.submission?.roundId ??
+                (run.resultDelivery?.kind === 'delivered' ? run.resultDelivery.roundId : undefined))
                 ? '已提交评审'
                 : '产物已提交'
               : '本轮已结束',
@@ -224,7 +225,7 @@ function Message({ message }: { message: NativeRunMessage }) {
 function Selection({
   view,
   disabled,
-  onChange,
+  onChange: publishSelection,
 }: {
   view: ReadyView;
   disabled: boolean;
@@ -236,6 +237,23 @@ function Selection({
   const [partialExecutor, setPartialExecutor] = useState<NativeRunSelection['executor']>();
   const [partialWorkspace, setPartialWorkspace] = useState<NativeRunSelection['workspace']>();
   const chosenWorkspace = selected?.workspace ?? partialWorkspace;
+  const [partialKnowledge, setPartialKnowledge] = useState<
+    NativeRunSelection['knowledge'] | null
+  >();
+  const chosenKnowledge =
+    partialKnowledge === undefined ? selected?.knowledge : (partialKnowledge ?? undefined);
+  const onChange = (next: NativeRunSelection) =>
+    publishSelection({ ...next, ...(chosenKnowledge ? { knowledge: chosenKnowledge } : {}) });
+  function changeKnowledge(next: NativeRunSelection['knowledge']) {
+    setPartialKnowledge(next ?? null);
+    if (model && expert)
+      publishSelection({
+        model: model.value,
+        executor: expert.value,
+        ...(chosenWorkspace ? { workspace: chosenWorkspace } : {}),
+        ...(next ? { knowledge: next } : {}),
+      });
+  }
   const perRunPublication =
     chosenWorkspace?.kind === 'local' &&
     view.workspaces?.find((item) => item.id === chosenWorkspace.id)?.publication === 'per-run';
@@ -417,6 +435,56 @@ function Selection({
                     onChange({ model: model.value, executor: expert.value, workspace: choice });
                 }}
               />
+            )}
+          </div>
+        )}
+        {view.knowledgeLibraries && (
+          <div className="zm-native-run__choice">
+            <span>知识库</span>
+            {disabled ? (
+              <strong>
+                {chosenKnowledge
+                  ? view.knowledgeLibraries.kind === 'ready'
+                    ? (view.knowledgeLibraries.items.find(
+                        (item) => item.id === chosenKnowledge.libraryId,
+                      )?.label ?? '本轮知识库')
+                    : '本轮知识库'
+                  : '未使用'}
+              </strong>
+            ) : (
+              <SingleSelect
+                label="选择本轮知识库"
+                popupMinWidth={320}
+                value={chosenKnowledge?.libraryId ?? ''}
+                options={[
+                  { value: '', label: '不使用知识库' },
+                  ...(view.knowledgeLibraries.kind === 'ready'
+                    ? view.knowledgeLibraries.items.map((item) => ({
+                        value: item.id,
+                        label: item.label,
+                      }))
+                    : []),
+                ]}
+                onValueChange={(libraryId) =>
+                  changeKnowledge(libraryId ? { libraryId, allowDrafts: false } : undefined)
+                }
+              />
+            )}
+            {chosenKnowledge && (
+              <label className="zm-checkbox">
+                <input
+                  type="checkbox"
+                  checked={chosenKnowledge.allowDrafts}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    changeKnowledge({ ...chosenKnowledge, allowDrafts: event.target.checked })
+                  }
+                />
+                允许 Agent 创建知识草稿
+              </label>
+            )}
+            {!disabled && view.knowledgeLibraries.kind !== 'ready' && (
+              <small>{view.knowledgeLibraries.message}</small>
             )}
           </div>
         )}
@@ -694,7 +762,7 @@ function RunPanel(props: NativeRunPanelProps) {
   const submittedReadOnly =
     run?.status === 'completed' &&
     run.resources === 'settled' &&
-    run.resultDelivery?.kind === 'delivered' &&
+    (run.resultDelivery?.kind === 'delivered' || !!run.submission) &&
     ready?.actions.start.kind !== 'available';
   const inactiveHint = !ready
     ? ''
@@ -796,6 +864,7 @@ function RunPanel(props: NativeRunPanelProps) {
           />
           <Receipt run={run} />
           <TurnNotice run={run} turnEnd={turnEnd} />
+          {props.reviewAction}
           <div
             className="zm-native-run__timeline"
             ref={timeline}

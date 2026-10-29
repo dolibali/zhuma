@@ -1,6 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
-import { remoteNodeTargetSchema } from '@zhuma/agent-core';
+import {
+  remoteNodeTargetSchema,
+  localReviewOptionsQuerySchema,
+  type LocalReviewOptionsQuery,
+} from '@zhuma/agent-core';
 import type { MemberShell } from '../identity/shell.js';
 import type { SharedBackendClient } from '../identity/shared-backend.js';
 import { Modal } from '../workbench/controls.js';
@@ -10,6 +14,8 @@ import { createNativeRunApi, type NativeRunApi } from './api.js';
 import type { MemberNativeClient } from './member-native.js';
 import type { LocalWorkspaceDirectory } from './workspace-directory.js';
 import type { NativeRunTarget } from './native-run-contract.js';
+import { createNativeReviewApi, type NativeReviewApi } from './review-api.js';
+import { NativeReviewHistory } from './NativeReviewWorkspace.js';
 
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -25,6 +31,12 @@ function classify(raw: unknown) {
   const row = record(raw);
   if (row.kind === 'ordinary' && Object.keys(row).length === 1)
     return { kind: 'ordinary' as const };
+  if (row.kind === 'review')
+    return {
+      kind: 'review' as const,
+      target: { ...localReviewOptionsQuerySchema.parse(row.target), runId: id(row.runId) },
+      sessionId: id(row.sessionId),
+    };
   if (row.kind !== 'task') throw Error('Invalid session classification');
   const scope = record(row.target);
   const node = remoteNodeTargetSchema.parse({
@@ -51,7 +63,15 @@ function classify(raw: unknown) {
     sessionId: id(row.sessionId),
   };
 }
-type Entry = { api: NativeRunApi; target: NativeRunTarget };
+type Entry =
+  | { kind: 'work'; api: NativeRunApi; target: NativeRunTarget }
+  | {
+      kind: 'review';
+      api: NativeReviewApi;
+      target: NativeRunTarget;
+      query: LocalReviewOptionsQuery;
+      sessionId: string;
+    };
 type Guard = (target: unknown, signal: AbortSignal) => Promise<boolean>;
 
 /** Existing Workspace navigation is classified before retain/resume. Task
@@ -151,13 +171,56 @@ export function installMemberNativeNavigation(
     if (typeof ids === 'object' && !Array.isArray(ids)) {
       const parent = classify(await client.lookup(ids.parentSessionId, signal));
       current();
-      if (parent.kind === 'task' && found.kind === 'ordinary') return false;
+      if (parent.kind !== 'ordinary' && found.kind === 'ordinary') return false;
     }
     if (found.kind === 'ordinary') return ask(close, signal);
     if (found.sessionId !== sessionId) return false;
     const location = found.target;
     let active = true;
     let acceptedEpoch = -1;
+    if (found.kind === 'review') {
+      const api = createNativeReviewApi(
+        options.native.scoped(member.session.accountId, location.spaceId).fetcher,
+        member.session.accountId,
+        {
+          spaceId: location.spaceId,
+          isCurrent: () => {
+            const now = options.shell.session.getSnapshot();
+            return (
+              active &&
+              acceptedEpoch === epoch &&
+              now.status === 'authenticated' &&
+              now.epoch === member.epoch &&
+              options.backend.getSnapshot().selection?.connectionId === selected.connectionId
+            );
+          },
+          onUnavailable: close,
+        },
+        () => options.shell.session.invalidate(member.epoch),
+      );
+      const accepted = await ask(() => {
+        acceptedEpoch = ++epoch;
+        entryBinding = { member: member.epoch, connection: selected.connectionId };
+        const { runId: _runId, ...query } = found.target;
+        entry = {
+          kind: 'review',
+          api,
+          query,
+          sessionId,
+          target: {
+            spaceId: location.spaceId,
+            taskId: location.taskId,
+            planId: location.planId,
+            revision: location.revision,
+            nodeId: location.nodeId,
+            title: 'Agent 评审记录',
+          },
+        };
+        publish();
+      }, signal);
+      if (!accepted) active = false;
+      return false;
+    }
     const api = createNativeRunApi(
       options.native.scoped(member.session.accountId, location.spaceId, location.runId).fetcher,
       member.session.accountId,
@@ -186,6 +249,7 @@ export function installMemberNativeNavigation(
       acceptedEpoch = ++epoch;
       entryBinding = { member: member.epoch, connection: selected.connectionId };
       entry = {
+        kind: 'work',
         api: selected.origin ? remoteApi : api,
         target: {
           spaceId: location.spaceId,
@@ -249,12 +313,21 @@ function MemberNativeNavigation({ state }: { state: NavigationState }) {
           close={() => leave.request(state.close, dirty)}
         >
           <div className="zm-run-workspace-dialog">
-            <NativeRunWorkspace
-              api={entry.api}
-              target={entry.target}
-              onDirtyChange={setDirty}
-              onClose={() => leave.request(state.close, dirty)}
-            />
+            {entry.kind === 'review' ? (
+              <NativeReviewHistory
+                api={entry.api}
+                target={entry.query}
+                sessionId={entry.sessionId}
+                close={state.close}
+              />
+            ) : (
+              <NativeRunWorkspace
+                api={entry.api}
+                target={entry.target}
+                onDirtyChange={setDirty}
+                onClose={() => leave.request(state.close, dirty)}
+              />
+            )}
           </div>
         </Modal>
       )}

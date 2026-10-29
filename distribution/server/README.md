@@ -7,10 +7,10 @@
 从同一次 Release 下载并核验 DMG、`SOURCE.json`、`SHA256SUMS`、`packaged-backend.sh` 和 `packaged-backend.mjs`。把两个启动文件放在同一目录，安装对应版本的 Zhuma 后执行：
 
 ```sh
-sh packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data --file-uploads
+sh packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data --file-uploads --independent-reviews
 ```
 
-启动器使用 App 内的原官方运行时，显式启用成员 Web／共享后端，并核对产品和固定 SDK 来源。旧版或缺少能力的 App 会被拒绝。`--data` 是独立服务数据目录；`--file-uploads` 显式开放原文件协议，省略时保持关闭。需要其他设备访问时，通过 `--host` 指定本机具体 IP，并把成员入口地址交给团队。
+启动器使用 App 内的原官方运行时，显式启用成员 Web／共享后端，并核对产品和固定 SDK 来源。旧版或缺少能力的 App 会被拒绝。`--data` 是独立服务数据目录；`--file-uploads` 显式开放原文件协议，省略时保持关闭。`--independent-reviews` 启用独立 Agent 评审，必须同时启用文件协议；服务仍会核对原材料目录和文件存储是否就绪。需要其他设备访问时，通过 `--host` 指定本机具体 IP，并把成员入口地址交给团队。
 
 ## 源码开发启动
 

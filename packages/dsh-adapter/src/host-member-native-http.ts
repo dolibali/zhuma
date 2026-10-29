@@ -20,6 +20,12 @@ const endpoints = [
   'send',
   'stop',
   'lookup',
+  'review-options',
+  'review-start',
+  'review-read',
+  'review-stop',
+  'review-session',
+  'review-recover',
 ] as const;
 const payload = z.strictObject({
   connectionId: z.uuid().nullable(),

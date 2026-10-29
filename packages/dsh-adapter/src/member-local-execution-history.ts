@@ -6,18 +6,28 @@ import {
   type NativeSessionBinding,
 } from './native-work-session-contract.js';
 import type { openNativeWorkSessions } from './native-work-session-storage.js';
-import type {
-  MemberLocalExecutionProtocol,
-  MemberLocalReadHandle,
-} from './member-local-execution-protocol.js';
+import type { MemberLocalReadHandle } from './member-local-execution-protocol.js';
 
 type NativeOwner = Awaited<ReturnType<typeof openNativeWorkSessions>>;
-interface Reading {
-  readonly run: MemberLocalReadHandle;
+interface HistoryView {
+  readonly scope: RemoteRunView['scope'];
+  readonly result?:
+    | { readonly source: { readonly nativeSessionId: string; readonly nativeAgentId: string } }
+    | undefined;
+}
+type HistoryHandle = { readonly value: HistoryView };
+export interface NativeHistoryGrantAccess<Run extends HistoryHandle> {
+  readonly run: Run;
+  readonly signal: AbortSignal;
+  view(): Run['value'];
+  assertCurrent(action: NativeWorkAction): undefined;
+}
+interface Reading<Run extends HistoryHandle> {
+  readonly run: Run;
   readonly abort: AbortController;
   readonly signal: AbortSignal;
-  readonly grant: NativeWorkGrant;
-  view: RemoteRunView;
+  grant?: NativeWorkGrant;
+  view: Run['value'];
   deadline: number;
   binding?: NativeSessionBinding;
   refreshing?: Promise<void>;
@@ -31,18 +41,22 @@ const MAX_READERS = 8,
 /** Read-only capabilities over the original SDK logs and native binding table.
  * Separate from expired drive/result grants. No method can create/resume/send,
  * renew a drive, write a binding or reconcile business state. */
-export class MemberLocalExecutionHistory {
-  private readonly reads = new Set<Reading>();
+export class MemberLocalExecutionHistory<Run extends HistoryHandle = MemberLocalReadHandle> {
+  private readonly reads = new Set<Reading<Run>>();
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly lifetime = new AbortController();
   constructor(
     private readonly native: NativeOwner,
-    private readonly protocol: MemberLocalExecutionProtocol,
+    private readonly protocol: {
+      status(run: Run, signal?: AbortSignal): Promise<Run['value']>;
+      assertReadBinding(run: Run, binding: NativeSessionBinding): void;
+    },
+    private readonly grantFor?: (source: NativeHistoryGrantAccess<Run>) => NativeWorkGrant,
   ) {}
   canSwitchBackend(): boolean {
     return !this.lifetime.signal.aborted && this.reads.size === 0 && this.jobs.size === 0;
   }
-  private check(read: Reading): void {
+  private check(read: Reading<Run>): void {
     if (
       this.lifetime.signal.aborted ||
       read.signal.aborted ||
@@ -51,7 +65,12 @@ export class MemberLocalExecutionHistory {
     )
       throw new NativeWorkError('cancelled');
   }
-  private binding(read: Reading, value: NativeSessionBinding): void {
+  private grant(read: Reading<Run>): NativeWorkGrant {
+    this.check(read);
+    if (!read.grant) throw new NativeWorkError('unavailable');
+    return read.grant;
+  }
+  private binding(read: Reading<Run>, value: NativeSessionBinding): void {
     this.check(read);
     this.protocol.assertReadBinding(read.run, value);
     if (
@@ -69,7 +88,7 @@ export class MemberLocalExecutionHistory {
       throw new NativeWorkError('scope-mismatch');
     read.binding = value;
   }
-  private refresh(read: Reading): Promise<void> {
+  private refresh(read: Reading<Run>): Promise<void> {
     if (read.refreshing) return read.refreshing;
     const work = (async () => {
       const before = performance.now(),
@@ -85,39 +104,59 @@ export class MemberLocalExecutionHistory {
     });
     return read.refreshing;
   }
-  private release(read: Reading): void {
+  private release(read: Reading<Run>): void {
     if (!this.reads.delete(read)) return;
     if (read.timer) clearInterval(read.timer);
     read.abort.abort();
     if (read.end) void this.track(read.end()).catch(() => undefined);
   }
-  private async acquire(run: MemberLocalReadHandle, signal?: AbortSignal): Promise<Reading> {
+  private async acquire(run: Run, signal?: AbortSignal): Promise<Reading<Run>> {
     if (this.lifetime.signal.aborted || this.reads.size >= MAX_READERS)
       throw new NativeWorkError('unavailable');
     const abort = new AbortController(),
       combined = AbortSignal.any([this.lifetime.signal, abort.signal, ...(signal ? [signal] : [])]),
-      { backendId: _backendId, ...scope } = run.value.scope;
-    const read: Reading = {
+      { actorId, spaceId, taskId, planId, revision, nodeId, runId, generation, segmentId } =
+        run.value.scope,
+      scope = { actorId, spaceId, taskId, planId, revision, nodeId, runId, generation, segmentId };
+    const read: Reading<Run> = {
       run,
       abort,
       signal: combined,
       view: run.value,
       deadline: 0,
-      grant: Object.freeze({
-        scope: Object.freeze(structuredClone(scope)),
-        signal: combined,
-        assertCurrent: (action: NativeWorkAction) => {
-          if (!['open', 'history', 'follow'].includes(action))
-            throw new NativeWorkError('cancelled');
-          this.check(read);
-        },
-      }),
     };
     this.reads.add(read);
     combined.addEventListener('abort', () => this.release(read), { once: true });
     try {
       await this.refresh(read);
       this.check(read);
+      const source: NativeHistoryGrantAccess<Run> = Object.freeze({
+        run,
+        signal: combined,
+        view: () => read.view,
+        assertCurrent: (action: NativeWorkAction) => {
+          if (!['open', 'history', 'follow'].includes(action))
+            throw new NativeWorkError('cancelled');
+          this.check(read);
+          return undefined;
+        },
+      });
+      // Purpose-specific readonly grants come from the same original owner.
+      // No read handle is promoted to an admission, driving or result grant.
+      read.grant = this.grantFor
+        ? this.grantFor(source)
+        : Object.freeze({
+            scope: Object.freeze(scope),
+            signal: combined,
+            assertCurrent: source.assertCurrent,
+          });
+      if (this.grantFor) {
+        const binding = this.native.service.readBinding(read.grant);
+        if (!binding) throw new NativeWorkError('not-started');
+        // Validate the actual original binding against the private protocol
+        // pointer before a purpose-specific source can read any SDK log body.
+        this.binding(read, binding);
+      }
       read.timer = setInterval(() => {
         void this.refresh(read).catch(() => this.release(read));
       }, REFRESH_MS);
@@ -134,9 +173,9 @@ export class MemberLocalExecutionHistory {
     return job;
   }
   private withRead<T>(
-    run: MemberLocalReadHandle,
+    run: Run,
     signal: AbortSignal | undefined,
-    action: (read: Reading) => Promise<T>,
+    action: (read: Reading<Run>) => Promise<T>,
   ): Promise<T> {
     return this.track(
       (async () => {
@@ -149,14 +188,14 @@ export class MemberLocalExecutionHistory {
       })(),
     );
   }
-  open(run: MemberLocalReadHandle, signal?: AbortSignal) {
+  open(run: Run, signal?: AbortSignal) {
     return this.withRead(run, signal, async (read) => {
-      const binding = this.native.service.readBinding(read.grant);
+      const binding = this.native.service.readBinding(this.grant(read));
       let native: ReturnType<NativeOwner['service']['open']>;
       if (binding) {
         this.binding(read, binding);
         try {
-          native = this.native.service.open(read.grant);
+          native = this.native.service.open(this.grant(read));
         } catch (error) {
           // An old drive can expire/be retiring while a fresh read is valid.
           // Detached is navigation metadata, never a physical drain receipt.
@@ -174,31 +213,31 @@ export class MemberLocalExecutionHistory {
     });
   }
   /** Host-internal raw events; UI transports must expose observe() only. */
-  history(run: MemberLocalReadHandle, after = -1, limit = 100, signal?: AbortSignal) {
+  history(run: Run, after = -1, limit = 100, signal?: AbortSignal) {
     return this.withRead(run, signal, async (read) => {
-      const value = await this.native.service.history(read.grant, after, limit, read.signal);
+      const value = await this.native.service.history(this.grant(read), after, limit, read.signal);
       this.binding(read, value.binding);
       await this.refresh(read);
       this.check(read);
       return value;
     });
   }
-  readInbox(run: MemberLocalReadHandle, signal?: AbortSignal) {
+  readInbox(run: Run, signal?: AbortSignal) {
     return this.withRead(run, signal, async (read) => {
-      const value = await this.native.service.readInbox(read.grant, read.signal);
+      const value = await this.native.service.readInbox(this.grant(read), read.signal);
       this.binding(read, value.binding);
       await this.refresh(read);
       this.check(read);
       return value;
     });
   }
-  async *observe(run: MemberLocalReadHandle, after = -1, signal?: AbortSignal) {
+  async *observe(run: Run, after = -1, signal?: AbortSignal) {
     const read = await this.acquire(run, signal);
     try {
-      const binding = this.native.service.readBinding(read.grant);
+      const binding = this.native.service.readBinding(this.grant(read));
       if (!binding) throw new NativeWorkError('not-started');
       this.binding(read, binding);
-      const source = this.native.service.observe(read.grant, after, read.signal);
+      const source = this.native.service.observe(this.grant(read), after, read.signal);
       read.end = () => source.return(undefined);
       for await (const frame of source) {
         this.check(read);
@@ -209,13 +248,13 @@ export class MemberLocalExecutionHistory {
     }
   }
   /** Raw native frames remain internal to the Host. */
-  async *follow(run: MemberLocalReadHandle, after = -1, signal?: AbortSignal) {
+  async *follow(run: Run, after = -1, signal?: AbortSignal) {
     const read = await this.acquire(run, signal);
     try {
-      const binding = this.native.service.readBinding(read.grant);
+      const binding = this.native.service.readBinding(this.grant(read));
       if (!binding) throw new NativeWorkError('not-started');
       this.binding(read, binding);
-      const source = this.native.service.follow(read.grant, after, read.signal);
+      const source = this.native.service.follow(this.grant(read), after, read.signal);
       read.end = () => source.return(undefined);
       for await (const frame of source) {
         this.check(read);
