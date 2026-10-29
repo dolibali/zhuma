@@ -638,7 +638,11 @@ export class HostSharedBackend {
   request(input: SharedBackendRequest, signal: AbortSignal): Promise<SharedBackendResponse> {
     const work = this.perform(
       input,
-      AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(20_000)]),
+      AbortSignal.any([
+        signal,
+        this.lifetime.signal,
+        AbortSignal.timeout(input.operation === 'member.plan' ? 130_000 : 20_000),
+      ]),
     );
     this.jobs.add(work);
     void work.finally(() => this.jobs.delete(work)).catch(() => undefined);
