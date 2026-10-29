@@ -72,6 +72,7 @@ import {
   type UpstreamInputView,
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
+import type { MemberWorkbenchDirectory } from './member-workbench-dto.js';
 import {
   taskProgressQuerySchema,
   type TaskProgressValue,
@@ -1206,7 +1207,10 @@ export class ExecutionService {
 
   constructor(
     private readonly storage: ExecutionStorage,
-    private readonly workbench: { readWorkbench(): Workbench },
+    private readonly workbench: {
+      readWorkbench(): Workbench;
+      memberDirectory?(): MemberWorkbenchDirectory | undefined;
+    },
     private readonly projectSpaces: ProjectSpaceDirectory | undefined,
     private readonly attachments?: AttachmentStore,
     private readonly fileStore?: ArtifactFileStore,
@@ -4848,6 +4852,8 @@ export class ExecutionService {
     return this.enqueue(async () => {
       const opened = await this.openInbox(caller, body);
       if (!opened.ok) return opened;
+      const current = this.checkListActor(caller, body, opened.actor);
+      if (!current.ok) return current;
       const workbench = this.workbench.readWorkbench();
       return {
         ok: true,
@@ -4870,6 +4876,8 @@ export class ExecutionService {
     return this.enqueue(async () => {
       const opened = await this.openInbox(caller, body);
       if (!opened.ok) return opened;
+      const current = this.checkListActor(caller, body, opened.actor);
+      if (!current.ok) return current;
       return {
         ok: true,
         value: {
@@ -4954,7 +4962,7 @@ export class ExecutionService {
     body: unknown,
   ): Promise<ExecutionResult<{ actorId: string; plans: readonly StartablePlan[] }>> {
     return this.enqueue(async () => {
-      const actor = this.actor(caller, body);
+      const actor = this.listActor(caller, body);
       if (!actor.ok) return actor;
       const parsed = parseBody(startableSchema.optional(), body ?? {});
       if (!parsed.ok) return parsed;
@@ -4976,6 +4984,8 @@ export class ExecutionService {
         if (task.status !== 'ready') continue;
         if (planMembership(workbench, task.id, actor.value.actorId) !== 'allowed') continue;
         const space = await this.gateSpaceScoped(task.id, actor.value.spaceIds, scope);
+        const current = this.checkListActor(caller, body, actor.value);
+        if (!current.ok) return current;
         if (space === 'missing') continue;
         if (!space.ok) {
           if (space.error.code === 'unavailable') return space;
@@ -4995,6 +5005,8 @@ export class ExecutionService {
           title: task.title,
         });
       }
+      const current = this.checkListActor(caller, body, actor.value);
+      if (!current.ok) return current;
       return {
         ok: true,
         value: {
@@ -7267,6 +7279,78 @@ export class ExecutionService {
     };
   }
 
+  /** Normal member list reads use the SAME current account/space directory as
+   * the member workbench. Absence keeps legacy semantics; a broken injection
+   * never falls back to legacy participants or caller-supplied space echoes. */
+  private listActor(
+    input: ExecutionCaller,
+    body: unknown,
+  ): ExecutionResult<{
+    readonly actorId: string;
+    readonly spaceIds: readonly string[];
+  }> {
+    if (!('memberDirectory' in this.workbench)) return this.actor(input, body);
+    const actorField = this.actorField(body);
+    if (actorField) return actorField;
+    const member = input.member;
+    if (!member || member.ok !== true) {
+      const rejected = resolveActor(member, []);
+      return rejected.ok ? fail('unauthenticated') : fail(rejected.code);
+    }
+    if (
+      typeof member.memberId !== 'string' ||
+      !Array.isArray(member.spaceIds) ||
+      member.spaceIds.some((space) => typeof space !== 'string')
+    )
+      return fail('unauthenticated');
+    try {
+      const directory = this.workbench.memberDirectory?.();
+      if (!directory) return directoryUnavailable();
+      const actorId = member.memberId.trim();
+      const read = () => {
+        const spaces = new Set<string>(),
+          accounts = new Set<string>();
+        for (const space of directory.spacesForMember(actorId)) {
+          const members = directory.membersForSpace(space.id);
+          if (!members.every((item) => typeof item.id === 'string' && item.id.length > 0))
+            throw Error('Invalid member directory.');
+          if (
+            !directory.isMember(space.id, actorId) ||
+            !members.some((item) => item.id === actorId)
+          )
+            continue;
+          spaces.add(space.id);
+          for (const account of members) accounts.add(account.id);
+        }
+        return { spaceIds: [...spaces].sort(), accounts: [...accounts] };
+      };
+      const before = read();
+      const resolved = resolveActor(member, before.accounts);
+      if (!resolved.ok) return fail(resolved.code);
+      const after = read();
+      const current = resolveActor(member, after.accounts);
+      if (!current.ok) return fail(current.code);
+      if (canonicalPayload(before.spaceIds) !== canonicalPayload(after.spaceIds))
+        return directoryUnavailable();
+      return { ok: true, value: { actorId: current.actorId, spaceIds: after.spaceIds } };
+    } catch {
+      return directoryUnavailable();
+    }
+  }
+  private checkListActor(
+    caller: ExecutionCaller,
+    body: unknown,
+    original: { readonly actorId: string; readonly spaceIds: readonly string[] },
+  ): ExecutionResult<void> {
+    if (!('memberDirectory' in this.workbench)) return { ok: true, value: undefined };
+    const current = this.listActor(caller, body);
+    if (!current.ok) return current;
+    return current.value.actorId === original.actorId &&
+      canonicalPayload(current.value.spaceIds) === canonicalPayload(original.spaceIds)
+      ? { ok: true, value: undefined }
+      : directoryUnavailable();
+  }
+
   /** Absent or unusable injection. Callers do not fall back to the project id. */
   private projectSpaceDirectory(): ProjectSpaceDirectory | undefined {
     const directory = this.projectSpaces;
@@ -7349,7 +7433,7 @@ export class ExecutionService {
    * space the member can already see.
    */
   private async openInbox(caller: ExecutionCaller, body: unknown) {
-    const actor = this.actor(caller, body);
+    const actor = this.listActor(caller, body);
     if (!actor.ok) return actor;
     const parsed = parseBody(inboxSchema.optional(), body ?? {});
     if (!parsed.ok) return parsed;
@@ -7359,6 +7443,7 @@ export class ExecutionService {
       // Unknown or revoked scope: an empty projection, indistinguishable from an empty space.
       return {
         ok: true as const,
+        actor: actor.value,
         actorId: actor.value.actorId,
         scope,
         items: [] as readonly InboxItem[],
@@ -7367,18 +7452,31 @@ export class ExecutionService {
     }
     const visible = await this.readableRecords(actor.value.spaceIds, actor.value.actorId, scope);
     if (!Array.isArray(visible)) return visible;
+    const current = this.checkListActor(caller, body, actor.value);
+    if (!current.ok) return current;
     for (const taskId of new Set(visible.map((record) => record.taskId))) {
+      const current = this.checkListActor(caller, body, actor.value);
+      if (!current.ok) return current;
       await this.repairTaskUnlocks(taskId, actor.value.spaceIds);
     }
     const records = await this.readableRecords(actor.value.spaceIds, actor.value.actorId, scope);
     if (!Array.isArray(records)) return records;
+    const refreshed = this.checkListActor(caller, body, actor.value);
+    if (!refreshed.ok) return refreshed;
     const items = executionInbox({ actorId: actor.value.actorId, records });
     const nodes = records
       .filter((record) =>
         items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
       )
       .map((record) => ({ ...toNodeView(record), inputs: upstreamInputsFor(record, records) }));
-    return { ok: true as const, actorId: actor.value.actorId, scope, items, nodes };
+    return {
+      ok: true as const,
+      actor: actor.value,
+      actorId: actor.value.actorId,
+      scope,
+      items,
+      nodes,
+    };
   }
 
   /**
