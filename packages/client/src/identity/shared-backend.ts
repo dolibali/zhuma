@@ -71,6 +71,8 @@ const targets = {
   '/api/zhuma-knowledge/save-draft': ['POST', 'knowledge.save-draft'],
   '/api/zhuma-knowledge/propose-draft': ['POST', 'knowledge.propose-draft'],
   '/api/zhuma-knowledge/publish': ['POST', 'knowledge.publish'],
+  '/api/zhuma-knowledge/project-links': ['POST', 'knowledge.project-links'],
+  '/api/zhuma-knowledge/save-project-links': ['POST', 'knowledge.save-project-links'],
   '/api/zhuma-exec/inbox': ['POST', 'execution.inbox'],
   '/api/zhuma-exec/startable': ['POST', 'execution.startable'],
   '/api/zhuma-exec/task-progress': ['POST', 'execution.task-progress'],

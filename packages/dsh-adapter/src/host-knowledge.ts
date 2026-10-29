@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
+import type { Workbench } from '@zhuma/agent-core';
 import {
   KnowledgeError,
   openKnowledgeService,
@@ -11,6 +12,7 @@ import { spaceDirectoryFor, type OpenedSpaceDirectoryHandle } from './space-dire
 export function openHostKnowledge(
   ctx: Context,
   directory: () => OpenedSpaceDirectoryHandle | undefined,
+  readWorkbench?: () => Workbench,
 ) {
   let closed = false;
   let owner: KnowledgeService | undefined;
@@ -24,6 +26,7 @@ export function openHostKnowledge(
       if (closed) return;
       const original = directory();
       opening = openKnowledgeService(child, {
+        ...(readWorkbench ? { readWorkbench } : {}),
         assertPersonalOwner(spaceId, actorId) {
           if (
             !original ||

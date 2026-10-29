@@ -36,6 +36,7 @@ import {
 } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
 import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
+import type { ProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 import {
   ProjectHub,
@@ -96,13 +97,18 @@ export function WorkbenchPage({
       }
     | undefined;
   legacyMode?: boolean;
-  knowledge?: Omit<KnowledgePanelProps, 'onDirtyChange'> | undefined;
+  knowledge?:
+    (Omit<KnowledgePanelProps, 'onDirtyChange'> & { projectApi?: ProjectKnowledgeApi }) | undefined;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
   const [section, setSection] = useState(initialSection);
   const [knowledgeDirty, setKnowledgeDirty] = useState(false);
+  const [projectKnowledgeDirty, setProjectKnowledgeDirty] = useState(false);
   const knowledgeLeave = useLeaveConfirmation(() => knowledge?.lifetime.isCurrent() ?? true);
+  function leaveKnowledge(action: () => void) {
+    knowledgeLeave.request(action, knowledgeDirty || projectKnowledgeDirty);
+  }
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
@@ -681,7 +687,10 @@ export function WorkbenchPage({
           <header className="zm-page-heading">
             <div className="zm-page-title">
               {activeProject && (
-                <Button variant="quiet" onClick={() => setActiveProjectId(null)}>
+                <Button
+                  variant="quiet"
+                  onClick={() => leaveKnowledge(() => setActiveProjectId(null))}
+                >
                   <ControlIcon direction="left" /> 全部项目
                 </Button>
               )}
@@ -712,7 +721,7 @@ export function WorkbenchPage({
               <Button
                 variant="primary"
                 disabled={!!member && (loading || saving || !canCreate)}
-                onClick={createCatalogItem}
+                onClick={() => leaveKnowledge(createCatalogItem)}
               >
                 ＋ {createLabel}
               </Button>
@@ -734,14 +743,12 @@ export function WorkbenchPage({
                     key={s}
                     aria-current={s === section ? 'page' : undefined}
                     onClick={() => {
-                      knowledgeLeave.request(
-                        () => {
-                          setSection(s);
-                          setSearch('');
-                          setActiveProjectId(null);
-                        },
-                        s !== section && knowledgeDirty,
-                      );
+                      if (s === section && !activeProject) return;
+                      leaveKnowledge(() => {
+                        setSection(s);
+                        setSearch('');
+                        setActiveProjectId(null);
+                      });
                     }}
                   >
                     {labels[s]}
@@ -941,9 +948,11 @@ export function WorkbenchPage({
             project={activeProject}
             state={state}
             tab={projectTab}
-            changeTab={setProjectTab}
-            openTask={setActiveTaskId}
-            createTask={() => newTask(activeProject.id)}
+            changeTab={(tab) => {
+              if (tab !== projectTab) leaveKnowledge(() => setProjectTab(tab));
+            }}
+            openTask={(id) => leaveKnowledge(() => setActiveTaskId(id))}
+            createTask={() => leaveKnowledge(() => newTask(activeProject.id))}
             edit={() => openDialog({ kind: 'project', value: activeProject })}
             canCreateTask={!member || capabilities?.createTask === true}
             canEdit={!member || capabilities?.createProject === true}
@@ -951,6 +960,20 @@ export function WorkbenchPage({
             projectExecution={projectExecution?.api}
             spaceId={projectExecution?.spaceId}
             taskProgress={progressFor}
+            {...(knowledge?.projectApi
+              ? {
+                  knowledge: {
+                    scope: {
+                      actorId: knowledge.actorId,
+                      spaceId: knowledge.spaceId,
+                      projectId: activeProject.id,
+                    },
+                    api: knowledge.projectApi,
+                    isCurrent: () => knowledge.lifetime.isCurrent(),
+                    onDirtyChange: setProjectKnowledgeDirty,
+                  },
+                }
+              : {})}
           />
         )}
         {section === 'projects' && !activeProject && !!projects.length && (

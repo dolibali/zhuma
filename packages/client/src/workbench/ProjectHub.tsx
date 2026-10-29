@@ -7,6 +7,8 @@ import { ProjectArtifactsPanel } from './ProjectArtifactsPanel.js';
 import type { ExecutionApi } from '../execution/ExecutionApi.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
 import type { TaskProgressState } from '../execution/useTaskProgress.js';
+import { ProjectKnowledgePanel } from '../knowledge/ProjectKnowledgePanel.js';
+import type { ProjectKnowledgePanelProps } from '../knowledge/project-knowledge-api.js';
 
 export type ProjectTab = 'overview' | 'work' | 'materials' | 'people';
 const tabs: Record<ProjectTab, string> = {
@@ -161,6 +163,7 @@ export function ProjectHub({
   projectExecution,
   spaceId,
   taskProgress,
+  knowledge,
 }: {
   project: Project;
   state: Workbench;
@@ -175,6 +178,7 @@ export function ProjectHub({
   projectExecution?: Pick<ExecutionApi, 'files' | 'projectArtifacts'> | undefined;
   spaceId?: string | undefined;
   taskProgress?: ((taskId: string) => TaskProgressState | undefined) | undefined;
+  knowledge?: ProjectKnowledgePanelProps | undefined;
 }) {
   const [search, setSearch] = useState('');
   const tasks = state.tasks
@@ -365,6 +369,7 @@ export function ProjectHub({
       )}
       {tab === 'materials' && (
         <div className="zm-project-materials">
+          {knowledge && <ProjectKnowledgePanel {...knowledge} />}
           {projectExecution?.projectArtifacts && spaceId ? (
             <ProjectArtifactsPanel
               spaceId={spaceId}

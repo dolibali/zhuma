@@ -720,3 +720,55 @@ test('shared backend: Agent proposal forwards the original draft schema to one f
   );
   assert.equal(h.calls.length, valid);
 });
+
+test('shared backend: project knowledge uses exact original schemas and never accepts renderer authority or URLs', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  for (const [endpoint, input] of [
+    ['project-links', { spaceId: 'north', projectId: 'project' }],
+    [
+      'save-project-links',
+      {
+        spaceId: 'north',
+        projectId: 'project',
+        expectedVersion: 0,
+        idempotencyKey: 'same-intent',
+        links: [
+          {
+            required: true,
+            reference: {
+              spaceId: 'north',
+              libraryId: 'north',
+              pageId: 'guide',
+              version: 1,
+              checksum: 'a'.repeat(64),
+            },
+          },
+        ],
+      },
+    ],
+  ]) {
+    const before = h.calls.length;
+    await h.request(selection, `knowledge.${endpoint}`, input, { rpcId: randomUUID() });
+    assert.equal(h.calls.at(-1).url, `http://backend.example:3080/api/zhuma-knowledge/${endpoint}`);
+    assert.deepEqual(h.calls.at(-1).body.payload, input);
+    assert.equal(
+      h.calls.length,
+      before + 2,
+      'Original identity probe plus original member operation',
+    );
+    for (const patch of [{ actorId: 'other' }, { url: 'http://elsewhere.invalid' }]) {
+      const count = h.calls.length;
+      await assert.rejects(
+        h.request(
+          selection,
+          `knowledge.${endpoint}`,
+          { ...input, ...patch },
+          { rpcId: randomUUID() },
+        ),
+      );
+      assert.equal(h.calls.length, count);
+    }
+  }
+});
