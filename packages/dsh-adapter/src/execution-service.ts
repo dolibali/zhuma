@@ -328,7 +328,7 @@ const fileReadLocation = {
   mode: z.enum(['metadata', 'preview', 'download']).default('metadata'),
 };
 const artifactId = z.string().min(1).max(1000);
-const fileReadSchema = z.discriminatedUnion('purpose', [
+export const fileReadSchema = z.discriminatedUnion('purpose', [
   z.strictObject({ ...fileReadLocation, purpose: z.literal('draft') }),
   z.strictObject({
     ...fileReadLocation,
