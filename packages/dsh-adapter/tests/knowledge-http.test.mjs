@@ -220,7 +220,10 @@ test('knowledge proposal HTTP: same-team non-author, wrong space, actor injectio
   assert.equal(h.calls.writes, 1);
 });
 
-function unfinished(h, { cookie, origin = h.origin, type = 'application/json' } = {}) {
+function unfinished(
+  h,
+  { cookie, origin = h.origin, type = 'application/json', contentLength = 100000 } = {},
+) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const request = httpRequest(
@@ -230,7 +233,7 @@ function unfinished(h, { cookie, origin = h.origin, type = 'application/json' } 
         headers: {
           origin,
           'content-type': type,
-          'content-length': '100000',
+          'content-length': String(contentLength),
           ...(cookie ? { cookie } : {}),
         },
       },
@@ -269,7 +272,7 @@ test('knowledge proposal HTTP: missing/forged member, foreign Origin and wrong m
   assert.deepEqual(await h.durable(), before);
 });
 
-test('knowledge proposal HTTP: malformed envelopes and oversized bodies fail before the service, absent owner and close fail closed', async (t) => {
+test('knowledge proposal HTTP: malformed envelopes and declared oversized bodies fail before the service, absent owner and close fail closed', async (t) => {
   const h = await host(t),
     before = await h.durable();
   for (const body of [
@@ -279,10 +282,16 @@ test('knowledge proposal HTTP: malformed envelopes and oversized bodies fail bef
   ]) {
     assert.equal((await h.raw('propose-draft', body)).status, 400);
   }
-  const oversized = await h.raw('propose-draft', 'x'.repeat(1024 * 1024 + 1));
+  // The original Host rejects declared overflow before reading the body. Keep
+  // it unfinished so fetch cannot race that real early reply with a large write.
+  const oversized = await unfinished(h, {
+    cookie: h.cookies.ann,
+    contentLength: 1024 * 1024 + 1,
+  });
   assert.equal(oversized.status, 413);
-  assert.equal(oversized.json.result.error.code, 'limit');
+  assert.equal(JSON.parse(oversized.body).result.error.code, 'limit');
   assert.equal(h.calls.proposals, 0);
+  assert.equal(h.calls.writes, 0);
   assert.deepEqual(await h.durable(), before);
   h.unpublish();
   const absent = await h.call('propose-draft', proposal());
