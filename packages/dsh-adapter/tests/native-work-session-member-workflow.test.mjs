@@ -10,7 +10,7 @@ const defaults = {
   capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
 };
 const flow = { intentId: randomUUID(), generation: 1 };
-const fixture = () => {
+const fixture = (kind = 'work') => {
   const state = { done: 0, events: [], calls: 0, resources: 'held' };
   const candidate = () => ({
     kind: 'work',
@@ -30,7 +30,24 @@ const fixture = () => {
     requiresResume: false,
     activeWork: [],
     activeReviews: [],
-    candidates: state.done < 2 ? [candidate()] : [],
+    candidates:
+      state.done < 2
+        ? [
+            kind === 'review'
+              ? {
+                  kind,
+                  target: {
+                    ...candidate().target,
+                    roundId: 'round',
+                    artifactVersionId: 'artifact',
+                  },
+                  expectedReviewVersion: 0,
+                  reviewerRef: { id: 'expert', version: target.planId, digest: 'a'.repeat(64) },
+                  workflow: flow,
+                }
+              : candidate(),
+          ]
+        : [],
     attention: [],
   });
   const protocol = {
@@ -92,15 +109,32 @@ const fixture = () => {
       };
     },
     workAccepted: async () => state.events.push('bind'),
+    prepareReview: async ({ candidate: c }) => ({
+      target: c.target,
+      workflow: c.workflow,
+      expectedReviewVersion: c.expectedReviewVersion,
+      reviewerRef: { id: c.reviewerRef.id, version: c.reviewerRef.version },
+      model: defaults.model,
+      workspace: defaults.workspace,
+      capabilities: {
+        reader: 'zhuma-native-review-read@1',
+        resultIntent: 'zhuma-native-review-intent@1',
+      },
+    }),
   };
+  const review = { ...protocol };
+  native.startReview = native.start;
+  native.readReview = native.read;
+  native.stopReview = native.stop;
   const consumer = new NativeMemberWorkflowConsumer({
     protocol,
     native,
+    ...(kind === 'review' ? { review } : {}),
     hooks,
     signal: new AbortController().signal,
     pollMs: 250,
   });
-  return { consumer, protocol, native, hooks, state };
+  return { consumer, protocol, review, native, hooks, state };
 };
 async function until(predicate) {
   const deadline = Date.now() + 4000;
@@ -307,4 +341,112 @@ test('member workflow contract: explicit cold unknown reconciliation uses exact 
   assert.equal(h.consumer.canSwitchBackend(), false);
   await h.consumer.close();
   assert.equal(h.consumer.canSwitchBackend(), true);
+});
+
+test('member workflow contract: close joins an explicitly issued cold reconcile before original owner cleanup', async () => {
+  const h = fixture(),
+    issued = Promise.withResolvers(),
+    reply = Promise.withResolvers(),
+    requestId = randomUUID();
+  const candidate = (await h.protocol.workflowNext()).candidates[0];
+  h.protocol.pendingWorkflowAccept = async () => ({ requestId, candidate });
+  h.protocol.recover = async () => {
+    issued.resolve();
+    return reply.promise;
+  };
+  const recovery = h.consumer.recover(target);
+  await issued.promise;
+  assert.equal(h.consumer.recover(target), recovery, 'Same recovery joins the actual source');
+  await assert.rejects(h.consumer.recover({ ...target, taskId: 'other' }), {
+    code: 'scope-mismatch',
+  });
+  await assert.rejects(h.consumer.start(randomUUID(), { target, defaults }), {
+    code: 'unavailable',
+  });
+  h.consumer.fence();
+  let joined = false;
+  const join = h.consumer.whenAdmissionsIdle().then(() => {
+    joined = true;
+  });
+  const closed = h.consumer.close();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(joined, false);
+  assert.deepEqual(
+    h.state.events,
+    [],
+    'Original owner is still alive for the late recovery handle',
+  );
+  reply.resolve({ value: { resources: 'held', nodeVersion: 1, runVersion: 1 } });
+  await recovery;
+  await join;
+  await closed;
+  assert.deepEqual(h.state.events, ['stop']);
+  assert.equal(h.consumer.canSwitchBackend(), true);
+});
+
+for (const kind of ['work', 'review']) {
+  test(`member workflow contract: ${kind} known ACK retains its cold locator until real owner settlement`, async () => {
+    const h = fixture(kind),
+      accepted = Promise.withResolvers(),
+      release = Promise.withResolvers(),
+      drain = Promise.withResolvers();
+    h.hooks[kind === 'work' ? 'workAccepted' : 'reviewAccepted'] = async () => {
+      accepted.resolve();
+      await release.promise;
+    };
+    h.protocol.forgetWorkflowAccept = async () => h.state.events.push('locator-cleared');
+    h.native[kind === 'work' ? 'start' : 'startReview'] = async () =>
+      assert.fail('A late accepted source must never start after fence');
+    h.native[kind === 'work' ? 'stop' : 'stopReview'] = async () => {
+      h.state.events.push('original-cleanup');
+      await drain.promise;
+      h.state.resources = 'settled';
+    };
+    await h.consumer.start(randomUUID(), { target, defaults });
+    await accepted.promise;
+    assert(!h.state.events.includes('locator-cleared'));
+    const closing = h.consumer.close();
+    release.resolve();
+    await until(() => h.state.events.includes('original-cleanup'));
+    assert(!h.state.events.includes('locator-cleared'));
+    drain.resolve();
+    await closing;
+    assert.equal(h.state.events.filter((v) => v === 'locator-cleared').length, 1);
+  });
+  test(`member workflow contract: ${kind} cold reconcile keeps its locator until explicit cleanup`, async () => {
+    const h = fixture(kind),
+      requestId = randomUUID(),
+      candidate = (await h.protocol.workflowNext()).candidates[0],
+      carrier = kind === 'work' ? h.protocol : h.review;
+    h.protocol.pendingWorkflowAccept = async () => ({ requestId, candidate });
+    h.protocol.forgetWorkflowAccept = async () => h.state.events.push('locator-cleared');
+    carrier.recover = async (input) => {
+      if (kind === 'review')
+        assert.deepEqual(input.reviewerRef, {
+          id: candidate.reviewerRef.id,
+          version: candidate.reviewerRef.version,
+        });
+      return { value: { resources: 'settled' } };
+    };
+    carrier.status = async () => ({ resources: 'settled' });
+    h.native[kind === 'work' ? 'read' : 'readReview'] = () =>
+      assert.fail('Already settled recovery has no active local owner source');
+    await h.consumer.recover(target);
+    assert.deepEqual(h.state.events, []);
+    await h.consumer.close();
+    assert.deepEqual(h.state.events, ['locator-cleared']);
+    assert.equal(h.consumer.canSwitchBackend(), true);
+  });
+}
+test('member workflow contract: review hook cannot substitute a different expert', async () => {
+  const h = fixture('review'),
+    original = h.hooks.prepareReview;
+  h.hooks.prepareReview = async (input) => ({
+    ...(await original(input)),
+    reviewerRef: { id: 'other-expert', version: target.planId },
+  });
+  await h.consumer.start(randomUUID(), { target, defaults });
+  await until(() => h.consumer.view().blocked === 'scope-mismatch');
+  await h.consumer.close();
+  assert(!h.state.events.some((value) => value.startsWith('accept:')));
 });

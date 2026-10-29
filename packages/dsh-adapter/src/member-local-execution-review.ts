@@ -797,12 +797,16 @@ export class MemberLocalExecutionReview {
     this.options.protocol.assertReadHandle(run);
     const binding = this.historyBindings.get(run),
       owned = this.originals.get(run);
-    if (!binding || (owned && ['working', 'dispatching'].includes(owned.phase)))
+    if (owned && ['working', 'dispatching'].includes(owned.phase))
       throw new NativeReviewError('review-authority-denied');
     return this.track(
       (async () => {
         let before = performance.now(),
           view = await this.options.protocol.status(run, signal);
+        // An original reserved review can be accepted before any SDK binding
+        // exists. Reconcile/cleanup that exact handle without inventing one.
+        if (!binding && view.nextSequence !== 1)
+          throw new NativeReviewError('review-authority-denied');
         this.remember(view);
         const key = view.result?.requestId ?? view.receipt?.requestId ?? view.failure?.requestId;
         const recovered = await this.options.protocol.reconcile(
@@ -810,14 +814,16 @@ export class MemberLocalExecutionReview {
           {
             lastSequence: view.nextSequence - 1,
             ...(key ? { resultRequestId: key } : {}),
-            ...(view.nextSequence > 1
+            ...(binding && view.nextSequence > 1
               ? { nativeSessionId: binding.nativeSessionId, nativeAgentId: binding.nativeAgentId }
               : {}),
           },
           signal,
         );
-        this.historyBindings.set(recovered, binding);
-        const opened = await this.history!.open(recovered, signal);
+        if (binding) this.historyBindings.set(recovered, binding);
+        const opened = binding
+          ? await this.history!.open(recovered, signal)
+          : { remote: recovered.value, native: undefined };
         view = opened.remote;
         this.remember(view);
         let confirmation: RemoteReviewOperationValue<'result-status'> | undefined;

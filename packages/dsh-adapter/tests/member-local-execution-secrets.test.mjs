@@ -13,7 +13,9 @@ function fixture() {
     read: async (key) => structuredClone(rows.get(key)),
     modify(key, update) {
       const work = queue.then(() => {
-        const next = update(structuredClone(rows.get(key)));
+        // Original SDK modifyRecord(undefined) preserves the current record.
+        const current = structuredClone(rows.get(key));
+        const next = update(current) ?? current;
         rows.set(key, structuredClone(next));
         if (fail) throw Error('/private/KEY_CANARY');
         return structuredClone(next);
@@ -341,6 +343,11 @@ for (const kind of ['work', 'review'])
     else await coldOwner.rememberReviewRun(cold, oldIntent, scope, 'config', 'e'.repeat(64));
     await coldOwner.forgetWorkflowAccept(cold, candidate, scope);
     assert.equal(await coldOwner.pendingWorkflowAccept(cold, target, workflow), undefined);
+    const reopened = new MemberLocalExecutionSecrets(h.store),
+      reopenedDevice = await reopened.device(backendId, 'ann');
+    assert.equal(await reopened.pendingWorkflowAcceptForDevice(reopenedDevice), undefined);
+    await reopened.rememberWorkflowAccept(reopenedDevice, nextId, candidate);
+    assert.equal((await reopened.pendingWorkflowAcceptForDevice(reopenedDevice)).requestId, nextId);
     assert(
       await coldOwner.recoverAccept(cold, requestId),
       'Original permit record is never deleted',
