@@ -15,6 +15,7 @@ import type {
 import type { MemberLocalAcceptedRun } from './member-local-execution-protocol.js';
 import { nativeScopeKey } from './native-work-session-record.js';
 import { createHostMemberKnowledgePort } from './host-member-knowledge-port.js';
+import { readExecutionRunComposition } from './execution-run-composition.js';
 
 export const memberNativeKnowledgeChoiceSchema = z.strictObject({
   libraryId: z
@@ -80,6 +81,14 @@ export function createHostMemberNativeKnowledge(options: {
   }
   return {
     libraries,
+    async workflowChoice(spaceId: string, signal: AbortSignal): Promise<Choice> {
+      const source = await libraries(spaceId, signal);
+      if (source.length !== 1 || source[0]!.id !== spaceId)
+        throw new ExecutionRunError('run-authority-unavailable');
+      // Automatic work may read the original published library, never inherit
+      // a manual Run's consent to propose drafts.
+      return { libraryId: source[0]!.id, allowDrafts: false };
+    },
     async prepare(
       requestId: string,
       spaceId: string,
@@ -113,10 +122,29 @@ export function createHostMemberNativeKnowledge(options: {
     },
     bind(requestId: string, run: MemberLocalAcceptedRun) {
       const value = prepared.get(requestId);
-      if (!value) return;
       const { backendId: _backendId, ...scope } = run.value.scope;
+      const composition = readExecutionRunComposition(run.composition);
+      const project =
+        composition.schemaVersion === 2 ? composition.payload.projectKnowledge : undefined;
+      if (canonicalPayload(composition.payload.scope) !== canonicalPayload(scope))
+        throw new ExecutionRunError('run-scope-mismatch');
+      if (
+        project &&
+        (project.spaceId !== scope.spaceId ||
+          project.projectId !== composition.payload.plan.projectId ||
+          project.links.some(
+            ({ reference }) =>
+              reference.spaceId !== scope.spaceId ||
+              reference.libraryId !== (value?.library.id ?? scope.spaceId),
+          ) ||
+          (project.links.some(({ required }) => required) && !value))
+      )
+        throw new ExecutionRunError('run-scope-mismatch');
+      if (!value) return;
       if (scope.spaceId !== value.library.spaceId || scope.actorId !== options.actorId)
         throw new ExecutionRunError('run-scope-mismatch');
+      if (composition.schemaVersion !== 2 || !composition.payload.knowledgeTool)
+        throw new ExecutionRunError('run-authority-unavailable');
       const key = nativeScopeKey(scope);
       if (accepted.has(key) && accepted.get(key) !== value)
         throw new ExecutionRunError('run-scope-mismatch');

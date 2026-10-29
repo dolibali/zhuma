@@ -1,6 +1,8 @@
 import { createHash, createPublicKey, randomUUID, timingSafeEqual, verify } from 'node:crypto';
 import {
   canonicalPayload,
+  KnowledgeProjectSnapshotSchema,
+  type KnowledgeProjectSnapshot,
   isTerminalRunStatus,
   requestRunStop,
   REMOTE_RUN_LIMITS,
@@ -30,7 +32,12 @@ import {
   type RemoteInputDescriptor,
   type RemoteRunMigration,
   type RemoteReconcileValue,
+  REMOTE_WORKFLOW_OPERATIONS,
 } from '@zhuma/agent-core';
+import {
+  RemoteWorkflowIntents,
+  type RemoteWorkflowIntentSource,
+} from './execution-workflow-intent.js';
 import {
   RemoteReviewAuthorities,
   type RemoteReviewAuthoritySource,
@@ -136,6 +143,7 @@ function deny(code: RemoteRunErrorCode): never {
 
 /** Private original-service ports. A wire DTO never supplies any of these assertions. */
 export interface RemoteRunAuthoritySource {
+  readonly workflow?: Pick<RemoteWorkflowIntentSource, 'facts' | 'write' | 'reviewCandidates'>;
   readonly signal: AbortSignal;
   readonly review?: RemoteReviewAuthoritySource;
   readonly resourceHost?: ExecutionRunResourceCatalogHost;
@@ -170,18 +178,26 @@ export interface RemoteRunAuthoritySource {
   afterDelivery(record: ExecutionNodeRecord): Promise<void>;
   /** Current membership/project/assignment AND the unique latest applied plan. */
   assertTarget(actorId: string, target: Target, node: ExecutionNodeRecord): void;
+  /** Reference-only metadata, read outside the original queue after target authorization. */
+  prepareProjectKnowledge?(
+    request: MemberRequest,
+    target: Target,
+    signal: AbortSignal,
+  ): Promise<KnowledgeProjectSnapshot>;
   compose(
     actorId: string,
     request: Accept,
     node: ExecutionNodeRecord,
     scope: Omit<RemoteRunScope, 'backendId'>,
     resources?: ExecutionRunResourceCatalog,
+    projectKnowledge?: KnowledgeProjectSnapshot,
   ): FrozenExecutionRunComposition;
   now?(): number;
 }
 
 /** Owns no parallel task store. Durable metadata lives only in original global/Run rows. */
 export class RemoteRunAuthorities {
+  private workflowIntents: RemoteWorkflowIntents | undefined;
   private readonly epoch = randomUUID();
   private readonly active = new Map<
     string,
@@ -214,6 +230,31 @@ export class RemoteRunAuthorities {
     this.reviews = source.review
       ? new RemoteReviewAuthorities(source.review, {
           epoch: this.epoch,
+          ...(source.workflow
+            ? {
+                workflow: {
+                  owner: this,
+                  accept: (body, lease, sessionHash) =>
+                    this.workflows().assertReviewAccept(
+                      body,
+                      lease,
+                      sessionHash,
+                      this.registry().devices.find((device) => device.deviceId === body.deviceId)!
+                        .keyEpoch,
+                    ),
+                  preparing: (body, lease, sessionHash) =>
+                    this.workflows().preparingReview(
+                      body,
+                      lease,
+                      sessionHash,
+                      this.registry().devices.find((device) => device.deviceId === body.deviceId)!
+                        .keyEpoch,
+                    ),
+                  check: (lease, scope, ref, deviceId, keyEpoch) =>
+                    this.workflows().assertExisting(lease, scope, ref, deviceId, keyEpoch),
+                },
+              }
+            : {}),
           now: () => this.now(),
           registry: () => this.registry(),
           checkDevice: (body, actorId, verifyProof) => {
@@ -259,6 +300,8 @@ export class RemoteRunAuthorities {
       if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
       const raw = executionRunGlobalSchema.safeParse(this.source.readGlobal());
       if (!raw.success) deny('remote-unavailable');
+      if (raw.data.remoteWorkflowWriter === 1 && !this.source.workflow)
+        deny('remote-protocol-unsupported');
       if (
         (raw.data.remoteExecutionFileWriter === 1 ||
           raw.data.remoteExecutionAcceptedFileWriter === 1) &&
@@ -296,6 +339,103 @@ export class RemoteRunAuthorities {
       !!this.source.verifyOutputFiles
     );
   }
+  private workflows(): RemoteWorkflowIntents {
+    const source = this.source.workflow;
+    if (!source) deny('remote-protocol-unsupported');
+    this.workflowIntents ??= new RemoteWorkflowIntents({
+      ...source,
+      reviewCandidates: (lease, target, intent) =>
+        this.reviews?.ready() ? (source.reviewCandidates?.(lease, target, intent) ?? []) : [],
+      reviewViews: (lease, target, intent, sessionHash) =>
+        source
+          .facts(lease, target)
+          .nodes.flatMap((node) =>
+            (readExecutionReviewState(node)?.attempts ?? []).flatMap((attempt) =>
+              'remote' in attempt &&
+              attempt.remote?.workflow?.intentId === intent.intentId &&
+              attempt.remote.deviceId === intent.deviceId &&
+              attempt.scope.actorId === intent.actorId
+                ? [
+                    this.reviews!.workflowView(
+                      this,
+                      lease,
+                      { ...attempt.scope, backendId: attempt.remote.backendId },
+                      sessionHash,
+                    ),
+                  ]
+                : [],
+            ),
+          ),
+      deny,
+      now: () => this.now(),
+      beforeWrite: async () => {
+        const global = executionRunGlobalSchema.parse(this.source.readGlobal());
+        if (global.remoteWorkflowWriter !== 1)
+          await this.source.writeGlobal({
+            ...prepareExecutionRunWriter(global),
+            remoteWorkflowWriter: 1,
+          });
+        if (executionRunGlobalSchema.parse(this.source.readGlobal()).remoteWorkflowWriter !== 1)
+          deny('remote-unavailable');
+      },
+      runView: (node, run) => {
+        if (!run.remote) deny('remote-scope-mismatch');
+        return this.view({ node, run, state: readExecutionRunState(node)!, remote: run.remote });
+      },
+      stop: async (lease, target, intent, requestId) => {
+        for (const node of source.facts(lease, target).nodes) {
+          for (const original of readExecutionRunState(node)?.runs ?? []) {
+            if (
+              original.remote?.workflow?.intentId !== intent.intentId ||
+              original.remote.deviceId !== intent.deviceId ||
+              original.actorId !== intent.actorId ||
+              original.resources === 'settled' ||
+              original.remote.stopRequested ||
+              original.remote.receipt
+            )
+              continue;
+            const current = this.load({
+              ...executionRunScope(node, original),
+              backendId: original.remote.backendId,
+            });
+            await this.stop(
+              {
+                protocolVersion: 1,
+                backendId: current.remote.backendId,
+                requestId,
+                operation: 'stop',
+                payload: {
+                  scope: {
+                    ...executionRunScope(current.node, current.run),
+                    backendId: current.remote.backendId,
+                  },
+                  expectedNodeVersion: current.node.command.version,
+                  expectedRunVersion: current.state.version,
+                },
+              },
+              lease,
+            );
+          }
+          for (const attempt of readExecutionReviewState(node)?.attempts ?? []) {
+            if (
+              'remote' in attempt &&
+              attempt.remote?.workflow?.intentId === intent.intentId &&
+              attempt.remote.deviceId === intent.deviceId &&
+              attempt.scope.actorId === intent.actorId
+            )
+              await this.reviews!.workflowStop(
+                this,
+                lease,
+                { ...attempt.scope, backendId: attempt.remote.backendId },
+                intent.intentId,
+                requestId,
+              );
+          }
+        }
+      },
+    });
+    return this.workflowIntents;
+  }
   ownsReview(issuer: RemoteReviewAuthorities): boolean {
     return this.reviews === issuer;
   }
@@ -330,6 +470,7 @@ export class RemoteRunAuthorities {
   }
   fence(): void {
     this.closed = true;
+    this.workflowIntents?.close();
     this.files?.fence();
     this.reviews?.fence();
     for (const entries of this.inputReads.values()) for (const entry of entries) entry.cancel();
@@ -399,9 +540,11 @@ export class RemoteRunAuthorities {
       body.operation !== 'cleanup'
     )
       return { ok: false, error: { code: 'remote-protocol-unsupported' } };
-    const operations: readonly RemoteRunOperation[] = this.filesEnabled()
-      ? [...supported, ...fileOperations]
-      : supported;
+    const operations: readonly RemoteRunOperation[] = [
+      ...supported,
+      ...(this.filesEnabled() ? fileOperations : []),
+      ...(this.source.workflow ? REMOTE_WORKFLOW_OPERATIONS : []),
+    ];
     if (!operations.includes(body.operation))
       return { ok: false, error: { code: 'remote-protocol-unsupported' } };
     let lease: ExecutionMemberLease | undefined;
@@ -430,7 +573,10 @@ export class RemoteRunAuthorities {
       const sessionHash = session ? hash(session) : '';
       let proofAdmitted = false;
       let verifiedOutputFiles = false;
-      const execute = (qualification?: ExecutionInitialResourceVerification): Promise<unknown> =>
+      const execute = (
+        qualification?: ExecutionInitialResourceVerification,
+        projectKnowledge?: KnowledgeProjectSnapshot,
+      ): Promise<unknown> =>
         this.source.enqueue(async () => {
           if (body.operation !== 'cleanup' && (this.closed || this.source.signal.aborted))
             deny('remote-unavailable');
@@ -446,12 +592,27 @@ export class RemoteRunAuthorities {
               actorId: lease!.memberId,
               serverTime: this.now(),
               purposes: this.reviews?.ready() ? ['work', 'review'] : ['work'],
-              operations,
+              operations: body.payload.workflow
+                ? operations
+                : operations.filter((operation) => !operation.startsWith('workflow-')),
             };
           if (body.operation === 'register-device') return this.register(body, lease!);
           if (body.operation === 'cleanup') return this.cleanup(body, privatePermit);
+          if (
+            body.operation === 'workflow-start' ||
+            body.operation === 'workflow-status' ||
+            body.operation === 'workflow-next' ||
+            body.operation === 'workflow-resume' ||
+            body.operation === 'workflow-stop'
+          )
+            return this.workflows().command(
+              body,
+              lease!,
+              this.checkDevice(body, lease!.memberId),
+              sessionHash,
+            );
           if (body.operation === 'accept') {
-            return this.accept(body, lease!, sessionHash, qualification);
+            return this.accept(body, lease!, sessionHash, qualification, projectKnowledge);
           }
           if (body.operation === 'stop') return this.stop(body, lease!);
           this.checkDevice(body, lease!.memberId, !proofAdmitted);
@@ -562,7 +723,7 @@ export class RemoteRunAuthorities {
         });
       let response: unknown =
         body.operation === 'accept'
-          ? await this.prepareAcceptResources(request, body, lease!, execute)
+          ? await this.prepareAcceptResources(request, body, lease!, execute, sessionHash)
           : await execute();
       while (response instanceof RemoteFileOperation) response = await response.run();
       // Only after actual metadata release may this request acquire drive. A
@@ -801,44 +962,78 @@ export class RemoteRunAuthorities {
     request: MemberRequest,
     body: Accept,
     lease: ExecutionMemberLease,
-    work: (verification?: ExecutionInitialResourceVerification) => Promise<T>,
+    work: (
+      verification?: ExecutionInitialResourceVerification,
+      projectKnowledge?: KnowledgeProjectSnapshot,
+    ) => Promise<T>,
+    sessionHash: string,
   ): Promise<T> {
-    const needed = await this.source.enqueue(async () => {
-      if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
-      if (body.backendId !== this.registry().backendId) deny('remote-scope-mismatch');
-      this.checkDevice(body, lease.memberId);
-      lease.assertCurrent(body.payload.target.spaceId);
-      const node = this.source.readNode(body.payload.target);
-      if (!node) deny('remote-not-found');
-      this.source.assertTarget(lease.memberId, body.payload.target, node);
-      if (
-        node.handoff.skillRefs.length &&
-        body.payload.capabilities.resources !== REMOTE_RUN_RESOURCE_SOURCE_VERSION
-      )
-        deny('remote-protocol-unsupported');
-      const prior = readExecutionRunState(node)?.runs.some(
-        (run) => run.remote?.acceptRequestId === body.requestId,
-      );
-      return !prior && node.handoff.skillRefs.length > 0;
-    });
-    if (!needed) return work();
-    if (this.preparationFailure) deny('remote-unavailable');
-    const host = this.source.resourceHost;
-    if (!host) deny('remote-unavailable');
+    let preparation:
+      { readonly signal: AbortSignal; finish(cleanupConfirmed?: boolean): void } | undefined;
+    let cleanupConfirmed = true;
     try {
-      return await withExecutionInitialResourceQualification(
-        {
-          host,
-          ownerSignal: AbortSignal.any([this.source.signal, lease.signal]),
-          originalRequest: request,
-          locator: body.payload.target,
-        },
-        work,
-      );
-    } catch (error) {
-      if (error instanceof ExecutionRunResourceQualificationCloseError)
-        this.preparationFailure ??= error;
-      throw error;
+      const needed = await this.source.enqueue(async () => {
+        if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
+        if (body.backendId !== this.registry().backendId) deny('remote-scope-mismatch');
+        const device = this.checkDevice(body, lease.memberId);
+        lease.assertCurrent(body.payload.target.spaceId);
+        const node = this.source.readNode(body.payload.target);
+        if (!node) deny('remote-not-found');
+        this.source.assertTarget(lease.memberId, body.payload.target, node);
+        if (
+          node.handoff.skillRefs.length &&
+          body.payload.capabilities.resources !== REMOTE_RUN_RESOURCE_SOURCE_VERSION
+        )
+          deny('remote-protocol-unsupported');
+        const prior = readExecutionRunState(node)?.runs.some(
+          (run) => run.remote?.acceptRequestId === body.requestId,
+        );
+        if (!prior && body.payload.workflow)
+          preparation = this.workflows().preparing(body, lease, sessionHash, device.keyEpoch);
+        return { fresh: !prior, resources: !prior && node.handoff.skillRefs.length > 0 };
+      });
+      const signal = AbortSignal.any([
+        this.source.signal,
+        lease.signal,
+        ...(preparation ? [preparation.signal] : []),
+      ]);
+      const projectKnowledge =
+        needed.fresh && this.source.prepareProjectKnowledge
+          ? KnowledgeProjectSnapshotSchema.parse(
+              await this.source.prepareProjectKnowledge(request, body.payload.target, signal),
+            )
+          : undefined;
+      if (signal.aborted) deny('remote-permit-revoked');
+      lease.assertCurrent(body.payload.target.spaceId);
+      const qualified = (verification?: ExecutionInitialResourceVerification) =>
+        work(verification, projectKnowledge);
+      if (!needed.resources) return await qualified();
+      if (this.preparationFailure) deny('remote-unavailable');
+      const host = this.source.resourceHost;
+      if (!host) deny('remote-unavailable');
+      try {
+        return await withExecutionInitialResourceQualification(
+          {
+            host,
+            ownerSignal: AbortSignal.any([
+              this.source.signal,
+              lease.signal,
+              ...(preparation ? [preparation.signal] : []),
+            ]),
+            originalRequest: request,
+            locator: body.payload.target,
+          },
+          qualified,
+        );
+      } catch (error) {
+        if (error instanceof ExecutionRunResourceQualificationCloseError) {
+          cleanupConfirmed = false;
+          this.preparationFailure ??= error;
+        }
+        throw error;
+      }
+    } finally {
+      preparation?.finish(cleanupConfirmed);
     }
   }
   private proof(body: RemoteDeviceRequest | RemoteReviewDeviceRequest, publicKey: string): void {
@@ -1004,6 +1199,14 @@ export class RemoteRunAuthorities {
   ): void {
     const remote = value.remote;
     if (!mutation) return;
+    if (remote.workflow)
+      this.workflows().assertExisting(
+        lease,
+        { ...executionRunScope(value.node, value.run), backendId: remote.backendId },
+        remote.workflow,
+        remote.deviceId,
+        remote.keyEpoch,
+      );
     if (remote.stopRequested || value.run.attempt.stopPhase !== 'none')
       deny('remote-permit-revoked');
     if (remote.drive.epoch !== this.epoch || remote.drive.expiresAt <= this.now())
@@ -1413,6 +1616,7 @@ export class RemoteRunAuthorities {
     lease: ExecutionMemberLease,
     sessionHash: string,
     qualification?: ExecutionInitialResourceVerification,
+    projectKnowledge?: KnowledgeProjectSnapshot,
   ): Promise<RemoteAcceptValue> {
     const device = this.checkDevice(body, lease.memberId);
     const payload = body.payload;
@@ -1434,6 +1638,9 @@ export class RemoteRunAuthorities {
       this.authorize(loaded, lease);
       return this.acceptValue(loaded, 'replayed', loaded.remote.memberSessionHash === sessionHash);
     }
+    const workflow = payload.workflow
+      ? this.workflows().assertAccept(body, lease, sessionHash, device.keyEpoch)
+      : undefined;
     if (
       this.active.size >= REMOTE_RUN_LIMITS.activeAuthorities ||
       this.heldCount() >= REMOTE_RUN_LIMITS.activeAuthorities
@@ -1485,6 +1692,7 @@ export class RemoteRunAuthorities {
       node,
       scope,
       qualification?.catalog,
+      projectKnowledge,
     );
     qualification?.assertCurrent();
     const inputs = this.inputCatalog(
@@ -1521,6 +1729,7 @@ export class RemoteRunAuthorities {
     );
     const remote: RemoteRunBinding = {
       protocolVersion: 1,
+      ...(workflow ? { workflow } : {}),
       ...(files ? { files: 'zhuma-native-output-file@1' as const } : {}),
       ...(payload.capabilities.acceptedFile
         ? { acceptedFiles: payload.capabilities.acceptedFile }
@@ -1593,6 +1802,7 @@ export class RemoteRunAuthorities {
       if (!same(this.source.readNode(payload.target), node)) deny('remote-conflict');
       qualification?.assertCurrent();
     }
+    if (payload.workflow) this.workflows().assertAccept(body, lease, sessionHash, device.keyEpoch);
     await this.source.writeNode(next);
     qualification?.assertCurrent();
     return this.acceptValue(this.load({ ...scope, backendId: body.backendId }), 'accepted');

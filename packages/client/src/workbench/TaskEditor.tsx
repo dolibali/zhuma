@@ -30,6 +30,7 @@ import { SingleSelect } from './SingleSelect.js';
 import { PlanningChanges } from './PlanningChanges.js';
 import { ControlIcon } from './ControlIcon.js';
 import { useUnsavedChanges } from './UnsavedChanges.js';
+import { PlanningReadiness, usePlanningReadiness } from './PlanningReadiness.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
 import type { NativeRunApi } from '../run/api.js';
@@ -93,6 +94,7 @@ export function TaskEditor({
   refreshProgress?: (() => void) | undefined;
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
+  const planningReadiness = usePlanningReadiness(api, model);
   const [workflowView, setWorkflowView] = useState<WorkflowView>();
   const [baseline, setBaseline] = useState(() => JSON.stringify(original));
   const [revision, setRevision] = useState(state.revision);
@@ -829,13 +831,22 @@ export function TaskEditor({
         </details>
       </div>
       {nativeRun?.api.workflow &&
-        api.member?.actorId === task.ownerId &&
+        api.member &&
+        (api.member.actorId === task.ownerId ||
+          task.workflows.some((flow) =>
+            flow.nodes.some((node) => node.assigneeId === api.member?.actorId),
+          )) &&
         task.status === 'ready' &&
         applied &&
         !dirty && (
           <WorkflowControls
             api={nativeRun.api.workflow}
             target={{ taskId: task.id, planId: applied.id, revision: applied.revision }}
+            nodeLabels={Object.fromEntries(
+              applied.task.workflows.flatMap((flow) =>
+                flow.nodes.map((node) => [node.id, node.title]),
+              ),
+            )}
             onViewChange={updateWorkflowView}
             openModelSettings={nativeRun.api.openModelSettings}
             workspaceApprovals={
@@ -1245,6 +1256,7 @@ export function TaskEditor({
           ) : (
             <div className="zm-planner">
               <div className="zm-planner-body">
+                {api.member && <PlanningReadiness value={planningReadiness} />}
                 <details className="zm-planning-context">
                   <summary>
                     <span>规划依据</span>
@@ -1260,7 +1272,7 @@ export function TaskEditor({
                       </li>
                     ))}
                   </ul>
-                  <p>模型：{model}</p>
+                  {!api.member && <p>模型：{model}</p>}
                   <p>模型只读取任务、人员职责和资产定义，不获得工具授权。</p>
                 </details>
                 {!proposal && !planning && (

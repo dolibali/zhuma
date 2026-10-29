@@ -8,6 +8,14 @@ export interface HostNativeChild extends NativeSessionAdmissionSource {
   dispose(): Promise<void>;
 }
 
+/** Only the original opener may issue this after its failed mount really disposed. */
+export class HostNativeOpenRefusal extends Error {
+  constructor(cause: unknown) {
+    super('Native owner opening was disposed.', { cause });
+    this.name = 'HostNativeOpenRefusal';
+  }
+}
+
 /** One in-process original child lifetime. This stores no business/Run/session
  * facts and never turns close/SDK idle into a readiness or drain certificate. */
 export function createHostNativeOwnerLifecycle(options: {
@@ -63,7 +71,7 @@ export function createHostNativeOwnerLifecycle(options: {
   async function mount() {
     const generation = epoch;
     const work = openCurrent(generation).catch((error: unknown) => {
-      broken = true;
+      if (!(error instanceof HostNativeOpenRefusal)) broken = true;
       if (!closed && generation === epoch) phase = 'failed';
       throw error;
     });
@@ -76,6 +84,11 @@ export function createHostNativeOwnerLifecycle(options: {
   }
   const unsubscribe = options.backend.onNativeAuthenticationChanged((kind) => {
     if (closed) return;
+    if (
+      kind === 'verified' &&
+      (phase !== 'failed' || broken || child || opening || draining || selecting)
+    )
+      return;
     // Logout/revocation is intentionally different from an ordinary switch:
     // fence immediately and start genuine cleanup, including during an open.
     phase = 'transitioning';
@@ -94,14 +107,16 @@ export function createHostNativeOwnerLifecycle(options: {
       return;
     }
     const work = (async () => {
-      await priorOpening;
+      await priorOpening?.catch((error: unknown) => {
+        if (!(error instanceof HostNativeOpenRefusal)) throw error;
+      });
       await cleanup;
       if (closed || generation !== epoch) return;
       if (broken) {
         phase = 'failed';
         return;
       }
-      if (kind === 'changed') await mount();
+      if (kind === 'changed' || kind === 'verified') await mount();
       else phase = 'waiting-auth';
     })();
     void work.catch((error: unknown) => {

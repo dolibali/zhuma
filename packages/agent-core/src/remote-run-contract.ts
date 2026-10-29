@@ -45,6 +45,19 @@ export const remoteRunScopeSchema = remoteNodeTargetSchema.extend({
   segmentId: id,
 });
 export type RemoteRunScope = z.infer<typeof remoteRunScopeSchema>;
+export const remoteWorkflowTargetSchema = remoteNodeTargetSchema.omit({ nodeId: true });
+export type RemoteWorkflowTarget = z.infer<typeof remoteWorkflowTargetSchema>;
+export const remoteWorkflowRefSchema = z.strictObject({ intentId: z.uuid(), generation: positive });
+export type RemoteWorkflowRef = z.infer<typeof remoteWorkflowRefSchema>;
+export const remoteWorkflowBindingSchema = remoteWorkflowRefSchema.extend({
+  repairIndex: natural.max(2),
+});
+export type RemoteWorkflowBinding = z.infer<typeof remoteWorkflowBindingSchema>;
+export const remoteWorkflowScopeSchema = remoteWorkflowTargetSchema.extend({
+  actorId: id,
+  deviceId: z.uuid(),
+  ...remoteWorkflowRefSchema.shape,
+});
 export const remoteDeviceProofSchema = z.strictObject({
   issuedAt: natural,
   nonce: z.uuid(),
@@ -125,6 +138,98 @@ export const remoteLocalCapabilitiesSchema = z.strictObject({
   knowledge: z.literal('zhuma-native-knowledge@1').optional(),
   localTools: z.array(localTool).max(4),
 });
+export const REMOTE_WORKFLOW_LIMITS = Object.freeze({
+  intentsPerPlan: 32,
+  receipts: 128,
+  nodes: 512,
+  bytes: 65_536,
+  armTtlMs: 60_000,
+  concurrent: 4,
+});
+const workflowPublishRange = z.strictObject({
+  kind: z.enum(['file', 'directory']),
+  path: z
+    .string()
+    .min(1)
+    .max(512)
+    .refine(
+      (value) =>
+        !value.startsWith('/') &&
+        !/[\\\u0000-\u001f\u007f]/u.test(value) &&
+        !/^[a-z]:/iu.test(value) &&
+        !value.includes('://') &&
+        value.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
+    ),
+});
+const workflowPublishRanges = z
+  .array(workflowPublishRange)
+  .max(16)
+  .refine(
+    (value) =>
+      new Set(value.map((item) => `${item.kind}:${item.path}`)).size === value.length &&
+      remoteJsonBytes(value) <= 4096,
+  );
+export const remoteWorkflowWorkspaceSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('text-only') }),
+  z.strictObject({
+    kind: z.literal('local'),
+    rootId: id,
+    access: z.enum(['read', 'write']),
+    // Absence preserves existing signed intents; only explicit choices freeze ranges.
+    publish: workflowPublishRanges.optional(),
+  }),
+]);
+export const remoteWorkflowDefaultsSchema = z.strictObject({
+  model: remoteModelSelectionSchema,
+  workspace: remoteWorkflowWorkspaceSchema,
+  capabilities: remoteLocalCapabilitiesSchema,
+});
+export const remoteWorkflowBudgetSchema = z.strictObject({
+  concurrent: positive.max(REMOTE_WORKFLOW_LIMITS.concurrent).default(1),
+  automaticRevisions: natural.max(2).default(2),
+});
+export const remoteWorkflowIntentSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    intentId: z.uuid(),
+    actorId: id,
+    spaceId: id,
+    deviceId: z.uuid(),
+    keyEpoch: positive,
+    generation: positive,
+    version: positive,
+    status: z.enum(['running', 'stopping']),
+    defaults: remoteWorkflowDefaultsSchema,
+    budget: remoteWorkflowBudgetSchema,
+    nodeIds: z.array(id).min(1).max(REMOTE_WORKFLOW_LIMITS.nodes),
+    commandReceipts: z
+      .array(
+        z.strictObject({
+          requestId: z.uuid(),
+          kind: z.enum(['start', 'resume', 'stop']),
+          fingerprint: digest,
+          generation: positive,
+        }),
+      )
+      .min(1)
+      .max(REMOTE_WORKFLOW_LIMITS.receipts),
+  })
+  .refine(
+    (value) =>
+      new Set(value.nodeIds).size === value.nodeIds.length &&
+      new Set(value.commandReceipts.map((item) => item.requestId)).size ===
+        value.commandReceipts.length &&
+      value.commandReceipts.every((item) => item.generation <= value.generation) &&
+      remoteJsonBytes(value) <= REMOTE_WORKFLOW_LIMITS.bytes,
+  );
+export type RemoteWorkflowIntent = z.infer<typeof remoteWorkflowIntentSchema>;
+export const REMOTE_WORKFLOW_OPERATIONS = [
+  'workflow-start',
+  'workflow-status',
+  'workflow-next',
+  'workflow-resume',
+  'workflow-stop',
+] as const;
 const cut = z
   .strictObject({ callSeq: natural, resultSeq: natural, turnEndSeq: natural, asOfSeq: natural })
   .refine(
@@ -345,7 +450,47 @@ export const remoteCleanupObservationSchema = z.discriminatedUnion('kind', [
     ]),
   }),
 ]);
-const info = z.strictObject({ ...header, operation: z.literal('info'), payload: empty });
+const info = z.strictObject({
+  ...header,
+  operation: z.literal('info'),
+  payload: z.strictObject({ workflow: z.literal('zhuma-remote-workflow@1').optional() }),
+});
+const workflowStart = z.strictObject({
+  ...deviceHeader,
+  operation: z.literal('workflow-start'),
+  payload: z.strictObject({
+    target: remoteWorkflowTargetSchema,
+    defaults: remoteWorkflowDefaultsSchema,
+    budget: remoteWorkflowBudgetSchema.default({ concurrent: 1, automaticRevisions: 2 }),
+  }),
+});
+const workflowControlPayload = z.strictObject({
+  target: remoteWorkflowTargetSchema,
+  workflow: remoteWorkflowRefSchema,
+});
+const workflowStatus = z.strictObject({
+  ...deviceHeader,
+  operation: z.literal('workflow-status'),
+  payload: workflowControlPayload.extend({ workflow: remoteWorkflowRefSchema.optional() }),
+});
+const workflowNext = z.strictObject({
+  ...deviceHeader,
+  operation: z.literal('workflow-next'),
+  payload: workflowControlPayload,
+});
+const workflowStop = z.strictObject({
+  ...deviceHeader,
+  operation: z.literal('workflow-stop'),
+  payload: workflowControlPayload,
+});
+const workflowResume = z.strictObject({
+  ...deviceHeader,
+  operation: z.literal('workflow-resume'),
+  payload: workflowControlPayload.extend({
+    expectedVersion: positive,
+    defaults: remoteWorkflowDefaultsSchema.optional(),
+  }),
+});
 const register = z.strictObject({
   ...deviceHeader,
   operation: z.literal('register-device'),
@@ -377,6 +522,7 @@ const accept = z.strictObject({
       drive: remotePermitDeclarationSchema,
       cleanup: remotePermitDeclarationSchema,
     }),
+    workflow: remoteWorkflowRefSchema.optional(),
   }),
 });
 const status = z.strictObject({
@@ -523,6 +669,11 @@ export const remoteRunRequestSchema = z.discriminatedUnion('operation', [
   publication,
   fileStatus,
   abandonFile,
+  workflowStart,
+  workflowStatus,
+  workflowNext,
+  workflowResume,
+  workflowStop,
 ]);
 export type RemoteRunRequest = z.infer<typeof remoteRunRequestSchema>;
 export type RemoteDeviceRequest = Exclude<RemoteRunRequest, { operation: 'info' | 'stop' }>;
@@ -694,6 +845,11 @@ export type RemoteFileValue = z.infer<typeof remoteFileValueSchema>;
 /** Private process-owned I/O reservation, never an upload/publication receipt. */
 export type RemoteFileReservationValue = z.infer<typeof remoteFileReservationValueSchema>;
 export interface RemoteRunOperationValues {
+  readonly 'workflow-start': RemoteWorkflowView;
+  readonly 'workflow-status': RemoteWorkflowView;
+  readonly 'workflow-next': RemoteWorkflowView;
+  readonly 'workflow-resume': RemoteWorkflowView;
+  readonly 'workflow-stop': RemoteWorkflowView;
   readonly info: RemoteBackendInfo;
   readonly 'register-device': RemoteDeviceValue;
   readonly accept: RemoteAcceptValue;
@@ -767,7 +923,7 @@ export const remoteBackendInfoSchema = z.strictObject({
     .array(z.enum(['work', 'review']))
     .max(2)
     .refine((values) => new Set(values).size === values.length),
-  operations: z.array(z.enum(REMOTE_RUN_OPERATIONS)).max(16),
+  operations: z.array(z.enum(REMOTE_RUN_OPERATIONS)).max(32),
 });
 export const remoteDeviceValueSchema = z.strictObject({
   deviceId: z.uuid(),
@@ -927,7 +1083,115 @@ const inputReadValue = z
       value.offset + value.byteSize <= value.totalBytes &&
       value.eof === (value.offset + value.byteSize === value.totalBytes),
   );
+export const remoteWorkflowCandidateSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('work'),
+    target: remoteNodeTargetSchema,
+    expectedNodeVersion: natural,
+    expectedRunVersion: natural,
+    mode: accept.shape.payload.shape.mode,
+    executor: accept.shape.payload.shape.executor,
+    workflow: remoteWorkflowRefSchema,
+    repairIndex: natural.max(2),
+  }),
+  z.strictObject({
+    kind: z.literal('review'),
+    target: z.lazy(() => remoteReviewTargetSchema),
+    expectedReviewVersion: natural,
+    reviewerRef: z.lazy(() => remoteReviewPrincipalSchema.shape.reviewerRef),
+    workflow: remoteWorkflowRefSchema,
+  }),
+]);
+export type RemoteWorkflowCandidate = z.infer<typeof remoteWorkflowCandidateSchema>;
+const remoteWorkflowActiveViewSchema = z
+  .strictObject({
+    disposition: z.enum(['applied', 'replayed', 'unchanged']),
+    scope: remoteWorkflowScopeSchema,
+    intent: remoteWorkflowIntentSchema,
+    state: z.enum(['running', 'waiting', 'stopping', 'paused', 'requires-resume', 'completed']),
+    requiresResume: z.boolean(),
+    serverTime: natural,
+    expiresAt: positive.optional(),
+    activeWork: z.array(remoteRunViewSchema).max(REMOTE_WORKFLOW_LIMITS.nodes),
+    activeReviews: z
+      .array(z.lazy(() => remoteReviewRunViewSchema))
+      .max(REMOTE_WORKFLOW_LIMITS.nodes),
+    candidates: z.array(remoteWorkflowCandidateSchema).max(REMOTE_WORKFLOW_LIMITS.concurrent),
+    attention: z.array(z.strictObject({ nodeId: id, code: id })).max(REMOTE_WORKFLOW_LIMITS.nodes),
+    // Read-only original Run projection. Optional for earlier view producers;
+    // used counts initiated rework attempts, never votes or successful results.
+    revisions: z
+      .array(
+        z.strictObject({
+          nodeId: id,
+          used: natural.max(2),
+          limit: natural.max(2),
+        }),
+      )
+      .max(REMOTE_WORKFLOW_LIMITS.nodes)
+      .optional(),
+  })
+  .refine((value) => {
+    const sameTarget = (target: RemoteWorkflowTarget) =>
+      target.spaceId === value.scope.spaceId &&
+      target.taskId === value.scope.taskId &&
+      target.planId === value.scope.planId &&
+      target.revision === value.scope.revision;
+    return (
+      value.scope.actorId === value.intent.actorId &&
+      value.scope.deviceId === value.intent.deviceId &&
+      value.scope.spaceId === value.intent.spaceId &&
+      value.scope.intentId === value.intent.intentId &&
+      value.scope.generation === value.intent.generation &&
+      value.requiresResume === (value.state === 'requires-resume') &&
+      (value.revisions === undefined ||
+        (new Set(value.revisions.map((item) => item.nodeId)).size === value.revisions.length &&
+          value.revisions.every(
+            (item) =>
+              value.intent.nodeIds.includes(item.nodeId) &&
+              item.limit === value.intent.budget.automaticRevisions &&
+              item.used <= item.limit,
+          ))) &&
+      (!value.candidates.length ||
+        (!value.requiresResume && (value.state === 'running' || value.state === 'waiting'))) &&
+      value.candidates.every(
+        (candidate) =>
+          sameTarget(candidate.target) &&
+          value.intent.nodeIds.includes(candidate.target.nodeId) &&
+          candidate.workflow.intentId === value.intent.intentId &&
+          candidate.workflow.generation === value.intent.generation,
+      ) &&
+      [...value.activeWork, ...value.activeReviews].every(
+        (item) =>
+          sameTarget(item.scope) &&
+          item.scope.actorId === value.scope.actorId &&
+          item.deviceId === value.scope.deviceId,
+      )
+    );
+  });
+export const remoteWorkflowViewSchema = z.union([
+  remoteWorkflowActiveViewSchema,
+  z.strictObject({
+    disposition: z.literal('unchanged'),
+    scope: remoteWorkflowTargetSchema.extend({ actorId: id, deviceId: z.uuid() }),
+    intent: z.null(),
+    state: z.literal('inactive'),
+    requiresResume: z.literal(false),
+    serverTime: natural,
+    activeWork: z.array(remoteRunViewSchema).max(0),
+    activeReviews: z.array(z.lazy(() => remoteReviewRunViewSchema)).max(0),
+    candidates: z.array(remoteWorkflowCandidateSchema).max(0),
+    attention: z.array(z.strictObject({ nodeId: id, code: id })).max(0),
+  }),
+]);
+export type RemoteWorkflowView = z.infer<typeof remoteWorkflowViewSchema>;
+
 export const remoteRunValueSchemas = Object.freeze({
+  'workflow-start': remoteWorkflowViewSchema,
+  'workflow-status': remoteWorkflowViewSchema,
+  'workflow-next': remoteWorkflowViewSchema,
+  'workflow-resume': remoteWorkflowViewSchema,
+  'workflow-stop': remoteWorkflowViewSchema,
   info: remoteBackendInfoSchema,
   'register-device': remoteDeviceValueSchema,
   accept: remoteAcceptValueSchema,
@@ -1411,6 +1675,7 @@ const reviewAccept = z.strictObject({
     .strictObject({
       target: remoteReviewTargetSchema,
       expectedReviewVersion: natural,
+      workflow: remoteWorkflowRefSchema.optional(),
       reviewerRef: remoteReviewPrincipalSchema.shape.reviewerRef.omit({ digest: true }),
       model: remoteModelSelectionSchema,
       workspace: z.strictObject({ kind: z.literal('text-only') }),

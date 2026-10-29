@@ -21,10 +21,15 @@ import { describeMemberKnowledgeTool } from './member-knowledge-tool.js';
 import { z } from 'zod';
 import {
   canonicalPayload,
+  remoteWorkflowRefSchema,
+  remoteWorkflowIntentSchema,
   localReviewOptionsQuerySchema,
   localReviewOptionsSchema,
   localReviewUnavailableReasonSchema,
   type LocalReviewOptions,
+  type RemoteWorkflowIntent,
+  type KnowledgeProjectSnapshot,
+  type RemoteWorkflowCandidate,
   reviewOutcomeQuerySchema,
   reviewOutcomeSchema,
   type ReviewOutcomeView,
@@ -182,6 +187,7 @@ import {
   assertExecutionRunStoreCompatibility,
   enableExecutionRunWriter,
   ExecutionRunProtocolError,
+  executionRunGlobalSchema,
   requireExecutionRunWriter,
   enableExecutionReviewWriter,
   requireExecutionReviewWriter,
@@ -298,6 +304,7 @@ import {
   hasCommittedWorkflowStop,
   stoppedWorkflowReviewGeneration,
   stoppedWorkflowReviewRunIds,
+  stoppedRemoteWorkflowReviewRunIds,
   stoppedPreparedWorkflowReviewRunIdsForRevision,
 } from './execution-workflow-reviews.js';
 import { isStoppedReviewHistory, splitExecutionReviewRecord } from './execution-review-record.js';
@@ -428,7 +435,11 @@ const expertReviewPrepareSchema = z.strictObject({
   }),
   configurationId: z.string().trim().min(1).max(200),
 });
-const expertReviewPreparationSchema = expertReviewPrepareSchema.omit({ configurationId: true });
+const expertReviewPreparationSchema = expertReviewPrepareSchema
+  .omit({ configurationId: true })
+  .extend({
+    workflow: remoteWorkflowRefSchema.optional(),
+  });
 const expertReviewAdmitSchema = z.strictObject({
   spaceId: id,
   taskId: id,
@@ -503,6 +514,14 @@ export interface ExecutionRunHostPorts
     ExecutionRunResourceCatalogHost {
   /** Current authoritative mapping (and its source lifetime), not a browser-selected space. */
   assertProjectSpace(projectId: string, spaceId: string): undefined;
+  /** Same mounted knowledge Service, original request/space/project authorization.
+   * Awaited outside this Service's queue. Failure must reject, never become an empty snapshot.
+   * Optional only for legacy Hosts; references do not certify body reads. */
+  prepareProjectKnowledge?(
+    request: MemberRequest,
+    query: { readonly spaceId: string; readonly projectId: string },
+    signal: AbortSignal,
+  ): Promise<KnowledgeProjectSnapshot>;
   /** Verify the exact frozen expert/input/model/tool composition and executor readiness. */
   assertConfiguration(
     memberId: string,
@@ -643,6 +662,7 @@ export interface PlanReceipt {
   readonly fingerprint: string;
   readonly nodeIds: readonly string[];
   readonly workflowExecution?: WorkflowExecutionIntent | undefined;
+  readonly remoteWorkflows?: RemoteWorkflowIntent[] | undefined;
 }
 
 export interface ExecutionStorage {
@@ -1625,6 +1645,160 @@ export class ExecutionService {
     if (!this.remoteRunAuthorities) {
       this.remoteRunAuthorities = new RemoteRunAuthorities({
         signal: this.runLifetime.signal,
+        workflow: {
+          facts: (lease, target) => {
+            if (host !== this.requireRunHost() || host.signal.aborted)
+              throw new RemoteRunError('remote-unavailable');
+            lease.assertCurrent(target.spaceId);
+            const workbench = this.workbench.readWorkbench();
+            const task = workbench.tasks.find((item) => item.id === target.taskId);
+            if (
+              !task ||
+              planMembership(workbench, target.taskId, lease.memberId) !== 'allowed' ||
+              !workbench.participants.some(
+                (item) => item.id === lease.memberId && item.kind === 'human' && item.available,
+              )
+            )
+              throw new RemoteRunError('remote-forbidden');
+            const plans = workbench.appliedPlans.filter((plan) => plan.taskId === target.taskId);
+            const latest = Math.max(...plans.map((plan) => plan.revision));
+            const selected = plans.filter((plan) => plan.revision === latest);
+            if (
+              selected.length !== 1 ||
+              selected[0]!.id !== target.planId ||
+              latest !== target.revision
+            )
+              throw new RemoteRunError('remote-stale-plan');
+            const applied = createExecutionHandoff(target, workbench);
+            const receipt = this.storage.readPlan(
+              planKey(target.taskId, target.planId, target.revision),
+            );
+            if (!receipt) throw new RemoteRunError('remote-not-found');
+            if (
+              receipt.remoteWorkflows?.length &&
+              executionRunGlobalSchema.parse(this.readRunGlobal()).remoteWorkflowWriter !== 1
+            )
+              throw new RemoteRunError('remote-unavailable');
+            const nodes = createNodeHandoffs(applied).map((handoff) => {
+              const node = this.readRunNode({ ...target, nodeId: handoff.nodeId });
+              if (!node) throw new RemoteRunError('remote-not-found');
+              return node;
+            });
+            if (!nodes.length) throw new RemoteRunError('remote-not-found');
+            this.assertRunNodeAccess(host, lease.memberId, target.spaceId, nodes[0]!);
+            const controlledNodeIds = nodes
+              .filter((node) =>
+                node.handoff.assignee.kind === 'human'
+                  ? node.handoff.assignee.id === lease.memberId
+                  : node.handoff.assignee.kind === 'expert' &&
+                    node.ownerId === lease.memberId &&
+                    task.ownerId === lease.memberId,
+              )
+              .map((node) => node.nodeId);
+            const reviewNodeIds = nodes
+              .filter(
+                (node) =>
+                  node.ownerId === lease.memberId &&
+                  task.ownerId === lease.memberId &&
+                  node.handoff.reviewRequired &&
+                  node.handoff.reviewerIds.some((id) =>
+                    applied.participants.some(
+                      (participant) => participant.id === id && participant.kind === 'expert',
+                    ),
+                  ),
+              )
+              .map((node) => node.nodeId);
+            const availableExpertIds = applied.participants
+              .filter(
+                (item) =>
+                  item.kind === 'expert' &&
+                  item.available &&
+                  item.instructions.trim() &&
+                  !item.origin?.missing.length &&
+                  workbench.participants.some(
+                    (current) =>
+                      current.id === item.id && current.kind === 'expert' && current.available,
+                  ),
+              )
+              .map((item) => item.id);
+            const allNodes = this.storage.listNodes().map((node) => {
+              const current = this.readRunNode(node);
+              if (!current) throw new RemoteRunError('remote-unavailable');
+              return current;
+            });
+            lease.assertCurrent(target.spaceId);
+            return {
+              receipt: structuredClone(receipt),
+              nodes,
+              allNodes,
+              controlledNodeIds,
+              reviewNodeIds,
+              availableExpertIds,
+            };
+          },
+          reviewCandidates: (lease, target, intent) => {
+            const result: Extract<RemoteWorkflowCandidate, { kind: 'review' }>[] = [];
+            if (!this.remoteIndependentReviewsEnabled) return result;
+            const workbench = this.workbench.readWorkbench();
+            const applied = createExecutionHandoff(target, workbench);
+            const task = workbench.tasks.find((item) => item.id === target.taskId);
+            if (task?.ownerId !== lease.memberId) return result;
+            for (const handoff of createNodeHandoffs(applied)) {
+              const node = this.readRunNode({ ...target, nodeId: handoff.nodeId });
+              if (
+                !node ||
+                !intent.nodeIds.includes(node.nodeId) ||
+                node.command.status !== 'in-review' ||
+                node.command.upstreamAffected
+              )
+                continue;
+              if (
+                readExecutionRunState(node)?.runs.some((run) => run.resources !== 'settled') ||
+                readExecutionReviewState(node)?.attempts.some(
+                  (attempt) => attempt.resources !== 'settled',
+                )
+              )
+                continue;
+              const exact = executionReviewTarget(node, target.spaceId);
+              const expectedReviewVersion = readExecutionReviewState(node)?.version ?? 0;
+              for (const reviewerId of node.handoff.reviewerIds) {
+                if (
+                  !applied.participants.some(
+                    (participant) => participant.id === reviewerId && participant.kind === 'expert',
+                  )
+                )
+                  continue;
+                try {
+                  const prepared = this.currentExpertReviewPreparation(host, lease, {
+                    requestId: randomUUID(),
+                    expectedReviewVersion,
+                    target: exact,
+                    reviewerRef: { id: reviewerId, version: node.planId },
+                    workflow: { intentId: intent.intentId, generation: intent.generation },
+                  });
+                  result.push({
+                    kind: 'review',
+                    target: exact,
+                    expectedReviewVersion,
+                    reviewerRef: prepared.prepared.attempt.scope.review.principal.reviewerRef,
+                    workflow: { intentId: intent.intentId, generation: intent.generation },
+                  });
+                  break;
+                } catch (error) {
+                  if (
+                    !(error instanceof ExecutionReviewError) ||
+                    !localReviewUnavailableReasonSchema.safeParse(error.code).success
+                  )
+                    throw error;
+                }
+              }
+            }
+            lease.assertCurrent(target.spaceId);
+            return result;
+          },
+          write: (target, receipt) =>
+            this.storage.writePlan(planKey(target.taskId, target.planId, target.revision), receipt),
+        },
         resourceHost: host,
         review: {
           signal: this.runLifetime.signal,
@@ -1796,7 +1970,31 @@ export class ExecutionService {
           )
             throw new RemoteRunError('remote-stale-plan');
         },
-        compose: (actorId, request, node, scope, resourceCatalog) => {
+        ...(host.prepareProjectKnowledge
+          ? {
+              prepareProjectKnowledge: async (
+                request: MemberRequest,
+                target: { spaceId: string; taskId: string; planId: string; revision: number },
+                signal: AbortSignal,
+              ) => {
+                const prepare = host.prepareProjectKnowledge!;
+                const applied = createExecutionHandoff(target, this.workbench.readWorkbench());
+                const query = { spaceId: target.spaceId, projectId: applied.task.projectId };
+                if (host !== this.requireRunHost() || host.signal.aborted || signal.aborted)
+                  throw new RemoteRunError('remote-unavailable');
+                const snapshot = await prepare.call(host, request, query, signal);
+                if (
+                  host !== this.requireRunHost() ||
+                  host.prepareProjectKnowledge !== prepare ||
+                  host.signal.aborted ||
+                  signal.aborted
+                )
+                  throw new RemoteRunError('remote-unavailable');
+                return snapshot;
+              },
+            }
+          : {}),
+        compose: (actorId, request, node, scope, resourceCatalog, projectKnowledge) => {
           const files =
             request.payload.capabilities.resultIntent === 'zhuma-native-result-intent@2';
           const descriptor = files
@@ -1852,6 +2050,7 @@ export class ExecutionService {
             model: request.payload.model,
             executor: request.payload.executor,
             ...(resourceCatalog ? { resourceCatalog } : {}),
+            ...(projectKnowledge ? { projectKnowledge } : {}),
             inputs: {
               actorId,
               ...request.payload.target,
@@ -4717,14 +4916,30 @@ export class ExecutionService {
     const workflow = workflowExecutionIntentSchema.safeParse(plan?.workflowExecution);
     // Only this Service's original writer/queue derives the exception. It is
     // never a caller field; actual automatic preparation still needs its claim.
-    const stopped =
+    const stopped = new Set(
       workflow.success &&
-      workflow.data.status === 'running' &&
-      input.requestId === workflowReviewRequestId(workflow.data, input.target, input.reviewerRef.id)
+        workflow.data.status === 'running' &&
+        input.requestId ===
+          workflowReviewRequestId(workflow.data, input.target, input.reviewerRef.id)
         ? stoppedWorkflowReviewRunIds(node, workflow.data, (review) =>
             this.assertExpertReviewDrained(review.scope),
           )
-        : new Set<string>();
+        : [],
+    );
+    if (input.workflow) {
+      const remote = remoteWorkflowIntentSchema.safeParse(
+        plan?.remoteWorkflows?.find(
+          (item) => item.intentId === input.workflow!.intentId && item.actorId === lease.memberId,
+        ),
+      );
+      if (
+        !remote.success ||
+        remote.data.generation !== input.workflow.generation ||
+        remote.data.spaceId !== input.target.spaceId
+      )
+        throw new ExecutionWorkflowError('workflow-recovery-required');
+      for (const runId of stoppedRemoteWorkflowReviewRunIds(node, remote.data)) stopped.add(runId);
+    }
     if (stopped.size) requireExecutionReviewWriter(this.readRunGlobal());
     // Replayed preparation must not preserve an admission permission after its
     // predecessor's genuine C proof expired between prepare and admit.
@@ -7089,6 +7304,7 @@ export class ExecutionService {
     const target = this.assertFileRecord(authority, actorId, query, projectId, query.spaceId);
     let source = target;
     let file: ArtifactFileRef | undefined;
+    let expertProducerRunId: string | undefined;
     if (query.purpose === 'draft') {
       if (
         target.handoff.assignee.kind !== 'human' ||
@@ -7136,11 +7352,19 @@ export class ExecutionService {
           !source.handoff.reviewerIds.includes(actorId)
         )
           throw new ArtifactUploadError('not-found');
-      } else if (
-        query.purpose === 'artifact' &&
-        (source.handoff.assignee.kind !== 'human' || source.handoff.assignee.id !== actorId)
-      )
-        throw new ArtifactUploadError('not-found');
+      } else if (query.purpose === 'artifact') {
+        try {
+          // Reuse the original exact-node controller rule for both human and
+          // expert work; task membership/ownership alone never grants a read.
+          this.assertRunController(actorId, source);
+          if (source.handoff.assignee.kind === 'expert') {
+            if (!artifact.producerRunId) throw new ArtifactUploadError('not-found');
+            expertProducerRunId = artifact.producerRunId;
+          }
+        } catch {
+          throw new ArtifactUploadError('not-found');
+        }
+      }
       file = artifact.files.find((item) => item.id === query.uploadId);
       if (!file) throw new ArtifactUploadError('not-found');
       if (query.purpose === 'accepted' && authority.lease.signal.aborted)
@@ -7155,6 +7379,13 @@ export class ExecutionService {
       record.planId !== source.planId ||
       record.revision !== source.revision ||
       record.nodeId !== source.nodeId ||
+      (expertProducerRunId !== undefined &&
+        (!record.producer ||
+          record.producer.source.scope.actorId !== actorId ||
+          record.producer.source.scope.runId !== expertProducerRunId ||
+          (['spaceId', 'taskId', 'planId', 'revision', 'nodeId'] as const).some(
+            (key) => record.producer!.source.scope[key] !== record[key],
+          ))) ||
       (query.purpose === 'draft'
         ? record.uploadedBy !== actorId
         : !file || !matchesArtifactFileReference(file, record))

@@ -299,10 +299,12 @@
 }
 .zhuma .zm-login-entry {
   display: grid;
-  align-content: start;
+  align-content: safe center;
   justify-items: center;
   flex: 1;
-  padding: clamp(56px, 8vh, 80px) 24px 32px;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
 }
 .zhuma .zm-login-card {
   display: grid;
@@ -627,6 +629,86 @@
   border-radius: 10px;
   padding: 20px;
   min-width: 0;
+}
+.zhuma .zm-project-knowledge {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--zm-line);
+  border-radius: 10px;
+}
+.zhuma .zm-project-knowledge__header,
+.zhuma .zm-project-knowledge__row,
+.zhuma .zm-project-knowledge__picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  min-width: 0;
+}
+.zhuma .zm-project-knowledge__header h2,
+.zhuma .zm-project-knowledge__header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.zhuma .zm-project-knowledge__header p {
+  margin: 6px 0 0;
+}
+.zhuma .zm-project-knowledge__list {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.zhuma .zm-project-knowledge__row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--zm-line);
+}
+.zhuma .zm-project-knowledge__identity {
+  display: grid;
+  gap: 5px;
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.zhuma .zm-project-knowledge__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.zhuma .zm-project-knowledge__actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.zhuma .zm-project-knowledge__actions input[type='checkbox'] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--zm-accent);
+}
+.zhuma .zm-project-knowledge__picker > .zm-single-select {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.zhuma .zm-project-knowledge__preview {
+  min-width: 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--zm-line);
+}
+.zhuma .zm-project-knowledge__preview > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 .zhuma .zm-project-panel > header,
 .zhuma .zm-project-links-editor > header {
@@ -1037,7 +1119,7 @@ body[data-ds-dark-theme] {
   height: auto;
   min-height: 0;
 }
-/* Connection and space controls share one row below the original window strip. */
+/* The member header owns the official window strip; its controls remain no-drag. */
 .zm-shared-backend .zm-backend-bar {
   position: absolute;
   z-index: 2;
@@ -1050,7 +1132,8 @@ body[data-ds-dark-theme] {
   max-width: min(42%, 300px);
 }
 html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
-  top: var(--dsh-frame-top-clearance, 0px);
+  height: var(--dsh-frame-top-clearance, 48px);
+  padding-top: 2px;
 }
 .zm-shared-backend .zm-backend-bar .zm-button {
   min-width: 0;
@@ -1081,7 +1164,7 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
   margin: 0 auto;
   min-height: 0;
   overflow: auto;
-  padding-top: 20px;
+  padding-top: 8px;
 }
 .zm-member-work > .zm-page > h1 {
   margin: 0 0 20px;
@@ -1100,6 +1183,14 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
 }
 html[data-platform='darwin'] .zm-shell-chrome {
   height: var(--dsh-frame-top-clearance, 0px);
+}
+html[data-platform='darwin'] .zm-shell-panel:has(.zm-space-bar) > .zm-shell-chrome {
+  display: none;
+}
+html[data-platform='darwin'] .zhuma .zm-space-bar {
+  min-height: var(--dsh-frame-top-clearance, 48px);
+  padding-block: 8px 5px;
+  padding-inline-start: max(24px, var(--dsh-frame-leading-clearance, 0px));
 }
 /* Action hierarchy: primary, secondary (default), quiet, danger. */
 .zhuma button,
@@ -1293,7 +1384,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 .zm-page {
   max-width: 1400px;
-  padding: 28px 28px 48px;
+  padding: 8px 28px 48px;
   margin: auto;
 }
 .zm-page-heading {
@@ -2971,7 +3062,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 @media (max-width: 1100px) {
   .zm-page {
-    padding: 20px;
+    padding: 8px 20px 20px;
   }
   .zm-local {
     display: none;
@@ -2984,7 +3075,7 @@ html[data-platform='darwin'] .zm-shell-chrome {
 }
 @media (max-width: 800px) {
   .zm-page {
-    padding: 16px;
+    padding: 8px 16px 16px;
   }
   .zm-page-heading {
     align-items: flex-start;
@@ -4675,6 +4766,56 @@ html[data-platform='darwin'] .zm-shell-chrome {
   padding: 3px;
   border: 1px solid var(--zm-line);
   border-radius: 7px;
+  flex-shrink: 0;
+}
+.zhuma .zm-page-bar > .zm-task-filters {
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.zhuma .zm-task-page-bar {
+  gap: 8px 16px;
+  margin-bottom: 16px;
+}
+.zhuma .zm-task-page-bar > .zm-tabs {
+  flex: 1;
+  min-width: 0;
+}
+.zhuma .zm-task-filters input {
+  flex: 1 1 160px;
+  min-width: 140px;
+  max-width: 280px;
+}
+.zhuma .zm-task-filters > .zm-single-select {
+  flex: 0 1 140px;
+  min-width: 120px;
+}
+.zm-task-filter-summary {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-planning-readiness {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 0;
+  border-block: 1px solid var(--zm-line-subtle);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.zm-planning-readiness p {
+  margin: 4px 0 0;
+  color: var(--zm-muted);
+}
+.zm-planning-readiness > .zm-button {
   flex-shrink: 0;
 }
 .zm-task-view .zm-button {

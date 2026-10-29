@@ -6,12 +6,68 @@ import { createSharedBackendClient } from '../dist/identity/shared-backend.js';
 import { createIdentityApi } from '../dist/identity/api.js';
 import { createMemberWorkbenchApi } from '../dist/workbench/member-api.js';
 import { createExecutionHttpApi } from '../dist/execution/http.js';
+import { createProjectKnowledgeApi } from '../dist/knowledge/project-knowledge-api.js';
 import { reviewNode } from './browser/execution-fixture.mjs';
 const remote = () => ({
   origin: 'http://backend.example:3080',
   connectionId: crypto.randomUUID(),
   backendId: crypto.randomUUID(),
   actorId: 'ann',
+});
+
+test('shared renderer carries exact project knowledge operations and preserves the original write intent', async () => {
+  const selection = remote(),
+    calls = [];
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, method, request) {
+        if (method === 'zhuma-backend/status') return { ok: true, value: selection };
+        calls.push(request);
+        assert.equal(request.operation, 'knowledge.save-project-links');
+        return {
+          ok: true,
+          value: {
+            connectionId: selection.connectionId,
+            status: 200,
+            body: {
+              type: 'server-response',
+              rpcId: request.rpcId,
+              result: {
+                ok: true,
+                value: {
+                  actorId: 'ann',
+                  spaceId: 'north',
+                  projectId: 'project',
+                  relationshipVersion: 1,
+                  disposition: 'saved',
+                },
+              },
+            },
+          },
+        };
+      },
+    },
+    () => {},
+  );
+  await client.refresh();
+  const input = {
+    spaceId: 'north',
+    projectId: 'project',
+    expectedVersion: 0,
+    idempotencyKey: 'same-intent',
+    links: [],
+  };
+  const api = createProjectKnowledgeApi(
+    { actorId: 'ann', spaceId: 'north', isCurrent: () => true, onUnauthenticated() {} },
+    client.fetcher,
+  );
+  assert.equal(
+    (await api.saveProjectLinks(input, new AbortController().signal)).relationshipVersion,
+    1,
+  );
+  assert.deepEqual(calls[0].payload, input);
+  assert.deepEqual(Object.keys(calls[0]).sort(), ['connectionId', 'operation', 'payload', 'rpcId']);
+  client.close();
 });
 
 test('shared file transport keeps raw bytes and exact file routes on the local owner carrier', async () => {

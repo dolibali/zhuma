@@ -24,6 +24,7 @@ import { createNativeRunApi } from '../run/api.js';
 import type { RegisterWorkspaceDirectory } from '../run/workspace-approvals.js';
 import type { LocalWorkspaceDirectory } from '../run/workspace-directory.js';
 import { createKnowledgeApi } from '../knowledge/api.js';
+import { createProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import type { MemberNativeClient } from '../run/member-native.js';
 import { createNativeReviewApi } from '../run/review-api.js';
 
@@ -154,7 +155,7 @@ function MemberWork({
       !!memberNative,
     );
     if (!memberNative) return api;
-    const { workspaceApprovals: _approvals, workflow: _workflow, ...localNativeApi } = api;
+    const { workspaceApprovals: _approvals, ...localNativeApi } = api;
     return {
       ...localNativeApi,
       review: createNativeReviewApi(
@@ -179,20 +180,18 @@ function MemberWork({
     memberNative,
   ]);
   const nativeRun = useMemo(() => ({ api: nativeApi, spaceId }), [nativeApi, spaceId]);
-  const knowledgeApi = useMemo(
-    () =>
-      createKnowledgeApi(
-        {
-          actorId: accountId,
-          spaceId,
-          isCurrent: () =>
-            alive.current && currentLifetime.current.isCurrent() && view === 'catalog',
-          onUnauthenticated: () => currentLifetime.current.onUnauthenticated(),
-        },
-        fetcher,
-      ),
-    [fetcher, accountId, spaceId, view],
-  );
+  const knowledgeApi = useMemo(() => {
+    const scope = {
+      actorId: accountId,
+      spaceId,
+      isCurrent: () => alive.current && currentLifetime.current.isCurrent() && view === 'catalog',
+      onUnauthenticated: () => currentLifetime.current.onUnauthenticated(),
+    };
+    return {
+      api: createKnowledgeApi(scope, fetcher),
+      projectApi: createProjectKnowledgeApi(scope, fetcher),
+    };
+  }, [fetcher, accountId, spaceId, view]);
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
   return (
     <div className="zm-member-work">
@@ -203,7 +202,7 @@ function MemberWork({
             api={workbench}
             initialSection="tasks"
             appearance={appearance}
-            knowledge={{ api: knowledgeApi, actorId: accountId, spaceId, lifetime }}
+            knowledge={{ ...knowledgeApi, actorId: accountId, spaceId, lifetime }}
             {...(nativeExecution ? { nativeRun } : {})}
             projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}

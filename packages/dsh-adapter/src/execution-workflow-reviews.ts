@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { canonicalPayload, type ExecutionNodeRecord } from '@zhuma/agent-core';
+import {
+  canonicalPayload,
+  type RemoteWorkflowIntent,
+  type ExecutionNodeRecord,
+} from '@zhuma/agent-core';
 import { executionReviewTarget, readExecutionReviewState } from './execution-review-state.js';
 import type { ExecutionReviewAttempt, ExecutionReviewTarget } from './execution-review-contract.js';
 import { readExecutionRunState } from './execution-run-state.js';
@@ -208,6 +212,63 @@ export function stoppedWorkflowReviewRunIds(
     } catch {
       // No fresh original C proof means the original attention/budget remains.
     }
+  }
+  return result;
+}
+/** Remote retry eligibility comes only from the original signed cleanup and
+ * committed Stop followed by an explicit new generation on this same device.
+ * A read query identifies these facts; it cannot arm or authorize a new Run. */
+export function stoppedRemoteWorkflowReviewRunIds(
+  node: ExecutionNodeRecord,
+  intent: RemoteWorkflowIntent,
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  if (intent.status !== 'running' || node.command.status !== 'in-review') return result;
+  const target = executionReviewTarget(node, intent.spaceId);
+  const round = node.rounds.find((item) => item.id === target.roundId)!;
+  if (node.acceptedArtifactVersionId === target.artifactVersionId) return result;
+  for (const attempt of readExecutionReviewState(node)?.attempts ?? []) {
+    if (attempt.status === 'prepared' || !isStoppedReviewHistory(attempt)) continue;
+    const remote = attempt.remote,
+      binding = remote?.workflow;
+    if (
+      !remote ||
+      !binding ||
+      !remote.stopRequested ||
+      remote.lastObservation !== 'drained' ||
+      binding.intentId !== intent.intentId ||
+      binding.generation >= intent.generation ||
+      remote.deviceId !== intent.deviceId ||
+      remote.keyEpoch !== intent.keyEpoch ||
+      attempt.scope.actorId !== intent.actorId ||
+      attempt.scope.spaceId !== intent.spaceId ||
+      canonicalPayload(attempt.scope.review.target) !== canonicalPayload(target) ||
+      round.ballots.some(
+        (ballot) => ballot.reviewerId === attempt.scope.review.principal.reviewerRef.id,
+      )
+    )
+      continue;
+    const stop = intent.commandReceipts.some(
+      (receipt) =>
+        receipt.kind === 'stop' &&
+        receipt.generation === binding.generation &&
+        receipt.fingerprint ===
+          hash({
+            actorId: intent.actorId,
+            deviceId: intent.deviceId,
+            kind: 'stop',
+            payload: {
+              target: {
+                spaceId: intent.spaceId,
+                taskId: node.taskId,
+                planId: node.planId,
+                revision: node.revision,
+              },
+              workflow: { intentId: intent.intentId, generation: binding.generation },
+            },
+          }),
+    );
+    if (stop) result.add(attempt.scope.runId);
   }
   return result;
 }

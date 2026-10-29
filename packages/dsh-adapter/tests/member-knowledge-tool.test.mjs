@@ -19,6 +19,7 @@ import {
   describeMemberKnowledgeTool,
   registerMemberKnowledgeTool,
 } from '../dist/member-knowledge-tool.js';
+import { describeNativeResultTool } from '../dist/native-work-session-result-tool.js';
 import { boot, grant, message, scope, selection } from './native-work-session-fixture.mjs';
 
 const library = {
@@ -98,6 +99,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 async function harness(t, options = {}) {
   let record, definition, cleanup;
+  const completionGuards = [];
   const storage = {
     read: () => record,
     write: async (_key, value) => {
@@ -142,6 +144,7 @@ async function harness(t, options = {}) {
   const ctx = {
     agents: { get: (id) => (id === agent.id ? agent : undefined) },
     tools: {
+      guard: (guard) => completionGuards.push(guard),
       register: (value) => {
         definition = value;
       },
@@ -150,7 +153,14 @@ async function harness(t, options = {}) {
       cleanup = factory();
     },
   };
-  const composition = registerMemberKnowledgeTool(ctx, binding, current, sessions, ports);
+  const composition = registerMemberKnowledgeTool(
+    ctx,
+    binding,
+    current,
+    sessions,
+    ports,
+    options.required,
+  );
   t.after(async () => {
     await cleanup();
   });
@@ -174,6 +184,18 @@ async function harness(t, options = {}) {
     execute,
     definition,
     value: () => record,
+    completionGuard: () =>
+      completionGuards
+        .map((guard) =>
+          guard({
+            name: 'complete_work',
+            agent,
+            signal: current.signal,
+          }),
+        )
+        .find(Boolean),
+    finalize: ({ exec, value }) =>
+      JSON.parse(definition.finalizeContent(exec, { isError: false, value })[0].text),
   };
 }
 
@@ -539,4 +561,266 @@ test('current transport/consent gate is rechecked after a source reply before re
   assert.equal(h.calls.length, 1);
   assert.equal(gate, 2);
   await tick();
+});
+
+const requiredBody = Buffer.from('A汉😀BC');
+const requiredRef = {
+  ...reference,
+  checksum: createHash('sha256').update(requiredBody).digest('hex'),
+};
+const requiredArgs = (offset = 0, length = 8192, patch = {}) => ({
+  action: 'read',
+  reference: {
+    pageId: requiredRef.pageId,
+    version: requiredRef.version,
+    checksum: requiredRef.checksum,
+  },
+  offset,
+  length,
+  ...patch,
+});
+const requiredPage = (request) => {
+  const { offset, length, part } = request.payload;
+  const text = requiredBody.subarray(offset, offset + length).toString('utf8');
+  return {
+    ...read,
+    reference: requiredRef,
+    part,
+    text,
+    offset,
+    length: Buffer.byteLength(text),
+    nextOffset: offset + Buffer.byteLength(text),
+    totalBytes: requiredBody.length,
+    partChecksum: requiredRef.checksum,
+  };
+};
+const requiredHarness = (t, options = {}) =>
+  harness(t, {
+    required: [requiredRef],
+    invoke: async (request) => ({ ok: true, value: requiredPage(request) }),
+    ...options,
+  });
+
+test('required knowledge: only finalized exact body bytes count; search, original and execute alone do not', async (t) => {
+  const h = await requiredHarness(t, {
+    invoke: async (request) => ({
+      ok: true,
+      value: request.action === 'search' ? search : requiredPage(request),
+    }),
+  });
+  assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+  assert.equal(h.finalize(await h.execute({ action: 'search', query: 'guide' })).ok, true);
+  assert.equal(h.finalize(await h.execute(requiredArgs(0, 8192, { part: 'original' }))).ok, true);
+  const pending = await h.execute(requiredArgs());
+  assert.equal(pending.value.ok, true);
+  assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+  assert.equal(h.finalize(pending).ok, true);
+  assert.equal(h.completionGuard(), undefined);
+});
+
+test('required knowledge: exact UTF8 byte union permits out-of-order/overlap but duplicates never fill a gap', async (t) => {
+  const h = await requiredHarness(t);
+  for (const [offset, length] of [
+    [4, 4],
+    [4, 4],
+    [0, 1],
+    [8, 2],
+  ]) {
+    assert.equal(h.finalize(await h.execute(requiredArgs(offset, length))).ok, true);
+    assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+  }
+  assert.equal(h.finalize(await h.execute(requiredArgs(1, 3))).ok, true);
+  assert.equal(h.completionGuard(), undefined);
+});
+
+test('required knowledge: all fixed refs are necessary; another page/version/checksum cannot discharge them', async (t) => {
+  const second = { ...requiredRef, pageId: 'second' };
+  const exact = await requiredHarness(t, {
+    required: [requiredRef, second],
+    invoke: async (request) => ({
+      ok: true,
+      value: {
+        ...requiredPage(request),
+        reference: {
+          ...requiredRef,
+          pageId: request.payload.pageId,
+          version: request.payload.version,
+          checksum: request.payload.checksum,
+        },
+      },
+    }),
+  });
+  for (const patch of [{ pageId: 'other' }, { version: 2 }, { checksum: 'b'.repeat(64) }]) {
+    await exact
+      .execute(requiredArgs(0, 8192, { reference: { ...requiredArgs().reference, ...patch } }))
+      .then(exact.finalize);
+    assert.equal(exact.completionGuard(), 'native-required-knowledge-unread');
+  }
+  assert.equal(exact.finalize(await exact.execute(requiredArgs())).ok, true);
+  assert.equal(exact.completionGuard(), 'native-required-knowledge-unread');
+  assert.equal(
+    exact.finalize(
+      await exact.execute(
+        requiredArgs(0, 8192, {
+          reference: { ...requiredArgs().reference, pageId: 'second' },
+        }),
+      ),
+    ).ok,
+    true,
+  );
+  assert.equal(exact.completionGuard(), undefined);
+});
+
+test('required knowledge: registration rejects foreign scope/library or incomplete references before any I/O', async (t) => {
+  const h = await harness(t);
+  for (const ref of [
+    { ...requiredRef, spaceId: 'foreign' },
+    { ...requiredRef, libraryId: 'foreign' },
+    { ...requiredRef, checksum: '' },
+    { ...requiredRef, version: 0 },
+  ]) {
+    assert.throws(
+      () => registerMemberKnowledgeTool(h.ctx, h.binding, h.current, h.sessions, h.ports, [ref]),
+      { code: 'input-context-unavailable' },
+    );
+  }
+  assert.equal(h.calls.length, 0);
+});
+
+test('required knowledge: failures and bad body/part checksums or inconsistent total ranges cannot allow completion', async (t) => {
+  for (const reply of [
+    { ok: false, error: { code: 'not-found' } },
+    { ok: false, error: { code: 'forbidden' } },
+    {
+      ok: true,
+      value: {
+        ...requiredPage({ payload: { offset: 0, length: 8192, part: 'body' } }),
+        text: 'X汉😀BC',
+      },
+    },
+    {
+      ok: true,
+      value: {
+        ...requiredPage({ payload: { offset: 0, length: 8192, part: 'body' } }),
+        partChecksum: 'b'.repeat(64),
+      },
+    },
+    {
+      ok: true,
+      value: {
+        ...requiredPage({ payload: { offset: 0, length: 8192, part: 'body' } }),
+        reference: { ...requiredRef, version: 2 },
+      },
+    },
+  ]) {
+    const h = await requiredHarness(t, { invoke: async () => reply });
+    assert.equal(h.finalize(await h.execute(requiredArgs())).ok, false);
+    assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+  }
+  let changed = false;
+  const h = await requiredHarness(t, {
+    invoke: async (request) => ({
+      ok: true,
+      value: { ...requiredPage(request), totalBytes: requiredBody.length + (changed ? 1 : 0) },
+    }),
+  });
+  assert.equal(h.finalize(await h.execute(requiredArgs(0, 4))).ok, true);
+  changed = true;
+  assert.equal(h.finalize(await h.execute(requiredArgs(4, 6))).ok, false);
+  assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+});
+
+test('required knowledge: mutation, cancellation and a forged finalizer token do not count successful execute output', async (t) => {
+  const h = await requiredHarness(t);
+  const mutated = await h.execute(requiredArgs());
+  mutated.value.value.text = 'X汉😀BC';
+  assert.equal(h.finalize(mutated).ok, false);
+  const forged = await h.execute(requiredArgs());
+  assert.equal(h.finalize({ ...forged, exec: { ...forged.exec, token: Symbol() } }).ok, false);
+  assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+  const abort = new AbortController();
+  const cancelled = await h.execute(requiredArgs(), { signal: abort.signal });
+  abort.abort();
+  assert.equal(h.finalize(cancelled).ok, false);
+  assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+});
+
+test('required knowledge: scope-local observations and frozen requirements cannot be borrowed by another registration or Run', async (t) => {
+  const required = [structuredClone(requiredRef)];
+  const h = await requiredHarness(t, { required });
+  required.length = 0;
+  assert.equal(h.completionGuard(), 'native-required-knowledge-unread');
+  assert.equal(h.finalize(await h.execute(requiredArgs())).ok, true);
+  assert.equal(h.completionGuard(), undefined);
+  const cold = await requiredHarness(t);
+  assert.equal(cold.completionGuard(), 'native-required-knowledge-unread');
+  h.current.revoke();
+  assert.equal(h.completionGuard(), 'native-required-knowledge-unavailable');
+});
+
+test('optional knowledge: no forced read or completion guard is added', async (t) => {
+  const h = await harness(t);
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.completionGuard(), undefined);
+});
+
+test('SDK required knowledge: original monotonic guard rejects before the completion body; successful exact read then permits it', async (t) => {
+  const h = await requiredHarness(t);
+  const root = await mkdtemp(join(tmpdir(), 'zhuma-required-knowledge-sdk-'));
+  let host, handle;
+  let completionCalls = 0;
+  try {
+    host = await boot(root);
+    handle = await host.ctx.agents.create({
+      sessionId: SessionId(h.binding.nativeSessionId),
+      agentOptions: { provider: selection.provider, model: selection.model },
+    });
+    const ctx = handle.agent.ctx,
+      definition = describeNativeResultTool();
+    ctx.tools.register({
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters,
+      output: {
+        schema: definition.outputSchema,
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      execute() {
+        completionCalls++;
+        return { ok: false, code: 'result-unavailable' };
+      },
+    });
+    registerMemberKnowledgeTool(ctx, h.binding, h.current, h.sessions, h.ports, [requiredRef]);
+    let sequence = 0;
+    const execute = (name, args) =>
+      ctx.tools.execute({
+        name,
+        callId: `required-${++sequence}`,
+        arguments: args,
+        agent: handle.agent,
+        signal: new AbortController().signal,
+      });
+    const denied = await execute('complete_work', { text: 'No read yet.', links: [] });
+    assert.equal(denied.isError, true);
+    assert.match(JSON.stringify(denied), /native-required-knowledge-unread/u);
+    assert.equal(completionCalls, 0);
+    assert.equal(h.value().resultIntent, undefined);
+    assert.equal((await execute('knowledge', { request: requiredArgs(0, 4) })).value.ok, true);
+    assert.equal(
+      (await execute('complete_work', { text: 'Only a part.', links: [] })).isError,
+      true,
+    );
+    assert.equal(completionCalls, 0);
+    assert.equal((await execute('knowledge', { request: requiredArgs(4, 6) })).value.ok, true);
+    assert.equal(
+      (await execute('complete_work', { text: 'Read fixed body.', links: [] })).isError,
+      false,
+    );
+    assert.equal(completionCalls, 1);
+    assert.equal(host.adapter.requests.length, 0);
+  } finally {
+    await handle?.dispose();
+    await host?.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -61,6 +61,70 @@ function transport(value = initial(), hooks = {}) {
   return { api, calls };
 }
 const signal = () => new AbortController().signal;
+test('workflow publication wire: explicit start and Resume carry only selected relative ranges; ordinary Continue does not change defaults', async () => {
+  const workspace = {
+    kind: 'local',
+    id: 'local-root',
+    publish: [{ kind: 'directory', path: 'outputs' }],
+  };
+  const state = started();
+  state.selection.workspace = workspace;
+  const hooks = {},
+    h = transport(state, hooks);
+  const start = {
+    ...target,
+    requestId: 'start',
+    model: state.selection.model,
+    workspace,
+    concurrent: 1,
+  };
+  assert.deepEqual((await h.api.start(start, signal())).selection.workspace, workspace);
+  assert.deepEqual(hooks.payload.workspace, workspace);
+  state.intent.generation = 2;
+  const resume = {
+    ...target,
+    requestId: 'resume',
+    intentId: 'intent',
+    generation: 1,
+    expectedVersion: 1,
+  };
+  await h.api.resume({ ...resume, workspace }, signal());
+  assert.deepEqual(hooks.payload.workspace, workspace);
+  assert.equal(
+    'defaults' in hooks.payload,
+    false,
+    'Renderer never supplies remote capabilities or root grants',
+  );
+  state.intent.generation = 3;
+  await h.api.resume({ ...resume, generation: 2 }, signal());
+  assert.equal('workspace' in hooks.payload, false);
+});
+
+test('workflow publication wire: invalid relative paths and oversized scopes are rejected before transport', async () => {
+  for (const publish of [
+    [{ kind: 'directory', path: '../private' }],
+    [{ kind: 'file', path: '/absolute' }],
+    [{ kind: 'directory', path: '.' }],
+    Array.from({ length: 16 }, (_, i) => ({ kind: 'file', path: `${i}${'x'.repeat(300)}` })),
+  ]) {
+    const h = transport(started());
+    await assert.rejects(
+      h.api.resume(
+        {
+          ...target,
+          requestId: 'scope',
+          intentId: 'intent',
+          generation: 1,
+          expectedVersion: 1,
+          workspace: { kind: 'local', id: 'local-root', publish },
+        },
+        signal(),
+      ),
+    );
+    assert.deepEqual(h.calls, []);
+  }
+});
+
 test('workflow Client contract: passive read shares member Run fences and never starts a plan', async () => {
   const h = transport();
   assert.deepEqual(
@@ -69,12 +133,79 @@ test('workflow Client contract: passive read shares member Run fences and never 
   );
   assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-workflow/read']);
 });
+
+test('workflow Client contract: member waiting facts preserve real control count, review availability and concurrency', async () => {
+  const h = transport({
+    ...started(),
+    state: 'waiting',
+    controlledNodeCount: 1,
+    automaticReview: false,
+    attention: '等待上游工作完成。',
+    maxConcurrent: 1,
+    models: { kind: 'ready', items: [] },
+    workspaces: [],
+  });
+  const view = await h.api.options(target, signal());
+  assert.equal(view.state, 'waiting');
+  assert.equal(view.controlledNodeCount, 1);
+  assert.equal(view.automaticReview, false);
+  assert.equal(view.maxConcurrent, 1);
+  assert.equal(view.attention, '等待上游工作完成。');
+});
 test('workflow Client contract: a changed account cannot send a workflow command', async () => {
   const hooks = { accountId: 'outside' },
     h = transport(initial(), hooks);
   await assert.rejects(h.api.read(target, signal()), (error) => error.code === 'unauthenticated');
   assert.equal(hooks.invalidated, true);
   assert.deepEqual(h.calls, ['/zhuma-id/session']);
+});
+
+test('workflow Client contract: rework limit is strictly decoded and only an explicit start sends the selected budget', async () => {
+  const value = started();
+  value.intent.automaticRevisions = 2;
+  value.controlledReviewNodeCount = 1;
+  value.revisions = [{ nodeId: 'node', used: 1, limit: 2 }];
+  const hooks = {},
+    h = transport(value, hooks);
+  const input = {
+    ...target,
+    requestId: crypto.randomUUID(),
+    model: value.selection.model,
+    workspace: { kind: 'text-only' },
+    concurrent: 1,
+    automaticRevisions: 2,
+  };
+  const read = await h.api.start(input, signal());
+  assert.equal(read.intent.automaticRevisions, 2);
+  assert.equal(read.controlledReviewNodeCount, 1);
+  assert.deepEqual(read.revisions, [{ nodeId: 'node', used: 1, limit: 2 }]);
+  assert.equal(hooks.payload.automaticRevisions, 2);
+  value.intent.generation = 2;
+  await h.api.resume(
+    {
+      ...target,
+      requestId: crypto.randomUUID(),
+      intentId: value.intent.intentId,
+      generation: 1,
+      expectedVersion: 1,
+    },
+    signal(),
+  );
+  assert.equal('automaticRevisions' in hooks.payload, false);
+  value.intent.automaticRevisions = 3;
+  await assert.rejects(h.api.read(target, signal()), { code: 'validation' });
+  value.intent.automaticRevisions = 2;
+  for (const rows of [
+    [{ nodeId: 'node', used: 3, limit: 2 }],
+    [
+      { nodeId: 'node', used: 1, limit: 2 },
+      { nodeId: 'node', used: 0, limit: 2 },
+    ],
+    [{ nodeId: 'node', used: 0, limit: 1 }],
+  ]) {
+    value.revisions = rows;
+    await assert.rejects(h.api.read(target, signal()), { code: 'validation' });
+  }
 });
 test('workflow Client contract: an obsolete page cannot apply a late workflow receipt', async () => {
   const entered = Promise.withResolvers(),

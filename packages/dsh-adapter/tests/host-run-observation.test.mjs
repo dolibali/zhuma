@@ -73,14 +73,14 @@ test('Host native observation contract: subscribe before publication, correlate 
   }
 });
 
-test('Host native observation contract: rollback disposal or grant revocation clears pending correlation and listeners', async () => {
-  for (const reason of ['dispose', 'revoke']) {
+test('Host native observation contract: grant revocation or explicit release clears pending correlation and listeners', async () => {
+  for (const reason of ['close', 'revoke']) {
     const f = fixture();
     try {
       await f.ctx.serial('agent/created', { agent: f.agent, source: 'create' });
       f.claimed('reserved-message', 1);
       assert.ok(f.observation.claimFor('reserved-message'));
-      if (reason === 'dispose') f.ctx.emit('agent/disposed', { agent: f.agent });
+      if (reason === 'close') f.observation.close();
       else f.revoked.abort();
       assert.equal(f.observation.signal.aborted, true);
       assert.equal(f.observation.claimFor('reserved-message'), undefined);
@@ -89,6 +89,27 @@ test('Host native observation contract: rollback disposal or grant revocation cl
     } finally {
       await f.ctx.fiber.dispose();
     }
+  }
+});
+
+test('Host native observation contract: fast actual disposal preserves the original claim until the late send receipt joins', async () => {
+  const f = fixture();
+  try {
+    await f.ctx.serial('agent/created', { agent: f.agent, source: 'create' });
+    f.claimed('reserved-message', 7);
+    const original = f.observation.claimFor('reserved-message');
+    f.ctx.emit('agent/disposed', { agent: f.agent });
+    await f.ctx.fiber.dispose();
+    assert.equal(f.observation.signal.aborted, false);
+    assert.deepEqual(f.observation.claimFor('reserved-message'), original);
+    f.claimed('late-message', 8);
+    assert.equal(f.observation.claimFor('late-message'), undefined);
+    f.revoked.abort();
+    assert.equal(f.observation.signal.aborted, true);
+    assert.equal(f.observation.claimFor('reserved-message'), undefined);
+  } finally {
+    f.observation.close();
+    await f.ctx.fiber.dispose();
   }
 });
 

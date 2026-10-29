@@ -11,6 +11,8 @@ import {
   KnowledgeDraftRequestSchema,
   KnowledgeSaveDraftRequestSchema,
   KnowledgePublishRequestSchema,
+  KnowledgeProjectLinksRequestSchema,
+  KnowledgeSaveProjectLinksRequestSchema,
   REMOTE_RUN_PROTOCOL_VERSION,
   remoteRunResponseSchema,
   remoteBackendInfoSchema,
@@ -66,6 +68,8 @@ export const SHARED_BACKEND_OPERATIONS = [
   'knowledge.save-draft',
   'knowledge.propose-draft',
   'knowledge.publish',
+  'knowledge.project-links',
+  'knowledge.save-project-links',
   'execution.inbox',
   'execution.startable',
   'execution.task-progress',
@@ -280,6 +284,18 @@ const descriptors = {
     verb: 'POST',
     auth: false,
   },
+  'knowledge.project-links': {
+    schema: KnowledgeProjectLinksRequestSchema,
+    path: '/api/zhuma-knowledge/project-links',
+    verb: 'POST',
+    auth: false,
+  },
+  'knowledge.save-project-links': {
+    schema: KnowledgeSaveProjectLinksRequestSchema,
+    path: '/api/zhuma-knowledge/save-project-links',
+    verb: 'POST',
+    auth: false,
+  },
   'execution.inbox': {
     schema: z.strictObject({ spaceId: id }),
     path: '/api/zhuma-exec/inbox',
@@ -370,6 +386,7 @@ const manualOperations = new Set<SharedBackendOperation>([
   'execution.upstream-content',
   'execution.draft',
 ]);
+type NativeAuthenticationEvent = 'changed' | 'revoking' | 'verified';
 
 /** One exact original Credentials record, never a profile/cookie/token export.
  * The local owner authorizes settings/transport; only the remote member Cookie
@@ -379,7 +396,7 @@ export class HostSharedBackend {
   private readonly provider;
   private readonly providerIdentity;
   private readonly jobs = new Set<Promise<unknown>>();
-  private readonly nativeListeners = new Set<(kind: 'changed' | 'revoking') => void>();
+  private readonly nativeListeners = new Set<(kind: NativeAuthenticationEvent) => void>();
   constructor(
     private readonly ctx: Context,
     private readonly fetcher: typeof fetch = globalThis.fetch,
@@ -452,13 +469,13 @@ export class HostSharedBackend {
     const row = await this.read();
     return !!(row?.origin && row.cookie && row.actorId && row.backendId);
   }
-  onNativeAuthenticationChanged(listener: (kind: 'changed' | 'revoking') => void) {
+  onNativeAuthenticationChanged(listener: (kind: NativeAuthenticationEvent) => void) {
     this.nativeListeners.add(listener);
     return () => {
       this.nativeListeners.delete(listener);
     };
   }
-  private nativeChanged(kind: 'changed' | 'revoking') {
+  private nativeChanged(kind: NativeAuthenticationEvent) {
     for (const listener of this.nativeListeners) listener(kind);
   }
   /** Host-only callback for C's existing private outgoing protocol. Never part
@@ -622,7 +639,11 @@ export class HostSharedBackend {
   request(input: SharedBackendRequest, signal: AbortSignal): Promise<SharedBackendResponse> {
     const work = this.perform(
       input,
-      AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(20_000)]),
+      AbortSignal.any([
+        signal,
+        this.lifetime.signal,
+        AbortSignal.timeout(input.operation === 'member.plan' ? 130_000 : 20_000),
+      ]),
     );
     this.jobs.add(work);
     void work.finally(() => this.jobs.delete(work)).catch(() => undefined);
@@ -632,7 +653,9 @@ export class HostSharedBackend {
    * renderer cannot select a remote URL, Cookie or authorization header. */
   file(endpoint: 'file' | 'upload-file', request: Request): Promise<Response> {
     const changed = new AbortController();
-    const revoke = () => changed.abort();
+    const revoke = (kind: NativeAuthenticationEvent) => {
+      if (kind !== 'verified') changed.abort();
+    };
     const signal = AbortSignal.any([
       request.signal,
       this.lifetime.signal,
@@ -940,6 +963,14 @@ export class HostSharedBackend {
       this.nativeChanged('changed');
     }
     await this.assertCurrent(row, signal, entry.auth);
+    if (
+      input.operation === 'identity.session' &&
+      response.ok &&
+      row.cookie &&
+      row.actorId &&
+      row.backendId
+    )
+      this.nativeChanged('verified');
     return { connectionId: row.connectionId, status: response.status, body: value };
   }
   async close(): Promise<void> {

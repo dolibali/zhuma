@@ -12,6 +12,14 @@ import {
   KnowledgeDraftsRequestSchema,
   KnowledgeSaveDraftRequestSchema,
   KnowledgePublishRequestSchema,
+  KnowledgeProjectLinksRequestSchema,
+  KnowledgeSaveProjectLinksRequestSchema,
+  KnowledgeProjectSnapshotSchema,
+  KnowledgeProjectLinksValueSchema,
+  type KnowledgeProjectLinksValue,
+  type KnowledgeProjectLinksWriteValue,
+  type KnowledgeProjectSnapshot,
+  type Workbench,
   type KnowledgeErrorCode,
   type KnowledgeResult,
   type KnowledgeLibrary,
@@ -36,6 +44,7 @@ import {
   type KnowledgePageRecord,
   type KnowledgePublished,
   type KnowledgeWriteReceipt,
+  type KnowledgeProjectLinksRecord,
 } from './knowledge-storage.js';
 
 export class KnowledgeError extends Error {
@@ -44,6 +53,8 @@ export class KnowledgeError extends Error {
   }
 }
 export interface KnowledgeServiceOptions {
+  /** SAME original opened Workbench; absent/closed is unavailable, never a legacy fallback. */
+  readonly readWorkbench?: () => Workbench;
   /** Host-only synchronous assertion over the SAME current trusted directory.
    * No browser field, space-name convention or first page author is an owner grant.
    * Unknown old personal spaces must throw KnowledgeError('unavailable'). */
@@ -223,6 +234,148 @@ export class KnowledgeService {
     const space = access.directory.space(access.spaceId);
     if (!space || libraryId !== space.id) throw new KnowledgeError('not-found');
     return { id: space.id, spaceId: space.id, kind: space.kind, name: space.name, canCreate: true };
+  }
+  private async project(access: Access, projectId: string): Promise<void> {
+    access.check();
+    const read = this.options.readWorkbench;
+    if (typeof read !== 'function') return unavailable();
+    const exists = () => {
+      access.check();
+      if (this.options.readWorkbench !== read) return unavailable();
+      const projects = read().projects.filter((project) => project.id === projectId);
+      if (projects.length !== 1) throw new KnowledgeError('not-found');
+    };
+    exists();
+    const lookup = await access.directory.spaceForProject(projectId);
+    exists();
+    if (!lookup.ok && lookup.reason === 'unavailable') return unavailable();
+    if (!lookup.ok || lookup.spaceId !== access.spaceId) throw new KnowledgeError('not-found');
+  }
+  private projectSnapshotValue(
+    access: Access,
+    projectId: string,
+    row: KnowledgeProjectLinksRecord | undefined,
+  ): KnowledgeProjectSnapshot {
+    const value = {
+      sourceVersion: 'zhuma-project-knowledge@1' as const,
+      spaceId: access.spaceId,
+      projectId,
+      relationshipVersion: row?.version ?? 0,
+      links: row?.links ?? [],
+    };
+    return KnowledgeProjectSnapshotSchema.parse({ ...value, checksum: digest(value) });
+  }
+  projectLinks(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeProjectLinksValue>> {
+    return this.run(request, raw, signal, async (access) => {
+      const input = KnowledgeProjectLinksRequestSchema.parse(raw);
+      await this.project(access, input.projectId);
+      const row = this.store.projectLinks(access.spaceId, input.projectId);
+      const links = (row?.links ?? []).map((link) => {
+        const { page, version } = this.fixed(access, link.reference);
+        return {
+          ...link,
+          title: version.title,
+          format: version.format,
+          bytes: version.body.bytes,
+          hasUpdate: page.versions.at(-1)!.version > version.version,
+        };
+      });
+      await this.project(access, input.projectId);
+      if (
+        digest(this.store.projectLinks(access.spaceId, input.projectId) ?? null) !==
+        digest(row ?? null)
+      )
+        throw new KnowledgeError('conflict');
+      // Sources can be removed or withdrawn while project-space lookup yields.
+      for (const link of row?.links ?? []) this.fixed(access, link.reference);
+      return KnowledgeProjectLinksValueSchema.parse({
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        projectId: input.projectId,
+        relationshipVersion: row?.version ?? 0,
+        links,
+        snapshot: this.projectSnapshotValue(access, input.projectId, row),
+      });
+    });
+  }
+  /** Original member/project-authorized fixed refs only. No Node/Run grant,
+   * callback into the execution queue, content read, latest substitution or write. */
+  async projectSnapshot(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeProjectSnapshot>> {
+    const result = await this.projectLinks(request, raw, signal);
+    return result.ok ? { ok: true, value: structuredClone(result.value.snapshot) } : result;
+  }
+  saveProjectLinks(
+    request: MemberRequest,
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeResult<KnowledgeProjectLinksWriteValue>> {
+    return this.run(request, raw, signal, (access) =>
+      this.store.exclusive(async () => {
+        const input = KnowledgeSaveProjectLinksRequestSchema.parse(raw);
+        await this.project(access, input.projectId);
+        const previous = this.store.projectLinks(access.spaceId, input.projectId);
+        for (const link of input.links) this.fixed(access, link.reference);
+        const fingerprint = digest({
+          operation: 'save-project-links',
+          actorId: access.actorId,
+          input,
+        });
+        const receipt = previous?.receipts.find((item) => item.key === input.idempotencyKey);
+        if (receipt) {
+          if (receipt.fingerprint !== fingerprint) throw new KnowledgeError('conflict');
+          await this.project(access, input.projectId);
+          for (const link of input.links) this.fixed(access, link.reference);
+          return {
+            actorId: access.actorId,
+            spaceId: access.spaceId,
+            projectId: input.projectId,
+            relationshipVersion: receipt.version,
+            disposition: 'replayed' as const,
+          };
+        }
+        if ((previous?.version ?? 0) !== input.expectedVersion)
+          throw new KnowledgeError('conflict');
+        if (
+          (previous?.receipts.length ?? 0) >= KNOWLEDGE_LIMITS.receiptsPerProject ||
+          !Number.isSafeInteger(input.expectedVersion + 1)
+        )
+          throw new KnowledgeError('limit');
+        await this.store.protectProjectLinks();
+        // The durable format marker is a yielding boundary of its own. A failed
+        // or revoked request may retain marker 2, but cannot write an unauthorized relation.
+        await this.project(access, input.projectId);
+        for (const link of input.links) this.fixed(access, link.reference);
+        const version = input.expectedVersion + 1;
+        access.check();
+        await this.store.putProjectLinks({
+          schemaVersion: 1,
+          spaceId: access.spaceId,
+          projectId: input.projectId,
+          version,
+          links: input.links,
+          receipts: [
+            ...(previous?.receipts ?? []),
+            { key: input.idempotencyKey, fingerprint, version },
+          ],
+        });
+        await this.project(access, input.projectId);
+        return {
+          actorId: access.actorId,
+          spaceId: access.spaceId,
+          projectId: input.projectId,
+          relationshipVersion: version,
+          disposition: 'saved' as const,
+        };
+      }),
+    );
   }
   private page(access: Access, libraryId: string, pageId: string): KnowledgePageRecord {
     const library = this.library(access, libraryId),

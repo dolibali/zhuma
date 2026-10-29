@@ -32,6 +32,7 @@ export interface HostRunSources {
   >;
   readonly workspaces?: Pick<ReturnType<typeof createHostRunWorkspaces>, 'onChange'>;
   readonly retirementDrain?: NonNullable<ExecutionRunHostPorts['migrationDrain']>;
+  readonly prepareProjectKnowledge?: ExecutionRunHostPorts['prepareProjectKnowledge'];
 }
 
 type Retired = Extract<NativeScopeCleanupResult, { status: 'retired' }>;
@@ -129,6 +130,18 @@ export function createHostRunSources(
   };
   return {
     signal: sources.signal,
+    ...(sources.prepareProjectKnowledge
+      ? {
+          async prepareProjectKnowledge(
+            ...args: Parameters<NonNullable<ExecutionRunHostPorts['prepareProjectKnowledge']>>
+          ) {
+            active();
+            const snapshot = await sources.prepareProjectKnowledge!(...args);
+            active();
+            return snapshot;
+          },
+        }
+      : {}),
     prepareInitialResourceCatalog(request, locator, wait) {
       active();
       if (!sources.resources) throw new ExecutionRunError('run-authority-unavailable');

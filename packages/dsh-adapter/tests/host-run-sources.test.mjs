@@ -7,7 +7,7 @@ import { NativeWorkError } from '../dist/native-work-session-contract.js';
 
 // Host composition contracts only. These directories/configurations are not
 // real member, workspace, SDK connection, or execution authorization evidence.
-function fixture(retirementDrain, resources) {
+function fixture(retirementDrain, resources, prepareProjectKnowledge) {
   const ctx = new Context();
   const lifetime = new AbortController();
   const raw = new AbortController();
@@ -40,9 +40,38 @@ function fixture(retirementDrain, resources) {
     signal: lifetime.signal,
     ...(retirementDrain ? { retirementDrain } : {}),
     ...(resources ? { resources } : {}),
+    ...(prepareProjectKnowledge ? { prepareProjectKnowledge } : {}),
   });
   return { ctx, lifetime, raw, rows, handle, directory, configuration, native, ports };
 }
+
+test('Host project knowledge source contract: same request/query/signal reaches the mounted source without turning failures or late closure into an empty snapshot', async () => {
+  const calls = [],
+    pending = Promise.withResolvers();
+  const f = fixture(undefined, undefined, (...args) => {
+    calls.push(args);
+    return pending.promise;
+  });
+  const request = { headers: {} },
+    query = { spaceId: 'team', projectId: 'project' },
+    signal = new AbortController().signal;
+  const work = f.ports.prepareProjectKnowledge(request, query, signal);
+  assert.equal(calls.length, 1);
+  for (const [i, value] of [request, query, signal].entries()) assert.equal(calls[0][i], value);
+  const snapshot = Object.freeze({ sourceVersion: 'contract-only-fixed-snapshot' });
+  pending.resolve(snapshot);
+  assert.equal(await work, snapshot);
+  const denied = Object.assign(Error('Original knowledge source denied'), { code: 'forbidden' });
+  const unavailable = fixture(undefined, undefined, () => Promise.reject(denied));
+  await assert.rejects(unavailable.ports.prepareProjectKnowledge(request, query, signal), denied);
+  const late = Promise.withResolvers(),
+    closing = fixture(undefined, undefined, () => late.promise);
+  const result = closing.ports.prepareProjectKnowledge(request, query, signal);
+  closing.lifetime.abort();
+  late.resolve(snapshot);
+  await assert.rejects(result, { code: 'run-authority-unavailable' });
+  assert.equal(fixture().ports.prepareProjectKnowledge, undefined, 'legacy Host remains optional');
+});
 
 test('Host review source contract: exact request/wait/promise and late qualification stay with the original D owner', async () => {
   const pending = Promise.withResolvers(),

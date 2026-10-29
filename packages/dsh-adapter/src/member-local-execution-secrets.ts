@@ -13,9 +13,15 @@ import {
   remotePermitHashInput,
   remoteRunScopeSchema,
   remoteReviewScopeSchema,
+  remoteWorkflowCandidateSchema,
+  remoteWorkflowTargetSchema,
+  remoteWorkflowRefSchema,
   canonicalPayload,
   type RemoteRunScope,
   type RemoteReviewScope,
+  type RemoteWorkflowCandidate,
+  type RemoteWorkflowTarget,
+  type RemoteWorkflowRef,
 } from '@zhuma/agent-core';
 
 /** A adapts this to its ORIGINAL private credentials owner. Implementations
@@ -51,6 +57,18 @@ const intentRecord = z.strictObject({
   cleanup: remotePrivatePermitSchema,
 });
 type IntentRecord = z.infer<typeof intentRecord>;
+const workflowAcceptPointer = z.strictObject({
+  version: z.literal(1),
+  backendId: remoteRunScopeSchema.shape.backendId,
+  actorId: remoteRunScopeSchema.shape.actorId,
+  deviceId: z.uuid(),
+  requestId: z.uuid(),
+  intentFingerprint: digest,
+  candidate: remoteWorkflowCandidateSchema,
+});
+// The original credentials provider treats modify(undefined) as no change.
+// Clear this exact locator with a durable value in the same private slot.
+const clearedWorkflowPointer = z.strictObject({ version: z.literal(1), cleared: z.literal(true) });
 const historyPointer = z
   .strictObject({
     version: z.literal(1),
@@ -236,6 +254,132 @@ export class MemberLocalExecutionSecrets {
       if (error instanceof MemberLocalSecretError) throw error;
       throw new MemberLocalSecretError('unavailable');
     }
+  }
+  /** One exact pending-admission locator, in the ORIGINAL private pointer
+   * namespace. No permit/body copy, domain state, enumeration or work queue. */
+  async rememberWorkflowAccept(
+    device: MemberLocalDeviceIdentity,
+    requestId: string,
+    rawCandidate: RemoteWorkflowCandidate,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const candidate = remoteWorkflowCandidateSchema.parse(rawCandidate),
+      intent = await this.recoverAccept(device, requestId, signal);
+    if (!intent) throw new MemberLocalSecretError('unavailable');
+    const entry = workflowAcceptPointer.parse({
+      version: 1,
+      backendId: device.backendId,
+      actorId: device.actorId,
+      deviceId: device.deviceId,
+      requestId,
+      intentFingerprint: intent.intentFingerprint,
+      candidate,
+    });
+    const slot = this.workflowDeviceSlot(device);
+    const saved = await this.store.modify(slot, (raw) => {
+      if (raw === undefined || clearedWorkflowPointer.safeParse(raw).success) return entry;
+      if (canonicalPayload(workflowAcceptPointer.parse(raw)) !== canonicalPayload(entry))
+        throw new MemberLocalSecretError('conflict');
+      return raw;
+    });
+    checkSignal(signal);
+    if (canonicalPayload(saved) !== canonicalPayload(entry))
+      throw new MemberLocalSecretError('unavailable');
+  }
+  /** Pure exact-key lookup. The candidate/request ID is a locator only; the
+   * original signed reconcile must still prove actor/device/current scope. */
+  async pendingWorkflowAccept(
+    device: MemberLocalDeviceIdentity,
+    target: RemoteWorkflowTarget,
+    workflow: RemoteWorkflowRef,
+    signal?: AbortSignal,
+  ) {
+    remoteWorkflowRefSchema.parse(workflow);
+    const entry = await this.pendingWorkflowAcceptForDevice(device, signal);
+    if (!entry) return undefined;
+    const { nodeId: _node, ...located } = entry.candidate.target,
+      wanted = remoteWorkflowTargetSchema.parse({
+        spaceId: target.spaceId,
+        taskId: target.taskId,
+        planId: target.planId,
+        revision: target.revision,
+      });
+    if (
+      !Object.entries(wanted).every(([k, v]) => Reflect.get(located, k) === v) ||
+      entry.candidate.workflow.intentId !== workflow.intentId
+    )
+      return undefined;
+    if (canonicalPayload(entry.candidate.workflow) !== canonicalPayload(workflow))
+      throw new MemberLocalSecretError('conflict');
+    return entry;
+  }
+  /** Original Owner admits at most one local source. Retain that one pending
+   * request at device scope so cold backend switching cannot miss an unopened
+   * task. This is one exact read, never an enumerable task/Run index. */
+  async pendingWorkflowAcceptForDevice(device: MemberLocalDeviceIdentity, signal?: AbortSignal) {
+    checkSignal(signal);
+    if (!this.issued.has(device)) throw new MemberLocalSecretError('invalid');
+    const raw = await this.store.read(this.workflowDeviceSlot(device));
+    checkSignal(signal);
+    if (raw === undefined || clearedWorkflowPointer.safeParse(raw).success) return undefined;
+    const entry = workflowAcceptPointer.parse(raw);
+    if (
+      entry.backendId !== device.backendId ||
+      entry.actorId !== device.actorId ||
+      entry.deviceId !== device.deviceId
+    )
+      throw new MemberLocalSecretError('conflict');
+    const intent = await this.recoverAccept(device, entry.requestId, signal);
+    if (!intent || intent.intentFingerprint !== entry.intentFingerprint)
+      throw new MemberLocalSecretError('conflict');
+    return Object.freeze(structuredClone(entry));
+  }
+  /** Caller clears only after original Owner cleanup/result settlement. The
+   * original qualified Run pointer must still match; no permit is deleted. */
+  async forgetWorkflowAccept(
+    device: MemberLocalDeviceIdentity,
+    candidate: RemoteWorkflowCandidate,
+    scope: RemoteRunScope | RemoteReviewScope,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const entry = await this.pendingWorkflowAccept(
+      device,
+      candidate.target,
+      candidate.workflow,
+      signal,
+    );
+    if (!entry) return;
+    const saved =
+      candidate.kind === 'work'
+        ? await this.historyIntent(device, remoteRunScopeSchema.parse(scope), signal)
+        : await this.loadReviewRun(device, remoteReviewScopeSchema.parse(scope), signal);
+    if (
+      !saved ||
+      saved.intent.requestId !== entry.requestId ||
+      saved.intent.intentFingerprint !== entry.intentFingerprint ||
+      canonicalPayload(candidate) !== canonicalPayload(entry.candidate)
+    )
+      throw new MemberLocalSecretError('conflict');
+    const slot = this.workflowDeviceSlot(device);
+    const cleared = { version: 1, cleared: true } as const;
+    const stored = await this.store.modify(slot, (raw) => {
+      if (raw === undefined || clearedWorkflowPointer.safeParse(raw).success) return cleared;
+      if (canonicalPayload(workflowAcceptPointer.parse(raw)) !== canonicalPayload(entry))
+        throw new MemberLocalSecretError('conflict');
+      return cleared;
+    });
+    checkSignal(signal);
+    if (!clearedWorkflowPointer.safeParse(stored).success)
+      throw new MemberLocalSecretError('unavailable');
+  }
+  private workflowDeviceSlot(device: MemberLocalDeviceIdentity): string {
+    if (!this.issued.has(device)) throw new MemberLocalSecretError('invalid');
+    return key('run-pointer', [
+      device.backendId,
+      device.actorId,
+      device.deviceId,
+      'pending-workflow-accept',
+    ]);
   }
   /** One bounded exact-key locator per original Run, with the same lifetime as
    * its private accept intent. No list, scan, rotation or history eviction. */

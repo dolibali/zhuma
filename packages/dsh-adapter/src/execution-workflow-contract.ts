@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { remoteWorkflowIntentSchema, REMOTE_WORKFLOW_LIMITS } from '@zhuma/agent-core';
 import { executionWorkspaceSchema } from './execution-run-state.js';
 import type { ExecutionReviewScope } from './execution-review-contract.js';
 import type {
@@ -108,6 +109,15 @@ export const executionPlanReceiptSchema = z.strictObject({
   fingerprint: z.string().min(1),
   nodeIds: z.array(z.string().min(1)),
   workflowExecution: workflowExecutionIntentSchema.optional(),
+  remoteWorkflows: z
+    .array(remoteWorkflowIntentSchema)
+    .max(REMOTE_WORKFLOW_LIMITS.intentsPerPlan)
+    .refine(
+      (items) =>
+        new Set(items.map((item) => item.actorId)).size === items.length &&
+        new Set(items.map((item) => item.intentId)).size === items.length,
+    )
+    .optional(),
 });
 export const workflowStartSchema = workflowLocationSchema.extend({
   requestId: id,
