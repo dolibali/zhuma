@@ -1037,7 +1037,7 @@ body[data-ds-dark-theme] {
   height: auto;
   min-height: 0;
 }
-/* Connection and space controls share one row below the original window strip. */
+/* The member header owns the official window strip; its controls remain no-drag. */
 .zm-shared-backend .zm-backend-bar {
   position: absolute;
   z-index: 2;
@@ -1050,7 +1050,7 @@ body[data-ds-dark-theme] {
   max-width: min(42%, 300px);
 }
 html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
-  top: var(--dsh-frame-top-clearance, 0px);
+  height: var(--dsh-frame-top-clearance, 48px);
 }
 .zm-shared-backend .zm-backend-bar .zm-button {
   min-width: 0;
@@ -1100,6 +1100,13 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
 }
 html[data-platform='darwin'] .zm-shell-chrome {
   height: var(--dsh-frame-top-clearance, 0px);
+}
+html[data-platform='darwin'] .zm-shell-panel:has(.zm-space-bar) > .zm-shell-chrome {
+  display: none;
+}
+html[data-platform='darwin'] .zhuma .zm-space-bar {
+  min-height: var(--dsh-frame-top-clearance, 48px);
+  padding-inline-start: max(24px, var(--dsh-frame-leading-clearance, 0px));
 }
 /* Action hierarchy: primary, secondary (default), quiet, danger. */
 .zhuma button,
