@@ -31,9 +31,16 @@ export function isStoppedReviewHistory(attempt: ExecutionReviewAttempt): boolean
     attempt.status === 'cancelled' &&
     attempt.stopPhase === 'confirmed' &&
     attempt.resources === 'settled' &&
-    attempt.dispatch === 'received' &&
-    !!attempt.nativeSessionId &&
-    attempt.nativeAgentId === attempt.nativeSessionId &&
+    ((attempt.dispatch === 'received' &&
+      !!attempt.nativeSessionId &&
+      attempt.nativeAgentId === attempt.nativeSessionId) ||
+      (attempt.dispatch === 'reserved' &&
+        !attempt.nativeSessionId &&
+        !attempt.nativeAgentId &&
+        'remote' in attempt &&
+        !!attempt.remote?.workflow &&
+        attempt.remote.stopRequested &&
+        attempt.remote.lastObservation === 'drained')) &&
     attempt.result === undefined &&
     attempt.failure === undefined
   );

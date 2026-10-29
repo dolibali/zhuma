@@ -532,7 +532,11 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     })();
     await memberOpening;
     if (closed) return;
-    knowledge = openHostKnowledge(ctx, directoryLifecycle.currentDirectory);
+    knowledge = openHostKnowledge(
+      ctx,
+      directoryLifecycle.currentDirectory,
+      workbench.readWorkbench,
+    );
     // Each original execution child is opened once and disposed before another
     // native namespace is mounted. Reopen uses the SAME original domains.
     async function openLocalChild(): Promise<HostNativeChild> {

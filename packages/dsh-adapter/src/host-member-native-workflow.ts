@@ -12,6 +12,7 @@ import {
 import type { HostSharedBackend } from './host-shared-backend.js';
 import { MemberLocalExecutionProtocol } from './member-local-execution-protocol.js';
 import { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
+import type { MemberLocalReviewProtocol } from './member-local-review-protocol.js';
 import {
   NativeMemberWorkflowConsumer,
   type NativeMemberWorkflowHooks,
@@ -33,6 +34,7 @@ const metadataSchema = z.object({
   planStarted: z.boolean(),
   expertNodeCount: natural.max(1000),
   controlledNodeCount: natural.max(1000),
+  controlledReviewNodeCount: natural.max(1000),
   expertReviewRequired: z.boolean().optional(),
   intent: z.null(),
 });
@@ -44,6 +46,7 @@ const startSchema = workflowLocationSchema.extend({
     z.strictObject({ kind: z.literal('local'), id: z.string().min(1).max(200) }),
   ]),
   concurrent: z.literal(1).default(1),
+  automaticRevisions: natural.max(2).default(0),
 });
 
 /** Same backend facts, original device protocol and C consumer. This owns only
@@ -56,6 +59,7 @@ export function createHostMemberNativeWorkflow(
     actorId: string;
     protocol: MemberLocalExecutionProtocol;
     native: MemberLocalExecutionOwner;
+    review?: MemberLocalReviewProtocol;
     workspaces: ReturnType<typeof createHostMemberNativeWorkspaces>;
     hooks: NativeMemberWorkflowHooks;
     signal: AbortSignal;
@@ -63,6 +67,7 @@ export function createHostMemberNativeWorkflow(
   },
 ) {
   const consumers = new Map<string, NativeMemberWorkflowConsumer>();
+  const automaticReview = !!(options.review && options.hooks.prepareReview);
   const key = (target: unknown) => canonicalPayload(target);
   async function call(
     operation: 'member.snapshot' | 'execution.task-progress' | 'execution.start-plan',
@@ -143,6 +148,16 @@ export function createHostMemberNativeWorkflow(
             task.ownerId === options.actorId &&
             plan.task.ownerId === options.actorId,
       ).length,
+      controlledReviewNodeCount:
+        task.ownerId === options.actorId && plan.task.ownerId === options.actorId
+          ? nodes.filter(
+              (node) =>
+                node.reviewRequired &&
+                node.reviewerIds.some((id) =>
+                  plan.participants.some((item) => item.id === id && item.kind === 'expert'),
+                ),
+            ).length
+          : 0,
       expertReviewRequired: nodes.some(
         (node) =>
           node.reviewRequired &&
@@ -160,6 +175,7 @@ export function createHostMemberNativeWorkflow(
       value = new NativeMemberWorkflowConsumer({
         protocol: options.protocol,
         native: options.native,
+        ...(options.review ? { review: options.review } : {}),
         hooks: options.hooks,
         signal: options.signal,
       });
@@ -178,6 +194,7 @@ export function createHostMemberNativeWorkflow(
         planStarted: base.planStarted,
         expertNodeCount: base.expertNodeCount,
         controlledNodeCount: base.controlledNodeCount,
+        controlledReviewNodeCount: base.controlledReviewNodeCount,
         ...(base.expertReviewRequired === undefined
           ? {}
           : { expertReviewRequired: base.expertReviewRequired }),
@@ -186,7 +203,7 @@ export function createHostMemberNativeWorkflow(
         requiresResume: false,
         activeRunCount: 0,
         selection: null,
-        automaticReview: false,
+        automaticReview,
       };
     if (
       key(base.target) !== key(workflowLocationSchema.strip().parse(remote.scope)) ||
@@ -201,28 +218,40 @@ export function createHostMemberNativeWorkflow(
       workspace = { kind: 'unavailable' };
     }
     const local = consumers.get(key(base.target))?.view();
+    const budgetExhausted = remote.attention.some(
+      (item) => item.code === 'rework-budget-exhausted',
+    );
     return {
       target: base.target,
       title: base.title,
       planStarted: base.planStarted,
       expertNodeCount: base.expertNodeCount,
       controlledNodeCount: base.controlledNodeCount,
+      controlledReviewNodeCount: base.controlledReviewNodeCount,
+      ...(remote.revisions ? { revisions: structuredClone(remote.revisions) } : {}),
       ...(base.expertReviewRequired === undefined
         ? {}
         : { expertReviewRequired: base.expertReviewRequired }),
-      automaticReview: false,
+      automaticReview,
       state: remote.state,
       requiresResume: remote.requiresResume,
-      activeRunCount: remote.activeWork.filter((run) => run.resources !== 'settled').length,
+      activeRunCount: [...remote.activeWork, ...remote.activeReviews].filter(
+        (run) => run.resources !== 'settled',
+      ).length,
       intent: {
         intentId: intent.intentId,
         generation: intent.generation,
         version: intent.version,
         concurrent: intent.budget.concurrent,
+        automaticRevisions: intent.budget.automaticRevisions,
       },
       selection: { model: intent.defaults.model, workspace },
-      ...(local?.blocked
-        ? { attention: '自动接续需要处理，请检查当前工作节点，或停止后继续。' }
+      ...(budgetExhausted || local?.blocked
+        ? {
+            attention: budgetExhausted
+              ? `自动返工已达到所选上限（${intent.budget.automaticRevisions} 轮），请在待办中处理退回意见。`
+              : '自动接续需要处理，请检查当前工作节点，或停止后继续。',
+          }
         : {}),
     };
   }
@@ -252,6 +281,8 @@ export function createHostMemberNativeWorkflow(
       let base = await metadata(target, signal);
       if (endpoint === 'workflow-start') {
         const input = startSchema.parse(raw);
+        if (input.automaticRevisions && !automaticReview)
+          throw new ExecutionRunError('run-authority-unavailable');
         await modelAvailable(input.model, signal);
         if (!base.planStarted) {
           await call(
@@ -287,7 +318,11 @@ export function createHostMemberNativeWorkflow(
         });
         const next = await consumer(target).start(
           input.requestId,
-          { target, defaults, budget: { concurrent: 1, automaticRevisions: 0 } },
+          {
+            target,
+            defaults,
+            budget: { concurrent: 1, automaticRevisions: input.automaticRevisions },
+          },
           signal,
         );
         return project(base, next.remote);
@@ -326,18 +361,22 @@ export function createHostMemberNativeWorkflow(
         remote = next.remote;
       } else if (endpoint === 'workflow-stop') {
         const input = workflowControlSchema.parse(raw);
-        const active = consumers.get(key(target));
-        if (active) {
-          const intent = active.view().remote?.intent;
-          if (intent?.intentId !== input.intentId || intent.generation !== input.generation)
-            throw new ExecutionRunError('run-scope-mismatch');
-          remote = (await active.stop(input.requestId, signal)).remote;
-        } else
-          remote = await options.protocol.workflowStop(
-            input.requestId,
-            { target, workflow: { intentId: input.intentId, generation: input.generation } },
-            signal,
-          );
+        if (
+          remote?.intent?.intentId !== input.intentId ||
+          remote.intent.generation !== input.generation
+        )
+          throw new ExecutionRunError('run-scope-mismatch');
+        let active = consumers.get(key(target));
+        if (!active) {
+          active = consumer(target);
+          // Only explicit Stop reconciles the original cold unknown accept.
+          // Ordinary reads never recover, arm, retry accept or start an Agent.
+          await active.recover(target, signal);
+        }
+        const intent = active.view().remote?.intent;
+        if (intent?.intentId !== input.intentId || intent.generation !== input.generation)
+          throw new ExecutionRunError('run-scope-mismatch');
+        remote = (await active.stop(input.requestId, signal)).remote;
       } else if (!['workflow-read', 'workflow-options'].includes(endpoint))
         throw new ExecutionRunError('run-validation');
       const view = project(base, remote);

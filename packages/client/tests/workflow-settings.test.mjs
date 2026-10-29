@@ -154,6 +154,110 @@ test('workspace scope labels come from the original guarded member snapshot, not
   assert.equal(calls.length, before);
 });
 const dom = { skip: !domModule && 'set ZHUMA_NATIVE_PANEL_DOM_MODULE for in-memory DOM contracts' };
+
+test(
+  'workflow budget DOM: explicit start sends the chosen limit and Resume shows its frozen value without resetting it',
+  dom,
+  async (t) => {
+    let current = { ...view, automaticReview: true, controlledNodeCount: 1 },
+      started,
+      resumed;
+    const model = { provider: 'contract', model: 'configured', maxTokens: 4096 };
+    const h = await mount(t, WorkflowControls, {
+      target,
+      nodeLabels: { node: '生成客户方案' },
+      api: {
+        read: async () => current,
+        options: async () => ({
+          ...options,
+          ...current,
+          maxConcurrent: 1,
+          models: { kind: 'ready', items: [{ id: 'model', label: 'Model', value: model }] },
+        }),
+        start: async (input) => {
+          started = input;
+          current = {
+            ...current,
+            planStarted: true,
+            state: 'waiting',
+            intent: {
+              intentId: 'intent',
+              generation: 1,
+              version: 1,
+              concurrent: 1,
+              automaticRevisions: 2,
+            },
+            selection: { model, workspace: { kind: 'text-only' } },
+            revisions: [{ nodeId: 'node', used: 1, limit: 2 }],
+          };
+          return current;
+        },
+        stop: async () =>
+          (current = { ...current, state: 'paused', intent: { ...current.intent, version: 2 } }),
+        resume: async (input) => {
+          resumed = input;
+          return { ...current, state: 'waiting' };
+        },
+      },
+    });
+    await click(button(h, '运行工作流'));
+    assert.match(
+      h.container.querySelector('[aria-label="评审退回后自动返工"]').textContent,
+      /不自动返工/u,
+    );
+    await choose(h.container.querySelector('[aria-label="模型"]'), 'Model');
+    await choose(h.container.querySelector('[aria-label="评审退回后自动返工"]'), '最多 2 轮');
+    await click(button(h, '确认运行'));
+    assert.equal(started.automaticRevisions, 2);
+    assert.match(h.container.textContent, /已发起自动返工 1 次/u);
+    assert.match(h.container.textContent, /生成客户方案：1 \/ 2 次/u);
+    await click(button(h, '停止工作流'));
+    await click(button(h, '继续工作流'));
+    assert.match(h.container.textContent, /2 轮（继续运行不重置）/u);
+    assert.equal(h.container.querySelector('[aria-label="评审退回后自动返工"]'), null);
+    await click(button({ container: h.container.querySelector('form') }, '继续工作流'));
+    assert.equal(resumed.expectedVersion, 2);
+    assert.equal('automaticRevisions' in resumed, false);
+    assert.match(h.container.textContent, /已发起自动返工 1 次/u);
+  },
+);
+
+test(
+  'workflow review-only DOM: an owner can configure automatic expert review when all author work is assigned to other people',
+  dom,
+  async (t) => {
+    const review = {
+      ...view,
+      expertNodeCount: 0,
+      controlledNodeCount: 0,
+      controlledReviewNodeCount: 1,
+      expertReviewRequired: true,
+      automaticReview: true,
+    };
+    const h = await mount(t, WorkflowControls, {
+      target,
+      api: {
+        read: async () => review,
+        options: async () => ({ ...options, ...review }),
+        start: () => assert.fail('Model and explicit confirmation are required'),
+      },
+    });
+    await click(button(h, '运行工作流'));
+    assert.equal(button(h, '确认运行').disabled, true);
+    await h.update({
+      target,
+      api: {
+        read: async () => ({ ...review, automaticReview: false }),
+        options: () => assert.fail('Unavailable review must not start'),
+      },
+    });
+    assert(
+      ![...h.container.querySelectorAll('button')].some(
+        (item) => item.textContent.trim() === '运行工作流',
+      ),
+    );
+  },
+);
 async function mount(t, component, props) {
   const container = document.createElement('div');
   document.body.append(container);

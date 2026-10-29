@@ -62,7 +62,9 @@ async function host(t) {
   await identity;
   attachment = member.ctx.plugin(LocalAttachmentStore, { dshHome: join(home, 'knowledge-files') });
   await attachment;
-  service = await openKnowledgeService(member.ctx);
+  service = await openKnowledgeService(member.ctx, {
+    readWorkbench: () => member.service.snapshot(),
+  });
   const calls = { proposals: 0, writes: 0 };
   const propose = service.proposeDraft.bind(service),
     put = service.store.put.bind(service.store);
@@ -128,6 +130,56 @@ const value = (reply) => {
   return reply.json.result.value;
 };
 
+test('project knowledge HTTP: original member project creation and fixed publication feed two exact relation operations', async (t) => {
+  const h = await host(t);
+  const created = await h.rpc(
+    'command',
+    {
+      spaceId: 'north',
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      command: {
+        type: 'create-project',
+        project: { id: 'project', name: 'Project', description: '' },
+      },
+    },
+    h.cookies.ann,
+  );
+  assert.equal(created.json.result.ok, true, JSON.stringify(created.json));
+  const query = { spaceId: 'north', projectId: 'project' };
+  assert.equal(value(await h.call('project-links', query)).relationshipVersion, 0);
+  const saved = value(await h.call('save-draft', proposal()));
+  const published = value(
+    await h.call('publish', {
+      spaceId: 'north',
+      libraryId: 'north',
+      pageId: 'guide',
+      expectedVersion: saved.pageRevision,
+      idempotencyKey: randomUUID(),
+    }),
+  );
+  const input = {
+    ...query,
+    expectedVersion: 0,
+    idempotencyKey: randomUUID(),
+    links: [{ reference: published.reference, required: false }],
+  };
+  assert.equal(value(await h.call('save-project-links', input)).disposition, 'saved');
+  const before = await h.durable();
+  assert.equal(value(await h.call('save-project-links', input)).disposition, 'replayed');
+  const found = value(await h.call('project-links', query, { cookie: h.cookies.bob }));
+  assert.equal(found.actorId, 'bob');
+  assert.deepEqual(found.snapshot.links, input.links);
+  assert.equal(found.links[0].required, false);
+  const denied = await h.call('project-links', query, { cookie: h.cookies.dana });
+  assert.equal(denied.json.result.ok, false);
+  const anonymous = await h.call('save-project-links', input, { cookie: '' });
+  assert.equal(anonymous.status, 401);
+  const mismatched = envelope('read', query);
+  assert.equal((await h.raw('project-links', JSON.stringify(mismatched))).status, 400);
+  assert.deepEqual(await h.durable(), before);
+});
+
 test('knowledge proposal HTTP: one ninth exact reuses member/page-author save, marks only draft provenance and never publishes', async (t) => {
   const h = await host(t),
     input = proposal();
@@ -141,6 +193,8 @@ test('knowledge proposal HTTP: one ninth exact reuses member/page-author save, m
     'save-draft',
     'propose-draft',
     'publish',
+    'project-links',
+    'save-project-links',
   ]);
   const reply = await h.call('propose-draft', input),
     saved = value(reply);

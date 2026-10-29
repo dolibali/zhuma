@@ -10,15 +10,25 @@ import { createHostMemberNativeWorkflow } from '../dist/host-member-native-workf
 const target = { spaceId: 'north', taskId: 'task', planId: 'plan', revision: 1 };
 const model = { provider: 'synthetic', model: 'not-called', maxTokens: 4096 };
 const wait = () => new AbortController().signal;
-function setup(t, { started = false, available = true, remote } = {}) {
+function setup(
+  t,
+  {
+    started = false,
+    available = true,
+    remote,
+    review = false,
+    owner = 'outside',
+    assignee = 'ann',
+  } = {},
+) {
   const writes = [],
     calls = [];
   const { state, task, node } = fixture();
   state.participants[0].id = 'ann';
   state.participants.find((item) => item.id === 'qa').instructions = '独立核对固定提交。';
-  task.ownerId = 'outside';
+  task.ownerId = owner;
   task.participantIds = ['ann', 'outside', 'qa'];
-  node.assigneeId = 'ann';
+  node.assigneeId = assignee;
   const confirmed = applyWorkbenchCommand(state, {
     type: 'save-task',
     task: { ...task, status: 'ready' },
@@ -44,6 +54,10 @@ function setup(t, { started = false, available = true, remote } = {}) {
     async workflowNext() {
       return structuredClone(remote);
     },
+    async pendingWorkflowAccept(input) {
+      calls.push(['pending', structuredClone(input)]);
+      return undefined;
+    },
     async workflowStart(requestId, input) {
       calls.push(['start', requestId, structuredClone(input)]);
       if (!remote?.intent)
@@ -68,6 +82,7 @@ function setup(t, { started = false, available = true, remote } = {}) {
     async workflowStop(requestId, input) {
       calls.push(['stop', requestId, structuredClone(input)]);
       remote.state = 'paused';
+      remote.requiresResume = false;
       remote.intent.version++;
       return structuredClone(remote);
     },
@@ -85,6 +100,7 @@ function setup(t, { started = false, available = true, remote } = {}) {
     connectionId: 'connection',
     actorId: 'ann',
     native: { canSwitchBackend: () => true },
+    ...(review ? { review: { canSwitchBackend: () => true } } : {}),
     workspaces: {
       workflowWorkspace: () => ({ workspace: { kind: 'text-only' }, localTools: [] }),
       workflowSelection: () => ({ kind: 'text-only' }),
@@ -92,6 +108,9 @@ function setup(t, { started = false, available = true, remote } = {}) {
     },
     hooks: {
       prepareWork: () => assert.fail('A passive read or empty candidate cannot start work'),
+      ...(review
+        ? { prepareReview: () => assert.fail('An empty candidate cannot start review') }
+        : {}),
     },
     signal: wait(),
     current: async (signal) => signal.throwIfAborted(),
@@ -154,6 +173,115 @@ test('member workflow Host composition: passive discovery creates no plan or con
   assert.equal(h.writes.length, 0);
   assert.equal(h.calls.length, 0);
   assert.equal(h.helper.canSwitchBackend(), true);
+});
+
+test('member workflow Host composition: explicit rework budget survives Stop/Resume and actual review holds remain visible', async (t) => {
+  const h = setup(t, { review: true });
+  const initial = await h.helper.handle(
+    'workflow-start',
+    {
+      ...target,
+      requestId: randomUUID(),
+      model,
+      workspace: { kind: 'text-only' },
+      concurrent: 1,
+      automaticRevisions: 2,
+    },
+    wait(),
+  );
+  assert.equal(initial.automaticReview, true);
+  assert.equal(initial.intent.automaticRevisions, 2);
+  h.remote().revisions = [{ nodeId: 'node-1', used: 1, limit: 2 }];
+  const held = { resources: 'held' };
+  h.remote().activeReviews.push(held);
+  const observed = await h.helper.handle('workflow-read', target, wait());
+  assert.equal(observed.activeRunCount, 1);
+  assert.deepEqual(observed.revisions, [{ nodeId: 'node-1', used: 1, limit: 2 }]);
+  h.remote().attention.push({ nodeId: 'node', code: 'rework-budget-exhausted' });
+  assert.match((await h.helper.handle('workflow-read', target, wait())).attention, /2 轮/u);
+  held.resources = 'settled';
+  const paused = await h.helper.handle(
+    'workflow-stop',
+    {
+      ...target,
+      requestId: randomUUID(),
+      intentId: initial.intent.intentId,
+      generation: initial.intent.generation,
+    },
+    wait(),
+  );
+  const resumed = await h.helper.handle(
+    'workflow-resume',
+    {
+      ...target,
+      requestId: randomUUID(),
+      intentId: paused.intent.intentId,
+      generation: paused.intent.generation,
+      expectedVersion: paused.intent.version,
+    },
+    wait(),
+  );
+  assert.equal(resumed.intent.automaticRevisions, 2);
+  assert.deepEqual(resumed.revisions, [{ nodeId: 'node-1', used: 1, limit: 2 }]);
+  assert.equal(h.calls.filter((item) => item[0] === 'start').length, 1);
+  assert.equal('budget' in h.calls.find((item) => item[0] === 'resume')[2], false);
+});
+
+test('member workflow Host composition: review-only owner keeps a separate control count without claiming authorship', async (t) => {
+  const h = setup(t, { owner: 'ann', assignee: 'outside', review: true });
+  const view = await h.helper.handle('workflow-options', target, wait());
+  assert.equal(view.controlledNodeCount, 0);
+  assert.equal(view.controlledReviewNodeCount, 1);
+  assert.equal(view.automaticReview, true);
+  assert.equal(h.writes.length, 0);
+});
+
+test('member workflow Host composition: cold reads never reconcile, and explicit Stop checks generation before the same consumer recovery and stop', async (t) => {
+  const original = setup(t);
+  const initial = await original.helper.handle(
+    'workflow-start',
+    {
+      ...target,
+      requestId: randomUUID(),
+      model,
+      workspace: { kind: 'text-only' },
+      concurrent: 1,
+    },
+    wait(),
+  );
+  const cold = structuredClone(original.remote());
+  cold.state = 'requires-resume';
+  cold.requiresResume = true;
+  const h = setup(t, { started: true, remote: cold });
+  await h.helper.handle('workflow-read', target, wait());
+  assert.equal(h.calls.filter((row) => row[0] === 'pending').length, 0);
+  await assert.rejects(
+    h.helper.handle(
+      'workflow-stop',
+      {
+        ...target,
+        requestId: randomUUID(),
+        intentId: initial.intent.intentId,
+        generation: 2,
+      },
+      wait(),
+    ),
+  );
+  assert.equal(h.calls.filter((row) => row[0] === 'pending').length, 0);
+  const stopped = await h.helper.handle(
+    'workflow-stop',
+    {
+      ...target,
+      requestId: randomUUID(),
+      intentId: initial.intent.intentId,
+      generation: 1,
+    },
+    wait(),
+  );
+  assert.equal(stopped.state, 'paused');
+  assert.equal(h.calls.filter((row) => row[0] === 'pending').length, 2);
+  assert.equal(h.calls.filter((row) => row[0] === 'stop').length, 1);
+  assert.equal(h.calls.filter((row) => row[0] === 'start' || row[0] === 'resume').length, 0);
 });
 
 test('member workflow Host composition: explicit start reuses original plan start, Stop validates generation and explicit resume creates a new consumer', async (t) => {

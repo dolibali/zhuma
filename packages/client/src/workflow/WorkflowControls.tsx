@@ -16,6 +16,7 @@ type Props = {
   api: WorkflowApi;
   target: WorkflowTarget;
   onViewChange?: ((view: WorkflowView) => void) | undefined;
+  nodeLabels?: Readonly<Record<string, string>>;
   openModelSettings?: (() => void) | undefined;
   workspaceApprovals?:
     { api: WorkspaceApprovalApi; location: WorkspaceApprovalLocation } | undefined;
@@ -38,7 +39,14 @@ export function WorkflowControls(props: Props) {
     lifetime.current = { api: props.api, identity, epoch: lifetime.current.epoch + 1 };
   return <Controls key={lifetime.current.epoch} {...props} />;
 }
-function Controls({ api, target, onViewChange, workspaceApprovals, openModelSettings }: Props) {
+function Controls({
+  api,
+  target,
+  onViewChange,
+  workspaceApprovals,
+  openModelSettings,
+  nodeLabels,
+}: Props) {
   const directoryId = useId(),
     manageId = useId(),
     runTriggerId = useId(),
@@ -71,6 +79,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
   const [modelId, setModelId] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
   const [concurrent, setConcurrent] = useState(1);
+  const [automaticRevisions, setAutomaticRevisions] = useState(0);
   const reader = useRef<AbortController | undefined>(undefined);
   const alive = useRef(false);
   const command = useExecutionCommand();
@@ -135,6 +144,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
       setModelId('');
       setWorkspaceId('');
       setConcurrent(1);
+      setAutomaticRevisions(0);
     }
     command.setError('');
     void refresh(true);
@@ -179,6 +189,7 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
           ? { kind: 'local' as const, id: workspace.id }
           : { kind: 'text-only' as const },
         concurrent,
+        ...(choices.automaticReview ? { automaticRevisions } : {}),
       };
       void command.run(
         { mode: 'start', ...input },
@@ -210,7 +221,8 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
     (view.controlledNodeCount === undefined
       ? view.expertNodeCount > 0 ||
         (view.expertReviewRequired === true && view.automaticReview !== false)
-      : view.controlledNodeCount > 0);
+      : view.controlledNodeCount > 0 ||
+        (view.automaticReview === true && (view.controlledReviewNodeCount ?? 0) > 0));
   const selected =
     choices?.models.kind === 'ready' && choices.models.items.some((item) => item.id === modelId);
   const workspaceUnavailable =
@@ -238,6 +250,22 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
           自动执行：{labels[view.state]}
           {view.activeRunCount ? ` · ${view.activeRunCount} 个 Agent` : ''}
         </span>
+      )}
+      {view?.revisions?.some((row) => row.used > 0) && (
+        <details className="zm-workflow-revisions">
+          <summary>
+            已发起自动返工 {view.revisions.reduce((sum, row) => sum + row.used, 0)} 次
+          </summary>
+          <ul>
+            {view.revisions
+              .filter((row) => row.used > 0)
+              .map((row) => (
+                <li key={row.nodeId}>
+                  {nodeLabels?.[row.nodeId] ?? '工作节点'}：{row.used} / {row.limit} 次
+                </li>
+              ))}
+          </ul>
+        </details>
       )}
       {(canStart || canResume) && (
         <Button
@@ -332,6 +360,12 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                       </strong>
                       <span>并行数量</span>
                       <strong>{view.intent.concurrent}</strong>
+                      {view.intent.automaticRevisions !== undefined && (
+                        <>
+                          <span>自动返工上限</span>
+                          <strong>{view.intent.automaticRevisions} 轮（继续运行不重置）</strong>
+                        </>
+                      )}
                       {!modelPresent && (
                         <p className="zm-error">原模型当前不可用，请先恢复模型连接。</p>
                       )}
@@ -366,6 +400,22 @@ function Controls({ api, target, onViewChange, workspaceApprovals, openModelSett
                           ]}
                         />
                       </label>
+                      {choices.automaticReview && (
+                        <label className="zm-field">
+                          评审退回后自动返工
+                          <SingleSelect
+                            label="评审退回后自动返工"
+                            value={String(automaticRevisions)}
+                            disabled={command.pending}
+                            onValueChange={(value) => setAutomaticRevisions(Number(value))}
+                            options={[
+                              { value: '0', label: '不自动返工' },
+                              { value: '1', label: '最多 1 轮' },
+                              { value: '2', label: '最多 2 轮' },
+                            ]}
+                          />
+                        </label>
+                      )}
                       {choices.models.kind === 'unavailable' && (
                         <p className="zm-error">{choices.models.message}</p>
                       )}

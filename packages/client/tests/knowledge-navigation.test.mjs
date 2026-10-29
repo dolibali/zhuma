@@ -279,3 +279,102 @@ test(
     assert.ok(host.querySelector('h1').textContent.includes('任务清单'));
   },
 );
+
+test(
+  'project knowledge mount shares the original leave confirmation across project, catalog and main tabs',
+  { skip: !window },
+  async () => {
+    const reference = {
+      spaceId: 'north',
+      libraryId: 'north',
+      pageId: 'guide',
+      version: 1,
+      checksum: 'a'.repeat(64),
+    };
+    const scope = { actorId: 'ann', spaceId: 'north' };
+    const state = {
+      ...emptyWorkbench(),
+      projects: [{ id: 'project', name: '支付平台', description: '' }],
+    };
+    for (const destination of ['概览', '全部项目', '任务清单']) {
+      const host = document.createElement('div');
+      document.body.append(host);
+      const root = createRoot(host);
+      let reads = 0;
+      try {
+        await act(async () =>
+          root.render(
+            el(WorkbenchPage, {
+              api: { snapshot: async () => ({ state, model: '未配置' }) },
+              initialSection: 'projects',
+              appearance: { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} },
+              knowledge: {
+                ...scope,
+                lifetime: { isCurrent: () => true, onUnauthenticated() {} },
+                api: {},
+                projectApi: {
+                  async libraries() {
+                    return { ...scope, libraries: [] };
+                  },
+                  async projectLinks(query) {
+                    reads++;
+                    assert.deepEqual(query, { spaceId: 'north', projectId: 'project' });
+                    return {
+                      ...scope,
+                      projectId: 'project',
+                      relationshipVersion: 1,
+                      links: [
+                        {
+                          reference,
+                          required: true,
+                          title: '接口说明',
+                          format: 'markdown',
+                          bytes: 12,
+                          hasUpdate: false,
+                        },
+                      ],
+                      snapshot: {
+                        sourceVersion: 'zhuma-project-knowledge@1',
+                        ...query,
+                        relationshipVersion: 1,
+                        links: [{ reference, required: true }],
+                        checksum: 'b'.repeat(64),
+                      },
+                    };
+                  },
+                },
+              },
+            }),
+          ),
+        );
+        await flush();
+        await click(button(host, '支付平台'));
+        await click(button(host, '资料与成果'));
+        await until(() => !!host.querySelector('.zm-project-knowledge input[type="checkbox"]'));
+        assert.equal(reads, 1);
+        const checkbox = host.querySelector('.zm-project-knowledge input[type="checkbox"]');
+        await click(checkbox);
+        assert.equal(checkbox.checked, false);
+        const target = () =>
+          destination === '任务清单'
+            ? [...host.querySelectorAll('nav[aria-label="工作台导航"] button')].find((node) =>
+                node.textContent.startsWith(destination),
+              )
+            : button(host, destination);
+        await click(target());
+        assert.ok(document.querySelector('dialog[open]'));
+        await click(button(document, '继续编辑'));
+        assert.equal(
+          host.querySelector('.zm-project-knowledge input[type="checkbox"]').checked,
+          false,
+        );
+        await click(target());
+        await click(button(document, '放弃并离开'));
+        assert.equal(host.querySelector('.zm-project-knowledge'), null);
+      } finally {
+        await act(async () => root.unmount());
+        host.remove();
+      }
+    }
+  },
+);

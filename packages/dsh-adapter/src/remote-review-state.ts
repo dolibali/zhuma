@@ -3,6 +3,7 @@ import {
   canonicalPayload,
   remotePermitDeclarationSchema,
   remoteReviewResultDeclarationSchema,
+  remoteWorkflowBindingSchema,
 } from '@zhuma/agent-core';
 import type { ExecutionReviewAttempt } from './execution-review-contract.js';
 
@@ -13,6 +14,7 @@ const permit = remotePermitDeclarationSchema.extend({ epoch: z.uuid(), expiresAt
 export const remoteReviewBindingSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
+    workflow: remoteWorkflowBindingSchema.optional(),
     backendId: z.uuid(),
     deviceId: z.uuid(),
     publicKey: z.string().min(40).max(128),

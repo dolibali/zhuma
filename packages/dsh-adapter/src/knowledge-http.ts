@@ -15,6 +15,8 @@ const knowledgeMethods = {
   'save-draft': 'saveDraft',
   'propose-draft': 'proposeDraft',
   publish: 'publish',
+  'project-links': 'projectLinks',
+  'save-project-links': 'saveProjectLinks',
 } as const;
 type Endpoint = keyof typeof knowledgeMethods;
 export const knowledgeEndpoints = Object.keys(knowledgeMethods) as Endpoint[];

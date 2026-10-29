@@ -23,6 +23,12 @@ export interface WorkflowView {
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
   readonly controlledNodeCount?: number;
+  readonly controlledReviewNodeCount?: number;
+  readonly revisions?: readonly {
+    readonly nodeId: string;
+    readonly used: number;
+    readonly limit: number;
+  }[];
   readonly expertReviewRequired?: boolean;
   readonly automaticReview?: boolean;
   readonly attention?: string;
@@ -31,6 +37,7 @@ export interface WorkflowView {
     readonly generation: number;
     readonly version: number;
     readonly concurrent: number;
+    readonly automaticRevisions?: number;
   } | null;
   readonly selection: {
     readonly model: NativeRunModel;
@@ -49,6 +56,7 @@ export type WorkflowStart = WorkflowTarget & {
   readonly model: NativeRunModel;
   readonly workspace: WorkflowWorkspace;
   readonly concurrent: number;
+  readonly automaticRevisions?: number;
 };
 export type WorkflowControl = WorkflowTarget & {
   readonly requestId: string;
@@ -147,6 +155,22 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
     invalid();
   if ((intent !== null && !planStarted) || requiresResume !== (state === 'requires-resume'))
     invalid();
+  const revisions =
+    item.revisions === undefined
+      ? undefined
+      : array(item.revisions, 512).map((raw) => {
+          const row = object(raw),
+            limit = integer(row.limit, 0, 2);
+          return { nodeId: string(row.nodeId), used: integer(row.used, 0, limit), limit };
+        });
+  if (
+    revisions &&
+    (!intent ||
+      new Set(revisions.map((row) => row.nodeId)).size !== revisions.length ||
+      (intent.automaticRevisions !== undefined &&
+        revisions.some((row) => row.limit !== intent.automaticRevisions)))
+  )
+    invalid();
   return {
     target,
     title: string(item.title, 1000),
@@ -158,6 +182,10 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
     ...(item.controlledNodeCount === undefined
       ? {}
       : { controlledNodeCount: integer(item.controlledNodeCount, 0, 1000) }),
+    ...(item.controlledReviewNodeCount === undefined
+      ? {}
+      : { controlledReviewNodeCount: integer(item.controlledReviewNodeCount, 0, 1000) }),
+    ...(revisions === undefined ? {} : { revisions }),
     ...(item.expertReviewRequired === undefined
       ? {}
       : { expertReviewRequired: boolean(item.expertReviewRequired) }),
@@ -171,6 +199,9 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
           generation: integer(intent.generation, 1),
           version: integer(intent.version, 1),
           concurrent: integer(intent.concurrent, 1, 4),
+          ...(intent.automaticRevisions === undefined
+            ? {}
+            : { automaticRevisions: integer(intent.automaticRevisions, 0, 2) }),
         }
       : null,
     selection: selection
@@ -249,6 +280,9 @@ export function createWorkflowApi(
             model: input.model,
             workspace: input.workspace,
             concurrent: input.concurrent,
+            ...(input.automaticRevisions === undefined
+              ? {}
+              : { automaticRevisions: input.automaticRevisions }),
           },
           signal,
         ),

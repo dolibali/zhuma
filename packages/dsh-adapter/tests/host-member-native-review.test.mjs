@@ -120,6 +120,7 @@ function fixture({ late = false, denied = false } = {}) {
   });
   return {
     assembly,
+    run,
     ack,
     accepting,
     counters: () => ({ prepares, sends, starts, stops }),
@@ -211,4 +212,53 @@ test('shared review assembly late accepted ACK after close goes only to original
   await assert.rejects(pending);
   await Promise.allSettled(h.accepting);
   assert.deepEqual(h.counters(), { prepares: 1, sends: 1, starts: 0, stops: 1 });
+});
+
+test('automatic review preparation retains the original fixed target/ref and records cleanup before C starts the sole native owner', async () => {
+  const h = fixture({ denied: true }),
+    signal = new AbortController().signal;
+  const workflow = { intentId: randomUUID(), generation: 2 };
+  const input = await h.assembly.prepare(
+    {
+      target: fixed,
+      expectedReviewVersion: 3,
+      reviewerRef: { id: reviewerRef.id, version: reviewerRef.version },
+      model,
+      workflow,
+    },
+    signal,
+  );
+  assert.deepEqual(input, {
+    target: fixed,
+    expectedReviewVersion: 3,
+    reviewerRef: { id: reviewerRef.id, version: reviewerRef.version },
+    model,
+    workflow,
+    workspace: { kind: 'text-only' },
+    capabilities: {
+      reader: 'zhuma-native-review-read@1',
+      resultIntent: 'zhuma-native-review-intent@1',
+    },
+  });
+  assert.deepEqual(
+    h.counters(),
+    { prepares: 0, sends: 0, starts: 0, stops: 0 },
+    'Preparation neither accepts, authorizes nor starts an Agent; C must call original prepareAccept',
+  );
+  h.assembly.accepted(h.run, signal);
+  assert.equal(h.assembly.canSwitchBackend(), false);
+  await h.assembly.stopAccepted();
+  assert.equal(h.assembly.canSwitchBackend(), true);
+  assert.deepEqual(h.counters(), { prepares: 0, sends: 0, starts: 0, stops: 1 });
+});
+
+test('automatic review late admission remains a cleanup obligation even when its original gate has closed', async () => {
+  const h = fixture(),
+    signal = new AbortController().signal;
+  h.assembly.fence();
+  assert.throws(() => h.assembly.accepted(h.run, signal));
+  assert.equal(h.assembly.canSwitchBackend(), false);
+  await h.assembly.stopAccepted();
+  assert.equal(h.assembly.canSwitchBackend(), true);
+  assert.equal(h.counters().starts, 0);
 });

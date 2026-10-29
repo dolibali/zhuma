@@ -25,7 +25,7 @@ export async function reviewHost(
     base.service.runHost.prepareReviewResourceCatalog = async (request, query, wait) => {
       calls.metadata++;
       const preparation = ok(await base.service.readExpertReviewPreparation(request, query));
-      await hooks.metadata?.();
+      await hooks.metadata?.(wait);
       const life = new AbortController();
       return {
         preparation,
@@ -38,7 +38,7 @@ export async function reviewHost(
         release() {
           calls.released++;
           life.abort();
-          return undefined;
+          return hooks.release?.();
         },
       };
     };
@@ -131,16 +131,16 @@ export async function reviewHost(
   }
   const scoped = (operation, fields = {}, requestId) =>
     envelope(operation, { scope: view.scope, permit: h.drive.public, ...fields }, requestId);
-  const begin = async (reviewerId = 'qa') => {
-    view = ok(await send(accept(reviewerId)));
+  const begin = async (reviewerId = 'qa', patch = {}) => {
+    view = ok(await send(accept(reviewerId, patch)));
     view = ok(
       await send(
         scoped('event', {
           event: {
             sequence: view.nextSequence,
             kind: 'received',
-            nativeSessionId: `native-${reviewerId}`,
-            nativeAgentId: `native-${reviewerId}`,
+            nativeSessionId: `native-${reviewerId}${view.scope.generation === 1 ? '' : `-${view.scope.generation}`}`,
+            nativeAgentId: `native-${reviewerId}${view.scope.generation === 1 ? '' : `-${view.scope.generation}`}`,
           },
         }),
       ),
@@ -151,8 +151,8 @@ export async function reviewHost(
           event: {
             sequence: view.nextSequence,
             kind: 'accepted',
-            nativeSessionId: `native-${reviewerId}`,
-            nativeAgentId: `native-${reviewerId}`,
+            nativeSessionId: `native-${reviewerId}${view.scope.generation === 1 ? '' : `-${view.scope.generation}`}`,
+            nativeAgentId: `native-${reviewerId}${view.scope.generation === 1 ? '' : `-${view.scope.generation}`}`,
           },
         }),
       ),
@@ -201,8 +201,8 @@ export async function reviewHost(
           sequence: view.nextSequence,
           evidence: {
             basis: 'flushed-and-closed',
-            nativeSessionId: `native-${view.scope.review.principal.reviewerRef.id}`,
-            nativeAgentId: `native-${view.scope.review.principal.reviewerRef.id}`,
+            nativeSessionId: `native-${view.scope.review.principal.reviewerRef.id}${view.scope.generation === 1 ? '' : `-${view.scope.generation}`}`,
+            nativeAgentId: `native-${view.scope.review.principal.reviewerRef.id}${view.scope.generation === 1 ? '' : `-${view.scope.generation}`}`,
           },
         },
       }),

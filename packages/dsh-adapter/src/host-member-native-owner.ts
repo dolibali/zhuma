@@ -447,6 +447,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     connectionId: connection.connectionId,
     actorId: connection.actorId,
     protocol,
+    ...(reviewProtocol ? { review: reviewProtocol } : {}),
     native,
     workspaces,
     signal: lifetime.signal,
@@ -478,6 +479,29 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         knowledge.bind(requestId, accepted);
         workspaces.bind(requestId, accepted);
       },
+      ...(reviews
+        ? {
+            async prepareReview({ candidate, workflow, signal }) {
+              if (!workflow.intent) throw new ExecutionRunError('run-authority-unavailable');
+              return reviews.prepare(
+                {
+                  target: candidate.target,
+                  expectedReviewVersion: candidate.expectedReviewVersion,
+                  reviewerRef: {
+                    id: candidate.reviewerRef.id,
+                    version: candidate.reviewerRef.version,
+                  },
+                  model: workflow.intent.defaults.model,
+                  workflow: candidate.workflow,
+                },
+                signal,
+              );
+            },
+            reviewAccepted({ signal }, accepted) {
+              reviews.accepted(accepted, signal);
+            },
+          }
+        : {}),
     },
   });
   async function handle(endpoint: string, raw: unknown, wait: AbortSignal): Promise<unknown> {

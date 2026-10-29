@@ -95,6 +95,54 @@ test('workflow Client contract: a changed account cannot send a workflow command
   assert.equal(hooks.invalidated, true);
   assert.deepEqual(h.calls, ['/zhuma-id/session']);
 });
+
+test('workflow Client contract: rework limit is strictly decoded and only an explicit start sends the selected budget', async () => {
+  const value = started();
+  value.intent.automaticRevisions = 2;
+  value.controlledReviewNodeCount = 1;
+  value.revisions = [{ nodeId: 'node', used: 1, limit: 2 }];
+  const hooks = {},
+    h = transport(value, hooks);
+  const input = {
+    ...target,
+    requestId: crypto.randomUUID(),
+    model: value.selection.model,
+    workspace: { kind: 'text-only' },
+    concurrent: 1,
+    automaticRevisions: 2,
+  };
+  const read = await h.api.start(input, signal());
+  assert.equal(read.intent.automaticRevisions, 2);
+  assert.equal(read.controlledReviewNodeCount, 1);
+  assert.deepEqual(read.revisions, [{ nodeId: 'node', used: 1, limit: 2 }]);
+  assert.equal(hooks.payload.automaticRevisions, 2);
+  value.intent.generation = 2;
+  await h.api.resume(
+    {
+      ...target,
+      requestId: crypto.randomUUID(),
+      intentId: value.intent.intentId,
+      generation: 1,
+      expectedVersion: 1,
+    },
+    signal(),
+  );
+  assert.equal('automaticRevisions' in hooks.payload, false);
+  value.intent.automaticRevisions = 3;
+  await assert.rejects(h.api.read(target, signal()), { code: 'validation' });
+  value.intent.automaticRevisions = 2;
+  for (const rows of [
+    [{ nodeId: 'node', used: 3, limit: 2 }],
+    [
+      { nodeId: 'node', used: 1, limit: 2 },
+      { nodeId: 'node', used: 0, limit: 2 },
+    ],
+    [{ nodeId: 'node', used: 0, limit: 1 }],
+  ]) {
+    value.revisions = rows;
+    await assert.rejects(h.api.read(target, signal()), { code: 'validation' });
+  }
+});
 test('workflow Client contract: an obsolete page cannot apply a late workflow receipt', async () => {
   const entered = Promise.withResolvers(),
     release = Promise.withResolvers();

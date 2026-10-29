@@ -40,6 +40,12 @@ export interface HostWorkflowView {
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
   readonly controlledNodeCount?: number;
+  readonly controlledReviewNodeCount?: number;
+  readonly revisions?: readonly {
+    readonly nodeId: string;
+    readonly used: number;
+    readonly limit: number;
+  }[];
   /** Optional for older clients. Assignment count retains its original meaning. */
   readonly expertReviewRequired?: boolean;
   readonly automaticReview?: boolean;
@@ -49,6 +55,7 @@ export interface HostWorkflowView {
     readonly generation: number;
     readonly version: number;
     readonly concurrent: number;
+    readonly automaticRevisions?: number;
   } | null;
   readonly selection: { readonly model: HostRunModel; readonly workspace: PublicWorkspace } | null;
 }
