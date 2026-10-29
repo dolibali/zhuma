@@ -732,7 +732,7 @@ export function WorkbenchPage({
           <p className="zm-mode-notice">当前保留单人模式；已有资料不会自动迁入团队。</p>
         )}
         {!expertLibrary && (
-          <div className="zm-page-bar">
+          <div className={`zm-page-bar${section === 'tasks' ? ' zm-task-page-bar' : ''}`}>
             <nav className="zm-tabs" aria-label="工作台导航">
               {(Object.keys(labels) as Section[])
                 .filter((s) =>
@@ -766,6 +766,24 @@ export function WorkbenchPage({
                   </button>
                 ))}
             </nav>
+            {section === 'tasks' && (
+              <div className="zm-task-view" role="group" aria-label="任务显示方式">
+                <Button
+                  variant="quiet"
+                  aria-pressed={taskView === 'list'}
+                  onClick={() => setTaskView('list')}
+                >
+                  列表
+                </Button>
+                <Button
+                  variant="quiet"
+                  aria-pressed={taskView === 'board'}
+                  onClick={() => setTaskView('board')}
+                >
+                  看板
+                </Button>
+              </div>
+            )}
             {section === 'tasks' && (
               <div className="zm-filter zm-task-filters">
                 <input
@@ -814,21 +832,22 @@ export function WorkbenchPage({
                     ...state.projects.map((p) => ({ value: p.id, label: p.name })),
                   ]}
                 />
-                <div className="zm-task-view" role="group" aria-label="任务显示方式">
-                  <Button
-                    variant="quiet"
-                    aria-pressed={taskView === 'list'}
-                    onClick={() => setTaskView('list')}
-                  >
-                    列表
-                  </Button>
-                  <Button
-                    variant="quiet"
-                    aria-pressed={taskView === 'board'}
-                    onClick={() => setTaskView('board')}
-                  >
-                    看板
-                  </Button>
+                <div className="zm-task-filter-summary" role="status">
+                  <span>
+                    {tasks.length} / {state.tasks.length} 项任务
+                    {stageLoading ? ' · 正在读取阶段…' : ''}
+                  </span>
+                  {(projectFilter ||
+                    participantFilter ||
+                    taskFilters.stage ||
+                    taskFilters.search) && (
+                    <Button
+                      variant="quiet"
+                      onClick={() => setTaskFilters({ ...emptyTaskFilters, view: taskView })}
+                    >
+                      清除筛选
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
@@ -1007,19 +1026,6 @@ export function WorkbenchPage({
         )}
         {section === 'tasks' && (
           <>
-            <div className="zm-task-filter-summary" role="status">
-              <span>
-                {tasks.length} / {state.tasks.length} 项任务{stageLoading ? ' · 正在读取阶段…' : ''}
-              </span>
-              {(projectFilter || participantFilter || taskFilters.stage || taskFilters.search) && (
-                <Button
-                  variant="quiet"
-                  onClick={() => setTaskFilters({ ...emptyTaskFilters, view: taskView })}
-                >
-                  清除筛选
-                </Button>
-              )}
-            </div>
             {taskView === 'board' ? (
               <TaskBoard
                 tasks={tasks}

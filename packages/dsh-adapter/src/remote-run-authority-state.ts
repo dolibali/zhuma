@@ -5,6 +5,7 @@ import {
   remoteResultDeclarationSchema,
   remoteResultReceiptSchema,
   remoteInputDescriptorSchema,
+  remoteWorkflowBindingSchema,
 } from '@zhuma/agent-core';
 
 const id = z.string().min(1).max(200);
@@ -35,6 +36,7 @@ const permit = remotePermitDeclarationSchema.extend({ epoch: z.uuid(), expiresAt
 export const remoteRunBindingSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
+    workflow: remoteWorkflowBindingSchema.optional(),
     files: z.literal('zhuma-native-output-file@1').optional(),
     acceptedFiles: z.literal('zhuma-accepted-files@2').optional(),
     knowledge: z.literal('zhuma-native-knowledge@1').optional(),
