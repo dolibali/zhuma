@@ -59,6 +59,7 @@ export async function bootLocalOwner(root, protocol, options = {}) {
     }
     const owner = await MemberLocalExecutionOwner.open(ctx, {
       protocol,
+      ...(options.review ? { review: options.review } : {}),
       assertModel: options.assertModel ?? (() => undefined),
       ...(workspace
         ? {
