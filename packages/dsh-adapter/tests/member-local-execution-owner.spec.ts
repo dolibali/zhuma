@@ -104,6 +104,81 @@ test('backend switch fence: original owner distinguishes held idle work, fixed s
   assert.deepEqual([...h.remote.rows], rows);
   assert.equal(await readFile(path, 'utf8'), before);
 });
+test('shutdown fence: a late actual accepted handle is retired without starting an Agent even when fresh member authentication is unavailable', async (t) => {
+  let loggedOut = false,
+    cleanupMethod;
+  const h = await setup(t, {
+    remote: {
+      beforeAuthentication: (_signal, context) => {
+        if (loggedOut && context.method !== cleanupMethod)
+          throw Error('FRESH_MEMBER_AUTH_UNAVAILABLE');
+      },
+    },
+  });
+  cleanupMethod = h.remote.protocolOptions.methods.cleanup;
+  loggedOut = true;
+  // A must hand every actual late accept to stop BEFORE closing the owner.
+  // The failed business Stop wait does not revoke its independent cleanup.
+  const stopping = h.owner
+    .stop(h.run, {
+      requestId: randomUUID(),
+      expectedNodeVersion: h.run.value.nodeVersion,
+      expectedRunVersion: h.run.value.runVersion,
+    })
+    .catch((error) => error);
+  await h.owner.close();
+  assert((await stopping) instanceof Error);
+  const view = h.owner.read(h.run);
+  assert.equal(view.phase, 'retired');
+  assert.equal(view.remote.resources, 'settled');
+  assert.equal(h.ctx.agents.list().length, 0);
+  assert.equal(h.adapter.requests.length, 0);
+  const cleanup = h.remote.seen.find((v) => v.request.operation === 'cleanup').request;
+  assert.equal(cleanup.payload.observation.evidence.basis, 'absent-unadmitted');
+});
+
+test('shutdown fence: stop then close retains a real native model source until its original cleanup finishes', async (t) => {
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  const h = await setup(t, {
+    script: [
+      async () => {
+        entered.resolve();
+        await release.promise;
+        return response('Late original source.');
+      },
+    ],
+  });
+  t.onTestFinished(() => release.resolve());
+  await h.owner.start(h.run);
+  await entered.promise;
+  const stopping = h.owner
+    .stop(h.run, {
+      requestId: randomUUID(),
+      expectedNodeVersion: h.owner.read(h.run).remote.nodeVersion,
+      expectedRunVersion: h.owner.read(h.run).remote.runVersion,
+    })
+    .catch((error) => error);
+  let closed = false;
+  const closing = h.owner.close().then(() => {
+    closed = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(closed, false);
+  assert.equal(h.owner.read(h.run).remote.resources, 'held');
+  release.resolve();
+  await stopping;
+  await closing;
+  assert.equal(h.owner.read(h.run).remote.resources, 'settled');
+  assert.equal(h.ctx.agents.list().length, 0);
+  assert.equal(h.adapter.requests.length, 1);
+  assert.equal(
+    h.remote.seen.find((v) => v.request.operation === 'cleanup').request.payload.observation
+      .evidence.basis,
+    'flushed-and-closed',
+  );
+});
+
 test('original owner replay: two actually issued accept handles address the same live native work', async (t) => {
   const h = await setup(t, {
     script: ['First response.', 'Second explicit followup.', 'Same active session from workspace.'],

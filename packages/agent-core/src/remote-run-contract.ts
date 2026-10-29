@@ -571,7 +571,7 @@ export interface RemoteBackendInfo {
   readonly backendId: string;
   readonly serverTime: number;
   readonly actorId: string;
-  readonly purposes: readonly 'work'[];
+  readonly purposes: readonly ('work' | 'review')[];
   readonly operations: readonly RemoteRunOperation[];
 }
 export const remoteInputDescriptorSchema = z.strictObject({
@@ -615,6 +615,32 @@ export const remoteRunSharedSnapshotSchema = z.strictObject({
   inputs: z.array(remoteInputDescriptorSchema).max(REMOTE_RUN_LIMITS.inputs),
 });
 export type RemoteRunSharedSnapshot = z.infer<typeof remoteRunSharedSnapshotSchema>;
+/** Original immutable predecessor facts only; this is not native migration authority. */
+export const remoteRunMigrationSchema = z
+  .strictObject({
+    requestId: z.uuid(),
+    inputFingerprint: digest,
+    predecessors: z
+      .array(
+        z.strictObject({
+          scope: remoteRunScopeSchema,
+          selection: remoteModelSelectionSchema.extend({ configurationId: id }),
+          deviceId: z.uuid(),
+          keyEpoch: positive,
+          runStatus: z.enum(['completed', 'failed', 'cancelled']),
+          resources: z.literal('settled'),
+          dispatch: z.enum(['reserved', 'received', 'unknown']),
+          acknowledged: z.boolean(),
+          nativeSessionId: id.optional(),
+          nativeAgentId: id.optional(),
+          sessionDiscarded: z.literal(true).optional(),
+        }),
+      )
+      .min(1)
+      .max(63),
+  })
+  .refine((value) => remoteJsonBytes(value) <= REMOTE_RUN_LIMITS.snapshotBytes);
+export type RemoteRunMigration = z.infer<typeof remoteRunMigrationSchema>;
 export interface RemoteRunView {
   readonly scope: RemoteRunScope;
   readonly deviceId: string;
@@ -623,6 +649,7 @@ export interface RemoteRunView {
   readonly permit: z.infer<typeof remotePermitViewSchema>;
   readonly cleanup: z.infer<typeof remotePermitViewSchema>;
   readonly nodeVersion: number;
+  readonly migration?: RemoteRunMigration | undefined;
   readonly runVersion: number;
   readonly nextSequence: number;
   readonly stopRequested: boolean;
@@ -734,7 +761,10 @@ export const remoteBackendInfoSchema = z.strictObject({
   backendId: z.uuid(),
   actorId: id,
   serverTime: natural,
-  purposes: z.array(z.literal('work')).max(1),
+  purposes: z
+    .array(z.enum(['work', 'review']))
+    .max(2)
+    .refine((values) => new Set(values).size === values.length),
   operations: z.array(z.enum(REMOTE_RUN_OPERATIONS)).max(16),
 });
 export const remoteDeviceValueSchema = z.strictObject({
@@ -753,6 +783,7 @@ export const remoteRunViewSchema = z
     permit: remotePermitViewSchema,
     cleanup: remotePermitViewSchema,
     nodeVersion: natural,
+    migration: remoteRunMigrationSchema.optional(),
     runVersion: positive,
     nextSequence: positive,
     stopRequested: z.boolean(),

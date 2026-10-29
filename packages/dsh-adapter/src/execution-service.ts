@@ -1,4 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type {
+  RemoteReviewAuthorities,
+  RemoteReviewTargetGrant,
+} from './remote-review-authority.js';
+import { describeNativeReviewTool } from './native-work-session-review-tool.js';
+import { describeNativeReviewReadTool } from './native-work-session-review-read.js';
 import { RemoteRunAuthorities, RemoteRunError } from './remote-run-authority.js';
 import type { RemoteRunFileGrant, RemoteRunUpload } from './remote-run-files.js';
 import type {
@@ -202,6 +208,7 @@ import {
   type ExecutionReviewTargetReadLease,
 } from './execution-review-target-reader.js';
 import {
+  freezeExecutionReviewComposition,
   readExecutionReviewComposition,
   executionReviewCompositionRequest,
   type ExecutionReviewPreparation,
@@ -1135,6 +1142,7 @@ export class ExecutionService {
   private runAuthorities: ExecutionRunAuthorities | undefined;
   private remoteRunAuthorities: RemoteRunAuthorities | undefined;
   private remoteFileUploadsEnabled = false;
+  private remoteIndependentReviewsEnabled = false;
   private workflowIntents: ExecutionWorkflowIntents | undefined;
   private workspaceApprovalOwner: ExecutionWorkspaceApprovals | undefined;
   private readonly reviewWorkflowClaims = new Map<
@@ -1583,17 +1591,85 @@ export class ExecutionService {
 
   /** Host composition installs the same genuine member issuer first, then explicitly
    * enables remote admission. No HTTP read or native effect creates a second writer. */
-  async enableRemoteRuns(options: { readonly fileUploads?: true } = {}): Promise<void> {
+  async enableRemoteRuns(
+    options: { readonly fileUploads?: true; readonly independentReviews?: true } = {},
+  ): Promise<void> {
     if (options.fileUploads) {
       if (!this.attachments || !this.fileStore) throw new RemoteRunError('remote-unavailable');
       this.remoteFileUploadsEnabled = true;
     }
     const host = this.requireRunHost();
+    if (options.independentReviews) {
+      if (
+        !this.attachments ||
+        !this.fileStore ||
+        typeof host.prepareReviewResourceCatalog !== 'function'
+      )
+        throw new RemoteRunError('remote-unavailable');
+      this.remoteIndependentReviewsEnabled = true;
+    }
     if (!this.storage.writeGlobal) throw new RemoteRunError('remote-unavailable');
     if (!this.remoteRunAuthorities) {
       this.remoteRunAuthorities = new RemoteRunAuthorities({
         signal: this.runLifetime.signal,
         resourceHost: host,
+        review: {
+          signal: this.runLifetime.signal,
+          resourceHost: host,
+          enabled: () =>
+            this.remoteIndependentReviewsEnabled && !!this.attachments && !!this.fileStore,
+          enqueue: async (work) => {
+            const result = await this.enqueue(async () => ({ ok: true, value: await work() }));
+            if (!result.ok) throw new RemoteRunError('remote-unavailable');
+            return result.value;
+          },
+          memberLease: (request) => host.memberLease(request),
+          readGlobal: () => this.readRunGlobal(),
+          writeGlobal: (next) => this.storage.writeGlobal!(next),
+          readNode: (target) => this.readRunNode(target),
+          writeNode: (next) => this.writeNode(next, true),
+          prepare: (lease, query, configurationId) => {
+            const result = this.currentExpertReviewPreparation(host, lease, {
+              ...query,
+              ...(configurationId === undefined ? {} : { configurationId }),
+            });
+            this.assertRemoteReviewNode(
+              host,
+              lease.memberId,
+              result.prepared.attempt.scope,
+              result.node,
+              true,
+            );
+            return result;
+          },
+          compose: (preparation, body, catalog) =>
+            freezeExecutionReviewComposition({
+              ...preparation,
+              model: body.payload.model,
+              resourceCatalog: catalog,
+              tools: {
+                readTarget: describeNativeReviewReadTool(),
+                completeReview: describeNativeReviewTool(),
+              },
+            }),
+          assertTarget: (actorId, scope, node, current) =>
+            this.assertRemoteReviewNode(host, actorId, scope, node, current),
+          targetPort: (issuer) => this.remoteReviewTargetPort(issuer),
+          stampBallot: (record, reviewerId) => {
+            const stamped = withExecutionEvent(record, 'ballot-recorded', reviewerId);
+            if (!stamped) throw new RemoteRunError('remote-unavailable');
+            return stamped;
+          },
+          afterCommit: async (record) => {
+            if (record.command.status === 'completed') {
+              try {
+                await this.unlockFrom(record);
+              } catch {
+                /* Original reconciliation retries. */
+              }
+            }
+          },
+        },
         filesEnabled: () => this.remoteFileUploadsEnabled,
         outputFiles: (issuer) => this.createRemoteRunOutputFiles(issuer),
         acceptedFiles: (issuer) => {
@@ -2017,7 +2093,8 @@ export class ExecutionService {
           const state = readExecutionReviewState(node);
           const attempt = state?.attempts.find((item) => item.scope.runId === input.runId);
           const receipt = state?.receipts.find((item) => item.runId === input.runId);
-          if (!attempt || !receipt) throw new ExecutionReviewError('review-not-prepared');
+          if (!attempt || !receipt || ('remote' in attempt && attempt.remote))
+            throw new ExecutionReviewError('review-not-prepared');
           const current = () => {
             this.assertWorkflowReviewBinding(node, attempt, composition);
             return this.currentExpertReviewPreparation(host, lease, {
@@ -2124,7 +2201,8 @@ export class ExecutionService {
           readExecutionReviewState(node)?.attempts.find(
             (item) => item.scope.runId === locator.runId,
           );
-        if (!node || !attempt) throw new ExecutionReviewReadError('review-authority-denied');
+        if (!node || !attempt || ('remote' in attempt && attempt.remote))
+          throw new ExecutionReviewReadError('review-authority-denied');
         return { scope: attempt.scope, version: attempt.version };
       };
       this.reviewReadAuthorities ??= new ExecutionReviewReadAuthorities({
@@ -2197,7 +2275,7 @@ export class ExecutionService {
         splitExecutionReviewRecord(node).review?.attempts.find(
           (a) => a.scope.runId === locator.runId,
         );
-      if (!node || !attempt || attempt.status === 'prepared')
+      if (!node || !attempt || attempt.status === 'prepared' || attempt.remote)
         throw new ExecutionReviewReadError('review-authority-denied');
       const composition = readExecutionReviewComposition(attempt.composition);
       return {
@@ -2989,6 +3067,7 @@ export class ExecutionService {
       !node ||
       !attempt ||
       attempt.status === 'prepared' ||
+      attempt.remote !== undefined ||
       attempt.scope.spaceId !== input.spaceId
     )
       throw new ExecutionReviewFixedResultError('review-result-not-running');
@@ -3026,9 +3105,33 @@ export class ExecutionService {
     grant: ExecutionReviewReadGrant | ExecutionReviewDriveGrant,
   ): readonly ExecutionReviewResource[] {
     this.assertExpertReviewTargetReader(grant);
-    const node = this.currentFileNode(grant.scope);
+    return this.reviewTargetCatalog(grant.scope);
+  }
+
+  private remoteReviewTargetPort(issuer: RemoteReviewAuthorities) {
+    const current = () => {
+      if (!this.remoteIndependentReviewsEnabled || !this.remoteRunAuthorities?.ownsReview(issuer))
+        throw new ExecutionReviewReadError('review-authority-denied');
+    };
+    current();
+    const assert = (grant: RemoteReviewTargetGrant) => {
+      current();
+      issuer.assertTargetGrant(grant);
+    };
+    return Object.freeze({
+      list: (grant: RemoteReviewTargetGrant) => {
+        assert(grant);
+        return this.reviewTargetCatalog(grant.scope);
+      },
+      read: (grant: RemoteReviewTargetGrant, query: unknown, signal: AbortSignal) =>
+        this.readReviewTargetResource(grant, query, signal, () => assert(grant)),
+    });
+  }
+
+  private reviewTargetCatalog(scope: ExecutionReviewScope): readonly ExecutionReviewResource[] {
+    const node = this.currentFileNode(scope);
     const artifact = node.artifactVersions.find(
-      (item) => item.id === grant.scope.review.target.artifactVersionId,
+      (item) => item.id === scope.review.target.artifactVersionId,
     );
     if (!artifact) throw new ExecutionReviewReadError('review-target-changed');
     return reviewTargetResources(artifact);
@@ -3041,129 +3144,148 @@ export class ExecutionService {
     raw: unknown,
     caller: AbortSignal,
   ): Promise<ExecutionReviewTargetReadLease> {
-    const job = Promise.resolve().then(async (): Promise<ExecutionReviewTargetReadLease> => {
-      this.assertExpertReviewTargetReader(grant); // issuer before any claimed fields
-      const parsed = reviewTargetReadSchema.safeParse(raw);
-      if (!parsed.success || !(caller instanceof AbortSignal))
-        throw new ArtifactUploadError('invalid-request');
-      const signal = AbortSignal.any([
-        caller,
-        grant.signal,
-        this.fileLifetime.signal,
-        this.runLifetime.signal,
-      ]);
-      const query = parsed.data;
-      const resource = this.listExpertReviewResources(grant).find(
-        (item) => item.resourceRef === query.resourceRef,
-      );
-      if (!resource) throw new ArtifactUploadError('not-found');
-      if (resource.kind === 'external-reference')
-        throw new ArtifactUploadError('review-unsupported-material');
-      const expected = canonicalPayload(resource);
-      let released = false,
-        releaseOwned: (() => void) | undefined;
-      const release = () => {
-        if (released) return;
-        released = true;
-        signal.removeEventListener('abort', release);
-        releaseOwned?.();
-      };
-      const check = () => {
-        if (released || signal.aborted) throw new ArtifactUploadError('cancelled');
-        this.assertExpertReviewTargetReader(grant);
-        const current = this.listExpertReviewResources(grant).find(
+    return this.readReviewTargetResource(grant, raw, caller, () =>
+      this.assertExpertReviewTargetReader(grant),
+    );
+  }
+
+  private readReviewTargetResource<
+    Grant extends { readonly scope: ExecutionReviewScope; readonly signal: AbortSignal },
+  >(
+    grant: Grant,
+    raw: unknown,
+    caller: AbortSignal,
+    assertGrant: () => void,
+  ): Promise<ExecutionReviewTargetReadLease & { readonly drain: Promise<void> }> {
+    const job = Promise.resolve().then(
+      async (): Promise<ExecutionReviewTargetReadLease & { readonly drain: Promise<void> }> => {
+        assertGrant(); // issuer before any claimed fields
+        const parsed = reviewTargetReadSchema.safeParse(raw);
+        if (!parsed.success || !(caller instanceof AbortSignal))
+          throw new ArtifactUploadError('invalid-request');
+        const signal = AbortSignal.any([
+          caller,
+          grant.signal,
+          this.fileLifetime.signal,
+          this.runLifetime.signal,
+        ]);
+        const query = parsed.data;
+        const resource = this.reviewTargetCatalog(grant.scope).find(
           (item) => item.resourceRef === query.resourceRef,
         );
-        if (canonicalPayload(current ?? null) !== expected)
-          throw new ArtifactUploadError('not-found');
-      };
-      signal.addEventListener('abort', release, { once: true });
-      try {
-        check();
-        const node = this.currentFileNode(grant.scope);
-        const artifact = node.artifactVersions.find(
-          (item) => item.id === grant.scope.review.target.artifactVersionId,
-        )!;
-        let bytes: Uint8Array, encoding: 'utf-8' | 'binary';
-        if (resource.kind === 'text') {
-          if (
-            [...this.fileReadResources].filter((item) => item.spaceId === grant.scope.spaceId)
-              .length >= ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace
-          )
-            throw new ArtifactUploadError('quota-exceeded');
-          let free!: () => void;
-          const drain = new Promise<void>((resolve) => {
-            free = resolve;
-          });
-          const reservation = { spaceId: grant.scope.spaceId, drain };
-          this.fileReadResources.add(reservation);
-          releaseOwned = () => {
-            free();
-            this.fileReadResources.delete(reservation);
-          };
-          bytes = Buffer.from(artifact.text!, 'utf8');
-          encoding = 'utf-8';
-        } else {
-          const ref = artifact.files.find(
-            (file) => reviewFileResourceRef(file.id) === query.resourceRef,
-          );
-          const record = ref && this.fileStore?.get(ref.id);
-          if (
-            !ref ||
-            !record ||
-            !this.attachments ||
-            record.spaceId !== grant.scope.spaceId ||
-            record.taskId !== grant.scope.taskId ||
-            record.planId !== grant.scope.planId ||
-            record.revision !== grant.scope.revision ||
-            record.nodeId !== grant.scope.nodeId ||
-            !matchesArtifactFileReference(ref, record)
-          )
-            throw new ArtifactUploadError('not-found');
-          const recordFingerprint = canonicalPayload(record);
-          const fileCheck = () => {
-            check();
-            if (canonicalPayload(this.fileStore?.get(ref.id) ?? null) !== recordFingerprint)
-              throw new ArtifactUploadError('not-found');
-          };
-          const owned = await this.verifyOwnedFileBytes(record, signal, fileCheck, true, true);
-          releaseOwned = owned.release;
-          if (released) owned.release();
-          check();
-          fileCheck();
-          if (!owned.bytes) throw new ArtifactUploadError('unavailable');
-          bytes = owned.bytes;
-          encoding = runFileEncoding(
-            {
-              fileId: record.uploadId,
-              name: artifactFileLeaf(record.name),
-              mediaType: record.mediaType,
-              bytes: record.byteSize,
-              sha256: record.sha256,
-            },
-            bytes,
-          );
-        }
-        if (query.offset > bytes.length) throw new ArtifactUploadError('invalid-request');
-        const page = Uint8Array.from(
-          bytes.subarray(query.offset, Math.min(query.offset + query.length, bytes.length)),
-        );
-        check();
-        return {
-          scope: grant.scope,
-          resource: structuredClone(resource),
-          range: { offset: query.offset, length: page.length, total: bytes.length },
-          bytes: page,
-          encoding,
-          signal,
-          check,
-          release,
+        if (!resource) throw new ArtifactUploadError('not-found');
+        if (resource.kind === 'external-reference')
+          throw new ArtifactUploadError('review-unsupported-material');
+        const expected = canonicalPayload(resource);
+        let actualDrain: Promise<void> = Promise.resolve();
+        let released = false,
+          releaseOwned: (() => void) | undefined;
+        const release = () => {
+          if (released) return;
+          released = true;
+          signal.removeEventListener('abort', release);
+          releaseOwned?.();
         };
-      } catch (error) {
-        release();
-        throw error;
-      }
-    });
+        const check = () => {
+          if (released || signal.aborted) throw new ArtifactUploadError('cancelled');
+          assertGrant();
+          const current = this.reviewTargetCatalog(grant.scope).find(
+            (item) => item.resourceRef === query.resourceRef,
+          );
+          if (canonicalPayload(current ?? null) !== expected)
+            throw new ArtifactUploadError('not-found');
+        };
+        signal.addEventListener('abort', release, { once: true });
+        try {
+          check();
+          const node = this.currentFileNode(grant.scope);
+          const artifact = node.artifactVersions.find(
+            (item) => item.id === grant.scope.review.target.artifactVersionId,
+          )!;
+          let bytes: Uint8Array, encoding: 'utf-8' | 'binary';
+          if (resource.kind === 'text') {
+            if (
+              [...this.fileReadResources].filter((item) => item.spaceId === grant.scope.spaceId)
+                .length >= ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace
+            )
+              throw new ArtifactUploadError('quota-exceeded');
+            let free!: () => void;
+            const drain = new Promise<void>((resolve) => {
+              free = resolve;
+            });
+            actualDrain = drain;
+            const reservation = { spaceId: grant.scope.spaceId, drain };
+            this.fileReadResources.add(reservation);
+            releaseOwned = () => {
+              free();
+              this.fileReadResources.delete(reservation);
+            };
+            bytes = Buffer.from(artifact.text!, 'utf8');
+            encoding = 'utf-8';
+          } else {
+            const ref = artifact.files.find(
+              (file) => reviewFileResourceRef(file.id) === query.resourceRef,
+            );
+            const record = ref && this.fileStore?.get(ref.id);
+            if (
+              !ref ||
+              !record ||
+              !this.attachments ||
+              record.spaceId !== grant.scope.spaceId ||
+              record.taskId !== grant.scope.taskId ||
+              record.planId !== grant.scope.planId ||
+              record.revision !== grant.scope.revision ||
+              record.nodeId !== grant.scope.nodeId ||
+              !matchesArtifactFileReference(ref, record)
+            )
+              throw new ArtifactUploadError('not-found');
+            const recordFingerprint = canonicalPayload(record);
+            const fileCheck = () => {
+              check();
+              if (canonicalPayload(this.fileStore?.get(ref.id) ?? null) !== recordFingerprint)
+                throw new ArtifactUploadError('not-found');
+            };
+            const owned = await this.verifyOwnedFileBytes(record, signal, fileCheck, true, true);
+            actualDrain = owned.drain;
+            releaseOwned = owned.release;
+            if (released) owned.release();
+            check();
+            fileCheck();
+            if (!owned.bytes) throw new ArtifactUploadError('unavailable');
+            bytes = owned.bytes;
+            encoding = runFileEncoding(
+              {
+                fileId: record.uploadId,
+                name: artifactFileLeaf(record.name),
+                mediaType: record.mediaType,
+                bytes: record.byteSize,
+                sha256: record.sha256,
+              },
+              bytes,
+            );
+          }
+          if (query.offset > bytes.length) throw new ArtifactUploadError('invalid-request');
+          const page = Uint8Array.from(
+            bytes.subarray(query.offset, Math.min(query.offset + query.length, bytes.length)),
+          );
+          check();
+          return {
+            scope: grant.scope,
+            resource: structuredClone(resource),
+            range: { offset: query.offset, length: page.length, total: bytes.length },
+            bytes: page,
+            encoding,
+            signal,
+            drain: actualDrain,
+            check,
+            release,
+          };
+        } catch (error) {
+          release();
+          throw error;
+        }
+      },
+    );
     this.fileOperations.add(job);
     void job.then(
       () => this.fileOperations.delete(job),
@@ -4275,6 +4397,29 @@ export class ExecutionService {
           ? node.ownerId
           : undefined;
     if (controller !== memberId) throw new ExecutionRunError('run-not-controller');
+  }
+
+  private assertRemoteReviewNode(
+    host: ExecutionRunHostPorts,
+    actorId: string,
+    scope: ExecutionReviewScope,
+    node: ExecutionNodeRecord,
+    current: boolean,
+  ): void {
+    if (host !== this.requireRunHost() || host.signal.aborted)
+      throw new RemoteRunError('remote-unavailable');
+    this.assertRunNodeAccess(host, actorId, scope.spaceId, node);
+    this.assertReviewController(actorId, node);
+    if (current) {
+      const plans = this.workbench
+        .readWorkbench()
+        .appliedPlans.filter((plan) => plan.taskId === scope.taskId);
+      const latest = Math.max(...plans.map((plan) => plan.revision));
+      const selected = plans.filter((plan) => plan.revision === latest);
+      if (selected.length !== 1 || selected[0]!.id !== scope.planId || latest !== scope.revision)
+        throw new RemoteRunError('remote-stale-plan');
+      this.assertCurrentExpertReviewTarget(host, scope, node);
+    }
   }
 
   private assertReviewController(memberId: string, node: ExecutionNodeRecord): void {

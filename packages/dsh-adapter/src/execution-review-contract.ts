@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { interpretAgentReview } from '@zhuma/agent-core';
+import { remoteReviewBindingSchema } from './remote-review-state.js';
 
 const id = z
   .string()
@@ -120,6 +121,7 @@ const admittedReviewAttemptSchema = z
     // The shared record validator verifies the actual serialized composition;
     // the data contract must not import a runtime/composition dependency here.
     composition: z.unknown(),
+    remote: remoteReviewBindingSchema.optional(),
     result: z.unknown().optional(),
     failure: z.unknown().optional(),
     status: z.enum(['requested', 'running', 'completed', 'failed', 'cancelled']),

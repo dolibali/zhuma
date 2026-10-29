@@ -60,6 +60,7 @@ export const SHARED_BACKEND_OPERATIONS = [
   'knowledge.drafts',
   'knowledge.draft',
   'knowledge.save-draft',
+  'knowledge.propose-draft',
   'knowledge.publish',
   'execution.inbox',
   'execution.startable',
@@ -258,6 +259,12 @@ const descriptors = {
   'knowledge.save-draft': {
     schema: KnowledgeSaveDraftRequestSchema,
     path: '/api/zhuma-knowledge/save-draft',
+    verb: 'POST',
+    auth: false,
+  },
+  'knowledge.propose-draft': {
+    schema: KnowledgeSaveDraftRequestSchema,
+    path: '/api/zhuma-knowledge/propose-draft',
     verb: 'POST',
     auth: false,
   },
@@ -671,6 +678,13 @@ export class HostSharedBackend {
       signal,
     });
     await this.assertCurrent(row, signal, entry.auth);
+    if (
+      response.status === 401 &&
+      row.cookie &&
+      !entry.auth &&
+      input.operation !== 'identity.register'
+    )
+      this.nativeChanged('revoking');
     if (response.status >= 500) {
       await response.body?.cancel();
       throw new SharedBackendError('unavailable');

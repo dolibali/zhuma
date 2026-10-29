@@ -12,8 +12,10 @@ import {
   remotePrivatePermitSchema,
   remotePermitHashInput,
   remoteRunScopeSchema,
+  remoteReviewScopeSchema,
   canonicalPayload,
   type RemoteRunScope,
+  type RemoteReviewScope,
 } from '@zhuma/agent-core';
 
 /** A adapts this to its ORIGINAL private credentials owner. Implementations
@@ -321,6 +323,97 @@ export class MemberLocalExecutionSecrets {
         configurationId: entry.configurationId,
         selectionFingerprint: entry.selectionFingerprint,
       });
+    } catch (error) {
+      if (error instanceof MemberLocalSecretError) throw error;
+      throw new MemberLocalSecretError('unavailable');
+    }
+  }
+  /** Review navigation uses its full strict target/principal scope and the
+   * original private store. This never creates or rotates an accept intent. */
+  async rememberReviewRun(
+    device: MemberLocalDeviceIdentity,
+    intent: MemberLocalAcceptSecrets,
+    rawScope: RemoteReviewScope,
+    configurationId: string,
+    selectionFingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      checkSignal(signal);
+      const owner = this.issued.get(device),
+        record = this.intents.get(intent),
+        scope = remoteReviewScopeSchema.parse(rawScope);
+      if (
+        !owner ||
+        !record ||
+        owner.backendId !== scope.backendId ||
+        owner.actorId !== scope.actorId ||
+        record.backendId !== owner.backendId ||
+        record.actorId !== owner.actorId ||
+        record.deviceId !== owner.deviceId
+      )
+        throw new MemberLocalSecretError('invalid');
+      const entry = historyPointer.parse({
+        version: 1,
+        scopeFingerprint: this.scopeFingerprint(scope),
+        requestId: record.requestId,
+        configurationId,
+        selectionFingerprint,
+      });
+      const slot = key('run-pointer', [
+        owner.backendId,
+        owner.actorId,
+        owner.deviceId,
+        entry.scopeFingerprint,
+      ]);
+      const same = (raw: unknown) => {
+        const prior = historyPointer.parse(raw);
+        if (canonicalPayload(prior) !== canonicalPayload(entry))
+          throw new MemberLocalSecretError('conflict');
+        return prior;
+      };
+      const current = await this.store.read(slot);
+      checkSignal(signal);
+      if (current !== undefined) {
+        same(current);
+        return;
+      }
+      const saved = await this.store.modify(slot, (raw) => (raw === undefined ? entry : same(raw)));
+      checkSignal(signal);
+      same(saved);
+    } catch (error) {
+      if (error instanceof MemberLocalSecretError) throw error;
+      throw new MemberLocalSecretError('unavailable');
+    }
+  }
+  /** Exact-key read only. A work pointer or a different review is never reused. */
+  async loadReviewRun(
+    device: MemberLocalDeviceIdentity,
+    rawScope: RemoteReviewScope,
+    signal?: AbortSignal,
+  ) {
+    try {
+      checkSignal(signal);
+      const owner = this.issued.get(device),
+        scope = remoteReviewScopeSchema.parse(rawScope);
+      if (!owner || owner.backendId !== scope.backendId || owner.actorId !== scope.actorId)
+        throw new MemberLocalSecretError('invalid');
+      const fingerprint = this.scopeFingerprint(scope);
+      const raw = await this.store.read(
+        key('run-pointer', [owner.backendId, owner.actorId, owner.deviceId, fingerprint]),
+      );
+      checkSignal(signal);
+      if (raw === undefined) return undefined;
+      const entry = historyPointer.parse(raw);
+      if (entry.scopeFingerprint !== fingerprint) throw new MemberLocalSecretError('conflict');
+      const intent = await this.recoverAccept(device, entry.requestId, signal);
+      return intent
+        ? Object.freeze({
+            intent,
+            configurationId: entry.configurationId,
+            selectionFingerprint: entry.selectionFingerprint,
+          })
+        : undefined;
     } catch (error) {
       if (error instanceof MemberLocalSecretError) throw error;
       throw new MemberLocalSecretError('unavailable');

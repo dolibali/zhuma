@@ -7,7 +7,10 @@ import {
   remoteLocalCapabilitiesSchema,
 } from '@zhuma/agent-core';
 import { HostSharedBackend, SharedBackendError } from './host-shared-backend.js';
-import { MemberLocalExecutionProtocol } from './member-local-execution-protocol.js';
+import {
+  MemberLocalExecutionProtocol,
+  type MemberLocalAcceptedRun,
+} from './member-local-execution-protocol.js';
 import { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
 import { MemberLocalExecutionSecrets } from './member-local-execution-secrets.js';
 import { createMemberLocalPrivateStore } from './host-member-local-credentials.js';
@@ -126,21 +129,42 @@ export function publicMemberNativeHistory(event: NativeHistoryEvent): NativeHist
  * Session. No local ExecutionService, transcript cache or drive reconstruction. */
 export async function openHostMemberNativeOwner(ctx: Context, backend: HostSharedBackend) {
   const lifetime = new AbortController();
+  const admission = new AbortController();
+  let closed = false,
+    closing: Promise<void> | undefined;
+  function admit(signal: AbortSignal) {
+    if (closed) throw new SharedBackendError('unavailable');
+    admission.signal.throwIfAborted();
+    lifetime.signal.throwIfAborted();
+    signal.throwIfAborted();
+  }
   const connection = await backend.nativeConnection(lifetime.signal);
   const protocol = await MemberLocalExecutionProtocol.open(
     {
       origin: connection.origin,
       methods: MEMBER_LOCAL_REMOTE_METHODS,
-      authentication: connection.authentication,
+      authentication: async (active, request?: { readonly method: string }) => {
+        lifetime.signal.throwIfAborted();
+        active.throwIfAborted();
+        // Only C's actual allowlisted outgoing method can select this lane.
+        // D authenticates its original independent signed cleanup permit;
+        // cleanup neither needs nor receives a product member Cookie.
+        if (request?.method === MEMBER_LOCAL_REMOTE_METHODS.cleanup)
+          return { origin: connection.origin };
+        admit(active);
+        const headers = await connection.authentication(active);
+        admit(active);
+        return headers;
+      },
       expectedActorId: connection.actorId,
       secrets: new MemberLocalExecutionSecrets(createMemberLocalPrivateStore(ctx, lifetime.signal)),
     },
     lifetime.signal,
   );
   const assertCurrent = async (signal: AbortSignal) => {
-    lifetime.signal.throwIfAborted();
-    signal.throwIfAborted();
+    admit(signal);
     const current = await backend.nativeConnection(signal);
+    admit(signal);
     if (
       current.connectionId !== connection.connectionId ||
       current.backendId !== connection.backendId ||
@@ -148,7 +172,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     )
       throw new SharedBackendError('identity-changed');
     await connection.authentication(signal);
-    lifetime.signal.throwIfAborted();
+    admit(signal);
   };
   const workspaces = createHostMemberNativeWorkspaces(ctx, {
     connectionId: connection.connectionId,
@@ -184,8 +208,38 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     throw error;
   }
   const jobs = new Set<Promise<unknown>>();
-  let closed = false,
-    closing: Promise<void> | undefined;
+  const accepting = new Set<Promise<unknown>>();
+  const acceptedRuns = new Set<MemberLocalAcceptedRun>();
+  const stops = new WeakMap<MemberLocalAcceptedRun, Promise<unknown>>();
+  function pruneAccepted() {
+    for (const run of acceptedRuns) {
+      try {
+        if (native.read(run).remote.resources === 'settled') acceptedRuns.delete(run);
+      } catch {
+        /* An unknown or not-yet-started handle remains an obligation. */
+      }
+    }
+  }
+  function stopAccepted(run: MemberLocalAcceptedRun) {
+    const known = stops.get(run);
+    if (known) return known;
+    let view = run.value;
+    try {
+      const current = native.read(run).remote;
+      if (current.resources === 'settled') return Promise.resolve();
+      view = { ...view, ...current };
+    } catch {
+      /* A late issued handle is retained by the original cleanup-only path. */
+    }
+    const stop = native.stop(run, {
+      requestId: randomUUID(),
+      expectedNodeVersion: view.nodeVersion,
+      expectedRunVersion: view.runVersion,
+    });
+    stops.set(run, stop);
+    void stop.catch(() => undefined);
+    return stop;
+  }
   async function facts(target: z.infer<typeof hostRunOptionsQuerySchema>, signal: AbortSignal) {
     await assertCurrent(signal);
     const rpcId = randomUUID();
@@ -268,6 +322,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     return work;
   };
   async function handle(endpoint: string, raw: unknown, wait: AbortSignal): Promise<unknown> {
+    wait = AbortSignal.any([wait, admission.signal]);
     await assertCurrent(wait);
     if (endpoint === 'options') {
       const target = hostRunOptionsQuerySchema.parse(raw);
@@ -312,47 +367,65 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         input.tools === 'accepted-input-reader' ||
         (local && value.tools === 'accepted-input-reader');
       const resources = MemberLocalExecutionOwner.resourceSource(ctx);
-      const accepted = await (
-        await protocol.prepareAccept(
-          input.requestId,
-          {
-            target,
-            purpose: 'work',
-            mode: input.mode,
-            expectedNodeVersion: input.expectedNodeVersion,
-            expectedRunVersion: input.expectedRunVersion,
-            model: input.model,
-            executor: input.executor,
-            workspace: selected?.workspace ?? { kind: 'text-only' },
-            capabilities: {
-              ...(resources ? { resources } : {}),
-              ...(acceptedInput ? { acceptedInput: '1' as const } : {}),
-              ...(acceptedInput && protocol.supportsFilePublishing && native.acceptedFileSource
-                ? { acceptedFile: native.acceptedFileSource }
-                : {}),
-              ...(selected ? { outputFile: native.outputFileSource! } : {}),
-              resultIntent: selected
-                ? 'zhuma-native-result-intent@2'
-                : 'zhuma-native-result-intent@1',
-              localTools: selected
-                ? remoteLocalCapabilitiesSchema.shape.localTools.parse(
-                    workspaces.describe(selected),
-                  )
-                : [],
-            },
+      const prepared = await protocol.prepareAccept(
+        input.requestId,
+        {
+          target,
+          purpose: 'work',
+          mode: input.mode,
+          expectedNodeVersion: input.expectedNodeVersion,
+          expectedRunVersion: input.expectedRunVersion,
+          model: input.model,
+          executor: input.executor,
+          workspace: selected?.workspace ?? { kind: 'text-only' },
+          capabilities: {
+            ...(resources ? { resources } : {}),
+            ...(acceptedInput ? { acceptedInput: '1' as const } : {}),
+            ...(acceptedInput && protocol.supportsFilePublishing && native.acceptedFileSource
+              ? { acceptedFile: native.acceptedFileSource }
+              : {}),
+            ...(selected ? { outputFile: native.outputFileSource! } : {}),
+            resultIntent: selected
+              ? 'zhuma-native-result-intent@2'
+              : 'zhuma-native-result-intent@1',
+            localTools: selected
+              ? remoteLocalCapabilitiesSchema.shape.localTools.parse(workspaces.describe(selected))
+              : [],
           },
-          wait,
-        )
-      ).send(wait);
-      workspaces.bind(input.requestId, accepted);
-      // A client disconnect is not rollback of this actual accepted Run.
-      await native.start(accepted);
-      await assertCurrent(lifetime.signal);
-      return {
-        ...target,
-        runId: accepted.value.scope.runId,
-        segmentId: accepted.value.scope.segmentId,
-      };
+        },
+        wait,
+      );
+      // Preparing private retry material is not permission to send after close.
+      admit(wait);
+      pruneAccepted();
+      const acceptingRun = (async () => {
+        // Once sent, a disconnected renderer or logout does not erase the
+        // actual backend obligation. Join its real reply under cleanup life.
+        const accepted = await prepared.send(lifetime.signal);
+        acceptedRuns.add(accepted);
+        try {
+          if (closed) {
+            await stopAccepted(accepted).catch(() => undefined);
+            throw new SharedBackendError('unavailable');
+          }
+          workspaces.bind(input.requestId, accepted);
+          await native.start(accepted);
+          await assertCurrent(lifetime.signal);
+          return {
+            ...target,
+            runId: accepted.value.scope.runId,
+            segmentId: accepted.value.scope.segmentId,
+          };
+        } catch (error) {
+          // Failed local adoption also leaves a genuine accepted Run; hand it
+          // to the same original independent cleanup path, never a new start.
+          await stopAccepted(accepted).catch(() => undefined);
+          throw error;
+        }
+      })();
+      accepting.add(acceptingRun);
+      void acceptingRun.finally(() => accepting.delete(acceptingRun)).catch(() => undefined);
+      return acceptingRun;
     }
     // The public Client omits space on original read/send/history requests.
     // The private carrier supplies this exact bound space separately.
@@ -462,6 +535,8 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     handle: (endpoint: string, raw: unknown, wait: AbortSignal) =>
       track(handle(endpoint, raw, wait)),
     async observe(raw: unknown, sink: HostRunFrameSink, wait: AbortSignal) {
+      wait = AbortSignal.any([wait, admission.signal]);
+      await assertCurrent(wait);
       const data = z
         .object({ spaceId: id, query: historyLocator.omit({ limit: true }) })
         .parse(raw);
@@ -479,12 +554,32 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     close() {
       if (!closing) {
         closed = true;
+        admission.abort();
         // Native close owns physical cleanup before its original private
         // outgoing protocol or credentials adapter is sealed.
         closing = (async () => {
           workspaces.fence();
+          pruneAccepted();
+          // stop fences each existing drive synchronously; its business ACK
+          // may fail after logout while original private cleanup still drains.
+          const stopping = [...acceptedRuns].map(stopAccepted);
+          while (accepting.size) await Promise.allSettled([...accepting]);
+          await Promise.allSettled(stopping);
           await native.close();
           await workspaces.close();
+          // Unknown accepts or unsettled original resources retain this closed
+          // owner/protocol for recovery. Never report a successful replacement.
+          if (
+            !protocol.canSwitchBackend() ||
+            [...acceptedRuns].some((run) => {
+              try {
+                return native.read(run).remote.resources !== 'settled';
+              } catch {
+                return true;
+              }
+            })
+          )
+            throw new SharedBackendError('unavailable');
           lifetime.abort();
           await Promise.allSettled([...jobs]);
           await protocol.close();

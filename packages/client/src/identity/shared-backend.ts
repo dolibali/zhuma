@@ -68,6 +68,7 @@ const targets = {
   '/api/zhuma-knowledge/drafts': ['POST', 'knowledge.drafts'],
   '/api/zhuma-knowledge/draft': ['POST', 'knowledge.draft'],
   '/api/zhuma-knowledge/save-draft': ['POST', 'knowledge.save-draft'],
+  '/api/zhuma-knowledge/propose-draft': ['POST', 'knowledge.propose-draft'],
   '/api/zhuma-knowledge/publish': ['POST', 'knowledge.publish'],
   '/api/zhuma-exec/inbox': ['POST', 'execution.inbox'],
   '/api/zhuma-exec/startable': ['POST', 'execution.startable'],

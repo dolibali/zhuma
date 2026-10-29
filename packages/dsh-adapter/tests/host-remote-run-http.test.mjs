@@ -299,3 +299,53 @@ test('cleanup is the sole no-cookie path, cannot smuggle an ordinary operation a
     await h.close();
   }
 });
+
+test('remote HTTP: canonical review purpose uses the existing routes and preserves independent cleanup admission', async () => {
+  const h = await host();
+  try {
+    const request = cleanup(),
+      scope = request.payload.scope;
+    const review = {
+      purpose: 'review',
+      ...request,
+      payload: {
+        ...request.payload,
+        scope: {
+          ...scope,
+          review: {
+            target: {
+              spaceId: scope.spaceId,
+              taskId: scope.taskId,
+              planId: scope.planId,
+              revision: scope.revision,
+              nodeId: scope.nodeId,
+              roundId: 'fixed-round',
+              artifactVersionId: 'fixed-artifact',
+              artifactFingerprint: 'c'.repeat(64),
+            },
+            principal: {
+              kind: 'expert',
+              controllerMemberId: scope.actorId,
+              reviewerRef: { id: 'reviewer', version: scope.planId, digest: 'd'.repeat(64) },
+            },
+          },
+        },
+      },
+    };
+    const response = await h.post('cleanup', review);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).result.error.code, 'remote-protocol-unsupported');
+    assert.deepEqual(h.calls[0].body, review, 'The original D decoder remains authoritative');
+    const status = {
+      ...review,
+      operation: 'status',
+      payload: { scope: review.payload.scope, permit: review.payload.permit },
+    };
+    assert.equal((await h.post('status', status)).status, 401);
+    assert.equal(h.calls.length, 1);
+    assert.equal((await h.post('status', status, { member: true })).status, 200);
+    assert.equal(h.calls.length, 2);
+  } finally {
+    await h.close();
+  }
+});

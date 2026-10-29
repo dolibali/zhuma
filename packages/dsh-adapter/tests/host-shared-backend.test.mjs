@@ -19,6 +19,7 @@ async function fixture(t) {
     calls = [];
   let backendId = randomUUID(),
     expired = false,
+    businessExpired = false,
     pending;
   const cookies = new Map();
   const remote = async (input, init) => {
@@ -84,6 +85,8 @@ async function fixture(t) {
       );
     if (url.pathname === '/zhuma-id/password')
       return Response.json({ ok: false, error: 'invalid-login' }, { status: 401 });
+    if (businessExpired && url.pathname.startsWith('/api/zhuma-member/'))
+      return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
     return Response.json({
       type: 'server-response',
       rpcId: body.rpcId,
@@ -129,6 +132,9 @@ async function fixture(t) {
     request,
     expire: () => {
       expired = true;
+    },
+    expireBusiness: () => {
+      businessExpired = true;
     },
     replaceBackend: () => {
       backendId = randomUUID();
@@ -496,4 +502,55 @@ test('shared backend exact HTTP routes retain actual SDK local owner admission a
     'connectionId',
     'origin',
   ]);
+});
+
+test('shared backend: member expiry between successful probe and business reply immediately fences native admission', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const changed = [];
+  const off = h.owner.onNativeAuthenticationChanged((kind) => changed.push(kind));
+  h.expireBusiness();
+  const reply = await h.request(
+    selection,
+    'member.snapshot',
+    { spaceId: 'north' },
+    { rpcId: randomUUID() },
+  );
+  assert.equal(reply.status, 401);
+  assert.deepEqual(changed, ['revoking']);
+  off();
+});
+
+test('shared backend: Agent proposal forwards the original draft schema to one fixed member endpoint', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const input = {
+    spaceId: 'north',
+    libraryId: 'library',
+    pageId: 'page',
+    expectedVersion: 0,
+    idempotencyKey: 'proposal-1',
+    content: { title: 'Proposed note', format: 'markdown', text: 'Draft only', sources: [] },
+  };
+  const before = h.calls.length;
+  await h.request(selection, 'knowledge.propose-draft', input, { rpcId: randomUUID() });
+  assert.equal(h.calls.at(-1).url, 'http://backend.example:3080/api/zhuma-knowledge/propose-draft');
+  assert.deepEqual(h.calls.at(-1).body.payload, input);
+  assert.equal(
+    h.calls.length,
+    before + 2,
+    'One original identity probe plus the fixed draft operation',
+  );
+  const valid = h.calls.length;
+  await assert.rejects(
+    h.request(
+      selection,
+      'knowledge.propose-draft',
+      { ...input, actorId: 'other' },
+      { rpcId: randomUUID() },
+    ),
+  );
+  assert.equal(h.calls.length, valid);
 });

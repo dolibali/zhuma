@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const backendLaunchers = ['packaged-backend.sh', 'packaged-backend.mjs'];
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 export function releaseContext(root, env) {
@@ -125,6 +126,11 @@ export function writeManifest(context, gate) {
   assert(host.equals(readFileSync(join(root, '.build/workbench/index.js'))));
   assert(client.equals(readFileSync(join(root, '.build/workbench/client.js'))));
   const dmg = readFileSync(join(root, 'dist', filename));
+  const launchers = backendLaunchers.map((name) => {
+    const bytes = readFileSync(join(root, 'scripts/server', name));
+    writeFileSync(join(root, 'dist', name), bytes);
+    return { name, bytes: bytes.length, sha256: sha256(bytes) };
+  });
   assert(
     dmg.equals(
       readFileSync(
@@ -158,13 +164,15 @@ export function writeManifest(context, gate) {
       asarSha256: sha256(readFileSync(archive)),
       hostSha256: sha256(host),
       clientSha256: sha256(client),
+      backendLaunchers: launchers,
     },
   };
   const provenance = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
   writeFileSync(join(root, 'dist/SOURCE.json'), provenance);
   writeFileSync(
     join(root, 'dist/SHA256SUMS'),
-    `${sha256(dmg)}  ${filename}\n${sha256(provenance)}  SOURCE.json\n`,
+    `${sha256(dmg)}  ${filename}\n${sha256(provenance)}  SOURCE.json\n` +
+      launchers.map((item) => `${item.sha256}  ${item.name}\n`).join(''),
   );
   return manifest;
 }
@@ -189,7 +197,22 @@ export async function publish(context, directory, api) {
   assert.equal(manifest.artifacts.dmg.name, context.filename);
   assert.equal(manifest.artifacts.dmg.bytes, dmg.length);
   assert.equal(manifest.artifacts.dmg.sha256, sha256(dmg));
-  const sums = `${sha256(dmg)}  ${context.filename}\n${sha256(readFileSync(join(directory, 'SOURCE.json')))}  SOURCE.json\n`;
+  assert.deepEqual(
+    manifest.artifacts.backendLaunchers?.map((item) => item.name),
+    backendLaunchers,
+  );
+  for (const item of manifest.artifacts.backendLaunchers) {
+    const bytes = readFileSync(join(directory, item.name));
+    assert.equal(item.bytes, bytes.length);
+    assert.equal(item.sha256, sha256(bytes));
+    assert(
+      bytes.equals(readFileSync(join(context.root, 'scripts/server', item.name))),
+      'Backend launcher differs from the exact checked-out release source.',
+    );
+  }
+  const sums =
+    `${sha256(dmg)}  ${context.filename}\n${sha256(readFileSync(join(directory, 'SOURCE.json')))}  SOURCE.json\n` +
+    manifest.artifacts.backendLaunchers.map((item) => `${item.sha256}  ${item.name}\n`).join('');
   assert.equal(readFileSync(join(directory, 'SHA256SUMS'), 'utf8'), sums);
   await preflight(context, api); // Fresh exact source/CI/conflict checks before the first write.
   const prefix = `repos/${context.repository}`;
@@ -207,17 +230,21 @@ export async function publish(context, directory, api) {
       draft: true,
       prerelease: context.version.includes('-'),
       body: `## 核心能力
-- 可信账号、团队项目与任务规划，本地 Zhuma 模型与 Skill 持续执行。
-- 固定版本的文字／真实文件交付，人工／Agent 评审、下游输入与项目成果。
+- 正常注册与团队协作、项目与任务列表／看板、可编辑 AI 规划及默认工作流模板。
+- 团队知识、公开基础专家与工程 Skills；模型凭据和原生会话留在成员本机。
+- 本地共享后端保存业务；成员在自己的官方桌面逐节点主动使用本机 Agent。
+- 固定文字／真实文件交付、人工／Agent 评审、下游输入与项目成果；工作区读写和文件交付范围单独选择。
 
 ## 安装与首次使用
-1. 下载 DMG、SOURCE.json 和 SHA256SUMS，放在同一目录，执行 shasum -a 256 -c SHA256SUMS 核验。
+1. 下载 DMG、SOURCE.json、SHA256SUMS 和两个 packaged-backend 启动文件，放在同一目录，执行 shasum -a 256 -c SHA256SUMS 核验。
 2. 打开 DMG，将 Zhuma 拖入 Applications。首次被系统拦截时，核对来源后按 [macOS 正常允许打开流程](https://support.apple.com/zh-cn/102445)操作；不要全局关闭系统保护。
 3. 首次使用自行配置模型供应商与凭据，模型调用费用由供应商计费。
+4. 需要共享后端时，用同目录脚本运行 sh packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data；文件交付另加 --file-uploads。保留两个启动文件同目录，使用本版 App；成员在桌面选择该后端并正常登录。
 
 ## 支持与边界
 仅 macOS Apple Silicon（arm64）；ad-hoc 签名、未公证，无自动更新。Intel Mac、Windows、Linux 尚未认证。
 非空 MCP、资产／工作流发布、批量反馈、复杂子流程、效能统计、个人专家和外部 CLI 尚未进入本版。
+共享任务逐节点主动启动，跨设备自动接续留下一版；既有同 Host 自动工作流保留。共享后端为本地部署，集群部署后置。
 
 ## 许可与来源
 自有代码采用 [MIT License](https://github.com/${context.repository}/blob/${context.source}/LICENSE)，第三方许可保留在安装包中。
@@ -231,7 +258,7 @@ export async function publish(context, directory, api) {
   assert.equal(release.target_commitish, context.source);
   // A partial failure intentionally leaves the new draft/tag for inspection.
   // Never delete a tag/release, clobber an asset, or silently retry publication.
-  for (const name of [context.filename, 'SOURCE.json', 'SHA256SUMS']) {
+  for (const name of [context.filename, 'SOURCE.json', 'SHA256SUMS', ...backendLaunchers]) {
     const bytes = readFileSync(join(directory, name));
     const asset = await api(
       `${prefix}/releases/${release.id}/assets?name=${encodeURIComponent(name)}`,

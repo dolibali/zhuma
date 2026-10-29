@@ -6,10 +6,12 @@ import {
   REMOTE_RUN_LIMITS,
   REMOTE_RUN_RESOURCE_SOURCE_VERSION,
   remoteDeviceSigningInput,
+  remoteReviewDeviceSigningInput,
   remotePermitHashInput,
   remoteRunRequestSchema,
   remoteRunResponseSchema,
   remoteRunSharedSnapshotSchema,
+  remoteRunMigrationSchema,
   remoteAcceptValueSchema,
   remoteResultDigestInput,
   submitDelivery,
@@ -17,6 +19,7 @@ import {
   submitExpertManifestDelivery,
   type ExecutionNodeRecord,
   type RemoteRunRequest,
+  type RemoteReviewDeviceRequest,
   type RemoteDeviceRequest,
   type RemoteRunOperation,
   type RemoteRunResponse,
@@ -25,8 +28,14 @@ import {
   type RemoteRunScope,
   type RemoteRunErrorCode,
   type RemoteInputDescriptor,
+  type RemoteRunMigration,
   type RemoteReconcileValue,
 } from '@zhuma/agent-core';
+import {
+  RemoteReviewAuthorities,
+  type RemoteReviewAuthoritySource,
+} from './remote-review-authority.js';
+import { readExecutionReviewState } from './execution-review-state.js';
 import type { UpstreamContentValue } from './execution-service.js';
 import { memberSessionId, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
@@ -128,6 +137,7 @@ function deny(code: RemoteRunErrorCode): never {
 /** Private original-service ports. A wire DTO never supplies any of these assertions. */
 export interface RemoteRunAuthoritySource {
   readonly signal: AbortSignal;
+  readonly review?: RemoteReviewAuthoritySource;
   readonly resourceHost?: ExecutionRunResourceCatalogHost;
   filesEnabled?(): boolean;
   outputFiles?(issuer: RemoteRunAuthorities): ExecutionOutputFilePort<RemoteRunFileGrant>;
@@ -187,6 +197,7 @@ export class RemoteRunAuthorities {
   private preparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private releaseFailed = false;
   private files: RemoteRunFiles | undefined;
+  private readonly reviews: RemoteReviewAuthorities | undefined;
   /** Ephemeral backend IO only; no permission cache or accepted-file fact store. */
   private readonly inputReads = new Map<
     string,
@@ -200,6 +211,43 @@ export class RemoteRunAuthorities {
     }
   >();
   constructor(private readonly source: RemoteRunAuthoritySource) {
+    this.reviews = source.review
+      ? new RemoteReviewAuthorities(source.review, {
+          epoch: this.epoch,
+          now: () => this.now(),
+          registry: () => this.registry(),
+          checkDevice: (body, actorId, verifyProof) => {
+            this.checkDevice(body, actorId, verifyProof);
+          },
+          proof: (body, key) => this.proof(body, key),
+          checkPermit: (...args) => this.checkPermit(...args),
+          active: (runId) => this.active.get(runId),
+          retain: (runId, lease, sessionHash, expiresAt) =>
+            this.retain(runId, lease, sessionHash, expiresAt),
+          release: (runId) => this.release(runId),
+          renew: (runId, expiresAt) => {
+            const owner = this.active.get(runId);
+            if (!owner) deny('remote-recovery-required');
+            clearTimeout(owner.timer);
+            owner.timer = setTimeout(
+              () => this.release(runId),
+              Math.max(0, expiresAt - this.now()),
+            );
+            owner.timer.unref();
+          },
+          takeDevice: (deviceId) => {
+            const count = this.inFlight.get(deviceId) ?? 0;
+            if (count >= REMOTE_RUN_LIMITS.inFlightPerDevice) deny('remote-quota');
+            this.inFlight.set(deviceId, count + 1);
+            return () => {
+              const remaining = (this.inFlight.get(deviceId) ?? 1) - 1;
+              if (remaining) this.inFlight.set(deviceId, remaining);
+              else this.inFlight.delete(deviceId);
+            };
+          },
+          heldCount: () => this.heldCount(),
+        })
+      : undefined;
     source.signal.addEventListener('abort', () => this.fence(), { once: true });
   }
   private now(): number {
@@ -222,6 +270,8 @@ export class RemoteRunAuthorities {
         (!this.source.outputFiles || !this.source.readNativeFile || !this.source.verifyOutputFiles)
       )
         deny('remote-unavailable');
+      if (raw.data.remoteExecutionReviewWriter === 1 && !this.reviews?.ready())
+        deny('remote-protocol-unsupported');
       if (raw.data.remoteExecution) return;
       await this.source.writeGlobal({
         ...prepareExecutionRunWriter(raw.data),
@@ -246,7 +296,25 @@ export class RemoteRunAuthorities {
       !!this.source.verifyOutputFiles
     );
   }
+  ownsReview(issuer: RemoteReviewAuthorities): boolean {
+    return this.reviews === issuer;
+  }
+  private heldCount(): number {
+    return this.source
+      .listNodes()
+      .reduce(
+        (sum, node) =>
+          sum +
+          (readExecutionRunState(node)?.runs.filter((r) => r.remote && r.resources === 'held')
+            .length ?? 0) +
+          (readExecutionReviewState(node)?.attempts.filter(
+            (a) => 'remote' in a && a.remote && a.resources === 'held',
+          ).length ?? 0),
+        0,
+      );
+  }
   private release(runId: string): void {
+    this.reviews?.cancelRun(runId);
     for (const entries of this.inputReads.values())
       for (const entry of entries) if (entry.runId === runId) entry.cancel();
     const value = this.active.get(runId);
@@ -263,12 +331,14 @@ export class RemoteRunAuthorities {
   fence(): void {
     this.closed = true;
     this.files?.fence();
+    this.reviews?.fence();
     for (const entries of this.inputReads.values()) for (const entry of entries) entry.cancel();
     for (const id of this.active.keys()) this.release(id);
   }
   async close(): Promise<void> {
     this.fence();
     while (this.operations.size) await Promise.allSettled([...this.operations]);
+    await this.reviews?.close();
     if (this.preparationFailure) throw this.preparationFailure;
     if (this.releaseFailed) throw new RemoteRunError('remote-unavailable');
   }
@@ -302,6 +372,10 @@ export class RemoteRunAuthorities {
     privatePermit?: string,
     upload?: RemoteRunUpload,
   ): Promise<RemoteRunResponse<unknown>> {
+    if (raw && typeof raw === 'object' && 'purpose' in raw && raw.purpose === 'review')
+      return this.reviews
+        ? this.reviews.handle(request, raw, privatePermit)
+        : { ok: false, error: { code: 'remote-protocol-unsupported' } };
     const parsed = remoteRunRequestSchema.safeParse(raw);
     if (
       !parsed.success ||
@@ -315,6 +389,13 @@ export class RemoteRunAuthorities {
       (global.data.remoteExecutionFileWriter === 1 ||
         global.data.remoteExecutionAcceptedFileWriter === 1) &&
       !this.filesEnabled() &&
+      body.operation !== 'cleanup'
+    )
+      return { ok: false, error: { code: 'remote-protocol-unsupported' } };
+    if (
+      global.success &&
+      global.data.remoteExecutionReviewWriter === 1 &&
+      !this.reviews?.ready() &&
       body.operation !== 'cleanup'
     )
       return { ok: false, error: { code: 'remote-protocol-unsupported' } };
@@ -364,7 +445,7 @@ export class RemoteRunAuthorities {
               backendId: registry.backendId,
               actorId: lease!.memberId,
               serverTime: this.now(),
-              purposes: ['work'],
+              purposes: this.reviews?.ready() ? ['work', 'review'] : ['work'],
               operations,
             };
           if (body.operation === 'register-device') return this.register(body, lease!);
@@ -760,7 +841,7 @@ export class RemoteRunAuthorities {
       throw error;
     }
   }
-  private proof(body: RemoteDeviceRequest, publicKey: string): void {
+  private proof(body: RemoteDeviceRequest | RemoteReviewDeviceRequest, publicKey: string): void {
     if (Math.abs(this.now() - body.proof.issuedAt) > REMOTE_RUN_LIMITS.proofWindowMs)
       deny('remote-proof-expired');
     try {
@@ -774,7 +855,13 @@ export class RemoteRunAuthorities {
         key.export({ format: 'der', type: 'spki' }).toString('base64url') !== publicKey ||
         !verify(
           null,
-          Buffer.from(canonicalPayload(remoteDeviceSigningInput(body))),
+          Buffer.from(
+            canonicalPayload(
+              'purpose' in body
+                ? remoteReviewDeviceSigningInput(body)
+                : remoteDeviceSigningInput(body),
+            ),
+          ),
           key,
           Buffer.from(body.proof.signature, 'base64url'),
         )
@@ -784,7 +871,11 @@ export class RemoteRunAuthorities {
       deny('remote-proof-invalid');
     }
   }
-  private checkDevice(body: RemoteDeviceRequest, actorId: string, verifyProof = true) {
+  private checkDevice(
+    body: RemoteDeviceRequest | RemoteReviewDeviceRequest,
+    actorId: string,
+    verifyProof = true,
+  ) {
     const device = this.registry().devices.find((item) => item.deviceId === body.deviceId);
     if (!device || device.actorId !== actorId) deny('remote-device-mismatch');
     if (verifyProof) this.proof(body, device.publicKey);
@@ -925,6 +1016,72 @@ export class RemoteRunAuthorities {
     original.lease.assertCurrent(value.run.spaceId);
     lease.assertCurrent(value.run.spaceId);
   }
+  private migration(value: Loaded): RemoteRunMigration | undefined {
+    const { node, run, state, remote } = value;
+    const index = state.runs.findIndex((item) => item.attempt.id === run.attempt.id);
+    if (
+      state.currentRunId !== run.attempt.id ||
+      index < 1 ||
+      run.attempt.status !== 'requested' ||
+      run.resources !== 'held' ||
+      run.dispatch !== 'reserved' ||
+      run.attempt.acknowledged ||
+      run.attempt.sessionId !== undefined ||
+      run.attempt.executorRunId !== undefined ||
+      run.attempt.stopPhase !== 'none'
+    )
+      return undefined;
+    const predecessors = state.runs.slice(0, index);
+    // Original local migrations retain their original authority. Never mix
+    // device/actor/backend histories into a remote member's local session.
+    if (
+      predecessors.some(
+        (previous) =>
+          !previous.remote ||
+          previous.remote.backendId !== remote.backendId ||
+          previous.remote.deviceId !== remote.deviceId ||
+          previous.remote.keyEpoch !== remote.keyEpoch ||
+          previous.remote.publicKey !== remote.publicKey ||
+          previous.actorId !== run.actorId ||
+          previous.spaceId !== run.spaceId ||
+          !isTerminalRunStatus(previous.attempt.status) ||
+          previous.resources !== 'settled',
+      )
+    )
+      return undefined;
+    const receipt = state.receipts.find(
+      (item) =>
+        item.requestId === run.attempt.idempotencyKey &&
+        item.actorId === run.actorId &&
+        item.runId === run.attempt.id,
+    );
+    if (!receipt) deny('remote-unavailable');
+    const parsed = remoteRunMigrationSchema.safeParse({
+      requestId: receipt.requestId,
+      inputFingerprint: run.attempt.payloadHash,
+      predecessors: predecessors.map((previous) => ({
+        scope: { ...executionRunScope(node, previous), backendId: previous.remote!.backendId },
+        selection: previous.selection,
+        deviceId: previous.remote!.deviceId,
+        keyEpoch: previous.remote!.keyEpoch,
+        runStatus: previous.attempt.status,
+        resources: previous.resources,
+        dispatch: previous.dispatch,
+        acknowledged: previous.attempt.acknowledged,
+        ...(previous.attempt.sessionId === undefined
+          ? {}
+          : { nativeSessionId: previous.attempt.sessionId }),
+        ...(previous.attempt.executorRunId === undefined
+          ? {}
+          : { nativeAgentId: previous.attempt.executorRunId }),
+        ...(previous.attempt.sessionDiscarded === undefined
+          ? {}
+          : { sessionDiscarded: previous.attempt.sessionDiscarded }),
+      })),
+    });
+    if (!parsed.success) deny('remote-quota');
+    return parsed.data;
+  }
   private view(value: Loaded, cleanupOnly = false, sessionCurrent = true): RemoteRunView {
     const { node, state, run, remote } = value;
     const original = this.active.get(run.attempt.id);
@@ -954,6 +1111,7 @@ export class RemoteRunAuthorities {
           : cleanupOnly || remote.stopRequested
             ? 'cleanup-only'
             : 'recovery-required';
+    const migration = cleanupOnly ? undefined : this.migration(value);
     const { id: driveId, epoch: driveEpoch, expiresAt: driveExpiry } = remote.drive;
     const { id: cleanupId, epoch: cleanupEpoch, expiresAt: cleanupExpiry } = remote.cleanup;
     return {
@@ -964,6 +1122,7 @@ export class RemoteRunAuthorities {
       permit: { id: driveId, epoch: driveEpoch, expiresAt: driveExpiry },
       cleanup: { id: cleanupId, epoch: cleanupEpoch, expiresAt: cleanupExpiry },
       nodeVersion: node.command.version,
+      ...(migration ? { migration } : {}),
       runVersion: state.version,
       nextSequence: run.attempt.lastEventSequence + 1,
       stopRequested: remote.stopRequested || run.attempt.stopPhase !== 'none',
@@ -1267,11 +1426,7 @@ export class RemoteRunAuthorities {
     }
     if (
       this.active.size >= REMOTE_RUN_LIMITS.activeAuthorities ||
-      this.source
-        .listNodes()
-        .flatMap((record) => readExecutionRunState(record)?.runs ?? [])
-        .filter((run) => run.remote && run.resources === 'held').length >=
-        REMOTE_RUN_LIMITS.activeAuthorities
+      this.heldCount() >= REMOTE_RUN_LIMITS.activeAuthorities
     )
       deny('remote-quota');
     const files = payload.capabilities.resultIntent === 'zhuma-native-result-intent@2';
@@ -1386,6 +1541,7 @@ export class RemoteRunAuthorities {
       ...readExecutionRunState(decision.record)!,
       runs: [...(state?.runs ?? []), run],
     });
+    this.migration({ node: next, run, state: readExecutionRunState(next)!, remote });
     lease.assertCurrent(payload.target.spaceId);
     this.source.assertTarget(lease.memberId, payload.target, this.source.readNode(payload.target)!);
     qualification?.assertCurrent();

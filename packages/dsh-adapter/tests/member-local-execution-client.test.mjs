@@ -27,6 +27,56 @@ async function server(t, handle) {
   return `http://127.0.0.1:${s.address().port}`;
 }
 const decode = (raw) => z.strictObject({ ok: z.literal(true), value: z.string() }).parse(raw).value;
+test('member-local HTTP: authentication receives only the actual allowlisted method so cleanup can use its separately retained credential', async (t) => {
+  let current = true;
+  const calls = [],
+    requests = [];
+  const origin = await server(t, (req, res, body) => {
+    requests.push({
+      method: body.method,
+      cookie: req.headers.cookie,
+      permit: req.headers['x-private-test-permit'],
+    });
+    res.end(
+      JSON.stringify({
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: 'confirmed' },
+      }),
+    );
+  });
+  const client = new MemberLocalExecutionClient({
+    origin,
+    methods: ['zhuma-proof/status', 'zhuma-proof/cleanup'],
+    privateHeaderNames: ['x-private-test-permit'],
+    authentication: (_signal, context) => {
+      assert(Object.isFrozen(context));
+      assert.deepEqual(Object.keys(context), ['method']);
+      calls.push(context.method);
+      if (context.method === 'zhuma-proof/cleanup')
+        return { cookie: 'synthetic-retained-cleanup-member' };
+      if (!current) throw Error('CURRENT_AUTH_REVOKED');
+      return { cookie: 'synthetic-current-member' };
+    },
+  });
+  t.after(() => client.close());
+  await client.invoke('zhuma-proof/status', {}, decode);
+  current = false;
+  await assert.rejects(client.invoke('zhuma-proof/status', {}, decode));
+  await client.invoke('zhuma-proof/cleanup', {}, decode, undefined, {
+    'x-private-test-permit': 'synthetic-independent-cleanup',
+  });
+  await assert.rejects(client.invoke('zhuma-owner/cleanup', {}, decode), { code: 'invalid' });
+  assert.deepEqual(calls, ['zhuma-proof/status', 'zhuma-proof/status', 'zhuma-proof/cleanup']);
+  assert.deepEqual(requests, [
+    { method: 'zhuma-proof/status', cookie: 'synthetic-current-member', permit: undefined },
+    {
+      method: 'zhuma-proof/cleanup',
+      cookie: 'synthetic-retained-cleanup-member',
+      permit: 'synthetic-independent-cleanup',
+    },
+  ]);
+});
 test('member-local HTTP: per-scope private headers do not replace the original member authentication', async (t) => {
   const seen = [];
   let authCalls = 0;

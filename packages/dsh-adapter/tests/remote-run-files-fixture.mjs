@@ -35,7 +35,17 @@ const credential = () => {
 
 export async function fileHost(
   t,
-  { expert = false, enabled = true, seed = true, root: existingRoot, identity, expertNode } = {},
+  {
+    expert = false,
+    enabled = true,
+    seed = true,
+    root: existingRoot,
+    identity,
+    expertNode,
+    workbench,
+    beforeRemoteEnable,
+    remoteOptions,
+  } = {},
 ) {
   const root = existingRoot ?? (await mkdtemp(join(tmpdir(), 'zhuma-remote-files-')));
   const ctx = new Context();
@@ -56,6 +66,7 @@ export async function fileHost(
   };
   const h = await open(join(root, 'service'), {
     attachments,
+    ...(workbench ? { workbench } : {}),
     expertNode: expertNode ?? (expert ? 'produce' : undefined),
     seed,
   });
@@ -79,7 +90,11 @@ export async function fileHost(
     drive = identity?.drive ?? credential(),
     cleanup = identity?.cleanup ?? credential();
   try {
-    await h.service.enableRemoteRuns(enabled ? { fileUploads: true } : {});
+    await beforeRemoteEnable?.(h);
+    await h.service.enableRemoteRuns({
+      ...(enabled ? { fileUploads: true } : {}),
+      ...remoteOptions,
+    });
   } catch (error) {
     await close();
     throw error;
