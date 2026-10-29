@@ -328,6 +328,10 @@ test('remote workflow review: two fixed request-changes rounds carry original ci
         ),
         false,
       );
+      assert.deepEqual(
+        intent.revisions.find((item) => item.nodeId === 'produce'),
+        { nodeId: 'produce', used: 2, limit: 2 },
+      );
       assert.equal(h.read().artifactVersions.length, 3);
       assert.equal(h.calls.backendModel, 0);
       break;
@@ -335,6 +339,11 @@ test('remote workflow review: two fixed request-changes rounds carry original ci
     assert.equal(candidate.kind, 'work');
     assert.equal(candidate.repairIndex, repair);
     const view = await acceptWork(h, candidate);
+    const progress = ok(await h.send(control(h, 'workflow-status', intent)));
+    assert.deepEqual(
+      progress.revisions.find((item) => item.nodeId === 'produce'),
+      { nodeId: 'produce', used: repair, limit: 2 },
+    );
     const composition = readExecutionRunComposition(currentExecutionRun(h.read()).composition);
     assert.equal(
       composition.payload.returnedRevision.roundId,
@@ -472,4 +481,59 @@ test('remote workflow review: the automatic candidate reads real AttachmentLocal
   assert.equal(h.read('consume').command.status, 'ready');
   assert.equal(h.calls.backendModel, 0);
   assert.equal(h.read().rounds[0].ballots[0].artifactVersionId, h.target.artifactVersionId);
+});
+
+test('remote workflow review: spare concurrent device slots cannot admit downstream while any predecessor review still holds original resources', async (t) => {
+  const h = await reviewHost(t),
+    intent = ok(
+      await h.send(
+        h.workEnvelope('workflow-start', {
+          target: target(h),
+          defaults: defaults(),
+          budget: { concurrent: 3, automaticRevisions: 2 },
+        }),
+      ),
+    );
+  const candidate = ok(await h.send(control(h, 'workflow-next', intent))).candidates.find(
+    (item) => item.kind === 'review',
+  );
+  await h.begin('qa', { workflow: candidate.workflow, model: defaults().model });
+  const fixed = h.fixed({ conclusion: 'approve' });
+  await h.seal(fixed);
+  ok(await h.submit(fixed));
+  assert.equal(h.read('consume').command.status, 'ready');
+  const before = snapshot(h),
+    next = ok(await h.send(control(h, 'workflow-next', intent)));
+  assert.equal(next.activeReviews[0].resources, 'held');
+  assert.equal(
+    next.candidates.some((item) => item.target.nodeId === 'parallel'),
+    true,
+  );
+  assert.equal(
+    next.candidates.some((item) => item.target.nodeId === 'consume'),
+    false,
+  );
+  const consume = h.read('consume');
+  const attempt = () =>
+    h.workEnvelope('accept', {
+      target: { ...target(h), nodeId: 'consume' },
+      expectedNodeVersion: consume.command.version,
+      expectedRunVersion: 0,
+      purpose: 'work',
+      mode: 'begin',
+      executor: { kind: 'builtin' },
+      workflow: ref(intent),
+      ...defaults(),
+      credentials: { drive: h.drive.public, cleanup: h.cleanupCredential.public },
+    });
+  no(await h.send(attempt()));
+  assert.equal(snapshot(h), before);
+  assert.equal(h.read('consume').nativeExecution, undefined);
+  ok(await h.cleanup());
+  const ready = ok(await h.send(control(h, 'workflow-next', intent))).candidates.find(
+    (item) => item.target.nodeId === 'consume',
+  );
+  assert.equal(ready.kind, 'work');
+  await acceptWork(h, ready);
+  assert.equal(h.read('consume').nativeExecution.runs.length, 1);
 });

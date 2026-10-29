@@ -1089,6 +1089,18 @@ const remoteWorkflowActiveViewSchema = z
       .max(REMOTE_WORKFLOW_LIMITS.nodes),
     candidates: z.array(remoteWorkflowCandidateSchema).max(REMOTE_WORKFLOW_LIMITS.concurrent),
     attention: z.array(z.strictObject({ nodeId: id, code: id })).max(REMOTE_WORKFLOW_LIMITS.nodes),
+    // Read-only original Run projection. Optional for earlier view producers;
+    // used counts initiated rework attempts, never votes or successful results.
+    revisions: z
+      .array(
+        z.strictObject({
+          nodeId: id,
+          used: natural.max(2),
+          limit: natural.max(2),
+        }),
+      )
+      .max(REMOTE_WORKFLOW_LIMITS.nodes)
+      .optional(),
   })
   .refine((value) => {
     const sameTarget = (target: RemoteWorkflowTarget) =>
@@ -1103,6 +1115,14 @@ const remoteWorkflowActiveViewSchema = z
       value.scope.intentId === value.intent.intentId &&
       value.scope.generation === value.intent.generation &&
       value.requiresResume === (value.state === 'requires-resume') &&
+      (value.revisions === undefined ||
+        (new Set(value.revisions.map((item) => item.nodeId)).size === value.revisions.length &&
+          value.revisions.every(
+            (item) =>
+              value.intent.nodeIds.includes(item.nodeId) &&
+              item.limit === value.intent.budget.automaticRevisions &&
+              item.used <= item.limit,
+          ))) &&
       (!value.candidates.length ||
         (!value.requiresResume && (value.state === 'running' || value.state === 'waiting'))) &&
       value.candidates.every(
