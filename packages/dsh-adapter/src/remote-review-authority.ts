@@ -16,6 +16,8 @@ import {
   type RemoteReviewAcceptValue,
   type RemoteRunResponse,
   type RemoteRunErrorCode,
+  type RemoteWorkflowBinding,
+  type RemoteWorkflowRef,
 } from '@zhuma/agent-core';
 import { memberSessionId, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
@@ -71,7 +73,7 @@ type Attempt = Exclude<ExecutionReviewAttempt, { status: 'prepared' }>;
 type Loaded = { node: ExecutionReviewNode; attempt: Attempt; remote: RemoteReviewBinding };
 type Query = Pick<
   RemoteReviewAcceptRequest['payload'],
-  'target' | 'expectedReviewVersion' | 'reviewerRef'
+  'target' | 'expectedReviewVersion' | 'reviewerRef' | 'workflow'
 > & { requestId: string };
 type Prepared = {
   node: ExecutionNodeRecord;
@@ -93,6 +95,26 @@ function fail(code: RemoteRunErrorCode): never {
 }
 /** Original registry/device/permit/lease owner, shared with the author Run lane. */
 export interface RemoteReviewCredentials {
+  readonly workflow?: {
+    readonly owner: object;
+    accept(
+      body: RemoteReviewAcceptRequest,
+      lease: ExecutionMemberLease,
+      sessionHash: string,
+    ): RemoteWorkflowBinding;
+    preparing(
+      body: RemoteReviewAcceptRequest,
+      lease: ExecutionMemberLease,
+      sessionHash: string,
+    ): { readonly signal: AbortSignal; finish(cleanupConfirmed?: boolean): void };
+    check(
+      lease: ExecutionMemberLease,
+      scope: RemoteReviewScope,
+      ref: RemoteWorkflowRef,
+      deviceId: string,
+      keyEpoch: number,
+    ): void;
+  };
   readonly epoch: string;
   now(): number;
   registry(): RemoteBackendRegistry;
@@ -278,6 +300,16 @@ export class RemoteReviewAuthorities {
     commit = false,
   ): void {
     this.authorize(value, lease, !commit);
+    if (value.remote.workflow) {
+      if (!this.credentials.workflow) fail('remote-protocol-unsupported');
+      this.credentials.workflow.check(
+        lease,
+        this.scope(value),
+        value.remote.workflow,
+        value.remote.deviceId,
+        value.remote.keyEpoch,
+      );
+    }
     if (
       this.closed ||
       this.source.signal.aborted ||
@@ -541,7 +573,6 @@ export class RemoteReviewAuthorities {
       assertCurrent(): undefined;
     },
   ): Promise<RemoteReviewAcceptValue> {
-    if (body.payload.workflow) fail('remote-protocol-unsupported');
     const node = this.source.readNode(body.payload.target);
     if (!node) fail('remote-not-found');
     const state = readExecutionReviewState(node),
@@ -565,6 +596,10 @@ export class RemoteReviewAuthorities {
       };
     }
     if (!this.ready() || !verified) fail('remote-protocol-unsupported');
+    const workflow = body.payload.workflow
+      ? (this.credentials.workflow?.accept(body, lease, sessionHash) ??
+        fail('remote-protocol-unsupported'))
+      : undefined;
     if (this.credentials.heldCount() >= REMOTE_RUN_LIMITS.activeAuthorities) fail('remote-quota');
     if (
       body.payload.credentials.drive.id === body.payload.credentials.cleanup.id ||
@@ -576,6 +611,7 @@ export class RemoteReviewAuthorities {
       target: body.payload.target,
       expectedReviewVersion: body.payload.expectedReviewVersion,
       reviewerRef: body.payload.reviewerRef,
+      ...(body.payload.workflow ? { workflow: body.payload.workflow } : {}),
     };
     const prepared = this.source.prepare(lease, query);
     if (prepared.prepared.disposition !== 'applied') fail('remote-conflict'); // never adopt an old local reservation
@@ -600,6 +636,7 @@ export class RemoteReviewAuthorities {
     const device = this.credentials.registry().devices.find((d) => d.deviceId === body.deviceId)!;
     const remote: RemoteReviewBinding = {
       protocolVersion: 1,
+      ...(workflow ? { workflow } : {}),
       backendId: body.backendId,
       deviceId: body.deviceId,
       publicKey: device.publicKey,
@@ -648,6 +685,7 @@ export class RemoteReviewAuthorities {
     const fresh = this.source.prepare(lease, query, composition.configurationId);
     if (!same(fresh.node, final.node)) fail('remote-conflict');
     verified.assertCurrent();
+    if (body.payload.workflow) this.credentials.workflow!.accept(body, lease, sessionHash);
     await this.source.writeNode(next);
     verified.assertCurrent();
     const loaded = this.load({ ...admitted.attempt.scope, backendId: body.backendId });
@@ -736,6 +774,75 @@ export class RemoteReviewAuthorities {
     this.credentials.release(next.attempt.scope.runId);
     return { ...this.view(next, undefined, true), disposition: 'applied' };
   }
+  private async stopValue(
+    value: Loaded,
+    lease: ExecutionMemberLease,
+    scope: RemoteReviewScope,
+    requestId: string,
+    expectedVersion: number,
+    sessionHash?: string,
+  ): Promise<RemoteReviewView & { disposition: 'applied' | 'replayed' }> {
+    const fingerprint = hash({ scope: scope, actorId: lease.memberId }),
+      prior = value.remote.controls.find((c) => c.requestId === requestId);
+    if (prior) {
+      if (prior.operation !== 'stop' || prior.fingerprint !== fingerprint)
+        fail('remote-idempotency-mismatch');
+      return { ...this.view(value, sessionHash), disposition: 'replayed' };
+    }
+    if (
+      expectedVersion !== value.attempt.version ||
+      value.remote.stopRequested ||
+      value.remote.controls.length >= 4096 ||
+      readExecutionReviewFixedReceipt(value.node, value.attempt)
+    )
+      fail('remote-conflict');
+    const node = terminal(value.attempt) ? value.node : this.domain(value, 'stop-requested');
+    const next = await this.save(
+      value,
+      {
+        ...value.remote,
+        stopRequested: true,
+        controls: [
+          ...value.remote.controls,
+          { operation: 'stop', requestId: requestId, fingerprint },
+        ],
+      },
+      node,
+    );
+    this.credentials.release(next.attempt.scope.runId);
+    this.cancelRun(next.attempt.scope.runId);
+    return { ...this.view(next, sessionHash), disposition: 'applied' };
+  }
+  workflowView(
+    owner: object,
+    lease: ExecutionMemberLease,
+    scope: RemoteReviewScope,
+    sessionHash: string,
+  ): RemoteReviewView {
+    if (owner !== this.credentials.workflow?.owner) fail('remote-forbidden');
+    const value = this.load(scope);
+    this.authorize(value, lease);
+    return this.view(value, sessionHash);
+  }
+  async workflowStop(
+    owner: object,
+    lease: ExecutionMemberLease,
+    scope: RemoteReviewScope,
+    intentId: string,
+    requestId: string,
+  ): Promise<void> {
+    if (owner !== this.credentials.workflow?.owner) fail('remote-forbidden');
+    const value = this.load(scope);
+    this.authorize(value, lease);
+    if (value.remote.workflow?.intentId !== intentId) fail('remote-scope-mismatch');
+    if (value.remote.stopRequested || value.attempt.resources === 'settled') return;
+    if (readExecutionReviewFixedReceipt(value.node, value.attempt)) {
+      this.credentials.release(value.attempt.scope.runId);
+      this.cancelRun(value.attempt.scope.runId);
+      return;
+    }
+    await this.stopValue(value, lease, scope, requestId, value.attempt.version);
+  }
   private async handleNow(
     request: MemberRequest,
     raw: unknown,
@@ -745,6 +852,9 @@ export class RemoteReviewAuthorities {
     if (!parsed.success || Buffer.byteLength(JSON.stringify(raw)) > REMOTE_RUN_LIMITS.requestBytes)
       return { ok: false, error: { code: 'remote-validation' } };
     const body = parsed.data;
+    let preparation:
+      { readonly signal: AbortSignal; finish(cleanupConfirmed?: boolean): void } | undefined;
+    let cleanupConfirmed = true;
     let lease: ExecutionMemberLease | undefined,
       retained = false,
       proofAdmitted = false;
@@ -799,40 +909,15 @@ export class RemoteReviewAuthorities {
             } else if ('scope' in body.payload) value = this.load(body.payload.scope);
             else fail('remote-validation');
             this.authorize(value, lease!);
-            if (body.operation === 'stop') {
-              const fingerprint = hash({ scope: body.payload.scope, actorId: lease!.memberId }),
-                prior = value.remote.controls.find((c) => c.requestId === body.requestId);
-              if (prior) {
-                if (prior.operation !== 'stop' || prior.fingerprint !== fingerprint)
-                  fail('remote-idempotency-mismatch');
-                return { ...this.view(value, sessionHash), disposition: 'replayed' };
-              }
-              if (
-                body.payload.expectedAttemptVersion !== value.attempt.version ||
-                value.remote.stopRequested ||
-                value.remote.controls.length >= 4096 ||
-                readExecutionReviewFixedReceipt(value.node, value.attempt)
-              )
-                fail('remote-conflict');
-              const node = terminal(value.attempt)
-                ? value.node
-                : this.domain(value, 'stop-requested');
-              const next = await this.save(
+            if (body.operation === 'stop')
+              return this.stopValue(
                 value,
-                {
-                  ...value.remote,
-                  stopRequested: true,
-                  controls: [
-                    ...value.remote.controls,
-                    { operation: 'stop', requestId: body.requestId, fingerprint },
-                  ],
-                },
-                node,
+                lease!,
+                body.payload.scope,
+                body.requestId,
+                body.payload.expectedAttemptVersion,
+                sessionHash,
               );
-              this.credentials.release(next.attempt.scope.runId);
-              this.cancelRun(next.attempt.scope.runId);
-              return { ...this.view(next, sessionHash), disposition: 'applied' };
-            }
             this.binding(body, value);
             this.credentials.checkPermit(body.payload.permit, secret, value.remote.drive);
             if (body.operation === 'reconcile') {
@@ -1057,11 +1142,16 @@ export class RemoteReviewAuthorities {
               )
             )
               return true;
+            if (body.payload.workflow) {
+              if (!this.credentials.workflow) fail('remote-protocol-unsupported');
+              preparation = this.credentials.workflow.preparing(body, lease!, sessionHash);
+            }
             const prepared = this.source.prepare(lease!, {
               requestId: body.requestId,
               target: body.payload.target,
               expectedReviewVersion: body.payload.expectedReviewVersion,
               reviewerRef: body.payload.reviewerRef,
+              ...(body.payload.workflow ? { workflow: body.payload.workflow } : {}),
             });
             if (prepared.prepared.disposition !== 'applied') fail('remote-conflict');
             const reviewer = prepared.applied.participants.find(
@@ -1084,20 +1174,27 @@ export class RemoteReviewAuthorities {
             result = await withExecutionReviewResourceQualification(
               {
                 host: this.source.resourceHost,
-                ownerSignal: AbortSignal.any([this.source.signal, lease!.signal]),
+                ownerSignal: AbortSignal.any([
+                  this.source.signal,
+                  lease!.signal,
+                  ...(preparation ? [preparation.signal] : []),
+                ]),
                 originalRequest: request,
                 query: {
                   requestId: body.requestId,
                   expectedReviewVersion: body.payload.expectedReviewVersion,
                   target: body.payload.target,
                   reviewerRef: body.payload.reviewerRef,
+                  ...(body.payload.workflow ? { workflow: body.payload.workflow } : {}),
                 },
               },
               execute,
             );
           } catch (error) {
-            if (error instanceof ExecutionRunResourceQualificationCloseError)
+            if (error instanceof ExecutionRunResourceQualificationCloseError) {
+              cleanupConfirmed = false;
               this.qualificationFailure ??= error;
+            }
             throw error;
           }
         }
@@ -1106,6 +1203,14 @@ export class RemoteReviewAuthorities {
           result = await this.source.enqueue(async () => {
             const current = this.load(accepted.scope);
             this.authorize(current, lease!, true);
+            if (current.remote.workflow)
+              this.credentials.workflow!.check(
+                lease!,
+                accepted.scope,
+                current.remote.workflow,
+                current.remote.deviceId,
+                current.remote.keyEpoch,
+              );
             if (!this.ready() || current.remote.stopRequested) fail('remote-unavailable');
             this.credentials.retain(
               current.attempt.scope.runId,
@@ -1123,6 +1228,7 @@ export class RemoteReviewAuthorities {
     } catch (error) {
       return { ok: false, error: { code: mapped(error).code } };
     } finally {
+      preparation?.finish(cleanupConfirmed);
       releaseDevice?.();
       if (lease && !retained) {
         try {

@@ -16,6 +16,8 @@ import {
   type RemoteWorkflowView,
   type RemoteWorkflowCandidate,
   type RemoteAcceptRequest,
+  type RemoteReviewAcceptRequest,
+  type RemoteReviewView,
 } from '@zhuma/agent-core';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
 import { readExecutionReviewState } from './execution-review-state.js';
@@ -915,9 +917,21 @@ export interface RemoteWorkflowFacts {
   readonly nodes: readonly ExecutionNodeRecord[];
   readonly allNodes: readonly ExecutionNodeRecord[];
   readonly controlledNodeIds: readonly string[];
+  readonly reviewNodeIds?: readonly string[];
   readonly availableExpertIds: readonly string[];
 }
 export interface RemoteWorkflowIntentSource {
+  reviewCandidates?(
+    lease: ExecutionMemberLease,
+    target: RemoteWorkflowTarget,
+    intent: RemoteWorkflowIntent,
+  ): readonly Extract<RemoteWorkflowCandidate, { kind: 'review' }>[];
+  reviewViews?(
+    lease: ExecutionMemberLease,
+    target: RemoteWorkflowTarget,
+    intent: RemoteWorkflowIntent,
+    sessionHash: string,
+  ): readonly RemoteReviewView[];
   facts(lease: ExecutionMemberLease, target: RemoteWorkflowTarget): RemoteWorkflowFacts;
   beforeWrite(): Promise<void>;
   write(target: RemoteWorkflowTarget, receipt: PlanReceipt): Promise<void>;
@@ -1050,6 +1064,8 @@ export class RemoteWorkflowIntents {
   private candidates(
     facts: RemoteWorkflowFacts,
     intent: RemoteWorkflowIntent,
+    lease: ExecutionMemberLease,
+    target: RemoteWorkflowTarget,
   ): RemoteWorkflowCandidate[] {
     const deviceBudget = Math.min(
       intent.budget.concurrent,
@@ -1059,6 +1075,12 @@ export class RemoteWorkflowIntents {
     );
     let slots = deviceBudget - this.occupied(facts, intent.deviceId);
     const result: RemoteWorkflowCandidate[] = [];
+    for (const candidate of this.source.reviewCandidates?.(lease, target, intent) ?? []) {
+      if (slots <= 0) break;
+      if (!intent.nodeIds.includes(candidate.target.nodeId)) continue;
+      result.push(candidate);
+      slots--;
+    }
     for (const node of facts.nodes) {
       if (slots <= 0) break;
       if (
@@ -1145,8 +1167,12 @@ export class RemoteWorkflowIntents {
     const facts = this.facts(lease, target),
       owned = this.ownedRuns(facts, intent);
     const activeWork = owned.map(({ node, run }) => this.source.runView(node, run));
+    const activeReviews = [
+      ...(this.source.reviewViews?.(lease, target, intent, sessionHash) ?? []),
+    ];
     const held =
       owned.some(({ run }) => run.resources !== 'settled') ||
+      activeReviews.some((review) => review.resources !== 'settled') ||
       !!this.preparations.get(intent.intentId)?.size;
     const complete =
       intent.nodeIds.length > 0 &&
@@ -1161,7 +1187,7 @@ export class RemoteWorkflowIntents {
       !held;
     const arm = this.live(intent, sessionHash);
     const requiresResume = intent.status === 'running' && !arm && !complete;
-    const candidates = arm && next ? this.candidates(facts, intent) : [];
+    const candidates = arm && next ? this.candidates(facts, intent, lease, target) : [];
     const state = complete
       ? 'completed'
       : intent.status === 'stopping'
@@ -1184,7 +1210,17 @@ export class RemoteWorkflowIntents {
       )
       .map((node) => ({
         nodeId: node.nodeId,
-        code: node.command.upstreamAffected ? 'upstream-affected' : node.command.status,
+        code: node.command.upstreamAffected
+          ? 'upstream-affected'
+          : node.command.status === 'needs-revision' &&
+              Math.max(
+                0,
+                ...(readExecutionRunState(node)?.runs ?? [])
+                  .filter((run) => run.remote?.workflow?.intentId === intent.intentId)
+                  .map((run) => run.remote!.workflow!.repairIndex),
+              ) >= intent.budget.automaticRevisions
+            ? 'rework-budget-exhausted'
+            : node.command.status,
       }));
     lease.assertCurrent(target.spaceId);
     return remoteWorkflowViewSchema.parse({
@@ -1202,7 +1238,7 @@ export class RemoteWorkflowIntents {
       serverTime: this.source.now(),
       ...(arm ? { expiresAt: arm.expiresAt } : {}),
       activeWork,
-      activeReviews: [],
+      activeReviews,
       candidates,
       attention,
     });
@@ -1293,7 +1329,8 @@ export class RemoteWorkflowIntents {
           return this.source.deny('remote-conflict');
         return this.view(lease, target, current, sessionHash, 'replayed');
       }
-      if (!facts.controlledNodeIds.length) return this.source.deny('remote-forbidden');
+      const nodeIds = [...new Set([...facts.controlledNodeIds, ...(facts.reviewNodeIds ?? [])])];
+      if (!nodeIds.length) return this.source.deny('remote-forbidden');
       if (this.arms.size >= REMOTE_WORKFLOW_LIMITS.intentsPerPlan)
         return this.source.deny('remote-quota');
       const intent: RemoteWorkflowIntent = {
@@ -1308,7 +1345,7 @@ export class RemoteWorkflowIntents {
         status: 'running',
         defaults: body.payload.defaults,
         budget: body.payload.budget,
-        nodeIds: [...facts.controlledNodeIds],
+        nodeIds,
         commandReceipts: [{ requestId: body.requestId, kind: 'start', fingerprint, generation: 1 }],
       };
       await this.write(lease, target, intent);
@@ -1375,7 +1412,10 @@ export class RemoteWorkflowIntents {
     if (body.payload.expectedVersion !== intent.version) return this.source.deny('remote-conflict');
     if (
       this.preparations.get(intent.intentId)?.size ||
-      this.ownedRuns(facts, intent).some(({ run }) => run.resources !== 'settled')
+      this.ownedRuns(facts, intent).some(({ run }) => run.resources !== 'settled') ||
+      this.source
+        .reviewViews?.(lease, target, intent, sessionHash)
+        .some((review) => review.resources !== 'settled')
     )
       return this.source.deny('remote-resource-held');
     const next: RemoteWorkflowIntent = {
@@ -1408,6 +1448,12 @@ export class RemoteWorkflowIntents {
     keyEpoch: number,
   ): { readonly signal: AbortSignal; finish(cleanupConfirmed?: boolean): void } {
     const binding = this.assertAccept(body, lease, sessionHash, keyEpoch);
+    return this.beginPreparation(binding);
+  }
+  private beginPreparation(binding: RemoteWorkflowBinding): {
+    readonly signal: AbortSignal;
+    finish(cleanupConfirmed?: boolean): void;
+  } {
     const controller = new AbortController();
     const pending = this.preparations.get(binding.intentId) ?? new Set<AbortController>();
     pending.add(controller);
@@ -1423,6 +1469,47 @@ export class RemoteWorkflowIntents {
         if (!pending.size) this.preparations.delete(binding.intentId);
       },
     };
+  }
+  preparingReview(
+    body: RemoteReviewAcceptRequest,
+    lease: ExecutionMemberLease,
+    sessionHash: string,
+    keyEpoch: number,
+  ): { readonly signal: AbortSignal; finish(cleanupConfirmed?: boolean): void } {
+    return this.beginPreparation(this.assertReviewAccept(body, lease, sessionHash, keyEpoch));
+  }
+  assertReviewAccept(
+    body: RemoteReviewAcceptRequest,
+    lease: ExecutionMemberLease,
+    sessionHash: string,
+    keyEpoch: number,
+  ): RemoteWorkflowBinding {
+    const ref = body.payload.workflow;
+    if (!ref) return this.source.deny('remote-validation');
+    const target = locationOf(body.payload.target),
+      facts = this.facts(lease, target);
+    const intent = this.exact(this.find(facts, lease.memberId), body.deviceId, keyEpoch, ref);
+    if (!this.live(intent, sessionHash)) return this.source.deny('remote-recovery-required');
+    if (
+      canonicalPayload(body.payload.model) !== canonicalPayload(intent.defaults.model) ||
+      (body.payload.capabilities.resources !== undefined &&
+        body.payload.capabilities.resources !== intent.defaults.capabilities.resources)
+    )
+      return this.source.deny('remote-forbidden');
+    const candidate = this.candidates(facts, intent, lease, target).find(
+      (item) =>
+        item.kind === 'review' &&
+        canonicalPayload(item.target) === canonicalPayload(body.payload.target) &&
+        item.reviewerRef.id === body.payload.reviewerRef.id,
+    );
+    if (
+      !candidate ||
+      candidate.kind !== 'review' ||
+      candidate.expectedReviewVersion !== body.payload.expectedReviewVersion ||
+      candidate.reviewerRef.version !== body.payload.reviewerRef.version
+    )
+      return this.source.deny('remote-conflict');
+    return { ...ref, repairIndex: 0 };
   }
   assertAccept(
     body: RemoteAcceptRequest,
@@ -1467,7 +1554,7 @@ export class RemoteWorkflowIntents {
         canonicalPayload({ ...permitted, localTools: [] })
     )
       return this.source.deny('remote-forbidden');
-    const candidate = this.candidates(facts, intent).find(
+    const candidate = this.candidates(facts, intent, lease, target).find(
       (item) => item.kind === 'work' && item.target.nodeId === body.payload.target.nodeId,
     );
     if (

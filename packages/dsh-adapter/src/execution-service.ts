@@ -21,11 +21,14 @@ import { describeMemberKnowledgeTool } from './member-knowledge-tool.js';
 import { z } from 'zod';
 import {
   canonicalPayload,
+  remoteWorkflowRefSchema,
+  remoteWorkflowIntentSchema,
   localReviewOptionsQuerySchema,
   localReviewOptionsSchema,
   localReviewUnavailableReasonSchema,
   type LocalReviewOptions,
   type RemoteWorkflowIntent,
+  type RemoteWorkflowCandidate,
   reviewOutcomeQuerySchema,
   reviewOutcomeSchema,
   type ReviewOutcomeView,
@@ -300,6 +303,7 @@ import {
   hasCommittedWorkflowStop,
   stoppedWorkflowReviewGeneration,
   stoppedWorkflowReviewRunIds,
+  stoppedRemoteWorkflowReviewRunIds,
   stoppedPreparedWorkflowReviewRunIdsForRevision,
 } from './execution-workflow-reviews.js';
 import { isStoppedReviewHistory, splitExecutionReviewRecord } from './execution-review-record.js';
@@ -430,7 +434,11 @@ const expertReviewPrepareSchema = z.strictObject({
   }),
   configurationId: z.string().trim().min(1).max(200),
 });
-const expertReviewPreparationSchema = expertReviewPrepareSchema.omit({ configurationId: true });
+const expertReviewPreparationSchema = expertReviewPrepareSchema
+  .omit({ configurationId: true })
+  .extend({
+    workflow: remoteWorkflowRefSchema.optional(),
+  });
 const expertReviewAdmitSchema = z.strictObject({
   spaceId: id,
   taskId: id,
@@ -1678,6 +1686,19 @@ export class ExecutionService {
                     task.ownerId === lease.memberId,
               )
               .map((node) => node.nodeId);
+            const reviewNodeIds = nodes
+              .filter(
+                (node) =>
+                  node.ownerId === lease.memberId &&
+                  task.ownerId === lease.memberId &&
+                  node.handoff.reviewRequired &&
+                  node.handoff.reviewerIds.some((id) =>
+                    applied.participants.some(
+                      (participant) => participant.id === id && participant.kind === 'expert',
+                    ),
+                  ),
+              )
+              .map((node) => node.nodeId);
             const availableExpertIds = applied.participants
               .filter(
                 (item) =>
@@ -1702,8 +1723,69 @@ export class ExecutionService {
               nodes,
               allNodes,
               controlledNodeIds,
+              reviewNodeIds,
               availableExpertIds,
             };
+          },
+          reviewCandidates: (lease, target, intent) => {
+            const result: Extract<RemoteWorkflowCandidate, { kind: 'review' }>[] = [];
+            if (!this.remoteIndependentReviewsEnabled) return result;
+            const workbench = this.workbench.readWorkbench();
+            const applied = createExecutionHandoff(target, workbench);
+            const task = workbench.tasks.find((item) => item.id === target.taskId);
+            if (task?.ownerId !== lease.memberId) return result;
+            for (const handoff of createNodeHandoffs(applied)) {
+              const node = this.readRunNode({ ...target, nodeId: handoff.nodeId });
+              if (
+                !node ||
+                !intent.nodeIds.includes(node.nodeId) ||
+                node.command.status !== 'in-review' ||
+                node.command.upstreamAffected
+              )
+                continue;
+              if (
+                readExecutionRunState(node)?.runs.some((run) => run.resources !== 'settled') ||
+                readExecutionReviewState(node)?.attempts.some(
+                  (attempt) => attempt.resources !== 'settled',
+                )
+              )
+                continue;
+              const exact = executionReviewTarget(node, target.spaceId);
+              const expectedReviewVersion = readExecutionReviewState(node)?.version ?? 0;
+              for (const reviewerId of node.handoff.reviewerIds) {
+                if (
+                  !applied.participants.some(
+                    (participant) => participant.id === reviewerId && participant.kind === 'expert',
+                  )
+                )
+                  continue;
+                try {
+                  const prepared = this.currentExpertReviewPreparation(host, lease, {
+                    requestId: randomUUID(),
+                    expectedReviewVersion,
+                    target: exact,
+                    reviewerRef: { id: reviewerId, version: node.planId },
+                    workflow: { intentId: intent.intentId, generation: intent.generation },
+                  });
+                  result.push({
+                    kind: 'review',
+                    target: exact,
+                    expectedReviewVersion,
+                    reviewerRef: prepared.prepared.attempt.scope.review.principal.reviewerRef,
+                    workflow: { intentId: intent.intentId, generation: intent.generation },
+                  });
+                  break;
+                } catch (error) {
+                  if (
+                    !(error instanceof ExecutionReviewError) ||
+                    !localReviewUnavailableReasonSchema.safeParse(error.code).success
+                  )
+                    throw error;
+                }
+              }
+            }
+            lease.assertCurrent(target.spaceId);
+            return result;
           },
           write: (target, receipt) =>
             this.storage.writePlan(planKey(target.taskId, target.planId, target.revision), receipt),
@@ -4800,14 +4882,30 @@ export class ExecutionService {
     const workflow = workflowExecutionIntentSchema.safeParse(plan?.workflowExecution);
     // Only this Service's original writer/queue derives the exception. It is
     // never a caller field; actual automatic preparation still needs its claim.
-    const stopped =
+    const stopped = new Set(
       workflow.success &&
-      workflow.data.status === 'running' &&
-      input.requestId === workflowReviewRequestId(workflow.data, input.target, input.reviewerRef.id)
+        workflow.data.status === 'running' &&
+        input.requestId ===
+          workflowReviewRequestId(workflow.data, input.target, input.reviewerRef.id)
         ? stoppedWorkflowReviewRunIds(node, workflow.data, (review) =>
             this.assertExpertReviewDrained(review.scope),
           )
-        : new Set<string>();
+        : [],
+    );
+    if (input.workflow) {
+      const remote = remoteWorkflowIntentSchema.safeParse(
+        plan?.remoteWorkflows?.find(
+          (item) => item.intentId === input.workflow!.intentId && item.actorId === lease.memberId,
+        ),
+      );
+      if (
+        !remote.success ||
+        remote.data.generation !== input.workflow.generation ||
+        remote.data.spaceId !== input.target.spaceId
+      )
+        throw new ExecutionWorkflowError('workflow-recovery-required');
+      for (const runId of stoppedRemoteWorkflowReviewRunIds(node, remote.data)) stopped.add(runId);
+    }
     if (stopped.size) requireExecutionReviewWriter(this.readRunGlobal());
     // Replayed preparation must not preserve an admission permission after its
     // predecessor's genuine C proof expired between prepare and admit.
