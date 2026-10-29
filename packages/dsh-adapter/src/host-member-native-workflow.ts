@@ -67,6 +67,9 @@ export function createHostMemberNativeWorkflow(
   },
 ) {
   const consumers = new Map<string, NativeMemberWorkflowConsumer>();
+  // Only a failed explicit cold Stop can leave an unarmed consumer needing
+  // another recovery attempt. This is not a durable Run or workflow fact.
+  const coldStopRecovery = new WeakSet<NativeMemberWorkflowConsumer>();
   const automaticReview = !!(options.review && options.hooks.prepareReview);
   const key = (target: unknown) => canonicalPayload(target);
   async function call(
@@ -302,6 +305,9 @@ export function createHostMemberNativeWorkflow(
           workspace: choice.workspace,
           capabilities: {
             ...(resources ? { resources } : {}),
+            ...(options.native.knowledgeSource
+              ? { knowledge: options.native.knowledgeSource }
+              : {}),
             acceptedInput: '1',
             ...(options.protocol.supportsFilePublishing && options.native.acceptedFileSource
               ? { acceptedFile: options.native.acceptedFileSource }
@@ -369,9 +375,16 @@ export function createHostMemberNativeWorkflow(
         let active = consumers.get(key(target));
         if (!active) {
           active = consumer(target);
+          coldStopRecovery.add(active);
+        }
+        if (coldStopRecovery.has(active)) {
           // Only explicit Stop reconciles the original cold unknown accept.
           // Ordinary reads never recover, arm, retry accept or start an Agent.
-          await active.recover(target, signal);
+          const state = active.view();
+          if (!state.armed && !state.busy) await active.recover(target, signal);
+          // An original pending handle is cleaned by stop/close. Do not call
+          // recover again after that consumer has entered closing.
+          coldStopRecovery.delete(active);
         }
         const intent = active.view().remote?.intent;
         if (intent?.intentId !== input.intentId || intent.generation !== input.generation)

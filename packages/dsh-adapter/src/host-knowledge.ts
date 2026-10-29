@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Workbench } from '@zhuma/agent-core';
+import type { ExecutionRunHostPorts } from './execution-service.js';
 import {
   KnowledgeError,
   openKnowledgeService,
@@ -69,5 +70,19 @@ export function openHostKnowledge(
         throw new Error('Knowledge close failed.');
     })());
   ctx.effect(() => close);
-  return { close };
+  const projectSnapshot: NonNullable<ExecutionRunHostPorts['prepareProjectKnowledge']> = async (
+    request,
+    query,
+    signal,
+  ) => {
+    const service = owner;
+    if (closed || !service || signal.aborted) throw new KnowledgeError('unavailable');
+    // Use the same mounted service and original request. A failed or replaced
+    // source cannot become an empty project snapshot for a new Run.
+    const result = await service.projectSnapshot(request, query, signal);
+    if (closed || owner !== service || signal.aborted) throw new KnowledgeError('unavailable');
+    if (!result.ok) throw new KnowledgeError(result.error.code);
+    return result.value;
+  };
+  return { close, projectSnapshot };
 }

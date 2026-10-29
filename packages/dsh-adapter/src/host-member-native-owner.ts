@@ -457,6 +457,11 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         if (!workflow.intent) throw new ExecutionRunError('run-authority-unavailable');
         const workspace = workspaces.workflowSelection(workflow.intent.defaults.workspace);
         const value = await facts(candidate.target, signal);
+        const knowledgeChoice =
+          native.knowledgeSource &&
+          workflow.intent.defaults.capabilities.knowledge === native.knowledgeSource
+            ? await knowledge.workflowChoice(candidate.target.spaceId, signal)
+            : undefined;
         return prepareRun(
           {
             ...candidate.target,
@@ -469,6 +474,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
             workspace: memberNativeWorkspaceSchema.parse(workspace),
             tools: workspace.kind === 'local' ? 'local-tools' : value.tools,
             workflow: candidate.workflow,
+            ...(knowledgeChoice ? { knowledge: knowledgeChoice } : {}),
           },
           signal,
         );

@@ -19,6 +19,8 @@ function setup(
     review = false,
     owner = 'outside',
     assignee = 'ann',
+    knowledge = false,
+    failPendingOnce = false,
   } = {},
 ) {
   const writes = [],
@@ -56,6 +58,10 @@ function setup(
     },
     async pendingWorkflowAccept(input) {
       calls.push(['pending', structuredClone(input)]);
+      if (failPendingOnce) {
+        failPendingOnce = false;
+        throw Error('Original recovery read temporarily unavailable');
+      }
       return undefined;
     },
     async workflowStart(requestId, input) {
@@ -99,7 +105,10 @@ function setup(
     protocol,
     connectionId: 'connection',
     actorId: 'ann',
-    native: { canSwitchBackend: () => true },
+    native: {
+      canSwitchBackend: () => true,
+      ...(knowledge ? { knowledgeSource: 'zhuma-native-knowledge@1' } : {}),
+    },
     ...(review ? { review: { canSwitchBackend: () => true } } : {}),
     workspaces: {
       workflowWorkspace: () => ({ workspace: { kind: 'text-only' }, localTools: [] }),
@@ -173,6 +182,19 @@ test('member workflow Host composition: passive discovery creates no plan or con
   assert.equal(h.writes.length, 0);
   assert.equal(h.calls.length, 0);
   assert.equal(h.helper.canSwitchBackend(), true);
+});
+
+test('member workflow Host composition: the original reader descriptor is only a ceiling and carries no draft or read assertions', async (t) => {
+  const h = setup(t, { knowledge: true });
+  await h.helper.handle(
+    'workflow-start',
+    { ...target, requestId: randomUUID(), model, workspace: { kind: 'text-only' }, concurrent: 1 },
+    wait(),
+  );
+  const defaults = h.calls.find((call) => call[0] === 'start')[2].defaults;
+  assert.equal(defaults.capabilities.knowledge, 'zhuma-native-knowledge@1');
+  for (const key of ['allowDrafts', 'libraryId', 'projectKnowledge', 'reads'])
+    assert.equal(Object.hasOwn(defaults, key), false);
 });
 
 test('member workflow Host composition: explicit rework budget survives Stop/Resume and actual review holds remain visible', async (t) => {
@@ -282,6 +304,38 @@ test('member workflow Host composition: cold reads never reconcile, and explicit
   assert.equal(h.calls.filter((row) => row[0] === 'pending').length, 2);
   assert.equal(h.calls.filter((row) => row[0] === 'stop').length, 1);
   assert.equal(h.calls.filter((row) => row[0] === 'start' || row[0] === 'resume').length, 0);
+});
+
+test('member workflow Host composition: a failed cold recovery stays retryable only through explicit Stop without arming or replacing its consumer', async (t) => {
+  const original = setup(t);
+  await original.helper.handle(
+    'workflow-start',
+    { ...target, requestId: randomUUID(), model, workspace: { kind: 'text-only' }, concurrent: 1 },
+    wait(),
+  );
+  const cold = structuredClone(original.remote());
+  cold.state = 'requires-resume';
+  cold.requiresResume = true;
+  const h = setup(t, { started: true, remote: cold, failPendingOnce: true }),
+    command = {
+      ...target,
+      requestId: randomUUID(),
+      intentId: cold.intent.intentId,
+      generation: cold.intent.generation,
+    };
+  await assert.rejects(h.helper.handle('workflow-stop', command, wait()));
+  assert.equal(h.calls.filter((row) => row[0] === 'stop').length, 0);
+  const pendingBefore = h.calls.filter((row) => row[0] === 'pending').length;
+  assert.equal((await h.helper.handle('workflow-stop', command, wait())).state, 'paused');
+  assert(h.calls.filter((row) => row[0] === 'pending').length > pendingBefore + 1);
+  assert.equal(h.calls.filter((row) => row[0] === 'stop').length, 1);
+  assert.equal(h.calls.filter((row) => row[0] === 'start' || row[0] === 'resume').length, 0);
+  assert.equal((await h.helper.handle('workflow-stop', command, wait())).state, 'paused');
+  assert.equal(
+    h.calls.filter((row) => row[0] === 'stop').length,
+    2,
+    'closing Stop replay still uses its original cleanup',
+  );
 });
 
 test('member workflow Host composition: explicit start reuses original plan start, Stop validates generation and explicit resume creates a new consumer', async (t) => {
