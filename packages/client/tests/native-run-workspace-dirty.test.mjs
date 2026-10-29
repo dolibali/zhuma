@@ -17,6 +17,7 @@ if (!domModule) {
   const window = new Window({ url: 'http://localhost/' });
   for (const name of [
     'window',
+    'localStorage',
     'document',
     'navigator',
     'HTMLElement',
@@ -50,6 +51,9 @@ if (!domModule) {
   const { ExecutionWorkspace } = await import('../dist/execution/ExecutionWorkspace.js');
   const { UnsavedChangesBoundary } = await import('../dist/workbench/UnsavedChanges.js');
   const { TaskEditor } = await import('../dist/workbench/TaskEditor.js');
+  const { WorkbenchPage } = await import('../dist/workbench/WorkbenchPage.js');
+  const { createTaskFilterStore } = await import('../dist/workbench/task-filters.js');
+  const { row } = await import('./task-progress-fixture.mjs');
   const { applyWorkbenchCommand } = await import('@zhuma/agent-core');
   const { fixture } = await import('../../../tests/fixtures/workbench.mjs');
   const target = {
@@ -184,6 +188,176 @@ if (!domModule) {
       },
     };
   }
+  test('DOM task filters: persisted stage still loads every candidate plan and list/board share results without leaking scope', async () => {
+    const data = fixture();
+    let state = applyWorkbenchCommand(data.state, {
+      type: 'save-task',
+      task: { ...data.task, status: 'ready' },
+    });
+    state = applyWorkbenchCommand(state, {
+      type: 'save-task',
+      task: { ...data.task, id: 'second', title: '另一个任务', status: 'ready' },
+    });
+    const store = createTaskFilterStore();
+    store.save(
+      { accountId: 'chen', spaceId: 'north' },
+      { projectId: '', participantId: '', stage: 'review', search: '', view: 'list' },
+    );
+    const node = document.createElement('div');
+    document.body.append(node);
+    const root = createRoot(node),
+      reads = [];
+    const makeApi = (actorId) => ({
+      member: { actorId, capabilities: () => ({ createTask: true, createProject: true }) },
+      snapshot: async () => ({ state, model: 'unconfigured' }),
+    });
+    const api = makeApi('chen');
+    const progressApi = {
+      read: async (query) => {
+        reads.push(structuredClone(query));
+        return {
+          items: query.plans.map((target) =>
+            row({ target, delivery: target.taskId === 'second' ? 'all-accepted' : 'pending' }),
+          ),
+        };
+      },
+    };
+    const render = async (api, spaceId) =>
+      act(async () => {
+        root.render(
+          h(
+            UnsavedChangesBoundary,
+            { register: () => () => {} },
+            h(WorkbenchPage, {
+              api,
+              initialSection: 'tasks',
+              projectExecution: { spaceId, api: { taskProgress: progressApi } },
+              appearance: { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} },
+            }),
+          ),
+        );
+        await new Promise(setImmediate);
+      });
+    const click = async (label) =>
+      act(async () => {
+        const button = [...node.querySelectorAll('button')].find(
+          (item) => item.querySelector('.zm-button-label')?.textContent === label,
+        );
+        assert.ok(button, label);
+        button.click();
+        await new Promise(setImmediate);
+      });
+    try {
+      await render(api, 'north');
+      assert.equal(
+        reads[0].plans.length,
+        2,
+        'Persisted stage cannot starve its own progress request',
+      );
+      assert.equal(node.querySelectorAll('.zm-task-row').length, 1);
+      const title = node.querySelector('.zm-task-row strong').textContent;
+      await click('看板');
+      assert.equal(node.querySelectorAll('.zm-board-card').length, 1);
+      assert.equal(node.querySelector('.zm-board-card strong').textContent, title);
+      assert.ok(node.querySelector('.zm-task-filter-summary').textContent.includes('1 / 2'));
+      await click('清除筛选');
+      assert.equal(node.querySelectorAll('.zm-board-card').length, 2);
+      await render(makeApi('bob'), 'south');
+      assert.equal(node.querySelectorAll('.zm-board-card').length, 0);
+      assert.equal(node.querySelectorAll('.zm-task-row').length, 2);
+    } finally {
+      await act(async () => root.unmount());
+      node.remove();
+      localStorage.clear();
+    }
+  });
+  test('DOM planning readiness: checking service facts and a failed planning request preserve the live editor input', async () => {
+    const data = fixture();
+    const node = document.createElement('div');
+    document.body.append(node);
+    const root = createRoot(node);
+    let ready = false,
+      reads = 0,
+      plans = 0;
+    const workbench = {
+      member: {
+        actorId: 'chen',
+        capabilities: () => ({
+          planning: ready,
+          tasks: [{ taskId: data.task.id, edit: true, confirm: true, plan: ready }],
+        }),
+      },
+      snapshot: async () => {
+        if (++reads === 1) throw Error('offline');
+        ready = true;
+        return { state: data.state, model: 'service / configured' };
+      },
+      plan: async () => {
+        plans++;
+        throw Error('Provider unavailable');
+      },
+      save: () => assert.fail('Checking a model must not save or replace the draft'),
+    };
+    const click = async (text) => {
+      const button = [...node.querySelectorAll('button')].find(
+        (item) =>
+          (item.querySelector('.zm-button-label')?.textContent ?? item.textContent).trim() === text,
+      );
+      assert.ok(button, text);
+      await act(async () => {
+        button.click();
+        await new Promise(setImmediate);
+      });
+    };
+    try {
+      await act(async () =>
+        root.render(
+          h(
+            UnsavedChangesBoundary,
+            { register: () => () => {} },
+            h(TaskEditor, {
+              original: data.task,
+              state: data.state,
+              api: workbench,
+              model: '未配置模型',
+              saved() {},
+              close() {},
+              appearance: { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} },
+            }),
+          ),
+        ),
+      );
+      await click('✧ AI 规划');
+      const input = node.querySelector('.zm-planner-composer textarea');
+      assert.ok(input);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(
+          input,
+          '保留这份补充要求',
+        );
+        input.dispatchEvent(new window.Event('input', { bubbles: true }));
+      });
+      await click('检查模型');
+      assert.ok(node.textContent.includes('暂时无法确认规划模型'));
+      assert.ok(input.isConnected);
+      assert.equal(input.value, '保留这份补充要求');
+      await click('检查模型');
+      assert.ok(node.textContent.includes('service / configured'));
+      const generate = node.querySelector('.zm-planning-actions button');
+      assert.ok(generate && !generate.disabled);
+      await act(async () => {
+        generate.click();
+        await new Promise(setImmediate);
+      });
+      assert.equal(plans, 1);
+      assert.ok(input.isConnected);
+      assert.equal(input.value, '保留这份补充要求');
+      assert.ok(node.textContent.includes('Provider unavailable'));
+    } finally {
+      await act(async () => root.unmount());
+      node.remove();
+    }
+  });
   test('DOM task entry: a human assignee who is not the task owner reads the original node controller without workflow control', async () => {
     for (const { authorized, owner } of [
       { authorized: true, owner: false },

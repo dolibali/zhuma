@@ -130,7 +130,7 @@ export function MemberSpaceBoundary({
   };
   return (
     <div className="zm-space-boundary">
-      <nav className="zm-space-bar" aria-label="工作空间">
+      <nav className="zm-space-bar" aria-label="工作空间" data-window-drag>
         {showSpacePicker ? (
           <SingleSelect
             id={pickerId}

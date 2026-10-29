@@ -65,19 +65,6 @@ export function SharedBackendBoundary({
   }
   return (
     <div className="zhuma zm-shared-backend">
-      <div className="zm-backend-bar" aria-label="服务连接">
-        <Button
-          variant="quiet"
-          disabled={busy}
-          onClick={() => {
-            setOrigin(state.selection?.origin ?? '');
-            setError('');
-            setOpen(true);
-          }}
-        >
-          {state.selection?.origin ? new URL(state.selection.origin).host : '本机团队'} · 连接设置
-        </Button>
-      </div>
       {state.phase === 'ready' ? (
         children(state.selection?.origin != null)
       ) : (
@@ -101,6 +88,19 @@ export function SharedBackendBoundary({
           )}
         </main>
       )}
+      <div className="zm-backend-bar" aria-label="服务连接">
+        <Button
+          variant="quiet"
+          disabled={busy}
+          onClick={() => {
+            setOrigin(state.selection?.origin ?? '');
+            setError('');
+            setOpen(true);
+          }}
+        >
+          {state.selection?.origin ? new URL(state.selection.origin).host : '本机团队'} · 连接设置
+        </Button>
+      </div>
       {open && (
         <Modal
           title="连接共享后端"
