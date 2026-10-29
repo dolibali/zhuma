@@ -1,6 +1,8 @@
 import { createHash, createPublicKey, randomUUID, timingSafeEqual, verify } from 'node:crypto';
 import {
   canonicalPayload,
+  KnowledgeProjectSnapshotSchema,
+  type KnowledgeProjectSnapshot,
   isTerminalRunStatus,
   requestRunStop,
   REMOTE_RUN_LIMITS,
@@ -176,12 +178,19 @@ export interface RemoteRunAuthoritySource {
   afterDelivery(record: ExecutionNodeRecord): Promise<void>;
   /** Current membership/project/assignment AND the unique latest applied plan. */
   assertTarget(actorId: string, target: Target, node: ExecutionNodeRecord): void;
+  /** Reference-only metadata, read outside the original queue after target authorization. */
+  prepareProjectKnowledge?(
+    request: MemberRequest,
+    target: Target,
+    signal: AbortSignal,
+  ): Promise<KnowledgeProjectSnapshot>;
   compose(
     actorId: string,
     request: Accept,
     node: ExecutionNodeRecord,
     scope: Omit<RemoteRunScope, 'backendId'>,
     resources?: ExecutionRunResourceCatalog,
+    projectKnowledge?: KnowledgeProjectSnapshot,
   ): FrozenExecutionRunComposition;
   now?(): number;
 }
@@ -564,7 +573,10 @@ export class RemoteRunAuthorities {
       const sessionHash = session ? hash(session) : '';
       let proofAdmitted = false;
       let verifiedOutputFiles = false;
-      const execute = (qualification?: ExecutionInitialResourceVerification): Promise<unknown> =>
+      const execute = (
+        qualification?: ExecutionInitialResourceVerification,
+        projectKnowledge?: KnowledgeProjectSnapshot,
+      ): Promise<unknown> =>
         this.source.enqueue(async () => {
           if (body.operation !== 'cleanup' && (this.closed || this.source.signal.aborted))
             deny('remote-unavailable');
@@ -600,7 +612,7 @@ export class RemoteRunAuthorities {
               sessionHash,
             );
           if (body.operation === 'accept') {
-            return this.accept(body, lease!, sessionHash, qualification);
+            return this.accept(body, lease!, sessionHash, qualification, projectKnowledge);
           }
           if (body.operation === 'stop') return this.stop(body, lease!);
           this.checkDevice(body, lease!.memberId, !proofAdmitted);
@@ -950,7 +962,10 @@ export class RemoteRunAuthorities {
     request: MemberRequest,
     body: Accept,
     lease: ExecutionMemberLease,
-    work: (verification?: ExecutionInitialResourceVerification) => Promise<T>,
+    work: (
+      verification?: ExecutionInitialResourceVerification,
+      projectKnowledge?: KnowledgeProjectSnapshot,
+    ) => Promise<T>,
     sessionHash: string,
   ): Promise<T> {
     let preparation:
@@ -975,9 +990,24 @@ export class RemoteRunAuthorities {
         );
         if (!prior && body.payload.workflow)
           preparation = this.workflows().preparing(body, lease, sessionHash, device.keyEpoch);
-        return !prior && node.handoff.skillRefs.length > 0;
+        return { fresh: !prior, resources: !prior && node.handoff.skillRefs.length > 0 };
       });
-      if (!needed) return await work();
+      const signal = AbortSignal.any([
+        this.source.signal,
+        lease.signal,
+        ...(preparation ? [preparation.signal] : []),
+      ]);
+      const projectKnowledge =
+        needed.fresh && this.source.prepareProjectKnowledge
+          ? KnowledgeProjectSnapshotSchema.parse(
+              await this.source.prepareProjectKnowledge(request, body.payload.target, signal),
+            )
+          : undefined;
+      if (signal.aborted) deny('remote-permit-revoked');
+      lease.assertCurrent(body.payload.target.spaceId);
+      const qualified = (verification?: ExecutionInitialResourceVerification) =>
+        work(verification, projectKnowledge);
+      if (!needed.resources) return await qualified();
       if (this.preparationFailure) deny('remote-unavailable');
       const host = this.source.resourceHost;
       if (!host) deny('remote-unavailable');
@@ -993,7 +1023,7 @@ export class RemoteRunAuthorities {
             originalRequest: request,
             locator: body.payload.target,
           },
-          work,
+          qualified,
         );
       } catch (error) {
         if (error instanceof ExecutionRunResourceQualificationCloseError) {
@@ -1586,6 +1616,7 @@ export class RemoteRunAuthorities {
     lease: ExecutionMemberLease,
     sessionHash: string,
     qualification?: ExecutionInitialResourceVerification,
+    projectKnowledge?: KnowledgeProjectSnapshot,
   ): Promise<RemoteAcceptValue> {
     const device = this.checkDevice(body, lease.memberId);
     const payload = body.payload;
@@ -1661,6 +1692,7 @@ export class RemoteRunAuthorities {
       node,
       scope,
       qualification?.catalog,
+      projectKnowledge,
     );
     qualification?.assertCurrent();
     const inputs = this.inputCatalog(
