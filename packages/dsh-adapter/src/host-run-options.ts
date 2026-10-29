@@ -7,6 +7,7 @@ import {
   type Workbench,
 } from '@zhuma/agent-core';
 import { z } from 'zod';
+import type { HostRunReadView } from './host-run-reader.js';
 import type { ExecutionService } from './execution-service.js';
 import type { MemberRequest } from './member-session.js';
 import type { createHostRunResourceSource } from './host-run-resource-source.js';
@@ -31,13 +32,17 @@ const query = z.strictObject({
   planId: id,
   revision: z.number().int().positive().refine(Number.isSafeInteger),
   nodeId: id,
+  runId: id.optional(),
 });
+export const hostRunOptionsQuerySchema = query;
 type Executor = { kind: 'builtin' } | { kind: 'plan-expert'; ref: { id: string; version: string } };
 export interface HostRunOptionsView {
   readonly target: z.infer<typeof query>;
   readonly nodeVersion: number;
   readonly runVersion: number;
   readonly currentRunId: string | null;
+  /** Original persisted Run facts; a backend cannot certify a local Session. */
+  readonly currentRun?: Omit<HostRunReadView, 'resultDelivery' | 'sendCapabilities'> | null;
   readonly selection: {
     model: Model;
     executor: Executor;
@@ -67,6 +72,9 @@ export function createHostRunOptions(
     readWorkbench(): Workbench;
     signal: AbortSignal;
     modelTimeoutMs?: number;
+    /** Shared backend metadata never discovers backend models/directories.
+     * A member's local Host supplies those actual choices separately. */
+    readonly localSelection?: true;
     readonly resources?: Pick<ReturnType<typeof createHostRunResourceSource>, 'catalog'>;
     readonly workspaces?: ReturnType<typeof createHostRunWorkspaces>;
   },
@@ -83,7 +91,7 @@ export function createHostRunOptions(
     const parsed = query.safeParse(payload);
     if (!parsed.success) throw new ExecutionRunError('run-validation');
     const signal = AbortSignal.any([options.signal, ...(wait ? [wait] : [])]);
-    const target = parsed.data;
+    const { runId: requestedRunId, ...target } = parsed.data;
     const authorize = async () => {
       active(signal);
       const result = await options.execution.readRunCompositionInputs(request, target);
@@ -93,7 +101,9 @@ export function createHostRunOptions(
     };
     // Reject a foreign/changed node before asking any provider for metadata.
     await authorize();
-    const models = await readHostRunModels(ctx, signal, options.modelTimeoutMs);
+    const models: HostRunModels = options.localSelection
+      ? { kind: 'unavailable', message: '请在成员本机选择已配置的模型。' }
+      : await readHostRunModels(ctx, signal, options.modelTimeoutMs);
     // Metadata discovery may await network IO. Revalidate member, directory,
     // controller, full locator and inputs, then synchronously read current facts.
     let resourceReady = false;
@@ -121,15 +131,20 @@ export function createHostRunOptions(
     )
       throw new ExecutionRunError('run-scope-mismatch');
     const state = readExecutionRunState(node);
-    const current = currentExecutionRun(node);
+    const latest = currentExecutionRun(node);
+    const current = requestedRunId
+      ? state?.runs.find((run) => run.attempt.id === requestedRunId)
+      : latest;
+    if (requestedRunId && !current) throw new ExecutionRunError('run-scope-mismatch');
     if (current && (current.actorId !== inputs.actorId || current.spaceId !== target.spaceId))
       throw new ExecutionRunError('run-scope-mismatch');
     // This does not project the frozen prompt, method body, owner or grant.
     const saved = current
       ? options.execution.readRunComposition({ ...target, runId: current.attempt.id }).payload
       : undefined;
-    const workspaceChoices =
-      options.workspaces?.choices(inputs.actorId, target.spaceId, plan.task.projectId) ?? [];
+    const workspaceChoices = options.localSelection
+      ? []
+      : (options.workspaces?.choices(inputs.actorId, target.spaceId, plan.task.projectId) ?? []);
     const workspaceChoice =
       current?.workspace.kind === 'local'
         ? workspaceChoices.find((choice) =>
@@ -231,6 +246,30 @@ export function createHostRunOptions(
       nodeVersion: node.command.version,
       runVersion: state?.version ?? 0,
       currentRunId: current?.attempt.id ?? null,
+      ...(options.localSelection
+        ? {
+            currentRun:
+              current && state
+                ? {
+                    taskId: target.taskId,
+                    planId: target.planId,
+                    revision: target.revision,
+                    nodeId: target.nodeId,
+                    runId: current.attempt.id,
+                    generation: current.attempt.generation,
+                    segmentId: current.segmentId,
+                    nodeVersion: node.command.version,
+                    runVersion: state.version,
+                    status: current.attempt.status,
+                    dispatch: current.dispatch,
+                    resources: current.resources,
+                    acknowledged: current.attempt.acknowledged,
+                    stopPhase: current.attempt.stopPhase,
+                    native: null,
+                  }
+                : null,
+          }
+        : {}),
       selection: saved
         ? {
             model: saved.model,
@@ -250,9 +289,12 @@ export function createHostRunOptions(
       models,
       experts,
       resources,
-      start,
+      start:
+        requestedRunId && requestedRunId !== latest?.attempt.id
+          ? { kind: 'unavailable', message: '历史执行仅供查看，请返回当前工作节点开始新一轮。' }
+          : start,
       tools: inputs.items.length ? 'accepted-input-reader' : 'text-only',
-      ...(options.workspaces
+      ...(!options.localSelection && options.workspaces
         ? {
             workspaces: workspaceChoices,
             workspaceApprovalScope: { spaceId: target.spaceId, projectId: plan.task.projectId },

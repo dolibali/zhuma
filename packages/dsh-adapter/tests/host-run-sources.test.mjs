@@ -7,7 +7,7 @@ import { NativeWorkError } from '../dist/native-work-session-contract.js';
 
 // Host composition contracts only. These directories/configurations are not
 // real member, workspace, SDK connection, or execution authorization evidence.
-function fixture(retirementDrain) {
+function fixture(retirementDrain, resources) {
   const ctx = new Context();
   const lifetime = new AbortController();
   const raw = new AbortController();
@@ -39,9 +39,54 @@ function fixture(retirementDrain) {
     native,
     signal: lifetime.signal,
     ...(retirementDrain ? { retirementDrain } : {}),
+    ...(resources ? { resources } : {}),
   });
   return { ctx, lifetime, raw, rows, handle, directory, configuration, native, ports };
 }
+
+test('Host review source contract: exact request/wait/promise and late qualification stay with the original D owner', async () => {
+  const pending = Promise.withResolvers(),
+    calls = [];
+  const resources = {
+    prepareReviewResourceCatalog(...args) {
+      calls.push({ receiver: this, args });
+      return pending.promise;
+    },
+  };
+  const f = fixture(undefined, resources);
+  const request = { headers: {} },
+    query = Object.freeze({
+      requestId: 'opaque-original-intent',
+      expectedReviewVersion: 2,
+      target: Object.freeze({}),
+      reviewerRef: Object.freeze({ id: 'reviewer', version: 'fixed-plan' }),
+    });
+  const wait = new AbortController();
+  const actual = f.ports.prepareReviewResourceCatalog(request, query, wait.signal);
+  assert.equal(actual, pending.promise);
+  assert.equal(calls[0].receiver, resources);
+  assert.deepEqual(calls[0].args, [request, query, wait.signal]);
+  for (const [index, value] of [request, query, wait.signal].entries())
+    assert.equal(calls[0].args[index], value);
+  f.lifetime.abort();
+  assert.throws(() => f.ports.prepareReviewResourceCatalog(request, query, wait.signal), {
+    code: 'run-authority-unavailable',
+  });
+  let released = 0;
+  const qualification = {
+    release() {
+      released++;
+    },
+    source: 'contract-only',
+  };
+  pending.resolve(qualification);
+  assert.equal(await actual, qualification);
+  assert.equal(released, 0, 'A never releases or fabricates a late qualification on behalf of D');
+  assert.equal(calls.length, 1);
+  assert.throws(() => fixture().ports.prepareReviewResourceCatalog(request, query, wait.signal), {
+    code: 'run-authority-unavailable',
+  });
+});
 
 test('Host Run source contract: synchronous project checks use the current row and reject missing or closed facts', () => {
   const f = fixture();

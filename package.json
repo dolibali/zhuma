@@ -1,6 +1,6 @@
 {
   "name": "zhuma",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Plugin-first agent workbench built on DeepSeek Harness Desktop.",
   "license": "MIT",

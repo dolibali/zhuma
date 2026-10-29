@@ -75,6 +75,8 @@ export interface NativeReviewBridgeHostPorts {
 }
 
 export interface NativeReviewBridge {
+  /** Pure cached ownership observation; never closes or probes native IO. */
+  canSwitchBackend(): boolean;
   readonly reviewPorts: NativeReviewPorts;
   /** Once, after A creates its original result owner, before consuming claims. */
   bindNative(service: NativeWorkSessionService, runtime: NativeWorkRuntime): void;
@@ -657,6 +659,23 @@ export function createNativeReviewBridge(options: NativeReviewBridgeOptions): Na
     },
   };
   const bridge: NativeReviewBridge = {
+    canSwitchBackend() {
+      return (
+        !closing &&
+        !jobs.size &&
+        [...states.values()].every(
+          (state) =>
+            state.settled &&
+            state.released &&
+            !state.starting &&
+            !state.accepting &&
+            !state.resultJob &&
+            !state.cleanupJob &&
+            !state.resourceClosing &&
+            !state.releasing,
+        )
+      );
+    },
     reviewPorts,
     bindNative(service, runtime) {
       if (native || fenced || !service.ownsResultRuntime(runtime)) return failure();

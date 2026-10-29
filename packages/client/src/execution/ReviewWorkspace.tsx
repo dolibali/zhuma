@@ -6,17 +6,21 @@ import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type { ExecutionApi, ExecutionNodeWire, ReviewDraft } from './ExecutionApi.js';
 import { reviewIdentity, useExecutionCommand, useFormKey } from './interaction.js';
 import { createExecutionGoalView } from '../execution-view.js';
+import type { NativeReviewApi } from '../run/review-api.js';
+import { NativeReviewLauncher } from '../run/NativeReviewWorkspace.js';
+import { ReviewBallots } from './ReviewBallots.js';
 
 type Props = {
   api: ExecutionApi;
   node: ExecutionNodeWire;
+  nativeReview?: { api: NativeReviewApi; spaceId: string };
   onSubmitted(node: ExecutionNodeWire): void;
 };
 export function ReviewWorkspace(props: Props) {
   const key = useFormKey(props.api, reviewIdentity(props.node));
   return <ReviewForm key={key} {...props} />;
 }
-function ReviewForm({ api, node, onSubmitted }: Props) {
+function ReviewForm({ api, node, onSubmitted, nativeReview }: Props) {
   const titleId = useId();
   const goal = createExecutionGoalView(node.goal);
   const round = node.rounds.find((item) => item.id === node.currentRoundId);
@@ -60,6 +64,20 @@ function ReviewForm({ api, node, onSubmitted }: Props) {
           <h2 id={titleId}>{goal.title}</h2>
         </div>
       </div>
+      {!unavailable && nativeReview && artifact && round && (
+        <NativeReviewLauncher
+          api={nativeReview.api}
+          target={{
+            spaceId: nativeReview.spaceId,
+            taskId: node.taskId,
+            planId: node.planId,
+            revision: node.revision,
+            nodeId: node.nodeId,
+            roundId: round.id,
+            artifactVersionId: artifact.id,
+          }}
+        />
+      )}
       {goal.description !== undefined && <p className="zm-execution-text">{goal.description}</p>}
       {command.error && (
         <div role="alert" className="zm-error">
@@ -104,21 +122,7 @@ function ReviewForm({ api, node, onSubmitted }: Props) {
           />
         )}
       </article>
-      {!!round?.ballots.length && (
-        <div className="zm-execution-ballots" aria-label="本轮意见">
-          {round.ballots.map((ballot, index) => (
-            <p key={index}>
-              <strong>{ballot.reviewerId}</strong> ·{' '}
-              {ballot.action === 'approve'
-                ? '通过'
-                : ballot.action === 'request-changes'
-                  ? '退回修改'
-                  : '评论'}
-              {ballot.comment && <span className="zm-execution-text">{ballot.comment}</span>}
-            </p>
-          ))}
-        </div>
-      )}
+      <ReviewBallots ballots={round?.ballots ?? []} />
       <Field label="评审意见">
         <textarea
           rows={4}

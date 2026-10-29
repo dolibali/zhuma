@@ -3,6 +3,7 @@ import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
 import { z } from 'zod';
 import { WorkbenchError } from '@zhuma/agent-core';
 import { resolveMember } from './member-session.js';
+import { registerProductFetch } from './member-web-transport.js';
 import { MemberWorkbenchService } from './member-workbench-service.js';
 import type { MemberWorkbenchOptions } from './member-workbench-dto.js';
 import type { WorkbenchService } from './workbench-service.js';
@@ -53,7 +54,7 @@ export function openMemberWorkbenchHttp(
   try {
     for (const endpoint of memberWorkbenchEndpoints) {
       stops.push(
-        ctx.connection.fetch.register({
+        registerProductFetch(ctx, {
           path: `/api/zhuma-member/${endpoint}`,
           methods: ['POST'],
           requestBody: 'streaming',

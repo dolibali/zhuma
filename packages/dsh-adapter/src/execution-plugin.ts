@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
+import { registerProductFetch } from './member-web-transport.js';
 import type {} from '@deepseek-ai/dsh-storage-domain';
 import type { Workbench } from '@zhuma/agent-core';
 import { WorkbenchError, type ExecutionNodeRecord } from '@zhuma/agent-core';
@@ -16,6 +17,7 @@ import {
 import { openExecutionMemberLease, resolveMember, type MemberRequest } from './member-session.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
 import { spaceDirectoryFor } from './space-directory.js';
+import type { MemberWorkbenchDirectory } from './member-workbench-dto.js';
 import type { ProjectSpaceDirectory } from './project-space.js';
 import { readExecutionRunState } from './execution-run-state.js';
 import { executionRunGlobalSchema } from './execution-run-protocol.js';
@@ -36,6 +38,7 @@ const ENDPOINTS = [
   'settle',
   'report',
   'revision',
+  'review-outcome',
   'draft',
   'upstream-content',
   'project-artifacts',
@@ -109,6 +112,8 @@ export const inject = ['connection', 'storageDomain'] as const;
 /** Reads the workbench A already opened. The member comes from `resolveMember`. */
 export interface ExecutionPluginConfig {
   readWorkbench(): Workbench;
+  /** Host-only live account/space facts, never a browser DTO or a cached roster. */
+  memberDirectory?(): MemberWorkbenchDirectory | undefined;
   /**
    * Directory A injects at the Host. B delivers the formal catalog on #29.
    * Omission rejects every project. This plugin does not store the mapping
@@ -452,6 +457,7 @@ function run(
   endpoint: Endpoint,
   member: Awaited<ReturnType<typeof resolveMember>>,
   payload: unknown,
+  original: MemberRequest,
   fileAuthority?: ExecutionFileAuthoritySource,
 ) {
   const caller = { member };
@@ -472,6 +478,8 @@ function run(
       return service.report(caller, payload);
     case 'revision':
       return service.revision(caller, payload);
+    case 'review-outcome':
+      return service.readReviewOutcome(original, payload);
     case 'upstream-content':
       return service.upstreamContent(caller, payload);
     case 'project-artifacts':
@@ -569,7 +577,18 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   if (lifetime.signal.aborted) throw new Error('Execution plugin disposed during startup.');
   const service = new ExecutionService(
     storage,
-    { readWorkbench: () => config.readWorkbench() },
+    {
+      readWorkbench: () => config.readWorkbench(),
+      ...('memberDirectory' in config
+        ? {
+            memberDirectory: () => {
+              if (typeof config.memberDirectory !== 'function')
+                throw new WorkbenchError('unavailable', '成员目录暂不可用。');
+              return config.memberDirectory();
+            },
+          }
+        : {}),
+    },
     projectSpaces,
     attachments,
     fileStore,
@@ -580,7 +599,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   if (!reconciled.ok) throw new WorkbenchError(reconciled.error.code, reconciled.error.message);
   unpublish = config.publishRunService?.(service);
   const stops = ENDPOINTS.map((endpoint) =>
-    ctx.connection.fetch.register({
+    registerProductFetch(ctx, {
       path: `/api/zhuma-exec/${endpoint}`,
       methods: ['POST'],
       requestBody: 'streaming',
@@ -607,7 +626,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
           }
           rpcId = envelope.data.rpcId;
           if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-          const result = await run(service, endpoint, member, envelope.data.payload, () =>
+          const result = await run(service, endpoint, member, envelope.data.payload, original, () =>
             openFileAuthority(ctx, original, signal),
           );
           return Response.json({ type: 'server-response', rpcId, result });
@@ -637,7 +656,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   );
   // Raw byte upload rides the same member gate but never enters the JSON
   // envelope: declarations ride headers, the body is the byte stream.
-  const uploadStop = ctx.connection.fetch.register({
+  const uploadStop = registerProductFetch(ctx, {
     path: '/api/zhuma-exec/upload-file',
     methods: ['POST'],
     requestBody: 'streaming',
@@ -752,7 +771,7 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   stops.push(uploadStop);
 
   stops.push(
-    ctx.connection.fetch.register({
+    registerProductFetch(ctx, {
       path: '/api/zhuma-exec/file',
       methods: ['GET'],
       requestBody: 'buffered',

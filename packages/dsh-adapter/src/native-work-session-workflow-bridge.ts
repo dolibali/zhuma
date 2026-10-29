@@ -84,11 +84,39 @@ export function createNativeWorkflowBridge(options: {
   const jobs = new Set<Promise<unknown>>();
   const drains = new Map<string, Promise<ExecutionResult<WorkflowExecutionView>>>();
   const errors = new Map<string, BridgeError>();
+  // Only obligations observed from the original loaded workflow views. This
+  // is a lifecycle fence, never another plan/Run authority or persistence store.
+  const obligations = new Map<string, { location: string; intentId: string; generation: number }>();
   let controls = 0;
   let fenced = false;
   let closing: Promise<void> | undefined;
   function cleanupFailure(code: string) {
     if (!errors.has(code)) errors.set(code, new BridgeError(code));
+  }
+  function remember(view: WorkflowExecutionView): void {
+    if (!view.intent) return;
+    const location = locationKey(view.location),
+      intent = view.intent;
+    for (const [key, old] of obligations) {
+      if (
+        old.location === location &&
+        old.intentId === intent.intentId &&
+        old.generation <= intent.generation
+      )
+        obligations.delete(key);
+    }
+    if (
+      view.activeRunIds.length ||
+      view.reviewResources?.some((review) => review.resources !== 'settled') ||
+      !['paused', 'completed'].includes(view.state) ||
+      !['paused', 'completed'].includes(intent.status)
+    ) {
+      obligations.set(armKey(view), {
+        location,
+        intentId: intent.intentId,
+        generation: intent.generation,
+      });
+    }
   }
 
   function own<T>(work: Promise<T>): Promise<T> {
@@ -190,6 +218,7 @@ export function createNativeWorkflowBridge(options: {
       claim.tickets.length > WORKFLOW_EXECUTION_LIMITS.concurrent
     )
       throw new BridgeError('workflow-authority-denied');
+    remember(claim.view);
     if (!arm.claim) {
       arm.claim = claim;
       arm.unsubscribe = claim.onChange(() => kick(arm));
@@ -254,6 +283,7 @@ export function createNativeWorkflowBridge(options: {
 
   async function attach(original: MemberRequest, view: WorkflowExecutionView): Promise<void> {
     active();
+    remember(view);
     if (!view.intent || view.requiresResume || view.state !== 'running') return;
     const key = armKey(view);
     const previous = arms.get(key);
@@ -360,6 +390,7 @@ export function createNativeWorkflowBridge(options: {
   ): Promise<ExecutionResult<WorkflowExecutionView>> {
     const fresh = await execution.readWorkflowExecution(original, stopped.location);
     if (!fresh.ok) return fresh;
+    remember(fresh.value);
     if (
       !fresh.value.intent ||
       fresh.value.intent.intentId !== stopped.intent?.intentId ||
@@ -419,6 +450,25 @@ export function createNativeWorkflowBridge(options: {
   signal.addEventListener('abort', fence, { once: true });
   if (signal.aborted) fence();
   return {
+    canSwitchBackend(): boolean {
+      return (
+        !closing &&
+        controls === 0 &&
+        !jobs.size &&
+        !drains.size &&
+        !errors.size &&
+        !obligations.size &&
+        [...arms.values()].every(
+          (arm) =>
+            arm.fenced &&
+            !arm.claim &&
+            !arm.pumping &&
+            !arm.dirty &&
+            !arm.starts.size &&
+            !arm.tickets.size,
+        )
+      );
+    },
     attach,
     stop,
     fence,

@@ -179,6 +179,37 @@ test('root shell contract: active page owns discard guard; navigation invalidate
   shell.stop();
 });
 
+test('retained panels cannot borrow the active panel epoch or replace its navigation guards', async () => {
+  const { shell } = fixture();
+  shell.start();
+  await tick();
+  shell.setPageActive(true, 'zhuma-workbench');
+  const epoch = shell.getSnapshot().pageEpoch;
+  assert.equal(shell.isPageCurrent(epoch, 'zhuma-workbench'), true);
+  assert.equal(shell.isPageCurrent(epoch, 'zhuma-my-work'), false);
+  const selected = [],
+    left = [];
+  shell.registerSpaceGuard(epoch, (id) => selected.push(id), 'zhuma-workbench');
+  shell.registerSpaceGuard(epoch, () => assert.fail('hidden space guard'), 'zhuma-my-work');
+  shell.registerLeaveGuard(
+    epoch,
+    (proceed) => {
+      left.push('catalog');
+      proceed();
+    },
+    'zhuma-workbench',
+  );
+  shell.registerLeaveGuard(epoch, () => assert.fail('hidden leave guard'), 'zhuma-my-work');
+  shell.requestSpace('team-a');
+  shell.requestLeave(() => left.push('navigate'));
+  assert.deepEqual(selected, ['team-a']);
+  assert.deepEqual(left, ['catalog', 'navigate']);
+  shell.setPageActive(true, 'zhuma-my-work');
+  assert.equal(shell.isPageCurrent(epoch, 'zhuma-workbench'), false);
+  assert.equal(shell.isPageCurrent(shell.getSnapshot().pageEpoch, 'zhuma-my-work'), true);
+  shell.stop();
+});
+
 test('root shell contract: logout immediately removes shared member/space content; failed logout cannot reopen old cookie', async () => {
   const logout = deferred();
   const { shell, reads } = fixture({ logout: () => logout.promise });
@@ -197,6 +228,47 @@ test('root shell contract: logout immediately removes shared member/space conten
   await shell.session.restore();
   assert.equal(reads(), before);
   assert.equal(shell.space, undefined);
+  shell.stop();
+});
+
+test('account transition: a delayed former-account picker cannot select its team after a new login', async () => {
+  let accountId = 'member-a';
+  const personalB = { id: 'personal-b', kind: 'personal', name: 'New account' };
+  const api = {
+    session: async () => ({
+      ...member(accountId),
+      spaces: accountId === 'member-a' ? spaces : [personalB],
+    }),
+    login: async (input) => {
+      accountId = input.accountId;
+      return { accountId };
+    },
+    logout: async () => ({ accountId }),
+  };
+  const shell = createMemberShell(
+    api,
+    createSpacePreferenceStore(() => undefined),
+  );
+  shell.start();
+  await tick();
+  await shell.space.select('team-a');
+  const former = shell.getSnapshot().session.epoch;
+  const delayedPicker = () => shell.requestSpace('team-a', undefined, former);
+  await shell.session.logout();
+  assert.equal(shell.space, undefined);
+  await shell.session.login({ accountId: 'member-b', password: 'synthetic' });
+  await tick();
+  assert.equal(shell.getSnapshot().space.space.id, personalB.id);
+  delayedPicker();
+  await tick();
+  assert.equal(shell.getSnapshot().space.status, 'ready');
+  assert.equal(shell.getSnapshot().space.space.id, personalB.id);
+  // A genuine current-account choice still goes through the original directory
+  // check and remains closed when it is unavailable: no revocation fallback.
+  shell.requestSpace('team-a', undefined, shell.getSnapshot().session.epoch);
+  await tick();
+  assert.equal(shell.getSnapshot().space.status, 'error');
+  assert.equal(shell.getSnapshot().space.requestedSpaceId, 'team-a');
   shell.stop();
 });
 

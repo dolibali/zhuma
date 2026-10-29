@@ -1,9 +1,17 @@
-import { conversationLines, readConversationFrame, readNativeInbox } from './conversation.js';
+import {
+  conversationLines,
+  readConversationFrame,
+  readNativeInbox,
+  readNativeTurnEnd,
+} from './conversation.js';
 import { createIdentityApi } from '../identity/api.js';
 import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
 import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
+import type { LocalWorkspaceDirectory } from './workspace-directory.js';
+import type { NativeReviewApi } from './review-api.js';
+import { workspacePublishRanges, type WorkspacePublishRange } from './workspace-approvals.js';
 import {
   createWorkspaceApprovalApi,
   type RegisterWorkspaceDirectory,
@@ -40,6 +48,7 @@ export type NativeRunOptions = {
   tools: 'text-only' | 'accepted-input-reader';
   workspaces?: readonly NativeRunWorkspaceChoice[];
   workspaceApprovalScope?: { readonly spaceId: string; readonly projectId: string };
+  knowledgeLibraries?: Extract<NativeRunPanelView, { kind: 'ready' }>['knowledgeLibraries'];
 };
 export type NativeRunRead = NativeRunSummary & {
   sendCapabilities: Readonly<Record<NativeRunSendMode, NativeRunAction>>;
@@ -53,11 +62,16 @@ export type NativeRunBegin = NativeRunLocator & {
   expectedRunVersion: number;
   mode: 'begin' | 'retry' | 'restart';
   model: NativeRunSelection['model'];
+  knowledge?: NativeRunSelection['knowledge'];
   executor: NativeRunSelection['executor'];
   tools: 'text-only' | 'accepted-input-reader' | 'local-tools';
-  workspace: { kind: 'text-only' } | { kind: 'local'; id: string };
+  workspace:
+    | { kind: 'text-only' }
+    | { kind: 'local'; id: string; publish?: readonly WorkspacePublishRange[] };
 };
 export interface NativeRunApi {
+  readonly review?: NativeReviewApi;
+  openNativeSession?: ((run: NativeRunSummary, signal: AbortSignal) => Promise<void>) | undefined;
   readonly workflow?: WorkflowApi;
   readonly workspaceApprovals?: WorkspaceApprovalApi;
   readonly openModelSettings?: (() => void) | undefined;
@@ -77,6 +91,7 @@ export interface NativeRunApi {
   ): Promise<{
     messages: readonly NativeRunMessage[];
     nextAfter: number;
+    turnEnd?: Extract<NativeConversationFrame, { type: 'turn-end' }>;
   }>;
   begin(input: NativeRunBegin, signal: AbortSignal): Promise<void>;
   send(
@@ -136,6 +151,7 @@ function selection(value: unknown): NativeRunSelection {
   return {
     model: model(row.model),
     executor: executor(row.executor),
+    ...(row.knowledge === undefined ? {} : { knowledge: knowledge(row.knowledge) }),
     ...(row.workspace === undefined
       ? {}
       : {
@@ -146,12 +162,20 @@ function selection(value: unknown): NativeRunSelection {
         }),
   };
 }
+function knowledge(value: unknown): NonNullable<NativeRunSelection['knowledge']> {
+  const row = object(value);
+  return { libraryId: string(row.libraryId, 100), allowDrafts: boolean(row.allowDrafts) };
+}
 function workspace(value: unknown): NativeRunBegin['workspace'] {
   const row = object(value);
   return row.kind === 'text-only'
     ? { kind: 'text-only' }
     : row.kind === 'local'
-      ? { kind: 'local', id: string(row.id) }
+      ? {
+          kind: 'local',
+          id: string(row.id),
+          ...(row.publish === undefined ? {} : { publish: workspacePublishRanges(row.publish) }),
+        }
       : invalid();
 }
 function locator(value: unknown, expected: NativeRunLocator): NativeRunLocator {
@@ -204,6 +228,23 @@ function optionsView(
     currentRunId: row.currentRunId === null ? null : string(row.currentRunId),
     selection: row.selection === null ? null : selection(row.selection),
     models,
+    ...(row.knowledgeLibraries === undefined
+      ? {}
+      : {
+          knowledgeLibraries:
+            object(row.knowledgeLibraries).kind === 'ready'
+              ? {
+                  kind: 'ready' as const,
+                  items: array(object(row.knowledgeLibraries).items, 100).map((value) => {
+                    const item = object(value);
+                    return { id: string(item.id, 100), label: string(item.label, 200) };
+                  }),
+                }
+              : {
+                  kind: 'unavailable' as const,
+                  message: string(object(row.knowledgeLibraries).message),
+                },
+        }),
     experts: array(row.experts, 100).map((raw) => {
       const item = object(raw);
       return {
@@ -242,6 +283,9 @@ function optionsView(
               label: string(item.label),
               access: oneOf(item.access, ['read', 'write']),
               publish: boolean(item.publish),
+              ...(item.publication === undefined
+                ? {}
+                : { publication: oneOf(item.publication, ['per-run']) }),
             };
           }),
         }),
@@ -329,6 +373,16 @@ function readView(value: unknown, expected: NativeRunLocator, runId: string): Na
     acknowledged: boolean(row.acknowledged),
     stopPhase: oneOf(row.stopPhase, ['none', 'requested', 'confirmed', 'receipt-rejected']),
     ...(delivery ? { resultDelivery: delivery } : {}),
+    ...(row.submission === undefined
+      ? {}
+      : {
+          submission: {
+            artifactVersionId: string(object(row.submission).artifactVersionId, 1000),
+            ...(object(row.submission).roundId === undefined
+              ? {}
+              : { roundId: string(object(row.submission).roundId, 1000) }),
+          },
+        }),
     native: native
       ? {
           sessionId: string(native.sessionId),
@@ -404,6 +458,8 @@ export function createNativeRunApi(
   onUnauthenticated: () => void,
   registerDirectory?: RegisterWorkspaceDirectory,
   openModelSettings?: () => void,
+  localDirectory?: LocalWorkspaceDirectory,
+  serverAllocatedRunIds = false,
 ): NativeRunApi {
   const identity = createIdentityApi(fetcher);
   const directory = createMemberWorkbenchApi(
@@ -419,6 +475,15 @@ export function createNativeRunApi(
   function current(signal: AbortSignal) {
     signal.throwIfAborted();
     if (scope.isCurrent?.() === false) throw new DOMException('View changed', 'AbortError');
+  }
+  async function authorizeLocal(signal: AbortSignal) {
+    current(signal);
+    const session = await identity.session(signal);
+    current(signal);
+    if (session.accountId !== accountId)
+      throw new ExecutionError('unauthenticated', '账号已变化，请重新登录。');
+    if (!session.spaces.some((item) => item.id === scope.spaceId))
+      throw new ExecutionError('space-unavailable', '此空间已不可访问。');
   }
   function report(error: unknown, signal: AbortSignal): never {
     current(signal);
@@ -510,6 +575,30 @@ export function createNativeRunApi(
   });
   const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
   return {
+    ...(localDirectory?.openSession
+      ? {
+          async openNativeSession(run: NativeRunSummary, signal: AbortSignal) {
+            try {
+              const latest = readView(await call('read', runLocator(run), signal), run, run.runId);
+              if (
+                !latest.native ||
+                !run.native ||
+                latest.generation !== run.generation ||
+                latest.segmentId !== run.segmentId ||
+                latest.native.sessionId !== run.native.sessionId
+              )
+                throw new ExecutionError('unavailable', '工作会话已变化，请刷新后重试。');
+              current(signal);
+              await localDirectory.openSession!(latest.native.sessionId, signal, () =>
+                authorizeLocal(signal),
+              );
+              current(signal);
+            } catch (error) {
+              return report(error, signal);
+            }
+          },
+        }
+      : {}),
     ...(openModelSettings
       ? {
           openModelSettings: () => {
@@ -519,6 +608,19 @@ export function createNativeRunApi(
         }
       : {}),
     workspaceApprovals: {
+      ...(localDirectory
+        ? {
+            existingDirectories: async (signal: AbortSignal) => {
+              try {
+                const entries = await localDirectory.read(signal, () => authorizeLocal(signal));
+                current(signal);
+                return entries;
+              } catch (error) {
+                return report(error, signal);
+              }
+            },
+          }
+        : {}),
       ...createWorkspaceApprovalApi(
         (endpoint, payload, signal) => call(endpoint, payload, signal, 'workspaces'),
         scope.spaceId,
@@ -609,7 +711,24 @@ export function createNativeRunApi(
       }
       const nextAfter = integer(value.nextAfter, -1);
       if (nextAfter !== previous) invalid();
-      return { messages: projectNativeRunMessages(events), nextAfter };
+      let boundary: unknown;
+      for (const event of events) if (object(event).type === 'turn/end') boundary = event;
+      let turnEnd: Extract<NativeConversationFrame, { type: 'turn-end' }> | undefined;
+      if (boundary) {
+        const event = object(boundary),
+          data = object(event.data);
+        turnEnd = readNativeTurnEnd({
+          seq: event.seq,
+          time: event.time,
+          turn: data.turn,
+          reason: data.reason,
+        });
+      }
+      return {
+        messages: projectNativeRunMessages(events),
+        nextAfter,
+        ...(turnEnd ? { turnEnd } : {}),
+      };
     },
     async begin(input, signal) {
       if (input.spaceId !== scope.spaceId) invalid();
@@ -626,6 +745,7 @@ export function createNativeRunApi(
             expectedRunVersion: input.expectedRunVersion,
             mode: input.mode,
             model: model(input.model),
+            ...(input.knowledge ? { knowledge: knowledge(input.knowledge) } : {}),
             executor: executor(input.executor),
             tools: input.tools,
             workspace: workspace(input.workspace),
@@ -634,7 +754,11 @@ export function createNativeRunApi(
         ),
       );
       locator(value, input);
-      if (value.runId !== input.newRunId || value.segmentId !== input.newSegmentId) invalid();
+      if (serverAllocatedRunIds) {
+        string(value.runId);
+        string(value.segmentId);
+      } else if (value.runId !== input.newRunId || value.segmentId !== input.newSegmentId)
+        invalid();
     },
     async send(run, text, mode, requestId, signal) {
       const value = object(

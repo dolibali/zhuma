@@ -141,15 +141,23 @@ const historyRequest = z.strictObject({
 
 const inboxRequest = historyRequest.omit({ after: true, limit: true });
 const observeRequest = historyRequest.omit({ limit: true });
-function conversationTarget(
+export function conversationTarget(
   scope: import('./native-work-session-contract.js').NativeWorkScope,
 ): HostRunConversationTarget {
   const { spaceId, taskId, planId, revision, nodeId, runId, generation, segmentId } = scope;
   return { spaceId, taskId, planId, revision, nodeId, runId, generation, segmentId };
 }
 /** Project exact known fields, even if a future native version adds private fields. */
-function publicFrame(value: NativeConversationFrame): NativeConversationFrame {
+export function publicFrame(value: NativeConversationFrame): NativeConversationFrame {
   switch (value.type) {
+    case 'turn-end':
+      return {
+        type: value.type,
+        seq: value.seq,
+        time: value.time,
+        turn: value.turn,
+        reason: { kind: value.reason.kind },
+      };
     case 'message':
       return {
         type: value.type,

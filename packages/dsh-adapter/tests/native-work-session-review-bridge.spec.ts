@@ -21,6 +21,53 @@ async function setup(t, options = {}) {
   return bootReviewBridge(root, (close) => closes.push(close), options);
 }
 
+test('backend switch fence: original review preparation and fixed vote remain occupied until actual release', async (t) => {
+  const preparing = Promise.withResolvers(),
+    releasePrepare = Promise.withResolvers(),
+    completing = Promise.withResolvers(),
+    releaseComplete = Promise.withResolvers();
+  const h = await setup(t, {
+    afterPreparation: async () => {
+      preparing.resolve();
+      await releasePrepare.promise;
+    },
+    beforeCompletion: async () => {
+      completing.resolve();
+      await releaseComplete.promise;
+    },
+  });
+  assert.equal(h.bridge.canSwitchBackend(), true);
+  h.bridge.consumeClaim(h.d.request, h.claim);
+  try {
+    await preparing.promise;
+    assert.equal(h.bridge.canSwitchBackend(), false, 'preparation exists before a native state');
+    releasePrepare.resolve();
+    await completing.promise;
+    const before = {
+      models: h.adapter.requests.length,
+      reads: h.reads.length,
+      ballots: h.d.read().rounds[0].ballots.length,
+    };
+    for (let index = 0; index < 20; index++) assert.equal(h.bridge.canSwitchBackend(), false);
+    assert.deepEqual(
+      {
+        models: h.adapter.requests.length,
+        reads: h.reads.length,
+        ballots: h.d.read().rounds[0].ballots.length,
+      },
+      before,
+    );
+  } finally {
+    releasePrepare.resolve();
+    releaseComplete.resolve();
+  }
+  await h.waitFor(() => h.d.read().command.status === 'completed');
+  await h.bridge.whenIdle();
+  assert.equal(readExecutionReviewState(h.d.read()).attempts[0].resources, 'settled');
+  assert.equal(h.bridge.canSwitchBackend(), true);
+  assert.equal(h.native.ctx.agents.list().length, 0);
+});
+
 test('original SDK bridge: genuine claim automatically correlates actual receipt/adoption and fixed text/file reads to one ballot and downstream without manual events', async (t) => {
   const h = await setup(t);
   assert.equal(h.claim.reviewCandidates.length, 1);

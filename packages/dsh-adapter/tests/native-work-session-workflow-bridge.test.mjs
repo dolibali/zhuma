@@ -4,6 +4,39 @@ import test from 'node:test';
 import { createNativeWorkflowBridge } from '../dist/native-work-session-workflow-bridge.js';
 import { workflowFixture, turns, ok, fail } from './native-work-session-workflow-fixture.mjs';
 
+test('backend switch fence contract: armed empty workflow and pending claim stay occupied until an authenticated stopped view settles', async () => {
+  const h = workflowFixture(),
+    pending = Promise.withResolvers();
+  assert.equal(h.bridge.canSwitchBackend(), true);
+  h.setClaim(() => pending.promise);
+  const attaching = h.bridge.attach(h.original, h.view());
+  await turns();
+  assert.equal(h.bridge.canSwitchBackend(), false);
+  pending.resolve(ok(h.claim()));
+  await attaching;
+  await turns();
+  const before = structuredClone(h.calls);
+  for (let index = 0; index < 20; index++) assert.equal(h.bridge.canSwitchBackend(), false);
+  assert.deepEqual(h.calls, before, 'pure checks neither claim nor stop');
+  h.setRead(() => ok(h.view({ state: 'paused', intent: { ...h.intent, status: 'paused' } })));
+  assert.equal((await h.bridge.stop(h.original, h.control())).ok, true);
+  await turns();
+  assert.equal(h.bridge.canSwitchBackend(), true);
+  await h.bridge.close();
+});
+
+test('backend switch fence contract: a failed claim cannot erase the observed running intent', async () => {
+  const h = workflowFixture();
+  h.setClaim(() => fail('workflow-authority-denied'));
+  await assert.rejects(h.bridge.attach(h.original, h.view()), {
+    code: 'workflow-authority-denied',
+  });
+  await turns();
+  assert.equal(h.bridge.canSwitchBackend(), false);
+  assert.equal(h.calls.begin.length, 0);
+  await h.bridge.close();
+});
+
 test('bridge contract: repeated attach/wakes retain the first original request and do not cancel or repeat an in-flight ticket', async () => {
   const h = workflowFixture(),
     gate = Promise.withResolvers();

@@ -1,0 +1,125 @@
+html,
+body,
+#zhuma-member-root {
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+body {
+  overflow: hidden;
+  color: var(--zm-ink);
+  background: var(--zm-paper);
+  font:
+    14px/1.5 -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+* {
+  box-sizing: border-box;
+}
+.zm-web-shell {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+.zm-web-sidebar {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  width: 220px;
+  flex: 0 0 220px;
+  padding: 28px 16px 16px;
+  border-right: 1px solid var(--zm-line);
+  background: var(--zm-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.zm-web-brand {
+  flex-shrink: 0;
+  padding: 0 12px;
+  color: var(--zm-ink);
+  font-size: 24px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.zm-web-identity {
+  display: grid;
+  gap: 4px;
+}
+.zm-web-context {
+  padding: 0 12px;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-web-sidebar nav {
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+}
+.zm-web-sidebar nav .zm-button {
+  justify-content: flex-start;
+  padding: 10px 12px;
+}
+.zm-web-sidebar nav .zm-button-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.zm-web-sidebar nav svg {
+  flex: 0 0 18px;
+}
+.zm-web-local-context {
+  margin: 0;
+  padding: 0 12px;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-web-sidebar nav [aria-current='page'] {
+  background: var(--zm-paper);
+}
+.zm-web-account {
+  margin-top: auto;
+  flex-shrink: 0;
+}
+.zm-web-main {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+}
+.zm-web-main .zm-member-work {
+  min-height: 0;
+}
+@media (max-width: 720px) {
+  .zm-web-context,
+  .zm-web-local-context {
+    display: none;
+  }
+  .zm-web-shell {
+    flex-direction: column;
+  }
+  .zm-web-sidebar {
+    width: auto;
+    height: auto;
+    flex: 0 0 auto;
+    padding: 12px 16px;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--zm-line);
+  }
+  .zm-web-sidebar nav {
+    display: flex;
+    flex: 1;
+  }
+  .zm-web-account {
+    margin-top: 0;
+  }
+}

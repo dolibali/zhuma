@@ -329,8 +329,12 @@ test(
       );
       // A scope chen does not hold (personal-a of someone else) hides everything.
       const ghost = await host.exec('startable', { spaceId: 'team-north' }, outside);
-      assert.equal(ghost.result.ok, true);
-      assert.deepEqual(ghost.result.value.plans, []);
+      assert.equal(ghost.result.ok, false);
+      assert.equal(
+        ghost.result.value,
+        undefined,
+        'foreign scope refusal cannot carry any task metadata',
+      );
       // Empty personal space returns an empty projection, not an error.
       const personal = await host.exec('startable', { spaceId: 'personal-chen' }, chen);
       assert.equal(personal.result.ok, true);

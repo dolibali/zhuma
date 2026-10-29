@@ -44,6 +44,279 @@ if (domModule) {
 const { createElement, act } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { NativeRunPanel } = await import('../dist/run/NativeRunPanel.js');
+const { NativeReviewLauncher, NativeReviewHistory } =
+  await import('../dist/run/NativeReviewWorkspace.js');
+
+function reviewOutcome(query, status = 'open') {
+  return {
+    target: { ...query, artifactFingerprint: 'a'.repeat(64) },
+    controllerMemberId: 'member',
+    nodeStatus: status === 'approved' ? 'completed' : 'needs-revision',
+    artifact: {
+      id: query.artifactVersionId,
+      version: 2,
+      text: '固定第二版正文',
+      links: [],
+      files: [],
+    },
+    round: {
+      id: query.roundId,
+      artifactVersionId: query.artifactVersionId,
+      status,
+      reviewerIds: ['one'],
+      ballots:
+        status === 'open'
+          ? []
+          : [
+              {
+                reviewerId: 'one',
+                reviewerName: '独立评审专家',
+                roundId: query.roundId,
+                artifactVersionId: query.artifactVersionId,
+                action: status === 'approved' ? 'approve' : 'request-changes',
+                comment: '已核对固定版本的具体意见 <literal>',
+              },
+            ],
+    },
+    comments: [],
+  };
+}
+
+test(
+  'DOM contract: a settled first expert can yield to the next eligible reviewer without restarting itself',
+  { skip: !domModule },
+  async () => {
+    const { createRoot } = await import('react-dom/client');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    let reads = 0,
+      starts = 0;
+    const api = {
+      outcome: async (query) => reviewOutcome(query),
+      options: async () => {
+        reads++;
+        return {
+          currentRunId: 'old',
+          models: { kind: 'ready', items: [] },
+          facts: {
+            expectedReviewVersion: 2,
+            reviewers: [
+              { name: 'QA One', reviewerRef: { id: 'one' }, canStart: false },
+              { name: 'QA Two', reviewerRef: { id: 'two' }, canStart: true },
+            ],
+          },
+        };
+      },
+      read: async () => ({
+        runId: 'old',
+        reviewerId: 'one',
+        resources: 'settled',
+        status: 'completed',
+        receipt: { action: 'approve' },
+      }),
+      start: async () => {
+        starts++;
+        throw Error('User did not start');
+      },
+    };
+    const query = {
+      spaceId: 'space',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      roundId: 'round',
+      artifactVersionId: 'artifact',
+    };
+    const click = async (text) =>
+      act(async () => {
+        const button = [...document.querySelectorAll('button')].find(
+          (button) => button.querySelector('.zm-button-label')?.textContent.trim() === text,
+        );
+        assert.ok(button, text);
+        button.click();
+        await new Promise(setImmediate);
+      });
+    try {
+      await act(async () =>
+        root.render(createElement(NativeReviewLauncher, { api, target: query })),
+      );
+      await click('查看评审');
+      assert.equal(
+        [...document.querySelectorAll('button')].some(
+          (button) => button.querySelector('.zm-button-label')?.textContent.trim() === '开始评审',
+        ),
+        false,
+      );
+      await click('选择下一位评审');
+      assert.ok(
+        [...document.querySelectorAll('button')].some(
+          (button) => button.querySelector('.zm-button-label')?.textContent.trim() === '开始评审',
+        ),
+      );
+      assert.ok(document.body.textContent.includes('QA One · 已通过'));
+      assert.equal(reads, 2);
+      assert.equal(starts, 0);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  },
+);
+test(
+  'DOM contract: cold Stop is explicit and retries the same intent after an unknown response',
+  { skip: !domModule },
+  async () => {
+    const { createRoot } = await import('react-dom/client');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host),
+      keys = [];
+    const api = {
+      outcome: async (query) => reviewOutcome(query),
+      session: async () => ({
+        nextAfter: -1,
+        messages: [],
+        run: {
+          runId: 'old',
+          resources: 'held',
+          phase: 'recovery-required',
+          attemptVersion: 2,
+          stopRequested: false,
+        },
+      }),
+      stopSession: async (_target, _sid, run, key) => {
+        keys.push([key, run.attemptVersion]);
+        throw Error('Unknown original stop ACK');
+      },
+      recover: () => assert.fail('No automatic recovery'),
+      start: () => assert.fail('No drive'),
+    };
+    const query = {
+      spaceId: 'space',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      roundId: 'round',
+      artifactVersionId: 'artifact',
+    };
+    try {
+      await act(async () => {
+        root.render(
+          createElement(NativeReviewHistory, {
+            api,
+            target: query,
+            sessionId: 'original-session',
+            close() {},
+          }),
+        );
+        await new Promise(setImmediate);
+      });
+      assert.equal(keys.length, 0);
+      for (let i = 0; i < 2; i++)
+        await act(async () => {
+          const button = [...host.querySelectorAll('button')].find(
+            (button) => button.querySelector('.zm-button-label')?.textContent.trim() === '停止评审',
+          );
+          assert.ok(button);
+          button.click();
+          await new Promise(setImmediate);
+        });
+      assert.equal(keys.length, 2);
+      assert.deepEqual(keys[0], keys[1]);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  },
+);
+
+test(
+  'DOM contract: closed decisions reopen from task and native history with specific fixed feedback and no writes',
+  { skip: !domModule },
+  async () => {
+    const { createRoot } = await import('react-dom/client');
+    const query = {
+      spaceId: 'space',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      roundId: 'old-round',
+      artifactVersionId: 'old-artifact',
+    };
+    for (const status of ['approved', 'changes-requested']) {
+      const seen = [];
+      const api = {
+        outcome: async (target) => {
+          seen.push(structuredClone(target));
+          return reviewOutcome(target, status);
+        },
+        options: () => assert.fail('Closed feedback must not query open-round options'),
+        start: () => assert.fail('No start from read-only feedback'),
+        recover: () => assert.fail('No automatic recovery'),
+        session: async () => ({
+          run: { resources: 'settled', receipt: { action: 'approve' } },
+          messages: [],
+          nextAfter: -1,
+        }),
+      };
+      for (const history of [false, true]) {
+        const host = document.createElement('div');
+        document.body.append(host);
+        const root = createRoot(host);
+        try {
+          await act(async () => {
+            root.render(
+              history
+                ? createElement(NativeReviewHistory, {
+                    api,
+                    target: query,
+                    sessionId: 'original-review',
+                    close() {},
+                  })
+                : createElement(NativeReviewLauncher, { api, target: query }),
+            );
+            await new Promise(setImmediate);
+          });
+          if (!history)
+            await act(async () => {
+              [...host.querySelectorAll('button')]
+                .find((button) => button.textContent.includes('查看评审'))
+                .click();
+              await new Promise(setImmediate);
+            });
+          if (!history) {
+            const scroller = document.querySelector('dialog > .zm-form-body');
+            assert.ok(scroller, 'Long fixed content uses the existing dialog scroll body');
+            assert.equal(scroller.tabIndex, 0, 'The scroll body is keyboard reachable');
+            assert.equal(document.querySelectorAll('dialog > header h2').length, 1);
+          }
+          const text = document.body.textContent;
+          assert.ok(text.includes('独立评审专家'));
+          assert.ok(text.includes('已核对固定版本的具体意见 <literal>'));
+          assert.ok(text.includes('固定第二版正文'));
+          assert.ok(text.includes('第 2 版'));
+          assert.ok(text.includes(status === 'approved' ? '评审已通过' : '已退回修改'));
+          assert.equal(
+            [...document.querySelectorAll('button')].some((button) =>
+              button.textContent.includes('开始评审'),
+            ),
+            false,
+          );
+        } finally {
+          await act(async () => root.unmount());
+          host.remove();
+        }
+      }
+      assert.equal(seen.length, 2, 'Each cold view reads the actual persisted outcome');
+      for (const target of seen)
+        assert.deepEqual(target, query, 'Old round remains exact; never replace with latest');
+    }
+  },
+);
 
 const available = { kind: 'available' };
 const unavailable = { kind: 'unavailable', message: '当前能力不可用' };
@@ -57,6 +330,27 @@ const target = {
   nodeId: 'node',
   title: '实现任务状态筛选',
 };
+
+test('native turn outcome is a safe reason, never an artifact receipt or a later turn status', () => {
+  const ended = { type: 'turn-end', seq: 7, time: 1, turn: 1, reason: { kind: 'max-tokens' } };
+  const current = view({ run, turnEnd: ended });
+  const html = renderToStaticMarkup(createElement(NativeRunPanel, props({ view: current })));
+  assert.match(html, /达到输出上限/);
+  assert.match(html, /尚未提交产物/);
+  assert.match(html, /需要处理/);
+  const next = renderToStaticMarkup(
+    createElement(
+      NativeRunPanel,
+      props({
+        view: {
+          ...current,
+          messages: [{ id: 'later', role: 'user', sequence: 8, text: 'continue' }],
+        },
+      }),
+    ),
+  );
+  assert.doesNotMatch(next, /达到输出上限/);
+});
 const run = {
   ...target,
   runId: 'run',
@@ -737,3 +1031,41 @@ if (domModule) {
     }
   });
 }
+
+test('SSR per-Run publication: ranges stay explicit, and incomplete relative paths disable start before a Host call', () => {
+  const workspace = {
+    id: 'files',
+    label: 'Project files',
+    access: 'write',
+    publish: false,
+    publication: 'per-run',
+  };
+  const html = render({
+    view: view({
+      workspaces: [workspace],
+      selection: {
+        ...selection,
+        workspace: {
+          kind: 'local',
+          id: workspace.id,
+          publish: [{ kind: 'file', path: '../private' }],
+        },
+      },
+    }),
+  });
+  assert.match(html, /文件交付范围/);
+  assert.match(html, /请填写工作区内的相对路径/);
+  const start = [...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/gu)]
+    .map((match) => match[0])
+    .find((button) => button.includes('>开始执行</span>'));
+  assert(start);
+  assert.match(start, /disabled=""/);
+  const untouched = render({
+    view: view({
+      workspaces: [workspace],
+      selection: { ...selection, workspace: { kind: 'local', id: workspace.id } },
+    }),
+  });
+  assert.match(untouched, /未授权/);
+  assert.match(untouched, /添加相对路径后/);
+});

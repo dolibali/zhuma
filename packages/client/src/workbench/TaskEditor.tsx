@@ -672,11 +672,24 @@ export function TaskEditor({
           {state.projects.find((p) => p.id === task.projectId)?.name}
         </span>
         <span className="zm-spacer" />
-        {!api.member && (
+        {(!api.member || (api.saveTemplate && task.ownerId === api.member.actorId)) && (
           <Button
             variant="quiet"
-            disabled={busy || planning || !!previewTask || !!pendingSave.current || hasGaps}
-            title={hasGaps ? '先补齐映射，再保存为新工作流' : undefined}
+            disabled={
+              busy ||
+              planning ||
+              !!previewTask ||
+              !!pendingSave.current ||
+              hasGaps ||
+              (!!api.member && dirty)
+            }
+            title={
+              hasGaps
+                ? '先补齐映射，再保存为新工作流'
+                : api.member && dirty
+                  ? '请先保存任务修改'
+                  : undefined
+            }
             onClick={() => {
               try {
                 setTemplateSave(captureWorkflowTemplate(task, state));
@@ -1555,6 +1568,7 @@ export function TaskEditor({
         <TemplateSaveDialog
           definition={templateSave}
           initialName={task.title}
+          sourceTaskId={task.id}
           api={api}
           revision={revision}
           close={() => setTemplateSave(null)}

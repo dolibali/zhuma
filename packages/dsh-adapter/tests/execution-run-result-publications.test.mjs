@@ -13,7 +13,7 @@ import {
 import { describeNativeResultPublicationsTool } from '../dist/native-work-session-result-publications-tool.js';
 import { describeNativeResultTool } from '../dist/native-work-session-result-tool.js';
 import { describeNativeOutputFileTool } from '../dist/native-work-session-output-file-tool.js';
-import { compositionFacts } from './execution-run-composition-fixture.mjs';
+import { compositionFacts, legacyCompletionFixture } from './execution-run-composition-fixture.mjs';
 import { combinedPublisherFacts } from './execution-run-output-file-fixture.mjs';
 
 const hash = (value) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
@@ -218,7 +218,9 @@ test('result v2 composition: absent and v1 old wire bytes and configuration IDs 
     ],
   ];
   for (const [input, configurationId, bytes] of samples) {
-    const saved = freezeExecutionRunComposition(input);
+    const saved = readExecutionRunComposition(
+      legacyCompletionFixture(freezeExecutionRunComposition(input)),
+    );
     assert.equal(saved.configurationId, configurationId);
     assert.equal(wireHash(saved), bytes);
     const reopened = readExecutionRunComposition(JSON.parse(JSON.stringify(saved)));

@@ -191,7 +191,24 @@ export interface NativeAssistantSnapshot {
 }
 
 /** Whitelisted presentation only. No raw events, reasoning, tool arguments or replay data. */
+export const NATIVE_TURN_END_KINDS = Object.freeze([
+  'completed',
+  'blocked',
+  'max-tokens',
+  'error',
+  'aborted',
+  'interrupted',
+  'forked',
+] as const);
+export type NativeTurnEndKind = (typeof NATIVE_TURN_END_KINDS)[number] | 'unknown';
 export type NativeConversationFrame =
+  | {
+      readonly type: 'turn-end';
+      readonly seq: number;
+      readonly time: number;
+      readonly turn: number;
+      readonly reason: { readonly kind: NativeTurnEndKind };
+    }
   | {
       readonly type: 'message';
       readonly seq: number;
@@ -270,6 +287,14 @@ export interface NativeWorkRuntime {
   stop(sessionId: string, signal: AbortSignal): Promise<'stopped' | 'pending'>;
   flush(sessionId: string): Promise<void>;
   history(
+    sessionId: string,
+    after: number,
+    limit: number,
+    signal: AbortSignal,
+    allowAbsent?: boolean,
+  ): Promise<readonly NativeHistoryEvent[]>;
+  /** UI-only durable history, projected before the original public byte budget. */
+  conversationHistory?(
     sessionId: string,
     after: number,
     limit: number,

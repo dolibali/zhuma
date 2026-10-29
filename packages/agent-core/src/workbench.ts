@@ -48,7 +48,17 @@ export const AssetSchema = z
     content: z.string().max(150000),
     available: z.boolean(),
     origin: ResourceOriginSchema.optional(),
+    memberTemplate: z
+      .strictObject({
+        schemaVersion: z.literal(1),
+        spaceId: id,
+        ownerId: id,
+        sourceTaskId: id,
+        sourceWorkbenchRevision: z.number().int().nonnegative(),
+      })
+      .optional(),
   })
+  .refine((a) => !a.memberTemplate || a.kind === 'template', '成员工作流归属仅适用于工作流资产。')
   .refine((a) => a.kind === 'template' || a.content.length <= (a.kind === 'skill' ? 60000 : 8000), {
     path: ['content'],
     message: 'Skill 正文最多 60000 字符，MCP 正文最多 8000 字符。',

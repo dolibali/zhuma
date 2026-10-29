@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "id": "zhuma-engineering-starter",
+  "version": "1.0.0",
+  "licenseFile": "LICENSE.txt",
+  "description": "四组可选研发工作流及可单独使用的方法 Skills。",
+  "registrationNotes": [
+    "此清单仅为静态构建登记元数据，不是导入器或执行协议；工作流文件逐个遵守现有 WorkflowTemplate v1。",
+    "默认可见可选，不自动导入、覆盖空间或开始运行；成员显式选择自己的本机执行者。",
+    "roleSkillSuggestions 是建议资源映射；选定专家仍须经真实资源绑定和可用性核对，不能按角色名称冒认 Skill 生效。",
+    "资源、角色或权限不足时保持可编辑草稿，并明确报告缺项；不能删除正式评审来假装可运行。",
+    "短任务可以只选一个 Skill；模板不是必须经过的固定长流程。"
+  ],
+  "skills": [
+    {
+      "id": "zhuma-eng-requirements-analysis",
+      "name": "需求分析",
+      "entry": "resources/skills/engineering-starter/requirements-analysis/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/requirements-analysis/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-delivery-plan",
+      "name": "工作拆解与计划",
+      "entry": "resources/skills/engineering-starter/delivery-plan/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/delivery-plan/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-test-design",
+      "name": "业务测试设计",
+      "entry": "resources/skills/engineering-starter/test-design/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/test-design/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-acceptance-review",
+      "name": "验收与内容评审",
+      "entry": "resources/skills/engineering-starter/acceptance-review/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/acceptance-review/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-solution-design",
+      "name": "有界方案设计",
+      "entry": "resources/skills/engineering-starter/solution-design/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/solution-design/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-change-review",
+      "name": "变更代码审查",
+      "entry": "resources/skills/engineering-starter/change-review/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/change-review/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-bounded-fix",
+      "name": "有界问题修复",
+      "entry": "resources/skills/engineering-starter/bounded-fix/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/bounded-fix/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-focused-verification",
+      "name": "定向验证",
+      "entry": "resources/skills/engineering-starter/focused-verification/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/focused-verification/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-source-curation",
+      "name": "资料整理与来源索引",
+      "entry": "resources/skills/engineering-starter/source-curation/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/source-curation/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-engineering-writing",
+      "name": "工程文档编写",
+      "entry": "resources/skills/engineering-starter/engineering-writing/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/engineering-writing/LICENSE.txt"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "zhuma-eng-requirements-to-test",
+      "name": "需求分析与测试设计",
+      "description": "需求澄清、可交付拆解和业务用例，经正式独立评审后交付。",
+      "file": "requirements-to-test.json",
+      "roleSkillSuggestions": {
+        "analyst": ["zhuma-eng-requirements-analysis"],
+        "planner": ["zhuma-eng-delivery-plan"],
+        "test-designer": ["zhuma-eng-test-design"],
+        "independent-reviewer": ["zhuma-eng-acceptance-review"]
+      }
+    },
+    {
+      "id": "zhuma-eng-design-to-plan",
+      "name": "方案与实施计划",
+      "description": "方案先经过可行性和验收评审，再形成有真实依赖的实施计划。",
+      "file": "design-to-plan.json",
+      "roleSkillSuggestions": {
+        "designer": ["zhuma-eng-solution-design"],
+        "planner": ["zhuma-eng-delivery-plan"],
+        "independent-reviewer": ["zhuma-eng-acceptance-review"]
+      }
+    },
+    {
+      "id": "zhuma-eng-review-fix-verify",
+      "name": "代码审查、修复与验证",
+      "description": "从固定差异定位问题，完成有界修复与定向验证，每个必要关卡由独立角色评审。",
+      "file": "review-fix-verify.json",
+      "roleSkillSuggestions": {
+        "code-reviewer": ["zhuma-eng-change-review", "zhuma-eng-acceptance-review"],
+        "implementer": ["zhuma-eng-bounded-fix"],
+        "verifier": ["zhuma-eng-focused-verification"]
+      }
+    },
+    {
+      "id": "zhuma-eng-sources-to-docs",
+      "name": "资料整理与文档生成",
+      "description": "按需整理有权资料，生成有来源的文档并进行正式内容评审。",
+      "file": "sources-to-docs.json",
+      "roleSkillSuggestions": {
+        "curator": ["zhuma-eng-source-curation"],
+        "writer": ["zhuma-eng-engineering-writing"],
+        "independent-reviewer": ["zhuma-eng-acceptance-review"]
+      }
+    }
+  ]
+}

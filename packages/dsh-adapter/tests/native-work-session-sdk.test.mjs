@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { requireNativeInboxRetention } from '../dist/native-session-lifecycle.js';
+import { nativeWorkSessionKey } from '../dist/native-work-session-record.js';
 import {
   boot,
   grant,
@@ -45,12 +46,17 @@ test('published SDK: product cold open/history still read pre-existing native fa
   const host = await boot(root, new ScriptedAdapter([]));
   t.after(() => host.close());
   const current = grant();
-  await assert.rejects(host.service.send(current, message('unsupported', 'do not execute')), {
-    code: 'native-inbox-retention-unsupported',
-  });
   // Seed pre-existing native history with public SDK APIs only. This is a fixture,
-  // not a bypass or positive invocation of the product's retention guard.
-  const binding = host.service.open(current).binding;
+  // before it is designated a task session. Once bound, ordinary factory resume
+  // is forbidden; history remains readable without creating/resuming an Agent.
+  const binding = {
+    schemaVersion: 1,
+    scope: { ...current.scope },
+    selection: { ...selection },
+    receipts: [],
+    nativeSessionId: 'pre-existing-native-history',
+    nativeAgentId: 'pre-existing-native-history',
+  };
   const raw = await host.ctx.agents.create({
     sessionId: SessionId(binding.nativeSessionId),
     agentOptions: { provider: selection.provider, model: selection.model },
@@ -64,6 +70,14 @@ test('published SDK: product cold open/history still read pre-existing native fa
     false,
   );
   await raw.dispose();
+  await host.service.storage.write(nativeWorkSessionKey(current.scope), binding);
+  await assert.rejects(
+    host.ctx.agents.resume({
+      resumeSessionId: SessionId(binding.nativeSessionId),
+      agentOptions: { provider: selection.provider, model: selection.model },
+    }),
+    { code: 'scope-mismatch' },
+  );
   assert.equal(host.service.open(current).status, 'detached');
   const history = await host.service.history(current);
   assert.ok(history.events.some((event) => event.type === 'agent/inbox/spliced'));

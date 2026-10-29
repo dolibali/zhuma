@@ -1256,6 +1256,31 @@ export class NativeWorkSessionService {
     });
   }
 
+  /** Match an already sealed cut with history authority only. This never seals
+   * a new cut, writes metadata, creates an Agent or issues a result/drain proof;
+   * the original result owner must separately requalify its actual SDK source. */
+  readSealedResultIntent(
+    grant: NativeWorkGrant,
+    intentId: string,
+    raw: NativeResultCut,
+    assertSource: () => undefined,
+  ): Promise<NativeSessionBinding> {
+    const cut = nativeResultCutSchema.parse(raw);
+    return this.serial(grant, 'history', async (verify) => {
+      const binding = this.required(grant, 'history');
+      if (binding.resultIntent?.intentId !== intentId || !binding.resultIntent.cut)
+        throw new NativeWorkError('scope-mismatch');
+      if (JSON.stringify(binding.resultIntent.cut) !== JSON.stringify(cut))
+        throw new NativeWorkError('idempotency-mismatch');
+      if (assertSource() !== undefined) throw new NativeWorkError('invalid-request');
+      verify();
+      const current = this.required(grant, 'history');
+      if (JSON.stringify(current) !== JSON.stringify(binding))
+        throw new NativeWorkError('scope-mismatch');
+      return structuredClone(current);
+    });
+  }
+
   clearResultIntent(grant: NativeWorkGrant, intentId: string): Promise<void> {
     return this.serial(grant, 'send', async (verify) => {
       const binding = this.required(grant, 'send');
@@ -1476,11 +1501,32 @@ export class NativeWorkSessionService {
     }
   }
 
-  async history(
+  /** Raw Host-internal history retains its original capacity rejection. */
+  history(
     grant: NativeWorkGrant,
     after = -1,
-    limit = NATIVE_WORK_LIMITS.historyEvents,
+    limit: number = NATIVE_WORK_LIMITS.historyEvents,
     signal: AbortSignal = grant.signal,
+  ) {
+    return this.readHistory(grant, after, limit, signal, false);
+  }
+
+  /** Read-only UI history; this cannot create, resume or drive a native Agent. */
+  conversationHistory(
+    grant: NativeWorkGrant,
+    after = -1,
+    limit: number = NATIVE_WORK_LIMITS.historyEvents,
+    signal: AbortSignal = grant.signal,
+  ) {
+    return this.readHistory(grant, after, limit, signal, true);
+  }
+
+  private async readHistory(
+    grant: NativeWorkGrant,
+    after = -1,
+    limit: number = NATIVE_WORK_LIMITS.historyEvents,
+    signal: AbortSignal,
+    presentation: boolean,
   ) {
     const binding = this.required(grant, 'history');
     if (
@@ -1492,7 +1538,10 @@ export class NativeWorkSessionService {
     )
       throw new NativeWorkError('invalid-request');
     const combined = AbortSignal.any([grant.signal, signal]);
-    const events = await this.runtime.history(
+    const read = presentation ? this.runtime.conversationHistory : this.runtime.history;
+    if (!read) throw new NativeWorkError('unavailable');
+    const events = await read.call(
+      this.runtime,
       binding.nativeSessionId,
       after,
       limit,

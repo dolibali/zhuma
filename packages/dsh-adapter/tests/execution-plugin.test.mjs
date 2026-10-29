@@ -153,6 +153,7 @@ async function mount(options = {}) {
   };
   const cookie = signedChen(ctx);
   await apply(ctx, {
+    publishRunService: options.publishRunService,
     readWorkbench() {
       if (secret) throw new Error('secret-provider-path');
       return options.workbench;
@@ -1008,4 +1009,44 @@ test('cancelling an execution body clears the read timer', async () => {
   assert.equal((await response.json()).result.error.code, 'cancelled');
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(timeouts(), before);
+});
+
+// Transport contract only. Domain/lease/closed-round authorization is exercised
+// against the actual Service/JSON in review-outcome.test.mjs.
+test('review-outcome fetch preserves original cookie headers and exact query behind the existing member/envelope gate', async () => {
+  const { state } = confirmed();
+  const calls = [];
+  const host = await mount({
+    workbench: state,
+    publishRunService(service) {
+      service.readReviewOutcome = async (original, query) => {
+        calls.push({ original, query });
+        return { ok: true, value: { routeContract: 'review-outcome' } };
+      };
+    },
+  });
+  const query = {
+    spaceId: 'project',
+    taskId: 'task',
+    planId: 'plan',
+    revision: 1,
+    nodeId: 'design',
+    roundId: 'round',
+    artifactVersionId: 'fixed',
+  };
+  const anonymous = await host.call('review-outcome', query);
+  assert.equal(anonymous.status, 401);
+  const wrong = await host.call('review-outcome', query, {
+    cookie: host.cookie,
+    method: 'zhuma-exec/revision',
+  });
+  assert.equal(wrong.status, 400);
+  assert.equal(calls.length, 0);
+  const response = await host.call('review-outcome', query, { cookie: host.cookie });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.result, { ok: true, value: { routeContract: 'review-outcome' } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].original.headers.cookie, host.cookie);
+  assert.deepEqual(calls[0].query, query);
+  assert.equal('member' in calls[0].original, false);
 });

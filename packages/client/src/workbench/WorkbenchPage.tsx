@@ -24,12 +24,15 @@ import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
 import { ControlIcon } from './ControlIcon.js';
+import { TaskBoard } from './TaskBoard.js';
 import {
   latestTaskPlan,
   useTaskProgress,
   type TaskProgressState,
 } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
+import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 import {
   ProjectHub,
   ProjectFields,
@@ -37,7 +40,7 @@ import {
   type ProjectTab,
 } from './ProjectHub.js';
 
-type Section = 'projects' | 'tasks' | 'assets' | 'members';
+type Section = 'projects' | 'tasks' | 'assets' | 'members' | 'knowledge';
 type Dialog =
   | { kind: 'project'; value: Project }
   | { kind: 'member'; value: Participant }
@@ -59,6 +62,7 @@ const labels: Record<Section, string> = {
   tasks: '任务清单',
   assets: '团队资产',
   members: '成员与专家',
+  knowledge: '知识',
 };
 
 export function WorkbenchPage({
@@ -70,6 +74,7 @@ export function WorkbenchPage({
   nativeRun,
   projectExecution,
   legacyMode = false,
+  knowledge,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
@@ -87,10 +92,13 @@ export function WorkbenchPage({
       }
     | undefined;
   legacyMode?: boolean;
+  knowledge?: Omit<KnowledgePanelProps, 'onDirtyChange'> | undefined;
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
   const [section, setSection] = useState(initialSection);
+  const [knowledgeDirty, setKnowledgeDirty] = useState(false);
+  const knowledgeLeave = useLeaveConfirmation(() => knowledge?.lifetime.isCurrent() ?? true);
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
@@ -134,6 +142,7 @@ export function WorkbenchPage({
     }
   }, [assetContent]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [taskView, setTaskView] = useState<'list' | 'board'>('list');
   const [initialPlanning, setInitialPlanning] = useState<InitialPlanning | null>(null);
   const submitting = useRef(false);
   const pageGeneration = useRef(0);
@@ -325,7 +334,9 @@ export function WorkbenchPage({
               : state.tasks.some((t) => t.id === command.task.id)
                 ? 'update-task'
                 : 'create-task'
-            : undefined;
+            : command.type === 'instantiate-template'
+              ? 'create-task'
+              : undefined;
       pending.current = { content, id: uid(), revision: state.revision, intent };
     }
     try {
@@ -632,47 +643,50 @@ export function WorkbenchPage({
     );
   return (
     <div className="zhuma">
+      {knowledgeLeave.dialog}
       <div className={`zm-page${activeProject ? ' zm-project-page' : ''}`}>
-        <header className="zm-page-heading">
-          <div className="zm-page-title">
-            {activeProject && (
-              <Button variant="quiet" onClick={() => setActiveProjectId(null)}>
-                <ControlIcon direction="left" /> 全部项目
+        {section !== 'knowledge' && (
+          <header className="zm-page-heading">
+            <div className="zm-page-title">
+              {activeProject && (
+                <Button variant="quiet" onClick={() => setActiveProjectId(null)}>
+                  <ControlIcon direction="left" /> 全部项目
+                </Button>
+              )}
+              <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>
+              <span>
+                {expertLibrary
+                  ? state.participants.filter((p) => p.kind === 'expert').length
+                  : activeProject
+                    ? undefined
+                    : total}
+              </span>
+            </div>
+            <div className="zm-actions">
+              <Appearance store={appearance} />
+              <Button variant="quiet" onClick={() => void refresh()}>
+                刷新
               </Button>
-            )}
-            <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>
-            <span>
-              {expertLibrary
-                ? state.participants.filter((p) => p.kind === 'expert').length
-                : activeProject
-                  ? undefined
-                  : total}
-            </span>
-          </div>
-          <div className="zm-actions">
-            <Appearance store={appearance} />
-            <Button variant="quiet" onClick={() => void refresh()}>
-              刷新
-            </Button>
-            {activeProject && (!member || capabilities?.createProject) && (
-              <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
-                编辑项目
+              {activeProject && (!member || capabilities?.createProject) && (
+                <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
+                  编辑项目
+                </Button>
+              )}
+              {!member && section === 'assets' && (
+                <Button onClick={() => setImportOpen(true)}>
+                  {expertLibrary ? '导入专家' : '导入定义'}
+                </Button>
+              )}
+              <Button
+                variant="primary"
+                disabled={!!member && (loading || saving || !canCreate)}
+                onClick={createCatalogItem}
+              >
+                ＋ {createLabel}
               </Button>
-            )}
-            {!member && section === 'assets' && (
-              <Button onClick={() => setImportOpen(true)}>
-                {expertLibrary ? '导入专家' : '导入定义'}
-              </Button>
-            )}
-            <Button
-              variant="primary"
-              disabled={!!member && (loading || saving || !canCreate)}
-              onClick={createCatalogItem}
-            >
-              ＋ {createLabel}
-            </Button>
-          </div>
-        </header>
+            </div>
+          </header>
+        )}
         {legacyMode && (
           <p className="zm-mode-notice">当前保留单人模式；已有资料不会自动迁入团队。</p>
         )}
@@ -680,27 +694,36 @@ export function WorkbenchPage({
           <div className="zm-page-bar">
             <nav className="zm-tabs" aria-label="工作台导航">
               {(Object.keys(labels) as Section[])
-                .filter((s) => !member || s === 'projects' || s === 'tasks')
+                .filter((s) =>
+                  s === 'knowledge' ? !!knowledge : !member || s === 'projects' || s === 'tasks',
+                )
                 .map((s) => (
                   <button
                     key={s}
                     aria-current={s === section ? 'page' : undefined}
                     onClick={() => {
-                      setSection(s);
-                      setSearch('');
-                      setActiveProjectId(null);
+                      knowledgeLeave.request(
+                        () => {
+                          setSection(s);
+                          setSearch('');
+                          setActiveProjectId(null);
+                        },
+                        s !== section && knowledgeDirty,
+                      );
                     }}
                   >
                     {labels[s]}
-                    <span>
-                      {s === 'projects'
-                        ? state.projects.length
-                        : s === 'tasks'
-                          ? state.tasks.length
-                          : s === 'members'
-                            ? state.participants.length
-                            : catalog.length}
-                    </span>
+                    {s !== 'knowledge' && (
+                      <span>
+                        {s === 'projects'
+                          ? state.projects.length
+                          : s === 'tasks'
+                            ? state.tasks.length
+                            : s === 'members'
+                              ? state.participants.length
+                              : catalog.length}
+                      </span>
+                    )}
                   </button>
                 ))}
             </nav>
@@ -721,9 +744,25 @@ export function WorkbenchPage({
                     ...state.projects.map((p) => ({ value: p.id, label: p.name })),
                   ]}
                 />
+                <div className="zm-task-view" role="group" aria-label="任务显示方式">
+                  <Button
+                    variant="quiet"
+                    aria-pressed={taskView === 'list'}
+                    onClick={() => setTaskView('list')}
+                  >
+                    列表
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    aria-pressed={taskView === 'board'}
+                    onClick={() => setTaskView('board')}
+                  >
+                    看板
+                  </Button>
+                </div>
               </div>
             )}
-            {section !== 'tasks' && !activeProject && (
+            {section !== 'tasks' && section !== 'knowledge' && !activeProject && (
               <div className="zm-filter">
                 <input
                   type="search"
@@ -759,6 +798,9 @@ export function WorkbenchPage({
               </div>
             )}
           </div>
+        )}
+        {section === 'knowledge' && knowledge && (
+          <KnowledgePanel {...knowledge} onDirtyChange={setKnowledgeDirty} />
         )}
         {!expertLibrary && section === 'assets' && (
           <nav className="zm-asset-categories" aria-label="资产分类">
@@ -879,67 +921,78 @@ export function WorkbenchPage({
         )}
         {section === 'tasks' && (
           <>
-            <div className="zm-task-table">
-              <div className="zm-table-heading">
-                <span>工作事项</span>
-                <span>参与者</span>
-                <span>工作流</span>
-                <span>状态</span>
-              </div>
-              {tasks.map((t) => (
-                <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
-                  <span>
-                    <strong>{t.title}</strong>
-                    <small>
-                      {state.projects.find((p) => p.id === t.projectId)?.name}
-                      <span className="zm-meta-dot">·</span>
-                      {state.participants.find((p) => p.id === t.ownerId)?.name ?? '负责人待定'}
-                    </small>
-                  </span>
-                  <span className="zm-avatars">
-                    {state.participants
-                      .filter((p) => t.participantIds.includes(p.id))
-                      .slice(0, 3)
-                      .map((p) => {
-                        const avatarLabel = `${p.name} · ${p.kind === 'expert' ? 'Agent 专家' : '团队成员'}（参与者）`;
-                        return (
-                          <span
-                            role="img"
-                            title={avatarLabel}
-                            aria-label={avatarLabel}
-                            className={`zm-avatar ${p.kind}`}
-                            key={p.id}
-                          >
-                            {p.kind === 'expert' ? 'AI' : p.name[0]}
-                          </span>
-                        );
-                      })}
-                    {t.participantIds.length > 3 && (
-                      <span
-                        className="zm-avatar zm-avatar-overflow"
-                        title={`${t.participantIds.length} 位参与者`}
-                      >
-                        +{t.participantIds.length - 3}
-                      </span>
-                    )}
-                  </span>
-                  <span>
-                    {t.workflows.flatMap((w) => w.nodes).length} 节点
-                    {t.workflows.length > 1 && <small>{t.workflows.length} 个工作流</small>}
-                  </span>
-                  <span className="zm-task-state-cell">
-                    <TaskProgressSummary
-                      progress={progressFor(t.id)}
-                      confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
-                      compact
-                    />
-                    <span className={`zm-status ${t.status}`}>
-                      {t.status === 'draft' ? '计划草稿' : '计划已确认'}
+            {taskView === 'board' ? (
+              <TaskBoard
+                tasks={tasks}
+                projects={state.projects}
+                participants={state.participants}
+                progress={progressFor}
+                confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
+                openTask={setActiveTaskId}
+              />
+            ) : (
+              <div className="zm-task-table">
+                <div className="zm-table-heading">
+                  <span>工作事项</span>
+                  <span>参与者</span>
+                  <span>工作流</span>
+                  <span>状态</span>
+                </div>
+                {tasks.map((t) => (
+                  <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
+                    <span>
+                      <strong>{t.title}</strong>
+                      <small>
+                        {state.projects.find((p) => p.id === t.projectId)?.name}
+                        <span className="zm-meta-dot">·</span>
+                        {state.participants.find((p) => p.id === t.ownerId)?.name ?? '负责人待定'}
+                      </small>
                     </span>
-                  </span>
-                </button>
-              ))}
-            </div>
+                    <span className="zm-avatars">
+                      {state.participants
+                        .filter((p) => t.participantIds.includes(p.id))
+                        .slice(0, 3)
+                        .map((p) => {
+                          const avatarLabel = `${p.name} · ${p.kind === 'expert' ? 'Agent 专家' : '团队成员'}（参与者）`;
+                          return (
+                            <span
+                              role="img"
+                              title={avatarLabel}
+                              aria-label={avatarLabel}
+                              className={`zm-avatar ${p.kind}`}
+                              key={p.id}
+                            >
+                              {p.kind === 'expert' ? 'AI' : p.name[0]}
+                            </span>
+                          );
+                        })}
+                      {t.participantIds.length > 3 && (
+                        <span
+                          className="zm-avatar zm-avatar-overflow"
+                          title={`${t.participantIds.length} 位参与者`}
+                        >
+                          +{t.participantIds.length - 3}
+                        </span>
+                      )}
+                    </span>
+                    <span>
+                      {t.workflows.flatMap((w) => w.nodes).length} 节点
+                      {t.workflows.length > 1 && <small>{t.workflows.length} 个工作流</small>}
+                    </span>
+                    <span className="zm-task-state-cell">
+                      <TaskProgressSummary
+                        progress={progressFor(t.id)}
+                        confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
+                        compact
+                      />
+                      <span className={`zm-status ${t.status}`}>
+                        {t.status === 'draft' ? '计划草稿' : '计划已确认'}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             {!tasks.length && (
               <div className="zm-empty">
                 <h3>{search ? '没有匹配的任务' : '开始下一项工作'}</h3>
@@ -1063,35 +1116,39 @@ export function WorkbenchPage({
             ))}
           </div>
         )}
-        {!expertLibrary && !activeProject && section !== 'tasks' && !visibleCount && (
-          <div className="zm-empty zm-directory-empty">
-            <h3>{directoryTotal ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
-            <p>
-              {directoryTotal
-                ? '换个关键词，或清除筛选。'
-                : section === 'projects'
-                  ? '创建项目，集中管理相关工作。'
-                  : section === 'members'
-                    ? '添加团队成员或 Agent 专家，填写职责后参与分工。'
-                    : '新建或导入专家、Skill、MCP 能力定义和工作流模板。'}
-            </p>
-            {directoryTotal ? (
-              <Button
-                onClick={() => {
-                  setSearch('');
-                  setMemberKind('all');
-                  setAssetKind('all');
-                }}
-              >
-                清除筛选
-              </Button>
-            ) : (
-              <Button variant="primary" onClick={createCatalogItem} disabled={!canCreate}>
-                {createLabel}
-              </Button>
-            )}
-          </div>
-        )}
+        {!expertLibrary &&
+          !activeProject &&
+          section !== 'tasks' &&
+          section !== 'knowledge' &&
+          !visibleCount && (
+            <div className="zm-empty zm-directory-empty">
+              <h3>{directoryTotal ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
+              <p>
+                {directoryTotal
+                  ? '换个关键词，或清除筛选。'
+                  : section === 'projects'
+                    ? '创建项目，集中管理相关工作。'
+                    : section === 'members'
+                      ? '添加团队成员或 Agent 专家，填写职责后参与分工。'
+                      : '新建或导入专家、Skill、MCP 能力定义和工作流模板。'}
+              </p>
+              {directoryTotal ? (
+                <Button
+                  onClick={() => {
+                    setSearch('');
+                    setMemberKind('all');
+                    setAssetKind('all');
+                  }}
+                >
+                  清除筛选
+                </Button>
+              ) : (
+                <Button variant="primary" onClick={createCatalogItem} disabled={!canCreate}>
+                  {createLabel}
+                </Button>
+              )}
+            </div>
+          )}
       </div>
       {dialog && (
         <Modal
@@ -1485,7 +1542,10 @@ export function WorkbenchPage({
                           <strong>AI 规划</strong>
                         </span>
                       </label>
-                      {!member && (
+                      {(!member ||
+                        state.assets.some(
+                          (asset) => asset.kind === 'template' && asset.available,
+                        )) && (
                         <label>
                           <input
                             type="radio"

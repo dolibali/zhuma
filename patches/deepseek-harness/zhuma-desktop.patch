@@ -1781,7 +1781,7 @@ diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-mana
 +    mkdirSync(projectDir, { recursive: true, mode: 0o700 })
 +    // Write the selection before the manifest: a failed init can retry without
 +    // falling back to an inherited legacy default or replacing an existing patch.
-+    writeFileSync(patch, '# Zhuma first profile: explicit member setup.\n- id: zhuma-workbench\n  config:\n    deploymentMode: multi-member\n    localSetup: true\n', { flag: 'wx', mode: 0o600 })
++    writeFileSync(patch, '# Zhuma first profile: explicit member setup.\n- id: typert-gateway\n  config:\n    sessionAdmissionRequired: true\n- id: zhuma-workbench\n  config:\n    deploymentMode: multi-member\n    localSetup: true\n', { flag: 'wx', mode: 0o600 })
 +  }
    initProfile(projectDir, WEB_PROFILE.bundles)
  }
@@ -1942,3 +1942,228 @@ diff --git a/scripts/primary-runtime/prepare.ts b/scripts/primary-runtime/prepar
  }
  
  if (import.meta.main) {
+diff --git a/packages/api/gateway/src/types.ts b/packages/api/gateway/src/types.ts
+--- a/packages/api/gateway/src/types.ts
++++ b/packages/api/gateway/src/types.ts
+@@ -144,8 +144,20 @@
+   | 'gateway/signature-invalid'
+   | 'gateway/uplink-overflow'
+ 
++/** One serial product guard, after argument/access validation and before any
++ * Session receiver or Agent lookup. Only an explicit true admits a command. */
++export type SessionCommandAdmission = (
++  method: string,
++  args: Readonly<Record<string, unknown>>,
++  signal: AbortSignal,
++) => boolean | Promise<boolean>
++
+ /** Host dispatcher consumed by Connection adapters. */
+ export interface TypertGateway {
++  /** Installs one Session guard. Once enabled, removal fails closed until a
++   * replacement is ready; ordinary SDK deployments install no guard. */
++  registerSessionAdmission(admit: SessionCommandAdmission): () => void
++
+   /** Carrier adapter shared by WebSocket and in-process transports. */
+   readonly wireStream: TypertGatewayWireStream
+ 
+diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.ts
+--- a/packages/api/gateway/src/index.ts
++++ b/packages/api/gateway/src/index.ts
+@@ -36,6 +36,7 @@
+ } from '@deepseek-ai/dsh-typert-protocol'
+ import type {
+   InvokeRemoteRequest,
++  SessionCommandAdmission,
+   TypertGateway,
+   TypertGatewayErrorCode,
+   TypertGatewayWireStream,
+@@ -70,6 +71,7 @@
+ 
+ export type {
+   InvokeRemoteRequest,
++  SessionCommandAdmission,
+   TypertGateway,
+   TypertGatewayErrorCode,
+   TypertGatewayWireStream,
+@@ -154,6 +156,9 @@
+ 
+ /** Gateway transport configuration. */
+ export interface Config {
++  /** Product Session commands stay closed before registration or after unload.
++   * Plain SDK deployments default to their original behavior. @default false */
++  readonly sessionAdmissionRequired?: boolean
+   /** WebSocket Ping interval from 1 through 2,147,483,647 milliseconds. @default 2000 */
+   readonly websocketHeartbeatIntervalMs?: number
+   /** Buffered uplink frame bytes one logical stream may hold before it fails with `gateway/uplink-overflow`. @default 262144 */
+@@ -209,10 +214,22 @@
+ export class TypertGatewayService extends Service implements TypertGateway {
+   static inject = ['typert', 'remoteAccess']
+   static Config: z<Config> = z.object({
++    sessionAdmissionRequired: z.boolean().default(false),
+     websocketHeartbeatIntervalMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS)
+       .default(DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS),
+     streamInboxBytes: z.number().step(1).min(1).default(DEFAULT_STREAM_INBOX_BYTES),
+   })
++
++  private sessionAdmissionRequired = false
++  private sessionAdmission: { readonly admit: SessionCommandAdmission } | undefined
++
++  registerSessionAdmission(admit: SessionCommandAdmission): () => void {
++    if (this.sessionAdmission !== undefined) throw new Error('Session admission is already registered')
++    this.sessionAdmissionRequired = true
++    const registration = { admit }
++    this.sessionAdmission = registration
++    return () => { if (this.sessionAdmission === registration) this.sessionAdmission = undefined }
++  }
+ 
+   /** Carrier adapter shared by the WebSocket mux and local Host transports. */
+   readonly wireStream: TypertGatewayWireStream = {
+@@ -236,6 +253,7 @@
+   constructor(ctx: Context, config: Config) {
+     super(ctx, 'typertGateway')
+     const resolved = config as ResolvedConfig
++    this.sessionAdmissionRequired = resolved.sessionAdmissionRequired === true
+     ctx.on('internal/service', () => {
+       this.srcClaims = undefined
+     })
+@@ -807,6 +825,23 @@
+         })
+       }
+     }
++    // Covers unary and mux streams, including already-live prompt/queue/cancel
++    // and cold history/create. A refusing guard must activate no Agent lookup.
++    if (request.namespace === 'session'
++      || (request.namespace === 'workspace' && request.method === 'archiveSession')) {
++      const admission = this.sessionAdmission
++      if (admission === undefined) {
++        if (this.sessionAdmissionRequired) throw new TypertGatewayError(
++          'gateway/service-unavailable', endpoint, 'Session command admission is unavailable')
++      } else {
++        const signal = request.signal ?? NEVER_ABORTED_SIGNAL
++        signal.throwIfAborted()
++        const allowed = await admission.admit(request.method, validated, signal)
++        signal.throwIfAborted()
++        if (this.sessionAdmission !== admission || allowed !== true) throw new TypertGatewayError(
++          'gateway/invocation-unavailable', endpoint, 'Use the authorized task Session controls')
++      }
++    }
+     const receiverContext = await this.resolveReceiverContext(descriptor, validated, endpoint)
+     const receiver: unknown = receiverContext.get(descriptor.service)
+     if (!isObject(receiver)) {
+diff --git a/packages/client/ui-workspace/src/client/index.ts b/packages/client/ui-workspace/src/client/index.ts
+index cc9da07..a5f541d 100644
+--- a/packages/client/ui-workspace/src/client/index.ts
++++ b/packages/client/ui-workspace/src/client/index.ts
+@@ -58,7 +58,7 @@ import { SessionIdMenuItem } from './session-actions/SessionId.tsx'
+ import { WorkspacePicker } from './WorkspacePicker.tsx'
+ import { en, zh, type WorkspaceKey } from './locales.ts'
+ 
+-export type { StartSessionOptions, UiWorkspace } from './navigation.ts'
++export type { StartSessionOptions, SessionNavigationGuard, UiWorkspace } from './navigation.ts'
+ export type {
+   DirectoryFlowOwnerProps, DirectoryFlowSlotName, DirectoryPickingHooks, DirectoryPickingInjected,
+   MenuOpenState, RowToast, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
+diff --git a/packages/client/ui-workspace/src/client/navigation.ts b/packages/client/ui-workspace/src/client/navigation.ts
+index 9c8fa97..689fdc6 100644
+--- a/packages/client/ui-workspace/src/client/navigation.ts
++++ b/packages/client/ui-workspace/src/client/navigation.ts
+@@ -35,8 +35,15 @@ export interface StartSessionOptions extends DraftInitializationOptions {
+   readonly agentPreset?: string
+ }
+ 
++/** Product navigation guard before retaining/following a Session. False means
++ * the guard handled task navigation or refused it; the guard owns user feedback. */
++export type SessionNavigationGuard = (target: SessionTarget, signal: AbortSignal) => boolean | Promise<boolean>
++
+ /** Workspace archive and directory operations consumed by Client UI domains. */
+ export interface UiWorkspace {
++  /** One optional product guard, sharing sidebar/direct/restore navigation. */
++  registerSessionNavigationGuard(guard: SessionNavigationGuard): () => void
++
+   /**
+    * Select a Session and show its Conversation as one UI navigation action.
+    * @param target - known Session identity or durable direct-parent subagent address to display.
+@@ -160,6 +167,19 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+     {}, { persist: { name: 'dsh.sessions.current' } },
+   )
+   private mainReference: SessionReference | undefined
++  private sessionNavigation: { readonly guard: SessionNavigationGuard } | undefined
++  private waitingNavigation: AbortController | undefined
++
++  registerSessionNavigationGuard(guard: SessionNavigationGuard): () => void {
++    if (this.sessionNavigation !== undefined) throw new Error('Session navigation guard is already registered')
++    const registration = { guard }
++    this.sessionNavigation = registration
++    return () => {
++      if (this.sessionNavigation !== registration) return
++      this.sessionNavigation = undefined
++      this.waitingNavigation?.abort()
++    }
++  }
+ 
+   /**
+    * @param ctx - Client root Context.
+@@ -274,7 +294,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+   }
+ 
+   openSession(target: SessionTarget): void {
+-    this.replaceMain(target, this.lifetime.signal, 'reveal')
++    this.replaceMain(target, AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]), 'reveal')
+   }
+ 
+   openWorkspace(
+@@ -441,18 +461,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+ 
+   private async restoreSelection(workspaces: WorkspaceSnapshot, sessions: SessionListState): Promise<void> {
+     const saved = this.selection.getSnapshot()
++    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+     if (saved.subagentAddress !== undefined) {
+-      this.replaceMain(saved.subagentAddress, this.lifetime.signal, 'preserve')
++      this.replaceMain(saved.subagentAddress, navigation, 'preserve')
+       return
+     }
+     const summary = saved.sessionId === undefined ? undefined : sessions.byId[saved.sessionId]
+     const workspace = summary === undefined ? undefined
+       : workspaces.items.find(item => item.sessionIds.includes(summary.id))
+     if (summary !== undefined && (!summary.blank || workspace === undefined)) {
+-      this.replaceMain(summary.id, this.lifetime.signal, 'preserve')
++      this.replaceMain(summary.id, navigation, 'preserve')
+       return
+     }
+-    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+     let sessionId: SessionId | undefined
+     if (summary !== undefined && workspace !== undefined && summary.cwd === workspace.path
+       && !workspaces.archivedSessionIds.includes(summary.id)) {
+@@ -501,6 +521,32 @@ class UiWorkspaceService extends Service implements UiWorkspace {
+     signal: AbortSignal,
+     panel: 'reveal' | 'preserve',
+     beforeOpen?: (sessionId: SessionId) => void,
++  ): void {
++    const registration = this.sessionNavigation
++    if (registration === undefined) { this.commitMain(target, signal, panel, beforeOpen); return }
++    this.waitingNavigation?.abort()
++    const waiting = new AbortController()
++    this.waitingNavigation = waiting
++    const bounded = AbortSignal.any([signal, this.lifetime.signal, waiting.signal])
++    void Promise.resolve().then(() => {
++      bounded.throwIfAborted()
++      return registration.guard(target, bounded)
++    }).then(allowed => {
++      if (bounded.aborted || this.sessionNavigation !== registration || this.waitingNavigation !== waiting) return
++      if (allowed === true) this.commitMain(target, bounded, panel, beforeOpen)
++    }).catch(() => {
++      // Refusal keeps the previous view. The installed product guard owns its
++      // error/login feedback; failure must never default to ordinary history.
++    }).finally(() => {
++      if (this.waitingNavigation === waiting) this.waitingNavigation = undefined
++    })
++  }
++
++  private commitMain(
++    target: SessionTarget,
++    signal: AbortSignal,
++    panel: 'reveal' | 'preserve',
++    beforeOpen?: (sessionId: SessionId) => void,
+   ): void {
+     signal.throwIfAborted()
+     const reference = this.sessions.retain(target, { source: 'mainView' })

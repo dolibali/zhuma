@@ -10,6 +10,7 @@ import type { MemberShell, MemberShellSnapshot } from './shell.js';
 export type SidebarAccountFooterProps = SidebarFooterActionOwnerProps & {
   readonly shell: MemberShell;
   openWork(): void;
+  manageAccount?: (() => void) | undefined;
 };
 function spaceCaption(space: MemberShellSnapshot['space']) {
   if (!space || space.status === 'checking') return '正在确认空间';
@@ -35,7 +36,12 @@ function PersonIcon() {
 }
 
 /** Account action reused by the composed Settings launcher; owns no session or theme state. */
-export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFooterProps) {
+export function SidebarAccountFooter({
+  shell,
+  wide,
+  openWork,
+  manageAccount,
+}: SidebarAccountFooterProps) {
   const snapshot = useSyncExternalStore(shell.subscribe, shell.getSnapshot, shell.getSnapshot);
   const state = snapshot.session;
   const trigger = useRef<HTMLButtonElement>(null);
@@ -125,7 +131,7 @@ export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFo
                     onValueChange={(id) => {
                       setOpen(false);
                       openWork();
-                      shell.requestSpace(id, () => trigger.current?.focus());
+                      shell.requestSpace(id, () => trigger.current?.focus(), state.epoch);
                     }}
                   />
                 </Field>
@@ -142,6 +148,17 @@ export function SidebarAccountFooter({ shell, wide, openWork }: SidebarAccountFo
                   </Button>
                 )}
                 <div className="zm-account-exit">
+                  {manageAccount && (
+                    <Button
+                      variant="quiet"
+                      onClick={() => {
+                        setOpen(false);
+                        manageAccount();
+                      }}
+                    >
+                      账号与团队
+                    </Button>
+                  )}
                   <Button
                     variant="quiet"
                     onClick={() => {

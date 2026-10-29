@@ -299,9 +299,10 @@
 }
 .zhuma .zm-login-entry {
   display: grid;
-  place-items: center;
+  align-content: start;
+  justify-items: center;
   flex: 1;
-  padding: 32px 16px;
+  padding: clamp(56px, 8vh, 80px) 24px 32px;
 }
 .zhuma .zm-login-card {
   display: grid;
@@ -527,7 +528,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 24px;
+  padding: 6px 24px;
   border-bottom: 1px solid var(--zm-line);
 }
 .zhuma .zm-space-bar .zm-single-select {
@@ -1024,6 +1025,45 @@ body[data-ds-dark-theme] {
   flex: 1;
   min-height: 0;
 }
+.zhuma.zm-shared-backend {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.zm-shared-backend > .zm-shell-panel {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+/* Connection and space controls share one row below the original window strip. */
+.zm-shared-backend .zm-backend-bar {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 44px;
+  max-width: min(42%, 300px);
+}
+html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
+  top: var(--dsh-frame-top-clearance, 0px);
+}
+.zm-shared-backend .zm-backend-bar .zm-button {
+  min-width: 0;
+  max-width: 100%;
+}
+.zm-shared-backend .zm-backend-bar .zm-button-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.zm-shared-backend .zm-space-bar {
+  padding-right: calc(min(42%, 300px) + 36px);
+}
 .zm-member-work {
   display: flex;
   flex-direction: column;
@@ -1041,6 +1081,18 @@ body[data-ds-dark-theme] {
   margin: 0 auto;
   min-height: 0;
   overflow: auto;
+  padding-top: 20px;
+}
+.zm-member-work > .zm-page > h1 {
+  margin: 0 0 20px;
+}
+.zm-member-work .zm-execution-workspace > section > .zm-page-heading {
+  margin-bottom: 12px;
+}
+.zm-member-work .zm-execution-workspace > section > .zm-empty {
+  margin: 0;
+  padding: 12px 0;
+  text-align: left;
 }
 .zm-shell-chrome {
   flex: none;
@@ -4616,4 +4668,159 @@ html[data-platform='darwin'] .zm-shell-chrome {
   background: var(--zm-bg);
   font-size: 12px;
   line-height: 1.6;
+}
+.zm-task-view {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--zm-line);
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+.zm-task-view .zm-button {
+  min-height: 28px;
+  padding: 4px 12px;
+}
+.zm-task-view [aria-pressed='true'] {
+  background: var(--zm-hover);
+  color: var(--zm-ink);
+}
+.zm-task-board {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(210px, 1fr));
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 12px;
+  align-items: start;
+}
+.zm-board-column {
+  min-width: 0;
+  min-height: 220px;
+  padding: 12px;
+  background: var(--zm-bg);
+  border: 1px solid var(--zm-line-subtle);
+  border-radius: 8px;
+}
+.zm-board-column h2 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.zm-board-column h2 span {
+  color: var(--zm-muted);
+  font-weight: 400;
+}
+.zhuma .zm-board-card {
+  width: 100%;
+  display: grid;
+  gap: 9px;
+  margin-bottom: 10px;
+  padding: 14px;
+  background: var(--zm-paper);
+  border: 1px solid var(--zm-line);
+  border-radius: 7px;
+  text-align: left;
+  white-space: normal;
+}
+.zhuma .zm-board-card:hover {
+  border-color: var(--zm-line-strong);
+  background: var(--zm-paper);
+  box-shadow: 0 2px 6px var(--zm-shadow-soft);
+}
+.zm-board-card strong {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.zm-board-card small,
+.zm-board-card-footer,
+.zm-board-empty {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-account-management {
+  display: grid;
+  gap: 18px;
+}
+.zm-team-create,
+.zm-team-add {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+.zm-team-create .zm-field,
+.zm-team-add .zm-field {
+  flex: 1;
+  margin: 0;
+}
+.zm-team-directory {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(0, 1.5fr);
+  gap: 22px;
+  min-height: 200px;
+}
+.zm-team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.zhuma .zm-team-list button,
+.zm-dialog .zm-team-list button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  white-space: normal;
+  padding: 12px;
+}
+.zm-team-list [aria-current='true'] {
+  background: var(--zm-soft);
+  border-color: var(--zm-line-strong);
+}
+.zm-team-list small,
+.zm-team-member small {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-team-members h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.zm-team-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--zm-line-subtle);
+}
+.zm-team-member small {
+  margin-left: 8px;
+}
+.zm-team-add {
+  margin-top: 18px;
+}
+.zm-password-change {
+  max-width: 440px;
+}
+@media (max-width: 600px) {
+  .zm-team-directory {
+    grid-template-columns: 1fr;
+  }
+  .zm-team-create,
+  .zm-team-add {
+    flex-wrap: wrap;
+  }
+}
+.zm-board-card-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.zm-board-empty {
+  padding: 18px 0;
+  text-align: center;
 }

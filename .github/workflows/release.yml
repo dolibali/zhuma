@@ -80,6 +80,8 @@ jobs:
             dist/*.dmg
             dist/SOURCE.json
             dist/SHA256SUMS
+            dist/packaged-backend.sh
+            dist/packaged-backend.mjs
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

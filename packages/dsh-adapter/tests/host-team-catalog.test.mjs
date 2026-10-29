@@ -128,6 +128,68 @@ test('team catalog contract: same-ID private content and immutable package confl
   assert.equal(fresh.calls, 0);
 });
 
+test('shared team defaults: fresh real teams reuse four fixed public packs, explicit selections win and reads never import', async () => {
+  const h = await setup();
+  const catalog = await openHostTeamCatalog({ ...h.options, defaultForTeams: true });
+  assert.equal(h.calls, 4, 'Only startup imports original immutable records');
+  assert.deepEqual(
+    (await catalog('north')).experts.map((expert) => expert.id),
+    grants[0].packs.map((pack) => pack.id),
+    'An explicit selection is never concatenated with defaults',
+  );
+  assert.deepEqual(await catalog('new-team'), { experts: [], assets: [] });
+  h.spaces.set('new-team', { id: 'new-team', kind: 'team', name: 'New team' });
+  h.spaces.set('personal', { id: 'personal', kind: 'personal', name: 'Personal' });
+  const before = JSON.stringify(h.state);
+  const value = await catalog('new-team');
+  assert.equal(value.experts.length, 4);
+  assert.equal(value.assets.length, 4);
+  for (const expert of value.experts) {
+    assert(h.options.packages.some((pack) => pack.versionId === expert.origin.versionId));
+    assert(h.packages.has(expert.origin.versionId));
+    assert(expert.origin.filePaths.includes('LICENSE.txt'));
+    assert.equal(expert.resourceBindings.skillIds.length, 1);
+  }
+  assert.deepEqual(await catalog('personal'), { experts: [], assets: [] });
+  assert.equal(JSON.stringify(h.state), before);
+  assert.equal(h.calls, 4);
+  await openHostTeamCatalog({ ...h.options, defaultForTeams: true });
+  assert.equal(h.calls, 4, 'Cold verification reuses immutable imports');
+  h.spaces.delete('new-team');
+  assert.deepEqual(await catalog('new-team'), { experts: [], assets: [] });
+});
+
+test('shared team defaults: empty initial directory gains teams without read writes and replaced owner fails closed', async () => {
+  const h = await setup();
+  h.spaces.clear();
+  const options = { ...h.options, grants: [], defaultForTeams: true };
+  const catalog = await openHostTeamCatalog(options);
+  assert.equal(h.calls, 4);
+  h.spaces.set('registered-team', { id: 'registered-team', kind: 'team', name: 'Registered' });
+  assert.equal((await catalog('registered-team')).experts.length, 4);
+  options.directory = () => ({ space: () => undefined });
+  await assert.rejects(catalog('registered-team'));
+  assert.equal(h.calls, 4);
+});
+
+test('shared team defaults: a conflicting unselected public ID never overwrites private content', async () => {
+  const h = await setup();
+  h.state.participants.push({
+    id: 'zhuma-engineering-docs',
+    kind: 'expert',
+    name: 'Private expert',
+    role: '',
+    capabilities: [],
+    instructions: 'PRIVATE_DEFINITION',
+    available: true,
+  });
+  await assert.rejects(openHostTeamCatalog({ ...h.options, defaultForTeams: true }));
+  assert.equal(
+    h.state.participants.find((item) => item.id === 'zhuma-engineering-docs').instructions,
+    'PRIVATE_DEFINITION',
+  );
+});
+
 test('team catalog contract: immutable files before a failed global write can be explicitly retried once', async () => {
   const h = await setup();
   h.fail = true;

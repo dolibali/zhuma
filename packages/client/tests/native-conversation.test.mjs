@@ -48,6 +48,45 @@ const inbox = {
   ],
 };
 
+test('conversation turn boundary: strict safe metadata preserves the durable reason without private diagnostics or changing running state', () => {
+  const value = {
+    type: 'turn-end',
+    seq: 18,
+    time: 19,
+    turn: 2,
+    reason: { kind: 'max-tokens', error: { message: 'PRIVATE_PATH_OR_KEY' } },
+    replay: 'PRIVATE',
+  };
+  const parsed = readConversationFrame(wire(value), run, 'north');
+  assert.deepEqual(parsed, {
+    type: 'turn-end',
+    seq: 18,
+    time: 19,
+    turn: 2,
+    reason: { kind: 'max-tokens' },
+  });
+  assert.equal(JSON.stringify(parsed).includes('PRIVATE'), false);
+  for (const patch of [
+    { seq: -1 },
+    { turn: 0 },
+    { time: Infinity },
+    { reason: { kind: 'unvalidated-private-kind' } },
+  ])
+    assert.throws(() => readConversationFrame(wire({ ...value, ...patch }), run, 'north'));
+  const state = createConversationState();
+  state.frame(parsed);
+  state.frame({ ...parsed, seq: 10, reason: { kind: 'completed' } });
+  assert.deepEqual(state.turnEnd(), parsed);
+  state.frame({ type: 'status', status: 'running' });
+  assert.deepEqual(
+    state.turnEnd(),
+    parsed,
+    'history boundary does not replace actual SDK status or submission',
+  );
+  state.clear();
+  assert.equal(state.turnEnd(), undefined);
+});
+
 test('conversation wire contract: exact Run/session and canonical message key; extra private fields never become view props', () => {
   const message = {
     type: 'message',

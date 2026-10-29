@@ -143,6 +143,9 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
         <ReviewWorkspace
           api={api}
           node={node}
+          {...(nativeRun?.api.review
+            ? { nativeReview: { api: nativeRun.api.review, spaceId: nativeRun.spaceId } }
+            : {})}
           onSubmitted={(next) => submitted(next, selected, presentedReview)}
         />
       )}

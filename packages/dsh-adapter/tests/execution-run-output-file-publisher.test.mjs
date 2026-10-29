@@ -13,7 +13,11 @@ import {
 } from '../dist/execution-run-composition.js';
 import { describeNativeOutputFileTool } from '../dist/native-work-session-output-file-tool.js';
 import { describeNativeResultTool } from '../dist/native-work-session-result-tool.js';
-import { compositionFacts, reader } from './execution-run-composition-fixture.mjs';
+import {
+  compositionFacts,
+  reader,
+  legacyCompletionFixture,
+} from './execution-run-composition-fixture.mjs';
 import { combinedPublisherFacts } from './execution-run-output-file-fixture.mjs';
 
 const hash = (value) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
@@ -96,11 +100,11 @@ test('output publisher contract: new tool is inserted before complete_work, with
     saved.payload.toolAllowlist.filter((name) => name !== 'publish_output_file'),
   );
   assert.equal(
-    wireHash(absent),
+    wireHash(readExecutionRunComposition(legacyCompletionFixture(absent))),
     '86fcc547cf46451c03eaeeab9c0d0ed8e6a2a4b8544bc48732c4032dfea5bec8',
   );
   assert.equal(
-    absent.configurationId,
+    readExecutionRunComposition(legacyCompletionFixture(absent)).configurationId,
     'composition_928eb3f3d43f7b645bea34fd85db8d8cd03186cfa9332afb13099d8b53a4fc66',
   );
 });
@@ -220,7 +224,8 @@ test('output publisher contract: slot-absent old schema1/file/resource/result JS
     assert(!reopened.payload.toolAllowlist.includes('publish_output_file'));
   }
   const input = { ...compositionFacts(), resultIntentTool: describeNativeResultTool() };
-  const saved = freezeExecutionRunComposition(input);
+  const current = freezeExecutionRunComposition(input);
+  const saved = readExecutionRunComposition(legacyCompletionFixture(current));
   assert.equal(wireHash(saved), '5d9bb8b1d3c0d3d363862039504f03c6f415e6d5065fb89c7bc85e67885b209e');
   assert.equal(
     saved.configurationId,
@@ -228,7 +233,7 @@ test('output publisher contract: slot-absent old schema1/file/resource/result JS
   );
   assert.deepEqual(
     freezeExecutionRunComposition({ ...input, outputFilePublisherTool: undefined }),
-    saved,
+    current,
   );
   const request = executionRunCompositionRequest(saved);
   assert.equal(assertExecutionRunComposition(saved, input, request), undefined);

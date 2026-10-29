@@ -1,0 +1,107 @@
+{
+  "format": "zhuma-workflow-template",
+  "schemaVersion": 1,
+  "roles": [
+    {
+      "id": "code-reviewer",
+      "name": "代码审查与独立评审者",
+      "preferredKind": "expert",
+      "capabilities": ["变更审查", "修复复核"]
+    },
+    {
+      "id": "implementer",
+      "name": "修复执行者",
+      "preferredKind": "expert",
+      "capabilities": ["有界修复", "兼容性保护"]
+    },
+    {
+      "id": "verifier",
+      "name": "验证执行者",
+      "preferredKind": "expert",
+      "capabilities": ["定向验证", "结果证据"]
+    }
+  ],
+  "resources": [
+    {
+      "id": "change-review",
+      "name": "变更代码审查",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-change-review"
+    },
+    {
+      "id": "bounded-fix",
+      "name": "有界问题修复",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-bounded-fix"
+    },
+    {
+      "id": "focused-verification",
+      "name": "定向验证",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-focused-verification"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "review-fix-verify",
+      "name": "代码审查修复验证",
+      "parentNodeId": null,
+      "nodes": [
+        {
+          "id": "review",
+          "title": "代码审查",
+          "description": "只读评审实际差异和必要调用链，非阻塞建议单列。",
+          "assigneeId": "code-reviewer",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": [],
+          "skillIds": ["change-review"],
+          "mcpIds": [],
+          "input": "用户指定的代码基线、固定变更版本、目标行为和必要授权资料。",
+          "output": "有证据的问题清单、触发与影响、最小修复方向和验证缺口。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 0,
+            "y": 80
+          }
+        },
+        {
+          "id": "fix",
+          "title": "有界修复与复核",
+          "description": "保护在途工作，仅修复确认的问题；没有修改权限时交付阻塞，不能伪称已修。",
+          "assigneeId": "implementer",
+          "reviewerIds": ["code-reviewer"],
+          "reviewRequired": true,
+          "dependsOn": ["review"],
+          "skillIds": ["bounded-fix"],
+          "mcpIds": [],
+          "input": "代码审查节点已接受的问题清单、对应固定代码基线及明确允许修改的范围。",
+          "output": "修复说明、准确代码／文件引用、实际验证和剩余限制；由独立代码评审者复核。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 420,
+            "y": 80
+          }
+        },
+        {
+          "id": "verify",
+          "title": "定向验证与评审",
+          "description": "针对原失败及必要回归验证，不用历史或模拟结果认证当前代码。",
+          "assigneeId": "verifier",
+          "reviewerIds": ["code-reviewer"],
+          "reviewRequired": true,
+          "dependsOn": ["review", "fix"],
+          "skillIds": ["focused-verification"],
+          "mcpIds": [],
+          "input": "已接受的问题清单和经独立复核接受的修复版本；执行命令和本机执行者须有真实授权。",
+          "output": "验收条目到实际证据的对应关系，明确通过／失败／未执行／阻塞；交独立评审者处理固定版本。",
+          "rationale": "只依赖实际需要的已接受产物；指定角色、资源和本机执行者仍需显式绑定。",
+          "position": {
+            "x": 840,
+            "y": 80
+          }
+        }
+      ]
+    }
+  ]
+}

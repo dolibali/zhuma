@@ -56,6 +56,111 @@ function harness(handler, session = () => identity()) {
 }
 const businessCalls = (h) => h.calls.filter(({ url }) => url.startsWith('/api/zhuma-member/'));
 
+test('member template wire contract preserves exact bindings, source and retries without browser definitions', async () => {
+  const bodies = [];
+  const h = harness(({ payload }) => {
+    bodies.push(payload);
+    return snapshot();
+  });
+  const task = {
+    id: crypto.randomUUID(),
+    projectId: 'project-a',
+    title: '方案',
+    goal: '形成实施方案',
+    participantIds: ['chen'],
+    ownerId: 'chen',
+  };
+  const create = {
+    requestId: crypto.randomUUID(),
+    expectedRevision: 2,
+    command: {
+      type: 'instantiate-template',
+      input: {
+        templateId: 'zhuma-eng-design-to-plan',
+        sourceSpaceId: 'personal-a',
+        task,
+        roleBindings: { designer: 'chen', reviewer: null },
+        resourceBindings: { method: null },
+      },
+    },
+  };
+  await h.api.command(create);
+  await h.api.command(create);
+  assert.deepEqual(bodies[0], bodies[1]);
+  assert.deepEqual(bodies[0].command, create.command);
+  const save = {
+    type: 'save-template',
+    input: {
+      templateId: crypto.randomUUID(),
+      sourceTaskId: task.id,
+      name: '方案工作流',
+      description: '',
+    },
+  };
+  await h.api.command({ requestId: crypto.randomUUID(), expectedRevision: 3, command: save });
+  assert.deepEqual(bodies[2].command, save);
+  assert.equal('sourceSpaceId' in bodies[2].command.input, false);
+  assert.equal('actorId' in bodies[2], false);
+});
+
+test('member template wire contract rejects owner payloads and unsaved definitions before transport', async () => {
+  const h = harness(() => snapshot());
+  const input = {
+    templateId: crypto.randomUUID(),
+    sourceTaskId: 'task-a',
+    name: '模板',
+    description: '',
+  };
+  const base = { requestId: crypto.randomUUID(), expectedRevision: 0 };
+  for (const injected of [
+    { content: '{}' },
+    { actorId: 'other' },
+    { memberTemplate: {} },
+    { status: 'ready' },
+    { sourceSpaceId: '' },
+    { templateId: 'not-a-uuid' },
+    { name: ' ' },
+    { description: 'x'.repeat(8001) },
+  ])
+    await assert.rejects(
+      h.api.command({
+        ...base,
+        command: { type: 'save-template', input: { ...input, ...injected } },
+      }),
+      { code: 'validation' },
+    );
+  const task = {
+    id: crypto.randomUUID(),
+    projectId: 'project-a',
+    title: '方案',
+    goal: '目标',
+    participantIds: [],
+    ownerId: null,
+  };
+  for (const injected of [
+    { updatedAt: new Date().toISOString() },
+    { workflows: [] },
+    { templateSource: {} },
+    { status: 'draft' },
+  ])
+    await assert.rejects(
+      h.api.command({
+        ...base,
+        command: {
+          type: 'instantiate-template',
+          input: {
+            templateId: 'template-a',
+            task: { ...task, ...injected },
+            roleBindings: {},
+            resourceBindings: {},
+          },
+        },
+      }),
+      { code: 'validation' },
+    );
+  assert.equal(h.calls.length, 0);
+});
+
 test('member contract reads only its bound scope, with fresh identity and no model command', async () => {
   const h = harness((request) => {
     assert.equal(request.type, 'client-request');
