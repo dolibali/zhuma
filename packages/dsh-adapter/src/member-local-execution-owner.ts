@@ -1076,7 +1076,7 @@ export class MemberLocalExecutionOwner {
       throw new NativeWorkError('scope-mismatch');
     return opened;
   }
-  /** Host-internal raw history. Client transport uses observe's whitelist. */
+  /** Read-only UI history over the fixed native presentation whitelist. */
   history(run: MemberLocalReadHandle, after = -1, limit = 100, signal?: AbortSignal) {
     return this.historyReader.history(run, after, limit, signal);
   }

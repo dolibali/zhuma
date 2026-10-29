@@ -59,6 +59,7 @@ import {
   type NativeInboxSnapshot,
 } from './native-work-session-contract.js';
 import { NativeAssistantSnapshotCache } from './native-work-session-snapshot.js';
+import { publicNativeHistoryPage } from './native-work-session-history-view.js';
 
 const MAX_FRAME_BYTES = 262_144;
 const MAX_BUFFER_BYTES = 524_288;
@@ -923,6 +924,27 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         if (Buffer.byteLength(JSON.stringify(events)) > MAX_FRAME_BYTES)
           throw new NativeWorkError('capacity');
         return events;
+      },
+    );
+  }
+
+  /** Same original SDK read, authority and physical close. Only the public
+   * presentation is budgeted here; raw history/result reads keep their limits. */
+  conversationHistory(
+    sessionId: string,
+    after: number,
+    limit: number,
+    signal: AbortSignal,
+    allowAbsent = false,
+  ): Promise<readonly NativeHistoryEvent[]> {
+    return this.readSession(
+      sessionId,
+      signal,
+      allowAbsent,
+      () => [],
+      async (handle, bounded) => {
+        const result = await handle.read(after + 1, limit, { signal: bounded });
+        return publicNativeHistoryPage(result.events);
       },
     );
   }
