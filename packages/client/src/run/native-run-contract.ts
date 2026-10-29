@@ -179,6 +179,23 @@ export interface NativeRunInbox {
   }[];
 }
 export type NativeConversationFrame =
+  | {
+      readonly type: 'turn-end';
+      readonly seq: number;
+      readonly time: number;
+      readonly turn: number;
+      readonly reason: {
+        readonly kind:
+          | 'completed'
+          | 'blocked'
+          | 'max-tokens'
+          | 'error'
+          | 'aborted'
+          | 'interrupted'
+          | 'forked'
+          | 'unknown';
+      };
+    }
   | { readonly type: 'ready' }
   | {
       readonly type: 'message';

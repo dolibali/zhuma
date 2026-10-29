@@ -179,6 +179,64 @@ test('shutdown fence: stop then close retains a real native model source until i
   );
 });
 
+test('native turn boundary: actual max-token idle is visible and same Run followup still requires the real completion tool', async (t) => {
+  const h = await setup(t, {
+    script: [
+      () =>
+        response('Bounded first turn.').map((chunk) =>
+          chunk.type === 'finish' ? { ...chunk, reason: { kind: 'max-tokens' } } : chunk,
+        ),
+      toolResponse(
+        { text: 'Explicit same Run completion.', links: [] },
+        'after-boundary-complete',
+        'complete_work',
+      ),
+    ],
+  });
+  await h.owner.start(h.run);
+  await until(
+    () => h.owner.read(h.run),
+    (v) => v.native?.status === 'idle',
+  );
+  const before = h.owner.read(h.run),
+    sid = before.native.binding.nativeSessionId,
+    abort = new AbortController(),
+    stream = h.owner.observe(h.run, -1, abort.signal);
+  let boundary;
+  try {
+    for (let n = 0; n < 50; n++) {
+      const frame = await stream.next();
+      if (frame.value?.type === 'turn-end') {
+        boundary = frame.value;
+        break;
+      }
+    }
+  } finally {
+    abort.abort();
+    await stream.return();
+  }
+  assert.equal(boundary.reason.kind, 'max-tokens');
+  assert.equal(before.phase, 'working');
+  assert.equal(before.remote.runStatus, 'running');
+  assert.equal(before.remote.resources, 'held');
+  assert.equal(
+    h.remote.seen.some((v) => v.request.operation === 'submit-result'),
+    false,
+  );
+  await h.owner.send(h.run, {
+    requestId: randomUUID(),
+    text: 'Finish this same work.',
+    mode: 'followup',
+  });
+  const done = await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'submitted',
+  );
+  assert.equal(done.native.binding.nativeSessionId, sid);
+  assert.equal(h.remote.acceptCalls(), 1);
+  assert.equal(h.adapter.requests.length, 2);
+});
+
 test('original owner replay: two actually issued accept handles address the same live native work', async (t) => {
   const h = await setup(t, {
     script: ['First response.', 'Second explicit followup.', 'Same active session from workspace.'],
