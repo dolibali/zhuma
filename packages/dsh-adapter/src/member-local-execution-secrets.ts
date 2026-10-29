@@ -66,6 +66,9 @@ const workflowAcceptPointer = z.strictObject({
   intentFingerprint: digest,
   candidate: remoteWorkflowCandidateSchema,
 });
+// The original credentials provider treats modify(undefined) as no change.
+// Clear this exact locator with a durable value in the same private slot.
+const clearedWorkflowPointer = z.strictObject({ version: z.literal(1), cleared: z.literal(true) });
 const historyPointer = z
   .strictObject({
     version: z.literal(1),
@@ -274,7 +277,7 @@ export class MemberLocalExecutionSecrets {
     });
     const slot = this.workflowDeviceSlot(device);
     const saved = await this.store.modify(slot, (raw) => {
-      if (raw === undefined) return entry;
+      if (raw === undefined || clearedWorkflowPointer.safeParse(raw).success) return entry;
       if (canonicalPayload(workflowAcceptPointer.parse(raw)) !== canonicalPayload(entry))
         throw new MemberLocalSecretError('conflict');
       return raw;
@@ -318,7 +321,7 @@ export class MemberLocalExecutionSecrets {
     if (!this.issued.has(device)) throw new MemberLocalSecretError('invalid');
     const raw = await this.store.read(this.workflowDeviceSlot(device));
     checkSignal(signal);
-    if (raw === undefined) return undefined;
+    if (raw === undefined || clearedWorkflowPointer.safeParse(raw).success) return undefined;
     const entry = workflowAcceptPointer.parse(raw);
     if (
       entry.backendId !== device.backendId ||
@@ -331,8 +334,8 @@ export class MemberLocalExecutionSecrets {
       throw new MemberLocalSecretError('conflict');
     return Object.freeze(structuredClone(entry));
   }
-  /** Forget only AFTER the original qualified ACK/reconcile durably wrote the
-   * exact Run pointer. This neither settles resources nor grants a drive. */
+  /** Caller clears only after original Owner cleanup/result settlement. The
+   * original qualified Run pointer must still match; no permit is deleted. */
   async forgetWorkflowAccept(
     device: MemberLocalDeviceIdentity,
     candidate: RemoteWorkflowCandidate,
@@ -358,13 +361,16 @@ export class MemberLocalExecutionSecrets {
     )
       throw new MemberLocalSecretError('conflict');
     const slot = this.workflowDeviceSlot(device);
-    await this.store.modify(slot, (raw) => {
-      if (raw === undefined) return undefined;
+    const cleared = { version: 1, cleared: true } as const;
+    const stored = await this.store.modify(slot, (raw) => {
+      if (raw === undefined || clearedWorkflowPointer.safeParse(raw).success) return cleared;
       if (canonicalPayload(workflowAcceptPointer.parse(raw)) !== canonicalPayload(entry))
         throw new MemberLocalSecretError('conflict');
-      return undefined;
+      return cleared;
     });
     checkSignal(signal);
+    if (!clearedWorkflowPointer.safeParse(stored).success)
+      throw new MemberLocalSecretError('unavailable');
   }
   private workflowDeviceSlot(device: MemberLocalDeviceIdentity): string {
     if (!this.issued.has(device)) throw new MemberLocalSecretError('invalid');

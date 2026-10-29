@@ -89,6 +89,8 @@ export class NativeMemberWorkflowConsumer {
   private blocked?: string;
   private timer?: ReturnType<typeof setTimeout>;
   private pumping?: Promise<void>;
+  private reconciling?: Promise<ReturnType<NativeMemberWorkflowConsumer['view']>>;
+  private recoveryTarget?: RemoteWorkflowTarget;
   private closing?: Promise<void>;
   private readonly pollMs: number;
   constructor(private readonly options: NativeMemberWorkflowConsumerOptions) {
@@ -131,7 +133,22 @@ export class NativeMemberWorkflowConsumer {
     return this.view();
   }
   /** Explicit unknown-ACK reconciliation only. No arm, accept replay or start. */
-  async recover(target: RemoteWorkflowTarget, signal?: AbortSignal) {
+  recover(target: RemoteWorkflowTarget, signal?: AbortSignal) {
+    if (this.reconciling)
+      return same(target, this.recoveryTarget)
+        ? this.reconciling
+        : Promise.reject(new NativeWorkError('scope-mismatch'));
+    this.recoveryTarget = structuredClone(target);
+    const work = this.recoverNow(target, signal).finally(() => {
+      if (this.reconciling === work) {
+        delete this.reconciling;
+        delete this.recoveryTarget;
+      }
+    });
+    this.reconciling = work;
+    return work;
+  }
+  private async recoverNow(target: RemoteWorkflowTarget, signal?: AbortSignal) {
     this.current();
     if (this.life.armed || this.pending || this.pumping) throw new NativeWorkError('unavailable');
     await this.inspect(target, signal);
@@ -153,6 +170,7 @@ export class NativeMemberWorkflowConsumer {
     signal?: AbortSignal,
   ) {
     this.current();
+    if (this.reconciling) throw new NativeWorkError('unavailable');
     const value = await this.options.protocol.workflowStart(requestId, input, signal);
     this.attach(value);
     return this.view();
@@ -163,7 +181,7 @@ export class NativeMemberWorkflowConsumer {
     signal?: AbortSignal,
   ) {
     this.current();
-    if (this.pending || !this.options.native.canSwitchBackend())
+    if (this.reconciling || this.pending || !this.options.native.canSwitchBackend())
       throw new NativeWorkError('unavailable');
     await this.life.close(async () => {});
     const value = await this.options.protocol.workflowResume(requestId, input, signal);
@@ -287,11 +305,6 @@ export class NativeMemberWorkflowConsumer {
       this.pending = pending;
       const run = await prepared.send(scope.cleanupSignal);
       pending.run = run;
-      await this.options.protocol.forgetWorkflowAccept(
-        candidate,
-        run.value.scope,
-        scope.cleanupSignal,
-      );
       if (!this.life.armed) {
         await this.retire(pending);
         return;
@@ -307,6 +320,8 @@ export class NativeMemberWorkflowConsumer {
         !same(input.target, candidate.target) ||
         !same(input.workflow, candidate.workflow) ||
         input.expectedReviewVersion !== candidate.expectedReviewVersion ||
+        input.reviewerRef.id !== candidate.reviewerRef.id ||
+        input.reviewerRef.version !== candidate.reviewerRef.version ||
         !same(input.model, view.intent.defaults.model)
       )
         throw new NativeWorkError('scope-mismatch');
@@ -321,11 +336,6 @@ export class NativeMemberWorkflowConsumer {
       this.pending = pending;
       const run = await prepared.send(scope.cleanupSignal);
       pending.run = run;
-      await this.options.protocol.forgetWorkflowAccept(
-        candidate,
-        run.value.scope,
-        scope.cleanupSignal,
-      );
       if (!this.life.armed) {
         await this.retire(pending);
         return;
@@ -355,15 +365,13 @@ export class NativeMemberWorkflowConsumer {
           {
             target: pending.candidate.target,
             acceptRequestId: pending.requestId,
-            reviewerRef: pending.candidate.reviewerRef,
+            reviewerRef: {
+              id: pending.candidate.reviewerRef.id,
+              version: pending.candidate.reviewerRef.version,
+            },
           },
           this.cleanup.signal,
         );
-      await this.options.protocol.forgetWorkflowAccept(
-        pending.candidate,
-        pending.recovered.value.scope,
-        this.cleanup.signal,
-      );
       this.blocked = 'remote-recovery-required';
       return;
     }
@@ -376,6 +384,11 @@ export class NativeMemberWorkflowConsumer {
       view.phase === 'submitted' ||
       (view.remote.runStatus === 'completed' && view.remote.receipt)
     ) {
+      await this.options.protocol.forgetWorkflowAccept(
+        pending.candidate,
+        pending.run.value.scope,
+        this.cleanup.signal,
+      );
       delete this.pending;
       delete this.blocked;
     } else {
@@ -388,7 +401,7 @@ export class NativeMemberWorkflowConsumer {
       const run = pending.run ?? pending.recovered;
       if (!run) return;
       const value = await this.options.protocol.status(run).catch(() => run.value);
-      if (value.resources === 'settled') return;
+      if (value.resources === 'settled') return value;
       await this.options.native
         .stop(
           run,
@@ -404,7 +417,7 @@ export class NativeMemberWorkflowConsumer {
       const run = pending.run;
       if (run) {
         const value = await this.options.review!.status(run).catch(() => run.value);
-        if (value.resources === 'settled') return;
+        if (value.resources === 'settled') return value;
         await this.options.native
           .stopReview(
             run,
@@ -414,11 +427,13 @@ export class NativeMemberWorkflowConsumer {
           .catch(() => undefined);
       } else if (pending.recovered) {
         const value = await this.options.review!.status(pending.recovered);
-        await this.options.review!.stop(
-          pending.recovered,
-          { requestId: randomUUID(), expectedAttemptVersion: value.attemptVersion },
-          this.cleanup.signal,
-        );
+        if (value.resources === 'settled') return value;
+        if (!value.stopRequested)
+          await this.options.review!.stop(
+            pending.recovered,
+            { requestId: randomUUID(), expectedAttemptVersion: value.attemptVersion },
+            this.cleanup.signal,
+          );
         await this.options.native.recoverReview(pending.recovered, this.cleanup.signal);
       }
     }
@@ -428,8 +443,9 @@ export class NativeMemberWorkflowConsumer {
     this.life.fence();
     if (this.timer) clearTimeout(this.timer);
   }
-  whenAdmissionsIdle(): Promise<void> {
-    return this.life.whenIdle();
+  async whenAdmissionsIdle(): Promise<void> {
+    await this.life.whenIdle();
+    if (this.reconciling) await this.reconciling.catch(() => undefined);
   }
   async stop(requestId: string, signal?: AbortSignal) {
     this.life.fence();
@@ -448,16 +464,18 @@ export class NativeMemberWorkflowConsumer {
     if (this.timer) clearTimeout(this.timer);
     this.closing = this.life
       .close(async () => {
+        if (this.reconciling) await this.reconciling.catch(() => undefined);
         if (this.pending && !this.pending.run && !this.pending.recovered)
           await this.observePending();
-        if (this.pending) await this.retire(this.pending);
+        const settled = this.pending ? await this.retire(this.pending) : undefined;
         // Joining admissions is not proof that native physical sources settled.
         if (this.pending) {
           for (;;) {
             const run = this.pending.run ?? this.pending.recovered;
             if (!run) throw new NativeWorkError('unavailable');
-            const value =
-              this.pending.kind === 'work'
+            const value = settled
+              ? { remote: settled }
+              : this.pending.kind === 'work'
                 ? this.options.native.read(run as MemberLocalReadHandle)
                 : this.options.native.readReview(run as MemberLocalReviewReadHandle);
             // Fresh business authentication may already be closed. Settlement
@@ -472,6 +490,11 @@ export class NativeMemberWorkflowConsumer {
                   key({ kind: this.pending.kind, scope: actual.scope, deviceId: actual.deviceId }),
                 );
               }
+              await this.options.protocol.forgetWorkflowAccept(
+                this.pending.candidate,
+                original.scope,
+                this.cleanup.signal,
+              );
               delete this.pending;
               break;
             }
@@ -497,6 +520,7 @@ export class NativeMemberWorkflowConsumer {
       this.life.canSwitchBackend() &&
       !this.pending &&
       !this.pumping &&
+      !this.reconciling &&
       (this.remote?.activeWork ?? []).every((value) => retired('work', value)) &&
       (this.remote?.activeReviews ?? []).every((value) => retired('review', value))
     );

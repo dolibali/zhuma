@@ -55,6 +55,10 @@ export function observeHostNativeRun(
     grant.signal.removeEventListener('abort', close);
     for (const stop of stops.splice(0)) stop();
   }
+  function detach() {
+    published = undefined;
+    for (const stop of stops.splice(0)) stop();
+  }
   const matches = (agent: Agent) =>
     agent.id === binding.nativeAgentId && agent.session.id === binding.nativeSessionId;
   stops.push(
@@ -78,7 +82,9 @@ export function observeHostNativeRun(
       ({ agent }) => {
         if (agent === published) {
           fault();
-          close();
+          // Fast fixed-result retirement may precede send() returning its
+          // receipt. Keep only bounded actual claims for that receipt join.
+          detach();
         }
       },
       { global: true },
@@ -132,7 +138,7 @@ export function observeHostNativeRun(
   );
   grant.signal.addEventListener('abort', close, { once: true });
   if (grant.signal.aborted) close();
-  ctx.effect(() => close);
+  ctx.effect(() => detach);
   return {
     signal: lifetime.signal,
     claimFor(messageId: string): HostNativeClaim | undefined {
