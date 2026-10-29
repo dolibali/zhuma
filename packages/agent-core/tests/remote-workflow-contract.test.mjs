@@ -216,3 +216,21 @@ test('workflow DTO: duplicate receipts, foreign generation and duplicated node I
     false,
   );
 });
+
+test('portable workflow: original initiated-rework projection is optional for old views, bounded, unique and scoped to this intent', () => {
+  const value = view();
+  assert.equal(remoteWorkflowViewSchema.safeParse(value).success, true);
+  value.revisions = [{ nodeId: 'node', used: 1, limit: 2 }];
+  assert.equal(remoteWorkflowViewSchema.safeParse(value).success, true);
+  for (const revisions of [
+    [{ nodeId: 'outside', used: 1, limit: 2 }],
+    [
+      { nodeId: 'node', used: 1, limit: 2 },
+      { nodeId: 'node', used: 1, limit: 2 },
+    ],
+    [{ nodeId: 'node', used: 3, limit: 2 }],
+    [{ nodeId: 'node', used: 1, limit: 0 }],
+    [{ nodeId: 'node', used: 0, limit: 1 }],
+  ])
+    assert.equal(remoteWorkflowViewSchema.safeParse({ ...value, revisions }).success, false);
+});

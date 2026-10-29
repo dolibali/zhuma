@@ -141,7 +141,7 @@ function deny(code: RemoteRunErrorCode): never {
 
 /** Private original-service ports. A wire DTO never supplies any of these assertions. */
 export interface RemoteRunAuthoritySource {
-  readonly workflow?: Pick<RemoteWorkflowIntentSource, 'facts' | 'write'>;
+  readonly workflow?: Pick<RemoteWorkflowIntentSource, 'facts' | 'write' | 'reviewCandidates'>;
   readonly signal: AbortSignal;
   readonly review?: RemoteReviewAuthoritySource;
   readonly resourceHost?: ExecutionRunResourceCatalogHost;
@@ -221,6 +221,31 @@ export class RemoteRunAuthorities {
     this.reviews = source.review
       ? new RemoteReviewAuthorities(source.review, {
           epoch: this.epoch,
+          ...(source.workflow
+            ? {
+                workflow: {
+                  owner: this,
+                  accept: (body, lease, sessionHash) =>
+                    this.workflows().assertReviewAccept(
+                      body,
+                      lease,
+                      sessionHash,
+                      this.registry().devices.find((device) => device.deviceId === body.deviceId)!
+                        .keyEpoch,
+                    ),
+                  preparing: (body, lease, sessionHash) =>
+                    this.workflows().preparingReview(
+                      body,
+                      lease,
+                      sessionHash,
+                      this.registry().devices.find((device) => device.deviceId === body.deviceId)!
+                        .keyEpoch,
+                    ),
+                  check: (lease, scope, ref, deviceId, keyEpoch) =>
+                    this.workflows().assertExisting(lease, scope, ref, deviceId, keyEpoch),
+                },
+              }
+            : {}),
           now: () => this.now(),
           registry: () => this.registry(),
           checkDevice: (body, actorId, verifyProof) => {
@@ -310,6 +335,28 @@ export class RemoteRunAuthorities {
     if (!source) deny('remote-protocol-unsupported');
     this.workflowIntents ??= new RemoteWorkflowIntents({
       ...source,
+      reviewCandidates: (lease, target, intent) =>
+        this.reviews?.ready() ? (source.reviewCandidates?.(lease, target, intent) ?? []) : [],
+      reviewViews: (lease, target, intent, sessionHash) =>
+        source
+          .facts(lease, target)
+          .nodes.flatMap((node) =>
+            (readExecutionReviewState(node)?.attempts ?? []).flatMap((attempt) =>
+              'remote' in attempt &&
+              attempt.remote?.workflow?.intentId === intent.intentId &&
+              attempt.remote.deviceId === intent.deviceId &&
+              attempt.scope.actorId === intent.actorId
+                ? [
+                    this.reviews!.workflowView(
+                      this,
+                      lease,
+                      { ...attempt.scope, backendId: attempt.remote.backendId },
+                      sessionHash,
+                    ),
+                  ]
+                : [],
+            ),
+          ),
       deny,
       now: () => this.now(),
       beforeWrite: async () => {
@@ -359,6 +406,21 @@ export class RemoteRunAuthorities {
               },
               lease,
             );
+          }
+          for (const attempt of readExecutionReviewState(node)?.attempts ?? []) {
+            if (
+              'remote' in attempt &&
+              attempt.remote?.workflow?.intentId === intent.intentId &&
+              attempt.remote.deviceId === intent.deviceId &&
+              attempt.scope.actorId === intent.actorId
+            )
+              await this.reviews!.workflowStop(
+                this,
+                lease,
+                { ...attempt.scope, backendId: attempt.remote.backendId },
+                intent.intentId,
+                requestId,
+              );
           }
         }
       },

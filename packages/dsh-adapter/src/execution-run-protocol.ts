@@ -155,9 +155,16 @@ export function assertExecutionRunStoreCompatibility(
       throw new ExecutionRunProtocolError('run-writer-incompatible');
     const review = (
       node as {
-        nativeExecution?: { review?: { attempts?: { remote?: { backendId?: unknown } }[] } };
+        nativeExecution?: {
+          review?: { attempts?: { remote?: { backendId?: unknown; workflow?: unknown } }[] };
+        };
       }
     ).nativeExecution?.review;
+    if (
+      review?.attempts?.some((attempt) => attempt.remote?.workflow !== undefined) &&
+      parsed.remoteWorkflowWriter !== 1
+    )
+      throw new ExecutionRunProtocolError('run-writer-incompatible');
     if (
       Array.isArray(review?.attempts) &&
       review.attempts.some(
