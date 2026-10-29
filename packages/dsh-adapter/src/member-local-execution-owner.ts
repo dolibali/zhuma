@@ -1141,6 +1141,25 @@ export class MemberLocalExecutionOwner {
     if (!this.reviews) throw new NativeWorkError('unavailable');
     return this.reviews.start(run);
   }
+  lookupSession(nativeSessionId: string) {
+    return this.native.lookupNativeSession(nativeSessionId);
+  }
+  openReviewSession(nativeSessionId: string, signal?: AbortSignal) {
+    if (!this.reviews) throw new NativeWorkError('unavailable');
+    return this.reviews.openSession(nativeSessionId, signal);
+  }
+  historyReview(run: MemberLocalReviewReadHandle, after = -1, limit = 100, signal?: AbortSignal) {
+    if (!this.reviews) throw new NativeWorkError('unavailable');
+    return this.reviews.historyOf(run, after, limit, signal);
+  }
+  recoverReview(run: MemberLocalReviewReadHandle, signal?: AbortSignal) {
+    if (!this.reviews) throw new NativeWorkError('unavailable');
+    return this.reviews.recover(run, signal);
+  }
+  observeReview(run: MemberLocalReviewReadHandle, after = -1, signal?: AbortSignal) {
+    if (!this.reviews) throw new NativeWorkError('unavailable');
+    return this.reviews.observe(run, after, signal);
+  }
   readReview(run: MemberLocalReviewReadHandle) {
     if (!this.reviews) throw new NativeWorkError('unavailable');
     return this.reviews.read(run);

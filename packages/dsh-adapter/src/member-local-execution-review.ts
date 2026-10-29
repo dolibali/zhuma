@@ -6,11 +6,14 @@ import {
   remoteNativeFixedReviewFactsSchema,
   remoteReviewResultDeclarationSchema,
   type RemoteReviewView,
+  type RemoteReviewScope,
+  type RemoteReviewOperationValue,
 } from '@zhuma/agent-core';
 import {
   MemberLocalReviewProtocol,
   type MemberLocalAcceptedReview,
   type MemberLocalReviewReadHandle,
+  type MemberLocalReviewRunHandle,
   type MemberLocalReviewStopInput,
 } from './member-local-review-protocol.js';
 import type { NativeReviewPorts } from './native-work-session-purpose.js';
@@ -18,10 +21,15 @@ import {
   type NativeWorkAction,
   type NativeWorkGrant,
   type NativeSessionBinding,
+  type NativeBindingReference,
   type NativeSessionSelection,
 } from './native-work-session-contract.js';
 import type { openNativeWorkSessions } from './native-work-session-storage.js';
 import type { NativeDshComposition } from './native-work-session-dsh.js';
+import {
+  MemberLocalExecutionHistory,
+  type NativeHistoryGrantAccess,
+} from './member-local-execution-history.js';
 import { executionReviewCompositionRequest } from './execution-review-composition.js';
 import {
   nativeReviewContextFromScope,
@@ -72,6 +80,7 @@ interface OwnedReview {
   resultRequestId: string;
 }
 export interface MemberLocalReviewView {
+  readonly access: 'live' | 'history' | 'recovery';
   readonly phase: Phase;
   readonly remote: RemoteReviewView;
   readonly native: ReturnType<NativeOwner['service']['open']> | undefined;
@@ -89,6 +98,24 @@ export class MemberLocalExecutionReview {
   private readonly grants = new WeakMap<NativeWorkGrant, OwnedReview>();
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly lifetime = new AbortController();
+  private readonly historySources = new WeakMap<
+    object,
+    {
+      readonly source: NativeHistoryGrantAccess<MemberLocalReviewReadHandle>;
+      readonly binding: NativeBindingReference;
+    }
+  >();
+  private readonly historyBindings = new WeakMap<
+    MemberLocalReviewReadHandle,
+    NativeBindingReference
+  >();
+  private readonly historyViews = new WeakMap<MemberLocalReviewReadHandle, MemberLocalReviewView>();
+  private readonly coldObligations = new Set<string>();
+  private readonly cleanupSources = new WeakMap<
+    object,
+    { readonly run: MemberLocalReviewRunHandle; readonly deadline: number }
+  >();
+  private history?: MemberLocalExecutionHistory<MemberLocalReviewReadHandle>;
   private native?: NativeOwner;
   private issuer?: NativeFixedReviewIssuer;
   private closing?: Promise<void>;
@@ -127,6 +154,14 @@ export class MemberLocalExecutionReview {
   }
   readonly reviewPorts: NativeReviewPorts = {
     authorize: (original, action) => {
+      const reading = this.historySources.get(original);
+      if (reading) {
+        const { source, binding } = reading;
+        source.assertCurrent(action);
+        this.options.protocol.assertReadHandle(source.run);
+        const { backendId: _backendId, ...scope } = source.view().scope;
+        return { scope, selection: binding.selection, signal: source.signal };
+      }
       const state = this.state(original);
       this.options.protocol.assertStartHandle(state.run);
       this.current(state, action);
@@ -137,6 +172,12 @@ export class MemberLocalExecutionReview {
       };
     },
     authorizeCleanup: (original) => {
+      const recovered = this.cleanupSources.get(original);
+      if (recovered) {
+        this.options.protocol.assertReadHandle(recovered.run);
+        if (performance.now() >= recovered.deadline) throw new NativeReviewError('cancelled');
+        return recovered.run.composition.payload.scope;
+      }
       const state = this.state(original);
       if (performance.now() >= state.cleanupDeadline) throw new NativeReviewError('cancelled');
       return state.run.composition.payload.scope;
@@ -191,6 +232,33 @@ export class MemberLocalExecutionReview {
     if (this.native || this.lifetime.signal.aborted)
       throw new NativeReviewError('review-unavailable');
     this.native = native;
+    this.history = new MemberLocalExecutionHistory(
+      native,
+      {
+        status: async (run, wait) => {
+          const value = await this.options.protocol.status(run, wait);
+          this.remember(value);
+          const previous = this.historyViews.get(run);
+          if (previous)
+            this.historyViews.set(run, {
+              ...previous,
+              remote: value,
+              ...(value.receipt ? { receipt: value.receipt } : {}),
+              ...(value.failure ? { failure: value.failure } : {}),
+            });
+          return value;
+        },
+        assertReadBinding: (run, binding) => this.options.protocol.assertReadBinding(run, binding),
+      },
+      (source) => {
+        const binding = this.historyBindings.get(source.run);
+        if (!binding) throw new NativeReviewError('review-authority-denied');
+        this.options.protocol.assertReadHandle(source.run);
+        const original = Object.freeze({});
+        this.historySources.set(original, { source, binding });
+        return native.service.reviewGrant(original);
+      },
+    );
     this.issuer = nativeFixedReviewIssuer(native.service, native.runtime);
     if (!this.issuer.onReviewReady) throw new NativeReviewError('review-unavailable');
     this.stopReady = this.issuer.onReviewReady((grant, ref) => {
@@ -243,6 +311,7 @@ export class MemberLocalExecutionReview {
     )
       throw new NativeReviewError('review-target-changed');
     state.view = structuredClone(value);
+    this.remember(value);
     if (value.failure) state.failure = structuredClone(value.failure);
     state.deadline =
       before + Math.min(REMOTE_RUN_LIMITS.driveTtlMs, value.permit.expiresAt - value.serverTime);
@@ -257,6 +326,11 @@ export class MemberLocalExecutionReview {
       state.timer.unref();
     }
   }
+  private remember(view: RemoteReviewView): void {
+    const key = canonicalPayload(view.scope);
+    if (view.resources === 'settled') this.coldObligations.delete(key);
+    else this.coldObligations.add(key);
+  }
   async compose(
     ctx: Context,
     binding: NativeSessionBinding,
@@ -267,6 +341,7 @@ export class MemberLocalExecutionReview {
     this.current(state, 'send');
     this.options.protocol.assertReadBinding(state.run, binding);
     state.binding = binding;
+    this.historyBindings.set(state.run, binding);
     const snapshot = state.run.composition;
     const tools = this.issuer!.registerNativeReviewTools(ctx, binding, grant, () => {
       this.current(state, 'send');
@@ -646,6 +721,11 @@ export class MemberLocalExecutionReview {
     }
   }
   read(run: MemberLocalReviewReadHandle): MemberLocalReviewView {
+    const historical = this.historyViews.get(run);
+    if (historical) {
+      this.options.protocol.assertReadHandle(run);
+      return structuredClone(historical);
+    }
     const state = this.state(run);
     let native;
     if (state.grant && !state.abort.signal.aborted) {
@@ -656,6 +736,11 @@ export class MemberLocalExecutionReview {
       }
     }
     return {
+      access: ['working', 'dispatching'].includes(state.phase)
+        ? 'live'
+        : ['submitted', 'retired'].includes(state.phase)
+          ? 'history'
+          : 'recovery',
       phase: state.phase,
       remote: structuredClone(state.view),
       native,
@@ -663,6 +748,179 @@ export class MemberLocalExecutionReview {
       ...(state.receipt ? { receipt: structuredClone(state.receipt) } : {}),
       ...(state.failure ? { failure: structuredClone(state.failure) } : {}),
     };
+  }
+  async openSession(nativeSessionId: string, signal?: AbortSignal) {
+    const found = this.nativeOwner().lookupNativeSession(nativeSessionId);
+    if (
+      !found ||
+      found.role !== 'review' ||
+      !found.reviewContext ||
+      found.backendId !== this.options.protocol.backendId ||
+      !same(found.binding.scope, found.reviewContext.scope)
+    )
+      throw new NativeReviewError('review-target-changed');
+    const scope: RemoteReviewScope = {
+      backendId: found.backendId,
+      ...found.binding.scope,
+      review: found.reviewContext.review,
+    };
+    const run = await this.options.protocol.openScope(scope, signal);
+    this.remember(run.value);
+    this.historyBindings.set(run, found.binding);
+    const opened = await this.history!.open(run, signal);
+    if (opened.native?.binding.nativeSessionId !== nativeSessionId)
+      throw new NativeReviewError('review-target-changed');
+    const view: MemberLocalReviewView = {
+      access: 'history',
+      phase:
+        opened.remote.receipt && opened.remote.resources === 'settled'
+          ? 'submitted'
+          : opened.remote.resources === 'settled'
+            ? 'retired'
+            : 'recovery-required',
+      ...opened,
+      ...(opened.native?.binding ? { binding: opened.native.binding } : {}),
+      ...(opened.remote.receipt ? { receipt: opened.remote.receipt } : {}),
+      ...(opened.remote.failure ? { failure: opened.remote.failure } : {}),
+    };
+    this.historyViews.set(run, view);
+    return { run, view };
+  }
+  historyOf(run: MemberLocalReviewReadHandle, after = -1, limit = 100, signal?: AbortSignal) {
+    this.options.protocol.assertReadHandle(run);
+    if (!this.historyBindings.has(run)) throw new NativeReviewError('review-authority-denied');
+    return this.history!.history(run, after, limit, signal);
+  }
+  /** Explicit reconciliation never promotes a cold handle to starts or resends
+   * a model. Unknown fixed outcomes remain held until an authoritative receipt. */
+  async recover(run: MemberLocalReviewReadHandle, signal?: AbortSignal) {
+    this.options.protocol.assertReadHandle(run);
+    const binding = this.historyBindings.get(run),
+      owned = this.originals.get(run);
+    if (!binding || (owned && ['working', 'dispatching'].includes(owned.phase)))
+      throw new NativeReviewError('review-authority-denied');
+    return this.track(
+      (async () => {
+        let before = performance.now(),
+          view = await this.options.protocol.status(run, signal);
+        this.remember(view);
+        const key = view.result?.requestId ?? view.receipt?.requestId ?? view.failure?.requestId;
+        const recovered = await this.options.protocol.reconcile(
+          run,
+          {
+            lastSequence: view.nextSequence - 1,
+            ...(key ? { resultRequestId: key } : {}),
+            ...(view.nextSequence > 1
+              ? { nativeSessionId: binding.nativeSessionId, nativeAgentId: binding.nativeAgentId }
+              : {}),
+          },
+          signal,
+        );
+        this.historyBindings.set(recovered, binding);
+        const opened = await this.history!.open(recovered, signal);
+        view = opened.remote;
+        this.remember(view);
+        let confirmation: RemoteReviewOperationValue<'result-status'> | undefined;
+        const resultKey =
+          view.result?.requestId ?? view.receipt?.requestId ?? view.failure?.requestId;
+        if (resultKey)
+          confirmation = await this.options.protocol.command(
+            recovered,
+            {
+              operation: 'result-status',
+              payload: { resultRequestId: resultKey },
+            },
+            signal,
+          );
+        if (
+          view.receipt &&
+          (confirmation?.status !== 'committed' || !same(view.receipt, confirmation.receipt))
+        )
+          throw new NativeReviewError('review-target-changed');
+        const receipt = confirmation?.status === 'committed' ? confirmation.receipt : view.receipt,
+          failure =
+            confirmation?.status === 'needs-attention' ? confirmation.failure : view.failure,
+          known =
+            confirmation?.status === 'committed' ||
+            confirmation?.status === 'needs-attention' ||
+            (view.authority === 'cleanup-only' &&
+              (view.stopRequested || ['failed', 'cancelled'].includes(view.runStatus)));
+        if (view.resources !== 'settled' && known) {
+          before = performance.now();
+          view = await this.options.protocol.status(recovered, signal);
+          const marker = Object.freeze({});
+          this.cleanupSources.set(marker, {
+            run: recovered,
+            deadline:
+              before +
+              Math.min(REMOTE_RUN_LIMITS.cleanupTtlMs, view.cleanup.expiresAt - view.serverTime),
+          });
+          const retired = await this.native!.service.retireReviewForCleanup(
+            marker,
+            signal ?? AbortSignal.timeout(5000),
+          );
+          if (retired.status === 'retired') {
+            retired.drain.assertCurrent();
+            const evidence =
+              retired.drain.basis === 'absent-unadmitted'
+                ? { basis: 'absent-unadmitted' as const }
+                : retired.binding
+                  ? {
+                      basis: 'flushed-and-closed' as const,
+                      nativeSessionId: retired.binding.nativeSessionId,
+                      nativeAgentId: retired.binding.nativeAgentId,
+                    }
+                  : undefined;
+            if (!evidence) throw new NativeReviewError('review-unavailable');
+            before = performance.now();
+            view = await this.options.protocol.command(
+              recovered,
+              {
+                operation: 'cleanup',
+                payload: {
+                  observation: { kind: 'drained', sequence: view.nextSequence, evidence },
+                },
+              },
+              signal,
+            );
+            this.remember(view);
+          }
+        }
+        const value: MemberLocalReviewView = {
+          access: view.resources === 'settled' ? 'history' : 'recovery',
+          phase:
+            view.resources === 'settled'
+              ? receipt
+                ? 'submitted'
+                : 'retired'
+              : 'recovery-required',
+          remote: view,
+          native: opened.native,
+          ...(opened.native?.binding ? { binding: opened.native.binding } : {}),
+          ...(receipt ? { receipt } : {}),
+          ...(failure ? { failure } : {}),
+        };
+        this.historyViews.set(recovered, value);
+        this.historyViews.set(run, value);
+        const state = this.states.get(canonicalPayload(view.scope));
+        if (state) {
+          this.update(state, view, before);
+          if (receipt) state.receipt = receipt;
+          if (failure) state.failure = failure;
+          if (view.resources === 'settled') {
+            state.phase = value.phase;
+            state.abort.abort();
+            state.observation?.close();
+          }
+        }
+        return { run: recovered, view: value, ...(confirmation ? { confirmation } : {}) };
+      })(),
+    );
+  }
+  observe(run: MemberLocalReviewReadHandle, after = -1, signal?: AbortSignal) {
+    this.options.protocol.assertReadHandle(run);
+    if (!this.historyBindings.has(run)) throw new NativeReviewError('review-authority-denied');
+    return this.history!.observe(run, after, signal);
   }
   async stop(
     run: MemberLocalAcceptedReview,
@@ -703,6 +961,8 @@ export class MemberLocalExecutionReview {
       !this.lifetime.signal.aborted &&
       !this.closing &&
       !this.jobs.size &&
+      !this.coldObligations.size &&
+      !!this.history?.canSwitchBackend() &&
       this.options.protocol.canSwitchBackend() &&
       [...this.states.values()].every(
         (s) =>
@@ -716,6 +976,7 @@ export class MemberLocalExecutionReview {
   close(): Promise<void> {
     return (this.closing ??= (async () => {
       this.lifetime.abort();
+      await this.history?.close();
       if (this.heartbeat) clearInterval(this.heartbeat);
       this.stopReady?.();
       for (const state of this.states.values()) {

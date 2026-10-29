@@ -52,6 +52,7 @@ test('backend switch fence: original owner distinguishes held idle work, fixed s
     ],
   });
   assert.equal(h.owner.canSwitchBackend(), true);
+  assert.equal(h.protocol.supportsIndependentReviews, false);
   await h.owner.start(h.run);
   assert.equal(h.adapter.requests.length, 1);
   assert.equal(h.owner.canSwitchBackend(), false, 'an idle native turn is still held work');
