@@ -8,7 +8,7 @@ for arg in "$@"; do
   case "$arg" in
     --app) next=app ;;
     --app=*) app=${arg#--app=} ;;
-    --help) printf '%s\n' 'Usage: packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data [--host IP] [--port PORT] [--file-uploads]'; exit 0 ;;
+    --help) printf '%s\n' 'Usage: packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data [--host IP] [--port PORT] [--file-uploads] [--independent-reviews]'; exit 0 ;;
   esac
 done
 if [ -z "$app" ] || [ -n "$next" ]; then printf '%s\n' 'Pass --app and --data explicitly; use --help for usage.' >&2; exit 64; fi
