@@ -450,6 +450,16 @@ export class RemoteRunAuthorities {
             };
           if (body.operation === 'register-device') return this.register(body, lease!);
           if (body.operation === 'cleanup') return this.cleanup(body, privatePermit);
+          // Portable workflow contracts precede their original-queue consumer.
+          // Never interpret a new automation command as an ordinary Run request.
+          if (
+            body.operation === 'workflow-start' ||
+            body.operation === 'workflow-status' ||
+            body.operation === 'workflow-next' ||
+            body.operation === 'workflow-resume' ||
+            body.operation === 'workflow-stop'
+          )
+            deny('remote-protocol-unsupported');
           if (body.operation === 'accept') {
             return this.accept(body, lease!, sessionHash, qualification);
           }
@@ -1416,6 +1426,7 @@ export class RemoteRunAuthorities {
   ): Promise<RemoteAcceptValue> {
     const device = this.checkDevice(body, lease.memberId);
     const payload = body.payload;
+    if (payload.workflow) deny('remote-protocol-unsupported');
     lease.assertCurrent(payload.target.spaceId);
     const node = this.source.readNode(payload.target);
     if (!node) deny('remote-not-found');
