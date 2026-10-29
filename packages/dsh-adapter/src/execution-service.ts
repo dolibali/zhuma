@@ -7304,6 +7304,7 @@ export class ExecutionService {
     const target = this.assertFileRecord(authority, actorId, query, projectId, query.spaceId);
     let source = target;
     let file: ArtifactFileRef | undefined;
+    let expertProducerRunId: string | undefined;
     if (query.purpose === 'draft') {
       if (
         target.handoff.assignee.kind !== 'human' ||
@@ -7351,11 +7352,19 @@ export class ExecutionService {
           !source.handoff.reviewerIds.includes(actorId)
         )
           throw new ArtifactUploadError('not-found');
-      } else if (
-        query.purpose === 'artifact' &&
-        (source.handoff.assignee.kind !== 'human' || source.handoff.assignee.id !== actorId)
-      )
-        throw new ArtifactUploadError('not-found');
+      } else if (query.purpose === 'artifact') {
+        try {
+          // Reuse the original exact-node controller rule for both human and
+          // expert work; task membership/ownership alone never grants a read.
+          this.assertRunController(actorId, source);
+          if (source.handoff.assignee.kind === 'expert') {
+            if (!artifact.producerRunId) throw new ArtifactUploadError('not-found');
+            expertProducerRunId = artifact.producerRunId;
+          }
+        } catch {
+          throw new ArtifactUploadError('not-found');
+        }
+      }
       file = artifact.files.find((item) => item.id === query.uploadId);
       if (!file) throw new ArtifactUploadError('not-found');
       if (query.purpose === 'accepted' && authority.lease.signal.aborted)
@@ -7370,6 +7379,13 @@ export class ExecutionService {
       record.planId !== source.planId ||
       record.revision !== source.revision ||
       record.nodeId !== source.nodeId ||
+      (expertProducerRunId !== undefined &&
+        (!record.producer ||
+          record.producer.source.scope.actorId !== actorId ||
+          record.producer.source.scope.runId !== expertProducerRunId ||
+          (['spaceId', 'taskId', 'planId', 'revision', 'nodeId'] as const).some(
+            (key) => record.producer!.source.scope[key] !== record[key],
+          ))) ||
       (query.purpose === 'draft'
         ? record.uploadedBy !== actorId
         : !file || !matchesArtifactFileReference(file, record))

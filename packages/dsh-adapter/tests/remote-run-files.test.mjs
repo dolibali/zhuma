@@ -1,6 +1,7 @@
 /** Actual original backend/official attachment bytes; synthetic member and native reports only. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,9 +50,104 @@ for (const expert of [false, true])
     assert.equal(h.read().rounds.length, 1);
     assert.deepEqual(h.read().artifactVersions[0].files, [completed.file]);
     assert.equal(h.read().artifactVersions[0].submittedBy, expert ? 'qa' : 'chen');
+    const artifactQuery = {
+      ...h.locate(),
+      spaceId: 'north',
+      uploadId: completed.uploadId,
+      purpose: 'artifact',
+      artifactVersionId: h.read().artifactVersions[0].id,
+    };
+    const readArtifact = (
+      mode,
+      patch = {},
+      memberId = 'chen',
+      signal = new AbortController().signal,
+    ) =>
+      h.service.fileContent(
+        { member: { ok: true, memberId, spaceIds: ['north'] } },
+        { ...artifactQuery, mode, ...patch },
+        async () => ({
+          lease: {
+            memberId,
+            expiresAt: Date.now() + 60_000,
+            signal,
+            assertCurrent() {},
+            release() {},
+          },
+          assertProjectSpace(projectId, spaceId) {
+            assert.equal(projectId, 'project');
+            assert.equal(spaceId, 'north');
+          },
+        }),
+      );
+    const beforeRead = await businessHashes(join(h.root, 'service'));
+    for (const mode of ['metadata', 'preview', 'download']) {
+      const file = ok(await readArtifact(mode));
+      assert.equal(file.info.name, 'result.txt');
+      assert.equal(file.info.sha256, sha(bytes));
+      assert.deepEqual(file.info.reference, completed.file);
+      if (mode !== 'metadata') assert.deepEqual(Buffer.from(file.bytes), bytes);
+      file.check();
+      file.release();
+    }
+    for (const patch of [
+      { uploadId: randomUUID() },
+      { artifactVersionId: randomUUID() },
+      { planId: 'foreign-plan' },
+      { revision: artifactQuery.revision + 1 },
+      { nodeId: 'parallel' },
+      { spaceId: 'foreign-space' },
+    ])
+      no(await readArtifact('metadata', patch), 'not-found');
+    no(await readArtifact('metadata', {}, 'outside'), 'not-found');
+    no(await readArtifact('metadata', {}, 'chen', AbortSignal.abort()), 'cancelled');
+    if (expert) {
+      const workbench = h.readWorkbench();
+      h.setWorkbench((current) => ({
+        ...current,
+        tasks: current.tasks.map((task) => ({ ...task, ownerId: 'outside' })),
+      }));
+      no(
+        await readArtifact('metadata'),
+        'not-found',
+        'stale node owner is not the current controller',
+      );
+      h.setWorkbench(() => workbench);
+      const get = h.service.fileStore.get.bind(h.service.fileStore);
+      try {
+        for (const patch of [
+          { actorId: 'outside' },
+          { nodeId: 'parallel' },
+          { runId: 'foreign-run' },
+        ]) {
+          h.service.fileStore.get = (id) => {
+            const record = get(id);
+            if (id !== completed.uploadId) return record;
+            return {
+              ...record,
+              producer: {
+                ...record.producer,
+                source: {
+                  ...record.producer.source,
+                  scope: { ...record.producer.source.scope, ...patch },
+                },
+              },
+            };
+          };
+          no(await readArtifact('metadata'), 'not-found');
+        }
+      } finally {
+        h.service.fileStore.get = get;
+      }
+    }
+    assert.deepEqual(
+      await businessHashes(join(h.root, 'service')),
+      beforeRead,
+      'authorized reads never change task/Run/artifact facts',
+    );
     const repeated = ok(await h.submit(value));
     assert.deepEqual(repeated.receipt, receipt.receipt);
-    assert.equal(h.counts.read, 1, 'receipt retry does not reread bytes or repeat delivery');
+    assert.equal(h.counts.read, 3, 'receipt retry does not reread bytes or repeat delivery');
   });
 
 test('remote files: original 13 operations remain advertised until the Host explicitly enables the stream port', async (t) => {
