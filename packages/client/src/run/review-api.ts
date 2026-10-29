@@ -31,6 +31,13 @@ export interface NativeReviewState {
   readonly failure?: Pick<NonNullable<RemoteReviewView['failure']>, 'code'>;
 }
 export interface NativeReviewApi {
+  stopSession(
+    query: LocalReviewOptionsQuery,
+    sessionId: string,
+    run: NativeReviewState,
+    requestId: string,
+    signal: AbortSignal,
+  ): Promise<NativeReviewHistoryPage>;
   session(
     query: LocalReviewOptionsQuery,
     sessionId: string,
@@ -180,14 +187,15 @@ export function createNativeReviewApi(
     };
   }
   async function history(
-    endpoint: 'session' | 'recover',
+    endpoint: 'session' | 'recover' | 'session-stop',
     raw: LocalReviewOptionsQuery,
     sessionId: string,
     signal: AbortSignal,
     after = -1,
+    stop?: { requestId: string; expectedAttemptVersion: number },
   ): Promise<NativeReviewHistoryPage> {
     const expected = query(raw),
-      value = object(await call(endpoint, { ...expected, sessionId, after }, signal));
+      value = object(await call(endpoint, { ...expected, sessionId, after, ...stop }, signal));
     if (value.sessionId !== sessionId || !Array.isArray(value.events) || value.events.length > 100)
       return invalid();
     let previous = after;
@@ -209,6 +217,11 @@ export function createNativeReviewApi(
     };
   }
   return {
+    stopSession: (query, sessionId, run, requestId, signal) =>
+      history('session-stop', query, sessionId, signal, -1, {
+        requestId,
+        expectedAttemptVersion: run.attemptVersion,
+      }),
     session: (query, sessionId, signal, after) =>
       history('session', query, sessionId, signal, after),
     recover: (query, sessionId, signal) => history('recover', query, sessionId, signal),

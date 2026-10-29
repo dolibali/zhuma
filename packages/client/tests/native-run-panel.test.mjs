@@ -44,6 +44,157 @@ if (domModule) {
 const { createElement, act } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { NativeRunPanel } = await import('../dist/run/NativeRunPanel.js');
+const { NativeReviewLauncher, NativeReviewHistory } =
+  await import('../dist/run/NativeReviewWorkspace.js');
+
+test(
+  'DOM contract: a settled first expert can yield to the next eligible reviewer without restarting itself',
+  { skip: !domModule },
+  async () => {
+    const { createRoot } = await import('react-dom/client');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    let reads = 0,
+      starts = 0;
+    const api = {
+      options: async () => {
+        reads++;
+        return {
+          currentRunId: 'old',
+          models: { kind: 'ready', items: [] },
+          facts: {
+            expectedReviewVersion: 2,
+            reviewers: [
+              { name: 'QA One', reviewerRef: { id: 'one' }, canStart: false },
+              { name: 'QA Two', reviewerRef: { id: 'two' }, canStart: true },
+            ],
+          },
+        };
+      },
+      read: async () => ({
+        runId: 'old',
+        reviewerId: 'one',
+        resources: 'settled',
+        status: 'completed',
+        receipt: { action: 'approve' },
+      }),
+      start: async () => {
+        starts++;
+        throw Error('User did not start');
+      },
+    };
+    const query = {
+      spaceId: 'space',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      roundId: 'round',
+      artifactVersionId: 'artifact',
+    };
+    const click = async (text) =>
+      act(async () => {
+        const button = [...document.querySelectorAll('button')].find(
+          (button) => button.querySelector('.zm-button-label')?.textContent.trim() === text,
+        );
+        assert.ok(button, text);
+        button.click();
+        await new Promise(setImmediate);
+      });
+    try {
+      await act(async () =>
+        root.render(createElement(NativeReviewLauncher, { api, target: query })),
+      );
+      await click('Agent 评审');
+      assert.equal(
+        [...document.querySelectorAll('button')].some(
+          (button) => button.querySelector('.zm-button-label')?.textContent.trim() === '开始评审',
+        ),
+        false,
+      );
+      await click('选择下一位评审');
+      assert.ok(
+        [...document.querySelectorAll('button')].some(
+          (button) => button.querySelector('.zm-button-label')?.textContent.trim() === '开始评审',
+        ),
+      );
+      assert.ok(document.body.textContent.includes('QA One · 已通过'));
+      assert.equal(reads, 2);
+      assert.equal(starts, 0);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  },
+);
+test(
+  'DOM contract: cold Stop is explicit and retries the same intent after an unknown response',
+  { skip: !domModule },
+  async () => {
+    const { createRoot } = await import('react-dom/client');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host),
+      keys = [];
+    const api = {
+      session: async () => ({
+        nextAfter: -1,
+        messages: [],
+        run: {
+          runId: 'old',
+          resources: 'held',
+          phase: 'recovery-required',
+          attemptVersion: 2,
+          stopRequested: false,
+        },
+      }),
+      stopSession: async (_target, _sid, run, key) => {
+        keys.push([key, run.attemptVersion]);
+        throw Error('Unknown original stop ACK');
+      },
+      recover: () => assert.fail('No automatic recovery'),
+      start: () => assert.fail('No drive'),
+    };
+    const query = {
+      spaceId: 'space',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      roundId: 'round',
+      artifactVersionId: 'artifact',
+    };
+    try {
+      await act(async () => {
+        root.render(
+          createElement(NativeReviewHistory, {
+            api,
+            target: query,
+            sessionId: 'original-session',
+            close() {},
+          }),
+        );
+        await new Promise(setImmediate);
+      });
+      assert.equal(keys.length, 0);
+      for (let i = 0; i < 2; i++)
+        await act(async () => {
+          const button = [...host.querySelectorAll('button')].find(
+            (button) => button.querySelector('.zm-button-label')?.textContent.trim() === '停止评审',
+          );
+          assert.ok(button);
+          button.click();
+          await new Promise(setImmediate);
+        });
+      assert.equal(keys.length, 2);
+      assert.deepEqual(keys[0], keys[1]);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  },
+);
 
 const available = { kind: 'available' };
 const unavailable = { kind: 'unavailable', message: '当前能力不可用' };

@@ -26,6 +26,7 @@ const endpoints = [
   'review-stop',
   'review-session',
   'review-recover',
+  'review-session-stop',
 ] as const;
 const payload = z.strictObject({
   connectionId: z.uuid().nullable(),

@@ -16,6 +16,7 @@ const endpoints = new Set([
   'review-stop',
   'review-session',
   'review-recover',
+  'review-session-stop',
 ]);
 /** Local transport selection only. Original remote identity/business calls use
  * their fixed proxy; native calls stay on this device's SDK owner HTTP. */

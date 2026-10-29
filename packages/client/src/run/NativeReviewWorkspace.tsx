@@ -53,6 +53,7 @@ export function NativeReviewHistory({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const lifetime = useRef<AbortController>();
+  const stopIntent = useRef<{ requestId: string; expectedAttemptVersion: number }>();
   useEffect(() => {
     const active = new AbortController();
     lifetime.current = active;
@@ -66,21 +67,35 @@ export function NativeReviewHistory({
       });
     return () => active.abort();
   }, [api, target, sessionId]);
-  async function load(kind: 'refresh' | 'more' | 'recover') {
+  async function load(kind: 'refresh' | 'more' | 'recover' | 'stop') {
     const active = lifetime.current;
     if (!active || active.signal.aborted || busy) return;
     setBusy(true);
     setError('');
     try {
+      if (kind === 'stop' && !page) return;
+      if (kind === 'stop' && !stopIntent.current)
+        stopIntent.current = {
+          requestId: crypto.randomUUID(),
+          expectedAttemptVersion: page!.run.attemptVersion,
+        };
       const value =
-        kind === 'recover'
-          ? await api.recover(target, sessionId, active.signal)
-          : await api.session(
+        kind === 'stop'
+          ? await api.stopSession(
               target,
               sessionId,
+              { ...page!.run, attemptVersion: stopIntent.current!.expectedAttemptVersion },
+              stopIntent.current!.requestId,
               active.signal,
-              kind === 'more' ? page?.nextAfter : -1,
-            );
+            )
+          : kind === 'recover'
+            ? await api.recover(target, sessionId, active.signal)
+            : await api.session(
+                target,
+                sessionId,
+                active.signal,
+                kind === 'more' ? page?.nextAfter : -1,
+              );
       active.signal.throwIfAborted();
       setPage(
         kind === 'more' && page
@@ -133,6 +148,11 @@ export function NativeReviewHistory({
             <Button busy={busy} onClick={() => void load('refresh')}>
               刷新状态
             </Button>
+            {page.run.resources === 'held' && !page.run.stopRequested && (
+              <Button disabled={busy} onClick={() => void load('stop')}>
+                停止评审
+              </Button>
+            )}
             <Button disabled={busy || page.nextAfter < 0} onClick={() => void load('more')}>
               加载更多记录
             </Button>
@@ -155,6 +175,8 @@ function ReviewForm({ api, target }: Props) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [retry, setRetry] = useState<StartInput>();
+  const [pastRuns, setPastRuns] = useState<NativeReviewState[]>([]);
+  const ignoredRun = useRef<string>();
   const lifetime = useRef<AbortController>();
   async function load(signal: AbortSignal) {
     const value = await api.options(target, signal);
@@ -165,10 +187,11 @@ function ReviewForm({ api, target }: Props) {
         ? before
         : (value.facts.reviewers.find((item) => item.canStart)?.reviewerRef.id ?? ''),
     );
-    if (value.currentRunId) {
+    if (value.currentRunId && value.currentRunId !== ignoredRun.current) {
       const current = await api.read(target, value.currentRunId, signal);
       signal.throwIfAborted();
       setRun(current);
+      setReviewerId(current.reviewerId);
       setRetry(undefined);
     }
   }
@@ -285,7 +308,51 @@ function ReviewForm({ api, target }: Props) {
               )}
             </div>
           )}
+          {!!pastRuns.length && (
+            <div className="zm-native-run__notice" aria-label="本轮已有评审">
+              {pastRuns.map((previous) => (
+                <p key={previous.runId}>
+                  {catalog.facts.reviewers.find(
+                    (item) => item.reviewerRef.id === previous.reviewerId,
+                  )?.name ?? previous.reviewerId}{' '}
+                  ·{' '}
+                  {previous.receipt?.action === 'approve'
+                    ? '已通过'
+                    : previous.receipt?.action === 'request-changes'
+                      ? '已退回修改'
+                      : '本轮已结束'}
+                </p>
+              ))}
+            </div>
+          )}
           <div className="zm-actions">
+            {run?.resources === 'settled' &&
+              catalog.facts.reviewers.some((item) => item.canStart) && (
+                <Button
+                  disabled={busy}
+                  onClick={() =>
+                    void command(async (signal) => {
+                      const fresh = await api.options(target, signal);
+                      signal.throwIfAborted();
+                      setCatalog(fresh);
+                      const next = fresh.facts.reviewers.find((item) => item.canStart);
+                      if (!next) {
+                        setError('当前没有其他可启动的评审专家。');
+                        return;
+                      }
+                      ignoredRun.current = run.runId;
+                      setPastRuns((before) =>
+                        before.some((item) => item.runId === run.runId) ? before : [...before, run],
+                      );
+                      setRun(undefined);
+                      setRetry(undefined);
+                      setReviewerId(next.reviewerRef.id);
+                    })
+                  }
+                >
+                  选择下一位评审
+                </Button>
+              )}
             {!run && (
               <Button
                 variant="primary"

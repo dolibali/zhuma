@@ -36,6 +36,10 @@ const sessionSchema = localReviewOptionsQuerySchema.extend({
   sessionId: id,
   after: z.number().int().min(-1).default(-1),
 });
+const sessionStopSchema = sessionSchema.extend({
+  requestId: z.uuid(),
+  expectedAttemptVersion: z.number().int().positive(),
+});
 const replySchema = z.object({
   type: z.literal('server-response'),
   rpcId: z.uuid(),
@@ -156,15 +160,32 @@ export function createHostMemberNativeReviews(
     async handle(endpoint: string, raw: unknown, signal: AbortSignal): Promise<unknown> {
       if (fenced) throw new SharedBackendError('unavailable');
       await options.current(signal);
-      if (endpoint === 'review-session' || endpoint === 'review-recover') {
-        const { sessionId, after, ...target } = sessionSchema.parse(raw);
+      if (
+        endpoint === 'review-session' ||
+        endpoint === 'review-recover' ||
+        endpoint === 'review-session-stop'
+      ) {
+        const stop = endpoint === 'review-session-stop' ? sessionStopSchema.parse(raw) : undefined;
+        const read = stop
+          ? (() => {
+              const { requestId: _id, expectedAttemptVersion: _version, ...query } = stop;
+              return query;
+            })()
+          : raw;
+        const { sessionId, after, ...target } = sessionSchema.parse(read);
         const opened = await options.native.openReviewSession(sessionId, signal);
         const { artifactFingerprint: _fingerprint, ...fixed } =
           opened.view.remote.scope.review.target;
         if (canonicalPayload(fixed) !== canonicalPayload(target))
           throw new ExecutionRunError('run-scope-mismatch');
+        if (stop)
+          await options.protocol.stop(
+            opened.run,
+            { requestId: stop.requestId, expectedAttemptVersion: stop.expectedAttemptVersion },
+            signal,
+          );
         const result =
-          endpoint === 'review-recover'
+          endpoint === 'review-recover' || stop
             ? await options.native.recoverReview(opened.run, signal)
             : opened;
         const view = result.view;

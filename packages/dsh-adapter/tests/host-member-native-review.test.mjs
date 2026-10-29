@@ -22,7 +22,9 @@ function fixture({ late = false, denied = false } = {}) {
     starts = 0,
     stops = 0;
   let opens = 0,
-    recovers = 0;
+    recovers = 0,
+    coldStops = 0;
+  const coldStopKeys = new Set();
   const ack = Promise.withResolvers();
   const run = {
     value: {
@@ -86,6 +88,12 @@ function fixture({ late = false, denied = false } = {}) {
         };
       },
       status: async () => run.value,
+      stop: async (handle, input) => {
+        assert.equal(handle, run);
+        coldStops++;
+        coldStopKeys.add(input.requestId);
+        return run.value;
+      },
       canSwitchBackend: () => true,
     },
     native: {
@@ -115,7 +123,8 @@ function fixture({ late = false, denied = false } = {}) {
     ack,
     accepting,
     counters: () => ({ prepares, sends, starts, stops }),
-    coldCounters: () => ({ opens, recovers }),
+    coldCounters: () => ({ opens, recovers, coldStops }),
+    coldStopKeys,
     input: {
       ...target,
       requestId: randomUUID(),
@@ -149,15 +158,35 @@ test('cold review opening only reads original status/history; reconciliation req
   const input = { ...target, sessionId: 'original-session' };
   const value = await h.assembly.handle('review-session', input, signal);
   assert.equal(value.sessionId, 'original-session');
-  assert.deepEqual(h.coldCounters(), { opens: 1, recovers: 0 });
+  assert.deepEqual(h.coldCounters(), { opens: 1, recovers: 0, coldStops: 0 });
   assert.deepEqual(h.counters(), { prepares: 0, sends: 0, starts: 0, stops: 0 });
   await h.assembly.handle('review-recover', input, signal);
-  assert.deepEqual(h.coldCounters(), { opens: 2, recovers: 1 });
+  assert.deepEqual(h.coldCounters(), { opens: 2, recovers: 1, coldStops: 0 });
   assert.equal(h.counters().starts, 0);
   await assert.rejects(
     h.assembly.handle('review-recover', { ...input, roundId: 'foreign' }, signal),
   );
   assert.equal(h.coldCounters().recovers, 1);
+});
+test('cold held review can be explicitly stopped with its original read handle and same-key retry, without drive admission', async () => {
+  const h = fixture(),
+    signal = new AbortController().signal;
+  const input = {
+    ...target,
+    sessionId: 'original-session',
+    requestId: randomUUID(),
+    expectedAttemptVersion: 1,
+  };
+  const first = await h.assembly.handle('review-session-stop', input, signal);
+  assert.equal(first.run.resources, 'held', 'unknown recovery is never reported settled');
+  await h.assembly.handle('review-session-stop', input, signal);
+  assert.equal(h.coldStopKeys.size, 1);
+  assert.deepEqual(h.coldCounters(), { opens: 2, recovers: 2, coldStops: 2 });
+  assert.deepEqual(h.counters(), { prepares: 0, sends: 0, starts: 0, stops: 0 });
+  await assert.rejects(
+    h.assembly.handle('review-session-stop', { ...input, artifactVersionId: 'foreign' }, signal),
+  );
+  assert.equal(h.coldCounters().coldStops, 2);
 });
 test('shared review assembly rejects original self-review/changed target before accept', async () => {
   const h = fixture({ denied: true });
