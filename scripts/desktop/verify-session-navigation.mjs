@@ -1,19 +1,26 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, cp, symlink, writeFile, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, cp, symlink, writeFile, rm, readFile, mkdir, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const { values } = parseArgs({ options: { sdk: { type: 'string' } } });
+const { values } = parseArgs({
+  options: {
+    sdk: { type: 'string' },
+    'build-sdk': { type: 'string' },
+    output: { type: 'string' },
+  },
+});
 if (!values.sdk) throw Error('Pass --sdk with the public fixed SDK');
 const sdk = resolve(values.sdk),
+  buildSdk = resolve(values['build-sdk'] ?? values.sdk),
   source = join(root, 'upstream/deepseek-harness');
 const lock = JSON.parse(await readFile(join(root, 'runtime.lock.json'), 'utf8'));
-for (const cwd of [sdk, source])
+for (const cwd of new Set([sdk, source, buildSdk]))
   assert.equal(
     execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim(),
     lock.upstreams.deepseekHarness.commit,
@@ -102,6 +109,85 @@ console.log(JSON.stringify({scope:'actual-patched-sdk-navigation-class-with-cont
     cwd: temp,
     encoding: 'utf8',
   });
+  let artifact;
+  if (values.output) {
+    // Build only this original browser plugin with its official CSS, externals,
+    // purity gate and ModuleLoader wrapper. Never rebuild or mutate the SDK.
+    for (const file of [
+      'packages/client/ui-workspace/package.json',
+      'packages/client/tsdown.client.ts',
+      'packages/client/modules/src/client/manifest.ts',
+      'packages/client/web/src/platform.ts',
+      'scripts/client-build-environment.ts',
+      'scripts/experimental-package-policy.ts',
+      'scripts/bundle-input-isolation.ts',
+    ]) {
+      await mkdir(dirname(join(temp, file)), { recursive: true });
+      await cp(join(source, file), join(temp, file));
+    }
+    await symlink(
+      join(buildSdk, 'node_modules'),
+      join(temp, 'packages/client/node_modules'),
+      'dir',
+    );
+    await symlink(
+      join(buildSdk, 'packages/client/ui-workspace/node_modules'),
+      join(temp, 'packages/client/ui-workspace/node_modules'),
+      'dir',
+    );
+    await writeFile(
+      join(temp, 'build-client.mjs'),
+      `import {clientBundle} from './packages/client/tsdown.client.ts';
+import {build} from ${JSON.stringify(pathToFileURL(join(buildSdk, 'node_modules/tsdown/dist/index.mjs')).href)};
+const directory=new URL('./packages/client/ui-workspace',import.meta.url).pathname;
+process.chdir(directory);
+const config=clientBundle(directory,['lib/types/index.js'])({env:{}}).find(value=>value.name==='@deepseek-ai/dsh-client-ui-workspace/client');
+if(!config) throw Error('Original Workspace client preset is unavailable');
+await build({...config,config:false,cwd:directory,sourcemap:false});`,
+    );
+    execFileSync(
+      process.execPath,
+      ['--experimental-transform-types', join(temp, 'build-client.mjs')],
+      {
+        cwd: temp,
+        // Only public build inputs; no inherited HOME, profile or model variables.
+        env: { PATH: process.env.PATH, NODE_ENV: 'production' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const lib = join(temp, 'packages/client/ui-workspace/lib');
+    assert.deepEqual(await readdir(lib), ['client.js']);
+    const bytes = await readFile(join(lib, 'client.js'));
+    for (const marker of [
+      '__ModuleLoader__',
+      '@deepseek-ai/dsh-client-ui-workspace',
+      'registerSessionNavigationGuard',
+    ])
+      assert(bytes.includes(Buffer.from(marker)));
+    const target = resolve(values.output);
+    for (const input of [sdk, buildSdk, source])
+      assert(target !== input && !target.startsWith(input + '/'), 'Output must be outside the SDK');
+    artifact = {
+      scope: 'actual-original-ui-workspace-browser-client-bundle',
+      pin: lock.upstreams.deepseekHarness.commit,
+      patch: createHash('sha256')
+        .update(await readFile(patch))
+        .digest('hex'),
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+    await mkdir(target, { recursive: true });
+    for (const [file, data] of [
+      ['client.js', bytes],
+      ['SOURCE.json', Buffer.from(JSON.stringify(artifact, null, 2) + '\n')],
+    ]) {
+      try {
+        await writeFile(join(target, file), data, { flag: 'wx' });
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        assert((await readFile(join(target, file))).equals(data), 'Existing output differs');
+      }
+    }
+  }
   console.log(
     JSON.stringify({
       ...JSON.parse(output),
@@ -109,6 +195,7 @@ console.log(JSON.stringify({scope:'actual-patched-sdk-navigation-class-with-cont
       patch: createHash('sha256')
         .update(await readFile(patch))
         .digest('hex'),
+      ...(artifact ? { artifact, output: resolve(values.output) } : {}),
     }),
   );
 } finally {

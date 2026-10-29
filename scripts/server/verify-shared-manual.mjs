@@ -197,6 +197,33 @@ try {
   );
   let write = (await author.inbox(signal())).nodes.find((item) => item.nodeId === 'write');
   assert.ok(write);
+  const metadataResponse = await ann.client.fetcher('/api/zhuma-member/local-run-options', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    signal: signal(),
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: randomUUID(),
+      method: 'zhuma-member/local-run-options',
+      payload: { ...target(write), spaceId },
+    }),
+  });
+  assert.equal(metadataResponse.status, 200);
+  const metadata = await metadataResponse.json();
+  assert.equal(metadata.result.ok, true);
+  assert.equal(metadata.result.value.currentRunId, null);
+  assert.equal(metadata.result.value.currentRun, null);
+  assert.equal(metadata.result.value.nodeVersion, write.version);
+  assert.equal(metadata.result.value.models.kind, 'unavailable');
+  assert.equal(Object.hasOwn(metadata.result.value, 'workspaces'), false);
+  assert.equal(metadata.result.value.start.kind, 'available');
+  assert.deepEqual(
+    (await author.inbox(signal())).nodes.find((item) => item.nodeId === 'write'),
+    write,
+  );
+  checks.push(
+    'exact-member-local-metadata-keeps-actual-node-version-without-backend-model-or-directory-selection',
+  );
   const saved = await author.saveDeliveryDraft(
     {
       ...target(write),

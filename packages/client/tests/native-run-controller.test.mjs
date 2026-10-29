@@ -1061,3 +1061,32 @@ test('Run stream transport contract: exact same-origin member endpoint validates
   assert.deepEqual(h.calls, ['/zhuma-id/session', '/api/zhuma-run/observe']);
   assert.equal(cancelled, 1);
 });
+
+test('Run publication contract: only explicit per-Run ranges enter the start intent and malformed ranges never call the Host', async () => {
+  const choice = {
+    id: 'current-workspace',
+    label: 'Workspace',
+    access: 'write',
+    publish: false,
+    publication: 'per-run',
+  };
+  const h = setup({
+    async options() {
+      return { ...options(), workspaces: [choice] };
+    },
+  });
+  await h.controller.refresh();
+  const publish = [{ kind: 'file', path: 'deliverables/report.md' }];
+  await h.controller.start({ ...selection, workspace: { kind: 'local', id: choice.id, publish } });
+  const begun = h.calls.find((item) => Array.isArray(item) && item[0] === 'begin');
+  assert.deepEqual(begun[1].workspace, { kind: 'local', id: choice.id, publish });
+  const count = h.calls.filter((item) => Array.isArray(item) && item[0] === 'begin').length;
+  await assert.rejects(
+    h.controller.start({
+      ...selection,
+      workspace: { kind: 'local', id: choice.id, publish: [{ kind: 'file', path: '../private' }] },
+    }),
+  );
+  assert.equal(h.calls.filter((item) => Array.isArray(item) && item[0] === 'begin').length, count);
+  h.controller.dispose();
+});

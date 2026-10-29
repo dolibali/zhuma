@@ -340,6 +340,10 @@ export function createHostWorkflowOwner(
   };
   return {
     operations,
+    canSwitchBackend: () =>
+      !bridge ||
+      (bridge as typeof bridge & { canSwitchBackend?: () => boolean }).canSwitchBackend?.() ===
+        true,
     fence: () => bridge?.fence(),
     close: () => bridge?.close() ?? Promise.resolve(),
   };

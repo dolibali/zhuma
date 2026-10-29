@@ -60,6 +60,7 @@ const targets = {
   '/api/zhuma-member/snapshot': ['POST', 'member.snapshot'],
   '/api/zhuma-member/command': ['POST', 'member.command'],
   '/api/zhuma-member/plan': ['POST', 'member.plan'],
+  '/api/zhuma-member/local-run-options': ['POST', 'execution.local-run-options'],
   '/api/zhuma-knowledge/libraries': ['POST', 'knowledge.libraries'],
   '/api/zhuma-knowledge/list': ['POST', 'knowledge.list'],
   '/api/zhuma-knowledge/search': ['POST', 'knowledge.search'],
@@ -67,6 +68,7 @@ const targets = {
   '/api/zhuma-knowledge/drafts': ['POST', 'knowledge.drafts'],
   '/api/zhuma-knowledge/draft': ['POST', 'knowledge.draft'],
   '/api/zhuma-knowledge/save-draft': ['POST', 'knowledge.save-draft'],
+  '/api/zhuma-knowledge/propose-draft': ['POST', 'knowledge.propose-draft'],
   '/api/zhuma-knowledge/publish': ['POST', 'knowledge.publish'],
   '/api/zhuma-exec/inbox': ['POST', 'execution.inbox'],
   '/api/zhuma-exec/startable': ['POST', 'execution.startable'],
@@ -124,6 +126,11 @@ export function createSharedBackendClient(
       AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]),
     );
     if (!result.ok) {
+      if (endpoint === 'select' && result.error.code === 'backend-native-busy') {
+        const error = new Error('仍有工作在运行或等待清理，请先停止并确认结束后再切换服务。');
+        error.name = 'SharedBackendNativeBusy';
+        throw error;
+      }
       if (endpoint === 'request' && result.error.code === 'backend-invalid-response')
         return { connectionId: snapshot.selection?.connectionId, status: 502, body: null };
       if (
@@ -258,7 +265,11 @@ export function createSharedBackendClient(
         retry = undefined;
       } catch (error) {
         current(attempt);
-        publish({ phase: 'error', selection });
+        publish({
+          phase:
+            error instanceof Error && error.name === 'SharedBackendNativeBusy' ? 'ready' : 'error',
+          selection,
+        });
         throw error;
       }
     },

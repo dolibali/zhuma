@@ -13,12 +13,14 @@ const knowledgeMethods = {
   drafts: 'drafts',
   draft: 'draft',
   'save-draft': 'saveDraft',
+  'propose-draft': 'proposeDraft',
   publish: 'publish',
 } as const;
 type Endpoint = keyof typeof knowledgeMethods;
 export const knowledgeEndpoints = Object.keys(knowledgeMethods) as Endpoint[];
 
-/** Eight exact member operations. Host-only Agent proposals have no browser route. */
+/** Exact member operations. Proposals use the same member/page-author authority;
+ * Agent authorship is metadata, not evidence of a Run or permission to publish. */
 export function openKnowledgeHttp(ctx: Context, current: () => KnowledgeService | undefined) {
   const lifetime = new AbortController();
   const pending = new Set<Promise<Response>>();
@@ -63,7 +65,11 @@ export function openKnowledgeHttp(ctx: Context, current: () => KnowledgeService 
       const envelope = clientRequestSchema.safeParse(
         await readWorkbenchBody(
           request,
-          { bodyBytes: endpoint === 'save-draft' ? 1024 * 1024 : 16_384, bodyTimeoutMs: 10_000 },
+          {
+            bodyBytes:
+              endpoint === 'save-draft' || endpoint === 'propose-draft' ? 1024 * 1024 : 16_384,
+            bodyTimeoutMs: 10_000,
+          },
           signal,
         ),
       );

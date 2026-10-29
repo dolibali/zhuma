@@ -10,7 +10,7 @@ import Credentials from '@deepseek-ai/dsh-credentials-local';
 import WebServer from '@deepseek-ai/dsh-host-webserver';
 import * as Connection from '@deepseek-ai/dsh-client-connection';
 import RemoteAccess from '@deepseek-ai/dsh-api-remote-access';
-import { HostSharedBackend } from '../dist/host-shared-backend.js';
+import { HostSharedBackend, SharedBackendError } from '../dist/host-shared-backend.js';
 import { mountHostSharedBackend } from '../dist/host-shared-backend-http.js';
 
 async function fixture(t) {
@@ -19,6 +19,7 @@ async function fixture(t) {
     calls = [];
   let backendId = randomUUID(),
     expired = false,
+    businessExpired = false,
     pending;
   const cookies = new Map();
   const remote = async (input, init) => {
@@ -84,6 +85,8 @@ async function fixture(t) {
       );
     if (url.pathname === '/zhuma-id/password')
       return Response.json({ ok: false, error: 'invalid-login' }, { status: 401 });
+    if (businessExpired && url.pathname.startsWith('/api/zhuma-member/'))
+      return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
     return Response.json({
       type: 'server-response',
       rpcId: body.rpcId,
@@ -130,12 +133,60 @@ async function fixture(t) {
     expire: () => {
       expired = true;
     },
+    expireBusiness: () => {
+      businessExpired = true;
+    },
     replaceBackend: () => {
       backendId = randomUUID();
     },
     delay: () => (pending = Promise.withResolvers()),
   };
 }
+
+test('shared backend actual Credentials: a precommit native refusal preserves the old durable selection and retry identity', async (t) => {
+  const h = await fixture(t),
+    selected = await h.selected();
+  const input = {
+    requestId: randomUUID(),
+    expectedConnectionId: selected.connectionId,
+    origin: 'http://next.example',
+  };
+  let calls = 0;
+  await assert.rejects(
+    h.owner.select(input, {
+      async prepare() {
+        calls++;
+        throw new SharedBackendError('native-busy');
+      },
+    }),
+    { code: 'native-busy' },
+  );
+  assert.equal((await h.owner.status()).connectionId, selected.connectionId);
+  const trace = [];
+  const next = await h.owner.select(input, {
+    async prepare() {
+      trace.push('closed-original-child');
+      return {
+        async committed() {
+          trace.push('opened-selected-child');
+        },
+        failed() {
+          assert.fail();
+        },
+      };
+    },
+  });
+  assert.equal(next.origin, input.origin);
+  assert.notEqual(next.connectionId, selected.connectionId);
+  const retry = await h.owner.select(input, {
+    async prepare() {
+      assert.fail('A durable replay must not stop or reopen current work');
+    },
+  });
+  assert.equal(retry.connectionId, next.connectionId);
+  assert.equal(calls, 1);
+  assert.deepEqual(trace, ['closed-original-child', 'opened-selected-child']);
+});
 
 test('shared backend confines fixed methods, persists only original member Cookie privately and cold reads exact origin/identity', async (t) => {
   const h = await fixture(t);
@@ -451,4 +502,55 @@ test('shared backend exact HTTP routes retain actual SDK local owner admission a
     'connectionId',
     'origin',
   ]);
+});
+
+test('shared backend: member expiry between successful probe and business reply immediately fences native admission', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const changed = [];
+  const off = h.owner.onNativeAuthenticationChanged((kind) => changed.push(kind));
+  h.expireBusiness();
+  const reply = await h.request(
+    selection,
+    'member.snapshot',
+    { spaceId: 'north' },
+    { rpcId: randomUUID() },
+  );
+  assert.equal(reply.status, 401);
+  assert.deepEqual(changed, ['revoking']);
+  off();
+});
+
+test('shared backend: Agent proposal forwards the original draft schema to one fixed member endpoint', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const input = {
+    spaceId: 'north',
+    libraryId: 'library',
+    pageId: 'page',
+    expectedVersion: 0,
+    idempotencyKey: 'proposal-1',
+    content: { title: 'Proposed note', format: 'markdown', text: 'Draft only', sources: [] },
+  };
+  const before = h.calls.length;
+  await h.request(selection, 'knowledge.propose-draft', input, { rpcId: randomUUID() });
+  assert.equal(h.calls.at(-1).url, 'http://backend.example:3080/api/zhuma-knowledge/propose-draft');
+  assert.deepEqual(h.calls.at(-1).body.payload, input);
+  assert.equal(
+    h.calls.length,
+    before + 2,
+    'One original identity probe plus the fixed draft operation',
+  );
+  const valid = h.calls.length;
+  await assert.rejects(
+    h.request(
+      selection,
+      'knowledge.propose-draft',
+      { ...input, actorId: 'other' },
+      { rpcId: randomUUID() },
+    ),
+  );
+  assert.equal(h.calls.length, valid);
 });

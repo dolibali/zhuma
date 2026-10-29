@@ -13,6 +13,31 @@ const remote = () => ({
   backendId: crypto.randomUUID(),
   actorId: 'ann',
 });
+
+test('shared backend busy refusal keeps the original ready connection so the user can still stop current work', async () => {
+  const selected = remote();
+  let changes = 0;
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, endpoint) {
+        return endpoint === 'zhuma-backend/status'
+          ? { ok: true, value: selected }
+          : { ok: false, error: { code: 'backend-native-busy' } };
+      },
+    },
+    () => {
+      changes++;
+    },
+  );
+  await client.refresh();
+  await assert.rejects(client.select('http://other.invalid', AbortSignal.timeout(1000)), {
+    name: 'SharedBackendNativeBusy',
+  });
+  assert.equal(client.getSnapshot().phase, 'ready');
+  assert.equal(client.getSnapshot().selection.connectionId, selected.connectionId);
+  assert.equal(changes, 0);
+  client.close();
+});
 function fixture(selection = remote()) {
   const calls = [];
   let changes = 0,

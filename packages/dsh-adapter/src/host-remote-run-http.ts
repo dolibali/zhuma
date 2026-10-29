@@ -4,7 +4,7 @@ import {
   REMOTE_RUN_LIMITS,
   REMOTE_RUN_OPERATIONS,
   REMOTE_RUN_PERMIT_HEADER,
-  remoteRunRequestSchema,
+  remoteExecutionRequestSchema,
   type RemoteRunOperation,
 } from '@zhuma/agent-core';
 import { Readable } from 'node:stream';
@@ -117,7 +117,7 @@ export function openHostRemoteRunHttp(
       if (!envelope.success || envelope.data.method !== MEMBER_LOCAL_REMOTE_METHODS[operation])
         return fail('remote-validation', 400);
       rpcId = envelope.data.rpcId;
-      const body = remoteRunRequestSchema.safeParse(envelope.data.payload);
+      const body = remoteExecutionRequestSchema.safeParse(envelope.data.payload);
       if (!body.success || body.data.operation !== operation) return fail('remote-validation', 400);
       if (body.data.operation === 'publish-file' && body.data.payload.mode === 'publish' && !upload)
         return fail('remote-validation', 400);

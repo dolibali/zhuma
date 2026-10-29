@@ -1,6 +1,11 @@
 import { symbols, type Context } from '@deepseek-ai/cordis';
 import { createHash } from 'node:crypto';
-import { canonicalPayload, isTerminalRunStatus, type Workbench } from '@zhuma/agent-core';
+import {
+  canonicalPayload,
+  createNodeHandoffs,
+  isTerminalRunStatus,
+  type Workbench,
+} from '@zhuma/agent-core';
 import { z } from 'zod';
 import { createHostRunConfiguration } from './host-run-configuration.js';
 import { createHostRunOptions } from './host-run-options.js';
@@ -101,6 +106,7 @@ const sendRequest = z.strictObject({
     .refine((text) => text.trim().length > 0),
   mode: z.enum(['followup', 'steer', 'queue']),
 });
+export const hostRunSendRequestSchema = sendRequest;
 const locatorFor = (scope: NativeWorkScope): ExecutionRunLocator => ({
   taskId: scope.taskId,
   planId: scope.planId,
@@ -245,12 +251,14 @@ export async function openHostRunOwner(
     signal: lifetime.signal,
     resources,
     workspaces,
+    ...(options.remoteOnly ? { localSelection: true } : {}),
   });
   const reviews = createNativeReviewBridge({
     execution,
     signal: lifetime.signal,
     host: {
       prepareReview: (original, input, wait) => {
+        assertNativeDrive();
         // Author output limits do not configure the independent review.
         const { provider, model, reasoningEffort } = input.model;
         return configuration.prepareReview(
@@ -260,6 +268,7 @@ export async function openHostRunOwner(
         );
       },
       adoptReviewResources(agentCtx, input) {
+        assertNativeDrive();
         return adoptHostReviewResources(agentCtx, input, {
           native: native.service,
           resources,
@@ -1480,6 +1489,54 @@ export async function openHostRunOwner(
 
   return {
     lookupNativeSession: native.lookupNativeSession,
+    canSwitchBackend() {
+      if (
+        fenced ||
+        closing ||
+        lifetime.signal.aborted ||
+        beginning ||
+        commands.size ||
+        events.size ||
+        admissions.size ||
+        owned.size ||
+        absentRetirements.size ||
+        (reviews as typeof reviews & { canSwitchBackend?: () => boolean }).canSwitchBackend?.() !==
+          true ||
+        workflow?.canSwitchBackend() !== true
+      )
+        return false;
+      try {
+        for (const plan of options.readWorkbench().appliedPlans) {
+          for (const node of createNodeHandoffs(plan)) {
+            const record = execution.readRunNode({
+              taskId: plan.taskId,
+              planId: plan.id,
+              revision: plan.revision,
+              nodeId: node.nodeId,
+            });
+            if (
+              record &&
+              (readExecutionRunState(record)?.runs.some(
+                (run) => run.resources !== 'settled' || !isTerminalRunStatus(run.attempt.status),
+              ) ||
+                readExecutionReviewState(record)?.attempts.some(
+                  (attempt) =>
+                    attempt.resources !== 'settled' ||
+                    !['completed', 'failed', 'cancelled'].includes(attempt.status),
+                ))
+            )
+              return false;
+          }
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    memberLocalOptions(request: MemberRequest, payload: unknown, wait?: AbortSignal) {
+      if (!options.remoteOnly) throw new ExecutionRunError('run-authority-denied');
+      return command(() => readOptions(request, payload, wait));
+    },
     operations,
     beginWorkflowRun,
     workflowOperations,

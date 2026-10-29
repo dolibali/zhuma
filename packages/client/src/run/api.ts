@@ -5,6 +5,7 @@ import { ExecutionError } from '../execution/ExecutionApi.js';
 import type { MemberExecutionScope } from '../execution/http.js';
 import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
 import type { LocalWorkspaceDirectory } from './workspace-directory.js';
+import { workspacePublishRanges, type WorkspacePublishRange } from './workspace-approvals.js';
 import {
   createWorkspaceApprovalApi,
   type RegisterWorkspaceDirectory,
@@ -56,7 +57,9 @@ export type NativeRunBegin = NativeRunLocator & {
   model: NativeRunSelection['model'];
   executor: NativeRunSelection['executor'];
   tools: 'text-only' | 'accepted-input-reader' | 'local-tools';
-  workspace: { kind: 'text-only' } | { kind: 'local'; id: string };
+  workspace:
+    | { kind: 'text-only' }
+    | { kind: 'local'; id: string; publish?: readonly WorkspacePublishRange[] };
 };
 export interface NativeRunApi {
   openNativeSession?: ((run: NativeRunSummary, signal: AbortSignal) => Promise<void>) | undefined;
@@ -153,7 +156,11 @@ function workspace(value: unknown): NativeRunBegin['workspace'] {
   return row.kind === 'text-only'
     ? { kind: 'text-only' }
     : row.kind === 'local'
-      ? { kind: 'local', id: string(row.id) }
+      ? {
+          kind: 'local',
+          id: string(row.id),
+          ...(row.publish === undefined ? {} : { publish: workspacePublishRanges(row.publish) }),
+        }
       : invalid();
 }
 function locator(value: unknown, expected: NativeRunLocator): NativeRunLocator {
@@ -244,6 +251,9 @@ function optionsView(
               label: string(item.label),
               access: oneOf(item.access, ['read', 'write']),
               publish: boolean(item.publish),
+              ...(item.publication === undefined
+                ? {}
+                : { publication: oneOf(item.publication, ['per-run']) }),
             };
           }),
         }),
@@ -407,6 +417,7 @@ export function createNativeRunApi(
   registerDirectory?: RegisterWorkspaceDirectory,
   openModelSettings?: () => void,
   localDirectory?: LocalWorkspaceDirectory,
+  serverAllocatedRunIds = false,
 ): NativeRunApi {
   const identity = createIdentityApi(fetcher);
   const directory = createMemberWorkbenchApi(
@@ -683,7 +694,11 @@ export function createNativeRunApi(
         ),
       );
       locator(value, input);
-      if (value.runId !== input.newRunId || value.segmentId !== input.newSegmentId) invalid();
+      if (serverAllocatedRunIds) {
+        string(value.runId);
+        string(value.segmentId);
+      } else if (value.runId !== input.newRunId || value.segmentId !== input.newSegmentId)
+        invalid();
     },
     async send(run, text, mode, requestId, signal) {
       const value = object(

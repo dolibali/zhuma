@@ -89,6 +89,33 @@ if (gateway) {
   throw Error(
     'This plugin requires the matching Gateway; pass a verified frozen --plugin candidate',
   );
+const workspaceTarget = join(stage, 'packages/client/ui-workspace/lib/client.js');
+const workspace = frozen?.sdkUiWorkspace;
+if (workspace) {
+  if (
+    workspace.pin !== pin ||
+    (await hash(join(source, 'sdk-ui-workspace/client.js'))) !== workspace.sha256 ||
+    !(await readFile(join(source, 'sdk-ui-workspace/client.js'), 'utf8')).includes(
+      'registerSessionNavigationGuard',
+    ) ||
+    !(await realpath(workspaceTarget)).startsWith((await realpath(stage)) + '/')
+  )
+    throw Error('Frozen SDK Workspace client identity differs');
+}
+async function replaceSdkEntry(input, output, expected, label) {
+  const old = await hash(output);
+  const saved = join(root, '.build/desktop-plugin-backups', `${label}-${old}`);
+  await mkdir(saved, { recursive: true });
+  try {
+    await access(join(saved, 'index.js'));
+    if ((await hash(join(saved, 'index.js'))) !== old) throw Error('SDK backup differs');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await copyFile(output, join(saved, 'index.js'));
+  }
+  await copyFile(input, output);
+  if ((await hash(output)) !== expected) throw Error('Staged SDK entry differs');
+}
 if (!values['dry-run']) {
   await mkdir(backup, { recursive: true });
   for (const file of files) {
@@ -104,20 +131,20 @@ if (!values['dry-run']) {
   }
   for (const file of files) await copyFile(join(source, file), join(target, file));
   if (gateway) {
-    const old = await hash(gatewayTarget),
-      gatewayBackup = join(root, '.build/desktop-plugin-backups', `gateway-${old}`);
-    await mkdir(gatewayBackup, { recursive: true });
-    try {
-      await access(join(gatewayBackup, 'index.js'));
-      if ((await hash(join(gatewayBackup, 'index.js'))) !== old)
-        throw Error('Gateway backup differs');
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      await copyFile(gatewayTarget, join(gatewayBackup, 'index.js'));
-    }
-    await copyFile(join(source, 'sdk-gateway/index.js'), gatewayTarget);
-    if ((await hash(gatewayTarget)) !== gateway.sha256) throw Error('Staged Gateway differs');
+    await replaceSdkEntry(
+      join(source, 'sdk-gateway/index.js'),
+      gatewayTarget,
+      gateway.sha256,
+      'gateway',
+    );
   }
+  if (workspace)
+    await replaceSdkEntry(
+      join(source, 'sdk-ui-workspace/client.js'),
+      workspaceTarget,
+      workspace.sha256,
+      'ui-workspace',
+    );
   for (const file of files)
     if ((await hash(join(target, file))) !== candidate[file])
       throw Error('Staged product bytes differ');
@@ -132,11 +159,14 @@ const report = {
   backup,
   hashes: candidate,
   sdkGateway: gateway ?? { sha256: await hash(gatewayTarget), reused: true },
+  ...(workspace ? { sdkUiWorkspace: workspace } : {}),
   launcher: join(stage, 'apps/desktop/scripts/dev.ts'),
   profileAccessed: false,
   launched: false,
   limits: [
-    'Product plugin plus the verified optional Gateway entry only; no UI Workspace navigation hook is installed',
+    workspace
+      ? 'Verified original Workspace browser bundle included; product native navigation registration remains a separate requirement'
+      : 'No UI Workspace navigation hook is installed',
     'No desktop GUI, model, task execution or installation acceptance',
   ],
 };

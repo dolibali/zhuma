@@ -29,6 +29,7 @@ import { taskProgressQuerySchema } from './execution-task-progress-contract.js';
 import { projectArtifactsQuerySchema } from './execution-project-artifacts-contract.js';
 import { executionMemberRequestSchemas } from './execution-service.js';
 import { EXECUTION_BODY_BYTE_LIMIT } from './execution-plugin.js';
+import { hostRunOptionsQuerySchema } from './host-run-options.js';
 
 /** The existing execution carrier's legal text/draft budget, not a file stream. */
 export const SHARED_BACKEND_BODY_BYTE_LIMIT = EXECUTION_BODY_BYTE_LIMIT;
@@ -59,6 +60,7 @@ export const SHARED_BACKEND_OPERATIONS = [
   'knowledge.drafts',
   'knowledge.draft',
   'knowledge.save-draft',
+  'knowledge.propose-draft',
   'knowledge.publish',
   'execution.inbox',
   'execution.startable',
@@ -70,6 +72,7 @@ export const SHARED_BACKEND_OPERATIONS = [
   'execution.revision',
   'execution.upstream-content',
   'execution.draft',
+  'execution.local-run-options',
 ] as const;
 export type SharedBackendOperation = (typeof SHARED_BACKEND_OPERATIONS)[number];
 export const sharedBackendRequestSchema = z.strictObject({
@@ -98,7 +101,13 @@ export type SharedBackendRequest = z.infer<typeof sharedBackendRequestSchema>;
 export type SharedBackendSelection = z.infer<typeof sharedBackendSelectionSchema>;
 export class SharedBackendError extends Error {
   constructor(
-    readonly code: 'invalid' | 'changed' | 'unavailable' | 'identity-changed' | 'invalid-response',
+    readonly code:
+      | 'invalid'
+      | 'changed'
+      | 'unavailable'
+      | 'identity-changed'
+      | 'invalid-response'
+      | 'native-busy',
   ) {
     super('共享服务连接未就绪。');
   }
@@ -253,6 +262,12 @@ const descriptors = {
     verb: 'POST',
     auth: false,
   },
+  'knowledge.propose-draft': {
+    schema: KnowledgeSaveDraftRequestSchema,
+    path: '/api/zhuma-knowledge/propose-draft',
+    verb: 'POST',
+    auth: false,
+  },
   'knowledge.publish': {
     schema: KnowledgePublishRequestSchema,
     path: '/api/zhuma-knowledge/publish',
@@ -322,6 +337,12 @@ const descriptors = {
     verb: 'POST',
     auth: false,
   },
+  'execution.local-run-options': {
+    schema: hostRunOptionsQuerySchema,
+    path: '/api/zhuma-member/local-run-options',
+    verb: 'POST',
+    auth: false,
+  },
 } as const;
 const manualOperations = new Set<SharedBackendOperation>([
   'execution.start-plan',
@@ -340,6 +361,7 @@ export class HostSharedBackend {
   private readonly provider;
   private readonly providerIdentity;
   private readonly jobs = new Set<Promise<unknown>>();
+  private readonly nativeListeners = new Set<(kind: 'changed' | 'revoking') => void>();
   constructor(
     private readonly ctx: Context,
     private readonly fetcher: typeof fetch = globalThis.fetch,
@@ -407,6 +429,20 @@ export class HostSharedBackend {
   async status(): Promise<SharedBackendStatus> {
     return publicStatus(await this.read());
   }
+  /** Local lifecycle metadata only. Cookies and authentication revisions stay here. */
+  async hasNativeAuthentication(): Promise<boolean> {
+    const row = await this.read();
+    return !!(row?.origin && row.cookie && row.actorId && row.backendId);
+  }
+  onNativeAuthenticationChanged(listener: (kind: 'changed' | 'revoking') => void) {
+    this.nativeListeners.add(listener);
+    return () => {
+      this.nativeListeners.delete(listener);
+    };
+  }
+  private nativeChanged(kind: 'changed' | 'revoking') {
+    for (const listener of this.nativeListeners) listener(kind);
+  }
   /** Host-only callback for C's existing private outgoing protocol. Never part
    * of the status/RPC result and never exports a cookie to the renderer. */
   async nativeConnection(signal: AbortSignal) {
@@ -425,30 +461,53 @@ export class HostSharedBackend {
       },
     };
   }
-  async select(raw: SharedBackendSelection): Promise<SharedBackendStatus> {
+  async select(
+    raw: SharedBackendSelection,
+    lifecycle?: {
+      prepare(): Promise<{ committed(): Promise<void>; failed(): void }>;
+    },
+  ): Promise<SharedBackendStatus> {
     const input = sharedBackendSelectionSchema.parse(raw),
       origin = input.origin === null ? null : originOf(input.origin);
-    return publicStatus(
-      await this.modify((row) => {
-        if (row?.requestId === input.requestId) {
-          if (row.origin !== origin) throw new SharedBackendError('changed');
-          return row;
-        }
-        if ((row?.connectionId ?? null) !== input.expectedConnectionId)
-          throw new SharedBackendError('changed');
-        return {
-          version: 1,
-          origin,
-          connectionId: randomUUID(),
-          requestId: input.requestId,
-          authRevision: randomUUID(),
-          authAttempt: randomUUID(),
-          cookie: null,
-          backendId: null,
-          actorId: null,
-        };
-      }),
-    );
+    const before = await this.read();
+    if (before?.requestId === input.requestId) {
+      if (before.origin !== origin) throw new SharedBackendError('changed');
+      return publicStatus(before);
+    }
+    if ((before?.connectionId ?? null) !== input.expectedConnectionId)
+      throw new SharedBackendError('changed');
+    // The actual native lifecycle checks synchronously, gates new admission,
+    // then drains/disposes the old child before this durable selection changes.
+    const transition = await lifecycle?.prepare();
+    let selected: SharedBackendStatus;
+    try {
+      selected = publicStatus(
+        await this.modify((row) => {
+          if (row?.requestId === input.requestId) {
+            if (row.origin !== origin) throw new SharedBackendError('changed');
+            return row;
+          }
+          if ((row?.connectionId ?? null) !== input.expectedConnectionId)
+            throw new SharedBackendError('changed');
+          return {
+            version: 1,
+            origin,
+            connectionId: randomUUID(),
+            requestId: input.requestId,
+            authRevision: randomUUID(),
+            authAttempt: randomUUID(),
+            cookie: null,
+            backendId: null,
+            actorId: null,
+          };
+        }),
+      );
+    } catch (error) {
+      transition?.failed();
+      throw error;
+    }
+    await transition?.committed();
+    return selected;
   }
   private async json(
     response: Response,
@@ -569,6 +628,8 @@ export class HostSharedBackend {
     signal.throwIfAborted();
     if (!row?.origin || row.connectionId !== input.connectionId)
       throw new SharedBackendError('changed');
+    if (input.operation === 'identity.logout' || input.operation === 'identity.password')
+      this.nativeChanged('revoking');
     if (entry.auth)
       row = await this.modify((latest) => {
         if (
@@ -583,12 +644,14 @@ export class HostSharedBackend {
       row.cookie &&
       input.operation !== 'identity.register' &&
       !(await this.info(row, signal))
-    )
+    ) {
+      this.nativeChanged('revoking');
       return {
         connectionId: row.connectionId,
         status: 401,
         body: { ok: false, error: 'unauthenticated' },
       };
+    }
     await this.assertCurrent(row, signal, entry.auth);
     const url = new URL(entry.path, row.origin!);
     if (input.operation === 'identity.members.read')
@@ -615,6 +678,13 @@ export class HostSharedBackend {
       signal,
     });
     await this.assertCurrent(row, signal, entry.auth);
+    if (
+      response.status === 401 &&
+      row.cookie &&
+      !entry.auth &&
+      input.operation !== 'identity.register'
+    )
+      this.nativeChanged('revoking');
     if (response.status >= 500) {
       await response.body?.cancel();
       throw new SharedBackendError('unavailable');
@@ -660,12 +730,14 @@ export class HostSharedBackend {
           throw new SharedBackendError('changed');
         return { ...latest, cookie, backendId, actorId, authRevision: randomUUID() };
       });
+      this.nativeChanged('changed');
     }
     await this.assertCurrent(row, signal, entry.auth);
     return { connectionId: row.connectionId, status: response.status, body: value };
   }
   async close(): Promise<void> {
     this.lifetime.abort();
+    this.nativeListeners.clear();
     await Promise.allSettled([...this.jobs]);
   }
 }

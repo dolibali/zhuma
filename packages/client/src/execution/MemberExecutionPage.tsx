@@ -24,6 +24,7 @@ import { createNativeRunApi } from '../run/api.js';
 import type { RegisterWorkspaceDirectory } from '../run/workspace-approvals.js';
 import type { LocalWorkspaceDirectory } from '../run/workspace-directory.js';
 import { createKnowledgeApi } from '../knowledge/api.js';
+import type { MemberNativeClient } from '../run/member-native.js';
 
 function MemberWork({
   fetcher,
@@ -39,6 +40,7 @@ function MemberWork({
   localDirectory,
   openModelSettings,
   nativeExecution,
+  memberNative,
 }: {
   fetcher: typeof fetch;
   accountId: string;
@@ -50,6 +52,7 @@ function MemberWork({
   localDirectory?: LocalWorkspaceDirectory | undefined;
   openModelSettings?: (() => void) | undefined;
   nativeExecution: boolean;
+  memberNative?: MemberNativeClient | undefined;
   view: 'catalog' | 'work';
   openWork?: (() => void) | undefined;
   registerLeaveGuard?:
@@ -133,31 +136,34 @@ function MemberWork({
     () => ({ api: projectExecution, spaceId }),
     [projectExecution, spaceId],
   );
-  const nativeApi = useMemo(
-    () =>
-      createNativeRunApi(
-        fetcher,
-        accountId,
-        {
-          spaceId,
-          isCurrent: () => alive.current && currentLifetime.current.isCurrent(),
-          onUnavailable: () => currentSpaceUnavailable.current(),
-        },
-        () => currentLifetime.current.onUnauthenticated(),
-        registerWorkspaceDirectory,
-        openModelSettings,
-        localDirectory,
-      ),
-    [
-      fetcher,
+  const nativeApi = useMemo(() => {
+    const api = createNativeRunApi(
+      memberNative?.scoped(accountId, spaceId).fetcher ?? fetcher,
       accountId,
-      spaceId,
-      view,
+      {
+        spaceId,
+        isCurrent: () => alive.current && currentLifetime.current.isCurrent(),
+        onUnavailable: () => currentSpaceUnavailable.current(),
+      },
+      () => currentLifetime.current.onUnauthenticated(),
       registerWorkspaceDirectory,
       openModelSettings,
       localDirectory,
-    ],
-  );
+      !!memberNative,
+    );
+    if (!memberNative) return api;
+    const { workspaceApprovals: _approvals, workflow: _workflow, ...localNativeApi } = api;
+    return localNativeApi;
+  }, [
+    fetcher,
+    accountId,
+    spaceId,
+    view,
+    registerWorkspaceDirectory,
+    openModelSettings,
+    localDirectory,
+    memberNative,
+  ]);
   const nativeRun = useMemo(() => ({ api: nativeApi, spaceId }), [nativeApi, spaceId]);
   const knowledgeApi = useMemo(
     () =>
@@ -219,6 +225,7 @@ export function MemberExecutionPage({
   localDirectory,
   openModelSettings,
   nativeExecution = true,
+  memberNative,
   allowRegistration = false,
 }: {
   fetcher?: typeof fetch;
@@ -231,6 +238,7 @@ export function MemberExecutionPage({
   openModelSettings?: (() => void) | undefined;
   /** Web members do not implicitly run an Agent on the backend machine. */
   nativeExecution?: boolean;
+  memberNative?: MemberNativeClient | undefined;
   allowRegistration?: boolean;
 }) {
   const snapshot = useSyncExternalStore(
@@ -311,6 +319,7 @@ export function MemberExecutionPage({
                 localDirectory={localDirectory}
                 openModelSettings={openModelSettings}
                 nativeExecution={nativeExecution}
+                memberNative={memberNative}
                 {...(workbenchAppearance ? { appearance: workbenchAppearance } : {})}
               />
             )}

@@ -1,6 +1,7 @@
 import type { NativeRunApi, NativeRunBegin, NativeRunOptions, NativeRunRead } from './api.js';
 import { createConversationState } from './conversation-state.js';
 import { canonicalPayload } from '@zhuma/agent-core';
+import { workspacePublishRanges } from './workspace-approvals.js';
 import type {
   NativeRunPanelProps,
   NativeRunPanelView,
@@ -319,6 +320,14 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
             !options.workspaces?.some((item) => item.id === chosenWorkspace.id))
         )
           throw Error('Workspace changed');
+        if (chosenWorkspace?.kind === 'local' && chosenWorkspace.publish !== undefined) {
+          if (
+            options.workspaces?.find((item) => item.id === chosenWorkspace.id)?.publication !==
+            'per-run'
+          )
+            throw Error('Workspace changed');
+          workspacePublishRanges(chosenWorkspace.publish);
+        }
         const content = {
           spaceId: target.spaceId,
           taskId: target.taskId,

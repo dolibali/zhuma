@@ -410,6 +410,35 @@ test('remote HTTP response codecs: terminal state cannot regain drive; accept ca
   );
 });
 
+test('remote knowledge capability: exact optional implementation version is signed data, without library or draft authority', () => {
+  const body = accept();
+  const legacy = remoteRunRequestSchema.parse(body);
+  assert.equal(Object.hasOwn(legacy.payload.capabilities, 'knowledge'), false);
+  const before = canonicalPayload(remoteDeviceSigningInput(body));
+  body.payload.capabilities.knowledge = 'zhuma-native-knowledge@1';
+  assert.deepEqual(remoteRunRequestSchema.parse(body), body);
+  assert.notEqual(canonicalPayload(remoteDeviceSigningInput(body)), before);
+  for (const knowledge of [true, null, 'zhuma-native-knowledge@2', { allowDrafts: true }])
+    assert.equal(
+      remoteRunRequestSchema.safeParse({
+        ...body,
+        payload: { ...body.payload, capabilities: { ...body.payload.capabilities, knowledge } },
+      }).success,
+      false,
+    );
+  for (const field of ['allowDrafts', 'libraryId', 'cookie', 'assertCurrent'])
+    assert.equal(
+      remoteRunRequestSchema.safeParse({
+        ...body,
+        payload: {
+          ...body.payload,
+          capabilities: { ...body.payload.capabilities, [field]: 'not-authority' },
+        },
+      }).success,
+      false,
+    );
+});
+
 test('remote migration projection: bounded predecessor facts are optional data, with no workspace, proof or permission fields', () => {
   const current = scope(),
     previous = { ...current, generation: 1, runId: randomUUID(), segmentId: randomUUID() };
