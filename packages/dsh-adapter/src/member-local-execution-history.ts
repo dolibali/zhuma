@@ -212,10 +212,15 @@ export class MemberLocalExecutionHistory<Run extends HistoryHandle = MemberLocal
       return { remote: structuredClone(read.view), native };
     });
   }
-  /** Host-internal raw events; UI transports must expose observe() only. */
+  /** Fixed UI history whitelist, with the original cursor and fresh read authority. */
   history(run: Run, after = -1, limit = 100, signal?: AbortSignal) {
     return this.withRead(run, signal, async (read) => {
-      const value = await this.native.service.history(this.grant(read), after, limit, read.signal);
+      const value = await this.native.service.conversationHistory(
+        this.grant(read),
+        after,
+        limit,
+        read.signal,
+      );
       this.binding(read, value.binding);
       await this.refresh(read);
       this.check(read);

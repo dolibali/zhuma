@@ -293,6 +293,14 @@ export interface NativeWorkRuntime {
     signal: AbortSignal,
     allowAbsent?: boolean,
   ): Promise<readonly NativeHistoryEvent[]>;
+  /** UI-only durable history, projected before the original public byte budget. */
+  conversationHistory?(
+    sessionId: string,
+    after: number,
+    limit: number,
+    signal: AbortSignal,
+    allowAbsent?: boolean,
+  ): Promise<readonly NativeHistoryEvent[]>;
   follow(
     sessionId: string,
     after: number,

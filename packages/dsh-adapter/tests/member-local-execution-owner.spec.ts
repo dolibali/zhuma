@@ -983,3 +983,101 @@ test('original cold result: same fixed cut is requalified with read-only authori
   );
   assert.equal(cold.adapter.requests.length, 0);
 });
+
+test('public member history: actual large native replay uses the bounded whitelist with zero cold Agent/model or binding writes', async (t) => {
+  const text = '中'.repeat(18000);
+  const h = await setup(t, {
+    workspace: true,
+    script: [
+      text,
+      text,
+      text,
+      toolResponse({ text: 'Fixed.', links: [] }, 'large-history-complete', 'complete_work'),
+    ],
+  });
+  await h.owner.start(h.run);
+  for (let i = 0; i < 3; i++) {
+    await h.owner.send(h.run, { requestId: randomUUID(), text: 'Continue.', mode: 'followup' });
+    const actor = h.ctx.agents.list()[0];
+    if (actor) await actor.whenIdle();
+  }
+  const done = await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'submitted',
+  );
+  const sid = done.native.binding.nativeSessionId;
+  const handle = await h.ctx.sessionPersistence.open(SessionId(sid), 'read');
+  let raw;
+  try {
+    raw = (await handle.read(0, 100)).events;
+  } finally {
+    await handle.close();
+  }
+  assert(
+    Buffer.byteLength(JSON.stringify(raw)) > 262144,
+    'Actual native aggregate exceeds the original public budget',
+  );
+  assert(
+    raw.every((e) => Buffer.byteLength(JSON.stringify(e)) < 262144),
+    'Each original SDK record fits alone',
+  );
+  await h.close();
+  await h.protocol.close();
+  const coldProtocol = await MemberLocalExecutionProtocol.open({
+    ...h.remote.protocolOptions,
+    secrets: new MemberLocalExecutionSecrets(h.remote.store),
+  });
+  t.onTestFinished(() => coldProtocol.close());
+  const cold = await bootLocalOwner(h.root, coldProtocol, {
+    workspace: h.workspace.id,
+    assertModel: () => assert.fail('history must not resolve models'),
+  });
+  t.onTestFinished(() => cold.close());
+  const path = join(h.root, 'domains', 'zhuma_native_work_sessions.json'),
+    before = await readFile(path, 'utf8');
+  const rows = structuredClone([...h.remote.rows]),
+    cut = h.remote.seen.length;
+  const opened = await cold.owner.openSession(sid),
+    events = [];
+  for (let i = 0; i < 10; i++) {
+    const page = await cold.owner.history(opened.run, events.at(-1)?.seq ?? -1, 100);
+    assert(Buffer.byteLength(JSON.stringify(page.events)) <= 262144);
+    if (!page.events.length) break;
+    events.push(...page.events);
+  }
+  assert.deepEqual(
+    events.map((e) => e.seq),
+    raw.map((e) => e.seq),
+  );
+  assert.equal(
+    events
+      .filter((e) => e.type === 'assistant/message')
+      .flatMap((e) => e.data.message.content)
+      .filter((b) => b.text === text).length,
+    3,
+  );
+  assert(events.some((e) => e.type === 'redacted'));
+  assert(events.some((e) => e.type === 'turn/end'));
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(cold.ctx.agents.list().length, 0);
+  assert.deepEqual([...h.remote.rows], rows);
+  assert(h.remote.seen.slice(cut).every((v) => v.request.operation === 'status'));
+  assert.equal(await readFile(path, 'utf8'), before);
+  console.log(
+    'PUBLIC_HISTORY_BYTE_PROOF',
+    JSON.stringify({
+      rawEvents: raw.length,
+      rawBytes: Buffer.byteLength(JSON.stringify(raw)),
+      largestRawEvent: Math.max(...raw.map((e) => Buffer.byteLength(JSON.stringify(e)))),
+      publicBytes: Buffer.byteLength(JSON.stringify(events)),
+      readModelCalls: cold.adapter.requests.length,
+      readAgents: cold.ctx.agents.list().length,
+    }),
+  );
+  h.remote.changeScope();
+  await assert.rejects(cold.owner.history(opened.run), { code: 'local-mismatch' });
+  assert.equal(cold.adapter.requests.length, 0);
+  assert.equal(await readFile(path, 'utf8'), before);
+  await cold.close();
+  assert.equal(await readFile(path, 'utf8'), before);
+});
