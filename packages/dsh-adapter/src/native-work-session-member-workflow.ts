@@ -327,7 +327,7 @@ export class NativeMemberWorkflowConsumer {
     }
     const view =
       pending.kind === 'work'
-        ? await this.options.native.refresh(pending.run)
+        ? this.options.native.read(pending.run)
         : this.options.native.readReview(pending.run);
     if (view.remote.resources !== 'settled') return;
     if (

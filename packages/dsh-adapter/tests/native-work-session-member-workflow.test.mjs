@@ -58,15 +58,17 @@ const fixture = () => {
     start: async () => {
       state.events.push('native:' + state.done);
       state.done++;
+      state.resources = 'settled';
     },
     read: () => ({
-      phase: state.resources === 'settled' ? 'retired' : 'retiring',
-      remote: { resources: state.resources },
+      phase: state.resources === 'settled' ? 'submitted' : 'retiring',
+      remote: {
+        resources: state.resources,
+        runStatus: state.resources === 'settled' ? 'completed' : 'running',
+        ...(state.resources === 'settled' ? { receipt: {} } : {}),
+      },
     }),
-    refresh: async () => ({
-      phase: 'submitted',
-      remote: { resources: 'settled', runStatus: 'completed', receipt: {} },
-    }),
+    refresh: async () => assert.fail('Observation must not renew a terminal drive'),
     stop: async () => {
       state.events.push('stop');
       state.resources = 'settled';
