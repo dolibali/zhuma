@@ -547,23 +547,32 @@ export class MemberLocalExecutionOwner {
       )
         throw new NativeWorkError('configuration-mismatch');
     };
-    return registerMemberKnowledgeTool(ctx, binding, grant, this.native.service, {
-      catalog: ports.catalog,
-      allowDrafts: ports.allowDrafts,
-      assertCurrent: async (signal) => {
-        // Called only by the actual tool invocation. Waiting during original
-        // unpublished compose would deadlock the same SDK admission.
-        await this.admission(grant);
-        signal.throwIfAborted();
-        identity();
-        await assert.call(ports, signal);
-        identity();
+    return registerMemberKnowledgeTool(
+      ctx,
+      binding,
+      grant,
+      this.native.service,
+      {
+        catalog: ports.catalog,
+        allowDrafts: ports.allowDrafts,
+        assertCurrent: async (signal) => {
+          // Called only by the actual tool invocation. Waiting during original
+          // unpublished compose would deadlock the same SDK admission.
+          await this.admission(grant);
+          signal.throwIfAborted();
+          identity();
+          await assert.call(ports, signal);
+          identity();
+        },
+        invoke: (request, signal) => {
+          identity();
+          return invoke.call(ports, request, signal);
+        },
       },
-      invoke: (request, signal) => {
-        identity();
-        return invoke.call(ports, request, signal);
-      },
-    });
+      snapshot.payload.projectKnowledge?.links
+        .filter((link) => link.required)
+        .map((link) => link.reference),
+    );
   }
   private update(state: Owned, view: RemoteRunView, before: number): void {
     if (
