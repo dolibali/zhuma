@@ -460,7 +460,7 @@ export class RemoteRunAuthorities {
             return this.reconcile(body, lease!, privatePermit, sessionHash);
           const target = body.payload.scope;
           const loaded = this.load(target);
-          this.authorize(loaded, lease!);
+          this.authorize(loaded, lease!, body.operation === 'status' ? 'status' : undefined);
           this.checkBinding(body, loaded);
           this.checkPermit(body.payload.permit, privatePermit, loaded.remote.drive);
           const mutable =
@@ -950,7 +950,7 @@ export class RemoteRunAuthorities {
       deny('remote-unavailable');
     return { node, state, run, remote: run.remote };
   }
-  private authorize(value: Loaded, lease: ExecutionMemberLease): void {
+  private authorize(value: Loaded, lease: ExecutionMemberLease, readOnly?: 'status'): void {
     if (lease.memberId !== value.run.actorId) deny('remote-forbidden');
     lease.assertCurrent(value.run.spaceId);
     this.source.assertTarget(
@@ -958,7 +958,15 @@ export class RemoteRunAuthorities {
       { ...executionRunScope(value.node, value.run) },
       value.node,
     );
-    if (value.state.currentRunId !== value.run.attempt.id) deny('remote-scope-mismatch');
+    // Historical conversation navigation still requires every original current
+    // member/device/permit check. Only status may read a settled prior Run.
+    if (
+      value.state.currentRunId !== value.run.attempt.id &&
+      (readOnly !== 'status' ||
+        !isTerminalRunStatus(value.run.attempt.status) ||
+        value.run.resources !== 'settled')
+    )
+      deny('remote-scope-mismatch');
   }
   private checkBinding(body: RemoteDeviceRequest, value: Loaded): void {
     if (value.remote.deviceId !== body.deviceId) deny('remote-device-mismatch');
@@ -1084,7 +1092,8 @@ export class RemoteRunAuthorities {
   }
   private view(value: Loaded, cleanupOnly = false, sessionCurrent = true): RemoteRunView {
     const { node, state, run, remote } = value;
-    const original = this.active.get(run.attempt.id);
+    const current = state.currentRunId === run.attempt.id;
+    const original = current ? this.active.get(run.attempt.id) : undefined;
     let originalCurrent = false;
     if (original && !original.lease.signal.aborted && original.lease.expiresAt > this.now()) {
       try {
@@ -1095,6 +1104,7 @@ export class RemoteRunAuthorities {
       }
     }
     const live =
+      current &&
       sessionCurrent &&
       !cleanupOnly &&
       !this.closed &&
