@@ -1,7 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
 import type { ExecutionResult } from './execution-service.js';
-import type { HostRunOptionsView } from './host-run-options.js';
 import { ExecutionRunError } from './execution-run-state.js';
 import { resolveMember, type MemberRequest } from './member-session.js';
 import { registerProductFetch } from './member-web-transport.js';
@@ -12,11 +11,15 @@ type Reader = (
   request: MemberRequest,
   payload: unknown,
   wait?: AbortSignal,
-) => Promise<ExecutionResult<HostRunOptionsView>>;
+) => Promise<ExecutionResult<unknown>>;
 
 /** One product metadata projection. No generic Run dispatcher, SDK Session,
  * model discovery, execution admission or native factory is mounted here. */
-export function openHostMemberLocalOptionsHttp(ctx: Context, current: () => Reader | undefined) {
+export function openHostMemberLocalOptionsHttp(
+  ctx: Context,
+  current: () => Reader | undefined,
+  endpoint: 'local-run-options' | 'local-review-options' = 'local-run-options',
+) {
   const lifetime = new AbortController(),
     active = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
@@ -25,7 +28,7 @@ export function openHostMemberLocalOptionsHttp(ctx: Context, current: () => Read
     error: { code, message: '暂时无法读取工作节点，请刷新后重试。', details: {} },
   });
   const stop = registerProductFetch(ctx, {
-    path: '/api/zhuma-member/local-run-options',
+    path: `/api/zhuma-member/${endpoint}`,
     methods: ['POST'],
     requestBody: 'streaming',
     fetch(request) {
@@ -58,7 +61,7 @@ export function openHostMemberLocalOptionsHttp(ctx: Context, current: () => Read
           signal,
         ),
       );
-      if (!envelope.success || envelope.data.method !== 'zhuma-member/local-run-options')
+      if (!envelope.success || envelope.data.method !== `zhuma-member/${endpoint}`)
         return reply(failure('run-validation'), 400);
       rpcId = envelope.data.rpcId;
       const source = current();

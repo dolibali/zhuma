@@ -4,7 +4,7 @@ import test from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { openHostMemberLocalOptionsHttp } from '../dist/host-member-local-options-http.js';
 import { installMemberResolver, memberCredential } from '../dist/member-session.js';
-function host() {
+function host(endpoint = 'local-run-options') {
   const routes = new Map(),
     effects = [],
     secret = randomBytes(32),
@@ -35,13 +35,22 @@ function host() {
     singleUserAccountId: () => undefined,
     admitOwner: () => false,
   });
-  const owner = openHostMemberLocalOptionsHttp(ctx, () => source);
+  const owner = openHostMemberLocalOptionsHttp(ctx, () => source, endpoint);
   const cookie = `zhuma-member=${memberCredential(secret, sessionId, expiresAt)}`;
   const input = {
     type: 'client-request',
     rpcId: randomUUID(),
-    method: 'zhuma-member/local-run-options',
-    payload: { spaceId: 'space', taskId: 'task', planId: 'plan', revision: 1, nodeId: 'node' },
+    method: `zhuma-member/${endpoint}`,
+    payload: {
+      spaceId: 'space',
+      taskId: 'task',
+      planId: 'plan',
+      revision: 1,
+      nodeId: 'node',
+      ...(endpoint === 'local-review-options'
+        ? { roundId: 'round', artifactVersionId: 'artifact' }
+        : {}),
+    },
   };
   return {
     input,
@@ -54,8 +63,8 @@ function host() {
       };
     },
     async request(body = input, authenticated = true) {
-      return routes.get('/api/zhuma-member/local-run-options').fetch(
-        new Request('http://localhost/api/zhuma-member/local-run-options', {
+      return routes.get(`/api/zhuma-member/${endpoint}`).fetch(
+        new Request(`http://localhost/api/zhuma-member/${endpoint}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...(authenticated ? { cookie } : {}) },
           body: JSON.stringify(body),
@@ -108,6 +117,29 @@ test('member local metadata route suppresses a late projection from a replaced n
     const value = await response;
     assert.equal(value.status, 503);
     assert.equal((await value.json()).result.ok, false);
+    assert.equal(h.calls(), 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test('member local review metadata uses the exact normal member carrier and preserves the original fixed-round query', async () => {
+  const h = host('local-review-options');
+  try {
+    h.setSource(async (original, query) => {
+      assert.equal(original.headers.cookie, h.cookie);
+      assert.deepEqual(query, h.input.payload);
+      return { ok: true, value: { contractOnly: 'D original reader result' } };
+    });
+    assert.equal((await h.request(h.input, false)).status, 401);
+    assert.equal(
+      (await h.request({ ...h.input, method: 'zhuma-member/local-run-options' })).status,
+      400,
+    );
+    assert.equal(h.calls(), 0);
+    const reply = await h.request();
+    assert.equal(reply.status, 200);
+    assert.equal((await reply.json()).result.value.contractOnly, 'D original reader result');
     assert.equal(h.calls(), 1);
   } finally {
     await h.close();

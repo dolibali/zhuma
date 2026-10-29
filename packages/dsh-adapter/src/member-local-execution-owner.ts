@@ -64,10 +64,18 @@ import { registerMemberLocalAcceptedFiles } from './member-local-execution-accep
 import { NATIVE_ACCEPTED_FILE_TOOL_VERSION } from './native-work-session-files-tool.js';
 import { MemberLocalExecutionHistory } from './member-local-execution-history.js';
 import { RemoteRunMigrationAuthorities } from './remote-run-migration-authority.js';
+import { MemberLocalExecutionReview } from './member-local-execution-review.js';
+import type {
+  MemberLocalReviewProtocol,
+  MemberLocalAcceptedReview,
+  MemberLocalReviewReadHandle,
+  MemberLocalReviewStopInput,
+} from './member-local-review-protocol.js';
 import type { ExecutionService } from './execution-service.js';
 
 export interface MemberLocalOwnerOptions {
   readonly protocol: MemberLocalExecutionProtocol;
+  readonly review?: { readonly protocol: MemberLocalReviewProtocol };
   /** Normal local model owner; this does not copy provider credentials. */
   assertModel(selection: NativeSessionSelection, signal: AbortSignal): void | Promise<void>;
   /** Actual original local tool/workspace adapters, when those tools were selected. */
@@ -136,6 +144,7 @@ export class MemberLocalExecutionOwner {
   private publications?: NativeOutputFileIssuer;
   private historyReader!: MemberLocalExecutionHistory;
   private migrations!: RemoteRunMigrationAuthorities;
+  private reviews?: MemberLocalExecutionReview;
   private heartbeat?: ReturnType<typeof setInterval>;
   private closing?: Promise<void>;
   private constructor(private readonly options: MemberLocalOwnerOptions) {}
@@ -149,6 +158,7 @@ export class MemberLocalExecutionOwner {
       !this.closing &&
       this.jobs.size === 0 &&
       this.options.protocol.canSwitchBackend() &&
+      (!this.reviews || this.reviews.canSwitchBackend()) &&
       this.historyReader.canSwitchBackend() &&
       [...this.states.values()].every((state) => !this.active(state))
     );
@@ -259,10 +269,24 @@ export class MemberLocalExecutionOwner {
     return this.track(job);
   }
   private async initialize(ctx: Context): Promise<void> {
+    if (this.options.review) {
+      if (
+        this.options.review.protocol.backendId !== this.options.protocol.backendId ||
+        this.options.review.protocol.actorId !== this.options.protocol.actorId ||
+        this.options.review.protocol.deviceId !== this.options.protocol.deviceId
+      )
+        throw new NativeWorkError('scope-mismatch');
+      this.reviews = new MemberLocalExecutionReview({
+        protocol: this.options.review.protocol,
+        assertModel: this.options.assertModel,
+        ...(this.options.openMcp ? { openMcp: this.options.openMcp } : {}),
+      });
+    }
     this.native = await openNativeWorkSessions(
       ctx,
       {
         workingDirectory: async (binding, grant) => {
+          if (this.reviews?.owns(grant)) return { kind: 'text-only' };
           const state = this.state(grant);
           this.check(state, 'send');
           if (!this.options.native) {
@@ -275,6 +299,7 @@ export class MemberLocalExecutionOwner {
           return directory;
         },
         compose: async (agentCtx, binding, grant) => {
+          if (this.reviews?.owns(grant)) return this.reviews.compose(agentCtx, binding, grant);
           const state = this.state(grant),
             snapshot = this.composition(state);
           this.check(state, 'send');
@@ -365,7 +390,7 @@ export class MemberLocalExecutionOwner {
           };
         },
       },
-      undefined,
+      this.reviews?.reviewPorts,
       this.options.protocol.backendId,
     );
     this.migrations = new RemoteRunMigrationAuthorities({
@@ -448,6 +473,7 @@ export class MemberLocalExecutionOwner {
       );
     }
     this.historyReader = new MemberLocalExecutionHistory(this.native, this.options.protocol);
+    this.reviews?.bindNative(this.native);
     this.results.onReady((grant, ref) => {
       const state = this.grants.get(grant);
       if (state)
@@ -1024,6 +1050,7 @@ export class MemberLocalExecutionOwner {
       if (this.heartbeat) clearInterval(this.heartbeat);
       this.lifetime.abort();
       await this.historyReader.close();
+      await this.reviews?.close();
       for (const state of this.states.values()) this.fence(state);
       // A first joins every already-sent accept and hands late issued handles
       // to stop(). Drain tasks may themselves enqueue their original events.
@@ -1032,6 +1059,22 @@ export class MemberLocalExecutionOwner {
       await this.publications?.close();
       await this.native.close();
     })());
+  }
+  startReview(run: MemberLocalAcceptedReview) {
+    if (!this.reviews) throw new NativeWorkError('unavailable');
+    return this.reviews.start(run);
+  }
+  readReview(run: MemberLocalReviewReadHandle) {
+    if (!this.reviews) throw new NativeWorkError('unavailable');
+    return this.reviews.read(run);
+  }
+  stopReview(
+    run: MemberLocalAcceptedReview,
+    input: MemberLocalReviewStopInput,
+    signal?: AbortSignal,
+  ) {
+    if (!this.reviews) throw new NativeWorkError('unavailable');
+    return this.reviews.stop(run, input, signal);
   }
   async refresh(run: MemberLocalReadHandle): Promise<MemberLocalOwnerView> {
     const state = this.owned(run);
