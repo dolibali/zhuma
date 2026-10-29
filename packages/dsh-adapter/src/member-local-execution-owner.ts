@@ -65,6 +65,11 @@ import { NATIVE_ACCEPTED_FILE_TOOL_VERSION } from './native-work-session-files-t
 import { MemberLocalExecutionHistory } from './member-local-execution-history.js';
 import { RemoteRunMigrationAuthorities } from './remote-run-migration-authority.js';
 import { MemberLocalExecutionReview } from './member-local-execution-review.js';
+import {
+  describeMemberKnowledgeTool,
+  registerMemberKnowledgeTool,
+  type MemberKnowledgeToolPorts,
+} from './member-knowledge-tool.js';
 import type {
   MemberLocalReviewProtocol,
   MemberLocalAcceptedReview,
@@ -76,6 +81,11 @@ import type { ExecutionService } from './execution-service.js';
 export interface MemberLocalOwnerOptions {
   readonly protocol: MemberLocalExecutionProtocol;
   readonly review?: { readonly protocol: MemberLocalReviewProtocol };
+  /** A freezes the selected library and default-off draft consent privately
+   * for this exact accepted Run. Factory construction/registration must do no IO. */
+  readonly knowledge?: {
+    create(binding: NativeSessionBinding, grant: NativeWorkGrant): MemberKnowledgeToolPorts;
+  };
   /** Normal local model owner; this does not copy provider credentials. */
   assertModel(selection: NativeSessionSelection, signal: AbortSignal): void | Promise<void>;
   /** Actual original local tool/workspace adapters, when those tools were selected. */
@@ -174,6 +184,14 @@ export class MemberLocalExecutionOwner {
    * this capability and freeze its exact file slots before any model starts. */
   get acceptedFileSource(): typeof NATIVE_ACCEPTED_FILE_TOOL_VERSION | undefined {
     return this.lifetime.signal.aborted ? undefined : NATIVE_ACCEPTED_FILE_TOOL_VERSION;
+  }
+  /** Local registration availability only; A separately qualifies the actual
+   * per-Run library/private port before advertising the signed capability. */
+  get knowledgeSource():
+    ReturnType<typeof describeMemberKnowledgeTool>['sourceVersion'] | undefined {
+    return !this.lifetime.signal.aborted && typeof this.options.knowledge?.create === 'function'
+      ? describeMemberKnowledgeTool().sourceVersion
+      : undefined;
   }
   /** Read-only local SDK availability for the accept capability declaration.
    * Actual frozen resources are still adopted and checked in the unpublished
@@ -334,6 +352,10 @@ export class MemberLocalExecutionOwner {
               ? this.publications?.registerNativeOutputFileTool(agentCtx, binding, grant)
               : { context: '', toolAllowlist: [] };
           if (!output) throw new NativeWorkError('configuration-mismatch');
+          const knowledge =
+            snapshot.schemaVersion === 2 && snapshot.payload.knowledgeTool
+              ? this.registerKnowledge(agentCtx, state, binding, grant)
+              : { context: '', toolAllowlist: [] };
           state.resources = await registerExecutionRunResources(
             agentCtx,
             snapshot,
@@ -370,6 +392,7 @@ export class MemberLocalExecutionOwner {
               ...files.toolAllowlist,
               ...output.toolAllowlist,
               ...result.toolAllowlist,
+              ...knowledge.toolAllowlist,
               ...state.resources.toolAllowlist,
             ]) !== canonicalPayload(snapshot.payload.toolAllowlist)
           )
@@ -385,7 +408,9 @@ export class MemberLocalExecutionOwner {
           });
           state.resources.signal.addEventListener('abort', () => this.wake(state), { once: true });
           return {
-            context: snapshot.payload.context,
+            context: knowledge.context
+              ? `${snapshot.payload.context}\n${knowledge.context}`
+              : snapshot.payload.context,
             toolAllowlist: snapshot.payload.toolAllowlist,
           };
         },
@@ -489,6 +514,57 @@ export class MemberLocalExecutionOwner {
     }, REMOTE_RUN_LIMITS.renewAfterMs);
     this.heartbeat.unref();
   }
+  private registerKnowledge(
+    ctx: Context,
+    state: Owned,
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+  ) {
+    const factory = this.options.knowledge,
+      create = factory?.create,
+      snapshot = this.composition(state);
+    if (
+      !factory ||
+      !create ||
+      snapshot.schemaVersion !== 2 ||
+      canonicalPayload(snapshot.payload.knowledgeTool) !==
+        canonicalPayload(describeMemberKnowledgeTool())
+    )
+      throw new NativeWorkError('configuration-mismatch');
+    this.check(state, 'send');
+    const ports = create.call(factory, binding, grant);
+    if (!ports || typeof ports.assertCurrent !== 'function' || typeof ports.invoke !== 'function')
+      throw new NativeWorkError('configuration-mismatch');
+    const assert = ports.assertCurrent,
+      invoke = ports.invoke;
+    const identity = () => {
+      this.check(state, 'send');
+      if (
+        this.options.knowledge !== factory ||
+        factory.create !== create ||
+        ports.assertCurrent !== assert ||
+        ports.invoke !== invoke
+      )
+        throw new NativeWorkError('configuration-mismatch');
+    };
+    return registerMemberKnowledgeTool(ctx, binding, grant, this.native.service, {
+      catalog: ports.catalog,
+      allowDrafts: ports.allowDrafts,
+      assertCurrent: async (signal) => {
+        // Called only by the actual tool invocation. Waiting during original
+        // unpublished compose would deadlock the same SDK admission.
+        await this.admission(grant);
+        signal.throwIfAborted();
+        identity();
+        await assert.call(ports, signal);
+        identity();
+      },
+      invoke: (request, signal) => {
+        identity();
+        return invoke.call(ports, request, signal);
+      },
+    });
+  }
   private update(state: Owned, view: RemoteRunView, before: number): void {
     if (
       canonicalPayload(view.scope) !== canonicalPayload(state.run.value.scope) ||
@@ -568,6 +644,7 @@ export class MemberLocalExecutionOwner {
       (snapshot.payload.resultIntentTool?.sourceVersion === 'zhuma-native-result-intent@2' &&
         !this.publicationResults) ||
       (snapshot.payload.outputFilePublisherTool && !this.outputFileSource) ||
+      (snapshot.payload.knowledgeTool && !this.knowledgeSource) ||
       (snapshot.payload.tools.kind === 'local-tools' && !this.options.native) ||
       (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
     )

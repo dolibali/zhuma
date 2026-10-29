@@ -13,6 +13,7 @@ import { MemberLocalExecutionSecrets } from '../dist/member-local-execution-secr
 import { freezeExecutionRunComposition } from '../dist/execution-run-composition.js';
 import { describeNativeResultTool } from '../dist/native-work-session-result-tool.js';
 import { describeAcceptedInputTool } from '../dist/native-work-session-input-tool.js';
+import { describeMemberKnowledgeTool } from '../dist/member-knowledge-tool.js';
 import { compositionFacts } from './execution-run-composition-fixture.mjs';
 import {
   EXECUTION_RESOURCE_SOURCE_VERSION,
@@ -25,6 +26,7 @@ export async function fixture(t, options = {}) {
   const facts = {
     ...compositionFacts({ upstream: options.upstream }),
     resultIntentTool: describeNativeResultTool(),
+    ...(options.knowledge ? { knowledgeTool: describeMemberKnowledgeTool() } : {}),
   };
   if (options.upstream)
     facts.tools = { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() };
@@ -425,6 +427,7 @@ export async function fixture(t, options = {}) {
     capabilities: {
       resultIntent: 'zhuma-native-result-intent@1',
       localTools: [],
+      ...(options.knowledge ? { knowledge: 'zhuma-native-knowledge@1' } : {}),
       ...(options.upstream ? { acceptedInput: '1' } : {}),
       ...(options.skill && !options.omitResourceCapability
         ? { resources: EXECUTION_RESOURCE_SOURCE_VERSION }

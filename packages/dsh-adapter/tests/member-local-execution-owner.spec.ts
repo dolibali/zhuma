@@ -1,6 +1,6 @@
 /** Original local SDK/factory/log/drain over actual HTTP; backend ACL is a contract. */
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -235,6 +235,156 @@ test('native turn boundary: actual max-token idle is visible and same Run follow
   assert.equal(done.native.binding.nativeSessionId, sid);
   assert.equal(h.remote.acceptCalls(), 1);
   assert.equal(h.adapter.requests.length, 2);
+});
+
+test('member knowledge owner: actual original tool waits genuine admission, supplies only catalog metadata and keeps draft consent off', async (t) => {
+  const body = 'FROZEN_KNOWLEDGE_BODY',
+    checksum = createHash('sha256').update(body).digest('hex'),
+    reference = { spaceId: 'north', libraryId: 'library-a', pageId: 'guide', version: 1, checksum },
+    summary = {
+      reference,
+      title: 'Guide',
+      format: 'markdown',
+      ownerActorId: 'chen',
+      pageRevision: 2,
+      bytes: Buffer.byteLength(body),
+      publishedAt: '2026-10-28T00:00:00.000Z',
+    },
+    calls = [];
+  let h,
+    factories = 0,
+    gates = 0;
+  const knowledge = {
+    create(binding, grant) {
+      factories++;
+      assert.deepEqual(binding.scope, grant.scope);
+      return {
+        catalog: {
+          scope: binding.scope,
+          library: {
+            id: 'library-a',
+            spaceId: 'north',
+            name: 'Selected knowledge metadata',
+            kind: 'team',
+            canCreate: true,
+          },
+        },
+        allowDrafts: false,
+        assertCurrent(signal) {
+          gates++;
+          assert.equal(signal.aborted, false);
+          assert(
+            h.remote.seen.some(
+              (v) => v.request.operation === 'event' && v.request.payload.event.kind === 'accepted',
+            ),
+          );
+        },
+        async invoke(request) {
+          calls.push(request.action);
+          if (request.action === 'search')
+            return {
+              ok: true,
+              value: {
+                actorId: 'chen',
+                spaceId: 'north',
+                libraryIds: ['library-a'],
+                query: request.payload.query,
+                hits: [{ ...summary, snippet: 'fixed reference' }],
+                complete: true,
+              },
+            };
+          assert.equal(request.action, 'read');
+          return {
+            ok: true,
+            value: {
+              actorId: 'chen',
+              spaceId: 'north',
+              reference,
+              part: 'body',
+              title: 'Guide',
+              format: 'markdown',
+              text: body,
+              offset: 0,
+              length: Buffer.byteLength(body),
+              nextOffset: Buffer.byteLength(body),
+              totalBytes: Buffer.byteLength(body),
+              partChecksum: checksum,
+              sources: [],
+            },
+          };
+        },
+      };
+    },
+  };
+  h = await setup(t, {
+    remote: { knowledge: true },
+    knowledge,
+    script: [
+      (request) => {
+        assert.equal(factories, 1);
+        assert.equal(gates, 0);
+        assert.equal(calls.length, 0);
+        assert(JSON.stringify(request).includes('Selected knowledge metadata'));
+        assert(!JSON.stringify(request).includes(body));
+        return toolResponse(
+          { request: { action: 'search', query: 'guide' } },
+          'knowledge-search',
+          'knowledge',
+        )();
+      },
+      () =>
+        toolResponse(
+          { request: { action: 'read', reference: { pageId: 'guide', version: 1, checksum } } },
+          'knowledge-read',
+          'knowledge',
+        )(),
+      (request) => {
+        assert(JSON.stringify(request).includes(body));
+        return toolResponse(
+          {
+            request: {
+              action: 'propose-draft',
+              pageId: 'guide',
+              expectedVersion: 2,
+              idempotencyKey: 'draft-off',
+              content: { title: 'Guide', format: 'markdown', text: 'Draft', sources: [reference] },
+            },
+          },
+          'knowledge-draft-off',
+          'knowledge',
+        )();
+      },
+      () =>
+        toolResponse(
+          { text: 'Read the exact knowledge version.', links: [] },
+          'knowledge-complete',
+          'complete_work',
+        )(),
+    ],
+  });
+  assert.equal(h.owner.knowledgeSource, 'zhuma-native-knowledge@1');
+  await h.owner.start(h.run);
+  await until(
+    () => h.owner.read(h.run),
+    (v) => v.phase === 'submitted',
+  );
+  assert.deepEqual(calls, ['search', 'read']);
+  assert(gates >= 4);
+  assert.equal(h.adapter.requests.length, 4);
+  assert.equal(h.ctx.agents.list().length, 0);
+});
+
+test('member knowledge owner: a frozen knowledge capability without the actual private factory refuses before any native model', async (t) => {
+  const h = await setup(t, { remote: { knowledge: true } });
+  assert.equal(h.owner.knowledgeSource, undefined);
+  await assert.rejects(h.owner.start(h.run), { code: 'configuration-mismatch' });
+  assert.equal(h.adapter.requests.length, 0);
+  assert.equal(h.ctx.agents.list().length, 0);
+  await h.owner.stop(h.run, {
+    requestId: randomUUID(),
+    expectedNodeVersion: h.run.value.nodeVersion,
+    expectedRunVersion: h.run.value.runVersion,
+  });
 });
 
 test('original owner replay: two actually issued accept handles address the same live native work', async (t) => {
