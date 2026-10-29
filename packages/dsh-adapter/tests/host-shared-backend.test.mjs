@@ -28,6 +28,7 @@ const fileQuery = {
 const fileRequest = (selection, query = fileQuery) =>
   new Request(
     `http://local.invalid/api/zhuma-backend/file?${new URLSearchParams({ connectionId: selection.connectionId, ...query })}`,
+    { method: 'POST' },
   );
 const fileHash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
@@ -630,7 +631,7 @@ test('shared backend exact HTTP routes retain actual SDK local owner admission a
       redirect: 'error',
     });
   assert.equal((await call(undefined, 'status', {})).status, 401);
-  assert.equal((await fetch(`${origin}/api/zhuma-backend/file`)).status, 401);
+  assert.equal((await fetch(`${origin}/api/zhuma-backend/file`, { method: 'POST' })).status, 401);
   assert.equal(
     (await fetch(`${origin}/api/zhuma-backend/upload-file`, { method: 'POST' })).status,
     401,

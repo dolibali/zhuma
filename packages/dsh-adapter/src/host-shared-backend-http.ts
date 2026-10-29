@@ -90,7 +90,7 @@ export function mountHostSharedBackend(
       for (const endpoint of ['file', 'upload-file'] as const) {
         child.connection.fetch.register({
           path: `/api/zhuma-backend/${endpoint}`,
-          methods: [endpoint === 'file' ? 'GET' : 'POST'],
+          methods: ['POST'],
           requestBody: 'streaming',
           async fetch(request) {
             const rejected = child.connection.requestRejection({ headers: request.headers });
