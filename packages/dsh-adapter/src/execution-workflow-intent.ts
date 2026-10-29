@@ -951,19 +951,22 @@ interface RemoteArm {
  * never jobs, delivery facts or a serializable replacement for the local tickets. */
 export class RemoteWorkflowIntents {
   private readonly arms = new Map<string, RemoteArm>();
+  private readonly preparations = new Map<string, Set<AbortController>>();
   private closed = false;
   constructor(private readonly source: RemoteWorkflowIntentSource) {}
   close(): void {
     this.closed = true;
-    for (const id of this.arms.keys()) this.fence(id);
+    for (const id of new Set([...this.arms.keys(), ...this.preparations.keys()])) this.fence(id);
   }
-  private fence(id: string): void {
+  private fence(id: string, abortPreparations = true): void {
     const arm = this.arms.get(id);
     if (arm) clearTimeout(arm.timer);
     this.arms.delete(id);
+    if (abortPreparations)
+      for (const preparation of this.preparations.get(id) ?? []) preparation.abort();
   }
   private arm(intent: RemoteWorkflowIntent, sessionHash: string): void {
-    this.fence(intent.intentId);
+    this.fence(intent.intentId, false);
     const expiresAt = this.source.now() + REMOTE_WORKFLOW_LIMITS.armTtlMs;
     const timer = setTimeout(() => this.fence(intent.intentId), REMOTE_WORKFLOW_LIMITS.armTtlMs);
     timer.unref();
@@ -1142,7 +1145,9 @@ export class RemoteWorkflowIntents {
     const facts = this.facts(lease, target),
       owned = this.ownedRuns(facts, intent);
     const activeWork = owned.map(({ node, run }) => this.source.runView(node, run));
-    const held = owned.some(({ run }) => run.resources !== 'settled');
+    const held =
+      owned.some(({ run }) => run.resources !== 'settled') ||
+      !!this.preparations.get(intent.intentId)?.size;
     const complete =
       intent.nodeIds.length > 0 &&
       intent.nodeIds.every((id) => {
@@ -1208,6 +1213,27 @@ export class RemoteWorkflowIntents {
     if (receipt.fingerprint !== fingerprint) return this.source.deny('remote-idempotency-mismatch');
     return true;
   }
+  private reserveStop(intent: RemoteWorkflowIntent): void {
+    // Validate both count and byte headroom using an exact-size terminal receipt.
+    // Exhaustion is knowable before replacing/fencing a currently usable arm.
+    if (
+      !remoteWorkflowIntentSchema.safeParse({
+        ...intent,
+        status: 'stopping',
+        version: intent.version + 1,
+        commandReceipts: [
+          ...intent.commandReceipts,
+          {
+            requestId: '00000000-0000-4000-8000-000000000000',
+            kind: 'stop',
+            fingerprint: '0'.repeat(64),
+            generation: intent.generation,
+          },
+        ],
+      }).success
+    )
+      return this.source.deny('remote-quota');
+  }
   private async write(
     lease: ExecutionMemberLease,
     target: RemoteWorkflowTarget,
@@ -1215,6 +1241,7 @@ export class RemoteWorkflowIntents {
   ): Promise<void> {
     const checked = remoteWorkflowIntentSchema.safeParse(next);
     if (!checked.success) return this.source.deny('remote-quota');
+    if (next.status === 'running') this.reserveStop(next);
     await this.source.beforeWrite();
     const facts = this.facts(lease, target);
     const items = [
@@ -1346,7 +1373,10 @@ export class RemoteWorkflowIntents {
     }
     if (replayed) return this.view(lease, target, intent, sessionHash, 'replayed');
     if (body.payload.expectedVersion !== intent.version) return this.source.deny('remote-conflict');
-    if (this.ownedRuns(facts, intent).some(({ run }) => run.resources !== 'settled'))
+    if (
+      this.preparations.get(intent.intentId)?.size ||
+      this.ownedRuns(facts, intent).some(({ run }) => run.resources !== 'settled')
+    )
       return this.source.deny('remote-resource-held');
     const next: RemoteWorkflowIntent = {
       ...intent,
@@ -1364,11 +1394,31 @@ export class RemoteWorkflowIntents {
         },
       ],
     };
+    this.reserveStop(next);
     this.fence(intent.intentId);
     await this.write(lease, target, next);
     this.facts(lease, target);
     this.arm(next, sessionHash);
     return this.view(lease, target, next, sessionHash, 'applied');
+  }
+  preparing(
+    body: RemoteAcceptRequest,
+    lease: ExecutionMemberLease,
+    sessionHash: string,
+    keyEpoch: number,
+  ): { readonly signal: AbortSignal; finish(): void } {
+    const binding = this.assertAccept(body, lease, sessionHash, keyEpoch);
+    const controller = new AbortController();
+    const pending = this.preparations.get(binding.intentId) ?? new Set<AbortController>();
+    pending.add(controller);
+    this.preparations.set(binding.intentId, pending);
+    return {
+      signal: controller.signal,
+      finish: () => {
+        pending.delete(controller);
+        if (!pending.size) this.preparations.delete(binding.intentId);
+      },
+    };
   }
   assertAccept(
     body: RemoteAcceptRequest,
@@ -1391,7 +1441,7 @@ export class RemoteWorkflowIntents {
       (selected.kind === 'local' &&
         (actual.kind !== 'local' ||
           selected.rootId !== actual.rootId ||
-          selected.access !== actual.access))
+          (selected.access === 'read' && actual.access !== 'read')))
     )
       return this.source.deny('remote-forbidden');
     const permitted = { ...intent.defaults.capabilities },
@@ -1402,7 +1452,16 @@ export class RemoteWorkflowIntents {
       delete offered[field];
       delete permitted[field];
     }
-    if (canonicalPayload(offered) !== canonicalPayload(permitted))
+    if (
+      offered.localTools.some(
+        (tool) =>
+          !permitted.localTools.some(
+            (allowed) => canonicalPayload(allowed) === canonicalPayload(tool),
+          ),
+      ) ||
+      canonicalPayload({ ...offered, localTools: [] }) !==
+        canonicalPayload({ ...permitted, localTools: [] })
+    )
       return this.source.deny('remote-forbidden');
     const candidate = this.candidates(facts, intent).find(
       (item) => item.kind === 'work' && item.target.nodeId === body.payload.target.nodeId,
