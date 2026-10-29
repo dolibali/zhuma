@@ -4677,6 +4677,47 @@ html[data-platform='darwin'] .zm-shell-chrome {
   border-radius: 7px;
   flex-shrink: 0;
 }
+.zhuma .zm-page-bar > .zm-task-filters {
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.zhuma .zm-task-filters input {
+  flex: 1 1 180px;
+  min-width: 140px;
+  max-width: 280px;
+}
+.zhuma .zm-task-filters > .zm-single-select {
+  flex: 0 1 180px;
+  min-width: 120px;
+}
+.zm-task-filter-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-planning-readiness {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 0;
+  border-block: 1px solid var(--zm-line-subtle);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.zm-planning-readiness p {
+  margin: 4px 0 0;
+  color: var(--zm-muted);
+}
+.zm-planning-readiness > .zm-button {
+  flex-shrink: 0;
+}
 .zm-task-view .zm-button {
   min-height: 28px;
   padding: 4px 12px;
