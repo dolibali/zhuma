@@ -14,6 +14,7 @@ import {
   REMOTE_RUN_PROTOCOL_VERSION,
   remoteRunResponseSchema,
   remoteBackendInfoSchema,
+  localReviewOptionsQuerySchema,
 } from '@zhuma/agent-core';
 import { MemberWorkbenchCommandSchema, MemberWorkbenchPlanSchema } from './member-workbench-dto.js';
 import {
@@ -73,6 +74,7 @@ export const SHARED_BACKEND_OPERATIONS = [
   'execution.upstream-content',
   'execution.draft',
   'execution.local-run-options',
+  'execution.local-review-options',
 ] as const;
 export type SharedBackendOperation = (typeof SHARED_BACKEND_OPERATIONS)[number];
 export const sharedBackendRequestSchema = z.strictObject({
@@ -340,6 +342,12 @@ const descriptors = {
   'execution.local-run-options': {
     schema: hostRunOptionsQuerySchema,
     path: '/api/zhuma-member/local-run-options',
+    verb: 'POST',
+    auth: false,
+  },
+  'execution.local-review-options': {
+    schema: localReviewOptionsQuerySchema,
+    path: '/api/zhuma-member/local-review-options',
     verb: 'POST',
     auth: false,
   },

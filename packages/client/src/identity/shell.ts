@@ -120,19 +120,35 @@ export function createMemberShell(
       leaveGuard = undefined;
       publish();
     },
-    isPageCurrent(epoch: number) {
-      return pageActive && pageEpoch === epoch;
+    isPageCurrent(epoch: number, expectedKey?: string) {
+      return (
+        pageActive && pageEpoch === epoch && (expectedKey === undefined || pageKey === expectedKey)
+      );
     },
-    registerSpaceGuard(epoch: number, select: SpaceSwitch) {
-      if (!pageActive || epoch !== pageEpoch) return () => {};
+    registerSpaceGuard(epoch: number, select: SpaceSwitch, expectedKey?: string) {
+      if (
+        !pageActive ||
+        epoch !== pageEpoch ||
+        (expectedKey !== undefined && pageKey !== expectedKey)
+      )
+        return () => {};
       const current = { epoch, select };
       guard = current;
       return () => {
         if (guard === current) guard = undefined;
       };
     },
-    registerLeaveGuard(epoch: number, leave: (proceed: () => void, signal?: AbortSignal) => void) {
-      if (!pageActive || epoch !== pageEpoch) return () => {};
+    registerLeaveGuard(
+      epoch: number,
+      leave: (proceed: () => void, signal?: AbortSignal) => void,
+      expectedKey?: string,
+    ) {
+      if (
+        !pageActive ||
+        epoch !== pageEpoch ||
+        (expectedKey !== undefined && pageKey !== expectedKey)
+      )
+        return () => {};
       const current = { epoch, leave };
       leaveGuard = current;
       return () => {

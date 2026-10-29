@@ -368,7 +368,7 @@ test('Run refresh priority contract: passive reads do not cancel each other and 
   assert.equal(h.calls.some(Array.isArray), false);
 });
 
-test('Run refresh priority contract: genuine catalog and history failures still reject and publish the unavailable view', async (t) => {
+test('Run refresh priority contract: catalog failures close the view while history failures preserve fresh status', async (t) => {
   for (const stage of ['options', 'history']) {
     const failure = Object.assign(new Error('Synthetic read failure'), { code: 'unavailable' });
     let armed = false;
@@ -386,11 +386,51 @@ test('Run refresh priority contract: genuine catalog and history failures still 
     await h.controller.refresh();
     armed = true;
     await assert.rejects(h.controller.refresh(), (error) => error === failure);
-    assert.equal(h.controller.getSnapshot().view.kind, 'unavailable');
-    assert.match(h.controller.getSnapshot().view.message, /暂时无法读取/);
+    assert.equal(
+      h.controller.getSnapshot().view.kind,
+      stage === 'options' ? 'unavailable' : 'ready',
+    );
+    if (stage === 'options') assert.match(h.controller.getSnapshot().view.message, /暂时无法读取/);
+    else assert.match(h.controller.getSnapshot().error, /运行状态已更新/);
     assert.equal(h.controller.getSnapshot().busy, undefined);
     assert.equal(h.calls.some(Array.isArray), false);
   }
+});
+
+test('Run refresh contract: settled status is visible before blocked history and survives inbox failure', async (t) => {
+  let completed = false;
+  const held = heldRead();
+  const settled = {
+    ...summary,
+    status: 'completed',
+    resources: 'settled',
+    runVersion: 4,
+    nodeVersion: 4,
+  };
+  const h = setup({
+    options: async () => runningOptions(),
+    read: async () => (completed ? settled : summary),
+    history: async (_target, _run, after, signal) => {
+      if (completed) await held.wait(signal);
+      return { messages: [], nextAfter: after };
+    },
+    inbox: async () => {
+      if (completed) throw Error('Retired inbox reader');
+      return [];
+    },
+  });
+  t.after(() => h.controller.dispose());
+  await h.controller.refresh();
+  completed = true;
+  const refresh = h.controller.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.controller.getSnapshot().view.run.resources, 'settled');
+  assert.equal(h.controller.getSnapshot().view.run.status, 'completed');
+  held.resolve();
+  await assert.rejects(refresh, /Retired inbox reader/);
+  assert.equal(h.controller.getSnapshot().view.kind, 'ready');
+  assert.deepEqual(h.controller.getSnapshot().view.run, settled);
+  assert.equal(h.controller.getSnapshot().view.actions.stop.kind, 'unavailable');
 });
 
 test('Run refresh priority contract: Stop, a replacement generation and scope disposal still cancel an in-flight foreground read', async (t) => {

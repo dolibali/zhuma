@@ -242,6 +242,7 @@ function Selection({
           ) : (
             <SingleSelect
               label="选择模型"
+              popupMinWidth={320}
               value={model?.id ?? ''}
               disabled={view.models.kind !== 'ready' || !view.models.items.length}
               triggerContent={
@@ -290,6 +291,7 @@ function Selection({
           ) : (
             <SingleSelect
               label="选择执行者"
+              popupMinWidth={280}
               value={expert?.id ?? ''}
               disabled={view.experts.kind !== 'ready' || !view.experts.items.length}
               triggerContent={
@@ -340,6 +342,7 @@ function Selection({
             ) : (
               <SingleSelect
                 label="执行范围"
+                popupMinWidth={320}
                 value={
                   chosenWorkspace?.kind === 'unavailable'
                     ? 'unavailable'
@@ -378,7 +381,13 @@ function Selection({
       {perRunPublication && (
         <details className="zm-native-run__resources zm-native-run__disclosure">
           <summary>
-            文件交付范围{publishRanges.length ? ` · ${publishRanges.length}` : ' · 未授权'}
+            <span className="zm-native-run__disclosure-icon">
+              <ControlIcon direction="right" />
+            </span>
+            <span className="zm-native-run__disclosure-label">文件交付范围</span>
+            <span className="zm-native-run__resource-count">
+              {publishRanges.length || '未授权'}
+            </span>
           </summary>
           <div className="zm-workspace-publish">
             {!publicationValid && (

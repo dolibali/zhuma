@@ -179,6 +179,37 @@ test('root shell contract: active page owns discard guard; navigation invalidate
   shell.stop();
 });
 
+test('retained panels cannot borrow the active panel epoch or replace its navigation guards', async () => {
+  const { shell } = fixture();
+  shell.start();
+  await tick();
+  shell.setPageActive(true, 'zhuma-workbench');
+  const epoch = shell.getSnapshot().pageEpoch;
+  assert.equal(shell.isPageCurrent(epoch, 'zhuma-workbench'), true);
+  assert.equal(shell.isPageCurrent(epoch, 'zhuma-my-work'), false);
+  const selected = [],
+    left = [];
+  shell.registerSpaceGuard(epoch, (id) => selected.push(id), 'zhuma-workbench');
+  shell.registerSpaceGuard(epoch, () => assert.fail('hidden space guard'), 'zhuma-my-work');
+  shell.registerLeaveGuard(
+    epoch,
+    (proceed) => {
+      left.push('catalog');
+      proceed();
+    },
+    'zhuma-workbench',
+  );
+  shell.registerLeaveGuard(epoch, () => assert.fail('hidden leave guard'), 'zhuma-my-work');
+  shell.requestSpace('team-a');
+  shell.requestLeave(() => left.push('navigate'));
+  assert.deepEqual(selected, ['team-a']);
+  assert.deepEqual(left, ['catalog', 'navigate']);
+  shell.setPageActive(true, 'zhuma-my-work');
+  assert.equal(shell.isPageCurrent(epoch, 'zhuma-workbench'), false);
+  assert.equal(shell.isPageCurrent(shell.getSnapshot().pageEpoch, 'zhuma-my-work'), true);
+  shell.stop();
+});
+
 test('root shell contract: logout immediately removes shared member/space content; failed logout cannot reopen old cookie', async () => {
   const logout = deferred();
   const { shell, reads } = fixture({ logout: () => logout.promise });

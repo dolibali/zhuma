@@ -179,6 +179,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
     const valid = () => current() && reading === request && !signal.aborted;
     publish({ error: undefined });
     publishBusy();
+    let adopted = false;
     try {
       const next = !catalog && options ? options : await api.options(target, signal);
       if (!valid()) return;
@@ -189,20 +190,6 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         run?.generation !== nextRun?.generation ||
         run?.segmentId !== nextRun?.segmentId;
       if (changed) stopObserving();
-      let page: Awaited<ReturnType<NativeRunApi['history']>> | undefined;
-      let inbox: Awaited<ReturnType<NonNullable<NativeRunApi['inbox']>>> | undefined;
-      let nextCursor = changed ? -1 : cursor;
-      // Forward-only SDK history: retain the transcript and advance the real seq
-      // cursor. Never call this "older messages" or infer missing events.
-      if (nextRun?.native) {
-        page = await api.history(target, nextRun.runId, nextCursor, signal);
-        if (!valid()) return;
-        nextCursor = page.nextAfter;
-        if (api.inbox) {
-          inbox = await api.inbox(nextRun, signal);
-          if (!valid()) return;
-        }
-      }
       options = next;
       run = nextRun;
       if (changed) epoch++;
@@ -216,18 +203,43 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
         stopFence = undefined;
       if (next.selection) selection = next.selection;
       else if (changed) selection = null;
-      if (changed) transcript.clear();
-      if (page) transcript.history(page.messages, page.nextAfter);
-      if (inbox) transcript.inbox(inbox);
-      cursor = nextCursor;
+      if (changed) {
+        transcript.clear();
+        cursor = -1;
+      }
+      // The authoritative status is independent of the historical reader's
+      // lifetime. A retired Session reader must not hide a fresh settled Run.
+      adopted = true;
       ready();
+      // Forward-only SDK history: retain the transcript and advance the real seq
+      // cursor. Never call this "older messages" or infer missing events.
+      if (nextRun?.native) {
+        const page = await api.history(target, nextRun.runId, cursor, signal);
+        if (!valid()) return;
+        transcript.history(page.messages, page.nextAfter);
+        cursor = page.nextAfter;
+        ready();
+        if (api.inbox) {
+          const inbox = await api.inbox(nextRun, signal);
+          if (!valid()) return;
+          transcript.inbox(inbox);
+          ready();
+        }
+      }
       observe();
     } catch (error) {
-      if (valid()) stopObserving();
-      if (valid())
-        publish({
-          view: { kind: 'unavailable', message: '暂时无法读取这个工作节点，请刷新或重新进入。' },
-        });
+      if (valid()) {
+        if (adopted) {
+          ready();
+          publish({ error: '运行状态已更新，部分会话消息暂未同步，请刷新重试。' });
+          observe();
+        } else {
+          stopObserving();
+          publish({
+            view: { kind: 'unavailable', message: '暂时无法读取这个工作节点，请刷新或重新进入。' },
+          });
+        }
+      }
       throw error;
     } finally {
       if (reading === request) {

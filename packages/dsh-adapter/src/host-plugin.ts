@@ -265,6 +265,13 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   const memberLocalOptionsHttp = config.remoteExecution
     ? openHostMemberLocalOptionsHttp(ctx, () => currentRunOwner()?.memberLocalOptions)
     : undefined;
+  const memberLocalReviewOptionsHttp = config.remoteExecution
+    ? openHostMemberLocalOptionsHttp(
+        ctx,
+        () => currentRunOwner()?.memberLocalReviewOptions,
+        'local-review-options',
+      )
+    : undefined;
   let runOpening: ReturnType<typeof openHostRunOwner> | undefined;
   let runHttp: ReturnType<typeof openHostRunHttp> | undefined;
   let workflowHttp: ReturnType<typeof openHostWorkflowHttp> | undefined;
@@ -305,6 +312,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
     const httpClose = runHttp?.close();
     const remoteClose = remoteHttp?.close();
     const localOptionsClose = memberLocalOptionsHttp?.close();
+    const localReviewOptionsClose = memberLocalReviewOptionsHttp?.close();
     const workflowClose = workflowHttp?.close();
     const workspaceClose = workspaceApprovalHttp?.close();
     const memberNativeClose = memberNativeHttp?.close();
@@ -313,6 +321,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       httpClose,
       remoteClose,
       localOptionsClose,
+      localReviewOptionsClose,
       workflowClose,
       workspaceClose,
       memberNativeClose,

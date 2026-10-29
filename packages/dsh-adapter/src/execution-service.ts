@@ -21,6 +21,10 @@ import { describeMemberKnowledgeTool } from './member-knowledge-tool.js';
 import { z } from 'zod';
 import {
   canonicalPayload,
+  localReviewOptionsQuerySchema,
+  localReviewOptionsSchema,
+  localReviewUnavailableReasonSchema,
+  type LocalReviewOptions,
   completionSource,
   createExecutionHandoff,
   createNodeHandoffs,
@@ -2139,6 +2143,116 @@ export class ExecutionService {
           };
         },
         true,
+        'review',
+      );
+    });
+  }
+
+  /** Passive exact target discovery: never creates a marker, reservation, or grant. */
+  readLocalReviewOptions(
+    original: MemberRequest,
+    body: unknown,
+  ): Promise<ExecutionResult<LocalReviewOptions>> {
+    return this.enqueue(async () => {
+      const actorField = this.actorField(body);
+      if (actorField) return actorField;
+      const parsed = parseBody(localReviewOptionsQuerySchema, body);
+      if (!parsed.ok) return parsed;
+      const input = parsed.value;
+      return this.withRunMember(
+        original,
+        input,
+        async (host, lease, node) => {
+          const target = executionReviewTarget(node, input.spaceId);
+          if (
+            target.roundId !== input.roundId ||
+            target.artifactVersionId !== input.artifactVersionId
+          )
+            throw new ExecutionReviewError('review-target-stale');
+          const workbench = this.workbench.readWorkbench();
+          const applied = createExecutionHandoff(node, workbench);
+          const latest = Math.max(
+            ...workbench.appliedPlans
+              .filter((p) => p.taskId === node.taskId)
+              .map((p) => p.revision),
+          );
+          if (
+            latest !== node.revision ||
+            workbench.appliedPlans.filter((p) => p.taskId === node.taskId && p.revision === latest)
+              .length !== 1
+          )
+            throw new ExecutionReviewError('review-target-stale');
+          const state = readExecutionReviewState(node);
+          const expectedReviewVersion = state?.version ?? 0;
+          const round = node.rounds.find((item) => item.id === target.roundId)!;
+          const reviewers: LocalReviewOptions['reviewers'] = [];
+          for (const reviewerId of node.handoff.reviewerIds) {
+            if (!round.reviewerIds.includes(reviewerId)) continue;
+            const reviewer = applied.participants.find((p) => p.id === reviewerId);
+            if (!reviewer) throw new ExecutionReviewError('review-plan-mismatch');
+            if (reviewer.kind !== 'expert') continue;
+            const reviewerRef = {
+              id: reviewer.id,
+              version: applied.id,
+              digest: createHash('sha256').update(canonicalPayload(reviewer)).digest('hex'),
+            };
+            try {
+              // The original getter derives a disposable pure candidate only.
+              // No reservation/marker is persisted and no candidate scope is returned.
+              this.currentExpertReviewPreparation(host, lease, {
+                requestId: `local-review-options-${randomUUID()}`,
+                expectedReviewVersion,
+                target,
+                reviewerRef: { id: reviewerRef.id, version: reviewerRef.version },
+              });
+              reviewers.push({ name: reviewer.name, reviewerRef, canStart: true });
+            } catch (error) {
+              const reason =
+                error instanceof ExecutionReviewError
+                  ? localReviewUnavailableReasonSchema.safeParse(error.code)
+                  : undefined;
+              if (!reason?.success) throw error;
+              reviewers.push({
+                name: reviewer.name,
+                reviewerRef,
+                canStart: false,
+                unavailableReason: reason.data,
+              });
+            }
+          }
+          lease.assertCurrent(input.spaceId);
+          return {
+            ok: true,
+            value: localReviewOptionsSchema.parse({
+              controllerMemberId: lease.memberId,
+              target,
+              expectedReviewVersion,
+              reviewers,
+              attempts: (state?.attempts ?? [])
+                .filter(
+                  (attempt) =>
+                    canonicalPayload(attempt.scope.review.target) === canonicalPayload(target),
+                )
+                .map((attempt) => ({
+                  scope: attempt.scope,
+                  version: attempt.version,
+                  status: attempt.status,
+                  dispatch: attempt.dispatch,
+                  resources: attempt.resources,
+                  ...('stopPhase' in attempt ? { stopPhase: attempt.stopPhase } : {}),
+                  ...('remote' in attempt && attempt.remote
+                    ? {
+                        remoteScope: {
+                          ...attempt.scope,
+                          backendId: attempt.remote.backendId,
+                        },
+                      }
+                    : {}),
+                })),
+            }),
+          };
+        },
+        false,
         'review',
       );
     });

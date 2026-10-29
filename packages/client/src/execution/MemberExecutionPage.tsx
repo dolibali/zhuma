@@ -218,6 +218,7 @@ const noShellSnapshot = () => undefined;
 export function MemberExecutionPage({
   fetcher = globalThis.fetch,
   shell,
+  pageKey,
   workbenchAppearance,
   view,
   openWork,
@@ -230,6 +231,8 @@ export function MemberExecutionPage({
 }: {
   fetcher?: typeof fetch;
   shell?: MemberShell;
+  /** Official slots may retain hidden panels; only this panel owns its UI lifetime. */
+  pageKey?: string;
   workbenchAppearance?: AppearanceStore;
   view?: 'catalog' | 'work';
   openWork?: () => void;
@@ -248,17 +251,17 @@ export function MemberExecutionPage({
   );
   const epoch = snapshot?.pageEpoch ?? 0;
   const pageCurrent = useCallback(
-    () => (shell ? shell.isPageCurrent(epoch) : true),
-    [shell, epoch],
+    () => (shell ? shell.isPageCurrent(epoch, pageKey) : true),
+    [shell, epoch, pageKey],
   );
   const registerSwitchGuard = useCallback(
-    (select: SpaceSwitch) => shell?.registerSpaceGuard(epoch, select) ?? (() => {}),
-    [shell, epoch],
+    (select: SpaceSwitch) => shell?.registerSpaceGuard(epoch, select, pageKey) ?? (() => {}),
+    [shell, epoch, pageKey],
   );
   const registerLeaveGuard = useCallback(
     (leave: (proceed: () => void, signal?: AbortSignal) => void) =>
-      shell?.registerLeaveGuard(epoch, leave) ?? (() => {}),
-    [shell, epoch],
+      shell?.registerLeaveGuard(epoch, leave, pageKey) ?? (() => {}),
+    [shell, epoch, pageKey],
   );
   const identity = useMemo(() => shell?.api ?? createIdentityApi(fetcher), [fetcher, shell]);
   const lifecycle = useMemo(() => createIdentityLifecycleApi(fetcher), [fetcher]);

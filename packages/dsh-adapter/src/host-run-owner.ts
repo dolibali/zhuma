@@ -4,6 +4,8 @@ import {
   canonicalPayload,
   createNodeHandoffs,
   isTerminalRunStatus,
+  localReviewOptionsQuerySchema,
+  localReviewOptionsSchema,
   type Workbench,
 } from '@zhuma/agent-core';
 import { z } from 'zod';
@@ -1536,6 +1538,20 @@ export async function openHostRunOwner(
     memberLocalOptions(request: MemberRequest, payload: unknown, wait?: AbortSignal) {
       if (!options.remoteOnly) throw new ExecutionRunError('run-authority-denied');
       return command(() => readOptions(request, payload, wait));
+    },
+    memberLocalReviewOptions(request: MemberRequest, payload: unknown, wait?: AbortSignal) {
+      if (!options.remoteOnly) throw new ExecutionRunError('run-authority-denied');
+      return command(async () => {
+        active();
+        wait?.throwIfAborted();
+        const query = localReviewOptionsQuerySchema.parse(payload);
+        const result = await execution.readLocalReviewOptions(request, query);
+        active();
+        wait?.throwIfAborted();
+        return result.ok
+          ? { ok: true as const, value: localReviewOptionsSchema.parse(result.value) }
+          : result;
+      });
     },
     operations,
     beginWorkflowRun,

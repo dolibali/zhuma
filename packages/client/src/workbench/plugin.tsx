@@ -243,6 +243,7 @@ export function apply(ctx: Context): void {
                 key={sharedBackend?.getSnapshot().selection?.connectionId ?? 'local'}
                 fetcher={memberFetch}
                 shell={memberShell}
+                pageKey={panel.id}
                 nativeExecution={!remote || !!memberNative}
                 memberNative={remote ? memberNative : undefined}
                 allowRegistration={mode === 'multi-member'}
