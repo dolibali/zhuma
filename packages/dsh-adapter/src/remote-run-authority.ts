@@ -11,6 +11,7 @@ import {
   remoteRunRequestSchema,
   remoteRunResponseSchema,
   remoteRunSharedSnapshotSchema,
+  remoteRunMigrationSchema,
   remoteAcceptValueSchema,
   remoteResultDigestInput,
   submitDelivery,
@@ -27,6 +28,7 @@ import {
   type RemoteRunScope,
   type RemoteRunErrorCode,
   type RemoteInputDescriptor,
+  type RemoteRunMigration,
   type RemoteReconcileValue,
 } from '@zhuma/agent-core';
 import {
@@ -1014,6 +1016,72 @@ export class RemoteRunAuthorities {
     original.lease.assertCurrent(value.run.spaceId);
     lease.assertCurrent(value.run.spaceId);
   }
+  private migration(value: Loaded): RemoteRunMigration | undefined {
+    const { node, run, state, remote } = value;
+    const index = state.runs.findIndex((item) => item.attempt.id === run.attempt.id);
+    if (
+      state.currentRunId !== run.attempt.id ||
+      index < 1 ||
+      run.attempt.status !== 'requested' ||
+      run.resources !== 'held' ||
+      run.dispatch !== 'reserved' ||
+      run.attempt.acknowledged ||
+      run.attempt.sessionId !== undefined ||
+      run.attempt.executorRunId !== undefined ||
+      run.attempt.stopPhase !== 'none'
+    )
+      return undefined;
+    const predecessors = state.runs.slice(0, index);
+    // Original local migrations retain their original authority. Never mix
+    // device/actor/backend histories into a remote member's local session.
+    if (
+      predecessors.some(
+        (previous) =>
+          !previous.remote ||
+          previous.remote.backendId !== remote.backendId ||
+          previous.remote.deviceId !== remote.deviceId ||
+          previous.remote.keyEpoch !== remote.keyEpoch ||
+          previous.remote.publicKey !== remote.publicKey ||
+          previous.actorId !== run.actorId ||
+          previous.spaceId !== run.spaceId ||
+          !isTerminalRunStatus(previous.attempt.status) ||
+          previous.resources !== 'settled',
+      )
+    )
+      return undefined;
+    const receipt = state.receipts.find(
+      (item) =>
+        item.requestId === run.attempt.idempotencyKey &&
+        item.actorId === run.actorId &&
+        item.runId === run.attempt.id,
+    );
+    if (!receipt) deny('remote-unavailable');
+    const parsed = remoteRunMigrationSchema.safeParse({
+      requestId: receipt.requestId,
+      inputFingerprint: run.attempt.payloadHash,
+      predecessors: predecessors.map((previous) => ({
+        scope: { ...executionRunScope(node, previous), backendId: previous.remote!.backendId },
+        selection: previous.selection,
+        deviceId: previous.remote!.deviceId,
+        keyEpoch: previous.remote!.keyEpoch,
+        runStatus: previous.attempt.status,
+        resources: previous.resources,
+        dispatch: previous.dispatch,
+        acknowledged: previous.attempt.acknowledged,
+        ...(previous.attempt.sessionId === undefined
+          ? {}
+          : { nativeSessionId: previous.attempt.sessionId }),
+        ...(previous.attempt.executorRunId === undefined
+          ? {}
+          : { nativeAgentId: previous.attempt.executorRunId }),
+        ...(previous.attempt.sessionDiscarded === undefined
+          ? {}
+          : { sessionDiscarded: previous.attempt.sessionDiscarded }),
+      })),
+    });
+    if (!parsed.success) deny('remote-quota');
+    return parsed.data;
+  }
   private view(value: Loaded, cleanupOnly = false, sessionCurrent = true): RemoteRunView {
     const { node, state, run, remote } = value;
     const original = this.active.get(run.attempt.id);
@@ -1043,6 +1111,7 @@ export class RemoteRunAuthorities {
           : cleanupOnly || remote.stopRequested
             ? 'cleanup-only'
             : 'recovery-required';
+    const migration = cleanupOnly ? undefined : this.migration(value);
     const { id: driveId, epoch: driveEpoch, expiresAt: driveExpiry } = remote.drive;
     const { id: cleanupId, epoch: cleanupEpoch, expiresAt: cleanupExpiry } = remote.cleanup;
     return {
@@ -1053,6 +1122,7 @@ export class RemoteRunAuthorities {
       permit: { id: driveId, epoch: driveEpoch, expiresAt: driveExpiry },
       cleanup: { id: cleanupId, epoch: cleanupEpoch, expiresAt: cleanupExpiry },
       nodeVersion: node.command.version,
+      ...(migration ? { migration } : {}),
       runVersion: state.version,
       nextSequence: run.attempt.lastEventSequence + 1,
       stopRequested: remote.stopRequested || run.attempt.stopPhase !== 'none',
@@ -1471,6 +1541,7 @@ export class RemoteRunAuthorities {
       ...readExecutionRunState(decision.record)!,
       runs: [...(state?.runs ?? []), run],
     });
+    this.migration({ node: next, run, state: readExecutionRunState(next)!, remote });
     lease.assertCurrent(payload.target.spaceId);
     this.source.assertTarget(lease.memberId, payload.target, this.source.readNode(payload.target)!);
     qualification?.assertCurrent();
