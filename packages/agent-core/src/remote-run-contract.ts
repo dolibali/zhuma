@@ -1009,6 +1009,73 @@ export const remoteReviewScopeSchema = remoteRunScopeSchema
   .extend({ review: remoteReviewBindingSchema })
   .refine((scope) => reviewBindingMatches(scope, scope.review));
 export type RemoteReviewScope = z.infer<typeof remoteReviewScopeSchema>;
+/** Current member discovery only. These facts are neither a reservation nor local drive authority. */
+export const localReviewOptionsQuerySchema = remoteReviewTargetSchema.omit({
+  artifactFingerprint: true,
+});
+export type LocalReviewOptionsQuery = z.infer<typeof localReviewOptionsQuerySchema>;
+export const localReviewUnavailableReasonSchema = z.enum([
+  'review-expert-unavailable',
+  'review-not-assigned',
+  'review-self-review',
+  'review-author-active',
+  'review-provenance-invalid',
+  'review-already-voted',
+  'review-capacity',
+  'review-attempt-budget',
+]);
+const localReviewOptionScopeSchema = remoteRunScopeSchema
+  .omit({ backendId: true })
+  .extend({ review: remoteReviewBindingSchema })
+  .refine((scope) => reviewBindingMatches(scope, scope.review));
+export const localReviewOptionsSchema = z
+  .strictObject({
+    controllerMemberId: reviewId,
+    target: remoteReviewTargetSchema,
+    expectedReviewVersion: natural,
+    reviewers: z
+      .array(
+        z
+          .strictObject({
+            name: z.string().min(1).max(200),
+            reviewerRef: remoteReviewPrincipalSchema.shape.reviewerRef,
+            canStart: z.boolean(),
+            unavailableReason: localReviewUnavailableReasonSchema.optional(),
+          })
+          .refine((value) => value.canStart === (value.unavailableReason === undefined)),
+      )
+      .max(100),
+    attempts: z
+      .array(
+        z.strictObject({
+          scope: localReviewOptionScopeSchema,
+          version: positive,
+          status: z.enum(['prepared', 'requested', 'running', 'completed', 'failed', 'cancelled']),
+          dispatch: z.enum(['reserved', 'received', 'unknown']),
+          resources: z.enum(['held', 'settled']),
+          stopPhase: z.enum(['none', 'requested', 'confirmed']).optional(),
+          remoteScope: remoteReviewScopeSchema.optional(),
+        }),
+      )
+      .max(64),
+  })
+  .refine(
+    (value) =>
+      new Set(value.reviewers.map((item) => item.reviewerRef.id)).size === value.reviewers.length &&
+      value.reviewers.every((item) => item.reviewerRef.version === value.target.planId) &&
+      value.attempts.every(
+        (attempt) =>
+          canonicalPayload(attempt.scope.review.target) === canonicalPayload(value.target) &&
+          attempt.scope.actorId === value.controllerMemberId &&
+          (!attempt.remoteScope ||
+            canonicalPayload(attempt.remoteScope) ===
+              canonicalPayload({
+                ...attempt.scope,
+                backendId: attempt.remoteScope.backendId,
+              })),
+      ),
+  );
+export type LocalReviewOptions = z.infer<typeof localReviewOptionsSchema>;
 function reviewSourceMatches(
   scope: RemoteReviewScope,
   source: {
