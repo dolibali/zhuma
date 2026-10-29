@@ -12,7 +12,7 @@ import { MEMBER_LOCAL_REMOTE_METHODS } from '../dist/host-remote-run-http.js';
 const deferred = () => Promise.withResolvers();
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-async function setup(t, mode) {
+async function setup(t, mode, { tools = 'text-only', files = false } = {}) {
   const ctx = new Context(),
     facts = compositionFacts(),
     trace = [];
@@ -23,6 +23,7 @@ async function setup(t, mode) {
     revision: facts.scope.revision,
     nodeId: facts.scope.nodeId,
   };
+  const preparations = [];
   const composition = freezeExecutionRunComposition(facts);
   const accepted = {
     composition,
@@ -49,9 +50,10 @@ async function setup(t, mode) {
     backendId: 'backend',
     actorId: facts.scope.actorId,
     deviceId: 'device',
-    supportsFilePublishing: false,
+    supportsFilePublishing: files,
     canSwitchBackend: () => !uncertain,
-    async prepareAccept() {
+    async prepareAccept(_requestId, input) {
+      preparations.push(structuredClone(input));
       trace.push('prepare');
       return {
         async send(signal) {
@@ -73,6 +75,7 @@ async function setup(t, mode) {
     },
   };
   const native = {
+    ...(files ? { acceptedFileSource: 'zhuma-accepted-files@2' } : {}),
     canSwitchBackend: () => true,
     lookupNativeSession: () => null,
     read(run) {
@@ -136,7 +139,7 @@ async function setup(t, mode) {
               experts: [],
               resources: [],
               start: { kind: 'available' },
-              tools: 'text-only',
+              tools,
             },
           },
         },
@@ -176,12 +179,43 @@ async function setup(t, mode) {
     sendRelease,
     cleanup,
     options,
+    preparations,
     releaseCleanup() {
       cleanup.done = true;
       cleanup.resolve();
     },
   };
 }
+
+for (const tools of ['text-only', 'accepted-input-reader'])
+  test(`member native preparation: ${tools} facts control input capabilities instead of caller ceilings`, async (t) => {
+    const h = await setup(t, 'accept', { tools, files: true });
+    const beginning = h.owner.handle(
+      'begin',
+      { ...h.input, tools: 'accepted-input-reader' },
+      new AbortController().signal,
+    );
+    const failed = assert.rejects(beginning);
+    await h.sendEntered.promise;
+    assert.equal(h.preparations.length, 1);
+    const offered = h.preparations[0].capabilities;
+    assert.equal(offered.acceptedInput, tools === 'text-only' ? undefined : '1');
+    assert.equal(
+      offered.acceptedFile,
+      tools === 'text-only' ? undefined : 'zhuma-accepted-files@2',
+    );
+    assert.equal(offered.knowledge, undefined);
+    assert.equal(offered.resources, undefined);
+    assert.equal(Object.hasOwn(h.preparations[0], 'newRunId'), false);
+    assert.equal(Object.hasOwn(h.preparations[0], 'newSegmentId'), false);
+    const closing = h.owner.close();
+    h.sendRelease.resolve();
+    await tick();
+    h.releaseCleanup();
+    await failed;
+    await closing;
+    assert.equal(h.trace.includes('start'), false);
+  });
 
 test('member native close: facts returning after admission closes cannot prepare, accept or start', async (t) => {
   const h = await setup(t, 'facts');

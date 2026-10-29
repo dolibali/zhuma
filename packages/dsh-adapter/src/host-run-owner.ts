@@ -161,6 +161,9 @@ export async function openHostRunOwner(
     readonly localExecution?: HostLocalExecutionConfig | undefined;
     /** Shared backend owns facts/permissions only; never a native driver. */
     readonly remoteOnly?: boolean;
+    readonly prepareProjectKnowledge?: Parameters<
+      typeof createHostRunSources
+    >[1]['prepareProjectKnowledge'];
     readWorkbench(): Workbench;
   },
 ) {
@@ -467,6 +470,9 @@ export async function openHostRunOwner(
         resources,
         workspaces,
         retirementDrain: (scope) => retirementDrains?.read(scope),
+        ...(options.prepareProjectKnowledge
+          ? { prepareProjectKnowledge: options.prepareProjectKnowledge }
+          : {}),
       }),
     );
     if (resultProtocol() === 2) {

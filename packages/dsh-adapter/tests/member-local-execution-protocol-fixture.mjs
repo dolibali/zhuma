@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import {
   canonicalPayload,
   REMOTE_RUN_OPERATIONS,
+  REMOTE_WORKFLOW_OPERATIONS,
   REMOTE_RUN_PERMIT_HEADER,
   remoteDeviceSigningInput,
   remoteRunRequestSchema,
@@ -169,7 +170,13 @@ export async function fixture(t, options = {}) {
             backendId,
             actorId: options.actorId ?? 'chen',
             serverTime: Date.now(),
-            operations: options.operations ?? REMOTE_RUN_OPERATIONS,
+            operations:
+              options.operations ??
+              REMOTE_RUN_OPERATIONS.filter(
+                (operation) =>
+                  !REMOTE_WORKFLOW_OPERATIONS.includes(operation) ||
+                  (request.payload.workflow && options.workflow),
+              ),
             purposes: ['work'],
           },
         });
@@ -227,6 +234,9 @@ export async function fixture(t, options = {}) {
                 },
               },
         );
+      } else if (REMOTE_WORKFLOW_OPERATIONS.includes(request.operation)) {
+        assert.equal(typeof options.workflow, 'function');
+        respond({ ok: true, value: await options.workflow(request) });
       } else if (request.operation === 'accept') {
         acceptCalls++;
         assert.equal(

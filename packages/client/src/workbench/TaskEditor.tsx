@@ -831,13 +831,22 @@ export function TaskEditor({
         </details>
       </div>
       {nativeRun?.api.workflow &&
-        api.member?.actorId === task.ownerId &&
+        api.member &&
+        (api.member.actorId === task.ownerId ||
+          task.workflows.some((flow) =>
+            flow.nodes.some((node) => node.assigneeId === api.member?.actorId),
+          )) &&
         task.status === 'ready' &&
         applied &&
         !dirty && (
           <WorkflowControls
             api={nativeRun.api.workflow}
             target={{ taskId: task.id, planId: applied.id, revision: applied.revision }}
+            nodeLabels={Object.fromEntries(
+              applied.task.workflows.flatMap((flow) =>
+                flow.nodes.map((node) => [node.id, node.title]),
+              ),
+            )}
             onViewChange={updateWorkflowView}
             openModelSettings={nativeRun.api.openModelSettings}
             workspaceApprovals={

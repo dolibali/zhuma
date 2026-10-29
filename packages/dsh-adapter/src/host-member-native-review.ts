@@ -17,6 +17,7 @@ import type {
   MemberLocalReviewProtocol,
   MemberLocalAcceptedReview,
   MemberLocalPreparedReviewAccept,
+  MemberLocalReviewAcceptInput,
 } from './member-local-review-protocol.js';
 import type { NativeHistoryEvent } from './native-work-session-contract.js';
 
@@ -74,6 +75,37 @@ export function createHostMemberNativeReviews(
   const starting = new Map<string, Promise<unknown>>();
   const stops = new WeakMap<MemberLocalAcceptedReview, Promise<unknown>>();
   let fenced = false;
+  async function prepare(
+    input: Pick<
+      MemberLocalReviewAcceptInput,
+      'target' | 'expectedReviewVersion' | 'reviewerRef' | 'model' | 'workflow'
+    >,
+    signal: AbortSignal,
+  ): Promise<MemberLocalReviewAcceptInput> {
+    if (fenced) throw new SharedBackendError('unavailable');
+    await options.current(signal);
+    const models = await readHostRunModels(ctx, signal);
+    if (
+      models.kind !== 'ready' ||
+      !models.items.some(
+        (item) =>
+          item.value.provider === input.model.provider && item.value.model === input.model.model,
+      )
+    )
+      throw new ExecutionRunError('run-authority-denied');
+    await options.current(signal);
+    if (fenced) throw new SharedBackendError('unavailable');
+    const resources = MemberLocalExecutionOwner.resourceSource(ctx);
+    return {
+      ...input,
+      workspace: { kind: 'text-only' },
+      capabilities: {
+        ...(resources ? { resources } : {}),
+        reader: 'zhuma-native-review-read@1',
+        resultIntent: 'zhuma-native-review-intent@1',
+      },
+    };
+  }
   async function facts(target: LocalReviewOptionsQuery, signal: AbortSignal) {
     await options.current(signal);
     const rpcId = randomUUID();
@@ -157,6 +189,14 @@ export function createHostMemberNativeReviews(
     return run;
   }
   return {
+    // Automatic callers carry only C's original signed candidate; the original
+    // prepareAccept revalidates its full target, reviewer and workflow generation.
+    prepare,
+    accepted(run: MemberLocalAcceptedReview, signal: AbortSignal) {
+      accepted.set(run.value.scope.runId, run);
+      options.admit(signal);
+      if (fenced) throw new SharedBackendError('unavailable');
+    },
     async handle(endpoint: string, raw: unknown, signal: AbortSignal): Promise<unknown> {
       if (fenced) throw new SharedBackendError('unavailable');
       await options.current(signal);
@@ -237,31 +277,20 @@ export function createHostMemberNativeReviews(
             const reviewer = current.reviewers.find((item) => item.reviewerRef.id === reviewerId);
             if (!reviewer?.canStart || current.expectedReviewVersion !== expectedReviewVersion)
               throw new ExecutionRunError('run-authority-denied');
-            const models = await readHostRunModels(ctx, signal);
-            if (
-              models.kind !== 'ready' ||
-              !models.items.some(
-                (item) =>
-                  item.value.provider === model.provider && item.value.model === model.model,
-              )
-            )
-              throw new ExecutionRunError('run-authority-denied');
-            await options.current(signal);
-            const resources = MemberLocalExecutionOwner.resourceSource(ctx);
             return options.protocol.prepareAccept(
               requestId,
-              {
-                target: current.target,
-                expectedReviewVersion,
-                reviewerRef: { id: reviewer.reviewerRef.id, version: reviewer.reviewerRef.version },
-                model,
-                workspace: { kind: 'text-only' },
-                capabilities: {
-                  ...(resources ? { resources } : {}),
-                  reader: 'zhuma-native-review-read@1',
-                  resultIntent: 'zhuma-native-review-intent@1',
+              await prepare(
+                {
+                  target: current.target,
+                  expectedReviewVersion,
+                  reviewerRef: {
+                    id: reviewer.reviewerRef.id,
+                    version: reviewer.reviewerRef.version,
+                  },
+                  model,
                 },
-              },
+                signal,
+              ),
               signal,
             );
           })();

@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import type { JsonSchemaNode, ToolDefinition, ToolExecution } from '@deepseek-ai/dsh-tools';
 import {
+  KNOWLEDGE_LIMITS,
   KnowledgeErrorCodeSchema,
   KnowledgeLibrarySchema,
   KnowledgeReadValueSchema,
@@ -17,6 +18,7 @@ import {
   type KnowledgeSearchRequest,
   type KnowledgeSearchValue,
   type KnowledgeWriteValue,
+  type KnowledgeVersionRef,
 } from '@zhuma/agent-core';
 import { z } from 'zod';
 import {
@@ -31,6 +33,7 @@ import {
   nativeWorkSessionKey,
   type NativeWorkSessionService,
 } from './native-work-session.js';
+import { NATIVE_RESULT_TOOL } from './native-work-session-result-contract.js';
 
 export const MEMBER_KNOWLEDGE_TOOL = 'knowledge';
 const WAIT_MS = 5_000;
@@ -235,12 +238,21 @@ export function registerMemberKnowledgeTool(
   grant: NativeWorkGrant,
   sessions: NativeWorkSessionService,
   ports: MemberKnowledgeToolPorts,
+  required: readonly KnowledgeVersionRef[] = [],
 ): NativeDshComposition {
   const library = KnowledgeLibrarySchema.safeParse(ports?.catalog?.library);
+  const references = z
+    .array(KnowledgeVersionRefSchema)
+    .max(KNOWLEDGE_LIMITS.projectLinks)
+    .safeParse(required);
   const scope = structuredClone(binding.scope);
   const identity = scopeKey(scope);
   if (
     !library.success ||
+    !references.success ||
+    references.data.some(
+      (ref) => ref.spaceId !== scope.spaceId || ref.libraryId !== library.data.id,
+    ) ||
     library.data.spaceId !== scope.spaceId ||
     !ports?.catalog?.scope ||
     scopeKey(ports.catalog.scope) !== identity ||
@@ -255,6 +267,62 @@ export function registerMemberKnowledgeTool(
   const nativeAgentId = binding.nativeAgentId;
   const lifetime = new AbortController();
   const issued = new Map<ToolExecution['token'], string>();
+  const referenceKey = (ref: KnowledgeVersionRef) =>
+    JSON.stringify([ref.spaceId, ref.libraryId, ref.pageId, ref.version, ref.checksum]);
+  const requiredKeys = new Set(references.data.map(referenceKey));
+  // Process-local observations of this exact Agent's finalized tool output.
+  // Never infer reads from prompts, search hits, billed bytes or another Run.
+  // A cold resume conservatively reads again through the original tool.
+  const coverage = new Map<
+    string,
+    {
+      totalBytes: number;
+      bytes: Buffer | undefined;
+      ranges: [number, number][];
+      complete: boolean;
+    }
+  >();
+  const observeRequired = (output: ToolOutput): boolean => {
+    if (!output.ok || output.action !== 'read' || output.value.part !== 'body') return true;
+    const value = output.value,
+      key = referenceKey(value.reference);
+    if (!requiredKeys.has(key)) return true;
+    if (value.partChecksum !== value.reference.checksum) return false;
+    let read = coverage.get(key);
+    if (read && read.totalBytes !== value.totalBytes) {
+      coverage.delete(key);
+      return false;
+    }
+    if (read?.complete) return true;
+    if (!read) {
+      read = {
+        totalBytes: value.totalBytes,
+        bytes: Buffer.alloc(value.totalBytes),
+        ranges: [],
+        complete: false,
+      };
+      coverage.set(key, read);
+    }
+    Buffer.from(value.text).copy(read.bytes!, value.offset);
+    const ranges: [number, number][] = [];
+    for (const range of [...read.ranges, [value.offset, value.nextOffset] as [number, number]].sort(
+      (a, b) => a[0] - b[0],
+    )) {
+      const previous = ranges.at(-1);
+      if (previous && range[0] <= previous[1]) previous[1] = Math.max(previous[1], range[1]);
+      else ranges.push([...range]);
+    }
+    read.ranges = ranges;
+    if (ranges.length === 1 && ranges[0]![0] === 0 && ranges[0]![1] === read.totalBytes) {
+      if (createHash('sha256').update(read.bytes!).digest('hex') !== value.reference.checksum) {
+        coverage.delete(key);
+        return false;
+      }
+      read.complete = true;
+      read.bytes = undefined;
+    }
+    return true;
+  };
   const check = (exec: Readonly<ToolExecution>, signal = exec.signal) => {
     if (signal.aborted || lifetime.signal.aborted || grant.signal.aborted) throw Error('cancelled');
     grant.assertCurrent('send');
@@ -271,6 +339,18 @@ export function registerMemberKnowledgeTool(
     await ports.assertCurrent(signal);
     check(exec, signal);
   };
+  if (requiredKeys.size)
+    ctx.tools.guard((exec) => {
+      if (exec.name !== NATIVE_RESULT_TOOL) return undefined;
+      try {
+        check(exec);
+        return [...requiredKeys].every((key) => coverage.get(key)?.complete)
+          ? undefined
+          : 'native-required-knowledge-unread';
+      } catch {
+        return 'native-required-knowledge-unavailable';
+      }
+    });
   const invoke = async (
     args: z.infer<typeof requestSchema>,
     signal: AbortSignal,
@@ -374,6 +454,7 @@ export function registerMemberKnowledgeTool(
   };
   ctx.effect(() => async () => {
     lifetime.abort();
+    coverage.clear();
     await sessions.whenInputReadsIdle(scope);
   });
   ctx.tools.register({
@@ -460,6 +541,7 @@ export function registerMemberKnowledgeTool(
           bytes(value) > NATIVE_INPUT_READ_LIMITS.pageBytes
         )
           return blocks(failure('unavailable'));
+        if (!observeRequired(value)) return blocks(failure('unavailable'));
         return blocks(value);
       } catch {
         return blocks(failure('cancelled'));

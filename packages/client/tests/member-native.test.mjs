@@ -69,6 +69,33 @@ test('member native: only exact operations and the original envelope are accepte
   await assert.rejects(client.fetcher('/api/zhuma-run/stop', { method: 'GET' }));
   assert.equal(h.local.length, 0);
 });
+
+test('member workflow: all five operations stay on the local owner and cannot use a forged method or old connection', async () => {
+  const h = setup(),
+    client = h.client.scoped('member', 'team');
+  const input = (endpoint) => ({
+    method: 'POST',
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: randomUUID(),
+      method: `zhuma-workflow/${endpoint}`,
+      payload: { spaceId: 'team', taskId: 'task', planId: 'plan', revision: 1 },
+    }),
+  });
+  for (const endpoint of ['options', 'read', 'start', 'resume', 'stop']) {
+    await client.fetcher(`/api/zhuma-workflow/${endpoint}`, input(endpoint));
+    assert.equal(h.local.at(-1).input, `/api/zhuma-member-native/workflow-${endpoint}`);
+    assert.equal(JSON.parse(h.local.at(-1).init.body).payload.spaceId, 'team');
+  }
+  assert.equal(h.remote.length, 0, 'No automatic command reaches a remote backend as renderer RPC');
+  await assert.rejects(client.fetcher('/api/zhuma-workflow/start', input('read')));
+  await assert.rejects(client.fetcher('/api/zhuma-workflow/unknown', input('unknown')));
+  h.change();
+  await assert.rejects(client.fetcher('/api/zhuma-workflow/start', input('start')), {
+    name: 'AbortError',
+  });
+  assert.equal(h.local.length, 5);
+});
 test('member native: history navigation selects only the requested original Run for a metadata read', async () => {
   const h = setup();
   const client = h.client.scoped('member', 'team', 'original-run');

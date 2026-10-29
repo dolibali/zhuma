@@ -1,4 +1,5 @@
 import { ExecutionError } from '../execution/ExecutionApi.js';
+import { workspacePublishRanges, type WorkspacePublishRange } from '../run/workspace-approvals.js';
 import type {
   NativeRunModel,
   NativeRunModelChoice,
@@ -12,21 +13,37 @@ export type WorkflowTarget = {
 };
 export type WorkflowLocation = WorkflowTarget & { readonly spaceId: string };
 export type WorkflowWorkspace =
-  { readonly kind: 'text-only' } | { readonly kind: 'local'; readonly id: string };
+  | { readonly kind: 'text-only' }
+  | {
+      readonly kind: 'local';
+      readonly id: string;
+      readonly publish?: readonly WorkspacePublishRange[];
+    };
 export interface WorkflowView {
   readonly target: WorkflowLocation;
   readonly title: string;
-  readonly state: 'inactive' | 'running' | 'stopping' | 'paused' | 'completed' | 'requires-resume';
+  readonly state:
+    'inactive' | 'running' | 'waiting' | 'stopping' | 'paused' | 'completed' | 'requires-resume';
   readonly planStarted: boolean;
   readonly requiresResume: boolean;
   readonly activeRunCount: number;
   readonly expertNodeCount: number;
+  readonly controlledNodeCount?: number;
+  readonly controlledReviewNodeCount?: number;
+  readonly revisions?: readonly {
+    readonly nodeId: string;
+    readonly used: number;
+    readonly limit: number;
+  }[];
   readonly expertReviewRequired?: boolean;
+  readonly automaticReview?: boolean;
+  readonly attention?: string;
   readonly intent: {
     readonly intentId: string;
     readonly generation: number;
     readonly version: number;
     readonly concurrent: number;
+    readonly automaticRevisions?: number;
   } | null;
   readonly selection: {
     readonly model: NativeRunModel;
@@ -38,12 +55,14 @@ export interface WorkflowOptions extends WorkflowView {
     | { readonly kind: 'ready'; readonly items: readonly NativeRunModelChoice[] }
     | { readonly kind: 'unavailable'; readonly message: string };
   readonly workspaces: readonly NativeRunWorkspaceChoice[];
+  readonly maxConcurrent?: number;
 }
 export type WorkflowStart = WorkflowTarget & {
   readonly requestId: string;
   readonly model: NativeRunModel;
   readonly workspace: WorkflowWorkspace;
   readonly concurrent: number;
+  readonly automaticRevisions?: number;
 };
 export type WorkflowControl = WorkflowTarget & {
   readonly requestId: string;
@@ -55,7 +74,10 @@ export interface WorkflowApi {
   read(target: WorkflowTarget, signal: AbortSignal): Promise<WorkflowView>;
   start(input: WorkflowStart, signal: AbortSignal): Promise<WorkflowView>;
   resume(
-    input: WorkflowControl & { readonly expectedVersion: number },
+    input: WorkflowControl & {
+      readonly expectedVersion: number;
+      readonly workspace?: WorkflowWorkspace;
+    },
     signal: AbortSignal,
   ): Promise<WorkflowView>;
   stop(input: WorkflowControl, signal: AbortSignal): Promise<WorkflowView>;
@@ -100,7 +122,11 @@ function workspace(value: unknown): WorkflowWorkspace | { readonly kind: 'unavai
   const item = object(value);
   switch (item.kind) {
     case 'local':
-      return { kind: 'local', id: string(item.id) };
+      return {
+        kind: 'local',
+        id: string(item.id),
+        ...(item.publish === undefined ? {} : { publish: workflowPublishRanges(item.publish) }),
+      };
     case 'text-only':
       return { kind: 'text-only' };
     case 'unavailable':
@@ -108,6 +134,16 @@ function workspace(value: unknown): WorkflowWorkspace | { readonly kind: 'unavai
     default:
       return invalid();
   }
+}
+export function workflowPublishRanges(raw: unknown): WorkspacePublishRange[] {
+  const ranges = workspacePublishRanges(raw);
+  if (new TextEncoder().encode(JSON.stringify(ranges)).byteLength > 4096) invalid();
+  return ranges;
+}
+function selectedWorkspace(raw: WorkflowWorkspace): WorkflowWorkspace {
+  const value = workspace(raw);
+  if (value.kind === 'unavailable') return invalid();
+  return value;
 }
 function view(value: unknown, expected: WorkflowLocation): WorkflowView {
   const item = object(value),
@@ -130,6 +166,7 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
   const state = oneOf(item.state, [
     'inactive',
     'running',
+    'waiting',
     'stopping',
     'paused',
     'completed',
@@ -141,6 +178,22 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
     invalid();
   if ((intent !== null && !planStarted) || requiresResume !== (state === 'requires-resume'))
     invalid();
+  const revisions =
+    item.revisions === undefined
+      ? undefined
+      : array(item.revisions, 512).map((raw) => {
+          const row = object(raw),
+            limit = integer(row.limit, 0, 2);
+          return { nodeId: string(row.nodeId), used: integer(row.used, 0, limit), limit };
+        });
+  if (
+    revisions &&
+    (!intent ||
+      new Set(revisions.map((row) => row.nodeId)).size !== revisions.length ||
+      (intent.automaticRevisions !== undefined &&
+        revisions.some((row) => row.limit !== intent.automaticRevisions)))
+  )
+    invalid();
   return {
     target,
     title: string(item.title, 1000),
@@ -149,15 +202,29 @@ function view(value: unknown, expected: WorkflowLocation): WorkflowView {
     requiresResume,
     activeRunCount: integer(item.activeRunCount, 0, 512),
     expertNodeCount: integer(item.expertNodeCount, 0, 1000),
+    ...(item.controlledNodeCount === undefined
+      ? {}
+      : { controlledNodeCount: integer(item.controlledNodeCount, 0, 1000) }),
+    ...(item.controlledReviewNodeCount === undefined
+      ? {}
+      : { controlledReviewNodeCount: integer(item.controlledReviewNodeCount, 0, 1000) }),
+    ...(revisions === undefined ? {} : { revisions }),
     ...(item.expertReviewRequired === undefined
       ? {}
       : { expertReviewRequired: boolean(item.expertReviewRequired) }),
+    ...(item.automaticReview === undefined
+      ? {}
+      : { automaticReview: boolean(item.automaticReview) }),
+    ...(item.attention === undefined ? {} : { attention: string(item.attention, 500) }),
     intent: intent
       ? {
           intentId: string(intent.intentId),
           generation: integer(intent.generation, 1),
           version: integer(intent.version, 1),
           concurrent: integer(intent.concurrent, 1, 4),
+          ...(intent.automaticRevisions === undefined
+            ? {}
+            : { automaticRevisions: integer(intent.automaticRevisions, 0, 2) }),
         }
       : null,
     selection: selection
@@ -170,6 +237,9 @@ function options(value: unknown, expected: WorkflowLocation): WorkflowOptions {
     models = object(item.models);
   return {
     ...view(item, expected),
+    ...(item.maxConcurrent === undefined
+      ? {}
+      : { maxConcurrent: integer(item.maxConcurrent, 1, 4) }),
     models:
       models.kind === 'ready'
         ? {
@@ -193,6 +263,9 @@ function options(value: unknown, expected: WorkflowLocation): WorkflowOptions {
         label: string(choice.label),
         access: oneOf(choice.access, ['read', 'write']),
         publish: boolean(choice.publish),
+        ...(choice.publication === undefined
+          ? {}
+          : { publication: oneOf(choice.publication, ['per-run']) }),
       };
     }),
   };
@@ -231,8 +304,11 @@ export function createWorkflowApi(
             ...target,
             requestId: input.requestId,
             model: input.model,
-            workspace: input.workspace,
+            workspace: selectedWorkspace(input.workspace),
             concurrent: input.concurrent,
+            ...(input.automaticRevisions === undefined
+              ? {}
+              : { automaticRevisions: input.automaticRevisions }),
           },
           signal,
         ),
@@ -243,7 +319,17 @@ export function createWorkflowApi(
     },
     async resume(input, signal) {
       const next = view(
-        await call('resume', { ...control(input), expectedVersion: input.expectedVersion }, signal),
+        await call(
+          'resume',
+          {
+            ...control(input),
+            expectedVersion: input.expectedVersion,
+            ...(input.workspace === undefined
+              ? {}
+              : { workspace: selectedWorkspace(input.workspace) }),
+          },
+          signal,
+        ),
         location(input),
       );
       if (

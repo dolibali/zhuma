@@ -178,6 +178,25 @@ test('member Workspace contract: opaque explicit selectors bind once per request
   assert.equal(choices.length, 2);
   assert.equal(JSON.stringify(choices).includes(h.root), false);
   assert.equal(JSON.stringify(h.selected.workspace).includes(h.root), false);
+  const defaults = h.helper.workflowWorkspace(h.input);
+  assert.equal(defaults.workspace.rootId, h.selected.workspace.rootId);
+  assert.equal(
+    Object.hasOwn(defaults.workspace, 'grantId'),
+    false,
+    'A workflow ceiling has no per-node IO grant',
+  );
+  assert.equal(Object.hasOwn(defaults.workspace, 'generation'), false);
+  const choice = h.helper.workflowSelection(defaults.workspace);
+  assert.deepEqual(choice, { kind: 'local', id: h.choice.id });
+  const next = h.helper.prepare('next-node-request', { ...h.target, nodeId: 'next-node' }, choice);
+  assert.notEqual(
+    next.workspace.grantId,
+    h.selected.workspace.grantId,
+    'Every actual node obtains its own original grant',
+  );
+  assert.throws(() =>
+    h.helper.workflowSelection({ ...defaults.workspace, rootId: 'foreign-root' }),
+  );
   assert.equal(h.helper.prepare('accept-request', h.target, h.input), h.selected);
   assert.throws(
     () =>
@@ -264,6 +283,41 @@ test('member Workspace contract: write access never grants publication; explicit
     read.close();
     await read.drain();
   }
+});
+
+test('member Workspace workflow ceiling: explicit ranges survive selection into each distinct original node grant without backfilling old grants', async (t) => {
+  const h = await setup(t);
+  const input = {
+    kind: 'local',
+    id: h.choice.id,
+    publish: [{ kind: 'directory', path: 'outputs' }],
+  };
+  const frozen = h.helper.workflowWorkspace(input);
+  input.publish[0].path = 'private';
+  assert.deepEqual(frozen.workspace.publish, [{ kind: 'directory', path: 'outputs' }]);
+  const selected = h.helper.workflowSelection(frozen.workspace);
+  const first = h.helper.prepare('workflow-node-1', h.target, selected);
+  const second = h.helper.prepare(
+    'workflow-node-2',
+    { ...h.target, nodeId: 'second-node' },
+    selected,
+  );
+  assert.deepEqual(first.paths, [{ kind: 'directory', path: 'outputs' }]);
+  assert.deepEqual(second.paths, first.paths);
+  assert.notEqual(first.workspace.grantId, second.workspace.grantId);
+  assert.deepEqual(
+    h.selected.paths,
+    [],
+    'Existing Run IO manifest cannot gain later workflow permissions',
+  );
+  await h.compose();
+  assert.throws(
+    () =>
+      h.helper
+        .output(h.binding, h.grant)
+        .authorize(h.grant, h.composition.configurationId, 'report.txt'),
+    { code: 'publication-denied' },
+  );
 });
 
 test('member Workspace contract: original read-only policy removes write; permission never survives cold reconstruction', async (t) => {

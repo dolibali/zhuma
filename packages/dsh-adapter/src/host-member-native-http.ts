@@ -27,6 +27,11 @@ const endpoints = [
   'review-session',
   'review-recover',
   'review-session-stop',
+  'workflow-options',
+  'workflow-read',
+  'workflow-start',
+  'workflow-resume',
+  'workflow-stop',
 ] as const;
 const payload = z.strictObject({
   connectionId: z.uuid().nullable(),

@@ -155,6 +155,8 @@ test('shared file carrier: logout cancels a live reader; corrupt bytes cannot fi
   const response = await h.owner.file('file', fileRequest(selected));
   const reader = response.body.getReader();
   assert.deepEqual(Buffer.from((await reader.read()).value), bytes);
+  await h.request(selected, 'identity.session');
+  assert.equal(cancelled, 0, 'A verified member session must not revoke a live file reader');
   const pending = reader.read();
   const rejected = assert.rejects(pending);
   await h.request(selected, 'identity.logout');
@@ -165,7 +167,23 @@ test('shared file carrier: logout cancels a live reader; corrupt bytes cannot fi
   await assert.rejects((await h.owner.file('file', fileRequest(selected))).arrayBuffer());
 });
 
-async function fixture(t, fileHandler) {
+test('shared backend reconnect signal: only an originally verified member session publishes verification', async (t) => {
+  const h = await fixture(t),
+    selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const events = [];
+  const off = h.owner.onNativeAuthenticationChanged((kind) => events.push(kind));
+  await h.request(selection, 'member.snapshot', { spaceId: 'north' }, { rpcId: randomUUID() });
+  assert.deepEqual(events, []);
+  await h.request(selection, 'identity.session');
+  assert.deepEqual(events, ['verified']);
+  h.replaceBackend();
+  await assert.rejects(h.request(selection, 'identity.session'), { code: 'identity-changed' });
+  assert.deepEqual(events, ['verified'], 'A different backend identity cannot restore an owner');
+  off();
+});
+
+async function fixture(t, fileHandler, businessHandler) {
   const directory = await mkdtemp(join(tmpdir(), 'zhuma-backend-private-'));
   const filename = join(directory, 'synthetic.yaml'),
     calls = [];
@@ -244,6 +262,7 @@ async function fixture(t, fileHandler) {
       return Response.json({ ok: false, error: 'invalid-login' }, { status: 401 });
     if (businessExpired && url.pathname.startsWith('/api/zhuma-member/'))
       return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
+    if (businessHandler) return businessHandler(url, init);
     return Response.json({
       type: 'server-response',
       rpcId: body.rpcId,
@@ -299,6 +318,116 @@ async function fixture(t, fileHandler) {
     delay: () => (pending = Promise.withResolvers()),
   };
 }
+
+test('shared backend planning deadline: only planning survives 20 seconds; default timeout and caller/lifetime cancellation remain bounded', async (t) => {
+  let entered, held;
+  const h = await fixture(t, undefined, async (url, init) => {
+    assert.ok(['/api/zhuma-member/plan', '/api/zhuma-member/snapshot'].includes(url.pathname));
+    const wire = JSON.parse(init.body);
+    return new Promise((resolve, reject) => {
+      const aborted = () => reject(init.signal.reason);
+      init.signal.addEventListener('abort', aborted, { once: true });
+      held = {
+        signal: init.signal,
+        finish() {
+          init.signal.removeEventListener('abort', aborted);
+          resolve(
+            Response.json({
+              type: 'server-response',
+              rpcId: wire.rpcId,
+              result: { ok: true, value: { actorId: 'ann', echo: wire.payload } },
+            }),
+          );
+        },
+      };
+      entered();
+    });
+  });
+  const selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const deadlines = [];
+  t.mock.method(AbortSignal, 'timeout', (milliseconds) => {
+    deadlines.push(milliseconds);
+    const controller = new AbortController();
+    setTimeout(
+      () => controller.abort(new DOMException('Synthetic deadline', 'TimeoutError')),
+      milliseconds,
+    );
+    return controller.signal;
+  });
+  async function begin(operation = 'member.plan') {
+    const ready = Promise.withResolvers();
+    entered = ready.resolve;
+    const caller = new AbortController();
+    const work = h.owner.request(
+      {
+        connectionId: selection.connectionId,
+        operation,
+        rpcId: randomUUID(),
+        payload:
+          operation === 'member.plan'
+            ? {
+                spaceId: 'north',
+                requestId: randomUUID(),
+                taskId: 'task',
+                expectedRevision: 0,
+                instruction: 'Plan the assigned work',
+              }
+            : { spaceId: 'north' },
+      },
+      caller.signal,
+    );
+    let settled = false;
+    void work.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await ready.promise;
+    return { work, caller, held, settled: () => settled };
+  }
+  const completed = await begin();
+  t.mock.timers.tick(20_000);
+  assert.equal(
+    completed.held.signal.aborted,
+    false,
+    'Planning is not cut by the old proxy deadline',
+  );
+  assert.equal(completed.settled(), false);
+  completed.held.finish();
+  assert.equal((await completed.work).status, 200);
+
+  const bounded = await begin();
+  const timedOut = assert.rejects(bounded.work, { name: 'TimeoutError' });
+  t.mock.timers.tick(129_999);
+  assert.equal(bounded.held.signal.aborted, false);
+  t.mock.timers.tick(1);
+  await timedOut;
+
+  const ordinary = await begin('member.snapshot');
+  const ordinaryTimeout = assert.rejects(ordinary.work, { name: 'TimeoutError' });
+  t.mock.timers.tick(19_999);
+  assert.equal(ordinary.held.signal.aborted, false);
+  t.mock.timers.tick(1);
+  await ordinaryTimeout;
+
+  const cancelled = await begin();
+  const callerCancelled = assert.rejects(cancelled.work, { name: 'AbortError' });
+  cancelled.caller.abort();
+  assert.equal(cancelled.held.signal.aborted, true);
+  await callerCancelled;
+
+  const closing = await begin();
+  const lifetimeCancelled = assert.rejects(closing.work, { name: 'AbortError' });
+  const closed = h.owner.close();
+  assert.equal(closing.held.signal.aborted, true);
+  await Promise.all([closed, lifetimeCancelled]);
+  assert.deepEqual(deadlines, [130_000, 130_000, 20_000, 130_000, 130_000]);
+});
 
 test('shared backend actual Credentials: a precommit native refusal preserves the old durable selection and retry identity', async (t) => {
   const h = await fixture(t),

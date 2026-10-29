@@ -155,7 +155,7 @@ function MemberWork({
       !!memberNative,
     );
     if (!memberNative) return api;
-    const { workspaceApprovals: _approvals, workflow: _workflow, ...localNativeApi } = api;
+    const { workspaceApprovals: _approvals, ...localNativeApi } = api;
     return {
       ...localNativeApi,
       review: createNativeReviewApi(

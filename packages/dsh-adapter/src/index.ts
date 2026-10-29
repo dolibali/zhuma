@@ -349,7 +349,14 @@ export type {
   MemberLocalRecoveryInput,
   MemberLocalPreparedAccept,
   MemberLocalAcceptInput,
+  MemberLocalWorkflowInput,
 } from './member-local-execution-protocol.js';
+export {
+  NativeMemberWorkflowConsumer,
+  type NativeMemberWorkflowConsumerOptions,
+  type NativeMemberWorkflowHooks,
+  type NativeMemberWorkflowPreparation,
+} from './native-work-session-member-workflow.js';
 export { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
 export type {
   MemberLocalOwnerOptions,

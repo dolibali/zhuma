@@ -61,6 +61,50 @@ const packageDomainSpec = {
 
 export const inject = ['connection', 'storageDomain'];
 
+/** SDK-normalized stable facts only. Never surface provider messages, endpoints
+ * or request identities; this classification does not retry or change routing. */
+function planningFailure(failure: { readonly code: string; readonly status?: number }) {
+  const mapped: Record<string, readonly [string, string]> = {
+    MISSING_CREDENTIAL: [
+      'model-credentials-missing',
+      '规划服务未配置所选模型的凭据，请检查当前服务的模型设置。',
+    ],
+    INVALID_CREDENTIAL: [
+      'model-credentials-invalid',
+      '所选模型的凭据格式无效，请联系管理员检查模型设置。',
+    ],
+    AUTH: ['model-access-denied', '模型服务拒绝了请求，请联系管理员检查凭据与访问权限。'],
+    QUOTA: ['model-quota', '模型服务额度不足，请联系管理员检查账户额度。'],
+    ACCOUNT_QUOTA: ['model-quota', '模型服务额度不足，请联系管理员检查账户额度。'],
+    RATE_LIMIT: ['model-rate-limit', '模型服务请求过于频繁，请稍后再发起规划。'],
+    TIMEOUT: ['model-timeout', '模型请求超时，请检查服务连接后再发起规划。'],
+    TRANSPORT: ['model-connection', '无法连接模型服务，请联系管理员检查网络与服务连接。'],
+    SERVER: ['model-service', '模型服务暂不可用，请稍后再发起规划。'],
+    NO_ADAPTER: ['model-unavailable', '所选模型适配器不可用，请联系管理员检查模型设置。'],
+    CONTEXT_WINDOW_EXCEEDED: [
+      'model-context-limit',
+      '任务材料超出模型容量，请缩小任务范围或减少材料。',
+    ],
+    INVALID_REQUEST: [
+      'model-request-rejected',
+      '模型服务不接受本次请求，请检查任务材料与所选模型设置。',
+    ],
+  };
+  let value = Object.hasOwn(mapped, failure.code) ? mapped[failure.code] : undefined;
+  const status = failure.status;
+  if (!value && typeof status === 'number' && Number.isInteger(status)) {
+    if (status === 401 || status === 403) value = mapped.AUTH;
+    else if (status === 402) value = mapped.QUOTA;
+    else if (status === 429) value = mapped.RATE_LIMIT;
+    else if (status === 408 || status === 504) value = mapped.TIMEOUT;
+    else if (status >= 500 && status <= 599) value = mapped.SERVER;
+  }
+  return new WorkbenchError(
+    ...(value ??
+      (['model-incomplete', '模型请求未正常结束，请检查模型连接或缩小任务后重试。'] as const)),
+  );
+}
+
 /** Reading and manual editing do not require a configured model service. */
 function planningModel(ctx: Context): PlanningModel | undefined {
   const llm = ctx.get('llm');
@@ -88,7 +132,10 @@ function planningModel(ctx: Context): PlanningModel | undefined {
         if (chunk.type === 'text-delta') text += chunk.text;
         if (text.length > 150000)
           throw new WorkbenchError('output-limit', '模型输出过长，请缩小任务范围。');
-        if (chunk.type === 'finish') stopped = chunk.reason.kind === 'stop';
+        if (chunk.type === 'finish') {
+          if (chunk.reason.kind === 'error') throw planningFailure(chunk.reason.failure);
+          stopped = chunk.reason.kind === 'stop';
+        }
       }
       if (!stopped)
         throw new WorkbenchError(

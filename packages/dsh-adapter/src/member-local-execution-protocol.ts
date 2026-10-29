@@ -3,6 +3,7 @@ import {
   canonicalPayload,
   REMOTE_RUN_LIMITS,
   REMOTE_RUN_OPERATIONS,
+  REMOTE_WORKFLOW_OPERATIONS,
   REMOTE_RUN_PERMIT_HEADER,
   REMOTE_RUN_PROTOCOL_VERSION,
   remoteDeviceSigningInput,
@@ -16,6 +17,9 @@ import {
   type RemoteRunOperationValue,
   type RemoteRunRequest,
   type RemoteRunView,
+  type RemoteWorkflowView,
+  type RemoteWorkflowCandidate,
+  type RemoteReviewScope,
 } from '@zhuma/agent-core';
 import {
   MemberLocalExecutionClient,
@@ -35,9 +39,14 @@ import type { NativeSessionBinding } from './native-work-session-contract.js';
 
 type Unsigned<Request extends RemoteDeviceRequest = RemoteDeviceRequest> =
   Request extends RemoteDeviceRequest ? Omit<Request, 'proof'> : never;
+type WorkflowOperation = (typeof REMOTE_WORKFLOW_OPERATIONS)[number];
+export type MemberLocalWorkflowInput<Operation extends WorkflowOperation> = Extract<
+  RemoteRunRequest,
+  { operation: Operation }
+>['payload'];
 type RunRequest = Exclude<
   RemoteDeviceRequest,
-  { operation: 'register-device' | 'accept' | 'reconcile' }
+  { operation: 'register-device' | 'accept' | 'reconcile' | WorkflowOperation }
 >;
 /** A projection of D's canonical request union, not another wire model. */
 type RunCommand<Request extends RunRequest = RunRequest> = Request extends RunRequest
@@ -116,6 +125,8 @@ export class MemberLocalExecutionProtocol {
   private clock?: { readonly serverTime: number; readonly sampledAt: number };
   private operations = new Set<RemoteRunOperation>();
   private independentReviews = false;
+  private workflowReady = false;
+  private workflowNegotiation?: Promise<boolean>;
   private activities = 0;
   private readonly uncertainAccepts = new Set<string>();
   canSwitchBackend(): boolean {
@@ -176,6 +187,157 @@ export class MemberLocalExecutionProtocol {
   get supportsIndependentReviews(): boolean {
     this.identity();
     return this.independentReviews;
+  }
+  /** Capability only, never an arm/drive grant. Old connect() still sends {}. */
+  get supportsAutomaticWorkflow(): boolean {
+    this.identity();
+    return this.workflowReady;
+  }
+  negotiateWorkflow(signal?: AbortSignal): Promise<boolean> {
+    if (this.workflowReady) return Promise.resolve(true);
+    if (this.workflowNegotiation) return this.workflowNegotiation;
+    const work = this.activity(async () => {
+      const device = this.identity();
+      const info = await this.call(
+        {
+          protocolVersion: REMOTE_RUN_PROTOCOL_VERSION,
+          operation: 'info',
+          requestId: randomUUID(),
+          payload: { workflow: 'zhuma-remote-workflow@1' },
+        },
+        undefined,
+        signal,
+      );
+      if (info.backendId !== device.backendId || info.actorId !== device.actorId)
+        throw new MemberLocalProtocolError('local-mismatch');
+      this.workflowReady = REMOTE_WORKFLOW_OPERATIONS.every((operation) =>
+        info.operations.includes(operation),
+      );
+      if (this.workflowReady)
+        for (const operation of REMOTE_WORKFLOW_OPERATIONS) this.operations.add(operation);
+      return this.workflowReady;
+    });
+    this.workflowNegotiation = work;
+    void work
+      .finally(() => {
+        if (this.workflowNegotiation === work) delete this.workflowNegotiation;
+      })
+      .catch(() => undefined);
+    return work;
+  }
+  workflowStart(
+    requestId: string,
+    input: MemberLocalWorkflowInput<'workflow-start'>,
+    signal?: AbortSignal,
+  ) {
+    return this.workflowCommand('workflow-start', requestId, input, signal);
+  }
+  workflowStatus(input: MemberLocalWorkflowInput<'workflow-status'>, signal?: AbortSignal) {
+    return this.workflowCommand('workflow-status', randomUUID(), input, signal);
+  }
+  rememberWorkflowAccept(
+    requestId: string,
+    candidate: RemoteWorkflowCandidate,
+    signal?: AbortSignal,
+  ) {
+    return this.activity(() =>
+      this.options.secrets.rememberWorkflowAccept(this.identity(), requestId, candidate, signal),
+    );
+  }
+  pendingWorkflowAccept(input: MemberLocalWorkflowInput<'workflow-next'>, signal?: AbortSignal) {
+    return this.activity(async () => {
+      const entry = await this.options.secrets.pendingWorkflowAccept(
+        this.identity(),
+        input.target,
+        input.workflow,
+        signal,
+      );
+      if (entry) this.uncertainAccepts.add(entry.requestId);
+      return entry;
+    });
+  }
+  forgetWorkflowAccept(
+    candidate: RemoteWorkflowCandidate,
+    scope: RemoteRunView['scope'] | RemoteReviewScope,
+    signal?: AbortSignal,
+  ) {
+    return this.activity(async () => {
+      const entry = await this.options.secrets.pendingWorkflowAccept(
+        this.identity(),
+        candidate.target,
+        candidate.workflow,
+        signal,
+      );
+      await this.options.secrets.forgetWorkflowAccept(this.identity(), candidate, scope, signal);
+      if (entry) this.uncertainAccepts.delete(entry.requestId);
+    });
+  }
+  workflowNext(input: MemberLocalWorkflowInput<'workflow-next'>, signal?: AbortSignal) {
+    return this.workflowCommand('workflow-next', randomUUID(), input, signal);
+  }
+  workflowResume(
+    requestId: string,
+    input: MemberLocalWorkflowInput<'workflow-resume'>,
+    signal?: AbortSignal,
+  ) {
+    return this.workflowCommand('workflow-resume', requestId, input, signal);
+  }
+  workflowStop(
+    requestId: string,
+    input: MemberLocalWorkflowInput<'workflow-stop'>,
+    signal?: AbortSignal,
+  ) {
+    return this.workflowCommand('workflow-stop', requestId, input, signal);
+  }
+  private workflowCommand<Operation extends WorkflowOperation>(
+    operation: Operation,
+    requestId: string,
+    input: MemberLocalWorkflowInput<Operation>,
+    signal?: AbortSignal,
+  ): Promise<RemoteWorkflowView> {
+    return this.activity(async () => {
+      if (!(await this.negotiateWorkflow(signal)))
+        throw new MemberLocalProtocolError('remote-protocol-unsupported');
+      const parsed = remoteRunRequestSchema.parse({
+        ...this.header(requestId),
+        operation,
+        payload: structuredClone(input),
+        proof: { issuedAt: this.now(), nonce: randomUUID(), signature: 'A'.repeat(86) },
+      });
+      if (
+        !REMOTE_WORKFLOW_OPERATIONS.some((item) => item === parsed.operation) ||
+        !('proof' in parsed)
+      )
+        throw new MemberLocalProtocolError('local-mismatch');
+      const { proof: _proof, ...unsigned } = parsed;
+      const value = await this.signed(
+        unsigned as Unsigned<Extract<RemoteDeviceRequest, { operation: WorkflowOperation }>>,
+        undefined,
+        signal,
+      );
+      const scope = value.scope,
+        target = input.target;
+      if (
+        scope.actorId !== this.actorId ||
+        scope.deviceId !== this.deviceId ||
+        scope.spaceId !== target.spaceId ||
+        scope.taskId !== target.taskId ||
+        scope.planId !== target.planId ||
+        scope.revision !== target.revision
+      )
+        throw new MemberLocalProtocolError('local-mismatch');
+      const ref = 'workflow' in input ? input.workflow : undefined;
+      if (
+        ref &&
+        (!value.intent ||
+          value.intent.intentId !== ref.intentId ||
+          value.intent.generation !== ref.generation + (operation === 'workflow-resume' ? 1 : 0))
+      )
+        throw new MemberLocalProtocolError('local-mismatch');
+      if (operation !== 'workflow-status' && !value.intent)
+        throw new MemberLocalProtocolError('local-mismatch');
+      return value;
+    });
   }
   /** Monotonic estimate sampled from this backend; never a new authority. */
   get serverTime(): number {
@@ -240,6 +402,8 @@ export class MemberLocalExecutionProtocol {
     );
     if (registered.actorId !== info.actorId || registered.deviceId !== this.device.deviceId)
       throw new MemberLocalProtocolError('local-mismatch');
+    const pending = await this.options.secrets.pendingWorkflowAcceptForDevice(this.device, signal);
+    if (pending) this.uncertainAccepts.add(pending.requestId);
   }
   private header(requestId: string = randomUUID()) {
     const device = this.identity();

@@ -13,6 +13,7 @@ import {
   type AppliedPlan,
   type TeamAsset,
   type Workbench,
+  type RemoteWorkflowRef,
 } from '@zhuma/agent-core';
 import type { ExecutionService } from './execution-service.js';
 import { ExecutionRunError } from './execution-run-state.js';
@@ -27,6 +28,7 @@ import { executionReviewTarget } from './execution-review-state.js';
 
 /** Exact input of D's passive preparation read. Content only, never review authority. */
 export interface HostReviewPreparationRequest {
+  readonly workflow?: RemoteWorkflowRef;
   readonly requestId: string;
   readonly expectedReviewVersion: number;
   readonly target: ExecutionReviewTarget;
