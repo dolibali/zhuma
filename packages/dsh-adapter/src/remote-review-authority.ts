@@ -541,6 +541,7 @@ export class RemoteReviewAuthorities {
       assertCurrent(): undefined;
     },
   ): Promise<RemoteReviewAcceptValue> {
+    if (body.payload.workflow) fail('remote-protocol-unsupported');
     const node = this.source.readNode(body.payload.target);
     if (!node) fail('remote-not-found');
     const state = readExecutionReviewState(node),
