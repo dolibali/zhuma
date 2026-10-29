@@ -18,6 +18,8 @@ import {
   type RemoteRunRequest,
   type RemoteRunView,
   type RemoteWorkflowView,
+  type RemoteWorkflowCandidate,
+  type RemoteReviewScope,
 } from '@zhuma/agent-core';
 import {
   MemberLocalExecutionClient,
@@ -233,6 +235,43 @@ export class MemberLocalExecutionProtocol {
   workflowStatus(input: MemberLocalWorkflowInput<'workflow-status'>, signal?: AbortSignal) {
     return this.workflowCommand('workflow-status', randomUUID(), input, signal);
   }
+  rememberWorkflowAccept(
+    requestId: string,
+    candidate: RemoteWorkflowCandidate,
+    signal?: AbortSignal,
+  ) {
+    return this.activity(() =>
+      this.options.secrets.rememberWorkflowAccept(this.identity(), requestId, candidate, signal),
+    );
+  }
+  pendingWorkflowAccept(input: MemberLocalWorkflowInput<'workflow-next'>, signal?: AbortSignal) {
+    return this.activity(async () => {
+      const entry = await this.options.secrets.pendingWorkflowAccept(
+        this.identity(),
+        input.target,
+        input.workflow,
+        signal,
+      );
+      if (entry) this.uncertainAccepts.add(entry.requestId);
+      return entry;
+    });
+  }
+  forgetWorkflowAccept(
+    candidate: RemoteWorkflowCandidate,
+    scope: RemoteRunView['scope'] | RemoteReviewScope,
+    signal?: AbortSignal,
+  ) {
+    return this.activity(async () => {
+      const entry = await this.options.secrets.pendingWorkflowAccept(
+        this.identity(),
+        candidate.target,
+        candidate.workflow,
+        signal,
+      );
+      await this.options.secrets.forgetWorkflowAccept(this.identity(), candidate, scope, signal);
+      if (entry) this.uncertainAccepts.delete(entry.requestId);
+    });
+  }
   workflowNext(input: MemberLocalWorkflowInput<'workflow-next'>, signal?: AbortSignal) {
     return this.workflowCommand('workflow-next', randomUUID(), input, signal);
   }
@@ -363,6 +402,8 @@ export class MemberLocalExecutionProtocol {
     );
     if (registered.actorId !== info.actorId || registered.deviceId !== this.device.deviceId)
       throw new MemberLocalProtocolError('local-mismatch');
+    const pending = await this.options.secrets.pendingWorkflowAcceptForDevice(this.device, signal);
+    if (pending) this.uncertainAccepts.add(pending.requestId);
   }
   private header(requestId: string = randomUUID()) {
     const device = this.identity();

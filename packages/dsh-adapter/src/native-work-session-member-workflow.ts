@@ -122,6 +122,29 @@ export class NativeMemberWorkflowConsumer {
   }
   async inspect(target: RemoteWorkflowTarget, signal?: AbortSignal) {
     this.remote = await this.options.protocol.workflowStatus({ target }, signal);
+    if (
+      this.remote.intent &&
+      !this.life.armed &&
+      (await this.options.protocol.pendingWorkflowAccept(this.control(), signal))
+    )
+      this.blocked = 'remote-recovery-required';
+    return this.view();
+  }
+  /** Explicit unknown-ACK reconciliation only. No arm, accept replay or start. */
+  async recover(target: RemoteWorkflowTarget, signal?: AbortSignal) {
+    this.current();
+    if (this.life.armed || this.pending || this.pumping) throw new NativeWorkError('unavailable');
+    await this.inspect(target, signal);
+    if (!this.remote?.intent) return this.view();
+    const entry = await this.options.protocol.pendingWorkflowAccept(this.control(), signal);
+    if (!entry) return this.view();
+    if (entry.candidate.kind === 'review' && !this.options.review)
+      throw new NativeWorkError('configuration-mismatch');
+    this.pending =
+      entry.candidate.kind === 'work'
+        ? { kind: 'work', requestId: entry.requestId, candidate: entry.candidate }
+        : { kind: 'review', requestId: entry.requestId, candidate: entry.candidate };
+    await this.observePending();
     return this.view();
   }
   async start(
@@ -258,11 +281,17 @@ export class NativeMemberWorkflowConsumer {
       )
         throw new NativeWorkError('scope-mismatch');
       const prepared = await this.options.protocol.prepareAccept(requestId, input, scope.signal);
+      await this.options.protocol.rememberWorkflowAccept(requestId, candidate, scope.signal);
       scope.assertCurrent();
       const pending: Extract<Pending, { kind: 'work' }> = { kind: 'work', requestId, candidate };
       this.pending = pending;
       const run = await prepared.send(scope.cleanupSignal);
       pending.run = run;
+      await this.options.protocol.forgetWorkflowAccept(
+        candidate,
+        run.value.scope,
+        scope.cleanupSignal,
+      );
       if (!this.life.armed) {
         await this.retire(pending);
         return;
@@ -282,6 +311,7 @@ export class NativeMemberWorkflowConsumer {
       )
         throw new NativeWorkError('scope-mismatch');
       const prepared = await this.options.review!.prepareAccept(requestId, input, scope.signal);
+      await this.options.protocol.rememberWorkflowAccept(requestId, candidate, scope.signal);
       scope.assertCurrent();
       const pending: Extract<Pending, { kind: 'review' }> = {
         kind: 'review',
@@ -291,6 +321,11 @@ export class NativeMemberWorkflowConsumer {
       this.pending = pending;
       const run = await prepared.send(scope.cleanupSignal);
       pending.run = run;
+      await this.options.protocol.forgetWorkflowAccept(
+        candidate,
+        run.value.scope,
+        scope.cleanupSignal,
+      );
       if (!this.life.armed) {
         await this.retire(pending);
         return;
@@ -324,6 +359,11 @@ export class NativeMemberWorkflowConsumer {
           },
           this.cleanup.signal,
         );
+      await this.options.protocol.forgetWorkflowAccept(
+        pending.candidate,
+        pending.recovered.value.scope,
+        this.cleanup.signal,
+      );
       this.blocked = 'remote-recovery-required';
       return;
     }

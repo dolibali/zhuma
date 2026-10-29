@@ -253,3 +253,96 @@ test('member-local secrets: cancellation after durable private storage never exp
   );
   assert.equal(h.rows.size, 1, 'the private durable record is retained for explicit recovery');
 });
+
+for (const kind of ['work', 'review'])
+  test(`member-local pending workflow locator contract: ${kind} survives lost ACK, never overwrites unknown, and clears only after original scope pointer`, async () => {
+    const h = fixture(),
+      owner = new MemberLocalExecutionSecrets(h.store),
+      backendId = '00000000-0000-4000-8000-000000000001',
+      device = await owner.device(backendId, 'ann'),
+      requestId = '00000000-0000-4000-8000-000000000003',
+      target = { spaceId: 'team', taskId: 'task', planId: 'plan', revision: 1, nodeId: 'node' },
+      workflow = { intentId: '00000000-0000-4000-8000-000000000004', generation: 1 },
+      reviewerRef = { id: 'expert', version: 'plan', digest: 'b'.repeat(64) },
+      candidate =
+        kind === 'work'
+          ? {
+              kind,
+              target,
+              workflow,
+              expectedNodeVersion: 1,
+              expectedRunVersion: 0,
+              executor: { kind: 'builtin' },
+              mode: 'begin',
+              repairIndex: 0,
+            }
+          : {
+              kind,
+              target: {
+                ...target,
+                roundId: 'round',
+                artifactVersionId: 'artifact',
+                artifactFingerprint: 'c'.repeat(64),
+              },
+              workflow,
+              expectedReviewVersion: 1,
+              reviewerRef,
+            };
+    const intent = await owner.accept(device, requestId, 'a'.repeat(64));
+    await owner.rememberWorkflowAccept(device, requestId, candidate);
+    const coldOwner = new MemberLocalExecutionSecrets(h.store),
+      cold = await coldOwner.device(backendId, 'ann');
+    const pointer = await coldOwner.pendingWorkflowAccept(cold, target, workflow);
+    assert.equal(pointer.requestId, requestId);
+    assert.equal(pointer.intentFingerprint, intent.intentFingerprint);
+    assert.deepEqual(pointer.candidate, candidate);
+    assert(!JSON.stringify(pointer).includes(intent.withDriveSecret((s) => s)));
+    const scope =
+      kind === 'work'
+        ? {
+            ...target,
+            backendId,
+            actorId: 'ann',
+            runId: 'run',
+            generation: 1,
+            segmentId: 'segment',
+          }
+        : {
+            ...target,
+            backendId,
+            actorId: 'ann',
+            runId: 'review-run',
+            generation: 1,
+            segmentId: 'segment',
+            review: {
+              target: candidate.target,
+              principal: { kind: 'expert', controllerMemberId: 'ann', reviewerRef },
+            },
+          };
+    await assert.rejects(coldOwner.forgetWorkflowAccept(cold, candidate, scope), {
+      code: 'conflict',
+    });
+    await assert.rejects(
+      coldOwner.pendingWorkflowAccept(cold, target, { ...workflow, generation: 2 }),
+      { code: 'conflict' },
+    );
+    const nextId = '00000000-0000-4000-8000-000000000005';
+    await coldOwner.accept(cold, nextId, 'd'.repeat(64));
+    await assert.rejects(coldOwner.rememberWorkflowAccept(cold, nextId, candidate), {
+      code: 'conflict',
+    });
+    assert.equal(
+      (await coldOwner.pendingWorkflowAccept(cold, target, workflow)).requestId,
+      requestId,
+    );
+    const oldIntent = await coldOwner.recoverAccept(cold, requestId);
+    if (kind === 'work')
+      await coldOwner.rememberRun(cold, oldIntent, scope, 'config', 'e'.repeat(64));
+    else await coldOwner.rememberReviewRun(cold, oldIntent, scope, 'config', 'e'.repeat(64));
+    await coldOwner.forgetWorkflowAccept(cold, candidate, scope);
+    assert.equal(await coldOwner.pendingWorkflowAccept(cold, target, workflow), undefined);
+    assert(
+      await coldOwner.recoverAccept(cold, requestId),
+      'Original permit record is never deleted',
+    );
+  });

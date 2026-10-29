@@ -38,6 +38,9 @@ const fixture = () => {
     actorId: 'member',
     deviceId: 'device',
     canSwitchBackend: () => true,
+    pendingWorkflowAccept: async () => undefined,
+    rememberWorkflowAccept: async () => undefined,
+    forgetWorkflowAccept: async () => undefined,
     workflowStatus: async () => view(),
     workflowStart: async () => view(),
     workflowNext: async () => {
@@ -269,3 +272,39 @@ for (const other of [undefined, 'scope', 'device'])
       'Only exact scope/device cleanup can retire a stale projection',
     );
   });
+
+test('member workflow contract: failed durable locator prevents actual accept dispatch', async () => {
+  const h = fixture();
+  h.protocol.rememberWorkflowAccept = async () => {
+    throw Error('CONTRACT_DURABILITY_FAILURE');
+  };
+  await h.consumer.start(randomUUID(), { target, defaults });
+  await until(() => h.consumer.view().blocked === 'unavailable');
+  h.consumer.fence();
+  await h.consumer.close();
+  assert(!h.state.events.some((v) => v.startsWith('accept:')));
+  assert(!h.state.events.some((v) => v.startsWith('native:')));
+});
+test('member workflow contract: explicit cold unknown reconciliation uses exact old request, never arms or starts recovered handle', async () => {
+  const h = fixture(),
+    requestId = randomUUID();
+  const candidate = (await h.protocol.workflowNext()).candidates[0];
+  h.state.calls = 0;
+  h.protocol.pendingWorkflowAccept = async () => ({ requestId, candidate });
+  h.protocol.recover = async (input) => {
+    assert.deepEqual(input, { target: candidate.target, acceptRequestId: requestId });
+    h.state.events.push('reconcile-old');
+    return { value: { resources: 'held', nodeVersion: 1, runVersion: 1 } };
+  };
+  h.native.start = async () => assert.fail('A recovered handle has no drive');
+  await h.consumer.inspect(target);
+  h.consumer.wake();
+  assert.deepEqual(h.state.events, [], 'Passive inspect is not reconcile');
+  await h.consumer.recover(target);
+  assert.equal(h.consumer.view().armed, false);
+  assert.equal(h.state.calls, 0);
+  assert.deepEqual(h.state.events, ['reconcile-old']);
+  assert.equal(h.consumer.canSwitchBackend(), false);
+  await h.consumer.close();
+  assert.equal(h.consumer.canSwitchBackend(), true);
+});
