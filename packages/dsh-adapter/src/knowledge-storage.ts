@@ -7,6 +7,7 @@ import {
   KNOWLEDGE_LIMITS,
   KnowledgeFormatSchema,
   KnowledgeVersionRefSchema,
+  KnowledgeProjectLinksSchema,
 } from '@zhuma/agent-core';
 import { ArtifactUploadStream } from './artifact-files.js';
 
@@ -88,19 +89,56 @@ export const KnowledgePageRecordSchema = z
   });
 export type KnowledgePageRecord = z.infer<typeof KnowledgePageRecordSchema>;
 
+export const KnowledgeProjectLinksRecordSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    spaceId: id,
+    projectId: id,
+    version: positive,
+    links: KnowledgeProjectLinksSchema,
+    receipts: z
+      .array(
+        z.strictObject({
+          key: id,
+          fingerprint: KnowledgeVersionRefSchema.shape.checksum,
+          version: positive,
+        }),
+      )
+      .min(1)
+      .max(KNOWLEDGE_LIMITS.receiptsPerProject),
+  })
+  .refine(
+    (row) =>
+      row.links.every((link) => link.reference.spaceId === row.spaceId) &&
+      new Set(row.receipts.map((receipt) => receipt.key)).size === row.receipts.length &&
+      row.receipts.every((receipt, index) => receipt.version === index + 1) &&
+      row.receipts.length === row.version,
+  );
+export type KnowledgeProjectLinksRecord = z.infer<typeof KnowledgeProjectLinksRecordSchema>;
+
 export const knowledgeDomainSpec = defineDomain({
   name: 'zhuma_knowledge',
   version: 1,
   global: {
-    schema: z.strictObject({ schemaVersion: z.literal(1) }),
+    // Format 2 deliberately refuses the old page-only writer. Its original
+    // single-document backend otherwise drops unknown relation tables on write.
+    schema: z.strictObject({ schemaVersion: z.union([z.literal(1), z.literal(2)]) }),
     initial: { schemaVersion: 1 as const },
   },
-  tables: { pages: { valueSchema: KnowledgePageRecordSchema } },
+  tables: {
+    pages: { valueSchema: KnowledgePageRecordSchema },
+    project_links: { valueSchema: KnowledgeProjectLinksRecordSchema },
+  },
 });
 type KnowledgeDomain = Domain<typeof knowledgeDomainSpec>;
 export function knowledgePageKey(spaceId: string, pageId: string): string {
   return `knowledge_${createHash('sha256')
     .update(JSON.stringify([spaceId, pageId]))
+    .digest('hex')}`;
+}
+export function knowledgeProjectKey(spaceId: string, projectId: string): string {
+  return `project_${createHash('sha256')
+    .update(JSON.stringify([spaceId, projectId]))
     .digest('hex')}`;
 }
 /** One authoritative metadata record per page. Body bytes live in the original
@@ -127,6 +165,28 @@ export class KnowledgeStorage {
   async put(row: KnowledgePageRecord): Promise<void> {
     const parsed = KnowledgePageRecordSchema.parse(row);
     await this.domain.table('pages').put(knowledgePageKey(parsed.spaceId, parsed.pageId), parsed);
+  }
+  projectLinks(spaceId: string, projectId: string): KnowledgeProjectLinksRecord | undefined {
+    const table = this.domain.table('project_links');
+    if (this.domain.global.get().schemaVersion === 1 && table.size > 0)
+      throw new Error('Unprotected knowledge relationship format.');
+    const row = table.get(knowledgeProjectKey(spaceId, projectId));
+    return row && structuredClone(row);
+  }
+  /** Call inside exclusive(), before a first relation write. Reads never upgrade.
+   * If the following put fails, format 2 is safe and the original intent retries.
+   * Rollback requires the pre-association backup, never lowering this marker. */
+  async protectProjectLinks(): Promise<void> {
+    if (this.domain.global.get().schemaVersion === 1)
+      await this.domain.global.set({ schemaVersion: 2 });
+  }
+  async putProjectLinks(row: KnowledgeProjectLinksRecord): Promise<void> {
+    const parsed = KnowledgeProjectLinksRecordSchema.parse(row);
+    if (this.domain.global.get().schemaVersion !== 2)
+      throw new Error('Unprotected knowledge relationship format.');
+    await this.domain
+      .table('project_links')
+      .put(knowledgeProjectKey(parsed.spaceId, parsed.projectId), parsed);
   }
   close(): Promise<void> {
     return this.domain.close();

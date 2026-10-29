@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { createDesktopMemberCookieBridge } from '../dist/desktop-member-cookie.js';
 import { hostWorkflowEndpoints } from '../dist/host-workflow-http.js';
+import { knowledgeEndpoints } from '../dist/knowledge-http.js';
 import { hashPassword } from '../dist/identity-session.js';
 import {
   apply as applyExecution,
@@ -63,6 +64,7 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/notes/note-a',
     ...['snapshot', 'command', 'plan'].map((endpoint) => `/api/zhuma-member/${endpoint}`),
     ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
+    ...knowledgeEndpoints.map((endpoint) => `/api/zhuma-knowledge/${endpoint}`),
     ...['begin', 'send', 'stop', 'read', 'history', 'options', 'inbox', 'observe'].map(
       (endpoint) => `/api/zhuma-run/${endpoint}`,
     ),
@@ -81,9 +83,32 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/api/zhuma-run/send/extra',
     '/api/zhuma-member/command/extra',
     '/api/zhuma-member/unknown',
+    '/api/zhuma-knowledge/unknown',
+    '/api/zhuma-knowledge/project-links/extra',
+    '/api/zhuma-knowledge/%72ead',
+    '/api/zhuma-knowledge/project-links%2Fextra',
     '/zhuma-id/spaces/%2F',
   ])
     assert.equal(await sentCookie(bridge, path), OWNER);
+});
+
+test('desktop knowledge carrier contract: signed-out and revoked members cannot dispatch exact knowledge routes as owner', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  for (const loggedOut of [false, true]) {
+    if (loggedOut) {
+      await login(bridge);
+      bridge.clear();
+    }
+    for (const endpoint of knowledgeEndpoints) {
+      const result = await bridge.forward(
+        request(`/api/zhuma-knowledge/${endpoint}`, { method: 'POST' }),
+        HOST,
+        OWNER,
+        async () => assert.fail('Knowledge cannot fall back to owner'),
+      );
+      assert.equal(result.status, 401);
+    }
+  }
 });
 
 for (const endpoint of hostWorkflowEndpoints)
