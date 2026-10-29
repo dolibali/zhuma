@@ -891,7 +891,9 @@ export class RemoteRunAuthorities {
     work: (verification?: ExecutionInitialResourceVerification) => Promise<T>,
     sessionHash: string,
   ): Promise<T> {
-    let preparation: { readonly signal: AbortSignal; finish(): void } | undefined;
+    let preparation:
+      { readonly signal: AbortSignal; finish(cleanupConfirmed?: boolean): void } | undefined;
+    let cleanupConfirmed = true;
     try {
       const needed = await this.source.enqueue(async () => {
         if (this.closed || this.source.signal.aborted) deny('remote-unavailable');
@@ -932,12 +934,14 @@ export class RemoteRunAuthorities {
           work,
         );
       } catch (error) {
-        if (error instanceof ExecutionRunResourceQualificationCloseError)
+        if (error instanceof ExecutionRunResourceQualificationCloseError) {
+          cleanupConfirmed = false;
           this.preparationFailure ??= error;
+        }
         throw error;
       }
     } finally {
-      preparation?.finish();
+      preparation?.finish(cleanupConfirmed);
     }
   }
   private proof(body: RemoteDeviceRequest | RemoteReviewDeviceRequest, publicKey: string): void {

@@ -1406,7 +1406,7 @@ export class RemoteWorkflowIntents {
     lease: ExecutionMemberLease,
     sessionHash: string,
     keyEpoch: number,
-  ): { readonly signal: AbortSignal; finish(): void } {
+  ): { readonly signal: AbortSignal; finish(cleanupConfirmed?: boolean): void } {
     const binding = this.assertAccept(body, lease, sessionHash, keyEpoch);
     const controller = new AbortController();
     const pending = this.preparations.get(binding.intentId) ?? new Set<AbortController>();
@@ -1414,7 +1414,11 @@ export class RemoteWorkflowIntents {
     this.preparations.set(binding.intentId, pending);
     return {
       signal: controller.signal,
-      finish: () => {
+      finish: (cleanupConfirmed = true) => {
+        if (!cleanupConfirmed) {
+          controller.abort();
+          return;
+        }
         pending.delete(controller);
         if (!pending.size) this.preparations.delete(binding.intentId);
       },
