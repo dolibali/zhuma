@@ -1525,6 +1525,7 @@ export class RemoteRunAuthorities {
       ...(payload.capabilities.acceptedFile
         ? { acceptedFiles: payload.capabilities.acceptedFile }
         : {}),
+      ...(payload.capabilities.knowledge ? { knowledge: payload.capabilities.knowledge } : {}),
       backendId: body.backendId,
       deviceId: device.deviceId,
       publicKey: device.publicKey,
@@ -1555,13 +1556,14 @@ export class RemoteRunAuthorities {
     lease.assertCurrent(payload.target.spaceId);
     this.source.assertTarget(lease.memberId, payload.target, this.source.readNode(payload.target)!);
     qualification?.assertCurrent();
-    if (files || payload.capabilities.acceptedFile) {
+    if (files || payload.capabilities.acceptedFile || payload.capabilities.knowledge) {
       // Qualify the actual original attachment port BEFORE changing the format.
       if (files) this.fileManager();
       const global = executionRunGlobalSchema.parse(this.source.readGlobal());
       if (
         (files && global.remoteExecutionFileWriter !== 1) ||
-        (payload.capabilities.acceptedFile && global.remoteExecutionAcceptedFileWriter !== 1)
+        (payload.capabilities.acceptedFile && global.remoteExecutionAcceptedFileWriter !== 1) ||
+        (payload.capabilities.knowledge && global.remoteExecutionKnowledgeWriter !== 1)
       ) {
         // Original storage has no cross-row transaction. This durable barrier
         // precedes the first node put in the SAME writer queue. A failed node
@@ -1572,12 +1574,14 @@ export class RemoteRunAuthorities {
           ...(payload.capabilities.acceptedFile
             ? { remoteExecutionAcceptedFileWriter: 1 as const }
             : {}),
+          ...(payload.capabilities.knowledge ? { remoteExecutionKnowledgeWriter: 1 as const } : {}),
         });
       }
       const marked = executionRunGlobalSchema.parse(this.source.readGlobal());
       if (
         (files && marked.remoteExecutionFileWriter !== 1) ||
-        (payload.capabilities.acceptedFile && marked.remoteExecutionAcceptedFileWriter !== 1)
+        (payload.capabilities.acceptedFile && marked.remoteExecutionAcceptedFileWriter !== 1) ||
+        (payload.capabilities.knowledge && marked.remoteExecutionKnowledgeWriter !== 1)
       )
         deny('remote-unavailable');
       lease.assertCurrent(payload.target.spaceId);

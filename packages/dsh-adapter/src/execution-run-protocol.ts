@@ -18,12 +18,16 @@ export const executionRunGlobalSchema = z
     remoteExecutionFileWriter: z.literal(1).optional(),
     remoteExecutionAcceptedFileWriter: z.literal(1).optional(),
     remoteExecutionReviewWriter: z.literal(1).optional(),
+    remoteExecutionKnowledgeWriter: z.literal(1).optional(),
     remoteExecution: remoteBackendRegistrySchema.optional(),
   })
   .refine((value) => value.nativeReviewWriter !== 1 || value.nativeExecutionWriter === 1)
   .refine((value) => value.workspaceApprovalWriter !== 1 || value.nativeExecutionWriter === 1)
   .refine((value) => (value.remoteExecutionWriter === 1) === (value.remoteExecution !== undefined))
   .refine((value) => value.remoteExecutionFileWriter !== 1 || value.remoteExecutionWriter === 1)
+  .refine(
+    (value) => value.remoteExecutionKnowledgeWriter !== 1 || value.remoteExecutionWriter === 1,
+  )
   .refine(
     (value) => value.remoteExecutionAcceptedFileWriter !== 1 || value.remoteExecutionWriter === 1,
   )
@@ -43,6 +47,7 @@ export type ExecutionWriterGlobal = {
   remoteExecutionFileWriter?: 1;
   remoteExecutionAcceptedFileWriter?: 1;
   remoteExecutionReviewWriter?: 1;
+  remoteExecutionKnowledgeWriter?: 1;
   remoteExecution?: RemoteBackendRegistry;
 };
 
@@ -70,6 +75,9 @@ export function prepareExecutionRunWriter(global: unknown): ExecutionWriterGloba
     nativeExecutionWriter: 1,
     ...(parsed.data.nativeReviewWriter === 1 ? { nativeReviewWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionReviewWriter === 1 ? { remoteExecutionReviewWriter: 1 } : {}),
+    ...(parsed.data.remoteExecutionKnowledgeWriter === 1
+      ? { remoteExecutionKnowledgeWriter: 1 }
+      : {}),
     ...(parsed.data.workspaceApprovalWriter === 1 ? { workspaceApprovalWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionFileWriter === 1 ? { remoteExecutionFileWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionAcceptedFileWriter === 1
@@ -123,7 +131,15 @@ export function assertExecutionRunStoreCompatibility(
     const raw = (
       node as {
         nativeExecution?: {
-          runs?: { remote?: { backendId?: unknown; files?: unknown; acceptedFiles?: unknown } }[];
+          runs?: {
+            remote?: {
+              backendId?: unknown;
+              files?: unknown;
+              acceptedFiles?: unknown;
+              knowledge?: unknown;
+            };
+            composition?: { payload?: { knowledgeTool?: unknown } };
+          }[];
         };
       }
     ).nativeExecution;
@@ -147,15 +163,20 @@ export function assertExecutionRunStoreCompatibility(
       Array.isArray(raw?.runs) &&
       raw.runs.some(
         (run) =>
-          Object.hasOwn(run, 'remote') &&
-          (!registry ||
-            run.remote?.backendId !== registry.backendId ||
-            (run.remote?.files !== undefined &&
-              (parsed.remoteExecutionFileWriter !== 1 ||
-                run.remote.files !== 'zhuma-native-output-file@1')) ||
-            (run.remote?.acceptedFiles !== undefined &&
-              (parsed.remoteExecutionAcceptedFileWriter !== 1 ||
-                run.remote.acceptedFiles !== 'zhuma-accepted-files@2'))),
+          ((run.composition?.payload?.knowledgeTool !== undefined ||
+            run.remote?.knowledge !== undefined) &&
+            (parsed.remoteExecutionKnowledgeWriter !== 1 ||
+              run.remote?.knowledge !== 'zhuma-native-knowledge@1' ||
+              run.composition?.payload?.knowledgeTool === undefined)) ||
+          (Object.hasOwn(run, 'remote') &&
+            (!registry ||
+              run.remote?.backendId !== registry.backendId ||
+              (run.remote?.files !== undefined &&
+                (parsed.remoteExecutionFileWriter !== 1 ||
+                  run.remote.files !== 'zhuma-native-output-file@1')) ||
+              (run.remote?.acceptedFiles !== undefined &&
+                (parsed.remoteExecutionAcceptedFileWriter !== 1 ||
+                  run.remote.acceptedFiles !== 'zhuma-accepted-files@2')))),
       )
     )
       throw new ExecutionRunProtocolError('run-writer-incompatible');
