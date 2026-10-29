@@ -1,6 +1,6 @@
 # v1.1.0 范围与验收说明
 
-当前源码版本为 `1.1.0`。以下记录用户确认的范围和正常入口，候选构建、源码或契约通过不等于正式发布。实时交付与准确版本的验证结论仍以 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#263](https://github.com/dolibali/zhuma/issues/263) 为准；已验 main、tag、来源清单与 Release 资产由协调者一次收口，既有 tag 不移动。
+本文保留 `1.1.0` 的历史范围与入口，不描述当前候选；当前范围见 [v1.2.0 说明](release-v1.2.md)。候选构建、源码或契约通过不等于正式发布。实时交付与准确版本的验证结论仍以 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#263](https://github.com/dolibali/zhuma/issues/263) 为准；已验 main、tag、来源清单与 Release 资产由协调者一次收口，既有 tag 不移动。
 
 ## 成员与任务
 

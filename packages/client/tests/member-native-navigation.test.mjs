@@ -147,6 +147,12 @@ test('Workspace task navigation opens the same controlled Run without returning 
   assert.equal(h.entries[0].name, 'shell.overlay');
   assert.deepEqual(h.scopes.at(-1), ['member', 'team', 'actual-run']);
   assert.equal(h.state.getSnapshot().target.nodeId, 'node');
+  assert.equal(
+    h.state.getSnapshot().api.workflow,
+    undefined,
+    'History navigation is not a plan control entry',
+  );
+  assert.equal(h.state.getSnapshot().api.workspaceApprovals, undefined);
   h.change();
   assert.equal(h.state.getSnapshot(), undefined);
   h.close();

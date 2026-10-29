@@ -230,21 +230,23 @@ export async function publish(context, directory, api) {
       draft: true,
       prerelease: context.version.includes('-'),
       body: `## 核心能力
-- 正常注册与团队协作、项目与任务列表／看板、可编辑 AI 规划及默认工作流模板。
-- 团队知识、公开基础专家与工程 Skills；模型凭据和原生会话留在成员本机。
-- 本地共享后端保存业务；成员在自己的官方桌面逐节点主动使用本机 Agent。
-- 固定文字／真实文件交付、人工／Agent 评审、下游输入与项目成果；工作区读写和文件交付范围单独选择。
+- 成员明确授权本机运行工作流，只接续自己获准的节点；其他成员各自授权，离线等待，后端不代跑成员 Agent。
+- 固定文字／真实文件自动交付、指定独立 Agent 评审及 0／1／2 轮有界返工；真人评审与上限耗尽等待人工，全部通过且原运行收口后接续。手工交付与逐节点使用 Agent 保留。
+- 任务按参与真人／专家、阶段、项目与搜索联合筛选，列表／看板共用结果与计数。
+- 项目关联必需／可选的固定版本知识，运行沿原授权工具按需读取；引用清单和工具注册不代表正文已读。
+- 共享后端 AI 规划读取实际模型可用状态，提案可继续编辑，失败保留输入；规划与成员本机执行分别配置模型。
+- 同机共享后端与两个隔离成员 Host 的真实 HTTP 接续、停止、未知回执与冷恢复；保留原工作区／Session 导航及历史交付。
 
 ## 安装与首次使用
 1. 下载 DMG、SOURCE.json、SHA256SUMS 和两个 packaged-backend 启动文件，放在同一目录，执行 shasum -a 256 -c SHA256SUMS 核验。
 2. 打开 DMG，将 Zhuma 拖入 Applications。首次被系统拦截时，核对来源后按 [macOS 正常允许打开流程](https://support.apple.com/zh-cn/102445)操作；不要全局关闭系统保护。
-3. 首次使用自行配置模型供应商与凭据，模型调用费用由供应商计费。
+3. 成员自行在桌面模型页配置本机执行模型；共享 AI 规划由服务操作者在后端官方 Settings → Models 中单独配置。凭据不自动复制，模型调用费用由供应商计费。
 4. 需要共享后端时，用同目录脚本运行 sh packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data --file-uploads --independent-reviews，启用文件交付和独立 Agent 评审。保留两个启动文件同目录，使用本版 App；成员在桌面选择该后端并正常登录。
 
 ## 支持与边界
 仅 macOS Apple Silicon（arm64）；ad-hoc 签名、未公证，无自动更新。Intel Mac、Windows、Linux 尚未认证。
-非空 MCP、资产／工作流发布、批量反馈、复杂子流程、效能统计、个人专家和外部 CLI 尚未进入本版。
-共享任务逐节点主动启动，跨设备自动接续留下一版；既有同 Host 自动工作流保留。共享后端为本地部署，集群部署后置。
+非空 MCP、资产／工作流发布版本、批量反馈、复杂子流程与完整工作树执行、效能统计、个人专家直接使用与导入、外部 CLI 和完整跨会话通信后置。
+多成员恢复以同机隔离模拟为边界，不认证实体异机网络、休眠或平台差异；真实模型与知识正文实际读取须按准确候选分别留证。共享后端为本地部署，集群部署后置。
 
 ## 许可与来源
 自有代码采用 [MIT License](https://github.com/${context.repository}/blob/${context.source}/LICENSE)，第三方许可保留在安装包中。
