@@ -106,9 +106,17 @@ export type HostOptionsBoth = Assert<Both<S1ExecutionOptions, ExecutionPluginCon
 export type LiveOptionsBoth = Assert<Both<S1ExecutionOptions, LiveApplyOptions>>;
 export type ApplyHostBoth = Assert<Both<typeof apply, HostApply>>;
 export type StartupOptionsBoth = Assert<Both<StartupOptions, LiveApplyOptions>>;
-export type OptionKeysBoth = Assert<Both<keyof S1ExecutionOptions, keyof ExecutionPluginConfig>>;
-export type LiveOptionKeysBoth = Assert<Both<keyof S1ExecutionOptions, keyof LiveApplyOptions>>;
-export type StartupOptionKeysBoth = Assert<Both<keyof StartupOptions, keyof LiveApplyOptions>>;
+// The new optional Host-only directory getter may be injected by the Host's
+// actual assembly without widening any other legacy startup option.
+export type OptionKeysBoth = Assert<
+  Both<keyof S1ExecutionOptions | 'memberDirectory', keyof ExecutionPluginConfig>
+>;
+export type LiveOptionKeysBoth = Assert<
+  Both<keyof S1ExecutionOptions | 'memberDirectory', keyof LiveApplyOptions>
+>;
+export type StartupOptionKeysBoth = Assert<
+  Both<keyof StartupOptions | 'memberDirectory', keyof LiveApplyOptions>
+>;
 export type ApplyOptionsExcludeMemberResolver = Assert<
   'memberResolver' extends keyof S1ExecutionOptions ? false : true
 >;
