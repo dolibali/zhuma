@@ -47,6 +47,7 @@ export interface AssetPackageStorage {
   get(versionId: string): StoredAssetPackage | undefined;
   put(value: StoredAssetPackage): Promise<void>;
 }
+type MemberAssetRecord = NonNullable<Workbench['memberAssets']>[number];
 const fingerprint = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -96,6 +97,77 @@ export class WorkbenchService {
   ) {}
   snapshot(): Workbench {
     return structuredClone(this.storage.read());
+  }
+
+  /** Host-only asset fact access; public member snapshots strip this leaf. */
+  memberAssetRecords(): readonly MemberAssetRecord[] {
+    return structuredClone(this.storage.read().memberAssets ?? []);
+  }
+
+  /** Small byte-boundary guard without cloning whole definitions on every chunk. */
+  memberAssetVersion(spaceId: string, assetId: string): number | undefined {
+    const rows = (this.storage.read().memberAssets ?? []).filter(
+      (item) => item.spaceId === spaceId && item.assetId === assetId,
+    );
+    if (rows.length > 1) throw new WorkbenchError('asset-unavailable', '资产事实暂不可用。');
+    return rows[0]?.version;
+  }
+
+  /** Private immutable bytes are still the original package table, not a new store. */
+  memberAssetPackage(versionId: string): StoredAssetPackage | undefined {
+    const raw = this.packages?.get(versionId);
+    if (!raw) return undefined;
+    const record = StoredAssetPackageSchema.parse(raw);
+    if (record.digest !== fingerprint(record.files))
+      throw new WorkbenchError('asset-unavailable', '资产来源暂不可用。');
+    return structuredClone(record);
+  }
+
+  async putMemberAssetPackage(record: StoredAssetPackage): Promise<void> {
+    if (!this.packages) throw new WorkbenchError('asset-unavailable', '资产来源尚未接入。');
+    const next = StoredAssetPackageSchema.parse(record);
+    if (next.digest !== fingerprint(next.files))
+      throw new WorkbenchError('asset-invalid', '资产来源校验失败。');
+    const old = this.memberAssetPackage(next.versionId);
+    if (old) {
+      if (fingerprint(old) !== fingerprint(next))
+        throw new WorkbenchError('asset-conflict', '资产来源版本已存在。');
+      return;
+    }
+    await this.packages.put(next);
+  }
+
+  /** The original writer queue owns the only mutation. Asset callers cannot
+   * replace tasks, plans, profiles or unrelated Workbench facts. */
+  memberAssetCommand<T>(
+    signal: AbortSignal,
+    authorize: () => void | Promise<void>,
+    apply: (records: readonly MemberAssetRecord[]) => Promise<{
+      readonly records?: readonly MemberAssetRecord[];
+      readonly value: T;
+    }>,
+  ): Promise<T> {
+    const operation = this.writes.then(async () => {
+      signal.throwIfAborted();
+      await authorize();
+      const state = this.snapshot();
+      const result = await apply(state.memberAssets ?? []);
+      signal.throwIfAborted();
+      await authorize();
+      signal.throwIfAborted();
+      if (result.records) {
+        const next = WorkbenchSchema.parse({
+          ...state,
+          revision: state.revision + 1,
+          memberAssets: result.records,
+        });
+        signal.throwIfAborted();
+        await this.storage.write(next);
+      }
+      return structuredClone(result.value);
+    });
+    this.writes = operation.catch(() => undefined);
+    return operation;
   }
 
   /** Host-only member entry. Shares the legacy writer queue and the same durable fact. */
