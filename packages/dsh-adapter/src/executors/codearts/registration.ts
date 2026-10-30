@@ -84,6 +84,7 @@ export async function createCodeArtsProfileRegistration(input: {
   if (!node || !adapter || !launcher) throw new CodeArtsRegistrationError();
   const profile = Object.freeze({
     name: 'CodeArts',
+    loginHint: '在码道 CLI 完成登录并信任工作目录后，再检查连接。',
     command: node.path,
     args: Object.freeze([adapter.path, '--codearts-command', launcher.path]),
     env: Object.freeze({ ELECTRON_RUN_AS_NODE: '1' }),

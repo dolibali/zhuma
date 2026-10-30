@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
+import type { CodeArtsMcpPolicy } from './policy.js';
 
 const sessionIdSchema = z.string().regex(/^ses_[A-Za-z0-9_-]{1,180}$/u);
 export const codeArtsPermissionRuleSchema = z.strictObject({
@@ -78,6 +79,7 @@ export class CodeArtsHttpClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #owned = new Set<string>();
   readonly #created = new Set<string>();
+  readonly #permissions = new Map<string, string>();
 
   constructor(options: CodeArtsHttpOptions) {
     let url: URL;
@@ -181,6 +183,43 @@ export class CodeArtsHttpClient {
     return { status: 'acknowledged' };
   }
 
+  /** One explicit dispatch; admission is not completion and unknown outcomes never replay. */
+  async sendPrompt(
+    sessionId: string,
+    policy: CodeArtsMcpPolicy,
+    text: string,
+    signal: AbortSignal,
+    model?: { readonly providerID: string; readonly modelID: string },
+  ): Promise<void> {
+    const id = this.#ownedId(sessionId);
+    const response = await this.#request('POST', `/session/${id}/prompt_async`, signal, true, {
+      agent: policy.agentName,
+      // Replace persisted old bridge rules on an explicit send after resume.
+      tools: policy.tools,
+      ...(model === undefined ? {} : { model }),
+      parts: [{ type: 'text', text }],
+    });
+    await response.body?.cancel();
+    if (response.status !== 204) throw new CodeArtsHttpError('dispatch-unknown');
+  }
+
+  /** Unexpected native/CodeArts approval cannot grant extra task capabilities. */
+  async rejectPermission(sessionId: string, requestId: string, signal: AbortSignal): Promise<void> {
+    const id = this.#ownedId(sessionId);
+    if (this.#permissions.get(requestId) !== id) throw new CodeArtsHttpError('invalid-session');
+    const accepted = await this.#json(
+      'POST',
+      `/permission/${encodeURIComponent(requestId)}/reply`,
+      signal,
+      true,
+      {
+        reply: 'reject',
+      },
+    );
+    if (accepted !== true) throw new CodeArtsHttpError('dispatch-unknown');
+    this.#permissions.delete(requestId);
+  }
+
   /** Explicit cleanup of a newly created test/abandoned setup only; never deletes restored history. */
   async discardCreatedSession(sessionId: string, signal: AbortSignal): Promise<void> {
     const id = this.#ownedId(sessionId);
@@ -191,7 +230,11 @@ export class CodeArtsHttpClient {
     this.#owned.delete(id);
   }
 
-  async *events(sessionId: string, signal: AbortSignal): AsyncGenerator<CodeArtsSessionEvent> {
+  async *events(
+    sessionId: string,
+    signal: AbortSignal,
+    onOpen?: () => void,
+  ): AsyncGenerator<CodeArtsSessionEvent> {
     const id = this.#ownedId(sessionId);
     const response = await this.#request('GET', '/event', signal, true);
     if (
@@ -207,6 +250,7 @@ export class CodeArtsHttpClient {
     let data: string[] = [];
     let frameCharacters = 0;
     try {
+      onOpen?.();
       for (;;) {
         const next = await reader.read();
         signal.throwIfAborted();
@@ -230,7 +274,19 @@ export class CodeArtsHttpClient {
           }
           data = [];
           const event = this.#parse(eventSchema, raw);
-          if (eventSession(event) === id) yield event;
+          if (eventSession(event) === id) {
+            if (event.type === 'permission.asked') {
+              const requestId = event.properties.id;
+              if (
+                typeof requestId !== 'string' ||
+                !/^[A-Za-z0-9_-]{1,200}$/u.test(requestId) ||
+                this.#permissions.size >= 64
+              )
+                throw new CodeArtsHttpError('invalid-response');
+              this.#permissions.set(requestId, id);
+            }
+            yield event;
+          }
           // Unscoped status/heartbeat and another session's data never enter a task stream.
         }
         if (text.length + frameCharacters > MAX_EVENT_CHARACTERS)
