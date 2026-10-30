@@ -989,10 +989,11 @@ export function WorkbenchPage({
                   className="zm-directory-row"
                   key={p.id}
                   aria-label={p.name}
-                  role="link"
                   tabIndex={0}
                   onClick={openProject}
                   onKeyDown={(event) => {
+                    // Nested 编辑／创建任务 must keep Enter／Space; only the row itself opens.
+                    if (event.target !== event.currentTarget) return;
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
                       openProject();

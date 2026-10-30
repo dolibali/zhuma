@@ -37,7 +37,7 @@ test('board projection uses authoritative progress and keeps unknown/cancelled d
   assert.equal(taskBoardColumn(draft, false, ready(row())), 'planning');
 });
 
-test('board SSR contract renders the supplied task snapshot without commands or draggable states', () => {
+test('board SSR contract renders the supplied task snapshot without commands; cards may be draggable for reject-only feedback', () => {
   const { state } = fixture();
   const html = renderToStaticMarkup(
     createElement(TaskBoard, {
@@ -53,6 +53,7 @@ test('board SSR contract renders the supplied task snapshot without commands or 
   );
   for (const task of state.tasks) assert.ok(html.includes(task.title));
   assert.ok(html.includes('任务看板'));
-  assert.ok(!html.includes('draggable="true"'));
+  // Cards are draggable so cross-column drops can show a tip and snap back; SSR still starts no command.
+  assert.ok(html.includes('draggable="true"'));
   assert.ok(!html.includes('产物全部已接受'));
 });
