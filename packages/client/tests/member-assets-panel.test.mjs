@@ -95,8 +95,20 @@ const valueOf = (asset, def = definition(asset), file) => ({
 function source(initial = [], hooks = {}) {
   let assets = initial.slice(),
     values = new Map(assets.map((asset) => [asset.assetId, valueOf(asset)]));
-  const calls = { command: [], read: [], upload: [], catalog: [] };
+  const calls = { command: [], read: [], upload: [], catalog: [], folders: [] };
   const api = {
+    async listFolder(query, signal) {
+      calls.folders.push(query);
+      if (hooks.listFolder) return hooks.listFolder(query, signal);
+      return {
+        actorId: 'ann',
+        spaceId,
+        folderId: query.folderId,
+        path: [],
+        folders: [],
+        files: assets.filter((asset) => asset.kind === 'file'),
+      };
+    },
     async catalog(query) {
       calls.catalog.push(query);
       if (hooks.catalog) return hooks.catalog(query);
@@ -286,6 +298,182 @@ async function mount(t, data, component = MemberAssetsPanel, extra = {}) {
   return { host, click, button, field, input, choose, settle };
 }
 const dom = { skip: !module, timeout: 15000 };
+
+test(
+  'material category uses a full-width authoritative folder browser and opens bodies only on explicit preview',
+  dom,
+  async (t) => {
+    const asset = summary({ kind: 'file', name: '接口规范.txt', hasDraft: false }),
+      reference = {
+        spaceId,
+        assetId: asset.assetId,
+        kind: 'file',
+        versionId: randomUUID(),
+        sha256: 'a'.repeat(64),
+      },
+      folder = {
+        spaceId,
+        folderId: randomUUID(),
+        parentFolderId: null,
+        name: '研发资料',
+        createdBy: 'ann',
+        version: 1,
+      },
+      file = {
+        name: asset.name,
+        mediaType: 'text/plain',
+        byteSize: 3,
+        sha256: createHash('sha256').update('abc').digest('hex'),
+      };
+    asset.versions = [
+      { reference, number: 1, publishedBy: 'ann', publishedAt: '2026-10-30T00:00:00.000Z' },
+    ];
+    const data = source([asset], {
+      listFolder: (query) => ({
+        actorId: 'ann',
+        spaceId,
+        folderId: query.folderId,
+        path: query.folderId ? [folder] : [],
+        folders: query.folderId ? [] : [folder],
+        files: query.folderId ? [] : [asset],
+      }),
+    });
+    data.values.set(asset.assetId, valueOf(asset, definition(asset), file));
+    let bodies = 0;
+    data.api.file = async () => {
+      bodies++;
+      return {
+        blob: new Blob(['abc'], { type: 'text/plain' }),
+        contentType: 'text/plain',
+        inline: true,
+      };
+    };
+    const f = await mount(t, data);
+    await f.click(f.button('资料', f.host.querySelector('.zm-asset-categories')));
+    assert.equal(f.host.querySelector('.zm-member-assets-layout'), null);
+    assert.equal(f.host.querySelector('.zm-member-asset-detail'), null);
+    assert.deepEqual(
+      [...f.host.querySelectorAll('thead th')].map((node) => node.textContent),
+      ['名称', '大小', '状态 / 版本', '发布日期', '操作'],
+    );
+    assert.equal(data.calls.read.length, 0);
+    assert.equal(bodies, 0);
+    await f.click(f.button('研发资料'));
+    assert.equal(data.calls.folders.at(-1).folderId, folder.folderId);
+    assert.equal(data.calls.folders.at(-1).includeDrafts, true);
+    assert.equal(
+      f.host.querySelector('nav[aria-label="文件夹位置"]').textContent.includes('研发资料'),
+      true,
+    );
+    await f.click(f.button('全部文件'));
+    await f.click(f.host.querySelector(`button[aria-label="预览文件 ${asset.name}"]`));
+    assert.equal(bodies, 1);
+    assert.equal(document.querySelector('dialog[open] pre').textContent, 'abc');
+    assert.equal(f.host.querySelector('tbody tr:last-child td:nth-child(2)').textContent, '3 B');
+    await f.click(f.button('关闭', document.querySelector('dialog[open]')));
+    await f.click(f.host.querySelector(`button[aria-label="文件信息 ${asset.name}"]`));
+    assert.ok(document.querySelector('dialog[open] .zm-member-asset-detail'));
+  },
+);
+
+test(
+  'folder creation retries the same unknown intent and selected-folder batch upload uses its frozen folder',
+  dom,
+  async (t) => {
+    const folder = {
+        spaceId,
+        folderId: randomUUID(),
+        parentFolderId: null,
+        name: '研发资料',
+        createdBy: 'ann',
+        version: 1,
+      },
+      data = source([], {
+        listFolder: (query) => ({
+          actorId: 'ann',
+          spaceId,
+          folderId: query.folderId,
+          path: query.folderId ? [folder] : [],
+          folders: query.folderId ? [] : [folder],
+          files: [],
+        }),
+      }),
+      calls = [];
+    data.api.createFolder = async (input) => {
+      calls.push(structuredClone(input));
+      if (calls.length === 1) throw new MemberAssetClientError('asset-unavailable', 'unknown');
+      return {
+        actorId: 'ann',
+        spaceId,
+        disposition: 'replayed',
+        resultVersion: 1,
+        folder: { ...folder, folderId: input.folderId, name: input.name },
+      };
+    };
+    const f = await mount(t, data);
+    await f.click(f.button('资料', f.host.querySelector('.zm-asset-categories')));
+    await f.click(f.button('新建文件夹'));
+    await f.input('文件夹名称', '产品资料');
+    await f.click(f.button('创建文件夹'));
+    assert.equal(f.field('文件夹名称').disabled, true);
+    await f.click(f.button('重试原请求'));
+    assert.deepEqual(calls[1], calls[0]);
+    await f.click(f.button('研发资料'));
+    await f.click(f.button('上传文件'));
+    const upload = document.querySelector('input[aria-label="选择批量上传文件"]');
+    const file = new File(['真实字节'], 'spec.txt', { type: 'text/plain' });
+    Object.defineProperty(upload, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      upload.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(setImmediate);
+    });
+    await f.click(f.button('开始上传', document.querySelector('dialog[open]')));
+    await f.settle();
+    await f.settle();
+    assert.equal(data.calls.command[0].operation, 'create-draft');
+    assert.equal(data.calls.command[0].folderId, folder.folderId);
+    assert.equal(data.calls.upload[0].file, file);
+  },
+);
+
+test(
+  'moving a file keeps its original expected version and retries the same unknown move intent',
+  dom,
+  async (t) => {
+    const asset = summary({ kind: 'file', name: '设计稿.pdf' }),
+      folder = {
+        spaceId,
+        folderId: randomUUID(),
+        parentFolderId: null,
+        name: '设计资料',
+        createdBy: 'ann',
+        version: 1,
+      },
+      data = source([asset], {
+        listFolder: (query) => ({
+          actorId: 'ann',
+          spaceId,
+          folderId: query.folderId,
+          path: query.folderId ? [folder] : [],
+          folders: query.folderId ? [] : [folder],
+          files: query.folderId ? [] : [asset],
+        }),
+        command: (_input, count) => {
+          if (count === 1) throw new MemberAssetClientError('asset-unavailable', 'unknown');
+        },
+      }),
+      f = await mount(t, data);
+    await f.click(f.button('资料', f.host.querySelector('.zm-asset-categories')));
+    await f.click(f.host.querySelector(`button[aria-label="移动文件 ${asset.name}"]`));
+    await f.click(f.button('设计资料', document.querySelector('dialog[open]')));
+    await f.click(f.button('移动到这里'));
+    assert.equal(data.calls.command[0].operation, 'move-file');
+    assert.equal(data.calls.command[0].expectedVersion, asset.version);
+    assert.equal(data.calls.command[0].folderId, folder.folderId);
+    await f.click(f.button('重试原请求'));
+    assert.deepEqual(data.calls.command[1], data.calls.command[0]);
+  },
+);
 
 test(
   'fixed file picker: metadata-only opening, explicit old-version choice, full fixed refs and cancel without a parent write',

@@ -233,3 +233,64 @@ test('member assets: preview verifies exact bytes/context/digest and rejects par
     });
   }
 });
+
+test('member folders: exact folder projections and unknown create ACK retain the original intent', async () => {
+  const folderId = randomUUID(),
+    folder = {
+      spaceId,
+      folderId,
+      parentFolderId: null,
+      name: '研发资料',
+      createdBy: 'ann',
+      version: 1,
+    },
+    bodies = [];
+  let lost = true,
+    wrong = false;
+  const h = harness((input) => {
+    if (input.method.endsWith('asset-folder-list'))
+      return {
+        actorId: 'ann',
+        spaceId,
+        folderId: wrong ? randomUUID() : folderId,
+        path: [folder],
+        folders: [],
+        files: [],
+      };
+    bodies.push(input.payload);
+    if (lost) {
+      lost = false;
+      throw Error('lost after durable folder create');
+    }
+    return { actorId: 'ann', spaceId, disposition: 'replayed', resultVersion: 1, folder };
+  });
+  assert.equal(
+    (
+      await h.api.listFolder(
+        { spaceId, folderId, includeDrafts: true },
+        new AbortController().signal,
+      )
+    ).path[0].name,
+    '研发资料',
+  );
+  wrong = true;
+  await assert.rejects(h.api.listFolder({ spaceId, folderId }, new AbortController().signal), {
+    code: 'invalid-response',
+  });
+  const input = {
+    spaceId,
+    folderId,
+    parentFolderId: null,
+    name: '研发资料',
+    expectedVersion: 0,
+    idempotencyKey: randomUUID(),
+  };
+  await assert.rejects(h.api.createFolder(input, new AbortController().signal), {
+    outcome: 'unknown',
+  });
+  assert.equal(
+    (await h.api.createFolder(input, new AbortController().signal)).disposition,
+    'replayed',
+  );
+  assert.deepEqual(bodies, [input, input]);
+});

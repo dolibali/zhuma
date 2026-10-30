@@ -249,6 +249,48 @@ test(
         { spaceId, kind: 'skill', includeDrafts: true },
         new AbortController().signal,
       );
+      const folderIntent = {
+        spaceId,
+        folderId: randomUUID(),
+        parentFolderId: null,
+        name: '研发资料',
+        expectedVersion: 0,
+        idempotencyKey: randomUUID(),
+      };
+      const folder = await sharedApi.createFolder(folderIntent, new AbortController().signal);
+      assert.equal(folder.folder.folderId, folderIntent.folderId);
+      assert.equal(
+        (await sharedApi.createFolder(folderIntent, new AbortController().signal)).disposition,
+        'replayed',
+      );
+      const rootFolder = await sharedApi.listFolder(
+        { spaceId, folderId: null, includeDrafts: true },
+        new AbortController().signal,
+      );
+      assert.equal(rootFolder.folders[0].folderId, folderIntent.folderId);
+      assert.ok(rootFolder.files.some((file) => file.assetId === assetId));
+      await sharedApi.command(
+        {
+          operation: 'move-file',
+          spaceId,
+          assetId,
+          expectedVersion: published.asset.version,
+          idempotencyKey: randomUUID(),
+          folderId: folderIntent.folderId,
+        },
+        new AbortController().signal,
+      );
+      const child = await sharedApi.listFolder(
+        { spaceId, folderId: folderIntent.folderId, includeDrafts: true },
+        new AbortController().signal,
+      );
+      assert.equal(child.path[0].name, '研发资料');
+      assert.equal(child.files[0].assetId, assetId);
+      assert.equal(
+        (await sharedApi.listFolder({ spaceId, folderId: null }, new AbortController().signal))
+          .files.length,
+        0,
+      );
       shared.close();
       await read(published.reference);
       const text = await rpc('asset-file-text', {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   teamAssetCatalogRowKey,
   type MemberAssetCommand,
@@ -13,11 +13,14 @@ import {
 import type { MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import type { KnowledgeApi } from '../knowledge/api.js';
 import { Button } from '../workbench/Button.js';
+import { Modal } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import { MemberAssetDefinitionFields } from '../workbench/MemberAssetDefinitionFields.js';
 import { MemberAssetImportDialog } from './MemberAssetImportDialog.js';
+import { MemberAssetFilesBrowser } from './MemberAssetFilesBrowser.js';
+import { MemberAssetFilesUploadDialog } from './MemberAssetFilesUploadDialog.js';
 import { MemberAssetFilePreview } from './MemberAssetFilePreview.js';
 import {
   MemberAssetClientError,
@@ -81,6 +84,23 @@ export function MemberAssetsPanel({
   onDirtyChange?: (dirty: boolean) => void;
   onChanged?: () => void;
 }) {
+  const [folderId, setFolderId] = useState<string | null>(null),
+    [uploadTarget, setUploadTarget] = useState<{ folderId: string | null }>();
+  const uploadApi = useMemo(
+    () => ({
+      command(input: MemberAssetCommand, signal: AbortSignal) {
+        return api.command(
+          input.operation === 'create-draft' && input.definition.kind === 'file' && uploadTarget
+            ? { ...input, folderId: uploadTarget.folderId }
+            : input,
+          signal,
+        );
+      },
+      read: api.read,
+      upload: api.upload,
+    }),
+    [api, uploadTarget],
+  );
   const [category, setCategory] = useState<Category>('all'),
     [search, setSearch] = useState(''),
     [offset, setOffset] = useState(0),
@@ -377,7 +397,12 @@ export function MemberAssetsPanel({
       kind: 'command',
       input:
         detail.kind === 'new'
-          ? { ...base, operation: 'create-draft', expectedVersion: 0 }
+          ? {
+              ...base,
+              operation: 'create-draft',
+              expectedVersion: 0,
+              ...(detail.form.definition.kind === 'file' ? { folderId } : {}),
+            }
           : { ...base, operation: 'update-draft', expectedVersion: detail.value.asset.version },
     });
   }
@@ -582,67 +607,253 @@ export function MemberAssetsPanel({
             detail.value.reference.pageId,
           ])
         : '';
+  const detailView = (
+    <div className="zm-member-asset-detail" aria-busy={detailLoading || !!busy}>
+      {error && (
+        <div className="zm-error" role="alert">
+          {error}
+          {unknown && intent && (
+            <>
+              <p>结果尚未确认。请使用原请求重试。</p>
+              <Button disabled={!!busy} onClick={() => void perform(intent)}>
+                重试原请求
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+      {notice && <p role="status">{notice}</p>}
+      {detailLoading ? (
+        <p role="status">正在读取详情…</p>
+      ) : !detail ? (
+        <div className="zm-empty">
+          <h3>选择一项资产</h3>
+          <p>查看内容、版本和可用操作。</p>
+        </div>
+      ) : detail.kind === 'knowledge' ? (
+        <article>
+          <header>
+            <h2>{detail.value.title}</h2>
+            <span>v{detail.value.reference.version}</span>
+          </header>
+          <pre className="zm-member-asset-text">{detail.value.text}</pre>
+          {detail.value.nextOffset < detail.value.totalBytes && (
+            <p>已显示首段，前往在线文档继续查看。</p>
+          )}
+          {onOpenKnowledge && <Button onClick={onOpenKnowledge}>打开在线文档</Button>}
+        </article>
+      ) : (
+        <>
+          <header className="zm-member-asset-detail-heading">
+            <h2>
+              {detail.kind === 'new'
+                ? `新建${labels[detail.form.definition.kind]}`
+                : detail.form.definition.name}
+            </h2>
+            {owned && (
+              <SingleSelect
+                label="资产版本"
+                value={
+                  owned.value.selection.kind === 'draft'
+                    ? 'draft'
+                    : owned.value.selection.reference.versionId
+                }
+                disabled={!!busy || unknown}
+                options={[
+                  ...(owned.value.asset.hasDraft && owned.value.asset.canMaintain
+                    ? [{ value: 'draft', label: '草稿' }]
+                    : []),
+                  ...owned.value.asset.versions
+                    .slice()
+                    .reverse()
+                    .map((version) => ({
+                      value: version.reference.versionId,
+                      label: `v${version.number} · ${version.publishedBy}`,
+                    })),
+                ]}
+                onValueChange={(value) =>
+                  leave.request(() => void readAsset(owned.value.asset, value), dirty)
+                }
+              />
+            )}
+          </header>
+          {detail.kind !== 'new' && (
+            <AssetProvenance detail={detail} members={authoringState?.participants ?? []} />
+          )}
+          <MemberAssetDefinitionFields
+            value={detail.form.definition}
+            dependencies={detail.form.dependencies}
+            choices={choices}
+            {...(authoringState ? { authoringState } : {})}
+            requirements={requirements}
+            {...(detail.kind === 'legacy' ? { readOnlyDefinition: true } : {})}
+            disabled={!!busy || unknown || (!editing && detail.kind !== 'legacy')}
+            onChange={(definition, dependencies) =>
+              setDetail({ ...detail, form: { definition, dependencies } })
+            }
+          />
+          {!!owned?.value.requirements?.length && (
+            <div className="zm-member-asset-requirements">
+              {owned.value.requirements.map((requirement) => {
+                const draft = skillAssets.find(
+                  (asset) =>
+                    asset.assetId === requirement.suggestedAssetId &&
+                    asset.hasDraft &&
+                    asset.canMaintain,
+                );
+                return (
+                  <div key={requirement.slotId}>
+                    <span>所需 Skill · {requirement.name}</span>
+                    {draft && (
+                      <Button
+                        disabled={!!busy || unknown}
+                        onClick={() => leave.request(() => void readAsset(draft, 'draft'), dirty)}
+                      >
+                        编辑 Skill 草稿
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {owned?.value.file && (
+            <section className="zm-member-asset-file">
+              <strong>{owned.value.file.name}</strong>
+              <span>{Math.ceil(owned.value.file.byteSize / 1024)} KB</span>
+              {owned.value.selection.kind === 'published' && (
+                <div className="zm-actions">
+                  <Button disabled={!!busy} onClick={() => void readFile('preview')}>
+                    预览
+                  </Button>
+                  <Button disabled={!!busy} onClick={() => void readFile('download')}>
+                    下载
+                  </Button>
+                </div>
+              )}
+            </section>
+          )}
+          {editing && detail.form.definition.kind === 'file' && (
+            <label className="zm-member-asset-upload">
+              {owned?.value.file ? '替换文件' : '上传文件'}
+              <input
+                type="file"
+                aria-label="上传团队文件"
+                disabled={
+                  !!busy || unknown || dirty || !owned || owned.value.selection.kind !== 'draft'
+                }
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (file) void upload(file);
+                }}
+              />
+              {(!owned || dirty) && <small>先保存草稿，再选择文件。</small>}
+            </label>
+          )}
+          <footer className="zm-member-asset-actions">
+            {editing && (
+              <Button
+                variant="primary"
+                disabled={!!busy || unknown || (!dirty && detail.kind !== 'new')}
+                onClick={save}
+              >
+                保存草稿
+              </Button>
+            )}
+            {owned?.value.selection.kind === 'draft' && owned.value.asset.canPublish && (
+              <Button
+                disabled={
+                  !!busy ||
+                  unknown ||
+                  dirty ||
+                  missingRequirements ||
+                  (owned.form.definition.kind === 'file' && !owned.value.file)
+                }
+                onClick={publish}
+              >
+                发布
+              </Button>
+            )}
+            {owned && !owned.editing && owned.value.asset.canMaintain && (
+              <Button disabled={!!busy || unknown} onClick={() => void beginEdit()}>
+                {owned.value.asset.hasDraft ? '编辑草稿' : '编辑最新版本'}
+              </Button>
+            )}
+            {canCopy && (
+              <Button disabled={!!busy || unknown} onClick={copy}>
+                复制为新资产
+              </Button>
+            )}
+            {busy && <span role="status">{busy}</span>}
+          </footer>
+        </>
+      )}
+    </div>
+  );
   return (
     <section className="zm-member-assets" aria-label="团队资产">
       {leave.dialog}
-      <header className="zm-member-assets-toolbar">
-        <input
-          type="search"
-          aria-label="搜索团队资产"
-          placeholder="搜索名称或说明…"
-          value={search}
-          onChange={(event) => {
-            setSearch(event.target.value);
-            setOffset(0);
-          }}
-        />
-        <div className="zm-actions">
-          <Button
-            variant="quiet"
-            disabled={!!busy || unknown}
-            onClick={() =>
-              leave.request(() => {
-                setOffset(0);
-                setRefresh((value) => value + 1);
-                if (owned)
-                  void readAsset(
-                    owned.value.asset,
-                    owned.value.selection.kind === 'draft'
-                      ? 'draft'
-                      : owned.value.selection.reference.versionId,
-                  );
-              }, dirty)
-            }
-          >
-            刷新
-          </Button>
-          {onOpenKnowledge && (
-            <Button onClick={() => leave.request(onOpenKnowledge, dirty)}>在线文档</Button>
-          )}
-          <SingleSelect
-            label="新建资产"
-            popupMinWidth={180}
-            value="new"
-            disabled={!!busy || unknown}
-            options={[
-              { value: 'new', label: '＋ 新建' },
-              { value: 'file', label: '文件资料' },
-              { value: 'expert', label: 'Agent 专家' },
-              { value: 'skill', label: 'Skill' },
-              { value: 'template', label: '工作流' },
-            ]}
-            onValueChange={(value) => {
-              if (value !== 'new') create(value as MemberAssetDefinition['kind']);
+      {category !== 'material' && (
+        <header className="zm-member-assets-toolbar">
+          <input
+            type="search"
+            aria-label="搜索团队资产"
+            placeholder="搜索名称或说明…"
+            value={search}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setOffset(0);
             }}
           />
-          <Button
-            disabled={!!busy || unknown}
-            onClick={() => leave.request(() => setImportOpen(true), dirty)}
-          >
-            导入
-          </Button>
-        </div>
-      </header>
+          <div className="zm-actions">
+            <Button
+              variant="quiet"
+              disabled={!!busy || unknown}
+              onClick={() =>
+                leave.request(() => {
+                  setOffset(0);
+                  setRefresh((value) => value + 1);
+                  if (owned)
+                    void readAsset(
+                      owned.value.asset,
+                      owned.value.selection.kind === 'draft'
+                        ? 'draft'
+                        : owned.value.selection.reference.versionId,
+                    );
+                }, dirty)
+              }
+            >
+              刷新
+            </Button>
+            {onOpenKnowledge && (
+              <Button onClick={() => leave.request(onOpenKnowledge, dirty)}>在线文档</Button>
+            )}
+            <SingleSelect
+              label="新建资产"
+              popupMinWidth={180}
+              value="new"
+              disabled={!!busy || unknown}
+              options={[
+                { value: 'new', label: '＋ 新建' },
+                { value: 'file', label: '文件资料' },
+                { value: 'expert', label: 'Agent 专家' },
+                { value: 'skill', label: 'Skill' },
+                { value: 'template', label: '工作流' },
+              ]}
+              onValueChange={(value) => {
+                if (value !== 'new') create(value as MemberAssetDefinition['kind']);
+              }}
+            />
+            <Button
+              disabled={!!busy || unknown}
+              onClick={() => leave.request(() => setImportOpen(true), dirty)}
+            >
+              导入
+            </Button>
+          </div>
+        </header>
+      )}
       <nav className="zm-asset-categories" aria-label="团队资产分类">
         {categories.map(([kind, label]) => (
           <Button
@@ -657,294 +868,165 @@ export function MemberAssetsPanel({
           </Button>
         ))}
       </nav>
-      <div className="zm-member-assets-layout">
-        <div className="zm-member-assets-list" aria-busy={browse.phase === 'loading'}>
-          {browse.phase === 'loading' ? (
-            <p role="status">正在读取资产…</p>
-          ) : browse.phase === 'error' ? (
-            <div role="alert">
-              {browse.error}
-              <Button onClick={() => setRefresh((value) => value + 1)}>重试</Button>
-            </div>
-          ) : (
-            <>
-              {!browse.value!.items.length && (
-                <div className="zm-empty">
-                  <h3>{search ? '没有匹配的资产' : '还没有资产'}</h3>
-                  <Button
-                    onClick={() =>
-                      create(
-                        category === 'expert'
-                          ? 'expert'
-                          : category === 'skill'
-                            ? 'skill'
-                            : category === 'template'
-                              ? 'template'
-                              : 'file',
-                      )
-                    }
-                  >
-                    新建
-                    {category === 'expert'
-                      ? '专家'
-                      : category === 'skill'
-                        ? 'Skill'
-                        : category === 'template'
-                          ? '工作流'
-                          : '资料'}
-                  </Button>
-                </div>
-              )}
-              {browse.value!.items.map((row) => {
-                const title =
-                  row.source === 'asset'
-                    ? row.asset.name
-                    : row.source === 'knowledge'
-                      ? row.page.title
-                      : row.legacy.name;
-                const description =
-                  row.source === 'asset'
-                    ? row.asset.description
-                    : row.source === 'knowledge'
-                      ? '在线文档'
-                      : row.legacy.description;
-                return (
-                  <button
-                    className={`zm-member-asset-row${category === 'all' ? ' has-kind' : ''}`}
-                    key={teamAssetCatalogRowKey(row)}
-                    aria-pressed={selectedKey === teamAssetCatalogRowKey(row)}
-                    disabled={!!busy || (row.source === 'knowledge' && !knowledge)}
-                    onClick={() => leave.request(() => void open(row), dirty)}
-                  >
-                    {category === 'all' && (
-                      <span className="zm-member-asset-kind">
-                        {row.source === 'knowledge'
-                          ? '文档'
-                          : row.source === 'asset'
-                            ? labels[row.asset.kind]
-                            : labels[row.legacy.kind]}
-                      </span>
-                    )}
-                    <span className="zm-member-asset-caption">
-                      <strong>{title}</strong>
-                      {description && <small>{description}</small>}
-                    </span>
-                    <span className="zm-member-asset-state">
-                      {row.source === 'asset'
-                        ? row.asset.hasDraft
-                          ? '草稿'
-                          : `v${row.asset.versions.at(-1)?.number ?? ''}`
-                        : row.source === 'knowledge'
-                          ? `v${row.page.reference.version}`
-                          : '只读'}
-                    </span>
-                  </button>
-                );
-              })}
-              <div className="zm-member-assets-pagination">
-                <Button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 30))}>
-                  上一页
-                </Button>
-                <span>
-                  {browse.value!.total
-                    ? `${offset + 1}–${offset + browse.value!.items.length} / ${browse.value!.total}`
-                    : '0 项'}
-                </span>
-                <Button
-                  disabled={browse.value!.nextOffset === null}
-                  onClick={() => setOffset(browse.value!.nextOffset!)}
-                >
-                  下一页
-                </Button>
+      {category === 'material' ? (
+        <>
+          <MemberAssetFilesBrowser
+            api={api}
+            spaceId={spaceId}
+            lifetime={lifetime}
+            folderId={folderId}
+            onFolderChange={(next) => leave.request(() => setFolderId(next), dirty)}
+            refresh={refresh}
+            onUpload={() => setUploadTarget({ folderId })}
+            onDetails={(asset) => leave.request(() => void readAsset(asset), dirty)}
+            {...(onOpenKnowledge
+              ? { onOpenKnowledge: () => leave.request(onOpenKnowledge, dirty) }
+              : {})}
+          />
+          {(detail || detailLoading || error) && (
+            <Modal
+              title="文件信息"
+              close={() =>
+                leave.request(() => {
+                  ++readAttempt.current;
+                  rowRead.current?.abort();
+                  setDetailLoading(false);
+                  setDetail(null);
+                  setPreview(null);
+                  setBaseline('');
+                  setIntent(null);
+                  setUnknown(false);
+                  setError('');
+                  setNotice('');
+                }, dirty)
+              }
+            >
+              {detailView}
+            </Modal>
+          )}
+        </>
+      ) : (
+        <div className="zm-member-assets-layout">
+          <div className="zm-member-assets-list" aria-busy={browse.phase === 'loading'}>
+            {browse.phase === 'loading' ? (
+              <p role="status">正在读取资产…</p>
+            ) : browse.phase === 'error' ? (
+              <div role="alert">
+                {browse.error}
+                <Button onClick={() => setRefresh((value) => value + 1)}>重试</Button>
               </div>
-            </>
-          )}
-        </div>
-        <div className="zm-member-asset-detail" aria-busy={detailLoading || !!busy}>
-          {error && (
-            <div className="zm-error" role="alert">
-              {error}
-              {unknown && intent && (
-                <>
-                  <p>结果尚未确认。请使用原请求重试。</p>
-                  <Button disabled={!!busy} onClick={() => void perform(intent)}>
-                    重试原请求
-                  </Button>
-                </>
-              )}
-            </div>
-          )}
-          {notice && <p role="status">{notice}</p>}
-          {detailLoading ? (
-            <p role="status">正在读取详情…</p>
-          ) : !detail ? (
-            <div className="zm-empty">
-              <h3>选择一项资产</h3>
-              <p>查看内容、版本和可用操作。</p>
-            </div>
-          ) : detail.kind === 'knowledge' ? (
-            <article>
-              <header>
-                <h2>{detail.value.title}</h2>
-                <span>v{detail.value.reference.version}</span>
-              </header>
-              <pre className="zm-member-asset-text">{detail.value.text}</pre>
-              {detail.value.nextOffset < detail.value.totalBytes && (
-                <p>已显示首段，前往在线文档继续查看。</p>
-              )}
-              {onOpenKnowledge && <Button onClick={onOpenKnowledge}>打开在线文档</Button>}
-            </article>
-          ) : (
-            <>
-              <header className="zm-member-asset-detail-heading">
-                <h2>
-                  {detail.kind === 'new'
-                    ? `新建${labels[detail.form.definition.kind]}`
-                    : detail.form.definition.name}
-                </h2>
-                {owned && (
-                  <SingleSelect
-                    label="资产版本"
-                    value={
-                      owned.value.selection.kind === 'draft'
-                        ? 'draft'
-                        : owned.value.selection.reference.versionId
-                    }
-                    disabled={!!busy || unknown}
-                    options={[
-                      ...(owned.value.asset.hasDraft && owned.value.asset.canMaintain
-                        ? [{ value: 'draft', label: '草稿' }]
-                        : []),
-                      ...owned.value.asset.versions
-                        .slice()
-                        .reverse()
-                        .map((version) => ({
-                          value: version.reference.versionId,
-                          label: `v${version.number} · ${version.publishedBy}`,
-                        })),
-                    ]}
-                    onValueChange={(value) =>
-                      leave.request(() => void readAsset(owned.value.asset, value), dirty)
-                    }
-                  />
+            ) : (
+              <>
+                {!browse.value!.items.length && (
+                  <div className="zm-empty">
+                    <h3>{search ? '没有匹配的资产' : '还没有资产'}</h3>
+                    <Button
+                      onClick={() =>
+                        create(
+                          category === 'expert'
+                            ? 'expert'
+                            : category === 'skill'
+                              ? 'skill'
+                              : category === 'template'
+                                ? 'template'
+                                : 'file',
+                        )
+                      }
+                    >
+                      新建
+                      {category === 'expert'
+                        ? '专家'
+                        : category === 'skill'
+                          ? 'Skill'
+                          : category === 'template'
+                            ? '工作流'
+                            : '资料'}
+                    </Button>
+                  </div>
                 )}
-              </header>
-              {detail.kind !== 'new' && (
-                <AssetProvenance detail={detail} members={authoringState?.participants ?? []} />
-              )}
-              <MemberAssetDefinitionFields
-                value={detail.form.definition}
-                dependencies={detail.form.dependencies}
-                choices={choices}
-                {...(authoringState ? { authoringState } : {})}
-                requirements={requirements}
-                {...(detail.kind === 'legacy' ? { readOnlyDefinition: true } : {})}
-                disabled={!!busy || unknown || (!editing && detail.kind !== 'legacy')}
-                onChange={(definition, dependencies) =>
-                  setDetail({ ...detail, form: { definition, dependencies } })
-                }
-              />
-              {!!owned?.value.requirements?.length && (
-                <div className="zm-member-asset-requirements">
-                  {owned.value.requirements.map((requirement) => {
-                    const draft = skillAssets.find(
-                      (asset) =>
-                        asset.assetId === requirement.suggestedAssetId &&
-                        asset.hasDraft &&
-                        asset.canMaintain,
-                    );
-                    return (
-                      <div key={requirement.slotId}>
-                        <span>所需 Skill · {requirement.name}</span>
-                        {draft && (
-                          <Button
-                            disabled={!!busy || unknown}
-                            onClick={() =>
-                              leave.request(() => void readAsset(draft, 'draft'), dirty)
-                            }
-                          >
-                            编辑 Skill 草稿
-                          </Button>
-                        )}
-                      </div>
-                    );
-                  })}
+                {browse.value!.items.map((row) => {
+                  const title =
+                    row.source === 'asset'
+                      ? row.asset.name
+                      : row.source === 'knowledge'
+                        ? row.page.title
+                        : row.legacy.name;
+                  const description =
+                    row.source === 'asset'
+                      ? row.asset.description
+                      : row.source === 'knowledge'
+                        ? '在线文档'
+                        : row.legacy.description;
+                  return (
+                    <button
+                      className={`zm-member-asset-row${category === 'all' ? ' has-kind' : ''}`}
+                      key={teamAssetCatalogRowKey(row)}
+                      aria-pressed={selectedKey === teamAssetCatalogRowKey(row)}
+                      disabled={!!busy || (row.source === 'knowledge' && !knowledge)}
+                      onClick={() => leave.request(() => void open(row), dirty)}
+                    >
+                      {category === 'all' && (
+                        <span className="zm-member-asset-kind">
+                          {row.source === 'knowledge'
+                            ? '文档'
+                            : row.source === 'asset'
+                              ? labels[row.asset.kind]
+                              : labels[row.legacy.kind]}
+                        </span>
+                      )}
+                      <span className="zm-member-asset-caption">
+                        <strong>{title}</strong>
+                        {description && <small>{description}</small>}
+                      </span>
+                      <span className="zm-member-asset-state">
+                        {row.source === 'asset'
+                          ? row.asset.hasDraft
+                            ? '草稿'
+                            : `v${row.asset.versions.at(-1)?.number ?? ''}`
+                          : row.source === 'knowledge'
+                            ? `v${row.page.reference.version}`
+                            : '只读'}
+                      </span>
+                    </button>
+                  );
+                })}
+                <div className="zm-member-assets-pagination">
+                  <Button
+                    disabled={offset === 0}
+                    onClick={() => setOffset(Math.max(0, offset - 30))}
+                  >
+                    上一页
+                  </Button>
+                  <span>
+                    {browse.value!.total
+                      ? `${offset + 1}–${offset + browse.value!.items.length} / ${browse.value!.total}`
+                      : '0 项'}
+                  </span>
+                  <Button
+                    disabled={browse.value!.nextOffset === null}
+                    onClick={() => setOffset(browse.value!.nextOffset!)}
+                  >
+                    下一页
+                  </Button>
                 </div>
-              )}
-              {owned?.value.file && (
-                <section className="zm-member-asset-file">
-                  <strong>{owned.value.file.name}</strong>
-                  <span>{Math.ceil(owned.value.file.byteSize / 1024)} KB</span>
-                  {owned.value.selection.kind === 'published' && (
-                    <div className="zm-actions">
-                      <Button disabled={!!busy} onClick={() => void readFile('preview')}>
-                        预览
-                      </Button>
-                      <Button disabled={!!busy} onClick={() => void readFile('download')}>
-                        下载
-                      </Button>
-                    </div>
-                  )}
-                </section>
-              )}
-              {editing && detail.form.definition.kind === 'file' && (
-                <label className="zm-member-asset-upload">
-                  {owned?.value.file ? '替换文件' : '上传文件'}
-                  <input
-                    type="file"
-                    aria-label="上传团队文件"
-                    disabled={
-                      !!busy || unknown || dirty || !owned || owned.value.selection.kind !== 'draft'
-                    }
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      event.target.value = '';
-                      if (file) void upload(file);
-                    }}
-                  />
-                  {(!owned || dirty) && <small>先保存草稿，再选择文件。</small>}
-                </label>
-              )}
-              <footer className="zm-member-asset-actions">
-                {editing && (
-                  <Button
-                    variant="primary"
-                    disabled={!!busy || unknown || (!dirty && detail.kind !== 'new')}
-                    onClick={save}
-                  >
-                    保存草稿
-                  </Button>
-                )}
-                {owned?.value.selection.kind === 'draft' && owned.value.asset.canPublish && (
-                  <Button
-                    disabled={
-                      !!busy ||
-                      unknown ||
-                      dirty ||
-                      missingRequirements ||
-                      (owned.form.definition.kind === 'file' && !owned.value.file)
-                    }
-                    onClick={publish}
-                  >
-                    发布
-                  </Button>
-                )}
-                {owned && !owned.editing && owned.value.asset.canMaintain && (
-                  <Button disabled={!!busy || unknown} onClick={() => void beginEdit()}>
-                    {owned.value.asset.hasDraft ? '编辑草稿' : '编辑最新版本'}
-                  </Button>
-                )}
-                {canCopy && (
-                  <Button disabled={!!busy || unknown} onClick={copy}>
-                    复制为新资产
-                  </Button>
-                )}
-                {busy && <span role="status">{busy}</span>}
-              </footer>
-            </>
-          )}
+              </>
+            )}
+          </div>
+          {detailView}
         </div>
-      </div>
+      )}
+      {uploadTarget && (
+        <MemberAssetFilesUploadDialog
+          api={uploadApi}
+          spaceId={spaceId}
+          lifetime={lifetime}
+          close={() => setUploadTarget(undefined)}
+          onChanged={() => {
+            setRefresh((value) => value + 1);
+            onChanged?.();
+          }}
+        />
+      )}
       {preview && <MemberAssetFilePreview value={preview} close={() => setPreview(null)} />}
       {importOpen && (
         <MemberAssetImportDialog

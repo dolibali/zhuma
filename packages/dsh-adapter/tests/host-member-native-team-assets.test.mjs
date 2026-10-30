@@ -233,7 +233,7 @@ function producer(t, sizes, options = {}) {
         return { authority: 'drive', resources: 'held', stopRequested: false };
       },
       checkTeamAssetFile() {
-        return { result: Promise.resolve(), drain: Promise.resolve() };
+        return options.check?.() ?? { result: Promise.resolve(), drain: Promise.resolve() };
       },
       openTeamAssetFile(_run, ref, signal) {
         reads++;
@@ -280,6 +280,7 @@ test('native team file cache is bounded across pinned bytes and concurrent fresh
   assert.equal(h.reads(), 3);
 });
 test('a cached carrier stays pinned while its fresh signed check is pending', async (t) => {
+  t.after(() => held.resolve());
   const held = Promise.withResolvers(),
     h = producer(t, [12 * 1024 * 1024, 12 * 1024 * 1024], {
       check: () => ({ result: held.promise, drain: held.promise }),
@@ -290,13 +291,19 @@ test('a cached carrier stays pinned while its fresh signed check is pending', as
   await first.drain;
   handle.release();
   const cached = h.ports.openFile(h.rows[0].reference, signal);
+  let settled = false;
+  void cached.result.then(() => {
+    settled = true;
+  });
   await tick();
+  assert.equal(settled, false, 'the fresh check must still be held before the competing read');
   const competing = h.ports.openFile(h.rows[1].reference, signal);
   await assert.rejects(competing.result, { code: 'run-capacity' });
   await competing.drain;
   held.resolve();
   const same = await cached.result;
   await cached.drain;
+  assert.equal(settled, true);
   assert.equal(same.carrier, handle.carrier);
   same.release();
   assert.equal(h.reads(), 1);

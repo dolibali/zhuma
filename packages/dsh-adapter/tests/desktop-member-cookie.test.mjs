@@ -62,7 +62,9 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/session',
     '/zhuma-id/spaces/team-empty',
     '/zhuma-id/notes/note-a',
-    ...['snapshot', 'command', 'plan'].map((endpoint) => `/api/zhuma-member/${endpoint}`),
+    ...['snapshot', 'command', 'plan', 'asset-folder-list', 'asset-folder-create'].map(
+      (endpoint) => `/api/zhuma-member/${endpoint}`,
+    ),
     ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
     ...knowledgeEndpoints.map((endpoint) => `/api/zhuma-knowledge/${endpoint}`),
     ...['begin', 'send', 'stop', 'read', 'history', 'options', 'inbox', 'observe'].map(
@@ -83,6 +85,8 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/api/zhuma-run/send/extra',
     '/api/zhuma-member/command/extra',
     '/api/zhuma-member/unknown',
+    '/api/zhuma-member/asset-folder-list/extra',
+    '/api/zhuma-member/asset-folder-%63reate',
     '/api/zhuma-knowledge/unknown',
     '/api/zhuma-knowledge/project-links/extra',
     '/api/zhuma-knowledge/%72ead',

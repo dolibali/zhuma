@@ -153,7 +153,13 @@ test('shared assets metadata: exact allowlist retains original command intent an
         rpcId: body.rpcId,
         result: { ok: true, value: { boundedCatalog: large } },
       });
-    assert.equal(url.pathname, '/api/zhuma-member/asset-command');
+    assert.ok(
+      [
+        '/api/zhuma-member/asset-command',
+        '/api/zhuma-member/asset-folder-list',
+        '/api/zhuma-member/asset-folder-create',
+      ].includes(url.pathname),
+    );
     return Response.json({
       type: 'server-response',
       rpcId: body.rpcId,
@@ -171,6 +177,23 @@ test('shared assets metadata: exact allowlist retains original command intent an
   };
   const reply = await h.request(selected, 'member.asset-command', command, { rpcId: randomUUID() });
   assert.deepEqual(reply.body.result.value.echo, command);
+  for (const [operation, payload] of [
+    ['member.asset-folder-list', { spaceId: 'north', folderId: null, includeDrafts: true }],
+    [
+      'member.asset-folder-create',
+      {
+        spaceId: 'north',
+        folderId: randomUUID(),
+        parentFolderId: null,
+        name: '研发资料',
+        expectedVersion: 0,
+        idempotencyKey: randomUUID(),
+      },
+    ],
+  ]) {
+    const folder = await h.request(selected, operation, payload, { rpcId: randomUUID() });
+    assert.deepEqual(folder.body.result.value.echo, payload);
+  }
   const catalog = await h.request(
     selected,
     'member.asset-catalog',

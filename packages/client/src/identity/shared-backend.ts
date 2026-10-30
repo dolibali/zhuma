@@ -60,6 +60,8 @@ const targets = {
   '/api/zhuma-member/snapshot': ['POST', 'member.snapshot'],
   '/api/zhuma-member/command': ['POST', 'member.command'],
   '/api/zhuma-member/plan': ['POST', 'member.plan'],
+  '/api/zhuma-member/asset-folder-list': ['POST', 'member.asset-folder-list'],
+  '/api/zhuma-member/asset-folder-create': ['POST', 'member.asset-folder-create'],
   '/api/zhuma-member/asset-list': ['POST', 'member.asset-list'],
   '/api/zhuma-member/asset-read': ['POST', 'member.asset-read'],
   '/api/zhuma-member/asset-reference': ['POST', 'member.asset-reference'],

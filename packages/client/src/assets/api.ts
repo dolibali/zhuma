@@ -1,5 +1,9 @@
 import {
   MEMBER_ASSET_LIMITS,
+  MemberAssetFolderListQuerySchema,
+  MemberAssetFolderListValueSchema,
+  MemberAssetFolderCreateSchema,
+  MemberAssetFolderCreateValueSchema,
   MemberAssetCommandSchema,
   MemberAssetCommandValueSchema,
   MemberAssetPreviewImportQuerySchema,
@@ -21,6 +25,10 @@ import {
   MemberAssetReferenceValueSchema,
   TeamAssetCatalogQuerySchema,
   TeamAssetCatalogValueSchema,
+  type MemberAssetFolderListQuery,
+  type MemberAssetFolderListValue,
+  type MemberAssetFolderCreate,
+  type MemberAssetFolderCreateValue,
   type MemberAssetCommand,
   type MemberAssetCommandValue,
   type MemberAssetPreviewImportQuery,
@@ -84,6 +92,14 @@ export interface MemberAssetFileContent {
   readonly inline: boolean;
 }
 export interface MemberAssetApi {
+  listFolder(
+    input: MemberAssetFolderListQuery,
+    signal: AbortSignal,
+  ): Promise<MemberAssetFolderListValue>;
+  createFolder(
+    input: MemberAssetFolderCreate,
+    signal: AbortSignal,
+  ): Promise<MemberAssetFolderCreateValue>;
   previewImport(
     input: MemberAssetPreviewImportQuery,
     signal: AbortSignal,
@@ -313,6 +329,39 @@ export function createMemberAssetApi(
     }
   }
   return {
+    async listFolder(input, signal) {
+      const query = MemberAssetFolderListQuerySchema.parse(input);
+      const value = await call(
+        'asset-folder-list',
+        query,
+        MemberAssetFolderListValueSchema,
+        signal,
+      );
+      if (value.spaceId !== query.spaceId || value.folderId !== query.folderId) invalid();
+      return value;
+    },
+    async createFolder(input, signal) {
+      const query = MemberAssetFolderCreateSchema.parse(input);
+      space(query.spaceId);
+      return write(async () => {
+        const value = await call(
+          'asset-folder-create',
+          query,
+          MemberAssetFolderCreateValueSchema,
+          signal,
+        );
+        if (
+          value.spaceId !== query.spaceId ||
+          value.folder.spaceId !== query.spaceId ||
+          value.folder.folderId !== query.folderId ||
+          value.folder.parentFolderId !== query.parentFolderId ||
+          value.folder.name !== query.name ||
+          value.folder.createdBy !== scope.actorId
+        )
+          invalid();
+        return value;
+      });
+    },
     async previewImport(input, signal) {
       const query = MemberAssetPreviewImportQuerySchema.parse(input);
       const value = await call(

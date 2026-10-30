@@ -5321,3 +5321,164 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
     grid-column: 1 / -1;
   }
 }
+
+.zm-file-browser {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.zm-file-browser-toolbar,
+.zm-folder-breadcrumbs,
+.zm-folder-breadcrumbs > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.zm-file-browser-toolbar {
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+.zm-folder-breadcrumbs {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+.zm-folder-breadcrumbs button {
+  max-width: 220px;
+  overflow-wrap: anywhere;
+}
+.zm-file-browser > input {
+  width: min(100%, 360px);
+}
+.zm-file-browser-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--zm-line);
+  border-radius: 10px;
+  background: var(--zm-paper);
+}
+.zm-file-browser-table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 630px;
+  table-layout: fixed;
+}
+.zm-file-browser-table th,
+.zm-file-browser-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--zm-line);
+  font-size: 13px;
+}
+.zm-file-browser-table th {
+  color: var(--zm-muted);
+  background: var(--zm-soft);
+  font-size: 12px;
+  font-weight: 500;
+}
+.zm-file-browser-table th:first-child {
+  width: 40%;
+}
+.zm-file-browser-table th:nth-child(2) {
+  width: 12%;
+}
+.zm-file-browser-table th:nth-child(3) {
+  width: 17%;
+}
+.zm-file-browser-table th:last-child {
+  width: 132px;
+}
+.zm-file-browser-table tr:last-child td {
+  border-bottom: 0;
+}
+.zm-file-browser-table tbody tr:hover {
+  background: var(--zm-soft);
+}
+.zm-file-browser-table .zm-file-name {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--zm-ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.zm-file-name strong {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.zm-file-name > span {
+  flex: none;
+  width: 20px;
+  color: var(--zm-muted);
+}
+.zm-file-browser-table .zm-actions {
+  gap: 2px;
+}
+.zm-folder-targets {
+  display: grid;
+  max-height: 300px;
+  overflow: auto;
+  gap: 6px;
+}
+.zm-folder-targets button {
+  justify-content: flex-start;
+}
+.zm-folder-dialog .zm-dialog-actions {
+  justify-content: flex-end;
+}
+.zm-member-asset-files-drop {
+  display: grid;
+  gap: 12px;
+  border: 1px dashed var(--zm-line-strong);
+  border-radius: 10px;
+  padding: 28px 20px;
+  background: var(--zm-soft);
+  text-align: center;
+}
+.zm-member-asset-files-drop input {
+  max-width: 100%;
+}
+.zm-member-asset-files-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+}
+.zm-member-asset-files-list > li {
+  border-bottom: 1px solid var(--zm-line);
+  padding: 14px 0;
+  display: grid;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.zm-member-asset-files-list .zm-actions {
+  flex-wrap: wrap;
+}
+.zm-member-asset-files-progress {
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--zm-soft);
+}
+@media (max-width: 700px) {
+  .zm-file-browser-toolbar > .zm-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
+.zm-member-asset-files-list > li > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.zm-member-asset-files-list > li > div:first-child > span {
+  flex: none;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
