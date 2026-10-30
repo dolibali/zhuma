@@ -7,6 +7,7 @@ import {
 } from '../dist/host-session-admission.js';
 function fixture() {
   let admission,
+    projection,
     disposed = false,
     source;
   const effects = [];
@@ -15,6 +16,12 @@ function fixture() {
       admission = fn;
       return () => {
         disposed = true;
+      };
+    },
+    registerSessionResultProjection(fn) {
+      projection = fn;
+      return () => {
+        projection = undefined;
       };
     },
   };
@@ -33,6 +40,7 @@ function fixture() {
       source = next;
     },
     call: (method, args, signal = new AbortController().signal) => admission(method, args, signal),
+    project: (method, signal = new AbortController().signal) => projection(method, {}, signal),
     disposed: () => disposed,
   };
 }
@@ -52,6 +60,41 @@ test('actual Session argument shapes cover create/reuse, live mutations and cold
     }),
     [],
   );
+});
+
+test('ACP exact session parameters and explicit globals cannot bypass task or parent ownership', async () => {
+  const h = fixture();
+  const seen = [];
+  h.setSource({
+    lookupNativeSession(id) {
+      seen.push(id);
+      return id === 'ordinary' ? null : {};
+    },
+  });
+  for (const [method, args] of [
+    ['activitySnapshot', { sessionId: 'task' }],
+    ['teamMemberModels', { lead: 'task', sessionId: 'ordinary' }],
+    ['approvalChildren', { parent: 'task' }],
+    ['activityDetail', { sessionId: 'ordinary', request: { ownerDshSessionId: 'task' } }],
+    ['activityPage', { sessionId: 'ordinary', request: { filter: { ownerDshSessionId: 'task' } } }],
+  ])
+    assert.equal(await h.call(`dshAcp/${method}`, args), false);
+  assert.equal(await h.call('dshAcp/activitySnapshot', { sessionId: 'ordinary' }), true);
+  assert.equal(await h.call('dshAcp/activitySnapshot', {}), false);
+  assert.equal(await h.call('dshAcp/futureUncheckedVerb', {}), false);
+  assert.equal(await h.call('dshAcp/boundSessions', { agentId: 'configured' }), false);
+  for (const method of ['health', 'projectedSubagentIds', 'ownedProviderRoutes'])
+    assert.equal(await h.call(`dshAcp/${method}`, {}), true);
+  assert.ok(seen.includes('task'));
+});
+
+test('ACP projection captures one source before invocation and rejects a later member owner', async () => {
+  const h = fixture();
+  h.setSource({ lookupNativeSession: () => null });
+  const projection = h.project('projectedSubagentIds');
+  h.setSource({ lookupNativeSession: () => null });
+  assert.throws(() => projection.assertCurrent(), /unavailable/);
+  await assert.rejects(projection.project({ sessionIds: ['ordinary'] }), /unavailable/);
 });
 test('work/review task hits reject ordinary live prompt, queue, cancel and cold read/reuse; only actual null admits ordinary behavior', async () => {
   const h = fixture();

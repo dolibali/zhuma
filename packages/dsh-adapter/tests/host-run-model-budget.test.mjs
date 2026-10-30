@@ -57,3 +57,63 @@ test('public model resolution mismatch or timeout fails closed without calling a
     }
   }
 });
+
+test('task model options read ACP static identities without launching its model-directory probe', async (t) => {
+  const ctx = new Context();
+  t.after(() => ctx.fiber.dispose());
+  const listed = [];
+  ctx.provide('dshAcp', {
+    async health(request) {
+      assert.equal(request, undefined, 'never request a recheck while reading task options');
+      return {
+        providers: [
+          { id: 'codearts', command: '/private/contract/executable', args: ['private-arg'] },
+        ],
+        liveSessions: [{ sessionId: 'private-session' }],
+      };
+    },
+  });
+  ctx.provide('llm', {
+    listProviders: () => [{ id: 'native' }, { id: 'acp-codearts' }],
+    async listModels(provider) {
+      assert.notEqual(provider, 'acp-codearts', 'ACP listModels would start a subprocess probe');
+      listed.push(provider);
+      return [{ provider, id: 'native-model', name: 'Native model' }];
+    },
+    generate: () => assert.fail('metadata cannot execute'),
+  });
+  const result = await readHostRunModels(ctx, new AbortController().signal);
+  assert.equal(result.kind, 'ready');
+  assert.deepEqual(listed, ['native']);
+  assert.deepEqual(
+    result.items.map((item) => item.value.provider),
+    ['native'],
+  );
+  for (const privateValue of ['private-session', 'private-arg', '/private/contract'])
+    assert.ok(!JSON.stringify(result).includes(privateValue));
+});
+
+test('unknown, malformed or removed ACP owners never fall through to an external probe', async (t) => {
+  for (const mode of ['absent', 'malformed', 'changed']) {
+    const ctx = new Context();
+    t.after(() => ctx.fiber.dispose());
+    let current;
+    if (mode !== 'absent') {
+      current = {
+        async health() {
+          if (mode === 'changed') current = {};
+          return mode === 'malformed'
+            ? { providers: [{ id: '../foreign' }] }
+            : { providers: [{ id: 'codearts' }] };
+        },
+      };
+      const originalGet = ctx.get.bind(ctx);
+      ctx.get = (name, ...rest) => (name === 'dshAcp' ? current : originalGet(name, ...rest));
+    }
+    ctx.provide('llm', {
+      listProviders: () => [{ id: 'acp-codearts' }],
+      listModels: () => assert.fail('unverified owner cannot start an ACP probe'),
+    });
+    assert.equal((await readHostRunModels(ctx, new AbortController().signal)).kind, 'unavailable');
+  }
+});

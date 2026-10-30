@@ -1,0 +1,133 @@
+diff --git a/src/host/composition/index.ts b/src/host/composition/index.ts
+index bbe5397..9ba7163 100644
+--- a/src/host/composition/index.ts
++++ b/src/host/composition/index.ts
+@@ -33,7 +33,21 @@ export function apply(ctx: Context, config: Config): void {
+   ctx.inject(['settings'], (child) => {
+     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
+   })
+-  installInstalledProfileRegistry(ctx, config, { installRemote: true })
++  installInstalledProfileRegistry(ctx, config, {
++    installRemote: true,
++    nativeToolHandoffGuard: (id, profile) => {
++      // Optional local Host policy, never a renderer/config boolean or profile
++      // name heuristic. A producer's captured guard survives only its generation.
++      const policy: unknown = ctx.get('acpNativeToolHandoffPolicy')
++      if (policy === undefined) return undefined
++      if (policy === null || typeof policy !== 'object' || typeof Reflect.get(policy, 'guardForProfile') !== 'function')
++        throw new TypeError('Native tool handoff policy is unavailable')
++      const guard: unknown = Reflect.apply(Reflect.get(policy, 'guardForProfile'), policy, [id, profile])
++      if (guard !== undefined && typeof guard !== 'function')
++        throw new TypeError('Native tool handoff policy returned an invalid guard')
++      return guard as (() => boolean) | undefined
++    },
++  })
+   installLegacySettingsImport(ctx)
+ }
+ 
+diff --git a/src/host/composition/installed-profile-registry.ts b/src/host/composition/installed-profile-registry.ts
+index 829d4bd..1d643e0 100644
+--- a/src/host/composition/installed-profile-registry.ts
++++ b/src/host/composition/installed-profile-registry.ts
+@@ -169,6 +169,9 @@ export interface InstalledProfileRegistry {
+ }
+ 
+ export interface InstalledProfileRegistryOptions {
++  /** Host-only capability factory. A matched producer returns one revocable,
++   * generation-bound guard; user configuration cannot supply this function. */
++  nativeToolHandoffGuard?: (profileId: string, profile: Readonly<AcpAgentConfig>) => (() => boolean) | undefined
+   /** Mount the additive dshAcp activity Remote in the provider composition.
+    * The additive provider composition mounts its own service when enabled. */
+   installRemote?: boolean
+@@ -689,6 +692,22 @@ export function installInstalledProfileRegistry(
+         if (config === undefined) continue
+         let routeAdapter = profileAdapters.get(id)
+         if (routeAdapter === undefined) {
++          const guard = options.nativeToolHandoffGuard?.(id, structuredClone(config))
++          if (guard !== undefined && typeof guard !== 'function')
++            throw new TypeError('Native tool handoff requires a Host capability guard')
++          const capturedProfile = JSON.stringify(config)
++          const nativeToolHandoff =
++            guard === undefined
++              ? false
++              : () => {
++                  const current = activeAgents[id]
++                  if (current === undefined || JSON.stringify(current) !== capturedProfile) return false
++                  try {
++                    return guard() === true
++                  } catch {
++                    return false
++                  }
++                }
+           routeAdapter = new AcpProfileAdapter(
+             id,
+             () => activeAgents[id],
+@@ -741,6 +760,7 @@ export function installInstalledProfileRegistry(
+             controlsChanged,
+             ctx.root,
+             (sessionId) => resolveQwenTaskJobs(ctx, sessionId),
++            nativeToolHandoff,
+           )
+           profileAdapters.set(id, routeAdapter)
+         }
+diff --git a/test/unit/domain/installed-profile-registry.spec.ts b/test/unit/domain/installed-profile-registry.spec.ts
+index b0bcc05..4c4ba1f 100644
+--- a/test/unit/domain/installed-profile-registry.spec.ts
++++ b/test/unit/domain/installed-profile-registry.spec.ts
+@@ -908,3 +908,56 @@ it('treats catalog identity as metadata while preserving host schema validation'
+   expect(acpProbeConfigKey(config)).toBe(acpProbeConfigKey({ ...config, catalogId: 'future-agent' }))
+   expect(() => acpSettingsSchema({ agents: { custom: { ...config, catalogId: '../codex' } } })).toThrow('catalogId')
+ })
++
++// Zhuma Host-only registration contract. This checks the actual registry and
++// adapter, with the existing in-memory settings/LLM ports; no CLI or model runs.
++describe('Host native tool handoff registration', () => {
++  function current(adapter: unknown): boolean {
++    if (adapter === null || typeof adapter !== 'object') throw new Error('Missing adapter')
++    return Reflect.apply(Reflect.get(adapter, 'nativeHandoffCurrent'), adapter, []) === true
++  }
++
++  it('keeps ordinary user settings disabled without a captured Host guard', async () => {
++    const { ctx, settings, llm } = fakeHarness()
++    installInstalledProfileRegistry(ctx, settings.config)
++    await settings.replace({ agents: { foo: { ...fooAgent, nativeToolHandoff: true } } })
++    expect(current(llm.adapters[0])).toBe(false)
++  })
++
++  it('captures one generation and refuses changed complete config or revoked capability', async () => {
++    const { ctx, settings, llm } = fakeHarness()
++    let valid = true
++    const first = () => valid
++    const factory = vi.fn(() => first)
++    installInstalledProfileRegistry(ctx, settings.config, { nativeToolHandoffGuard: factory })
++    await settings.replace({ agents: { foo: fooAgent } })
++    const adapter = llm.adapters[0]
++    expect(factory).toHaveBeenCalledExactlyOnceWith('foo', fooAgent)
++    expect(current(adapter)).toBe(true)
++    valid = false
++    expect(current(adapter)).toBe(false)
++    valid = true
++    await settings.replace({ agents: { foo: { ...fooAgent, loginHint: 'changed' } } })
++    expect(current(adapter)).toBe(false)
++    expect(factory).toHaveBeenCalledTimes(1)
++    expect(llm.adapters[0]).toBe(adapter)
++  })
++
++  it('rejects a fake boolean grant and treats a throwing captured guard as unavailable', async () => {
++    const absent = fakeHarness()
++    installInstalledProfileRegistry(absent.ctx, absent.settings.config, {
++      nativeToolHandoffGuard: (() => true) as never,
++    })
++    await absent.settings.replace({ agents: { foo: fooAgent } })
++    expect(absent.llm.adapters).toHaveLength(0)
++    expect(absent.errors.length).toBeGreaterThan(0)
++    const throwing = fakeHarness()
++    installInstalledProfileRegistry(throwing.ctx, throwing.settings.config, {
++      nativeToolHandoffGuard: () => () => {
++        throw new Error('retired')
++      },
++    })
++    await throwing.settings.replace({ agents: { foo: fooAgent } })
++    expect(current(throwing.llm.adapters[0])).toBe(false)
++  })
++})

@@ -20,6 +20,9 @@
     # settings page and explicit credential setup remain available.
     credentialOnboarding: false
 - insert:
+    - id: dsh-acp-adapter
+      name: '@zaimokuza/dsh-acp-adapter'
+      config: {}
     - id: zhuma-workbench
       name: './lib/zhuma-workbench/index.js'
       config:
