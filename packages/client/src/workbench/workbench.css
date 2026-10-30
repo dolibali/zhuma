@@ -1581,6 +1581,10 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zhuma .zm-directory-title {
   padding: 3px 0;
   min-height: 0;
+  width: max-content;
+  max-width: 100%;
+  justify-items: start;
+  justify-self: start;
   text-align: left;
   font-size: 14px;
   font-weight: 550;
@@ -1588,7 +1592,14 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   overflow-wrap: anywhere;
 }
 .zm-directory-title .zm-button-label {
+  justify-content: flex-start;
   white-space: normal;
+}
+.zm-project-directory .zm-directory-row {
+  cursor: pointer;
+}
+.zm-project-directory .zm-directory-content {
+  text-align: left;
 }
 .zm-directory-content p {
   color: var(--zm-muted);
