@@ -435,7 +435,7 @@ type NavigationState = ReturnType<typeof installMemberNativeNavigation>;
 function MemberNativeNavigation({ state }: { state: NavigationState }) {
   const entry = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
   return (
-    <div className="zm-shell-panel">
+    <div className="zhuma zhuma-workbench zm-shell-panel">
       <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
       {entry ? (
         <MemberNativeSession key={entry.key} state={state} entry={entry} />
