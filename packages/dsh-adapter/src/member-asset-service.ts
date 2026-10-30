@@ -198,6 +198,7 @@ export class MemberAssetService
   private readonly fileSlots = new Set<string>();
   private readonly reads = new Set<FileReadState>();
   private readonly openings = new Set<Promise<unknown>>();
+  private openingUploads = 0;
   private openingReads = 0;
   private closed = false;
   private cleanupFailed = false;
@@ -620,15 +621,27 @@ export class MemberAssetService
     if (!parsed.success) return fail('asset-invalid');
     const input = parsed.data;
     const slot = canonicalPayload({ spaceId: input.spaceId, assetId: input.assetId });
-    if (this.fileSlots.has(slot)) return fail('asset-upload-pending');
-    if (this.fileSlots.size >= MEMBER_ASSET_LIMITS.activeUploads) return fail('asset-quota');
-    // Lease openings count too: concurrent awaits cannot overbook the bound.
-    this.fileSlots.add(slot);
+    // Authentication openings have their own bounded admission. Do not reveal
+    // object occupancy/quota to an unqualified caller, even when all uploads
+    // are retained awaiting their real physical drain.
+    if (this.openingUploads >= MEMBER_ASSET_LIMITS.activeUploads) return fail('asset-unavailable');
+    this.openingUploads++;
     let access: Access | undefined;
+    let opening = true;
+    let claimed = false;
     let retained = false;
     try {
       access = await this.access(request, input.spaceId, caller);
       const active = access;
+      const current = this.find(this.records(), input.spaceId, input.assetId);
+      this.maintain(active, current);
+      if (current.kind !== 'file') return fail('asset-invalid');
+      if (this.fileSlots.has(slot)) return fail('asset-upload-pending');
+      if (this.fileSlots.size >= MEMBER_ASSET_LIMITS.activeUploads) return fail('asset-quota');
+      this.fileSlots.add(slot);
+      claimed = true;
+      this.openingUploads--;
+      opening = false;
       const fingerprint = hash({ actorId: active.actorId, operation: 'upload-file', input });
       const reserved = await this.workbench.memberAssetCommand<FileReservation>(
         active.signal,
@@ -715,11 +728,12 @@ export class MemberAssetService
         ? { kind: 'replayed' as const, receipt: reserved.receipt, ticket, grant }
         : { kind: 'reserved' as const, ticket, grant };
     } finally {
+      if (opening) this.openingUploads--;
       if (!retained) {
         try {
           access?.release();
         } finally {
-          this.fileSlots.delete(slot);
+          if (claimed) this.fileSlots.delete(slot);
         }
       }
     }
