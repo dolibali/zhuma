@@ -118,6 +118,7 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
           revision: node.revision,
           nodeId: node.nodeId,
           title: node.goal.split('\n')[0]!.slice(0, 160),
+          description: node.goal,
         }}
       />
     ) : undefined;

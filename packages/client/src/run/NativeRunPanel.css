@@ -24,6 +24,7 @@
 .zm-native-run
   > :is(
     .zm-native-run__header,
+    .zm-native-run__context,
     .zm-native-run__config,
     .zm-native-run__notice,
     .zm-native-run__timeline,
@@ -32,9 +33,39 @@
     .zm-native-run__empty
   ) {
   width: 100%;
-  max-width: 740px;
-  margin-inline: auto;
+  min-width: 0;
   box-sizing: border-box;
+}
+.zm-native-run .zm-native-run__context {
+  flex: 0 0 auto;
+  margin-block: 8px 0;
+  color: var(--zm-muted);
+  font-size: 12px;
+}
+.zm-native-run .zm-native-run__context > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  min-height: 32px;
+  list-style: none;
+  cursor: pointer;
+}
+.zm-native-run .zm-native-run__context > summary::-webkit-details-marker {
+  display: none;
+}
+.zm-native-run .zm-native-run__context[open] > summary svg {
+  transform: rotate(180deg);
+}
+.zm-native-run .zm-native-run__context > p {
+  max-height: min(22vh, 180px);
+  margin: 4px 0 8px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--zm-ink);
+  font-size: 13px;
 }
 .zm-native-run .zm-native-run__header,
 .zm-native-run .zm-native-run__heading,
@@ -251,6 +282,22 @@
   border-radius: 12px;
   background: var(--zm-bg);
 }
+.zm-native-run .zm-native-run__message[data-initial-task='true'] {
+  justify-self: stretch;
+  width: auto;
+  max-width: 100%;
+  border-radius: 8px;
+}
+.zm-native-run .zm-native-run__instructions > .zm-native-run__message-text {
+  max-height: min(40vh, 360px);
+  margin-block-start: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.zm-native-run .zm-native-run__instructions-hint {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
 .zm-native-run .zm-native-run__message[data-role='system'] {
   color: var(--zm-muted);
   font-size: 12px;
@@ -308,7 +355,6 @@
   gap: 8px;
   flex: 1;
   min-height: 120px;
-  max-width: 64ch;
   padding: 32px 4px;
   color: var(--zm-muted);
 }
@@ -318,6 +364,7 @@
   color: var(--zm-ink);
 }
 .zm-native-run .zm-native-run__empty p {
+  max-width: 64ch;
   margin: 0;
 }
 .zm-native-run .zm-native-run__footer {

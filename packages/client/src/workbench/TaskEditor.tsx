@@ -976,6 +976,9 @@ export function TaskEditor({
                     revision: applied.revision,
                     nodeId: fixedNode.id,
                     title: fixedNode.title,
+                    description: fixedNode.description
+                      ? `${fixedNode.title}\n\n${fixedNode.description}`
+                      : fixedNode.title,
                   }}
                 />
               ) : (
