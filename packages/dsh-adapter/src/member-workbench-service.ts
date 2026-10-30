@@ -10,6 +10,9 @@ import {
   instantiateWorkflowTemplate,
   captureWorkflowTemplate,
   canonicalPayload,
+  MemberAssetLegacySummarySchema,
+  type MemberAssetDefinition,
+  type MemberAssetLegacySource,
   type TeamAsset,
   type Participant,
   type Project,
@@ -27,7 +30,8 @@ import {
   type MemberWorkbenchSnapshot,
 } from './member-workbench-dto.js';
 import { WorkbenchService } from './workbench-service.js';
-import { ownedMemberTemplates } from './member-template-catalog.js';
+import { defaultMemberTemplateSource, ownedMemberTemplates } from './member-template-catalog.js';
+import type { MemberAssetSourceSnapshot } from './member-asset-source-contract.js';
 import {
   memberWorkbenchOperationKey,
   type MemberWorkbenchIntent,
@@ -64,6 +68,111 @@ export class MemberWorkbenchService {
     private readonly workbench: WorkbenchService,
     private readonly options: MemberWorkbenchOptions,
   ) {}
+
+  /** Host-only original source provider for assets; HTTP callers receive only
+   * the later authority's metadata or explicitly selected detail projection. */
+  async assetSources(raw: unknown, signal: AbortSignal): Promise<MemberAssetSourceSnapshot> {
+    const { spaceId } = MemberWorkbenchScopeSchema.parse(raw);
+    signal.throwIfAborted();
+    const initial = await this.scope(spaceId);
+    const revision = this.workbench.snapshot().revision;
+    const fingerprint = canonicalPayload(initial.catalog);
+    const items: MemberAssetSourceSnapshot['items'][number][] = [];
+    const add = (
+      original: TeamAsset | Participant,
+      definition: MemberAssetDefinition,
+      source: MemberAssetLegacySource,
+      requirements: MemberAssetSourceSnapshot['items'][number]['requirements'] = [],
+    ) => {
+      items.push({
+        summary: MemberAssetLegacySummarySchema.parse({
+          source,
+          kind: definition.kind,
+          name: definition.name,
+          description: definition.description,
+          available: original.available,
+          readOnly: true,
+          canCopy:
+            original.available &&
+            source.kind !== 'unknown' &&
+            !requirements.some((item) => item.kind === 'mcp'),
+        }),
+        definition,
+        requirements,
+      });
+    };
+    for (const asset of initial.catalog.assets) {
+      if (asset.kind === 'mcp') continue;
+      const definition: MemberAssetDefinition = {
+        kind: asset.kind,
+        name: asset.name,
+        description: asset.description,
+        content: asset.content,
+        ...(asset.origin ? { origin: asset.origin } : {}),
+      };
+      const common = { spaceId, assetId: asset.id, assetKind: asset.kind };
+      const builtin = defaultMemberTemplateSource(asset);
+      const source: MemberAssetLegacySource = asset.memberTemplate
+        ? {
+            ...common,
+            assetKind: 'template',
+            kind: 'member-template',
+            ownerId: asset.memberTemplate.ownerId,
+            sourceTaskId: asset.memberTemplate.sourceTaskId,
+            sourceWorkbenchRevision: asset.memberTemplate.sourceWorkbenchRevision,
+            sha256: digest({ definition: asset, memberTemplate: asset.memberTemplate }),
+          }
+        : builtin
+          ? { ...common, kind: 'builtin', ...builtin }
+          : asset.origin
+            ? { ...common, kind: 'package', origin: asset.origin, sha256: digest(asset) }
+            : { ...common, kind: 'unknown', sha256: digest(asset) };
+      add(asset, definition, source);
+    }
+    for (const expert of initial.catalog.experts) {
+      const common = {
+        spaceId,
+        assetId: expert.id,
+        assetKind: 'expert' as const,
+        sha256: digest(expert),
+      };
+      const source: MemberAssetLegacySource = expert.origin
+        ? { ...common, kind: 'package', origin: expert.origin }
+        : { ...common, kind: 'unknown' };
+      add(
+        expert,
+        {
+          kind: 'expert',
+          name: expert.name,
+          description: expert.role,
+          role: expert.role,
+          capabilities: expert.capabilities,
+          instructions: expert.instructions,
+          ...(expert.origin ? { origin: expert.origin } : {}),
+        },
+        source,
+        [
+          ...(expert.resourceBindings?.skillIds ?? []).map((slotId) => ({
+            slotId,
+            kind: 'skill' as const,
+          })),
+          ...(expert.resourceBindings?.mcpIds ?? []).map((slotId) => ({
+            slotId,
+            kind: 'mcp' as const,
+          })),
+        ],
+      );
+    }
+    const current = await this.scope(spaceId, initial.actorId);
+    signal.throwIfAborted();
+    if (
+      current.directory !== initial.directory ||
+      this.workbench.snapshot().revision !== revision ||
+      canonicalPayload(current.catalog) !== fingerprint
+    )
+      fail('context-changed', '授权资产来源已变化，请重新读取。');
+    return structuredClone({ actorId: initial.actorId, spaceId, items });
+  }
 
   private async scope(spaceId: string, actorId?: string): Promise<Scope> {
     const member = await this.options.resolve();
