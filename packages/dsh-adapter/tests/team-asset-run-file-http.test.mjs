@@ -23,6 +23,7 @@ import { resolveMember } from '../dist/member-session.js';
 import { TeamAssetFileBytes } from '../dist/team-asset-file.js';
 import { TeamAssetFileService } from '../dist/team-asset-file-service.js';
 import { openTeamAssetRunFileHttp } from '../dist/team-asset-run-file-http.js';
+import { MemberLocalExecutionClient } from '../dist/member-local-execution-client.js';
 const hash = (data) => createHash('sha256').update(data).digest('hex');
 const active = () => new AbortController().signal;
 const deferred = () => {
@@ -148,6 +149,7 @@ async function fixture(t, options = {}) {
         canonicalPayload(body.payload.reference) !== canonicalPayload(reference)
       )
         throw denial('remote-scope-mismatch');
+      options.onWireRequest?.(request, body);
       if (admission) await admission();
       let released;
       const retirement = new AbortController();
@@ -251,6 +253,103 @@ async function fixture(t, options = {}) {
     },
   };
 }
+
+test('Run file HTTP: a dedicated signed check survives the prior read socket retiring after response consumption', async (t) => {
+  let readSocket,
+    checkSocket,
+    retired = 0,
+    authentications = 0;
+  const h = await fixture(t, {
+    data: Buffer.alloc(315, 65),
+    onWireRequest(request, body) {
+      if (body.payload.mode === 'read') readSocket = request.socket;
+      else {
+        checkSocket = request.socket;
+        // Reproduce the SDK binary lane's late socket retirement exactly when
+        // an authenticated follow-up reuses it, before any response headers.
+        if (request.socket === readSocket) {
+          retired++;
+          request.socket.destroy();
+        }
+      }
+    },
+  });
+  const client = new MemberLocalExecutionClient({
+    origin: h.origin,
+    methods: ['zhuma-proof/noop'],
+    privateHeaderNames: [REMOTE_RUN_PERMIT_HEADER],
+    async authentication() {
+      authentications++;
+      // Original credential reads yield after the binary body has settled.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { cookie: h.cookie, origin: h.origin };
+    },
+  });
+  h.beforeClose(() => client.close());
+  const open = (mode) =>
+    client.openTeamAssetFile(
+      h.envelope(mode).payload,
+      { scope: h.scope, reference: h.reference, file: h.file },
+      'synthetic-private-permit',
+      active(),
+    );
+  const reading = open('read');
+  const read = await reading.result;
+  await reading.drain;
+  assert.equal(read.ok, true);
+  assert.deepEqual(Buffer.from(read.value.bytes), h.data);
+  const checking = open('check');
+  const checked = await checking.result;
+  await checking.drain;
+  assert.equal(checked.ok, true);
+  assert.deepEqual(checked.value, { scope: h.scope, reference: h.reference, file: h.file });
+  assert.notEqual(readSocket, checkSocket);
+  assert.equal(retired, 0);
+  assert.equal(authentications, 2, 'a fresh original authentication precedes each request');
+  assert.equal(h.calls.admit, 2);
+  assert.equal(h.calls.attachment, 1, 'the final check never rereads the file');
+  await tick();
+  assert.equal(h.calls.runRelease, 2);
+  assert.equal(h.calls.fileRelease, 1);
+});
+
+test('Run file HTTP: a genuinely disconnected check is not retried and retains no false success or file lease', async (t) => {
+  let checks = 0,
+    authentications = 0;
+  const h = await fixture(t, {
+    data: Buffer.alloc(315, 65),
+    onWireRequest(request, body) {
+      if (body.payload.mode === 'check') {
+        checks++;
+        request.socket.destroy();
+      }
+    },
+  });
+  const client = new MemberLocalExecutionClient({
+    origin: h.origin,
+    methods: ['zhuma-proof/noop'],
+    privateHeaderNames: [REMOTE_RUN_PERMIT_HEADER],
+    async authentication() {
+      authentications++;
+      return { cookie: h.cookie, origin: h.origin };
+    },
+  });
+  h.beforeClose(() => client.close());
+  const checking = client.openTeamAssetFile(
+    h.envelope('check').payload,
+    { scope: h.scope, reference: h.reference, file: h.file },
+    'synthetic-private-permit',
+    active(),
+  );
+  await assert.rejects(checking.result, { code: 'unavailable' });
+  await checking.drain;
+  assert.equal(checks, 1);
+  assert.equal(authentications, 1);
+  assert.equal(h.calls.attachment, 0);
+  await tick();
+  assert.equal(h.calls.runRelease, 1);
+  assert.equal(h.calls.fileRelease, 0);
+});
 
 test('Run file HTTP: member and same-origin admission precede incomplete request bytes and all Run/attachment I/O', async (t) => {
   const h = await fixture(t);
