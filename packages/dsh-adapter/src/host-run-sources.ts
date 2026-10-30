@@ -33,6 +33,9 @@ export interface HostRunSources {
   readonly workspaces?: Pick<ReturnType<typeof createHostRunWorkspaces>, 'onChange'>;
   readonly retirementDrain?: NonNullable<ExecutionRunHostPorts['migrationDrain']>;
   readonly prepareProjectKnowledge?: ExecutionRunHostPorts['prepareProjectKnowledge'];
+  readonly teamAssets?: Required<
+    Pick<ExecutionRunHostPorts, 'prepareTeamAssetFiles' | 'qualifyTeamAssetFile'>
+  >;
 }
 
 type Retired = Extract<NativeScopeCleanupResult, { status: 'retired' }>;
@@ -130,6 +133,26 @@ export function createHostRunSources(
   };
   return {
     signal: sources.signal,
+    ...(sources.teamAssets
+      ? {
+          async prepareTeamAssetFiles(
+            ...args: Parameters<NonNullable<ExecutionRunHostPorts['prepareTeamAssetFiles']>>
+          ) {
+            active();
+            const value = await sources.teamAssets!.prepareTeamAssetFiles(...args);
+            active();
+            return value;
+          },
+          async qualifyTeamAssetFile(
+            ...args: Parameters<NonNullable<ExecutionRunHostPorts['qualifyTeamAssetFile']>>
+          ) {
+            active();
+            const value = await sources.teamAssets!.qualifyTeamAssetFile(...args);
+            active();
+            return value;
+          },
+        }
+      : {}),
     ...(sources.prepareProjectKnowledge
       ? {
           async prepareProjectKnowledge(

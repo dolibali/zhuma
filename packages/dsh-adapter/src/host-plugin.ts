@@ -535,6 +535,9 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
           member: memberOptions,
           knowledge: () => knowledge?.catalogSource(),
           limits: { bodyBytes: config.bodyBytes, bodyTimeoutMs: config.bodyTimeoutMs },
+          ...(config.remoteExecution
+            ? { execution: () => (closed || runsClosed ? undefined : remoteExecution) }
+            : {}),
         });
         http = workbench.openMemberWorkbench(ctx, memberOptions);
         memberAssets = assets;
@@ -599,6 +602,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                 signal: lifetime.signal,
                 readWorkbench: workbench.readWorkbench,
                 prepareProjectKnowledge: knowledgeOwner.projectSnapshot,
+                ...(memberAssets ? { teamAssets: memberAssets.runSources } : {}),
                 skillPolicies: workbench.createRunSkillPolicies(service),
                 localExecution: config.localExecution,
                 remoteOnly: config.remoteExecution === true,
