@@ -340,9 +340,23 @@ export class MemberAssetFilesUploadQueue {
           );
           this.live();
           signal.throwIfAborted();
-          // A later edit/reservation belongs to another intent. The original
-          // cancel command fences the row, so never fence that newer upload.
-          if (detail.asset.version > row.upload!.expectedVersion + 2)
+          // +2 is ambiguous: an old reservation may have drained without a
+          // commit and a different upload may now be pending. Only matching
+          // authoritative file metadata proves completion; it needs no cancel.
+          if (
+            detail.asset.version === row.upload!.expectedVersion + 2 &&
+            detail.file &&
+            sameFile(detail.file, row.declare!)
+          ) {
+            row.phase = 'complete';
+            row.error = '文件在取消前已上传；草稿保留，尚未发布。';
+            this.notify();
+            this.changed();
+            return;
+          }
+          // Only the original reservation's exact version may be fenced.
+          // The command still verifies its original upload key and CAS.
+          if (detail.asset.version !== row.upload!.expectedVersion + 1)
             throw new MemberAssetClientError('asset-conflict');
           row.cancel = {
             operation: 'cancel-upload',

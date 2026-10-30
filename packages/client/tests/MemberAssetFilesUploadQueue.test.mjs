@@ -238,11 +238,16 @@ test('batch queue: cancel ACK does not undo an upload that already committed; de
   await h.queue.cancel(h.queue.getSnapshot().rows[0].id);
   assert.equal(phase(h), 'complete');
   assert.match(h.queue.getSnapshot().rows[0].error, /取消前已上传/);
+  assert.deepEqual(
+    h.calls.command.map((input) => input.operation),
+    ['create-draft'],
+  );
+  assert.equal([...h.records.values()][0].version, 3);
   held.resolve();
   await run;
   assert.equal(phase(h), 'complete');
 });
-test('batch queue: cancellation before a reserve exists stays pending, never falsely cancelled; definitive conflict refresh retains cancel identity', async (t) => {
+test('batch queue: cancellation before a reserve exists sends no fence; later exact reservation still uses the original upload identity', async (t) => {
   let fail = true;
   const h = harness(t, {
     upload: async (_input, row) => {
@@ -258,8 +263,10 @@ test('batch queue: cancellation before a reserve exists stays pending, never fal
   const id = h.queue.getSnapshot().rows[0].id;
   await h.queue.cancel(id);
   assert.equal(phase(h), 'cancel-unknown');
-  const original = h.calls.command.at(-1);
-  assert.equal(original.operation, 'cancel-upload');
+  assert.deepEqual(
+    h.calls.command.map((input) => input.operation),
+    ['create-draft'],
+  );
   fail = false;
   const row = h.records.get(id);
   row.upload = h.calls.upload[0].input;
@@ -267,9 +274,30 @@ test('batch queue: cancellation before a reserve exists stays pending, never fal
   await h.queue.retry(id);
   assert.equal(phase(h), 'cancelled');
   const next = h.calls.command.at(-1);
-  assert.equal(next.uploadKey, original.uploadKey);
-  assert.equal(next.idempotencyKey, original.idempotencyKey);
+  assert.equal(next.operation, 'cancel-upload');
+  assert.equal(next.uploadKey, h.calls.upload[0].input.idempotencyKey);
   assert.equal(next.expectedVersion, 2);
+});
+test('batch queue: expected+2 without the exact file is an ambiguous later reservation, never permission to cancel it', async (t) => {
+  for (const wrongFile of [false, true]) {
+    const h = harness(t, {
+      upload(input, row) {
+        row.version = 3;
+        if (wrongFile) row.file = { ...input.declare, sha256: 'a'.repeat(64) };
+        throw new MemberAssetClientError('asset-unavailable', 'unknown');
+      },
+    });
+    h.queue.add([file()]);
+    await h.queue.start();
+    const before = structuredClone([...h.records.values()]);
+    await h.queue.cancel(h.queue.getSnapshot().rows[0].id);
+    assert.equal(phase(h), 'cancel-unknown');
+    assert.deepEqual(
+      h.calls.command.map((input) => input.operation),
+      ['create-draft'],
+    );
+    assert.deepEqual([...h.records.values()], before);
+  }
 });
 test('batch queue: a newer external row mutation cannot be fenced by cancelling the earlier upload', async (t) => {
   const h = harness(t, {
