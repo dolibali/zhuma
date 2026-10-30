@@ -365,3 +365,15 @@ test('team asset Run: preparing a failed snapshot cannot become empty or commit 
   assert.equal(h.read().nativeExecution?.runs.length ?? 0, 0);
   assert.equal(h.domain.global.get().remoteExecutionTeamAssetWriter, undefined);
 });
+
+test('team asset Run: repeated missing-producer refusal releases every authentication opening', async (t) => {
+  const h = await setup(t, { enabled: false });
+  await h.begin({
+    capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
+    workspace: { kind: 'text-only' },
+  });
+  for (let index = 0; index < 9; index++)
+    await assert.rejects(h.open(), { code: 'remote-protocol-unsupported' });
+  assert.equal(h.counts.qualifications, 0);
+  assert.equal(h.counts.snapshots, 0);
+});

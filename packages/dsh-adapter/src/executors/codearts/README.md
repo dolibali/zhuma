@@ -4,6 +4,12 @@
 
 `http.ts` 仅连接本进程拥有的 loopback 服务，使用单独生成的 Basic 凭据。会话创建固定目录和明确 permission 配置；恢复读取原 ID，失败保留错误。历史和 SSE 只返回已绑定会话，流关闭会取消 reader。写请求遇到不确定结果不会自动重发；abort 返回的是确认回执，真实进程排空沿原 Harness Subprocess 能力核对。
 
-这两个叶子尚未提供 ACP 可执行入口或任务 prompt。文件校验、permission 回显、SSE、CLI 退出均不认证成员权限、内置工具的读写范围、产物提交或独立评审。任务接入还需核定 CodeArts 本会话权限的实际执行边界，复用原 Run／成员／固定提交门禁。原 Harness 工具交接补丁由 A 按协调冻结的社区源 pin 纳入发行。
+`main.ts` 是独立的 Node ACP 入口，A 需将其构建成自包含产物，并由注册生产者校验该实际产物的 SHA256。`initialize` 只协商能力；显式 new／resume／load 才建立自己的 CodeArts serve。每个 ACP connection 只拥有一个会话，第二个工作项返回 busy，原会话继续保留；不同连接分别管理 serve、桥和停止范围。普通 DSH 历史仍走原历史系统。
+
+`policy.ts` 只接受当前固定插件生成的单个 DSH HTTP 桥。每进程配置禁用内置工具，开启该桥，并在每次明确 prompt 后置写入 deny-all 加本代桥 namespace 的 allow；恢复不会沿用旧桥权限。CodeArts 内置 user-shell 不作为任务端口。授权、审批、产物和评审继续由原 DSH 工具与 Run／成员门禁处理。原工具交接补丁由 A 按协调冻结的社区源 pin 纳入发行。
+
+当前入口固定核对已验证的 CLI 26.10.13，使用正常 CLI 认证及既有会话模型，不读取全局模型配置。首个请求生成的原生用户记录确定模型；继续时复用该模型元数据。文本和内联文本资源可用；图片、任意本机路径及额外工作目录会被明确拒绝。取消在未发送时不启动请求；请求尚未确认进入 provider loop 时退出自有 backend 并保留不确定结果。abort／主进程退出与官方外层 Subprocess 的托管范围排空分别观察。
+
+文件校验、permission 回显、CLI 退出和会话文本均不认证产物交付。真实 CLI → 本地合成 provider／scoped MCP 的定向资格已观察到仅受控桥声明、一次受控读和一次越界拒绝、native bash 为 invalid；这不替代当前 ACP 产物、真实 DSH Run 与模型的组合验收。
 
 本地契约测试使用合成文件和 HTTP 响应。真实 CLI 会话与恢复的无模型证据分别记录准确 launcher 和编译产物；Windows／Linux、真实模型和完整任务交付另验。

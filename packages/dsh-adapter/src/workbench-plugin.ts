@@ -20,6 +20,9 @@ import {
   type MemberWorkbenchHttpHandle,
   type MemberWorkbenchMountOptions,
 } from './member-workbench-http.js';
+import { MemberAssetService } from './member-asset-service.js';
+import { MemberWorkbenchService } from './member-workbench-service.js';
+import { openExecutionMemberLease, resolveMember } from './member-session.js';
 import { previewAssetImport } from './asset-import.js';
 import { authorizeLegacyOwnerRoutes, LEGACY_OWNER_ROUTES } from './member-session.js';
 import {
@@ -159,6 +162,11 @@ export interface OpenedWorkbench {
   ): ReturnType<typeof createHostRunSkillPolicies>;
   readWorkbench(): ReturnType<WorkbenchService['snapshot']>;
   planningModel(): PlanningModel | undefined;
+  /** Facade over this already-opened Workbench and the same member catalog. */
+  openMemberAssets(
+    ctx: Context,
+    options: Omit<MemberWorkbenchMountOptions, 'workbench'>,
+  ): MemberAssetService;
   openMemberWorkbench(
     ctx: Context,
     options: Omit<MemberWorkbenchMountOptions, 'workbench'>,
@@ -335,6 +343,26 @@ export async function openWorkbench(
     planningModel: () => {
       if (lifetime.signal.aborted) return undefined;
       return planningModel(ctx);
+    },
+    openMemberAssets: (memberCtx, options) => {
+      if (lifetime.signal.aborted || !service)
+        throw new WorkbenchError('unavailable', '工作台已关闭。');
+      const original = service;
+      return new MemberAssetService(original, {
+        signal: lifetime.signal,
+        memberLease: (request) => openExecutionMemberLease(memberCtx, request),
+        directory: options.directory,
+        ...(options.catalog ? { catalog: options.catalog } : {}),
+        sources: async (request, input, signal) => {
+          if (lifetime.signal.aborted || service !== original)
+            throw new WorkbenchError('asset-unavailable', '资产服务暂不可用。');
+          const member = new MemberWorkbenchService(original, {
+            ...options,
+            resolve: () => resolveMember(memberCtx, request),
+          });
+          return member.assetSources(input, signal);
+        },
+      });
     },
     openMemberWorkbench: (memberCtx, options) => {
       if (lifetime.signal.aborted || !service)

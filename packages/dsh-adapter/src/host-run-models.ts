@@ -13,6 +13,21 @@ export type HostRunModels =
   | { kind: 'ready'; items: { id: string; label: string; value: HostRunModel }[] }
   | { kind: 'unavailable'; message: string };
 const id = z.string().trim().min(1).max(200);
+// Fixed adapter's health() defaults to its cache-only view. Keep only profile
+// identities: command, argv, private paths and live Session ids never enter the
+// task options projection. listModels() would actively probe those profiles.
+const acpProfiles = z.object({
+  providers: z
+    .array(
+      z.object({
+        id: z
+          .string()
+          .max(196)
+          .regex(/^[a-z][a-z0-9-]*$/),
+      }),
+    )
+    .max(128),
+});
 
 /** Passive official metadata only. Callers authorize both before and after this await. */
 export async function readHostRunModels(
@@ -44,8 +59,40 @@ export async function readHostRunModels(
         deadline.addEventListener('abort', cancel, { once: true });
       });
       deadline.throwIfAborted();
+      const acp: unknown = ctx.get('dshAcp');
+      const acpOrigin =
+        acp && typeof acp === 'object' ? (Reflect.get(acp, symbols.original) ?? acp) : acp;
+      const external = new Set<string>();
+      if (acp !== undefined) {
+        if (!acp || typeof acp !== 'object' || typeof Reflect.get(acp, 'health') !== 'function')
+          throw Error('External profile metadata is unavailable');
+        const snapshot = acpProfiles.parse(
+          await Promise.race([Reflect.apply(Reflect.get(acp, 'health'), acp, []), cancelled]),
+        );
+        active(signal);
+        const current: unknown = ctx.get('dshAcp');
+        if (
+          !current ||
+          typeof current !== 'object' ||
+          (Reflect.get(current, symbols.original) ?? current) !== acpOrigin
+        )
+          throw Error('External profile owner changed');
+        for (const profile of snapshot.providers) {
+          const route = `acp-${profile.id}`;
+          if (external.has(route)) throw Error('Duplicate external profile');
+          external.add(route);
+        }
+      }
+      // A missing/retiring ACP owner cannot fall through to an active probe.
+      // This is a conservative refusal for the adapter's reserved namespace,
+      // not a prefix-derived availability or execution grant.
+      if (
+        providers.some((provider) => provider.id.startsWith('acp-') && !external.has(provider.id))
+      )
+        throw Error('External profile owner is unavailable');
+      const nativeProviders = providers.filter((provider) => !external.has(provider.id));
       const catalogs = await Promise.race([
-        Promise.all(providers.map((provider) => llm.listModels(provider.id))),
+        Promise.all(nativeProviders.map((provider) => llm.listModels(provider.id))),
         cancelled,
       ]);
       active(signal);
