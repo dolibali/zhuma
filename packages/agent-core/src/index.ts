@@ -260,3 +260,4 @@ export {
   executionInbox,
 } from './human-node.js';
 export * from './remote-run-contract.js';
+export * from './member-asset-contract.js';
