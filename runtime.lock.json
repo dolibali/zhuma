@@ -17,5 +17,14 @@
   "qualification": {
     "desktopIntegration": "not-tested",
     "releasePackaging": "not-implemented"
+  },
+  "plugins": {
+    "acpAdapter": {
+      "package": "@zaimokuza/dsh-acp-adapter",
+      "version": "0.2.1-rc.4.1",
+      "repository": "https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git",
+      "commit": "28ccc6745ec82139c684c3642637e93e00d800f2",
+      "integrity": "sha512-IMLKvzdzb3JzbH2DTn5G5CiKC7hMgtaXxItsCKEwJ2JJu5Z4AngeuhET+/33OGhgnEcUo7ZVQez5bymi7oXtKQ=="
+    }
   }
 }
