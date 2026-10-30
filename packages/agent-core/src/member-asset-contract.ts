@@ -77,9 +77,71 @@ export const MemberAssetDefinitionSchema = z.discriminatedUnion('kind', [
   z.strictObject({ ...commonDefinition, kind: z.literal('file') }),
 ]);
 export type MemberAssetDefinition = z.infer<typeof MemberAssetDefinitionSchema>;
+/** Existing sources retain their real pin, never a synthesized publication UUID. */
+export const MemberAssetLegacyFixedSourceSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('builtin'),
+    spaceId: id,
+    assetId: id,
+    assetKind: MemberAssetKindSchema,
+    sourceCommit: z.string().regex(/^[a-f0-9]{40}$/u),
+    sha256: digest,
+  }),
+  z.strictObject({
+    kind: z.literal('package'),
+    spaceId: id,
+    assetId: id,
+    assetKind: MemberAssetKindSchema,
+    origin: ResourceOriginSchema,
+    sha256: digest,
+  }),
+  z.strictObject({
+    kind: z.literal('member-template'),
+    spaceId: id,
+    assetId: id,
+    assetKind: z.literal('template'),
+    ownerId: id,
+    sourceTaskId: id,
+    sourceWorkbenchRevision: natural,
+    sha256: digest,
+  }),
+]);
+export const MemberAssetLegacySourceSchema = z.union([
+  MemberAssetLegacyFixedSourceSchema,
+  z.strictObject({
+    kind: z.literal('unknown'),
+    spaceId: id,
+    assetId: id,
+    assetKind: MemberAssetKindSchema,
+    sha256: digest,
+  }),
+]);
+export type MemberAssetLegacyFixedSource = z.infer<typeof MemberAssetLegacyFixedSourceSchema>;
+export type MemberAssetLegacySource = z.infer<typeof MemberAssetLegacySourceSchema>;
+export const MemberAssetLegacySummarySchema = z
+  .strictObject({
+    source: MemberAssetLegacySourceSchema,
+    kind: MemberAssetKindSchema,
+    name,
+    description,
+    available: z.boolean(),
+    readOnly: z.literal(true),
+    canCopy: z.boolean(),
+  })
+  .refine(
+    (value) =>
+      value.kind === value.source.assetKind && (!value.canCopy || value.source.kind !== 'unknown'),
+  );
+export const MemberAssetLegacyListValueSchema = z.strictObject({
+  actorId: id,
+  spaceId: id,
+  items: z.array(MemberAssetLegacySummarySchema).max(200),
+});
+export type MemberAssetLegacySummary = z.infer<typeof MemberAssetLegacySummarySchema>;
+export type MemberAssetLegacyListValue = z.infer<typeof MemberAssetLegacyListValueSchema>;
 export const MemberAssetSourceSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('asset'), reference: MemberAssetReferenceSchema }),
-  z.strictObject({ kind: z.literal('builtin'), assetId: id, versionId: id, sha256: digest }),
+  ...MemberAssetLegacyFixedSourceSchema.options,
   z.strictObject({
     kind: z.literal('import'),
     versionId: z.uuid(),
@@ -228,7 +290,7 @@ export const MemberAssetCommandSchema = z.discriminatedUnion('operation', [
     ...object,
     expectedVersion: z.literal(0),
     idempotencyKey: z.uuid(),
-    source: MemberAssetReferenceSchema,
+    source: z.union([MemberAssetReferenceSchema, MemberAssetLegacyFixedSourceSchema]),
     name,
     dependencies,
   }),
