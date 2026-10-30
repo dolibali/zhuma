@@ -534,22 +534,23 @@ export class MemberAssetService
     if (!item) return fail('asset-unavailable');
     return item.skillKeys.map((sourceKey, index) => {
       const skill = preview.items.find((item) => item.key === sourceKey && item.kind === 'skill');
-      if (!skill) return fail('asset-unavailable');
-      const suggested = records.find((record) => {
-        const candidate = (record.draft ?? record.published.at(-1))?.source;
-        return (
-          record.spaceId === access.spaceId &&
-          record.kind === 'skill' &&
-          (record.published.length || record.maintainerIds.includes(access.actorId)) &&
-          candidate?.kind === 'import' &&
-          candidate.versionId === source.versionId &&
-          candidate.entryPath === sourceKey
-        );
-      });
+      const suggested =
+        skill &&
+        records.find((record) => {
+          const candidate = (record.draft ?? record.published.at(-1))?.source;
+          return (
+            record.spaceId === access.spaceId &&
+            record.kind === 'skill' &&
+            (record.published.length || record.maintainerIds.includes(access.actorId)) &&
+            candidate?.kind === 'import' &&
+            candidate.versionId === source.versionId &&
+            candidate.entryPath === sourceKey
+          );
+        });
       return {
         slotId: memberAssetImportSkillSlotId(index),
         kind: 'skill' as const,
-        name: skill.name,
+        name: skill?.name ?? sourceKey.slice(0, 160),
         sourceKey,
         ...(suggested ? { suggestedAssetId: suggested.assetId } : {}),
       };
