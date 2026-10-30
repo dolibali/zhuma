@@ -673,6 +673,15 @@ function freezeForRevisionRound(
     )
       fail('composition-source-mismatch');
     const applied = AppliedPlanSchema.parse(createExecutionHandoff(locator, input.workbench));
+    const selectedFiles = applied.task.fileRefs ?? [];
+    if (selectedFiles.length && (!input.teamAssets || !input.teamAssetTool))
+      fail('composition-input-reader-required');
+    const keys = (values: readonly unknown[]) => values.map(canonicalPayload).sort();
+    if (
+      canonicalPayload(keys(selectedFiles)) !==
+      canonicalPayload(keys(input.teamAssets?.files.map((item) => item.reference) ?? []))
+    )
+      fail('composition-source-mismatch');
     const expected = createNodeHandoffs(applied).find((node) => node.nodeId === scope.nodeId);
     const node = input.node;
     if (
