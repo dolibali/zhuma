@@ -127,15 +127,29 @@ try {
       env: {},
     },
   };
+  let guardRegistrations = 0;
   const registry = installInstalledProfileRegistry(
     ctx,
     {
       agents: { get: () => structuredClone(profiles) },
       toolApprovalDefault: { get: () => 'ask' },
     },
-    { installRemote: true },
+    {
+      installRemote: true,
+      ...(lock.plugins.acpAdapter.nativeToolHandoff
+        ? {
+            nativeToolHandoffGuard(id, profile) {
+              assert.equal(id, 'codearts');
+              assert.deepEqual(profile, profiles.codearts);
+              guardRegistrations++;
+              return () => false; // Contract only; no real producer or execution grant.
+            },
+          }
+        : {}),
+    },
   );
   await registry.ready;
+  if (lock.plugins.acpAdapter.nativeToolHandoff) assert.equal(guardRegistrations, 1);
   assert.equal(registry.agents().get('codearts').name, 'CodeArts qualification');
   assert.ok(ctx.llm.listProviders().some((row) => row.id === 'acp-codearts'));
   assert.ok(ctx.llm.listProviders().some((row) => row.id === 'native-qualification'));
@@ -173,6 +187,7 @@ try {
     nativeFactoryPreserved: true,
     acpRouteRegistered: true,
     passiveHealthRead: true,
+    hostGuardRegistration: guardRegistrations,
     spawns,
     inference,
     limits: [

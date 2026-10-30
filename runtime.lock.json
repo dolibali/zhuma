@@ -24,7 +24,27 @@
       "version": "0.2.1-rc.4.1",
       "repository": "https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git",
       "commit": "28ccc6745ec82139c684c3642637e93e00d800f2",
-      "integrity": "sha512-IMLKvzdzb3JzbH2DTn5G5CiKC7hMgtaXxItsCKEwJ2JJu5Z4AngeuhET+/33OGhgnEcUo7ZVQez5bymi7oXtKQ=="
+      "integrity": "sha512-IMLKvzdzb3JzbH2DTn5G5CiKC7hMgtaXxItsCKEwJ2JJu5Z4AngeuhET+/33OGhgnEcUo7ZVQez5bymi7oXtKQ==",
+      "nativeToolHandoff": {
+        "sourceTree": "4c54f49a7585f43ea41eb9c12a525fff834efff6",
+        "communityPatchTree": "fbe9a9708ace3a727553abeb8ae3850cc43b9c75",
+        "sourcePackageManager": "pnpm@10.7.0",
+        "sourceNode": "24.15.0",
+        "patches": {
+          "native-tool-handoff-source.patch": {
+            "path": "patches/dsh-acp-adapter/native-tool-handoff-source.patch",
+            "sha256": "7dc8a6bbc3464308d463aec68474c75c20ada7a1c2907c51194ef96578af0789"
+          },
+          "host-registration-source.patch": {
+            "path": "patches/dsh-acp-adapter/host-registration-source.patch",
+            "sha256": "c4aa5b12cd60adbf8615501cfee44940927763aa45b55a75ebdaf25888a10168"
+          },
+          "published-package.patch": {
+            "path": "patches/dsh-acp-adapter/published-package.patch",
+            "sha256": "e7d8880c63d599db18874bb30d47188c2c0c14b101afddcf821adca1163e328a"
+          }
+        }
+      }
     }
   }
 }
