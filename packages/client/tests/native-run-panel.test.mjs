@@ -447,6 +447,41 @@ test('SSR: first-run configuration is expanded and ready selection has one expli
   assert.ok(!empty.includes('准备就绪'));
 });
 
+test('SSR: long node goals remain complete in a collapsed work description without executing', () => {
+  const description = `完整工作说明 <literal>\n${'保留全部正文与换行。'.repeat(600)}\n最终要求`;
+  const passive = () => assert.fail('reading the work description must not execute');
+  const html = render({
+    target: { ...target, description },
+    onStart: passive,
+    onSend: passive,
+    onSelectionChange: passive,
+    onRefresh: passive,
+  });
+  assert.match(html, /<details class="zm-native-run__context">/);
+  assert.ok(html.includes('完整工作说明 &lt;literal&gt;\n'));
+  assert.ok(html.includes(`${'保留全部正文与换行。'.repeat(600)}\n最终要求`));
+  assert.ok(!render({ target: { ...target, description: target.title } }).includes('工作说明'));
+});
+
+test('SSR: only a long initial automatic task prompt is folded, preserving exact text', () => {
+  const text = `执行当前节点：${'完整目标与字面内容 <literal>。'.repeat(120)}\n预期产物：正文\n节点输入说明：参考\n按固定输入清单处理，返回产物草稿与必要说明。\n末尾交付要求`;
+  const first = { id: 'first', sequence: 1, role: 'user', text };
+  const html = render({ view: view({ messages: [first] }) });
+  assert.match(html, /<details class="zm-native-run__instructions zm-native-run__disclosure">/);
+  assert.ok(html.includes('初始任务说明'));
+  assert.ok(html.includes(text.replaceAll('<', '&lt;').replaceAll('>', '&gt;')));
+  for (const messages of [
+    [{ ...first, text: '短任务说明' }],
+    [{ ...first, text: '普通长消息。'.repeat(400) }],
+    [{ ...first, role: 'assistant' }],
+    [
+      { ...first, text: '此前的用户消息' },
+      { ...first, id: 'later', sequence: 2 },
+    ],
+  ])
+    assert.ok(!render({ view: view({ messages }) }).includes('初始任务说明'));
+});
+
 test('SSR workspace: only supplied workspace names appear and an unavailable saved selection cannot start', () => {
   const workspace = { id: 'unavailable', label: 'Project files', access: 'write', publish: true };
   const html = render({
@@ -746,8 +781,12 @@ if (domModule) {
       await act(async () => {
         config.open = true;
       });
-    await act(async () => h.button(label).click());
-    const option = document.querySelector('[role="option"]');
+    const trigger = h.button(label);
+    await act(async () => trigger.click());
+    // A closing menu may still be mounted for its exit transition. Select only
+    // the new trigger's own popup, rather than a previous field's option.
+    const popup = document.getElementById(trigger.getAttribute('aria-controls'));
+    const option = popup?.querySelector('[role="option"]');
     assert.ok(option, `missing option for ${label}`);
     await act(async () => option.click());
   }
