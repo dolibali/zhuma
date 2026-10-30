@@ -41,11 +41,28 @@ test('board projection uses authoritative progress and keeps unknown/cancelled d
   assert.equal(taskBoardColumn(draft, false, ready(row())), 'planning');
 });
 
-test('board drag rejects review-bypass drops and allows safe paths', () => {
+test('board drag refuses execution/review moves without authority; planning may allow', () => {
   assert.equal(boardDragDecision('running', 'running', { reviewRequired: true }).type, 'same');
+  // running/review→ended have no client drag command — refuse (no fake stage).
   assert.equal(
     boardDragDecision('running', 'ended', { reviewRequired: true }).type,
     'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('running', 'ended', { reviewRequired: false }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('review', 'ended', { reviewRequired: true }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('review', 'attention', { reviewRequired: true }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('attention', 'running', { reviewRequired: false }).type,
+    'reject-no-authority',
   );
   assert.equal(
     boardDragDecision('attention', 'ended', { reviewRequired: true }).type,
@@ -55,29 +72,22 @@ test('board drag rejects review-bypass drops and allows safe paths', () => {
     boardDragDecision('planning', 'ended', { reviewRequired: true }).type,
     'reject-bypass-review',
   );
-  // Path does not require review → allow forward to ended.
-  assert.equal(boardDragDecision('running', 'ended', { reviewRequired: false }).type, 'allow');
-  assert.equal(boardDragDecision('attention', 'running', { reviewRequired: false }).type, 'allow');
-  assert.equal(boardDragDecision('attention', 'running', { reviewRequired: true }).type, 'allow');
+  // Planning confirm path (save-task) may allow when it does not bypass review / fake review.
+  assert.equal(boardDragDecision('planning', 'attention', { reviewRequired: false }).type, 'allow');
+  assert.equal(boardDragDecision('planning', 'running', { reviewRequired: true }).type, 'allow');
+  assert.equal(boardDragDecision('planning', 'ended', { reviewRequired: false }).type, 'allow');
   // Faking the review column always bypasses submit-for-review.
   assert.equal(
     boardDragDecision('running', 'review', { reviewRequired: true }).type,
     'reject-bypass-review',
   );
   assert.equal(
-    boardDragDecision('running', 'review', { reviewRequired: false }).type,
-    'reject-bypass-review',
-  );
-  // Leave review only via accept or changes-requested.
-  assert.equal(boardDragDecision('review', 'ended', { reviewRequired: true }).type, 'allow');
-  assert.equal(boardDragDecision('review', 'attention', { reviewRequired: true }).type, 'allow');
-  assert.equal(
-    boardDragDecision('review', 'running', { reviewRequired: true }).type,
+    boardDragDecision('planning', 'review', { reviewRequired: false }).type,
     'reject-bypass-review',
   );
   assert.equal(
     boardDragDecision('unknown', 'attention', { reviewRequired: false }).type,
-    'reject-bypass-review',
+    'reject-no-authority',
   );
 });
 
@@ -110,4 +120,11 @@ test('board SSR contract renders the supplied task snapshot without commands; ca
   assert.ok(html.includes('任务看板'));
   assert.ok(html.includes('draggable="true"'));
   assert.ok(!html.includes('产物全部已接受'));
+});
+
+test('TaskBoard source has no session placements override of stage', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../src/workbench/TaskBoard.tsx', import.meta.url), 'utf8');
+  assert.equal(/setPlacements|placements\[/.test(source), false);
+  assert.match(source, /taskBoardColumn\(/);
 });

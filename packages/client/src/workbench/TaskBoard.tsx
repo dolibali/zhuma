@@ -27,7 +27,11 @@ export function TaskBoard({
   progress(taskId: string): TaskProgressState | undefined;
   confirmed(taskId: string): boolean;
   openTask(taskId: string): void;
-  /** Called when a drop is allowed; should persist the stage change. Return false to snap back. */
+  /**
+   * Called only for decisions that may have an authoritative migration.
+   * Return true after the command commits new facts; false/throw → tip, stay on fact column.
+   * Columns never use session placements — only plan + execution/review facts.
+   */
   onMoveTask?(
     taskId: string,
     from: TaskBoardColumn,
@@ -37,31 +41,22 @@ export function TaskBoard({
   const [notice, setNotice] = useState<string>();
   const [draggingId, setDraggingId] = useState<string>();
   const [overColumn, setOverColumn] = useState<TaskBoardColumn>();
-  /** Session placements for allowed drops until authoritative facts catch up. */
-  const [placements, setPlacements] = useState<Readonly<Record<string, TaskBoardColumn>>>({});
 
   const rows = tasks.map((task) => ({ task, progress: progress(task.id) }));
 
-  function naturalColumn(taskId: string): TaskBoardColumn | undefined {
+  function columnOf(taskId: string): TaskBoardColumn | undefined {
     const row = rows.find((item) => item.task.id === taskId);
     if (!row) return undefined;
     return taskBoardColumn(row.task, confirmed(row.task.id), row.progress);
   }
 
-  function columnOf(taskId: string): TaskBoardColumn | undefined {
-    const natural = naturalColumn(taskId);
-    if (!natural) return undefined;
-    const placed = placements[taskId];
-    // Drop stale overrides once facts already match the placement.
-    if (placed && placed === natural) return natural;
-    return placed ?? natural;
-  }
-
-  function rejectMove(target: TaskBoardColumn) {
+  function rejectMove(target: TaskBoardColumn, reason: 'bypass-review' | 'no-authority') {
     const label = taskBoardColumns.find((column) => column.id === target)?.label ?? target;
-    setNotice(
-      `不能拖到「${label}」：看板阶段来自计划确认与执行／评审事实，拖列会绕过评审。卡片已回到原列。`,
-    );
+    const detail =
+      reason === 'bypass-review'
+        ? `不能拖到「${label}」：会绕过评审或伪造待评审。卡片留在原列。`
+        : `不能拖到「${label}」：看板阶段来自计划确认与执行／评审事实，无对应权威命令不能改列。卡片留在原列。`;
+    setNotice(detail);
     setOverColumn(undefined);
     setDraggingId(undefined);
   }
@@ -98,33 +93,26 @@ export function TaskBoard({
       reviewRequired: boardReviewRequired(row.task, row.progress),
     });
     if (decision.type === 'reject-bypass-review') {
-      rejectMove(columnId);
+      rejectMove(columnId, 'bypass-review');
+      return;
+    }
+    if (decision.type === 'reject-no-authority') {
+      rejectMove(columnId, 'no-authority');
       return;
     }
     if (decision.type !== 'allow') return;
 
     const label = taskBoardColumns.find((column) => column.id === columnId)?.label ?? columnId;
-    // Apply placement first so the card moves; parent may persist via onMoveTask.
-    setPlacements((current) => ({ ...current, [taskId]: columnId }));
+    // Do not set session placements. Wait for onMoveTask to commit facts; column follows projection.
     try {
       const result = await onMoveTask?.(taskId, from, columnId);
-      if (result === false) {
-        setPlacements((current) => {
-          const next = { ...current };
-          delete next[taskId];
-          return next;
-        });
-        rejectMove(columnId);
+      if (result !== true) {
+        rejectMove(columnId, 'no-authority');
         return;
       }
-      setNotice(`已移到「${label}」。`);
+      setNotice(`已确认计划；列随执行／评审事实更新（目标「${label}」）。`);
     } catch {
-      setPlacements((current) => {
-        const next = { ...current };
-        delete next[taskId];
-        return next;
-      });
-      rejectMove(columnId);
+      rejectMove(columnId, 'no-authority');
     }
   }
 

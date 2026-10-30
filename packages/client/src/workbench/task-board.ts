@@ -33,16 +33,17 @@ const BOARD_PIPELINE = ['planning', 'attention', 'running', 'review', 'ended'] a
 
 export type BoardDragDecision =
   | { readonly type: 'same' }
+  | { readonly type: 'reject-no-authority' }
   | { readonly type: 'reject-bypass-review' }
   | { readonly type: 'allow' };
 
 /**
  * Board columns are projections of plan confirmation + execution/review facts
- * (docs: 禁止拖卡绕过评审; #34 拖动不绕过命令、依赖或评审).
+ * (docs: 禁止拖卡绕过评审; #34 拖动不绕过命令、依赖或评审; FR05 只显示已确认事实).
  *
- * - Bypass review → reject (tip + snap back).
- * - Path does not require review (and does not fake the review column) → allow;
- *   caller must actually move the card / apply the stage change.
+ * Cross-column drops need an authoritative migration. The only client path here is
+ * confirming a planning draft (`save-task` → ready). Execution/review stages have no
+ * drag command — refuse (tip + stay on fact column). Never fake stage via session state.
  */
 export function boardDragDecision(
   from: TaskBoardColumn,
@@ -50,29 +51,27 @@ export function boardDragDecision(
   opts: { readonly reviewRequired: boolean },
 ): BoardDragDecision {
   if (from === to) return { type: 'same' };
-  // unknown is not an authoritative drop target or source for stage changes.
-  if (from === 'unknown' || to === 'unknown') return { type: 'reject-bypass-review' };
+  if (from === 'unknown' || to === 'unknown') return { type: 'reject-no-authority' };
 
   const fromIdx = (BOARD_PIPELINE as readonly string[]).indexOf(from);
   const toIdx = (BOARD_PIPELINE as readonly string[]).indexOf(to);
-  if (fromIdx < 0 || toIdx < 0) return { type: 'reject-bypass-review' };
+  if (fromIdx < 0 || toIdx < 0) return { type: 'reject-no-authority' };
 
   const reviewIdx = (BOARD_PIPELINE as readonly string[]).indexOf('review');
 
   // Dragging into「待评审」fakes submit-for-review.
   if (to === 'review' && from !== 'review') return { type: 'reject-bypass-review' };
 
-  // Leaving review except via accept (ended) or changes-requested (attention).
-  if (from === 'review' && to !== 'ended' && to !== 'attention') {
-    return { type: 'reject-bypass-review' };
-  }
-
   // Jumping past review when the path requires review.
   if (opts.reviewRequired && fromIdx < reviewIdx && toIdx > reviewIdx) {
     return { type: 'reject-bypass-review' };
   }
 
-  return { type: 'allow' };
+  // Only planning→* has a client authoritative command (confirm draft).
+  if (from === 'planning' && to !== 'planning') return { type: 'allow' };
+
+  // running/review/attention/ended moves need execution or review commands — not drag.
+  return { type: 'reject-no-authority' };
 }
 
 /** True when any node requires review, or progress already shows in-review work. */
