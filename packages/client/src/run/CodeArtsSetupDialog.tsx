@@ -80,7 +80,10 @@ export function CodeArtsSetupDialog({
               }}
             />
           </Field>
-          <small>在码道 CLI 完成登录后，选择码道处理任务。保存配置不会启动任务。</small>
+          <small>
+            首次使用工作区前，请在该目录启动官方码道
+            CLI，确认目录可信后按提示选择信任。完成登录后，再返回选择该工作区开始任务。保存配置不会启动任务。
+          </small>
           {error && <p role="alert">{error}</p>}
           <div className="zm-dialog-actions">
             <Button onClick={() => leave.request(close, dirty || busy)}>取消</Button>
