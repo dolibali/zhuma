@@ -32,6 +32,7 @@ import {
 import { WorkbenchService } from './workbench-service.js';
 import { defaultMemberTemplateSource, ownedMemberTemplates } from './member-template-catalog.js';
 import type { MemberAssetSourceSnapshot } from './member-asset-source-contract.js';
+import { memberAssetPublishedCatalog } from './member-asset-service.js';
 import {
   memberWorkbenchOperationKey,
   type MemberWorkbenchIntent,
@@ -102,7 +103,7 @@ export class MemberWorkbenchService {
       });
     };
     for (const asset of initial.catalog.assets) {
-      if (asset.kind === 'mcp') continue;
+      if (asset.kind === 'mcp' || asset.memberAsset) continue;
       const definition: MemberAssetDefinition = {
         kind: asset.kind,
         name: asset.name,
@@ -130,6 +131,7 @@ export class MemberWorkbenchService {
       add(asset, definition, source);
     }
     for (const expert of initial.catalog.experts) {
+      if (expert.memberAsset) continue;
       const common = {
         spaceId,
         assetId: expert.id,
@@ -207,7 +209,8 @@ export class MemberWorkbenchService {
     if (
       space.kind === 'personal' &&
       (state.assets.some((asset) => asset.memberTemplate?.spaceId === spaceId) ||
-        catalogData.data.assets.some((asset) => asset.kind === 'template'))
+        catalogData.data.assets.some((asset) => asset.kind === 'template' || asset.memberAsset) ||
+        catalogData.data.experts.some((expert) => expert.memberAsset))
     ) {
       if (!personalOwner) fail('unavailable', '个人工作流归属暂不可用。');
       if (personalOwner !== member.memberId) fail('not-found', '空间不可用。');
@@ -215,6 +218,18 @@ export class MemberWorkbenchService {
     // Static grants are Host-owned. Member ownership comes only from the original asset row.
     if (catalogData.data.assets.some((asset) => asset.memberTemplate))
       fail('unavailable', '成员工作流目录来源不可用。');
+    // A Host catalog marker must match an actual publication in this same fact
+    // owner; a ref/hash/UUID supplied by another catalog is never authority.
+    const published = memberAssetPublishedCatalog(state.memberAssets ?? [], spaceId);
+    for (const [incoming, actual] of [
+      [catalogData.data.assets, published.assets],
+      [catalogData.data.experts, published.experts],
+    ] as const)
+      for (const value of incoming.filter((item) => item.memberAsset)) {
+        const fixed = actual.find((item) => item.id === value.id);
+        if (!fixed || canonicalPayload(fixed) !== canonicalPayload(value))
+          fail('resource-unavailable', '已发布资产的空间或固定版本不可用。');
+      }
     const catalog: MemberWorkbenchCatalog = {
       experts: catalogData.data.experts,
       assets: [
