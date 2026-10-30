@@ -14,6 +14,7 @@ const codes = [
   'start-timeout',
   'unsupported-version',
   'server-exited',
+  'workspace-untrusted',
   'invalid-endpoint',
   'invalid-session',
   'cancelled',
