@@ -12,8 +12,9 @@ import { parse } from 'yaml';
 import * as Policy from '../dist/host-codearts-policy.js';
 import { openHostCodeArtsSetup } from '../dist/host-codearts-setup.js';
 
+const layout = process.env.ZHUMA_CODEARTS_LAYOUT ?? 'directory';
 test(
-  'CodeArts normal setup: original persistent profile writes, passive executable lookup, cold reopen and no launcher execution',
+  `CodeArts normal setup (${layout}): original persistent profile writes, passive executable lookup, cold reopen and no launcher execution`,
   {
     skip: !process.env.ZHUMA_CODEARTS_LOADER_MODULE || !process.env.ZHUMA_CODEARTS_BUNDLE,
     timeout: 30_000,
@@ -44,14 +45,21 @@ test(
     });
     const bundle = join(dir, 'node_modules', 'test-bundle');
     await mkdir(bundle, { recursive: true });
-    const launchDirectory = join(bundle, 'lib', 'zhuma-workbench');
+    const suffix = join('dsh', 'node_modules', 'test-bundle', 'lib', 'zhuma-workbench');
+    const launchDirectory =
+      layout === 'asar'
+        ? join(home, 'app.asar.unpacked', suffix)
+        : join(bundle, 'lib', 'zhuma-workbench');
     await mkdir(launchDirectory, { recursive: true });
     for (const file of ['codearts-acp.js', 'codearts-policy.js', 'codearts-acp.manifest.json'])
       await writeFile(
         join(launchDirectory, file),
         await readFile(join(dirname(resolve(process.env.ZHUMA_CODEARTS_BUNDLE)), file)),
       );
-    const launchURL = pathToFileURL(launchDirectory + '/');
+    if (layout === 'asar') await writeFile(join(home, 'app.asar'), 'opaque archive fixture');
+    const launchURL = pathToFileURL(
+      (layout === 'asar' ? join(home, 'app.asar', suffix) : launchDirectory) + '/',
+    );
     await writeFile(
       join(bundle, 'package.json'),
       JSON.stringify({
@@ -68,7 +76,15 @@ test(
             { id: 'config-editor', name: 'cordis:editor' },
             {
               id: 'zhuma-codearts-policy',
-              name: './lib/zhuma-workbench/codearts-policy.js',
+              name:
+                layout === 'asar'
+                  ? new URL(
+                      'codearts-policy.js',
+                      process.env.ZHUMA_CODEARTS_POLICY_PHYSICAL
+                        ? pathToFileURL(launchDirectory + '/')
+                        : launchURL,
+                    ).href
+                  : './lib/zhuma-workbench/codearts-policy.js',
               config: {},
             },
             {
@@ -149,7 +165,9 @@ test(
           };
           const load = ctx.loader.internal.import.bind(ctx.loader.internal);
           ctx.loader.internal.import = (specifier) =>
-            specifier === new URL('codearts-policy.js', launchURL).href
+            [launchURL, pathToFileURL(launchDirectory + '/')].some(
+              (base) => specifier === new URL('codearts-policy.js', base).href,
+            )
               ? Promise.resolve(Policy)
               : specifier === '@zaimokuza/dsh-acp-adapter'
                 ? Promise.resolve(acp)
@@ -213,6 +231,10 @@ test(
     assert.equal(row.config.agents.foreign.env.KEEP, 'SYNTHETIC_FOREIGN');
     assert.equal(row.config.toolApprovalDefault, 'ask');
     assert.equal(row.config.agents['zhuma-codearts'].args[2], launcher);
+    assert.equal(
+      row.config.agents['zhuma-codearts'].args[0],
+      await realpath(join(launchDirectory, 'codearts-acp.js')),
+    );
     assert.equal((await stat(profile.patchPath)).mode & 0o777, 0o600);
     await assert.rejects(access(audit));
     assert.equal(guards.at(-1)(), true);
@@ -266,13 +288,25 @@ for (const scenario of [
   'resolver-throws',
   'manifest-missing',
   'active-runtime',
+  'asar-policy-neighbor',
+  'asar-policy-missing',
+  'asar-like-directory',
 ]) {
   test(`CodeArts setup rejects ${scenario} without writes and logs only its fixed stage`, async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'zhuma-codearts-entry-'));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const bundle = pathToFileURL(directory + '/');
+    const home = await mkdtemp(join(tmpdir(), 'zhuma-codearts-entry-'));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const archived = scenario.startsWith('asar-policy-');
+    const directory = archived
+      ? join(home, 'app.asar.unpacked', 'plugin')
+      : scenario === 'asar-like-directory'
+        ? join(home, 'app.asar.backup', 'plugin')
+        : home;
+    await mkdir(directory, { recursive: true });
+    if (archived) await writeFile(join(home, 'app.asar'), 'opaque archive fixture');
+    const bundle = pathToFileURL((archived ? join(home, 'app.asar', 'plugin') : directory) + '/');
     const bytes = 'synthetic policy; not executed\n';
-    await writeFile(join(directory, 'codearts-policy.js'), bytes);
+    if (scenario !== 'asar-policy-missing')
+      await writeFile(join(directory, 'codearts-policy.js'), bytes);
     await mkdir(join(directory, 'foreign'));
     await writeFile(join(directory, 'foreign', 'codearts-policy.js'), bytes);
     const rows = [
@@ -284,6 +318,8 @@ for (const scenario of [
     if (scenario === 'acp-entry-missing') rows.shift();
     if (scenario === 'policy-neighbor')
       rows[1].options.name = pathToFileURL(join(directory, 'foreign', 'codearts-policy.js')).href;
+    if (scenario === 'asar-policy-neighbor')
+      rows[1].options.name = new URL('foreign/codearts-policy.js', bundle).href;
     if (scenario === 'policy-query') rows[1].options.name += '?generation=other';
     if (scenario === 'policy-hash') rows[1].options.name += '#other';
     if (scenario === 'duplicate-entry') rows.push(rows[1]);
@@ -361,7 +397,10 @@ for (const scenario of [
       scenario === 'active-runtime' ? 'active-sessions' : 'unavailable',
     );
     assert.equal(edits, 0);
-    assert.equal(resolutions, ['resolver-throws', 'manifest-missing'].includes(scenario) ? 1 : 0);
+    assert.equal(
+      resolutions,
+      ['resolver-throws', 'manifest-missing', 'asar-like-directory'].includes(scenario) ? 1 : 0,
+    );
     const stage = {
       'editor-missing': 'editor',
       'acp-entry-missing': 'acp-entry',
@@ -373,6 +412,9 @@ for (const scenario of [
       'health-throws': 'health',
       'resolver-throws': 'resolve-command',
       'manifest-missing': 'manifest',
+      'asar-policy-neighbor': 'policy-entry',
+      'asar-policy-missing': 'policy-entry',
+      'asar-like-directory': 'resolve-command',
     }[scenario];
     assert.deepEqual(diagnostics, stage ? [`CodeArts setup unavailable at ${stage}.`] : []);
     assert.equal(JSON.stringify(diagnostics).includes('diagnostic-secret'), false);
