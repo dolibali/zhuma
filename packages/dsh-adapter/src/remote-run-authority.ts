@@ -575,9 +575,9 @@ export class RemoteRunAuthorities {
     let lease: ExecutionMemberLease | undefined,
       deviceId: string | undefined,
       retained = false;
-    const qualify = this.source.qualifyTeamAssetFile;
-    if (!qualify || !this.source.prepareTeamAssetFiles) deny('remote-protocol-unsupported');
     try {
+      const qualify = this.source.qualifyTeamAssetFile;
+      if (!qualify || !this.source.prepareTeamAssetFiles) deny('remote-protocol-unsupported');
       if (this.closed || caller.aborted || this.source.signal.aborted) deny('remote-unavailable');
       try {
         lease = await this.source.memberLease(request);
