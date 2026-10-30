@@ -428,3 +428,8 @@ export type {
 } from './team-asset-file-tool.js';
 export { preflightTeamAssetImport } from './team-asset-import.js';
 export type { TeamAssetImportPreflight } from './team-asset-import.js';
+
+export { MemberAssetService } from './member-asset-service.js';
+export type { MemberAssetServiceOptions } from './member-asset-service.js';
+export { TeamAssetCatalogService } from './team-asset-catalog.js';
+export type { TeamAssetCatalogSources } from './team-asset-catalog.js';
