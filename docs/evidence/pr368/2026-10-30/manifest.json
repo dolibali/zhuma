@@ -1,0 +1,111 @@
+{
+  "purpose": "Actual normal Workspace session navigation before/after and separate real CodeArts delivery evidence for PR368",
+  "data": "Isolated fictional account/team/project only; no user attachment, real person or credential",
+  "sdk": "504a01a9578abc2c6f1fb896b1dc322c9fe24f66",
+  "component": "cfe84283e4f90b7b6495be7c415839c405ca0516",
+  "viewport": [
+    1280,
+    820
+  ],
+  "devicePixelRatio": 2,
+  "hostSHA256": "8cc83a1ea0ac321f1ed3c1b9df298b3df05ed695e0185739fbfdcdcc84dee8d3",
+  "boundary": "Root personally inspected original unedited captures after normal desktop clicks. The first four show the same completed, immutable fictional conversation and follow-up: old Client355 controlled dialog versus final Client713 right-side main view, each in light/dark at the same CSS viewport. Elapsed-time labels naturally differ. Only the Client was changed for this comparison; original official App was restarted with the same protected profile and separate backend. Product metadata was already1.3 in both comparison compositions; these are precise Client-source claims. The last two are separate actual core-path observations from source355: real fixed-file read and human-confirmation draft, then independent formal review passed. They are not a before/after pair. No added model calls were made for navigation/screenshots. System-theme and cross-platform qualification are not claimed.",
+  "images": [
+    {
+      "file": "355-before368-light-task-session-dialog-1280x820.png",
+      "path": "docs/evidence/pr368/2026-10-30/355-before368-light-task-session-dialog-1280x820.png",
+      "sha256": "fe7a17f869aa2567b626519f2659fe24e0e458fcea394c48a99ab8a6d2a1715b",
+      "bytes": 277549,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "355201527d52d02a78bc93c3ee3a7ca91c76a3fb",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "355-before368-dark-task-session-dialog-1280x820.png",
+      "path": "docs/evidence/pr368/2026-10-30/355-before368-dark-task-session-dialog-1280x820.png",
+      "sha256": "5b665fbb08b4a2fe15f07a2a6ed9ee3857dbea76b6d5b7a78c5a297dcc23d318",
+      "bytes": 271011,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "355201527d52d02a78bc93c3ee3a7ca91c76a3fb",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "713-after368-light-task-session-main-1280x820.png",
+      "path": "docs/evidence/pr368/2026-10-30/713-after368-light-task-session-main-1280x820.png",
+      "sha256": "e58d7604b411a3c89d763978ca70ba044e4524bb24571370578ba269c60023ca",
+      "bytes": 329652,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "713d41a6b51a18e74fef24acc6ed76ef88302c03",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "713-after368-dark-task-session-main-1280x820.png",
+      "path": "docs/evidence/pr368/2026-10-30/713-after368-dark-task-session-main-1280x820.png",
+      "sha256": "1ec7d406b60925ef451f50b4fedc04f33a11aec8568aa180649e3226800da930",
+      "bytes": 328797,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "713d41a6b51a18e74fef24acc6ed76ef88302c03",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "355-dark-codearts-fixed-file-read-draft-1280x820.png",
+      "path": "docs/evidence/pr368/2026-10-30/355-dark-codearts-fixed-file-read-draft-1280x820.png",
+      "sha256": "66d1a61f83df24862a292df1a24b6d176426f7537b56709451b68d84948ece4e",
+      "bytes": 290441,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "355201527d52d02a78bc93c3ee3a7ca91c76a3fb",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "355-dark-codearts-independent-review-accepted-1280x820.png",
+      "path": "docs/evidence/pr368/2026-10-30/355-dark-codearts-independent-review-accepted-1280x820.png",
+      "sha256": "cfbc4c5637dc31933b88231bc1c561eb730af6f8496414981b6f4ef2d9f71916",
+      "bytes": 524811,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "355201527d52d02a78bc93c3ee3a7ca91c76a3fb",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    }
+  ]
+}
