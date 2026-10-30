@@ -7,7 +7,10 @@ import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { startAcceptanceHost } from './fixtures/m1-acceptance-harness.mjs';
+import { packageFixture } from '../../../tests/fixtures/asset-package.mjs';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const envelope = (endpoint, payload) => ({
   type: 'client-request',
@@ -20,6 +23,29 @@ test(
   'normal asset Host: real member drafts/upload/publish/catalog and exact bytes survive a fresh process',
   { skip: !process.env.S1A_HOST_MODULE, timeout: 30_000 },
   async () => {
+    const client = await build({
+      stdin: {
+        contents: "export { createMemberAssetApi, describeMemberAssetFile } from '@zhuma/client';",
+        resolveDir: fileURLToPath(new URL('../../client', import.meta.url)),
+        sourcefile: 'member-asset-client-proof.mjs',
+      },
+      bundle: true,
+      write: false,
+      platform: 'browser',
+      format: 'esm',
+      target: 'es2022',
+      define: { 'process.env.NODE_ENV': '"production"' },
+      loader: { '.css': 'text' },
+      metafile: true,
+    });
+    assert.equal(
+      Object.keys(client.metafile.inputs).some((path) => /dsh-adapter\/(?:src|dist)\//u.test(path)),
+      false,
+    );
+    const clientBytes = client.outputFiles[0].contents;
+    const { createMemberAssetApi, describeMemberAssetFile } = await import(
+      `data:text/javascript;base64,${Buffer.from(clientBytes).toString('base64')}`
+    );
     const home = await mkdtemp(join(tmpdir(), 'zhuma-member-asset-host-'));
     const config = { deploymentMode: 'multi-member', localSetup: true };
     const setup = {
@@ -33,6 +59,28 @@ test(
       assetId = randomUUID();
     const data = Buffer.from('接口字段说明：status = ready\n保留真实字节与固定版本。');
     let host, member;
+    const api = createMemberAssetApi(
+      {
+        actorId: setup.accountId,
+        spaceId,
+        isCurrent: () => !!host,
+        onUnauthenticated() {
+          throw Error('Unexpected member change');
+        },
+        onUnavailable() {
+          throw Error('Unexpected space change');
+        },
+      },
+      (url, init) =>
+        fetch(host.baseURL + url, {
+          ...init,
+          headers: {
+            ...Object.fromEntries(new Headers(init?.headers)),
+            origin: host.baseURL,
+            cookie: `${host.ownerCookie}; ${member}`,
+          },
+        }),
+    );
     const rpc = async (endpoint, payload) => {
       const reply = await host.post(
         '/api/zhuma-member/' + endpoint,
@@ -44,6 +92,17 @@ test(
       return reply.json.result.value;
     };
     const read = async (reference) => {
+      const fixed = await api.read(
+        { spaceId, assetId, versionId: reference.versionId },
+        new AbortController().signal,
+      );
+      const preview = await api.file(
+        { spaceId, assetId, versionId: reference.versionId, mode: 'preview' },
+        fixed.file,
+        new AbortController().signal,
+      );
+      assert.equal(preview.inline, true);
+      assert.deepEqual(Buffer.from(await preview.blob.arrayBuffer()), data);
       const target = { spaceId, assetId, versionId: reference.versionId, mode: 'preview' };
       const response = await fetch(host.baseURL + '/api/zhuma-member/asset-file-read', {
         method: 'POST',
@@ -74,42 +133,41 @@ test(
       );
       assert.equal(initialized.status, 200, JSON.stringify(initialized.json));
       member = await host.login(setup.accountId, setup.password);
-      const draft = await rpc('asset-command', {
-        operation: 'create-draft',
-        spaceId,
-        assetId,
-        expectedVersion: 0,
-        idempotencyKey: randomUUID(),
-        definition: { kind: 'file', name: '接口规范', description: '团队独立资料' },
-        dependencies: [],
-      });
-      const upload = await fetch(host.baseURL + '/api/zhuma-member/asset-file-upload', {
-        method: 'POST',
-        headers: {
-          origin: host.baseURL,
-          cookie: `${host.ownerCookie}; ${member}`,
-          'content-type': 'application/octet-stream',
-          'x-zhuma-space-id': spaceId,
-          'x-zhuma-asset-id': assetId,
-          'x-zhuma-expected-version': String(draft.asset.version),
-          'x-zhuma-idempotency-key': randomUUID(),
-          'x-zhuma-file-name': encodeURIComponent('接口规范.txt'),
-          'x-zhuma-file-type': 'text/plain',
-          'x-zhuma-file-size': String(data.length),
-          'x-zhuma-file-sha256': sha(data),
+      const draft = await api.command(
+        {
+          operation: 'create-draft',
+          spaceId,
+          assetId,
+          expectedVersion: 0,
+          idempotencyKey: randomUUID(),
+          definition: { kind: 'file', name: '接口规范', description: '团队独立资料' },
+          dependencies: [],
         },
-        body: data,
-      });
-      assert.equal(upload.status, 200);
-      const receipt = await upload.json();
-      assert.equal(receipt.ok, true, JSON.stringify(receipt));
-      const published = await rpc('asset-command', {
-        operation: 'publish',
-        spaceId,
-        assetId,
-        expectedVersion: receipt.value.assetVersion,
-        idempotencyKey: randomUUID(),
-      });
+        new AbortController().signal,
+      );
+      const file = new File([data], '接口规范.txt', { type: 'text/plain' });
+      const declare = await describeMemberAssetFile(file, new AbortController().signal);
+      const receipt = await api.upload(
+        {
+          spaceId,
+          assetId,
+          expectedVersion: draft.asset.version,
+          idempotencyKey: randomUUID(),
+          declare,
+        },
+        file,
+        new AbortController().signal,
+      );
+      const published = await api.command(
+        {
+          operation: 'publish',
+          spaceId,
+          assetId,
+          expectedVersion: receipt.assetVersion,
+          idempotencyKey: randomUUID(),
+        },
+        new AbortController().signal,
+      );
       assert.ok(published.reference);
       assert.notEqual(
         published.reference.sha256,
@@ -125,7 +183,10 @@ test(
       });
       assert.equal(metadata.file.sha256, sha(data));
       assert.ok(!JSON.stringify(metadata).includes('attachmentId'));
-      const catalog = await rpc('asset-catalog', { spaceId, category: 'material' });
+      const catalog = await api.catalog(
+        { spaceId, category: 'material' },
+        new AbortController().signal,
+      );
       assert.equal(catalog.counts.material, 1);
       assert.equal(catalog.items[0].asset.assetId, assetId);
       assert.ok(!JSON.stringify(catalog).includes('attachmentId'));
@@ -138,10 +199,97 @@ test(
         length: 8192,
       });
       assert.ok(JSON.stringify(text).includes('接口字段说明'));
+      const upload = { kind: 'files', files: packageFixture() };
+      const importedPreview = await api.previewImport(
+        { spaceId, upload },
+        new AbortController().signal,
+      );
+      assert.equal(importedPreview.items.length, 2);
+      const importIntent = {
+        spaceId,
+        upload,
+        packageChecksum: importedPreview.packageChecksum,
+        idempotencyKey: randomUUID(),
+        choices: importedPreview.items.map((item) => ({
+          key: item.key,
+          id: randomUUID(),
+          name: item.name,
+          description: item.description,
+          role: item.role,
+          capabilities: item.capabilities,
+          dependencies: [],
+        })),
+      };
+      const imported = await api.importDrafts(importIntent, new AbortController().signal);
+      assert.equal(imported.assets.length, 2);
+      assert(imported.assets.every((item) => item.hasDraft && !item.versions.length));
+      const importedSkill = imported.assets.find((item) => item.kind === 'skill'),
+        importedExpert = imported.assets.find((item) => item.kind === 'expert');
+      const expertDetail = await api.read(
+        { spaceId, assetId: importedExpert.assetId, draft: true },
+        new AbortController().signal,
+      );
+      assert.equal(expertDetail.requirements[0].suggestedAssetId, importedSkill.assetId);
+      assert.equal(expertDetail.dependencies.length, 0);
+      await assert.rejects(
+        api.command(
+          {
+            operation: 'publish',
+            spaceId,
+            assetId: importedExpert.assetId,
+            expectedVersion: importedExpert.version,
+            idempotencyKey: randomUUID(),
+          },
+          new AbortController().signal,
+        ),
+        { code: 'asset-dependency-required' },
+      );
+      const skillVersion = await api.command(
+        {
+          operation: 'publish',
+          spaceId,
+          assetId: importedSkill.assetId,
+          expectedVersion: importedSkill.version,
+          idempotencyKey: randomUUID(),
+        },
+        new AbortController().signal,
+      );
+      const mapped = await api.command(
+        {
+          operation: 'update-draft',
+          spaceId,
+          assetId: importedExpert.assetId,
+          expectedVersion: importedExpert.version,
+          idempotencyKey: randomUUID(),
+          definition: expertDetail.definition,
+          dependencies: [
+            { slotId: expertDetail.requirements[0].slotId, reference: skillVersion.reference },
+          ],
+        },
+        new AbortController().signal,
+      );
+      const expertVersion = await api.command(
+        {
+          operation: 'publish',
+          spaceId,
+          assetId: importedExpert.assetId,
+          expectedVersion: mapped.asset.version,
+          idempotencyKey: randomUUID(),
+        },
+        new AbortController().signal,
+      );
       await host.close();
       host = undefined;
       host = await startAcceptanceHost(home, config);
       member = await host.login(setup.accountId, setup.password);
+      const importReplay = await api.importDrafts(importIntent, new AbortController().signal);
+      assert.equal(importReplay.disposition, 'replayed');
+      const coldExpert = await api.read(
+        { spaceId, assetId: importedExpert.assetId, versionId: expertVersion.reference.versionId },
+        new AbortController().signal,
+      );
+      assert.deepEqual(coldExpert.dependencies[0].reference, skillVersion.reference);
+      assert.equal(coldExpert.definition.instructions, expertDetail.definition.instructions);
       const cold = await rpc('asset-read', {
         spaceId,
         assetId,
@@ -156,12 +304,16 @@ test(
             {
               sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
               hostSha256: sha(await readFile(process.env.S1A_HOST_MODULE)),
+              publicClientApiSha256: sha(clientBytes),
               normalMemberHttp: true,
               seeded: false,
               processes: 2,
               fixedReference: published.reference,
               byteSha256: sha(data),
               catalogCount: catalog.counts.material,
+              importDrafts: imported.assets.length,
+              importedDependencyFixed: true,
+              importColdReplay: importReplay.disposition,
               scope:
                 'Exact emitted Host, normal member HTTP, original JSON/attachments; synthetic account/file, no GUI/model/Run adoption',
             },

@@ -459,3 +459,4 @@ export type {
   CodeArtsLaunchArtifact,
   CodeArtsProfileRegistration,
 } from './executors/codearts/registration.js';
+export { describeCodeArtsRoutingCapability } from './executors/codearts/routing-metadata.js';

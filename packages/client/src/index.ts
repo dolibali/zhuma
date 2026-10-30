@@ -1,6 +1,16 @@
 import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export * from './identity/index.js';
+export {
+  createMemberAssetApi,
+  describeMemberAssetFile,
+  MemberAssetClientError,
+} from './assets/api.js';
+export type {
+  MemberAssetApi,
+  MemberAssetFileContent,
+  MemberAssetUploadReceipt,
+} from './assets/api.js';
 export type {
   WorkflowApi,
   WorkflowTarget,

@@ -14,6 +14,8 @@ import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclie
 import { parse } from 'yaml';
 import * as Policy from '../dist/host-codearts-policy.js';
 import { createCodeArtsProfileRegistration } from '../dist/index.js';
+import { readHostRunModels } from '../dist/host-run-models.js';
+import { describeCodeArtsRoutingCapability } from '../dist/executors/codearts/routing-metadata.js';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 async function fixture(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'zhuma-codearts-policy-')));
@@ -72,8 +74,12 @@ test('CodeArts Host policy: exact verified generation and full profile; change, 
     invalid = failed.plugin(Policy, {
       artifacts: { ...artifacts, adapter: { ...artifacts.adapter, sha256: '0'.repeat(64) } },
     });
-  await assert.rejects(Promise.resolve(invalid), /launch artifacts are unavailable/);
-  assert.equal(failed.get('acpNativeToolHandoffPolicy'), undefined);
+  await invalid;
+  assert.equal(
+    failed.get('acpNativeToolHandoffPolicy').guardForProfile('zhuma-codearts', profile),
+    undefined,
+  );
+  assert.equal(failed.get('acpNativeToolHandoffPolicy').currentRoutingCapability(), undefined);
   await invalid.dispose();
 });
 
@@ -100,6 +106,47 @@ test('CodeArts product composition adds a producer dependency without replacing 
   ]);
 });
 
+test('CodeArts passive task route uses the prepared complete original profile and C declaration with zero external model probes', async (t) => {
+  const { artifacts, profile, root } = await fixture(t),
+    ctx = new Context();
+  t.after(() => ctx.fiber.dispose());
+  const config = { agents: { 'zhuma-codearts': profile } };
+  ctx.provide('loader', {
+    *entries() {
+      yield { options: { id: 'dsh-acp-adapter', name: '@zaimokuza/dsh-acp-adapter', config } };
+    },
+  });
+  ctx.provide('dshAcp', { health: async () => ({ providers: [{ id: 'zhuma-codearts' }] }) });
+  ctx.provide('llm', {
+    listProviders: () => [{ id: 'native' }, { id: 'acp-zhuma-codearts' }],
+    listModels: async (provider) => {
+      assert.equal(provider, 'native', 'passive metadata cannot launch ACP probe');
+      return [{ provider, id: 'native-model', name: 'Native model' }];
+    },
+  });
+  const mount = ctx.plugin(Policy, { artifacts });
+  await mount;
+  const value = await readHostRunModels(ctx, new AbortController().signal),
+    cap = describeCodeArtsRoutingCapability();
+  assert.equal(value.kind, 'ready');
+  assert.equal(value.items.length, 2);
+  assert.equal(value.items[1].value.model, cap.id);
+  assert.match(value.items[1].label, /开始时解析/u);
+  assert.equal(JSON.stringify(value).includes(root), false);
+  config.agents['zhuma-codearts'] = { ...profile, env: { ...profile.env, EXTRA: 'changed' } };
+  const stale = await readHostRunModels(ctx, new AbortController().signal);
+  assert.deepEqual(
+    stale.items.map((item) => item.value.provider),
+    ['native'],
+  );
+  config.agents['zhuma-codearts'] = profile;
+  assert.equal(
+    (await readHostRunModels(ctx, new AbortController().signal)).items.length,
+    1,
+    'a rejected prepared generation is not reacquired',
+  );
+});
+
 test(
   'CodeArts actual Loader entry inject waits for producer and replays only after the original ready service',
   { skip: !process.env.ZHUMA_CODEARTS_LOADER_MODULE },
@@ -124,14 +171,17 @@ test(
     const calls = [];
     const consumer = {
       inject: ['originalSeam'],
-      apply(child) {
+      apply(child, config) {
+        child.provide('dshAcp', {});
         calls.push(
-          child.get('acpNativeToolHandoffPolicy').guardForProfile('zhuma-codearts', profiles),
+          child
+            .get('acpNativeToolHandoffPolicy')
+            .guardForProfile('zhuma-codearts', config.agents['zhuma-codearts']),
         );
       },
     };
     const modules = new Map([
-      ['consumer', consumer],
+      ['@zaimokuza/dsh-acp-adapter', consumer],
       ['policy', actualPolicy],
     ]);
     ctx.loader.internal = {
@@ -143,8 +193,9 @@ test(
     };
     ctx.provide('originalSeam', {});
     await ctx.loader.create({
-      id: 'consumer',
-      name: 'consumer',
+      id: 'dsh-acp-adapter',
+      name: '@zaimokuza/dsh-acp-adapter',
+      config: { agents: { 'zhuma-codearts': profiles } },
       inject: ['acpNativeToolHandoffPolicy'],
     });
     assert.equal(calls.length, 0, 'no factory registration before prepare');
@@ -152,6 +203,10 @@ test(
     await ctx.loader.await();
     assert.equal(calls.length, 1);
     assert.equal(calls[0](), true);
+    assert.equal(
+      ctx.get('acpNativeToolHandoffPolicy').currentRoutingCapability().capability.id,
+      describeCodeArtsRoutingCapability().id,
+    );
     const entry = ctx.loader.resolve('policy');
     await entry.fiber.dispose();
     assert.equal(calls[0](), false, 'old factory guard stays retired on producer unload');
