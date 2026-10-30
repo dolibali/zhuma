@@ -25,7 +25,10 @@ import { ExecutionError } from '../execution/ExecutionApi.js';
 import { createSharedBackendClient } from '../identity/shared-backend.js';
 import { SharedBackendBoundary } from '../identity/SharedBackendBoundary.js';
 import { createMemberNativeClient } from '../run/member-native.js';
-import { installMemberNativeNavigation } from '../run/MemberNativeNavigation.js';
+import {
+  installMemberNativeNavigation,
+  nativeSessionPanel,
+} from '../run/MemberNativeNavigation.js';
 
 export const inject = ['slots', 'layout', 'connection', 'theme', 'uiWorkspace'];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
@@ -73,7 +76,8 @@ export function apply(ctx: Context): void {
   const restoreBackendMember = () => {
     memberShell.session.invalidate();
     const active = ctx.layout.panelInfo.getSnapshot().activePanelId;
-    const memberPage = active === 'zhuma-my-work' || active === 'zhuma-workbench';
+    const memberPage =
+      active === 'zhuma-my-work' || active === 'zhuma-workbench' || active === nativeSessionPanel;
     memberShell.setPageActive(false);
     memberShell.setPageActive(memberPage, memberPage ? active : undefined);
     void memberShell.session.restore();
@@ -109,21 +113,24 @@ export function apply(ctx: Context): void {
       throw new ExecutionError('unavailable', '设置入口暂不可用，请稍后重试。');
     settingsLauncher();
   };
-  if (sharedBackend && memberNative)
-    installMemberNativeNavigation(ctx, {
-      shell: memberShell,
-      backend: sharedBackend,
-      native: memberNative,
-      directory: originalLocalDirectory,
-      openModelSettings,
-    });
+  const nativeNavigation =
+    sharedBackend && memberNative
+      ? installMemberNativeNavigation(ctx, {
+          shell: memberShell,
+          backend: sharedBackend,
+          native: memberNative,
+          directory: originalLocalDirectory,
+          openModelSettings,
+        })
+      : undefined;
   const executionPanel = 'zhuma-my-work' as MainPanelId;
   const workbenchPanel = 'zhuma-workbench' as MainPanelId;
   ctx.effect(() => {
     const syncPage = () => {
       const active = ctx.layout.panelInfo.getSnapshot().activePanelId;
       const memberPage =
-        active === executionPanel || (mode === 'multi-member' && active === workbenchPanel);
+        active === executionPanel ||
+        (mode === 'multi-member' && (active === workbenchPanel || active === nativeSessionPanel));
       memberShell.setPageActive(memberPage, memberPage ? active : undefined);
     };
     syncPage();
@@ -137,6 +144,7 @@ export function apply(ctx: Context): void {
   if (mode === 'multi-member')
     ctx.effect(() =>
       layout.registerPanelGuard!((target, proceed, signal) => {
+        if (nativeNavigation?.guardPanel(target, proceed, signal)) return;
         if (target === layout.panelInfo.getSnapshot().activePanelId) proceed();
         else memberShell.requestLeave(proceed, signal);
       }),

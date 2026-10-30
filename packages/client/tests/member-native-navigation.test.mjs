@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { installMemberNativeNavigation } from '../dist/run/MemberNativeNavigation.js';
+import {
+  installMemberNativeNavigation,
+  nativeSessionPanel,
+} from '../dist/run/MemberNativeNavigation.js';
 function setup() {
   let guard,
     component,
@@ -24,7 +27,8 @@ function setup() {
   const listeners = new Set(),
     backendListeners = new Set(),
     effects = [],
-    entries = [];
+    entries = [],
+    views = [];
   const backend = {
     getSnapshot: () => backendState,
     subscribe(fn) {
@@ -49,6 +53,7 @@ function setup() {
       },
       register(options, view) {
         entries.push(options);
+        views.push({ options, view });
         component = view;
         return () => {};
       },
@@ -74,6 +79,42 @@ function setup() {
     },
   };
   const scopes = [];
+  let panel = { activePanelId: 'zhuma-workbench' },
+    navigation = new AbortController(),
+    leaveRequests = 0,
+    lastSignal;
+  const panelListeners = new Set();
+  const layout = {
+    panelInfo: {
+      getSnapshot: () => panel,
+      subscribe(fn) {
+        panelListeners.add(fn);
+        return () => panelListeners.delete(fn);
+      },
+    },
+    beginNavigation() {
+      navigation.abort();
+      navigation = new AbortController();
+      return navigation.signal;
+    },
+    selectPanel(target) {
+      const signal = this.beginNavigation();
+      const proceed = () => {
+        if (signal.aborted) return;
+        panel = { activePanelId: target };
+        panelListeners.forEach((fn) => fn());
+      };
+      if (!state.guardPanel(target, proceed, signal)) shell.requestLeave(proceed, signal);
+    },
+  };
+  ctx.layout = layout;
+  shell.registerLeaveGuard = () => () => {};
+  shell.registerSpaceGuard = () => () => {};
+  const requestLeave = shell.requestLeave;
+  shell.requestLeave = (...args) => {
+    leaveRequests++;
+    requestLeave(...args);
+  };
   const state = installMemberNativeNavigation(ctx, {
     shell,
     backend,
@@ -95,7 +136,14 @@ function setup() {
     state,
     entries,
     scopes,
-    guard: (...args) => guard(...args),
+    guard: (value, signal) => {
+      lastSignal = AbortSignal.any([signal, layout.beginNavigation()]);
+      return guard(value, lastSignal);
+    },
+    guardSignal: () => lastSignal,
+    layout,
+    panel: () => panel.activePanelId,
+    leaveRequests: () => leaveRequests,
     setLookup: (fn) => {
       lookup = fn;
     },
@@ -112,6 +160,10 @@ function setup() {
       backendListeners.forEach((fn) => fn());
     },
     render: () => renderToStaticMarkup(createElement(component, { state })),
+    renderMain: () => {
+      const main = views.find((v) => v.options.name === 'main');
+      return renderToStaticMarkup(createElement(main.view, { state }));
+    },
     change() {
       session = { ...session, epoch: 2 };
       listeners.forEach((fn) => fn());
@@ -167,7 +219,7 @@ test('Workspace task navigation opens the same controlled Run without returning 
   const h = setup();
   h.setLookup(async () => task);
   assert.equal(await h.guard('actual-native-session', AbortSignal.timeout(1000)), false);
-  assert.equal(h.entries[0].name, 'shell.overlay');
+  assert.ok(h.entries.some((entry) => entry.name === 'main' && entry.key === nativeSessionPanel));
   assert.deepEqual(h.scopes.at(-1), ['member', 'team', 'actual-run']);
   assert.equal(h.state.getSnapshot().target.nodeId, 'node');
   assert.equal(
@@ -375,5 +427,71 @@ test('Workspace task-parent/ordinary-child address never falls through to ordina
   );
   assert.equal(h.state.getSnapshot(), undefined);
   assert.match(h.state.getNoticeSnapshot(), /确认当前账号/);
+  h.close();
+});
+
+test('controlled Session handoff uses the main panel once and survives the shared SDK navigation signal replacement', async () => {
+  const h = setup();
+  h.setLookup(async () => task);
+  assert.equal(await h.guard(task.sessionId, new AbortController().signal), false);
+  assert.equal(h.panel(), nativeSessionPanel);
+  assert.equal(h.leaveRequests(), 1, 'the accepted leave is not requested again for selectPanel');
+  assert.equal(
+    h.guardSignal().aborted,
+    true,
+    'public selectPanel replaces the old navigation signal',
+  );
+  assert.equal(h.state.getSnapshot().target.nodeId, 'node');
+  assert.equal(h.state.getNoticeSnapshot(), undefined);
+  const main = h.renderMain();
+  assert.match(main, /zm-shell-panel/);
+  assert.doesNotMatch(main, /role="dialog"/);
+  assert.equal(
+    h.render().includes('role="dialog"'),
+    false,
+    'the overlay has no second work dialog',
+  );
+  h.close();
+});
+
+test('main panel departure asks once and cancellation preserves the current controlled view', async () => {
+  const h = setup();
+  h.setLookup(async () => task);
+  await h.guard(task.sessionId, new AbortController().signal);
+  const original = h.state.getSnapshot();
+  let requests = 0,
+    accept;
+  h.state.registerLeave((proceed) => {
+    requests++;
+    accept = proceed;
+  });
+  h.layout.selectPanel('zhuma-workbench');
+  assert.equal(requests, 1);
+  assert.equal(h.panel(), nativeSessionPanel);
+  assert.equal(h.state.getSnapshot(), original, 'not proceeding keeps the same input owner');
+  h.layout.selectPanel('zhuma-workbench');
+  assert.equal(requests, 2, 'a later selection supersedes the cancelled one');
+  accept();
+  await new Promise((done) => setImmediate(done));
+  assert.equal(h.panel(), 'zhuma-workbench');
+  assert.equal(h.state.getSnapshot(), undefined);
+  h.close();
+});
+
+test('ordinary Session selection leaves the controlled page and preserves original Conversation permission', async () => {
+  const h = setup();
+  h.setLookup(async (id) => (id === task.sessionId ? task : { kind: 'ordinary' }));
+  await h.guard(task.sessionId, new AbortController().signal);
+  let requests = 0;
+  const stop = h.state.registerLeave((proceed) => {
+    requests++;
+    proceed();
+  });
+  assert.equal(await h.guard('ordinary', new AbortController().signal), true);
+  assert.equal(requests, 1);
+  assert.equal(h.state.getSnapshot(), undefined);
+  stop();
+  h.layout.selectPanel(null);
+  assert.equal(h.panel(), null);
   h.close();
 });

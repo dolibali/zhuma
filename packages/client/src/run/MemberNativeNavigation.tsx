@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
+import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import {
   remoteNodeTargetSchema,
   localReviewOptionsQuerySchema,
@@ -65,7 +66,8 @@ function classify(raw: unknown) {
     sessionId: id(row.sessionId),
   };
 }
-type Entry =
+export const nativeSessionPanel = 'zhuma-native-session' as MainPanelId;
+type Entry = { key: number } & (
   | { kind: 'work'; api: NativeRunApi; target: NativeRunTarget }
   | {
       kind: 'review';
@@ -73,7 +75,8 @@ type Entry =
       target: NativeRunTarget;
       query: LocalReviewOptionsQuery;
       sessionId: string;
-    };
+    }
+);
 type Guard = (target: unknown, signal: AbortSignal) => Promise<boolean>;
 
 /** Existing Workspace navigation is classified before retain/resume. Task
@@ -90,6 +93,8 @@ export function installMemberNativeNavigation(
 ) {
   let entry: Entry | undefined;
   let notice: string | undefined;
+  let acceptedPanel: Entry | undefined;
+  let returnPanel: MainPanelId | null = null;
   let installed = true;
   let navigation = 0;
   let epoch = 0;
@@ -101,6 +106,7 @@ export function installMemberNativeNavigation(
   const close = () => {
     ++epoch;
     entry = undefined;
+    acceptedPanel = undefined;
     entryBinding = undefined;
     notice = undefined;
     publish();
@@ -135,13 +141,68 @@ export function installMemberNativeNavigation(
     },
     close,
     dismissNotice,
+    exit: () => ctx.layout.selectPanel(returnPanel),
+    guardPanel(target: MainPanelId | null, proceed: () => void, signal: AbortSignal) {
+      if (target === nativeSessionPanel && entry && acceptedPanel === entry) {
+        acceptedPanel = undefined;
+        if (!signal.aborted && entryBinding && bindingCurrent(entryBinding)) proceed();
+        return true;
+      }
+      if (
+        target !== nativeSessionPanel &&
+        ctx.layout.panelInfo.getSnapshot().activePanelId === nativeSessionPanel &&
+        entry
+      ) {
+        void ask(() => {
+          close();
+          proceed();
+        }, signal).catch(() => undefined);
+        return true;
+      }
+      return false;
+    },
     registerLeave(handler: NonNullable<typeof leave>) {
       leave = handler;
+      const lifetime = new AbortController();
+      const page = options.shell.getSnapshot();
+      const unleave = options.shell.registerLeaveGuard(
+        page.pageEpoch,
+        (proceed, signal) => handler(proceed, signal ?? lifetime.signal),
+        nativeSessionPanel,
+      );
+      const unspace = options.shell.registerSpaceGuard(
+        page.pageEpoch,
+        (spaceId) =>
+          handler(() => {
+            if (entryBinding && bindingCurrent(entryBinding))
+              void options.shell.space?.select(spaceId);
+          }, lifetime.signal),
+        nativeSessionPanel,
+      );
       return () => {
+        lifetime.abort();
+        unleave();
+        unspace();
         if (leave === handler) leave = undefined;
       };
     },
   };
+  function reveal() {
+    const previous = ctx.layout.panelInfo.getSnapshot().activePanelId;
+    if (previous !== nativeSessionPanel) returnPanel = previous;
+    // The Session guard has already obtained leave consent. Hand that consent
+    // to this one synchronous public panel selection before it replaces the
+    // SDK navigation signal; no later selection inherits the permit.
+    const accepted = entry;
+    acceptedPanel = accepted;
+    try {
+      ctx.layout.selectPanel(nativeSessionPanel);
+    } finally {
+      queueMicrotask(() => {
+        if (acceptedPanel === accepted) acceptedPanel = undefined;
+      });
+    }
+  }
   function ask(proceed: () => void, signal: AbortSignal): Promise<boolean> {
     if (signal.aborted) return Promise.resolve(false);
     return new Promise((resolve, reject) => {
@@ -236,6 +297,7 @@ export function installMemberNativeNavigation(
         entryBinding = binding;
         const { runId: _runId, ...query } = found.target;
         entry = {
+          key: acceptedEpoch,
           kind: 'review',
           api: review,
           query,
@@ -250,6 +312,7 @@ export function installMemberNativeNavigation(
           },
         };
         publish();
+        reveal();
       }, signal);
       if (!accepted) active = false;
       return false;
@@ -271,6 +334,7 @@ export function installMemberNativeNavigation(
       acceptedEpoch = ++epoch;
       entryBinding = binding;
       entry = {
+        key: acceptedEpoch,
         kind: 'work',
         api: { ...(selected.origin ? remoteApi : api), review },
         target: {
@@ -283,6 +347,7 @@ export function installMemberNativeNavigation(
         },
       };
       publish();
+      reveal();
     }, signal);
     if (!accepted) active = false;
     return false;
@@ -339,10 +404,16 @@ export function installMemberNativeNavigation(
     if (entryBinding && !bindingCurrent(entryBinding)) close();
     else if (notice) dismissNotice();
   });
+  ctx.slots.inject('main', () =>
+    ctx.slots.register(
+      { name: 'main', key: nativeSessionPanel, inject: () => ({ state }) },
+      MemberNativeNavigation,
+    ),
+  );
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register(
       { name: 'shell.overlay', id: 'zhuma-native-session', inject: () => ({ state }) },
-      MemberNativeNavigation,
+      MemberNativeNavigationNotice,
     ),
   );
   ctx.effect(() => () => {
@@ -358,21 +429,59 @@ export function installMemberNativeNavigation(
 type NavigationState = ReturnType<typeof installMemberNativeNavigation>;
 function MemberNativeNavigation({ state }: { state: NavigationState }) {
   const entry = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
+  return (
+    <div className="zm-shell-panel">
+      <div className="zm-shell-chrome" data-window-drag aria-hidden="true" />
+      {entry ? (
+        <MemberNativeSession key={entry.key} state={state} entry={entry} />
+      ) : (
+        <div className="zm-native-run__empty" role="status">
+          <p>请从工作区选择当前有权查看的任务会话。</p>
+          <Button onClick={state.exit}>返回</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+function MemberNativeSession({ state, entry }: { state: NavigationState; entry: Entry }) {
+  const [dirty, setDirty] = useState(false);
+  const leave = useLeaveConfirmation(() => state.getSnapshot() === entry);
+  useEffect(
+    () => state.registerLeave((proceed, signal) => leave.request(proceed, dirty, signal)),
+    [state, leave.request, dirty],
+  );
+  return (
+    <>
+      {leave.dialog}
+      <div className="zm-run-workspace-dialog">
+        {entry.kind === 'review' ? (
+          <NativeReviewHistory
+            api={entry.api}
+            target={entry.query}
+            sessionId={entry.sessionId}
+            close={state.exit}
+          />
+        ) : (
+          <NativeRunWorkspace
+            api={entry.api}
+            target={entry.target}
+            onDirtyChange={setDirty}
+            onClose={state.exit}
+          />
+        )}
+      </div>
+    </>
+  );
+}
+function MemberNativeNavigationNotice({ state }: { state: NavigationState }) {
   const notice = useSyncExternalStore(
     state.subscribe,
     state.getNoticeSnapshot,
     state.getNoticeSnapshot,
   );
   const noticeId = useId();
-  const [dirty, setDirty] = useState(false);
-  const leave = useLeaveConfirmation();
-  useEffect(
-    () => state.registerLeave((proceed, signal) => leave.request(proceed, dirty, signal)),
-    [state, leave, dirty],
-  );
   return (
     <>
-      {leave.dialog}
       {notice && (
         <Modal
           title="暂时无法打开会话"
@@ -390,31 +499,6 @@ function MemberNativeNavigation({ state }: { state: NavigationState }) {
                 知道了
               </Button>
             </div>
-          </div>
-        </Modal>
-      )}
-      {entry && (
-        <Modal
-          title={entry.target.title}
-          variant="workspace"
-          close={() => leave.request(state.close, dirty)}
-        >
-          <div className="zm-run-workspace-dialog">
-            {entry.kind === 'review' ? (
-              <NativeReviewHistory
-                api={entry.api}
-                target={entry.query}
-                sessionId={entry.sessionId}
-                close={state.close}
-              />
-            ) : (
-              <NativeRunWorkspace
-                api={entry.api}
-                target={entry.target}
-                onDirtyChange={setDirty}
-                onClose={() => leave.request(state.close, dirty)}
-              />
-            )}
           </div>
         </Modal>
       )}

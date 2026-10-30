@@ -4,11 +4,11 @@ Zhuma 使用固定的官方 DSH Electron 实现，自有工作台通过插件预
 
 ## 安装与首发边界
 
-本轮目标产品版本为 `1.2.0`，计划 tag 为 `v1.2.0`；工程包、Draft PR 或候选资产不等于正式 Release。当前已有候选构建集中于 **macOS arm64（Apple Silicon）**，使用 ad-hoc 临时签名、未公证，不认证 Intel Mac、Windows 或 Linux。Developer ID 签名、公证和自动更新尚未提供；正式 v1.2.0 的支持平台、安装限制、签名状态与必要验收按最终发行说明核对。
+产品版本为 `1.3.0`，对应 tag 为 `v1.3.0`；工程包、Draft PR 或候选资产不等于正式 Release。本版支持范围限定为 **macOS arm64（Apple Silicon）**，使用 ad-hoc 临时签名、未公证，不认证 Intel Mac、Windows 或 Linux。Developer ID 签名、公证和自动更新尚未提供；本轮 v1.3.0 的支持平台、安装限制、签名状态与必要验收按最终发行说明核对。
 
 安装时打开已核对来源的候选 DMG，将 Zhuma 拖入 Applications 后运行。正常首次账号／团队、模型与交付入口见[工作台正常操作](../workbench/README.md#正常操作)。已有 profile 不因安装新包而自动迁移或更改部署模式。
 
-源码／服务契约、历史安装操作与最终候选验收分别留证。正常界面、真实模型＋Skill、独立 Agent 评审、下游及安装／恢复按准确候选验证；实时结果见 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#294](https://github.com/dolibali/zhuma/issues/294)，不从构建成功或既往记录推定全链路通过。本轮六项范围、同机隔离成员验证及后置边界见 [v1.2.0 说明](../../docs/release-v1.2.md)。
+源码／服务契约、历史安装操作与最终候选验收分别留证。正常界面、真实模型＋Skill、独立 Agent 评审、下游及安装／恢复按准确候选验证；实时结果见 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#310](https://github.com/dolibali/zhuma/issues/310)，不从构建成功或既往记录推定全链路通过。本轮增量与必要验收见 [v1.3.0 说明](../../docs/release-v1.3.md)；[v1.2.0 说明](../../docs/release-v1.2.md)保留原范围与证据。
 
 ## 前置条件
 
@@ -26,7 +26,7 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 桌面预览开发应用位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/development/Zhuma Dev.app`，Renderer CDP 默认 `127.0.0.1:9222`，Main/Host 分别为 `9229`/`9230`。切换 DevTools 使用 `Command + Option + I`。
 
-候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；当前验收候选采用 ad-hoc 临时签名、未公证。此为开发者测试包，正式发行状态以最终 v1.2.0 说明为准。
+候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；当前验收候选采用 ad-hoc 临时签名、未公证。此为开发者测试包，正式发行状态以最终 v1.3.0 说明为准。
 
 ## 本地优先，登录策略与数据隔离
 
