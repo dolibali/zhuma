@@ -4,6 +4,9 @@ import {
   AppliedPlanSchema,
   KnowledgeProjectSnapshotSchema,
   type KnowledgeProjectSnapshot,
+  MemberAssetFileSnapshotSchema,
+  memberAssetFileSnapshotDigestInput,
+  type MemberAssetFileSnapshot,
   ParticipantSchema,
   canonicalPayload,
   createExecutionHandoff,
@@ -16,6 +19,7 @@ import { ACCEPTED_INPUT_TOOL, acceptedInputRef } from './native-work-session-inp
 import type { NativeSessionSelection, NativeWorkScope } from './native-work-session-contract.js';
 import type { UpstreamInputView } from './upstream-inputs.js';
 import type { MemberKnowledgeToolDefinition } from './member-knowledge-tool.js';
+import { describeTeamAssetFileTool } from './team-asset-file-tool.js';
 import {
   executionRunResourcesSchema,
   executionResourceToolNames,
@@ -162,6 +166,14 @@ const knowledgeToolSchema = toolSchema
   .refine(
     (value) => hash(value) === '005acfb58f64dba6f5aa422578ddb811cbbd32d3d7b7d475c63def1b7494cd51',
   );
+const teamAssetToolSchema = toolSchema
+  .extend({ name: z.literal('team_asset'), sourceVersion: z.literal('zhuma-native-team-assets@1') })
+  .refine(
+    (value) => hash(value) === '2c1ad05a92c3234960ae32ce7c7fe7251ad511c426ade5274d4fd36a35127b68',
+  );
+const teamAssetSnapshotSchema = MemberAssetFileSnapshotSchema.refine(
+  (value) => hash(memberAssetFileSnapshotDigestInput(value)) === value.sha256,
+);
 export type LocalFileToolName = 'read' | 'write' | 'edit';
 export interface LocalFileToolDefinition extends AcceptedInputToolDefinition {
   readonly name: LocalFileToolName;
@@ -291,6 +303,8 @@ const extendedFields = {
   outputFilePublisherTool: outputFilePublisherToolSchema.optional(),
   knowledgeTool: knowledgeToolSchema.optional(),
   projectKnowledge: projectKnowledgeSchema.optional(),
+  teamAssetTool: teamAssetToolSchema.optional(),
+  teamAssets: teamAssetSnapshotSchema.optional(),
 };
 const extendedSourceSchema = sourceSchema.extend(extendedFields);
 type Source = z.infer<typeof extendedSourceSchema>;
@@ -352,6 +366,9 @@ export interface ExecutionRunCompositionInput {
   /** Exact project association snapshot from the same authorized knowledge Service.
    * References only: neither a body-read receipt nor additional tool authority. */
   readonly projectKnowledge?: KnowledgeProjectSnapshot;
+  /** Fixed bounded references only. Tool reads require separate original Run/member authority. */
+  readonly teamAssets?: MemberAssetFileSnapshot;
+  readonly teamAssetTool?: ReturnType<typeof describeTeamAssetFileTool>;
   /** Qualified metadata only; absence preserves legacy refusal and exact schema-1 replay. */
   readonly resourceCatalog?: ExecutionRunResourceCatalog;
 }
@@ -432,6 +449,7 @@ function derive(source: Source, completionGuidance = true) {
     resultIntentTool,
     outputFilePublisherTool,
     knowledgeTool,
+    teamAssetTool,
   } = source;
   if (
     plan.ref.taskId !== scope.taskId ||
@@ -527,6 +545,11 @@ function derive(source: Source, completionGuidance = true) {
     if (snapshot.links.some((link) => link.required) && !knowledgeTool)
       fail('composition-input-reader-required');
   }
+  if (
+    !!source.teamAssets !== !!teamAssetTool ||
+    (source.teamAssets && source.teamAssets.spaceId !== scope.spaceId)
+  )
+    fail('composition-source-mismatch');
   const catalog = inputs.map((input) => ({
     ...input,
     required: true,
@@ -564,6 +587,7 @@ function derive(source: Source, completionGuidance = true) {
       ...(outputFilePublisherTool ? [outputFilePublisherToolName] : []),
       ...(resultIntentTool ? [resultIntentToolName] : []),
       ...(knowledgeTool ? ['knowledge'] : []),
+      ...(teamAssetTool ? ['team_asset'] : []),
       ...(resources ? executionResourceToolNames(resources) : []),
     ],
   };
@@ -589,7 +613,9 @@ export const executionRunCompositionSchema = z.preprocess(
         !value.payload.outputFilePublisherTool &&
         !value.payload.knowledgeTool &&
         !value.payload.returnedRevision &&
-        !value.payload.projectKnowledge
+        !value.payload.projectKnowledge &&
+        !value.payload.teamAssetTool &&
+        !value.payload.teamAssets
       )
         throw Error();
       const schema = value.schemaVersion === 1 ? sourceSchema : extendedSourceSchema;
@@ -752,7 +778,8 @@ function freezeForRevisionRound(
       input.outputFilePublisherTool !== undefined ||
       input.knowledgeTool !== undefined ||
       input.projectKnowledge !== undefined;
-    const source = checked(extended ? extendedSourceSchema : sourceSchema, {
+    const hasTeamAssets = input.teamAssets !== undefined || input.teamAssetTool !== undefined;
+    const source = checked(extended || hasTeamAssets ? extendedSourceSchema : sourceSchema, {
       scope,
       plan: {
         ref: locator,
@@ -781,10 +808,12 @@ function freezeForRevisionRound(
         : {}),
       ...(input.knowledgeTool !== undefined ? { knowledgeTool: input.knowledgeTool } : {}),
       ...(input.projectKnowledge !== undefined ? { projectKnowledge: input.projectKnowledge } : {}),
+      ...(input.teamAssets !== undefined ? { teamAssets: input.teamAssets } : {}),
+      ...(input.teamAssetTool !== undefined ? { teamAssetTool: input.teamAssetTool } : {}),
     });
     const payload = derive(source, completionGuidance);
     return readExecutionRunComposition({
-      schemaVersion: extended ? 2 : 1,
+      schemaVersion: extended || hasTeamAssets ? 2 : 1,
       configurationId: `composition_${hash(payload)}`,
       payload,
     });

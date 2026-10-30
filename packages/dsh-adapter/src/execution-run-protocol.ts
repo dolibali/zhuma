@@ -19,6 +19,7 @@ export const executionRunGlobalSchema = z
     remoteExecutionAcceptedFileWriter: z.literal(1).optional(),
     remoteExecutionReviewWriter: z.literal(1).optional(),
     remoteExecutionKnowledgeWriter: z.literal(1).optional(),
+    remoteExecutionTeamAssetWriter: z.literal(1).optional(),
     remoteWorkflowWriter: z.literal(1).optional(),
     remoteExecution: remoteBackendRegistrySchema.optional(),
   })
@@ -28,6 +29,9 @@ export const executionRunGlobalSchema = z
   .refine((value) => value.remoteExecutionFileWriter !== 1 || value.remoteExecutionWriter === 1)
   .refine(
     (value) => value.remoteExecutionKnowledgeWriter !== 1 || value.remoteExecutionWriter === 1,
+  )
+  .refine(
+    (value) => value.remoteExecutionTeamAssetWriter !== 1 || value.remoteExecutionWriter === 1,
   )
   .refine(
     (value) => value.remoteExecutionAcceptedFileWriter !== 1 || value.remoteExecutionWriter === 1,
@@ -50,6 +54,7 @@ export type ExecutionWriterGlobal = {
   remoteExecutionAcceptedFileWriter?: 1;
   remoteExecutionReviewWriter?: 1;
   remoteExecutionKnowledgeWriter?: 1;
+  remoteExecutionTeamAssetWriter?: 1;
   remoteWorkflowWriter?: 1;
   remoteExecution?: RemoteBackendRegistry;
 };
@@ -81,6 +86,9 @@ export function prepareExecutionRunWriter(global: unknown): ExecutionWriterGloba
     ...(parsed.data.remoteExecutionReviewWriter === 1 ? { remoteExecutionReviewWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionKnowledgeWriter === 1
       ? { remoteExecutionKnowledgeWriter: 1 }
+      : {}),
+    ...(parsed.data.remoteExecutionTeamAssetWriter === 1
+      ? { remoteExecutionTeamAssetWriter: 1 }
       : {}),
     ...(parsed.data.workspaceApprovalWriter === 1 ? { workspaceApprovalWriter: 1 } : {}),
     ...(parsed.data.remoteExecutionFileWriter === 1 ? { remoteExecutionFileWriter: 1 } : {}),
@@ -141,9 +149,12 @@ export function assertExecutionRunStoreCompatibility(
               files?: unknown;
               acceptedFiles?: unknown;
               knowledge?: unknown;
+              teamAssets?: unknown;
               workflow?: unknown;
             };
-            composition?: { payload?: { knowledgeTool?: unknown } };
+            composition?: {
+              payload?: { knowledgeTool?: unknown; teamAssetTool?: unknown; teamAssets?: unknown };
+            };
           }[];
         };
       }
@@ -185,6 +196,13 @@ export function assertExecutionRunStoreCompatibility(
             (parsed.remoteExecutionKnowledgeWriter !== 1 ||
               run.remote?.knowledge !== 'zhuma-native-knowledge@1' ||
               run.composition?.payload?.knowledgeTool === undefined)) ||
+          ((run.composition?.payload?.teamAssetTool !== undefined ||
+            run.composition?.payload?.teamAssets !== undefined ||
+            run.remote?.teamAssets !== undefined) &&
+            (parsed.remoteExecutionTeamAssetWriter !== 1 ||
+              run.remote?.teamAssets !== 'zhuma-native-team-assets@1' ||
+              !run.composition?.payload?.teamAssetTool ||
+              !run.composition?.payload?.teamAssets)) ||
           (Object.hasOwn(run, 'remote') &&
             (!registry ||
               run.remote?.backendId !== registry.backendId ||

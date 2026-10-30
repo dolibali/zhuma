@@ -4,6 +4,7 @@ import { validateDeliveryContent } from './delivery.js';
 import { canonicalPayload } from './concurrency.js';
 import { REVIEW_ACTIONS } from './review.js';
 import { NODE_STATUSES } from './node-status.js';
+import { MemberAssetReferenceSchema } from './member-asset-contract.js';
 
 /** Portable data only. A decoded object is never member, device or native authority. */
 export const REMOTE_RUN_PROTOCOL_VERSION = 1 as const;
@@ -136,6 +137,7 @@ export const remoteLocalCapabilitiesSchema = z.strictObject({
   resultIntent: z.enum(['zhuma-native-result-intent@1', 'zhuma-native-result-intent@2']),
   outputFile: z.literal('zhuma-native-output-file@1').optional(),
   knowledge: z.literal('zhuma-native-knowledge@1').optional(),
+  teamAssets: z.literal('zhuma-native-team-assets@1').optional(),
   localTools: z.array(localTool).max(4),
 });
 export const REMOTE_WORKFLOW_LIMITS = Object.freeze({
@@ -399,6 +401,20 @@ const deviceHeader = {
 const targetVersion = { expectedNodeVersion: natural, expectedRunVersion: natural };
 /** Proof binds the public ID/hash; raw secret travels only in the private Host HTTP header. */
 const authorized = { scope: remoteRunScopeSchema, permit: remotePermitDeclarationSchema };
+/** Dedicated binary/check endpoint; deliberately absent from the automatic
+ * generic JSON operation map. Uses the same original device signing domain. */
+export const REMOTE_TEAM_ASSET_FILE_METHOD = 'zhuma-remote-run/team-asset-file' as const;
+export const REMOTE_TEAM_ASSET_FILE_PATH = `/api/${REMOTE_TEAM_ASSET_FILE_METHOD}` as const;
+export const remoteTeamAssetFileReadRequestSchema = z.strictObject({
+  ...deviceHeader,
+  operation: z.literal('team-asset-file'),
+  payload: z.strictObject({
+    ...authorized,
+    mode: z.enum(['read', 'check']),
+    reference: MemberAssetReferenceSchema.refine((value) => value.kind === 'file'),
+  }),
+});
+export type RemoteTeamAssetFileReadRequest = z.infer<typeof remoteTeamAssetFileReadRequestSchema>;
 const eventLocation = { sequence: positive };
 const drained = {
   idle: z.literal(true),
@@ -680,7 +696,7 @@ export type RemoteDeviceRequest = Exclude<RemoteRunRequest, { operation: 'info' 
 export type RemoteAcceptRequest = Extract<RemoteRunRequest, { operation: 'accept' }>;
 /** Sign exactly this parsed value; method/body substitution cannot borrow a proof. */
 export function remoteDeviceSigningInput(
-  request: Omit<RemoteDeviceRequest, 'proof'> & {
+  request: Omit<RemoteDeviceRequest | RemoteTeamAssetFileReadRequest, 'proof'> & {
     readonly proof: {
       readonly issuedAt: number;
       readonly nonce: string;

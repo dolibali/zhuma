@@ -12,6 +12,7 @@ export const MEMBER_ASSET_LIMITS = Object.freeze({
   registryBytes: 8 * 1024 * 1024,
   fileBytes: 20 * 1024 * 1024,
   activeUploads: 8,
+  runFiles: 50,
 });
 const id = z
   .string()
@@ -57,6 +58,37 @@ export const MemberAssetFileBlobSchema = MemberAssetFileDeclareSchema.extend({
 });
 export type MemberAssetFileDeclare = z.infer<typeof MemberAssetFileDeclareSchema>;
 export type MemberAssetFileBlob = z.infer<typeof MemberAssetFileBlobSchema>;
+/** Metadata frozen into the ORIGINAL new Run configuration; not a body read,
+ * access grant, accepted task input, or independent directory fact. */
+export const MemberAssetFileSnapshotSchema = z
+  .strictObject({
+    sourceVersion: z.literal('zhuma-native-team-assets@1'),
+    spaceId: id,
+    files: z
+      .array(
+        z.strictObject({
+          reference: MemberAssetReferenceSchema.refine((value) => value.kind === 'file'),
+          file: MemberAssetFileDeclareSchema,
+        }),
+      )
+      .max(MEMBER_ASSET_LIMITS.runFiles),
+    sha256: digest,
+  })
+  .refine(
+    (value) =>
+      value.files.every((item) => item.reference.spaceId === value.spaceId) &&
+      new Set(value.files.map((item) => item.reference.assetId)).size === value.files.length,
+  );
+export type MemberAssetFileSnapshot = z.infer<typeof MemberAssetFileSnapshotSchema>;
+export function memberAssetFileSnapshotDigestInput(value: MemberAssetFileSnapshot) {
+  const { sha256: _digest, ...snapshot } = value;
+  return snapshot;
+}
+export const MemberAssetFileSnapshotValueSchema = z.strictObject({
+  actorId: id,
+  snapshot: MemberAssetFileSnapshotSchema,
+});
+export type MemberAssetFileSnapshotValue = z.infer<typeof MemberAssetFileSnapshotValueSchema>;
 const commonDefinition = { name, description };
 export const MemberAssetDefinitionSchema = z.discriminatedUnion('kind', [
   z.strictObject({
@@ -144,6 +176,22 @@ export const MemberAssetLegacyListValueSchema = z.strictObject({
 });
 export type MemberAssetLegacySummary = z.infer<typeof MemberAssetLegacySummarySchema>;
 export type MemberAssetLegacyListValue = z.infer<typeof MemberAssetLegacyListValueSchema>;
+export const MemberAssetLegacySourceValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    source: MemberAssetLegacySourceSchema,
+    definition: MemberAssetDefinitionSchema,
+    requirements: z
+      .array(z.strictObject({ slotId: id, kind: z.enum(['skill', 'mcp']) }))
+      .max(MEMBER_ASSET_LIMITS.dependencies)
+      .refine((items) => new Set(items.map((item) => item.slotId)).size === items.length),
+  })
+  .refine(
+    (value) =>
+      value.source.spaceId === value.spaceId && value.source.assetKind === value.definition.kind,
+  );
+export type MemberAssetLegacySourceValue = z.infer<typeof MemberAssetLegacySourceValueSchema>;
 export const MemberAssetSourceSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('asset'), reference: MemberAssetReferenceSchema }),
   ...MemberAssetLegacyFixedSourceSchema.options,
