@@ -45,6 +45,20 @@ export const MemberAssetReferenceSchema = z.strictObject({
   sha256: digest,
 });
 export type MemberAssetReference = z.infer<typeof MemberAssetReferenceSchema>;
+/** Explicit published file selections. Absence is distinct from an empty
+ * selection on Project/Task; neither value means a latest-version lookup. */
+export const MemberAssetFileReferencesSchema = z
+  .array(MemberAssetReferenceSchema.extend({ kind: z.literal('file') }))
+  .max(MEMBER_ASSET_LIMITS.runFiles)
+  .refine(
+    (values) =>
+      new Set(values.map((value) => value.assetId)).size === values.length &&
+      values.every((value) => value.spaceId === values[0]?.spaceId),
+  );
+export const MemberAssetFileSnapshotQuerySchema = z
+  .strictObject({ spaceId: id, references: MemberAssetFileReferencesSchema })
+  .refine((value) => value.references.every((ref) => ref.spaceId === value.spaceId));
+export type MemberAssetFileSnapshotQuery = z.infer<typeof MemberAssetFileSnapshotQuerySchema>;
 /** Original task catalogs use an immutable definition ID per real publication.
  * This alias never replaces the complete asset reference or grants access. */
 export function memberAssetDefinitionId(reference: MemberAssetReference): string {

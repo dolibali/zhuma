@@ -24,6 +24,7 @@ import {
   MemberAssetRecordSchema,
   MemberAssetReferenceSchema,
   MemberAssetReferenceValueSchema,
+  MemberAssetFileSnapshotQuerySchema,
   MemberAssetRegistrySchema,
   MemberAssetFileSnapshotValueSchema,
   ParticipantSchema,
@@ -52,6 +53,7 @@ import {
   type MemberAssetReference,
   type MemberAssetLegacySource,
   type MemberAssetFileSnapshot,
+  type MemberAssetFileSnapshotQuery,
   type MemberAssetReadValue,
   type MemberAssetPreviewImportQuery,
   type MemberAssetImportDraftsQuery,
@@ -149,6 +151,39 @@ export interface MemberAssetServiceOptions {
   /** Same Host catalog used by original member task creation, never a Client grant.
    * Projection below does not call this closure, so catalog assembly cannot recurse. */
   readonly catalog?: (spaceId: string) => Promise<MemberWorkbenchCatalog>;
+}
+
+/** Pure projection of this original fact owner's exact published files. The
+ * caller still owns member/space/project authorization and the writer queue. */
+export function memberAssetFixedFiles(
+  raw: readonly MemberAssetRecord[],
+  input: MemberAssetFileSnapshotQuery,
+): MemberAssetFileSnapshot['files'] {
+  const query = MemberAssetFileSnapshotQuerySchema.safeParse(input);
+  if (!query.success) return fail('asset-reference-denied');
+  if (!query.data.references.length) return [];
+  const records = MemberAssetRegistrySchema.safeParse(raw);
+  if (!records.success) return fail('asset-unavailable');
+  return query.data.references.map((reference) => {
+    const record = records.data.find(
+      (value) => value.spaceId === query.data.spaceId && value.assetId === reference.assetId,
+    );
+    const version = record?.published.find(
+      (value) => value.reference.versionId === reference.versionId,
+    );
+    if (
+      record?.kind !== 'file' ||
+      !version ||
+      version.definition.kind !== 'file' ||
+      canonicalPayload(version.reference) !== canonicalPayload(reference) ||
+      hash(memberAssetVersionDigestInput(version)) !== reference.sha256
+    )
+      return fail('asset-reference-denied');
+    if (!version.blob || version.blob.attachmentId !== `sha256:${version.blob.sha256}`)
+      return fail('asset-file-invalid');
+    const { attachmentId: _privateHandle, ...file } = version.blob;
+    return { reference: version.reference, file };
+  });
 }
 
 /** Pure Host projection, not a new grant or fact store. All historical publications
@@ -258,21 +293,12 @@ export class MemberAssetService
 
   /** Reference-only preparation for a newly admitted Run. Explicit fixed reads
    * later repeat original member, complete Run and FileAuthority checks. */
-  fileSnapshot(request: MemberRequest, raw: { spaceId: string }, signal: AbortSignal) {
-    const parsed = MemberAssetListQuerySchema.pick({ spaceId: true }).safeParse(raw);
+  fileSnapshot(request: MemberRequest, raw: MemberAssetFileSnapshotQuery, signal: AbortSignal) {
+    const parsed = MemberAssetFileSnapshotQuerySchema.safeParse(raw);
     if (!parsed.success)
       return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
     return this.scoped(request, parsed.data.spaceId, signal, async (access) => {
-      const files: MemberAssetFileSnapshot['files'] = [];
-      for (const record of this.records()) {
-        if (record.spaceId !== access.spaceId || record.kind !== 'file' || !record.published.length)
-          continue;
-        const last = record.published.at(-1)!;
-        const version = this.fixed(record, last.reference.versionId);
-        if (!version.blob) return fail('asset-file-invalid');
-        files.push({ reference: version.reference, file: this.fileDeclaration(version.blob) });
-      }
-      if (files.length > MEMBER_ASSET_LIMITS.runFiles) return fail('asset-quota');
+      const files = memberAssetFixedFiles(this.records(), parsed.data);
       files.sort((a, b) => a.reference.assetId.localeCompare(b.reference.assetId, 'en'));
       const snapshot: MemberAssetFileSnapshot = {
         sourceVersion: 'zhuma-native-team-assets@1',
