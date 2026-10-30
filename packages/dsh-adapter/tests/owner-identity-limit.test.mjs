@@ -1,6 +1,6 @@
 /**
  * Minimal reproduction of the DSH owner-identity limit at the published
- * Connection layer (package 0.2.1-rc.2, submodule pin 687f282).
+ * Connection layer (package 0.2.1-rc.4, submodule pin 504a01a9).
  *
  * Real: `apply` builds BrowserAuth and HostConnectionService. `authenticatedUrl`,
  * `authorizeIndex`, `authorizeConnect`, `admit`, `createPeer`, and exact Fetch
@@ -74,7 +74,7 @@ async function mountConnection() {
 }
 
 test('published connection package matches the pinned DSH release', () => {
-  assert.equal(connectionPackage.version, '0.2.1-rc.2');
+  assert.equal(connectionPackage.version, '0.2.1-rc.4');
 });
 
 test('two browser sessions both resolve to the same owner principal', async () => {

@@ -8,7 +8,7 @@ import { constants } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export const PACKAGED_SDK_PIN = '687f282e8625c6b8d11ff58211a90524be2e4317';
+export const PACKAGED_SDK_PIN = '504a01a9578abc2c6f1fb896b1dc322c9fe24f66';
 export const HELP = `用法：packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data [选项]
   --host <IP>       具体监听地址，默认 127.0.0.1，不接受通配地址
   --port <端口>     默认 3080（1–65535）

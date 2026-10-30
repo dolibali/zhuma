@@ -4,8 +4,8 @@
 
 - 官方仓库：<https://github.com/deepseek-ai/deepseek-harness>
 - 位置：`upstream/deepseek-harness/`（Git 子模块）
-- 基线：`dsh-v0.2.1-rc.2`
-- 提交：`687f282e8625c6b8d11ff58211a90524be2e4317`
+- 基线：`dsh-v0.2.1-rc.4`
+- 提交：`504a01a9578abc2c6f1fb896b1dc322c9fe24f66`
 - 上游许可：保留 [LICENSE](upstream/deepseek-harness/LICENSE) 及其第三方声明。
 - 本次未复制、改写或重新署名上游实现；仅锁定子模块提交。
 
