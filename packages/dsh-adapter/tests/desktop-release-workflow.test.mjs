@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,22 +137,59 @@ async function artifacts(t) {
   return directory;
 }
 
-test('release contracts: dispatch binds the full checked-out main SHA and product/build version', () => {
-  const source = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-  const env = {
-    RELEASE_SOURCE_SHA: source,
-    GITHUB_SHA: source,
-    GITHUB_REF: 'refs/heads/main',
-    GITHUB_REPOSITORY: 'example/product',
-  };
-  assert.equal(releaseContext(root, env).source, source);
-  for (const patch of [
-    { RELEASE_SOURCE_SHA: 'main' },
-    { RELEASE_SOURCE_SHA: 'f'.repeat(40) },
-    { GITHUB_REF: 'refs/heads/develop' },
-    { GITHUB_REPOSITORY: 'example/product/extra' },
-  ])
-    assert.throws(() => releaseContext(root, { ...env, ...patch }));
+test('release contracts: dispatch binds the full checked-out main SHA and product/build version', async () => {
+  // The release gate checks committed provenance. Give it a committed fixture,
+  // so checking an SDK-pin change before committing does not weaken that gate.
+  const directory = await mkdtemp(join(tmpdir(), 'zhuma-release-source-'));
+  const git = (...args) => execFileSync('git', args, { cwd: directory, encoding: 'utf8' }).trim();
+  try {
+    await mkdir(join(directory, 'branding/default'), { recursive: true });
+    for (const file of [
+      'package.json',
+      'runtime.lock.json',
+      'pnpm-lock.yaml',
+      'branding/default/brand.json',
+    ])
+      await writeFile(join(directory, file), await readFile(join(root, file)));
+    const pin = JSON.parse(await readFile(join(directory, 'runtime.lock.json'), 'utf8')).upstreams
+      .deepseekHarness.commit;
+    git('init', '--quiet');
+    git('add', '.');
+    git('update-index', '--add', '--cacheinfo', `160000,${pin},upstream/deepseek-harness`);
+    git(
+      '-c',
+      'user.name=Release fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--quiet',
+      '-m',
+      'Release fixture',
+    );
+    const source = git('rev-parse', 'HEAD');
+    const env = {
+      RELEASE_SOURCE_SHA: source,
+      GITHUB_SHA: source,
+      GITHUB_REF: 'refs/heads/main',
+      GITHUB_REPOSITORY: 'example/product',
+    };
+    assert.equal(releaseContext(directory, env).source, source);
+    for (const patch of [
+      { RELEASE_SOURCE_SHA: 'main' },
+      { RELEASE_SOURCE_SHA: 'f'.repeat(40) },
+      { GITHUB_REF: 'refs/heads/develop' },
+      { GITHUB_REPOSITORY: 'example/product/extra' },
+    ])
+      assert.throws(() => releaseContext(directory, { ...env, ...patch }));
+    const lock = JSON.parse(await readFile(join(directory, 'runtime.lock.json'), 'utf8'));
+    lock.upstreams.deepseekHarness.commit = 'f'.repeat(40);
+    await writeFile(join(directory, 'runtime.lock.json'), JSON.stringify(lock));
+    assert.throws(() => releaseContext(directory, env));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 test('release contracts: preflight reuses exact-main CI and never writes or accepts existing tags/releases', async () => {
   const pass = fakeApi();

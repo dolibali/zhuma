@@ -66,7 +66,7 @@ test('the unpatched published SDK cannot be mistaken for retention support', () 
   const sdk = createRequire(new URL('../package.json', import.meta.url))(
     '@deepseek-ai/dsh-agent/package.json',
   );
-  assert.equal(sdk.version, '0.2.1-rc.2');
+  assert.equal(sdk.version, '0.2.1-rc.4');
   // Actual public SDK class, not a fixture supplying a capability result.
   assert.throws(
     () => requireNativeInboxRetention(Object.create(AgentRegistry.prototype)),

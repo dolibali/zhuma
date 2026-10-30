@@ -1,6 +1,6 @@
 # DSH 补丁
 
-`zhuma-desktop.patch` 应用于固定上游 `687f282e8625c6b8d11ff58211a90524be2e4317`，只在发行脚本创建的 `.build/` 临时工作树生效，固定子模块保持原样。
+`zhuma-desktop.patch` 应用于固定上游 `504a01a9578abc2c6f1fb896b1dc322c9fe24f66`，只在发行脚本创建的 `.build/` 临时工作树生效，固定子模块保持原样。
 
 当前补丁覆盖：
 
