@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import {
   remoteNodeTargetSchema,
@@ -8,6 +8,7 @@ import {
 import type { MemberShell } from '../identity/shell.js';
 import type { SharedBackendClient } from '../identity/shared-backend.js';
 import { Modal } from '../workbench/controls.js';
+import { Button } from '../workbench/Button.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { NativeRunWorkspace } from './NativeRunWorkspace.js';
 import { createNativeRunApi, type NativeRunApi } from './api.js';
@@ -88,8 +89,12 @@ export function installMemberNativeNavigation(
   },
 ) {
   let entry: Entry | undefined;
+  let notice: string | undefined;
+  let installed = true;
+  let navigation = 0;
   let epoch = 0;
-  let entryBinding: { member: number; connection: string | null } | undefined;
+  let entryBinding:
+    { member: number; connection: string | null; space: string; spaceEpoch: number } | undefined;
   let leave: ((proceed: () => void, signal: AbortSignal) => void) | undefined;
   const listeners = new Set<() => void>();
   const publish = () => listeners.forEach((listener) => listener());
@@ -97,10 +102,31 @@ export function installMemberNativeNavigation(
     ++epoch;
     entry = undefined;
     entryBinding = undefined;
+    notice = undefined;
     publish();
+  };
+  const dismissNotice = () => {
+    notice = undefined;
+    publish();
+  };
+  const bindingCurrent = (binding: NonNullable<typeof entryBinding>) => {
+    const member = options.shell.session.getSnapshot();
+    const backend = options.backend.getSnapshot();
+    const space = options.shell.getSnapshot().space;
+    return (
+      installed &&
+      member.status === 'authenticated' &&
+      member.epoch === binding.member &&
+      backend.phase === 'ready' &&
+      backend.selection?.connectionId === binding.connection &&
+      space?.status === 'ready' &&
+      space.space.id === binding.space &&
+      space.epoch === binding.spaceEpoch
+    );
   };
   const state = {
     getSnapshot: () => entry,
+    getNoticeSnapshot: () => notice,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -108,6 +134,7 @@ export function installMemberNativeNavigation(
       };
     },
     close,
+    dismissNotice,
     registerLeave(handler: NonNullable<typeof leave>) {
       leave = handler;
       return () => {
@@ -117,15 +144,19 @@ export function installMemberNativeNavigation(
   };
   function ask(proceed: () => void, signal: AbortSignal): Promise<boolean> {
     if (signal.aborted) return Promise.resolve(false);
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const aborted = () => resolve(false);
       signal.addEventListener('abort', aborted, { once: true });
       const accepted = () => {
         signal.removeEventListener('abort', aborted);
         if (signal.aborted) resolve(false);
         else {
-          proceed();
-          resolve(true);
+          try {
+            proceed();
+            resolve(true);
+          } catch (error) {
+            reject(error);
+          }
         }
       };
       if (entry) leave?.(accepted, signal);
@@ -136,19 +167,23 @@ export function installMemberNativeNavigation(
     registerSessionNavigationGuard?: (guard: Guard) => () => void;
   };
   if (!source?.registerSessionNavigationGuard) throw Error('工作区导航需要配套的 Zhuma 界面版本。');
-  const unguard = source.registerSessionNavigationGuard(async (value, signal) => {
+  const navigate = async (value: unknown, signal: AbortSignal, attempt: number) => {
     signal.throwIfAborted();
     const member = options.shell.session.getSnapshot();
     const selected = options.backend.getSnapshot().selection;
     if (member.status !== 'authenticated' || !selected) return false;
+    const scope = options.shell.getSnapshot().space;
+    if (scope?.status !== 'ready') return false;
+    const binding = {
+      member: member.epoch,
+      connection: selected.connectionId,
+      space: scope.space.id,
+      spaceEpoch: scope.epoch,
+    };
+    const initialEpoch = epoch;
     const current = () => {
       signal.throwIfAborted();
-      const now = options.shell.session.getSnapshot();
-      if (
-        now.status !== 'authenticated' ||
-        now.epoch !== member.epoch ||
-        options.backend.getSnapshot().selection?.connectionId !== selected.connectionId
-      )
+      if (attempt !== navigation || epoch !== initialEpoch || !bindingCurrent(binding))
         throw new DOMException('Member navigation changed', 'AbortError');
     };
     const ids =
@@ -163,33 +198,28 @@ export function installMemberNativeNavigation(
             };
           })();
     const sessionId = typeof ids === 'object' && !Array.isArray(ids) ? ids.childSessionId : ids[0]!;
-    const scope = options.shell.getSnapshot().space;
-    const initialSpace = scope?.status === 'ready' ? scope.space.id : member.session.spaces[0]?.id;
-    if (!initialSpace) return false;
-    const client = options.native.scoped(member.session.accountId, initialSpace);
+    const client = options.native.scoped(member.session.accountId, scope.space.id);
     const found = classify(await client.lookup(sessionId, signal));
     current();
     if (typeof ids === 'object' && !Array.isArray(ids)) {
       const parent = classify(await client.lookup(ids.parentSessionId, signal));
       current();
-      if (parent.kind !== 'ordinary' && found.kind === 'ordinary') return false;
+      if (parent.kind !== 'ordinary' && found.kind === 'ordinary')
+        throw Error('Invalid session relationship');
     }
-    if (found.kind === 'ordinary') return ask(close, signal);
-    if (found.sessionId !== sessionId) return false;
+    if (found.kind === 'ordinary')
+      return ask(() => {
+        current();
+        close();
+      }, signal);
+    if (found.sessionId !== sessionId) throw Error('Invalid session identity');
     const location = found.target;
     let active = true;
     let acceptedEpoch = -1;
     const nativeScope = {
       spaceId: location.spaceId,
       isCurrent: () => {
-        const now = options.shell.session.getSnapshot();
-        return (
-          active &&
-          acceptedEpoch === epoch &&
-          now.status === 'authenticated' &&
-          now.epoch === member.epoch &&
-          options.backend.getSnapshot().selection?.connectionId === selected.connectionId
-        );
+        return active && acceptedEpoch === epoch && bindingCurrent(binding);
       },
       onUnavailable: close,
     };
@@ -201,8 +231,9 @@ export function installMemberNativeNavigation(
     );
     if (found.kind === 'review') {
       const accepted = await ask(() => {
+        current();
         acceptedEpoch = ++epoch;
-        entryBinding = { member: member.epoch, connection: selected.connectionId };
+        entryBinding = binding;
         const { runId: _runId, ...query } = found.target;
         entry = {
           kind: 'review',
@@ -236,8 +267,9 @@ export function installMemberNativeNavigation(
     );
     const { workflow: _workflow, workspaceApprovals: _approvals, ...remoteApi } = api;
     const accepted = await ask(() => {
+      current();
       acceptedEpoch = ++epoch;
-      entryBinding = { member: member.epoch, connection: selected.connectionId };
+      entryBinding = binding;
       entry = {
         kind: 'work',
         api: { ...(selected.origin ? remoteApi : api), review },
@@ -254,21 +286,58 @@ export function installMemberNativeNavigation(
     }, signal);
     if (!accepted) active = false;
     return false;
+  };
+  const unguard = source.registerSessionNavigationGuard(async (value, signal) => {
+    signal.throwIfAborted();
+    if (!installed) throw new DOMException('Navigation disposed', 'AbortError');
+    const attempt = ++navigation;
+    const initialEpoch = epoch;
+    dismissNotice();
+    const member = options.shell.session.getSnapshot();
+    const backend = options.backend.getSnapshot();
+    const scope = options.shell.getSnapshot().space;
+    const refuse = (message: string) => {
+      notice = message;
+      publish();
+      return false;
+    };
+    if (member.status !== 'authenticated')
+      return refuse('请先登录账号并选择有权空间，再重新打开会话。');
+    if (backend.phase !== 'ready' || !backend.selection)
+      return refuse('服务连接尚未就绪。请检查账号菜单中的服务连接后重试。');
+    if (scope?.status !== 'ready')
+      return refuse('空间目录尚未就绪。请刷新或重新选择有权空间后重试。');
+    const binding = {
+      member: member.epoch,
+      connection: backend.selection.connectionId,
+      space: scope.space.id,
+      spaceEpoch: scope.epoch,
+    };
+    try {
+      const allowed = await navigate(value, signal, attempt);
+      if (allowed) {
+        signal.throwIfAborted();
+        if (attempt !== navigation || !bindingCurrent(binding))
+          throw new DOMException('Member navigation changed', 'AbortError');
+      }
+      return allowed;
+    } catch (error) {
+      signal.throwIfAborted();
+      if (attempt !== navigation || epoch !== initialEpoch || !bindingCurrent(binding))
+        throw new DOMException('Member navigation changed', 'AbortError');
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      // Transport and authority failures deliberately share neutral feedback.
+      // Never display raw errors or turn an unknown task into ordinary history.
+      return refuse('请确认当前账号、所选空间和服务连接，然后从侧栏重新打开。');
+    }
   });
   const stop = options.shell.subscribe(() => {
-    const session = options.shell.session.getSnapshot();
-    if (
-      entryBinding &&
-      (session.status !== 'authenticated' || session.epoch !== entryBinding.member)
-    )
-      close();
+    if (entryBinding && !bindingCurrent(entryBinding)) close();
+    else if (notice) dismissNotice();
   });
   const stopBackend = options.backend.subscribe(() => {
-    if (
-      entryBinding &&
-      options.backend.getSnapshot().selection?.connectionId !== entryBinding.connection
-    )
-      close();
+    if (entryBinding && !bindingCurrent(entryBinding)) close();
+    else if (notice) dismissNotice();
   });
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register(
@@ -277,6 +346,8 @@ export function installMemberNativeNavigation(
     ),
   );
   ctx.effect(() => () => {
+    installed = false;
+    ++navigation;
     unguard();
     stop();
     stopBackend();
@@ -287,6 +358,12 @@ export function installMemberNativeNavigation(
 type NavigationState = ReturnType<typeof installMemberNativeNavigation>;
 function MemberNativeNavigation({ state }: { state: NavigationState }) {
   const entry = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
+  const notice = useSyncExternalStore(
+    state.subscribe,
+    state.getNoticeSnapshot,
+    state.getNoticeSnapshot,
+  );
+  const noticeId = useId();
   const [dirty, setDirty] = useState(false);
   const leave = useLeaveConfirmation();
   useEffect(
@@ -296,6 +373,26 @@ function MemberNativeNavigation({ state }: { state: NavigationState }) {
   return (
     <>
       {leave.dialog}
+      {notice && (
+        <Modal
+          title="暂时无法打开会话"
+          variant="confirmation"
+          descriptionId={noticeId}
+          initialFocusId={`${noticeId}-dismiss`}
+          close={state.dismissNotice}
+        >
+          <div className="zm-confirmation-body">
+            <p id={noticeId} role="alert">
+              {notice}
+            </p>
+            <div className="zm-confirmation-actions">
+              <Button id={`${noticeId}-dismiss`} variant="primary" onClick={state.dismissNotice}>
+                知道了
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {entry && (
         <Modal
           title={entry.target.title}
