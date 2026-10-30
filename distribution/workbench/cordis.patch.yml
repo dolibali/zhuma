@@ -1,8 +1,12 @@
 # Applied after the official Web composition, inside the disposable build tree.
 # Keep conversation, model settings, tools, and security approval available for execution work.
+# entry-customization injects pluginNavigation from ui-plugin-manager; keep both disabled together
+# so web boot does not stall on pending (waiting for service: pluginNavigation).
 - id: ui-schedule
   disabled: true
 - id: ui-plugin-manager
+  disabled: true
+- id: entry-customization
   disabled: true
 - id: ui-settings-account
   disabled: true
