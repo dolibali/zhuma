@@ -40,6 +40,19 @@ export function defaultMemberTemplates(raw: unknown): readonly TeamAsset[] {
   return structuredClone(parsed.data.assets);
 }
 
+/** Exact original built-in source pin, not a member owner or publication UUID. */
+export function defaultMemberTemplateSource(asset: TeamAsset) {
+  if (
+    asset.kind !== 'template' ||
+    !asset.available ||
+    asset.memberTemplate ||
+    asset.origin ||
+    pins.get(asset.id) !== hash(asset.content)
+  )
+    return undefined;
+  return { sourceCommit: ENGINEERING_WORKFLOW_SOURCE, sha256: hash(asset.content) };
+}
+
 /** Projection only. Caller proves live membership/personal ownership; legacy assets grant nothing. */
 export function ownedMemberTemplates(
   assets: readonly TeamAsset[],
