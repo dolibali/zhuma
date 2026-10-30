@@ -32,6 +32,34 @@ const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 const original = (value: unknown): unknown =>
   record(value) ? (Reflect.get(value, symbols.original) ?? value) : value;
+type SetupStage =
+  | 'request-admission'
+  | 'request-origin'
+  | 'request-body'
+  | 'request-recheck'
+  | 'status'
+  | 'edit-admission'
+  | 'editor'
+  | 'acp-entry'
+  | 'policy-entry'
+  | 'health'
+  | 'subprocess'
+  | 'resolve-command'
+  | 'manifest'
+  | 'hash-node'
+  | 'hash-adapter'
+  | 'hash-launcher'
+  | 'hash-policy'
+  | 'verify-artifacts'
+  | 'register-profile'
+  | 'health-before-acp-edit'
+  | 'verify-services'
+  | 'edit-acp'
+  | 'verify-registration'
+  | 'health-before-policy-edit'
+  | 'edit-policy'
+  | 'loader'
+  | 'effective-policy';
 class SetupError extends Error {
   constructor(
     readonly code: 'unavailable' | 'active-sessions' | 'command-not-found' | 'incomplete',
@@ -106,22 +134,29 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
     current();
     return { path, sha256: hash.digest('hex') };
   }
-  async function configure(command: string) {
+  async function configure(command: string, checkpoint: (stage: SetupStage) => void) {
+    checkpoint('edit-admission');
     if (writing) throw new SetupError('incomplete');
     writing = true;
     let registration: Awaited<ReturnType<typeof createCodeArtsProfileRegistration>> | undefined;
     try {
+      checkpoint('editor');
       const source = editor();
+      checkpoint('acp-entry');
       const acp = entry(source, 'dsh-acp-adapter', '@zaimokuza/dsh-acp-adapter');
+      checkpoint('policy-entry');
       const policy = entry(source, 'zhuma-codearts-policy', [
         './lib/zhuma-workbench/codearts-policy.js',
         new URL('codearts-policy.js', bundle).href,
         fileURLToPath(new URL('codearts-policy.js', bundle)),
       ]);
+      checkpoint('health');
       await assertIdle();
+      checkpoint('subprocess');
       const subprocess: unknown = ctx.get('subprocess');
       if (!record(subprocess) || typeof subprocess.resolveExecutable !== 'function')
         throw new SetupError('unavailable');
+      checkpoint('resolve-command');
       const launcher: unknown = await Reflect.apply(subprocess.resolveExecutable, subprocess, [
         command,
         undefined,
@@ -130,31 +165,39 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       current();
       if (typeof launcher !== 'string' || !isAbsolute(launcher))
         throw new SetupError('command-not-found');
+      checkpoint('manifest');
       const manifestFile = new URL('codearts-acp.manifest.json', bundle);
       if ((await stat(manifestFile)).size > 256 * 1024) throw new SetupError('unavailable');
       const manifest = manifestSchema.parse(JSON.parse(await readFile(manifestFile, 'utf8')));
-      const artifacts = {
-        node: await hashArtifact(process.execPath, 1024 * 1024 * 1024),
-        adapter: await hashArtifact(
-          fileURLToPath(new URL(manifest.entry, bundle)),
-          32 * 1024 * 1024,
-        ),
-        launcher: await hashArtifact(launcher, 256 * 1024 * 1024),
-      };
+      checkpoint('hash-node');
+      const node = await hashArtifact(process.execPath, 1024 * 1024 * 1024);
+      checkpoint('hash-adapter');
+      const adapter = await hashArtifact(
+        fileURLToPath(new URL(manifest.entry, bundle)),
+        32 * 1024 * 1024,
+      );
+      checkpoint('hash-launcher');
+      const launcherArtifact = await hashArtifact(launcher, 256 * 1024 * 1024);
+      const artifacts = { node, adapter, launcher: launcherArtifact };
+      checkpoint('hash-policy');
       const policyArtifact = await hashArtifact(
         fileURLToPath(new URL('codearts-policy.js', bundle)),
         32 * 1024 * 1024,
       );
+      checkpoint('verify-artifacts');
       if (
         artifacts.adapter.sha256 !== manifest.sha256 ||
         policyArtifact.sha256 !== manifest.policySha256
       )
         throw new SetupError('unavailable');
+      checkpoint('register-profile');
       registration = await createCodeArtsProfileRegistration({
         ...artifacts,
         signal: lifetime.signal,
       });
+      checkpoint('health-before-acp-edit');
       await assertIdle();
+      checkpoint('verify-services');
       const currentSubprocess: unknown = ctx.get('subprocess');
       if (
         original(editor()) !== original(source) ||
@@ -165,6 +208,7 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
         profileId = registration.profileId;
       // Preserve all foreign ACP profiles and settings under the original
       // editor's file lock; never reconstruct a redacted settings document.
+      checkpoint('edit-acp');
       await source.edit(acp, (raw) => {
         current();
         return {
@@ -173,18 +217,23 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
         };
       });
       current();
+      checkpoint('verify-registration');
       if (original(editor()) !== original(source) || !registration.isCurrent())
         throw new SetupError('incomplete');
+      checkpoint('health-before-policy-edit');
       await assertIdle();
+      checkpoint('edit-policy');
       await source.edit(policy, (raw) => {
         current();
         return { ...raw, artifacts };
       });
       current();
+      checkpoint('loader');
       const loader: unknown = ctx.get('loader');
       if (!record(loader) || typeof loader.await !== 'function') throw new SetupError('incomplete');
       await Reflect.apply(loader.await, loader, []);
       current();
+      checkpoint('effective-policy');
       if (original(editor()) !== original(source) || !readPreparedCodeArtsRoute(ctx))
         throw new SetupError('incomplete');
       return { configured: true };
@@ -202,10 +251,17 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
   const reply = (value: unknown, status = 200) =>
     Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   async function handle(endpoint: 'status' | 'configure', request: Request): Promise<Response> {
+    let stage: SetupStage = 'request-admission';
+    const checkpoint = (next: SetupStage) => {
+      stage = next;
+    };
     try {
       if (!admit(request)) return reply({ ok: false, code: 'untrusted-request' }, 403);
-      if (endpoint === 'status')
+      if (endpoint === 'status') {
+        checkpoint('status');
         return reply({ ok: true, value: { configured: !!readPreparedCodeArtsRoute(ctx) } });
+      }
+      checkpoint('request-origin');
       const origin = request.headers.get('origin');
       if (
         !origin ||
@@ -214,6 +270,7 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
         request.headers.get('content-type')?.split(';')[0] !== 'application/json'
       )
         return reply({ ok: false, code: 'untrusted-request' }, 403);
+      checkpoint('request-body');
       const input = commandSchema.safeParse(
         await readWorkbenchBody(
           request,
@@ -222,11 +279,21 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
         ),
       );
       if (!input.success) return reply({ ok: false, code: 'invalid-input' }, 400);
+      checkpoint('request-recheck');
       if (!admit(request)) return reply({ ok: false, code: 'untrusted-request' }, 403);
       // Once admitted, drain the original durable operation even if the reply
       // is lost. Status on reopening checks the real current producer.
-      return reply({ ok: true, value: await configure(input.data.command) });
+      return reply({ ok: true, value: await configure(input.data.command, checkpoint) });
     } catch (error) {
+      if (
+        !(error instanceof WorkbenchBodyError) &&
+        (!(error instanceof SetupError) || error.code === 'unavailable')
+      ) {
+        // Fixed labels only: never print an Error, command, path, profile or credential.
+        try {
+          ctx.logger.warn(`CodeArts setup unavailable at ${stage}.`);
+        } catch {}
+      }
       return reply(
         { ok: false, code: error instanceof SetupError ? error.code : 'unavailable' },
         error instanceof WorkbenchBodyError ? error.status : 409,

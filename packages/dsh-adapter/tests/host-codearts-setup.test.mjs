@@ -261,9 +261,11 @@ for (const scenario of [
   'duplicate-entry',
   'health-null',
   'health-throws',
+  'resolver-throws',
+  'manifest-missing',
   'active-runtime',
 ]) {
-  test(`CodeArts setup rejects ${scenario} before executable lookup or edits`, async (t) => {
+  test(`CodeArts setup rejects ${scenario} without writes and logs only its fixed stage`, async (t) => {
     const bundle = new URL('file:///synthetic/zhuma-workbench/');
     const rows = [
       { options: { id: 'dsh-acp-adapter', name: '@zaimokuza/dsh-acp-adapter' } },
@@ -277,6 +279,7 @@ for (const scenario of [
     if (scenario === 'duplicate-entry') rows.push(rows[1]);
     let edits = 0,
       resolutions = 0;
+    const diagnostics = [];
     const dependencies = {
       configEditor:
         scenario === 'editor-missing'
@@ -289,7 +292,8 @@ for (const scenario of [
             },
       dshAcp: {
         health: async () => {
-          if (scenario === 'health-throws') throw new Error('unknown actual health');
+          if (scenario === 'health-throws')
+            throw new Error('diagnostic-secret /private/never-print');
           return {
             providers: [],
             liveSessions:
@@ -304,7 +308,8 @@ for (const scenario of [
       subprocess: {
         resolveExecutable: async () => {
           resolutions++;
-          throw new Error('must not resolve');
+          if (scenario === 'manifest-missing') return process.execPath;
+          throw new Error('diagnostic-secret /private/never-print');
         },
       },
     };
@@ -312,6 +317,7 @@ for (const scenario of [
     const setup = openHostCodeArtsSetup(
       {
         fiber: { assertActive() {} },
+        logger: { warn: (text) => diagnostics.push(text) },
         get: (name) => dependencies[name],
         effect() {},
         connection: {
@@ -345,6 +351,19 @@ for (const scenario of [
       scenario === 'active-runtime' ? 'active-sessions' : 'unavailable',
     );
     assert.equal(edits, 0);
-    assert.equal(resolutions, 0);
+    assert.equal(resolutions, ['resolver-throws', 'manifest-missing'].includes(scenario) ? 1 : 0);
+    const stage = {
+      'editor-missing': 'editor',
+      'acp-entry-missing': 'acp-entry',
+      'policy-neighbor': 'policy-entry',
+      'duplicate-entry': 'policy-entry',
+      'health-null': 'health',
+      'health-throws': 'health',
+      'resolver-throws': 'resolve-command',
+      'manifest-missing': 'manifest',
+    }[scenario];
+    assert.deepEqual(diagnostics, stage ? [`CodeArts setup unavailable at ${stage}.`] : []);
+    assert.equal(JSON.stringify(diagnostics).includes('diagnostic-secret'), false);
+    assert.equal(JSON.stringify(diagnostics).includes('/private/'), false);
   });
 }
