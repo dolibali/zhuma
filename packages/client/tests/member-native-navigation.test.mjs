@@ -10,6 +10,7 @@ import {
 function setup() {
   let guard,
     component,
+    shellLeave,
     session = {
       status: 'authenticated',
       epoch: 1,
@@ -70,8 +71,9 @@ function setup() {
       },
     },
     getSnapshot: () => ({ space }),
-    requestLeave(proceed) {
-      proceed();
+    requestLeave(proceed, signal) {
+      if (shellLeave) shellLeave(proceed, signal);
+      else proceed();
     },
     subscribe(fn) {
       listeners.add(fn);
@@ -108,7 +110,12 @@ function setup() {
     },
   };
   ctx.layout = layout;
-  shell.registerLeaveGuard = () => () => {};
+  shell.registerLeaveGuard = (_epoch, handler) => {
+    shellLeave = handler;
+    return () => {
+      if (shellLeave === handler) shellLeave = undefined;
+    };
+  };
   shell.registerSpaceGuard = () => () => {};
   const requestLeave = shell.requestLeave;
   shell.requestLeave = (...args) => {
@@ -483,15 +490,17 @@ test('ordinary Session selection leaves the controlled page and preserves origin
   h.setLookup(async (id) => (id === task.sessionId ? task : { kind: 'ordinary' }));
   await h.guard(task.sessionId, new AbortController().signal);
   let requests = 0;
+  const original = h.state.getSnapshot();
   const stop = h.state.registerLeave((proceed) => {
     requests++;
-    proceed();
+    if (h.state.getSnapshot() === original) proceed();
   });
   assert.equal(await h.guard('ordinary', new AbortController().signal), true);
   assert.equal(requests, 1);
   assert.equal(h.state.getSnapshot(), undefined);
-  stop();
   h.layout.selectPanel(null);
   assert.equal(h.panel(), null);
+  assert.equal(requests, 1, 'closed view guards retire synchronously, before React cleanup');
+  stop();
   h.close();
 });

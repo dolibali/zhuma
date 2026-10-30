@@ -101,10 +101,12 @@ export function installMemberNativeNavigation(
   let entryBinding:
     { member: number; connection: string | null; space: string; spaceEpoch: number } | undefined;
   let leave: ((proceed: () => void, signal: AbortSignal) => void) | undefined;
+  let retireLeave: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const publish = () => listeners.forEach((listener) => listener());
   const close = () => {
     ++epoch;
+    retireLeave?.();
     entry = undefined;
     acceptedPanel = undefined;
     entryBinding = undefined;
@@ -179,12 +181,15 @@ export function installMemberNativeNavigation(
           }, lifetime.signal),
         nativeSessionPanel,
       );
-      return () => {
+      const retire = () => {
         lifetime.abort();
         unleave();
         unspace();
         if (leave === handler) leave = undefined;
+        if (retireLeave === retire) retireLeave = undefined;
       };
+      retireLeave = retire;
+      return retire;
     },
   };
   function reveal() {
