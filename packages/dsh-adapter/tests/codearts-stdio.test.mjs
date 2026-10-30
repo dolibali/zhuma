@@ -91,6 +91,22 @@ test(
     }
     const first = await launch();
     await assert.rejects(access(statePath));
+    // The public ACP wire carries only the bounded diagnostic, never the
+    // malformed bridge's private header or a CLI/provider error body.
+    const invalid = await launch();
+    await assert.rejects(
+      invalid.client.newSession({
+        cwd: root,
+        mcpServers: [{ ...bridge('1'), headers: [{ name: 'private', value: 'private-token' }] }],
+      }),
+      (error) => {
+        assert.equal(error.code, -32000);
+        assert.deepEqual(error.data, { codeArts: { stage: 'policy', code: 'unknown' } });
+        return true;
+      },
+    );
+    await invalid.close();
+    await assert.rejects(access(statePath));
     // Same RPC sequence as the original community model catalogue probe:
     // initialize -> session/new with no bridge -> configOptions -> close.
     const metadata = await first.client.newSession({ cwd: root, mcpServers: [] });
