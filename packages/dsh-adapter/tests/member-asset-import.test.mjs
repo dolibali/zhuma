@@ -133,6 +133,47 @@ test('member import: missing published Skill dependencies stay visible until exp
   assert.equal(publicValue.requirements[0].sourceKey, detail.requirements[0].sourceKey);
 });
 
+test('member import: a physically missing declared Skill stays readable as an unmet draft requirement and cannot publish', async (t) => {
+  const h = await assetHost(t);
+  const raw = {
+    kind: 'files',
+    files: [
+      sourceFile(
+        'expert.json',
+        JSON.stringify({
+          format: 'zhuma-expert',
+          schemaVersion: 1,
+          name: '接口专家',
+          role: '审阅接口',
+          capabilities: ['review'],
+          instructions: '检查接口。',
+          skillPaths: ['skills/missing/SKILL.md'],
+        }),
+      ),
+    ],
+  };
+  const { preview, input } = await prepare(h, raw);
+  assert.deepEqual(preview.items[0].missing, ['skills/missing/SKILL.md']);
+  const result = await commit(h, input),
+    asset = result.assets[0];
+  const before = h.workbench.snapshot();
+  const detail = await read(h, asset);
+  assert.deepEqual(detail.requirements, [
+    {
+      slotId: 'source-skill-1',
+      kind: 'skill',
+      name: 'skills/missing/SKILL.md',
+      sourceKey: 'skills/missing/SKILL.md',
+    },
+  ]);
+  assert.deepEqual(detail.definition.origin.missing, ['skills/missing/SKILL.md']);
+  assert.deepEqual(detail.dependencies, []);
+  assert.equal(detail.asset.hasDraft, true);
+  await assert.rejects(publish(h, asset), { code: 'asset-dependency-required' });
+  assert.deepEqual(h.workbench.snapshot(), before);
+  assert.equal([...h.packageDomain.table('versions').keys()].length, 1);
+});
+
 test('member import: checksum/selection/identity/scope tampering and private origin injection refuse without package or Workbench writes', async (t) => {
   const h = await assetHost(t),
     { input } = await prepare(h),
