@@ -5,11 +5,17 @@ import { CodeArtsHttpClient, CodeArtsHttpError } from './http.js';
 import type { CodeArtsMcpPolicy } from './policy.js';
 import { deferred } from './deferred.js';
 import { codeArtsOpenDiagnostic, type CodeArtsOpenDiagnostic } from './diagnostics.js';
+import { CodeArtsStartupFailure } from './startup-failure.js';
 
 export class CodeArtsServerError extends Error {
   constructor(
     readonly code:
-      'not-installed' | 'start-failed' | 'start-timeout' | 'unsupported-version' | 'server-exited',
+      | 'not-installed'
+      | 'start-failed'
+      | 'start-timeout'
+      | 'unsupported-version'
+      | 'server-exited'
+      | 'workspace-untrusted',
     readonly stage: 'start' | 'health' = 'start',
     readonly diagnostic: CodeArtsOpenDiagnostic = codeArtsOpenDiagnostic(stage, code),
   ) {
@@ -67,20 +73,24 @@ export async function startCodeArtsServer(input: {
   let done = false;
   let closing: Promise<void> | undefined;
   let output = '';
+  const startupFailure = new CodeArtsStartupFailure();
   child.stdout?.on('data', (chunk: Buffer) => {
+    startupFailure.write('stdout', chunk);
     output = (output + chunk.toString('utf8')).slice(-8192);
     const match = /http:\/\/127\.0\.0\.1:\d+/u.exec(output);
     if (match) {
+      startupFailure.seal();
       origin.resolve(match[0]);
       output = '';
     }
   });
-  // Consume private diagnostics without reflecting them into ACP or logs.
+  // Recognize only fixed preflight templates; no stderr body enters ACP or logs.
+  child.stderr?.on('data', (chunk: Buffer) => startupFailure.write('stderr', chunk));
   child.stderr?.resume();
   const markExited = (): void => {
     done = true;
     exited.resolve();
-    origin.reject(new CodeArtsServerError('start-failed'));
+    origin.reject(new CodeArtsServerError(startupFailure.code ?? 'start-failed'));
     lifetime.abort(new CodeArtsServerError('server-exited'));
   };
   child.once('error', markExited);
