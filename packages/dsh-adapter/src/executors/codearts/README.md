@@ -10,6 +10,8 @@
 
 路由来源绑定完整固定 profile 与注册生产者代次：Node、适配入口或 launcher 文件变化，完整 profile 改变、替换、撤销、父信号取消均令旧 guard 失效；A 的 registry 保留原完整配置和探测缓存失效规则。实际供应商／模型仍由真正任务的原生用户记录确定；探测成功不认证 CodeArts 登录、工作区信任或模型可用性。需要这些事实时须在明确的资格操作中另作有预算检查。
 
+`routing-metadata.ts` 的 `describeCodeArtsRoutingCapability()` 为零依赖、零 I/O 的纯元数据出口，返回冻结的 `{ id, name, kind: 'adapter-routing-capability', backendVerified: false }`。ACP 的 configOptions、兼容 models 字段与 `_meta` 复用同一描述；A 单写公开 exports 和 Host 被动投影，仅对原 prepared 且仍有效的固定 profile 展示它。原 `CODEARTS_PROFILE_ID` 继续由注册模块唯一提供。该描述不携带模型目录、凭据、会话或授权。
+
 `policy.ts` 只接受当前固定插件生成的单个 DSH HTTP 桥。每进程配置禁用内置工具，开启该桥，并在每次明确 prompt 后置写入 deny-all 加本代桥 namespace 的 allow；恢复不会沿用旧桥权限。CodeArts 内置 user-shell 不作为任务端口。授权、审批、产物和评审继续由原 DSH 工具与 Run／成员门禁处理。原工具交接补丁由 A 按协调冻结的社区源 pin 纳入发行。
 
 当前入口固定核对已验证的 CLI 26.10.13，使用正常 CLI 认证及既有会话模型，不读取全局模型配置。首个请求生成的原生用户记录确定模型；继续时复用该模型元数据。文本和内联文本资源可用；图片、任意本机路径及额外工作目录会被明确拒绝。取消在未发送时不启动请求；请求尚未确认进入 provider loop 时退出自有 backend 并保留不确定结果。abort／主进程退出与官方外层 Subprocess 的托管范围排空分别观察。

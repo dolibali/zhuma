@@ -24,6 +24,7 @@ import type { CodeArtsSessionEvent } from './http.js';
 import { codeArtsPromptText, createCodeArtsMcpPolicy, type CodeArtsMcpPolicy } from './policy.js';
 import { startCodeArtsServer, type CodeArtsServer } from './server.js';
 import { deferred } from './deferred.js';
+import { describeCodeArtsRoutingCapability } from './routing-metadata.js';
 
 type Model = { readonly providerID: string; readonly modelID: string };
 type Binding = {
@@ -65,7 +66,7 @@ const failure = (): RequestError =>
     'CodeArts operation failed; inspect the current session before continuing',
   );
 const discoveryPrefix = 'zhuma-codearts-metadata-';
-const routeName = '继承码道当前配置（开始时解析）';
+const route = describeCodeArtsRoutingCapability();
 const configOptions = (): SessionConfigOption[] => [
   {
     id: 'model',
@@ -74,15 +75,15 @@ const configOptions = (): SessionConfigOption[] => [
       'Adapter routing capability only; provider/model and authentication are not discovered or verified.',
     category: 'model',
     type: 'select',
-    currentValue: 'provider-default',
-    options: [{ value: 'provider-default', name: routeName }],
+    currentValue: route.id,
+    options: [{ value: route.id, name: route.name }],
   },
 ];
 const sessionOptions = () => ({
   configOptions: configOptions(),
   models: {
-    currentModelId: 'provider-default',
-    availableModels: [{ modelId: 'provider-default', name: routeName }],
+    currentModelId: route.id,
+    availableModels: [{ modelId: route.id, name: route.name }],
   },
 });
 
@@ -152,8 +153,8 @@ export class CodeArtsAcpAgent implements Agent {
         ...sessionOptions(),
         _meta: {
           'zhuma.dev/session-kind': 'metadata-only',
-          'zhuma.dev/model-source': 'adapter-routing-capability',
-          'zhuma.dev/backend-verified': false,
+          'zhuma.dev/model-source': route.kind,
+          'zhuma.dev/backend-verified': route.backendVerified,
         },
       };
     }
@@ -226,7 +227,7 @@ export class CodeArtsAcpAgent implements Agent {
   }
   setSessionConfigOption(params: SetSessionConfigOptionRequest): SetSessionConfigOptionResponse {
     this.#require(params.sessionId);
-    if (params.configId !== 'model' || params.value !== 'provider-default')
+    if (params.configId !== 'model' || params.value !== route.id)
       throw RequestError.invalidParams();
     return { configOptions: configOptions() };
   }
