@@ -37,8 +37,9 @@ function LoginForm({
   login(credentials: LoginCredentials): void;
   register?: (() => void) | undefined;
 }) {
-  const [accountId, setAccountId] = useState('');
-  const [password, setPassword] = useState('');
+  // Non-production only: workbench esbuild defines process.env.NODE_ENV (not Vite).
+  const [accountId, setAccountId] = useState(process.env.NODE_ENV !== 'production' ? 'test' : '');
+  const [password, setPassword] = useState(process.env.NODE_ENV !== 'production' ? 'testtest' : '');
   const [visible, setVisible] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null);
   const errorId = useId();
