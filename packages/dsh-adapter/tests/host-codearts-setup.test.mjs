@@ -317,7 +317,7 @@ for (const scenario of [
     const setup = openHostCodeArtsSetup(
       {
         fiber: { assertActive() {} },
-        logger: { warn: (text) => diagnostics.push(text) },
+        logger: { error: (text) => diagnostics.push(text) },
         get: (name) => dependencies[name],
         effect() {},
         connection: {

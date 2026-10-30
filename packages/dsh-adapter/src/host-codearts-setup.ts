@@ -291,7 +291,7 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       ) {
         // Fixed labels only: never print an Error, command, path, profile or credential.
         try {
-          ctx.logger.warn(`CodeArts setup unavailable at ${stage}.`);
+          ctx.logger.error(`CodeArts setup unavailable at ${stage}.`);
         } catch {}
       }
       return reply(
