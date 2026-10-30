@@ -24,6 +24,7 @@ try {
   const clientFileProof = join(runtime, 'client-files-proof.json');
   const teamCatalogProof = join(runtime, 'team-catalog-proof.json');
   const firstSetupProof = join(runtime, 'first-setup-proof.json');
+  const memberAssetsProof = join(runtime, 'member-assets-proof.json');
   const child = spawn(
     process.execPath,
     [
@@ -32,6 +33,7 @@ try {
       'packages/dsh-adapter/tests/member-file-client-host.test.mjs',
       'packages/dsh-adapter/tests/host-team-catalog.test.mjs',
       'packages/dsh-adapter/tests/host-first-setup.test.mjs',
+      'packages/dsh-adapter/tests/member-assets-host.test.mjs',
     ],
     {
       cwd: root,
@@ -43,6 +45,7 @@ try {
         S1A_CLIENT_FILE_PROOF_FILE: clientFileProof,
         S1A_TEAM_CATALOG_PROOF_FILE: teamCatalogProof,
         S1A_FIRST_SETUP_PROOF_FILE: firstSetupProof,
+        S1A_MEMBER_ASSET_PROOF_FILE: memberAssetsProof,
       },
     },
   );
@@ -119,8 +122,19 @@ try {
     )
       throw Error('Incomplete or crossed normal first-setup Host proof');
     proof.firstSetup = firstSetup;
+    const memberAssets = JSON.parse(await readFile(memberAssetsProof, 'utf8'));
+    if (
+      !memberAssets.normalMemberHttp ||
+      memberAssets.seeded !== false ||
+      memberAssets.processes !== 2 ||
+      memberAssets.sourceHead !== proof.sourceHead ||
+      memberAssets.hostSha256 !== proof.artifact['index.js'] ||
+      memberAssets.catalogCount !== 1
+    )
+      throw Error('Incomplete or crossed normal member assets Host proof');
+    proof.memberAssets = memberAssets;
     proof.scope =
-      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream, public team catalog member creation/confirmation/cold reopen, and normal first setup/catalog-prefix crash with explicit same-context recovery; a private temporary SDK package link; no installed-desktop or model-quality claim.';
+      'Exact emitted bundle; nine real-service subprocess cases plus public Client file HTTP delivery/review/downstream, public team catalog member creation/confirmation/cold reopen, and normal first setup/catalog-prefix crash with explicit same-context recovery, and normal member asset metadata/upload/publish/catalog/read across two OS processes; a private temporary SDK package link; no installed-desktop or model-quality claim.';
     if (process.env.S1A_PROOF_FILE) {
       const target = resolve(process.env.S1A_PROOF_FILE);
       await mkdir(dirname(target), { recursive: true });
@@ -135,6 +149,7 @@ try {
         clientFileHostCase: proof.clientFiles.passed,
         teamCatalogHostCase: proof.teamCatalog.passed,
         firstSetupHostCases: proof.firstSetup.cases.length,
+        memberAssetsHostCase: proof.memberAssets.normalMemberHttp,
       }),
     );
   }

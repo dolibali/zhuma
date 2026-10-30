@@ -1,0 +1,11 @@
+{
+  "lib/host/composition/index.js": "c7ec43ec2f56c24121533c05bd6e67e1725dee978b66071969e7d15871d26771",
+  "lib/host/composition/installed-profile-registry.js": "407093b28300232f8e73aceff9eff0b391f33fdf936a485359198d1de8b75e7c",
+  "lib/types/host/composition/installed-profile-registry.d.ts": "d891dc125eeec5c459d2f6f612f76cb87e5f47c615cb8e55023ccc8e271890d9",
+  "lib/host/composition/profile-adapter.js": "7ffc4c2424b4f22603308614b458b71dc55f71d6379ac78bed47e9ab463d399c",
+  "lib/types/host/composition/profile-adapter.d.ts": "aee539a14dc02a9dec27f0932e49a88cf096a9b3da318aa4315d52c9e6fb4493",
+  "lib/host/composition/stream-handoff.js": "6c0b93781e8776a1a3408d33a1d5982cd8ad5d7ea2b491b4b97e1575074be5c1",
+  "lib/types/host/composition/stream-handoff.d.ts": "92c8e5e5f53910c7d66866657d78e2b376d2a7836d0a3f4c6a4eab44ad58f75c",
+  "lib/host/tools/bridge.js": "450986da56c27ad4968e6c5b6fefb21c5830aeb3d5d31a252be3a79c01693fb7",
+  "lib/types/host/tools/bridge.d.ts": "421c4a932ff876639865d261efd7d7b7dac835291d6b3ff5bb1e57be4f3c87fc"
+}

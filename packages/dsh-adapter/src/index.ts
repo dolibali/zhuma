@@ -404,6 +404,7 @@ export {
   encodeRemoteRunUploadPrefix,
 } from './remote-run-file-transport.js';
 export type { RemoteRunUpload } from './remote-run-files.js';
+export type { RemoteTeamAssetFileReadGrant } from './remote-team-asset-file-authority.js';
 export { TeamAssetFileBytes, TeamAssetFileError } from './team-asset-file.js';
 export type {
   TeamAssetFileAuthority,
@@ -416,6 +417,16 @@ export { TeamAssetFileService } from './team-asset-file-service.js';
 export type { TeamAssetFileReadHandle } from './team-asset-file-service.js';
 export { openTeamAssetFileHttp, TEAM_ASSET_FILE_HTTP_PATHS } from './team-asset-file-http.js';
 export {
+  createVerifiedTeamAssetFile,
+  verifiedTeamAssetFileInfo,
+  readVerifiedTeamAssetText,
+  type VerifiedTeamAssetFile,
+} from './team-asset-file-carrier.js';
+export {
+  openTeamAssetRunFileHttp,
+  type TeamAssetRunFileHttpSources,
+} from './team-asset-run-file-http.js';
+export {
   TEAM_ASSET_FILE_TOOL,
   TEAM_ASSET_FILE_TOOL_VERSION,
   describeTeamAssetFileTool,
@@ -425,6 +436,26 @@ export type {
   TeamAssetFileToolPorts,
   TeamAssetFileToolRow,
   TeamAssetFileToolContent,
+  TeamAssetFileCarrierReadHandle,
+  TeamAssetFileToolReadHandle,
 } from './team-asset-file-tool.js';
 export { preflightTeamAssetImport } from './team-asset-import.js';
 export type { TeamAssetImportPreflight } from './team-asset-import.js';
+
+export { MemberAssetService } from './member-asset-service.js';
+export type { MemberAssetServiceOptions } from './member-asset-service.js';
+export { TeamAssetCatalogService } from './team-asset-catalog.js';
+export type { TeamAssetCatalogSources } from './team-asset-catalog.js';
+
+export { openMemberAssetHttp, MEMBER_ASSET_ENDPOINTS } from './member-asset-http.js';
+export type { MemberAssetHttpSources } from './member-asset-http.js';
+export {
+  CODEARTS_PROFILE_ID,
+  createCodeArtsProfileRegistration,
+  CodeArtsProfileRegistrationProducer,
+} from './executors/codearts/registration.js';
+export type {
+  CodeArtsAcpProfile,
+  CodeArtsLaunchArtifact,
+  CodeArtsProfileRegistration,
+} from './executors/codearts/registration.js';

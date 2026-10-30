@@ -358,13 +358,14 @@ if (!domModule) {
       node.remove();
     }
   });
-  test('DOM task entry: a human assignee who is not the task owner reads the original node controller without workflow control', async () => {
+  test('DOM task entry: a human assignee reads full work instructions through the original node controller without starting a workflow', async () => {
     for (const { authorized, owner } of [
       { authorized: true, owner: false },
       { authorized: false, owner: false },
       { authorized: false, owner: true },
     ]) {
       const data = fixture();
+      data.node.description = `${'完整主入口工作说明。'.repeat(100)}\n最终细节 <literal>`;
       data.task.ownerId = 'outside';
       data.task.participantIds.push('outside');
       const state = applyWorkbenchCommand(data.state, {
@@ -380,6 +381,7 @@ if (!domModule) {
         revision: plan.revision,
         nodeId: data.node.id,
         title: data.node.title,
+        description: `${data.node.title}\n\n${data.node.description}`,
       };
       const node = document.createElement('div');
       document.body.append(node);
@@ -390,24 +392,22 @@ if (!domModule) {
       const native = api({
         workflow: {
           options: forbidden,
-          read: owner
-            ? async () => ({
-                target: {
-                  spaceId: 'north',
-                  taskId: task.id,
-                  planId: plan.id,
-                  revision: plan.revision,
-                },
-                title: task.title,
-                state: 'inactive',
-                planStarted: false,
-                requiresResume: false,
-                activeRunCount: 0,
-                expertNodeCount: 1,
-                intent: null,
-                selection: null,
-              })
-            : forbidden,
+          read: async () => ({
+            target: {
+              spaceId: 'north',
+              taskId: task.id,
+              planId: plan.id,
+              revision: plan.revision,
+            },
+            title: task.title,
+            state: 'inactive',
+            planStarted: false,
+            requiresResume: false,
+            activeRunCount: 0,
+            expertNodeCount: 1,
+            intent: null,
+            selection: null,
+          }),
           start: forbidden,
           resume: forbidden,
           stop: forbidden,
@@ -461,9 +461,13 @@ if (!domModule) {
           false,
           'The assignee does not need task-owner workflow state',
         );
-        assert.equal(node.querySelector('[aria-label="工作流执行"]'), null);
+        assert.ok(node.querySelector('[aria-label="工作流执行"]'));
         await act(async () => launch.click());
         assert.equal(reads, 1);
+        const description = node.querySelector('.zm-native-run__context');
+        assert.ok(description);
+        assert.equal(description.open, false);
+        assert.equal(description.querySelector('p').textContent, expected.description);
         assert.ok(
           node.textContent.includes(authorized ? '配置此次执行' : '暂时无法读取这个工作节点'),
         );
@@ -730,6 +734,7 @@ if (!domModule) {
       reason: 'agent-assisted-delivery',
       action: 'continue-handling',
     };
+    const describedTarget = { ...target, description: execution.goal };
     const reads = [],
       histories = [];
     let options = 0,
@@ -741,7 +746,7 @@ if (!domModule) {
     };
     const nativeApi = api({
       options: async (current) => {
-        assert.deepEqual(current, target);
+        assert.deepEqual(current, describedTarget);
         options++;
         return api().options();
       },
@@ -782,8 +787,8 @@ if (!domModule) {
         assert.ok(node.querySelector('.zm-run-workspace-dialog'));
         assert.ok(node.textContent.includes('Persisted result'));
         assert.equal(node.querySelector('.zm-execution-detail'), null, 'no fake manual delivery');
-        assert.deepEqual(reads.at(-1), { current: target, runId: run.runId });
-        assert.deepEqual(histories.at(-1), { current: target, runId: run.runId });
+        assert.deepEqual(reads.at(-1), { current: describedTarget, runId: run.runId });
+        assert.deepEqual(histories.at(-1), { current: describedTarget, runId: run.runId });
         assert.equal(begins, 0);
         assert.equal(submissions, 0);
       } finally {

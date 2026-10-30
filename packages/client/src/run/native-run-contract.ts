@@ -7,6 +7,8 @@ export interface NativeRunTarget {
   readonly revision: number;
   readonly nodeId: string;
   readonly title: string;
+  /** Complete display-only node goal. Never included in execution locator requests. */
+  readonly description?: string;
 }
 
 export interface NativeRunModel {

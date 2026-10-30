@@ -125,6 +125,12 @@ export function writeManifest(context, gate) {
   const client = asar.extractFile(archive, plugin + 'client.js');
   assert(host.equals(readFileSync(join(root, '.build/workbench/index.js'))));
   assert(client.equals(readFileSync(join(root, '.build/workbench/client.js'))));
+  for (const file of ['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'])
+    assert(
+      asar
+        .extractFile(archive, plugin + file)
+        .equals(readFileSync(join(root, '.build/workbench', file))),
+    );
   const dmg = readFileSync(join(root, 'dist', filename));
   const launchers = backendLaunchers.map((name) => {
     const bytes = readFileSync(join(root, 'scripts/server', name));

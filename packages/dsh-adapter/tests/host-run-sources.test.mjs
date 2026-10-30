@@ -7,7 +7,7 @@ import { NativeWorkError } from '../dist/native-work-session-contract.js';
 
 // Host composition contracts only. These directories/configurations are not
 // real member, workspace, SDK connection, or execution authorization evidence.
-function fixture(retirementDrain, resources, prepareProjectKnowledge) {
+function fixture(retirementDrain, resources, prepareProjectKnowledge, teamAssets) {
   const ctx = new Context();
   const lifetime = new AbortController();
   const raw = new AbortController();
@@ -41,9 +41,63 @@ function fixture(retirementDrain, resources, prepareProjectKnowledge) {
     ...(retirementDrain ? { retirementDrain } : {}),
     ...(resources ? { resources } : {}),
     ...(prepareProjectKnowledge ? { prepareProjectKnowledge } : {}),
+    ...(teamAssets ? { teamAssets } : {}),
   });
   return { ctx, lifetime, raw, rows, handle, directory, configuration, native, ports };
 }
+
+test('Host team file source contract: original request/reference/producer survive composition; failures and closure cannot yield a snapshot', async () => {
+  const calls = [],
+    pending = Promise.withResolvers();
+  const sources = {
+    async prepareTeamAssetFiles(...args) {
+      calls.push({ receiver: this, args });
+      return pending.promise;
+    },
+    async qualifyTeamAssetFile(...args) {
+      calls.push({ receiver: this, args });
+      return { reference: args[1], actorId: 'contract-actor' };
+    },
+  };
+  const f = fixture(undefined, undefined, undefined, sources);
+  const request = { headers: {} },
+    query = { spaceId: 'contract-team' };
+  const signal = new AbortController().signal;
+  const work = f.ports.prepareTeamAssetFiles(request, query, signal);
+  const ref = Object.freeze({ assetId: 'contract-file' });
+  const qualified = await f.ports.qualifyTeamAssetFile(request, ref, signal);
+  assert.equal(qualified.reference, ref);
+  for (const [index, args] of [
+    [request, query, signal],
+    [request, ref, signal],
+  ].entries()) {
+    assert.equal(calls[index].receiver, sources);
+    for (const [position, value] of args.entries())
+      assert.equal(calls[index].args[position], value);
+  }
+  f.lifetime.abort();
+  pending.resolve({ actorId: 'contract-actor', snapshot: {} });
+  await assert.rejects(work, { code: 'run-authority-unavailable' });
+  await assert.rejects(f.ports.qualifyTeamAssetFile(request, ref, signal), {
+    code: 'run-authority-unavailable',
+  });
+  assert.equal(calls.length, 2);
+  const denied = Object.assign(Error('Original asset authority denied'), {
+    code: 'asset-forbidden',
+  });
+  const refusing = fixture(undefined, undefined, undefined, {
+    prepareTeamAssetFiles: async () => {
+      throw denied;
+    },
+    qualifyTeamAssetFile: async () => {
+      throw denied;
+    },
+  });
+  await assert.rejects(refusing.ports.prepareTeamAssetFiles(request, query, signal), denied);
+  await assert.rejects(refusing.ports.qualifyTeamAssetFile(request, ref, signal), denied);
+  assert.equal(fixture().ports.prepareTeamAssetFiles, undefined, 'legacy Host adds no capability');
+  assert.equal(fixture().ports.qualifyTeamAssetFile, undefined);
+});
 
 test('Host project knowledge source contract: same request/query/signal reaches the mounted source without turning failures or late closure into an empty snapshot', async () => {
   const calls = [],

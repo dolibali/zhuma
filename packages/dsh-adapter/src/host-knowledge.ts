@@ -84,5 +84,10 @@ export function openHostKnowledge(
     if (!result.ok) throw new KnowledgeError(result.error.code);
     return result.value;
   };
-  return { close, projectSnapshot };
+  // Host-private read projection of this exact mounted owner. Returning the
+  // original object keeps its reference stable across catalog read checkpoints;
+  // a closed/replaced owner never becomes a freshly fabricated read port.
+  const catalogSource = (): Pick<KnowledgeService, 'libraries' | 'list'> | undefined =>
+    closed ? undefined : owner;
+  return { close, projectSnapshot, catalogSource };
 }

@@ -8,6 +8,8 @@ import {
   REMOTE_RUN_PERMIT_HEADER,
   remoteDeviceSigningInput,
   remoteRunRequestSchema,
+  remoteTeamAssetFileReadRequestSchema,
+  REMOTE_TEAM_ASSET_FILE_METHOD,
 } from '@zhuma/agent-core';
 import { MemberLocalExecutionProtocol } from '../dist/member-local-execution-protocol.js';
 import { MemberLocalExecutionSecrets } from '../dist/member-local-execution-secrets.js';
@@ -15,6 +17,7 @@ import { freezeExecutionRunComposition } from '../dist/execution-run-composition
 import { describeNativeResultTool } from '../dist/native-work-session-result-tool.js';
 import { describeAcceptedInputTool } from '../dist/native-work-session-input-tool.js';
 import { describeMemberKnowledgeTool } from '../dist/member-knowledge-tool.js';
+import { describeTeamAssetFileTool } from '../dist/team-asset-file-tool.js';
 import { compositionFacts } from './execution-run-composition-fixture.mjs';
 import {
   EXECUTION_RESOURCE_SOURCE_VERSION,
@@ -28,6 +31,9 @@ export async function fixture(t, options = {}) {
     ...compositionFacts({ upstream: options.upstream }),
     resultIntentTool: describeNativeResultTool(),
     ...(options.knowledge ? { knowledgeTool: describeMemberKnowledgeTool() } : {}),
+    ...(options.teamAssets
+      ? { teamAssets: options.teamAssets, teamAssetTool: describeTeamAssetFileTool() }
+      : {}),
   };
   if (options.upstream)
     facts.tools = { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() };
@@ -154,8 +160,14 @@ export async function fixture(t, options = {}) {
       let bytes = '';
       for await (const chunk of req) bytes += chunk;
       const envelope = JSON.parse(bytes),
-        request = remoteRunRequestSchema.parse(envelope.payload);
-      assert.equal(req.url, `/api/${methods[request.operation]}`);
+        teamFile = envelope.method === REMOTE_TEAM_ASSET_FILE_METHOD,
+        request = (teamFile ? remoteTeamAssetFileReadRequestSchema : remoteRunRequestSchema).parse(
+          envelope.payload,
+        );
+      assert.equal(
+        req.url,
+        `/api/${teamFile ? REMOTE_TEAM_ASSET_FILE_METHOD : methods[request.operation]}`,
+      );
       assert.equal(req.headers.cookie, 'synthetic-original-member');
       const respond = (response) =>
         res.end(
@@ -234,6 +246,22 @@ export async function fixture(t, options = {}) {
                 },
               },
         );
+      } else if (teamFile) {
+        const intent = [...rows.values()].find((row) => row.requestId);
+        assert.equal(req.headers[REMOTE_RUN_PERMIT_HEADER], intent.drive.secret);
+        assert(!bytes.includes(intent.drive.secret));
+        assert.deepEqual(request.payload.scope, value.scope);
+        assert.deepEqual(
+          request.payload.permit,
+          intent.drive && {
+            id: intent.drive.id,
+            sha256: createHash('sha256')
+              .update(Buffer.from(intent.drive.secret, 'base64url'))
+              .digest('hex'),
+          },
+        );
+        assert.equal(typeof options.teamAssetFile, 'function');
+        await options.teamAssetFile({ req, res, request, rpcId: envelope.rpcId, respond, value });
       } else if (REMOTE_WORKFLOW_OPERATIONS.includes(request.operation)) {
         assert.equal(typeof options.workflow, 'function');
         respond({ ok: true, value: await options.workflow(request) });
@@ -438,6 +466,9 @@ export async function fixture(t, options = {}) {
       resultIntent: 'zhuma-native-result-intent@1',
       localTools: [],
       ...(options.knowledge ? { knowledge: 'zhuma-native-knowledge@1' } : {}),
+      ...(options.teamAssets && !options.omitTeamAssetCapability
+        ? { teamAssets: 'zhuma-native-team-assets@1' }
+        : {}),
       ...(options.upstream ? { acceptedInput: '1' } : {}),
       ...(options.skill && !options.omitResourceCapability
         ? { resources: EXECUTION_RESOURCE_SOURCE_VERSION }
