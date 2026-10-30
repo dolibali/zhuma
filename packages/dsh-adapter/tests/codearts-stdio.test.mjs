@@ -90,6 +90,27 @@ test(
     }
     const first = await launch();
     await assert.rejects(access(statePath));
+    // Same RPC sequence as the original community model catalogue probe:
+    // initialize -> session/new with no bridge -> configOptions -> close.
+    const metadata = await first.client.newSession({ cwd: root, mcpServers: [] });
+    assert.equal(metadata._meta['zhuma.dev/session-kind'], 'metadata-only');
+    assert.equal(metadata.configOptions[0].currentValue, 'provider-default');
+    await assert.rejects(access(statePath), 'catalogue discovery must not launch the CLI');
+    await assert.rejects(
+      first.client.prompt({
+        sessionId: metadata.sessionId,
+        prompt: [{ type: 'text', text: 'Must not execute' }],
+      }),
+    );
+    await assert.rejects(
+      first.client.resumeSession({
+        cwd: root,
+        sessionId: metadata.sessionId,
+        mcpServers: [bridge('1')],
+      }),
+    );
+    await first.client.closeSession({ sessionId: metadata.sessionId });
+    await assert.rejects(access(statePath));
     const session = await first.client.newSession({ cwd: root, mcpServers: [bridge('1')] });
     assert.equal(session.sessionId, 'ses_fixture_owned');
     await first.client.prompt({
