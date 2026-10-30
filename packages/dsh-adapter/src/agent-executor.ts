@@ -1,4 +1,5 @@
 import type { ExecutionEngine, ExecutionFaultKind } from '@zhuma/agent-core';
+import { resolveDevModelGateway } from './dev-model-gateway.js';
 
 /**
  * `verified` 表示这条原生路由在本进程里已经配好，不是评审签字。
@@ -319,8 +320,15 @@ export type DshModelConfigResult =
   | { readonly ok: true; readonly config: DshModelConfig }
   | { readonly ok: false; readonly reason: string };
 
-/** 只读环境变量。缺哪一项就在原因里点名，不写出地址和密钥。 */
+/** 只读环境变量；非 production 可用开发网关默认值，显式环境变量始终优先。缺项时点名，不写出地址和密钥。 */
 export function readDshModelConfig(env: NodeJS.ProcessEnv = process.env): DshModelConfigResult {
+  const gateway = resolveDevModelGateway(env);
+  if (gateway) {
+    return {
+      ok: true,
+      config: { baseUrl: gateway.baseUrl, apiKey: gateway.apiKey, modelId: gateway.modelId },
+    };
+  }
   const baseUrl = env.ZHUMA_MODEL_BASE_URL?.trim() ?? '';
   const apiKey = env.ZHUMA_MODEL_API_KEY?.trim() ?? '';
   const modelId = env.ZHUMA_MODEL_ID?.trim() ?? '';

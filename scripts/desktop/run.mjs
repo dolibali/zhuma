@@ -5,6 +5,7 @@ import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { applyDevModelGatewayEnv } from '../lib/dev-model-gateway.mjs';
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const stage = `${root}/.build/desktop/deepseek-harness`;
 const task = process.argv[2] ?? 'dev';
@@ -13,7 +14,7 @@ const product = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 if (!/^[0-9A-Za-z.-]+$/u.test(brand.desktopBuildVersion))
   throw new Error('Invalid desktop build version');
 if (!['dev', 'package'].includes(task)) throw new Error(`Unknown desktop task: ${task}`);
-const env = {
+const baseEnv = {
   ...process.env,
   DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
   DSH_CLIENT_TITLE: 'Zhuma',
@@ -22,6 +23,15 @@ const env = {
   // Disallow upstream auto updates in this independent unsigned build.
   DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
 };
+// desktop:dev: non-production gateway defaults + inject llm-pi-ai models into the stage patch.
+// package builds keep the committed overlay only; env still overrides when set.
+const env =
+  task === 'dev'
+    ? {
+        ...applyDevModelGatewayEnv(baseEnv),
+        ZHUMA_WORKBENCH_DEV_GATEWAY: process.env.ZHUMA_WORKBENCH_DEV_GATEWAY ?? '1',
+      }
+    : baseEnv;
 const run = (args) => {
   const p = spawnSync('corepack', ['pnpm', ...args], { cwd: stage, stdio: 'inherit', env });
   if (p.error || p.status !== 0)
