@@ -404,3 +404,14 @@ export {
   encodeRemoteRunUploadPrefix,
 } from './remote-run-file-transport.js';
 export type { RemoteRunUpload } from './remote-run-files.js';
+export { TeamAssetFileBytes, TeamAssetFileError } from './team-asset-file.js';
+export type {
+  TeamAssetFileAuthority,
+  TeamAssetFileBlob,
+  TeamAssetFileDeclare,
+  TeamAssetFileErrorCode,
+  TeamAssetFileOperation,
+} from './team-asset-file.js';
+export { TeamAssetFileService } from './team-asset-file-service.js';
+export { preflightTeamAssetImport } from './team-asset-import.js';
+export type { TeamAssetImportPreflight } from './team-asset-import.js';
