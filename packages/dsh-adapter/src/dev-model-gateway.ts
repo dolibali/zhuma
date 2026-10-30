@@ -7,6 +7,10 @@
 export const DEV_MODEL_GATEWAY_PROVIDER_ID = 'zhuma';
 export const DEV_MODEL_GATEWAY_API_KEY_ENV = 'ZHUMA_MODEL_API_KEY';
 
+/**
+ * NODE_ENV is not "production".
+ * Unset NODE_ENV returns true. That is not authorization to inject the dev 自定义提供商.
+ */
 export function isNonProductionEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env.NODE_ENV ?? '').trim() !== 'production';
 }

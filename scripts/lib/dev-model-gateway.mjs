@@ -7,6 +7,10 @@
 export const DEV_MODEL_GATEWAY_PROVIDER_ID = 'zhuma';
 export const DEV_MODEL_GATEWAY_API_KEY_ENV = 'ZHUMA_MODEL_API_KEY';
 
+/**
+ * NODE_ENV is not "production".
+ * Unset NODE_ENV returns true. That is not authorization to inject the dev 自定义提供商.
+ */
 export function isNonProductionEnv(env = process.env) {
   return (env.NODE_ENV ?? '').trim() !== 'production';
 }
@@ -73,4 +77,61 @@ export function renderDevModelGatewayCordisPatch(gateway) {
     models,
     '',
   ].join('\n');
+}
+
+/**
+ * Explicit eligibility for the disposable 自定义提供商 overlay.
+ * Only the dev entry's `--dev-gateway` counts. `--no-dev-gateway` refuses.
+ * ZHUMA_MODEL_* and an unset NODE_ENV are not authorization.
+ */
+export function allowDevModelGateway(argv = []) {
+  if (argv.includes('--no-dev-gateway')) return false;
+  return argv.includes('--dev-gateway');
+}
+
+/**
+ * YAML appended to the disposable cordis overlay.
+ * Requires the dev-entry grant and ZHUMA_WORKBENCH_DEV_GATEWAY=1.
+ * ZHUMA_MODEL_* alone and an unset NODE_ENV do not qualify. The API key is never written.
+ */
+export function devModelGatewayOverlay(env = process.env, allowed = false) {
+  if (allowed !== true) return '';
+  if (env.ZHUMA_WORKBENCH_DEV_GATEWAY !== '1') return '';
+  const gateway = resolveDevModelGateway(env);
+  if (!gateway) return '';
+  const yaml = renderDevModelGatewayCordisPatch(gateway);
+  if (yaml.includes(gateway.apiKey)) {
+    throw new Error('Refusing to persist 自定义提供商 credentials in the workbench overlay.');
+  }
+  return '\n' + yaml;
+}
+
+/** Cordis patch written by install-stage. Gateway YAML needs --dev-gateway and DEV_GATEWAY=1. */
+export function composeStagedCordisPatch({ sourcePatch, marker, overlay, env, argv }) {
+  return sourcePatch + marker + overlay + devModelGatewayOverlay(env, allowDevModelGateway(argv));
+}
+
+/**
+ * Env and install-stage args for desktop dev vs formal package.
+ * Package always refuses injection, including when the caller inherited
+ * ZHUMA_WORKBENCH_DEV_GATEWAY=1 and ZHUMA_MODEL_*. Unset NODE_ENV is not a grant.
+ */
+export function desktopStageLaunch(task, env = process.env) {
+  if (task === 'dev') {
+    const flag = env.ZHUMA_WORKBENCH_DEV_GATEWAY ?? '1';
+    return {
+      env: {
+        ...applyDevModelGatewayEnv(env),
+        ZHUMA_WORKBENCH_DEV_GATEWAY: flag,
+      },
+      installStageArgs: flag === '1' ? ['--dev-gateway'] : ['--no-dev-gateway'],
+    };
+  }
+  if (task === 'package') {
+    return {
+      env: { ...env, ZHUMA_WORKBENCH_DEV_GATEWAY: '0' },
+      installStageArgs: ['--no-dev-gateway'],
+    };
+  }
+  throw new Error(`Unknown desktop task: ${task}`);
 }

@@ -2,10 +2,7 @@ import { cp, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import {
-  resolveDevModelGateway,
-  renderDevModelGatewayCordisPatch,
-} from '../lib/dev-model-gateway.mjs';
+import { composeStagedCordisPatch } from '../lib/dev-model-gateway.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const stage = resolve(root, '.build/desktop/deepseek-harness');
@@ -23,20 +20,21 @@ const current = await readFile(resolve(bundle, 'cordis.patch.yml'), 'utf8');
 if (current.split(marker)[0] !== sourcePatch)
   throw new Error('The Web bundle has unrelated changes; refusing to overwrite.');
 const overlay = await readFile(resolve(root, 'distribution/workbench/cordis.patch.yml'), 'utf8');
-// Inject OpenAI-compatible 自定义提供商 into the disposable bundle only when asked
-// (desktop:dev sets ZHUMA_WORKBENCH_DEV_GATEWAY=1) or when ZHUMA_MODEL_* is already set.
-// Models / URL / key come only from env; production package builds leave the overlay keyless.
-let gatewayOverlay = '';
-if (process.env.ZHUMA_WORKBENCH_DEV_GATEWAY === '1' || process.env.ZHUMA_MODEL_BASE_URL?.trim()) {
-  const gateway = resolveDevModelGateway(process.env);
-  if (gateway) gatewayOverlay = '\n' + renderDevModelGatewayCordisPatch(gateway);
-}
+// Disposable 自定义提供商 is appended only when the dev entry passed --dev-gateway.
+// Inherited ZHUMA_MODEL_* and an unset NODE_ENV do not authorize it.
+// Formal package builds pass --no-dev-gateway and keep the committed overlay only.
 await cp(resolve(root, '.build/workbench'), resolve(bundle, 'lib/zhuma-workbench'), {
   recursive: true,
 });
 await writeFile(
   resolve(bundle, 'cordis.patch.yml'),
-  sourcePatch + marker + overlay + gatewayOverlay,
+  composeStagedCordisPatch({
+    sourcePatch,
+    marker,
+    overlay,
+    env: process.env,
+    argv: process.argv,
+  }),
 );
 const manifestPath = resolve(bundle, 'package.json');
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));

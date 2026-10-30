@@ -5,7 +5,7 @@ import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyDevModelGatewayEnv } from '../lib/dev-model-gateway.mjs';
+import { desktopStageLaunch } from '../lib/dev-model-gateway.mjs';
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const stage = `${root}/.build/desktop/deepseek-harness`;
 const task = process.argv[2] ?? 'dev';
@@ -23,15 +23,10 @@ const baseEnv = {
   // Disallow upstream auto updates in this independent unsigned build.
   DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
 };
-// desktop:dev: may inject llm-pi-ai when ZHUMA_WORKBENCH_DEV_GATEWAY=1 and ZHUMA_MODEL_* are set.
-// URL / key / model ids come only from env; package builds keep the committed overlay only.
-const env =
-  task === 'dev'
-    ? {
-        ...applyDevModelGatewayEnv(baseEnv),
-        ZHUMA_WORKBENCH_DEV_GATEWAY: process.env.ZHUMA_WORKBENCH_DEV_GATEWAY ?? '1',
-      }
-    : baseEnv;
+// desktop:dev passes --dev-gateway when ZHUMA_WORKBENCH_DEV_GATEWAY is 1 (the dev default).
+// Formal package always passes --no-dev-gateway and forces that variable off.
+// URL / key / model ids come only from env; the key is not written into the overlay.
+const { env, installStageArgs } = desktopStageLaunch(task, baseEnv);
 const run = (args) => {
   const p = spawnSync('corepack', ['pnpm', ...args], { cwd: stage, stdio: 'inherit', env });
   if (p.error || p.status !== 0)
@@ -39,7 +34,8 @@ const run = (args) => {
 };
 run(['install', '--frozen-lockfile']);
 for (const script of ['workbench/build.mjs', 'workbench/install-stage.mjs']) {
-  const result = spawnSync(process.execPath, [join(root, 'scripts', script)], {
+  const extra = script === 'workbench/install-stage.mjs' ? installStageArgs : [];
+  const result = spawnSync(process.execPath, [join(root, 'scripts', script), ...extra], {
     cwd: root,
     stdio: 'inherit',
     env,
