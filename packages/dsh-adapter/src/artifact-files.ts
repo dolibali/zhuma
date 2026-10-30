@@ -308,7 +308,10 @@ export function artifactFileLeaf(name: string): string {
  */
 export function readVerifiedArtifactFile(input: {
   readonly attachments: AttachmentStore;
-  readonly record: UploadFileRecord;
+  readonly record: Pick<
+    UploadFileRecord,
+    'state' | 'byteSize' | 'attachmentId' | 'sha256' | 'name' | 'mediaType'
+  >;
   readonly signal: AbortSignal;
   readonly assertCurrent: () => void;
   readonly collect: boolean;
