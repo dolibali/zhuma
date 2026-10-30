@@ -316,7 +316,7 @@ test('member asset file contracts: close joins a pending original lease opening 
   assert.equal(h.leases.issued, h.leases.released);
 });
 
-test('member asset file contracts: reservation openings count toward the eight-upload bound before lease awaits', async (t) => {
+test('member asset file contracts: authentication openings are bounded and upload quota is checked only after original authorization', async (t) => {
   const gate = deferred();
   let block = false;
   const h = assets(t, { beforeLease: () => (block ? gate.promise : undefined) });
@@ -327,11 +327,47 @@ test('member asset file contracts: reservation openings count toward the eight-u
     .map(({ input }) => h.reserve(h.uploadInput(input.assetId, Buffer.from('x'))));
   await assert.rejects(
     h.reserve(h.uploadInput(created[8].input.assetId, Buffer.from('x'))),
-    rejects('asset-quota'),
+    rejects('asset-unavailable'),
   );
   gate.resolve();
   const tickets = await Promise.all(pending);
+  await assert.rejects(
+    h.reserve(h.uploadInput(created[8].input.assetId, Buffer.from('x'))),
+    rejects('asset-quota'),
+  );
+  await assert.rejects(
+    h.reserve(h.uploadInput(created[8].input.assetId, Buffer.from('x')), 'dana'),
+    rejects('asset-forbidden'),
+  );
+  await assert.rejects(
+    h.reserve(h.uploadInput(created[8].input.assetId, Buffer.from('x')), 'bob'),
+    rejects('asset-forbidden'),
+  );
   await h.owner.abortFile(tickets[0].ticket);
   await h.reserve(h.uploadInput(created[8].input.assetId, Buffer.from('x')));
   assert.equal(h.f.storage.read().memberAssets.filter((r) => r.uploads.length).length, 9);
+});
+
+test('member asset file: original authorization precedes per-object occupancy errors and rejected probes cannot release another upload', async (t) => {
+  const h = await assetHost(t),
+    created = await h.create(),
+    input = h.uploadInput(created.input.assetId, Buffer.from('owned'));
+  const attempt = (actor) => h.owner.reserveFile(h.requests[actor], input, signal());
+  const before = h.workbench.snapshot();
+  for (const actor of ['bob', 'dana'])
+    await assert.rejects(attempt(actor), rejects('asset-forbidden'));
+  assert.deepEqual(h.workbench.snapshot(), before);
+  const reserved = await attempt('ann');
+  try {
+    const occupied = h.workbench.snapshot();
+    for (const actor of ['bob', 'dana'])
+      await assert.rejects(attempt(actor), rejects('asset-forbidden'));
+    assert.deepEqual(h.workbench.snapshot(), occupied);
+    await assert.rejects(attempt('ann'), rejects('asset-upload-pending'));
+    reserved.grant.assertCurrent();
+  } finally {
+    await h.owner.abortFile(reserved.ticket);
+  }
+  const retry = await attempt('ann');
+  await h.owner.abortFile(retry.ticket);
 });
