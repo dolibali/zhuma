@@ -70,10 +70,16 @@ export function LocalSetupForm({
   initialize(input: LocalSetupInput): Promise<void>;
 }) {
   const requestId = useRef(snapshot.kind === 'pending' ? snapshot.requestId : crypto.randomUUID());
-  // DEV-only test defaults for local/login testing (not for release builds).
-  const [accountId, setAccountId] = useState(import.meta.env.DEV ? 'test' : '');
-  const [password, setPassword] = useState(import.meta.env.DEV ? 'testtest' : '');
-  const [teamName, setTeamName] = useState(import.meta.env.DEV ? '测试团队' : '');
+  // Non-production only: workbench esbuild defines process.env.NODE_ENV (not Vite).
+  const [accountId, setAccountId] = useState(
+    process.env.NODE_ENV !== 'production' ? 'test' : '',
+  );
+  const [password, setPassword] = useState(
+    process.env.NODE_ENV !== 'production' ? 'testtest' : '',
+  );
+  const [teamName, setTeamName] = useState(
+    process.env.NODE_ENV !== 'production' ? '测试团队' : '',
+  );
   const [packIds, setPackIds] = useState(() => snapshot.packs.map((pack) => pack.id));
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);

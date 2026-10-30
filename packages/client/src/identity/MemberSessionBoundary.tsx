@@ -37,9 +37,13 @@ function LoginForm({
   login(credentials: LoginCredentials): void;
   register?: (() => void) | undefined;
 }) {
-  // DEV-only test defaults for local/login testing (not for release builds).
-  const [accountId, setAccountId] = useState(import.meta.env.DEV ? 'test' : '');
-  const [password, setPassword] = useState(import.meta.env.DEV ? 'testtest' : '');
+  // Non-production only: workbench esbuild defines process.env.NODE_ENV (not Vite).
+  const [accountId, setAccountId] = useState(
+    process.env.NODE_ENV !== 'production' ? 'test' : '',
+  );
+  const [password, setPassword] = useState(
+    process.env.NODE_ENV !== 'production' ? 'testtest' : '',
+  );
   const [visible, setVisible] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null);
   const errorId = useId();
