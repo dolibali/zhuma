@@ -7,6 +7,7 @@ import {
   MemberAssetListQuerySchema,
   MemberAssetListValueSchema,
   MemberAssetLegacyListValueSchema,
+  MemberAssetLegacySourceValueSchema,
   MemberAssetLegacySourceSchema,
   MemberAssetLegacySummarySchema,
   MemberAssetDefinitionSchema,
@@ -19,12 +20,14 @@ import {
   MemberAssetReferenceSchema,
   MemberAssetReferenceValueSchema,
   MemberAssetRegistrySchema,
+  MemberAssetFileSnapshotValueSchema,
   ParticipantSchema,
   AssetSchema,
   WorkbenchError,
   canonicalPayload,
   memberAssetVersionDigestInput,
   memberAssetDefinitionId,
+  memberAssetFileSnapshotDigestInput,
   packageFileBytes,
   packageFileText,
   parseWorkflowTemplate,
@@ -40,6 +43,7 @@ import {
   type MemberAssetRecord,
   type MemberAssetReference,
   type MemberAssetLegacySource,
+  type MemberAssetFileSnapshot,
   type PackageFile,
 } from '@zhuma/agent-core';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
@@ -223,6 +227,35 @@ export class MemberAssetService
     if (this.closed || this.options.signal.aborted || this.cleanupFailed)
       return fail('asset-unavailable');
     return memberAssetPublishedCatalog(this.workbench.memberAssetRecords(), spaceId);
+  }
+
+  /** Reference-only preparation for a newly admitted Run. Explicit fixed reads
+   * later repeat original member, complete Run and FileAuthority checks. */
+  fileSnapshot(request: MemberRequest, raw: { spaceId: string }, signal: AbortSignal) {
+    const parsed = MemberAssetListQuerySchema.pick({ spaceId: true }).safeParse(raw);
+    if (!parsed.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    return this.scoped(request, parsed.data.spaceId, signal, async (access) => {
+      const files: MemberAssetFileSnapshot['files'] = [];
+      for (const record of this.records()) {
+        if (record.spaceId !== access.spaceId || record.kind !== 'file' || !record.published.length)
+          continue;
+        const last = record.published.at(-1)!;
+        const version = this.fixed(record, last.reference.versionId);
+        if (!version.blob) return fail('asset-file-invalid');
+        files.push({ reference: version.reference, file: this.fileDeclaration(version.blob) });
+      }
+      if (files.length > MEMBER_ASSET_LIMITS.runFiles) return fail('asset-quota');
+      files.sort((a, b) => a.reference.assetId.localeCompare(b.reference.assetId, 'en'));
+      const snapshot: MemberAssetFileSnapshot = {
+        sourceVersion: 'zhuma-native-team-assets@1',
+        spaceId: access.spaceId,
+        files,
+        sha256: '0'.repeat(64),
+      };
+      snapshot.sha256 = hash(memberAssetFileSnapshotDigestInput(snapshot));
+      return MemberAssetFileSnapshotValueSchema.parse({ actorId: access.actorId, snapshot });
+    });
   }
 
   private async publicationCatalog(
@@ -424,6 +457,16 @@ export class MemberAssetService
         item.requirements.length > MEMBER_ASSET_LIMITS.dependencies
       )
         return fail('asset-unavailable');
+      if (
+        !MemberAssetLegacySourceValueSchema.safeParse({
+          actorId: access.actorId,
+          spaceId: access.spaceId,
+          source: summary.data.source,
+          definition: definition.data,
+          requirements: item.requirements,
+        }).success
+      )
+        return fail('asset-unavailable');
       const key = `${summary.data.kind}:${summary.data.source.assetId}`;
       if (keys.has(key)) return fail('asset-unavailable');
       keys.add(key);
@@ -454,13 +497,13 @@ export class MemberAssetService
         (item) => canonicalPayload(item.summary.source) === canonicalPayload(query.data),
       );
       if (!item) return fail('asset-reference-denied');
-      return {
+      return MemberAssetLegacySourceValueSchema.parse({
         actorId: access.actorId,
         spaceId: access.spaceId,
         source: item.summary.source,
         definition: item.definition,
         requirements: item.requirements,
-      };
+      });
     });
   }
 

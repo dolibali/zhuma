@@ -2,6 +2,14 @@ import { createHash, createPublicKey, randomUUID, timingSafeEqual, verify } from
 import {
   canonicalPayload,
   KnowledgeProjectSnapshotSchema,
+  MemberAssetFileSnapshotValueSchema,
+  MemberAssetReferenceValueSchema,
+  remoteTeamAssetFileReadRequestSchema,
+  type MemberAssetFileSnapshot,
+  type MemberAssetFileSnapshotValue,
+  type MemberAssetReference,
+  type MemberAssetReferenceValue,
+  type RemoteTeamAssetFileReadRequest,
   type KnowledgeProjectSnapshot,
   isTerminalRunStatus,
   requestRunStop,
@@ -45,6 +53,7 @@ import {
 import { readExecutionReviewState } from './execution-review-state.js';
 import type { UpstreamContentValue } from './execution-service.js';
 import { memberSessionId, type MemberRequest } from './member-session.js';
+import type { RemoteTeamAssetFileReadGrant } from './remote-team-asset-file-authority.js';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
 import {
   executionRunGlobalSchema,
@@ -184,6 +193,16 @@ export interface RemoteRunAuthoritySource {
     target: Target,
     signal: AbortSignal,
   ): Promise<KnowledgeProjectSnapshot>;
+  prepareTeamAssetFiles?(
+    request: MemberRequest,
+    target: Target,
+    signal: AbortSignal,
+  ): Promise<MemberAssetFileSnapshotValue>;
+  qualifyTeamAssetFile?(
+    request: MemberRequest,
+    reference: MemberAssetReference,
+    signal: AbortSignal,
+  ): Promise<MemberAssetReferenceValue>;
   compose(
     actorId: string,
     request: Accept,
@@ -191,6 +210,7 @@ export interface RemoteRunAuthoritySource {
     scope: Omit<RemoteRunScope, 'backendId'>,
     resources?: ExecutionRunResourceCatalog,
     projectKnowledge?: KnowledgeProjectSnapshot,
+    teamAssets?: MemberAssetFileSnapshot,
   ): FrozenExecutionRunComposition;
   now?(): number;
 }
@@ -209,7 +229,9 @@ export class RemoteRunAuthorities {
   >();
   private readonly inFlight = new Map<string, number>();
   private closed = false;
-  private readonly operations = new Set<Promise<RemoteRunResponse<unknown>>>();
+  private readonly operations = new Set<Promise<unknown>>();
+  private readonly teamFileGrants = new WeakMap<RemoteTeamAssetFileReadGrant, () => void>();
+  private teamFileOpenings = 0;
   private preparationFailure: ExecutionRunResourceQualificationCloseError | undefined;
   private releaseFailed = false;
   private files: RemoteRunFiles | undefined;
@@ -314,6 +336,11 @@ export class RemoteRunAuthorities {
       )
         deny('remote-unavailable');
       if (raw.data.remoteExecutionReviewWriter === 1 && !this.reviews?.ready())
+        deny('remote-protocol-unsupported');
+      if (
+        raw.data.remoteExecutionTeamAssetWriter === 1 &&
+        (!this.source.prepareTeamAssetFiles || !this.source.qualifyTeamAssetFile)
+      )
         deny('remote-protocol-unsupported');
       if (raw.data.remoteExecution) return;
       await this.source.writeGlobal({
@@ -479,6 +506,12 @@ export class RemoteRunAuthorities {
   async close(): Promise<void> {
     this.fence();
     while (this.operations.size) await Promise.allSettled([...this.operations]);
+    while (this.inputReads.size)
+      await Promise.allSettled(
+        [...this.inputReads.values()].flatMap((entries) =>
+          [...entries].map((entry) => entry.drain),
+        ),
+      );
     await this.reviews?.close();
     if (this.preparationFailure) throw this.preparationFailure;
     if (this.releaseFailed) throw new RemoteRunError('remote-unavailable');
@@ -507,6 +540,204 @@ export class RemoteRunAuthorities {
     void operation.finally(() => this.operations.delete(operation)).catch(() => undefined);
     return operation;
   }
+
+  /** Dedicated binary/check admission. Shares the original queue, device/drive,
+   * active owner and inputReads; it is not part of the generic JSON transport. */
+  openTeamAssetFile(
+    request: MemberRequest,
+    raw: unknown,
+    rawPermit: unknown,
+    caller: AbortSignal,
+  ): Promise<RemoteTeamAssetFileReadGrant> {
+    const operation = Promise.resolve()
+      .then(() => this.openTeamAssetFileNow(request, raw, rawPermit, caller))
+      .catch((error: unknown) => {
+        if (error instanceof RemoteRunError) throw error;
+        throw new RemoteRunError('remote-unavailable');
+      });
+    this.operations.add(operation);
+    void operation.finally(() => this.operations.delete(operation)).catch(() => undefined);
+    return operation;
+  }
+
+  private async openTeamAssetFileNow(
+    request: MemberRequest,
+    raw: unknown,
+    rawPermit: unknown,
+    caller: AbortSignal,
+  ): Promise<RemoteTeamAssetFileReadGrant> {
+    const parsed = remoteTeamAssetFileReadRequestSchema.safeParse(raw);
+    if (!parsed.success || Buffer.byteLength(JSON.stringify(raw), 'utf8') > 16 * 1024)
+      deny('remote-validation');
+    const body = parsed.data;
+    if (this.teamFileOpenings >= REMOTE_RUN_LIMITS.inFlightPerDevice) deny('remote-unavailable');
+    this.teamFileOpenings++;
+    let lease: ExecutionMemberLease | undefined,
+      deviceId: string | undefined,
+      retained = false;
+    const qualify = this.source.qualifyTeamAssetFile;
+    if (!qualify || !this.source.prepareTeamAssetFiles) deny('remote-protocol-unsupported');
+    try {
+      if (this.closed || caller.aborted || this.source.signal.aborted) deny('remote-unavailable');
+      try {
+        lease = await this.source.memberLease(request);
+      } catch {
+        deny('remote-unauthenticated');
+      }
+      const member = lease;
+      if (member.signal.aborted || member.expiresAt <= this.now()) deny('remote-unauthenticated');
+      const session = memberSessionId(request.headers.cookie);
+      if (!session) deny('remote-unauthenticated');
+      const sessionHash = hash(session);
+      const signal = AbortSignal.any([caller, this.source.signal, member.signal]);
+      let proofAdmitted = false;
+      const current = () => {
+        if (this.closed || signal.aborted || member.expiresAt <= this.now())
+          deny('remote-permit-revoked');
+        if (body.backendId !== this.registry().backendId) deny('remote-scope-mismatch');
+        if (
+          executionRunGlobalSchema.parse(this.source.readGlobal())
+            .remoteExecutionTeamAssetWriter !== 1
+        )
+          deny('remote-protocol-unsupported');
+        member.assertCurrent(body.payload.scope.spaceId);
+        this.checkDevice(body, member.memberId, !proofAdmitted);
+        proofAdmitted = true;
+        const value = this.load(body.payload.scope);
+        this.authorize(value, member);
+        this.checkBinding(body, value);
+        this.checkPermit(body.payload.permit, rawPermit, value.remote.drive);
+        this.checkLive(value, member, sessionHash, true);
+        if (value.run.attempt.status !== 'running' || value.run.resources !== 'held')
+          deny('remote-resource-held');
+        const composition = value.run.composition;
+        const snapshot =
+          composition?.schemaVersion === 2 ? composition.payload.teamAssets : undefined;
+        const tool =
+          composition?.schemaVersion === 2 ? composition.payload.teamAssetTool : undefined;
+        if (
+          value.remote.teamAssets !== 'zhuma-native-team-assets@1' ||
+          !snapshot ||
+          !tool ||
+          snapshot.spaceId !== value.run.spaceId
+        )
+          deny('remote-protocol-unsupported');
+        const row = snapshot.files.find((item) => same(item.reference, body.payload.reference));
+        if (!row) deny('remote-input-stale');
+        return { value, row };
+      };
+      const selected = await this.source.enqueue(async () => {
+        const selected = current();
+        const pending = this.inFlight.get(body.deviceId) ?? 0;
+        if (pending >= REMOTE_RUN_LIMITS.inFlightPerDevice) deny('remote-quota');
+        deviceId = body.deviceId;
+        this.inFlight.set(deviceId, pending + 1);
+        return selected;
+      });
+      // A metadata producer may itself use original service reads. Never await
+      // it while holding the original execution writer queue.
+      const qualified = MemberAssetReferenceValueSchema.parse(
+        await qualify.call(this.source, request, body.payload.reference, signal),
+      );
+      if (this.source.qualifyTeamAssetFile !== qualify || signal.aborted)
+        deny('remote-unavailable');
+      if (
+        qualified.actorId !== member.memberId ||
+        !same(qualified.reference, selected.row.reference) ||
+        !same(qualified.file, selected.row.file)
+      )
+        deny('remote-input-stale');
+      return await this.source.enqueue(async () => {
+        const { value, row } = current();
+        if (!same(row, selected.row)) deny('remote-input-stale');
+        const owner = this.active.get(value.run.attempt.id);
+        if (!owner || owner.sessionHash !== sessionHash) deny('remote-recovery-required');
+        const controller = new AbortController();
+        const activeSignal = AbortSignal.any([signal, owner.lease.signal, controller.signal]);
+        const scope = Object.freeze({ ...body.payload.scope });
+        const reference = Object.freeze({ ...row.reference });
+        const file = Object.freeze({ ...row.file });
+        const key = hash(scope);
+        let finish!: () => void,
+          released = false,
+          cleanup: Promise<void> | undefined;
+        const drain = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        const entry = { runId: scope.runId, cancel: () => controller.abort(), drain };
+        const entries = this.inputReads.get(key) ?? new Set<typeof entry>();
+        const grant: RemoteTeamAssetFileReadGrant = Object.freeze({
+          scope,
+          reference,
+          file,
+          request: Object.freeze({ headers: Object.freeze(structuredClone(request.headers)) }),
+          signal: activeSignal,
+          check: () => {
+            const check = this.teamFileGrants.get(grant);
+            if (!check) deny('remote-forbidden');
+            check();
+          },
+          releaseAfter: (physical: Promise<void>) =>
+            (cleanup ??= (async () => {
+              controller.abort();
+              try {
+                await physical;
+              } catch {
+                this.releaseFailed = true;
+                throw new RemoteRunError('remote-unavailable');
+              } finally {
+                released = true;
+                this.teamFileGrants.delete(grant);
+                entries.delete(entry);
+                if (!entries.size) this.inputReads.delete(key);
+                const remaining = (this.inFlight.get(body.deviceId) ?? 1) - 1;
+                if (remaining) this.inFlight.set(body.deviceId, remaining);
+                else this.inFlight.delete(body.deviceId);
+                try {
+                  member.release();
+                } catch {
+                  this.releaseFailed = true;
+                  throw new RemoteRunError('remote-unavailable');
+                } finally {
+                  finish();
+                }
+              }
+            })()),
+        });
+        this.teamFileGrants.set(grant, () => {
+          if (released || activeSignal.aborted || this.active.get(scope.runId) !== owner)
+            deny('remote-permit-revoked');
+          const fresh = current();
+          if (!same(fresh.row, row)) deny('remote-input-stale');
+        });
+        entries.add(entry);
+        this.inputReads.set(key, entries);
+        retained = true;
+        try {
+          grant.check();
+        } catch (error) {
+          await grant.releaseAfter(Promise.resolve());
+          throw error;
+        }
+        return grant;
+      });
+    } finally {
+      this.teamFileOpenings--;
+      if (!retained) {
+        if (deviceId) {
+          const remaining = (this.inFlight.get(deviceId) ?? 1) - 1;
+          if (remaining) this.inFlight.set(deviceId, remaining);
+          else this.inFlight.delete(deviceId);
+        }
+        try {
+          lease?.release();
+        } catch {
+          this.releaseFailed = true;
+          throw new RemoteRunError('remote-unavailable');
+        }
+      }
+    }
+  }
   private async handleNow(
     request: MemberRequest,
     raw: unknown,
@@ -525,6 +756,13 @@ export class RemoteRunAuthorities {
       return { ok: false, error: { code: 'remote-validation' } };
     const body = parsed.data;
     const global = executionRunGlobalSchema.safeParse(this.source.readGlobal());
+    if (
+      global.success &&
+      global.data.remoteExecutionTeamAssetWriter === 1 &&
+      (!this.source.prepareTeamAssetFiles || !this.source.qualifyTeamAssetFile) &&
+      body.operation !== 'cleanup'
+    )
+      return { ok: false, error: { code: 'remote-protocol-unsupported' } };
     if (
       global.success &&
       (global.data.remoteExecutionFileWriter === 1 ||
@@ -576,6 +814,7 @@ export class RemoteRunAuthorities {
       const execute = (
         qualification?: ExecutionInitialResourceVerification,
         projectKnowledge?: KnowledgeProjectSnapshot,
+        teamAssets?: MemberAssetFileSnapshot,
       ): Promise<unknown> =>
         this.source.enqueue(async () => {
           if (body.operation !== 'cleanup' && (this.closed || this.source.signal.aborted))
@@ -612,7 +851,14 @@ export class RemoteRunAuthorities {
               sessionHash,
             );
           if (body.operation === 'accept') {
-            return this.accept(body, lease!, sessionHash, qualification, projectKnowledge);
+            return this.accept(
+              body,
+              lease!,
+              sessionHash,
+              qualification,
+              projectKnowledge,
+              teamAssets,
+            );
           }
           if (body.operation === 'stop') return this.stop(body, lease!);
           this.checkDevice(body, lease!.memberId, !proofAdmitted);
@@ -965,6 +1211,7 @@ export class RemoteRunAuthorities {
     work: (
       verification?: ExecutionInitialResourceVerification,
       projectKnowledge?: KnowledgeProjectSnapshot,
+      teamAssets?: MemberAssetFileSnapshot,
     ) => Promise<T>,
     sessionHash: string,
   ): Promise<T> {
@@ -1003,10 +1250,24 @@ export class RemoteRunAuthorities {
               await this.source.prepareProjectKnowledge(request, body.payload.target, signal),
             )
           : undefined;
+      let teamAssets: MemberAssetFileSnapshot | undefined;
+      if (needed.fresh && body.payload.capabilities.teamAssets) {
+        if (!this.source.prepareTeamAssetFiles || !this.source.qualifyTeamAssetFile)
+          deny('remote-protocol-unsupported');
+        const value = MemberAssetFileSnapshotValueSchema.parse(
+          await this.source.prepareTeamAssetFiles(request, body.payload.target, signal),
+        );
+        if (
+          value.actorId !== lease.memberId ||
+          value.snapshot.spaceId !== body.payload.target.spaceId
+        )
+          deny('remote-scope-mismatch');
+        teamAssets = value.snapshot;
+      }
       if (signal.aborted) deny('remote-permit-revoked');
       lease.assertCurrent(body.payload.target.spaceId);
       const qualified = (verification?: ExecutionInitialResourceVerification) =>
-        work(verification, projectKnowledge);
+        work(verification, projectKnowledge, teamAssets);
       if (!needed.resources) return await qualified();
       if (this.preparationFailure) deny('remote-unavailable');
       const host = this.source.resourceHost;
@@ -1036,7 +1297,10 @@ export class RemoteRunAuthorities {
       preparation?.finish(cleanupConfirmed);
     }
   }
-  private proof(body: RemoteDeviceRequest | RemoteReviewDeviceRequest, publicKey: string): void {
+  private proof(
+    body: RemoteDeviceRequest | RemoteReviewDeviceRequest | RemoteTeamAssetFileReadRequest,
+    publicKey: string,
+  ): void {
     if (Math.abs(this.now() - body.proof.issuedAt) > REMOTE_RUN_LIMITS.proofWindowMs)
       deny('remote-proof-expired');
     try {
@@ -1067,7 +1331,7 @@ export class RemoteRunAuthorities {
     }
   }
   private checkDevice(
-    body: RemoteDeviceRequest | RemoteReviewDeviceRequest,
+    body: RemoteDeviceRequest | RemoteReviewDeviceRequest | RemoteTeamAssetFileReadRequest,
     actorId: string,
     verifyProof = true,
   ) {
@@ -1163,7 +1427,10 @@ export class RemoteRunAuthorities {
     )
       deny('remote-scope-mismatch');
   }
-  private checkBinding(body: RemoteDeviceRequest, value: Loaded): void {
+  private checkBinding(
+    body: RemoteDeviceRequest | RemoteTeamAssetFileReadRequest,
+    value: Loaded,
+  ): void {
     if (value.remote.deviceId !== body.deviceId) deny('remote-device-mismatch');
     const current = this.registry().devices.find((device) => device.deviceId === body.deviceId);
     if (
@@ -1617,6 +1884,7 @@ export class RemoteRunAuthorities {
     sessionHash: string,
     qualification?: ExecutionInitialResourceVerification,
     projectKnowledge?: KnowledgeProjectSnapshot,
+    teamAssets?: MemberAssetFileSnapshot,
   ): Promise<RemoteAcceptValue> {
     const device = this.checkDevice(body, lease.memberId);
     const payload = body.payload;
@@ -1693,6 +1961,7 @@ export class RemoteRunAuthorities {
       scope,
       qualification?.catalog,
       projectKnowledge,
+      teamAssets,
     );
     qualification?.assertCurrent();
     const inputs = this.inputCatalog(
@@ -1735,6 +2004,7 @@ export class RemoteRunAuthorities {
         ? { acceptedFiles: payload.capabilities.acceptedFile }
         : {}),
       ...(payload.capabilities.knowledge ? { knowledge: payload.capabilities.knowledge } : {}),
+      ...(payload.capabilities.teamAssets ? { teamAssets: payload.capabilities.teamAssets } : {}),
       backendId: body.backendId,
       deviceId: device.deviceId,
       publicKey: device.publicKey,
@@ -1765,14 +2035,20 @@ export class RemoteRunAuthorities {
     lease.assertCurrent(payload.target.spaceId);
     this.source.assertTarget(lease.memberId, payload.target, this.source.readNode(payload.target)!);
     qualification?.assertCurrent();
-    if (files || payload.capabilities.acceptedFile || payload.capabilities.knowledge) {
+    if (
+      files ||
+      payload.capabilities.acceptedFile ||
+      payload.capabilities.knowledge ||
+      payload.capabilities.teamAssets
+    ) {
       // Qualify the actual original attachment port BEFORE changing the format.
       if (files) this.fileManager();
       const global = executionRunGlobalSchema.parse(this.source.readGlobal());
       if (
         (files && global.remoteExecutionFileWriter !== 1) ||
         (payload.capabilities.acceptedFile && global.remoteExecutionAcceptedFileWriter !== 1) ||
-        (payload.capabilities.knowledge && global.remoteExecutionKnowledgeWriter !== 1)
+        (payload.capabilities.knowledge && global.remoteExecutionKnowledgeWriter !== 1) ||
+        (payload.capabilities.teamAssets && global.remoteExecutionTeamAssetWriter !== 1)
       ) {
         // Original storage has no cross-row transaction. This durable barrier
         // precedes the first node put in the SAME writer queue. A failed node
@@ -1784,13 +2060,17 @@ export class RemoteRunAuthorities {
             ? { remoteExecutionAcceptedFileWriter: 1 as const }
             : {}),
           ...(payload.capabilities.knowledge ? { remoteExecutionKnowledgeWriter: 1 as const } : {}),
+          ...(payload.capabilities.teamAssets
+            ? { remoteExecutionTeamAssetWriter: 1 as const }
+            : {}),
         });
       }
       const marked = executionRunGlobalSchema.parse(this.source.readGlobal());
       if (
         (files && marked.remoteExecutionFileWriter !== 1) ||
         (payload.capabilities.acceptedFile && marked.remoteExecutionAcceptedFileWriter !== 1) ||
-        (payload.capabilities.knowledge && marked.remoteExecutionKnowledgeWriter !== 1)
+        (payload.capabilities.knowledge && marked.remoteExecutionKnowledgeWriter !== 1) ||
+        (payload.capabilities.teamAssets && marked.remoteExecutionTeamAssetWriter !== 1)
       )
         deny('remote-unavailable');
       lease.assertCurrent(payload.target.spaceId);
