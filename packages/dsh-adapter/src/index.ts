@@ -433,3 +433,6 @@ export { MemberAssetService } from './member-asset-service.js';
 export type { MemberAssetServiceOptions } from './member-asset-service.js';
 export { TeamAssetCatalogService } from './team-asset-catalog.js';
 export type { TeamAssetCatalogSources } from './team-asset-catalog.js';
+
+export { openMemberAssetHttp, MEMBER_ASSET_ENDPOINTS } from './member-asset-http.js';
+export type { MemberAssetHttpSources } from './member-asset-http.js';
