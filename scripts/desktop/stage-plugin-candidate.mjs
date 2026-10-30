@@ -47,6 +47,8 @@ const source = values.plugin ? resolve(values.plugin) : join(root, '.build/workb
   ];
 const current = JSON.parse(await readFile(join(target, 'package.json'), 'utf8'));
 const next = JSON.parse(await readFile(join(source, 'package.json'), 'utf8'));
+const launchFiles = ['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'];
+if (next.zhuma?.codeArtsLaunch === 1) files.push(...launchFiles);
 if (current.name !== '@zhuma/workbench' || next.name !== current.name)
   throw Error('Unexpected product plugin identity');
 if (JSON.stringify(current.peerDependencies) !== JSON.stringify(next.peerDependencies))
@@ -71,7 +73,8 @@ for (const file of files) {
   try {
     previous[file] = await hash(join(target, file));
   } catch (error) {
-    if (error.code !== 'ENOENT' || file !== 'member-web.js') throw error;
+    if (error.code !== 'ENOENT' || (file !== 'member-web.js' && !launchFiles.includes(file)))
+      throw error;
     previous[file] = null;
   }
   candidate[file] = await hash(join(source, file));

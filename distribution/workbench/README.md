@@ -49,6 +49,24 @@ pnpm desktop:dev
 
 ## 验证
 
+### 码道启动产物
+
+完整 `pnpm workbench:build` 额外生成 `codearts-acp.js`、`codearts-policy.js` 与摘要清单。入口是自包含 Node ESM；第三方许可证随同一目录交付。Host-only 刷新保留既有启动文件，不能替代新入口的完整构建。
+
+操作者明确指定实际 Node／Electron 和码道 launcher 后，可生成一个仅本机使用的私有组合补丁：
+
+```bash
+node scripts/desktop/prepare-codearts-profile.mjs \
+  --node '/absolute/path/to/node-or-electron' \
+  --launcher '/absolute/path/to/codearts' \
+  --bundle '/absolute/path/to/complete/workbench-bundle' \
+  --out '/private/temporary-directory/codearts-launch.patch.json'
+```
+
+脚本只核对明确文件及摘要，不启动码道、不读取用户 profile、不修改设置。输出包含本机路径，权限为 `0600`，已有文件不覆盖；不得提交到仓库。操作者将该补丁明确应用到相同候选的原产品组合，并保留原 ACP 设置的其他条目。重开时，原 Loader 的 entry inject 会让 ACP profile 注册等待启动策略；只有实际 producer.prepare 成功后的同代完整 profile 能取得原工具交接闭包。更改文件、配置或卸载会使旧闭包失效，不能用普通配置布尔值放行。
+
+此处交付启动文件、校验与注册顺序。码道的目录元数据兼容、正常任务选择／显式开始／停止恢复和工作区持续会话仍需对应 C/A 接缝及准确候选验收；生成补丁、握手或 CLI 退出都不表示登录、真实模型、工具权限或任务产物已通过。正常认证与目录信任继续走码道自身入口。
+
 `pnpm check` 不调用付费模型。规划测试使用明确命名的契约 fixture，覆盖非法引用、循环、缺失输出、一次修复、取消、版本冲突和幂等。真实模型和浏览器结果另记在 [验证记录](../../docs/workbench-validation.md)。
 
 `pnpm test:host` 构建并以真实已发布 DSH 服务测试完全相同的 Host 发行文件，使用临时私有 home、合成凭据和拒绝模型调用的端口。它不等于安装包、三账号人工交付或原生 Agent 验收；[服务与历史单人原生桌面证据](../../docs/review/s1a-host/README.md)按各自来源 SHA 和环境分别记录，不能认证后续新增组合。

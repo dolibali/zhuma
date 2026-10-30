@@ -449,3 +449,13 @@ export type { TeamAssetCatalogSources } from './team-asset-catalog.js';
 
 export { openMemberAssetHttp, MEMBER_ASSET_ENDPOINTS } from './member-asset-http.js';
 export type { MemberAssetHttpSources } from './member-asset-http.js';
+export {
+  CODEARTS_PROFILE_ID,
+  createCodeArtsProfileRegistration,
+  CodeArtsProfileRegistrationProducer,
+} from './executors/codearts/registration.js';
+export type {
+  CodeArtsAcpProfile,
+  CodeArtsLaunchArtifact,
+  CodeArtsProfileRegistration,
+} from './executors/codearts/registration.js';

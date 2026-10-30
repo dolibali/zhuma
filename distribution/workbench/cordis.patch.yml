@@ -20,8 +20,14 @@
     # settings page and explicit credential setup remain available.
     credentialOnboarding: false
 - insert:
+    - id: zhuma-codearts-policy
+      name: './lib/zhuma-workbench/codearts-policy.js'
+      config: {}
     - id: dsh-acp-adapter
       name: '@zaimokuza/dsh-acp-adapter'
+      # Loader merges this with the original SDK/plugin inject requirements.
+      # A persisted profile must never precede the verified producer on reopen.
+      inject: ['acpNativeToolHandoffPolicy']
       config: {}
     - id: zhuma-workbench
       name: './lib/zhuma-workbench/index.js'
