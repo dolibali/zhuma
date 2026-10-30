@@ -288,3 +288,147 @@ test('team_asset runtime: cancellation returns promptly but original read reserv
   h.finalize(next);
   h.finalize(cancelled);
 });
+
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { LocalAttachmentStore } from '@deepseek-ai/dsh-attachment-local';
+import { TeamAssetFileBytes } from '../dist/team-asset-file.js';
+import { TeamAssetFileService } from '../dist/team-asset-file-service.js';
+async function originalByteComposition(t, options = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'zhuma-team-tool-bytes-')),
+    ctx = new Context();
+  let service, attachment;
+  t.after(async () => {
+    await service?.close();
+    await attachment?.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+  attachment = ctx.plugin(LocalAttachmentStore, { dshHome: root });
+  await attachment;
+  let blocked = false,
+    reads = 0,
+    releases = 0;
+  const provider = {
+    saveFileStream: (request) => ctx.attachments.saveFileStream(request),
+    async *readFileStream(request) {
+      if (blocked) await options.block();
+      yield* ctx.attachments.readFileStream(request);
+    },
+  };
+  const carrier = new TeamAssetFileBytes(provider),
+    data = Buffer.from('A汉😀BC');
+  const declare = {
+    name: '固定使用说明.txt',
+    mediaType: 'text/plain',
+    byteSize: data.length,
+    sha256: createHash('sha256').update(data).digest('hex'),
+  };
+  const bytesGrant = { signal: new AbortController().signal, assertCurrent() {} };
+  const blob = await carrier.save(
+    declare,
+    (async function* () {
+      yield data;
+    })(),
+    bytesGrant,
+  );
+  // Only the original asset authority is a contract; no task/asset facts are
+  // fabricated in product storage. Actual bytes/stream verifier are unmodified.
+  const authority = {
+    reserveFile() {
+      throw Error('tool must not upload');
+    },
+    commitFile() {
+      throw Error('tool must not commit');
+    },
+    abortFile() {
+      throw Error('tool must not alter upload facts');
+    },
+    async readFile(_request, target, signal) {
+      reads++;
+      assert.equal(target.spaceId, scope.spaceId);
+      assert.equal(target.assetId, 'guide');
+      return {
+        blob: structuredClone(blob),
+        grant: {
+          signal,
+          assertCurrent() {
+            signal.throwIfAborted();
+          },
+        },
+        release() {
+          releases++;
+        },
+      };
+    },
+  };
+  service = new TeamAssetFileService(carrier, authority);
+  const h = await harness(t, {
+    open(ref, signal) {
+      return service.openReadTracked(
+        { headers: {} },
+        { spaceId: ref.spaceId, assetId: ref.assetId, versionId: ref.versionId },
+        signal,
+      );
+    },
+  });
+  return {
+    ...h,
+    byteService: service,
+    reads: () => reads,
+    byteReleases: () => releases,
+    block() {
+      blocked = true;
+    },
+    stored: blob,
+  };
+}
+
+test('team_asset composition: actual original attachment stream crosses service, Run budget and final tool output without task metadata writes', async (t) => {
+  const h = await originalByteComposition(t);
+  const metadata = await h.execute({ action: 'list' });
+  assert.equal(metadata.value.ok, true);
+  h.finalize(metadata);
+  assert.equal(h.reads(), 0);
+  const read = await h.execute({ action: 'read', reference: h.reference, offset: 1, length: 4 });
+  assert.equal(read.value.ok, true);
+  assert.equal(read.value.value.text, '汉');
+  assert.equal(read.value.value.file.sha256, h.stored.sha256);
+  assert.notEqual(read.value.value.reference.sha256, h.stored.sha256);
+  assert.equal(h.byteReleases(), 0);
+  assert.deepEqual(h.finalize(read), read.value);
+  await h.byteService.idle();
+  assert.equal(h.byteReleases(), 1);
+  assert.ok(h.sessions.open(h.current).binding.inputReadBudget.chargedBytes > 0);
+});
+
+test('team_asset composition: real tracked byte drain keeps Native reservation and original file lease after a cancelled tool result', async (t) => {
+  const entered = deferred(),
+    physical = deferred();
+  const h = await originalByteComposition(t, {
+    block: async () => {
+      entered.resolve();
+      await physical.promise;
+    },
+  });
+  h.block();
+  const abort = new AbortController();
+  const reading = h.execute({ action: 'read', reference: h.reference }, { signal: abort.signal });
+  await entered.promise;
+  abort.abort();
+  try {
+    const value = await reading;
+    assert.equal(value.value.code, 'cancelled');
+    await assert.rejects(h.sessions.reserveInputRead(h.current), { code: 'input-read-busy' });
+    assert.equal(h.byteReleases(), 0);
+    h.finalize(value);
+  } finally {
+    physical.resolve();
+  }
+  await h.sessions.whenInputReadsIdle(scope);
+  await h.byteService.idle();
+  assert.equal(h.byteReleases(), 1);
+  const next = await h.execute({ action: 'list' });
+  assert.equal(next.value.ok, true);
+  h.finalize(next);
+});
