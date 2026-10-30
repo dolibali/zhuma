@@ -76,6 +76,112 @@ const create = () => ({
 });
 const tick = () => new Promise(setImmediate);
 
+const folderInput = (patch = {}) => ({
+  spaceId: 'north',
+  folderId: randomUUID(),
+  parentFolderId: null,
+  name: '接口资料',
+  expectedVersion: 0,
+  idempotencyKey: randomUUID(),
+  ...patch,
+});
+test('folder metadata HTTP contract: registered create/list and original file create/move enforce real member privacy and exact scope', async (t) => {
+  const h = await setup(t),
+    input = folderInput();
+  const createReply = await h.request('asset-folder-create', input).response;
+  assert.equal(createReply.status, 200);
+  const createdFolder = (await createReply.json()).result.value.folder;
+  assert.equal(createdFolder.folderId, input.folderId);
+  assert.equal(createdFolder.createdBy, 'ann');
+  assert.equal(createdFolder.fingerprint, undefined);
+  const reply = await h.request('asset-folder-list', { spaceId: 'north', folderId: null }).response;
+  assert.equal((await reply.json()).result.value.folders[0].folderId, input.folderId);
+  const file = { ...create(), folderId: input.folderId };
+  const fileReply = await h.request('asset-command', file).response;
+  const asset = (await fileReply.json()).result.value.asset;
+  const visible = await h.request('asset-folder-list', {
+    spaceId: 'north',
+    folderId: input.folderId,
+    includeDrafts: true,
+  }).response;
+  assert.equal((await visible.json()).result.value.files.length, 1);
+  const privateReply = await h.request(
+    'asset-folder-list',
+    { spaceId: 'north', folderId: input.folderId, includeDrafts: true },
+    { actor: 'bob' },
+  ).response;
+  assert.deepEqual((await privateReply.json()).result.value.files, []);
+  const move = {
+    operation: 'move-file',
+    spaceId: 'north',
+    assetId: asset.assetId,
+    expectedVersion: asset.version,
+    idempotencyKey: randomUUID(),
+    folderId: null,
+  };
+  assert.equal((await h.request('asset-command', move, { actor: 'bob' }).response).status, 403);
+  assert.equal((await h.request('asset-command', move).response).status, 200);
+  const wrongSpace = await h.request(
+    'asset-folder-list',
+    { spaceId: 'south', folderId: input.folderId },
+    { actor: 'cy' },
+  ).response;
+  assert.equal(wrongSpace.status, 404);
+  const forged = await h.request('asset-folder-create', { ...folderInput(), createdBy: 'bob' })
+    .response;
+  assert.equal(forged.status, 400);
+});
+
+test('folder metadata HTTP contract: identity gates body and owner replacement fences a late directory request', async (t) => {
+  const h = await setup(t),
+    entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  let pulls = 0;
+  const deniedBody = new ReadableStream(
+    {
+      pull() {
+        pulls++;
+        throw Error('PRIVATE-BODY');
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const denied = await h.request(
+    'asset-folder-create',
+    {},
+    { body: deniedBody, headers: { cookie: '' } },
+  ).response;
+  assert.equal(denied.status, 401);
+  assert.equal(pulls, 0);
+  await deniedBody.cancel();
+  const body = new ReadableStream(
+    {
+      async pull(controller) {
+        entered.resolve();
+        await release.promise;
+        controller.enqueue(
+          new TextEncoder().encode(
+            JSON.stringify({
+              type: 'client-request',
+              rpcId: randomUUID(),
+              method: 'zhuma-member/asset-folder-create',
+              payload: folderInput(),
+            }),
+          ),
+        );
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const pending = h.request('asset-folder-create', {}, { body }).response;
+  await entered.promise;
+  h.replace();
+  release.resolve();
+  assert.equal((await pending).status, 503);
+  assert.equal(h.workbench.snapshot().memberAssetFolders, undefined);
+});
+
 test('asset metadata HTTP contract: original authority persists one draft and replays the same command', async (t) => {
   const f = await setup(t),
     input = create();
