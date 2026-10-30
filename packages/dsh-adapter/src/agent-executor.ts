@@ -320,7 +320,7 @@ export type DshModelConfigResult =
   | { readonly ok: true; readonly config: DshModelConfig }
   | { readonly ok: false; readonly reason: string };
 
-/** 只读环境变量；非 production 可用开发网关默认值，显式环境变量始终优先。缺项时点名，不写出地址和密钥。 */
+/** 只读 ZHUMA_MODEL_* 环境变量（自定义提供商／OpenAI-compatible）。缺项时点名，不写出地址和密钥，无仓库内默认字面量。 */
 export function readDshModelConfig(env: NodeJS.ProcessEnv = process.env): DshModelConfigResult {
   const gateway = resolveDevModelGateway(env);
   if (gateway) {

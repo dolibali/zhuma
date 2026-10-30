@@ -23,9 +23,9 @@ const current = await readFile(resolve(bundle, 'cordis.patch.yml'), 'utf8');
 if (current.split(marker)[0] !== sourcePatch)
   throw new Error('The Web bundle has unrelated changes; refusing to overwrite.');
 const overlay = await readFile(resolve(root, 'distribution/workbench/cordis.patch.yml'), 'utf8');
-// Inject OpenAI-compatible DEV gateway into the disposable bundle only when asked
+// Inject OpenAI-compatible 自定义提供商 into the disposable bundle only when asked
 // (desktop:dev sets ZHUMA_WORKBENCH_DEV_GATEWAY=1) or when ZHUMA_MODEL_* is already set.
-// Production package builds never set the flag, so the committed overlay stays keyless.
+// Models / URL / key come only from env; production package builds leave the overlay keyless.
 let gatewayOverlay = '';
 if (process.env.ZHUMA_WORKBENCH_DEV_GATEWAY === '1' || process.env.ZHUMA_MODEL_BASE_URL?.trim()) {
   const gateway = resolveDevModelGateway(process.env);

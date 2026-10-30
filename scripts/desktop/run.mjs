@@ -23,8 +23,8 @@ const baseEnv = {
   // Disallow upstream auto updates in this independent unsigned build.
   DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
 };
-// desktop:dev: non-production gateway defaults + inject llm-pi-ai models into the stage patch.
-// package builds keep the committed overlay only; env still overrides when set.
+// desktop:dev: may inject llm-pi-ai when ZHUMA_WORKBENCH_DEV_GATEWAY=1 and ZHUMA_MODEL_* are set.
+// URL / key / model ids come only from env; package builds keep the committed overlay only.
 const env =
   task === 'dev'
     ? {
