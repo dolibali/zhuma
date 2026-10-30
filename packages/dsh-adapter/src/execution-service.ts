@@ -18,6 +18,8 @@ import { describeNativeResultTool } from './native-work-session-result-tool.js';
 import { describeNativeResultPublicationsTool } from './native-work-session-result-publications-tool.js';
 import { describeAcceptedInputTool } from './native-work-session-input-tool.js';
 import { describeMemberKnowledgeTool } from './member-knowledge-tool.js';
+import { describeTeamAssetFileTool } from './team-asset-file-tool.js';
+import type { RemoteTeamAssetFileReadGrant } from './remote-team-asset-file-authority.js';
 import { z } from 'zod';
 import {
   canonicalPayload,
@@ -29,6 +31,9 @@ import {
   type LocalReviewOptions,
   type RemoteWorkflowIntent,
   type KnowledgeProjectSnapshot,
+  type MemberAssetFileSnapshotValue,
+  type MemberAssetReference,
+  type MemberAssetReferenceValue,
   type RemoteWorkflowCandidate,
   reviewOutcomeQuerySchema,
   reviewOutcomeSchema,
@@ -522,6 +527,16 @@ export interface ExecutionRunHostPorts
     query: { readonly spaceId: string; readonly projectId: string },
     signal: AbortSignal,
   ): Promise<KnowledgeProjectSnapshot>;
+  prepareTeamAssetFiles?(
+    request: MemberRequest,
+    query: { readonly spaceId: string },
+    signal: AbortSignal,
+  ): Promise<MemberAssetFileSnapshotValue>;
+  qualifyTeamAssetFile?(
+    request: MemberRequest,
+    reference: MemberAssetReference,
+    signal: AbortSignal,
+  ): Promise<MemberAssetReferenceValue>;
   /** Verify the exact frozen expert/input/model/tool composition and executor readiness. */
   assertConfiguration(
     memberId: string,
@@ -1994,7 +2009,56 @@ export class ExecutionService {
               },
             }
           : {}),
-        compose: (actorId, request, node, scope, resourceCatalog, projectKnowledge) => {
+        ...(host.prepareTeamAssetFiles
+          ? {
+              prepareTeamAssetFiles: async (
+                request: MemberRequest,
+                target: { spaceId: string },
+                signal: AbortSignal,
+              ) => {
+                const prepare = host.prepareTeamAssetFiles!;
+                if (host !== this.requireRunHost() || host.signal.aborted || signal.aborted)
+                  throw new RemoteRunError('remote-unavailable');
+                const value = await prepare.call(
+                  host,
+                  request,
+                  { spaceId: target.spaceId },
+                  signal,
+                );
+                if (
+                  host !== this.requireRunHost() ||
+                  host.prepareTeamAssetFiles !== prepare ||
+                  host.signal.aborted ||
+                  signal.aborted
+                )
+                  throw new RemoteRunError('remote-unavailable');
+                return value;
+              },
+            }
+          : {}),
+        ...(host.qualifyTeamAssetFile
+          ? {
+              qualifyTeamAssetFile: async (
+                request: MemberRequest,
+                reference: MemberAssetReference,
+                signal: AbortSignal,
+              ) => {
+                const qualify = host.qualifyTeamAssetFile!;
+                if (host !== this.requireRunHost() || host.signal.aborted || signal.aborted)
+                  throw new RemoteRunError('remote-unavailable');
+                const value = await qualify.call(host, request, reference, signal);
+                if (
+                  host !== this.requireRunHost() ||
+                  host.qualifyTeamAssetFile !== qualify ||
+                  host.signal.aborted ||
+                  signal.aborted
+                )
+                  throw new RemoteRunError('remote-unavailable');
+                return value;
+              },
+            }
+          : {}),
+        compose: (actorId, request, node, scope, resourceCatalog, projectKnowledge, teamAssets) => {
           const files =
             request.payload.capabilities.resultIntent === 'zhuma-native-result-intent@2';
           const descriptor = files
@@ -2051,6 +2115,7 @@ export class ExecutionService {
             executor: request.payload.executor,
             ...(resourceCatalog ? { resourceCatalog } : {}),
             ...(projectKnowledge ? { projectKnowledge } : {}),
+            ...(teamAssets ? { teamAssets, teamAssetTool: describeTeamAssetFileTool() } : {}),
             inputs: {
               actorId,
               ...request.payload.target,
@@ -2102,6 +2167,17 @@ export class ExecutionService {
 
   /** A's product HTTP transport forwards the original request and private header.
    * This method never starts a native Agent on the shared backend. */
+  openRemoteTeamAssetFile(
+    request: MemberRequest,
+    raw: unknown,
+    rawPrivatePermit: unknown,
+    signal: AbortSignal,
+  ): Promise<RemoteTeamAssetFileReadGrant> {
+    if (!this.remoteRunAuthorities)
+      return Promise.reject(new RemoteRunError('remote-protocol-unsupported'));
+    return this.remoteRunAuthorities.openTeamAssetFile(request, raw, rawPrivatePermit, signal);
+  }
+
   remoteRun(
     request: MemberRequest,
     body: unknown,
