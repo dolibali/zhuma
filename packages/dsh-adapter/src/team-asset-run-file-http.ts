@@ -84,7 +84,8 @@ export function openTeamAssetRunFileHttp(
     let rpcId = '',
       grant: ReadGrant | undefined,
       file: TeamAssetFileReadHandle | undefined;
-    let physical = Promise.resolve();
+    let physical = Promise.resolve(),
+      outputEnded = false;
     const disconnected = new AbortController(),
       deadline = new AbortController(),
       operation = new AbortController();
@@ -124,6 +125,7 @@ export function openTeamAssetRunFileHttp(
         ...(req.readableEnded ? {} : { connection: 'close' }),
       });
       res.end(JSON.stringify({ type: 'server-response', rpcId, result }));
+      outputEnded = true;
     };
     const fail = (code: RemoteRunErrorCode, status: number) =>
       reply({ ok: false, error: { code } }, status);
@@ -239,13 +241,16 @@ export function openTeamAssetRunFileHttp(
       }
       check();
       res.end();
+      outputEnded = true;
     } catch (error) {
       if (!res.headersSent) {
         const mapped = errorResponse(error);
         fail(mapped.code, mapped.status);
       } else if (!res.writableFinished && !res.destroyed) res.destroy();
     } finally {
-      if (!res.writableEnded && !res.destroyed) res.destroy();
+      // SDK compression may still be flushing after end() returns, before the
+      // underlying response reports writableEnded. Retain its actual finish.
+      if (!outputEnded && !res.writableEnded && !res.destroyed) res.destroy();
       if (res.writableFinished || res.closed) finishOutput();
       // Promise.all rejects early; actual drains must all settle even on failure.
       const drain = Promise.allSettled([physical, output]).then((results) => {
