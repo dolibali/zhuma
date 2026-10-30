@@ -1,6 +1,7 @@
 import type { MemberRequest } from './member-session.js';
 import type {
   MemberAssetFileAuthority,
+  MemberAssetFileDeclare,
   MemberAssetFileRead,
   MemberAssetFileReceipt,
   MemberAssetFileReserve,
@@ -11,6 +12,15 @@ import {
   TeamAssetFileError,
   type TeamAssetFileAuthority,
 } from './team-asset-file.js';
+import { ARTIFACT_FILE_LIMITS } from './artifact-files.js';
+
+export interface TeamAssetFileReadHandle {
+  readonly file: MemberAssetFileDeclare;
+  readonly bytes: Uint8Array;
+  readonly signal: AbortSignal;
+  check(): void;
+  release(): void;
+}
 
 /** Thin composition over D's one authoritative asset record and E's original
  * attachment byte carrier. It stores only live cleanup promises, never assets,
@@ -19,6 +29,9 @@ export class TeamAssetFileService {
   private readonly lifetime = new AbortController();
   private readonly requests = new Set<Promise<unknown>>();
   private readonly cleanups = new Set<Promise<void>>();
+  private readonly readLifetimes = new Set<Promise<void>>();
+  private readonly readers = new Set<TeamAssetFileReadHandle>();
+  private readSlots = 0;
   private cleanupFailed = false;
   private closed = false;
   private closing: Promise<void> | undefined;
@@ -118,21 +131,88 @@ export class TeamAssetFileService {
     return this.request(signal, (active) => this.readInner(request, input, active));
   }
   private async readInner(request: MemberRequest, input: MemberAssetFileRead, signal: AbortSignal) {
-    this.current(signal);
-    const opened = await this.authority.readFile(request, structuredClone(input), signal);
-    let drain = Promise.resolve();
+    const opened = await this.openReadInner(request, input, signal);
     try {
+      opened.check();
+      return { file: { ...opened.file }, bytes: opened.bytes };
+    } finally {
+      opened.release();
+    }
+  }
+  openRead(request: MemberRequest, input: MemberAssetFileRead, signal: AbortSignal) {
+    return this.request(signal, (active) => this.openReadInner(request, input, active));
+  }
+  private async openReadInner(
+    request: MemberRequest,
+    input: MemberAssetFileRead,
+    signal: AbortSignal,
+  ): Promise<TeamAssetFileReadHandle> {
+    this.current(signal);
+    if (this.readSlots >= ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace)
+      throw new TeamAssetFileError('limit');
+    this.readSlots++;
+    let opened: Awaited<ReturnType<MemberAssetFileAuthority['readFile']>> | undefined;
+    let drain = Promise.resolve();
+    let transferred = false;
+    try {
+      opened = await this.authority.readFile(request, structuredClone(input), signal);
       this.current(signal);
       opened.grant.assertCurrent();
-      const operation = this.bytes.readTracked(opened.blob, this.narrow(opened.grant, signal));
+      const source = opened;
+      const grant = this.narrow(source.grant, signal);
+      const operation = this.bytes.readTracked(source.blob, grant);
       drain = operation.drain;
       const data = await operation.result;
       this.current(signal);
-      opened.grant.assertCurrent();
-      const { attachmentId: _attachmentId, ...file } = opened.blob;
-      return { file, bytes: data };
+      source.grant.assertCurrent();
+      const { attachmentId: _attachmentId, ...file } = source.blob;
+      let released = false,
+        resolveLife!: () => void;
+      const life = new Promise<void>((resolve) => {
+        resolveLife = resolve;
+      });
+      this.readLifetimes.add(life);
+      const handle: TeamAssetFileReadHandle = {
+        file: Object.freeze(file),
+        bytes: data,
+        signal: grant.signal,
+        check: () => {
+          if (released) throw new TeamAssetFileError('cancelled');
+          this.current(grant.signal);
+          source.grant.assertCurrent();
+        },
+        release: () => {
+          if (released) return;
+          released = true;
+          grant.signal.removeEventListener('abort', handle.release);
+          this.readers.delete(handle);
+          this.cleanup(drain, () => {
+            try {
+              source.release();
+              this.readSlots--;
+            } finally {
+              this.readLifetimes.delete(life);
+              resolveLife();
+            }
+          });
+        },
+      };
+      this.readers.add(handle);
+      grant.signal.addEventListener('abort', handle.release, { once: true });
+      transferred = true;
+      if (grant.signal.aborted) handle.release();
+      handle.check();
+      return handle;
     } finally {
-      this.cleanup(drain, () => opened.release());
+      if (!transferred) {
+        const source = opened;
+        if (source)
+          this.cleanup(drain, () => {
+            source.release();
+            this.readSlots--;
+          });
+        else this.readSlots--;
+      }
     }
   }
   text(
@@ -170,13 +250,15 @@ export class TeamAssetFileService {
     }
   }
   async idle(): Promise<void> {
-    while (this.cleanups.size) await Promise.allSettled([...this.cleanups]);
+    while (this.cleanups.size || this.readLifetimes.size)
+      await Promise.allSettled([...this.cleanups, ...this.readLifetimes]);
     if (this.cleanupFailed) throw new TeamAssetFileError('unavailable');
   }
   close(): Promise<void> {
     return (this.closing ??= (async () => {
       this.closed = true;
       this.lifetime.abort();
+      for (const handle of [...this.readers]) handle.release();
       const settled = await Promise.allSettled([
         this.bytes.close(),
         (async () => {

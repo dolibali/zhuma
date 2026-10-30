@@ -267,3 +267,78 @@ test('team file composition: a release failure is reported by close instead of c
     (error) => error.code === 'unavailable' && !error.message.includes('PRIVATE_'),
   );
 });
+
+test('team file response handle: original lease stays live until explicit output release, and revocation fences later chunks', async () => {
+  const h = fixture();
+  await h.upload();
+  await h.service.idle();
+  const target = { spaceId: h.input.spaceId, assetId: h.input.assetId, versionId: 'fixed-version' };
+  const handle = await h.service.openRead(h.request, target, new AbortController().signal);
+  assert.deepEqual(Buffer.from(handle.bytes), h.data);
+  assert.equal(h.events.includes('release-read'), false);
+  let idle = false;
+  const waiting = h.service.idle().then(() => {
+    idle = true;
+  });
+  await tick();
+  assert.equal(idle, false);
+  handle.check();
+  h.deny();
+  assert.throws(() => handle.check(), /revoked/u);
+  handle.release();
+  handle.release();
+  await waiting;
+  assert.equal(h.events.filter((event) => event === 'release-read').length, 1);
+  await h.service.close();
+});
+
+test('team file response handle: eight held outputs bound memory/lease occupancy until real release', async () => {
+  const h = fixture();
+  await h.upload();
+  await h.service.idle();
+  const target = { spaceId: h.input.spaceId, assetId: h.input.assetId, versionId: 'fixed-version' };
+  const open = () => h.service.openRead(h.request, target, new AbortController().signal);
+  const handles = await Promise.all(Array.from({ length: 8 }, open));
+  await assert.rejects(open(), { code: 'limit' });
+  assert.equal(h.events.filter((event) => event === 'authorize-read').length, 8);
+  handles[0].release();
+  await tick();
+  handles.push(await open());
+  await h.service.close();
+  for (const handle of handles) assert.throws(() => handle.check(), { code: 'cancelled' });
+  assert.equal(h.events.filter((event) => event === 'release-read').length, 9);
+});
+
+test('team file response handle: close joins a late ignored-abort read grant and releases without opening bytes', async () => {
+  const h = fixture(),
+    pending = deferred(),
+    entered = deferred();
+  h.authority.readFile = async () => {
+    entered.resolve();
+    return pending.promise;
+  };
+  const opening = h.service.openRead(
+    h.request,
+    { spaceId: 'north', assetId: 'guide', versionId: 'fixed-version' },
+    new AbortController().signal,
+  );
+  await entered.promise;
+  let closed = false;
+  const closing = h.service.close().then(() => {
+    closed = true;
+  });
+  await tick();
+  assert.equal(closed, false);
+  let released = 0;
+  pending.resolve({
+    blob: {},
+    grant: { signal: new AbortController().signal, assertCurrent() {} },
+    release() {
+      released++;
+    },
+  });
+  await assert.rejects(opening, { code: 'cancelled' });
+  await closing;
+  assert.equal(released, 1);
+  assert.deepEqual(h.events, []);
+});
