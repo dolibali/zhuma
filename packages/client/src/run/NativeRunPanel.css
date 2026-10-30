@@ -282,6 +282,22 @@
   border-radius: 12px;
   background: var(--zm-bg);
 }
+.zm-native-run .zm-native-run__message[data-initial-task='true'] {
+  justify-self: stretch;
+  width: auto;
+  max-width: 100%;
+  border-radius: 8px;
+}
+.zm-native-run .zm-native-run__instructions > .zm-native-run__message-text {
+  max-height: min(40vh, 360px);
+  margin-block-start: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.zm-native-run .zm-native-run__instructions-hint {
+  color: var(--zm-muted);
+  font-size: 12px;
+}
 .zm-native-run .zm-native-run__message[data-role='system'] {
   color: var(--zm-muted);
   font-size: 12px;

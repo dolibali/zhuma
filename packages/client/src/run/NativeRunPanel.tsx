@@ -179,7 +179,19 @@ function Receipt({ run }: { run: NativeRunSummary | null }) {
   );
 }
 
-function Message({ message }: { message: NativeRunMessage }) {
+// This is a display hint for the original composition's initial task prompt,
+// never an execution classification or a rewrite of its persisted/sent text.
+function initialTaskInstructions(message: NativeRunMessage) {
+  return (
+    message.role === 'user' &&
+    (message.text.length > 800 || message.text.split('\n').length > 10) &&
+    message.text.startsWith('执行当前节点：') &&
+    message.text.includes('\n预期产物：') &&
+    message.text.includes('\n节点输入说明：') &&
+    message.text.includes('\n按固定输入清单处理，返回产物草稿与必要说明。')
+  );
+}
+function Message({ message, initial = false }: { message: NativeRunMessage; initial?: boolean }) {
   const title =
     message.label ||
     { user: '用户', assistant: 'Agent', tool: '工具记录', system: '运行记录' }[message.role];
@@ -198,14 +210,34 @@ function Message({ message }: { message: NativeRunMessage }) {
       </li>
     );
   return (
-    <li className="zm-native-run__message" data-role={message.role} aria-label={title}>
+    <li
+      className="zm-native-run__message"
+      data-role={message.role}
+      data-initial-task={initial || undefined}
+      aria-label={title}
+    >
       {message.role === 'assistant' && (
         <span className="zm-native-run__message-mark" aria-hidden="true">
           <RunIcon kind="agent" />
         </span>
       )}
       <div className="zm-native-run__message-body">
-        <div className="zm-native-run__message-text">{message.text}</div>
+        {initial ? (
+          <details className="zm-native-run__instructions zm-native-run__disclosure">
+            <summary>
+              <span className="zm-native-run__disclosure-icon">
+                <ControlIcon direction="right" />
+              </span>
+              <span className="zm-native-run__disclosure-label">初始任务说明</span>
+              <span className="zm-native-run__instructions-hint">完整内容</span>
+            </summary>
+            <div className="zm-native-run__message-text" tabIndex={0} aria-label="完整初始任务说明">
+              {message.text}
+            </div>
+          </details>
+        ) : (
+          <div className="zm-native-run__message-text">{message.text}</div>
+        )}
         {message.delivery && (
           <small className="zm-native-run__delivery">
             {
@@ -586,6 +618,8 @@ function RunPanel(props: NativeRunPanelProps) {
     };
   }, []);
   const lastMessage = view.kind === 'ready' ? view.messages.at(-1) : undefined;
+  const firstUserMessage =
+    view.kind === 'ready' ? view.messages.find((message) => message.role === 'user') : undefined;
   const turnEnd =
     view.kind === 'ready' &&
     view.turnEnd &&
@@ -799,7 +833,9 @@ function RunPanel(props: NativeRunPanelProps) {
             工作说明
             <ControlIcon direction="down" />
           </summary>
-          <p>{target.description}</p>
+          <p tabIndex={0} aria-label="完整工作说明">
+            {target.description}
+          </p>
         </details>
       )}
       {view.kind === 'loading' ? (
@@ -852,7 +888,11 @@ function RunPanel(props: NativeRunPanelProps) {
                 aria-relevant="additions"
               >
                 {view.messages.map((message) => (
-                  <Message key={message.id} message={message} />
+                  <Message
+                    key={message.id}
+                    message={message}
+                    initial={message === firstUserMessage && initialTaskInstructions(message)}
+                  />
                 ))}
               </ol>
             ) : (
