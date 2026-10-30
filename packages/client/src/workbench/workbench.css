@@ -2568,6 +2568,28 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-choice-panel > input {
   margin-bottom: 6px;
 }
+.zm-choice-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin: 0 0 6px;
+}
+.zm-choice-toolbar > button.zm-quiet {
+  min-height: 28px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--zm-muted);
+}
+.zm-choice-toolbar > button.zm-quiet:hover:not(:disabled) {
+  color: var(--zm-ink);
+}
+.zm-choice-toolbar > button.zm-quiet:disabled {
+  background: transparent;
+  border-color: transparent;
+  color: var(--zm-disabled-ink);
+}
 .zm-choice-options {
   max-height: 240px;
   overflow: auto;
