@@ -447,6 +447,22 @@ test('SSR: first-run configuration is expanded and ready selection has one expli
   assert.ok(!empty.includes('准备就绪'));
 });
 
+test('SSR: long node goals remain complete in a collapsed work description without executing', () => {
+  const description = `完整工作说明 <literal>\n${'保留全部正文与换行。'.repeat(600)}\n最终要求`;
+  const passive = () => assert.fail('reading the work description must not execute');
+  const html = render({
+    target: { ...target, description },
+    onStart: passive,
+    onSend: passive,
+    onSelectionChange: passive,
+    onRefresh: passive,
+  });
+  assert.match(html, /<details class="zm-native-run__context">/);
+  assert.ok(html.includes('完整工作说明 &lt;literal&gt;\n'));
+  assert.ok(html.includes(`${'保留全部正文与换行。'.repeat(600)}\n最终要求`));
+  assert.ok(!render({ target: { ...target, description: target.title } }).includes('工作说明'));
+});
+
 test('SSR workspace: only supplied workspace names appear and an unavailable saved selection cannot start', () => {
   const workspace = { id: 'unavailable', label: 'Project files', access: 'write', publish: true };
   const html = render({

@@ -793,6 +793,15 @@ function RunPanel(props: NativeRunPanelProps) {
           )}
         </div>
       </header>
+      {target.description && target.description !== target.title && (
+        <details className="zm-native-run__context">
+          <summary>
+            工作说明
+            <ControlIcon direction="down" />
+          </summary>
+          <p>{target.description}</p>
+        </details>
+      )}
       {view.kind === 'loading' ? (
         <div className="zm-native-run__empty" role="status">
           正在读取工作会话…
