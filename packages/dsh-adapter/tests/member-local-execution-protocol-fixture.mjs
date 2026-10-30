@@ -35,6 +35,20 @@ export async function fixture(t, options = {}) {
       ? { teamAssets: options.teamAssets, teamAssetTool: describeTeamAssetFileTool() }
       : {}),
   };
+  if (options.teamAssets) {
+    // Contract-only selection on the same synthetic task and applied plan;
+    // production member selection/authorization is exercised separately.
+    const fileRefs = options.teamAssets.files.map(({ reference }) => reference),
+      task = facts.workbench.tasks.find(({ id }) => id === facts.scope.taskId),
+      plan = facts.workbench.appliedPlans.find(
+        ({ id, revision, task }) =>
+          id === facts.scope.planId &&
+          revision === facts.scope.revision &&
+          task.id === facts.scope.taskId,
+      );
+    task.fileRefs = structuredClone(fileRefs);
+    plan.task.fileRefs = structuredClone(fileRefs);
+  }
   if (options.upstream)
     facts.tools = { kind: 'accepted-input-reader', definition: describeAcceptedInputTool() };
   if (options.skill) {
