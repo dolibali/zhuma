@@ -13,12 +13,12 @@ import {
 import type { MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import type { KnowledgeApi } from '../knowledge/api.js';
 import { Button } from '../workbench/Button.js';
-import { Modal } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import { MemberAssetDefinitionFields } from '../workbench/MemberAssetDefinitionFields.js';
 import { MemberAssetImportDialog } from './MemberAssetImportDialog.js';
+import { MemberAssetFilePreview } from './MemberAssetFilePreview.js';
 import {
   MemberAssetClientError,
   describeMemberAssetFile,
@@ -945,7 +945,7 @@ export function MemberAssetsPanel({
           )}
         </div>
       </div>
-      {preview && <AssetPreview value={preview} close={() => setPreview(null)} />}
+      {preview && <MemberAssetFilePreview value={preview} close={() => setPreview(null)} />}
       {importOpen && (
         <MemberAssetImportDialog
           api={api}
@@ -1049,56 +1049,5 @@ function AssetProvenance({
         )}
       </dl>
     </details>
-  );
-}
-
-function AssetPreview({
-  value,
-  close,
-}: {
-  value: { file: NonNullable<MemberAssetReadValue['file']>; content: MemberAssetFileContent };
-  close(): void;
-}) {
-  const [url, setUrl] = useState(''),
-    [text, setText] = useState('');
-  useEffect(() => {
-    const href = URL.createObjectURL(value.content.blob);
-    setUrl(href);
-    let active = true;
-    if (value.content.contentType.startsWith('text/plain'))
-      void value.content.blob.text().then((body) => {
-        if (active) setText(body.slice(0, 65536));
-      });
-    return () => {
-      active = false;
-      URL.revokeObjectURL(href);
-    };
-  }, [value]);
-  const type = value.content.contentType;
-  return (
-    <Modal title={value.file.name} close={close}>
-      <div className="zm-form zm-member-asset-preview">
-        {!value.content.inline ? (
-          <p>此格式请下载后查看。</p>
-        ) : type.startsWith('text/plain') ? (
-          <>
-            <pre className="zm-member-asset-text">{text}</pre>
-            {value.file.byteSize > 65536 && <p>预览显示前 64 KB，下载可查看完整内容。</p>}
-          </>
-        ) : type.startsWith('image/') ? (
-          <img src={url} alt={value.file.name} />
-        ) : type === 'application/pdf' ? (
-          <iframe title={value.file.name} src={url} sandbox="" referrerPolicy="no-referrer" />
-        ) : (
-          <p>此格式请下载后查看。</p>
-        )}
-        <footer>
-          <a className="zm-button secondary" href={url} download={value.file.name}>
-            下载文件
-          </a>
-          <Button onClick={close}>关闭</Button>
-        </footer>
-      </div>
-    </Modal>
   );
 }

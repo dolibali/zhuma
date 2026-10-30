@@ -39,6 +39,7 @@ import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/Knowledge
 import type { ProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 import { MemberAssetsPanel } from '../assets/MemberAssetsPanel.js';
+import { MemberAssetFilePicker } from '../assets/MemberAssetFilePicker.js';
 import type { MemberAssetApi } from '../assets/api.js';
 import type { MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import {
@@ -713,6 +714,7 @@ export function WorkbenchPage({
           {...(initialPlanning ? { initialPlanning } : {})}
           {...(openWork ? { openWork } : {})}
           {...(nativeRun ? { nativeRun } : {})}
+          {...(memberAssets ? { memberAssets } : {})}
         />
       </div>
     );
@@ -1355,6 +1357,7 @@ export function WorkbenchPage({
                       project={dialog.value}
                       state={state}
                       change={(value) => setDialog({ ...dialog, value })}
+                      {...(memberAssets ? { memberAssets } : {})}
                     />
                   </>
                 )}
@@ -1681,6 +1684,40 @@ export function WorkbenchPage({
                         />
                       </div>
                     </div>
+                    {memberAssets && (
+                      <>
+                        <MemberAssetFilePicker
+                          key={dialog.value.id}
+                          api={memberAssets.api}
+                          spaceId={memberAssets.spaceId}
+                          value={
+                            dialog.value.fileRefs ??
+                            state.projects.find((project) => project.id === dialog.value.projectId)
+                              ?.fileRefs
+                          }
+                          label="任务资料"
+                          hint={
+                            dialog.value.fileRefs === undefined
+                              ? '创建时沿用项目资料并固定版本。'
+                              : '仅此任务使用所选版本。'
+                          }
+                          change={(fileRefs) =>
+                            setDialog({ ...dialog, value: { ...dialog.value, fileRefs } })
+                          }
+                        />
+                        {dialog.value.fileRefs !== undefined && (
+                          <Button
+                            variant="quiet"
+                            onClick={() => {
+                              const { fileRefs: _fileRefs, ...value } = dialog.value;
+                              setDialog({ ...dialog, value });
+                            }}
+                          >
+                            使用项目资料
+                          </Button>
+                        )}
+                      </>
+                    )}
                     {member && <PlanningReadiness value={planningReadiness} />}
                     <fieldset className="zm-create-modes">
                       <legend>规划方式</legend>

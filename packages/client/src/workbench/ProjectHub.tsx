@@ -9,6 +9,8 @@ import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
 import type { TaskProgressState } from '../execution/useTaskProgress.js';
 import { ProjectKnowledgePanel } from '../knowledge/ProjectKnowledgePanel.js';
 import type { ProjectKnowledgePanelProps } from '../knowledge/project-knowledge-api.js';
+import { MemberAssetFilePicker } from '../assets/MemberAssetFilePicker.js';
+import type { MemberAssetApi } from '../assets/api.js';
 
 export type ProjectTab = 'overview' | 'work' | 'materials' | 'people';
 const tabs: Record<ProjectTab, string> = {
@@ -34,10 +36,12 @@ export function ProjectFields({
   project,
   state,
   change,
+  memberAssets,
 }: {
   project: Project;
   state: Workbench;
   change(project: Project): void;
+  memberAssets?: { api: MemberAssetApi; spaceId: string };
 }) {
   return (
     <>
@@ -58,6 +62,15 @@ export function ProjectFields({
           onChange={(e) => change({ ...project, description: e.target.value })}
         />
       </Field>
+      {memberAssets && (
+        <MemberAssetFilePicker
+          {...memberAssets}
+          label="项目资料"
+          value={project.fileRefs}
+          hint="新任务创建时沿用这些版本，已有任务保持原资料。"
+          change={(fileRefs) => change({ ...project, fileRefs })}
+        />
+      )}
       <ParticipantSelect
         label="默认参与者"
         multiple

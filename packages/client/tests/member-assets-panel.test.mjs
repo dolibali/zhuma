@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 const module = process.env.ZHUMA_NATIVE_PANEL_DOM_MODULE;
 if (module) {
   const { Window } = await import(pathToFileURL(resolve(module)).href),
@@ -45,6 +46,7 @@ if (module) {
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { emptyWorkbench } = await import('@zhuma/agent-core');
+const { MemberAssetFilePicker } = await import('../dist/assets/MemberAssetFilePicker.js');
 const { MemberAssetsPanel } = await import('../dist/assets/MemberAssetsPanel.js');
 const { MemberAssetImportDialog } = await import('../dist/assets/MemberAssetImportDialog.js');
 const { CodeArtsSetupDialog } = await import('../dist/run/CodeArtsSetupDialog.js');
@@ -286,6 +288,116 @@ async function mount(t, data, component = MemberAssetsPanel, extra = {}) {
 const dom = { skip: !module, timeout: 15000 };
 
 test(
+  'fixed file picker: metadata-only opening, explicit old-version choice, full fixed refs and cancel without a parent write',
+  dom,
+  async (t) => {
+    const assetId = randomUUID();
+    const ref = (sha) => ({
+      spaceId,
+      assetId,
+      kind: 'file',
+      versionId: randomUUID(),
+      sha256: sha.repeat(64),
+    });
+    const old = ref('a'),
+      latest = ref('b');
+    const asset = summary({
+      assetId,
+      kind: 'file',
+      name: '接口文档',
+      hasDraft: false,
+      versions: [
+        { reference: old, number: 1, publishedBy: 'ann', publishedAt: '2026-10-30T00:00:00.000Z' },
+        {
+          reference: latest,
+          number: 2,
+          publishedBy: 'ann',
+          publishedAt: '2026-10-30T01:00:00.000Z',
+        },
+      ],
+    });
+    const calls = [];
+    const api = {
+      async list() {
+        return { items: [asset] };
+      },
+      async read() {
+        throw Error('Opening must not read file metadata/body');
+      },
+    };
+    const f = await mount(t, { api }, MemberAssetFilePicker, {
+      value: undefined,
+      change(value) {
+        calls.push(value);
+      },
+    });
+    await f.settle();
+    assert.equal(calls.length, 0, 'missing property must not become [] on mount');
+    await f.click(f.button('选择资料'));
+    await f.click(f.host.querySelector('input[aria-label="选择资料 接口文档"]'));
+    assert.equal(calls.length, 0);
+    await f.choose('资料版本 接口文档', 'v1');
+    await f.click(f.button('确认选择'));
+    assert.deepEqual(calls, [[old]]);
+    await f.click(f.button('选择资料'));
+    await f.click(f.host.querySelector('input[aria-label="选择资料 接口文档"]'));
+    await f.click(f.button('取消'));
+    assert.equal(calls.length, 1);
+  },
+);
+
+test(
+  'fixed file picker: an unavailable pinned version is retained, never silently switched to latest, and a failed refresh is actionable',
+  dom,
+  async (t) => {
+    const assetId = randomUUID(),
+      pinned = { spaceId, assetId, kind: 'file', versionId: randomUUID(), sha256: 'a'.repeat(64) },
+      latest = { ...pinned, versionId: randomUUID(), sha256: 'b'.repeat(64) };
+    const asset = summary({
+      assetId,
+      kind: 'file',
+      name: '旧版资料',
+      hasDraft: false,
+      versions: [
+        {
+          reference: latest,
+          number: 2,
+          publishedBy: 'ann',
+          publishedAt: '2026-10-30T00:00:00.000Z',
+        },
+      ],
+    });
+    const calls = [];
+    let fail = false;
+    const api = {
+      async list() {
+        if (fail) throw new MemberAssetClientError('asset-unavailable');
+        return { items: [asset] };
+      },
+    };
+    const f = await mount(t, { api }, MemberAssetFilePicker, {
+      value: [pinned],
+      change(value) {
+        calls.push(value);
+      },
+    });
+    await f.settle();
+    await f.click(f.button('选择资料'));
+    const trigger = f.host.querySelector('button[aria-label="资料版本 旧版资料"]');
+    assert.equal(trigger.textContent.includes('原版本不可用'), true);
+    await f.click(f.button('确认选择'));
+    assert.equal(calls.length, 0);
+    assert.equal(f.host.textContent.includes('有资料版本当前不可用'), true);
+    fail = true;
+    await f.click(f.button('刷新'));
+    await f.settle();
+    assert.equal(f.host.textContent.includes('没有匹配的已发布资料'), false);
+    assert.equal(f.button('确认选择').disabled, true);
+    assert.equal(!!f.button('重试读取'), true);
+  },
+);
+
+test(
   'asset category navigation confirms unsaved edits, clears unrelated detail and suppresses redundant type labels',
   dom,
   async (t) => {
@@ -425,8 +537,19 @@ test(
       ),
       ['项目', '任务清单', '资产'],
     );
+    const style = document.createElement('style');
+    style.textContent = await readFile(
+      new URL('../src/workbench/workbench.css', import.meta.url),
+      'utf8',
+    );
+    document.head.append(style);
+    t.after(() => style.remove());
     assert.equal(f.host.querySelector('.zm-page-heading'), null);
     assert.equal(f.host.querySelector('h1.zm-catalog-heading').textContent, '任务清单');
+    assert.equal(
+      getComputedStyle(f.host.querySelector('h1.zm-catalog-heading')).position,
+      'absolute',
+    );
     assert.ok(f.host.querySelector('.zm-page-bar .zm-catalog-actions'));
     await f.click(f.button('项目', nav));
     assert.equal(f.host.querySelector('h1.zm-catalog-heading').textContent, '项目');
