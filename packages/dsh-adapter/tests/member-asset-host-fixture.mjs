@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { StoredAssetPackageSchema } from '@zhuma/agent-core';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,17 +21,32 @@ export async function assetHost(t, options = {}) {
   const root = options.root ?? (await mkdtemp(join(tmpdir(), 'zhuma-member-assets-')));
   const k = await knowledgeHost({ after: (fn) => hooks.push(fn) }, { ...options, root });
   const domain = await k.ctx.storageDomain.open(workbenchDomainSpec);
+  // Same original package domain identity/schema used by workbench-plugin.
+  const packageDomain = await k.ctx.storageDomain.open({
+    name: 'zhuma_asset_packages',
+    version: 1,
+    layout: 'per-record',
+    tables: { versions: { valueSchema: StoredAssetPackageSchema } },
+  });
   const workbench = new WorkbenchService(
     {
       read: () => domain.global.get(),
       write: async (next) => {
         await options.beforeWrite?.(next);
         await domain.global.set(next);
+        await options.afterWrite?.(next);
       },
     },
     {
       get: (id) => domain.table('planning').get(id),
       put: (v) => domain.table('planning').put(v.id, v),
+    },
+    {
+      get: (id) => packageDomain.table('versions').get(id),
+      put: async (value) => {
+        await options.beforePackageWrite?.(value);
+        await packageDomain.table('versions').put(value.versionId, value);
+      },
     },
   );
   const directory = {
@@ -47,6 +63,7 @@ export async function assetHost(t, options = {}) {
     signal: lifetime.signal,
     memberLease: (request) => openExecutionMemberLease(k.ctx, request),
     directory: () => directory,
+    catalog: async (spaceId) => owner.publishedDefinitions(spaceId),
   });
   const bytes = new TeamAssetFileBytes(
     options.attachments?.(k.ctx.attachments) ?? k.ctx.attachments,
@@ -59,6 +76,7 @@ export async function assetHost(t, options = {}) {
     await files.close();
     await owner.close();
     await domain.close();
+    await packageDomain.close();
     for (const hook of hooks) await hook();
   };
   t.after(close);
@@ -104,6 +122,7 @@ export async function assetHost(t, options = {}) {
     ...k,
     close,
     domain,
+    packageDomain,
     workbench,
     owner,
     files,
