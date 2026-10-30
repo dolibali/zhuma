@@ -195,6 +195,99 @@ test('CodeArts ACP: initialize is static; only the fixed scoped bridge is accept
   assert.deepEqual(policy.tools, { '*': false, ['dshteam_1111111111111111_*']: true });
 });
 
+test('CodeArts ACP: the original empty-bridge probe shape discovers only a passive routing strategy', async (t) => {
+  const f = await fixture(t);
+  const metadata = await f.agent.newSession({ cwd: f.cwd, mcpServers: [] });
+  assert.match(metadata.sessionId, /^zhuma-codearts-metadata-/u);
+  assert.deepEqual(metadata._meta, {
+    'zhuma.dev/session-kind': 'metadata-only',
+    'zhuma.dev/model-source': 'adapter-routing-capability',
+    'zhuma.dev/backend-verified': false,
+  });
+  assert.equal(metadata.configOptions[0].currentValue, 'provider-default');
+  assert.equal(metadata.configOptions[0].options[0].name, '继承码道当前配置（开始时解析）');
+  assert.deepEqual(f.starts, []);
+  assert.deepEqual(f.requests, []);
+  assert.equal(f.records.size, 0, 'no provider SID or transcript is created');
+  assert.deepEqual(f.updates, []);
+  await f.agent.closeSession({ sessionId: metadata.sessionId });
+  assert.deepEqual(f.starts, []);
+  assert.deepEqual(f.requests, []);
+});
+
+test('CodeArts ACP: metadata IDs cannot prompt, set a model, cancel, load or resume even on a cold connection', async (t) => {
+  const f = await fixture(t),
+    metadata = await f.agent.newSession({ cwd: f.cwd, mcpServers: [] });
+  await assert.rejects(f.agent.prompt(prompt(metadata.sessionId)));
+  await assert.rejects(f.agent.cancel({ sessionId: metadata.sessionId }));
+  assert.throws(() =>
+    f.agent.setSessionConfigOption({
+      sessionId: metadata.sessionId,
+      configId: 'model',
+      value: 'provider-default',
+    }),
+  );
+  await assert.rejects(
+    f.agent.loadSession({ cwd: f.cwd, sessionId: metadata.sessionId, mcpServers: [bridge('1')] }),
+  );
+  await assert.rejects(
+    f.agent.resumeSession({ cwd: f.cwd, sessionId: metadata.sessionId, mcpServers: [bridge('1')] }),
+  );
+  const cold = await fixture(t);
+  await assert.rejects(
+    cold.agent.resumeSession({
+      cwd: cold.cwd,
+      sessionId: metadata.sessionId,
+      mcpServers: [bridge('1')],
+    }),
+  );
+  await assert.rejects(
+    cold.agent.loadSession({
+      cwd: cold.cwd,
+      sessionId: metadata.sessionId,
+      mcpServers: [bridge('1')],
+    }),
+  );
+  assert.equal(f.starts.length, 0);
+  assert.equal(cold.starts.length, 0);
+  assert.equal(f.requests.length, 0);
+  assert.equal(cold.requests.length, 0);
+});
+
+test('CodeArts ACP: bounded metadata sessions cannot consume, replace or close the genuine task binding', async (t) => {
+  const f = await fixture(t),
+    created = await Promise.all(
+      Array.from({ length: 8 }, () => f.agent.newSession({ cwd: f.cwd, mcpServers: [] })),
+    );
+  await assert.rejects(f.agent.newSession({ cwd: f.cwd, mcpServers: [] }));
+  const actual = await f.setup('1');
+  assert.match(actual.sessionId, /^ses_own_/u);
+  assert.equal(f.starts.length, 1);
+  for (const metadata of created) await f.agent.closeSession({ sessionId: metadata.sessionId });
+  assert.equal(f.starts[0].closed, false);
+  assert.deepEqual(await f.agent.prompt(prompt(actual.sessionId)), { stopReason: 'end_turn' });
+  await assert.rejects(f.setup('2'), /busy/u);
+  assert.equal(f.starts.length, 1);
+  assert.equal(f.starts[0].closed, false);
+  const after = await f.agent.newSession({ cwd: f.cwd, mcpServers: [] });
+  await f.agent.closeSession({ sessionId: after.sessionId });
+  assert.equal(f.starts[0].closed, false);
+});
+
+test('CodeArts ACP: metadata admission stays bounded under concurrent requests and disposal is final', async (t) => {
+  const f = await fixture(t);
+  const results = await Promise.allSettled(
+    Array.from({ length: 16 }, () => f.agent.newSession({ cwd: f.cwd, mcpServers: [] })),
+  );
+  assert.equal(results.filter((row) => row.status === 'fulfilled').length, 8);
+  assert.equal(results.filter((row) => row.status === 'rejected').length, 8);
+  assert.equal(f.starts.length, 0);
+  await f.agent.dispose();
+  await assert.rejects(f.agent.newSession({ cwd: f.cwd, mcpServers: [] }));
+  await assert.rejects(f.setup('1'));
+  assert.equal(f.starts.length, 0);
+});
+
 test('CodeArts ACP: live deltas arrive once and each explicit turn sends the current MCP-only tool policy', async (t) => {
   const f = await fixture(t);
   const session = await f.setup('1');

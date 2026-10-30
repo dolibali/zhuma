@@ -1,4 +1,5 @@
 import { realpath } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type {
@@ -23,6 +24,7 @@ import type { CodeArtsSessionEvent } from './http.js';
 import { codeArtsPromptText, createCodeArtsMcpPolicy, type CodeArtsMcpPolicy } from './policy.js';
 import { startCodeArtsServer, type CodeArtsServer } from './server.js';
 import { deferred } from './deferred.js';
+import { describeCodeArtsRoutingCapability } from './routing-metadata.js';
 
 type Model = { readonly providerID: string; readonly modelID: string };
 type Binding = {
@@ -63,21 +65,25 @@ const failure = (): RequestError =>
     -32000,
     'CodeArts operation failed; inspect the current session before continuing',
   );
+const discoveryPrefix = 'zhuma-codearts-metadata-';
+const route = describeCodeArtsRoutingCapability();
 const configOptions = (): SessionConfigOption[] => [
   {
     id: 'model',
-    name: 'CodeArts model',
+    name: 'CodeArts 配置来源',
+    description:
+      'Adapter routing capability only; provider/model and authentication are not discovered or verified.',
     category: 'model',
     type: 'select',
-    currentValue: 'provider-default',
-    options: [{ value: 'provider-default', name: 'Current CodeArts session model' }],
+    currentValue: route.id,
+    options: [{ value: route.id, name: route.name }],
   },
 ];
 const sessionOptions = () => ({
   configOptions: configOptions(),
   models: {
-    currentModelId: 'provider-default',
-    availableModels: [{ modelId: 'provider-default', name: 'Current CodeArts session model' }],
+    currentModelId: route.id,
+    availableModels: [{ modelId: route.id, name: route.name }],
   },
 });
 
@@ -91,6 +97,8 @@ export class CodeArtsAcpAgent implements Agent {
   #turn: Turn | undefined;
   #opening = false;
   #poisoned = false;
+  /** Ephemeral ACP discovery IDs, never CodeArts SIDs or task bindings. */
+  readonly #discovery = new Set<string>();
 
   constructor(input: {
     readonly command: string;
@@ -123,6 +131,33 @@ export class CodeArtsAcpAgent implements Agent {
     );
   }
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+    if (params.mcpServers.length === 0) {
+      // The original ACP catalogue probe uses session/new with no tools. It
+      // learns only this adapter's existing routing strategy. Nothing here
+      // starts CodeArts, reads its config/auth, or creates a provider session.
+      if (
+        this.#poisoned ||
+        this.#signal.aborted ||
+        !isAbsolute(params.cwd) ||
+        params.additionalDirectories?.length ||
+        this.#discovery.size >= 8
+      )
+        throw RequestError.invalidParams();
+      await realpath(params.cwd);
+      if (this.#poisoned || this.#signal.aborted || this.#discovery.size >= 8)
+        throw RequestError.invalidParams();
+      const sessionId = `${discoveryPrefix}${randomUUID()}`;
+      this.#discovery.add(sessionId);
+      return {
+        sessionId,
+        ...sessionOptions(),
+        _meta: {
+          'zhuma.dev/session-kind': 'metadata-only',
+          'zhuma.dev/model-source': route.kind,
+          'zhuma.dev/backend-verified': route.backendVerified,
+        },
+      };
+    }
     const binding = await this.#open(params);
     return { sessionId: binding.id, ...sessionOptions() };
   }
@@ -185,13 +220,14 @@ export class CodeArtsAcpAgent implements Agent {
     return sessionOptions();
   }
   async closeSession(params: { readonly sessionId: string }): Promise<void> {
+    if (this.#discovery.delete(params.sessionId)) return;
     this.#require(params.sessionId);
     await this.cancel({ sessionId: params.sessionId });
     await this.dispose();
   }
   setSessionConfigOption(params: SetSessionConfigOptionRequest): SetSessionConfigOptionResponse {
     this.#require(params.sessionId);
-    if (params.configId !== 'model' || params.value !== 'provider-default')
+    if (params.configId !== 'model' || params.value !== route.id)
       throw RequestError.invalidParams();
     return { configOptions: configOptions() };
   }
@@ -297,6 +333,7 @@ export class CodeArtsAcpAgent implements Agent {
   }
   async dispose(): Promise<void> {
     this.#poisoned = true;
+    this.#discovery.clear();
     this.#turn?.terminal.reject(failure());
     await this.#binding?.server.close();
     this.#binding = undefined;
@@ -312,7 +349,12 @@ export class CodeArtsAcpAgent implements Agent {
         -32000,
         'CodeArts connection is busy; use a separate connection for another session',
       );
-    if (this.#poisoned || !isAbsolute(params.cwd) || params.additionalDirectories?.length)
+    if (
+      this.#poisoned ||
+      !isAbsolute(params.cwd) ||
+      params.additionalDirectories?.length ||
+      id?.startsWith(discoveryPrefix)
+    )
       throw RequestError.invalidParams();
     this.#opening = true;
     let server: CodeArtsServer | undefined;
@@ -348,7 +390,12 @@ export class CodeArtsAcpAgent implements Agent {
     }
   }
   #require(id: string): Binding {
-    if (!this.#binding || this.#binding.id !== id || this.#signal.aborted)
+    if (
+      id.startsWith(discoveryPrefix) ||
+      !this.#binding ||
+      this.#binding.id !== id ||
+      this.#signal.aborted
+    )
       throw RequestError.invalidParams();
     return this.#binding;
   }

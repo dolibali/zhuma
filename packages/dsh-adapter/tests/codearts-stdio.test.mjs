@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable, Writable } from 'node:stream';
 import { build } from 'esbuild';
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import { describeCodeArtsRoutingCapability } from '../dist/executors/codearts/routing-metadata.js';
 const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
 const bridge = (digit) => ({
   type: 'http',
@@ -89,6 +90,33 @@ test(
       };
     }
     const first = await launch();
+    await assert.rejects(access(statePath));
+    // Same RPC sequence as the original community model catalogue probe:
+    // initialize -> session/new with no bridge -> configOptions -> close.
+    const metadata = await first.client.newSession({ cwd: root, mcpServers: [] });
+    const route = describeCodeArtsRoutingCapability();
+    assert.equal(metadata._meta['zhuma.dev/session-kind'], 'metadata-only');
+    assert.equal(metadata.configOptions[0].currentValue, route.id);
+    assert.deepEqual(metadata.configOptions[0].options, [{ value: route.id, name: route.name }]);
+    assert.equal(metadata.models.currentModelId, route.id);
+    assert.deepEqual(metadata.models.availableModels, [{ modelId: route.id, name: route.name }]);
+    assert.equal(metadata._meta['zhuma.dev/model-source'], route.kind);
+    assert.equal(metadata._meta['zhuma.dev/backend-verified'], route.backendVerified);
+    await assert.rejects(access(statePath), 'catalogue discovery must not launch the CLI');
+    await assert.rejects(
+      first.client.prompt({
+        sessionId: metadata.sessionId,
+        prompt: [{ type: 'text', text: 'Must not execute' }],
+      }),
+    );
+    await assert.rejects(
+      first.client.resumeSession({
+        cwd: root,
+        sessionId: metadata.sessionId,
+        mcpServers: [bridge('1')],
+      }),
+    );
+    await first.client.closeSession({ sessionId: metadata.sessionId });
     await assert.rejects(access(statePath));
     const session = await first.client.newSession({ cwd: root, mcpServers: [bridge('1')] });
     assert.equal(session.sessionId, 'ses_fixture_owned');
