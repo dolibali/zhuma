@@ -160,6 +160,17 @@ async function fixture(t) {
         headers: headers(value, auth),
         body: data,
       }),
+    directUpload: (body, value, signal) =>
+      shared.fetch(
+        new Request(origin + TEAM_ASSET_FILE_HTTP_PATHS.upload, {
+          method: 'POST',
+          headers: { ...headers(value), host: new URL(origin).host },
+          body,
+          signal,
+          duplex: 'half',
+        }),
+        host.ctx.connection.browserPeer,
+      ),
     call: (kind, payload, auth = cookie) =>
       fetch(origin + TEAM_ASSET_FILE_HTTP_PATHS[kind], {
         method: 'POST',
@@ -302,4 +313,68 @@ test('team file HTTP: route close cancels an unread verified response and waits 
   await assert.rejects(response.arrayBuffer());
   await h.service.idle();
   assert.equal(h.calls.releaseRead, 1);
+});
+
+test('team file HTTP: abort, iterator return and route close share the same pending physical request cancellation', async (t) => {
+  const h = await fixture(t);
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  const reading = deferred(),
+    cancelling = deferred(),
+    physical = deferred();
+  let first = true,
+    cancels = 0;
+  const body = new ReadableStream(
+    {
+      pull(controller) {
+        if (first) {
+          first = false;
+          controller.enqueue(new Uint8Array([65]));
+        } else reading.resolve();
+      },
+      cancel() {
+        cancels++;
+        cancelling.resolve();
+        return physical.promise;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const abort = new AbortController();
+  const sending = h.directUpload(body, h.input(Buffer.from('AB')), abort.signal);
+  await Promise.race([
+    reading.promise,
+    sending.then((response) => {
+      throw new Error(`Upload refused before the stream test: ${response.status}`);
+    }),
+  ]);
+  abort.abort();
+  await cancelling.promise;
+  let closed = false;
+  const closing = h.http.close().then(() => {
+    closed = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(closed, false, 'route close cannot outrun the request reader cancellation');
+    assert.equal(
+      h.calls.releaseUpload,
+      0,
+      'original upload lease remains until physical source drain',
+    );
+    assert.equal(cancels, 1);
+  } finally {
+    physical.resolve();
+  }
+  const response = await sending;
+  await response.body?.cancel();
+  await closing;
+  await h.service.idle();
+  assert.equal(cancels, 1);
+  assert.equal(h.calls.releaseUpload, 1);
 });

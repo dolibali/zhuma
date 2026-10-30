@@ -140,12 +140,33 @@ export class TeamAssetFileService {
     }
   }
   openRead(request: MemberRequest, input: MemberAssetFileRead, signal: AbortSignal) {
-    return this.request(signal, (active) => this.openReadInner(request, input, active));
+    return this.openReadTracked(request, input, signal).result;
+  }
+  /** The original byte/admission drain, separate from the output lease. A
+   * logical cancellation must not free the caller's Run reservation early. */
+  openReadTracked(request: MemberRequest, input: MemberAssetFileRead, signal: AbortSignal) {
+    let resolve!: () => void,
+      retained = false;
+    const drain = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const result = this.request(signal, (active) =>
+      this.openReadInner(request, input, active, (physical) => {
+        retained = true;
+        void physical.then(resolve, resolve);
+      }),
+    );
+    const unopened = () => {
+      if (!retained) resolve();
+    };
+    void result.then(unopened, unopened);
+    return { result, drain };
   }
   private async openReadInner(
     request: MemberRequest,
     input: MemberAssetFileRead,
     signal: AbortSignal,
+    retainDrain: (drain: Promise<void>) => void = () => {},
   ): Promise<TeamAssetFileReadHandle> {
     this.current(signal);
     if (this.readSlots >= ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace)
@@ -204,6 +225,7 @@ export class TeamAssetFileService {
       handle.check();
       return handle;
     } finally {
+      retainDrain(drain);
       if (!transferred) {
         const source = opened;
         if (source)

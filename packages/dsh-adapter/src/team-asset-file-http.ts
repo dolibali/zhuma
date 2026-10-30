@@ -70,17 +70,21 @@ function declaration(headers: Headers) {
 function requestBytes(request: Request, signal: AbortSignal): AsyncIterableIterator<Uint8Array> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined,
     closed = false;
-  const stop = async () => {
-    if (closed) return;
+  let closing: Promise<void> | undefined;
+  const stop = () => {
+    if (closing) return closing;
+    if (closed) return Promise.resolve();
     closed = true;
     signal.removeEventListener('abort', abort);
-    if (reader) {
-      try {
-        await reader.cancel();
-      } finally {
-        reader.releaseLock();
+    return (closing = (async () => {
+      if (reader) {
+        try {
+          await reader.cancel();
+        } finally {
+          reader.releaseLock();
+        }
       }
-    }
+    })());
   };
   const abort = () => {
     void stop().catch(() => undefined);
