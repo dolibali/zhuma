@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Button } from '../workbench/Button.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { ControlIcon } from '../workbench/ControlIcon.js';
@@ -258,10 +258,12 @@ function Message({ message, initial = false }: { message: NativeRunMessage; init
 function Selection({
   view,
   disabled,
+  actions,
   onChange: publishSelection,
 }: {
   view: ReadyView;
   disabled: boolean;
+  actions?: ReactNode;
   onChange(selection: NativeRunSelection): void;
 }) {
   const selected = view.selection;
@@ -371,6 +373,7 @@ function Selection({
           {!disabled && view.models.kind === 'ready' && !view.models.items.length && (
             <small>暂无可用模型</small>
           )}
+          {!disabled && actions}
         </div>
         <div className="zm-native-run__choice">
           <span>执行者</span>
@@ -853,6 +856,7 @@ function RunPanel(props: NativeRunPanelProps) {
             key={runKey(view)}
             view={view}
             disabled={held || submittedReadOnly || running('start')}
+            actions={props.configurationActions}
             onChange={props.onSelectionChange}
           />
           <Receipt run={run} />

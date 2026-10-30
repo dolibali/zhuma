@@ -17,7 +17,7 @@ export interface MemberAssetDefinitionFieldsProps {
   value: MemberAssetDefinition;
   dependencies: readonly Dependency[];
   choices: readonly { reference: MemberAssetReference; name: string; version: number }[];
-  requirements?: readonly { slotId: string; kind: 'skill' | 'mcp' }[];
+  requirements?: readonly { slotId: string; kind: 'skill' | 'mcp'; name?: string }[];
   authoringState?: Workbench;
   readOnlyDefinition?: boolean;
   disabled?: boolean;
@@ -223,12 +223,13 @@ export function MemberAssetDefinitionFields({
           <h3>依赖资源</h3>
           {slots.map((slotId) => {
             const matching = requirements.filter((requirement) => requirement.slotId === slotId);
+            const displayName = matching[0]?.name ?? slotId;
             const kinds = new Set(matching.map((requirement) => requirement.kind));
             const existing = dependencies.find((dependency) => dependency.slotId === slotId);
             if (kinds.size !== 1 || matching[0]?.kind === 'mcp')
               return (
                 <div className="zm-field" key={slotId}>
-                  <span>{slotId}</span>
+                  <span>{displayName}</span>
                   <span className="zm-muted">
                     {kinds.size !== 1
                       ? '资源要求存在歧义，现有引用保持不变。'
@@ -240,9 +241,9 @@ export function MemberAssetDefinitionFields({
             const selected = existing ? canonicalPayload(existing.reference) : '';
             return (
               <div key={slotId}>
-                <Field label={`Skill 依赖 · ${slotId}`}>
+                <Field label={`Skill 依赖 · ${displayName}`}>
                   <SingleSelect
-                    label={`Skill 依赖 · ${slotId}`}
+                    label={`Skill 依赖 · ${displayName}`}
                     value={selected}
                     disabled={disabled}
                     options={[

@@ -156,6 +156,7 @@ export type NativeRunPanelView =
  */
 export interface NativeRunPanelProps {
   readonly reviewAction?: ReactNode;
+  readonly configurationActions?: ReactNode;
   readonly target: NativeRunTarget;
   readonly view: NativeRunPanelView;
   readonly busy?: 'start' | 'send' | 'stop' | 'refresh' | 'history' | 'open' | undefined;

@@ -11,6 +11,7 @@ import { Modal } from '../workbench/controls.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { NativeRunWorkspace } from './NativeRunWorkspace.js';
 import { createNativeRunApi, type NativeRunApi } from './api.js';
+import { createCodeArtsSetupApi } from './codearts-setup.js';
 import type { MemberNativeClient } from './member-native.js';
 import type { LocalWorkspaceDirectory } from './workspace-directory.js';
 import type { NativeRunTarget } from './native-run-contract.js';
@@ -231,6 +232,7 @@ export function installMemberNativeNavigation(
       options.openModelSettings,
       options.directory,
       !!selected.origin,
+      createCodeArtsSetupApi(globalThis.fetch, () => nativeScope.isCurrent?.() !== false),
     );
     const { workflow: _workflow, workspaceApprovals: _approvals, ...remoteApi } = api;
     const accepted = await ask(() => {

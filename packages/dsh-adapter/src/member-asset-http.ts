@@ -9,6 +9,9 @@ import {
   MemberAssetReadQuerySchema,
   MemberAssetReferenceSchema,
   TeamAssetCatalogQuerySchema,
+  MEMBER_ASSET_IMPORT_LIMITS,
+  MemberAssetPreviewImportQuerySchema,
+  MemberAssetImportDraftsQuerySchema,
   type MemberAssetErrorCode,
 } from '@zhuma/agent-core';
 import type { MemberAssetService } from './member-asset-service.js';
@@ -30,6 +33,8 @@ export const MEMBER_ASSET_ENDPOINTS = [
   'asset-sources',
   'asset-source',
   'asset-catalog',
+  'asset-preview-import',
+  'asset-import-drafts',
 ] as const;
 export interface MemberAssetHttpSources {
   readonly assets: MemberAssetService;
@@ -141,7 +146,16 @@ export function openMemberAssetHttp(
           throw Object.assign(new Error('Asset owner unavailable'), { code: 'asset-unavailable' });
       };
       check();
-      const body = await readWorkbenchBody(new Request(request, { signal }), limits);
+      const bulk = endpoint === 'asset-preview-import' || endpoint === 'asset-import-drafts';
+      const body = await readWorkbenchBody(
+        new Request(request, { signal }),
+        bulk
+          ? {
+              ...limits,
+              bodyBytes: Math.min(limits.bodyBytes, MEMBER_ASSET_IMPORT_LIMITS.requestBytes),
+            }
+          : limits,
+      );
       check();
       const envelope = clientRequestSchema.safeParse(body);
       if (!envelope.success || envelope.data.method !== `zhuma-member/${endpoint}`)
@@ -176,6 +190,18 @@ export function openMemberAssetHttp(
             );
           case 'asset-catalog':
             return source!.catalog.list(original, TeamAssetCatalogQuerySchema.parse(raw), signal);
+          case 'asset-preview-import':
+            return source!.assets.previewImport(
+              original,
+              MemberAssetPreviewImportQuerySchema.parse(raw),
+              signal,
+            );
+          case 'asset-import-drafts':
+            return source!.assets.importDrafts(
+              original,
+              MemberAssetImportDraftsQuerySchema.parse(raw),
+              signal,
+            );
         }
       })();
       check();

@@ -19,8 +19,10 @@ import type { AppearanceStore } from '../workbench/Appearance.js';
 import { WorkbenchPage } from '../workbench/WorkbenchPage.js';
 import { createMemberWorkbenchApi } from '../workbench/member-api.js';
 import { createMemberWorkbenchAdapter } from '../workbench/member-adapter.js';
+import { createMemberAssetApi } from '../assets/api.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { createNativeRunApi } from '../run/api.js';
+import { createCodeArtsSetupApi } from '../run/codearts-setup.js';
 import type { RegisterWorkspaceDirectory } from '../run/workspace-approvals.js';
 import type { LocalWorkspaceDirectory } from '../run/workspace-directory.js';
 import { createKnowledgeApi } from '../knowledge/api.js';
@@ -119,6 +121,21 @@ function MemberWork({
     [fetcher, accountId, spaceId, view],
   );
   const [refreshKey, setRefreshKey] = useState(0);
+  const memberAssets = useMemo(
+    () =>
+      createMemberAssetApi(
+        {
+          actorId: accountId,
+          spaceId,
+          isCurrent: () =>
+            alive.current && currentLifetime.current.isCurrent() && view === 'catalog',
+          onUnauthenticated: () => currentLifetime.current.onUnauthenticated(),
+          onUnavailable: () => currentSpaceUnavailable.current(),
+        },
+        fetcher,
+      ),
+    [fetcher, accountId, spaceId, view],
+  );
   const projectExecution = useMemo(
     () =>
       createExecutionHttpApi(
@@ -153,6 +170,12 @@ function MemberWork({
       openModelSettings,
       localDirectory,
       !!memberNative,
+      localDirectory
+        ? createCodeArtsSetupApi(
+            globalThis.fetch,
+            () => alive.current && currentLifetime.current.isCurrent(),
+          )
+        : undefined,
     );
     if (!memberNative) return api;
     const { workspaceApprovals: _approvals, ...localNativeApi } = api;
@@ -203,6 +226,7 @@ function MemberWork({
             initialSection="tasks"
             appearance={appearance}
             knowledge={{ ...knowledgeApi, actorId: accountId, spaceId, lifetime }}
+            memberAssets={{ api: memberAssets, spaceId, lifetime }}
             {...(nativeExecution ? { nativeRun } : {})}
             projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}

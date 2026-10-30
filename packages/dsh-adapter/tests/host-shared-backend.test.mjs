@@ -32,6 +32,162 @@ const fileRequest = (selection, query = fileQuery) =>
   );
 const fileHash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+test('shared member import transport retains member identity and the full bounded package without task or owner credentials', async (t) => {
+  const h = await fixture(t, undefined, async (url, init) => {
+    assert.equal(url.pathname, '/api/zhuma-member/asset-preview-import');
+    const headers = new Headers(init.headers);
+    assert.match(headers.get('cookie'), /^zhuma-member=synthetic-/u);
+    assert.equal(headers.has('x-zhuma-backend-connection'), false);
+    assert(init.body.length > 1200000);
+    const wire = JSON.parse(init.body);
+    assert.equal(wire.payload.upload.files.length, 5);
+    assert.equal('taskId' in wire.payload, false);
+    return Response.json({
+      type: 'server-response',
+      rpcId: wire.rpcId,
+      result: { ok: true, value: { original: true } },
+    });
+  });
+  const selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const payload = {
+    spaceId: 'north',
+    upload: {
+      kind: 'files',
+      files: Array.from({ length: 5 }, (_, index) => ({
+        path: `${index}.md`,
+        data: Buffer.from('x'.repeat(200000)).toString('base64'),
+      })),
+    },
+  };
+  const result = await h.request(selection, 'member.asset-preview-import', payload, {
+    rpcId: randomUUID(),
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.result.value.original, true);
+});
+
+test('shared asset file carrier: independent member route, original cookie and complete fixed target without fabricated task fields', async (t) => {
+  const data = Buffer.from('团队独立规范'),
+    hash = fileHash(data),
+    assetId = randomUUID(),
+    versionId = randomUUID();
+  const target = { spaceId: 'north', assetId, versionId, mode: 'preview' };
+  let mismatch = false,
+    uploads = 0;
+  const h = await fixture(t, async (url, init) => {
+    assert.match(init.headers.get('cookie'), /^zhuma-member=synthetic-/u);
+    assert.equal(init.headers.has('x-zhuma-backend-connection'), false);
+    assert.equal(init.headers.has('x-zhuma-task'), false);
+    if (url.pathname.endsWith('upload')) {
+      assert.equal(init.headers.get('x-zhuma-space-id'), 'north');
+      assert.deepEqual(Buffer.from(await new Response(init.body).arrayBuffer()), data);
+      uploads++;
+      return Response.json({ ok: true, value: { originalReceipt: true } });
+    }
+    assert.equal(url.pathname, '/api/zhuma-member/asset-file-read');
+    const envelope = JSON.parse(init.body);
+    assert.equal(envelope.method, 'zhuma-member/asset-file-read');
+    assert.deepEqual(envelope.payload, target);
+    return new Response(data, {
+      headers: {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': String(data.length),
+        'x-zhuma-file-sha256': hash,
+        'x-zhuma-asset-file-context': encodeURIComponent(
+          JSON.stringify(mismatch ? { ...target, versionId: randomUUID() } : target),
+        ),
+      },
+    });
+  });
+  const selected = await h.selected();
+  await h.request(selected, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const request = () =>
+    new Request('http://local.invalid/api/zhuma-backend/asset-file-read', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-zhuma-backend-connection': selected.connectionId,
+      },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: randomUUID(),
+        method: 'zhuma-member/asset-file-read',
+        payload: target,
+      }),
+    });
+  const response = await h.owner.file('asset-file-read', request());
+  assert.equal(response.headers.get('x-zhuma-backend-connection'), selected.connectionId);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), data);
+  mismatch = true;
+  await assert.rejects(h.owner.file('asset-file-read', request()), { code: 'invalid-response' });
+  const upload = () =>
+    new Request('http://local.invalid/api/zhuma-backend/asset-file-upload', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-zhuma-backend-connection': selected.connectionId,
+        'x-zhuma-space-id': 'north',
+        'x-zhuma-asset-id': assetId,
+        'x-zhuma-expected-version': '1',
+        'x-zhuma-idempotency-key': randomUUID(),
+        'x-zhuma-file-name': encodeURIComponent('规范.txt'),
+        'x-zhuma-file-type': 'text/plain',
+        'x-zhuma-file-size': String(data.length),
+        'x-zhuma-file-sha256': hash,
+        'x-zhuma-task': 'must-not-forward',
+      },
+      body: data,
+    });
+  assert.equal((await (await h.owner.file('asset-file-upload', upload())).json()).ok, true);
+  assert.equal(uploads, 1);
+});
+
+test('shared assets metadata: exact allowlist retains original command intent and bounded legal catalog above 1MiB', async (t) => {
+  const large = '规范'.repeat(600_000);
+  const h = await fixture(t, undefined, async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.pathname.endsWith('asset-catalog'))
+      return Response.json({
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: { boundedCatalog: large } },
+      });
+    assert.equal(url.pathname, '/api/zhuma-member/asset-command');
+    return Response.json({
+      type: 'server-response',
+      rpcId: body.rpcId,
+      result: { ok: true, value: { echo: body.payload } },
+    });
+  });
+  const selected = await h.selected();
+  await h.request(selected, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const command = {
+    operation: 'publish',
+    spaceId: 'north',
+    assetId: randomUUID(),
+    expectedVersion: 1,
+    idempotencyKey: randomUUID(),
+  };
+  const reply = await h.request(selected, 'member.asset-command', command, { rpcId: randomUUID() });
+  assert.deepEqual(reply.body.result.value.echo, command);
+  const catalog = await h.request(
+    selected,
+    'member.asset-catalog',
+    { spaceId: 'north' },
+    { rpcId: randomUUID() },
+  );
+  assert.equal(catalog.body.result.value.boundedCatalog.length, large.length);
+  await assert.rejects(
+    h.request(
+      selected,
+      'member.asset-command',
+      { ...command, actorId: 'forged' },
+      { rpcId: randomUUID() },
+    ),
+  );
+});
+
 test('shared file carrier: private original member identity, exact query and unchanged bounded bytes', async (t) => {
   const data = Buffer.alloc(256 * 1024, 'native file data');
   let fileCalls = 0;
@@ -242,7 +398,12 @@ async function fixture(t, fileHandler, businessHandler) {
       });
     if (
       fileHandler &&
-      ['/api/zhuma-exec/file', '/api/zhuma-exec/upload-file'].includes(url.pathname)
+      [
+        '/api/zhuma-exec/file',
+        '/api/zhuma-exec/upload-file',
+        '/api/zhuma-member/asset-file-read',
+        '/api/zhuma-member/asset-file-upload',
+      ].includes(url.pathname)
     )
       return fileHandler(url, init);
     if (url.pathname === '/zhuma-id/session')
@@ -765,6 +926,11 @@ test('shared backend exact HTTP routes retain actual SDK local owner admission a
     });
   assert.equal((await call(undefined, 'status', {})).status, 401);
   assert.equal((await fetch(`${origin}/api/zhuma-backend/file`, { method: 'POST' })).status, 401);
+  for (const name of ['asset-preview-import', 'asset-import-drafts'])
+    assert.equal(
+      (await fetch(`${origin}/api/zhuma-backend/${name}`, { method: 'POST' })).status,
+      401,
+    );
   assert.equal(
     (await fetch(`${origin}/api/zhuma-backend/upload-file`, { method: 'POST' })).status,
     401,

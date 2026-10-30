@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { symbols, type Context } from '@deepseek-ai/cordis';
 import { credentialKey } from '@deepseek-ai/dsh-credentials';
 import { z } from 'zod';
+import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
 import {
   KnowledgeLibrariesRequestSchema,
   KnowledgeListRequestSchema,
@@ -18,6 +19,19 @@ import {
   remoteBackendInfoSchema,
   localReviewOptionsQuerySchema,
   reviewOutcomeQuerySchema,
+  MEMBER_ASSET_LIMITS,
+  MEMBER_ASSET_IMPORT_LIMITS,
+  MemberAssetPreviewImportQuerySchema,
+  MemberAssetImportDraftsQuerySchema,
+  MemberAssetListQuerySchema,
+  MemberAssetReadQuerySchema,
+  MemberAssetReferenceSchema,
+  MemberAssetCommandSchema,
+  MemberAssetLegacySourceSchema,
+  MemberAssetFileReadSchema,
+  MemberAssetFileReserveSchema,
+  TeamAssetCatalogQuerySchema,
+  canonicalPayload,
 } from '@zhuma/agent-core';
 import { MemberWorkbenchCommandSchema, MemberWorkbenchPlanSchema } from './member-workbench-dto.js';
 import {
@@ -36,6 +50,7 @@ import { EXECUTION_BODY_BYTE_LIMIT } from './execution-plugin.js';
 import { hostRunOptionsQuerySchema } from './host-run-options.js';
 import { ARTIFACT_FILE_LIMITS, artifactUploadOptionsSchema } from './artifact-files.js';
 import { guardSharedFileStream } from './host-shared-backend-file-stream.js';
+import { readWorkbenchBody } from './workbench-http.js';
 
 /** The existing execution carrier's legal text/draft budget, not a file stream. */
 export const SHARED_BACKEND_BODY_BYTE_LIMIT = EXECUTION_BODY_BYTE_LIMIT;
@@ -59,6 +74,16 @@ export const SHARED_BACKEND_OPERATIONS = [
   'member.snapshot',
   'member.command',
   'member.plan',
+  'member.asset-list',
+  'member.asset-read',
+  'member.asset-reference',
+  'member.asset-command',
+  'member.asset-sources',
+  'member.asset-source',
+  'member.asset-catalog',
+  'member.asset-file-text',
+  'member.asset-preview-import',
+  'member.asset-import-drafts',
   'knowledge.libraries',
   'knowledge.list',
   'knowledge.search',
@@ -163,6 +188,11 @@ const privateSchema = z
         : row.backendId !== null && row.actorId !== null),
   );
 type PrivateConnection = z.infer<typeof privateSchema>;
+export type SharedBackendFileEndpoint =
+  'file' | 'upload-file' | 'asset-file-read' | 'asset-file-upload';
+const assetFileReadSchema = MemberAssetFileReadSchema.extend({
+  mode: z.enum(['preview', 'download']).default('download'),
+});
 const slot = credentialKey('zhuma-workbench', 'shared-backend');
 const original = (value: unknown): unknown =>
   value && typeof value === 'object' ? (Reflect.get(value, symbols.original) ?? value) : value;
@@ -173,6 +203,18 @@ const publicStatus = (row: PrivateConnection | undefined): SharedBackendStatus =
   actorId: row?.actorId ?? null,
 });
 const descriptors = {
+  'member.asset-preview-import': {
+    schema: MemberAssetPreviewImportQuerySchema,
+    path: '/api/zhuma-member/asset-preview-import',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-import-drafts': {
+    schema: MemberAssetImportDraftsQuerySchema,
+    path: '/api/zhuma-member/asset-import-drafts',
+    verb: 'POST',
+    auth: false,
+  },
   'identity.login': {
     schema: z.strictObject({ accountId: id, password: z.string().min(1).max(200) }),
     path: '/zhuma-id/login',
@@ -227,6 +269,57 @@ const descriptors = {
   'member.plan': {
     schema: MemberWorkbenchPlanSchema,
     path: '/api/zhuma-member/plan',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-list': {
+    schema: MemberAssetListQuerySchema,
+    path: '/api/zhuma-member/asset-list',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-read': {
+    schema: MemberAssetReadQuerySchema,
+    path: '/api/zhuma-member/asset-read',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-reference': {
+    schema: MemberAssetReferenceSchema,
+    path: '/api/zhuma-member/asset-reference',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-command': {
+    schema: MemberAssetCommandSchema,
+    path: '/api/zhuma-member/asset-command',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-sources': {
+    schema: MemberAssetListQuerySchema.pick({ spaceId: true }),
+    path: '/api/zhuma-member/asset-sources',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-source': {
+    schema: MemberAssetLegacySourceSchema,
+    path: '/api/zhuma-member/asset-source',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-catalog': {
+    schema: TeamAssetCatalogQuerySchema,
+    path: '/api/zhuma-member/asset-catalog',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.asset-file-text': {
+    schema: MemberAssetFileReadSchema.extend({
+      offset: z.number().int().nonnegative().refine(Number.isSafeInteger),
+      length: z.number().int().positive().max(8192),
+    }),
+    path: '/api/zhuma-member/asset-file-text',
     verb: 'POST',
     auth: false,
   },
@@ -651,7 +744,7 @@ export class HostSharedBackend {
   }
   /** Exact original file carriers only. Bytes never enter RPC/JSON and the
    * renderer cannot select a remote URL, Cookie or authorization header. */
-  file(endpoint: 'file' | 'upload-file', request: Request): Promise<Response> {
+  file(endpoint: SharedBackendFileEndpoint, request: Request): Promise<Response> {
     const changed = new AbortController();
     const revoke = (kind: NativeAuthenticationEvent) => {
       if (kind !== 'verified') changed.abort();
@@ -694,9 +787,12 @@ export class HostSharedBackend {
       if (!(await this.info(row, signal))) throw new SharedBackendError('identity-changed');
       const check = () => this.assertCurrent(row, signal);
       await check();
-      const url = new URL(`/api/zhuma-exec/${endpoint}`, row.origin);
+      const asset = endpoint.startsWith('asset-');
+      const url = new URL(`/api/${asset ? 'zhuma-member' : 'zhuma-exec'}/${endpoint}`, row.origin);
       const headers = new Headers({ origin: row.origin, cookie: row.cookie });
       let upload: ReturnType<typeof guardSharedFileStream> | undefined;
+      let assetRead: z.infer<typeof assetFileReadSchema> | undefined;
+      let body: string | undefined;
       if (endpoint === 'file') {
         if (request.method !== 'POST') throw new SharedBackendError('invalid');
         const query: Record<string, unknown> = {};
@@ -709,6 +805,24 @@ export class HostSharedBackend {
           throw new SharedBackendError('invalid');
         const parsed = fileReadSchema.parse(query);
         for (const [key, value] of Object.entries(parsed)) url.searchParams.set(key, String(value));
+      } else if (endpoint === 'asset-file-read') {
+        if (
+          request.method !== 'POST' ||
+          input.search ||
+          request.headers.get('content-type')?.split(';')[0] !== 'application/json'
+        )
+          throw new SharedBackendError('invalid');
+        const envelope = clientRequestSchema.parse(
+          await readWorkbenchBody(new Request(request, { signal }), {
+            bodyBytes: 16384,
+            bodyTimeoutMs: 5000,
+          }),
+        );
+        if (envelope.method !== 'zhuma-member/asset-file-read')
+          throw new SharedBackendError('invalid');
+        assetRead = assetFileReadSchema.parse(envelope.payload);
+        body = JSON.stringify({ ...envelope, payload: assetRead });
+        headers.set('content-type', 'application/json');
       } else {
         if (
           request.method !== 'POST' ||
@@ -718,20 +832,33 @@ export class HostSharedBackend {
         )
           throw new SharedBackendError('invalid');
         const h = request.headers;
-        const declaration = artifactUploadOptionsSchema.parse({
-          taskId: h.get('x-zhuma-task'),
-          planId: h.get('x-zhuma-plan'),
-          revision: Number(h.get('x-zhuma-revision')),
-          nodeId: h.get('x-zhuma-node'),
-          spaceId: h.get('x-zhuma-space'),
-          idempotencyKey: h.get('x-zhuma-idempotency-key'),
-          declare: {
-            name: decodeURIComponent(h.get('x-zhuma-file-name') ?? ''),
-            mediaType: h.get('x-zhuma-file-type'),
-            byteSize: Number(h.get('x-zhuma-file-size')),
-            sha256: h.get('x-zhuma-file-sha256'),
-          },
-        });
+        const declaration = asset
+          ? MemberAssetFileReserveSchema.parse({
+              spaceId: h.get('x-zhuma-space-id'),
+              assetId: h.get('x-zhuma-asset-id'),
+              expectedVersion: Number(h.get('x-zhuma-expected-version')),
+              idempotencyKey: h.get('x-zhuma-idempotency-key'),
+              declare: {
+                name: decodeURIComponent(h.get('x-zhuma-file-name') ?? ''),
+                mediaType: h.get('x-zhuma-file-type'),
+                byteSize: Number(h.get('x-zhuma-file-size')),
+                sha256: h.get('x-zhuma-file-sha256'),
+              },
+            })
+          : artifactUploadOptionsSchema.parse({
+              taskId: h.get('x-zhuma-task'),
+              planId: h.get('x-zhuma-plan'),
+              revision: Number(h.get('x-zhuma-revision')),
+              nodeId: h.get('x-zhuma-node'),
+              spaceId: h.get('x-zhuma-space'),
+              idempotencyKey: h.get('x-zhuma-idempotency-key'),
+              declare: {
+                name: decodeURIComponent(h.get('x-zhuma-file-name') ?? ''),
+                mediaType: h.get('x-zhuma-file-type'),
+                byteSize: Number(h.get('x-zhuma-file-size')),
+                sha256: h.get('x-zhuma-file-sha256'),
+              },
+            });
         if (
           !h.has('x-zhuma-file-size') ||
           declaration.declare.byteSize > ARTIFACT_FILE_LIMITS.maxFileBytes
@@ -743,11 +870,15 @@ export class HostSharedBackend {
           'x-zhuma-file-type',
           'x-zhuma-file-size',
           'x-zhuma-file-sha256',
-          'x-zhuma-space',
-          'x-zhuma-task',
-          'x-zhuma-plan',
-          'x-zhuma-revision',
-          'x-zhuma-node',
+          ...(asset
+            ? ['x-zhuma-space-id', 'x-zhuma-asset-id', 'x-zhuma-expected-version']
+            : [
+                'x-zhuma-space',
+                'x-zhuma-task',
+                'x-zhuma-plan',
+                'x-zhuma-revision',
+                'x-zhuma-node',
+              ]),
           'x-zhuma-idempotency-key',
         ])
           headers.set(name, h.get(name)!);
@@ -763,6 +894,7 @@ export class HostSharedBackend {
       }
       let response: Response;
       try {
+        await check();
         response = await this.fetcher(url, {
           method: endpoint === 'file' ? 'GET' : 'POST',
           headers,
@@ -770,6 +902,7 @@ export class HostSharedBackend {
           cache: 'no-store',
           signal,
           ...(upload ? { body: upload.body, duplex: 'half' as const } : {}),
+          ...(body ? { body } : {}),
         });
       } finally {
         await upload?.cancel();
@@ -780,10 +913,27 @@ export class HostSharedBackend {
         const json = type.split(';')[0] === 'application/json';
         if (
           !response.body ||
-          (!json && !['application/octet-stream', 'text/plain; charset=utf-8'].includes(type))
+          (!json &&
+            ![
+              'application/octet-stream',
+              'text/plain; charset=utf-8',
+              ...(asset ? ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'] : []),
+            ].includes(type))
         )
           throw new SharedBackendError('invalid-response');
         if (response.status === 401) this.nativeChanged('revoking');
+        if (assetRead && !json) {
+          let context: unknown;
+          try {
+            context = JSON.parse(
+              decodeURIComponent(response.headers.get('x-zhuma-asset-file-context') ?? ''),
+            );
+          } catch {
+            throw new SharedBackendError('invalid-response');
+          }
+          if (canonicalPayload(assetFileReadSchema.parse(context)) !== canonicalPayload(assetRead))
+            throw new SharedBackendError('invalid-response');
+        }
         const encoding = response.headers.get('content-encoding');
         const length =
           !encoding || encoding === 'identity' ? response.headers.get('content-length') : null;
@@ -810,6 +960,7 @@ export class HostSharedBackend {
           'x-zhuma-file-context',
           'x-zhuma-file-sha256',
           'x-zhuma-file-upload-id',
+          ...(asset ? ['x-zhuma-asset-file-context'] : []),
         ]) {
           const value = response.headers.get(name);
           if (value !== null) output.set(name, value);
@@ -849,7 +1000,10 @@ export class HostSharedBackend {
       payload = entry.schema.parse(input.payload);
     const requestLimit = manualOperations.has(input.operation)
       ? EXECUTION_BODY_BYTE_LIMIT
-      : 1200 * 1024;
+      : input.operation === 'member.asset-preview-import' ||
+          input.operation === 'member.asset-import-drafts'
+        ? MEMBER_ASSET_IMPORT_LIMITS.requestBytes
+        : 1200 * 1024;
     if (Buffer.byteLength(JSON.stringify(input)) > requestLimit)
       throw new SharedBackendError('invalid');
     const rpc = entry.path.startsWith('/api/');
@@ -924,7 +1078,13 @@ export class HostSharedBackend {
     const value = await this.json(
       response,
       signal,
-      manualOperations.has(input.operation) ? EXECUTION_BODY_BYTE_LIMIT : undefined,
+      manualOperations.has(input.operation)
+        ? EXECUTION_BODY_BYTE_LIMIT
+        : input.operation.startsWith('member.asset-') ||
+            input.operation === 'member.snapshot' ||
+            input.operation === 'member.command'
+          ? MEMBER_ASSET_LIMITS.registryBytes + 2 * 1024 * 1024
+          : undefined,
     );
     await this.assertCurrent(row, signal, entry.auth);
     if (entry.auth && response.ok) {

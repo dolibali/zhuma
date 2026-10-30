@@ -11,6 +11,7 @@ import type { MemberExecutionScope } from '../execution/http.js';
 import { createWorkflowApi, type WorkflowApi } from '../workflow/api.js';
 import type { LocalWorkspaceDirectory } from './workspace-directory.js';
 import type { NativeReviewApi } from './review-api.js';
+import type { CodeArtsSetupApi } from './codearts-setup.js';
 import { workspacePublishRanges, type WorkspacePublishRange } from './workspace-approvals.js';
 import {
   createWorkspaceApprovalApi,
@@ -70,6 +71,7 @@ export type NativeRunBegin = NativeRunLocator & {
     | { kind: 'local'; id: string; publish?: readonly WorkspacePublishRange[] };
 };
 export interface NativeRunApi {
+  readonly codeArtsSetup?: CodeArtsSetupApi | undefined;
   readonly review?: NativeReviewApi;
   openNativeSession?: ((run: NativeRunSummary, signal: AbortSignal) => Promise<void>) | undefined;
   readonly workflow?: WorkflowApi;
@@ -460,6 +462,7 @@ export function createNativeRunApi(
   openModelSettings?: () => void,
   localDirectory?: LocalWorkspaceDirectory,
   serverAllocatedRunIds = false,
+  codeArtsSetup?: CodeArtsSetupApi,
 ): NativeRunApi {
   const identity = createIdentityApi(fetcher);
   const directory = createMemberWorkbenchApi(
@@ -575,6 +578,7 @@ export function createNativeRunApi(
   });
   const runLocator = (run: NativeRunSummary) => ({ ...clean(run), runId: run.runId });
   return {
+    ...(codeArtsSetup ? { codeArtsSetup } : {}),
     ...(localDirectory?.openSession
       ? {
           async openNativeSession(run: NativeRunSummary, signal: AbortSignal) {

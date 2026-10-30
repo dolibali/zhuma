@@ -15,6 +15,144 @@ const remote = () => ({
   actorId: 'ann',
 });
 
+test('member package import keeps the original large intent on the two local owner Fetch paths, never the generic RPC carrier', async () => {
+  const selection = remote(),
+    calls = [];
+  let stale = false;
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, method) {
+        assert.equal(method, 'zhuma-backend/status');
+        return { ok: true, value: selection };
+      },
+    },
+    () => {},
+    async (input, init) => {
+      calls.push({ input, init });
+      return Response.json(
+        { original: true },
+        {
+          headers: {
+            'x-zhuma-backend-connection': stale ? crypto.randomUUID() : selection.connectionId,
+          },
+        },
+      );
+    },
+  );
+  await client.refresh();
+  const body = JSON.stringify({
+    type: 'client-request',
+    rpcId: crypto.randomUUID(),
+    method: 'zhuma-member/asset-preview-import',
+    payload: { spaceId: 'north', upload: { kind: 'zip', data: 'x'.repeat(1300000) } },
+  });
+  await client.fetcher('/api/zhuma-member/asset-preview-import', {
+    method: 'POST',
+    body,
+    headers: {
+      'content-type': 'application/json',
+      authorization: 'must-not-forward',
+      cookie: 'must-not-forward',
+    },
+  });
+  assert.equal(calls[0].input, '/api/zhuma-backend/asset-preview-import');
+  assert.equal(calls[0].init.body, body);
+  assert.equal(calls[0].init.headers.authorization, undefined);
+  assert.equal(calls[0].init.headers.cookie, undefined);
+  assert.equal(calls[0].init.headers['x-zhuma-backend-connection'], selection.connectionId);
+  stale = true;
+  await assert.rejects(
+    client.fetcher('/api/zhuma-member/asset-import-drafts', {
+      method: 'POST',
+      body,
+      headers: { 'content-type': 'application/json' },
+    }),
+  );
+  await assert.rejects(
+    client.fetcher('/api/zhuma-member/asset-preview-import?forged=1', {
+      method: 'POST',
+      body,
+      headers: { 'content-type': 'application/json' },
+    }),
+  );
+  client.close();
+});
+
+test('shared member asset carrier selects only exact paths, strips credential/task headers and rejects stale connection echoes', async () => {
+  const selection = remote(),
+    calls = [];
+  let mismatch = false;
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, method, request) {
+        if (method === 'zhuma-backend/status') return { ok: true, value: selection };
+        assert.equal(request.operation, 'member.asset-catalog');
+        return {
+          ok: true,
+          value: {
+            connectionId: selection.connectionId,
+            status: 200,
+            body: {
+              type: 'server-response',
+              rpcId: request.rpcId,
+              result: { ok: true, value: {} },
+            },
+          },
+        };
+      },
+    },
+    () => {},
+    async (input, init) => {
+      calls.push({ input, init });
+      return new Response('file', {
+        headers: {
+          'x-zhuma-backend-connection': mismatch ? crypto.randomUUID() : selection.connectionId,
+        },
+      });
+    },
+  );
+  await client.refresh();
+  const payload = {
+    type: 'client-request',
+    rpcId: crypto.randomUUID(),
+    method: 'zhuma-member/asset-catalog',
+    payload: { spaceId: 'north' },
+  };
+  await client.fetcher('/api/zhuma-member/asset-catalog', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  const blob = new Blob(['file']);
+  const upload = await client.fetcher('/api/zhuma-member/asset-file-upload', {
+    method: 'POST',
+    body: blob,
+    headers: {
+      'content-type': 'application/octet-stream',
+      'x-zhuma-asset-id': 'asset',
+      'x-zhuma-task': 'forged',
+      authorization: 'forged',
+      cookie: 'forged',
+    },
+  });
+  await upload.text();
+  assert.equal(calls[0].input, '/api/zhuma-backend/asset-file-upload');
+  assert.equal(calls[0].init.body, blob);
+  assert.equal(calls[0].init.headers.get('x-zhuma-asset-id'), 'asset');
+  assert.equal(calls[0].init.headers.get('x-zhuma-backend-connection'), selection.connectionId);
+  for (const key of ['cookie', 'authorization', 'x-zhuma-task'])
+    assert.equal(calls[0].init.headers.has(key), false);
+  mismatch = true;
+  await assert.rejects(
+    client.fetcher('/api/zhuma-member/asset-file-read', { method: 'POST', body: '{}' }),
+  );
+  await assert.rejects(
+    client.fetcher('/api/zhuma-member/asset-file-read?origin=http://forged.invalid', {
+      method: 'POST',
+    }),
+  );
+  client.close();
+});
+
 test('shared renderer carries exact project knowledge operations and preserves the original write intent', async () => {
   const selection = remote(),
     calls = [];
