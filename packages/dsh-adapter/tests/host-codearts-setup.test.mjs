@@ -258,6 +258,8 @@ for (const scenario of [
   'editor-missing',
   'acp-entry-missing',
   'policy-neighbor',
+  'policy-query',
+  'policy-hash',
   'duplicate-entry',
   'health-null',
   'health-throws',
@@ -266,7 +268,13 @@ for (const scenario of [
   'active-runtime',
 ]) {
   test(`CodeArts setup rejects ${scenario} without writes and logs only its fixed stage`, async (t) => {
-    const bundle = new URL('file:///synthetic/zhuma-workbench/');
+    const directory = await mkdtemp(join(tmpdir(), 'zhuma-codearts-entry-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const bundle = pathToFileURL(directory + '/');
+    const bytes = 'synthetic policy; not executed\n';
+    await writeFile(join(directory, 'codearts-policy.js'), bytes);
+    await mkdir(join(directory, 'foreign'));
+    await writeFile(join(directory, 'foreign', 'codearts-policy.js'), bytes);
     const rows = [
       { options: { id: 'dsh-acp-adapter', name: '@zaimokuza/dsh-acp-adapter' } },
       {
@@ -275,7 +283,9 @@ for (const scenario of [
     ];
     if (scenario === 'acp-entry-missing') rows.shift();
     if (scenario === 'policy-neighbor')
-      rows[1].options.name = '/synthetic/other/codearts-policy.js';
+      rows[1].options.name = pathToFileURL(join(directory, 'foreign', 'codearts-policy.js')).href;
+    if (scenario === 'policy-query') rows[1].options.name += '?generation=other';
+    if (scenario === 'policy-hash') rows[1].options.name += '#other';
     if (scenario === 'duplicate-entry') rows.push(rows[1]);
     let edits = 0,
       resolutions = 0;
@@ -356,6 +366,8 @@ for (const scenario of [
       'editor-missing': 'editor',
       'acp-entry-missing': 'acp-entry',
       'policy-neighbor': 'policy-entry',
+      'policy-query': 'policy-entry',
+      'policy-hash': 'policy-entry',
       'duplicate-entry': 'policy-entry',
       'health-null': 'health',
       'health-throws': 'health',

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { createCodeArtsProfileRegistration } from './executors/codearts/registration.js';
 import { readPreparedCodeArtsRoute } from './host-codearts-policy.js';
@@ -104,6 +104,32 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
     if (rows.length !== 1) throw new SetupError('unavailable');
     return rows[0]!;
   }
+  async function policyEntry(source: ConfigEditor): Promise<ConfigEntry> {
+    const rows = source.entries().filter((row) => row.options.id === 'zhuma-codearts-policy');
+    if (rows.length !== 1) throw new SetupError('unavailable');
+    const row = rows[0]!;
+    // The original Loader anchors bundle names at its logical pnpm path;
+    // import.meta.url may instead name the physical installation. Only the
+    // exact same file may supply this policy, never another copy by hash/name.
+    const module = isAbsolute(row.options.name)
+      ? pathToFileURL(row.options.name)
+      : new URL(row.options.name);
+    if (module.protocol !== 'file:' || module.search || module.hash)
+      throw new SetupError('unavailable');
+    current();
+    const [actual, expected] = await Promise.all([
+      realpath(fileURLToPath(module)),
+      realpath(fileURLToPath(new URL('codearts-policy.js', bundle))),
+    ]);
+    current();
+    if (
+      actual !== expected ||
+      original(editor()) !== original(source) ||
+      !source.entries().includes(row)
+    )
+      throw new SetupError('unavailable');
+    return row;
+  }
   async function assertIdle() {
     current();
     const acp: unknown = ctx.get('dshAcp');
@@ -145,11 +171,7 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       checkpoint('acp-entry');
       const acp = entry(source, 'dsh-acp-adapter', '@zaimokuza/dsh-acp-adapter');
       checkpoint('policy-entry');
-      const policy = entry(source, 'zhuma-codearts-policy', [
-        './lib/zhuma-workbench/codearts-policy.js',
-        new URL('codearts-policy.js', bundle).href,
-        fileURLToPath(new URL('codearts-policy.js', bundle)),
-      ]);
+      const policy = await policyEntry(source);
       checkpoint('health');
       await assertIdle();
       checkpoint('subprocess');

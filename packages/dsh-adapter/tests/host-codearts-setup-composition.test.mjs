@@ -2,7 +2,17 @@
  * isolated profile. No CLI/model executes; synthetic command is only resolved. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, access, stat } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  realpath,
+  rm,
+  access,
+  stat,
+  symlink,
+} from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -14,16 +24,8 @@ import { parse } from 'yaml';
 import * as Policy from '../dist/host-codearts-policy.js';
 import { openHostCodeArtsSetup } from '../dist/host-codearts-setup.js';
 
-test(
-  'CodeArts original composition: actual ACP health, persistent configure and cold reopen without CLI/model',
-  {
-    skip:
-      !process.env.ZHUMA_CODEARTS_LOADER_MODULE ||
-      !process.env.ZHUMA_CODEARTS_BUNDLE ||
-      !process.env.ZHUMA_CODEARTS_ACP_MODULE,
-    timeout: 30_000,
-  },
-  async (t) => {
+const originalComposition = {
+  async run(t, logicalAlias) {
     const sdk = new URL(
       '../../../',
       pathToFileURL(resolve(process.env.ZHUMA_CODEARTS_LOADER_MODULE)),
@@ -48,8 +50,15 @@ test(
       mode: 0o755,
     });
     const bundle = join(dir, 'node_modules', 'test-bundle');
-    await mkdir(bundle, { recursive: true });
-    const launchDirectory = join(bundle, 'lib', 'zhuma-workbench');
+    const physicalBundle = logicalAlias
+      ? join(home, 'physical installation', 'test-bundle')
+      : bundle;
+    await mkdir(physicalBundle, { recursive: true });
+    if (logicalAlias) {
+      await mkdir(dirname(bundle), { recursive: true });
+      await symlink(physicalBundle, bundle, 'dir');
+    }
+    const launchDirectory = join(physicalBundle, 'lib', 'zhuma-workbench');
     await mkdir(launchDirectory, { recursive: true });
     for (const file of ['codearts-acp.js', 'codearts-policy.js', 'codearts-acp.manifest.json'])
       await writeFile(
@@ -73,7 +82,9 @@ test(
             { id: 'config-editor', name: 'cordis:editor' },
             {
               id: 'zhuma-codearts-policy',
-              name: fileURLToPath(new URL('codearts-policy.js', launchURL)),
+              name: logicalAlias
+                ? './lib/zhuma-workbench/codearts-policy.js'
+                : fileURLToPath(new URL('codearts-policy.js', launchURL)),
               config: {},
             },
             {
@@ -200,16 +211,22 @@ test(
             const module = modules.get(name);
             await ctx.plugin(whole ? module : module.default, config);
           }
-          const originalImport = ctx.loader.internal.import.bind(ctx.loader.internal);
-          ctx.loader.internal.import = (specifier) =>
+          const internal = ctx.loader.internal;
+          const originalImport = internal.import;
+          const fixtureImport = (specifier, ...args) =>
             [
+              pathToFileURL(join(bundle, 'lib', 'zhuma-workbench', 'codearts-policy.js')).href,
               new URL('codearts-policy.js', launchURL).href,
               fileURLToPath(new URL('codearts-policy.js', launchURL)),
             ].includes(specifier)
               ? Promise.resolve(Policy)
               : specifier === '@zaimokuza/dsh-acp-adapter'
                 ? Promise.resolve(acp)
-                : originalImport(specifier);
+                : Reflect.apply(originalImport, internal, [specifier, ...args]);
+          internal.import = fixtureImport;
+          ctx.effect(() => () => {
+            if (internal.import === fixtureImport) internal.import = originalImport;
+          });
           ctx.loader.builtins.editor = ConfigEditor;
         },
       );
@@ -244,8 +261,23 @@ test(
       return { ctx, setup, call };
     }
     const first = await start();
+    if (logicalAlias) {
+      const rows = first.ctx.configEditor
+        .entries()
+        .filter((row) => row.options.id === 'zhuma-codearts-policy');
+      assert.equal(rows.length, 1);
+      assert.notEqual(rows[0].options.name, new URL('codearts-policy.js', launchURL).href);
+      assert.equal(
+        await realpath(fileURLToPath(rows[0].options.name)),
+        await realpath(fileURLToPath(new URL('codearts-policy.js', launchURL))),
+        'original logical anchoring and physical import address the same policy',
+      );
+    }
     const before = await readFile(profile.patchPath, 'utf8');
-    assert.deepEqual((await first.call('status')).body, { ok: true, value: { configured: false } });
+    assert.deepEqual((await first.call('status')).body, {
+      ok: true,
+      value: { configured: false },
+    });
     assert.equal(resolutions, 0);
     principal = 'member';
     assert.equal((await first.call('configure', launcher)).status, 403);
@@ -323,4 +355,20 @@ test(
     assert.equal(spawns, 0);
     await assert.rejects(access(audit));
   },
-);
+};
+
+for (const logicalAlias of [false, true]) {
+  test(
+    logicalAlias
+      ? 'CodeArts original composition: logical pnpm alias matches the same physical policy file'
+      : 'CodeArts original composition: actual ACP health, persistent configure and cold reopen without CLI/model',
+    {
+      skip:
+        !process.env.ZHUMA_CODEARTS_LOADER_MODULE ||
+        !process.env.ZHUMA_CODEARTS_BUNDLE ||
+        !process.env.ZHUMA_CODEARTS_ACP_MODULE,
+      timeout: 30_000,
+    },
+    (t) => originalComposition.run(t, logicalAlias),
+  );
+}
