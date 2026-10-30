@@ -3,6 +3,13 @@ import { parseDocument } from 'yaml';
 import {
   MEMBER_ASSET_LIMITS,
   MEMBER_ASSET_IMPORT_LIMITS,
+  MEMBER_ASSET_FOLDER_LIMITS,
+  MemberAssetFoldersSchema,
+  MemberAssetFolderRecordSchema,
+  MemberAssetFolderCreateSchema,
+  MemberAssetFolderCreateValueSchema,
+  MemberAssetFolderListQuerySchema,
+  MemberAssetFolderListValueSchema,
   MemberAssetPreviewImportQuerySchema,
   MemberAssetPreviewImportValueSchema,
   MemberAssetImportDraftsQuerySchema,
@@ -55,6 +62,9 @@ import {
   type MemberAssetFileSnapshot,
   type MemberAssetFileSnapshotQuery,
   type MemberAssetReadValue,
+  type MemberAssetFolderRecord,
+  type MemberAssetFolderCreate,
+  type MemberAssetFolderListQuery,
   type MemberAssetPreviewImportQuery,
   type MemberAssetImportDraftsQuery,
   type PackageFile,
@@ -289,6 +299,138 @@ export class MemberAssetService
     if (this.closed || this.options.signal.aborted || this.cleanupFailed)
       return fail('asset-unavailable');
     return memberAssetPublishedCatalog(this.workbench.memberAssetRecords(), spaceId);
+  }
+
+  private folderSummary(row: MemberAssetFolderRecord) {
+    const {
+      schemaVersion: _schema,
+      idempotencyKey: _key,
+      fingerprint: _fingerprint,
+      ...value
+    } = row;
+    return value;
+  }
+
+  private folders(raw = this.workbench.memberAssetFolderRecords()) {
+    const result = MemberAssetFoldersSchema.safeParse(raw);
+    if (!result.success) return fail('asset-unavailable');
+    return result.data;
+  }
+
+  private folderPath(
+    rows: readonly MemberAssetFolderRecord[],
+    spaceId: string,
+    folderId: string | null,
+  ) {
+    const path: ReturnType<MemberAssetService['folderSummary']>[] = [];
+    let current = folderId;
+    while (current !== null) {
+      const row = rows.find((item) => item.spaceId === spaceId && item.folderId === current);
+      if (!row) return fail('asset-not-found');
+      if (
+        path.some((item) => item.folderId === row.folderId) ||
+        path.length >= MEMBER_ASSET_FOLDER_LIMITS.depth
+      )
+        return fail('asset-unavailable');
+      path.unshift(this.folderSummary(row));
+      current = row.parentFolderId;
+    }
+    return path;
+  }
+
+  listFolder(request: MemberRequest, raw: MemberAssetFolderListQuery, signal: AbortSignal) {
+    const parsed = MemberAssetFolderListQuerySchema.safeParse(raw);
+    if (!parsed.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    const input = parsed.data;
+    return this.scoped(request, input.spaceId, signal, async (access) => {
+      const folders = this.folders();
+      const path = this.folderPath(folders, access.spaceId, input.folderId);
+      const children = folders
+        .filter((row) => row.spaceId === access.spaceId && row.parentFolderId === input.folderId)
+        .map((row) => this.folderSummary(row))
+        .sort((a, b) => a.name.localeCompare(b.name, 'en'));
+      const files = this.records()
+        .filter(
+          (row) =>
+            row.spaceId === access.spaceId &&
+            row.kind === 'file' &&
+            (row.folderId ?? null) === input.folderId &&
+            (row.published.length > 0 ||
+              (input.includeDrafts && row.draft && row.maintainerIds.includes(access.actorId))),
+        )
+        .map((row) => this.summary(access, row, !!input.includeDrafts));
+      return MemberAssetFolderListValueSchema.parse({
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        folderId: input.folderId,
+        path,
+        folders: children,
+        files,
+      });
+    });
+  }
+
+  createFolder(request: MemberRequest, raw: MemberAssetFolderCreate, signal: AbortSignal) {
+    const parsed = MemberAssetFolderCreateSchema.safeParse(raw);
+    if (!parsed.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    const input = parsed.data;
+    return this.scoped(request, input.spaceId, signal, async (access) => {
+      const fingerprint = hash({ actorId: access.actorId, command: input });
+      return this.workbench.memberAssetCommand(
+        access.signal,
+        access.assertCurrent,
+        async (_records, rawFolders) => {
+          const folders = this.folders(rawFolders);
+          const prior = folders.find(
+            (row) =>
+              row.spaceId === access.spaceId &&
+              row.createdBy === access.actorId &&
+              row.idempotencyKey === input.idempotencyKey,
+          );
+          const value = (row: MemberAssetFolderRecord, disposition: 'applied' | 'replayed') =>
+            MemberAssetFolderCreateValueSchema.parse({
+              actorId: access.actorId,
+              spaceId: access.spaceId,
+              resultVersion: 1,
+              disposition,
+              folder: this.folderSummary(row),
+            });
+          if (prior) {
+            if (prior.fingerprint !== fingerprint) return fail('asset-request-reused');
+            return { value: value(prior, 'replayed') };
+          }
+          if (
+            folders.some(
+              (row) =>
+                row.folderId === input.folderId ||
+                (row.spaceId === access.spaceId &&
+                  row.parentFolderId === input.parentFolderId &&
+                  row.name.toLowerCase() === input.name.toLowerCase()),
+            )
+          )
+            return fail('asset-conflict');
+          const path = this.folderPath(folders, access.spaceId, input.parentFolderId);
+          if (
+            folders.length >= MEMBER_ASSET_FOLDER_LIMITS.folders ||
+            path.length >= MEMBER_ASSET_FOLDER_LIMITS.depth
+          )
+            return fail('asset-quota');
+          const { expectedVersion: _expected, ...facts } = input;
+          const row = MemberAssetFolderRecordSchema.parse({
+            schemaVersion: 1,
+            ...facts,
+            createdBy: access.actorId,
+            version: 1,
+            fingerprint,
+          });
+          const next = [...folders, row];
+          if (!MemberAssetFoldersSchema.safeParse(next).success) return fail('asset-quota');
+          return { folders: next, value: value(row, 'applied') };
+        },
+      );
+    });
   }
 
   /** Reference-only preparation for a newly admitted Run. Explicit fixed reads
@@ -865,6 +1007,7 @@ export class MemberAssetService
       name: selected?.definition.name ?? record.assetId,
       description: selected?.definition.description ?? '',
       ownerId: record.ownerId,
+      ...(record.folderId !== undefined ? { folderId: record.folderId } : {}),
       maintainerIds: [...record.maintainerIds],
       version: record.version,
       canMaintain,
@@ -1428,7 +1571,7 @@ export class MemberAssetService
         const result = await this.workbench.memberAssetCommand(
           access.signal,
           authorize,
-          async (records) => {
+          async (records, rawFolders) => {
             const previous = records.find(
               (item) => item.spaceId === input.spaceId && item.assetId === input.assetId,
             );
@@ -1464,6 +1607,8 @@ export class MemberAssetService
               if (records.length >= MEMBER_ASSET_LIMITS.assets) return fail('asset-quota');
               let draft: NonNullable<MemberAssetRecord['draft']>;
               if (input.operation === 'create-draft') {
+                if (input.folderId !== undefined)
+                  this.folderPath(this.folders(rawFolders), access.spaceId, input.folderId);
                 if ('origin' in input.definition && input.definition.origin)
                   return fail('asset-invalid');
                 draft = { definition: input.definition, dependencies: input.dependencies };
@@ -1543,6 +1688,9 @@ export class MemberAssetService
                 assetId: input.assetId,
                 kind: draft.definition.kind,
                 ownerId: access.actorId,
+                ...(input.operation === 'create-draft' && input.folderId !== undefined
+                  ? { folderId: input.folderId }
+                  : {}),
                 maintainerIds: [access.actorId],
                 version: 1,
                 draft,
@@ -1574,7 +1722,18 @@ export class MemberAssetService
             const next = structuredClone(previous);
             next.version++;
             let published: MemberAssetPublishedVersion | undefined;
-            if (input.operation === 'update-draft') {
+            if (input.operation === 'move-file') {
+              if (previous.kind !== 'file') return fail('asset-invalid');
+              if (
+                this.fileSlots.has(
+                  canonicalPayload({ spaceId: input.spaceId, assetId: input.assetId }),
+                ) ||
+                previous.uploads.some((upload) => upload.state === 'pending')
+              )
+                return fail('asset-upload-pending');
+              this.folderPath(this.folders(rawFolders), access.spaceId, input.folderId);
+              next.folderId = input.folderId;
+            } else if (input.operation === 'update-draft') {
               if (input.definition.kind !== previous.kind) return fail('asset-invalid');
               this.dependencies(access, records, input.dependencies);
               const old = previous.draft ?? previous.published.at(-1);

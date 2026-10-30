@@ -3,6 +3,8 @@ import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
 import { z } from 'zod';
 import {
   MemberAssetCommandSchema,
+  MemberAssetFolderCreateSchema,
+  MemberAssetFolderListQuerySchema,
   MemberAssetErrorCodeSchema,
   MemberAssetLegacySourceSchema,
   MemberAssetListQuerySchema,
@@ -35,6 +37,8 @@ export const MEMBER_ASSET_ENDPOINTS = [
   'asset-catalog',
   'asset-preview-import',
   'asset-import-drafts',
+  'asset-folder-list',
+  'asset-folder-create',
 ] as const;
 export interface MemberAssetHttpSources {
   readonly assets: MemberAssetService;
@@ -164,6 +168,18 @@ export function openMemberAssetHttp(
       const raw = envelope.data.payload;
       const value = await (async () => {
         switch (endpoint) {
+          case 'asset-folder-list':
+            return source!.assets.listFolder(
+              original,
+              MemberAssetFolderListQuerySchema.parse(raw),
+              signal,
+            );
+          case 'asset-folder-create':
+            return source!.assets.createFolder(
+              original,
+              MemberAssetFolderCreateSchema.parse(raw),
+              signal,
+            );
           case 'asset-list':
             return source!.assets.list(original, MemberAssetListQuerySchema.parse(raw), signal);
           case 'asset-read':

@@ -26,6 +26,12 @@ export const MEMBER_ASSET_IMPORT_LIMITS = Object.freeze({
   requestBytes: 8 * 1024 * 1024,
   active: 2,
 });
+export const MEMBER_ASSET_FOLDER_LIMITS = Object.freeze({
+  folders: 200,
+  depth: 12,
+  name: 80,
+  bytes: 128 * 1024,
+});
 const id = z
   .string()
   .min(1)
@@ -36,6 +42,90 @@ const positive = natural.positive();
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const name = z.string().trim().min(1).max(160);
 const description = z.string().max(8000);
+const folderId = z.uuid().nullable();
+const folderName = z
+  .string()
+  .trim()
+  .normalize('NFC')
+  .min(1)
+  .max(MEMBER_ASSET_FOLDER_LIMITS.name)
+  .refine((value) => !/[\\/\u0000-\u001f\u007f]/u.test(value) && value !== '.' && value !== '..');
+export const MemberAssetFolderSummarySchema = z.strictObject({
+  spaceId: id,
+  folderId: z.uuid(),
+  parentFolderId: folderId,
+  name: folderName,
+  createdBy: id,
+  version: z.literal(1),
+});
+export const MemberAssetFolderRecordSchema = MemberAssetFolderSummarySchema.extend({
+  schemaVersion: z.literal(1),
+  idempotencyKey: z.uuid(),
+  fingerprint: digest,
+});
+export const MemberAssetFoldersSchema = z
+  .array(MemberAssetFolderRecordSchema)
+  .max(MEMBER_ASSET_FOLDER_LIMITS.folders)
+  .refine((rows) => {
+    if (
+      new TextEncoder().encode(JSON.stringify(rows)).byteLength > MEMBER_ASSET_FOLDER_LIMITS.bytes
+    )
+      return false;
+    if (new Set(rows.map((row) => row.folderId)).size !== rows.length) return false;
+    if (
+      new Set(rows.map((row) => JSON.stringify([row.spaceId, row.createdBy, row.idempotencyKey])))
+        .size !== rows.length
+    )
+      return false;
+    const names = rows.map((row) =>
+      JSON.stringify([row.spaceId, row.parentFolderId, row.name.toLowerCase()]),
+    );
+    if (new Set(names).size !== rows.length) return false;
+    return rows.every((row) => {
+      const seen = new Set([row.folderId]);
+      let current = row;
+      while (current.parentFolderId !== null) {
+        const parent = rows.find(
+          (item) => item.spaceId === row.spaceId && item.folderId === current.parentFolderId,
+        );
+        if (!parent || seen.has(parent.folderId)) return false;
+        seen.add(parent.folderId);
+        if (seen.size > MEMBER_ASSET_FOLDER_LIMITS.depth) return false;
+        current = parent;
+      }
+      return true;
+    });
+  });
+export const MemberAssetFolderCreateSchema = z
+  .strictObject({
+    spaceId: id,
+    folderId: z.uuid(),
+    parentFolderId: folderId,
+    name: folderName,
+    expectedVersion: z.literal(0),
+    idempotencyKey: z.uuid(),
+  })
+  .refine((value) => value.folderId !== value.parentFolderId);
+export const MemberAssetFolderListQuerySchema = z.strictObject({
+  spaceId: id,
+  folderId,
+  includeDrafts: z.boolean().optional(),
+});
+export const MemberAssetFolderCreateValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    disposition: z.enum(['applied', 'replayed']),
+    resultVersion: z.literal(1),
+    folder: MemberAssetFolderSummarySchema,
+  })
+  .refine(
+    (value) => value.folder.spaceId === value.spaceId && value.folder.createdBy === value.actorId,
+  );
+export type MemberAssetFolderRecord = z.infer<typeof MemberAssetFolderRecordSchema>;
+export type MemberAssetFolderSummary = z.infer<typeof MemberAssetFolderSummarySchema>;
+export type MemberAssetFolderCreate = z.infer<typeof MemberAssetFolderCreateSchema>;
+export type MemberAssetFolderListQuery = z.infer<typeof MemberAssetFolderListQuerySchema>;
 export const MemberAssetKindSchema = z.enum(['template', 'expert', 'skill', 'file']);
 export const MemberAssetReferenceSchema = z.strictObject({
   spaceId: id,
@@ -276,6 +366,7 @@ export const MemberAssetRecordSchema = z
     assetId: id,
     kind: MemberAssetKindSchema,
     ownerId: id,
+    folderId: folderId.optional(),
     maintainerIds: z.array(id).min(1).max(MEMBER_ASSET_LIMITS.maintainers),
     version: positive,
     draft: draft.nullable(),
@@ -297,6 +388,7 @@ export const MemberAssetRecordSchema = z
   .refine(
     (value) =>
       value.maintainerIds.includes(value.ownerId) &&
+      (value.folderId === undefined || value.kind === 'file') &&
       new Set(value.maintainerIds).size === value.maintainerIds.length &&
       (!value.draft || value.draft.definition.kind === value.kind) &&
       (!value.draft?.blob || value.kind === 'file') &&
@@ -343,14 +435,17 @@ export const MemberAssetReadQuerySchema = z.union([
 ]);
 export const MemberAssetReferenceQuerySchema = MemberAssetReferenceSchema;
 export const MemberAssetCommandSchema = z.discriminatedUnion('operation', [
-  z.strictObject({
-    operation: z.literal('create-draft'),
-    ...object,
-    expectedVersion: z.literal(0),
-    idempotencyKey: z.uuid(),
-    definition: MemberAssetDefinitionSchema,
-    dependencies,
-  }),
+  z
+    .strictObject({
+      operation: z.literal('create-draft'),
+      ...object,
+      expectedVersion: z.literal(0),
+      idempotencyKey: z.uuid(),
+      definition: MemberAssetDefinitionSchema,
+      dependencies,
+      folderId: folderId.optional(),
+    })
+    .refine((value) => value.folderId === undefined || value.definition.kind === 'file'),
   z.strictObject({
     operation: z.literal('update-draft'),
     ...mutation,
@@ -360,6 +455,7 @@ export const MemberAssetCommandSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('publish'), ...mutation }),
   z.strictObject({ operation: z.literal('remove-draft'), ...mutation }),
   z.strictObject({ operation: z.literal('cancel-upload'), ...mutation, uploadKey: z.uuid() }),
+  z.strictObject({ operation: z.literal('move-file'), ...mutation, folderId }),
   z.strictObject({
     operation: z.literal('set-maintainers'),
     ...mutation,
@@ -392,6 +488,7 @@ export const MemberAssetSummarySchema = z.strictObject({
   name,
   description,
   ownerId: id,
+  folderId: folderId.optional(),
   maintainerIds: z.array(id).max(MEMBER_ASSET_LIMITS.maintainers),
   version: positive,
   canMaintain: z.boolean(),
@@ -408,6 +505,37 @@ export const MemberAssetSummarySchema = z.strictObject({
     )
     .max(MEMBER_ASSET_LIMITS.versions),
 });
+export const MemberAssetFolderListValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    folderId,
+    path: z.array(MemberAssetFolderSummarySchema).max(MEMBER_ASSET_FOLDER_LIMITS.depth),
+    folders: z.array(MemberAssetFolderSummarySchema).max(MEMBER_ASSET_FOLDER_LIMITS.folders),
+    files: z.array(MemberAssetSummarySchema).max(MEMBER_ASSET_LIMITS.assets),
+  })
+  .refine(
+    (value) =>
+      value.folders.every(
+        (row) => row.spaceId === value.spaceId && row.parentFolderId === value.folderId,
+      ) &&
+      value.files.every(
+        (row) =>
+          row.spaceId === value.spaceId &&
+          row.kind === 'file' &&
+          (row.folderId ?? null) === value.folderId,
+      ) &&
+      (value.folderId === null
+        ? value.path.length === 0
+        : value.path.at(-1)?.folderId === value.folderId) &&
+      value.path.every(
+        (row, index) =>
+          row.spaceId === value.spaceId &&
+          row.parentFolderId === (value.path[index - 1]?.folderId ?? null),
+      ),
+  );
+export type MemberAssetFolderListValue = z.infer<typeof MemberAssetFolderListValueSchema>;
+export type MemberAssetFolderCreateValue = z.infer<typeof MemberAssetFolderCreateValueSchema>;
 export const MemberAssetListValueSchema = z.strictObject({
   actorId: id,
   spaceId: id,
