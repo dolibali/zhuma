@@ -32,6 +32,11 @@ export const MemberAssetReferenceSchema = z.strictObject({
   sha256: digest,
 });
 export type MemberAssetReference = z.infer<typeof MemberAssetReferenceSchema>;
+/** Original task catalogs use an immutable definition ID per real publication.
+ * This alias never replaces the complete asset reference or grants access. */
+export function memberAssetDefinitionId(reference: MemberAssetReference): string {
+  return `member-asset-${MemberAssetReferenceSchema.parse(reference).versionId}`;
+}
 export const MemberAssetDependencySchema = z.strictObject({
   slotId: id,
   reference: MemberAssetReferenceSchema,
