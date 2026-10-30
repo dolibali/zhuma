@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { ResourceOriginSchema } from './asset-package.js';
+import {
+  ResourceOriginSchema,
+  PackagePathSchema,
+  PackageUploadSchema,
+  ImportChoiceSchema,
+  ImportPackageItemSchema,
+  ImportPackagePreviewSchema,
+  ASSET_IMPORT_LIMITS,
+} from './asset-package.js';
 
 /** Portable asset facts. Sessions, attachment services and authority stay Host-owned. */
 export const MEMBER_ASSET_SOURCE_VERSION = 'zhuma-member-assets@1' as const;
@@ -13,6 +21,10 @@ export const MEMBER_ASSET_LIMITS = Object.freeze({
   fileBytes: 20 * 1024 * 1024,
   activeUploads: 8,
   runFiles: 50,
+});
+export const MEMBER_ASSET_IMPORT_LIMITS = Object.freeze({
+  requestBytes: 8 * 1024 * 1024,
+  active: 2,
 });
 const id = z
   .string()
@@ -199,6 +211,7 @@ export const MemberAssetSourceSchema = z.discriminatedUnion('kind', [
     kind: z.literal('import'),
     versionId: z.uuid(),
     sha256: digest,
+    entryPath: PackagePathSchema.optional(),
     sourceId: id.optional(),
     sourceVersion: z.string().max(80).optional(),
   }),
@@ -398,7 +411,88 @@ export const MemberAssetReadValueSchema = z.strictObject({
   source: MemberAssetSourceSchema.optional(),
   // The original attachment handle is never part of a public read result.
   file: MemberAssetFileDeclareSchema.optional(),
+  requirements: z
+    .array(
+      z.strictObject({
+        slotId: id,
+        kind: z.literal('skill'),
+        name,
+        sourceKey: PackagePathSchema,
+        suggestedAssetId: id.optional(),
+      }),
+    )
+    .max(MEMBER_ASSET_LIMITS.dependencies)
+    .optional(),
 });
+const importQuery = z.strictObject({ spaceId: id, upload: PackageUploadSchema });
+const importBound = (value: unknown) =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+  MEMBER_ASSET_IMPORT_LIMITS.requestBytes;
+export const MemberAssetPreviewImportQuerySchema = importQuery.refine(importBound);
+export const MemberAssetImportChoiceSchema = ImportChoiceSchema.omit({
+  replace: true,
+  available: true,
+}).extend({ id: z.uuid(), dependencies });
+export const MemberAssetImportDraftsQuerySchema = importQuery
+  .extend({
+    idempotencyKey: z.uuid(),
+    packageChecksum: digest,
+    choices: z
+      .array(MemberAssetImportChoiceSchema)
+      .min(1)
+      .max(ASSET_IMPORT_LIMITS.items)
+      .refine(
+        (items) =>
+          new Set(items.map((item) => item.key)).size === items.length &&
+          new Set(items.map((item) => item.id)).size === items.length,
+      ),
+  })
+  .refine(importBound);
+export const MemberAssetPreviewImportValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    packageChecksum: digest,
+    items: z.array(ImportPackageItemSchema).min(1).max(ASSET_IMPORT_LIMITS.items),
+    ignored: ImportPackagePreviewSchema.shape.ignored,
+  })
+  .refine(importBound);
+export const MemberAssetImportDraftsValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    disposition: z.enum(['applied', 'replayed']),
+    source: z.strictObject({ kind: z.literal('import'), versionId: z.uuid(), sha256: digest }),
+    assets: z.array(MemberAssetSummarySchema).min(1).max(ASSET_IMPORT_LIMITS.items),
+    resultVersions: z
+      .array(z.strictObject({ assetId: id, version: z.literal(1) }))
+      .min(1)
+      .max(ASSET_IMPORT_LIMITS.items),
+  })
+  .refine(
+    (value) =>
+      value.assets.every(
+        (asset) =>
+          asset.spaceId === value.spaceId &&
+          asset.ownerId === value.actorId &&
+          asset.kind !== 'file',
+      ) &&
+      value.resultVersions.length === value.assets.length &&
+      new Set(value.assets.map((asset) => asset.assetId)).size === value.assets.length &&
+      new Set(value.resultVersions.map((item) => item.assetId)).size === value.assets.length &&
+      value.resultVersions.every((item) =>
+        value.assets.some((asset) => asset.assetId === item.assetId),
+      ),
+  );
+export type MemberAssetPreviewImportQuery = z.infer<typeof MemberAssetPreviewImportQuerySchema>;
+export type MemberAssetImportDraftsQuery = z.infer<typeof MemberAssetImportDraftsQuerySchema>;
+export type MemberAssetPreviewImportValue = z.infer<typeof MemberAssetPreviewImportValueSchema>;
+export type MemberAssetImportDraftsValue = z.infer<typeof MemberAssetImportDraftsValueSchema>;
+export function memberAssetImportSkillSlotId(index: number): string {
+  if (!Number.isInteger(index) || index < 0 || index >= MEMBER_ASSET_LIMITS.dependencies)
+    throw new RangeError('Invalid import dependency slot.');
+  return `source-skill-${index + 1}`;
+}
 export const MemberAssetCommandValueSchema = z.strictObject({
   disposition: z.enum(['applied', 'replayed']),
   actorId: id,
