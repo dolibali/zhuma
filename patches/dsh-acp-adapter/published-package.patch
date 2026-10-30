@@ -1,0 +1,562 @@
+diff --git a/lib/host/composition/index.js b/lib/host/composition/index.js
+index 601aef8e..0745d061 100644
+--- a/lib/host/composition/index.js
++++ b/lib/host/composition/index.js
+@@ -23,7 +23,22 @@ export function apply(ctx, config) {
+     ctx.inject(['settings'], (child) => {
+         child.effect(() => child.settings.configure({ auto: false }, ctx.fiber));
+     });
+-    installInstalledProfileRegistry(ctx, config, { installRemote: true });
++    installInstalledProfileRegistry(ctx, config, {
++        installRemote: true,
++        nativeToolHandoffGuard: (id, profile) => {
++            // Optional local Host policy, never a renderer/config boolean or profile
++            // name heuristic. A producer's captured guard survives only its generation.
++            const policy = ctx.get('acpNativeToolHandoffPolicy');
++            if (policy === undefined)
++                return undefined;
++            if (policy === null || typeof policy !== 'object' || typeof Reflect.get(policy, 'guardForProfile') !== 'function')
++                throw new TypeError('Native tool handoff policy is unavailable');
++            const guard = Reflect.apply(Reflect.get(policy, 'guardForProfile'), policy, [id, profile]);
++            if (guard !== undefined && typeof guard !== 'function')
++                throw new TypeError('Native tool handoff policy returned an invalid guard');
++            return guard;
++        },
++    });
+     installLegacySettingsImport(ctx);
+ }
+ export { installInstalledProfileRegistry } from "./installed-profile-registry.js";
+diff --git a/lib/host/composition/installed-profile-registry.js b/lib/host/composition/installed-profile-registry.js
+index d62454af..2ec04696 100644
+--- a/lib/host/composition/installed-profile-registry.js
++++ b/lib/host/composition/installed-profile-registry.js
+@@ -590,6 +590,23 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
+                     continue;
+                 let routeAdapter = profileAdapters.get(id);
+                 if (routeAdapter === undefined) {
++                    const guard = options.nativeToolHandoffGuard?.(id, structuredClone(config));
++                    if (guard !== undefined && typeof guard !== 'function')
++                        throw new TypeError('Native tool handoff requires a Host capability guard');
++                    const capturedProfile = JSON.stringify(config);
++                    const nativeToolHandoff = guard === undefined
++                        ? false
++                        : () => {
++                            const current = activeAgents[id];
++                            if (current === undefined || JSON.stringify(current) !== capturedProfile)
++                                return false;
++                            try {
++                                return guard() === true;
++                            }
++                            catch {
++                                return false;
++                            }
++                        };
+                     routeAdapter = new AcpProfileAdapter(id, () => activeAgents[id], subprocess, (sessionId) => acpSessionView(ctx, sessionStore?.get(sessionId)), ledgerStore, undefined, undefined, sidecar, attachments, resolveNativeQuestions, sidecar === undefined
+                         ? undefined
+                         : async (operation) => {
+@@ -611,7 +628,7 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
+                                     return result?.childSessionId;
+                                 });
+                             });
+-                        }, (message) => log.warn(message, { operation: 'claude-draft-subagent-capability' }), (sessionId) => resolveTerminalJobs(ctx, sessionId), (sessionId, capabilities, wireProfile, schemas) => createDshToolBridge(ctx, sessionId, capabilities, wireProfile, async () => (await readToolApprovalPolicy(sessionId)).policy, notifyPolicySubscribers, schemas), (sessionId, schemas) => toolBridgeKey(ctx, sessionId, schemas), controlsChanged, ctx.root, (sessionId) => resolveQwenTaskJobs(ctx, sessionId));
++                        }, (message) => log.warn(message, { operation: 'claude-draft-subagent-capability' }), (sessionId) => resolveTerminalJobs(ctx, sessionId), (sessionId, capabilities, wireProfile, schemas) => createDshToolBridge(ctx, sessionId, capabilities, wireProfile, async () => (await readToolApprovalPolicy(sessionId)).policy, notifyPolicySubscribers, schemas), (sessionId, schemas) => toolBridgeKey(ctx, sessionId, schemas), controlsChanged, ctx.root, (sessionId) => resolveQwenTaskJobs(ctx, sessionId), nativeToolHandoff);
+                     profileAdapters.set(id, routeAdapter);
+                 }
+                 const route = acpRouteId(id);
+diff --git a/lib/types/host/composition/installed-profile-registry.d.ts b/lib/types/host/composition/installed-profile-registry.d.ts
+index ed926511..f367cacd 100644
+--- a/lib/types/host/composition/installed-profile-registry.d.ts
++++ b/lib/types/host/composition/installed-profile-registry.d.ts
+@@ -61,6 +61,9 @@ export interface InstalledProfileRegistry {
+     resolveRoute(provider: string): AcpResolvedAgent | undefined;
+ }
+ export interface InstalledProfileRegistryOptions {
++    /** Host-only capability factory. A matched producer returns one revocable,
++     * generation-bound guard; user configuration cannot supply this function. */
++    nativeToolHandoffGuard?: (profileId: string, profile: Readonly<AcpAgentConfig>) => (() => boolean) | undefined;
+     /** Mount the additive dshAcp activity Remote in the provider composition.
+      * The additive provider composition mounts its own service when enabled. */
+     installRemote?: boolean;
+diff --git a/lib/host/composition/profile-adapter.js b/lib/host/composition/profile-adapter.js
+index f139a134..dc500ffa 100644
+--- a/lib/host/composition/profile-adapter.js
++++ b/lib/host/composition/profile-adapter.js
+@@ -5,6 +5,7 @@ import { ACP_ACTIVITY_RAW_MAX, modeIntentBindingKey } from "../../persistence/si
+ import { teamModeChoices } from "../../contract/session-modes.js";
+ import fs from 'node:fs';
+ import path from 'node:path';
++import { SessionLogOffset } from '@deepseek-ai/dsh-session';
+ import { admitEncodedImages } from '@deepseek-ai/dsh-attachment';
+ import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm';
+ import { AcpStubAdapter, reasoningInfoFromConfigOptions } from "./llm-stub.js";
+@@ -16,6 +17,8 @@ import { effectiveRuntimeOf } from "../../contract/agent-config.js";
+ import { reasoningRequestIsCurrent, sessionProtocolExtensions } from "../../domain/session/agent-compatibility.js";
+ import { DispatchLedger } from "../../runtime/session/dispatch-ledger.js";
+ import { StreamHandoff } from "./stream-handoff.js";
++import { bindNativeToolHandoff } from "../tools/bridge.js";
++import { waitWithin } from "../../runtime/process/timeout.js";
+ import { admitCurrentStep } from "../../domain/session/current-step-admission.js";
+ import { AcpAdmissionError } from "../../domain/session/current-step-admission.js";
+ import { ExternalDelegationNormalizer } from "../../domain/subagent/external-delegation.js";
+@@ -475,6 +478,7 @@ export class AcpProfileAdapter extends LlmAdapter {
+     controlsChanged;
+     hostRoot;
+     qwenTaskJobs;
++    nativeToolHandoff;
+     probeGeneration;
+     runtimes = new Map();
+     terminalOutcomes = new WeakMap();
+@@ -499,7 +503,9 @@ export class AcpProfileAdapter extends LlmAdapter {
+     sessionControlWrites = new Map();
+     deliveredQwenContexts = new WeakMap();
+     deliveredHostInstructions = new WeakMap();
+-    constructor(profileId, readConfig, subprocess, sessionOf = () => undefined, ledgerStore, probeFactory = (config) => createNativeProfileProbe(profileId, subprocess, config), runtimeFactory = (options) => new AcpSessionRuntime(options), sidecar, attachments, resolveQuestions, projectExternalDelegation, log, terminalJobs, createMcpLease, mcpKey, controlsChanged, hostRoot, qwenTaskJobs) {
++    constructor(profileId, readConfig, subprocess, sessionOf = () => undefined, ledgerStore, probeFactory = (config) => createNativeProfileProbe(profileId, subprocess, config), runtimeFactory = (options) => new AcpSessionRuntime(options), sidecar, attachments, resolveQuestions, projectExternalDelegation, log, terminalJobs, createMcpLease, mcpKey, controlsChanged, hostRoot, qwenTaskJobs, 
++    /** Trusted Host opt-in; never derived from provider/profile text. */
++    nativeToolHandoff = false) {
+         super();
+         this.profileId = profileId;
+         this.readConfig = readConfig;
+@@ -518,6 +524,7 @@ export class AcpProfileAdapter extends LlmAdapter {
+         this.controlsChanged = controlsChanged;
+         this.hostRoot = hostRoot;
+         this.qwenTaskJobs = qwenTaskJobs;
++        this.nativeToolHandoff = nativeToolHandoff;
+         this.ledger = new DispatchLedger(ledgerStore);
+         this.settlementSink = this.localSettlementSink();
+         this.settlementOwnerDisposer = registerLocalSettlementSink(this.hostRoot ?? this, this.profileId, this, this.settlementSink);
+@@ -526,6 +533,16 @@ export class AcpProfileAdapter extends LlmAdapter {
+     providerInfo(provider) {
+         return { id: provider, name: `${this.readConfig()?.name ?? this.profileId} · ACP` };
+     }
++    nativeHandoffCurrent() {
++        try {
++            return typeof this.nativeToolHandoff === 'function'
++                ? this.nativeToolHandoff() === true
++                : this.nativeToolHandoff === true;
++        }
++        catch {
++            return false;
++        }
++    }
+     /** Directory-changing native tools require a context-preserving ACP handoff. */
+     workingDirectoryChangeDenial(sessionId, owner) {
+         const session = this.sessionOf(sessionId);
+@@ -1475,6 +1492,10 @@ export class AcpProfileAdapter extends LlmAdapter {
+                 owner = undefined;
+             }
+             if (owner !== undefined) {
++                if (self.nativeToolHandoff !== false && !self.nativeHandoffCurrent()) {
++                    await retire(owner);
++                    throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
++                }
+                 if (!owner.stream.suspended)
+                     throw new LlmError('ACP stream is already active', 'ACP_PROMPT_ALREADY_ACTIVE');
+                 const sameToolDirectory = self.mcpKey === undefined || self.mcpKey(key, owner.options.tools) === self.mcpKey(key, options.tools);
+@@ -1559,6 +1580,26 @@ export class AcpProfileAdapter extends LlmAdapter {
+                     }
+                 };
+                 const view = self.sessionOf(key);
++                const offStopping = self.nativeToolHandoff !== false
++                    ? self.hostRoot?.on('agent/turn-stopping', async ({ agent }) => {
++                        if (agent.session !== view?.identity || !stream.nativeSuspended || self.handoffs.get(key) !== captured)
++                            return;
++                        try {
++                            // Native result is already final. Let its same pending MCP response
++                            // reach the provider before normal turn-end cleanup can cancel it.
++                            const drained = stream.drain(false).then(() => true);
++                            if ((await waitWithin(drained, 3000)) !== true) {
++                                stream.cancel?.();
++                                await drained;
++                            }
++                            if (!self.nativeHandoffCurrent())
++                                throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
++                        }
++                        finally {
++                            self.detachHandoffOwner(key, captured);
++                        }
++                    })
++                    : undefined;
+                 const offEnd = view?.watchTurnEnd?.(() => {
+                     void cleanup(true).catch(() => {
+                         try {
+@@ -1575,7 +1616,12 @@ export class AcpProfileAdapter extends LlmAdapter {
+                         offEnd?.();
+                     }
+                     finally {
+-                        offRoute?.();
++                        try {
++                            offRoute?.();
++                        }
++                        finally {
++                            offStopping?.();
++                        }
+                     }
+                 };
+             }
+@@ -1625,6 +1671,9 @@ export class AcpProfileAdapter extends LlmAdapter {
+                 throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL');
+             }
+             const sessionKey = String(options.sessionId ?? '');
++            let stopNativeHandoff;
++            if (self.nativeToolHandoff !== false && !self.nativeHandoffCurrent())
++                throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
+             if (sessionKey.length === 0)
+                 throw new LlmError('ACP requires a DSH session id', 'ACP_SESSION_UNAVAILABLE');
+             await self.waitForSessionControlWrite(sessionKey, options.signal);
+@@ -2761,6 +2810,44 @@ export class AcpProfileAdapter extends LlmAdapter {
+                         directoryAbort.abort(new Error('ACP interrupted for a working-directory handoff'));
+                 });
+                 handoff.resume = async (nextOptions) => {
++                    if (handoff.nativeSuspended) {
++                        const step = session?.facts.openSteps.at(-1);
++                        const actualAgent = self.hostRoot?.get('agents', false)?.get(sessionKey);
++                        if (actualAgent === undefined ||
++                            actualAgent.session !== session?.identity ||
++                            step === undefined ||
++                            step.turn !== admissionProof?.turn)
++                            return false;
++                        if (step.messageIds.length === 0) {
++                            if (handoff.nativeResumeCalls.length === 0)
++                                throw new SteeringFailure(new Error('ACP_NATIVE_RESULT_PROOF_MISSING'), false);
++                            const events = actualAgent.session.snapshotEvents(SessionLogOffset(Math.min(...handoff.nativeResumeCalls.map((call) => call.fromSeq))));
++                            for (const { call } of handoff.nativeResumeCalls) {
++                                const logged = events.findLast((event) => event.type === 'tool/call' && event.data.callId === call.callId);
++                                if (logged?.type !== 'tool/call' ||
++                                    logged.data.name !== call.name ||
++                                    logged.data.arguments !== JSON.stringify(call.arguments) ||
++                                    logged.data.turn !== step.turn ||
++                                    logged.data.step >= step.step)
++                                    throw new SteeringFailure(new Error('ACP_NATIVE_CALL_PROOF_MISSING'), false);
++                                const result = events.find((event) => event.type === 'tool/result' &&
++                                    event.sourceEventSeqs?.length === 1 &&
++                                    event.sourceEventSeqs[0] === logged.seq);
++                                if (result?.type !== 'tool/result' ||
++                                    result.seq >= step.startSeq ||
++                                    !nextOptions.messages.some((message) => message.role === 'tool' &&
++                                        message.id === result.data.message.id &&
++                                        message.toolCallId === call.callId &&
++                                        JSON.stringify(message.content) === JSON.stringify(result.data.message.content) &&
++                                        message.isError === result.data.message.isError))
++                                    throw new SteeringFailure(new Error('ACP_NATIVE_RESULT_PROOF_MISSING'), false);
++                            }
++                            await contentDeliveryTail;
++                            if (promptSignal.aborted)
++                                throw abortReason(promptSignal);
++                            return true;
++                        }
++                    }
+                     let nextProof;
+                     let nextPrompt;
+                     let nextSystem;
+@@ -2898,6 +2985,18 @@ export class AcpProfileAdapter extends LlmAdapter {
+                     if (admissionProof?.anchorMessageId === currentAnchor)
+                         deliveredHostConclusionByAnchor.set(currentAnchor, ++responseObservationSeq);
+                 };
++                if (self.nativeToolHandoff !== false) {
++                    if (!self.nativeHandoffCurrent())
++                        throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
++                    if (self.hostRoot === undefined)
++                        throw new Error('ACP_NATIVE_HOST_UNAVAILABLE');
++                    stopNativeHandoff = bindNativeToolHandoff(self.hostRoot, sessionKey, (call) => {
++                        if (!self.nativeHandoffCurrent())
++                            throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
++                        breakContent();
++                        handoff.enqueueNativeTool(call, nextContentIndex++);
++                    }, () => self.nativeHandoffCurrent());
++                }
+                 const promptResult = runtime.prompt(prompt, onUpdate, promptSignal, () => {
+                     if (teammateReportEligible) {
+                         teammateReportConfirmed = true;
+@@ -3488,6 +3587,7 @@ export class AcpProfileAdapter extends LlmAdapter {
+                 throw error;
+             }
+             finally {
++                stopNativeHandoff?.();
+                 stopWatchingTerminalOutcomes?.();
+             }
+         })();
+diff --git a/lib/types/host/composition/profile-adapter.d.ts b/lib/types/host/composition/profile-adapter.d.ts
+index 53a28f56..8f02416f 100644
+--- a/lib/types/host/composition/profile-adapter.d.ts
++++ b/lib/types/host/composition/profile-adapter.d.ts
+@@ -189,6 +189,8 @@ export declare class AcpProfileAdapter extends LlmAdapter {
+     private readonly controlsChanged?;
+     private readonly hostRoot?;
+     private readonly qwenTaskJobs?;
++    /** Trusted Host opt-in; never derived from provider/profile text. */
++    private readonly nativeToolHandoff;
+     private probeGeneration;
+     private readonly runtimes;
+     private readonly terminalOutcomes;
+@@ -220,8 +222,11 @@ export declare class AcpProfileAdapter extends LlmAdapter {
+         readonly parentDshSessionId: string;
+         readonly parentCwd: string;
+         readonly parentDelegationDepth?: number;
+-    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined);
++    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined, 
++    /** Trusted Host opt-in; never derived from provider/profile text. */
++    nativeToolHandoff?: boolean | (() => boolean));
+     providerInfo(provider: string): LlmProviderInfo;
++    private nativeHandoffCurrent;
+     /** Directory-changing native tools require a context-preserving ACP handoff. */
+     workingDirectoryChangeDenial(sessionId: string, owner: object): string | undefined;
+     /** Display-only: a settled Stop handoff needs Continue, not recovery clicks. */
+diff --git a/lib/host/composition/stream-handoff.js b/lib/host/composition/stream-handoff.js
+index bc0bef8d..d8354382 100644
+--- a/lib/host/composition/stream-handoff.js
++++ b/lib/host/composition/stream-handoff.js
+@@ -15,6 +15,18 @@ export class StreamHandoff {
+     terminalConsumerCallback;
+     incompleteBlocks = new Set();
+     remainder = [];
++    nativeTools = [];
++    nativeToolIds = new Set();
++    nextNativeIndex = 0;
++    nativeSuspended = false;
++    nativeResumeCalls = [];
++    enqueueNativeTool(call, index = this.nextNativeIndex++) {
++        if (this.ended || this.closing || call.signal.aborted || this.nativeToolIds.has(call.callId))
++            throw new Error('ACP_NATIVE_TOOL_HANDOFF_REJECTED');
++        this.nativeToolIds.add(call.callId);
++        this.nativeTools.push({ call, index, fromSeq: call.agent?.session.seq ?? 0 });
++        this.request();
++    }
+     suspended = false;
+     ended = false;
+     get closing() {
+@@ -52,6 +64,7 @@ export class StreamHandoff {
+     }
+     async *segment() {
+         this.suspended = false;
++        this.nativeSuspended = false;
+         this.localSettlementAbortReason = undefined;
+         try {
+             while (!this.ended) {
+@@ -69,6 +82,28 @@ export class StreamHandoff {
+                 if (result === 'handoff') {
+                     this.requested = false;
+                     this.suspended = true;
++                    const calls = this.nativeTools.splice(0);
++                    if (calls.length > 0) {
++                        this.nativeSuspended = true;
++                        this.nativeResumeCalls = calls;
++                        for (const { call, index } of calls) {
++                            if (call.signal.aborted)
++                                throw call.signal.reason;
++                            yield { type: 'block-start', index, blockType: 'tool-call' };
++                            yield {
++                                type: 'block-end',
++                                index,
++                                block: {
++                                    type: 'tool-call',
++                                    id: call.callId,
++                                    name: call.name,
++                                    arguments: JSON.stringify(call.arguments),
++                                },
++                            };
++                        }
++                        yield { type: 'finish', reason: { kind: 'tool-calls' } };
++                        return;
++                    }
+                     // The native loop commits this assistant segment, then owns pre-step,
+                     // input rewriting and user/message before resume is allowed to steer.
+                     yield { type: 'finish', reason: { kind: 'stop' } };
+@@ -76,6 +111,8 @@ export class StreamHandoff {
+                 }
+                 this.pending = undefined;
+                 this.pendingValue = undefined;
++                if ('index' in (result.value ?? {}))
++                    this.nextNativeIndex = Math.max(this.nextNativeIndex, result.value.index + 1);
+                 if (result.done) {
+                     this.ended = true;
+                     return;
+@@ -115,9 +152,10 @@ export class StreamHandoff {
+         }
+     }
+     /** Stop the remote pull and collect its remainder; this does not abandon local settlement. */
+-    drain() {
++    drain(cancel = true) {
+         return (this.draining ??= (async () => {
+-            this.cancel?.();
++            if (cancel)
++                this.cancel?.();
+             try {
+                 for (;;) {
+                     const result = await this.next();
+diff --git a/lib/types/host/composition/stream-handoff.d.ts b/lib/types/host/composition/stream-handoff.d.ts
+index 1b2315a2..7582d0ae 100644
+--- a/lib/types/host/composition/stream-handoff.d.ts
++++ b/lib/types/host/composition/stream-handoff.d.ts
+@@ -1,4 +1,5 @@
+ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
++import type { ToolExecutionInput } from '@deepseek-ai/dsh-tools';
+ /** One ACP execution may span native steps; only the outer stream is handed back to DSH. */
+ export declare class StreamHandoff {
+     resume: ((options: GenerateOptions) => Promise<boolean>) | undefined;
+@@ -16,6 +17,16 @@ export declare class StreamHandoff {
+     private terminalConsumerCallback;
+     private readonly incompleteBlocks;
+     private readonly remainder;
++    private readonly nativeTools;
++    private readonly nativeToolIds;
++    private nextNativeIndex;
++    nativeSuspended: boolean;
++    nativeResumeCalls: readonly {
++        readonly call: ToolExecutionInput;
++        readonly index: number;
++        readonly fromSeq: number;
++    }[];
++    enqueueNativeTool(call: ToolExecutionInput, index?: number): void;
+     suspended: boolean;
+     ended: boolean;
+     get closing(): boolean;
+@@ -32,7 +43,7 @@ export declare class StreamHandoff {
+     /** Drain after releasing a local waiter, suppressing only that exact reason. */
+     drainAfterAbandon(): Promise<void>;
+     /** Stop the remote pull and collect its remainder; this does not abandon local settlement. */
+-    drain(): Promise<void>;
++    drain(cancel?: boolean): Promise<void>;
+     /** A fallback consumer must deliver buffered output before its replacement prompt. */
+     takeRemainder(): StreamChunk[];
+ }
+diff --git a/lib/host/tools/bridge.js b/lib/host/tools/bridge.js
+index be3b1655..3e86bec8 100644
+--- a/lib/host/tools/bridge.js
++++ b/lib/host/tools/bridge.js
+@@ -17,6 +17,100 @@ import { performance } from 'node:perf_hooks';
+ import { normalizeAntigravityPresentation, resolveAntigravityNativeTool } from "./antigravity.js";
+ import { createTeamToolContext } from "../teams/tool-context.js";
+ import { DEFERRED_WAIT_TEXT, DeferredWaitReceipts } from "./deferred-wait-receipts.js";
++const nativeToolHandoffs = new WeakMap();
++export function bindNativeToolHandoff(ctx, sessionId, enqueue, isCurrent = () => true) {
++    if (!isCurrent())
++        throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
++    const root = ctx.root;
++    const agent = root.get('agents', false)?.get(sessionId);
++    if (agent === undefined)
++        throw new Error('ACP_NATIVE_AGENT_UNAVAILABLE');
++    let directory = nativeToolHandoffs.get(root);
++    if (directory === undefined)
++        nativeToolHandoffs.set(root, (directory = new Map()));
++    if (directory.has(sessionId))
++        throw new Error('ACP_NATIVE_HANDOFF_ALREADY_BOUND');
++    const lifetime = new AbortController();
++    const entry = { agent, signal: lifetime.signal, enqueue, isCurrent };
++    directory.set(sessionId, entry);
++    return () => {
++        if (directory.get(sessionId) === entry)
++            directory.delete(sessionId);
++        lifetime.abort(new Error('ACP_NATIVE_HANDOFF_CLOSED'));
++    };
++}
++/** Wait for the original AgentLoop's execution, never dispatch a second body. */
++async function nativeToolResult(ctx, handoff, input) {
++    const agent = input.agent;
++    if (!handoff.isCurrent())
++        throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
++    if (agent === undefined || agent !== handoff.agent)
++        throw new Error('ACP_NATIVE_AGENT_CHANGED');
++    const fence = agent.session.seq;
++    const expectedArguments = JSON.stringify(input.arguments);
++    const signal = AbortSignal.any([input.signal, handoff.signal]);
++    signal.throwIfAborted();
++    const result = Promise.withResolvers();
++    let token;
++    let settled = false;
++    const matching = (exec) => exec.agent === agent &&
++        exec.callId === input.callId &&
++        exec.parent === undefined &&
++        exec.rootCallId === input.callId;
++    const actualCall = () => {
++        const events = agent.session.snapshotEvents(fence);
++        const call = events.findLast((event) => event.type === 'tool/call' && event.data.callId === input.callId);
++        return (call !== undefined &&
++            call.type === 'tool/call' &&
++            call.data.name === input.name &&
++            call.data.arguments === expectedArguments &&
++            !events.some((event) => event.type === 'tool/result' && event.sourceEventSeqs?.includes(call.seq)));
++    };
++    const offPre = ctx.on('tools/pre-execute', async (exec, next) => {
++        if (!matching(exec))
++            return next();
++        if (settled ||
++            token !== undefined ||
++            signal.aborted ||
++            !handoff.isCurrent() ||
++            exec.name !== input.name ||
++            JSON.stringify(exec.arguments) !== expectedArguments ||
++            !actualCall())
++            throw new Error('ACP_NATIVE_TOOL_EXECUTION_REJECTED');
++        token = exec.token;
++        return next();
++    });
++    const offResult = ctx.on('tools/result', (exec, final) => {
++        if (!matching(exec) || settled || signal.aborted || !actualCall())
++            return;
++        if (!handoff.isCurrent()) {
++            settled = true;
++            result.reject(new Error('ACP_NATIVE_HANDOFF_REVOKED'));
++            return;
++        }
++        if (token !== exec.token && !(token === undefined && final.isError))
++            return;
++        settled = true;
++        result.resolve(final);
++    });
++    const abort = () => {
++        settled = true;
++        result.reject(signal.reason);
++    };
++    signal.addEventListener('abort', abort, { once: true });
++    try {
++        if (!handoff.isCurrent())
++            throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
++        handoff.enqueue(input);
++        return await result.promise;
++    }
++    finally {
++        settled = true;
++        signal.removeEventListener('abort', abort);
++        offResult();
++        offPre();
++    }
++}
+ const TEAM_TOOLS = [
+     'spawn_teammate',
+     'send_message',
+@@ -1009,13 +1103,18 @@ export async function createDshToolBridge(ctx, sessionId, capabilities, wireProf
+                     }
+                     let result;
+                     try {
+-                        result = await agents.withInitiator(agent, () => tools.execute({
++                        const nativeHandoff = nativeToolHandoffs.get(ctx.root)?.get(sessionId);
++                        const execution = {
+                             callId: hostCallId,
+                             name: definition.name,
+                             arguments: args,
+                             agent,
+                             signal: bodySignal,
+-                        }));
++                        };
++                        result =
++                            nativeHandoff === undefined
++                                ? await agents.withInitiator(agent, () => tools.execute(execution))
++                                : await nativeToolResult(ctx, nativeHandoff, execution);
+                         if (toolErrorInfoCode(result.error) === TOOL_ABORTED_BEFORE_DISPATCH)
+                             callRecord.abortedBeforeDispatch = true;
+                         if (diagnosticEnabled && diagnosticBase !== undefined) {
+diff --git a/lib/types/host/tools/bridge.d.ts b/lib/types/host/tools/bridge.d.ts
+index 1ef3439e..62af2996 100644
+--- a/lib/types/host/tools/bridge.d.ts
++++ b/lib/types/host/tools/bridge.d.ts
+@@ -1,7 +1,9 @@
+ import type { Context } from '@deepseek-ai/cordis';
++import type { ToolExecutionInput } from '@deepseek-ai/dsh-tools';
+ import type { ToolSchema } from '@deepseek-ai/dsh-llm';
+ import type * as acp from '@agentclientprotocol/sdk';
+ import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts';
++export declare function bindNativeToolHandoff(ctx: Context, sessionId: string, enqueue: (call: ToolExecutionInput) => void, isCurrent?: () => boolean): () => void;
+ /** Registry-owned identity keys track scoped tool and visible schema changes. */
+ export declare function createDshToolBridgeKey(): (ctx: Context, sessionId: string, schemas?: readonly ToolSchema[]) => unknown;
+ /** Discover native session tools without enabling any host plugin or Teams service. */

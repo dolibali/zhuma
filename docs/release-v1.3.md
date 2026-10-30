@@ -16,7 +16,7 @@ DSH 固定为 `dsh-v0.2.1-rc.4`／`504a01a9578abc2c6f1fb896b1dc322c9fe24f66`，�
 
 附加社区插件固定为 `@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1`／源码 `28ccc6745ec82139c684c3642637e93e00d800f2`。构建补丁将它安装进官方 SDK 的 Web Bundle，发行 overlay 注册附加 profile／路由，保留默认 factory 与官方会话、工具、权限展示。新增 Gateway 门禁覆盖插件会话操作；全局会话目录按原生任务绑定逐项过滤，未知结果或注册代次变化拒绝返回，不将任务会话暴露给普通个人会话界面。任务模型选项只读取插件被动缓存，排除需要主动 CLI 探测的路由。
 
-`node scripts/desktop/verify-acp-registration.mjs --sdk <固定且已构建的SDK>` 验证实际发布插件注册、共享 Host peer 图和默认原生 factory；子进程与模型端口是显式禁止调用的契约端口。`verify-session-admission.mjs --sdk <固定SDK>` 验证实际 Gateway dispatch，业务服务为契约夹具。SDK Host／Client／Web 构建不等于正常桌面验收。当前这一基础装配不包含 CodeArts 原生工具 handoff 的后续补丁，也不表示其真实 CLI、登录、工作区、工具和停止链路已通过；码道官方认证前置不得绕过。
+`node scripts/desktop/verify-acp-registration.mjs --sdk <固定且已构建的SDK>` 验证实际发布插件注册、共享 Host peer 图和默认原生 factory；子进程与模型端口是显式禁止调用的契约端口。`verify-session-admission.mjs --sdk <固定SDK>` 验证实际 Gateway dispatch，业务服务为契约夹具。SDK Host／Client／Web 构建不等于正常桌面验收。附加插件的原生工具 handoff 使用固定源码补丁及 pnpm 发布包补丁，详见 [登记](../patches/dsh-acp-adapter/README.md)。只有明确匹配的 Host producer 本代闭包能开启交接，普通配置不能设置执行开关；动态撤销沿原停止与排空路径处理。构建与契约不表示真实 CLI、登录、工作区、工具隔离、停止及业务链路已通过；码道官方认证前置不得绕过。
 
 ## 必要验证
 
