@@ -417,12 +417,13 @@ export class MemberWorkbenchService {
     const space = fresh.directory.space(spaceId);
     if (!space) fail('not-found', '空间不可用。');
     const model = this.options.model?.();
+    const { memberAssets: _privateAssetFacts, ...visibleState } = state;
     return structuredClone({
       actorId: scope.actorId,
       spaceId,
       space,
       state: {
-        ...state,
+        ...visibleState,
         projects: projects.map((project) => ({
           ...project,
           defaultParticipantIds: (project.defaultParticipantIds ?? []).filter((id) =>
