@@ -8,10 +8,11 @@ import {
   canonicalPayload,
   remoteDeviceSigningInput,
   remoteTeamAssetFileReadRequestSchema,
+  memberAssetFileSnapshotDigestInput,
 } from '@zhuma/agent-core';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { assetHost } from './member-asset-host-fixture.mjs';
-import { fileHost, ok, no, deferred } from './remote-run-files-fixture.mjs';
+import { fileHost, ok, no, deferred, hash } from './remote-run-files-fixture.mjs';
 import { caller } from './execution-service-run-fixture.mjs';
 import { openExecutionMemberLease } from '../dist/member-session.js';
 import { currentExecutionRun } from '../dist/execution-run-state.js';
@@ -41,7 +42,7 @@ function workbench() {
     },
   });
 }
-async function setup(t, { enabled = true, wait } = {}) {
+async function setup(t, { enabled = true, wait, selected = true } = {}) {
   const grants = new Set();
   let k;
   t.after(async () => {
@@ -57,6 +58,14 @@ async function setup(t, { enabled = true, wait } = {}) {
     receipt = await k.upload(upload, data);
   await k.files.idle();
   const published = await k.publish(upload, receipt);
+  if (selected) {
+    // This Run fixture seeds the original confirmed fact. Normal member
+    // create/inherit/confirm and recovery are covered by member-fixed-files.
+    const state = k.workbench.snapshot();
+    state.tasks[0].fileRefs = [published.reference];
+    state.appliedPlans[0].task.fileRefs = [published.reference];
+    await k.domain.global.set(state);
+  }
   const controls = {};
   let snapshots = 0,
     qualifications = 0;
@@ -70,6 +79,7 @@ async function setup(t, { enabled = true, wait } = {}) {
       if (enabled) {
         base.service.runHost.prepareTeamAssetFiles = async (request, query, active) => {
           snapshots++;
+          controls.query = structuredClone(query);
           if (controls.snapshotFailure) throw Error('PRIVATE-SNAPSHOT-DETAIL');
           ok(
             await base.service.readRunCompositionInputs(request, {
@@ -77,7 +87,8 @@ async function setup(t, { enabled = true, wait } = {}) {
               spaceId: 'north',
             }),
           );
-          return k.owner.fileSnapshot(request, query, active);
+          const value = await k.owner.fileSnapshot(request, query, active);
+          return controls.snapshotReplace ? controls.snapshotReplace(value) : value;
         };
         base.service.runHost.qualifyTeamAssetFile = async (request, reference, active) => {
           qualifications++;
@@ -220,7 +231,7 @@ test('team asset Run: check is metadata only, later publication is not substitut
 });
 
 test('team asset Run: absent capability keeps the original composition and explicit missing producer refuses instead of an empty catalog', async (t) => {
-  const h = await setup(t);
+  const h = await setup(t, { selected: false });
   await h.begin({
     capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
     workspace: { kind: 'text-only' },
@@ -250,6 +261,91 @@ test('team asset Run: original accept replay never reads a fresh/latest snapshot
   assert.equal(first.scope.runId, replay.scope.runId);
   assert.equal(h.counts.snapshots, 1);
   assert.deepEqual(currentExecutionRun(h.read()).composition, saved);
+});
+
+test('team asset Run: a new Run consumes only the old version selected in its AppliedPlan even after a newer publication, including actual original bytes', async (t) => {
+  const h = await setup(t);
+  const data = Buffer.from('Newer before Run preparation');
+  const input = h.k.uploadInput(h.upload.assetId, data, {
+    expectedVersion: h.published.asset.version,
+  });
+  const receipt = await h.k.upload(input, data);
+  await h.k.files.idle();
+  const newer = await h.k.publish(input, receipt);
+  await h.beginTeam();
+  assert.deepEqual(h.controls.query, { spaceId: 'north', references: [h.published.reference] });
+  const saved = currentExecutionRun(h.read()).composition;
+  assert.deepEqual(
+    saved.payload.teamAssets.files.map((item) => item.reference),
+    [h.published.reference],
+  );
+  assert(!JSON.stringify(saved).includes(newer.reference.versionId));
+  const grant = await h.open();
+  const operation = h.k.files.openReadTracked(
+    grant.request,
+    {
+      spaceId: 'north',
+      assetId: grant.reference.assetId,
+      versionId: grant.reference.versionId,
+    },
+    grant.signal,
+  );
+  const handle = await operation.result;
+  grant.check();
+  handle.check();
+  assert.deepEqual(Buffer.from(handle.bytes), h.data);
+  handle.release();
+  await grant.releaseAfter(operation.drain);
+});
+
+test('team asset Run: selected files without executor capability fail explicitly before any persisted Run or file preparation', async (t) => {
+  const h = await setup(t);
+  const result = await h.send(
+    h.accept({
+      capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
+      workspace: { kind: 'text-only' },
+    }),
+  );
+  no(result, 'remote-protocol-unsupported');
+  assert.equal(h.read().nativeExecution?.runs.length ?? 0, 0);
+  assert.equal(h.counts.snapshots, 0);
+});
+
+test('team asset Run: Host substitution or extra files never override the AppliedPlan, and an empty selection never scans team latest', async (t) => {
+  const h = await setup(t),
+    extra = await h.k.create();
+  const data = Buffer.from('Unselected file');
+  const input = h.k.uploadInput(extra.input.assetId, data);
+  const receipt = await h.k.upload(input, data);
+  await h.k.files.idle();
+  const extraPublished = await h.k.publish(input, receipt);
+  const actualExtra = await h.k.owner.fileSnapshot(
+    h.k.requests.ann,
+    {
+      spaceId: 'north',
+      references: [extraPublished.reference],
+    },
+    signal(),
+  );
+  for (const replace of [
+    () => actualExtra,
+    (value) => {
+      const snapshot = {
+        ...value.snapshot,
+        files: [...value.snapshot.files, ...actualExtra.snapshot.files],
+      };
+      snapshot.sha256 = hash(memberAssetFileSnapshotDigestInput(snapshot));
+      return { ...value, snapshot };
+    },
+  ]) {
+    h.controls.snapshotReplace = replace;
+    no(await h.send(h.accept({ capabilities, workspace: { kind: 'text-only' } })));
+    assert.equal(h.read().nativeExecution?.runs.length ?? 0, 0);
+  }
+  const empty = await setup(t, { selected: false });
+  await empty.beginTeam();
+  assert.deepEqual(empty.controls.query.references, []);
+  assert.deepEqual(currentExecutionRun(empty.read()).composition.payload.teamAssets.files, []);
 });
 
 test('team asset Run: original revoke and stop fence held reads while close still waits for their actual drain', async (t) => {
@@ -367,7 +463,7 @@ test('team asset Run: preparing a failed snapshot cannot become empty or commit 
 });
 
 test('team asset Run: repeated missing-producer refusal releases every authentication opening', async (t) => {
-  const h = await setup(t, { enabled: false });
+  const h = await setup(t, { enabled: false, selected: false });
   await h.begin({
     capabilities: { resultIntent: 'zhuma-native-result-intent@1', localTools: [] },
     workspace: { kind: 'text-only' },

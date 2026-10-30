@@ -32,6 +32,7 @@ import {
   type RemoteWorkflowIntent,
   type KnowledgeProjectSnapshot,
   type MemberAssetFileSnapshotValue,
+  type MemberAssetFileSnapshotQuery,
   type MemberAssetReference,
   type MemberAssetReferenceValue,
   type RemoteWorkflowCandidate,
@@ -529,7 +530,7 @@ export interface ExecutionRunHostPorts
   ): Promise<KnowledgeProjectSnapshot>;
   prepareTeamAssetFiles?(
     request: MemberRequest,
-    query: { readonly spaceId: string },
+    query: MemberAssetFileSnapshotQuery,
     signal: AbortSignal,
   ): Promise<MemberAssetFileSnapshotValue>;
   qualifyTeamAssetFile?(
@@ -2013,16 +2014,17 @@ export class ExecutionService {
           ? {
               prepareTeamAssetFiles: async (
                 request: MemberRequest,
-                target: { spaceId: string },
+                target: { spaceId: string; taskId: string; planId: string; revision: number },
                 signal: AbortSignal,
               ) => {
                 const prepare = host.prepareTeamAssetFiles!;
+                const applied = createExecutionHandoff(target, this.workbench.readWorkbench());
                 if (host !== this.requireRunHost() || host.signal.aborted || signal.aborted)
                   throw new RemoteRunError('remote-unavailable');
                 const value = await prepare.call(
                   host,
                   request,
-                  { spaceId: target.spaceId },
+                  { spaceId: target.spaceId, references: applied.task.fileRefs ?? [] },
                   signal,
                 );
                 if (
@@ -2059,6 +2061,13 @@ export class ExecutionService {
             }
           : {}),
         compose: (actorId, request, node, scope, resourceCatalog, projectKnowledge, teamAssets) => {
+          const workbench = this.workbench.readWorkbench();
+          const applied = createExecutionHandoff(request.payload.target, workbench);
+          if (
+            applied.task.fileRefs?.length &&
+            request.payload.capabilities.teamAssets !== 'zhuma-native-team-assets@1'
+          )
+            throw new RemoteRunError('remote-protocol-unsupported');
           const files =
             request.payload.capabilities.resultIntent === 'zhuma-native-result-intent@2';
           const descriptor = files
@@ -2108,7 +2117,7 @@ export class ExecutionService {
               : { kind: 'text-only' };
           }
           return freezeExecutionRunComposition({
-            workbench: this.workbench.readWorkbench(),
+            workbench,
             node,
             scope,
             model: request.payload.model,

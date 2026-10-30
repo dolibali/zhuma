@@ -32,7 +32,7 @@ import {
 import { WorkbenchService } from './workbench-service.js';
 import { defaultMemberTemplateSource, ownedMemberTemplates } from './member-template-catalog.js';
 import type { MemberAssetSourceSnapshot } from './member-asset-source-contract.js';
-import { memberAssetPublishedCatalog } from './member-asset-service.js';
+import { memberAssetPublishedCatalog, memberAssetFixedFiles } from './member-asset-service.js';
 import {
   memberWorkbenchOperationKey,
   type MemberWorkbenchIntent,
@@ -209,6 +209,10 @@ export class MemberWorkbenchService {
     if (
       space.kind === 'personal' &&
       (state.assets.some((asset) => asset.memberTemplate?.spaceId === spaceId) ||
+        state.projects.some((project) =>
+          project.fileRefs?.some((ref) => ref.spaceId === spaceId),
+        ) ||
+        state.tasks.some((task) => task.fileRefs?.some((ref) => ref.spaceId === spaceId)) ||
         catalogData.data.assets.some((asset) => asset.kind === 'template' || asset.memberAsset) ||
         catalogData.data.experts.some((expert) => expert.memberAsset))
     ) {
@@ -308,7 +312,20 @@ export class MemberWorkbenchService {
     };
   }
 
+  private validateFileOwner(scope: Scope, references: WorkTask['fileRefs']): void {
+    if (references === undefined || scope.directory.space(scope.spaceId)?.kind !== 'personal')
+      return;
+    const owner = scope.directory.administratorForSpace?.(scope.spaceId);
+    if (!owner) fail('unavailable', '个人资料归属暂不可用。');
+    if (owner !== scope.actorId) fail('not-found', '空间不可用。');
+  }
+
   private validateTask(task: WorkTask, state: Workbench, scope: Scope): void {
+    this.validateFileOwner(scope, task.fileRefs);
+    memberAssetFixedFiles(state.memberAssets ?? [], {
+      spaceId: scope.spaceId,
+      references: task.fileRefs ?? [],
+    });
     if (!task.ownerId || !task.participantIds.includes(scope.actorId))
       fail('validation', '请选择负责人，并将当前成员加入任务。');
     if (
@@ -356,6 +373,11 @@ export class MemberWorkbenchService {
   }
 
   private validateProject(project: Project, scope: Scope): void {
+    this.validateFileOwner(scope, project.fileRefs);
+    memberAssetFixedFiles(this.workbench.memberAssetRecords(), {
+      spaceId: scope.spaceId,
+      references: project.fileRefs ?? [],
+    });
     if (
       (project.defaultParticipantIds ?? []).some(
         (id) => !scope.participants.some((p) => p.id === id && p.available),
@@ -390,6 +412,7 @@ export class MemberWorkbenchService {
     state: Workbench,
     scope: Scope,
     command: Extract<MemberWorkbenchCommand['command'], { type: 'instantiate-template' }>,
+    inheritanceState = state,
   ) {
     const source = await this.sourceScope(scope, command.input.sourceSpaceId);
     const asset = source.catalog.assets.find(
@@ -409,6 +432,7 @@ export class MemberWorkbenchService {
         ...input,
         task: {
           ...input.task,
+          ...this.taskFileSelection(inheritanceState, input.task, true),
           updatedAt: (this.options.now ?? (() => new Date().toISOString()))(),
         },
       },
@@ -450,6 +474,25 @@ export class MemberWorkbenchService {
     });
   }
 
+  private taskFileSelection(
+    state: Workbench,
+    input: Pick<WorkTask, 'id' | 'projectId' | 'fileRefs'>,
+    creating: boolean,
+  ): Pick<WorkTask, 'fileRefs'> {
+    const previous = state.tasks.find((task) => task.id === input.id);
+    const references =
+      input.fileRefs !== undefined
+        ? input.fileRefs
+        : previous
+          ? previous.fileRefs
+          : creating
+            ? state.projects.find((project) => project.id === input.projectId)?.fileRefs
+            : undefined;
+    // A raw omitted create replay uses the already committed task, including
+    // its original omission. Never recompute inheritance from a changed project.
+    return references === undefined ? {} : { fileRefs: structuredClone(references) };
+  }
+
   private async commandTask(
     state: Workbench,
     scope: Scope,
@@ -471,12 +514,14 @@ export class MemberWorkbenchService {
         { ...state, tasks: state.tasks.filter((task) => task.id !== command.input.task.id) },
         scope,
         command,
+        state,
       );
       return instantiateWorkflowTemplate(prepared.state, prepared.input);
     }
     const previous = state.tasks.find((task) => task.id === command.task.id);
     return {
       ...command.task,
+      ...this.taskFileSelection(state, command.task, command.type === 'create-task'),
       status: 'draft',
       updatedAt,
       ...(command.type === 'update-task' && previous?.templateSource

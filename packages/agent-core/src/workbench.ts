@@ -3,6 +3,7 @@ import { validatePlan } from './plan.js';
 import {
   MemberAssetRegistrySchema,
   MemberAssetReferenceSchema,
+  MemberAssetFileReferencesSchema,
   memberAssetDefinitionId,
 } from './member-asset-contract.js';
 import {
@@ -114,6 +115,7 @@ export const ProjectSchema = z.strictObject({
   // Optional fields preserve old snapshots and command fingerprints without a migration.
   defaultParticipantIds: ids.optional(),
   assetIds: ids.optional(),
+  fileRefs: MemberAssetFileReferencesSchema.optional(),
   references: z
     .array(z.strictObject({ id, name: title, url: projectLink }))
     .max(30)
@@ -193,6 +195,7 @@ export const WorkTaskSchema = z.strictObject({
   status: z.enum(['draft', 'ready']),
   updatedAt: z.string().datetime(),
   templateSource: TemplateSourceSchema.optional(),
+  fileRefs: MemberAssetFileReferencesSchema.optional(),
 });
 export const AppliedPlanSchema = z.strictObject({
   id,
