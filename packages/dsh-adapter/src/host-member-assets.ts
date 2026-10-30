@@ -9,6 +9,8 @@ import { TeamAssetCatalogService } from './team-asset-catalog.js';
 import { TeamAssetFileBytes } from './team-asset-file.js';
 import { TeamAssetFileService } from './team-asset-file-service.js';
 import { openTeamAssetFileHttp } from './team-asset-file-http.js';
+import { openTeamAssetRunFileHttp } from './team-asset-run-file-http.js';
+import type { ExecutionRunHostPorts, ExecutionService } from './execution-service.js';
 import type {} from '@deepseek-ai/dsh-attachment';
 
 /** One member facade over the original opened Workbench and attachment owner.
@@ -20,6 +22,7 @@ export function openHostMemberAssets(
     readonly member: Omit<MemberWorkbenchMountOptions, 'workbench'>;
     readonly knowledge: () => Pick<KnowledgeService, 'libraries' | 'list'> | undefined;
     readonly limits: WorkbenchHttpLimits;
+    readonly execution?: () => ExecutionService | undefined;
   },
 ) {
   let closed = false;
@@ -34,6 +37,7 @@ export function openHostMemberAssets(
   });
   let http: ReturnType<typeof openMemberAssetHttp> | undefined;
   let fileHttp: ReturnType<typeof openTeamAssetFileHttp> | undefined;
+  let runFileHttp: ReturnType<typeof openTeamAssetRunFileHttp> | undefined;
   let mount: Fiber | undefined;
   const closeFiles = (owner: TeamAssetFileService) => {
     const operation = owner.close();
@@ -62,7 +66,7 @@ export function openHostMemberAssets(
       };
       // Fence and drain metadata/binary handlers, then readers, then authority.
       // Disposing Cordis alone is not used as proof of a finalizer's success.
-      await collect([http?.close(), fileHttp?.close()]);
+      await collect([http?.close(), fileHttp?.close(), runFileHttp?.close()]);
       await collect([
         catalog.close(),
         ...(originalFiles ? [closeFiles(originalFiles)] : []),
@@ -82,6 +86,11 @@ export function openHostMemberAssets(
       options.limits,
     );
     fileHttp = openTeamAssetFileHttp(ctx, () => (closed || cleanupFailed ? undefined : files));
+    if (options.execution)
+      runFileHttp = openTeamAssetRunFileHttp(ctx, () => {
+        const execution = options.execution!();
+        return closed || cleanupFailed || !execution || !files ? undefined : { execution, files };
+      });
     mount = ctx.plugin({
       name: 'zhuma-member-asset-files',
       inject: ['attachments'],
@@ -103,8 +112,30 @@ export function openHostMemberAssets(
     void close().catch(() => ctx.logger.error('Zhuma member asset rollback is incomplete.'));
     throw error;
   }
+  const active = (signal: AbortSignal) => {
+    signal.throwIfAborted();
+    if (closed || cleanupFailed)
+      throw new WorkbenchError('asset-unavailable', '资产服务暂不可用。');
+  };
+  const runSources: Required<
+    Pick<ExecutionRunHostPorts, 'prepareTeamAssetFiles' | 'qualifyTeamAssetFile'>
+  > = {
+    async prepareTeamAssetFiles(request, query, signal) {
+      active(signal);
+      const value = await assets.fileSnapshot(request, query, signal);
+      active(signal);
+      return value;
+    },
+    async qualifyTeamAssetFile(request, reference, signal) {
+      active(signal);
+      const value = await assets.reference(request, reference, signal);
+      active(signal);
+      return value;
+    },
+  };
   return {
     close,
+    runSources,
     publishedDefinitions(spaceId: string) {
       if (closed || cleanupFailed)
         throw new WorkbenchError('asset-unavailable', '资产服务暂不可用。');

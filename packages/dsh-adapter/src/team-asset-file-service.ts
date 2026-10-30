@@ -144,17 +144,30 @@ export class TeamAssetFileService {
   }
   /** The original byte/admission drain, separate from the output lease. A
    * logical cancellation must not free the caller's Run reservation early. */
-  openReadTracked(request: MemberRequest, input: MemberAssetFileRead, signal: AbortSignal) {
+  openReadTracked(
+    request: MemberRequest,
+    input: MemberAssetFileRead,
+    signal: AbortSignal,
+    /** An actual transport finish/close, not merely its cancellation request.
+     * Settlement keeps the original file slot/lease through the output drain. */
+    retainUntil: Promise<void> = Promise.resolve(),
+  ) {
     let resolve!: () => void,
       retained = false;
     const drain = new Promise<void>((done) => {
       resolve = done;
     });
     const result = this.request(signal, (active) =>
-      this.openReadInner(request, input, active, (physical) => {
-        retained = true;
-        void physical.then(resolve, resolve);
-      }),
+      this.openReadInner(
+        request,
+        input,
+        active,
+        (physical) => {
+          retained = true;
+          void physical.then(resolve, resolve);
+        },
+        retainUntil,
+      ),
     );
     const unopened = () => {
       if (!retained) resolve();
@@ -167,6 +180,7 @@ export class TeamAssetFileService {
     input: MemberAssetFileRead,
     signal: AbortSignal,
     retainDrain: (drain: Promise<void>) => void = () => {},
+    retainUntil: Promise<void> = Promise.resolve(),
   ): Promise<TeamAssetFileReadHandle> {
     this.current(signal);
     if (this.readSlots >= ARTIFACT_FILE_LIMITS.maxConcurrentReadsPerSpace)
@@ -174,6 +188,7 @@ export class TeamAssetFileService {
     this.readSlots++;
     let opened: Awaited<ReturnType<MemberAssetFileAuthority['readFile']>> | undefined;
     let drain = Promise.resolve();
+    const releasedAfter = () => Promise.allSettled([drain, retainUntil]).then(() => undefined);
     let transferred = false;
     try {
       opened = await this.authority.readFile(request, structuredClone(input), signal);
@@ -207,7 +222,7 @@ export class TeamAssetFileService {
           released = true;
           grant.signal.removeEventListener('abort', handle.release);
           this.readers.delete(handle);
-          this.cleanup(drain, () => {
+          this.cleanup(releasedAfter(), () => {
             try {
               source.release();
               this.readSlots--;
@@ -229,7 +244,7 @@ export class TeamAssetFileService {
       if (!transferred) {
         const source = opened;
         if (source)
-          this.cleanup(drain, () => {
+          this.cleanup(releasedAfter(), () => {
             source.release();
             this.readSlots--;
           });
