@@ -22,16 +22,27 @@ export function createCodeArtsSetupApi(
       if (!isCurrent()) throw new DOMException('View changed', 'AbortError');
     };
     current();
-    const response = await localFetch(`/api/zhuma-codearts/${endpoint}`, {
-      method: endpoint === 'status' ? 'GET' : 'POST',
-      credentials: 'same-origin',
-      redirect: 'error',
-      cache: 'no-store',
-      signal,
-      ...(command === undefined
-        ? {}
-        : { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command }) }),
-    });
+    let response: Response;
+    try {
+      response = await localFetch(`/api/zhuma-codearts/${endpoint}`, {
+        method: endpoint === 'status' ? 'GET' : 'POST',
+        credentials: 'same-origin',
+        redirect: 'error',
+        cache: 'no-store',
+        signal,
+        ...(command === undefined
+          ? {}
+          : { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command }) }),
+      });
+    } catch {
+      current();
+      throw new SetupResponseError(
+        endpoint === 'configure'
+          ? '本机连接中断，配置结果尚未确认。'
+          : '本机连接中断，请稍后重试。',
+      );
+    }
+
     const reader = response.body?.getReader();
     const cancel = () => {
       void reader?.cancel().catch(() => undefined);

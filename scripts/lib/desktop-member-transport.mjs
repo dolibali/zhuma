@@ -13,10 +13,20 @@ export async function verifyDesktopMemberTransport(stage, expectedSource) {
     throw Error(
       'Prepared desktop member transport is stale; synchronize the matching official build source.',
     );
-  const pattern = expected.toString('utf8').match(/const MEMBER_PATH\s*=\s*(\/[^\r\n]+\/);/u)?.[1];
-  if (!pattern || !main.toString('utf8').includes(pattern))
-    throw Error(
-      'Compiled desktop member routes are stale; rebuild the official desktop main before staging.',
-    );
-  return { sourceSha256: sha(expected), routePatternSha256: sha(pattern), mainSha256: sha(main) };
+  const patterns = ['MEMBER_PATH', 'OWNER_POST_PATH'].map((name) => {
+    const pattern = expected
+      .toString('utf8')
+      .match(new RegExp(`const ${name}\\s*=\\s*(/[^\\r\\n]+/);`, 'u'))?.[1];
+    if (!pattern || !main.toString('utf8').includes(pattern))
+      throw Error(
+        `Compiled desktop member routes or owner POST policy (${name}) are stale; rebuild the official desktop main before staging.`,
+      );
+    return sha(pattern);
+  });
+  return {
+    sourceSha256: sha(expected),
+    routePatternSha256: patterns[0],
+    ownerPostPatternSha256: patterns[1],
+    mainSha256: sha(main),
+  };
 }

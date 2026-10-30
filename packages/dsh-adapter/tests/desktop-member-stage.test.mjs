@@ -24,8 +24,11 @@ test('stage member transport rejects copied-old source and uncompiled routes, an
   await writeFile(copied, source);
   await assert.rejects(
     verifyDesktopMemberTransport(stage, expected),
-    /Compiled desktop member routes are stale/u,
+    /Compiled desktop member routes or owner POST policy/u,
   );
+  const memberPattern = source.match(/const MEMBER_PATH\s*=\s*(\/[^\r\n]+\/);/u)[1];
+  await writeFile(main, memberPattern);
+  await assert.rejects(verifyDesktopMemberTransport(stage, expected), /OWNER_POST_PATH/u);
   const compiled = await build({
     entryPoints: [expected],
     bundle: true,
