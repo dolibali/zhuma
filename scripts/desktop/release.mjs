@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyPackagedCodeArts } from '../lib/desktop-codearts-artifacts.mjs';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const backendLaunchers = ['packaged-backend.sh', 'packaged-backend.mjs'];
@@ -125,12 +126,7 @@ export function writeManifest(context, gate) {
   const client = asar.extractFile(archive, plugin + 'client.js');
   assert(host.equals(readFileSync(join(root, '.build/workbench/index.js'))));
   assert(client.equals(readFileSync(join(root, '.build/workbench/client.js'))));
-  for (const file of ['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'])
-    assert(
-      asar
-        .extractFile(archive, plugin + file)
-        .equals(readFileSync(join(root, '.build/workbench', file))),
-    );
+  verifyPackagedCodeArts(join(app, 'Contents/Resources'), join(root, '.build/workbench'), asar);
   const dmg = readFileSync(join(root, 'dist', filename));
   const launchers = backendLaunchers.map((name) => {
     const bytes = readFileSync(join(root, 'scripts/server', name));

@@ -151,10 +151,20 @@ index ff09b8b7..77cb955a 100644
      writeFileSync(stamp, identity, { mode: 0o600 })
      execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
 diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
-index 4b9cd27a..b0f8b367 100644
+index 4b9cd27a..d4036093 100644
 --- a/apps/desktop/scripts/electron-builder-config.mjs
 +++ b/apps/desktop/scripts/electron-builder-config.mjs
-@@ -105,7 +105,7 @@ export function createElectronBuilderConfig(
+@@ -75,6 +75,9 @@ export function createElectronBuilderConfig(
+   let dshDestination
+   let windowsCode = []
+   const unpack = ['**/*.{node,dylib,dll,so,exe}', '**/*.so.*', '**/spawn-helper', '**/@vscode/ripgrep-*/bin/rg',
++    // CodeArts setup hands these exact physical files to a child process.
++    ...['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'].map(file =>
++      `**/node_modules/@deepseek-ai/dsh-web-app/lib/zhuma-workbench/${file}`),
+     `**/node_modules/@deepseek-ai/libreoffice-kit-${resolvedPlatform}-${resolvedArch}/**/*`]
+   const windowsSigner = packagesWindows && !unsigned
+     ? createWindowsTokenSigner({
+@@ -105,7 +108,7 @@ export function createElectronBuilderConfig(
    const packaged = resolveDesktopBuildCommit(env)
    return {
      appId,
@@ -163,7 +173,7 @@ index 4b9cd27a..b0f8b367 100644
      extraMetadata: {
        dshDesktopAppId: appId,
        dshDesktopUpdateChannel: update?.channel ?? 'nightly',
-@@ -113,9 +113,9 @@ export function createElectronBuilderConfig(
+@@ -113,9 +116,9 @@ export function createElectronBuilderConfig(
        ...buildVersion === productVersion ? {} : { version: buildVersion },
        ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
      },
@@ -175,7 +185,7 @@ index 4b9cd27a..b0f8b367 100644
      directories: { output: output.directory },
      asar: true,
      electronDist: buildPaths.electron,
-@@ -157,7 +157,7 @@ export function createElectronBuilderConfig(
+@@ -157,7 +160,7 @@ export function createElectronBuilderConfig(
        ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
      ],
      mac: {
@@ -184,7 +194,7 @@ index 4b9cd27a..b0f8b367 100644
        category: 'public.app-category.developer-tools',
        // macOS matches the application locale against this bundle, not Electron Framework resources.
        extendInfo: { CFBundleLocalizations: ['en', 'zh_CN'] },
-@@ -165,7 +165,7 @@ export function createElectronBuilderConfig(
+@@ -165,7 +168,7 @@ export function createElectronBuilderConfig(
        identity: unsigned ? '-' : macOSSigning?.signingIdentity,
        forceCodeSigning: !unsigned,
        hardenedRuntime: true,
@@ -4132,3 +4142,28 @@ index 00000000..56eadd40
 +     close(): Promise<void>;
 +     private closeInternal;
 +     private closeResources;
+diff --git a/apps/desktop/scripts/runtime-patch-policy.ts b/apps/desktop/scripts/runtime-patch-policy.ts
+index d2ea174f..b150b5ff 100644
+--- a/apps/desktop/scripts/runtime-patch-policy.ts
++++ b/apps/desktop/scripts/runtime-patch-policy.ts
+@@ -9,6 +9,7 @@ export type DesktopRuntimePatch =
+ /** Every workspace patch requires an explicit Desktop decision; runtime-only entries may add or replace a patch. */
+ export const DESKTOP_RUNTIME_PATCHES: Readonly<Record<string, DesktopRuntimePatch>> = {
+   '@earendil-works/pi-ai@1.1.0': { scope: 'shared', reason: 'Runtime providers need the streamed argument parsing fix.' },
++  '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1': { scope: 'shared', reason: 'The Web runtime consumes the same qualified ACP plugin and native handoff patch.' },
+   '@electron/osx-sign@1.3.3': { scope: 'workspace-only', reason: 'Signing executes on the build host.' },
+   '@fortune-sheet/core@1.0.4': { scope: 'workspace-only', reason: 'Patched spreadsheet code is embedded in the client bundle.' },
+   '@fortune-sheet/react@1.0.4': { scope: 'workspace-only', reason: 'Patched spreadsheet code is embedded in the client bundle.' },
+diff --git a/apps/desktop/tests/prepare-runtime-patches.spec.ts b/apps/desktop/tests/prepare-runtime-patches.spec.ts
+index 84c71a18..c948dd84 100644
+--- a/apps/desktop/tests/prepare-runtime-patches.spec.ts
++++ b/apps/desktop/tests/prepare-runtime-patches.spec.ts
+@@ -42,7 +42,7 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
+   const repository = resolve(import.meta.dirname, '../../..')
+   const before = readFileSync(join(repository, 'pnpm-lock.yaml'))
+   const plan = prepareRuntimePatches(project, repository)
+-  expect(plan.patches.map(entry => entry.spec)).toEqual(['@earendil-works/pi-ai@1.1.0', 'node-pty@1.2.0-beta.15'])
++  expect(plan.patches.map(entry => entry.spec)).toEqual(['@earendil-works/pi-ai@1.1.0', '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1', 'node-pty@1.2.0-beta.15'])
+   expect(plan.workspaceOnly).toHaveLength(6)
+   const settings = yaml.load(readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')) as { overrides: Record<string, string> }
+   expect(settings.overrides['@earendil-works/pi-ai']).toBeUndefined()

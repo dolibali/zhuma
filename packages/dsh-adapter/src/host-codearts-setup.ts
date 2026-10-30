@@ -2,7 +2,7 @@ import { symbols, type Context } from '@deepseek-ai/cordis';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { createCodeArtsProfileRegistration } from './executors/codearts/registration.js';
@@ -32,6 +32,18 @@ const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 const original = (value: unknown): unknown =>
   record(value) ? (Reflect.get(value, symbols.original) ?? value) : value;
+
+/** Child-process artifacts must name physical files, even when the Host runs in ASAR. */
+function physicalBundleFile(url: URL): string {
+  const file = fileURLToPath(url);
+  const marker = `${sep}app.asar${sep}`;
+  const archive = file.indexOf(marker);
+  return archive < 0
+    ? file
+    : file.slice(0, archive) +
+        `${sep}app.asar.unpacked${sep}` +
+        file.slice(archive + marker.length);
+}
 type SetupStage =
   | 'request-admission'
   | 'request-origin'
@@ -118,8 +130,8 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       throw new SetupError('unavailable');
     current();
     const [actual, expected] = await Promise.all([
-      realpath(fileURLToPath(module)),
-      realpath(fileURLToPath(new URL('codearts-policy.js', bundle))),
+      realpath(physicalBundleFile(module)),
+      realpath(physicalBundleFile(new URL('codearts-policy.js', bundle))),
     ]);
     current();
     if (
@@ -188,14 +200,14 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       if (typeof launcher !== 'string' || !isAbsolute(launcher))
         throw new SetupError('command-not-found');
       checkpoint('manifest');
-      const manifestFile = new URL('codearts-acp.manifest.json', bundle);
+      const manifestFile = physicalBundleFile(new URL('codearts-acp.manifest.json', bundle));
       if ((await stat(manifestFile)).size > 256 * 1024) throw new SetupError('unavailable');
       const manifest = manifestSchema.parse(JSON.parse(await readFile(manifestFile, 'utf8')));
       checkpoint('hash-node');
       const node = await hashArtifact(process.execPath, 1024 * 1024 * 1024);
       checkpoint('hash-adapter');
       const adapter = await hashArtifact(
-        fileURLToPath(new URL(manifest.entry, bundle)),
+        physicalBundleFile(new URL(manifest.entry, bundle)),
         32 * 1024 * 1024,
       );
       checkpoint('hash-launcher');
@@ -203,7 +215,7 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       const artifacts = { node, adapter, launcher: launcherArtifact };
       checkpoint('hash-policy');
       const policyArtifact = await hashArtifact(
-        fileURLToPath(new URL('codearts-policy.js', bundle)),
+        physicalBundleFile(new URL('codearts-policy.js', bundle)),
         32 * 1024 * 1024,
       );
       checkpoint('verify-artifacts');
