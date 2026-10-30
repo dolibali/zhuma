@@ -1,0 +1,174 @@
+{
+  "purpose": "PR 316 actual desktop session layout before/after evidence",
+  "data": "Isolated fictional account, team, project and task; no user attachments",
+  "before": {
+    "source": "49d2d1ba5d8be54764add30510b718a6afc95389",
+    "tree": "50454fc574386d5077c28c21cc499e039a864737",
+    "runtime": "DSH dsh-v0.2.1-rc.2"
+  },
+  "after": {
+    "source": "d2b7bf37542d72be400b35ff48d13ec853b15fc1",
+    "tree": "836a6e5dc182a2593915e9eaada293af94c423a9",
+    "runtime": "DSH dsh-v0.2.1-rc.4, 504a01a9578abc2c6f1fb896b1dc322c9fe24f66",
+    "compositionOverlay": "PR 320, 2a2 cold-start overlay",
+    "clientSha256": "9f6f56633556641f58464fb56ed0ceeb0890d8631bd1520b74905716e6d03aaa",
+    "hostSha256": "e784f20ac1d804f59c605c05705ea04810e4ebc3f6b07bcc58bd3efd179aeb03"
+  },
+  "boundary": "Same saved task and history, viewport, theme and terminal session state. Full before and after runtime compositions differ as stated. No claim of CodeArts, new asset flow, file upload or whole-release acceptance.",
+  "images": [
+    {
+      "file": "316-before-light-collapsed-1280.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-before-light-collapsed-1280.png",
+      "sha256": "d3c1f7945c781be6a430ecd5fdcc1f7041132de55f4bb3067099c1fe24c6a031",
+      "bytes": 300293,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "v1.2-before"
+    },
+    {
+      "file": "316-before-light-collapsed-1440.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-before-light-collapsed-1440.png",
+      "sha256": "db8e8b00a357847d03bddd98409b75fbe532203eea2bfc33d136ff15c797f3e8",
+      "bytes": 352867,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "v1.2-before"
+    },
+    {
+      "file": "316-before-light-collapsed-1920.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-before-light-collapsed-1920.png",
+      "sha256": "bba356661ff3624cd271c411db9ef82452ea4b152ef67c3060a02c9452bccc5c",
+      "bytes": 492333,
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "source": "v1.2-before"
+    },
+    {
+      "file": "316-before-dark-collapsed-1280.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-before-dark-collapsed-1280.png",
+      "sha256": "1823401b29a4b180e76e996af6adf013912c0add4082eae10285ae0c6b8d7e88",
+      "bytes": 241721,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "v1.2-before"
+    },
+    {
+      "file": "316-before-dark-collapsed-1440.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-before-dark-collapsed-1440.png",
+      "sha256": "c32bbb6ee10a1186c364d388e0e7f90625a68bf1cc22beaca18e639503653c2d",
+      "bytes": 327511,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "v1.2-before"
+    },
+    {
+      "file": "316-before-dark-collapsed-1920.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-before-dark-collapsed-1920.png",
+      "sha256": "3956343b2459c809e072484cc7e61d7a0b139d7112f256a44503fe139ea0c1e6",
+      "bytes": 464529,
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "source": "v1.2-before"
+    },
+    {
+      "file": "316-after-light-collapsed-1280.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-light-collapsed-1280.png",
+      "sha256": "627fbcaee8a19baf54122acdb206b3ad70a70bdaeca2a7e7bd4edd14e06fc186",
+      "bytes": 62120,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "d2b7bf3-after"
+    },
+    {
+      "file": "316-after-light-collapsed-1440.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-light-collapsed-1440.png",
+      "sha256": "936d75dbd3b6cd32ab82a7e6e31009518836171702e72d092eaf6b4bef2b9f7e",
+      "bytes": 112253,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "d2b7bf3-after"
+    },
+    {
+      "file": "316-after-light-collapsed-1920.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-light-collapsed-1920.png",
+      "sha256": "90a53baa0521ca14cb185d95304aea0504d67c8030f3d84b56d63e4477df700c",
+      "bytes": 267178,
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "source": "d2b7bf3-after"
+    },
+    {
+      "file": "316-after-dark-collapsed-1280.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-dark-collapsed-1280.png",
+      "sha256": "4c5f7c1ae9c293557a06b79dc426089f6befba8ba5765dd5d8dcfe09e83a3e0f",
+      "bytes": 59460,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "d2b7bf3-after"
+    },
+    {
+      "file": "316-after-dark-collapsed-1440.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-dark-collapsed-1440.png",
+      "sha256": "553c56934b513646bb4027b5fc62394cffd6e776f129e01679a4a3739b19a9cc",
+      "bytes": 107050,
+      "dimensions": [
+        1440,
+        900
+      ],
+      "source": "d2b7bf3-after"
+    },
+    {
+      "file": "316-after-dark-collapsed-1920.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-dark-collapsed-1920.png",
+      "sha256": "7ff350bf7f089aef9598b200b34238db78cee02c5468a94eb5653794741e7ecf",
+      "bytes": 258321,
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "source": "d2b7bf3-after"
+    },
+    {
+      "file": "316-after-light-expanded-1280.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-light-expanded-1280.png",
+      "sha256": "b780d0b99e165e0c40fd38c1a8d762cd39f51f8e49d623c1e1a5e735ca6d5e4c",
+      "bytes": 381285,
+      "dimensions": [
+        1280,
+        800
+      ],
+      "source": "d2b7bf3-after"
+    },
+    {
+      "file": "316-after-dark-expanded-1024.png",
+      "path": "docs/evidence/pr316/2026-10-30/316-after-dark-expanded-1024.png",
+      "sha256": "8aab6d270643aee41f5f5d89fe73d1633fba44d45b8953fbeab2104854a39178",
+      "bytes": 175759,
+      "dimensions": [
+        1024,
+        768
+      ],
+      "source": "d2b7bf3-after"
+    }
+  ]
+}
