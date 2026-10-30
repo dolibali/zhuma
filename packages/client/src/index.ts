@@ -1,6 +1,12 @@
 import type { TaskSnapshot, TaskStatus } from '@zhuma/agent-core';
 
 export * from './identity/index.js';
+export { createSharedBackendClient } from './identity/shared-backend.js';
+export type {
+  SharedBackendClient,
+  SharedBackendStatus,
+  SharedBackendSnapshot,
+} from './identity/shared-backend.js';
 export {
   createMemberAssetApi,
   describeMemberAssetFile,

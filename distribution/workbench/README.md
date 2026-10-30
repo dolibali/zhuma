@@ -47,6 +47,8 @@ pnpm desktop:dev
 - 已确认计划是不可变快照；任务草稿和执行端状态分开。A/B 接口方案见 [交接提案](../../docs/ab-handoff-proposal.md)。
 - `desktop:package:mac` 已挂接插件构建与组合，当前已有 macOS arm64 工程候选及限定安装记录；最新候选的正常界面、真实模型与安装／恢复按准确版本分别验收，不以开发环境加载或历史安装成功代替。
 
+在既有临时 SDK 上使用 `stage-plugin-candidate.mjs` 刷新插件前，还须同步本仓正式 `desktop-member-cookie.ts` 至该 SDK 的 `apps/desktop/src/zhuma-member-cookie.ts`，并通过原官方桌面构建重新生成 `apps/desktop/lib/main.js`。staging 在任何备份／替换前只读核对源摘要及编译后精确成员路由；只换插件或只复制 TypeScript 源均不能更新 Electron 转运规则。完整发行仍沿 `desktop:prepare` 的 recipe 检查，不改固定子模块或用户安装。
+
 ## 验证
 
 ### 码道启动产物

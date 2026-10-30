@@ -286,6 +286,246 @@ async function mount(t, data, component = MemberAssetsPanel, extra = {}) {
 const dom = { skip: !module, timeout: 15000 };
 
 test(
+  'asset category navigation confirms unsaved edits, clears unrelated detail and suppresses redundant type labels',
+  dom,
+  async (t) => {
+    const expert = summary({ name: '企业级接口兼容性分析专家VeryLongUnbrokenName' }),
+      skill = summary({ kind: 'skill', name: '接口校验' }),
+      data = source([expert, skill]),
+      f = await mount(t, data);
+    const category = (label) => f.button(label, f.host.querySelector('.zm-asset-categories'));
+    assert.equal(f.host.querySelectorAll('.zm-member-asset-kind').length, 2);
+    await f.click(category('Agent 专家'));
+    assert.equal(f.host.querySelectorAll('.zm-member-asset-kind').length, 0);
+    await f.click(f.host.querySelector('.zm-member-asset-row'));
+    await f.input('名称', '尚未保存的专家');
+    await f.click(category('Skills'));
+    const dialog = document.querySelector('dialog[open]');
+    assert.ok(dialog?.textContent.includes('离开当前页面'));
+    assert.equal(category('Agent 专家').getAttribute('aria-pressed'), 'true');
+    await f.click(f.button('继续编辑', dialog));
+    assert.equal(f.field('名称').value, '尚未保存的专家');
+    await f.click(category('Skills'));
+    await f.click(f.button('放弃并离开', document.querySelector('dialog[open]')));
+    assert.equal(category('Skills').getAttribute('aria-pressed'), 'true');
+    assert.equal(f.field('名称'), null);
+    assert.equal(f.host.querySelector('.zm-member-asset-detail h3').textContent, '选择一项资产');
+    assert.equal(f.host.querySelector('.zm-member-asset-row strong').textContent, '接口校验');
+  },
+);
+
+test(
+  'changing category aborts a pending detail and late completion cannot repopulate it',
+  dom,
+  async (t) => {
+    const expert = summary(),
+      held = Promise.withResolvers();
+    let signal;
+    const data = source([expert], {
+        read: (_query, suppliedSignal) => {
+          signal = suppliedSignal;
+          return held.promise;
+        },
+      }),
+      f = await mount(t, data);
+    await f.click(f.host.querySelector('.zm-member-asset-row'));
+    await f.click(f.button('Skills', f.host.querySelector('.zm-asset-categories')));
+    assert.equal(signal.aborted, true);
+    await act(async () => {
+      held.resolve(valueOf(expert));
+      await new Promise(setImmediate);
+    });
+    assert.equal(f.field('名称'), null);
+    assert.equal(f.host.querySelector('.zm-member-asset-detail h3').textContent, '选择一项资产');
+  },
+);
+
+test(
+  'asset detail shows server provenance and maintainers without treating imported source declarations as editable instructions',
+  dom,
+  async (t) => {
+    const asset = summary(),
+      data = source([asset]);
+    data.values.get(asset.assetId).source = {
+      kind: 'import',
+      versionId: randomUUID(),
+      sha256: 'f'.repeat(64),
+      entryPath: 'analyst/SOUL.md',
+      sourceVersion: '1.2',
+    };
+    const f = await mount(t, data, MemberAssetsPanel, {
+      authoringState: {
+        ...emptyWorkbench(),
+        participants: [
+          {
+            id: 'ann',
+            name: '林可',
+            kind: 'human',
+            role: '开发',
+            capabilities: [],
+            instructions: '',
+            available: true,
+          },
+        ],
+      },
+    });
+    await f.click(f.button('接口专家'));
+    const provenance = f.host.querySelector('.zm-asset-provenance');
+    assert.equal(provenance.querySelector('summary').textContent, '来源与维护');
+    for (const text of ['导入资源包', '创建者', '维护者', '林可', 'analyst/SOUL.md', '1.2'])
+      assert.equal(provenance.textContent.includes(text), true);
+  },
+);
+
+test(
+  'member assets keep online documents reachable without a duplicate top-level knowledge tab',
+  dom,
+  async (t) => {
+    const data = source(),
+      state = emptyWorkbench(),
+      snapshot = {
+        actorId: 'ann',
+        spaceId,
+        space: { id: spaceId, kind: 'team', name: '团队' },
+        state,
+        model: null,
+        capabilities: {
+          createProject: true,
+          createTask: true,
+          planning: false,
+          resources: 'authorized',
+          tasks: [],
+        },
+      },
+      adapter = createMemberWorkbenchAdapter({ snapshot: async () => snapshot }, 'ann');
+    const f = await mount(t, data, WorkbenchPage, {
+      api: adapter,
+      initialSection: 'tasks',
+      appearance: { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} },
+      memberAssets: {
+        api: data.api,
+        spaceId,
+        lifetime: { isCurrent: () => true, onUnauthenticated() {} },
+      },
+      knowledge: {
+        actorId: 'ann',
+        spaceId,
+        lifetime: { isCurrent: () => true, onUnauthenticated() {} },
+        api: {
+          async libraries() {
+            return { actorId: 'ann', spaceId, libraries: [] };
+          },
+        },
+      },
+    });
+    const nav = f.host.querySelector('nav[aria-label="工作台导航"]');
+    assert.deepEqual(
+      [...nav.querySelectorAll('button')].map((button) =>
+        button.textContent.replace(/\d+/gu, '').trim(),
+      ),
+      ['项目', '任务清单', '资产'],
+    );
+    assert.equal(f.host.querySelector('.zm-page-heading'), null);
+    assert.equal(f.host.querySelector('h1.zm-catalog-heading').textContent, '任务清单');
+    assert.ok(f.host.querySelector('.zm-page-bar .zm-catalog-actions'));
+    await f.click(f.button('项目', nav));
+    assert.equal(f.host.querySelector('h1.zm-catalog-heading').textContent, '项目');
+    assert.equal(f.host.querySelector('.zm-page-heading'), null);
+    await f.click(f.button('资产', nav));
+    assert.equal(f.host.querySelector('h1.zm-catalog-heading').textContent, '资产');
+    assert.equal(f.host.querySelector('.zm-page-heading'), null);
+    assert.equal(!!f.button('在线文档'), true);
+    await f.click(f.button('在线文档'));
+    await f.settle();
+    assert.equal(f.host.querySelector('h1').textContent, '知识资料');
+    assert.equal(
+      nav.querySelector('button[aria-current="page"]').textContent.includes('资产'),
+      true,
+    );
+  },
+);
+
+test(
+  'normal member upload keeps the same detail element while its parent snapshot is held and after the acknowledgement projection returns',
+  dom,
+  async (t) => {
+    const data = source(),
+      state = emptyWorkbench(),
+      held = Promise.withResolvers();
+    let reads = 0;
+    const adapter = createMemberWorkbenchAdapter(
+      {
+        snapshot: async () => {
+          if (++reads === 3) await held.promise;
+          return {
+            actorId: 'ann',
+            spaceId,
+            space: { id: spaceId, kind: 'team', name: '团队' },
+            state,
+            model: null,
+            capabilities: {
+              createProject: true,
+              createTask: true,
+              planning: false,
+              resources: 'authorized',
+              tasks: [],
+            },
+          };
+        },
+      },
+      'ann',
+    );
+    const f = await mount(t, data, WorkbenchPage, {
+      api: adapter,
+      initialSection: 'tasks',
+      appearance: { getSnapshot: () => 'light', subscribe: () => () => {}, set() {} },
+      memberAssets: {
+        api: data.api,
+        spaceId,
+        lifetime: { isCurrent: () => true, onUnauthenticated() {} },
+      },
+    });
+    await f.click(f.button('资产'));
+    await f.settle();
+    await f.choose('新建资产', '文件资料');
+    await f.input('名称', '上传后保位');
+    await f.click(f.button('保存草稿'));
+    await f.settle();
+    const savedField = f.field('名称'),
+      input = f.host.querySelector('input[type="file"]');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['actual synthetic file'], 'keep.txt', { type: 'text/plain' })],
+    });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(setImmediate);
+    });
+    await f.settle();
+    await f.settle();
+    assert.equal(data.calls.upload.length, 1);
+    assert.equal(reads, 3);
+    assert.equal(
+      f.field('名称') === savedField,
+      true,
+      'held parent refresh retains the detail instance',
+    );
+    assert.equal(f.field('名称').value, '上传后保位');
+    await act(async () => {
+      held.resolve();
+      await new Promise(setImmediate);
+    });
+    await f.settle();
+    assert.equal(
+      f.field('名称') === savedField,
+      true,
+      'completed parent refresh retains the detail instance',
+    );
+    assert.equal(!!f.button('发布'), true);
+  },
+);
+
+test(
   'member import UI contract: full static preview, excluded private bytes, draft-only writes and exact retry after a lost reply',
   dom,
   async (t) => {
@@ -431,7 +671,7 @@ test(
         lifetime: { isCurrent: () => true, onUnauthenticated() {} },
       },
     });
-    await f.click(f.button('团队资产'));
+    await f.click(f.button('资产'));
     await f.settle();
     assert.ok(!!f.host.querySelector('input[aria-label="搜索团队资产"]'));
     assert.equal(data.calls.catalog.length, 1);

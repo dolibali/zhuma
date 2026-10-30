@@ -87,7 +87,7 @@
 }
 .zhuma .zm-member-asset-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   width: 100%;
@@ -100,6 +100,9 @@
   background: transparent;
   text-align: left;
   font: inherit;
+}
+.zhuma .zm-member-asset-row.has-kind {
+  grid-template-columns: max-content minmax(0, 1fr) auto;
 }
 .zhuma .zm-member-asset-row:first-child {
   border-radius: 10px 10px 0 0;
@@ -116,6 +119,7 @@
   color: var(--zm-muted);
   font-size: 12px;
 }
+.zhuma .zm-member-asset-kind,
 .zhuma .zm-member-asset-state {
   white-space: nowrap;
 }
@@ -1391,7 +1395,24 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
 .zm-member-work > .zm-page > h1 {
   margin: 0 0 20px;
 }
-.zm-member-work .zm-execution-workspace > section > .zm-page-heading {
+.zm-member-work .zm-execution-workspace > section > .zhuma .zm-catalog-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.zm-catalog-actions {
+  margin-left: auto;
+}
+.zm-catalog-actions .zm-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.zm-page-heading {
   margin-bottom: 12px;
 }
 .zm-member-work .zm-execution-workspace > section > .zm-empty {
@@ -5118,6 +5139,28 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+.zm-asset-provenance {
+  margin: 12px 0;
+  color: var(--zm-muted);
+}
+.zm-asset-provenance summary {
+  cursor: pointer;
+}
+.zm-asset-provenance dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 16px;
+  font-size: 12px;
+}
+.zm-asset-provenance dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.zm-member-asset-preview > .zm-member-asset-text,
+.zm-member-asset-preview > p {
+  margin-left: 24px;
+  margin-right: 24px;
 }
 .zm-account-management {
   display: grid;

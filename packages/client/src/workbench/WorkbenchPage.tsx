@@ -648,6 +648,37 @@ export function WorkbenchPage({
     (task) => !taskFilters.stage || stageFor(task) === taskFilters.stage,
   );
   const stageLoading = taskCandidates.some((task) => progressFor(task.id)?.state === 'loading');
+  const catalogHeading =
+    !activeProject && !expertLibrary && ['projects', 'tasks', 'assets'].includes(section);
+  const pageActions = (
+    <div className="zm-actions">
+      <Appearance store={appearance} />
+      {!(memberAssets && section === 'assets') && (
+        <Button variant="quiet" onClick={() => void refresh()}>
+          刷新
+        </Button>
+      )}
+      {activeProject && (!member || capabilities?.createProject) && (
+        <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
+          编辑项目
+        </Button>
+      )}
+      {!member && section === 'assets' && (
+        <Button onClick={() => setImportOpen(true)}>
+          {expertLibrary ? '导入专家' : '导入定义'}
+        </Button>
+      )}
+      {!(memberAssets && section === 'assets') && (
+        <Button
+          variant="primary"
+          disabled={!!member && (loading || saving || !canCreate)}
+          onClick={() => leaveKnowledge(createCatalogItem)}
+        >
+          ＋ {createLabel}
+        </Button>
+      )}
+    </div>
+  );
   if (loading)
     return (
       <div className="zhuma zm-loading" role="status">
@@ -689,7 +720,12 @@ export function WorkbenchPage({
     <div className="zhuma">
       {knowledgeLeave.dialog}
       <div className={`zm-page${activeProject ? ' zm-project-page' : ''}`}>
-        {section !== 'knowledge' && (
+        {catalogHeading && (
+          <h1 className="zm-catalog-heading">
+            {section === 'assets' && memberAssets ? '资产' : labels[section]}
+          </h1>
+        )}
+        {section !== 'knowledge' && !catalogHeading && (
           <header className="zm-page-heading">
             <div className="zm-page-title">
               {activeProject && (
@@ -700,7 +736,12 @@ export function WorkbenchPage({
                   <ControlIcon direction="left" /> 全部项目
                 </Button>
               )}
-              <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>
+              <h1>
+                {expertLibrary
+                  ? '专家'
+                  : (activeProject?.name ??
+                    (section === 'assets' && memberAssets ? '资产' : labels[section]))}
+              </h1>
               {!(memberAssets && section === 'assets') && (
                 <span>
                   {expertLibrary
@@ -711,33 +752,7 @@ export function WorkbenchPage({
                 </span>
               )}
             </div>
-            <div className="zm-actions">
-              <Appearance store={appearance} />
-              {!(memberAssets && section === 'assets') && (
-                <Button variant="quiet" onClick={() => void refresh()}>
-                  刷新
-                </Button>
-              )}
-              {activeProject && (!member || capabilities?.createProject) && (
-                <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
-                  编辑项目
-                </Button>
-              )}
-              {!member && section === 'assets' && (
-                <Button onClick={() => setImportOpen(true)}>
-                  {expertLibrary ? '导入专家' : '导入定义'}
-                </Button>
-              )}
-              {!(memberAssets && section === 'assets') && (
-                <Button
-                  variant="primary"
-                  disabled={!!member && (loading || saving || !canCreate)}
-                  onClick={() => leaveKnowledge(createCatalogItem)}
-                >
-                  ＋ {createLabel}
-                </Button>
-              )}
-            </div>
+            {pageActions}
           </header>
         )}
         {legacyMode && (
@@ -749,7 +764,7 @@ export function WorkbenchPage({
               {(Object.keys(labels) as Section[])
                 .filter((s) =>
                   s === 'knowledge'
-                    ? !!knowledge
+                    ? !!knowledge && !memberAssets
                     : !member ||
                       s === 'projects' ||
                       s === 'tasks' ||
@@ -758,7 +773,11 @@ export function WorkbenchPage({
                 .map((s) => (
                   <button
                     key={s}
-                    aria-current={s === section ? 'page' : undefined}
+                    aria-current={
+                      s === section || (s === 'assets' && section === 'knowledge' && memberAssets)
+                        ? 'page'
+                        : undefined
+                    }
                     onClick={() => {
                       if (s === section && !activeProject) return;
                       leaveKnowledge(() => {
@@ -768,7 +787,7 @@ export function WorkbenchPage({
                       });
                     }}
                   >
-                    {labels[s]}
+                    {s === 'assets' && memberAssets ? '资产' : labels[s]}
                     {s !== 'knowledge' && !(s === 'assets' && memberAssets) && (
                       <span>
                         {s === 'projects'
@@ -801,6 +820,7 @@ export function WorkbenchPage({
                 </Button>
               </div>
             )}
+            {catalogHeading && <div className="zm-catalog-actions">{pageActions}</div>}
             {section === 'tasks' && (
               <div className="zm-filter zm-task-filters">
                 <input

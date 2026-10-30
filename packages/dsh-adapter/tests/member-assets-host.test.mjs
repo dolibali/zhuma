@@ -25,7 +25,8 @@ test(
   async () => {
     const client = await build({
       stdin: {
-        contents: "export { createMemberAssetApi, describeMemberAssetFile } from '@zhuma/client';",
+        contents:
+          "export { createMemberAssetApi, describeMemberAssetFile, createSharedBackendClient } from '@zhuma/client';",
         resolveDir: fileURLToPath(new URL('../../client', import.meta.url)),
         sourcefile: 'member-asset-client-proof.mjs',
       },
@@ -43,11 +44,10 @@ test(
       false,
     );
     const clientBytes = client.outputFiles[0].contents;
-    const { createMemberAssetApi, describeMemberAssetFile } = await import(
-      `data:text/javascript;base64,${Buffer.from(clientBytes).toString('base64')}`
-    );
+    const { createMemberAssetApi, describeMemberAssetFile, createSharedBackendClient } =
+      await import(`data:text/javascript;base64,${Buffer.from(clientBytes).toString('base64')}`);
     const home = await mkdtemp(join(tmpdir(), 'zhuma-member-asset-host-'));
-    const config = { deploymentMode: 'multi-member', localSetup: true };
+    const config = { deploymentMode: 'multi-member', localSetup: true, memberWeb: true };
     const setup = {
       requestId: randomUUID(),
       accountId: 'asset-member',
@@ -190,6 +190,66 @@ test(
       assert.equal(catalog.counts.material, 1);
       assert.equal(catalog.items[0].asset.assetId, assetId);
       assert.ok(!JSON.stringify(catalog).includes('attachmentId'));
+      const selection = {
+        origin: host.baseURL,
+        connectionId: randomUUID(),
+        backendId: randomUUID(),
+        actorId: setup.accountId,
+      };
+      const shared = createSharedBackendClient(
+        {
+          async call(_channel, method, input) {
+            if (method === 'zhuma-backend/status') return { ok: true, value: selection };
+            const identity = input.operation === 'identity.session';
+            const endpoint = identity
+              ? '/zhuma-id/session'
+              : '/api/zhuma-member/' + input.operation.slice('member.'.length);
+            const response = await fetch(host.baseURL + endpoint, {
+              method: identity ? 'GET' : 'POST',
+              headers: { origin: host.baseURL, cookie: member, 'content-type': 'application/json' },
+              ...(identity
+                ? {}
+                : {
+                    body: JSON.stringify({
+                      type: 'client-request',
+                      rpcId: input.rpcId,
+                      method: endpoint.slice('/api/'.length),
+                      payload: input.payload,
+                    }),
+                  }),
+            });
+            return {
+              ok: true,
+              value: {
+                connectionId: selection.connectionId,
+                status: response.status,
+                body: await response.json(),
+              },
+            };
+          },
+        },
+        () => {},
+      );
+      await shared.refresh();
+      const sharedApi = createMemberAssetApi(
+        {
+          actorId: setup.accountId,
+          spaceId,
+          isCurrent: () => true,
+          onUnauthenticated() {},
+          onUnavailable() {},
+        },
+        shared.fetcher,
+      );
+      await sharedApi.catalog(
+        { spaceId, category: 'all', search: '', offset: 0, limit: 30 },
+        new AbortController().signal,
+      );
+      await sharedApi.list(
+        { spaceId, kind: 'skill', includeDrafts: true },
+        new AbortController().signal,
+      );
+      shared.close();
       await read(published.reference);
       const text = await rpc('asset-file-text', {
         spaceId,

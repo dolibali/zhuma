@@ -527,6 +527,31 @@ export function MemberAssetsPanel({
       } catch {}
     }
   }
+  function changeCategory(next: Category) {
+    if (next === category) return;
+    leave.request(() => {
+      // A delayed read from the previous category must never reopen its detail.
+      ++readAttempt.current;
+      rowRead.current?.abort();
+      setDetailLoading(false);
+      const detailKind = detail
+        ? detail.kind === 'knowledge'
+          ? 'file'
+          : detail.form.definition.kind
+        : undefined;
+      if (next !== 'all' && next !== (detailKind === 'file' ? 'material' : detailKind)) {
+        setDetail(null);
+        setPreview(null);
+        setBaseline('');
+        setIntent(null);
+        setUnknown(false);
+        setError('');
+        setNotice('');
+      }
+      setCategory(next);
+      setOffset(0);
+    }, dirty);
+  }
   const owned = detail?.kind === 'owned' ? detail : undefined;
   const requirements =
     owned?.value.requirements ?? (detail?.kind === 'legacy' ? detail.value.requirements : []);
@@ -596,6 +621,7 @@ export function MemberAssetsPanel({
           )}
           <SingleSelect
             label="新建资产"
+            popupMinWidth={180}
             value="new"
             disabled={!!busy || unknown}
             options={[
@@ -623,10 +649,8 @@ export function MemberAssetsPanel({
             key={kind}
             variant="quiet"
             aria-pressed={category === kind}
-            onClick={() => {
-              setCategory(kind);
-              setOffset(0);
-            }}
+            disabled={!!busy}
+            onClick={() => changeCategory(kind)}
           >
             {label}
             {browse.phase === 'ready' && <span>{browse.value!.counts[kind]}</span>}
@@ -686,19 +710,21 @@ export function MemberAssetsPanel({
                       : row.legacy.description;
                 return (
                   <button
-                    className="zm-member-asset-row"
+                    className={`zm-member-asset-row${category === 'all' ? ' has-kind' : ''}`}
                     key={teamAssetCatalogRowKey(row)}
                     aria-pressed={selectedKey === teamAssetCatalogRowKey(row)}
                     disabled={!!busy || (row.source === 'knowledge' && !knowledge)}
                     onClick={() => leave.request(() => void open(row), dirty)}
                   >
-                    <span className="zm-member-asset-kind">
-                      {row.source === 'knowledge'
-                        ? '文档'
-                        : row.source === 'asset'
-                          ? labels[row.asset.kind]
-                          : labels[row.legacy.kind]}
-                    </span>
+                    {category === 'all' && (
+                      <span className="zm-member-asset-kind">
+                        {row.source === 'knowledge'
+                          ? '文档'
+                          : row.source === 'asset'
+                            ? labels[row.asset.kind]
+                            : labels[row.legacy.kind]}
+                      </span>
+                    )}
                     <span className="zm-member-asset-caption">
                       <strong>{title}</strong>
                       {description && <small>{description}</small>}
@@ -803,6 +829,9 @@ export function MemberAssetsPanel({
                   />
                 )}
               </header>
+              {detail.kind !== 'new' && (
+                <AssetProvenance detail={detail} members={authoringState?.participants ?? []} />
+              )}
               <MemberAssetDefinitionFields
                 value={detail.form.definition}
                 dependencies={detail.form.dependencies}
@@ -932,6 +961,94 @@ export function MemberAssetsPanel({
         />
       )}
     </section>
+  );
+}
+
+function AssetProvenance({
+  detail,
+  members,
+}: {
+  detail: Extract<Detail, { kind: 'owned' | 'legacy' }>;
+  members: Workbench['participants'];
+}) {
+  const source = detail.value.source;
+  const person = (id: string) => members.find((member) => member.id === id)?.name ?? id;
+  const owner =
+    detail.kind === 'owned'
+      ? detail.value.asset.ownerId
+      : source?.kind === 'member-template'
+        ? source.ownerId
+        : undefined;
+  const kinds = {
+    asset: '复制自团队资产',
+    builtin: '内置资源',
+    package: '导入资源包',
+    import: '导入资源包',
+    'member-template': '已保存的工作流',
+    unknown: '来源未确认',
+  };
+  const digest =
+    source?.kind === 'asset'
+      ? source.reference.sha256
+      : source && 'sha256' in source
+        ? source.sha256
+        : undefined;
+  const version =
+    source?.kind === 'asset'
+      ? source.reference.versionId
+      : source && 'versionId' in source
+        ? source.versionId
+        : source?.kind === 'builtin'
+          ? source.sourceCommit
+          : undefined;
+  return (
+    <details className="zm-asset-provenance">
+      <summary>来源与维护</summary>
+      <dl>
+        <dt>来源</dt>
+        <dd>{source ? kinds[source.kind] : '团队资产'}</dd>
+        {owner && (
+          <>
+            <dt>创建者</dt>
+            <dd>{person(owner)}</dd>
+          </>
+        )}
+        {detail.kind === 'owned' && (
+          <>
+            <dt>维护者</dt>
+            <dd>{detail.value.asset.maintainerIds.map(person).join('、')}</dd>
+          </>
+        )}
+        {source?.kind === 'import' && source.entryPath && (
+          <>
+            <dt>来源文件</dt>
+            <dd>{source.entryPath}</dd>
+          </>
+        )}
+        {source?.kind === 'import' && source.sourceVersion && (
+          <>
+            <dt>来源声明版本</dt>
+            <dd>{source.sourceVersion}</dd>
+          </>
+        )}
+        {version && (
+          <>
+            <dt>固定来源版本</dt>
+            <dd>
+              <code>{version}</code>
+            </dd>
+          </>
+        )}
+        {digest && (
+          <>
+            <dt>来源摘要</dt>
+            <dd>
+              <code>{digest}</code>
+            </dd>
+          </>
+        )}
+      </dl>
+    </details>
   );
 }
 
