@@ -117,19 +117,18 @@ function TurnNotice({
   run: NativeRunSummary | null;
   turnEnd?: TurnEnd | undefined;
 }) {
-  if (
-    !turnEnd ||
-    !run ||
-    run.native?.status !== 'idle' ||
-    run.resultDelivery ||
-    run.stopPhase !== 'none'
-  )
-    return null;
+  if (!turnEnd || !run || run.resultDelivery || run.submission) return null;
+  const settledError =
+    turnEnd.reason.kind === 'error' &&
+    (run.status === 'failed' || run.status === 'cancelled') &&
+    run.resources === 'settled' &&
+    run.native?.status === 'detached';
+  if (!settledError && (run.native?.status !== 'idle' || run.stopPhase !== 'none')) return null;
   const text = {
     completed: '本轮回复已结束，尚未提交产物。可补充要求后继续。',
     blocked: '本轮执行受阻，可补充信息后继续。',
     'max-tokens': '本轮达到输出上限，尚未提交产物。可发送消息继续。',
-    error: '本轮执行失败，可查看会话后重试。',
+    error: '本轮执行失败，尚未提交产物。',
     aborted: '本轮已中止，尚未提交产物。',
     interrupted: '本轮已中断，尚未提交产物。',
     forked: '本轮会话已分支，尚未提交产物。',

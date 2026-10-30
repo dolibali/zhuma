@@ -413,6 +413,142 @@ const running = (partial = {}) =>
     ...partial,
   });
 
+test('SSR: a current turn error stays visible after actual cleanup without changing Run receipts', () => {
+  const turnEnd = { type: 'turn-end', seq: 7, time: 1, turn: 1, reason: { kind: 'error' } };
+  Object.defineProperty(turnEnd.reason, 'error', {
+    get() {
+      assert.fail('the Client must not inspect provider errors');
+    },
+  });
+  for (const status of ['failed', 'cancelled']) {
+    const html = render({
+      view: view({
+        run: {
+          ...run,
+          status,
+          resources: 'settled',
+          stopPhase: 'confirmed',
+          native: { ...run.native, status: 'detached' },
+        },
+        turnEnd,
+      }),
+    });
+    assert.match(html, /本轮执行失败，尚未提交产物。/);
+    assert.match(html, status === 'failed' ? /运行失败/ : /已停止/);
+    assert.doesNotMatch(html, /任务已完成|可查看会话后重试/);
+  }
+  for (const partial of [
+    { status: 'cancelled', resources: 'held', native: { ...run.native, status: 'detached' } },
+    { native: { ...run.native, status: 'running' } },
+    { status: 'completed', resources: 'settled', native: { ...run.native, status: 'detached' } },
+  ]) {
+    assert.doesNotMatch(
+      render({ view: view({ run: { ...run, ...partial }, turnEnd }) }),
+      /本轮执行失败，尚未提交产物。/,
+    );
+  }
+});
+
+test('SSR: fixed artifact and result receipts suppress an unsubmitted turn notice', () => {
+  const turnEnd = { type: 'turn-end', seq: 7, time: 1, turn: 1, reason: { kind: 'error' } };
+  for (const receipt of [
+    { submission: { artifactVersionId: 'artifact', roundId: 'round' } },
+    { resultDelivery: { kind: 'pending', phase: 'draining' } },
+    {
+      resultDelivery: {
+        kind: 'delivered',
+        artifactVersionId: 'artifact',
+        artifactVersion: 1,
+        roundId: 'round',
+        receipt: { idempotencyKey: 'key', version: 4 },
+      },
+    },
+  ]) {
+    assert.doesNotMatch(
+      render({
+        view: view({
+          run: {
+            ...run,
+            status: 'cancelled',
+            resources: 'settled',
+            stopPhase: 'confirmed',
+            native: { ...run.native, status: 'detached' },
+            ...receipt,
+          },
+          turnEnd,
+        }),
+      }),
+      /本轮执行失败，尚未提交产物。/,
+    );
+  }
+});
+
+test(
+  'DOM contract: a failure notice clears for a later message and a new Run without dispatching',
+  { skip: !domModule },
+  async () => {
+    const { createRoot } = await import('react-dom/client');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    const passive = () => assert.fail('a notice transition must not dispatch a command');
+    const failed = view({
+      run: {
+        ...run,
+        status: 'cancelled',
+        resources: 'settled',
+        stopPhase: 'confirmed',
+        native: { ...run.native, status: 'detached' },
+      },
+      turnEnd: { type: 'turn-end', seq: 7, time: 1, turn: 1, reason: { kind: 'error' } },
+    });
+    const show = async (current) =>
+      act(() =>
+        root.render(
+          createElement(
+            NativeRunPanel,
+            props({
+              view: current,
+              onStart: passive,
+              onSend: passive,
+              onStop: passive,
+              onRefresh: passive,
+              onSelectionChange: passive,
+            }),
+          ),
+        ),
+      );
+    try {
+      await show(failed);
+      assert.match(host.textContent, /本轮执行失败，尚未提交产物。/);
+      await show({
+        ...failed,
+        messages: [{ id: 'later', role: 'user', sequence: 8, text: '补充说明' }],
+      });
+      assert.doesNotMatch(host.textContent, /本轮执行失败/);
+      await show(view({ run: { ...run, runId: 'next-run', generation: 2, segmentId: 'next' } }));
+      assert.doesNotMatch(host.textContent, /本轮执行失败/);
+      await show(
+        view({
+          run: { ...run, runId: 'next-run', generation: 2, segmentId: 'next' },
+          turnEnd: {
+            type: 'turn-end',
+            seq: 2,
+            time: 2,
+            turn: 1,
+            reason: { kind: 'max-tokens' },
+          },
+        }),
+      );
+      assert.match(host.textContent, /达到输出上限/);
+      assert.doesNotMatch(host.textContent, /本轮执行失败/);
+    } finally {
+      await act(() => root.unmount());
+      host.remove();
+    }
+  },
+);
+
 test('SSR: rendering and target changes never start, send, refresh or choose defaults', () => {
   const calls = () => assert.fail('passive render called a handler');
   for (const current of [target, { ...target, spaceId: 'other-space', nodeId: 'other-node' }]) {
