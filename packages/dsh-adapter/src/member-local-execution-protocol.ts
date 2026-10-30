@@ -9,6 +9,9 @@ import {
   remoteDeviceSigningInput,
   remoteRunRequestSchema,
   remoteRunResponseSchema,
+  remoteTeamAssetFileReadRequestSchema,
+  type MemberAssetReference,
+  type RemoteTeamAssetFileReadRequest,
   type RemoteAcceptRequest,
   type RemoteAcceptValue,
   type RemoteDeviceRequest,
@@ -36,6 +39,11 @@ import {
   type FrozenExecutionRunComposition,
 } from './execution-run-composition.js';
 import type { NativeSessionBinding } from './native-work-session-contract.js';
+import type {
+  MemberLocalTeamAssetFileRead,
+  MemberLocalTeamAssetFileValue,
+  MemberLocalTrackedOperation,
+} from './member-local-execution-team-assets.js';
 
 type Unsigned<Request extends RemoteDeviceRequest = RemoteDeviceRequest> =
   Request extends RemoteDeviceRequest ? Omit<Request, 'proof'> : never;
@@ -115,6 +123,7 @@ export class MemberLocalExecutionProtocol {
   private readonly accepted = new WeakMap<MemberLocalReadHandle, MemberLocalAcceptSecrets>();
   private readonly histories = new WeakSet<MemberLocalReadHandle>();
   private readonly stopped = new WeakSet<MemberLocalReadHandle>();
+  private readonly teamAssetReads = new WeakMap<MemberLocalReadHandle, AbortController>();
   private readonly bindings = new WeakMap<
     MemberLocalReadHandle,
     { configurationId: string; selectionFingerprint: string }
@@ -570,6 +579,7 @@ export class MemberLocalExecutionProtocol {
       Boolean(extended?.acceptedFileReader) !== Boolean(capabilities.acceptedFile) ||
       Boolean(extended?.outputFilePublisherTool) !== Boolean(capabilities.outputFile) ||
       acceptedInput !== Boolean(capabilities.acceptedInput) ||
+      Boolean(extended?.teamAssets) !== Boolean(capabilities.teamAssets) ||
       (extended?.resources && capabilities.resources !== extended.resources.sourceVersion) ||
       canonicalPayload(localTools) !== canonicalPayload(capabilities.localTools) ||
       (request.payload.workspace.kind === 'text-only' && tools.kind === 'local-tools')
@@ -712,6 +722,7 @@ export class MemberLocalExecutionProtocol {
     const device = this.identity();
     if (!this.accepted.has(run)) throw new MemberLocalProtocolError('local-mismatch');
     this.stopped.add(run);
+    this.teamAssetReads.get(run)?.abort();
     const value = await this.call(
       {
         protocolVersion: REMOTE_RUN_PROTOCOL_VERSION,
@@ -745,6 +756,92 @@ export class MemberLocalExecutionProtocol {
       waitForSourceSettlement: true,
       upload: data,
     });
+  }
+  /** Local synchronous fence only. The backend must still revalidate each
+   * signed read/check. An identical DTO or a recovered/history handle cannot
+   * acquire a fresh read capability. */
+  assertTeamAssetFile(run: MemberLocalRunHandle, reference: MemberAssetReference): void {
+    this.teamAssetFileValue(run, reference);
+  }
+  private teamAssetFileValue(
+    run: MemberLocalRunHandle,
+    reference: MemberAssetReference,
+  ): MemberLocalTeamAssetFileValue {
+    this.identity();
+    if (!this.accepted.has(run)) throw new MemberLocalProtocolError('local-mismatch');
+    if (!this.starts.has(run) || this.histories.has(run) || this.stopped.has(run))
+      throw new MemberLocalProtocolError('remote-recovery-required');
+    if (run.composition.schemaVersion !== 2) throw new MemberLocalProtocolError('local-mismatch');
+    const payload = run.composition.payload,
+      row = payload.teamAssets?.files.find(
+        (file) => canonicalPayload(file.reference) === canonicalPayload(reference),
+      );
+    if (!payload.teamAssetTool || !row) throw new MemberLocalProtocolError('local-mismatch');
+    return { scope: run.value.scope, reference: row.reference, file: row.file };
+  }
+  openTeamAssetFile(
+    run: MemberLocalRunHandle,
+    reference: MemberAssetReference,
+    signal: AbortSignal,
+  ): MemberLocalTrackedOperation<MemberLocalTeamAssetFileRead> {
+    return this.teamAssetFile(run, reference, 'read', signal);
+  }
+  checkTeamAssetFile(
+    run: MemberLocalRunHandle,
+    reference: MemberAssetReference,
+    signal: AbortSignal,
+  ): MemberLocalTrackedOperation<MemberLocalTeamAssetFileValue> {
+    return this.teamAssetFile(run, reference, 'check', signal);
+  }
+  private teamAssetFile<Mode extends 'read' | 'check'>(
+    run: MemberLocalRunHandle,
+    reference: MemberAssetReference,
+    mode: Mode,
+    signal: AbortSignal,
+  ): MemberLocalTrackedOperation<
+    Mode extends 'read' ? MemberLocalTeamAssetFileRead : MemberLocalTeamAssetFileValue
+  > {
+    const expected = this.teamAssetFileValue(run, reference),
+      secrets = this.accepted.get(run)!;
+    let owner = this.teamAssetReads.get(run);
+    if (!owner) this.teamAssetReads.set(run, (owner = new AbortController()));
+    const bounded = AbortSignal.any([signal, owner.signal, this.lifetime.signal]),
+      request = remoteTeamAssetFileReadRequestSchema.parse({
+        ...this.header(),
+        operation: 'team-asset-file',
+        payload: {
+          scope: expected.scope,
+          permit: secrets.drive,
+          mode,
+          reference: expected.reference,
+        },
+        proof: { issuedAt: this.now(), nonce: randomUUID(), signature: 'A'.repeat(86) },
+      });
+    const signature = this.identity().sign(
+        Buffer.from(canonicalPayload(remoteDeviceSigningInput(request)), 'utf8'),
+      ),
+      signed = remoteTeamAssetFileReadRequestSchema.parse({
+        ...request,
+        proof: { ...request.proof, signature },
+      }) as RemoteTeamAssetFileReadRequest & { payload: { mode: Mode } },
+      operation = secrets.withDriveSecret((secret) =>
+        this.transport.openTeamAssetFile(signed, expected, secret, bounded),
+      );
+    this.activities++;
+    const drain = operation.drain.then(() => {
+      this.activities--;
+    });
+    const result = operation.result.then((response) => {
+      if (!response.ok) throw new MemberLocalProtocolError(response.error.code);
+      this.assertTeamAssetFile(run, expected.reference);
+      bounded.throwIfAborted();
+      freeze(response.value.scope);
+      freeze(response.value.reference);
+      freeze(response.value.file);
+      Object.freeze(response.value);
+      return response.value;
+    });
+    return Object.freeze({ result, drain });
   }
   /** The connection's own issued handle is required; matching JSON is rejected.
    * This performs a fresh server request, not a cached local ACL decision. */
