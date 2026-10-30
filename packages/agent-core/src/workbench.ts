@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { validatePlan } from './plan.js';
+import { MemberAssetRegistrySchema } from './member-asset-contract.js';
 import {
   ResourceOriginSchema,
   ImportPackageInputSchema,
@@ -187,6 +188,8 @@ export const WorkbenchSchema = z.strictObject({
   projects: z.array(ProjectSchema).max(100),
   participants: z.array(ParticipantSchema).max(100),
   assets: z.array(AssetSchema).max(100),
+  // One original Workbench fact owner; absence keeps existing snapshots byte-compatible.
+  memberAssets: MemberAssetRegistrySchema.optional(),
   tasks: z.array(WorkTaskSchema).max(300),
   appliedPlans: z.array(AppliedPlanSchema).max(1000).default([]),
   receipts: z

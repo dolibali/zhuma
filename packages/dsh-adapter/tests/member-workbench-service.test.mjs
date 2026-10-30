@@ -21,6 +21,57 @@ async function seeded(options) {
   return f;
 }
 
+test('member snapshot contract: asset authority leaf never leaks same-team/private/foreign drafts or attachment handles', async () => {
+  const state = emptyWorkbench();
+  state.memberAssets = ['north', 'south', 'personal-ann'].map((spaceId) => ({
+    schemaVersion: 1,
+    spaceId,
+    assetId: randomUUID(),
+    kind: 'file',
+    ownerId: 'ann',
+    maintainerIds: ['ann'],
+    version: 1,
+    draft: {
+      definition: {
+        kind: 'file',
+        name: 'PRIVATE-ASSET-CANARY',
+        description: 'PRIVATE-CONTENT-CANARY',
+      },
+      dependencies: [],
+      blob: {
+        attachmentId: 'PRIVATE-ATTACHMENT-CANARY',
+        name: 'private.txt',
+        mediaType: 'text/plain',
+        byteSize: 1,
+        sha256: 'a'.repeat(64),
+      },
+    },
+    published: [],
+    uploads: [],
+    receipts: [
+      {
+        idempotencyKey: randomUUID(),
+        fingerprint: 'b'.repeat(64),
+        operation: 'create-draft',
+        resultVersion: 1,
+      },
+    ],
+  }));
+  const f = setup({ state });
+  for (const [actor, spaceId] of [
+    ['ann', 'north'],
+    ['cy', 'south'],
+    ['ann', 'personal-ann'],
+  ]) {
+    const view = await f.service(actor).snapshot({ spaceId });
+    assert.equal(Object.hasOwn(view.state, 'memberAssets'), false);
+    assert(!JSON.stringify(view).includes('PRIVATE-'));
+  }
+  await f.service().command(request(0, projectCommand()), signal());
+  assert.deepEqual(f.storage.read().memberAssets, state.memberAssets);
+  assert.equal(f.writes, 1);
+});
+
 test('member directory contract: four accounts, two teams, cross-team actor and genuine empty personal space', async () => {
   const f = await seeded();
   await f.service('dana').command(request(2, projectCommand('south-project'), 'south'), signal());
