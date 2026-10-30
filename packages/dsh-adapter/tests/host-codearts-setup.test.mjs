@@ -252,3 +252,99 @@ test(
     await assert.rejects(access(audit));
   },
 );
+
+// Explicit rejection contracts; no original composition or CLI claim.
+for (const scenario of [
+  'editor-missing',
+  'acp-entry-missing',
+  'policy-neighbor',
+  'duplicate-entry',
+  'health-null',
+  'health-throws',
+  'active-runtime',
+]) {
+  test(`CodeArts setup rejects ${scenario} before executable lookup or edits`, async (t) => {
+    const bundle = new URL('file:///synthetic/zhuma-workbench/');
+    const rows = [
+      { options: { id: 'dsh-acp-adapter', name: '@zaimokuza/dsh-acp-adapter' } },
+      {
+        options: { id: 'zhuma-codearts-policy', name: new URL('codearts-policy.js', bundle).href },
+      },
+    ];
+    if (scenario === 'acp-entry-missing') rows.shift();
+    if (scenario === 'policy-neighbor')
+      rows[1].options.name = '/synthetic/other/codearts-policy.js';
+    if (scenario === 'duplicate-entry') rows.push(rows[1]);
+    let edits = 0,
+      resolutions = 0;
+    const dependencies = {
+      configEditor:
+        scenario === 'editor-missing'
+          ? undefined
+          : {
+              entries: () => rows,
+              edit: async () => {
+                edits++;
+              },
+            },
+      dshAcp: {
+        health: async () => {
+          if (scenario === 'health-throws') throw new Error('unknown actual health');
+          return {
+            providers: [],
+            liveSessions:
+              scenario === 'health-null'
+                ? null
+                : scenario === 'active-runtime'
+                  ? [{ sessionId: 'synthetic-runtime' }]
+                  : [],
+          };
+        },
+      },
+      subprocess: {
+        resolveExecutable: async () => {
+          resolutions++;
+          throw new Error('must not resolve');
+        },
+      },
+    };
+    const routes = new Map();
+    const setup = openHostCodeArtsSetup(
+      {
+        fiber: { assertActive() {} },
+        get: (name) => dependencies[name],
+        effect() {},
+        connection: {
+          requestRejection: () => undefined,
+          admit: () => ({ peer: { principal: { kind: 'owner' } } }),
+          fetch: {
+            register: (route) => {
+              routes.set(route.path, route);
+              return () => routes.delete(route.path);
+            },
+          },
+        },
+      },
+      bundle,
+    );
+    t.after(() => setup.close());
+    const response = await routes.get('/api/zhuma-codearts/configure').fetch(
+      new Request('http://local.invalid/api/zhuma-codearts/configure', {
+        method: 'POST',
+        headers: {
+          origin: 'http://local.invalid',
+          host: 'local.invalid',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ command: 'codearts' }),
+      }),
+    );
+    assert.equal(response.status, 409);
+    assert.equal(
+      (await response.json()).code,
+      scenario === 'active-runtime' ? 'active-sessions' : 'unavailable',
+    );
+    assert.equal(edits, 0);
+    assert.equal(resolutions, 0);
+  });
+}

@@ -116,6 +116,7 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       const policy = entry(source, 'zhuma-codearts-policy', [
         './lib/zhuma-workbench/codearts-policy.js',
         new URL('codearts-policy.js', bundle).href,
+        fileURLToPath(new URL('codearts-policy.js', bundle)),
       ]);
       await assertIdle();
       const subprocess: unknown = ctx.get('subprocess');

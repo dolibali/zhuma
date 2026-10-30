@@ -1,5 +1,73 @@
+diff --git a/lib/host/composition/host-execution-owners.js b/lib/host/composition/host-execution-owners.js
+index 67b20f9..a18679d 100644
+--- a/lib/host/composition/host-execution-owners.js
++++ b/lib/host/composition/host-execution-owners.js
+@@ -127,4 +127,62 @@ export function clearHostExecutionOwners(root, sessionId) {
+     }
+     owners.delete(sessionId);
+ }
++const liveRuntimeKey = Symbol.for('dsh-acp-adapter.live-runtime-owners.v1');
++function liveRuntimeOwners(root) {
++    const host = globalThis;
++    const roots = (host[liveRuntimeKey] ??= new WeakMap());
++    const key = hostRoot(root);
++    let owners = roots.get(key);
++    if (owners === undefined)
++        roots.set(key, (owners = new Map()));
++    return owners;
++}
++/** Called at the original adapter's runtime allocation boundary. */
++export function retainLiveRuntime(root, sessionId, runtime) {
++    const owners = liveRuntimeOwners(root);
++    if (!owners.has(runtime))
++        owners.set(runtime, { sessionId, runtime, closed: false });
++}
++/** Observe the original close operation without changing its result or teardown. */
++export function closeLiveRuntime(root, sessionId, runtime) {
++    retainLiveRuntime(root, sessionId, runtime);
++    const owner = liveRuntimeOwners(root).get(runtime);
++    if (owner.closing !== undefined)
++        return owner.closing;
++    const completion = Promise.withResolvers();
++    owner.closing = completion.promise;
++    try {
++        void runtime.close().then(() => {
++            owner.closed = true;
++            completion.resolve();
++        }, completion.reject);
++    }
++    catch (error) {
++        completion.reject(error);
++    }
++    return completion.promise;
++}
++/** Read only actual owned resources. Neither headers, sidecars, profile names
++ * nor an absent/failed close observer can prove that a process has drained. */
++export function listLiveRuntimeSessions(root) {
++    const owners = liveRuntimeOwners(root);
++    const sessions = new Map();
++    for (const [runtime, owner] of owners) {
++        if (owner.closed && runtime.physicalCleanupConfirmed === true && ownerIsQuiescent(runtime)) {
++            owners.delete(runtime);
++            continue;
++        }
++        sessions.set(owner.sessionId, {
++            status: 'blocked',
++            cause: owner.closing === undefined ? 'runtime-owned' : 'runtime-cleanup-unconfirmed',
++            detail: null,
++        });
++    }
++    // Original retained Host calls/feedback can outlive the transport too.
++    for (const [sessionId, retained] of registry().get(hostRoot(root)) ?? []) {
++        if (retained.size > 0)
++            sessions.set(sessionId, { status: 'blocked', cause: 'host-settlement-pending', detail: null });
++    }
++    return [...sessions].map(([sessionId, continuity]) => ({ sessionId, continuity }));
++}
+ //# sourceMappingURL=host-execution-owners.js.map
+\ No newline at end of file
 diff --git a/lib/host/composition/index.js b/lib/host/composition/index.js
-index 601aef8e..0745d061 100644
+index 601aef8..0745d06 100644
 --- a/lib/host/composition/index.js
 +++ b/lib/host/composition/index.js
 @@ -23,7 +23,22 @@ export function apply(ctx, config) {
@@ -27,10 +95,25 @@ index 601aef8e..0745d061 100644
  }
  export { installInstalledProfileRegistry } from "./installed-profile-registry.js";
 diff --git a/lib/host/composition/installed-profile-registry.js b/lib/host/composition/installed-profile-registry.js
-index d62454af..2ec04696 100644
+index d62454a..5049cec 100644
 --- a/lib/host/composition/installed-profile-registry.js
 +++ b/lib/host/composition/installed-profile-registry.js
-@@ -590,6 +590,23 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
+@@ -1,5 +1,6 @@
+ /** Live ACP routes derived from native volatile plugin configuration. */
+ /// <reference types="node" />
++import { listLiveRuntimeSessions } from "./host-execution-owners.js";
+ import { resolveTerminalJobs } from "./terminal-jobs.js";
+ import { resolveQwenTaskJobs } from "./qwen-task-jobs.js";
+ import { createDshToolBridge, createDshToolBridgeKey } from "../tools/bridge.js";
+@@ -543,6 +544,7 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
+                 },
+                 notify: notifyPolicySubscribers,
+             },
++            listLiveSessions: () => listLiveRuntimeSessions(ctx.root),
+             agentSessionControl: (provider) => {
+                 const id = acpAgentIdFromRoute(provider);
+                 return id === undefined ? undefined : profileAdapters.get(id);
+@@ -590,6 +592,23 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
                      continue;
                  let routeAdapter = profileAdapters.get(id);
                  if (routeAdapter === undefined) {
@@ -54,7 +137,7 @@ index d62454af..2ec04696 100644
                      routeAdapter = new AcpProfileAdapter(id, () => activeAgents[id], subprocess, (sessionId) => acpSessionView(ctx, sessionStore?.get(sessionId)), ledgerStore, undefined, undefined, sidecar, attachments, resolveNativeQuestions, sidecar === undefined
                          ? undefined
                          : async (operation) => {
-@@ -611,7 +628,7 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
+@@ -611,7 +630,7 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
                                      return result?.childSessionId;
                                  });
                              });
@@ -63,22 +146,8 @@ index d62454af..2ec04696 100644
                      profileAdapters.set(id, routeAdapter);
                  }
                  const route = acpRouteId(id);
-diff --git a/lib/types/host/composition/installed-profile-registry.d.ts b/lib/types/host/composition/installed-profile-registry.d.ts
-index ed926511..f367cacd 100644
---- a/lib/types/host/composition/installed-profile-registry.d.ts
-+++ b/lib/types/host/composition/installed-profile-registry.d.ts
-@@ -61,6 +61,9 @@ export interface InstalledProfileRegistry {
-     resolveRoute(provider: string): AcpResolvedAgent | undefined;
- }
- export interface InstalledProfileRegistryOptions {
-+    /** Host-only capability factory. A matched producer returns one revocable,
-+     * generation-bound guard; user configuration cannot supply this function. */
-+    nativeToolHandoffGuard?: (profileId: string, profile: Readonly<AcpAgentConfig>) => (() => boolean) | undefined;
-     /** Mount the additive dshAcp activity Remote in the provider composition.
-      * The additive provider composition mounts its own service when enabled. */
-     installRemote?: boolean;
 diff --git a/lib/host/composition/profile-adapter.js b/lib/host/composition/profile-adapter.js
-index f139a134..dc500ffa 100644
+index f139a13..535bb68 100644
 --- a/lib/host/composition/profile-adapter.js
 +++ b/lib/host/composition/profile-adapter.js
 @@ -5,6 +5,7 @@ import { ACP_ACTIVITY_RAW_MAX, modeIntentBindingKey } from "../../persistence/si
@@ -98,6 +167,15 @@ index f139a134..dc500ffa 100644
  import { admitCurrentStep } from "../../domain/session/current-step-admission.js";
  import { AcpAdmissionError } from "../../domain/session/current-step-admission.js";
  import { ExternalDelegationNormalizer } from "../../domain/subagent/external-delegation.js";
+@@ -38,7 +41,7 @@ import { createQwenQuestionHandler } from "../../domain/policy/qwen-question.js"
+ import { QWEN_TASK_JOB_KIND } from "../../runtime/session/qwen-background.js";
+ import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from "../../contract/config-options.js";
+ import { AcpClientError } from "../../protocol/v1/errors.js";
+-import { assertHostExecutionQuiescent, clearHostExecutionOwners, clearSharedRecoveryFallback, getSharedRecoveryFallback, retainHostExecutionOwner, setSharedRecoveryFallback, } from "./host-execution-owners.js";
++import { assertHostExecutionQuiescent, retainLiveRuntime, closeLiveRuntime, clearHostExecutionOwners, clearSharedRecoveryFallback, getSharedRecoveryFallback, retainHostExecutionOwner, setSharedRecoveryFallback, } from "./host-execution-owners.js";
+ import { AcpHostSettlementError } from "../../runtime/session/mcp-lease.js";
+ import { AcpSteeringRequestError, supportsFork } from "../../protocol/v1/connection.js";
+ import { nonTextContentFallback } from "../../domain/session/assistant-content.js";
 @@ -475,6 +478,7 @@ export class AcpProfileAdapter extends LlmAdapter {
      controlsChanged;
      hostRoot;
@@ -276,34 +354,39 @@ index f139a134..dc500ffa 100644
                  stopWatchingTerminalOutcomes?.();
              }
          })();
-diff --git a/lib/types/host/composition/profile-adapter.d.ts b/lib/types/host/composition/profile-adapter.d.ts
-index 53a28f56..8f02416f 100644
---- a/lib/types/host/composition/profile-adapter.d.ts
-+++ b/lib/types/host/composition/profile-adapter.d.ts
-@@ -189,6 +189,8 @@ export declare class AcpProfileAdapter extends LlmAdapter {
-     private readonly controlsChanged?;
-     private readonly hostRoot?;
-     private readonly qwenTaskJobs?;
-+    /** Trusted Host opt-in; never derived from provider/profile text. */
-+    private readonly nativeToolHandoff;
-     private probeGeneration;
-     private readonly runtimes;
-     private readonly terminalOutcomes;
-@@ -220,8 +222,11 @@ export declare class AcpProfileAdapter extends LlmAdapter {
-         readonly parentDshSessionId: string;
-         readonly parentCwd: string;
-         readonly parentDelegationDepth?: number;
--    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined);
-+    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined, 
-+    /** Trusted Host opt-in; never derived from provider/profile text. */
-+    nativeToolHandoff?: boolean | (() => boolean));
-     providerInfo(provider: string): LlmProviderInfo;
-+    private nativeHandoffCurrent;
-     /** Directory-changing native tools require a context-preserving ACP handoff. */
-     workingDirectoryChangeDenial(sessionId: string, owner: object): string | undefined;
-     /** Display-only: a settled Stop handoff needs Continue, not recovery clicks. */
+@@ -3811,7 +3911,9 @@ export class AcpProfileAdapter extends LlmAdapter {
+                     await this.preservePendingAgentTurnFailure(key, runtime, true);
+                     if (this.hostRoot !== undefined)
+                         retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime);
+-                    await runtime.close();
++                    await (this.hostRoot === undefined
++                        ? runtime.close()
++                        : closeLiveRuntime(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime));
+                 }));
+                 await Promise.all(handoffs
+                     .map(([, owner]) => owner)
+@@ -3835,7 +3937,9 @@ export class AcpProfileAdapter extends LlmAdapter {
+             retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime);
+         this.runtimes.delete(key);
+         this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')));
+-        await runtime.close().catch(() => undefined);
++        await (this.hostRoot === undefined
++            ? runtime.close()
++            : closeLiveRuntime(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)).catch(() => undefined);
+     }
+     /** Preserve an unconsumed failure before retiring its only in-memory owner. */
+     async preservePendingAgentTurnFailure(key, runtime, retiring = false) {
+@@ -3982,6 +4086,8 @@ export class AcpProfileAdapter extends LlmAdapter {
+     createRuntime(sessionId, profile, cwd) {
+         const outcomes = new HostTerminalOutcomes(sessionId, this.profileId);
+         const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd, outcomes));
++        if (this.hostRoot !== undefined)
++            retainLiveRuntime(this.hostRoot, sessionId, runtime);
+         this.terminalOutcomes.set(runtime, outcomes);
+         return runtime;
+     }
 diff --git a/lib/host/composition/stream-handoff.js b/lib/host/composition/stream-handoff.js
-index bc0bef8d..d8354382 100644
+index bc0bef8..d835438 100644
 --- a/lib/host/composition/stream-handoff.js
 +++ b/lib/host/composition/stream-handoff.js
 @@ -15,6 +15,18 @@ export class StreamHandoff {
@@ -384,44 +467,8 @@ index bc0bef8d..d8354382 100644
              try {
                  for (;;) {
                      const result = await this.next();
-diff --git a/lib/types/host/composition/stream-handoff.d.ts b/lib/types/host/composition/stream-handoff.d.ts
-index 1b2315a2..7582d0ae 100644
---- a/lib/types/host/composition/stream-handoff.d.ts
-+++ b/lib/types/host/composition/stream-handoff.d.ts
-@@ -1,4 +1,5 @@
- import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
-+import type { ToolExecutionInput } from '@deepseek-ai/dsh-tools';
- /** One ACP execution may span native steps; only the outer stream is handed back to DSH. */
- export declare class StreamHandoff {
-     resume: ((options: GenerateOptions) => Promise<boolean>) | undefined;
-@@ -16,6 +17,16 @@ export declare class StreamHandoff {
-     private terminalConsumerCallback;
-     private readonly incompleteBlocks;
-     private readonly remainder;
-+    private readonly nativeTools;
-+    private readonly nativeToolIds;
-+    private nextNativeIndex;
-+    nativeSuspended: boolean;
-+    nativeResumeCalls: readonly {
-+        readonly call: ToolExecutionInput;
-+        readonly index: number;
-+        readonly fromSeq: number;
-+    }[];
-+    enqueueNativeTool(call: ToolExecutionInput, index?: number): void;
-     suspended: boolean;
-     ended: boolean;
-     get closing(): boolean;
-@@ -32,7 +43,7 @@ export declare class StreamHandoff {
-     /** Drain after releasing a local waiter, suppressing only that exact reason. */
-     drainAfterAbandon(): Promise<void>;
-     /** Stop the remote pull and collect its remainder; this does not abandon local settlement. */
--    drain(): Promise<void>;
-+    drain(cancel?: boolean): Promise<void>;
-     /** A fallback consumer must deliver buffered output before its replacement prompt. */
-     takeRemainder(): StreamChunk[];
- }
 diff --git a/lib/host/tools/bridge.js b/lib/host/tools/bridge.js
-index be3b1655..3e86bec8 100644
+index be3b165..3e86bec 100644
 --- a/lib/host/tools/bridge.js
 +++ b/lib/host/tools/bridge.js
 @@ -17,6 +17,100 @@ import { performance } from 'node:perf_hooks';
@@ -546,8 +593,162 @@ index be3b1655..3e86bec8 100644
                          if (toolErrorInfoCode(result.error) === TOOL_ABORTED_BEFORE_DISPATCH)
                              callRecord.abortedBeforeDispatch = true;
                          if (diagnosticEnabled && diagnosticBase !== undefined) {
+diff --git a/lib/runtime/session/session-runtime.js b/lib/runtime/session/session-runtime.js
+index b8a611c..0c5e095 100644
+--- a/lib/runtime/session/session-runtime.js
++++ b/lib/runtime/session/session-runtime.js
+@@ -338,6 +338,8 @@ async function raceAbort(pending, signal, onAbort) {
+ export class AcpSessionRuntime {
+     options;
+     connection;
++    /** Original connections retained only until their managed range is confirmed gone. */
++    cleanupConnections = new Set();
+     mcpLease;
+     mcpKey;
+     sessionId;
+@@ -1037,6 +1039,12 @@ export class AcpSessionRuntime {
+         await run;
+     }
+     /** Cancel initialization and await acquired resources and late setup cleanup before reuse. */
++    /** Read-only physical fact; a settled close alone does not establish this. */
++    get physicalCleanupConfirmed() {
++        if (this.starting !== undefined || this.closing !== undefined || this.connection !== undefined)
++            return false;
++        return [...this.cleanupConnections].every((connection) => connection.isCleanupConfirmed === true);
++    }
+     close() {
+         return this.closeInternal();
+     }
+@@ -1332,6 +1340,10 @@ export class AcpSessionRuntime {
+                 this.options.onSessionUpdate?.(notification);
+             },
+         });
++        for (const retired of this.cleanupConnections)
++            if (retired.isCleanupConfirmed === true)
++                this.cleanupConnections.delete(retired);
++        this.cleanupConnections.add(connection);
+         starting.connection = connection;
+         try {
+             await connection.initialize({ signal: setupSignal });
+diff --git a/lib/types/host/composition/host-execution-owners.d.ts b/lib/types/host/composition/host-execution-owners.d.ts
+index 3270202..b8e4611 100644
+--- a/lib/types/host/composition/host-execution-owners.d.ts
++++ b/lib/types/host/composition/host-execution-owners.d.ts
+@@ -1,4 +1,5 @@
+ import type { Context } from '@deepseek-ai/cordis';
++import type { AcpSessionContinuityState } from '../../runtime/session/continuity.ts';
+ import type { AcpRecoveryState } from '../../persistence/sidecar.ts';
+ export interface HostExecutionOwner {
+     hasPendingHostCalls?(): boolean;
+@@ -15,4 +16,20 @@ export declare function retainHostExecutionOwner(root: Context, sessionId: strin
+ export declare function assertHostExecutionQuiescent(root: Context, sessionId: string, allowSettledFailure?: boolean): void;
+ /** Move feedback evidence out of the active gate after an explicit recovery action succeeds. */
+ export declare function clearHostExecutionOwners(root: Context, sessionId: string): void;
++/** Actual runtime resource handles, not a session/history index. The Host root
++ * survives plugin replacement; an unconfirmed old process must remain visible. */
++export interface HostLiveRuntime extends HostExecutionOwner {
++    readonly physicalCleanupConfirmed?: boolean | undefined;
++    close(): Promise<void>;
++}
++/** Called at the original adapter's runtime allocation boundary. */
++export declare function retainLiveRuntime(root: Context, sessionId: string, runtime: HostLiveRuntime): void;
++/** Observe the original close operation without changing its result or teardown. */
++export declare function closeLiveRuntime(root: Context, sessionId: string, runtime: HostLiveRuntime): Promise<void>;
++/** Read only actual owned resources. Neither headers, sidecars, profile names
++ * nor an absent/failed close observer can prove that a process has drained. */
++export declare function listLiveRuntimeSessions(root: Context): readonly {
++    readonly sessionId: string;
++    readonly continuity: AcpSessionContinuityState;
++}[];
+ //# sourceMappingURL=host-execution-owners.d.ts.map
+\ No newline at end of file
+diff --git a/lib/types/host/composition/installed-profile-registry.d.ts b/lib/types/host/composition/installed-profile-registry.d.ts
+index ed92651..f367cac 100644
+--- a/lib/types/host/composition/installed-profile-registry.d.ts
++++ b/lib/types/host/composition/installed-profile-registry.d.ts
+@@ -61,6 +61,9 @@ export interface InstalledProfileRegistry {
+     resolveRoute(provider: string): AcpResolvedAgent | undefined;
+ }
+ export interface InstalledProfileRegistryOptions {
++    /** Host-only capability factory. A matched producer returns one revocable,
++     * generation-bound guard; user configuration cannot supply this function. */
++    nativeToolHandoffGuard?: (profileId: string, profile: Readonly<AcpAgentConfig>) => (() => boolean) | undefined;
+     /** Mount the additive dshAcp activity Remote in the provider composition.
+      * The additive provider composition mounts its own service when enabled. */
+     installRemote?: boolean;
+diff --git a/lib/types/host/composition/profile-adapter.d.ts b/lib/types/host/composition/profile-adapter.d.ts
+index 53a28f5..0e9469d 100644
+--- a/lib/types/host/composition/profile-adapter.d.ts
++++ b/lib/types/host/composition/profile-adapter.d.ts
+@@ -127,6 +127,8 @@ export interface AcpProfileRuntime {
+     readonly pendingAgentTurnFailure?: AcpPendingAgentTurnFailure | undefined;
+     readonly cancelledSessionRefreshPending?: boolean | undefined;
+     readonly cancelledSessionRefreshBindingId?: string | undefined;
++    /** Original managed-process cleanup evidence; absence is unknown. */
++    readonly physicalCleanupConfirmed?: boolean | undefined;
+     readonly isBusy?: boolean;
+     hasPendingHostCalls?(): boolean;
+     toolControlOutcome?(toolCallId: string): AcpHostToolControlOutcome | undefined;
+@@ -189,6 +191,8 @@ export declare class AcpProfileAdapter extends LlmAdapter {
+     private readonly controlsChanged?;
+     private readonly hostRoot?;
+     private readonly qwenTaskJobs?;
++    /** Trusted Host opt-in; never derived from provider/profile text. */
++    private readonly nativeToolHandoff;
+     private probeGeneration;
+     private readonly runtimes;
+     private readonly terminalOutcomes;
+@@ -220,8 +224,11 @@ export declare class AcpProfileAdapter extends LlmAdapter {
+         readonly parentDshSessionId: string;
+         readonly parentCwd: string;
+         readonly parentDelegationDepth?: number;
+-    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined);
++    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined, 
++    /** Trusted Host opt-in; never derived from provider/profile text. */
++    nativeToolHandoff?: boolean | (() => boolean));
+     providerInfo(provider: string): LlmProviderInfo;
++    private nativeHandoffCurrent;
+     /** Directory-changing native tools require a context-preserving ACP handoff. */
+     workingDirectoryChangeDenial(sessionId: string, owner: object): string | undefined;
+     /** Display-only: a settled Stop handoff needs Continue, not recovery clicks. */
+diff --git a/lib/types/host/composition/stream-handoff.d.ts b/lib/types/host/composition/stream-handoff.d.ts
+index 1b2315a..7582d0a 100644
+--- a/lib/types/host/composition/stream-handoff.d.ts
++++ b/lib/types/host/composition/stream-handoff.d.ts
+@@ -1,4 +1,5 @@
+ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
++import type { ToolExecutionInput } from '@deepseek-ai/dsh-tools';
+ /** One ACP execution may span native steps; only the outer stream is handed back to DSH. */
+ export declare class StreamHandoff {
+     resume: ((options: GenerateOptions) => Promise<boolean>) | undefined;
+@@ -16,6 +17,16 @@ export declare class StreamHandoff {
+     private terminalConsumerCallback;
+     private readonly incompleteBlocks;
+     private readonly remainder;
++    private readonly nativeTools;
++    private readonly nativeToolIds;
++    private nextNativeIndex;
++    nativeSuspended: boolean;
++    nativeResumeCalls: readonly {
++        readonly call: ToolExecutionInput;
++        readonly index: number;
++        readonly fromSeq: number;
++    }[];
++    enqueueNativeTool(call: ToolExecutionInput, index?: number): void;
+     suspended: boolean;
+     ended: boolean;
+     get closing(): boolean;
+@@ -32,7 +43,7 @@ export declare class StreamHandoff {
+     /** Drain after releasing a local waiter, suppressing only that exact reason. */
+     drainAfterAbandon(): Promise<void>;
+     /** Stop the remote pull and collect its remainder; this does not abandon local settlement. */
+-    drain(): Promise<void>;
++    drain(cancel?: boolean): Promise<void>;
+     /** A fallback consumer must deliver buffered output before its replacement prompt. */
+     takeRemainder(): StreamChunk[];
+ }
 diff --git a/lib/types/host/tools/bridge.d.ts b/lib/types/host/tools/bridge.d.ts
-index 1ef3439e..62af2996 100644
+index 1ef3439..62af299 100644
 --- a/lib/types/host/tools/bridge.d.ts
 +++ b/lib/types/host/tools/bridge.d.ts
 @@ -1,7 +1,9 @@
@@ -560,3 +761,25 @@ index 1ef3439e..62af2996 100644
  /** Registry-owned identity keys track scoped tool and visible schema changes. */
  export declare function createDshToolBridgeKey(): (ctx: Context, sessionId: string, schemas?: readonly ToolSchema[]) => unknown;
  /** Discover native session tools without enabling any host plugin or Teams service. */
+diff --git a/lib/types/runtime/session/session-runtime.d.ts b/lib/types/runtime/session/session-runtime.d.ts
+index e0748ae..a5db7bd 100644
+--- a/lib/types/runtime/session/session-runtime.d.ts
++++ b/lib/types/runtime/session/session-runtime.d.ts
+@@ -129,6 +129,8 @@ export declare class AcpSessionRefreshAbortedError extends Error {
+ export declare class AcpSessionRuntime {
+     private readonly options;
+     private connection;
++    /** Original connections retained only until their managed range is confirmed gone. */
++    private readonly cleanupConnections;
+     private mcpLease;
+     private mcpKey;
+     private sessionId;
+@@ -247,6 +249,8 @@ export declare class AcpSessionRuntime {
+     /** Set a legacy ACP mode for this runtime's session. */
+     setMode(modeId: string, signal?: AbortSignal): Promise<void>;
+     /** Cancel initialization and await acquired resources and late setup cleanup before reuse. */
++    /** Read-only physical fact; a settled close alone does not establish this. */
++    get physicalCleanupConfirmed(): boolean;
+     close(): Promise<void>;
+     private closeInternal;
+     private closeResources;

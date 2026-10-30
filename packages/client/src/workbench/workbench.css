@@ -2,6 +2,14 @@
 .zhuma .zm-member-assets {
   min-width: 0;
 }
+.zm-dialog > .zm-member-asset-import {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px;
+  overflow: auto;
+}
 .zhuma .zm-member-import-layout {
   display: grid;
   grid-template-columns: minmax(140px, 0.7fr) minmax(0, 1.5fr);
@@ -5423,6 +5431,12 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   gap: 2px;
   flex-wrap: nowrap;
   justify-content: flex-end;
+}
+.zm-file-browser-table .zm-actions > button {
+  min-width: 0;
+  flex: 0 1 52px;
+  padding-inline: 8px;
+  grid-template-columns: minmax(0, 1fr);
 }
 .zm-folder-targets {
   display: grid;

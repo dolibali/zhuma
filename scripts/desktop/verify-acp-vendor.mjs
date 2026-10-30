@@ -70,11 +70,11 @@ for (const name of [
 const files = JSON.parse(
   readFileSync(join(root, 'patches/dsh-acp-adapter/compiled-files.json'), 'utf8'),
 );
-assert.equal(Object.keys(files).length, 9);
+assert.equal(Object.keys(files).length, 13);
 for (const [file, hash] of Object.entries(files)) {
   assert.match(
     file,
-    /^lib\/(?:types\/)?host\/(?:composition\/(?:index|installed-profile-registry|profile-adapter|stream-handoff)|tools\/bridge)\.(?:js|d\.ts)$/,
+    /^lib\/(?:types\/)?(?:host\/(?:composition\/(?:index|installed-profile-registry|profile-adapter|stream-handoff|host-execution-owners)|tools\/bridge)|runtime\/session\/session-runtime)\.(?:js|d\.ts)$/,
   );
   assert.match(hash, /^[a-f0-9]{64}$/);
   assert.equal(sha(join(source, file)), hash, 'Rebuilt file: ' + file);
