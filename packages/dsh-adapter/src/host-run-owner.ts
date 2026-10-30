@@ -164,6 +164,7 @@ export async function openHostRunOwner(
     readonly prepareProjectKnowledge?: Parameters<
       typeof createHostRunSources
     >[1]['prepareProjectKnowledge'];
+    readonly teamAssets?: Parameters<typeof createHostRunSources>[1]['teamAssets'];
     readWorkbench(): Workbench;
   },
 ) {
@@ -470,6 +471,7 @@ export async function openHostRunOwner(
         resources,
         workspaces,
         retirementDrain: (scope) => retirementDrains?.read(scope),
+        ...(options.teamAssets ? { teamAssets: options.teamAssets } : {}),
         ...(options.prepareProjectKnowledge
           ? { prepareProjectKnowledge: options.prepareProjectKnowledge }
           : {}),
