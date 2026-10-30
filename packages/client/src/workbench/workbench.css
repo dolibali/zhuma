@@ -5376,16 +5376,19 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   font-weight: 500;
 }
 .zm-file-browser-table th:first-child {
-  width: 40%;
+  width: auto;
 }
 .zm-file-browser-table th:nth-child(2) {
-  width: 12%;
+  width: 84px;
 }
 .zm-file-browser-table th:nth-child(3) {
-  width: 17%;
+  width: 124px;
+}
+.zm-file-browser-table th:nth-child(4) {
+  width: 112px;
 }
 .zm-file-browser-table th:last-child {
-  width: 132px;
+  width: 148px;
 }
 .zm-file-browser-table tr:last-child td {
   border-bottom: 0;
@@ -5411,13 +5414,15 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   overflow-wrap: anywhere;
   min-width: 0;
 }
-.zm-file-name > span {
+.zm-file-glyph {
   flex: none;
-  width: 20px;
   color: var(--zm-muted);
+  vertical-align: middle;
 }
 .zm-file-browser-table .zm-actions {
   gap: 2px;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
 }
 .zm-folder-targets {
   display: grid;
@@ -5430,6 +5435,17 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 }
 .zm-folder-dialog .zm-dialog-actions {
   justify-content: flex-end;
+}
+.zm-member-asset-files-upload {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px;
+  overflow: auto;
+}
+.zm-member-asset-files-upload > p {
+  margin: 0;
 }
 .zm-member-asset-files-drop {
   display: grid;
@@ -5461,9 +5477,34 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   flex-wrap: wrap;
 }
 .zm-member-asset-files-progress {
+  display: grid;
+  gap: 8px;
   padding: 12px 16px;
   border-radius: 8px;
   background: var(--zm-soft);
+}
+.zm-member-asset-files-progress progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: var(--zm-line);
+  accent-color: var(--zm-accent);
+}
+.zm-member-asset-files-progress progress::-webkit-progress-bar {
+  background: var(--zm-line);
+  border-radius: 999px;
+}
+.zm-member-asset-files-progress progress::-webkit-progress-value {
+  background: var(--zm-accent);
+  border-radius: 999px;
+}
+.zm-member-asset-files-progress progress::-moz-progress-bar {
+  background: var(--zm-accent);
+  border-radius: 999px;
 }
 @media (max-width: 700px) {
   .zm-file-browser-toolbar > .zm-actions {

@@ -228,7 +228,7 @@ export function MemberAssetFilesBrowser({
                         className="zm-file-name"
                         onClick={() => onFolderChange(folder.folderId)}
                       >
-                        <span aria-hidden="true">▱</span>
+                        <FileGlyph folder />
                         <strong>{folder.name}</strong>
                       </button>
                     </td>
@@ -250,7 +250,7 @@ export function MemberAssetFilesBrowser({
                           aria-label={`${version ? '预览文件' : '打开草稿'} ${asset.name}`}
                           onClick={() => void open(asset)}
                         >
-                          <span aria-hidden="true">≡</span>
+                          <FileGlyph />
                           <strong>{asset.name}</strong>
                         </button>
                       </td>
@@ -511,7 +511,7 @@ function FolderWriteDialog({
                         disabled={busy || unknown}
                         onClick={() => setTarget(folder.folderId)}
                       >
-                        ▱ {folder.name}
+                        <FileGlyph folder /> {folder.name}
                       </Button>
                     ))}
                     {!view.folders.length && <p>没有子文件夹，可移动到当前位置。</p>}
@@ -555,5 +555,32 @@ function FolderWriteDialog({
       </Modal>
       {leave.dialog}
     </>
+  );
+}
+
+/** Same bounded, currentColor stroke treatment as the existing navigation SVGs. */
+function FileGlyph({ folder = false }: { folder?: boolean }) {
+  return (
+    <svg
+      className="zm-file-glyph"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {folder ? (
+        <path d="M3 7V5h6l2 2h10v12H3Z" />
+      ) : (
+        <>
+          <path d="M6 3h8l4 4v14H6Z M14 3v5h4" />
+          <path d="M9 12h6M9 16h6" />
+        </>
+      )}
+    </svg>
   );
 }
