@@ -21,6 +21,11 @@ import { NATIVE_INPUT_READ_LIMITS, type NativeWorkSessionService } from './nativ
 import type { NativeDshComposition } from './native-work-session-dsh.js';
 import type { TeamAssetFileReadHandle } from './team-asset-file-service.js';
 import { sliceTeamAssetUtf8, TeamAssetFileError } from './team-asset-file.js';
+import {
+  verifiedTeamAssetFileInfo,
+  readVerifiedTeamAssetText,
+  type VerifiedTeamAssetFile,
+} from './team-asset-file-carrier.js';
 
 export const TEAM_ASSET_FILE_TOOL = 'team_asset';
 export const TEAM_ASSET_FILE_TOOL_VERSION = 'zhuma-native-team-assets@1';
@@ -28,6 +33,16 @@ export interface TeamAssetFileToolRow {
   readonly reference: MemberAssetReference;
   readonly file: MemberAssetFileDeclare;
 }
+export interface TeamAssetFileCarrierReadHandle {
+  readonly file: MemberAssetFileDeclare;
+  readonly carrier: VerifiedTeamAssetFile;
+  readonly bytes?: never;
+  readonly signal: AbortSignal;
+  check(): void;
+  release(): void;
+}
+export type TeamAssetFileToolReadHandle =
+  (TeamAssetFileReadHandle & { readonly carrier?: never }) | TeamAssetFileCarrierReadHandle;
 /** D supplies the immutable original Run snapshot and a private original member
  * transport. The descriptor/metadata does not itself grant any read access. */
 export interface TeamAssetFileToolPorts {
@@ -36,12 +51,14 @@ export interface TeamAssetFileToolPorts {
     readonly files: readonly TeamAssetFileToolRow[];
   };
   readonly signal: AbortSignal;
-  assertCurrent(signal: AbortSignal): void | Promise<void>;
+  /** A read's final asynchronous gate carries its exact selected reference.
+   * Discovery gates omit it and still validate the original Run/actor. */
+  assertCurrent(signal: AbortSignal, reference?: MemberAssetReference): void | Promise<void>;
   openFile(
     reference: MemberAssetReference,
     signal: AbortSignal,
   ): {
-    readonly result: Promise<TeamAssetFileReadHandle>;
+    readonly result: Promise<TeamAssetFileToolReadHandle>;
     /** Real admission/byte operation drain, excluding the final output lease. */
     readonly drain: Promise<void>;
   };
@@ -200,7 +217,7 @@ export function registerTeamAssetFileTool(
     ToolExecution['token'],
     { digest: string; check(): void; release(): void }
   >();
-  const handles = new Set<TeamAssetFileReadHandle>();
+  const handles = new Set<TeamAssetFileToolReadHandle>();
   const check = (exec: Readonly<ToolExecution>, signal = exec.signal) => {
     if (signal.aborted || grant.signal.aborted || ports.signal.aborted || lifetime.signal.aborted)
       throw new NativeWorkError('cancelled');
@@ -213,9 +230,13 @@ export function registerTeamAssetFileTool(
     )
       throw new NativeWorkError('scope-mismatch');
   };
-  const gate = async (exec: Readonly<ToolExecution>, signal: AbortSignal) => {
+  const gate = async (
+    exec: Readonly<ToolExecution>,
+    signal: AbortSignal,
+    reference?: MemberAssetReference,
+  ) => {
     check(exec, signal);
-    await ports.assertCurrent(signal);
+    await ports.assertCurrent(signal, reference && structuredClone(reference));
     check(exec, signal);
   };
   const codeOf = (error: unknown): ErrorCode => {
@@ -242,7 +263,7 @@ export function registerTeamAssetFileTool(
       render: (_args, value) => blocks(outputSchema.parse(value)),
     },
     async execute(raw, exec): Promise<Output> {
-      let handle: TeamAssetFileReadHandle | undefined,
+      let handle: TeamAssetFileToolReadHandle | undefined,
         abandoned = false,
         physical = Promise.resolve();
       const release = () => {
@@ -302,11 +323,7 @@ export function registerTeamAssetFileTool(
               handles.add(handle);
               check(exec, signal);
               handle.check();
-              if (
-                canonicalPayload(handle.file) !== canonicalPayload(fixed.file) ||
-                handle.bytes.byteLength !== fixed.file.byteSize ||
-                createHash('sha256').update(handle.bytes).digest('hex') !== fixed.file.sha256
-              )
+              if (canonicalPayload(handle.file) !== canonicalPayload(fixed.file))
                 return failure('input-unavailable');
               const type = fixed.file.mediaType.split(';')[0]!.toLowerCase().trim();
               if (
@@ -314,17 +331,36 @@ export function registerTeamAssetFileTool(
                 !['application/json', 'application/yaml'].includes(type)
               )
                 return failure('unsupported-encoding');
-              const slice = sliceTeamAssetUtf8(handle.bytes, {
-                offset: args.offset,
-                length: args.length,
-              });
+              const range = { offset: args.offset, length: args.length };
+              let slice: ReturnType<typeof sliceTeamAssetUtf8>;
+              if (handle.carrier !== undefined) {
+                if (
+                  handle.bytes !== undefined ||
+                  canonicalPayload(verifiedTeamAssetFileInfo(handle.carrier)) !==
+                    canonicalPayload(fixed.file)
+                )
+                  return failure('input-unavailable');
+                slice = readVerifiedTeamAssetText(handle.carrier, range);
+              } else {
+                // Existing byte-handle producers retain their complete original
+                // validation; only an actually minted immutable proof can skip it.
+                if (
+                  handle.bytes.byteLength !== fixed.file.byteSize ||
+                  createHash('sha256').update(handle.bytes).digest('hex') !== fixed.file.sha256
+                )
+                  return failure('input-unavailable');
+                slice = sliceTeamAssetUtf8(handle.bytes, range);
+              }
               value = {
                 ok: true,
                 action: 'read',
                 value: { ...fixed, ...slice, encoding: 'utf-8' },
               };
             }
-            await gate(exec, signal);
+            // Perform the final signed check after the real producer drains,
+            // rather than widening the unavoidable distributed consume window.
+            await physical;
+            await gate(exec, signal, args.action === 'read' ? args.reference : undefined);
             handle?.check();
             return outputSchema.parse(value);
           } finally {
