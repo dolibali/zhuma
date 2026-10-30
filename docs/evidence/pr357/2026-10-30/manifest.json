@@ -1,0 +1,220 @@
+{
+  "purpose": "Actual desktop asset browser, upload, fixed publication and session-refusal evidence for the v1.3 integration review",
+  "data": "Isolated fictional account, project, files and imported packages; no user attachment or actual credentials",
+  "sdk": "504a01a9578abc2c6f1fb896b1dc322c9fe24f66",
+  "viewport": [
+    1280,
+    820
+  ],
+  "boundary": "Normal desktop pointer/keyboard operations. Historical rejected states are explicitly flagged. File-table, upload and import comparisons use the same fixture files and corresponding control state; background catalog counts can differ as tests created real drafts. Final Host-only changes preserve the captured Client bytes. These images do not prove CodeArts model execution, fixed Run adoption, complete workflow delivery or release acceptance.",
+  "images": [
+    {
+      "file": "353-after-dark-tasks-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/353-after-dark-tasks-1280x820.png",
+      "sha256": "fbcd573e567255e7edf86082cabd61e98444d9d04fd72ff78e8b1a8faa8cc0f2",
+      "bytes": 64403,
+      "dimensions": [
+        1280,
+        820
+      ],
+      "source": "0b66da669894120da41716bf153790c3c39f6b88",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "357-after-dark-files-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/357-after-dark-files-1280x820.png",
+      "sha256": "8f8605cc22399a7d6e6e139fc7b78a4b338421236a46ea5ed5092ebbb131797a",
+      "bytes": 250342,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "5ac5b4f7c597494124c58b28365fd870f3f060c2",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": true
+    },
+    {
+      "file": "357-after-dark-upload-confirmed-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/357-after-dark-upload-confirmed-1280x820.png",
+      "sha256": "5e3869cf8a1937f23b29f3cbe0cac2ab0fc8ec62ecd8f5254fa2cd88fe8813f6",
+      "bytes": 240496,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "5ac5b4f7c597494124c58b28365fd870f3f060c2",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "357-after-light-upload-selected-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/357-after-light-upload-selected-1280x820.png",
+      "sha256": "6b36d67c0c2932f0ab4303582df35f4480f84f7c233fa47c3a584dbfaeafe99b",
+      "bytes": 287990,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "5ac5b4f7c597494124c58b28365fd870f3f060c2",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "357-light-published-expert-fixed-skill-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/357-light-published-expert-fixed-skill-1280x820.png",
+      "sha256": "16b47e45dc5608c607de9842b247997b963b9a0d6af40cc40cf612ce5ee8c681",
+      "bytes": 340233,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "5ac5b4f7c597494124c58b28365fd870f3f060c2",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "853-light-task-fixed-v1-preview-after-move-cold-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/853-light-task-fixed-v1-preview-after-move-cold-1280x820.png",
+      "sha256": "98226b79bca64643885755cc24309daec2edf5e8b575298eb787ae0750796d4b",
+      "bytes": 474150,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "85330ac889ab04abe1a61315b107c5f7e0dac525",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "98b-light-session-refusal-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/98b-light-session-refusal-1280x820.png",
+      "sha256": "3b787ac2ca51da88962f68cb344d4427f73b7d9a77013116a73a803c6b86ae1f",
+      "bytes": 203025,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "98b49b1e302fd2c05f7d0d4dca8af0564dd7fce7",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "bca-light-files-action-spacing-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/bca-light-files-action-spacing-1280x820.png",
+      "sha256": "90f3060e2442cec06fa617436f3b4b5ef4043370bfaacd0919e8865070881823",
+      "bytes": 263770,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "bca1c9991b92361ca0da2b35c3ad38a7138fad7b",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "bca-dark-files-action-spacing-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/bca-dark-files-action-spacing-1280x820.png",
+      "sha256": "1a2f8789d290728e58e57e6657184cf88ec97dc9d295f3874e965c6875fcf1cb",
+      "bytes": 258925,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "bca1c9991b92361ca0da2b35c3ad38a7138fad7b",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "bca-dark-import-preview-padding-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/bca-dark-import-preview-padding-1280x820.png",
+      "sha256": "72700c0babbc381978654aa0b1ea6fc843e5da585131153b37ab0712dde75bcd",
+      "bytes": 276814,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "bca1c9991b92361ca0da2b35c3ad38a7138fad7b",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "bca-light-import-preview-padding-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/bca-light-import-preview-padding-1280x820.png",
+      "sha256": "5d1a1ef607e5fa0e7edd5d193d058853c9f6a11cd9859417fe2e8efa6aebbbc8",
+      "bytes": 290636,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "bca1c9991b92361ca0da2b35c3ad38a7138fad7b",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": false
+    },
+    {
+      "file": "354-dark-batch-upload-confirmed-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/354-dark-batch-upload-confirmed-1280x820.png",
+      "sha256": "c4445608d64d1070cae693e624bf835ef6bd261c97dfa45b028c678ce859a721",
+      "bytes": 87714,
+      "dimensions": [
+        1280,
+        820
+      ],
+      "source": "d45a1757423229c376e6b70376290f6eb5887985",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": true
+    },
+    {
+      "file": "357-light-import-expert-skill-preview-1280x820.png",
+      "path": "docs/evidence/pr357/2026-10-30/357-light-import-expert-skill-preview-1280x820.png",
+      "sha256": "bac9438e018709c09beb38dbb9a9c6e72fef178fd8b378060abea7ba29a9607e",
+      "bytes": 292851,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "5ac5b4f7c597494124c58b28365fd870f3f060c2",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalRejected": true
+    }
+  ]
+}
