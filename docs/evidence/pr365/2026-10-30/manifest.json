@@ -1,0 +1,108 @@
+{
+  "purpose": "Actual CodeArts configuration help and truthful failure-state evidence for PR365/362",
+  "data": "Fictional test account, project and task only; no user attachment, real person or credential",
+  "sdk": "504a01a9578abc2c6f1fb896b1dc322c9fe24f66",
+  "viewport": [
+    1280,
+    820
+  ],
+  "boundary": "Root personally inspected original captures from normal desktop clicks. Help foreground is configured with the same unsaved default command input in both sources; background changed from not-started to stopped during real validation and is not claimed as an identical interaction state. The two error captures are historical genuine failure states, not successful CLI or file delivery. Their resource-held versus settled state differs. Theme changes are application preference only, not an operating-system theme qualification. These images do not prove accepted delivery or Release readiness.",
+  "images": [
+    {
+      "file": "f9f-codearts-help-before-light-1280x820.png",
+      "path": "docs/evidence/pr365/2026-10-30/f9f-codearts-help-before-light-1280x820.png",
+      "sha256": "504f3b32b964c6bc57a832c81d3b9219144d7735a894cd463c3d4b2d78bbe85f",
+      "bytes": 208072,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "f9f1d3a0009255854c4ff17fd2a2d2b36f625d42",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "f9f-codearts-help-before-dark-1280x820.png",
+      "path": "docs/evidence/pr365/2026-10-30/f9f-codearts-help-before-dark-1280x820.png",
+      "sha256": "7f174d9904dbbdbe8260115cdff8d6c9d27055af3e0e7664bce8e632c8d770c4",
+      "bytes": 186609,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "f9f1d3a0009255854c4ff17fd2a2d2b36f625d42",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "7cfa-codearts-help-after-configured-light-1280x820.png",
+      "path": "docs/evidence/pr365/2026-10-30/7cfa-codearts-help-after-configured-light-1280x820.png",
+      "sha256": "6d52fa939cbe85aa4f3407e9c80ebacc0799008ffd382398b72e9d6a169883aa",
+      "bytes": 251196,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "7cfa4d811e3f871e3702cd18746bd6a8f1a081fc",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "7cfa-codearts-help-after-configured-dark-1280x820.png",
+      "path": "docs/evidence/pr365/2026-10-30/7cfa-codearts-help-after-configured-dark-1280x820.png",
+      "sha256": "fdb6f9b417fe2638d34cb62f959d4e66d5420823f77ba49afa6709d1b8adea4e",
+      "bytes": 230162,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "7cfa4d811e3f871e3702cd18746bd6a8f1a081fc",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": false
+    },
+    {
+      "file": "f9f-codearts-current-error-light-1280x820.png",
+      "path": "docs/evidence/pr365/2026-10-30/f9f-codearts-current-error-light-1280x820.png",
+      "sha256": "c53ea89544f512926a5f70f033ae8c6c85fd8ab2ab42cf596a81866167969644",
+      "bytes": 215872,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "f9f1d3a0009255854c4ff17fd2a2d2b36f625d42",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": true
+    },
+    {
+      "file": "f9f-codearts-current-error-dark-1280x820.png",
+      "path": "docs/evidence/pr365/2026-10-30/f9f-codearts-current-error-dark-1280x820.png",
+      "sha256": "67eb8efa5ee8eed7561b081f58c0bf6e237d5d11b90ada9204a5e156359a128d",
+      "bytes": 200110,
+      "dimensions": [
+        2560,
+        1640
+      ],
+      "source": "f9f1d3a0009255854c4ff17fd2a2d2b36f625d42",
+      "viewport": [
+        1280,
+        820
+      ],
+      "historicalFailure": true
+    }
+  ]
+}
