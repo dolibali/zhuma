@@ -14,6 +14,8 @@ import {
   MemberAssetReferenceSchema,
   MemberAssetRegistrySchema,
   memberAssetVersionDigestInput,
+  MemberAssetLegacyFixedSourceSchema,
+  MemberAssetLegacySummarySchema,
 } from '../dist/member-asset-contract.js';
 
 const reference = () => ({
@@ -190,4 +192,43 @@ test('member file DTO: independent asset target, bounded declaration and exact p
     assetId: input.assetId,
     versionId: randomUUID(),
   });
+});
+test('member asset source DTO: original built-in commit, package UUID and owned template revision are distinct fixed facts', () => {
+  const builtin = {
+    kind: 'builtin',
+    spaceId: 'team',
+    assetId: 'original-flow',
+    assetKind: 'template',
+    sourceCommit: '1'.repeat(40),
+    sha256: '2'.repeat(64),
+  };
+  MemberAssetLegacyFixedSourceSchema.parse(builtin);
+  assert.equal(
+    MemberAssetLegacyFixedSourceSchema.safeParse({ ...builtin, versionId: randomUUID() }).success,
+    false,
+  );
+  assert.equal(
+    MemberAssetLegacyFixedSourceSchema.safeParse({ ...builtin, ownerId: 'ann' }).success,
+    false,
+  );
+  const unknown = {
+    kind: 'unknown',
+    spaceId: 'team',
+    assetId: 'original-flow',
+    assetKind: 'template',
+    sha256: '2'.repeat(64),
+  };
+  assert.equal(
+    MemberAssetLegacySummarySchema.safeParse({
+      source: unknown,
+      kind: 'template',
+      name: 'Original',
+      description: '',
+      available: true,
+      readOnly: true,
+      canCopy: true,
+    }).success,
+    false,
+  );
+  assert.equal(MemberAssetLegacyFixedSourceSchema.safeParse(unknown).success, false);
 });
