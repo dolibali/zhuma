@@ -2,7 +2,13 @@ import { useState, type DragEvent } from 'react';
 import type { Participant, Project, WorkTask } from '@zhuma/agent-core';
 import type { TaskProgressState } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
-import { taskBoardColumn, taskBoardColumns, type TaskBoardColumn } from './task-board.js';
+import {
+  boardDragDecision,
+  boardReviewRequired,
+  taskBoardColumn,
+  taskBoardColumns,
+  type TaskBoardColumn,
+} from './task-board.js';
 
 const BOARD_TASK_MIME = 'application/x-zhuma-board-task';
 
@@ -13,6 +19,7 @@ export function TaskBoard({
   progress,
   confirmed,
   openTask,
+  onMoveTask,
 }: {
   tasks: readonly WorkTask[];
   projects: readonly Project[];
@@ -20,16 +27,34 @@ export function TaskBoard({
   progress(taskId: string): TaskProgressState | undefined;
   confirmed(taskId: string): boolean;
   openTask(taskId: string): void;
+  /** Called when a drop is allowed; should persist the stage change. Return false to snap back. */
+  onMoveTask?(
+    taskId: string,
+    from: TaskBoardColumn,
+    to: TaskBoardColumn,
+  ): boolean | void | Promise<boolean | void>;
 }) {
   const [notice, setNotice] = useState<string>();
   const [draggingId, setDraggingId] = useState<string>();
   const [overColumn, setOverColumn] = useState<TaskBoardColumn>();
+  /** Session placements for allowed drops until authoritative facts catch up. */
+  const [placements, setPlacements] = useState<Readonly<Record<string, TaskBoardColumn>>>({});
+
   const rows = tasks.map((task) => ({ task, progress: progress(task.id) }));
 
-  function columnOf(taskId: string): TaskBoardColumn | undefined {
+  function naturalColumn(taskId: string): TaskBoardColumn | undefined {
     const row = rows.find((item) => item.task.id === taskId);
     if (!row) return undefined;
     return taskBoardColumn(row.task, confirmed(row.task.id), row.progress);
+  }
+
+  function columnOf(taskId: string): TaskBoardColumn | undefined {
+    const natural = naturalColumn(taskId);
+    if (!natural) return undefined;
+    const placed = placements[taskId];
+    // Drop stale overrides once facts already match the placement.
+    if (placed && placed === natural) return natural;
+    return placed ?? natural;
   }
 
   function rejectMove(target: TaskBoardColumn) {
@@ -56,7 +81,7 @@ export function TaskBoard({
     setOverColumn(columnId);
   }
 
-  function onColumnDrop(event: DragEvent<HTMLElement>, columnId: TaskBoardColumn) {
+  async function onColumnDrop(event: DragEvent<HTMLElement>, columnId: TaskBoardColumn) {
     event.preventDefault();
     const taskId = event.dataTransfer.getData(BOARD_TASK_MIME) || draggingId;
     const from = taskId ? columnOf(taskId) : undefined;
@@ -67,7 +92,40 @@ export function TaskBoard({
       setNotice(undefined);
       return;
     }
-    rejectMove(columnId);
+    const row = rows.find((item) => item.task.id === taskId);
+    if (!row) return;
+    const decision = boardDragDecision(from, columnId, {
+      reviewRequired: boardReviewRequired(row.task, row.progress),
+    });
+    if (decision.type === 'reject-bypass-review') {
+      rejectMove(columnId);
+      return;
+    }
+    if (decision.type !== 'allow') return;
+
+    const label = taskBoardColumns.find((column) => column.id === columnId)?.label ?? columnId;
+    // Apply placement first so the card moves; parent may persist via onMoveTask.
+    setPlacements((current) => ({ ...current, [taskId]: columnId }));
+    try {
+      const result = await onMoveTask?.(taskId, from, columnId);
+      if (result === false) {
+        setPlacements((current) => {
+          const next = { ...current };
+          delete next[taskId];
+          return next;
+        });
+        rejectMove(columnId);
+        return;
+      }
+      setNotice(`已移到「${label}」。`);
+    } catch {
+      setPlacements((current) => {
+        const next = { ...current };
+        delete next[taskId];
+        return next;
+      });
+      rejectMove(columnId);
+    }
   }
 
   return (
@@ -78,10 +136,7 @@ export function TaskBoard({
         </p>
       )}
       {taskBoardColumns.map((column) => {
-        const items = rows.filter(
-          (item) =>
-            taskBoardColumn(item.task, confirmed(item.task.id), item.progress) === column.id,
-        );
+        const items = rows.filter((item) => columnOf(item.task.id) === column.id);
         return (
           <section
             className={`zm-board-column${overColumn === column.id ? ' is-drop-target' : ''}`}
@@ -91,7 +146,9 @@ export function TaskBoard({
             onDragLeave={() => {
               if (overColumn === column.id) setOverColumn(undefined);
             }}
-            onDrop={(event) => onColumnDrop(event, column.id)}
+            onDrop={(event) => {
+              void onColumnDrop(event, column.id);
+            }}
           >
             <h2>
               {column.label}

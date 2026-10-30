@@ -4,7 +4,11 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { row, unknown } from './task-progress-fixture.mjs';
-import { taskBoardColumn } from '../dist/workbench/task-board.js';
+import {
+  boardDragDecision,
+  boardReviewRequired,
+  taskBoardColumn,
+} from '../dist/workbench/task-board.js';
 import { TaskBoard } from '../dist/workbench/TaskBoard.js';
 
 test('board projection uses authoritative progress and keeps unknown/cancelled distinct from accepted', () => {
@@ -37,7 +41,58 @@ test('board projection uses authoritative progress and keeps unknown/cancelled d
   assert.equal(taskBoardColumn(draft, false, ready(row())), 'planning');
 });
 
-test('board SSR contract renders the supplied task snapshot without commands; cards may be draggable for reject-only feedback', () => {
+test('board drag rejects review-bypass drops and allows safe paths', () => {
+  assert.equal(boardDragDecision('running', 'running', { reviewRequired: true }).type, 'same');
+  assert.equal(
+    boardDragDecision('running', 'ended', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('attention', 'ended', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('planning', 'ended', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  // Path does not require review → allow forward to ended.
+  assert.equal(boardDragDecision('running', 'ended', { reviewRequired: false }).type, 'allow');
+  assert.equal(boardDragDecision('attention', 'running', { reviewRequired: false }).type, 'allow');
+  assert.equal(boardDragDecision('attention', 'running', { reviewRequired: true }).type, 'allow');
+  // Faking the review column always bypasses submit-for-review.
+  assert.equal(
+    boardDragDecision('running', 'review', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('running', 'review', { reviewRequired: false }).type,
+    'reject-bypass-review',
+  );
+  // Leave review only via accept or changes-requested.
+  assert.equal(boardDragDecision('review', 'ended', { reviewRequired: true }).type, 'allow');
+  assert.equal(boardDragDecision('review', 'attention', { reviewRequired: true }).type, 'allow');
+  assert.equal(
+    boardDragDecision('review', 'running', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('unknown', 'attention', { reviewRequired: false }).type,
+    'reject-bypass-review',
+  );
+});
+
+test('boardReviewRequired follows node flags and in-review progress', () => {
+  const noReview = { workflows: [{ nodes: [{ reviewRequired: false }] }] };
+  const needsReview = { workflows: [{ nodes: [{ reviewRequired: true }] }] };
+  assert.equal(boardReviewRequired(noReview, undefined), false);
+  assert.equal(boardReviewRequired(needsReview, undefined), true);
+  const ready = (data) => ({ state: 'ready', row: data });
+  assert.equal(boardReviewRequired(noReview, ready(row())), true); // in-review count > 0
+  const counts = { ...row().byStatus, 'in-review': 0 };
+  assert.equal(boardReviewRequired(noReview, ready(row({ byStatus: counts }))), false);
+});
+
+test('board SSR contract renders the supplied task snapshot without commands; cards may be draggable', () => {
   const { state } = fixture();
   const html = renderToStaticMarkup(
     createElement(TaskBoard, {
@@ -53,7 +108,6 @@ test('board SSR contract renders the supplied task snapshot without commands; ca
   );
   for (const task of state.tasks) assert.ok(html.includes(task.title));
   assert.ok(html.includes('任务看板'));
-  // Cards are draggable so cross-column drops can show a tip and snap back; SSR still starts no command.
   assert.ok(html.includes('draggable="true"'));
   assert.ok(!html.includes('产物全部已接受'));
 });

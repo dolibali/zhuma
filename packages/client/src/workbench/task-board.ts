@@ -27,3 +27,69 @@ export function taskBoardColumn(
     return 'attention';
   return row.byStatus.running ? 'running' : 'attention';
 }
+
+/** Pipeline order for detecting a drag that jumps past review. */
+const BOARD_PIPELINE = ['planning', 'attention', 'running', 'review', 'ended'] as const;
+
+export type BoardDragDecision =
+  | { readonly type: 'same' }
+  | { readonly type: 'reject-bypass-review' }
+  | { readonly type: 'allow' };
+
+/**
+ * Board columns are projections of plan confirmation + execution/review facts
+ * (docs: 禁止拖卡绕过评审; #34 拖动不绕过命令、依赖或评审).
+ *
+ * - Bypass review → reject (tip + snap back).
+ * - Path does not require review (and does not fake the review column) → allow;
+ *   caller must actually move the card / apply the stage change.
+ */
+export function boardDragDecision(
+  from: TaskBoardColumn,
+  to: TaskBoardColumn,
+  opts: { readonly reviewRequired: boolean },
+): BoardDragDecision {
+  if (from === to) return { type: 'same' };
+  // unknown is not an authoritative drop target or source for stage changes.
+  if (from === 'unknown' || to === 'unknown') return { type: 'reject-bypass-review' };
+
+  const fromIdx = (BOARD_PIPELINE as readonly string[]).indexOf(from);
+  const toIdx = (BOARD_PIPELINE as readonly string[]).indexOf(to);
+  if (fromIdx < 0 || toIdx < 0) return { type: 'reject-bypass-review' };
+
+  const reviewIdx = (BOARD_PIPELINE as readonly string[]).indexOf('review');
+
+  // Dragging into「待评审」fakes submit-for-review.
+  if (to === 'review' && from !== 'review') return { type: 'reject-bypass-review' };
+
+  // Leaving review except via accept (ended) or changes-requested (attention).
+  if (from === 'review' && to !== 'ended' && to !== 'attention') {
+    return { type: 'reject-bypass-review' };
+  }
+
+  // Jumping past review when the path requires review.
+  if (opts.reviewRequired && fromIdx < reviewIdx && toIdx > reviewIdx) {
+    return { type: 'reject-bypass-review' };
+  }
+
+  return { type: 'allow' };
+}
+
+/** True when any node requires review, or progress already shows in-review work. */
+export function boardReviewRequired(
+  task: {
+    readonly workflows: readonly {
+      readonly nodes: readonly { readonly reviewRequired: boolean }[];
+    }[];
+  },
+  progress?: TaskProgressState,
+): boolean {
+  if (
+    progress?.state === 'ready' &&
+    progress.row.facts !== 'unknown' &&
+    progress.row.byStatus &&
+    progress.row.byStatus['in-review'] > 0
+  )
+    return true;
+  return task.workflows.some((workflow) => workflow.nodes.some((node) => node.reviewRequired));
+}

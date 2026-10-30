@@ -1057,6 +1057,19 @@ export function WorkbenchPage({
                 progress={progressFor}
                 confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
                 openTask={setActiveTaskId}
+                onMoveTask={(taskId, from, to) => {
+                  // Allowed drops may move the card; planning→* tries confirm when possible.
+                  if (from === 'planning' && to !== 'planning') {
+                    const task = state.tasks.find((item) => item.id === taskId);
+                    if (task && task.status === 'draft') {
+                      void submit({
+                        type: 'save-task',
+                        task: { ...task, status: 'ready', updatedAt: new Date().toISOString() },
+                      });
+                    }
+                  }
+                  return true;
+                }}
               />
             ) : (
               <div className="zm-task-table">
