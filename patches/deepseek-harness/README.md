@@ -55,8 +55,16 @@ MCP Client 增加公开 `captureMcpClientClose(originalMcpFiber.ctx): McpClientC
 
 ## 任务原生会话的普通命令门禁
 
-`Gateway.registerSessionAdmission` 在原 exact 参数及原 RemoteAccess 校验之后、任何 receiver/Agent lookup 之前，串行检查 `session` 命名空间的 unary 与 mux stream，以及会在写入后停止会话的 `workspace/archiveSession`。注册后保持 required 状态；卸载、迟到通过或当前守卫失效不会恢复默认放行。可配置 `sessionAdmissionRequired: true`，使产品启动尚未安装守卫时也拒绝命令。无产品配置、未注册守卫的 SDK 保持原行为。
+`Gateway.registerSessionAdmission` 在原 exact 参数及原 RemoteAccess 校验之后、任何 receiver/Agent lookup 之前，串行检查 `session` 与附加 `dshAcp` 命名空间的 unary／mux stream，以及会在写入后停止会话的 `workspace/archiveSession`。ACP 方法以 `dshAcp/` 加实际方法名交给同一原 Host 资格查询；不按前缀授予执行权限。注册后保持 required 状态；卸载、迟到通过或当前守卫失效不会恢复默认放行。可配置 `sessionAdmissionRequired: true`，使产品启动尚未安装守卫时也拒绝命令。无产品配置、未注册守卫的 SDK 保持原行为。
 
 产品 Host 消费 C 原 native 表的 reverse lookup：只有明确 `null` 表示普通会话；work/review 命中、foreign、损坏、关闭或初始化未完成均不得走普通 Session 命令。覆盖实际 create/reuse、prompt、queue、cancel、model selection、rename/fork、attachment/projections，以及 page/follow 的直接和父子地址。该接缝本身不授予任何任务历史、发送、停止或评审权限；Task 界面仍使用原成员、Run、世代、幂等与评审绑定。
 
 定向 SDK 检查入口为 `node scripts/desktop/verify-session-admission.mjs --sdk <已构建的固定公开SDK>`。脚本只在临时源树应用 Gateway 两文件增量，使用公开编译依赖并检验真实 Gateway dispatch 顺序；业务 service/lookup 为明确夹具，不能当作原 SessionController、原生 Agent、模型、两 Host 或 GUI 验收。原生归组、普通侧栏导航与共享后端装配另按实际 SHA 验证。
+
+## 附加 ACP 插件及会话目录
+
+官方 Web Bundle 的 manifest／锁文件固定附加 `@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1`，具体源码与完整性见 `runtime.lock.json` 和 [来源登记](../../third_party/acp-adapter.md)。仅附加插件路由，不替换默认 Agent factory，不修改用户 profile 或 CLI 认证。SDK 的独立 pnpm 安装验证了原发布包与官方 Host 共用 Cordis、LLM、Session、Tools peer 图。
+
+`Gateway.registerSessionResultProjection` 只为插件 `health`／`projectedSubagentIds` 的 unary 结果捕获当前 Host 投影 owner；执行前及异步返回后均核对同一注册。产品 required 模式下缺少投影拒绝派发；卸载、替换、停止和迟到结果均拒绝返回，未配置的 SDK 保持原行为。产品投影按原 C native 绑定逐项过滤完整任务会话记录，未知数据形状或查询失败整体拒绝，避免普通设置页获得任务会话、continuity cause 或 detail；`boundSessions` 不对普通入口开放。纯全局 provider 路由和普通个人会话继续原语义。
+
+任务模型选项只读取插件无参数 `health()` 缓存视图以识别其实际注册路由，不对 ACP 路由调用会主动探测 CLI 的 `listModels()`。此保守过滤不表示码道执行器已经取得任务权限；后续原生工具 handoff 和 CodeArts producer 单独交付验证。新增目录投影、实际 Gateway dispatch 和发布包注册契约均不证明真实 CLI／模型／GUI／安装资格。

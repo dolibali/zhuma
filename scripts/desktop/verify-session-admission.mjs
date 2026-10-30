@@ -59,7 +59,8 @@ import Access from '@deepseek-ai/dsh-api-remote-access';
 import { bindTypertRemote } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
 import Gateway from './gateway.mjs';
-let invoked = 0, looked = 0, admitted = 0, archiveWrites = 0, stopEvents = 0;
+let invoked = 0, looked = 0, admitted = 0, archiveWrites = 0, stopEvents = 0, acpInvoked = 0;
+let acpHeld, replaceScopeDuringCall = false, scope = 0;
 class Sessions extends Service {
   typertRemote = bindTypertRemote(this, 'admissionFixture', { namespace: 'session' });
   constructor(ctx) { super(ctx, 'admissionFixture'); }
@@ -72,9 +73,17 @@ class Workspaces extends Service {
   archiveSession(request) { archiveWrites++; if (request.stopActivity === true) stopEvents++; return { archivedSessionIds: [request.sessionId] }; }
 }
 const methods = ['create', 'prompt', 'updateQueue', 'cancel', 'rename', 'fork', 'selectModel', 'attachment', 'projections', 'page'];
+class Acp extends Service {
+  typertRemote = bindTypertRemote(this, 'acpFixture', { namespace: 'dshAcp' });
+  constructor(ctx) { super(ctx, 'acpFixture'); }
+  async health() { acpInvoked++; if (replaceScopeDuringCall) scope++; if (acpHeld) await acpHeld.promise; return { providers: [], liveSessions: [{ sessionId: 'ordinary' }, { sessionId: 'task' }] }; }
+  projectedSubagentIds() { acpInvoked++; return { sessionIds: ['ordinary', 'task'] }; }
+  backendOf(sessionId) { acpInvoked++; return { sessionId }; }
+  boundSessions(agentId) { acpInvoked++; return { agentId, count: 2 }; }
+}
 const codec = (schema) => ({ mode: 'strict', typeSymbol: '@zhuma/probe#Value', create: () => schema });
 async function setup(required) {
-  const ctx = new Context(); await ctx.plugin(Registry); await ctx.plugin(Access); await ctx.plugin(Gateway, { sessionAdmissionRequired: required }); await ctx.plugin(Sessions); await ctx.plugin(Workspaces);
+  const ctx = new Context(); await ctx.plugin(Registry); await ctx.plugin(Access); await ctx.plugin(Gateway, { sessionAdmissionRequired: required }); await ctx.plugin(Sessions); await ctx.plugin(Workspaces); await ctx.plugin(Acp);
   ctx.typert.lookups.register('admissionFixture', { parameter: 'agent', wire: 'agentId', hostTypeSymbol: '@zhuma/probe#Agent', wireTypeSymbol: '@zhuma/probe#AgentId', resolve: (id) => { looked++; return { id }; } });
   ctx.typert.register({ package: '@zhuma/probe', face: 'host', model: { services: [], events: [], objects: [] }, schemas: [], invocations: [...methods, 'follow'].map(method => ({
     id: '@zhuma/probe#session/' + method, namespace: 'session', service: 'admissionFixture', method, implementation: method === 'follow' ? 'follow' : 'invoke', invocation: { kind: 'direct' },
@@ -84,10 +93,15 @@ async function setup(required) {
     id: '@zhuma/archive-probe#workspace/archiveSession', namespace: 'workspace', service: 'admissionWorkspaceFixture', method: 'archiveSession', invocation: { kind: 'direct' },
     parameters: [{ name: 'request', wire: 'request', source: 'json', codec: codec(z.object({ sessionId: z.string(), stopActivity: z.boolean().optional() })) }], result: codec(z.object({ archivedSessionIds: z.array(z.string()) })),
   }] });
+  ctx.typert.register({ package: '@zhuma/acp-probe', face: 'host', model: { services: [], events: [], objects: [] }, schemas: [], invocations: ['health', 'projectedSubagentIds', 'backendOf', 'boundSessions'].map(method => ({
+    id: '@zhuma/acp-probe#dshAcp/' + method, namespace: 'dshAcp', service: 'acpFixture', method, invocation: { kind: 'direct' },
+    parameters: method === 'backendOf' ? [{ name: 'sessionId', wire: 'sessionId', source: 'json', codec: codec(z.string()) }] : method === 'boundSessions' ? [{ name: 'agentId', wire: 'agentId', source: 'json', codec: codec(z.string()) }] : [], result: codec(z.unknown()),
+  })) });
   const peer = new Peer(ctx, { principal: { kind: 'owner' } });
   const request = (method, id) => ({ namespace: 'session', method, args: { agentId: id, request: { sessionId: id } }, peer });
   const archive = (id) => ({ namespace: 'workspace', method: 'archiveSession', args: { request: { sessionId: id, stopActivity: true } }, peer });
-  return { ctx, request, archive };
+  const acp = (method, args = {}) => ({ namespace: 'dshAcp', method, args, peer });
+  return { ctx, request, archive, acp };
 }
 const h = await setup(true);
 try {
@@ -116,7 +130,53 @@ try {
 const plain = await setup(false);
 try { assert.equal((await plain.ctx.typertGateway.invoke(plain.request('prompt', 'ordinary'))).sessionId, 'ordinary'); }
 finally { await plain.ctx.fiber.dispose(); }
-console.log(JSON.stringify({ checks: ['required-before-registration', 'ten-unary-task-commands-before-lookup', 'mux-follow-before-lookup', 'schema-before-admission', 'ordinary-unchanged', 'unload-fails-closed', 'late-admission-refused', 'unconfigured-sdk-unchanged', 'task-archive-no-write-or-stop', 'ordinary-archive-preserved'], taskLookups: 0, taskInvocations: 0, taskArchiveWrites: 0, taskArchiveStops: 0 }));
+const external = await setup(true);
+try {
+  await assert.rejects(external.ctx.typertGateway.invoke(external.acp('health')));
+  assert.equal(acpInvoked, 0);
+  const stopAdmission = external.ctx.typertGateway.registerSessionAdmission((method, args) => {
+    assert.ok(method.startsWith('dshAcp/'));
+    return method !== 'dshAcp/boundSessions' && args.sessionId !== 'task';
+  });
+  await assert.rejects(external.ctx.typertGateway.invoke(external.acp('health')));
+  await assert.rejects(external.ctx.typertGateway.invoke(external.acp('backendOf', { sessionId: 'task' })));
+  await assert.rejects(external.ctx.typertGateway.invoke(external.acp('boundSessions', { agentId: 'configured' })));
+  assert.equal(acpInvoked, 0);
+  const prepare = (method) => {
+    const captured = scope;
+    return {
+      assertCurrent() { assert.equal(scope, captured); },
+      async project(value) { return method === 'health' ? { providers: value.providers, liveSessions: value.liveSessions.filter(x => x.sessionId === 'ordinary') } : { sessionIds: value.sessionIds.filter(id => id === 'ordinary') }; },
+    };
+  };
+  let stopProjection = external.ctx.typertGateway.registerSessionResultProjection(prepare);
+  assert.throws(() => external.ctx.typertGateway.registerSessionResultProjection(prepare));
+  assert.deepEqual(await external.ctx.typertGateway.invoke(external.acp('health')), { providers: [], liveSessions: [{ sessionId: 'ordinary' }] });
+  assert.deepEqual(await external.ctx.typertGateway.invoke(external.acp('projectedSubagentIds')), { sessionIds: ['ordinary'] });
+  assert.deepEqual(await external.ctx.typertGateway.invoke(external.acp('backendOf', { sessionId: 'ordinary' })), { sessionId: 'ordinary' });
+  replaceScopeDuringCall = true;
+  await assert.rejects(external.ctx.typertGateway.invoke(external.acp('health')));
+  replaceScopeDuringCall = false;
+  acpHeld = Promise.withResolvers();
+  const before = acpInvoked;
+  const pendingResult = external.ctx.typertGateway.invoke(external.acp('health'));
+  const rejection = assert.rejects(pendingResult);
+  while (acpInvoked === before) await new Promise(resolve => setImmediate(resolve));
+  stopProjection();
+  stopProjection = external.ctx.typertGateway.registerSessionResultProjection(prepare);
+  acpHeld.resolve();
+  await rejection;
+  acpHeld = undefined;
+  stopProjection();
+  await assert.rejects(external.ctx.typertGateway.invoke(external.acp('health')));
+  stopAdmission();
+  await assert.rejects(external.ctx.typertGateway.invoke(external.acp('backendOf', { sessionId: 'ordinary' })));
+} finally { await external.ctx.fiber.dispose(); }
+const unconfiguredAcp = await setup(false);
+try {
+  assert.deepEqual(await unconfiguredAcp.ctx.typertGateway.invoke(unconfiguredAcp.acp('health')), { providers: [], liveSessions: [{ sessionId: 'ordinary' }, { sessionId: 'task' }] });
+} finally { await unconfiguredAcp.ctx.fiber.dispose(); }
+console.log(JSON.stringify({ checks: ['required-before-registration', 'ten-unary-task-commands-before-lookup', 'mux-follow-before-lookup', 'schema-before-admission', 'ordinary-unchanged', 'unload-fails-closed', 'late-admission-refused', 'unconfigured-sdk-unchanged', 'task-archive-no-write-or-stop', 'ordinary-archive-preserved', 'acp-required-before-lookup', 'acp-task-backend-and-bound-list-refused', 'acp-unary-session-projection', 'acp-ordinary-preserved', 'acp-current-owner-before-return', 'acp-projection-unload-and-replacement-refused', 'acp-unconfigured-sdk-unchanged'], taskLookups: 0, taskInvocations: 0, taskArchiveWrites: 0, taskArchiveStops: 0 }));
 `;
   await writeFile(join(directory, 'probe.mjs'), probe);
   const output = execFileSync(process.execPath, [join(directory, 'probe.mjs')], {
