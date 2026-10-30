@@ -261,3 +261,4 @@ export {
 } from './human-node.js';
 export * from './remote-run-contract.js';
 export * from './member-asset-contract.js';
+export * from './team-asset-catalog-contract.js';

@@ -114,6 +114,10 @@ function fixture(options = {}) {
     },
     async *readFileStream(ref) {
       events.push('verify-read');
+      if (options.read) {
+        yield* options.read(ref, objects);
+        return;
+      }
       yield objects.get(ref.attachmentId);
     },
   };
@@ -266,4 +270,148 @@ test('team file composition: a release failure is reported by close instead of c
     h.service.close(),
     (error) => error.code === 'unavailable' && !error.message.includes('PRIVATE_'),
   );
+});
+
+test('team file response handle: original lease stays live until explicit output release, and revocation fences later chunks', async () => {
+  const h = fixture();
+  await h.upload();
+  await h.service.idle();
+  const target = { spaceId: h.input.spaceId, assetId: h.input.assetId, versionId: 'fixed-version' };
+  const handle = await h.service.openRead(h.request, target, new AbortController().signal);
+  assert.deepEqual(Buffer.from(handle.bytes), h.data);
+  assert.equal(h.events.includes('release-read'), false);
+  let idle = false;
+  const waiting = h.service.idle().then(() => {
+    idle = true;
+  });
+  await tick();
+  assert.equal(idle, false);
+  handle.check();
+  h.deny();
+  assert.throws(() => handle.check(), /revoked/u);
+  handle.release();
+  handle.release();
+  await waiting;
+  assert.equal(h.events.filter((event) => event === 'release-read').length, 1);
+  await h.service.close();
+});
+
+test('team file response handle: eight held outputs bound memory/lease occupancy until real release', async () => {
+  const h = fixture();
+  await h.upload();
+  await h.service.idle();
+  const target = { spaceId: h.input.spaceId, assetId: h.input.assetId, versionId: 'fixed-version' };
+  const open = () => h.service.openRead(h.request, target, new AbortController().signal);
+  const handles = await Promise.all(Array.from({ length: 8 }, open));
+  await assert.rejects(open(), { code: 'limit' });
+  assert.equal(h.events.filter((event) => event === 'authorize-read').length, 8);
+  handles[0].release();
+  await tick();
+  handles.push(await open());
+  await h.service.close();
+  for (const handle of handles) assert.throws(() => handle.check(), { code: 'cancelled' });
+  assert.equal(h.events.filter((event) => event === 'release-read').length, 9);
+});
+
+test('team file response handle: close joins a late ignored-abort read grant and releases without opening bytes', async () => {
+  const h = fixture(),
+    pending = deferred(),
+    entered = deferred();
+  h.authority.readFile = async () => {
+    entered.resolve();
+    return pending.promise;
+  };
+  const opening = h.service.openRead(
+    h.request,
+    { spaceId: 'north', assetId: 'guide', versionId: 'fixed-version' },
+    new AbortController().signal,
+  );
+  await entered.promise;
+  let closed = false;
+  const closing = h.service.close().then(() => {
+    closed = true;
+  });
+  await tick();
+  assert.equal(closed, false);
+  let released = 0;
+  pending.resolve({
+    blob: {},
+    grant: { signal: new AbortController().signal, assertCurrent() {} },
+    release() {
+      released++;
+    },
+  });
+  await assert.rejects(opening, { code: 'cancelled' });
+  await closing;
+  assert.equal(released, 1);
+  assert.deepEqual(h.events, []);
+});
+
+test('team file tracked read: physical drain completes independently of the still-live output lease', async () => {
+  const h = fixture();
+  await h.upload();
+  await h.service.idle();
+  const op = h.service.openReadTracked(
+    h.request,
+    { spaceId: 'north', assetId: 'guide', versionId: 'fixed-version' },
+    new AbortController().signal,
+  );
+  const handle = await op.result;
+  await op.drain;
+  handle.check();
+  assert.equal(h.events.includes('release-read'), false);
+  handle.release();
+  await h.service.close();
+});
+
+test('team file tracked read: cancellation cannot complete the physical drain while the original iterator is still pending', async () => {
+  const pending = deferred(),
+    entered = deferred();
+  let blocked = false;
+  const h = fixture({
+    read: async function* (ref, objects) {
+      if (blocked) {
+        entered.resolve();
+        await pending.promise;
+      }
+      yield objects.get(ref.attachmentId);
+    },
+  });
+  await h.upload();
+  await h.service.idle();
+  blocked = true;
+  const controller = new AbortController();
+  const op = h.service.openReadTracked(
+    h.request,
+    { spaceId: 'north', assetId: 'guide', versionId: 'fixed-version' },
+    controller.signal,
+  );
+  await entered.promise;
+  controller.abort();
+  await assert.rejects(op.result, { code: 'cancelled' });
+  let drained = false;
+  const draining = op.drain.then(() => {
+    drained = true;
+  });
+  await tick();
+  assert.equal(drained, false);
+  assert.equal(h.events.includes('release-read'), false);
+  pending.resolve();
+  await draining;
+  await h.service.close();
+  assert.equal(h.events.filter((event) => event === 'release-read').length, 1);
+});
+
+test('team file tracked read: a refused original authorization has a settled no-byte drain', async () => {
+  const h = fixture();
+  h.deny();
+  const op = h.service.openReadTracked(
+    h.request,
+    { spaceId: 'north', assetId: 'guide', versionId: 'fixed-version' },
+    new AbortController().signal,
+  );
+  await assert.rejects(op.result);
+  await op.drain;
+  await h.service.close();
+  assert.deepEqual(h.events, []);
 });
