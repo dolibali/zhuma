@@ -165,3 +165,50 @@ test('CodeArts SSE: malformed/truncated and oversized frames close without recon
     assert.equal(requests.length, 2);
   }
 });
+
+test('CodeArts SSE: every declared session identity must agree, without treating message IDs as session IDs', async () => {
+  const frames = [
+    {
+      type: 'message.part.updated',
+      properties: { sessionID: id, part: { sessionID: 'ses_other' } },
+    },
+    {
+      type: 'message.updated',
+      properties: { sessionID: id, info: { id: 'msg_synthetic', sessionID: 'ses_other' } },
+    },
+    { type: 'message.part.updated', properties: { sessionID: id, part: { sessionID: null } } },
+    { type: 'session.updated', properties: { sessionID: id, info: { id: 'ses_other' } } },
+  ];
+  for (const frame of frames) {
+    const { client } = fixture((url) =>
+      url.includes('/event?')
+        ? new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+            headers: { 'content-type': 'text/event-stream' },
+          })
+        : json(metadata),
+    );
+    await create(client);
+    await assert.rejects(
+      async () => {
+        for await (const _event of client.events(id, signal())) {
+        }
+      },
+      { code: 'invalid-response' },
+    );
+  }
+  const frame = {
+    type: 'message.updated',
+    properties: { sessionID: id, info: { id: 'msg_synthetic', sessionID: id } },
+  };
+  const { client } = fixture((url) =>
+    url.includes('/event?')
+      ? new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      : json(metadata),
+  );
+  await create(client);
+  const received = [];
+  for await (const event of client.events(id, signal())) received.push(event);
+  assert.deepEqual(received, [frame]);
+});

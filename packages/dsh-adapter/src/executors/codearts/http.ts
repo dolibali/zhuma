@@ -60,12 +60,14 @@ const ownRecord = (value: unknown): Record<string, unknown> | undefined =>
 
 function eventSession(event: CodeArtsSessionEvent): unknown {
   const props = event.properties;
-  return (
-    props.sessionID ??
-    ownRecord(props.part)?.sessionID ??
-    ownRecord(props.info)?.sessionID ??
-    (event.type.startsWith('session.') ? ownRecord(props.info)?.id : undefined)
-  );
+  const ids: unknown[] = [];
+  for (const record of [props, ownRecord(props.part), ownRecord(props.info)])
+    if (record && Object.hasOwn(record, 'sessionID')) ids.push(record.sessionID);
+  const info = ownRecord(props.info);
+  if (event.type.startsWith('session.') && info && Object.hasOwn(info, 'id')) ids.push(info.id);
+  if (ids.some((id) => !sessionIdSchema.safeParse(id).success || id !== ids[0]))
+    throw new CodeArtsHttpError('invalid-response');
+  return ids[0];
 }
 
 /** Internal transport only. Session metadata/SSE are not Run authority or completion. */
