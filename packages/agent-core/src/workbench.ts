@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { validatePlan } from './plan.js';
-import { MemberAssetRegistrySchema } from './member-asset-contract.js';
+import {
+  MemberAssetRegistrySchema,
+  MemberAssetReferenceSchema,
+  memberAssetDefinitionId,
+} from './member-asset-contract.js';
 import {
   ResourceOriginSchema,
   ImportPackageInputSchema,
@@ -29,12 +33,20 @@ export const ParticipantSchema = z
     instructions: z.string().max(32000),
     available: z.boolean(),
     origin: ResourceOriginSchema.optional(),
+    memberAsset: MemberAssetReferenceSchema.optional(),
     resourceBindings: z.strictObject({ skillIds: ids, mcpIds: ids }).optional(),
   })
   .refine(
     (p) =>
-      p.kind === 'expert' || (!p.origin && !p.resourceBindings && p.instructions.length <= 8000),
+      p.kind === 'expert' ||
+      (!p.origin && !p.memberAsset && !p.resourceBindings && p.instructions.length <= 8000),
     '真人成员不能携带专家来源／能力，说明最多 8000 字符。',
+  )
+  .refine(
+    (p) =>
+      !p.memberAsset ||
+      (p.memberAsset.kind === 'expert' && p.id === memberAssetDefinitionId(p.memberAsset)),
+    '已发布专家必须保留完整固定引用与对应定义标识。',
   )
   .refine(
     (p) => !p.available || !p.origin?.missing.length,
@@ -49,6 +61,7 @@ export const AssetSchema = z
     content: z.string().max(150000),
     available: z.boolean(),
     origin: ResourceOriginSchema.optional(),
+    memberAsset: MemberAssetReferenceSchema.optional(),
     memberTemplate: z
       .strictObject({
         schemaVersion: z.literal(1),
@@ -59,6 +72,14 @@ export const AssetSchema = z
       })
       .optional(),
   })
+  .refine(
+    (a) =>
+      !a.memberAsset ||
+      (a.memberAsset.kind === a.kind &&
+        a.id === memberAssetDefinitionId(a.memberAsset) &&
+        !a.memberTemplate),
+    '已发布资产必须保留完整固定引用与对应定义标识。',
+  )
   .refine((a) => !a.memberTemplate || a.kind === 'template', '成员工作流归属仅适用于工作流资产。')
   .refine((a) => a.kind === 'template' || a.content.length <= (a.kind === 'skill' ? 60000 : 8000), {
     path: ['content'],
@@ -150,6 +171,7 @@ export const WorkflowTemplateSchema = z.strictObject({
 export type WorkflowTemplate = z.infer<typeof WorkflowTemplateSchema>;
 export const TemplateSourceSchema = z.strictObject({
   assetId: id,
+  memberAsset: MemberAssetReferenceSchema.optional(),
   sourceWorkbenchRevision: z.number().int().nonnegative(),
   definition: WorkflowTemplateSchema,
   pendingParticipants: z
@@ -621,6 +643,7 @@ export function instantiateWorkflowTemplate(state: Workbench, input: TemplateInp
     })),
     templateSource: {
       assetId: source.id,
+      ...(source.memberAsset ? { memberAsset: source.memberAsset } : {}),
       sourceWorkbenchRevision: state.revision,
       definition,
       pendingParticipants,

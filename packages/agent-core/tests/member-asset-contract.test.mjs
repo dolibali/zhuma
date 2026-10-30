@@ -2,7 +2,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { emptyWorkbench, WorkbenchSchema } from '../dist/workbench.js';
+import {
+  emptyWorkbench,
+  WorkbenchSchema,
+  ParticipantSchema,
+  AssetSchema,
+  AppliedPlanSchema,
+  applyWorkbenchCommand,
+} from '../dist/workbench.js';
+import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import {
   MEMBER_ASSET_LIMITS,
   MemberAssetCommandSchema,
@@ -16,6 +24,7 @@ import {
   memberAssetVersionDigestInput,
   MemberAssetLegacyFixedSourceSchema,
   MemberAssetLegacySummarySchema,
+  memberAssetDefinitionId,
 } from '../dist/member-asset-contract.js';
 
 const reference = () => ({
@@ -52,6 +61,33 @@ const record = () => ({
       resultVersion: 1,
     },
   ],
+});
+
+test('member asset DTO: old applied definitions remain byte-compatible; real publication aliases require kind and full immutable source', () => {
+  const f = fixture(),
+    confirmed = applyWorkbenchCommand(f.state, {
+      type: 'save-task',
+      task: { ...f.task, status: 'ready' },
+    }).appliedPlans[0];
+  const before = JSON.stringify(confirmed);
+  assert.equal(JSON.stringify(AppliedPlanSchema.parse(confirmed)), before);
+  assert(!before.includes('memberAsset'));
+  const ref = reference(),
+    value = { ...f.state.assets[0], id: memberAssetDefinitionId(ref), memberAsset: ref };
+  AssetSchema.parse(value);
+  assert.equal(AssetSchema.safeParse({ ...value, id: ref.assetId }).success, false);
+  assert.equal(
+    AssetSchema.safeParse({ ...value, memberAsset: { ...ref, kind: 'expert' } }).success,
+    false,
+  );
+  assert.equal(
+    ParticipantSchema.safeParse({
+      ...f.state.participants[0],
+      id: memberAssetDefinitionId(ref),
+      memberAsset: ref,
+    }).success,
+    false,
+  );
 });
 test('member asset DTO: legacy Workbench has no fabricated asset ownership or normalized leaf', () => {
   const legacy = emptyWorkbench();
