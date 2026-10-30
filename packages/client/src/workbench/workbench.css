@@ -4894,6 +4894,30 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   color: var(--zm-muted);
   font-size: 12px;
 }
+.zm-board-drag-notice {
+  grid-column: 1 / -1;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--zm-warning-soft);
+  color: var(--zm-warning);
+  font-size: 13px;
+}
+.zm-board-column.is-drop-target {
+  outline: 2px dashed var(--zm-line-strong);
+  outline-offset: -2px;
+  background: var(--zm-hover);
+}
+.zhuma .zm-board-card.is-dragging {
+  opacity: 0.45;
+}
+.zhuma .zm-board-card[draggable='true'] {
+  cursor: grab;
+}
+.zhuma .zm-board-card[draggable='true']:active {
+  cursor: grabbing;
+}
+
 .zm-account-management {
   display: grid;
   gap: 18px;
