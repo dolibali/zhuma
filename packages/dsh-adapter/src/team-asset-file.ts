@@ -273,26 +273,9 @@ export class TeamAssetFileBytes {
       const { check } = this.access(authority);
       check();
       try {
-        // Whole-object verification and UTF-8 validity precede any returned slice.
-        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-        const { offset, length } = range.data;
-        if (offset > bytes.length || (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80))
-          throw new TeamAssetFileError('invalid');
-        let end = Math.min(offset + length, bytes.length);
-        while (end > offset && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
-        if (end === offset && offset < bytes.length) throw new TeamAssetFileError('invalid');
-        const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-          bytes.subarray(offset, end),
-        );
+        const value = sliceTeamAssetUtf8(bytes, range.data);
         check();
-        return {
-          text,
-          offset,
-          length: end - offset,
-          nextOffset: end,
-          totalBytes: bytes.length,
-          checksum: blob.sha256,
-        };
+        return { ...value, checksum: blob.sha256 };
       } catch (error) {
         if (error instanceof TeamAssetFileError) throw error;
         throw new TeamAssetFileError('unsupported');
@@ -308,5 +291,28 @@ export class TeamAssetFileBytes {
       this.lifetime.abort();
       await this.idle();
     })());
+  }
+}
+
+/** Pure byte slicing after the caller's complete-object integrity check. Never
+ * decodes only a valid prefix of an otherwise invalid UTF-8 original. */
+export function sliceTeamAssetUtf8(bytes: Uint8Array, query: { offset: number; length: number }) {
+  const parsed = textRangeSchema.safeParse(query);
+  if (!parsed.success) throw new TeamAssetFileError('invalid');
+  try {
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    const { offset, length } = parsed.data;
+    if (offset > bytes.length || (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80))
+      throw new TeamAssetFileError('invalid');
+    let end = Math.min(offset + length, bytes.length);
+    while (end > offset && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+    if (end === offset && offset < bytes.length) throw new TeamAssetFileError('invalid');
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bytes.subarray(offset, end),
+    );
+    return { text, offset, length: end - offset, nextOffset: end, totalBytes: bytes.length };
+  } catch (error) {
+    if (error instanceof TeamAssetFileError) throw error;
+    throw new TeamAssetFileError('unsupported');
   }
 }

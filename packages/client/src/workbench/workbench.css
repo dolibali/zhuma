@@ -1076,7 +1076,8 @@ body[data-ds-dark-theme] {
   box-sizing: border-box;
 }
 .zm-dialog.zm-dialog-workspace {
-  width: min(960px, calc(100vw - 32px));
+  width: min(1120px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   height: min(840px, calc(100dvh - 40px));
   background: var(--zm-paper);
 }

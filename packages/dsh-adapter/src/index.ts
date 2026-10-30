@@ -413,5 +413,23 @@ export type {
   TeamAssetFileOperation,
 } from './team-asset-file.js';
 export { TeamAssetFileService } from './team-asset-file-service.js';
+export type { TeamAssetFileReadHandle } from './team-asset-file-service.js';
+export { openTeamAssetFileHttp, TEAM_ASSET_FILE_HTTP_PATHS } from './team-asset-file-http.js';
+export {
+  TEAM_ASSET_FILE_TOOL,
+  TEAM_ASSET_FILE_TOOL_VERSION,
+  describeTeamAssetFileTool,
+  registerTeamAssetFileTool,
+} from './team-asset-file-tool.js';
+export type {
+  TeamAssetFileToolPorts,
+  TeamAssetFileToolRow,
+  TeamAssetFileToolContent,
+} from './team-asset-file-tool.js';
 export { preflightTeamAssetImport } from './team-asset-import.js';
 export type { TeamAssetImportPreflight } from './team-asset-import.js';
+
+export { MemberAssetService } from './member-asset-service.js';
+export type { MemberAssetServiceOptions } from './member-asset-service.js';
+export { TeamAssetCatalogService } from './team-asset-catalog.js';
+export type { TeamAssetCatalogSources } from './team-asset-catalog.js';

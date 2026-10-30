@@ -113,7 +113,7 @@ export function setup(options = {}) {
       audits.set(audit.id, structuredClone(audit));
     },
   };
-  let workbench = new WorkbenchService(storage, auditStorage);
+  let workbench = new WorkbenchService(storage, auditStorage, options.packages);
   const service = (actor = 'ann', patch = {}) =>
     new MemberWorkbenchService(workbench, {
       directory: () => directory,
@@ -152,7 +152,7 @@ export function setup(options = {}) {
       fail = value;
     },
     reopen() {
-      workbench = new WorkbenchService(storage, auditStorage);
+      workbench = new WorkbenchService(storage, auditStorage, options.packages);
     },
   };
 }

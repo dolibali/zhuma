@@ -6,6 +6,7 @@
   disabled: true
 - id: ui-plugin-manager
   disabled: true
+# RC.4's plugin browse/create menu requires the intentionally hidden manager.
 - id: entry-customization
   disabled: true
 - id: ui-settings-account
