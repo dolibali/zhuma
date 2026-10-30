@@ -70,9 +70,10 @@ export function LocalSetupForm({
   initialize(input: LocalSetupInput): Promise<void>;
 }) {
   const requestId = useRef(snapshot.kind === 'pending' ? snapshot.requestId : crypto.randomUUID());
-  const [accountId, setAccountId] = useState('');
-  const [password, setPassword] = useState('');
-  const [teamName, setTeamName] = useState('');
+  // DEV-only test defaults for local/login testing (not for release builds).
+  const [accountId, setAccountId] = useState(import.meta.env.DEV ? 'test' : '');
+  const [password, setPassword] = useState(import.meta.env.DEV ? 'testtest' : '');
+  const [teamName, setTeamName] = useState(import.meta.env.DEV ? '测试团队' : '');
   const [packIds, setPackIds] = useState(() => snapshot.packs.map((pack) => pack.id));
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);

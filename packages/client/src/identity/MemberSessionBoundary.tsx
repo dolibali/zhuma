@@ -37,8 +37,9 @@ function LoginForm({
   login(credentials: LoginCredentials): void;
   register?: (() => void) | undefined;
 }) {
-  const [accountId, setAccountId] = useState('');
-  const [password, setPassword] = useState('');
+  // DEV-only test defaults for local/login testing (not for release builds).
+  const [accountId, setAccountId] = useState(import.meta.env.DEV ? 'test' : '');
+  const [password, setPassword] = useState(import.meta.env.DEV ? 'testtest' : '');
   const [visible, setVisible] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null);
   const errorId = useId();
