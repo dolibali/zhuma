@@ -1,0 +1,34 @@
+{
+  "purpose": "PR 325 actual desktop ACP plugin discovery and expanded status",
+  "data": "Isolated fictional account and team; no user attachments or real credentials",
+  "baseline": "New optional plugin capability; no corresponding pre-change plugin page",
+  "productSource": "381a250041953fadf79e73227ab4606290e194f6",
+  "sdkCompositionSource": "cfe84283e4f90b7b6495be7c415839c405ca0516",
+  "runtime": "DSH RC.4 504a01a9578abc2c6f1fb896b1dc322c9fe24f66",
+  "plugin": "@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1",
+  "hostSha256": "bb42b45d61eb8d0e778625cd38e5d5c5fe3a6c8e71c61e8c9e476e2fb8c0eefc",
+  "clientSha256": "29022130259c46c148df4d4b7f3d520c111d48cc24e454a91391e4466153456f",
+  "boundary": "Normal Settings entry, search, keyboard expansion, Running status and close/focus return. Same saved fictional account and viewport in light/dark. PR 330 changes Host-only plugin files; this Settings UI is unchanged from PR 325. No ACP provider setup, child process, model call, CodeArts task, asset UI or release acceptance is implied.",
+  "images": [
+    {
+      "file": "325-after-dark-acp-settings-1280.png",
+      "path": "docs/evidence/pr325/2026-10-30/325-after-dark-acp-settings-1280.png",
+      "sha256": "34dc4cc084b19e7a79e39f2a0400af25f971de3d9bc5e4662d9f07edfb1c61ba",
+      "bytes": 93737,
+      "dimensions": [
+        1280,
+        800
+      ]
+    },
+    {
+      "file": "325-after-light-acp-settings-1280.png",
+      "path": "docs/evidence/pr325/2026-10-30/325-after-light-acp-settings-1280.png",
+      "sha256": "7f662a9e23a011dc563995ab3ae65d9e260ede16e37e96cdf375db10343faf48",
+      "bytes": 97862,
+      "dimensions": [
+        1280,
+        800
+      ]
+    }
+  ]
+}
