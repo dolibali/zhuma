@@ -1,0 +1,73 @@
+{
+  "scope": "Actual Client components in isolated fictional HTTP replay; no Host, authorization, native geometry, or model qualification. Before v1.3 b35; after develop1fb with PR337/338. All images personally inspected. No user attachment or credential material.",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "items": [
+    {
+      "name": "pr337-before-light.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr337-before-light.png",
+      "sha256": "a75f3341c8984135921782fa644096250c4792c86fd615695576f98e5484899c",
+      "bytes": 113209,
+      "blob": "4ee524c367edc561d2083170b67738ca2fdee02b",
+      "source": "b35e50c56cadc2569f3fbdd4e64643dcb5d505f8"
+    },
+    {
+      "name": "pr337-before-dark.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr337-before-dark.png",
+      "sha256": "111664270b43c25a524363fbd79ac8a0c53d2cee2ae4661850395e52744e094b",
+      "bytes": 110343,
+      "blob": "493cc703ce9233c34c75d5c9a41c03139deb0b2b",
+      "source": "b35e50c56cadc2569f3fbdd4e64643dcb5d505f8"
+    },
+    {
+      "name": "pr337-after-light.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr337-after-light.png",
+      "sha256": "bfac3fcd13a69ae674c809b0b3dd325a713e7c776eaa12f9a2a19b9d5623794c",
+      "bytes": 113927,
+      "blob": "7241500c80fe785c989df5832d79662723fea096",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    },
+    {
+      "name": "pr337-after-dark.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr337-after-dark.png",
+      "sha256": "58a0fd91cef0bcb3aca3ec3f72b7217f42866cdbd93caf4b2a54ae9effdae400",
+      "bytes": 111251,
+      "blob": "aeb4cdf32c5124ed702393d33c72cd2156629045",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    },
+    {
+      "name": "pr338-before-light.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr338-before-light.png",
+      "sha256": "0c27cb0a2d4e89e44be71cc9ba31b0f68fe33150e400813f6037340330c12d8d",
+      "bytes": 35509,
+      "blob": "e8e54ae0fb037050f8f31494b22ba10d115bcd2a",
+      "source": "b35e50c56cadc2569f3fbdd4e64643dcb5d505f8"
+    },
+    {
+      "name": "pr338-before-dark.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr338-before-dark.png",
+      "sha256": "7b8a31004a14e6e30e393eb51e4051ef69f2e7199ec76042d00602897cda90ca",
+      "bytes": 33726,
+      "blob": "dae1ca7be08bf55a0a77c56da6af533b58d412a9",
+      "source": "b35e50c56cadc2569f3fbdd4e64643dcb5d505f8"
+    },
+    {
+      "name": "pr338-after-light.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr338-after-light.png",
+      "sha256": "2539a9ec83c1e3df0a7a64c74c26fb8881ba57cf5483d693b873e87deae44544",
+      "bytes": 38264,
+      "blob": "77c1bf2451b3684bc1d33f8f0e6faf85b3c56ca9",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    },
+    {
+      "name": "pr338-after-dark.png",
+      "path": "docs/ui-evidence/fxnie-20261031/pr338-after-dark.png",
+      "sha256": "276cd0ec278bafb0d66342826037489c5496c993f4109cf47ef4aa712c58d019",
+      "bytes": 36250,
+      "blob": "cfcde6833ab0b79cab1bcd1372578fcbc21485d6",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    }
+  ]
+}
