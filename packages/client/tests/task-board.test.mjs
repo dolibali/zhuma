@@ -4,7 +4,11 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
 import { row, unknown } from './task-progress-fixture.mjs';
-import { taskBoardColumn } from '../dist/workbench/task-board.js';
+import {
+  boardDragDecision,
+  boardReviewRequired,
+  taskBoardColumn,
+} from '../dist/workbench/task-board.js';
 import { TaskBoard } from '../dist/workbench/TaskBoard.js';
 
 test('board projection uses authoritative progress and keeps unknown/cancelled distinct from accepted', () => {
@@ -37,7 +41,93 @@ test('board projection uses authoritative progress and keeps unknown/cancelled d
   assert.equal(taskBoardColumn(draft, false, ready(row())), 'planning');
 });
 
-test('board SSR contract renders the supplied task snapshot without commands or draggable states', () => {
+test('board drag refuses every cross-column move, including planning drafts', () => {
+  assert.equal(boardDragDecision('running', 'running', { reviewRequired: true }).type, 'same');
+  assert.equal(boardDragDecision('planning', 'planning', { reviewRequired: false }).type, 'same');
+  // running/review→ended have no client drag command — refuse (no fake stage).
+  assert.equal(
+    boardDragDecision('running', 'ended', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('running', 'ended', { reviewRequired: false }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('review', 'ended', { reviewRequired: true }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('review', 'attention', { reviewRequired: true }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('attention', 'running', { reviewRequired: false }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('attention', 'ended', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  // Dragging a planning card must not confirm the draft, whatever the target column is.
+  assert.equal(
+    boardDragDecision('planning', 'attention', { reviewRequired: false }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('planning', 'running', { reviewRequired: true }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('planning', 'running', { reviewRequired: false }).type,
+    'reject-no-authority',
+  );
+  assert.equal(
+    boardDragDecision('planning', 'ended', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('planning', 'ended', { reviewRequired: false }).type,
+    'reject-no-authority',
+  );
+  // Faking the review column always bypasses submit-for-review.
+  assert.equal(
+    boardDragDecision('running', 'review', { reviewRequired: true }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('planning', 'review', { reviewRequired: false }).type,
+    'reject-bypass-review',
+  );
+  assert.equal(
+    boardDragDecision('unknown', 'attention', { reviewRequired: false }).type,
+    'reject-no-authority',
+  );
+  const columns = ['planning', 'attention', 'running', 'review', 'ended', 'unknown'];
+  for (const from of columns) {
+    for (const to of columns) {
+      for (const reviewRequired of [false, true]) {
+        const type = boardDragDecision(from, to, { reviewRequired }).type;
+        assert.notEqual(type, 'allow', `${from} → ${to} reviewRequired=${reviewRequired}`);
+        if (from === to) assert.equal(type, 'same');
+        else assert.notEqual(type, 'same');
+      }
+    }
+  }
+});
+
+test('boardReviewRequired follows node flags and in-review progress', () => {
+  const noReview = { workflows: [{ nodes: [{ reviewRequired: false }] }] };
+  const needsReview = { workflows: [{ nodes: [{ reviewRequired: true }] }] };
+  assert.equal(boardReviewRequired(noReview, undefined), false);
+  assert.equal(boardReviewRequired(needsReview, undefined), true);
+  const ready = (data) => ({ state: 'ready', row: data });
+  assert.equal(boardReviewRequired(noReview, ready(row())), true); // in-review count > 0
+  const counts = { ...row().byStatus, 'in-review': 0 };
+  assert.equal(boardReviewRequired(noReview, ready(row({ byStatus: counts }))), false);
+});
+
+test('board SSR contract renders the supplied task snapshot without commands; cards may be draggable', () => {
   const { state } = fixture();
   const html = renderToStaticMarkup(
     createElement(TaskBoard, {
@@ -53,6 +143,24 @@ test('board SSR contract renders the supplied task snapshot without commands or 
   );
   for (const task of state.tasks) assert.ok(html.includes(task.title));
   assert.ok(html.includes('任务看板'));
-  assert.ok(!html.includes('draggable="true"'));
+  assert.ok(html.includes('draggable="true"'));
   assert.ok(!html.includes('产物全部已接受'));
+});
+
+test('TaskBoard source has no session placements and drag does not confirm a plan', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../src/workbench/TaskBoard.tsx', import.meta.url), 'utf8');
+  const page = await readFile(
+    new URL('../src/workbench/WorkbenchPage.tsx', import.meta.url),
+    'utf8',
+  );
+  const decision = await readFile(
+    new URL('../src/workbench/task-board.ts', import.meta.url),
+    'utf8',
+  );
+  assert.equal(/setPlacements|placements\[/.test(source), false);
+  assert.equal(/onMoveTask|save-task|已确认计划/.test(source), false);
+  assert.equal(/onMoveTask/.test(page), false);
+  assert.equal(/type: 'allow'/.test(decision), false);
+  assert.match(source, /taskBoardColumn\(/);
 });

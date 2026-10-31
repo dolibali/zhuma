@@ -1036,50 +1036,73 @@ export function WorkbenchPage({
         )}
         {section === 'projects' && !activeProject && !!projects.length && (
           <div className="zm-directory zm-project-directory">
-            {projects.map((p) => (
-              <article className="zm-directory-row" key={p.id} aria-label={p.name}>
-                <span className="zm-directory-symbol" aria-hidden>
-                  ▱
-                </span>
-                <div className="zm-directory-content">
-                  <Button
-                    variant="quiet"
-                    className="zm-directory-title"
-                    onClick={() => {
-                      setActiveProjectId(p.id);
-                      setProjectTab('overview');
-                      setSearch('');
-                    }}
+            {projects.map((p) => {
+              const openProject = () => {
+                setActiveProjectId(p.id);
+                setProjectTab('work');
+                setSearch('');
+              };
+              return (
+                <article
+                  className="zm-directory-row"
+                  key={p.id}
+                  aria-label={p.name}
+                  tabIndex={0}
+                  onClick={openProject}
+                  onKeyDown={(event) => {
+                    // Nested 编辑／创建任务 must keep Enter／Space; only the row itself opens.
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      openProject();
+                    }
+                  }}
+                >
+                  <span className="zm-directory-symbol" aria-hidden>
+                    ▱
+                  </span>
+                  <div className="zm-directory-content">
+                    <Button
+                      variant="quiet"
+                      className="zm-directory-title"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openProject();
+                      }}
+                    >
+                      {p.name}
+                    </Button>
+                    <p title={p.description}>{p.description || '暂无项目背景'}</p>
+                  </div>
+                  <span className="zm-directory-meta">
+                    {state.tasks.filter((t) => t.projectId === p.id).length} 项任务
+                  </span>
+                  <div
+                    className="zm-directory-actions"
+                    onClick={(event) => event.stopPropagation()}
                   >
-                    {p.name}
-                  </Button>
-                  <p title={p.description}>{p.description || '暂无项目背景'}</p>
-                </div>
-                <span className="zm-directory-meta">
-                  {state.tasks.filter((t) => t.projectId === p.id).length} 项任务
-                </span>
-                <div className="zm-directory-actions">
-                  <Button
-                    variant="quiet"
-                    disabled={!!member && !capabilities?.createProject}
-                    onClick={() => openDialog({ kind: 'project', value: p })}
-                  >
-                    编辑
-                  </Button>
-                  <Button
-                    disabled={!!member && !capabilities?.createTask}
-                    onClick={() => {
-                      setActiveProjectId(p.id);
-                      setProjectTab('work');
-                      setSearch('');
-                      newTask(p.id);
-                    }}
-                  >
-                    创建任务
-                  </Button>
-                </div>
-              </article>
-            ))}
+                    <Button
+                      variant="quiet"
+                      disabled={!!member && !capabilities?.createProject}
+                      onClick={() => openDialog({ kind: 'project', value: p })}
+                    >
+                      编辑
+                    </Button>
+                    <Button
+                      disabled={!!member && !capabilities?.createTask}
+                      onClick={() => {
+                        setActiveProjectId(p.id);
+                        setProjectTab('work');
+                        setSearch('');
+                        newTask(p.id);
+                      }}
+                    >
+                      创建任务
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
         {section === 'tasks' && (

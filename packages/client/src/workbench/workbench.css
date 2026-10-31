@@ -1876,6 +1876,10 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zhuma .zm-directory-title {
   padding: 3px 0;
   min-height: 0;
+  width: max-content;
+  max-width: 100%;
+  justify-items: start;
+  justify-self: start;
   text-align: left;
   font-size: 14px;
   font-weight: 550;
@@ -1883,7 +1887,14 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   overflow-wrap: anywhere;
 }
 .zm-directory-title .zm-button-label {
+  justify-content: flex-start;
   white-space: normal;
+}
+.zm-project-directory .zm-directory-row {
+  cursor: pointer;
+}
+.zm-project-directory .zm-directory-content {
+  text-align: left;
 }
 .zm-directory-content p {
   color: var(--zm-muted);
@@ -5199,6 +5210,29 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-board-empty {
   color: var(--zm-muted);
   font-size: 12px;
+}
+.zm-board-drag-notice {
+  grid-column: 1 / -1;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--zm-warning-soft);
+  color: var(--zm-warning);
+  font-size: 13px;
+}
+.zm-board-column.is-drop-target {
+  outline: 2px dashed var(--zm-line-strong);
+  outline-offset: -2px;
+  background: var(--zm-hover);
+}
+.zhuma .zm-board-card.is-dragging {
+  opacity: 0.45;
+}
+.zhuma .zm-board-card[draggable='true'] {
+  cursor: grab;
+}
+.zhuma .zm-board-card[draggable='true']:active {
+  cursor: grabbing;
 }
 .zm-codearts-setup {
   display: grid;
