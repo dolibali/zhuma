@@ -12,7 +12,7 @@ import { configureDeploymentMode, type IdentityExecutionOptions } from './member
 import { createHostDirectoryLifecycle } from './host-directory-lifecycle.js';
 import { openWorkbench, inject as workbenchInject } from './workbench-plugin.js';
 import { WORKBENCH_HTTP_LIMITS } from './workbench-http.js';
-import { memberWorkbenchDirectoryFor } from './member-workbench-directory.js';
+import { createHostMemberDirectory } from './host-member-directory.js';
 import { defaultMemberTemplates } from './member-template-catalog.js';
 import { mergeDefaultMemberEngineeringSkills } from './member-engineering-skill-catalog.js';
 
@@ -36,8 +36,10 @@ import { enableMemberWeb } from './member-web-transport.js';
 import { openMemberWebEntry } from './member-web-entry.js';
 import { openIdentityMemberHttp } from './identity-member-http.js';
 import { openHostKnowledge } from './host-knowledge.js';
+import { openHostMemberAssets } from './host-member-assets.js';
 import { mountHostSharedBackend } from './host-shared-backend-http.js';
 import { openHostMemberLocalOptionsHttp } from './host-member-local-options-http.js';
+import { openHostCodeArtsSetup } from './host-codearts-setup.js';
 import {
   createHostNativeOwnerLifecycle,
   HostNativeOpenRefusal,
@@ -213,9 +215,12 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   // Registers fail-closed streaming gates before the first asynchronous domain open.
   // The same clone-producing closure is shared with execution; no second workbench domain.
   let closed = false;
+  const codeArtsSetup = openHostCodeArtsSetup(ctx);
   const directoryLifecycle = createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
+  const memberDirectory = createHostMemberDirectory(ctx);
   let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
   let knowledge: ReturnType<typeof openHostKnowledge> | undefined;
+  let memberAssets: ReturnType<typeof openHostMemberAssets> | undefined;
   let identityMembers: IdentityMemberLifecycleHandle | undefined;
   const identityHttp =
     config.deploymentMode === 'multi-member'
@@ -340,8 +345,10 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   const beforeClose = async () => {
     closed = true;
+    const codeArtsClosing = codeArtsSetup.close();
     sessionAdmission?.close();
     const identityClosing = identityHttp?.close();
+    const assetClosing = memberAssets?.close();
     const knowledgeClosing = knowledge?.close();
     localSetup?.close();
     const setupClosing = localSetupHttp?.close();
@@ -354,7 +361,11 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       // Keep the shared Workbench facts available until native cleanup has
       // committed through the original execution owner.
       try {
-        await setupClosing;
+        const results = await Promise.allSettled([setupClosing, assetClosing, codeArtsClosing]);
+        const errors = results.flatMap((value) =>
+          value.status === 'rejected' ? [value.reason] : [],
+        );
+        if (errors.length) throw new AggregateError(errors, 'Member setup/assets close failed.');
       } finally {
         try {
           await identityClosing;
@@ -452,6 +463,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
         return undefined;
       }
       let http: ReturnType<typeof workbench.openMemberWorkbench>;
+      let assets: ReturnType<typeof openHostMemberAssets> | undefined;
       try {
         await localSetup?.restore();
         const configuredCatalog =
@@ -497,14 +509,21 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                   resources.assets,
                   ZHUMA_PUBLIC_ENGINEERING_SKILLS,
                 );
-          return { experts: resources.experts, assets: [...assets, ...templates] };
+          const published = memberAssets?.publishedDefinitions(spaceId) ?? {
+            experts: [],
+            assets: [],
+          };
+          return {
+            experts: [...resources.experts, ...published.experts],
+            assets: [...assets, ...templates, ...published.assets],
+          };
         };
         if (closed) {
           await operations?.close();
           return undefined;
         }
-        http = workbench.openMemberWorkbench(ctx, {
-          directory: () => memberWorkbenchDirectoryFor(ctx),
+        const memberOptions: Parameters<typeof workbench.openMemberWorkbench>[1] = {
+          directory: memberDirectory,
           writer: () => {
             const current = directoryLifecycle.currentDirectory();
             if (!current) return undefined;
@@ -513,8 +532,20 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
           model: workbench.planningModel,
           catalog,
           ...(operations ? { operations: operations.journal } : {}),
+        };
+        assets = openHostMemberAssets(ctx, {
+          workbench,
+          member: memberOptions,
+          knowledge: () => knowledge?.catalogSource(),
+          limits: { bodyBytes: config.bodyBytes, bodyTimeoutMs: config.bodyTimeoutMs },
+          ...(config.remoteExecution
+            ? { execution: () => (closed || runsClosed ? undefined : remoteExecution) }
+            : {}),
         });
+        http = workbench.openMemberWorkbench(ctx, memberOptions);
+        memberAssets = assets;
       } catch (error) {
+        await assets?.close();
         await operations?.close();
         throw error;
       }
@@ -525,7 +556,12 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             try {
               await http.close();
             } finally {
-              await operations?.close();
+              try {
+                if (memberAssets === assets) memberAssets = undefined;
+                await assets?.close();
+              } finally {
+                await operations?.close();
+              }
             }
           })());
         },
@@ -557,9 +593,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       let nativeFailedAndDisposed = false;
       const mount = ctx.plugin(executionPlugin, {
         readWorkbench: workbench.readWorkbench,
-        ...(config.deploymentMode === 'multi-member'
-          ? { memberDirectory: () => memberWorkbenchDirectoryFor(ctx) }
-          : {}),
+        ...(config.deploymentMode === 'multi-member' ? { memberDirectory } : {}),
         publishRunService(service) {
           nativeMount = ctx.plugin(nativeRunPlugin, {
             async open(nativeCtx: Context) {
@@ -571,6 +605,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
                 signal: lifetime.signal,
                 readWorkbench: workbench.readWorkbench,
                 prepareProjectKnowledge: knowledgeOwner.projectSnapshot,
+                ...(memberAssets ? { teamAssets: memberAssets.runSources } : {}),
                 skillPolicies: workbench.createRunSkillPolicies(service),
                 localExecution: config.localExecution,
                 remoteOnly: config.remoteExecution === true,

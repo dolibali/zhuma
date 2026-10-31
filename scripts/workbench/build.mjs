@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { publicTeamStarterPackages } from '../lib/team-starter-packages.mjs';
 import { publicMemberTemplates } from '../lib/member-template-defaults.mjs';
 import { publicMemberEngineeringSkills } from '../lib/member-engineering-skills.mjs';
+import { createHash } from 'node:crypto';
+import { isBuiltin } from 'node:module';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const hostOnly = process.argv.slice(2).includes('--host-only');
@@ -26,6 +28,79 @@ const compile = spawnSync(
 if (compile.error || compile.status !== 0) throw new Error('Workbench type build failed.');
 const out = resolve(root, '.build/workbench');
 await mkdir(out, { recursive: true });
+let codeArtsBuild;
+if (!hostOnly) {
+  codeArtsBuild = await build({
+    absWorkingDir: root,
+    entryPoints: ['packages/dsh-adapter/src/executors/codearts/main.ts'],
+    outfile: resolve(out, 'codearts-acp.js'),
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    metafile: true,
+  });
+  const policyBuild = await build({
+    absWorkingDir: root,
+    entryPoints: ['packages/dsh-adapter/src/host-codearts-policy.ts'],
+    outfile: resolve(out, 'codearts-policy.js'),
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    metafile: true,
+    external: ['@deepseek-ai/cordis'],
+    banner: {
+      js: 'import { createRequire as __zhumaCreateRequire } from "node:module"; const require = __zhumaCreateRequire(import.meta.url);',
+    },
+  });
+  for (const result of [codeArtsBuild, policyBuild])
+    if (
+      Object.values(result.metafile.outputs)
+        .flatMap((output) => output.imports)
+        .some(
+          (item) => item.external && !isBuiltin(item.path) && item.path !== '@deepseek-ai/cordis',
+        )
+    )
+      throw Error('CodeArts launch artifacts gained an external runtime dependency.');
+  codeArtsBuild.metafile.inputs = {
+    ...codeArtsBuild.metafile.inputs,
+    ...policyBuild.metafile.inputs,
+  };
+  const launchSources = Object.fromEntries(
+    await Promise.all(
+      Object.keys(codeArtsBuild.metafile.inputs)
+        .filter((path) => path.startsWith('packages/'))
+        .sort()
+        .map(async (path) => [
+          path,
+          createHash('sha256')
+            .update(await readFile(resolve(root, path)))
+            .digest('hex'),
+        ]),
+    ),
+  );
+  await writeFile(
+    resolve(out, 'codearts-acp.manifest.json'),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        sourceFiles: launchSources,
+        entry: 'codearts-acp.js',
+        sha256: createHash('sha256')
+          .update(await readFile(resolve(out, 'codearts-acp.js')))
+          .digest('hex'),
+        acpProtocolSdk: adapterManifest.dependencies['@agentclientprotocol/sdk'],
+        policySha256: createHash('sha256')
+          .update(await readFile(resolve(out, 'codearts-policy.js')))
+          .digest('hex'),
+        scope: 'Self-contained launch artifact; not CLI, model, login or business readiness',
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+}
 const engineeringSkills = await publicMemberEngineeringSkills();
 // The official Web bundle exposes Connection to this plugin, not every SDK
 // peer of its base bundle. Bundle only the pure definition/key helpers; live
@@ -108,6 +183,19 @@ if (
 )
   throw new Error('Workbench bundled a live SDK storage or credentials service implementation.');
 if (hostOnly) {
+  const launch = JSON.parse(await readFile(resolve(out, 'codearts-acp.manifest.json'), 'utf8'));
+  if (!launch.sourceFiles || !Object.keys(launch.sourceFiles).length)
+    throw Error('Launch inputs missing; run the complete workbench build.');
+  for (const [path, digest] of Object.entries(launch.sourceFiles)) {
+    if (
+      !path.startsWith('packages/') ||
+      path.includes('..') ||
+      createHash('sha256')
+        .update(await readFile(resolve(root, path)))
+        .digest('hex') !== digest
+    )
+      throw Error('Launch inputs changed; run the complete workbench build.');
+  }
   // A Host refresh cannot silently change the already assembled peer graph/UI.
   const previous = JSON.parse(await readFile(resolve(out, 'package.json'), 'utf8'));
   const peers = [...new Set(hostSdkImports)].sort();
@@ -121,6 +209,8 @@ if (hostOnly) {
   )
     throw new Error('Host SDK peers changed; run the complete workbench build first.');
   for (const name of ['client.js', 'LICENSE', 'THIRD_PARTY_LICENSES.txt'])
+    await readFile(resolve(out, name));
+  for (const name of ['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'])
     await readFile(resolve(out, name));
   const retainedLicenses = await readFile(resolve(out, 'THIRD_PARTY_LICENSES.txt'), 'utf8');
   if (engineeringSkills.licenses.some(({ text }) => !retainedLicenses.includes(text)))
@@ -170,6 +260,7 @@ if (hostOnly) {
         license: 'MIT',
         type: 'module',
         main: './index.js',
+        zhuma: { codeArtsLaunch: 1 },
         exports: {
           '.': './index.js',
           './client': './client.js',
@@ -218,6 +309,7 @@ if (hostOnly) {
     ...Object.keys(hostBuild.metafile.inputs),
     ...Object.keys(clientBuild.metafile.inputs),
     ...Object.keys(memberWebBuild.metafile.inputs),
+    ...Object.keys(codeArtsBuild.metafile.inputs),
   ]) {
     if (!input.includes('node_modules/')) continue;
     let directory = dirname(resolve(root, input));

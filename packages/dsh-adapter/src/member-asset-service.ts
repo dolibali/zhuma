@@ -2,11 +2,24 @@ import { createHash, randomUUID } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import {
   MEMBER_ASSET_LIMITS,
+  MEMBER_ASSET_IMPORT_LIMITS,
+  MEMBER_ASSET_FOLDER_LIMITS,
+  MemberAssetFoldersSchema,
+  MemberAssetFolderRecordSchema,
+  MemberAssetFolderCreateSchema,
+  MemberAssetFolderCreateValueSchema,
+  MemberAssetFolderListQuerySchema,
+  MemberAssetFolderListValueSchema,
+  MemberAssetPreviewImportQuerySchema,
+  MemberAssetPreviewImportValueSchema,
+  MemberAssetImportDraftsQuerySchema,
+  MemberAssetImportDraftsValueSchema,
   MemberAssetCommandSchema,
   MemberAssetCommandValueSchema,
   MemberAssetListQuerySchema,
   MemberAssetListValueSchema,
   MemberAssetLegacyListValueSchema,
+  MemberAssetLegacySourceValueSchema,
   MemberAssetLegacySourceSchema,
   MemberAssetLegacySummarySchema,
   MemberAssetDefinitionSchema,
@@ -18,13 +31,19 @@ import {
   MemberAssetRecordSchema,
   MemberAssetReferenceSchema,
   MemberAssetReferenceValueSchema,
+  MemberAssetFileSnapshotQuerySchema,
   MemberAssetRegistrySchema,
+  MemberAssetFileSnapshotValueSchema,
   ParticipantSchema,
   AssetSchema,
   WorkbenchError,
   canonicalPayload,
   memberAssetVersionDigestInput,
   memberAssetDefinitionId,
+  memberAssetImportSkillSlotId,
+  applyResourceImport,
+  emptyWorkbench,
+  memberAssetFileSnapshotDigestInput,
   packageFileBytes,
   packageFileText,
   parseWorkflowTemplate,
@@ -40,6 +59,14 @@ import {
   type MemberAssetRecord,
   type MemberAssetReference,
   type MemberAssetLegacySource,
+  type MemberAssetFileSnapshot,
+  type MemberAssetFileSnapshotQuery,
+  type MemberAssetReadValue,
+  type MemberAssetFolderRecord,
+  type MemberAssetFolderCreate,
+  type MemberAssetFolderListQuery,
+  type MemberAssetPreviewImportQuery,
+  type MemberAssetImportDraftsQuery,
   type PackageFile,
 } from '@zhuma/agent-core';
 import type { ExecutionMemberLease } from './execution-run-authority.js';
@@ -58,8 +85,23 @@ import type {
   MemberAssetFileTicket,
   MemberAssetFileReceipt,
 } from './member-asset-file-contract.js';
+import { preflightTeamAssetImport, type TeamAssetImportPreflight } from './team-asset-import.js';
 
 const hash = (value: unknown) => createHash('sha256').update(canonicalPayload(value)).digest('hex');
+/** UUIDv5 identifies an actual original immutable imported package, never a
+ * publication or grant. Integrity/permission still use SHA256 and live leases. */
+function importPackageVersion(actorId: string, spaceId: string, key: string) {
+  const namespace = Buffer.from('6ba7b8109dad11d180b400c04fd430c8', 'hex');
+  const value = createHash('sha1')
+    .update(namespace)
+    .update(`zhuma:member-assets:import:1:${canonicalPayload({ actorId, spaceId, key })}`)
+    .digest()
+    .subarray(0, 16);
+  value[6] = (value[6]! & 0x0f) | 0x50;
+  value[8] = (value[8]! & 0x3f) | 0x80;
+  const hex = value.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 const messages: Record<MemberAssetErrorCode, string> = {
   'asset-unavailable': '资产服务暂不可用。',
   'asset-not-found': '找不到该资产或固定版本。',
@@ -119,6 +161,39 @@ export interface MemberAssetServiceOptions {
   /** Same Host catalog used by original member task creation, never a Client grant.
    * Projection below does not call this closure, so catalog assembly cannot recurse. */
   readonly catalog?: (spaceId: string) => Promise<MemberWorkbenchCatalog>;
+}
+
+/** Pure projection of this original fact owner's exact published files. The
+ * caller still owns member/space/project authorization and the writer queue. */
+export function memberAssetFixedFiles(
+  raw: readonly MemberAssetRecord[],
+  input: MemberAssetFileSnapshotQuery,
+): MemberAssetFileSnapshot['files'] {
+  const query = MemberAssetFileSnapshotQuerySchema.safeParse(input);
+  if (!query.success) return fail('asset-reference-denied');
+  if (!query.data.references.length) return [];
+  const records = MemberAssetRegistrySchema.safeParse(raw);
+  if (!records.success) return fail('asset-unavailable');
+  return query.data.references.map((reference) => {
+    const record = records.data.find(
+      (value) => value.spaceId === query.data.spaceId && value.assetId === reference.assetId,
+    );
+    const version = record?.published.find(
+      (value) => value.reference.versionId === reference.versionId,
+    );
+    if (
+      record?.kind !== 'file' ||
+      !version ||
+      version.definition.kind !== 'file' ||
+      canonicalPayload(version.reference) !== canonicalPayload(reference) ||
+      hash(memberAssetVersionDigestInput(version)) !== reference.sha256
+    )
+      return fail('asset-reference-denied');
+    if (!version.blob || version.blob.attachmentId !== `sha256:${version.blob.sha256}`)
+      return fail('asset-file-invalid');
+    const { attachmentId: _privateHandle, ...file } = version.blob;
+    return { reference: version.reference, file };
+  });
 }
 
 /** Pure Host projection, not a new grant or fact store. All historical publications
@@ -199,6 +274,7 @@ export class MemberAssetService
   private readonly reads = new Set<FileReadState>();
   private readonly openings = new Set<Promise<unknown>>();
   private openingUploads = 0;
+  private imports = 0;
   private openingReads = 0;
   private closed = false;
   private cleanupFailed = false;
@@ -223,6 +299,430 @@ export class MemberAssetService
     if (this.closed || this.options.signal.aborted || this.cleanupFailed)
       return fail('asset-unavailable');
     return memberAssetPublishedCatalog(this.workbench.memberAssetRecords(), spaceId);
+  }
+
+  private folderSummary(row: MemberAssetFolderRecord) {
+    const {
+      schemaVersion: _schema,
+      idempotencyKey: _key,
+      fingerprint: _fingerprint,
+      ...value
+    } = row;
+    return value;
+  }
+
+  private folders(raw = this.workbench.memberAssetFolderRecords()) {
+    const result = MemberAssetFoldersSchema.safeParse(raw);
+    if (!result.success) return fail('asset-unavailable');
+    return result.data;
+  }
+
+  private folderPath(
+    rows: readonly MemberAssetFolderRecord[],
+    spaceId: string,
+    folderId: string | null,
+  ) {
+    const path: ReturnType<MemberAssetService['folderSummary']>[] = [];
+    let current = folderId;
+    while (current !== null) {
+      const row = rows.find((item) => item.spaceId === spaceId && item.folderId === current);
+      if (!row) return fail('asset-not-found');
+      if (
+        path.some((item) => item.folderId === row.folderId) ||
+        path.length >= MEMBER_ASSET_FOLDER_LIMITS.depth
+      )
+        return fail('asset-unavailable');
+      path.unshift(this.folderSummary(row));
+      current = row.parentFolderId;
+    }
+    return path;
+  }
+
+  listFolder(request: MemberRequest, raw: MemberAssetFolderListQuery, signal: AbortSignal) {
+    const parsed = MemberAssetFolderListQuerySchema.safeParse(raw);
+    if (!parsed.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    const input = parsed.data;
+    return this.scoped(request, input.spaceId, signal, async (access) => {
+      const folders = this.folders();
+      const path = this.folderPath(folders, access.spaceId, input.folderId);
+      const children = folders
+        .filter((row) => row.spaceId === access.spaceId && row.parentFolderId === input.folderId)
+        .map((row) => this.folderSummary(row))
+        .sort((a, b) => a.name.localeCompare(b.name, 'en'));
+      const files = this.records()
+        .filter(
+          (row) =>
+            row.spaceId === access.spaceId &&
+            row.kind === 'file' &&
+            (row.folderId ?? null) === input.folderId &&
+            (row.published.length > 0 ||
+              (input.includeDrafts && row.draft && row.maintainerIds.includes(access.actorId))),
+        )
+        .map((row) => this.summary(access, row, !!input.includeDrafts));
+      return MemberAssetFolderListValueSchema.parse({
+        actorId: access.actorId,
+        spaceId: access.spaceId,
+        folderId: input.folderId,
+        path,
+        folders: children,
+        files,
+      });
+    });
+  }
+
+  createFolder(request: MemberRequest, raw: MemberAssetFolderCreate, signal: AbortSignal) {
+    const parsed = MemberAssetFolderCreateSchema.safeParse(raw);
+    if (!parsed.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    const input = parsed.data;
+    return this.scoped(request, input.spaceId, signal, async (access) => {
+      const fingerprint = hash({ actorId: access.actorId, command: input });
+      return this.workbench.memberAssetCommand(
+        access.signal,
+        access.assertCurrent,
+        async (_records, rawFolders) => {
+          const folders = this.folders(rawFolders);
+          const prior = folders.find(
+            (row) =>
+              row.spaceId === access.spaceId &&
+              row.createdBy === access.actorId &&
+              row.idempotencyKey === input.idempotencyKey,
+          );
+          const value = (row: MemberAssetFolderRecord, disposition: 'applied' | 'replayed') =>
+            MemberAssetFolderCreateValueSchema.parse({
+              actorId: access.actorId,
+              spaceId: access.spaceId,
+              resultVersion: 1,
+              disposition,
+              folder: this.folderSummary(row),
+            });
+          if (prior) {
+            if (prior.fingerprint !== fingerprint) return fail('asset-request-reused');
+            return { value: value(prior, 'replayed') };
+          }
+          if (
+            folders.some(
+              (row) =>
+                row.folderId === input.folderId ||
+                (row.spaceId === access.spaceId &&
+                  row.parentFolderId === input.parentFolderId &&
+                  row.name.toLowerCase() === input.name.toLowerCase()),
+            )
+          )
+            return fail('asset-conflict');
+          const path = this.folderPath(folders, access.spaceId, input.parentFolderId);
+          if (
+            folders.length >= MEMBER_ASSET_FOLDER_LIMITS.folders ||
+            path.length >= MEMBER_ASSET_FOLDER_LIMITS.depth
+          )
+            return fail('asset-quota');
+          const { expectedVersion: _expected, ...facts } = input;
+          const row = MemberAssetFolderRecordSchema.parse({
+            schemaVersion: 1,
+            ...facts,
+            createdBy: access.actorId,
+            version: 1,
+            fingerprint,
+          });
+          const next = [...folders, row];
+          if (!MemberAssetFoldersSchema.safeParse(next).success) return fail('asset-quota');
+          return { folders: next, value: value(row, 'applied') };
+        },
+      );
+    });
+  }
+
+  /** Reference-only preparation for a newly admitted Run. Explicit fixed reads
+   * later repeat original member, complete Run and FileAuthority checks. */
+  fileSnapshot(request: MemberRequest, raw: MemberAssetFileSnapshotQuery, signal: AbortSignal) {
+    const parsed = MemberAssetFileSnapshotQuerySchema.safeParse(raw);
+    if (!parsed.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    return this.scoped(request, parsed.data.spaceId, signal, async (access) => {
+      const files = memberAssetFixedFiles(this.records(), parsed.data);
+      files.sort((a, b) => a.reference.assetId.localeCompare(b.reference.assetId, 'en'));
+      const snapshot: MemberAssetFileSnapshot = {
+        sourceVersion: 'zhuma-native-team-assets@1',
+        spaceId: access.spaceId,
+        files,
+        sha256: '0'.repeat(64),
+      };
+      snapshot.sha256 = hash(memberAssetFileSnapshotDigestInput(snapshot));
+      return MemberAssetFileSnapshotValueSchema.parse({ actorId: access.actorId, snapshot });
+    });
+  }
+
+  private async imported<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.imports >= MEMBER_ASSET_IMPORT_LIMITS.active)
+      return Promise.reject(new WorkbenchError('asset-unavailable', messages['asset-unavailable']));
+    this.imports++;
+    try {
+      return await operation();
+    } finally {
+      this.imports--;
+    }
+  }
+
+  private async preflightImport(
+    access: Access,
+    upload: MemberAssetPreviewImportQuery['upload'],
+  ): Promise<TeamAssetImportPreflight> {
+    try {
+      const result = await preflightTeamAssetImport(upload, {
+        signal: access.signal,
+        assertCurrent: access.assertCurrent,
+      });
+      access.assertCurrent();
+      return result;
+    } catch {
+      access.assertCurrent();
+      return fail('asset-invalid');
+    }
+  }
+
+  previewImport(request: MemberRequest, raw: MemberAssetPreviewImportQuery, signal: AbortSignal) {
+    const query = MemberAssetPreviewImportQuerySchema.safeParse(raw);
+    if (!query.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    return this.imported(() =>
+      this.scoped(request, query.data.spaceId, signal, async (access) => {
+        const { preview, packageChecksum } = await this.preflightImport(access, query.data.upload);
+        return MemberAssetPreviewImportValueSchema.parse({
+          actorId: access.actorId,
+          spaceId: access.spaceId,
+          packageChecksum,
+          items: preview.items,
+          ignored: preview.ignored,
+        });
+      }),
+    );
+  }
+
+  importDrafts(request: MemberRequest, raw: MemberAssetImportDraftsQuery, signal: AbortSignal) {
+    const query = MemberAssetImportDraftsQuerySchema.safeParse(raw);
+    if (!query.success)
+      return Promise.reject(new WorkbenchError('asset-invalid', messages['asset-invalid']));
+    const input = query.data;
+    return this.imported(() =>
+      this.scoped(request, input.spaceId, signal, async (access) => {
+        const actual = await this.preflightImport(access, input.upload);
+        if (actual.packageChecksum !== input.packageChecksum) return fail('asset-conflict');
+        if (
+          input.choices.some(
+            (choice) => !actual.preview.items.some((item) => item.key === choice.key),
+          )
+        )
+          return fail('asset-invalid');
+        const packageVersionId = importPackageVersion(
+          access.actorId,
+          access.spaceId,
+          input.idempotencyKey,
+        );
+        const fingerprint = hash({
+          actorId: access.actorId,
+          spaceId: access.spaceId,
+          operation: 'import-drafts',
+          packageChecksum: actual.packageChecksum,
+          choices: input.choices,
+        });
+        const source = {
+          kind: 'import' as const,
+          versionId: packageVersionId,
+          sha256: actual.packageChecksum,
+        };
+        // Only original static parsing: this temporary Workbench is never stored,
+        // enabled or used as task authority. Include all package items to retain
+        // physical missing-file information separately from unpublished choices.
+        const usedNames = new Set(
+          input.choices.map((choice) => choice.name.normalize('NFC').toLowerCase()),
+        );
+        const parsed = applyResourceImport(emptyWorkbench(), {
+          versionId: packageVersionId,
+          files: actual.preview.files,
+          choices: actual.preview.items.map((item, index) => {
+            const selected = input.choices.find((choice) => choice.key === item.key);
+            let temporaryName = `source-item-${index}`,
+              suffix = 0;
+            while (usedNames.has(temporaryName)) temporaryName = `source-item-${index}-${++suffix}`;
+            usedNames.add(temporaryName);
+            return {
+              key: item.key,
+              id: selected?.id ?? `source-item-${index}`,
+              name: selected?.name ?? temporaryName,
+              description: selected?.description ?? item.description,
+              role: selected?.role ?? item.role,
+              capabilities: selected?.capabilities ?? item.capabilities,
+              replace: false,
+              available: true,
+            };
+          }),
+        });
+        return this.workbench.memberAssetCommand(
+          access.signal,
+          access.assertCurrent,
+          async (records) => {
+            const prior = records.filter(
+              (record) =>
+                record.spaceId === access.spaceId &&
+                record.ownerId === access.actorId &&
+                record.receipts.some(
+                  (receipt) =>
+                    receipt.operation === 'import-drafts' &&
+                    receipt.idempotencyKey === input.idempotencyKey,
+                ),
+            );
+            const result = (
+              disposition: 'applied' | 'replayed',
+              rows: readonly MemberAssetRecord[],
+            ) =>
+              MemberAssetImportDraftsValueSchema.parse({
+                disposition,
+                actorId: access.actorId,
+                spaceId: access.spaceId,
+                source,
+                assets: input.choices.map((choice) => {
+                  const record = rows.find((item) => item.assetId === choice.id);
+                  if (!record) return fail('asset-unavailable');
+                  return this.summary(access, record, true);
+                }),
+                resultVersions: input.choices.map((choice) => ({ assetId: choice.id, version: 1 })),
+              });
+            if (prior.length) {
+              if (
+                prior.length !== input.choices.length ||
+                prior.some(
+                  (record) =>
+                    !input.choices.some((choice) => choice.id === record.assetId) ||
+                    !record.receipts.some(
+                      (receipt) =>
+                        receipt.idempotencyKey === input.idempotencyKey &&
+                        receipt.fingerprint === fingerprint,
+                    ),
+                )
+              )
+                return fail('asset-request-reused');
+              const original = this.workbench.memberAssetPackage(packageVersionId);
+              if (!original || hash(original.files) !== actual.packageChecksum)
+                return fail('asset-unavailable');
+              return { value: result('replayed', prior) };
+            }
+            if (records.length + input.choices.length > MEMBER_ASSET_LIMITS.assets)
+              return fail('asset-quota');
+            if (
+              input.choices.some((choice) => records.some((record) => record.assetId === choice.id))
+            )
+              return fail('asset-conflict');
+            const created: MemberAssetRecord[] = input.choices.map((choice) => {
+              this.dependencies(access, records, choice.dependencies);
+              const item = actual.preview.items.find((item) => item.key === choice.key)!;
+              let definition: MemberAssetDefinition;
+              if (item.kind === 'expert') {
+                const value = parsed.participants.find((value) => value.id === choice.id)!;
+                definition = {
+                  kind: 'expert',
+                  name: value.name,
+                  description: choice.description,
+                  role: value.role,
+                  capabilities: value.capabilities,
+                  instructions: value.instructions,
+                  ...(value.origin ? { origin: value.origin } : {}),
+                };
+              } else {
+                const value = parsed.assets.find((value) => value.id === choice.id)!;
+                definition = {
+                  kind: item.kind,
+                  name: value.name,
+                  description: value.description,
+                  content: value.content,
+                  ...(value.origin ? { origin: value.origin } : {}),
+                };
+              }
+              return MemberAssetRecordSchema.parse({
+                schemaVersion: 1,
+                spaceId: access.spaceId,
+                assetId: choice.id,
+                kind: item.kind,
+                ownerId: access.actorId,
+                maintainerIds: [access.actorId],
+                version: 1,
+                draft: {
+                  definition,
+                  dependencies: choice.dependencies,
+                  source: {
+                    ...source,
+                    entryPath: item.key,
+                    ...(item.sourceId ? { sourceId: item.sourceId } : {}),
+                    ...(item.sourceVersion ? { sourceVersion: item.sourceVersion } : {}),
+                  },
+                },
+                published: [],
+                uploads: [],
+                receipts: [
+                  {
+                    operation: 'import-drafts',
+                    idempotencyKey: input.idempotencyKey,
+                    fingerprint,
+                    resultVersion: 1,
+                  },
+                ],
+              });
+            });
+            const next = [...records, ...created];
+            if (!MemberAssetRegistrySchema.safeParse(next).success) return fail('asset-quota');
+            const oldPackage = this.workbench.memberAssetPackage(packageVersionId);
+            if (oldPackage && hash(oldPackage.files) !== actual.packageChecksum)
+              return fail('asset-request-reused');
+            await this.workbench.putMemberAssetPackage({
+              versionId: packageVersionId,
+              files: actual.preview.files,
+              digest: createHash('sha256')
+                .update(JSON.stringify(actual.preview.files))
+                .digest('hex'),
+            });
+            return { records: next, value: result('applied', created) };
+          },
+        );
+      }),
+    );
+  }
+
+  private importRequirements(
+    access: Access,
+    records: readonly MemberAssetRecord[],
+    selected: NonNullable<MemberAssetRecord['draft']>,
+  ): NonNullable<MemberAssetReadValue['requirements']> {
+    if (selected.source?.kind !== 'import' || selected.definition.kind !== 'expert') return [];
+    const source = selected.source;
+    const original = this.workbench.memberAssetPackage(source.versionId);
+    if (!original || hash(original.files) !== source.sha256) return fail('asset-unavailable');
+    const key = source.entryPath ?? selected.definition.origin?.entryPath;
+    const preview = previewResourcePackage(original.files, parseWorkflowTemplate);
+    const item = preview.items.find((item) => item.key === key && item.kind === 'expert');
+    if (!item) return fail('asset-unavailable');
+    return item.skillKeys.map((sourceKey, index) => {
+      const skill = preview.items.find((item) => item.key === sourceKey && item.kind === 'skill');
+      const suggested =
+        skill &&
+        records.find((record) => {
+          const candidate = (record.draft ?? record.published.at(-1))?.source;
+          return (
+            record.spaceId === access.spaceId &&
+            record.kind === 'skill' &&
+            (record.published.length || record.maintainerIds.includes(access.actorId)) &&
+            candidate?.kind === 'import' &&
+            candidate.versionId === source.versionId &&
+            candidate.entryPath === sourceKey
+          );
+        });
+      return {
+        slotId: memberAssetImportSkillSlotId(index),
+        kind: 'skill' as const,
+        name: skill?.name ?? sourceKey.slice(0, 160),
+        sourceKey,
+        ...(suggested ? { suggestedAssetId: suggested.assetId } : {}),
+      };
+    });
   }
 
   private async publicationCatalog(
@@ -424,6 +924,16 @@ export class MemberAssetService
         item.requirements.length > MEMBER_ASSET_LIMITS.dependencies
       )
         return fail('asset-unavailable');
+      if (
+        !MemberAssetLegacySourceValueSchema.safeParse({
+          actorId: access.actorId,
+          spaceId: access.spaceId,
+          source: summary.data.source,
+          definition: definition.data,
+          requirements: item.requirements,
+        }).success
+      )
+        return fail('asset-unavailable');
       const key = `${summary.data.kind}:${summary.data.source.assetId}`;
       if (keys.has(key)) return fail('asset-unavailable');
       keys.add(key);
@@ -454,13 +964,13 @@ export class MemberAssetService
         (item) => canonicalPayload(item.summary.source) === canonicalPayload(query.data),
       );
       if (!item) return fail('asset-reference-denied');
-      return {
+      return MemberAssetLegacySourceValueSchema.parse({
         actorId: access.actorId,
         spaceId: access.spaceId,
         source: item.summary.source,
         definition: item.definition,
         requirements: item.requirements,
-      };
+      });
     });
   }
 
@@ -497,6 +1007,7 @@ export class MemberAssetService
       name: selected?.definition.name ?? record.assetId,
       description: selected?.definition.description ?? '',
       ownerId: record.ownerId,
+      ...(record.folderId !== undefined ? { folderId: record.folderId } : {}),
       maintainerIds: [...record.maintainerIds],
       version: record.version,
       canMaintain,
@@ -543,6 +1054,7 @@ export class MemberAssetService
         'draft' in query.data ? record.draft : this.fixed(record, query.data.versionId);
       if (!selected) return fail('asset-not-found');
       const { blob, ...definition } = selected;
+      const requirements = this.importRequirements(access, this.records(), selected);
       return MemberAssetReadValueSchema.parse({
         actorId: access.actorId,
         asset: this.summary(access, record, draft),
@@ -553,6 +1065,7 @@ export class MemberAssetService
         dependencies: definition.dependencies,
         ...(definition.source ? { source: definition.source } : {}),
         ...(blob ? { file: this.fileDeclaration(blob) } : {}),
+        ...(requirements.length ? { requirements } : {}),
       });
     });
   }
@@ -1058,7 +1571,7 @@ export class MemberAssetService
         const result = await this.workbench.memberAssetCommand(
           access.signal,
           authorize,
-          async (records) => {
+          async (records, rawFolders) => {
             const previous = records.find(
               (item) => item.spaceId === input.spaceId && item.assetId === input.assetId,
             );
@@ -1094,6 +1607,8 @@ export class MemberAssetService
               if (records.length >= MEMBER_ASSET_LIMITS.assets) return fail('asset-quota');
               let draft: NonNullable<MemberAssetRecord['draft']>;
               if (input.operation === 'create-draft') {
+                if (input.folderId !== undefined)
+                  this.folderPath(this.folders(rawFolders), access.spaceId, input.folderId);
                 if ('origin' in input.definition && input.definition.origin)
                   return fail('asset-invalid');
                 draft = { definition: input.definition, dependencies: input.dependencies };
@@ -1173,6 +1688,9 @@ export class MemberAssetService
                 assetId: input.assetId,
                 kind: draft.definition.kind,
                 ownerId: access.actorId,
+                ...(input.operation === 'create-draft' && input.folderId !== undefined
+                  ? { folderId: input.folderId }
+                  : {}),
                 maintainerIds: [access.actorId],
                 version: 1,
                 draft,
@@ -1204,7 +1722,18 @@ export class MemberAssetService
             const next = structuredClone(previous);
             next.version++;
             let published: MemberAssetPublishedVersion | undefined;
-            if (input.operation === 'update-draft') {
+            if (input.operation === 'move-file') {
+              if (previous.kind !== 'file') return fail('asset-invalid');
+              if (
+                this.fileSlots.has(
+                  canonicalPayload({ spaceId: input.spaceId, assetId: input.assetId }),
+                ) ||
+                previous.uploads.some((upload) => upload.state === 'pending')
+              )
+                return fail('asset-upload-pending');
+              this.folderPath(this.folders(rawFolders), access.spaceId, input.folderId);
+              next.folderId = input.folderId;
+            } else if (input.operation === 'update-draft') {
               if (input.definition.kind !== previous.kind) return fail('asset-invalid');
               this.dependencies(access, records, input.dependencies);
               const old = previous.draft ?? previous.published.at(-1);
@@ -1238,6 +1767,18 @@ export class MemberAssetService
               if (previous.kind === 'file' && !previous.draft.blob)
                 return fail('asset-file-invalid');
               this.dependencies(access, records, previous.draft.dependencies);
+              const required = this.importRequirements(access, records, previous.draft);
+              if (
+                required.some(
+                  (item) =>
+                    !previous.draft!.dependencies.some(
+                      (dependency) =>
+                        dependency.slotId === item.slotId &&
+                        dependency.reference.kind === item.kind,
+                    ),
+                )
+              )
+                return fail('asset-dependency-required');
               if (previous.kind !== 'file') {
                 const fingerprint = await this.publicationCatalog(access, records, previous.kind);
                 publicationCheck = async () => {

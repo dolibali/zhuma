@@ -14,6 +14,7 @@ import {
   type MemberLocalAcceptInput,
 } from './member-local-execution-protocol.js';
 import { MemberLocalExecutionOwner } from './member-local-execution-owner.js';
+import { createHostMemberNativeTeamAssets } from './host-member-native-team-assets.js';
 import { createHostMemberNativeWorkflow } from './host-member-native-workflow.js';
 import { MemberLocalReviewProtocol } from './member-local-review-protocol.js';
 import { createHostMemberNativeReviews } from './host-member-native-review.js';
@@ -212,6 +213,12 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
     current: assertCurrent,
     admit,
   });
+  const teamAssets = createHostMemberNativeTeamAssets({
+    protocol,
+    lifetime: lifetime.signal,
+    current: assertCurrent,
+    admit,
+  });
   const workspaces = createHostMemberNativeWorkspaces(ctx, {
     connectionId: connection.connectionId,
     backendId: protocol.backendId,
@@ -225,6 +232,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       protocol,
       ...(reviewProtocol ? { review: { protocol: reviewProtocol } } : {}),
       knowledge: { create: knowledge.create },
+      teamAssets: { create: teamAssets.create },
       native: workspaces.native,
       ...(protocol.supportsFilePublishing
         ? { outputFiles: { resolveBytes: workspaces.output } }
@@ -243,6 +251,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       },
     });
   } catch (error) {
+    await teamAssets.close();
     await workspaces.close();
     await protocol.close();
     await reviewProtocol?.close();
@@ -429,6 +438,13 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
       ...(input.workflow ? { workflow: input.workflow } : {}),
       capabilities: {
         ...(knowledgeChoice ? { knowledge: native.knowledgeSource! } : {}),
+        ...(native.teamAssetSource
+          ? {
+              teamAssets: remoteLocalCapabilitiesSchema.shape.teamAssets
+                .unwrap()
+                .parse(native.teamAssetSource),
+            }
+          : {}),
         ...(needsResources && resources ? { resources } : {}),
         ...(acceptedInput ? { acceptedInput: '1' as const } : {}),
         ...(acceptedInput && protocol.supportsFilePublishing && native.acceptedFileSource
@@ -770,6 +786,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
         workflows.fence();
         reviews?.fence();
         knowledge.fence();
+        teamAssets.fence();
         // Native close owns physical cleanup before its original private
         // outgoing protocol or credentials adapter is sealed.
         closing = (async () => {
@@ -784,6 +801,7 @@ export async function openHostMemberNativeOwner(ctx: Context, backend: HostShare
           await Promise.allSettled(stopping);
           await reviewStopping;
           await native.close();
+          await teamAssets.close();
           await workflows.close();
           await workspaces.close();
           // Unknown accepts or unsettled original resources retain this closed

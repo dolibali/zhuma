@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
+import { verifyDesktopMemberTransport } from '../lib/desktop-member-transport.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({
   options: {
@@ -33,6 +34,10 @@ for (const file of [
   'apps/desktop/.desktop-build/targets/mac-arm64/runtime/primary-runtime/runtime.json',
 ])
   await access(join(stage, file));
+const desktopMemberTransport = await verifyDesktopMemberTransport(
+  stage,
+  join(root, 'packages/dsh-adapter/src/desktop-member-cookie.ts'),
+);
 const target = join(stage, 'packages/bundle/web-app/lib/zhuma-workbench');
 if (!(await realpath(target)).startsWith((await realpath(stage)) + '/'))
   throw Error('Plugin output must be an owned directory within this SDK');
@@ -47,6 +52,8 @@ const source = values.plugin ? resolve(values.plugin) : join(root, '.build/workb
   ];
 const current = JSON.parse(await readFile(join(target, 'package.json'), 'utf8'));
 const next = JSON.parse(await readFile(join(source, 'package.json'), 'utf8'));
+const launchFiles = ['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'];
+if (next.zhuma?.codeArtsLaunch === 1) files.push(...launchFiles);
 if (current.name !== '@zhuma/workbench' || next.name !== current.name)
   throw Error('Unexpected product plugin identity');
 if (JSON.stringify(current.peerDependencies) !== JSON.stringify(next.peerDependencies))
@@ -71,7 +78,8 @@ for (const file of files) {
   try {
     previous[file] = await hash(join(target, file));
   } catch (error) {
-    if (error.code !== 'ENOENT' || file !== 'member-web.js') throw error;
+    if (error.code !== 'ENOENT' || (file !== 'member-web.js' && !launchFiles.includes(file)))
+      throw error;
     previous[file] = null;
   }
   candidate[file] = await hash(join(source, file));
@@ -155,6 +163,7 @@ const report = {
   sourceCommit: frozen?.head ?? git(root, 'rev-parse', 'HEAD'),
   sourceTree: frozen?.tree ?? git(root, 'rev-parse', 'HEAD^{tree}'),
   sdkPin: pin,
+  desktopMemberTransport,
   target,
   backup,
   hashes: candidate,

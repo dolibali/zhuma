@@ -1,0 +1,475 @@
+diff --git a/src/host/composition/host-execution-owners.ts b/src/host/composition/host-execution-owners.ts
+index ae85e35..05d9875 100644
+--- a/src/host/composition/host-execution-owners.ts
++++ b/src/host/composition/host-execution-owners.ts
+@@ -1,4 +1,5 @@
+ import type { Context } from '@deepseek-ai/cordis'
++import type { AcpSessionContinuityState } from '../../runtime/session/continuity.ts'
+ import type { AcpRecoveryState } from '../../persistence/sidecar.ts'
+ 
+ export interface HostExecutionOwner {
+@@ -149,3 +150,77 @@ export function clearHostExecutionOwners(root: Context, sessionId: string): void
+   }
+   owners.delete(sessionId)
+ }
++
++/** Actual runtime resource handles, not a session/history index. The Host root
++ * survives plugin replacement; an unconfirmed old process must remain visible. */
++export interface HostLiveRuntime extends HostExecutionOwner {
++  readonly physicalCleanupConfirmed?: boolean | undefined
++  close(): Promise<void>
++}
++interface LiveRuntimeOwner {
++  readonly sessionId: string
++  readonly runtime: HostLiveRuntime
++  closing?: Promise<void>
++  closed: boolean
++}
++const liveRuntimeKey = Symbol.for('dsh-acp-adapter.live-runtime-owners.v1')
++function liveRuntimeOwners(root: Context): Map<HostLiveRuntime, LiveRuntimeOwner> {
++  const host = globalThis as typeof globalThis & {
++    [liveRuntimeKey]?: WeakMap<object, Map<HostLiveRuntime, LiveRuntimeOwner>>
++  }
++  const roots = (host[liveRuntimeKey] ??= new WeakMap())
++  const key = hostRoot(root)
++  let owners = roots.get(key)
++  if (owners === undefined) roots.set(key, (owners = new Map()))
++  return owners
++}
++
++/** Called at the original adapter's runtime allocation boundary. */
++export function retainLiveRuntime(root: Context, sessionId: string, runtime: HostLiveRuntime): void {
++  const owners = liveRuntimeOwners(root)
++  if (!owners.has(runtime)) owners.set(runtime, { sessionId, runtime, closed: false })
++}
++
++/** Observe the original close operation without changing its result or teardown. */
++export function closeLiveRuntime(root: Context, sessionId: string, runtime: HostLiveRuntime): Promise<void> {
++  retainLiveRuntime(root, sessionId, runtime)
++  const owner = liveRuntimeOwners(root).get(runtime)!
++  if (owner.closing !== undefined) return owner.closing
++  const completion = Promise.withResolvers<void>()
++  owner.closing = completion.promise
++  try {
++    void runtime.close().then(() => {
++      owner.closed = true
++      completion.resolve()
++    }, completion.reject)
++  } catch (error) {
++    completion.reject(error)
++  }
++  return completion.promise
++}
++
++/** Read only actual owned resources. Neither headers, sidecars, profile names
++ * nor an absent/failed close observer can prove that a process has drained. */
++export function listLiveRuntimeSessions(
++  root: Context,
++): readonly { readonly sessionId: string; readonly continuity: AcpSessionContinuityState }[] {
++  const owners = liveRuntimeOwners(root)
++  const sessions = new Map<string, AcpSessionContinuityState>()
++  for (const [runtime, owner] of owners) {
++    if (owner.closed && runtime.physicalCleanupConfirmed === true && ownerIsQuiescent(runtime)) {
++      owners.delete(runtime)
++      continue
++    }
++    sessions.set(owner.sessionId, {
++      status: 'blocked',
++      cause: owner.closing === undefined ? 'runtime-owned' : 'runtime-cleanup-unconfirmed',
++      detail: null,
++    })
++  }
++  // Original retained Host calls/feedback can outlive the transport too.
++  for (const [sessionId, retained] of registry().get(hostRoot(root)) ?? []) {
++    if (retained.size > 0)
++      sessions.set(sessionId, { status: 'blocked', cause: 'host-settlement-pending', detail: null })
++  }
++  return [...sessions].map(([sessionId, continuity]) => ({ sessionId, continuity }))
++}
+diff --git a/src/host/composition/index.ts b/src/host/composition/index.ts
+index bbe5397..9ba7163 100644
+--- a/src/host/composition/index.ts
++++ b/src/host/composition/index.ts
+@@ -33,7 +33,21 @@ export function apply(ctx: Context, config: Config): void {
+   ctx.inject(['settings'], (child) => {
+     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
+   })
+-  installInstalledProfileRegistry(ctx, config, { installRemote: true })
++  installInstalledProfileRegistry(ctx, config, {
++    installRemote: true,
++    nativeToolHandoffGuard: (id, profile) => {
++      // Optional local Host policy, never a renderer/config boolean or profile
++      // name heuristic. A producer's captured guard survives only its generation.
++      const policy: unknown = ctx.get('acpNativeToolHandoffPolicy')
++      if (policy === undefined) return undefined
++      if (policy === null || typeof policy !== 'object' || typeof Reflect.get(policy, 'guardForProfile') !== 'function')
++        throw new TypeError('Native tool handoff policy is unavailable')
++      const guard: unknown = Reflect.apply(Reflect.get(policy, 'guardForProfile'), policy, [id, profile])
++      if (guard !== undefined && typeof guard !== 'function')
++        throw new TypeError('Native tool handoff policy returned an invalid guard')
++      return guard as (() => boolean) | undefined
++    },
++  })
+   installLegacySettingsImport(ctx)
+ }
+ 
+diff --git a/src/host/composition/installed-profile-registry.ts b/src/host/composition/installed-profile-registry.ts
+index 829d4bd..c91e294 100644
+--- a/src/host/composition/installed-profile-registry.ts
++++ b/src/host/composition/installed-profile-registry.ts
+@@ -1,6 +1,7 @@
+ /** Live ACP routes derived from native volatile plugin configuration. */
+ /// <reference types="node" />
+ 
++import { listLiveRuntimeSessions } from './host-execution-owners.ts'
+ import { resolveTerminalJobs } from './terminal-jobs.ts'
+ import { resolveQwenTaskJobs } from './qwen-task-jobs.ts'
+ import type { Context } from '@deepseek-ai/cordis'
+@@ -169,6 +170,9 @@ export interface InstalledProfileRegistry {
+ }
+ 
+ export interface InstalledProfileRegistryOptions {
++  /** Host-only capability factory. A matched producer returns one revocable,
++   * generation-bound guard; user configuration cannot supply this function. */
++  nativeToolHandoffGuard?: (profileId: string, profile: Readonly<AcpAgentConfig>) => (() => boolean) | undefined
+   /** Mount the additive dshAcp activity Remote in the provider composition.
+    * The additive provider composition mounts its own service when enabled. */
+   installRemote?: boolean
+@@ -642,6 +646,7 @@ export function installInstalledProfileRegistry(
+         },
+         notify: notifyPolicySubscribers,
+       },
++      listLiveSessions: () => listLiveRuntimeSessions(ctx.root),
+       agentSessionControl: (provider) => {
+         const id = acpAgentIdFromRoute(provider)
+         return id === undefined ? undefined : profileAdapters.get(id)
+@@ -689,6 +694,22 @@ export function installInstalledProfileRegistry(
+         if (config === undefined) continue
+         let routeAdapter = profileAdapters.get(id)
+         if (routeAdapter === undefined) {
++          const guard = options.nativeToolHandoffGuard?.(id, structuredClone(config))
++          if (guard !== undefined && typeof guard !== 'function')
++            throw new TypeError('Native tool handoff requires a Host capability guard')
++          const capturedProfile = JSON.stringify(config)
++          const nativeToolHandoff =
++            guard === undefined
++              ? false
++              : () => {
++                  const current = activeAgents[id]
++                  if (current === undefined || JSON.stringify(current) !== capturedProfile) return false
++                  try {
++                    return guard() === true
++                  } catch {
++                    return false
++                  }
++                }
+           routeAdapter = new AcpProfileAdapter(
+             id,
+             () => activeAgents[id],
+@@ -741,6 +762,7 @@ export function installInstalledProfileRegistry(
+             controlsChanged,
+             ctx.root,
+             (sessionId) => resolveQwenTaskJobs(ctx, sessionId),
++            nativeToolHandoff,
+           )
+           profileAdapters.set(id, routeAdapter)
+         }
+diff --git a/src/host/composition/profile-adapter.ts b/src/host/composition/profile-adapter.ts
+index fd75e75..bdc83b5 100644
+--- a/src/host/composition/profile-adapter.ts
++++ b/src/host/composition/profile-adapter.ts
+@@ -92,6 +92,8 @@ import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from '../../
+ import { AcpClientError } from '../../protocol/v1/errors.ts'
+ import {
+   assertHostExecutionQuiescent,
++  retainLiveRuntime,
++  closeLiveRuntime,
+   clearHostExecutionOwners,
+   clearSharedRecoveryFallback,
+   getSharedRecoveryFallback,
+@@ -676,6 +678,8 @@ export interface AcpProfileRuntime {
+   readonly pendingAgentTurnFailure?: AcpPendingAgentTurnFailure | undefined
+   readonly cancelledSessionRefreshPending?: boolean | undefined
+   readonly cancelledSessionRefreshBindingId?: string | undefined
++  /** Original managed-process cleanup evidence; absence is unknown. */
++  readonly physicalCleanupConfirmed?: boolean | undefined
+   readonly isBusy?: boolean
+   hasPendingHostCalls?(): boolean
+   toolControlOutcome?(toolCallId: string): AcpHostToolControlOutcome | undefined
+@@ -4580,7 +4584,9 @@ export class AcpProfileAdapter extends LlmAdapter {
+             await this.preservePendingAgentTurnFailure(key, runtime, true)
+             if (this.hostRoot !== undefined)
+               retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
+-            await runtime.close()
++            await (this.hostRoot === undefined
++              ? runtime.close()
++              : closeLiveRuntime(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime))
+           }),
+         )
+         await Promise.all(
+@@ -4604,7 +4610,11 @@ export class AcpProfileAdapter extends LlmAdapter {
+       retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
+     this.runtimes.delete(key)
+     this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
+-    await runtime.close().catch(() => undefined)
++    await (
++      this.hostRoot === undefined
++        ? runtime.close()
++        : closeLiveRuntime(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
++    ).catch(() => undefined)
+   }
+ 
+   /** Preserve an unconsumed failure before retiring its only in-memory owner. */
+@@ -4757,6 +4767,7 @@ export class AcpProfileAdapter extends LlmAdapter {
+   private createRuntime(sessionId: string, profile: AcpStubAgentConfig, cwd: string): AcpProfileRuntime {
+     const outcomes = new HostTerminalOutcomes(sessionId, this.profileId)
+     const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd, outcomes))
++    if (this.hostRoot !== undefined) retainLiveRuntime(this.hostRoot, sessionId, runtime)
+     this.terminalOutcomes.set(runtime, outcomes)
+     return runtime
+   }
+diff --git a/src/runtime/session/session-runtime.ts b/src/runtime/session/session-runtime.ts
+index 06d108d..dc6aab9 100644
+--- a/src/runtime/session/session-runtime.ts
++++ b/src/runtime/session/session-runtime.ts
+@@ -502,6 +502,8 @@ async function raceAbort<T>(pending: Promise<T>, signal: AbortSignal | undefined
+ /** One reusable ACP connection/session, lazily started on the first prompt. */
+ export class AcpSessionRuntime {
+   private connection: AcpClientConnection | undefined
++  /** Original connections retained only until their managed range is confirmed gone. */
++  private readonly cleanupConnections = new Set<AcpClientConnection>()
+   private mcpLease: AcpMcpLease | undefined
+   private mcpKey: unknown
+   private sessionId: string | undefined
+@@ -1252,6 +1254,12 @@ export class AcpSessionRuntime {
+   }
+ 
+   /** Cancel initialization and await acquired resources and late setup cleanup before reuse. */
++  /** Read-only physical fact; a settled close alone does not establish this. */
++  get physicalCleanupConfirmed(): boolean {
++    if (this.starting !== undefined || this.closing !== undefined || this.connection !== undefined) return false
++    return [...this.cleanupConnections].every((connection) => connection.isCleanupConfirmed === true)
++  }
++
+   close(): Promise<void> {
+     return this.closeInternal()
+   }
+@@ -1563,6 +1571,9 @@ export class AcpSessionRuntime {
+         this.options.onSessionUpdate?.(notification)
+       },
+     })
++    for (const retired of this.cleanupConnections)
++      if (retired.isCleanupConfirmed === true) this.cleanupConnections.delete(retired)
++    this.cleanupConnections.add(connection)
+     starting.connection = connection
+     try {
+       await connection.initialize({ signal: setupSignal })
+diff --git a/test/unit/domain/installed-profile-registry.spec.ts b/test/unit/domain/installed-profile-registry.spec.ts
+index b0bcc05..4c4ba1f 100644
+--- a/test/unit/domain/installed-profile-registry.spec.ts
++++ b/test/unit/domain/installed-profile-registry.spec.ts
+@@ -908,3 +908,56 @@ it('treats catalog identity as metadata while preserving host schema validation'
+   expect(acpProbeConfigKey(config)).toBe(acpProbeConfigKey({ ...config, catalogId: 'future-agent' }))
+   expect(() => acpSettingsSchema({ agents: { custom: { ...config, catalogId: '../codex' } } })).toThrow('catalogId')
+ })
++
++// Zhuma Host-only registration contract. This checks the actual registry and
++// adapter, with the existing in-memory settings/LLM ports; no CLI or model runs.
++describe('Host native tool handoff registration', () => {
++  function current(adapter: unknown): boolean {
++    if (adapter === null || typeof adapter !== 'object') throw new Error('Missing adapter')
++    return Reflect.apply(Reflect.get(adapter, 'nativeHandoffCurrent'), adapter, []) === true
++  }
++
++  it('keeps ordinary user settings disabled without a captured Host guard', async () => {
++    const { ctx, settings, llm } = fakeHarness()
++    installInstalledProfileRegistry(ctx, settings.config)
++    await settings.replace({ agents: { foo: { ...fooAgent, nativeToolHandoff: true } } })
++    expect(current(llm.adapters[0])).toBe(false)
++  })
++
++  it('captures one generation and refuses changed complete config or revoked capability', async () => {
++    const { ctx, settings, llm } = fakeHarness()
++    let valid = true
++    const first = () => valid
++    const factory = vi.fn(() => first)
++    installInstalledProfileRegistry(ctx, settings.config, { nativeToolHandoffGuard: factory })
++    await settings.replace({ agents: { foo: fooAgent } })
++    const adapter = llm.adapters[0]
++    expect(factory).toHaveBeenCalledExactlyOnceWith('foo', fooAgent)
++    expect(current(adapter)).toBe(true)
++    valid = false
++    expect(current(adapter)).toBe(false)
++    valid = true
++    await settings.replace({ agents: { foo: { ...fooAgent, loginHint: 'changed' } } })
++    expect(current(adapter)).toBe(false)
++    expect(factory).toHaveBeenCalledTimes(1)
++    expect(llm.adapters[0]).toBe(adapter)
++  })
++
++  it('rejects a fake boolean grant and treats a throwing captured guard as unavailable', async () => {
++    const absent = fakeHarness()
++    installInstalledProfileRegistry(absent.ctx, absent.settings.config, {
++      nativeToolHandoffGuard: (() => true) as never,
++    })
++    await absent.settings.replace({ agents: { foo: fooAgent } })
++    expect(absent.llm.adapters).toHaveLength(0)
++    expect(absent.errors.length).toBeGreaterThan(0)
++    const throwing = fakeHarness()
++    installInstalledProfileRegistry(throwing.ctx, throwing.settings.config, {
++      nativeToolHandoffGuard: () => () => {
++        throw new Error('retired')
++      },
++    })
++    await throwing.settings.replace({ agents: { foo: fooAgent } })
++    expect(current(throwing.llm.adapters[0])).toBe(false)
++  })
++})
+diff --git a/test/unit/host/host-execution-owners.spec.ts b/test/unit/host/host-execution-owners.spec.ts
+index 680a2d9..afd5aa6 100644
+--- a/test/unit/host/host-execution-owners.spec.ts
++++ b/test/unit/host/host-execution-owners.spec.ts
+@@ -2,6 +2,9 @@ import { Context } from '@deepseek-ai/cordis'
+ import { describe, expect, it } from 'vitest'
+ import {
+   assertHostExecutionQuiescent,
++  retainLiveRuntime,
++  closeLiveRuntime,
++  listLiveRuntimeSessions,
+   clearHostExecutionOwners,
+   getSharedRecoveryFallback,
+   retainHostExecutionOwner,
+@@ -88,3 +91,87 @@ describe('Host execution owner registry', () => {
+     expect(() => assertHostExecutionQuiescent(root, 'observer-race')).not.toThrow()
+   })
+ })
++
++// Resource-lifecycle contracts. These handles are deliberately synthetic; the
++// runtime disposal suite separately checks original connection/cleanup facts.
++describe('live ACP resource projection', () => {
++  function runtime(close: () => Promise<void>, physical: () => boolean | undefined = () => true) {
++    return {
++      close,
++      get physicalCleanupConfirmed() {
++        return physical()
++      },
++      hasPendingHostCalls: () => false,
++      hasUncommittedHostFeedback: () => false,
++      hasRetainedHostFeedback: () => false,
++    }
++  }
++  it('reads empty only from a real empty resource registry, independent of history/profile text', () => {
++    expect(listLiveRuntimeSessions(new Context())).toEqual([])
++  })
++  it('keeps the exact runtime visible across child/plugin replacement until close and physical drain', async () => {
++    const root = new Context(),
++      child = root.extend({})
++    const completion = Promise.withResolvers<void>()
++    const owner = runtime(() => completion.promise)
++    retainLiveRuntime(root, 'actual-session', owner)
++    expect(listLiveRuntimeSessions(child).map((row) => row.sessionId)).toEqual(['actual-session'])
++    expect(listLiveRuntimeSessions(new Context())).toEqual([])
++    const closing = closeLiveRuntime(root, 'actual-session', owner)
++    expect(listLiveRuntimeSessions(child)).toHaveLength(1)
++    completion.resolve()
++    await closing
++    expect(listLiveRuntimeSessions(child)).toEqual([])
++  })
++  it('does not equate fulfilled close with physical cleanup', async () => {
++    const root = new Context()
++    let physical = false
++    const owner = runtime(
++      async () => {},
++      () => physical,
++    )
++    retainLiveRuntime(root, 'unconfirmed-session', owner)
++    await closeLiveRuntime(root, 'unconfirmed-session', owner)
++    expect(listLiveRuntimeSessions(root)).toHaveLength(1)
++    physical = true
++    expect(listLiveRuntimeSessions(root)).toEqual([])
++  })
++  it('retains failed cleanup even when another visible fact says quiescent', async () => {
++    const root = new Context()
++    const owner = runtime(async () => {
++      throw new Error('cleanup failed')
++    })
++    await expect(closeLiveRuntime(root, 'failed-session', owner)).rejects.toThrow('cleanup failed')
++    expect(listLiveRuntimeSessions(root)).toHaveLength(1)
++  })
++  it('does not turn missing cleanup or pending feedback into idle', async () => {
++    const root = new Context()
++    const unknown = runtime(
++      async () => {},
++      () => undefined,
++    )
++    const pending = { ...runtime(async () => {}), hasRetainedHostFeedback: () => true }
++    await closeLiveRuntime(root, 'unknown-session', unknown)
++    await closeLiveRuntime(root, 'feedback-session', pending)
++    expect(
++      listLiveRuntimeSessions(root)
++        .map((row) => row.sessionId)
++        .sort(),
++    ).toEqual(['feedback-session', 'unknown-session'])
++  })
++  it('retains the original Host settlement owner after the transport is gone', async () => {
++    const root = new Context(),
++      completion = Promise.withResolvers<void>()
++    let pending = true
++    retainHostExecutionOwner(root, 'host-session', {
++      hasPendingHostCalls: () => pending,
++      waitForHostCallsSettled: () => completion.promise,
++    })
++    expect(listLiveRuntimeSessions(root)).toHaveLength(1)
++    pending = false
++    completion.resolve()
++    await completion.promise
++    await Promise.resolve()
++    expect(listLiveRuntimeSessions(root)).toEqual([])
++  })
++})
+diff --git a/test/unit/runtime/session-runtime-disposal.spec.ts b/test/unit/runtime/session-runtime-disposal.spec.ts
+index 5723a05..cf94d05 100644
+--- a/test/unit/runtime/session-runtime-disposal.spec.ts
++++ b/test/unit/runtime/session-runtime-disposal.spec.ts
+@@ -25,6 +25,10 @@ it.each(['launch', 'initialize'])('closes resources if disposal races pending %s
+     return { protocolVersion: 1, agentCapabilities: {} }
+   })
+   const connectionClose = vi.spyOn(AcpClientConnection.prototype, 'close')
++  const cleanupFact =
++    phase === 'initialize'
++      ? vi.spyOn(AcpClientConnection.prototype, 'isCleanupConfirmed', 'get').mockReturnValue(false)
++      : undefined
+   const argv = [process.execPath, '-e', 'process.stdin.resume()']
+   const runtime = new AcpSessionRuntime({
+     profileId: 'test',
+@@ -43,12 +47,14 @@ it.each(['launch', 'initialize'])('closes resources if disposal races pending %s
+     const starting = runtime.initialize()
+     const rejected = expect(starting).rejects.toThrow()
+     await entered.promise
++    expect(runtime.physicalCleanupConfirmed).toBe(false)
+     let closed = false
+     const closing = runtime.close().then(() => {
+       closed = true
+     })
+     await new Promise<void>((resolve) => setImmediate(resolve))
+     expect(closed).toBe(false)
++    expect(runtime.physicalCleanupConfirmed).toBe(false)
+     release.resolve()
+     await rejected
+     await closing
+@@ -56,11 +62,15 @@ it.each(['launch', 'initialize'])('closes resources if disposal races pending %s
+     if (phase === 'launch') expect(initialize).not.toHaveBeenCalled()
+     else expect(connectionClose).toHaveBeenCalled()
+     expect(runtime.agentCapabilities).toBeUndefined()
++    // The initialize variant deliberately exposes an unknown physical cleanup
++    // fact. Even a fulfilled close must retain this late connection.
++    expect(runtime.physicalCleanupConfirmed).toBe(phase === 'launch')
+   } finally {
+     release.resolve()
+     await runtime.close()
+     initialize.mockRestore()
+     connectionClose.mockRestore()
++    cleanupFact?.mockRestore()
+   }
+ })
+ 

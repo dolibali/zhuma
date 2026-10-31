@@ -1,5 +1,7 @@
 # Applied after the official Web composition, inside the disposable build tree.
 # Keep conversation, model settings, tools, and security approval available for execution work.
+# entry-customization injects pluginNavigation from ui-plugin-manager; keep both disabled together
+# so web boot does not stall on pending (waiting for service: pluginNavigation).
 - id: ui-schedule
   disabled: true
 - id: ui-plugin-manager
@@ -20,6 +22,15 @@
     # settings page and explicit credential setup remain available.
     credentialOnboarding: false
 - insert:
+    - id: zhuma-codearts-policy
+      name: './lib/zhuma-workbench/codearts-policy.js'
+      config: {}
+    - id: dsh-acp-adapter
+      name: '@zaimokuza/dsh-acp-adapter'
+      # Loader merges this with the original SDK/plugin inject requirements.
+      # A persisted profile must never precede the verified producer on reopen.
+      inject: ['acpNativeToolHandoffPolicy']
+      config: {}
     - id: zhuma-workbench
       name: './lib/zhuma-workbench/index.js'
       config:

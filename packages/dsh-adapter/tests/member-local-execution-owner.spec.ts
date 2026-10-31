@@ -14,6 +14,8 @@ import {
   MemberLocalExecutionProtocol,
   MemberLocalExecutionSecrets,
   acceptedInputRef,
+  canonicalPayload,
+  createVerifiedTeamAssetFile,
 } from './zhuma-member-local-owner-bundle.ts';
 
 async function setup(t, options = {}) {
@@ -386,6 +388,469 @@ test('member knowledge owner: a frozen knowledge capability without the actual p
     expectedNodeVersion: h.run.value.nodeVersion,
     expectedRunVersion: h.run.value.runVersion,
   });
+});
+
+function teamFileSnapshot() {
+  const bytes = Buffer.from('OWNED_FIXED_TEAM_FILE_BODY'),
+    reference = {
+      spaceId: 'north',
+      assetId: 'owned-team-file',
+      kind: 'file',
+      versionId: randomUUID(),
+      sha256: 'a'.repeat(64),
+    },
+    file = {
+      name: 'owned-team-file.txt',
+      mediaType: 'text/plain',
+      byteSize: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    },
+    snapshot = {
+      sourceVersion: 'zhuma-native-team-assets@1',
+      spaceId: 'north',
+      files: [{ reference, file }],
+    };
+  return {
+    bytes,
+    reference,
+    file,
+    snapshot: {
+      ...snapshot,
+      sha256: createHash('sha256').update(canonicalPayload(snapshot)).digest('hex'),
+    },
+  };
+}
+
+test('member team-file owner: original Run/factory registers the genuine tool without IO and admits fixed carrier reads', async (t) => {
+  const data = teamFileSnapshot(),
+    calls = [];
+  let h,
+    factories = 0,
+    gates = 0,
+    releases = 0;
+  const teamAssets = {
+    create(binding, grant, run) {
+      factories++;
+      assert.equal(run, h.run, 'private original issued handle, never a scope projection or clone');
+      assert.deepEqual(binding.scope, grant.scope);
+      return {
+        catalog: { scope: binding.scope, files: run.composition.payload.teamAssets.files },
+        signal: grant.signal,
+        assertCurrent(signal, reference) {
+          gates++;
+          signal.throwIfAborted();
+          assert(
+            h.remote.seen.some(
+              (row) =>
+                row.request.operation === 'event' && row.request.payload.event.kind === 'accepted',
+            ),
+          );
+          if (reference) assert.deepEqual(reference, data.reference);
+        },
+        openFile(reference, signal) {
+          calls.push(reference);
+          assert.deepEqual(reference, data.reference);
+          let released = false;
+          return {
+            result: Promise.resolve({
+              file: data.file,
+              carrier: createVerifiedTeamAssetFile(data.file, data.bytes),
+              signal,
+              check() {
+                grant.assertCurrent('send');
+              },
+              release() {
+                if (!released) {
+                  released = true;
+                  releases++;
+                }
+              },
+            }),
+            drain: Promise.resolve(),
+          };
+        },
+      };
+    },
+  };
+  h = await setup(t, {
+    remote: { teamAssets: data.snapshot },
+    teamAssets,
+    script: [
+      (request) => {
+        assert.equal(factories, 1);
+        assert.equal(gates, 0);
+        assert.equal(calls.length, 0);
+        assert(JSON.stringify(request).includes('team_asset'));
+        assert(!JSON.stringify(request).includes(data.bytes.toString()));
+        return toolResponse({ request: { action: 'list' } }, 'team-list', 'team_asset')();
+      },
+      (request) => {
+        assert(JSON.stringify(request).includes(data.file.name));
+        assert(!JSON.stringify(request).includes(data.bytes.toString()));
+        return toolResponse(
+          { request: { action: 'read', reference: data.reference, offset: 0, length: 8192 } },
+          'team-read',
+          'team_asset',
+        )();
+      },
+      (request) => {
+        assert(JSON.stringify(request).includes(data.bytes.toString()));
+        return toolResponse(
+          { text: 'Read the exact selected team file.', links: [] },
+          'team-complete',
+          'complete_work',
+        )();
+      },
+    ],
+  });
+  assert.equal(h.owner.teamAssetSource, 'zhuma-native-team-assets@1');
+  await h.owner.start(h.run);
+  await until(
+    () => h.owner.read(h.run),
+    (view) => view.phase === 'submitted',
+  );
+  assert.equal(factories, 1);
+  assert.equal(calls.length, 1);
+  assert(gates >= 4);
+  assert.equal(releases, 1);
+  assert.equal(h.adapter.requests.length, 3);
+  assert.equal(h.ctx.agents.list().length, 0);
+  await h.owner.close();
+  assert.equal(h.owner.teamAssetSource, undefined);
+});
+
+test('member team-file owner: frozen capability without an actual private factory refuses before creating an Agent', async (t) => {
+  const data = teamFileSnapshot(),
+    h = await setup(t, { remote: { teamAssets: data.snapshot } });
+  assert.equal(h.owner.teamAssetSource, undefined);
+  await assert.rejects(h.owner.start(h.run), { code: 'configuration-mismatch' });
+  assert.equal(h.adapter.requests.length, 0);
+  assert.equal(h.ctx.agents.list().length, 0);
+});
+
+test('member team-file owner: mismatched scope, fixed version or file metadata refuses before the first model request', async (t) => {
+  for (const mutate of [
+    (catalog) => {
+      catalog.scope = { ...catalog.scope, segmentId: 'foreign-segment' };
+    },
+    (catalog) => {
+      catalog.files = [];
+    },
+    (catalog) => {
+      catalog.files[0].reference.versionId = randomUUID();
+    },
+    (catalog) => {
+      catalog.files[0].reference.sha256 = 'b'.repeat(64);
+    },
+    (catalog) => {
+      catalog.files[0].file.name = 'foreign-file.txt';
+    },
+  ]) {
+    const data = teamFileSnapshot();
+    let io = 0;
+    const h = await setup(t, {
+      remote: { teamAssets: data.snapshot },
+      teamAssets: {
+        create(binding, grant, run) {
+          const catalog = structuredClone({
+            scope: binding.scope,
+            files: run.composition.payload.teamAssets.files,
+          });
+          mutate(catalog);
+          return {
+            catalog,
+            signal: grant.signal,
+            assertCurrent() {
+              io++;
+            },
+            openFile() {
+              io++;
+              throw Error('must not read');
+            },
+          };
+        },
+      },
+    });
+    await assert.rejects(h.owner.start(h.run));
+    assert.equal(io, 0);
+    assert.equal(h.adapter.requests.length, 0);
+    assert.equal(h.ctx.agents.list().length, 0);
+  }
+});
+
+test('member team-file owner: replacing the private create function after registration blocks source IO', async (t) => {
+  const data = teamFileSnapshot();
+  let io = 0;
+  const teamAssets = {
+    create(binding, grant, run) {
+      return {
+        catalog: { scope: binding.scope, files: run.composition.payload.teamAssets.files },
+        signal: grant.signal,
+        assertCurrent() {
+          io++;
+        },
+        openFile() {
+          io++;
+          throw Error('must not read');
+        },
+      };
+    },
+  };
+  const h = await setup(t, {
+    remote: { teamAssets: data.snapshot },
+    teamAssets,
+    script: [
+      () => {
+        teamAssets.create = () => {
+          throw Error('foreign generation');
+        };
+        return toolResponse(
+          { request: { action: 'read', reference: data.reference } },
+          'team-stale',
+          'team_asset',
+        )();
+      },
+      (request) => {
+        assert(!JSON.stringify(request).includes(data.bytes.toString()));
+        return 'The stale private factory could not read.';
+      },
+    ],
+  });
+  await h.owner.start(h.run);
+  await until(
+    () => h.adapter.requests.length,
+    (count) => count === 2,
+  );
+  assert.equal(io, 0);
+});
+
+test('member team-file owner: unpublished compose rechecks a factory catalog that changes after construction', async (t) => {
+  const data = teamFileSnapshot();
+  let io = 0;
+  const h = await setup(t, {
+    remote: { teamAssets: data.snapshot },
+    teamAssets: {
+      create(binding, grant, run) {
+        const catalog = structuredClone({
+          scope: binding.scope,
+          files: run.composition.payload.teamAssets.files,
+        });
+        queueMicrotask(() => {
+          catalog.files[0].reference.sha256 = 'b'.repeat(64);
+        });
+        return {
+          catalog,
+          signal: grant.signal,
+          assertCurrent() {
+            io++;
+          },
+          openFile() {
+            io++;
+            throw Error('must not read');
+          },
+        };
+      },
+    },
+  });
+  await assert.rejects(h.owner.start(h.run));
+  assert.equal(io, 0);
+  assert.equal(h.adapter.requests.length, 0);
+  assert.equal(h.ctx.agents.list().length, 0);
+});
+
+test('member team-file owner: a catalog mutation across the asynchronous gate cannot dispatch a byte read', async (t) => {
+  const data = teamFileSnapshot();
+  let gates = 0,
+    reads = 0;
+  const h = await setup(t, {
+    remote: { teamAssets: data.snapshot },
+    teamAssets: {
+      create(binding, grant, run) {
+        const catalog = structuredClone({
+          scope: binding.scope,
+          files: run.composition.payload.teamAssets.files,
+        });
+        return {
+          catalog,
+          signal: grant.signal,
+          async assertCurrent() {
+            gates++;
+            await Promise.resolve();
+            catalog.files[0].file.name = 'changed-after-await.txt';
+          },
+          openFile() {
+            reads++;
+            throw Error('must not read');
+          },
+        };
+      },
+    },
+    script: [
+      toolResponse(
+        { request: { action: 'read', reference: data.reference } },
+        'team-changed-gate',
+        'team_asset',
+      ),
+      (request) => {
+        assert(!JSON.stringify(request).includes(data.bytes.toString()));
+        return 'No bytes from a changed catalog.';
+      },
+    ],
+  });
+  await h.owner.start(h.run);
+  await until(
+    () => h.adapter.requests.length,
+    (count) => count === 2,
+  );
+  assert.equal(gates, 1);
+  assert.equal(reads, 0);
+});
+
+test('member team-file owner: synchronous model consumption rechecks factory identity after the final async gate', async (t) => {
+  const data = teamFileSnapshot();
+  let reads = 0,
+    releases = 0;
+  const teamAssets = {
+    create(binding, grant, run) {
+      return {
+        catalog: { scope: binding.scope, files: run.composition.payload.teamAssets.files },
+        signal: grant.signal,
+        assertCurrent() {},
+        openFile(_reference, signal) {
+          reads++;
+          let checked = 0,
+            released = false;
+          return {
+            result: Promise.resolve({
+              file: data.file,
+              carrier: createVerifiedTeamAssetFile(data.file, data.bytes),
+              signal,
+              check() {
+                grant.assertCurrent('send');
+                if (++checked === 2)
+                  queueMicrotask(() => {
+                    teamAssets.create = () => {
+                      throw Error('retired factory');
+                    };
+                  });
+              },
+              release() {
+                if (!released) {
+                  released = true;
+                  releases++;
+                }
+              },
+            }),
+            drain: Promise.resolve(),
+          };
+        },
+      };
+    },
+  };
+  const h = await setup(t, {
+    remote: { teamAssets: data.snapshot },
+    teamAssets,
+    script: [
+      toolResponse(
+        { request: { action: 'read', reference: data.reference } },
+        'team-consume-fence',
+        'team_asset',
+      ),
+      (request) => {
+        assert(!JSON.stringify(request).includes(data.bytes.toString()));
+        return 'No content from a retired private factory.';
+      },
+    ],
+  });
+  await h.owner.start(h.run);
+  await until(
+    () => h.adapter.requests.length,
+    (count) => count === 2,
+  );
+  assert.equal(reads, 1);
+  assert.equal(releases, 1);
+});
+
+test('member team-file owner: cancellation retains the original byte producer drain before cleanup can settle', async (t) => {
+  const data = teamFileSnapshot(),
+    entered = Promise.withResolvers(),
+    result = Promise.withResolvers(),
+    drain = Promise.withResolvers();
+  let releases = 0,
+    granted;
+  const h = await setup(t, {
+    remote: { teamAssets: data.snapshot },
+    teamAssets: {
+      create(binding, grant, run) {
+        granted = grant;
+        return {
+          catalog: { scope: binding.scope, files: run.composition.payload.teamAssets.files },
+          signal: grant.signal,
+          assertCurrent(signal) {
+            signal.throwIfAborted();
+          },
+          openFile() {
+            entered.resolve();
+            return { result: result.promise, drain: drain.promise };
+          },
+        };
+      },
+    },
+    script: [
+      toolResponse(
+        { request: { action: 'read', reference: data.reference } },
+        'team-held-read',
+        'team_asset',
+      ),
+    ],
+  });
+  await h.owner.start(h.run);
+  await entered.promise;
+  const remote = h.owner.read(h.run).remote;
+  const stopping = h.owner
+    .stop(h.run, {
+      requestId: randomUUID(),
+      expectedNodeVersion: remote.nodeVersion,
+      expectedRunVersion: remote.runVersion,
+    })
+    .catch((error) => error);
+  let closed = false,
+    closeError;
+  const closing = h.owner.close().then(
+    () => {
+      closed = true;
+    },
+    (error) => {
+      closed = true;
+      closeError = error;
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(closed, false);
+  assert.equal(h.owner.read(h.run).remote.resources, 'held');
+  result.resolve({
+    file: data.file,
+    carrier: createVerifiedTeamAssetFile(data.file, data.bytes),
+    signal: granted.signal,
+    check() {
+      granted.assertCurrent('send');
+    },
+    release() {
+      releases++;
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(closed, false, 'a result alone cannot release the producer drain');
+  drain.resolve();
+  const stopped = await stopping;
+  // The concurrent close fences the stop method's final history projection;
+  // it does not release the original physical read or its cleanup obligation.
+  assert.equal(stopped.code, 'unavailable');
+  await closing;
+  assert.equal(closeError, undefined);
+  assert.equal(h.owner.read(h.run).remote.resources, 'settled');
+  assert.equal(releases, 1);
+  assert.equal(h.adapter.requests.length, 1);
 });
 
 test('original owner replay: two actually issued accept handles address the same live native work', async (t) => {

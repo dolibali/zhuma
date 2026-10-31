@@ -17,5 +17,34 @@
   "qualification": {
     "desktopIntegration": "not-tested",
     "releasePackaging": "not-implemented"
+  },
+  "plugins": {
+    "acpAdapter": {
+      "package": "@zaimokuza/dsh-acp-adapter",
+      "version": "0.2.1-rc.4.1",
+      "repository": "https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git",
+      "commit": "28ccc6745ec82139c684c3642637e93e00d800f2",
+      "integrity": "sha512-IMLKvzdzb3JzbH2DTn5G5CiKC7hMgtaXxItsCKEwJ2JJu5Z4AngeuhET+/33OGhgnEcUo7ZVQez5bymi7oXtKQ==",
+      "nativeToolHandoff": {
+        "sourceTree": "2b2f65de5f748b0f9f172ba843c1732b166662d5",
+        "communityPatchTree": "fbe9a9708ace3a727553abeb8ae3850cc43b9c75",
+        "sourcePackageManager": "pnpm@10.7.0",
+        "sourceNode": "24.15.0",
+        "patches": {
+          "native-tool-handoff-source.patch": {
+            "path": "patches/dsh-acp-adapter/native-tool-handoff-source.patch",
+            "sha256": "7dc8a6bbc3464308d463aec68474c75c20ada7a1c2907c51194ef96578af0789"
+          },
+          "host-registration-source.patch": {
+            "path": "patches/dsh-acp-adapter/host-registration-source.patch",
+            "sha256": "0e538eb53d789d999edf230a5808add054c3658930a9643f924ec6e2543b6b1e"
+          },
+          "published-package.patch": {
+            "path": "patches/dsh-acp-adapter/published-package.patch",
+            "sha256": "37a077f243e9d6265e0c22797def004c84e055385f152b20573752ca2ecfa0be"
+          }
+        }
+      }
+    }
   }
 }

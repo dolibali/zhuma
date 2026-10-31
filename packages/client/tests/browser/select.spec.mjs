@@ -86,7 +86,7 @@ test('外观菜单键盘选择、取消和外部关闭不保存任务，菜单�
   await page.keyboard.press('Escape');
   await expect(appearance).toBeFocused();
   await appearance.click();
-  await page.getByRole('heading', { name: '任务清单', exact: true }).click();
+  await page.getByText('工作事项', { exact: true }).click();
   await expect(popup(page)).toBeHidden();
   expect(replay.requests.filter((r) => r.endpoint !== 'snapshot')).toHaveLength(0);
 });

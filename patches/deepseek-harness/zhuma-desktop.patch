@@ -151,10 +151,20 @@ index ff09b8b7..77cb955a 100644
      writeFileSync(stamp, identity, { mode: 0o600 })
      execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
 diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
-index 4b9cd27a..b0f8b367 100644
+index 4b9cd27a..d4036093 100644
 --- a/apps/desktop/scripts/electron-builder-config.mjs
 +++ b/apps/desktop/scripts/electron-builder-config.mjs
-@@ -105,7 +105,7 @@ export function createElectronBuilderConfig(
+@@ -75,6 +75,9 @@ export function createElectronBuilderConfig(
+   let dshDestination
+   let windowsCode = []
+   const unpack = ['**/*.{node,dylib,dll,so,exe}', '**/*.so.*', '**/spawn-helper', '**/@vscode/ripgrep-*/bin/rg',
++    // CodeArts setup hands these exact physical files to a child process.
++    ...['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'].map(file =>
++      `**/node_modules/@deepseek-ai/dsh-web-app/lib/zhuma-workbench/${file}`),
+     `**/node_modules/@deepseek-ai/libreoffice-kit-${resolvedPlatform}-${resolvedArch}/**/*`]
+   const windowsSigner = packagesWindows && !unsigned
+     ? createWindowsTokenSigner({
+@@ -105,7 +108,7 @@ export function createElectronBuilderConfig(
    const packaged = resolveDesktopBuildCommit(env)
    return {
      appId,
@@ -163,7 +173,7 @@ index 4b9cd27a..b0f8b367 100644
      extraMetadata: {
        dshDesktopAppId: appId,
        dshDesktopUpdateChannel: update?.channel ?? 'nightly',
-@@ -113,9 +113,9 @@ export function createElectronBuilderConfig(
+@@ -113,9 +116,9 @@ export function createElectronBuilderConfig(
        ...buildVersion === productVersion ? {} : { version: buildVersion },
        ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
      },
@@ -175,7 +185,7 @@ index 4b9cd27a..b0f8b367 100644
      directories: { output: output.directory },
      asar: true,
      electronDist: buildPaths.electron,
-@@ -157,7 +157,7 @@ export function createElectronBuilderConfig(
+@@ -157,7 +160,7 @@ export function createElectronBuilderConfig(
        ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
      ],
      mac: {
@@ -184,7 +194,7 @@ index 4b9cd27a..b0f8b367 100644
        category: 'public.app-category.developer-tools',
        // macOS matches the application locale against this bundle, not Electron Framework resources.
        extendInfo: { CFBundleLocalizations: ['en', 'zh_CN'] },
-@@ -165,7 +165,7 @@ export function createElectronBuilderConfig(
+@@ -165,7 +168,7 @@ export function createElectronBuilderConfig(
        identity: unsigned ? '-' : macOSSigning?.signingIdentity,
        forceCodeSigning: !unsigned,
        hardenedRuntime: true,
@@ -631,7 +641,7 @@ diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
  /** Local Web document and authenticated HTTP forwarding for the application window. */
  import { readFile } from 'node:fs/promises'
  import { extname, resolve, sep } from 'node:path'
-+import { createDesktopMemberCookieBridge } from './zhuma-member-cookie.ts'
++import { createDesktopMemberCookieBridge, isDesktopOwnerControlPost } from './zhuma-member-cookie.ts'
 +
 +const memberCookies = createDesktopMemberCookieBridge()
  
@@ -654,7 +664,7 @@ diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
 +    headers.set('cookie', credential)
 +    // The bridge has verified the original dsh-app Origin before dispatching.
 +    // Preserve same-Host CSRF Origin only for explicit owner control-plane POSTs.
-+    if ((source.pathname === '/api/zhuma-local-setup/initialize' || /^\/api\/zhuma-workspaces\/(?:options|approve|revoke)$/.test(source.pathname)) && request.method === 'POST') headers.set('origin', target.origin)
++    if (isDesktopOwnerControlPost(request)) headers.set('origin', target.origin)
 +    return fetch(target, init)
 +  })
    const outgoing = new Headers(response.headers)
@@ -984,7 +994,7 @@ index 22dd77a4..bd2e4645 100644
  
    /** Toggle the sidebar panel (closed ⟷ contract default width). */
 diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
-index b466b32f..2c47c0a0 100644
+index cc5351d0..10e65058 100644
 --- a/packages/bundle/web-app/package.json
 +++ b/packages/bundle/web-app/package.json
 @@ -55,6 +55,7 @@
@@ -995,7 +1005,7 @@ index b466b32f..2c47c0a0 100644
      "@deepseek-ai/dsh-agent-instructions": "workspace:*",
      "@deepseek-ai/dsh-agent-preset": "workspace:*",
      "@deepseek-ai/dsh-agent-preset-registry": "workspace:*",
-@@ -140,6 +141,7 @@
+@@ -141,6 +142,7 @@
      "@deepseek-ai/dsh-host-plugin-inventory": "workspace:*",
      "@deepseek-ai/dsh-host-webserver": "workspace:*",
      "@deepseek-ai/dsh-launch-environment": "workspace:*",
@@ -1003,7 +1013,7 @@ index b466b32f..2c47c0a0 100644
      "@deepseek-ai/dsh-message-feedback": "workspace:*",
      "@deepseek-ai/dsh-office-to-pdf": "workspace:*",
      "@deepseek-ai/dsh-persona": "workspace:*",
-@@ -147,7 +149,14 @@
+@@ -148,7 +150,14 @@
      "@deepseek-ai/dsh-plugin-manager": "workspace:*",
      "@deepseek-ai/dsh-plugin-market": "workspace:*",
      "@deepseek-ai/dsh-schedule": "workspace:*",
@@ -1018,18 +1028,19 @@ index b466b32f..2c47c0a0 100644
      "@deepseek-ai/dsh-session-reference": "workspace:*",
      "@deepseek-ai/dsh-session-stats": "workspace:*",
      "@deepseek-ai/dsh-session-turn-outline": "workspace:*",
-@@ -188,7 +197,9 @@
+@@ -189,7 +198,10 @@
      "@deepseek-ai/dsh-client-product-analytics": "workspace:*",
      "@deepseek-ai/dsh-host-product-telemetry-otel": "workspace:*",
      "@deepseek-ai/dsh-client-ui-settings-session-log": "workspace:*",
 -    "@deepseek-ai/dsh-harness-dev-context": "workspace:*"
 +    "@deepseek-ai/dsh-harness-dev-context": "workspace:*",
 +    "@deepseek-ai/dsh-fs-local": "workspace:*",
-+    "@deepseek-ai/dsh-sandbox-policy": "workspace:*"
++    "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
++    "@zaimokuza/dsh-acp-adapter": "0.2.1-rc.4.1"
    },
    "peerDependencies": {
      "@deepseek-ai/cordis": "workspace:~",
-@@ -200,9 +211,6 @@
+@@ -201,9 +213,6 @@
      "@deepseek-ai/cordis-plugin-include": "workspace:~",
      "@deepseek-ai/cordis-plugin-loader": "workspace:~",
      "@deepseek-ai/dsh-fs": "workspace:*",
@@ -1040,54 +1051,56 @@ index b466b32f..2c47c0a0 100644
      "@deepseek-ai/dsh-shell-env": "workspace:*",
      "@deepseek-ai/dsh-typert-registry": "workspace:*",
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 5f38bae3..1b6b3ef0 100644
+index d6df9aae..b4714ec3 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -2688,6 +2688,15 @@ importers:
- 
-   packages/bundle/web-app:
-     dependencies:
+@@ -15,6 +15,7 @@ patchedDependencies:
+   '@fortune-sheet/core@1.0.4': 8791a230763dbf853fd65d627c68c31de37209992851377855e16cf08ea70532
+   '@fortune-sheet/react@1.0.4': 2932e52e79afcd4ced08cfa123b5eded786c85043da32f622f3e80af6fc96c37
+   '@yao-pkg/pkg@6.21.0': 75891fc22b277c145cafeab83e41baf4a70f5b8fe6dc0801c6a0b922d7ee88c7
++  '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1': 37a077f243e9d6265e0c22797def004c84e055385f152b20573752ca2ecfa0be
+   app-builder-lib@26.17.0: b70dc2a2a78ffabb80a4f14fafc7c103237f2b0a207e1f296fa1c1387ea29348
+   exceljs@4.4.0: c1bf8ac8f319dab382f08e3a669b715e691d46c703ac5a4163eb383fbedd1d48
+   node-pty@1.2.0-beta.15: 9d30053266d0f39d3debe894c675867f6782da6bcadbc94a693b3cfb9eff8ed0
+@@ -2940,6 +2941,12 @@ importers:
+       '@deepseek-ai/dsh-file-reference-local':
+         specifier: workspace:*
+         version: link:../../context/file-reference-local
 +      '@deepseek-ai/dsh-fs-local':
 +        specifier: workspace:*
 +        version: link:../../fs/fs-local
-+      '@deepseek-ai/dsh-sandbox-policy':
-+        specifier: workspace:*
-+        version: link:../../sandbox/sandbox-policy
 +      '@deepseek-ai/dsh-fs-observation-policy':
 +        specifier: workspace:*
 +        version: link:../../fs/fs-observation-policy
-       '@deepseek-ai/dsh-agent-instructions':
+       '@deepseek-ai/dsh-harness-dev-context':
          specifier: workspace:*
-         version: link:../../context/agent-instructions
-@@ -2967,6 +2976,9 @@ importers:
+         version: link:../../context/harness-dev-context
+@@ -2970,6 +2977,12 @@ importers:
        '@deepseek-ai/dsh-launch-environment':
          specifier: workspace:*
          version: link:../../util/launch-environment
 +      '@deepseek-ai/dsh-llm':
 +        specifier: workspace:*
 +        version: link:../../llm/llm
-       '@deepseek-ai/dsh-message-feedback':
-         specifier: workspace:*
-         version: link:../../feedback/message-feedback
-@@ -2988,9 +3000,30 @@ importers:
-       '@deepseek-ai/dsh-schedule':
-         specifier: workspace:*
-         version: link:../../schedule/schedule
-+      '@deepseek-ai/dsh-skill':
-+        specifier: workspace:*
-+        version: link:../../skill/skill
 +      '@deepseek-ai/dsh-mcp-client':
 +        specifier: workspace:*
 +        version: link:../../mcp/mcp-client
-+      '@deepseek-ai/dsh-tools':
+       '@deepseek-ai/dsh-message-feedback':
+         specifier: workspace:*
+         version: link:../../feedback/message-feedback
+@@ -2988,12 +3001,24 @@ importers:
+       '@deepseek-ai/dsh-plugin-market':
+         specifier: workspace:*
+         version: link:../../boot/plugin-market
++      '@deepseek-ai/dsh-sandbox-policy':
 +        specifier: workspace:*
-+        version: link:../../core/tools
++        version: link:../../sandbox/sandbox-policy
+       '@deepseek-ai/dsh-schedule':
+         specifier: workspace:*
+         version: link:../../schedule/schedule
 +      '@deepseek-ai/dsh-scope':
 +        specifier: workspace:*
 +        version: link:../../core/scope
-+      '@deepseek-ai/dsh-system-prompt':
-+        specifier: workspace:*
-+        version: link:../../core/system-prompt
 +      '@deepseek-ai/dsh-session':
 +        specifier: workspace:*
 +        version: link:../../core/session
@@ -1100,7 +1113,46 @@ index 5f38bae3..1b6b3ef0 100644
        '@deepseek-ai/dsh-session-reference':
          specifier: workspace:*
          version: link:../../context/session-reference
-@@ -3103,18 +3136,9 @@ importers:
+@@ -3003,12 +3028,18 @@ importers:
+       '@deepseek-ai/dsh-session-turn-outline':
+         specifier: workspace:*
+         version: link:../../session/session-turn-outline
++      '@deepseek-ai/dsh-skill':
++        specifier: workspace:*
++        version: link:../../skill/skill
+       '@deepseek-ai/dsh-skill-filesystem':
+         specifier: workspace:*
+         version: link:../../skill/skill-filesystem
+       '@deepseek-ai/dsh-subprocess':
+         specifier: workspace:*
+         version: link:../../subprocess/subprocess
++      '@deepseek-ai/dsh-system-prompt':
++        specifier: workspace:*
++        version: link:../../core/system-prompt
+       '@deepseek-ai/dsh-terminal':
+         specifier: workspace:*
+         version: link:../../terminal/terminal
+@@ -3072,6 +3103,9 @@ importers:
+       '@deepseek-ai/dsh-tool-workflow':
+         specifier: workspace:*
+         version: link:../../workflow/tool-workflow
++      '@deepseek-ai/dsh-tools':
++        specifier: workspace:*
++        version: link:../../core/tools
+       '@deepseek-ai/dsh-web-frontend':
+         specifier: workspace:*
+         version: link:../../../apps/web
+@@ -3087,6 +3121,9 @@ importers:
+       '@deepseek-ai/schemastery':
+         specifier: link:../../../vendor/schemastery
+         version: link:../../../vendor/schemastery
++      '@zaimokuza/dsh-acp-adapter':
++        specifier: 0.2.1-rc.4.1
++        version: 0.2.1-rc.4.1(patch_hash=37a077f243e9d6265e0c22797def004c84e055385f152b20573752ca2ecfa0be)(2f9c520390fc03078d835ee7948a41e2)
+       commander:
+         specifier: ^15.0.0
+         version: 15.0.0
+@@ -3106,18 +3143,9 @@ importers:
        '@deepseek-ai/dsh-fs':
          specifier: workspace:*
          version: link:../../fs/fs
@@ -1119,6 +1171,965 @@ index 5f38bae3..1b6b3ef0 100644
        '@deepseek-ai/dsh-session-projection':
          specifier: workspace:*
          version: link:../../session/session-projection
+@@ -16170,6 +16198,11 @@ packages:
+     peerDependencies:
+       zod: ^3.25.0 || ^4.0.0
+ 
++  '@agentclientprotocol/sdk@1.5.1':
++    resolution: {integrity: sha512-nSUIrC1fOR9+ppKfx9KdwjBBND2sAPzFHo4yVQrGbXZHnayUYpwL8CDVR5LSxbapY/oKMOzNP0wvwfyx3PS2KA==}
++    peerDependencies:
++      zod: ^3.25.0 || ^4.0.0
++
+   '@algolia/abtesting@1.21.2':
+     resolution: {integrity: sha512-uXj0rgk30EpsKvOpuS+R+1XFDrnm56hED1Lz56e8uBkZdKCxw99LS2U8eXBqAHYU8kpkbsnV1GC8velBG070Hg==}
+     engines: {node: '>= 14.0.0'}
+@@ -16591,6 +16624,296 @@ packages:
+     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
+     engines: {node: '>=20.19.0'}
+ 
++  '@deepseek-ai/dsh-api-gateway@0.2.1-rc.4':
++    resolution: {integrity: sha512-YgoqrOAUQaHfmg7WuI4lgn+BhQrDj4JQMjCDFQYOPoxgUdRDfWvE2KcBevCRlx2ueH2WVjxawE7a8Z7wExOsZA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-api-remote-access@0.2.1-rc.4':
++    resolution: {integrity: sha512-LqLolvDS/pvifVjPTkK0eFTY24eBKa271M7CitjDQLDqxz6LbDAFAaNEtLN41Vv+GPsw2EFplmuntjDgpXWvlw==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-attachment@0.2.1-rc.4':
++    resolution: {integrity: sha512-e7DqxYoKtsPUH/4UKhlLVZfPsPxc4zziPF7hhBAWVlJMhyicUtsrEXrgASKtZXXe6zg6w9dVQLW72wR2mkm6VQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-brand@0.2.1-rc.4':
++    resolution: {integrity: sha512-j/NLVa6lfUMym+5mEVrCisRqSQG6IsRlaYV9VuDKJawJ9+697F/BaZztPkuHd9iY/6SVa3PvIq7zhyoOBTaPEA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-chunked-list@0.2.1-rc.4':
++    resolution: {integrity: sha512-HL91hGk+DLkFu6S8u+/knsFsE7nuNoq7fNn845Fl+Tz0dYF4jj7nQaYIsz0fitwkljASko3Xuf+CuuNawXg8jQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-client-store@0.2.1-rc.4':
++    resolution: {integrity: sha512-4pyNXUq8/5c7swTrgA69XEKguV5U6ooVFpiNPUIFHHcW0T8egf6fi8ex9Mp+opnTjq8Bkwvme8iMHENxo3v6Hg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-client-ui-primitives@0.2.1-rc.4':
++    resolution: {integrity: sha512-NrZwWPERVCohOmP/GgYnDY6IzH7KB2y0EaQe+on39oJNy+zKSYCUrmk5cblq2Cp7DUM7Hb3lQHYtSow6Y8U+BQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-client-ui-slots@0.2.1-rc.4':
++    resolution: {integrity: sha512-0ESZvB9Pr9sCjs381M51w+Hos+H7In9seT4Tg/YRc/fZOo/Td4Ez42XGV7n4vN5pEHR6SXATHULgVtPIoxltNA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-commands@0.2.1-rc.4':
++    resolution: {integrity: sha512-qCz2CJRtJHLUIomvYYwmfYQLraancF0s1FWEaF4+3zuOU1E6vKxVJ8hkhPC7VS00gdri8QDa8Co8ipT+GvZykQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-attachment': 0.2.1-rc.4
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-scope': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-compaction-image-offload@0.2.1-rc.4':
++    resolution: {integrity: sha512-dyMCRcNNZD9zOXcchiAjWBzi41cdxRGfL0dnENZ6B8jExnr5hJEDMk0ylUG+JKVpgxF3KvCvez7NqB5pBWt/ww==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-compaction': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-compaction@0.2.1-rc.4':
++    resolution: {integrity: sha512-0J3ccW9vSQ+gsBgHEa1xBmMSI5yLjRB/fRqpQA08JmzeDFRVhJW1j5/niJUDYlCRZfBBLnsaV/cAoibdk3FYfg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4
++      '@deepseek-ai/dsh-commands': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-deque@0.2.1-rc.4':
++    resolution: {integrity: sha512-EMBzswcJQXf9PR/LWOOFVVqQSFDXSORp0naATHM4Xj2hnbpDnNOd+HRCyLeyUT7RMwj7LpPtduk3PA1zIzzRkg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-experimental-agent-team@0.2.1-rc.4':
++    resolution: {integrity: sha512-F4pg89+qwueS/oRMbHoAaTQJOwJQoXQc8wqqJVYQ8kjKw/jMJXwrGmtAAzkWhq99CIoWwkG5viltAYFQBjxCGA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-persistence': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection': 0.2.1-rc.4
++      '@deepseek-ai/dsh-subagent': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-jobs@0.2.1-rc.4':
++    resolution: {integrity: sha512-zn5HcafEx2hBd8+Fd3G3wwXIpTnXMBkecemGau/nWaX7fn/0v6dz/3XHI4pXepxV0duT8rIxQbgvOV9bDDmT1Q==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-workspace': 0.2.1-rc.4
++    peerDependenciesMeta:
++      '@deepseek-ai/dsh-workspace':
++        optional: true
++
++  '@deepseek-ai/dsh-llm@0.2.1-rc.4':
++    resolution: {integrity: sha512-AzKbc7JIS0Pi0o6lKMou1Lh3OrHntt/N93x6Po6JU9zkW910kUfeSSUx+19N4BjSpLpP/a3dbIr2KNlYYg9u6Q==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-permission-presets@0.2.1-rc.4':
++    resolution: {integrity: sha512-pqjwbmxaMYX4KNSSthtYCbmezZqGq7q0d+0I8Xpp6sq+GOxVjTCcwWAgiua+3bA+UaSisQqaaknXP8hvvJpabg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-commands': 0.2.1-rc.4
++      '@deepseek-ai/dsh-sandbox': 0.2.1-rc.4
++      '@deepseek-ai/dsh-sandbox-policy': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection': 0.2.1-rc.4
++      '@deepseek-ai/dsh-shell': 0.2.1-rc.4
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4
++      '@deepseek-ai/dsh-user-approval': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-sandbox@0.2.1-rc.4':
++    resolution: {integrity: sha512-HcAMUDQY+jQo4/BqsdTayQYKyYqTcruq/uWx6+U8jNxeCqG/y2tzi/QUqoivKAlyhnKuUaTuBzc22cdP/Ykvxg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-session-format-catalog@0.2.1-rc.4':
++    resolution: {integrity: sha512-Cep5+M042jN+J2h8HPIMWyOEQRSomF2jgC+bcynVm790wStFHveJRd5VSK7XCDoYFUtM3pN1+6Xq5FtPzShQzQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-session-format-v0-to-v1@0.2.1-rc.4':
++    resolution: {integrity: sha512-wKuaToq7Dh8kMcRVCSSvrN+niPyRCVleecylOM23rKgS14txiTf0TgRxUAUFYSTCZ4wkGoq+P6kPQGE0aJworA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-session-format-v1-to-v2@0.2.1-rc.4':
++    resolution: {integrity: sha512-6O6D/iFHQa08P/BtmPWEGM1m81mU3GS7J07U4vwCBsnER2W9DbjTYWFQPrC87NdCC1OmuVQDC9pBwwEmDsPykg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-session-format-v2-to-v3@0.2.1-rc.4':
++    resolution: {integrity: sha512-a9+7xIhASbfKT7CEoq/+xrOkCpoeTpawL5O0NtG/XmvgxqqonFsbzy164sbL1elEizKNeXhcFW0Eq8GHkjpadA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-session-format-v3-to-v4@0.2.1-rc.4':
++    resolution: {integrity: sha512-kyCYM4CwHQpuGwQzZNWH6I7lT/3U2aQMt8M7UuVfyfMQmefuADLjF/2XXWjcvibhq0gWq5A1UGuyDSjwKyitWQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-session-format@0.2.1-rc.4':
++    resolution: {integrity: sha512-HqXJNPXqb8cYjvuFo/VwZTo1RJ4r6LyMgMuhzrrAFFMK4STqKTnx4yuTjMJNQSwrddD9t+6UWzFnKOZ7cxOg9A==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-session-projection-cache@0.2.1-rc.4':
++    resolution: {integrity: sha512-wdlkvIcgOTl/1T4rQosK2V5kmAPNltKfMMVlwKF9zFSW2xG4EvrLaeTtkfQGYpwIXS9i58OG2xpjBqyurnNRlg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection': 0.2.1-rc.4
++      '@deepseek-ai/dsh-storage-domain': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-session-query@0.2.1-rc.4':
++    resolution: {integrity: sha512-m/LPkAPHwIsg0vg1mrg+EoccPdowa0J+mX2rDd7c8kRH8uYWqPAi71/ByKWKfZ/lhDI2jpmrVa4J0//QHWpWtA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-persistence': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection-cache': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-title': 0.2.1-rc.4
++      '@deepseek-ai/dsh-tool-todo': 0.2.1-rc.4
++    peerDependenciesMeta:
++      '@deepseek-ai/dsh-session-persistence':
++        optional: true
++      '@deepseek-ai/dsh-session-projection':
++        optional: true
++      '@deepseek-ai/dsh-session-projection-cache':
++        optional: true
++
++  '@deepseek-ai/dsh-session-title@0.2.1-rc.4':
++    resolution: {integrity: sha512-5cJm3K4rc/g/eDyaDqbfF2yjiDjQMrnYH2WJSmtBWs6ZbRVt1uNez0zX51sspwXCKQxIpVh+B/NpdTfowoFb3w==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-shell@0.2.1-rc.4':
++    resolution: {integrity: sha512-fJYcF4f2SqCKYo6uJMRQY77gi9jrfLYjmuqf9e7+1fn1ZZuPm1C03f53ITvssxvbd7aHU8ufLPi5jTZeNse/kw==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-sandbox': 0.2.1-rc.4
++      '@deepseek-ai/dsh-subprocess': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-storage-domain@0.2.1-rc.4':
++    resolution: {integrity: sha512-Z8Wyu67mIBqR6o3KmpNr5h5xRp014luKgfMZeRA1+3DoH+M1BAll84Cx9x/ytgcSAB+CwVl9TKvBC9OD164NDg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-storage': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-storage@0.2.1-rc.4':
++    resolution: {integrity: sha512-USOCHgze2Rzxwa6FbLON2BaQlZILCkX/W5/e1OKvWqwdLTC47ciV6+xp6fj6/AvPkaIdhiS//dVBBkFRHmrDSA==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-subagent@0.2.1-rc.4':
++    resolution: {integrity: sha512-qhXGHh+/+41cqKtOtXXYDRC8yAokR1H5jUReGtVwjRCvb6U3D7pfAWtHrtCcy/M8Ih5P0ylPVivv3LgrwMWJOw==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-agent-preset-registry': 0.2.1-rc.4
++      '@deepseek-ai/dsh-attachment': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-permission-presets': 0.2.1-rc.4
++      '@deepseek-ai/dsh-sandbox': 0.2.1-rc.4
++      '@deepseek-ai/dsh-sandbox-policy': 0.2.1-rc.4
++      '@deepseek-ai/dsh-scope': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-persistence': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-query': 0.2.1-rc.4
++      '@deepseek-ai/dsh-system-prompt': 0.2.1-rc.4
++      '@deepseek-ai/dsh-tools': 0.2.1-rc.4
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4
++      '@deepseek-ai/dsh-user-approval': 0.2.1-rc.4
++      '@deepseek-ai/dsh-util-time': 0.2.1-rc.4
++      '@deepseek-ai/dsh-working-directory': 0.2.1-rc.4
++      '@deepseek-ai/dsh-workspace': 0.2.1-rc.4
++    peerDependenciesMeta:
++      '@deepseek-ai/dsh-agent-preset-registry':
++        optional: true
++      '@deepseek-ai/dsh-permission-presets':
++        optional: true
++      '@deepseek-ai/dsh-sandbox':
++        optional: true
++      '@deepseek-ai/dsh-sandbox-policy':
++        optional: true
++      '@deepseek-ai/dsh-session-persistence':
++        optional: true
++      '@deepseek-ai/dsh-session-projection':
++        optional: true
++      '@deepseek-ai/dsh-session-query':
++        optional: true
++      '@deepseek-ai/dsh-user-approval':
++        optional: true
++      '@deepseek-ai/dsh-workspace':
++        optional: true
++
++  '@deepseek-ai/dsh-timeout@0.2.1-rc.4':
++    resolution: {integrity: sha512-8NQcrgG/3dscm4BVPYRhWl8zQdzR1Okl/awn2rFQwrbaht8FbUU83oYYvt2FhSY51wzJxbAADw2CKgy7w+iK0Q==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4':
++    resolution: {integrity: sha512-JYsPbakzRF/SpqEQsZpzgJ8peM4EI3nipfO/W1wMdLVZ9HCTtLogqW8Y6LH9Jp7sHnYNMECOpGW/tCQSW8UoSQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-user-approval@0.2.1-rc.4':
++    resolution: {integrity: sha512-nw+EOC7CSerjOHgZwz85sU8u+n2S3shJEaTvA9m3ygfsPg4EB0Xz8Mu2mxDYYU4acBKFFl8L8qme1milz9vFNQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-scope': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-system-prompt': 0.2.1-rc.4
++
++  '@deepseek-ai/dsh-util-crypto@0.2.1-rc.4':
++    resolution: {integrity: sha512-I3jJ6czJ0/sc+GfmL1sKY6Is7Kf4uvISwSdsLrxnfGtA+vXTIS6PmDnM/UpcMOboKm9RIjCniBmFATHm6TpOwQ==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-util-time@0.2.1-rc.4':
++    resolution: {integrity: sha512-HTQW6/fxZwjaespY+b5fg/v5yjoMC8uA+avGnyL/hyiQhh7OUOTJA+00MWUtXX8tuiJXgfn2W3z/4/DSWpRz5A==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
++  '@deepseek-ai/dsh-util-values@0.2.1-rc.4':
++    resolution: {integrity: sha512-6rQUar867FPR3MjTxiW0XdqLga5kfsHZniuDG+43M5w68dq5u37zIlppS91TTON+C8bkCcPqwPVUnjVda3z4Tg==}
++    peerDependencies:
++      '@deepseek-ai/cordis': ~4.0.5
++
+   '@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.5':
+     resolution: {integrity: sha512-SjeXmyaTevEq2TxK7reb1rhCrQZ4QOXmXt/qEwfQD5Fx3odU0ILx2uiXN+nphSCQ95LFCzrElHGgv2c7a824yg==}
+     engines: {node: '>=22.19.0'}
+@@ -17817,10 +18140,18 @@ packages:
+     resolution: {integrity: sha512-LxCou/CSYQ6dwEnjhLZY0KnEuc8V4UJ3IEQCl/uR2yHobSQIEdJKUlKLRYRF5i5FqRGHy1eK7une3aAWDHLtig==}
+     engines: {node: '>=20'}
+ 
++  '@modelcontextprotocol/client@2.3.0':
++    resolution: {integrity: sha512-pbHtGj6EeFCHngFE8gtNPaKrsj8Mb1IMw45BLcaPML/m2WTxI7pyYmeNQvaux88Lw8BSO5r7nyRbUyIkICmGrg==}
++    engines: {node: '>=20'}
++
+   '@modelcontextprotocol/core@2.2.0':
+     resolution: {integrity: sha512-iLhmprRmWI8EcosOA3wVvww22z02NkgqhV4fBH6f/odQBsi7xnJc0HGmi21yWO+/iKw2yzqVE127Zhna5/+JXw==}
+     engines: {node: '>=20'}
+ 
++  '@modelcontextprotocol/core@2.3.0':
++    resolution: {integrity: sha512-09BHFaNVBe5pB2AhzCfLj0cqmsKLERvZQ4FblzP90UMGLaXVqdZPByFjURwsUYCmxonUW2yAwgTTvle+8O2/8w==}
++    engines: {node: '>=20'}
++
+   '@modelcontextprotocol/node@2.0.0':
+     resolution: {integrity: sha512-Y4hAC2XdGDUdDOCbLDOCA4+aL3NUldjsOWlDL/YwpAxrPhRm1xHd7lZ+mLacvZ9t3PaH28wgNoaLQGrIk1P2pg==}
+     engines: {node: '>=20'}
+@@ -17831,6 +18162,12 @@ packages:
+       hono:
+         optional: true
+ 
++  '@modelcontextprotocol/node@2.1.1':
++    resolution: {integrity: sha512-EY92OAXN2xYL7tNS/MVsWJW1v8VHAPwl9B4Ca3pCrjmvqyC+S1C/6UHsMxF2GoFPraS5Yyg56vFz9brVpFojMA==}
++    engines: {node: '>=20'}
++    peerDependencies:
++      '@modelcontextprotocol/server': ^2.3.0
++
+   '@modelcontextprotocol/sdk@1.31.0':
+     resolution: {integrity: sha512-UvTMgnNlnIBO/22ob2RcVGDlcvOslQs8T59+FTGdA0L27a39fdGF/EDETNtDVK4DZGpwomlsYpRdA8UXcVL/pw==}
+     engines: {node: '>=18'}
+@@ -17853,6 +18190,10 @@ packages:
+     resolution: {integrity: sha512-qFnltjus6Gk8Lx6J1w2RXmr3YPN22MNT6qD6zjAkaiWIlFIFxWClz0rXHNuJF/KSUyn5YGhkSvXkWDbQHVLFEQ==}
+     engines: {node: '>=20'}
+ 
++  '@modelcontextprotocol/server@2.3.0':
++    resolution: {integrity: sha512-+6b0LdsQLmHsvS7J6sQJ4weTpzUn61fU1JKS+321/+IyDYoHW5CR2Tgqcs6GgAAQvlesCo6yX3xttgmx+XGtJw==}
++    engines: {node: '>=20'}
++
+   '@napi-rs/canvas-android-arm64@1.0.8':
+     resolution: {integrity: sha512-5+nkh8i3gt6lqS/d2jTZ1xAn6tdgtB4Lf1mW6T0Qm5/rXNwBuV1sAEyLEWan5o9gJPU/GuvHR3rvSeZ+FaGrbw==}
+     engines: {node: '>= 10'}
+@@ -19519,6 +19860,144 @@ packages:
+     resolution: {integrity: sha512-WoxUM/Be4hfsX06FxsvpGgfYqwgivMV7/Ol7aFuSfSmY6rRaiju4QxOEe9RUS0iYcSHWl5i9AhB1cMoE0p+XiA==}
+     engines: {node: '>=18.12.0'}
+ 
++  '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1':
++    resolution: {integrity: sha512-IMLKvzdzb3JzbH2DTn5G5CiKC7hMgtaXxItsCKEwJ2JJu5Z4AngeuhET+/33OGhgnEcUo7ZVQez5bymi7oXtKQ==}
++    engines: {dsh: 0.2.1-rc.4, node: ^22.19.0 || >=24.0.0}
++    peerDependencies:
++      '@deepseek-ai/cordis': 4.0.5
++      '@deepseek-ai/dsh-agent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-api-gateway': 0.2.1-rc.4
++      '@deepseek-ai/dsh-api-remote-access': 0.2.1-rc.4
++      '@deepseek-ai/dsh-api-remotes': 0.2.1-rc.4
++      '@deepseek-ai/dsh-api-session-controller': 0.2.1-rc.4
++      '@deepseek-ai/dsh-api-settings-controller': 0.2.1-rc.4
++      '@deepseek-ai/dsh-api-workspace-controller': 0.2.1-rc.4
++      '@deepseek-ai/dsh-attachment': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-locale': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-store': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-chat': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-conversation': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-layout': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-plugin-manager': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-primitives': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-renderer': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-settings': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-sidebar-right': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-slots': 0.2.1-rc.4
++      '@deepseek-ai/dsh-client-ui-workspace': 0.2.1-rc.4
++      '@deepseek-ai/dsh-experimental-agent-team': 0.2.1-rc.4
++      '@deepseek-ai/dsh-jobs': 0.2.1-rc.4
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4
++      '@deepseek-ai/dsh-permission-presets': 0.2.1-rc.4
++      '@deepseek-ai/dsh-sandbox-policy': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-format-catalog': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-format-v3-to-v4': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-persistence': 0.2.1-rc.4
++      '@deepseek-ai/dsh-session-projection': 0.2.1-rc.4
++      '@deepseek-ai/dsh-subagent': 0.2.1-rc.4
++      '@deepseek-ai/dsh-system-prompt': 0.2.1-rc.4
++      '@deepseek-ai/dsh-timeout': 0.2.1-rc.4
++      '@deepseek-ai/dsh-tool-todo': 0.2.1-rc.4
++      '@deepseek-ai/dsh-tools': 0.2.1-rc.4
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4
++      '@deepseek-ai/dsh-user-approval': 0.2.1-rc.4
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4
++      '@deepseek-ai/dsh-working-directory': 0.2.1-rc.4
++      '@deepseek-ai/schemastery': 3.18.5
++      react: 18.3.1
++      react-dom: 18.3.1
++    peerDependenciesMeta:
++      '@deepseek-ai/cordis':
++        optional: true
++      '@deepseek-ai/dsh-agent':
++        optional: true
++      '@deepseek-ai/dsh-api-gateway':
++        optional: true
++      '@deepseek-ai/dsh-api-remote-access':
++        optional: true
++      '@deepseek-ai/dsh-api-remotes':
++        optional: true
++      '@deepseek-ai/dsh-api-session-controller':
++        optional: true
++      '@deepseek-ai/dsh-api-settings-controller':
++        optional: true
++      '@deepseek-ai/dsh-api-workspace-controller':
++        optional: true
++      '@deepseek-ai/dsh-attachment':
++        optional: true
++      '@deepseek-ai/dsh-client-locale':
++        optional: true
++      '@deepseek-ai/dsh-client-store':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-chat':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-conversation':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-layout':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-plugin-manager':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-primitives':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-renderer':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-session':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-settings':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-sidebar-right':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-slots':
++        optional: true
++      '@deepseek-ai/dsh-client-ui-workspace':
++        optional: true
++      '@deepseek-ai/dsh-experimental-agent-team':
++        optional: true
++      '@deepseek-ai/dsh-jobs':
++        optional: true
++      '@deepseek-ai/dsh-llm':
++        optional: true
++      '@deepseek-ai/dsh-permission-presets':
++        optional: true
++      '@deepseek-ai/dsh-sandbox-policy':
++        optional: true
++      '@deepseek-ai/dsh-session':
++        optional: true
++      '@deepseek-ai/dsh-session-format-catalog':
++        optional: true
++      '@deepseek-ai/dsh-session-format-v3-to-v4':
++        optional: true
++      '@deepseek-ai/dsh-session-persistence':
++        optional: true
++      '@deepseek-ai/dsh-session-projection':
++        optional: true
++      '@deepseek-ai/dsh-subagent':
++        optional: true
++      '@deepseek-ai/dsh-system-prompt':
++        optional: true
++      '@deepseek-ai/dsh-timeout':
++        optional: true
++      '@deepseek-ai/dsh-tool-todo':
++        optional: true
++      '@deepseek-ai/dsh-tools':
++        optional: true
++      '@deepseek-ai/dsh-typert-protocol':
++        optional: true
++      '@deepseek-ai/dsh-user-approval':
++        optional: true
++      '@deepseek-ai/dsh-util-values':
++        optional: true
++      '@deepseek-ai/dsh-working-directory':
++        optional: true
++      '@deepseek-ai/schemastery':
++        optional: true
++      react:
++        optional: true
++      react-dom:
++        optional: true
++
+   abbrev@4.0.0:
+     resolution: {integrity: sha512-a1wflyaL0tHtJSmLSOVybYhy22vRih4eduhhrkcjgrWGnRfrZtovJ2FRjxuTtkkj47O/baf0R86QU5OuYpz8fA==}
+     engines: {node: ^20.17.0 || >=22.9.0}
+@@ -23769,6 +24248,10 @@ snapshots:
+     dependencies:
+       zod: 4.4.3
+ 
++  '@agentclientprotocol/sdk@1.5.1(zod@4.4.3)':
++    dependencies:
++      zod: 4.4.3
++
+   '@algolia/abtesting@1.21.2':
+     dependencies:
+       '@algolia/client-common': 5.55.2
+@@ -24343,6 +24826,339 @@ snapshots:
+ 
+   '@csstools/css-tokenizer@4.0.0': {}
+ 
++  '@deepseek-ai/dsh-api-gateway@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-deque': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-timeout': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      ws: 8.21.3
++    transitivePeerDependencies:
++      - bufferutil
++      - utf-8-validate
++    optional: true
++
++  '@deepseek-ai/dsh-api-remote-access@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-chunked-list@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-client-store@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-client-ui-primitives@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-client-ui-slots@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-attachment': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-scope': link:packages/core/scope
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-util-crypto': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-compaction-image-offload@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-compaction@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-compaction': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-compaction@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-commands': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-session': link:packages/core/session
++    optional: true
++
++  '@deepseek-ai/dsh-deque@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-experimental-agent-team@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session-persistence@packages+session+session-persistence)(@deepseek-ai/dsh-session-projection@packages+session+session-projection)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-subagent@0.2.1-rc.4(889044972a2f097c97ff798bbaf49d14))':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-session-persistence': link:packages/session/session-persistence
++      '@deepseek-ai/dsh-session-projection': link:packages/session/session-projection
++      '@deepseek-ai/dsh-subagent': 0.2.1-rc.4(889044972a2f097c97ff798bbaf49d14)
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-jobs@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-workspace@packages+workspace+workspace)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session': link:packages/core/session
++    optionalDependencies:
++      '@deepseek-ai/dsh-workspace': link:packages/workspace/workspace
++    optional: true
++
++  '@deepseek-ai/dsh-llm@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-timeout': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-util-crypto': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-permission-presets@0.2.1-rc.4(069cd75c9b192d951be5f655d015e419)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-commands': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))
++      '@deepseek-ai/dsh-sandbox': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-sandbox-policy': link:packages/sandbox/sandbox-policy
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-session-projection': link:packages/session/session-projection
++      '@deepseek-ai/dsh-shell': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-sandbox@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session))(@deepseek-ai/dsh-subprocess@packages+subprocess+subprocess)
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-user-approval': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-system-prompt@packages+core+system-prompt)
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-sandbox@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-session-format-catalog@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-compaction@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-compaction-image-offload': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-compaction@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-session-format': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v0-to-v1': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v1-to-v2': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v2-to-v3': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v3-to-v4': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    transitivePeerDependencies:
++      - '@deepseek-ai/dsh-agent'
++      - '@deepseek-ai/dsh-compaction'
++      - '@deepseek-ai/dsh-llm'
++    optional: true
++
++  '@deepseek-ai/dsh-session-format-v0-to-v1@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-session-format': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-session-format-v1-to-v2@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-llm': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v0-to-v1': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-session-format-v2-to-v3@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-session-format': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v0-to-v1': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v1-to-v2': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-session-format-v3-to-v4@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-session-format': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-format-v2-to-v3': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-session-format@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++    optional: true
++
++  '@deepseek-ai/dsh-session-projection-cache@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-session-projection@packages+session+session-projection)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-storage-domain@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-storage@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-session-projection': link:packages/session/session-projection
++      '@deepseek-ai/dsh-storage-domain': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-storage@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-session-query@0.2.1-rc.4(340df21b5094a9c146f4d205bdbe1cba)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-session-format-catalog': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-compaction@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-session-title': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session-projection@packages+session+session-projection)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-tool-todo': link:packages/todo/tool-todo
++    optionalDependencies:
++      '@deepseek-ai/dsh-session-persistence': link:packages/session/session-persistence
++      '@deepseek-ai/dsh-session-projection': link:packages/session/session-projection
++      '@deepseek-ai/dsh-session-projection-cache': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-session-projection@packages+session+session-projection)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-storage-domain@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-storage@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))
++    transitivePeerDependencies:
++      - '@deepseek-ai/dsh-agent'
++      - '@deepseek-ai/dsh-compaction'
++    optional: true
++
++  '@deepseek-ai/dsh-session-title@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session-projection@packages+session+session-projection)(@deepseek-ai/dsh-session@packages+core+session)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-session-projection': link:packages/session/session-projection
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-shell@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-sandbox@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session))(@deepseek-ai/dsh-subprocess@packages+subprocess+subprocess)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-sandbox': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-subprocess': link:packages/subprocess/subprocess
++    optional: true
++
++  '@deepseek-ai/dsh-storage-domain@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-storage@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-storage': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-storage@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-subagent@0.2.1-rc.4(889044972a2f097c97ff798bbaf49d14)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-attachment': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-chunked-list': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-scope': link:packages/core/scope
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-system-prompt': link:packages/core/system-prompt
++      '@deepseek-ai/dsh-tools': link:packages/core/tools
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-util-time': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-working-directory': link:packages/session/working-directory
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      zod: 4.4.3
++    optionalDependencies:
++      '@deepseek-ai/dsh-agent-preset-registry': link:packages/preset/agent-preset-registry
++      '@deepseek-ai/dsh-permission-presets': 0.2.1-rc.4(069cd75c9b192d951be5f655d015e419)
++      '@deepseek-ai/dsh-sandbox': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-sandbox-policy': link:packages/sandbox/sandbox-policy
++      '@deepseek-ai/dsh-session-persistence': link:packages/session/session-persistence
++      '@deepseek-ai/dsh-session-projection': link:packages/session/session-projection
++      '@deepseek-ai/dsh-session-query': 0.2.1-rc.4(340df21b5094a9c146f4d205bdbe1cba)
++      '@deepseek-ai/dsh-user-approval': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-system-prompt@packages+core+system-prompt)
++      '@deepseek-ai/dsh-workspace': link:packages/workspace/workspace
++    optional: true
++
++  '@deepseek-ai/dsh-timeout@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      zod: 4.4.3
++    optional: true
++
++  '@deepseek-ai/dsh-user-approval@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-system-prompt@packages+core+system-prompt)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-brand': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-scope': link:packages/core/scope
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-system-prompt': link:packages/core/system-prompt
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++    optional: true
++
++  '@deepseek-ai/dsh-util-crypto@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-util-time@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
++  '@deepseek-ai/dsh-util-values@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)':
++    dependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++    optional: true
++
+   '@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.5':
+     optional: true
+ 
+@@ -25314,10 +26130,24 @@ snapshots:
+       pkce-challenge: 5.0.1
+       zod: 4.4.3
+ 
++  '@modelcontextprotocol/client@2.3.0':
++    dependencies:
++      '@modelcontextprotocol/core': 2.3.0
++      cross-spawn: 7.0.6
++      eventsource: 3.0.7
++      eventsource-parser: 3.1.0
++      jose: 6.2.3
++      pkce-challenge: 5.0.1
++      zod: 4.4.3
++
+   '@modelcontextprotocol/core@2.2.0':
+     dependencies:
+       zod: 4.4.3
+ 
++  '@modelcontextprotocol/core@2.3.0':
++    dependencies:
++      zod: 4.4.3
++
+   '@modelcontextprotocol/node@2.0.0(@modelcontextprotocol/server@2.2.0)(hono@4.13.7)':
+     dependencies:
+       '@hono/node-server': 1.19.17(hono@4.13.7)
+@@ -25325,6 +26155,12 @@ snapshots:
+     optionalDependencies:
+       hono: 4.13.7
+ 
++  '@modelcontextprotocol/node@2.1.1(@modelcontextprotocol/server@2.3.0)':
++    dependencies:
++      '@hono/node-server': 1.19.17(hono@4.13.7)
++      '@modelcontextprotocol/server': 2.3.0
++      hono: 4.13.7
++
+   '@modelcontextprotocol/sdk@1.31.0(supports-color@9.4.0)(zod@4.4.3)':
+     dependencies:
+       '@hono/node-server': 1.19.17(hono@4.13.7)
+@@ -25374,6 +26210,11 @@ snapshots:
+       '@modelcontextprotocol/core': 2.2.0
+       zod: 4.4.3
+ 
++  '@modelcontextprotocol/server@2.3.0':
++    dependencies:
++      '@modelcontextprotocol/core': 2.3.0
++      zod: 4.4.3
++
+   '@napi-rs/canvas-android-arm64@1.0.8':
+     optional: true
+ 
+@@ -26818,6 +27659,60 @@ snapshots:
+       js-yaml: 4.3.2
+       tslib: 2.8.1
+ 
++  '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1(patch_hash=37a077f243e9d6265e0c22797def004c84e055385f152b20573752ca2ecfa0be)(2f9c520390fc03078d835ee7948a41e2)':
++    dependencies:
++      '@agentclientprotocol/sdk': 1.5.1(zod@4.4.3)
++      '@modelcontextprotocol/client': 2.3.0
++      '@modelcontextprotocol/node': 2.1.1(@modelcontextprotocol/server@2.3.0)
++      '@modelcontextprotocol/server': 2.3.0
++      yaml: 2.9.0
++      zod: 4.4.3
++    optionalDependencies:
++      '@deepseek-ai/cordis': link:vendor/cordis
++      '@deepseek-ai/dsh-agent': link:packages/core/agent
++      '@deepseek-ai/dsh-api-gateway': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-api-remote-access': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-api-remotes': link:packages/api/remotes
++      '@deepseek-ai/dsh-api-session-controller': link:packages/api/session-controller
++      '@deepseek-ai/dsh-api-settings-controller': link:packages/api/settings-controller
++      '@deepseek-ai/dsh-api-workspace-controller': link:packages/api/workspace-controller
++      '@deepseek-ai/dsh-attachment': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))
++      '@deepseek-ai/dsh-client-locale': link:packages/client/locale
++      '@deepseek-ai/dsh-client-store': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-client-ui-chat': link:packages/client/ui-chat
++      '@deepseek-ai/dsh-client-ui-conversation': link:packages/client/ui-conversation
++      '@deepseek-ai/dsh-client-ui-layout': link:packages/client/ui-layout
++      '@deepseek-ai/dsh-client-ui-plugin-manager': link:packages/client/ui-plugin-manager
++      '@deepseek-ai/dsh-client-ui-primitives': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-client-ui-renderer': link:packages/client/ui-renderer
++      '@deepseek-ai/dsh-client-ui-session': link:packages/client/ui-session
++      '@deepseek-ai/dsh-client-ui-settings': link:packages/client/ui-settings
++      '@deepseek-ai/dsh-client-ui-sidebar-right': link:packages/client/ui-sidebar-right
++      '@deepseek-ai/dsh-client-ui-slots': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-client-ui-workspace': link:packages/client/ui-workspace
++      '@deepseek-ai/dsh-experimental-agent-team': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session-persistence@packages+session+session-persistence)(@deepseek-ai/dsh-session-projection@packages+session+session-projection)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-subagent@0.2.1-rc.4(889044972a2f097c97ff798bbaf49d14))
++      '@deepseek-ai/dsh-jobs': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-workspace@packages+workspace+workspace)
++      '@deepseek-ai/dsh-llm': link:packages/llm/llm
++      '@deepseek-ai/dsh-permission-presets': 0.2.1-rc.4(069cd75c9b192d951be5f655d015e419)
++      '@deepseek-ai/dsh-sandbox-policy': link:packages/sandbox/sandbox-policy
++      '@deepseek-ai/dsh-session': link:packages/core/session
++      '@deepseek-ai/dsh-session-format-catalog': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-compaction@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-commands@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-attachment@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-typert-protocol@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)
++      '@deepseek-ai/dsh-session-format-v3-to-v4': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-session-persistence': link:packages/session/session-persistence
++      '@deepseek-ai/dsh-session-projection': link:packages/session/session-projection
++      '@deepseek-ai/dsh-subagent': 0.2.1-rc.4(889044972a2f097c97ff798bbaf49d14)
++      '@deepseek-ai/dsh-system-prompt': link:packages/core/system-prompt
++      '@deepseek-ai/dsh-timeout': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-tool-todo': link:packages/todo/tool-todo
++      '@deepseek-ai/dsh-tools': link:packages/core/tools
++      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-user-approval': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-agent@packages+core+agent)(@deepseek-ai/dsh-brand@0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis))(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-scope@packages+core+scope)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-system-prompt@packages+core+system-prompt)
++      '@deepseek-ai/dsh-util-values': 0.2.1-rc.4(@deepseek-ai/cordis@vendor+cordis)
++      '@deepseek-ai/dsh-working-directory': link:packages/session/working-directory
++      '@deepseek-ai/schemastery': link:vendor/schemastery
++      react: 18.3.1
++      react-dom: 18.3.1(react@18.3.1)
++
+   abbrev@4.0.0: {}
+ 
+   abort-controller@3.0.0:
 diff --git a/packages/core/tools/src/index.ts b/packages/core/tools/src/index.ts
 index ca939d4d..aaac1bcc 100644
 --- a/packages/core/tools/src/index.ts
@@ -1943,9 +2954,10 @@ diff --git a/scripts/primary-runtime/prepare.ts b/scripts/primary-runtime/prepar
  
  if (import.meta.main) {
 diff --git a/packages/api/gateway/src/types.ts b/packages/api/gateway/src/types.ts
+index 83ae7f07..e5566cc3 100644
 --- a/packages/api/gateway/src/types.ts
 +++ b/packages/api/gateway/src/types.ts
-@@ -144,8 +144,20 @@
+@@ -144,8 +144,34 @@ export type TypertGatewayErrorCode =
    | 'gateway/signature-invalid'
    | 'gateway/uplink-overflow'
  
@@ -1957,35 +2969,62 @@ diff --git a/packages/api/gateway/src/types.ts b/packages/api/gateway/src/types.
 +  signal: AbortSignal,
 +) => boolean | Promise<boolean>
 +
++/** Capture the current product owner before one ACP catalog call. The returned
++ * projection must revalidate that owner after every asynchronous lookup. */
++export type SessionResultProjection = (
++  method: string,
++  args: Readonly<Record<string, unknown>>,
++  signal: AbortSignal,
++) => PreparedSessionResultProjection | Promise<PreparedSessionResultProjection>
++export interface PreparedSessionResultProjection {
++  assertCurrent(): void
++  project(value: unknown): Promise<unknown>
++}
++
  /** Host dispatcher consumed by Connection adapters. */
  export interface TypertGateway {
 +  /** Installs one Session guard. Once enabled, removal fails closed until a
 +   * replacement is ready; ordinary SDK deployments install no guard. */
 +  registerSessionAdmission(admit: SessionCommandAdmission): () => void
++  /** Only health/projectedSubagentIds unary ACP results use this optional port. */
++  registerSessionResultProjection(prepare: SessionResultProjection): () => void
 +
    /** Carrier adapter shared by WebSocket and in-process transports. */
    readonly wireStream: TypertGatewayWireStream
  
 diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.ts
+index 54dbf73f..a6bd9786 100644
 --- a/packages/api/gateway/src/index.ts
 +++ b/packages/api/gateway/src/index.ts
-@@ -36,6 +36,7 @@
+@@ -36,6 +36,8 @@ import {
  } from '@deepseek-ai/dsh-typert-protocol'
  import type {
    InvokeRemoteRequest,
 +  SessionCommandAdmission,
++  SessionResultProjection,
    TypertGateway,
    TypertGatewayErrorCode,
    TypertGatewayWireStream,
-@@ -70,6 +71,7 @@
+@@ -70,6 +72,9 @@ import {
  
  export type {
    InvokeRemoteRequest,
 +  SessionCommandAdmission,
++  SessionResultProjection,
++  PreparedSessionResultProjection,
    TypertGateway,
    TypertGatewayErrorCode,
    TypertGatewayWireStream,
-@@ -154,6 +156,9 @@
+@@ -100,6 +105,8 @@ interface PreparedInvocation {
+   readonly args: readonly unknown[]
+   readonly method: (...args: never[]) => unknown
+   readonly invocation: GatewayInvocation
++  readonly projectResult: ((value: unknown) => Promise<unknown>) | undefined
++  readonly assertResultOwner: (() => void) | undefined
+ }
+ 
+ /** Carrier inputs `GatewayInvocation.uplink()` decodes on first use. */
+@@ -154,6 +161,9 @@ const SRC_JSON_CODEC: TypertCodec = { mode: 'src-json' }
  
  /** Gateway transport configuration. */
  export interface Config {
@@ -1995,7 +3034,7 @@ diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.
    /** WebSocket Ping interval from 1 through 2,147,483,647 milliseconds. @default 2000 */
    readonly websocketHeartbeatIntervalMs?: number
    /** Buffered uplink frame bytes one logical stream may hold before it fails with `gateway/uplink-overflow`. @default 262144 */
-@@ -209,10 +214,22 @@
+@@ -209,11 +219,32 @@ export class TypertGatewayError extends RemoteError<TypertGatewayErrorCode> {
  export class TypertGatewayService extends Service implements TypertGateway {
    static inject = ['typert', 'remoteAccess']
    static Config: z<Config> = z.object({
@@ -2004,9 +3043,10 @@ diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.
        .default(DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS),
      streamInboxBytes: z.number().step(1).min(1).default(DEFAULT_STREAM_INBOX_BYTES),
    })
-+
+ 
 +  private sessionAdmissionRequired = false
 +  private sessionAdmission: { readonly admit: SessionCommandAdmission } | undefined
++  private sessionResultProjection: { readonly prepare: SessionResultProjection } | undefined
 +
 +  registerSessionAdmission(admit: SessionCommandAdmission): () => void {
 +    if (this.sessionAdmission !== undefined) throw new Error('Session admission is already registered')
@@ -2015,10 +3055,19 @@ diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.
 +    this.sessionAdmission = registration
 +    return () => { if (this.sessionAdmission === registration) this.sessionAdmission = undefined }
 +  }
- 
++
++  registerSessionResultProjection(prepare: SessionResultProjection): () => void {
++    if (this.sessionResultProjection !== undefined) throw new Error('Session result projection is already registered')
++    this.sessionAdmissionRequired = true
++    const registration = { prepare }
++    this.sessionResultProjection = registration
++    return () => { if (this.sessionResultProjection === registration) this.sessionResultProjection = undefined }
++  }
++
    /** Carrier adapter shared by the WebSocket mux and local Host transports. */
    readonly wireStream: TypertGatewayWireStream = {
-@@ -236,6 +253,7 @@
+     open: (endpoint, payload, uplink, peer, signal) =>
+@@ -236,6 +267,7 @@ export class TypertGatewayService extends Service implements TypertGateway {
    constructor(ctx: Context, config: Config) {
      super(ctx, 'typertGateway')
      const resolved = config as ResolvedConfig
@@ -2026,13 +3075,24 @@ diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.
      ctx.on('internal/service', () => {
        this.srcClaims = undefined
      })
-@@ -807,6 +825,23 @@
+@@ -418,7 +450,9 @@ export class TypertGatewayService extends Service implements TypertGateway {
+     }
+ 
+     try {
+-      return await Reflect.apply(prepared.method, prepared.receiver, prepared.args) as unknown
++      prepared.assertResultOwner?.()
++      const value: unknown = await Reflect.apply(prepared.method, prepared.receiver, prepared.args)
++      return prepared.projectResult === undefined ? value : await prepared.projectResult(value)
+     } catch (error) {
+       if (prepared.invocation.signal.aborted) throw remoteCancelled(prepared.endpoint, error)
+       throw error
+@@ -807,6 +841,57 @@ export class TypertGatewayService extends Service implements TypertGateway {
          })
        }
      }
 +    // Covers unary and mux streams, including already-live prompt/queue/cancel
 +    // and cold history/create. A refusing guard must activate no Agent lookup.
-+    if (request.namespace === 'session'
++    if (request.namespace === 'session' || request.namespace === 'dshAcp'
 +      || (request.namespace === 'workspace' && request.method === 'archiveSession')) {
 +      const admission = this.sessionAdmission
 +      if (admission === undefined) {
@@ -2041,15 +3101,58 @@ diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.
 +      } else {
 +        const signal = request.signal ?? NEVER_ABORTED_SIGNAL
 +        signal.throwIfAborted()
-+        const allowed = await admission.admit(request.method, validated, signal)
++        const method = request.namespace === 'dshAcp' ? `dshAcp/${request.method}` : request.method
++        const allowed = await admission.admit(method, validated, signal)
 +        signal.throwIfAborted()
 +        if (this.sessionAdmission !== admission || allowed !== true) throw new TypertGatewayError(
 +          'gateway/invocation-unavailable', endpoint, 'Use the authorized task Session controls')
 +      }
 +    }
++    let projectResult: PreparedInvocation['projectResult']
++    let assertResultOwner: PreparedInvocation['assertResultOwner']
++    if (request.namespace === 'dshAcp'
++      && (request.method === 'health' || request.method === 'projectedSubagentIds')) {
++      const registration = this.sessionResultProjection
++      if (registration === undefined) {
++        if (this.sessionAdmissionRequired) throw new TypertGatewayError(
++          'gateway/service-unavailable', endpoint, 'Session result projection is unavailable')
++      } else {
++        if (descriptor.mode !== undefined) throw new TypertGatewayError(
++          'gateway/invocation-unavailable', endpoint, 'Session catalog projection requires unary dispatch')
++        const signal = request.signal ?? NEVER_ABORTED_SIGNAL
++        signal.throwIfAborted()
++        const prepared = await registration.prepare(request.method, validated, signal)
++        const current = () => {
++          signal.throwIfAborted()
++          if (this.sessionResultProjection !== registration) throw new TypertGatewayError(
++            'gateway/invocation-unavailable', endpoint, 'Session result projection owner changed')
++          prepared.assertCurrent()
++        }
++        if (!isObject(prepared) || typeof prepared.assertCurrent !== 'function'
++          || typeof prepared.project !== 'function') throw new TypertGatewayError(
++          'gateway/invocation-unavailable', endpoint, 'Session result projection is unavailable')
++        current()
++        assertResultOwner = current
++        projectResult = async (value) => {
++          current()
++          const result = await prepared.project(value)
++          current()
++          return result
++        }
++      }
++    }
      const receiverContext = await this.resolveReceiverContext(descriptor, validated, endpoint)
      const receiver: unknown = receiverContext.get(descriptor.service)
      if (!isObject(receiver)) {
+@@ -855,6 +940,8 @@ export class TypertGatewayService extends Service implements TypertGateway {
+       args,
+       method: method as (...args: never[]) => unknown,
+       invocation,
++      projectResult,
++      assertResultOwner,
+     }
+   }
+ 
 diff --git a/packages/client/ui-workspace/src/client/index.ts b/packages/client/ui-workspace/src/client/index.ts
 index cc9da07..a5f541d 100644
 --- a/packages/client/ui-workspace/src/client/index.ts
@@ -2236,3 +3339,831 @@ diff --git a/packages/client/ui-settings-models/src/client/index.ts b/packages/c
    ctx.slots.inject('settings.onboarding', () => ctx.slots.register({
      name: 'settings.onboarding',
      id: 'deepseek-official',
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 29065016..81beebc4 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -106,6 +106,7 @@ minimumReleaseAgeExclude:
+   # Desktop packaging requires this Electron fingerprint with node-addon-require-builtin 0.1.9.
+   - electron@44.7.0
+ patchedDependencies:
++  '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1': patches/zhuma-dsh-acp-adapter.patch
+   '@earendil-works/pi-ai@1.1.0': patches/@earendil-works__pi-ai@1.1.0.patch
+   '@electron/osx-sign@1.3.3': patches/@electron__osx-sign@1.3.3.patch
+   '@fortune-sheet/core@1.0.4': patches/@fortune-sheet__core@1.0.4.patch
+diff --git a/patches/zhuma-dsh-acp-adapter.patch b/patches/zhuma-dsh-acp-adapter.patch
+new file mode 100644
+index 00000000..56eadd40
+--- /dev/null
++++ b/patches/zhuma-dsh-acp-adapter.patch
+@@ -0,0 +1,785 @@
++diff --git a/lib/host/composition/host-execution-owners.js b/lib/host/composition/host-execution-owners.js
++index 67b20f9..a18679d 100644
++--- a/lib/host/composition/host-execution-owners.js
+++++ b/lib/host/composition/host-execution-owners.js
++@@ -127,4 +127,62 @@ export function clearHostExecutionOwners(root, sessionId) {
++     }
++     owners.delete(sessionId);
++ }
+++const liveRuntimeKey = Symbol.for('dsh-acp-adapter.live-runtime-owners.v1');
+++function liveRuntimeOwners(root) {
+++    const host = globalThis;
+++    const roots = (host[liveRuntimeKey] ??= new WeakMap());
+++    const key = hostRoot(root);
+++    let owners = roots.get(key);
+++    if (owners === undefined)
+++        roots.set(key, (owners = new Map()));
+++    return owners;
+++}
+++/** Called at the original adapter's runtime allocation boundary. */
+++export function retainLiveRuntime(root, sessionId, runtime) {
+++    const owners = liveRuntimeOwners(root);
+++    if (!owners.has(runtime))
+++        owners.set(runtime, { sessionId, runtime, closed: false });
+++}
+++/** Observe the original close operation without changing its result or teardown. */
+++export function closeLiveRuntime(root, sessionId, runtime) {
+++    retainLiveRuntime(root, sessionId, runtime);
+++    const owner = liveRuntimeOwners(root).get(runtime);
+++    if (owner.closing !== undefined)
+++        return owner.closing;
+++    const completion = Promise.withResolvers();
+++    owner.closing = completion.promise;
+++    try {
+++        void runtime.close().then(() => {
+++            owner.closed = true;
+++            completion.resolve();
+++        }, completion.reject);
+++    }
+++    catch (error) {
+++        completion.reject(error);
+++    }
+++    return completion.promise;
+++}
+++/** Read only actual owned resources. Neither headers, sidecars, profile names
+++ * nor an absent/failed close observer can prove that a process has drained. */
+++export function listLiveRuntimeSessions(root) {
+++    const owners = liveRuntimeOwners(root);
+++    const sessions = new Map();
+++    for (const [runtime, owner] of owners) {
+++        if (owner.closed && runtime.physicalCleanupConfirmed === true && ownerIsQuiescent(runtime)) {
+++            owners.delete(runtime);
+++            continue;
+++        }
+++        sessions.set(owner.sessionId, {
+++            status: 'blocked',
+++            cause: owner.closing === undefined ? 'runtime-owned' : 'runtime-cleanup-unconfirmed',
+++            detail: null,
+++        });
+++    }
+++    // Original retained Host calls/feedback can outlive the transport too.
+++    for (const [sessionId, retained] of registry().get(hostRoot(root)) ?? []) {
+++        if (retained.size > 0)
+++            sessions.set(sessionId, { status: 'blocked', cause: 'host-settlement-pending', detail: null });
+++    }
+++    return [...sessions].map(([sessionId, continuity]) => ({ sessionId, continuity }));
+++}
++ //# sourceMappingURL=host-execution-owners.js.map
++\ No newline at end of file
++diff --git a/lib/host/composition/index.js b/lib/host/composition/index.js
++index 601aef8..0745d06 100644
++--- a/lib/host/composition/index.js
+++++ b/lib/host/composition/index.js
++@@ -23,7 +23,22 @@ export function apply(ctx, config) {
++     ctx.inject(['settings'], (child) => {
++         child.effect(() => child.settings.configure({ auto: false }, ctx.fiber));
++     });
++-    installInstalledProfileRegistry(ctx, config, { installRemote: true });
+++    installInstalledProfileRegistry(ctx, config, {
+++        installRemote: true,
+++        nativeToolHandoffGuard: (id, profile) => {
+++            // Optional local Host policy, never a renderer/config boolean or profile
+++            // name heuristic. A producer's captured guard survives only its generation.
+++            const policy = ctx.get('acpNativeToolHandoffPolicy');
+++            if (policy === undefined)
+++                return undefined;
+++            if (policy === null || typeof policy !== 'object' || typeof Reflect.get(policy, 'guardForProfile') !== 'function')
+++                throw new TypeError('Native tool handoff policy is unavailable');
+++            const guard = Reflect.apply(Reflect.get(policy, 'guardForProfile'), policy, [id, profile]);
+++            if (guard !== undefined && typeof guard !== 'function')
+++                throw new TypeError('Native tool handoff policy returned an invalid guard');
+++            return guard;
+++        },
+++    });
++     installLegacySettingsImport(ctx);
++ }
++ export { installInstalledProfileRegistry } from "./installed-profile-registry.js";
++diff --git a/lib/host/composition/installed-profile-registry.js b/lib/host/composition/installed-profile-registry.js
++index d62454a..5049cec 100644
++--- a/lib/host/composition/installed-profile-registry.js
+++++ b/lib/host/composition/installed-profile-registry.js
++@@ -1,5 +1,6 @@
++ /** Live ACP routes derived from native volatile plugin configuration. */
++ /// <reference types="node" />
+++import { listLiveRuntimeSessions } from "./host-execution-owners.js";
++ import { resolveTerminalJobs } from "./terminal-jobs.js";
++ import { resolveQwenTaskJobs } from "./qwen-task-jobs.js";
++ import { createDshToolBridge, createDshToolBridgeKey } from "../tools/bridge.js";
++@@ -543,6 +544,7 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
++                 },
++                 notify: notifyPolicySubscribers,
++             },
+++            listLiveSessions: () => listLiveRuntimeSessions(ctx.root),
++             agentSessionControl: (provider) => {
++                 const id = acpAgentIdFromRoute(provider);
++                 return id === undefined ? undefined : profileAdapters.get(id);
++@@ -590,6 +592,23 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
++                     continue;
++                 let routeAdapter = profileAdapters.get(id);
++                 if (routeAdapter === undefined) {
+++                    const guard = options.nativeToolHandoffGuard?.(id, structuredClone(config));
+++                    if (guard !== undefined && typeof guard !== 'function')
+++                        throw new TypeError('Native tool handoff requires a Host capability guard');
+++                    const capturedProfile = JSON.stringify(config);
+++                    const nativeToolHandoff = guard === undefined
+++                        ? false
+++                        : () => {
+++                            const current = activeAgents[id];
+++                            if (current === undefined || JSON.stringify(current) !== capturedProfile)
+++                                return false;
+++                            try {
+++                                return guard() === true;
+++                            }
+++                            catch {
+++                                return false;
+++                            }
+++                        };
++                     routeAdapter = new AcpProfileAdapter(id, () => activeAgents[id], subprocess, (sessionId) => acpSessionView(ctx, sessionStore?.get(sessionId)), ledgerStore, undefined, undefined, sidecar, attachments, resolveNativeQuestions, sidecar === undefined
++                         ? undefined
++                         : async (operation) => {
++@@ -611,7 +630,7 @@ export function installInstalledProfileRegistry(ctx, config, options = {}) {
++                                     return result?.childSessionId;
++                                 });
++                             });
++-                        }, (message) => log.warn(message, { operation: 'claude-draft-subagent-capability' }), (sessionId) => resolveTerminalJobs(ctx, sessionId), (sessionId, capabilities, wireProfile, schemas) => createDshToolBridge(ctx, sessionId, capabilities, wireProfile, async () => (await readToolApprovalPolicy(sessionId)).policy, notifyPolicySubscribers, schemas), (sessionId, schemas) => toolBridgeKey(ctx, sessionId, schemas), controlsChanged, ctx.root, (sessionId) => resolveQwenTaskJobs(ctx, sessionId));
+++                        }, (message) => log.warn(message, { operation: 'claude-draft-subagent-capability' }), (sessionId) => resolveTerminalJobs(ctx, sessionId), (sessionId, capabilities, wireProfile, schemas) => createDshToolBridge(ctx, sessionId, capabilities, wireProfile, async () => (await readToolApprovalPolicy(sessionId)).policy, notifyPolicySubscribers, schemas), (sessionId, schemas) => toolBridgeKey(ctx, sessionId, schemas), controlsChanged, ctx.root, (sessionId) => resolveQwenTaskJobs(ctx, sessionId), nativeToolHandoff);
++                     profileAdapters.set(id, routeAdapter);
++                 }
++                 const route = acpRouteId(id);
++diff --git a/lib/host/composition/profile-adapter.js b/lib/host/composition/profile-adapter.js
++index f139a13..535bb68 100644
++--- a/lib/host/composition/profile-adapter.js
+++++ b/lib/host/composition/profile-adapter.js
++@@ -5,6 +5,7 @@ import { ACP_ACTIVITY_RAW_MAX, modeIntentBindingKey } from "../../persistence/si
++ import { teamModeChoices } from "../../contract/session-modes.js";
++ import fs from 'node:fs';
++ import path from 'node:path';
+++import { SessionLogOffset } from '@deepseek-ai/dsh-session';
++ import { admitEncodedImages } from '@deepseek-ai/dsh-attachment';
++ import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm';
++ import { AcpStubAdapter, reasoningInfoFromConfigOptions } from "./llm-stub.js";
++@@ -16,6 +17,8 @@ import { effectiveRuntimeOf } from "../../contract/agent-config.js";
++ import { reasoningRequestIsCurrent, sessionProtocolExtensions } from "../../domain/session/agent-compatibility.js";
++ import { DispatchLedger } from "../../runtime/session/dispatch-ledger.js";
++ import { StreamHandoff } from "./stream-handoff.js";
+++import { bindNativeToolHandoff } from "../tools/bridge.js";
+++import { waitWithin } from "../../runtime/process/timeout.js";
++ import { admitCurrentStep } from "../../domain/session/current-step-admission.js";
++ import { AcpAdmissionError } from "../../domain/session/current-step-admission.js";
++ import { ExternalDelegationNormalizer } from "../../domain/subagent/external-delegation.js";
++@@ -38,7 +41,7 @@ import { createQwenQuestionHandler } from "../../domain/policy/qwen-question.js"
++ import { QWEN_TASK_JOB_KIND } from "../../runtime/session/qwen-background.js";
++ import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from "../../contract/config-options.js";
++ import { AcpClientError } from "../../protocol/v1/errors.js";
++-import { assertHostExecutionQuiescent, clearHostExecutionOwners, clearSharedRecoveryFallback, getSharedRecoveryFallback, retainHostExecutionOwner, setSharedRecoveryFallback, } from "./host-execution-owners.js";
+++import { assertHostExecutionQuiescent, retainLiveRuntime, closeLiveRuntime, clearHostExecutionOwners, clearSharedRecoveryFallback, getSharedRecoveryFallback, retainHostExecutionOwner, setSharedRecoveryFallback, } from "./host-execution-owners.js";
++ import { AcpHostSettlementError } from "../../runtime/session/mcp-lease.js";
++ import { AcpSteeringRequestError, supportsFork } from "../../protocol/v1/connection.js";
++ import { nonTextContentFallback } from "../../domain/session/assistant-content.js";
++@@ -475,6 +478,7 @@ export class AcpProfileAdapter extends LlmAdapter {
++     controlsChanged;
++     hostRoot;
++     qwenTaskJobs;
+++    nativeToolHandoff;
++     probeGeneration;
++     runtimes = new Map();
++     terminalOutcomes = new WeakMap();
++@@ -499,7 +503,9 @@ export class AcpProfileAdapter extends LlmAdapter {
++     sessionControlWrites = new Map();
++     deliveredQwenContexts = new WeakMap();
++     deliveredHostInstructions = new WeakMap();
++-    constructor(profileId, readConfig, subprocess, sessionOf = () => undefined, ledgerStore, probeFactory = (config) => createNativeProfileProbe(profileId, subprocess, config), runtimeFactory = (options) => new AcpSessionRuntime(options), sidecar, attachments, resolveQuestions, projectExternalDelegation, log, terminalJobs, createMcpLease, mcpKey, controlsChanged, hostRoot, qwenTaskJobs) {
+++    constructor(profileId, readConfig, subprocess, sessionOf = () => undefined, ledgerStore, probeFactory = (config) => createNativeProfileProbe(profileId, subprocess, config), runtimeFactory = (options) => new AcpSessionRuntime(options), sidecar, attachments, resolveQuestions, projectExternalDelegation, log, terminalJobs, createMcpLease, mcpKey, controlsChanged, hostRoot, qwenTaskJobs, 
+++    /** Trusted Host opt-in; never derived from provider/profile text. */
+++    nativeToolHandoff = false) {
++         super();
++         this.profileId = profileId;
++         this.readConfig = readConfig;
++@@ -518,6 +524,7 @@ export class AcpProfileAdapter extends LlmAdapter {
++         this.controlsChanged = controlsChanged;
++         this.hostRoot = hostRoot;
++         this.qwenTaskJobs = qwenTaskJobs;
+++        this.nativeToolHandoff = nativeToolHandoff;
++         this.ledger = new DispatchLedger(ledgerStore);
++         this.settlementSink = this.localSettlementSink();
++         this.settlementOwnerDisposer = registerLocalSettlementSink(this.hostRoot ?? this, this.profileId, this, this.settlementSink);
++@@ -526,6 +533,16 @@ export class AcpProfileAdapter extends LlmAdapter {
++     providerInfo(provider) {
++         return { id: provider, name: `${this.readConfig()?.name ?? this.profileId} · ACP` };
++     }
+++    nativeHandoffCurrent() {
+++        try {
+++            return typeof this.nativeToolHandoff === 'function'
+++                ? this.nativeToolHandoff() === true
+++                : this.nativeToolHandoff === true;
+++        }
+++        catch {
+++            return false;
+++        }
+++    }
++     /** Directory-changing native tools require a context-preserving ACP handoff. */
++     workingDirectoryChangeDenial(sessionId, owner) {
++         const session = this.sessionOf(sessionId);
++@@ -1475,6 +1492,10 @@ export class AcpProfileAdapter extends LlmAdapter {
++                 owner = undefined;
++             }
++             if (owner !== undefined) {
+++                if (self.nativeToolHandoff !== false && !self.nativeHandoffCurrent()) {
+++                    await retire(owner);
+++                    throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
+++                }
++                 if (!owner.stream.suspended)
++                     throw new LlmError('ACP stream is already active', 'ACP_PROMPT_ALREADY_ACTIVE');
++                 const sameToolDirectory = self.mcpKey === undefined || self.mcpKey(key, owner.options.tools) === self.mcpKey(key, options.tools);
++@@ -1559,6 +1580,26 @@ export class AcpProfileAdapter extends LlmAdapter {
++                     }
++                 };
++                 const view = self.sessionOf(key);
+++                const offStopping = self.nativeToolHandoff !== false
+++                    ? self.hostRoot?.on('agent/turn-stopping', async ({ agent }) => {
+++                        if (agent.session !== view?.identity || !stream.nativeSuspended || self.handoffs.get(key) !== captured)
+++                            return;
+++                        try {
+++                            // Native result is already final. Let its same pending MCP response
+++                            // reach the provider before normal turn-end cleanup can cancel it.
+++                            const drained = stream.drain(false).then(() => true);
+++                            if ((await waitWithin(drained, 3000)) !== true) {
+++                                stream.cancel?.();
+++                                await drained;
+++                            }
+++                            if (!self.nativeHandoffCurrent())
+++                                throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
+++                        }
+++                        finally {
+++                            self.detachHandoffOwner(key, captured);
+++                        }
+++                    })
+++                    : undefined;
++                 const offEnd = view?.watchTurnEnd?.(() => {
++                     void cleanup(true).catch(() => {
++                         try {
++@@ -1575,7 +1616,12 @@ export class AcpProfileAdapter extends LlmAdapter {
++                         offEnd?.();
++                     }
++                     finally {
++-                        offRoute?.();
+++                        try {
+++                            offRoute?.();
+++                        }
+++                        finally {
+++                            offStopping?.();
+++                        }
++                     }
++                 };
++             }
++@@ -1625,6 +1671,9 @@ export class AcpProfileAdapter extends LlmAdapter {
++                 throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL');
++             }
++             const sessionKey = String(options.sessionId ?? '');
+++            let stopNativeHandoff;
+++            if (self.nativeToolHandoff !== false && !self.nativeHandoffCurrent())
+++                throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
++             if (sessionKey.length === 0)
++                 throw new LlmError('ACP requires a DSH session id', 'ACP_SESSION_UNAVAILABLE');
++             await self.waitForSessionControlWrite(sessionKey, options.signal);
++@@ -2761,6 +2810,44 @@ export class AcpProfileAdapter extends LlmAdapter {
++                         directoryAbort.abort(new Error('ACP interrupted for a working-directory handoff'));
++                 });
++                 handoff.resume = async (nextOptions) => {
+++                    if (handoff.nativeSuspended) {
+++                        const step = session?.facts.openSteps.at(-1);
+++                        const actualAgent = self.hostRoot?.get('agents', false)?.get(sessionKey);
+++                        if (actualAgent === undefined ||
+++                            actualAgent.session !== session?.identity ||
+++                            step === undefined ||
+++                            step.turn !== admissionProof?.turn)
+++                            return false;
+++                        if (step.messageIds.length === 0) {
+++                            if (handoff.nativeResumeCalls.length === 0)
+++                                throw new SteeringFailure(new Error('ACP_NATIVE_RESULT_PROOF_MISSING'), false);
+++                            const events = actualAgent.session.snapshotEvents(SessionLogOffset(Math.min(...handoff.nativeResumeCalls.map((call) => call.fromSeq))));
+++                            for (const { call } of handoff.nativeResumeCalls) {
+++                                const logged = events.findLast((event) => event.type === 'tool/call' && event.data.callId === call.callId);
+++                                if (logged?.type !== 'tool/call' ||
+++                                    logged.data.name !== call.name ||
+++                                    logged.data.arguments !== JSON.stringify(call.arguments) ||
+++                                    logged.data.turn !== step.turn ||
+++                                    logged.data.step >= step.step)
+++                                    throw new SteeringFailure(new Error('ACP_NATIVE_CALL_PROOF_MISSING'), false);
+++                                const result = events.find((event) => event.type === 'tool/result' &&
+++                                    event.sourceEventSeqs?.length === 1 &&
+++                                    event.sourceEventSeqs[0] === logged.seq);
+++                                if (result?.type !== 'tool/result' ||
+++                                    result.seq >= step.startSeq ||
+++                                    !nextOptions.messages.some((message) => message.role === 'tool' &&
+++                                        message.id === result.data.message.id &&
+++                                        message.toolCallId === call.callId &&
+++                                        JSON.stringify(message.content) === JSON.stringify(result.data.message.content) &&
+++                                        message.isError === result.data.message.isError))
+++                                    throw new SteeringFailure(new Error('ACP_NATIVE_RESULT_PROOF_MISSING'), false);
+++                            }
+++                            await contentDeliveryTail;
+++                            if (promptSignal.aborted)
+++                                throw abortReason(promptSignal);
+++                            return true;
+++                        }
+++                    }
++                     let nextProof;
++                     let nextPrompt;
++                     let nextSystem;
++@@ -2898,6 +2985,18 @@ export class AcpProfileAdapter extends LlmAdapter {
++                     if (admissionProof?.anchorMessageId === currentAnchor)
++                         deliveredHostConclusionByAnchor.set(currentAnchor, ++responseObservationSeq);
++                 };
+++                if (self.nativeToolHandoff !== false) {
+++                    if (!self.nativeHandoffCurrent())
+++                        throw new LlmError('ACP native tool handoff was revoked', 'ACP_NATIVE_HANDOFF_REVOKED');
+++                    if (self.hostRoot === undefined)
+++                        throw new Error('ACP_NATIVE_HOST_UNAVAILABLE');
+++                    stopNativeHandoff = bindNativeToolHandoff(self.hostRoot, sessionKey, (call) => {
+++                        if (!self.nativeHandoffCurrent())
+++                            throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
+++                        breakContent();
+++                        handoff.enqueueNativeTool(call, nextContentIndex++);
+++                    }, () => self.nativeHandoffCurrent());
+++                }
++                 const promptResult = runtime.prompt(prompt, onUpdate, promptSignal, () => {
++                     if (teammateReportEligible) {
++                         teammateReportConfirmed = true;
++@@ -3488,6 +3587,7 @@ export class AcpProfileAdapter extends LlmAdapter {
++                 throw error;
++             }
++             finally {
+++                stopNativeHandoff?.();
++                 stopWatchingTerminalOutcomes?.();
++             }
++         })();
++@@ -3811,7 +3911,9 @@ export class AcpProfileAdapter extends LlmAdapter {
++                     await this.preservePendingAgentTurnFailure(key, runtime, true);
++                     if (this.hostRoot !== undefined)
++                         retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime);
++-                    await runtime.close();
+++                    await (this.hostRoot === undefined
+++                        ? runtime.close()
+++                        : closeLiveRuntime(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime));
++                 }));
++                 await Promise.all(handoffs
++                     .map(([, owner]) => owner)
++@@ -3835,7 +3937,9 @@ export class AcpProfileAdapter extends LlmAdapter {
++             retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime);
++         this.runtimes.delete(key);
++         this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')));
++-        await runtime.close().catch(() => undefined);
+++        await (this.hostRoot === undefined
+++            ? runtime.close()
+++            : closeLiveRuntime(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)).catch(() => undefined);
++     }
++     /** Preserve an unconsumed failure before retiring its only in-memory owner. */
++     async preservePendingAgentTurnFailure(key, runtime, retiring = false) {
++@@ -3982,6 +4086,8 @@ export class AcpProfileAdapter extends LlmAdapter {
++     createRuntime(sessionId, profile, cwd) {
++         const outcomes = new HostTerminalOutcomes(sessionId, this.profileId);
++         const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd, outcomes));
+++        if (this.hostRoot !== undefined)
+++            retainLiveRuntime(this.hostRoot, sessionId, runtime);
++         this.terminalOutcomes.set(runtime, outcomes);
++         return runtime;
++     }
++diff --git a/lib/host/composition/stream-handoff.js b/lib/host/composition/stream-handoff.js
++index bc0bef8..d835438 100644
++--- a/lib/host/composition/stream-handoff.js
+++++ b/lib/host/composition/stream-handoff.js
++@@ -15,6 +15,18 @@ export class StreamHandoff {
++     terminalConsumerCallback;
++     incompleteBlocks = new Set();
++     remainder = [];
+++    nativeTools = [];
+++    nativeToolIds = new Set();
+++    nextNativeIndex = 0;
+++    nativeSuspended = false;
+++    nativeResumeCalls = [];
+++    enqueueNativeTool(call, index = this.nextNativeIndex++) {
+++        if (this.ended || this.closing || call.signal.aborted || this.nativeToolIds.has(call.callId))
+++            throw new Error('ACP_NATIVE_TOOL_HANDOFF_REJECTED');
+++        this.nativeToolIds.add(call.callId);
+++        this.nativeTools.push({ call, index, fromSeq: call.agent?.session.seq ?? 0 });
+++        this.request();
+++    }
++     suspended = false;
++     ended = false;
++     get closing() {
++@@ -52,6 +64,7 @@ export class StreamHandoff {
++     }
++     async *segment() {
++         this.suspended = false;
+++        this.nativeSuspended = false;
++         this.localSettlementAbortReason = undefined;
++         try {
++             while (!this.ended) {
++@@ -69,6 +82,28 @@ export class StreamHandoff {
++                 if (result === 'handoff') {
++                     this.requested = false;
++                     this.suspended = true;
+++                    const calls = this.nativeTools.splice(0);
+++                    if (calls.length > 0) {
+++                        this.nativeSuspended = true;
+++                        this.nativeResumeCalls = calls;
+++                        for (const { call, index } of calls) {
+++                            if (call.signal.aborted)
+++                                throw call.signal.reason;
+++                            yield { type: 'block-start', index, blockType: 'tool-call' };
+++                            yield {
+++                                type: 'block-end',
+++                                index,
+++                                block: {
+++                                    type: 'tool-call',
+++                                    id: call.callId,
+++                                    name: call.name,
+++                                    arguments: JSON.stringify(call.arguments),
+++                                },
+++                            };
+++                        }
+++                        yield { type: 'finish', reason: { kind: 'tool-calls' } };
+++                        return;
+++                    }
++                     // The native loop commits this assistant segment, then owns pre-step,
++                     // input rewriting and user/message before resume is allowed to steer.
++                     yield { type: 'finish', reason: { kind: 'stop' } };
++@@ -76,6 +111,8 @@ export class StreamHandoff {
++                 }
++                 this.pending = undefined;
++                 this.pendingValue = undefined;
+++                if ('index' in (result.value ?? {}))
+++                    this.nextNativeIndex = Math.max(this.nextNativeIndex, result.value.index + 1);
++                 if (result.done) {
++                     this.ended = true;
++                     return;
++@@ -115,9 +152,10 @@ export class StreamHandoff {
++         }
++     }
++     /** Stop the remote pull and collect its remainder; this does not abandon local settlement. */
++-    drain() {
+++    drain(cancel = true) {
++         return (this.draining ??= (async () => {
++-            this.cancel?.();
+++            if (cancel)
+++                this.cancel?.();
++             try {
++                 for (;;) {
++                     const result = await this.next();
++diff --git a/lib/host/tools/bridge.js b/lib/host/tools/bridge.js
++index be3b165..3e86bec 100644
++--- a/lib/host/tools/bridge.js
+++++ b/lib/host/tools/bridge.js
++@@ -17,6 +17,100 @@ import { performance } from 'node:perf_hooks';
++ import { normalizeAntigravityPresentation, resolveAntigravityNativeTool } from "./antigravity.js";
++ import { createTeamToolContext } from "../teams/tool-context.js";
++ import { DEFERRED_WAIT_TEXT, DeferredWaitReceipts } from "./deferred-wait-receipts.js";
+++const nativeToolHandoffs = new WeakMap();
+++export function bindNativeToolHandoff(ctx, sessionId, enqueue, isCurrent = () => true) {
+++    if (!isCurrent())
+++        throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
+++    const root = ctx.root;
+++    const agent = root.get('agents', false)?.get(sessionId);
+++    if (agent === undefined)
+++        throw new Error('ACP_NATIVE_AGENT_UNAVAILABLE');
+++    let directory = nativeToolHandoffs.get(root);
+++    if (directory === undefined)
+++        nativeToolHandoffs.set(root, (directory = new Map()));
+++    if (directory.has(sessionId))
+++        throw new Error('ACP_NATIVE_HANDOFF_ALREADY_BOUND');
+++    const lifetime = new AbortController();
+++    const entry = { agent, signal: lifetime.signal, enqueue, isCurrent };
+++    directory.set(sessionId, entry);
+++    return () => {
+++        if (directory.get(sessionId) === entry)
+++            directory.delete(sessionId);
+++        lifetime.abort(new Error('ACP_NATIVE_HANDOFF_CLOSED'));
+++    };
+++}
+++/** Wait for the original AgentLoop's execution, never dispatch a second body. */
+++async function nativeToolResult(ctx, handoff, input) {
+++    const agent = input.agent;
+++    if (!handoff.isCurrent())
+++        throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
+++    if (agent === undefined || agent !== handoff.agent)
+++        throw new Error('ACP_NATIVE_AGENT_CHANGED');
+++    const fence = agent.session.seq;
+++    const expectedArguments = JSON.stringify(input.arguments);
+++    const signal = AbortSignal.any([input.signal, handoff.signal]);
+++    signal.throwIfAborted();
+++    const result = Promise.withResolvers();
+++    let token;
+++    let settled = false;
+++    const matching = (exec) => exec.agent === agent &&
+++        exec.callId === input.callId &&
+++        exec.parent === undefined &&
+++        exec.rootCallId === input.callId;
+++    const actualCall = () => {
+++        const events = agent.session.snapshotEvents(fence);
+++        const call = events.findLast((event) => event.type === 'tool/call' && event.data.callId === input.callId);
+++        return (call !== undefined &&
+++            call.type === 'tool/call' &&
+++            call.data.name === input.name &&
+++            call.data.arguments === expectedArguments &&
+++            !events.some((event) => event.type === 'tool/result' && event.sourceEventSeqs?.includes(call.seq)));
+++    };
+++    const offPre = ctx.on('tools/pre-execute', async (exec, next) => {
+++        if (!matching(exec))
+++            return next();
+++        if (settled ||
+++            token !== undefined ||
+++            signal.aborted ||
+++            !handoff.isCurrent() ||
+++            exec.name !== input.name ||
+++            JSON.stringify(exec.arguments) !== expectedArguments ||
+++            !actualCall())
+++            throw new Error('ACP_NATIVE_TOOL_EXECUTION_REJECTED');
+++        token = exec.token;
+++        return next();
+++    });
+++    const offResult = ctx.on('tools/result', (exec, final) => {
+++        if (!matching(exec) || settled || signal.aborted || !actualCall())
+++            return;
+++        if (!handoff.isCurrent()) {
+++            settled = true;
+++            result.reject(new Error('ACP_NATIVE_HANDOFF_REVOKED'));
+++            return;
+++        }
+++        if (token !== exec.token && !(token === undefined && final.isError))
+++            return;
+++        settled = true;
+++        result.resolve(final);
+++    });
+++    const abort = () => {
+++        settled = true;
+++        result.reject(signal.reason);
+++    };
+++    signal.addEventListener('abort', abort, { once: true });
+++    try {
+++        if (!handoff.isCurrent())
+++            throw new Error('ACP_NATIVE_HANDOFF_REVOKED');
+++        handoff.enqueue(input);
+++        return await result.promise;
+++    }
+++    finally {
+++        settled = true;
+++        signal.removeEventListener('abort', abort);
+++        offResult();
+++        offPre();
+++    }
+++}
++ const TEAM_TOOLS = [
++     'spawn_teammate',
++     'send_message',
++@@ -1009,13 +1103,18 @@ export async function createDshToolBridge(ctx, sessionId, capabilities, wireProf
++                     }
++                     let result;
++                     try {
++-                        result = await agents.withInitiator(agent, () => tools.execute({
+++                        const nativeHandoff = nativeToolHandoffs.get(ctx.root)?.get(sessionId);
+++                        const execution = {
++                             callId: hostCallId,
++                             name: definition.name,
++                             arguments: args,
++                             agent,
++                             signal: bodySignal,
++-                        }));
+++                        };
+++                        result =
+++                            nativeHandoff === undefined
+++                                ? await agents.withInitiator(agent, () => tools.execute(execution))
+++                                : await nativeToolResult(ctx, nativeHandoff, execution);
++                         if (toolErrorInfoCode(result.error) === TOOL_ABORTED_BEFORE_DISPATCH)
++                             callRecord.abortedBeforeDispatch = true;
++                         if (diagnosticEnabled && diagnosticBase !== undefined) {
++diff --git a/lib/runtime/session/session-runtime.js b/lib/runtime/session/session-runtime.js
++index b8a611c..0c5e095 100644
++--- a/lib/runtime/session/session-runtime.js
+++++ b/lib/runtime/session/session-runtime.js
++@@ -338,6 +338,8 @@ async function raceAbort(pending, signal, onAbort) {
++ export class AcpSessionRuntime {
++     options;
++     connection;
+++    /** Original connections retained only until their managed range is confirmed gone. */
+++    cleanupConnections = new Set();
++     mcpLease;
++     mcpKey;
++     sessionId;
++@@ -1037,6 +1039,12 @@ export class AcpSessionRuntime {
++         await run;
++     }
++     /** Cancel initialization and await acquired resources and late setup cleanup before reuse. */
+++    /** Read-only physical fact; a settled close alone does not establish this. */
+++    get physicalCleanupConfirmed() {
+++        if (this.starting !== undefined || this.closing !== undefined || this.connection !== undefined)
+++            return false;
+++        return [...this.cleanupConnections].every((connection) => connection.isCleanupConfirmed === true);
+++    }
++     close() {
++         return this.closeInternal();
++     }
++@@ -1332,6 +1340,10 @@ export class AcpSessionRuntime {
++                 this.options.onSessionUpdate?.(notification);
++             },
++         });
+++        for (const retired of this.cleanupConnections)
+++            if (retired.isCleanupConfirmed === true)
+++                this.cleanupConnections.delete(retired);
+++        this.cleanupConnections.add(connection);
++         starting.connection = connection;
++         try {
++             await connection.initialize({ signal: setupSignal });
++diff --git a/lib/types/host/composition/host-execution-owners.d.ts b/lib/types/host/composition/host-execution-owners.d.ts
++index 3270202..b8e4611 100644
++--- a/lib/types/host/composition/host-execution-owners.d.ts
+++++ b/lib/types/host/composition/host-execution-owners.d.ts
++@@ -1,4 +1,5 @@
++ import type { Context } from '@deepseek-ai/cordis';
+++import type { AcpSessionContinuityState } from '../../runtime/session/continuity.ts';
++ import type { AcpRecoveryState } from '../../persistence/sidecar.ts';
++ export interface HostExecutionOwner {
++     hasPendingHostCalls?(): boolean;
++@@ -15,4 +16,20 @@ export declare function retainHostExecutionOwner(root: Context, sessionId: strin
++ export declare function assertHostExecutionQuiescent(root: Context, sessionId: string, allowSettledFailure?: boolean): void;
++ /** Move feedback evidence out of the active gate after an explicit recovery action succeeds. */
++ export declare function clearHostExecutionOwners(root: Context, sessionId: string): void;
+++/** Actual runtime resource handles, not a session/history index. The Host root
+++ * survives plugin replacement; an unconfirmed old process must remain visible. */
+++export interface HostLiveRuntime extends HostExecutionOwner {
+++    readonly physicalCleanupConfirmed?: boolean | undefined;
+++    close(): Promise<void>;
+++}
+++/** Called at the original adapter's runtime allocation boundary. */
+++export declare function retainLiveRuntime(root: Context, sessionId: string, runtime: HostLiveRuntime): void;
+++/** Observe the original close operation without changing its result or teardown. */
+++export declare function closeLiveRuntime(root: Context, sessionId: string, runtime: HostLiveRuntime): Promise<void>;
+++/** Read only actual owned resources. Neither headers, sidecars, profile names
+++ * nor an absent/failed close observer can prove that a process has drained. */
+++export declare function listLiveRuntimeSessions(root: Context): readonly {
+++    readonly sessionId: string;
+++    readonly continuity: AcpSessionContinuityState;
+++}[];
++ //# sourceMappingURL=host-execution-owners.d.ts.map
++\ No newline at end of file
++diff --git a/lib/types/host/composition/installed-profile-registry.d.ts b/lib/types/host/composition/installed-profile-registry.d.ts
++index ed92651..f367cac 100644
++--- a/lib/types/host/composition/installed-profile-registry.d.ts
+++++ b/lib/types/host/composition/installed-profile-registry.d.ts
++@@ -61,6 +61,9 @@ export interface InstalledProfileRegistry {
++     resolveRoute(provider: string): AcpResolvedAgent | undefined;
++ }
++ export interface InstalledProfileRegistryOptions {
+++    /** Host-only capability factory. A matched producer returns one revocable,
+++     * generation-bound guard; user configuration cannot supply this function. */
+++    nativeToolHandoffGuard?: (profileId: string, profile: Readonly<AcpAgentConfig>) => (() => boolean) | undefined;
++     /** Mount the additive dshAcp activity Remote in the provider composition.
++      * The additive provider composition mounts its own service when enabled. */
++     installRemote?: boolean;
++diff --git a/lib/types/host/composition/profile-adapter.d.ts b/lib/types/host/composition/profile-adapter.d.ts
++index 53a28f5..0e9469d 100644
++--- a/lib/types/host/composition/profile-adapter.d.ts
+++++ b/lib/types/host/composition/profile-adapter.d.ts
++@@ -127,6 +127,8 @@ export interface AcpProfileRuntime {
++     readonly pendingAgentTurnFailure?: AcpPendingAgentTurnFailure | undefined;
++     readonly cancelledSessionRefreshPending?: boolean | undefined;
++     readonly cancelledSessionRefreshBindingId?: string | undefined;
+++    /** Original managed-process cleanup evidence; absence is unknown. */
+++    readonly physicalCleanupConfirmed?: boolean | undefined;
++     readonly isBusy?: boolean;
++     hasPendingHostCalls?(): boolean;
++     toolControlOutcome?(toolCallId: string): AcpHostToolControlOutcome | undefined;
++@@ -189,6 +191,8 @@ export declare class AcpProfileAdapter extends LlmAdapter {
++     private readonly controlsChanged?;
++     private readonly hostRoot?;
++     private readonly qwenTaskJobs?;
+++    /** Trusted Host opt-in; never derived from provider/profile text. */
+++    private readonly nativeToolHandoff;
++     private probeGeneration;
++     private readonly runtimes;
++     private readonly terminalOutcomes;
++@@ -220,8 +224,11 @@ export declare class AcpProfileAdapter extends LlmAdapter {
++         readonly parentDshSessionId: string;
++         readonly parentCwd: string;
++         readonly parentDelegationDepth?: number;
++-    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined);
+++    }) => Promise<string | undefined>) => Promise<void>) => Promise<void>) | undefined, log?: ((message: string) => void) | undefined, terminalJobs?: ((sessionId: string) => AcpTerminalJobStarter | undefined) | undefined, createMcpLease?: ((sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, schemas?: readonly ToolSchema[]) => Promise<import("../../runtime/session/mcp-lease.ts").AcpMcpLease | undefined>) | undefined, mcpKey?: ((sessionId: string, schemas?: readonly ToolSchema[]) => unknown) | undefined, controlsChanged?: ((sessionId: string) => void) | undefined, hostRoot?: Context | undefined, qwenTaskJobs?: ((sessionId: string) => QwenTaskJobStarter | undefined) | undefined, 
+++    /** Trusted Host opt-in; never derived from provider/profile text. */
+++    nativeToolHandoff?: boolean | (() => boolean));
++     providerInfo(provider: string): LlmProviderInfo;
+++    private nativeHandoffCurrent;
++     /** Directory-changing native tools require a context-preserving ACP handoff. */
++     workingDirectoryChangeDenial(sessionId: string, owner: object): string | undefined;
++     /** Display-only: a settled Stop handoff needs Continue, not recovery clicks. */
++diff --git a/lib/types/host/composition/stream-handoff.d.ts b/lib/types/host/composition/stream-handoff.d.ts
++index 1b2315a..7582d0a 100644
++--- a/lib/types/host/composition/stream-handoff.d.ts
+++++ b/lib/types/host/composition/stream-handoff.d.ts
++@@ -1,4 +1,5 @@
++ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+++import type { ToolExecutionInput } from '@deepseek-ai/dsh-tools';
++ /** One ACP execution may span native steps; only the outer stream is handed back to DSH. */
++ export declare class StreamHandoff {
++     resume: ((options: GenerateOptions) => Promise<boolean>) | undefined;
++@@ -16,6 +17,16 @@ export declare class StreamHandoff {
++     private terminalConsumerCallback;
++     private readonly incompleteBlocks;
++     private readonly remainder;
+++    private readonly nativeTools;
+++    private readonly nativeToolIds;
+++    private nextNativeIndex;
+++    nativeSuspended: boolean;
+++    nativeResumeCalls: readonly {
+++        readonly call: ToolExecutionInput;
+++        readonly index: number;
+++        readonly fromSeq: number;
+++    }[];
+++    enqueueNativeTool(call: ToolExecutionInput, index?: number): void;
++     suspended: boolean;
++     ended: boolean;
++     get closing(): boolean;
++@@ -32,7 +43,7 @@ export declare class StreamHandoff {
++     /** Drain after releasing a local waiter, suppressing only that exact reason. */
++     drainAfterAbandon(): Promise<void>;
++     /** Stop the remote pull and collect its remainder; this does not abandon local settlement. */
++-    drain(): Promise<void>;
+++    drain(cancel?: boolean): Promise<void>;
++     /** A fallback consumer must deliver buffered output before its replacement prompt. */
++     takeRemainder(): StreamChunk[];
++ }
++diff --git a/lib/types/host/tools/bridge.d.ts b/lib/types/host/tools/bridge.d.ts
++index 1ef3439..62af299 100644
++--- a/lib/types/host/tools/bridge.d.ts
+++++ b/lib/types/host/tools/bridge.d.ts
++@@ -1,7 +1,9 @@
++ import type { Context } from '@deepseek-ai/cordis';
+++import type { ToolExecutionInput } from '@deepseek-ai/dsh-tools';
++ import type { ToolSchema } from '@deepseek-ai/dsh-llm';
++ import type * as acp from '@agentclientprotocol/sdk';
++ import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts';
+++export declare function bindNativeToolHandoff(ctx: Context, sessionId: string, enqueue: (call: ToolExecutionInput) => void, isCurrent?: () => boolean): () => void;
++ /** Registry-owned identity keys track scoped tool and visible schema changes. */
++ export declare function createDshToolBridgeKey(): (ctx: Context, sessionId: string, schemas?: readonly ToolSchema[]) => unknown;
++ /** Discover native session tools without enabling any host plugin or Teams service. */
++diff --git a/lib/types/runtime/session/session-runtime.d.ts b/lib/types/runtime/session/session-runtime.d.ts
++index e0748ae..a5db7bd 100644
++--- a/lib/types/runtime/session/session-runtime.d.ts
+++++ b/lib/types/runtime/session/session-runtime.d.ts
++@@ -129,6 +129,8 @@ export declare class AcpSessionRefreshAbortedError extends Error {
++ export declare class AcpSessionRuntime {
++     private readonly options;
++     private connection;
+++    /** Original connections retained only until their managed range is confirmed gone. */
+++    private readonly cleanupConnections;
++     private mcpLease;
++     private mcpKey;
++     private sessionId;
++@@ -247,6 +249,8 @@ export declare class AcpSessionRuntime {
++     /** Set a legacy ACP mode for this runtime's session. */
++     setMode(modeId: string, signal?: AbortSignal): Promise<void>;
++     /** Cancel initialization and await acquired resources and late setup cleanup before reuse. */
+++    /** Read-only physical fact; a settled close alone does not establish this. */
+++    get physicalCleanupConfirmed(): boolean;
++     close(): Promise<void>;
++     private closeInternal;
++     private closeResources;
+diff --git a/apps/desktop/scripts/runtime-patch-policy.ts b/apps/desktop/scripts/runtime-patch-policy.ts
+index d2ea174f..b150b5ff 100644
+--- a/apps/desktop/scripts/runtime-patch-policy.ts
++++ b/apps/desktop/scripts/runtime-patch-policy.ts
+@@ -9,6 +9,7 @@ export type DesktopRuntimePatch =
+ /** Every workspace patch requires an explicit Desktop decision; runtime-only entries may add or replace a patch. */
+ export const DESKTOP_RUNTIME_PATCHES: Readonly<Record<string, DesktopRuntimePatch>> = {
+   '@earendil-works/pi-ai@1.1.0': { scope: 'shared', reason: 'Runtime providers need the streamed argument parsing fix.' },
++  '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1': { scope: 'shared', reason: 'The Web runtime consumes the same qualified ACP plugin and native handoff patch.' },
+   '@electron/osx-sign@1.3.3': { scope: 'workspace-only', reason: 'Signing executes on the build host.' },
+   '@fortune-sheet/core@1.0.4': { scope: 'workspace-only', reason: 'Patched spreadsheet code is embedded in the client bundle.' },
+   '@fortune-sheet/react@1.0.4': { scope: 'workspace-only', reason: 'Patched spreadsheet code is embedded in the client bundle.' },
+diff --git a/apps/desktop/tests/prepare-runtime-patches.spec.ts b/apps/desktop/tests/prepare-runtime-patches.spec.ts
+index 84c71a18..c948dd84 100644
+--- a/apps/desktop/tests/prepare-runtime-patches.spec.ts
++++ b/apps/desktop/tests/prepare-runtime-patches.spec.ts
+@@ -42,7 +42,7 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
+   const repository = resolve(import.meta.dirname, '../../..')
+   const before = readFileSync(join(repository, 'pnpm-lock.yaml'))
+   const plan = prepareRuntimePatches(project, repository)
+-  expect(plan.patches.map(entry => entry.spec)).toEqual(['@earendil-works/pi-ai@1.1.0', 'node-pty@1.2.0-beta.15'])
++  expect(plan.patches.map(entry => entry.spec)).toEqual(['@earendil-works/pi-ai@1.1.0', '@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1', 'node-pty@1.2.0-beta.15'])
+   expect(plan.workspaceOnly).toHaveLength(6)
+   const settings = yaml.load(readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')) as { overrides: Record<string, string> }
+   expect(settings.overrides['@earendil-works/pi-ai']).toBeUndefined()

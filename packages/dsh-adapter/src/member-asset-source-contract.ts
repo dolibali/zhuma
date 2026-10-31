@@ -2,6 +2,7 @@ import type {
   MemberAssetDefinition,
   MemberAssetLegacySource,
   MemberAssetLegacySummary,
+  MemberAssetLegacySourceValue,
 } from '@zhuma/agent-core';
 import type { MemberRequest } from './member-session.js';
 
@@ -37,11 +38,5 @@ export interface MemberAssetLegacyAuthority {
     request: MemberRequest,
     source: MemberAssetLegacySource,
     signal: AbortSignal,
-  ): Promise<{
-    readonly actorId: string;
-    readonly spaceId: string;
-    readonly source: MemberAssetLegacySource;
-    readonly definition: MemberAssetDefinition;
-    readonly requirements: MemberAssetSourceItem['requirements'];
-  }>;
+  ): Promise<MemberAssetLegacySourceValue>;
 }

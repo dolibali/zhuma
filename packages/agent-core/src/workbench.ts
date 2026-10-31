@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { validatePlan } from './plan.js';
 import {
   MemberAssetRegistrySchema,
+  MemberAssetFoldersSchema,
   MemberAssetReferenceSchema,
+  MemberAssetFileReferencesSchema,
   memberAssetDefinitionId,
 } from './member-asset-contract.js';
 import {
@@ -114,6 +116,7 @@ export const ProjectSchema = z.strictObject({
   // Optional fields preserve old snapshots and command fingerprints without a migration.
   defaultParticipantIds: ids.optional(),
   assetIds: ids.optional(),
+  fileRefs: MemberAssetFileReferencesSchema.optional(),
   references: z
     .array(z.strictObject({ id, name: title, url: projectLink }))
     .max(30)
@@ -193,6 +196,7 @@ export const WorkTaskSchema = z.strictObject({
   status: z.enum(['draft', 'ready']),
   updatedAt: z.string().datetime(),
   templateSource: TemplateSourceSchema.optional(),
+  fileRefs: MemberAssetFileReferencesSchema.optional(),
 });
 export const AppliedPlanSchema = z.strictObject({
   id,
@@ -212,6 +216,7 @@ export const WorkbenchSchema = z.strictObject({
   assets: z.array(AssetSchema).max(100),
   // One original Workbench fact owner; absence keeps existing snapshots byte-compatible.
   memberAssets: MemberAssetRegistrySchema.optional(),
+  memberAssetFolders: MemberAssetFoldersSchema.optional(),
   tasks: z.array(WorkTaskSchema).max(300),
   appliedPlans: z.array(AppliedPlanSchema).max(1000).default([]),
   receipts: z

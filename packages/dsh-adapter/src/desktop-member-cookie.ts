@@ -2,7 +2,14 @@
 const MEMBER = 'zhuma-member';
 const APP_ORIGIN = 'dsh-app://app';
 const MEMBER_PATH =
-  /^\/(?:zhuma-id\/(?:login|logout|session|(?:spaces|notes)\/[a-z0-9-]{1,64})|api\/zhuma-member\/(?:snapshot|command|plan)|api\/zhuma-exec\/(?:start-plan|inbox-counts|inbox|startable|submit|ballot|settle|report|revision|review-outcome|draft|events|upstream-content|project-artifacts|task-progress|upload-file|file)|api\/zhuma-run\/(?:begin|send|stop|read|history|options|inbox|observe)|api\/zhuma-workflow\/(?:options|read|start|resume|stop)|api\/zhuma-knowledge\/(?:libraries|list|search|read|drafts|draft|save-draft|propose-draft|publish|project-links|save-project-links))$/;
+  /^\/(?:zhuma-id\/(?:login|logout|session|(?:spaces|notes)\/[a-z0-9-]{1,64})|api\/zhuma-member\/(?:snapshot|command|plan|asset-folder-list|asset-folder-create|asset-list|asset-read|asset-reference|asset-command|asset-sources|asset-source|asset-catalog|asset-preview-import|asset-import-drafts|asset-file-upload|asset-file-read|asset-file-text)|api\/zhuma-exec\/(?:start-plan|inbox-counts|inbox|startable|submit|ballot|settle|report|revision|review-outcome|draft|events|upstream-content|project-artifacts|task-progress|upload-file|file)|api\/zhuma-run\/(?:begin|send|stop|read|history|options|inbox|observe)|api\/zhuma-workflow\/(?:options|read|start|resume|stop)|api\/zhuma-knowledge\/(?:libraries|list|search|read|drafts|draft|save-draft|propose-draft|publish|project-links|save-project-links))$/;
+// Used only by the owned desktop forwarding operation after its original
+// application-origin fence. These exact POSTs need the real Host CSRF origin.
+const OWNER_POST_PATH =
+  /^\/api\/(?:zhuma-local-setup\/initialize|zhuma-workspaces\/(?:options|approve|revoke)|zhuma-codearts\/configure)$/;
+export function isDesktopOwnerControlPost(request: Pick<Request, 'url' | 'method'>): boolean {
+  return request.method === 'POST' && OWNER_POST_PATH.test(new URL(request.url).pathname);
+}
 const MAX_AGE_SECONDS = 12 * 60 * 60;
 
 function rejected(status: number): Response {

@@ -11,6 +11,15 @@
 
 DSH 的 MIT 许可与本仓自有代码许可分别处理。其依赖、图标、品牌和其他内容应按各自声明处理。
 
+## DSH ACP Adapter
+
+- 社区仓库：<https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter>
+- 发布包：`@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1`
+- 源码提交：`28ccc6745ec82139c684c3642637e93e00d800f2`
+- 许可：MIT；保留包内 `LICENSE`、原作者版权与实际依赖许可。
+- 通过官方 SDK 临时构建树的独立锁文件固定包完整性，记录于 `runtime.lock.json`；本仓不将它加入根 Workspace。它作为附加执行器注册，不替换默认原生 Agent。
+- 实际使用范围与修改边界见 [来源登记](third_party/acp-adapter.md)。
+
 ## 其他参考与依赖
 
 本骨架未复制 ZCode、AOCI、社区工作流或第三方桌面产品的源码。后续实际抽取模块时，在 `third_party/` 登记仓库、提交、原路径、许可、修改及验证。

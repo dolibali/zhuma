@@ -2,6 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
 import {
+  canonicalPayload,
+  REMOTE_TEAM_ASSET_FILE_METHOD,
+  REMOTE_RUN_PERMIT_HEADER,
+  remoteTeamAssetFileReadRequestSchema,
+  type RemoteTeamAssetFileReadRequest,
+} from '@zhuma/agent-core';
+import {
+  MemberLocalTeamAssetTransportError,
+  readMemberLocalTeamAssetFileValue,
+  readMemberLocalTeamAssetResponse,
+  type MemberLocalTeamAssetFileValue,
+  type MemberLocalTeamAssetResponse,
+  type MemberLocalTrackedOperation,
+} from './member-local-execution-team-assets.js';
+import {
   REMOTE_RUN_UPLOAD_MEDIA_TYPE,
   REMOTE_RUN_UPLOAD_METHOD,
   encodeRemoteRunUploadPrefix,
@@ -42,7 +57,7 @@ const serverResponse = z.strictObject({
   result: z.unknown(),
 });
 
-/** Outbound JSON sender only. It neither grants a Run nor publishes incoming
+/** Outbound sender only. It neither grants a Run nor publishes incoming
  * owner RPC. A owns server/HTTP/Host mounts; D owns all business DTOs/decoders. */
 export class MemberLocalExecutionClient {
   private readonly origin: string;
@@ -83,6 +98,86 @@ export class MemberLocalExecutionClient {
     } catch {
       throw new MemberLocalTransportError('invalid');
     }
+  }
+  /** Dedicated binary/check transport, deliberately outside the generic JSON
+   * method map. The original protocol supplies a signed request and drive. */
+  openTeamAssetFile<Mode extends 'read' | 'check'>(
+    request: RemoteTeamAssetFileReadRequest & { readonly payload: { readonly mode: Mode } },
+    expected: MemberLocalTeamAssetFileValue,
+    secret: string,
+    signal: AbortSignal,
+  ): MemberLocalTrackedOperation<MemberLocalTeamAssetResponse<Mode>> {
+    if (this.lifetime.signal.aborted) throw new MemberLocalTransportError('unavailable');
+    if (this.pending.size >= 16) throw new MemberLocalTransportError('limit');
+    if (!this.privateHeaderNames.has(REMOTE_RUN_PERMIT_HEADER))
+      throw new MemberLocalTransportError('invalid');
+    const parsed = remoteTeamAssetFileReadRequestSchema.parse(request),
+      // Snapshot before the first async boundary, never follow caller mutation.
+      fixed = readMemberLocalTeamAssetFileValue(expected),
+      bounded = AbortSignal.any([
+        this.lifetime.signal,
+        signal,
+        AbortSignal.timeout(this.timeoutMs),
+      ]);
+    if (
+      canonicalPayload(parsed.payload.scope) !== canonicalPayload(fixed.scope) ||
+      canonicalPayload(parsed.payload.reference) !== canonicalPayload(fixed.reference)
+    )
+      throw new MemberLocalTransportError('invalid');
+    const work = Promise.resolve()
+      .then(async () => {
+        bounded.throwIfAborted();
+        const rpcId = randomUUID(),
+          method = REMOTE_TEAM_ASSET_FILE_METHOD,
+          envelope = clientRequestSchema.parse({
+            type: 'client-request',
+            method,
+            rpcId,
+            payload: parsed,
+          }),
+          body = JSON.stringify(envelope);
+        if (Buffer.byteLength(body) > 16 * 1024) throw new MemberLocalTransportError('limit');
+        const authorization = await this.options.authentication(bounded, Object.freeze({ method }));
+        bounded.throwIfAborted();
+        const headers = new Headers(authorization);
+        headers.set(REMOTE_RUN_PERMIT_HEADER, secret);
+        headers.set('content-type', 'application/json');
+        // The SDK may retire a finished binary response's socket asynchronously.
+        // A following signed check must not reuse that transport or retry its proof.
+        headers.set('connection', 'close');
+        const response = await fetch(`${this.origin}/api/${method}`, {
+          method: 'POST',
+          headers,
+          body,
+          signal: bounded,
+          redirect: 'error',
+          cache: 'no-store',
+        });
+        return readMemberLocalTeamAssetResponse(
+          response,
+          rpcId,
+          parsed.payload.mode as Mode,
+          fixed,
+          bounded,
+        );
+      })
+      .catch((error: unknown) => {
+        if (bounded.aborted) throw new MemberLocalTransportError('cancelled');
+        if (error instanceof MemberLocalTransportError) throw error;
+        if (error instanceof MemberLocalTeamAssetTransportError)
+          throw new MemberLocalTransportError(error.code);
+        throw new MemberLocalTransportError('unavailable');
+      });
+    this.pending.add(work);
+    const drain = work
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .then(() => {
+        this.pending.delete(work);
+      });
+    return Object.freeze({ result: this.wait(work, bounded), drain });
   }
   invoke<T>(
     method: string,

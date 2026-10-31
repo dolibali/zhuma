@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { ResourceOriginSchema } from './asset-package.js';
+import {
+  ResourceOriginSchema,
+  PackagePathSchema,
+  PackageUploadSchema,
+  ImportChoiceSchema,
+  ImportPackageItemSchema,
+  ImportPackagePreviewSchema,
+  ASSET_IMPORT_LIMITS,
+} from './asset-package.js';
 
 /** Portable asset facts. Sessions, attachment services and authority stay Host-owned. */
 export const MEMBER_ASSET_SOURCE_VERSION = 'zhuma-member-assets@1' as const;
@@ -12,6 +20,17 @@ export const MEMBER_ASSET_LIMITS = Object.freeze({
   registryBytes: 8 * 1024 * 1024,
   fileBytes: 20 * 1024 * 1024,
   activeUploads: 8,
+  runFiles: 50,
+});
+export const MEMBER_ASSET_IMPORT_LIMITS = Object.freeze({
+  requestBytes: 8 * 1024 * 1024,
+  active: 2,
+});
+export const MEMBER_ASSET_FOLDER_LIMITS = Object.freeze({
+  folders: 200,
+  depth: 12,
+  name: 80,
+  bytes: 128 * 1024,
 });
 const id = z
   .string()
@@ -23,6 +42,90 @@ const positive = natural.positive();
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const name = z.string().trim().min(1).max(160);
 const description = z.string().max(8000);
+const folderId = z.uuid().nullable();
+const folderName = z
+  .string()
+  .trim()
+  .normalize('NFC')
+  .min(1)
+  .max(MEMBER_ASSET_FOLDER_LIMITS.name)
+  .refine((value) => !/[\\/\u0000-\u001f\u007f]/u.test(value) && value !== '.' && value !== '..');
+export const MemberAssetFolderSummarySchema = z.strictObject({
+  spaceId: id,
+  folderId: z.uuid(),
+  parentFolderId: folderId,
+  name: folderName,
+  createdBy: id,
+  version: z.literal(1),
+});
+export const MemberAssetFolderRecordSchema = MemberAssetFolderSummarySchema.extend({
+  schemaVersion: z.literal(1),
+  idempotencyKey: z.uuid(),
+  fingerprint: digest,
+});
+export const MemberAssetFoldersSchema = z
+  .array(MemberAssetFolderRecordSchema)
+  .max(MEMBER_ASSET_FOLDER_LIMITS.folders)
+  .refine((rows) => {
+    if (
+      new TextEncoder().encode(JSON.stringify(rows)).byteLength > MEMBER_ASSET_FOLDER_LIMITS.bytes
+    )
+      return false;
+    if (new Set(rows.map((row) => row.folderId)).size !== rows.length) return false;
+    if (
+      new Set(rows.map((row) => JSON.stringify([row.spaceId, row.createdBy, row.idempotencyKey])))
+        .size !== rows.length
+    )
+      return false;
+    const names = rows.map((row) =>
+      JSON.stringify([row.spaceId, row.parentFolderId, row.name.toLowerCase()]),
+    );
+    if (new Set(names).size !== rows.length) return false;
+    return rows.every((row) => {
+      const seen = new Set([row.folderId]);
+      let current = row;
+      while (current.parentFolderId !== null) {
+        const parent = rows.find(
+          (item) => item.spaceId === row.spaceId && item.folderId === current.parentFolderId,
+        );
+        if (!parent || seen.has(parent.folderId)) return false;
+        seen.add(parent.folderId);
+        if (seen.size > MEMBER_ASSET_FOLDER_LIMITS.depth) return false;
+        current = parent;
+      }
+      return true;
+    });
+  });
+export const MemberAssetFolderCreateSchema = z
+  .strictObject({
+    spaceId: id,
+    folderId: z.uuid(),
+    parentFolderId: folderId,
+    name: folderName,
+    expectedVersion: z.literal(0),
+    idempotencyKey: z.uuid(),
+  })
+  .refine((value) => value.folderId !== value.parentFolderId);
+export const MemberAssetFolderListQuerySchema = z.strictObject({
+  spaceId: id,
+  folderId,
+  includeDrafts: z.boolean().optional(),
+});
+export const MemberAssetFolderCreateValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    disposition: z.enum(['applied', 'replayed']),
+    resultVersion: z.literal(1),
+    folder: MemberAssetFolderSummarySchema,
+  })
+  .refine(
+    (value) => value.folder.spaceId === value.spaceId && value.folder.createdBy === value.actorId,
+  );
+export type MemberAssetFolderRecord = z.infer<typeof MemberAssetFolderRecordSchema>;
+export type MemberAssetFolderSummary = z.infer<typeof MemberAssetFolderSummarySchema>;
+export type MemberAssetFolderCreate = z.infer<typeof MemberAssetFolderCreateSchema>;
+export type MemberAssetFolderListQuery = z.infer<typeof MemberAssetFolderListQuerySchema>;
 export const MemberAssetKindSchema = z.enum(['template', 'expert', 'skill', 'file']);
 export const MemberAssetReferenceSchema = z.strictObject({
   spaceId: id,
@@ -32,6 +135,20 @@ export const MemberAssetReferenceSchema = z.strictObject({
   sha256: digest,
 });
 export type MemberAssetReference = z.infer<typeof MemberAssetReferenceSchema>;
+/** Explicit published file selections. Absence is distinct from an empty
+ * selection on Project/Task; neither value means a latest-version lookup. */
+export const MemberAssetFileReferencesSchema = z
+  .array(MemberAssetReferenceSchema.extend({ kind: z.literal('file') }))
+  .max(MEMBER_ASSET_LIMITS.runFiles)
+  .refine(
+    (values) =>
+      new Set(values.map((value) => value.assetId)).size === values.length &&
+      values.every((value) => value.spaceId === values[0]?.spaceId),
+  );
+export const MemberAssetFileSnapshotQuerySchema = z
+  .strictObject({ spaceId: id, references: MemberAssetFileReferencesSchema })
+  .refine((value) => value.references.every((ref) => ref.spaceId === value.spaceId));
+export type MemberAssetFileSnapshotQuery = z.infer<typeof MemberAssetFileSnapshotQuerySchema>;
 /** Original task catalogs use an immutable definition ID per real publication.
  * This alias never replaces the complete asset reference or grants access. */
 export function memberAssetDefinitionId(reference: MemberAssetReference): string {
@@ -57,6 +174,37 @@ export const MemberAssetFileBlobSchema = MemberAssetFileDeclareSchema.extend({
 });
 export type MemberAssetFileDeclare = z.infer<typeof MemberAssetFileDeclareSchema>;
 export type MemberAssetFileBlob = z.infer<typeof MemberAssetFileBlobSchema>;
+/** Metadata frozen into the ORIGINAL new Run configuration; not a body read,
+ * access grant, accepted task input, or independent directory fact. */
+export const MemberAssetFileSnapshotSchema = z
+  .strictObject({
+    sourceVersion: z.literal('zhuma-native-team-assets@1'),
+    spaceId: id,
+    files: z
+      .array(
+        z.strictObject({
+          reference: MemberAssetReferenceSchema.refine((value) => value.kind === 'file'),
+          file: MemberAssetFileDeclareSchema,
+        }),
+      )
+      .max(MEMBER_ASSET_LIMITS.runFiles),
+    sha256: digest,
+  })
+  .refine(
+    (value) =>
+      value.files.every((item) => item.reference.spaceId === value.spaceId) &&
+      new Set(value.files.map((item) => item.reference.assetId)).size === value.files.length,
+  );
+export type MemberAssetFileSnapshot = z.infer<typeof MemberAssetFileSnapshotSchema>;
+export function memberAssetFileSnapshotDigestInput(value: MemberAssetFileSnapshot) {
+  const { sha256: _digest, ...snapshot } = value;
+  return snapshot;
+}
+export const MemberAssetFileSnapshotValueSchema = z.strictObject({
+  actorId: id,
+  snapshot: MemberAssetFileSnapshotSchema,
+});
+export type MemberAssetFileSnapshotValue = z.infer<typeof MemberAssetFileSnapshotValueSchema>;
 const commonDefinition = { name, description };
 export const MemberAssetDefinitionSchema = z.discriminatedUnion('kind', [
   z.strictObject({
@@ -144,6 +292,22 @@ export const MemberAssetLegacyListValueSchema = z.strictObject({
 });
 export type MemberAssetLegacySummary = z.infer<typeof MemberAssetLegacySummarySchema>;
 export type MemberAssetLegacyListValue = z.infer<typeof MemberAssetLegacyListValueSchema>;
+export const MemberAssetLegacySourceValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    source: MemberAssetLegacySourceSchema,
+    definition: MemberAssetDefinitionSchema,
+    requirements: z
+      .array(z.strictObject({ slotId: id, kind: z.enum(['skill', 'mcp']) }))
+      .max(MEMBER_ASSET_LIMITS.dependencies)
+      .refine((items) => new Set(items.map((item) => item.slotId)).size === items.length),
+  })
+  .refine(
+    (value) =>
+      value.source.spaceId === value.spaceId && value.source.assetKind === value.definition.kind,
+  );
+export type MemberAssetLegacySourceValue = z.infer<typeof MemberAssetLegacySourceValueSchema>;
 export const MemberAssetSourceSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('asset'), reference: MemberAssetReferenceSchema }),
   ...MemberAssetLegacyFixedSourceSchema.options,
@@ -151,6 +315,7 @@ export const MemberAssetSourceSchema = z.discriminatedUnion('kind', [
     kind: z.literal('import'),
     versionId: z.uuid(),
     sha256: digest,
+    entryPath: PackagePathSchema.optional(),
     sourceId: id.optional(),
     sourceVersion: z.string().max(80).optional(),
   }),
@@ -201,6 +366,7 @@ export const MemberAssetRecordSchema = z
     assetId: id,
     kind: MemberAssetKindSchema,
     ownerId: id,
+    folderId: folderId.optional(),
     maintainerIds: z.array(id).min(1).max(MEMBER_ASSET_LIMITS.maintainers),
     version: positive,
     draft: draft.nullable(),
@@ -222,6 +388,7 @@ export const MemberAssetRecordSchema = z
   .refine(
     (value) =>
       value.maintainerIds.includes(value.ownerId) &&
+      (value.folderId === undefined || value.kind === 'file') &&
       new Set(value.maintainerIds).size === value.maintainerIds.length &&
       (!value.draft || value.draft.definition.kind === value.kind) &&
       (!value.draft?.blob || value.kind === 'file') &&
@@ -268,14 +435,17 @@ export const MemberAssetReadQuerySchema = z.union([
 ]);
 export const MemberAssetReferenceQuerySchema = MemberAssetReferenceSchema;
 export const MemberAssetCommandSchema = z.discriminatedUnion('operation', [
-  z.strictObject({
-    operation: z.literal('create-draft'),
-    ...object,
-    expectedVersion: z.literal(0),
-    idempotencyKey: z.uuid(),
-    definition: MemberAssetDefinitionSchema,
-    dependencies,
-  }),
+  z
+    .strictObject({
+      operation: z.literal('create-draft'),
+      ...object,
+      expectedVersion: z.literal(0),
+      idempotencyKey: z.uuid(),
+      definition: MemberAssetDefinitionSchema,
+      dependencies,
+      folderId: folderId.optional(),
+    })
+    .refine((value) => value.folderId === undefined || value.definition.kind === 'file'),
   z.strictObject({
     operation: z.literal('update-draft'),
     ...mutation,
@@ -285,6 +455,7 @@ export const MemberAssetCommandSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('publish'), ...mutation }),
   z.strictObject({ operation: z.literal('remove-draft'), ...mutation }),
   z.strictObject({ operation: z.literal('cancel-upload'), ...mutation, uploadKey: z.uuid() }),
+  z.strictObject({ operation: z.literal('move-file'), ...mutation, folderId }),
   z.strictObject({
     operation: z.literal('set-maintainers'),
     ...mutation,
@@ -317,6 +488,7 @@ export const MemberAssetSummarySchema = z.strictObject({
   name,
   description,
   ownerId: id,
+  folderId: folderId.optional(),
   maintainerIds: z.array(id).max(MEMBER_ASSET_LIMITS.maintainers),
   version: positive,
   canMaintain: z.boolean(),
@@ -333,6 +505,37 @@ export const MemberAssetSummarySchema = z.strictObject({
     )
     .max(MEMBER_ASSET_LIMITS.versions),
 });
+export const MemberAssetFolderListValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    folderId,
+    path: z.array(MemberAssetFolderSummarySchema).max(MEMBER_ASSET_FOLDER_LIMITS.depth),
+    folders: z.array(MemberAssetFolderSummarySchema).max(MEMBER_ASSET_FOLDER_LIMITS.folders),
+    files: z.array(MemberAssetSummarySchema).max(MEMBER_ASSET_LIMITS.assets),
+  })
+  .refine(
+    (value) =>
+      value.folders.every(
+        (row) => row.spaceId === value.spaceId && row.parentFolderId === value.folderId,
+      ) &&
+      value.files.every(
+        (row) =>
+          row.spaceId === value.spaceId &&
+          row.kind === 'file' &&
+          (row.folderId ?? null) === value.folderId,
+      ) &&
+      (value.folderId === null
+        ? value.path.length === 0
+        : value.path.at(-1)?.folderId === value.folderId) &&
+      value.path.every(
+        (row, index) =>
+          row.spaceId === value.spaceId &&
+          row.parentFolderId === (value.path[index - 1]?.folderId ?? null),
+      ),
+  );
+export type MemberAssetFolderListValue = z.infer<typeof MemberAssetFolderListValueSchema>;
+export type MemberAssetFolderCreateValue = z.infer<typeof MemberAssetFolderCreateValueSchema>;
 export const MemberAssetListValueSchema = z.strictObject({
   actorId: id,
   spaceId: id,
@@ -350,7 +553,88 @@ export const MemberAssetReadValueSchema = z.strictObject({
   source: MemberAssetSourceSchema.optional(),
   // The original attachment handle is never part of a public read result.
   file: MemberAssetFileDeclareSchema.optional(),
+  requirements: z
+    .array(
+      z.strictObject({
+        slotId: id,
+        kind: z.literal('skill'),
+        name,
+        sourceKey: PackagePathSchema,
+        suggestedAssetId: id.optional(),
+      }),
+    )
+    .max(MEMBER_ASSET_LIMITS.dependencies)
+    .optional(),
 });
+const importQuery = z.strictObject({ spaceId: id, upload: PackageUploadSchema });
+const importBound = (value: unknown) =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+  MEMBER_ASSET_IMPORT_LIMITS.requestBytes;
+export const MemberAssetPreviewImportQuerySchema = importQuery.refine(importBound);
+export const MemberAssetImportChoiceSchema = ImportChoiceSchema.omit({
+  replace: true,
+  available: true,
+}).extend({ id: z.uuid(), dependencies });
+export const MemberAssetImportDraftsQuerySchema = importQuery
+  .extend({
+    idempotencyKey: z.uuid(),
+    packageChecksum: digest,
+    choices: z
+      .array(MemberAssetImportChoiceSchema)
+      .min(1)
+      .max(ASSET_IMPORT_LIMITS.items)
+      .refine(
+        (items) =>
+          new Set(items.map((item) => item.key)).size === items.length &&
+          new Set(items.map((item) => item.id)).size === items.length,
+      ),
+  })
+  .refine(importBound);
+export const MemberAssetPreviewImportValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    packageChecksum: digest,
+    items: z.array(ImportPackageItemSchema).min(1).max(ASSET_IMPORT_LIMITS.items),
+    ignored: ImportPackagePreviewSchema.shape.ignored,
+  })
+  .refine(importBound);
+export const MemberAssetImportDraftsValueSchema = z
+  .strictObject({
+    actorId: id,
+    spaceId: id,
+    disposition: z.enum(['applied', 'replayed']),
+    source: z.strictObject({ kind: z.literal('import'), versionId: z.uuid(), sha256: digest }),
+    assets: z.array(MemberAssetSummarySchema).min(1).max(ASSET_IMPORT_LIMITS.items),
+    resultVersions: z
+      .array(z.strictObject({ assetId: id, version: z.literal(1) }))
+      .min(1)
+      .max(ASSET_IMPORT_LIMITS.items),
+  })
+  .refine(
+    (value) =>
+      value.assets.every(
+        (asset) =>
+          asset.spaceId === value.spaceId &&
+          asset.ownerId === value.actorId &&
+          asset.kind !== 'file',
+      ) &&
+      value.resultVersions.length === value.assets.length &&
+      new Set(value.assets.map((asset) => asset.assetId)).size === value.assets.length &&
+      new Set(value.resultVersions.map((item) => item.assetId)).size === value.assets.length &&
+      value.resultVersions.every((item) =>
+        value.assets.some((asset) => asset.assetId === item.assetId),
+      ),
+  );
+export type MemberAssetPreviewImportQuery = z.infer<typeof MemberAssetPreviewImportQuerySchema>;
+export type MemberAssetImportDraftsQuery = z.infer<typeof MemberAssetImportDraftsQuerySchema>;
+export type MemberAssetPreviewImportValue = z.infer<typeof MemberAssetPreviewImportValueSchema>;
+export type MemberAssetImportDraftsValue = z.infer<typeof MemberAssetImportDraftsValueSchema>;
+export function memberAssetImportSkillSlotId(index: number): string {
+  if (!Number.isInteger(index) || index < 0 || index >= MEMBER_ASSET_LIMITS.dependencies)
+    throw new RangeError('Invalid import dependency slot.');
+  return `source-skill-${index + 1}`;
+}
 export const MemberAssetCommandValueSchema = z.strictObject({
   disposition: z.enum(['applied', 'replayed']),
   actorId: id,
