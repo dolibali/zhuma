@@ -34,16 +34,18 @@ const BOARD_PIPELINE = ['planning', 'attention', 'running', 'review', 'ended'] a
 export type BoardDragDecision =
   | { readonly type: 'same' }
   | { readonly type: 'reject-no-authority' }
-  | { readonly type: 'reject-bypass-review' }
-  | { readonly type: 'allow' };
+  | { readonly type: 'reject-bypass-review' };
 
 /**
  * Board columns are projections of plan confirmation + execution/review facts
  * (docs: 禁止拖卡绕过评审; #34 拖动不绕过命令、依赖或评审; FR05 只显示已确认事实).
  *
- * Cross-column drops need an authoritative migration. The only client path here is
- * confirming a planning draft (`save-task` → ready). Execution/review stages have no
- * drag command — refuse (tip + stay on fact column). Never fake stage via session state.
+ * A column drop is not a migration command. Confirming a draft, starting work,
+ * submitting review, and ending a task each need their own explicit action.
+ * Dragging a planning card onto another column must not save the draft as ready:
+ * that confirms an immutable plan while the projection stays on the fact column
+ * (usually 待处理), not the drop target. Refuse and keep the card where the facts
+ * are. Never fake a stage with session state.
  */
 export function boardDragDecision(
   from: TaskBoardColumn,
@@ -67,10 +69,7 @@ export function boardDragDecision(
     return { type: 'reject-bypass-review' };
   }
 
-  // Only planning→* has a client authoritative command (confirm draft).
-  if (from === 'planning' && to !== 'planning') return { type: 'allow' };
-
-  // running/review/attention/ended moves need execution or review commands — not drag.
+  // No drag command confirms a draft or moves execution / review / ended facts.
   return { type: 'reject-no-authority' };
 }
 

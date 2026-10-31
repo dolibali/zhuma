@@ -1115,18 +1115,6 @@ export function WorkbenchPage({
                 progress={progressFor}
                 confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
                 openTask={setActiveTaskId}
-                onMoveTask={async (taskId, from, to) => {
-                  // Only planning→* has a client authoritative path (confirm draft).
-                  // Never return true for running/review→ended without execution/review commands.
-                  if (from !== 'planning' || to === 'planning') return false;
-                  const task = state.tasks.find((item) => item.id === taskId);
-                  if (!task || task.status !== 'draft') return false;
-                  const committed = await submit({
-                    type: 'save-task',
-                    task: { ...task, status: 'ready', updatedAt: new Date().toISOString() },
-                  });
-                  return committed !== null;
-                }}
               />
             ) : (
               <div className="zm-task-table">

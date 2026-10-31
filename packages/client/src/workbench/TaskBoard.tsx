@@ -19,7 +19,6 @@ export function TaskBoard({
   progress,
   confirmed,
   openTask,
-  onMoveTask,
 }: {
   tasks: readonly WorkTask[];
   projects: readonly Project[];
@@ -27,16 +26,6 @@ export function TaskBoard({
   progress(taskId: string): TaskProgressState | undefined;
   confirmed(taskId: string): boolean;
   openTask(taskId: string): void;
-  /**
-   * Called only for decisions that may have an authoritative migration.
-   * Return true after the command commits new facts; false/throw → tip, stay on fact column.
-   * Columns never use session placements — only plan + execution/review facts.
-   */
-  onMoveTask?(
-    taskId: string,
-    from: TaskBoardColumn,
-    to: TaskBoardColumn,
-  ): boolean | void | Promise<boolean | void>;
 }) {
   const [notice, setNotice] = useState<string>();
   const [draggingId, setDraggingId] = useState<string>();
@@ -76,7 +65,7 @@ export function TaskBoard({
     setOverColumn(columnId);
   }
 
-  async function onColumnDrop(event: DragEvent<HTMLElement>, columnId: TaskBoardColumn) {
+  function onColumnDrop(event: DragEvent<HTMLElement>, columnId: TaskBoardColumn) {
     event.preventDefault();
     const taskId = event.dataTransfer.getData(BOARD_TASK_MIME) || draggingId;
     const from = taskId ? columnOf(taskId) : undefined;
@@ -92,28 +81,12 @@ export function TaskBoard({
     const decision = boardDragDecision(from, columnId, {
       reviewRequired: boardReviewRequired(row.task, row.progress),
     });
-    if (decision.type === 'reject-bypass-review') {
-      rejectMove(columnId, 'bypass-review');
-      return;
-    }
-    if (decision.type === 'reject-no-authority') {
-      rejectMove(columnId, 'no-authority');
-      return;
-    }
-    if (decision.type !== 'allow') return;
-
-    const label = taskBoardColumns.find((column) => column.id === columnId)?.label ?? columnId;
-    // Do not set session placements. Wait for onMoveTask to commit facts; column follows projection.
-    try {
-      const result = await onMoveTask?.(taskId, from, columnId);
-      if (result !== true) {
-        rejectMove(columnId, 'no-authority');
-        return;
-      }
-      setNotice(`已确认计划；列随执行／评审事实更新（目标「${label}」）。`);
-    } catch {
-      rejectMove(columnId, 'no-authority');
-    }
+    // Columns follow taskBoardColumn only. A drop never writes placements or confirms a draft.
+    if (decision.type === 'same') return;
+    rejectMove(
+      columnId,
+      decision.type === 'reject-bypass-review' ? 'bypass-review' : 'no-authority',
+    );
   }
 
   return (
@@ -135,7 +108,7 @@ export function TaskBoard({
               if (overColumn === column.id) setOverColumn(undefined);
             }}
             onDrop={(event) => {
-              void onColumnDrop(event, column.id);
+              onColumnDrop(event, column.id);
             }}
           >
             <h2>
