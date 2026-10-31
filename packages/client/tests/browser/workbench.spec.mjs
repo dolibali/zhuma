@@ -72,7 +72,7 @@ test('主题切换保留节点草稿、选择和画布位置，不触发保存�
     await page.getByRole('option', { name: caption, exact: true }).click();
     await expect(page.getByLabel('外观', { exact: true })).toHaveAttribute(
       'title',
-      `外观：${caption}`,
+      '外观切换（浅色／深色／跟随系统）',
     );
     await expect(page.getByLabel('节点名称', { exact: true })).toHaveValue('尚未保存的节点修改');
     await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', 'node-0');

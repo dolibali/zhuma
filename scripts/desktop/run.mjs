@@ -5,6 +5,7 @@ import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { desktopStageLaunch } from '../lib/dev-model-gateway.mjs';
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const stage = `${root}/.build/desktop/deepseek-harness`;
 const task = process.argv[2] ?? 'dev';
@@ -13,7 +14,7 @@ const product = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 if (!/^[0-9A-Za-z.-]+$/u.test(brand.desktopBuildVersion))
   throw new Error('Invalid desktop build version');
 if (!['dev', 'package'].includes(task)) throw new Error(`Unknown desktop task: ${task}`);
-const env = {
+const baseEnv = {
   ...process.env,
   DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
   DSH_CLIENT_TITLE: 'Zhuma',
@@ -22,6 +23,10 @@ const env = {
   // Disallow upstream auto updates in this independent unsigned build.
   DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
 };
+// desktop:dev passes --dev-gateway when ZHUMA_WORKBENCH_DEV_GATEWAY is 1 (the dev default).
+// Formal package always passes --no-dev-gateway and forces that variable off.
+// URL / key / model ids come only from env; the key is not written into the overlay.
+const { env, installStageArgs } = desktopStageLaunch(task, baseEnv);
 const run = (args) => {
   const p = spawnSync('corepack', ['pnpm', ...args], { cwd: stage, stdio: 'inherit', env });
   if (p.error || p.status !== 0)
@@ -29,7 +34,8 @@ const run = (args) => {
 };
 run(['install', '--frozen-lockfile']);
 for (const script of ['workbench/build.mjs', 'workbench/install-stage.mjs']) {
-  const result = spawnSync(process.execPath, [join(root, 'scripts', script)], {
+  const extra = script === 'workbench/install-stage.mjs' ? installStageArgs : [];
+  const result = spawnSync(process.execPath, [join(root, 'scripts', script), ...extra], {
     cwd: root,
     stdio: 'inherit',
     env,

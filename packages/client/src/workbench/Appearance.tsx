@@ -11,13 +11,15 @@ export interface AppearanceStore {
 /** The official host owns this preference, persistence and OS theme resolution. */
 export function Appearance({ store }: { store: AppearanceStore }) {
   const preference = useSyncExternalStore(store.subscribe, store.getSnapshot);
-  const caption = { light: '浅色', dark: '深色', system: '跟随系统' }[preference];
+  // Hover/focus tip must name the control purpose; current mode stays in the menu.
+  // Keep aria-label stable as 外观 so scaffold getByLabel('外观') still finds it.
+  const tip = '外观切换（浅色／深色／跟随系统）';
   return (
     <SingleSelect
       className="zm-appearance"
       label="外观"
       popupMinWidth={144}
-      title={`外观：${caption}`}
+      title={tip}
       triggerContent={
         <svg
           aria-hidden="true"

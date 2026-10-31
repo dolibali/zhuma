@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { applyDevModelGatewayEnv } from '../lib/dev-model-gateway.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const { values } = parseArgs({
@@ -83,12 +84,16 @@ if (!values['prepare-only']) {
       cwd: stage,
       stdio: 'inherit',
       env: {
-        ...process.env,
-        DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
-        DSH_CLIENT_TITLE: 'Zhuma',
-        ZHUMA_DESKTOP_PRODUCT_VERSION: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-          .version,
-        DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
+        ...applyDevModelGatewayEnv({
+          ...process.env,
+          DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
+          DSH_CLIENT_TITLE: 'Zhuma',
+          ZHUMA_DESKTOP_PRODUCT_VERSION: JSON.parse(
+            readFileSync(join(root, 'package.json'), 'utf8'),
+          ).version,
+          DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
+          ZHUMA_WORKBENCH_DEV_GATEWAY: process.env.ZHUMA_WORKBENCH_DEV_GATEWAY ?? '1',
+        }),
       },
     },
   );
