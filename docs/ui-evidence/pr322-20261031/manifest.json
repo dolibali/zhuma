@@ -1,0 +1,41 @@
+{
+  "scope": "Actual Client components in isolated fictional HTTP replay; no Host, authorization, native geometry, or model qualification. Before develop1fb; after isolated composition of develop1fb plus PR322 at60d6; control source matches PR head. Project row click and Enter open work; nested edit remains a dialog. Dragging a planning card never confirms a plan or emits a command. All images personally inspected. No user attachment or credential material.",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "items": [
+    {
+      "name": "pr322-before-light.png",
+      "path": "docs/ui-evidence/pr322-20261031/pr322-before-light.png",
+      "sha256": "abe6c8d8483aa398ece902157596197543e7d9bf17b848597ebc4e738cb245f9",
+      "bytes": 28321,
+      "blob": "03807cf962758b1e9e1d56fbcf16c07875ab9ac2",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    },
+    {
+      "name": "pr322-before-dark.png",
+      "path": "docs/ui-evidence/pr322-20261031/pr322-before-dark.png",
+      "sha256": "e1398d4605441cc7fece59b63ad97e0ada4a4b98eaacbfe0d011b396922695cc",
+      "bytes": 28171,
+      "blob": "a337abcbb089feedd82aa8ce083809d02759c213",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    },
+    {
+      "name": "pr322-after-light.png",
+      "path": "docs/ui-evidence/pr322-20261031/pr322-after-light.png",
+      "sha256": "77c80a2acace3900501c5fdaff1ed124bac6dab18d5b1b6669c259a90c4dc17a",
+      "bytes": 28262,
+      "blob": "0cf74289e860efc9c85ffa0964d6e6d5c62953a9",
+      "source": "65903bfb008d8d595fb018a6e3ed5b6086a3d346"
+    },
+    {
+      "name": "pr322-after-dark.png",
+      "path": "docs/ui-evidence/pr322-20261031/pr322-after-dark.png",
+      "sha256": "64994ec1c9869fd4fbc69d6f3db5c704dd43251ec81418156fbe6f82769cb1bb",
+      "bytes": 28157,
+      "blob": "5b4987fde1797298aa67ef7cf83302e7402a550a",
+      "source": "65903bfb008d8d595fb018a6e3ed5b6086a3d346"
+    }
+  ]
+}
