@@ -2,10 +2,13 @@
  * OpenAI-compatible 自定义提供商配置（仅环境变量）。
  * Keep in sync with packages/dsh-adapter/src/dev-model-gateway.ts.
  * URL / key / model ids come only from ZHUMA_MODEL_*; never invent literals.
+ * Model ids do not grant vision. Image input is only for ids listed in
+ * ZHUMA_MODEL_IMAGE_IDS (exact match, no wildcard).
  */
 
 export const DEV_MODEL_GATEWAY_PROVIDER_ID = 'zhuma';
 export const DEV_MODEL_GATEWAY_API_KEY_ENV = 'ZHUMA_MODEL_API_KEY';
+export const DEV_MODEL_GATEWAY_IMAGE_IDS_ENV = 'ZHUMA_MODEL_IMAGE_IDS';
 
 /**
  * NODE_ENV is not "production".
@@ -15,11 +18,20 @@ export function isNonProductionEnv(env = process.env) {
   return (env.NODE_ENV ?? '').trim() !== 'production';
 }
 
-function listedModelIds(env) {
-  return (env.ZHUMA_MODEL_IDS ?? '')
+function listedCsv(value) {
+  return (value ?? '')
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function listedModelIds(env) {
+  return listedCsv(env.ZHUMA_MODEL_IDS);
+}
+
+/** Explicit image grant. Exact id match only; a model id is not itself a grant. */
+function listedImageModelIds(env) {
+  return listedCsv(env[DEV_MODEL_GATEWAY_IMAGE_IDS_ENV]);
 }
 
 /**
@@ -48,22 +60,27 @@ export function resolveDevModelGateway(env = process.env) {
   const modelIds = listed.length > 0 ? listed : modelId ? [modelId] : [];
   const resolvedModel = modelId || modelIds[0] || '';
   if (!resolvedModel) return null;
+  const catalog = modelIds.length > 0 ? modelIds : [resolvedModel];
+  const granted = new Set(listedImageModelIds(env));
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     apiKey,
     modelId: resolvedModel,
-    modelIds: modelIds.length > 0 ? modelIds : [resolvedModel],
+    modelIds: catalog,
+    imageModelIds: catalog.filter((id) => granted.has(id)),
   };
 }
 
-/** YAML for llm-pi-ai; key stays in apiKeyEnv (process env / credentials). */
+function renderedModel(id, image) {
+  const modalities = image ? ['text', 'image'] : ['text'];
+  const input = modalities.map((kind) => `              - ${kind}`).join('\n');
+  return `          - id: ${JSON.stringify(id)}\n            input:\n${input}`;
+}
+
+/** YAML for llm-pi-ai. Key stays in apiKeyEnv. Default input is text. */
 export function renderDevModelGatewayCordisPatch(gateway) {
-  const models = gateway.modelIds
-    .map(
-      (id) =>
-        `          - id: ${JSON.stringify(id)}\n            input:\n              - text\n              - image`,
-    )
-    .join('\n');
+  const imageIds = new Set(gateway.imageModelIds ?? []);
+  const models = gateway.modelIds.map((id) => renderedModel(id, imageIds.has(id))).join('\n');
   return [
     `- id: llm-pi-ai`,
     `  config:`,

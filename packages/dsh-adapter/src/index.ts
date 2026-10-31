@@ -71,6 +71,7 @@ export {
 } from './agent-executor.js';
 export {
   DEV_MODEL_GATEWAY_API_KEY_ENV,
+  DEV_MODEL_GATEWAY_IMAGE_IDS_ENV,
   DEV_MODEL_GATEWAY_PROVIDER_ID,
   isNonProductionEnv,
   renderDevModelGatewayCordisPatch,
