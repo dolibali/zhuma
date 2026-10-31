@@ -1,0 +1,41 @@
+{
+  "scope": "Actual Client components in isolated fictional HTTP replay; no Host, authorization, native geometry, or model qualification. Before develop1fb; after isolated composition of develop1fb plus PR328 at60d6; control source matches PR head. Tooltip text verified on actual button, menu layout unchanged. All images personally inspected. No user attachment or credential material.",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "items": [
+    {
+      "name": "pr328-before-light.png",
+      "path": "docs/ui-evidence/pr328-20261031/pr328-before-light.png",
+      "sha256": "593358a24b95b38cdc0a88c4d444fa49457f0d1d56e9ab26fc4f5f0af2093800",
+      "bytes": 43122,
+      "blob": "eead4ee7974b26c1bea73828c077f87bb009da84",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    },
+    {
+      "name": "pr328-before-dark.png",
+      "path": "docs/ui-evidence/pr328-20261031/pr328-before-dark.png",
+      "sha256": "cce3d2dcf84d349b379e9ae3471495b15caade809b00d5866d00d7d19799c27c",
+      "bytes": 41943,
+      "blob": "2b803ffb725398390de96709f3c4084e5e66c0d3",
+      "source": "1fb69735e1cefe3c096d4c3453b02c56186a36da"
+    },
+    {
+      "name": "pr328-after-light.png",
+      "path": "docs/ui-evidence/pr328-20261031/pr328-after-light.png",
+      "sha256": "ff2738fbb808b829726756f603861e80c931ef18168a5dd8bcf612b01761358c",
+      "bytes": 43123,
+      "blob": "e40e2f337c72ae7013a450c67378507f02d01219",
+      "source": "60d6eb942c139422ce4728e366e0a93f1a3cf0e0"
+    },
+    {
+      "name": "pr328-after-dark.png",
+      "path": "docs/ui-evidence/pr328-20261031/pr328-after-dark.png",
+      "sha256": "80dfc10574d9ec5732b5ee056e596489c31ff1e0fc29ea3555ef013d769e441d",
+      "bytes": 41957,
+      "blob": "ee8f6dd9cfd32ae918e47aee402450e94ee2f9b0",
+      "source": "60d6eb942c139422ce4728e366e0a93f1a3cf0e0"
+    }
+  ]
+}
