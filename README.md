@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-本工程版本为 **v1.3.0**，自有代码采用 MIT；v1.2.0 的历史范围与证据保留原边界。共享后端保存团队业务，成员在官方桌面明确授权本机 Zhuma Agent 接续处理自己负责的工作节点；任务、交付与评审复用原领域，会话与执行模型凭据仍由成员本机原 Harness 管理。共享后端的 AI 规划使用其自身配置的模型。
+本工程版本为 **v1.4.0 候选**，自有代码采用 MIT；版本号不代表已经发布。Windows x64、macOS arm64 和 Linux amd64 共享服务以同一准确来源分别验证，见 [v1.4 范围与安装说明](docs/release-v1.4.md)和[实时工作项 #372](https://github.com/dolibali/zhuma/issues/372)。共享后端保存团队业务，成员在官方桌面明确授权本机 Zhuma Agent 接续处理自己负责的工作节点；任务、交付与评审复用原领域，会话与执行模型凭据仍由成员本机原 Harness 管理。共享后端的 AI 规划使用其自身配置的模型。
 
 源码、Host／Client 契约及历史安装结果按版本分层保留，不能追认后续修改。正常桌面、真实模型＋Skill、同工作区同 Session、文件、独立 Agent 评审与恢复按准确候选分别验收。实时结论以 [交付总索引 #25](https://github.com/dolibali/zhuma/issues/25) 和 [v1.3 工作项 #310](https://github.com/dolibali/zhuma/issues/310) 为准，本轮范围和验证边界见 [v1.3.0 说明](docs/release-v1.3.md)；[v1.2.0 说明](docs/release-v1.2.md) 保留原版本边界。
 

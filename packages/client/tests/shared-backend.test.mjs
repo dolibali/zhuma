@@ -15,6 +15,99 @@ const remote = () => ({
   actorId: 'ann',
 });
 
+test('connection checks read the original member session, distinguish reachability from login and never infer it from saved settings', async () => {
+  const cases = [
+    { status: 401, body: {}, expected: 'login-required' },
+    { status: 200, body: {}, expected: 'invalid-response' },
+    { code: 'backend-invalid-response', expected: 'invalid-response' },
+    { code: 'backend-unavailable', expected: 'unavailable' },
+    {
+      status: 200,
+      body: {
+        ok: true,
+        accountId: 'ann',
+        principal: { kind: 'zhuma-member', memberId: 'ann' },
+        peerId: 'peer',
+        spaces: [],
+      },
+      expected: 'reachable',
+    },
+  ];
+  for (const scenario of cases) {
+    const selection = remote(),
+      calls = [];
+    const client = createSharedBackendClient(
+      {
+        async call(_channel, endpoint, payload) {
+          calls.push({ endpoint, payload });
+          if (endpoint === 'zhuma-backend/status') return { ok: true, value: selection };
+          assert.equal(endpoint, 'zhuma-backend/request');
+          assert.deepEqual(payload, {
+            connectionId: selection.connectionId,
+            operation: 'identity.session',
+            payload: {},
+          });
+          return scenario.code
+            ? { ok: false, error: { code: scenario.code } }
+            : {
+                ok: true,
+                value: {
+                  connectionId: selection.connectionId,
+                  status: scenario.status,
+                  body: scenario.body,
+                },
+              };
+        },
+      },
+      () => assert.fail('A read-only check must not change the selected service.'),
+    );
+    await client.refresh();
+    assert.equal(client.getSnapshot().verification, undefined);
+    assert.equal(calls.length, 1);
+    await client.check(AbortSignal.timeout(1000));
+    assert.equal(client.getSnapshot().verification, scenario.expected);
+    assert.deepEqual(client.getSnapshot().selection, selection);
+    assert.equal(calls.length, 2);
+    client.close();
+  }
+});
+
+test('a late old connection check cannot mark a newly selected local service as reachable or failed', async () => {
+  const selection = remote();
+  let release;
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, endpoint, payload) {
+        if (endpoint === 'zhuma-backend/status') return { ok: true, value: selection };
+        if (endpoint === 'zhuma-backend/select')
+          return {
+            ok: true,
+            value: {
+              origin: null,
+              connectionId: crypto.randomUUID(),
+              backendId: null,
+              actorId: null,
+            },
+          };
+        assert.equal(payload.operation, 'identity.session');
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      },
+    },
+    () => {},
+  );
+  await client.refresh();
+  const checking = client.check(AbortSignal.timeout(1000));
+  assert.equal(client.getSnapshot().verification, 'checking');
+  await client.select(null, AbortSignal.timeout(1000));
+  release({ ok: true, value: { connectionId: selection.connectionId, status: 401, body: {} } });
+  await assert.rejects(checking, { name: 'AbortError' });
+  assert.equal(client.getSnapshot().selection.origin, null);
+  assert.equal(client.getSnapshot().verification, undefined);
+  client.close();
+});
+
 test('member package import keeps the original large intent on the two local owner Fetch paths, never the generic RPC carrier', async () => {
   const selection = remote(),
     calls = [];

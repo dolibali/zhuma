@@ -143,9 +143,9 @@ function setup() {
     state,
     entries,
     scopes,
-    guard: (value, signal) => {
+    guard: (value, signal, intent) => {
       lastSignal = AbortSignal.any([signal, layout.beginNavigation()]);
-      return guard(value, lastSignal);
+      return guard(value, lastSignal, intent);
     },
     guardSignal: () => lastSignal,
     layout,
@@ -281,6 +281,42 @@ test('Workspace missing login, connection or ready space gives instructions befo
     assert.equal(await h.guard('session', AbortSignal.timeout(1000)), false);
     assert.match(h.state.getNoticeSnapshot(), expected);
     assert.deepEqual(h.scopes, []);
+    assert.equal(h.state.getSnapshot(), undefined);
+    h.close();
+  }
+});
+
+test('implicit startup restoration stays refused and quiet while logged out; explicit and legacy opens retain visible refusal', async () => {
+  const h = setup();
+  h.setSession({ status: 'anonymous', epoch: 2 });
+  h.setLookup(() => assert.fail('Logged-out restore must not look up or resume a Session'));
+  assert.equal(await h.guard('initial-blank', AbortSignal.timeout(1000), 'restore'), false);
+  assert.equal(h.state.getNoticeSnapshot(), undefined);
+  assert.deepEqual(h.scopes, []);
+  assert.equal(h.state.getSnapshot(), undefined);
+  for (const intent of ['explicit', undefined]) {
+    assert.equal(await h.guard('chosen-session', AbortSignal.timeout(1000), intent), false);
+    assert.match(h.state.getNoticeSnapshot(), /先登录账号/);
+  }
+  h.close();
+});
+
+test('restore provenance never bypasses authenticated service, space or session authority', async () => {
+  for (const [change, expected] of [
+    [(h) => h.setBackend({ phase: 'loading', selection: undefined }), /服务连接尚未就绪/],
+    [(h) => h.setSpace({ status: 'error', epoch: 2 }), /空间目录尚未就绪/],
+    [
+      (h) =>
+        h.setLookup(async () => {
+          throw Error('original authority refused');
+        }),
+      /确认当前账号/,
+    ],
+  ]) {
+    const h = setup();
+    change(h);
+    assert.equal(await h.guard('saved-session', AbortSignal.timeout(1000), 'restore'), false);
+    assert.match(h.state.getNoticeSnapshot(), expected);
     assert.equal(h.state.getSnapshot(), undefined);
     h.close();
   }

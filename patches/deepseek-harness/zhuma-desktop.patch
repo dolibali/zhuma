@@ -91,7 +91,7 @@ index 68291ca3..db3ed424 100644
              if (error !== null && error !== undefined) rejectListing(error instanceof Error ? error : new Error(String(error)))
              else {
 diff --git a/apps/desktop/scripts/desktop-package-environment.mjs b/apps/desktop/scripts/desktop-package-environment.mjs
-index 8116dea2..9575c9a2 100644
+index 8116dea245..c143b5a413 100644
 --- a/apps/desktop/scripts/desktop-package-environment.mjs
 +++ b/apps/desktop/scripts/desktop-package-environment.mjs
 @@ -28,7 +28,7 @@ const FILE_SETTINGS = ['DSH_DESKTOP_WINDOWS_CER_FILE', 'DSH_DESKTOP_WINDOWS_SIGN
@@ -103,6 +103,15 @@ index 8116dea2..9575c9a2 100644
      DSH_DESKTOP_UNSIGNED: '1',
    }
  }
+@@ -136,7 +136,7 @@ function requireReadableFile(environment, name) {
+ export function validateDesktopPackageEnvironment(environment, target, options = {}) {
+   resolveDesktopAppId(environment)
+   resolveNpmRegistry(environment)
+-  if (target.platform !== 'darwin' || !options.unsigned) resolveDesktopPolicyEnvironment(environment)
++  if (!options.unsigned) resolveDesktopPolicyEnvironment(environment)
+   if (target.platform === 'darwin') resolveMacOSPackageSettings(environment)
+   else resolveWindowsPackageSettings(environment)
+   if (options.unsigned) return
 diff --git a/apps/desktop/scripts/development-app.ts b/apps/desktop/scripts/development-app.ts
 index ff09b8b7..77cb955a 100644
 --- a/apps/desktop/scripts/development-app.ts
@@ -151,9 +160,18 @@ index ff09b8b7..77cb955a 100644
      writeFileSync(stamp, identity, { mode: 0o600 })
      execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
 diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
-index 4b9cd27a..d4036093 100644
+index 4b9cd27a8d..4987d0e77d 100644
 --- a/apps/desktop/scripts/electron-builder-config.mjs
 +++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -65,7 +65,7 @@ export function createElectronBuilderConfig(
+   if (skipNotarization && (unsigned || resolvedPlatform !== 'darwin')) throw new Error('Skipping notarization requires a signed macOS build')
+   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
+   const packagesWindows = resolvedPlatform === 'win32'
+-  const policy = packagesMacOS && unsigned ? undefined : resolveDesktopPolicyEnvironment(env)
++  const policy = unsigned ? undefined : resolveDesktopPolicyEnvironment(env)
+   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
+   const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
+   if (packagesMacOS && !unsigned && !skipNotarization) resolveMacOSNotarizationEnvironment(env)
 @@ -75,6 +75,9 @@ export function createElectronBuilderConfig(
    let dshDestination
    let windowsCode = []
@@ -164,8 +182,14 @@ index 4b9cd27a..d4036093 100644
      `**/node_modules/@deepseek-ai/libreoffice-kit-${resolvedPlatform}-${resolvedArch}/**/*`]
    const windowsSigner = packagesWindows && !unsigned
      ? createWindowsTokenSigner({
-@@ -105,7 +108,7 @@ export function createElectronBuilderConfig(
+@@ -103,19 +106,24 @@ export function createElectronBuilderConfig(
+   const buildVersion = resolveDesktopBuildVersion(env, productVersion)
+   if (update?.channel === 'latest' && buildVersion.includes('-')) throw new Error('desktop package: latest requires a stable version')
    const packaged = resolveDesktopBuildCommit(env)
++  const productSource = resolveDesktopBuildCommit({
++    DSH_DESKTOP_BUILD_COMMIT: env.ZHUMA_DESKTOP_SOURCE_COMMIT,
++    DSH_DESKTOP_BUILD_DIRTY: env.ZHUMA_DESKTOP_SOURCE_DIRTY,
++  })
    return {
      appId,
 -    protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
@@ -173,9 +197,10 @@ index 4b9cd27a..d4036093 100644
      extraMetadata: {
        dshDesktopAppId: appId,
        dshDesktopUpdateChannel: update?.channel ?? 'nightly',
-@@ -113,9 +116,9 @@ export function createElectronBuilderConfig(
+       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
        ...buildVersion === productVersion ? {} : { version: buildVersion },
        ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
++      ...productSource === undefined ? {} : { zhumaSourceCommit: productSource.commit, zhumaSourceDirty: productSource.dirty },
      },
 -    productName: 'DeepSeek Harness',
 +    productName: 'Zhuma',
@@ -185,7 +210,7 @@ index 4b9cd27a..d4036093 100644
      directories: { output: output.directory },
      asar: true,
      electronDist: buildPaths.electron,
-@@ -157,7 +160,7 @@ export function createElectronBuilderConfig(
+@@ -157,7 +165,7 @@ export function createElectronBuilderConfig(
        ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
      ],
      mac: {
@@ -194,7 +219,7 @@ index 4b9cd27a..d4036093 100644
        category: 'public.app-category.developer-tools',
        // macOS matches the application locale against this bundle, not Electron Framework resources.
        extendInfo: { CFBundleLocalizations: ['en', 'zh_CN'] },
-@@ -165,7 +168,7 @@ export function createElectronBuilderConfig(
+@@ -165,7 +173,7 @@ export function createElectronBuilderConfig(
        identity: unsigned ? '-' : macOSSigning?.signingIdentity,
        forceCodeSigning: !unsigned,
        hardenedRuntime: true,
@@ -230,7 +255,7 @@ index 4ba0fd12..00adcdfd 100644
    const zipApp = join(root, 'zip', basename(appPath))
    const dmgApp = join(root, 'dmg', basename(appPath))
 diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/package-target.ts
-index be2f577..a236a15 100644
+index be2f577e1b..0b1a060b53 100644
 --- a/apps/desktop/scripts/package-target.ts
 +++ b/apps/desktop/scripts/package-target.ts
 @@ -19,7 +19,7 @@ import { macOSDownloadEnvironment, resolveMacOSPackageSettings } from './macos-p
@@ -242,7 +267,14 @@ index be2f577..a236a15 100644
  import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts'
  import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
  import { requireDesktopToolchain } from './desktop-toolchain-preflight.ts'
-@@ -348,7 +348,7 @@ async function main(): Promise<void> {
+@@ -343,12 +343,13 @@ async function main(): Promise<void> {
+   if (invocation.skipNotarization) {
+     process.stdout.write('desktop package: skipping notarization and stapling; internal debugging only, not qualified for distribution or update publishing\n')
+   }
+-  const environment = target.platform === 'darwin' && invocation.unsigned
++  // Product unsigned packages share scrubbed local defaults on both platforms.
++  const environment = invocation.unsigned
+     ? localMacOSPackageEnvironment()
      : loadDesktopPackageEnvironment(target.platform, process.env, APP_ROOT, {
        unsigned: invocation.unsigned, prepareOnly: invocation.prepareOnly,
      })
@@ -251,7 +283,7 @@ index be2f577..a236a15 100644
    // Release settings come from the selected configuration files, so the version this run publishes is an
    // argument; the environment variable below only carries it to the child processes that build.
    const buildVersion = await resolveRequestedBuildVersion(invocation, productVersion, environment)
-@@ -401,7 +401,7 @@ async function main(): Promise<void> {
+@@ -401,7 +402,7 @@ async function main(): Promise<void> {
    if (success && target.platform === 'darwin' && !invocation.directory && !invocation.prepareOnly) {
      const paths = desktopTargetBuildPaths(target.name)
      const output = desktopArtifactOutput(paths, invocation)
@@ -260,7 +292,7 @@ index be2f577..a236a15 100644
      console.log(`DMG: ${join(output.directory, filename)}`)
    }
  }
-@@ -515,7 +515,7 @@ export async function packageTarget(
+@@ -515,7 +516,7 @@ export async function packageTarget(
    } else if (target.platform === 'darwin' && !invocation.unsigned && !invocation.skipNotarization) {
      await execute([...desktopElectronBuilderArguments(target, true), '--config.mac.notarize=false'], electronBuilderEnv)
      await execute(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts'], targetEnv)
@@ -3176,7 +3208,7 @@ index 9c8fa97..689fdc6 100644
  
 +/** Product navigation guard before retaining/following a Session. False means
 + * the guard handled task navigation or refused it; the guard owns user feedback. */
-+export type SessionNavigationGuard = (target: SessionTarget, signal: AbortSignal) => boolean | Promise<boolean>
++export type SessionNavigationGuard = (target: SessionTarget, signal: AbortSignal, intent?: 'restore' | 'explicit') => boolean | Promise<boolean>
 +
  /** Workspace archive and directory operations consumed by Client UI domains. */
  export interface UiWorkspace {
@@ -3250,7 +3282,7 @@ index 9c8fa97..689fdc6 100644
 +    const bounded = AbortSignal.any([signal, this.lifetime.signal, waiting.signal])
 +    void Promise.resolve().then(() => {
 +      bounded.throwIfAborted()
-+      return registration.guard(target, bounded)
++      return registration.guard(target, bounded, panel === 'preserve' ? 'restore' : 'explicit')
 +    }).then(allowed => {
 +      if (bounded.aborted || this.sessionNavigation !== registration || this.waitingNavigation !== waiting) return
 +      if (allowed === true) this.commitMain(target, bounded, panel, beforeOpen)
@@ -4167,3 +4199,135 @@ index 84c71a18..c948dd84 100644
    expect(plan.workspaceOnly).toHaveLength(6)
    const settings = yaml.load(readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')) as { overrides: Record<string, string> }
    expect(settings.overrides['@earendil-works/pi-ai']).toBeUndefined()
+diff --git a/packages/client/connection/src/http-bridge.ts b/packages/client/connection/src/http-bridge.ts
+index 61d89c0127..f1bce41a18 100644
+--- a/packages/client/connection/src/http-bridge.ts
++++ b/packages/client/connection/src/http-bridge.ts
+@@ -96,11 +96,20 @@ export async function bridge(
+   }
+   const response = await apiHandler.fetch(request, peer)
+   const requestUnread = bodyMode === 'streaming' && !req.readableEnded
++  // Only an unread streaming request owns this cleanup; keep-alive requests do not.
++  if (requestUnread && req.socket) {
++    const disposeUnreadRequest = () => {
++      if (!req.destroyed) req.destroy()
++    }
++    // Never destroy on response finish/close: queued response bytes may remain.
++    if (req.socket.closed) disposeUnreadRequest()
++    else req.socket.once('close', disposeUnreadRequest)
++  }
+   const responseHeaders = Object.fromEntries(response.headers.entries())
+   res.writeHead(response.status, requestUnread ? { ...responseHeaders, connection: 'close' } : responseHeaders)
+   if (response.body === null) {
+     res.end()
+-    if (requestUnread) req.destroy()
++    // Connection: close lets node:http flush the response before closing the socket.
+     return
+   }
+   for await (const chunk of response.body) {
+@@ -123,5 +132,5 @@ export async function bridge(
+     }
+   }
+   res.end()
+-  if (requestUnread) req.destroy()
++  // Connection: close lets node:http flush the response before closing the socket.
+ }
+diff --git a/packages/client/connection/tests/http-bridge.host.spec.ts b/packages/client/connection/tests/http-bridge.host.spec.ts
+index e612a0608d..75539c4e05 100644
+--- a/packages/client/connection/tests/http-bridge.host.spec.ts
++++ b/packages/client/connection/tests/http-bridge.host.spec.ts
+@@ -1,6 +1,7 @@
+ import { EventEmitter } from 'node:events'
+ import { Readable } from 'node:stream'
+-import type { IncomingMessage, ServerResponse } from 'node:http'
++import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
++import { createConnection, type Socket } from 'node:net'
+ import { Context } from '@deepseek-ai/cordis'
+ import { describe, expect, it } from 'vitest'
+ import { bridge } from '../src/http-bridge.ts'
+@@ -189,30 +190,61 @@ describe('HTTP bridge abort', () => {
+     expect(Buffer.concat(responseBytes).toString()).toBe('stored')
+   })
+ 
+-  it('closes an unread streaming request after returning an early validation response', async () => {
+-    const destroyed: true[] = []
+-    const request = new Readable({ read() {} }) as IncomingMessage
+-    Object.assign(request, {
+-      url: '/api/session/uploadFileBinary',
+-      method: 'POST',
+-      headers: { 'content-type': 'application/json' },
+-      destroy: () => { destroyed.push(true) },
++  it.each([null, 'rejected'])('flushes an early streaming rejection (%s) and closes an unfinished upload', async (body) => {
++    const sockets = new Set<Socket>()
++    let bridgeFailure: unknown
++    const server = createServer((request, response) => {
++      void bridge(request, response, {
++        requestBodyMode: () => 'streaming',
++        fetch: () => Promise.resolve(new Response(body, { status: 415 })),
++      }, PEER, 1).catch((error: unknown) => {
++        bridgeFailure = error
++        response.destroy()
++      })
+     })
+-    let status: number | undefined
+-    let headers: unknown
+-    const response = Object.assign(new EventEmitter(), {
+-      writableEnded: false,
+-      writeHead(code: number, values?: unknown) { status = code; headers = values; return this },
+-      write() { return true },
+-      end(this: { writableEnded: boolean }) { this.writableEnded = true; return this },
+-    }) as unknown as ServerResponse
+-
+-    await bridge(request, response, {
+-      requestBodyMode: () => 'streaming',
+-      fetch: () => Promise.resolve(new Response(null, { status: 415 })),
+-    }, PEER, 1)
+-    expect(status).toBe(415)
+-    expect(headers).toMatchObject({ connection: 'close' })
+-    expect(destroyed).toEqual([true])
++    server.on('connection', (socket) => {
++      sockets.add(socket)
++      socket.once('close', () => sockets.delete(socket))
++    })
++    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
++    try {
++      const address = server.address()
++      if (address === null || typeof address === 'string') throw new Error('missing test listener')
++      // A completed large upload can still be unread when the handler rejects.
++      // Its response must survive the same close path as an unfinished upload.
++      const response = await fetch(`http://127.0.0.1:${address.port}/api/session/uploadFileBinary`, {
++        method: 'POST',
++        body: 'x'.repeat(131457),
++        signal: AbortSignal.timeout(3000),
++      })
++      expect(response.status).toBe(415)
++      expect(await response.text()).toBe(body ?? '')
++      const wire = await new Promise<string>((resolve, reject) => {
++        const socket = createConnection({ host: '127.0.0.1', port: address.port })
++        let received = ''
++        // Deliberately leave the declared upload unfinished. The carrier must
++        // flush the complete rejection and close without waiting to drain it.
++        socket.setTimeout(3000, () => socket.destroy(new Error('early rejection did not close')))
++        socket.once('connect', () => socket.write(
++          'POST /api/session/uploadFileBinary HTTP/1.1\r\n'
++          + 'Host: 127.0.0.1\r\nContent-Type: application/json\r\n'
++          + 'Content-Length: 999999\r\n\r\nx',
++        ))
++        socket.on('data', (chunk: Buffer) => { received += chunk.toString('utf8') })
++        socket.once('error', reject)
++        socket.once('close', () => resolve(received))
++      })
++      expect(wire).toMatch(/^HTTP\/1\.1 415 /)
++      expect(wire).toMatch(/\r\nconnection: close\r\n/i)
++      if (body !== null) {
++        expect(wire).toContain(body)
++        expect(wire.endsWith('0\r\n\r\n')).toBe(true)
++      }
++      await expect.poll(() => sockets.size).toBe(0)
++      expect(bridgeFailure).toBeUndefined()
++    } finally {
++      server.closeAllConnections()
++      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
++    }
+   })
+ })

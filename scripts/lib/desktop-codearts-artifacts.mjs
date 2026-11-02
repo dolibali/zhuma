@@ -15,7 +15,8 @@ export function verifyPackagedCodeArts(resources, expected, asar) {
   const archive = join(resources, 'app.asar');
   return Object.fromEntries(
     codeArtsLaunchFiles.map((file) => {
-      const entry = `${packagedWorkbench}/${file}`;
+      // @electron/asar 3.x traverses with node:path.sep, including on Windows.
+      const entry = join(packagedWorkbench, file);
       assert.equal(
         asar.statFile(archive, entry).unpacked,
         true,
