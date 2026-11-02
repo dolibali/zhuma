@@ -15,6 +15,7 @@ const codes = [
   'unsupported-version',
   'server-exited',
   'workspace-untrusted',
+  'authentication-required',
   'invalid-endpoint',
   'invalid-session',
   'cancelled',
