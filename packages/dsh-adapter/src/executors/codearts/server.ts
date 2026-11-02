@@ -15,7 +15,8 @@ export class CodeArtsServerError extends Error {
       | 'start-timeout'
       | 'unsupported-version'
       | 'server-exited'
-      | 'workspace-untrusted',
+      | 'workspace-untrusted'
+      | 'authentication-required',
     readonly stage: 'start' | 'health' = 'start',
     readonly diagnostic: CodeArtsOpenDiagnostic = codeArtsOpenDiagnostic(stage, code),
   ) {
