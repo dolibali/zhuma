@@ -1,0 +1,121 @@
+name: Linux server qualification
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/linux-server-qualification.yml
+      - distribution/server/**
+      - scripts/server/**
+      - scripts/workbench/**
+      - packages/**
+      - patches/**
+      - runtime.lock.json
+      - pnpm-lock.yaml
+      - package.json
+      - .gitmodules
+      - upstream/deepseek-harness
+      - scripts/desktop/prepare.mjs
+      - scripts/desktop/source-recipe.mjs
+      - scripts/desktop/icon-assets.mjs
+      - branding/default/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-server-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Bind the definition and product candidate to the exact source
+        run: |
+          test "$(uname -m)" = x86_64
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          docker build --platform linux/amd64 -f distribution/server/container/Dockerfile.builder -t zhuma-builder distribution/server/container
+          docker volume create zhuma-source
+      - name: Build the original SDK and the production payload without host credentials
+        run: |
+          docker run -i --name zhuma-build --mount type=volume,source=zhuma-source,target=/workspace zhuma-builder sh -s -- "$SOURCE_SHA" <<'BUILD'
+          set -eu
+          git clone --no-checkout https://github.com/dolibali/zhuma.git /workspace/source
+          cd /workspace/source
+          git fetch --depth=1 origin "$1"
+          git checkout --detach "$1"
+          git submodule update --init --depth=1 upstream/deepseek-harness
+          node scripts/server/prepare.mjs
+          cd .build/server/deepseek-harness
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm run build:native-system
+          corepack pnpm run build:lib
+          corepack pnpm run build:web
+          cd /workspace/source
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+          node scripts/server/package-runtime.mjs --sdk .build/server/deepseek-harness --out .build/backend-runtime
+          BUILD
+          mkdir -p .build/qualification/payload .build/qualification/artifacts
+          docker cp zhuma-build:/workspace/source/.build/backend-runtime/. .build/qualification/payload/
+      - name: Verify the immutable payload and build a non-root image
+        run: |
+          docker run --rm --mount "type=bind,source=$PWD/.build/qualification/payload,target=/payload,readonly" -e SOURCE_SHA zhuma-builder node --input-type=module -e '
+          import assert from "node:assert/strict";
+          import { readdir } from "node:fs/promises";
+          import { inspectHeadlessRuntime } from "/payload/runtime-manifest.mjs";
+          assert.deepEqual((await readdir("/payload")).sort(), ["LICENSE","SOURCE.json","THIRD_PARTY_LICENSES.txt","member-gateway.mjs","runtime-manifest.mjs","sdk","start.mjs","workbench"].sort());
+          assert.equal((await inspectHeadlessRuntime("/payload")).source.product.commit, process.env.SOURCE_SHA);'
+          docker build --platform linux/amd64 -f distribution/server/container/Dockerfile -t "zhuma-backend:$SOURCE_SHA" .build/qualification/payload
+          test "$(docker image inspect "zhuma-backend:$SOURCE_SHA" --format '{{.Config.User}}')" = 10001:10001
+      - name: Check real HTTP entry and member control-plane isolation
+        run: |
+          docker volume create zhuma-test-data
+          docker run -d --name zhuma-http --read-only --cpus 1 --memory 1g --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount type=volume,source=zhuma-test-data,target=/data -p 127.0.0.1:3080:3080 --entrypoint /bin/sh "zhuma-backend:$SOURCE_SHA" -ec 'exec node /app/start.mjs --data /data --host "$(hostname -i)" --port 3080 --operator-port 3081 --public-origin http://127.0.0.1:3080 --file-uploads --independent-reviews'
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:3080/workbench > .build/qualification/member.html; then break; fi
+            sleep 2
+          done
+          rg -q zhuma-member-root .build/qualification/member.html
+          test "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/workbench/app.js)" = 200
+          for path in / /connect; do test "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:3080$path")" = 404; done
+          test "$(curl --connect-timeout 2 --max-time 5 -sS -X POST -H 'Origin: http://127.0.0.1:3080' -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/api/session/prompt)" = 404
+          test "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/zhuma-id/session)" = 401
+          test "$(curl --connect-timeout 2 --max-time 5 -sS -X POST -H 'Origin: http://127.0.0.1:3080' -H 'Content-Type: application/json' -d '{}' -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/api/zhuma-member/snapshot)" = 401
+          test "$(curl --connect-timeout 2 --max-time 5 -sS -H 'Host: attacker.invalid' -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/workbench)" = 403
+          test "$(curl --connect-timeout 2 --max-time 5 -sS -H 'Origin: https://attacker.invalid' -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/workbench)" = 403
+          test "$(docker inspect zhuma-http --format '{{.State.Running}}')" = true
+          stopping_at=$(date +%s)
+          docker stop --time 45 zhuma-http
+          test "$(( $(date +%s) - stopping_at ))" -lt 30
+          test "$(docker inspect zhuma-http --format '{{.State.OOMKilled}}')" = false
+          exit_code=$(docker inspect zhuma-http --format '{{.State.ExitCode}}')
+          test "$exit_code" = 0 || test "$exit_code" = 1
+          printf '{"exitCode":%s,"scope":"idle process stop; no business Run drain proof"}\n' "$exit_code" > .build/qualification/artifacts/STOP.json
+      - name: Export only qualified production bytes and their hashes
+        run: |
+          tar -C .build/qualification/payload -czf .build/qualification/artifacts/portable.tar.gz .
+          docker save "zhuma-backend:$SOURCE_SHA" -o .build/qualification/artifacts/backend-image.tar
+          cp .build/qualification/payload/SOURCE.json .build/qualification/artifacts/SOURCE.json
+          docker image inspect "zhuma-backend:$SOURCE_SHA" --format '{{.Id}}' > .build/qualification/artifacts/IMAGE_ID
+          cd .build/qualification/artifacts
+          sha256sum portable.tar.gz backend-image.tar SOURCE.json IMAGE_ID STOP.json > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-server-amd64-${{ github.event.pull_request.head.sha }}
+          path: .build/qualification/artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Dispose only this runner's containers and fresh test data
+        if: always()
+        run: |
+          docker rm -f zhuma-http zhuma-build 2>/dev/null || true
+          docker volume rm zhuma-test-data zhuma-source 2>/dev/null || true
