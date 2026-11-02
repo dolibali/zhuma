@@ -2,6 +2,39 @@
 
 本入口复用固定 SDK 官方 Web CLI、原身份、目录、工作台、执行与附件存储，不启动另一套运行器。普通成员从 `/workbench` 进入，仅使用产品成员 cookie；SDK 根页面、通用 RPC、WebSocket、连接和首次设置仍属于操作者。
 
+## Linux amd64 候选运行包
+
+此入口用于 [v1.4 工作项 #372](https://github.com/dolibali/zhuma/issues/372) 的 Linux／容器交付；实际目标平台首启、权限、持久化和恢复仍在该项分别留证，不以准备成功代替验收。
+
+构建机使用 Node `24.15.0`、本仓 pnpm `12.4.2` 和固定 SDK 自己的 pnpm `11.28.5`。先取得完整 Git 检出及固定子模块，安装本仓冻结依赖，在实际 Linux amd64／glibc 构建：
+
+```sh
+node scripts/server/prepare.mjs
+cd .build/server/deepseek-harness
+corepack pnpm install --frozen-lockfile
+corepack pnpm run build:native-system
+corepack pnpm run build:lib
+corepack pnpm run build:web
+cd ../../..
+pnpm workbench:build
+node scripts/server/package-runtime.mjs --sdk .build/server/deepseek-harness --out .build/backend-runtime
+```
+
+`build:native-system` 使用当前 Node 安装的开发头与本机编译器，Linux flock 不复制 macOS 二进制。SDK Host 编译原命令预留 4 GiB V8 heap，构建资源和运行服务资源分别记录。构建还需要 Git、编译工具、Python 与冻结依赖下载通道；不需要启动 Electron、导入任何原 profile 或调用模型。
+
+打包复用 SDK 原 production closure／完整性检查、部署和链接物化，保留必需共享实例和许可证。它先核固定源码、准备摘要、运行闭包与共享补丁分类，再逐文件核部署后的补丁字节；原 legacy deploy 对明确构建期补丁的 unused 参数不替代这些检查。输出先写临时目录、完成后原子改名，拒绝覆盖已有输出。根布局固定为 `sdk/`、`workbench/`、`start.mjs`、`member-gateway.mjs`、`runtime-manifest.mjs`、`SOURCE.json`、`LICENSE`、`THIRD_PARTY_LICENSES.txt`。无 Git 检出、原数据或凭据；只保留经检查的包内相对依赖链接，不依赖构建机绝对路径。
+
+运行只读 `/app` 和唯一可写数据目录 `/data`：
+
+```sh
+node /app/start.mjs --data /data --host "$POD_IP" --port 3080 --operator-port 3081 \
+  --public-origin http://members.example:30080 --file-uploads --independent-reviews
+```
+
+`--host` 为本机具体 IP，拒绝通配。成员 HTTP 门只转送逐项登记的方法／路径元组到固定回环目的地；SDK 根页面、通用 RPC、操作者 token 和 upgrade 不公开。原 CLI 只监听 `127.0.0.1:3081`，K8s Service 仅映射成员 `3080`。外部 NodePort／域名根地址须明确列为 `--public-origin`（可重复）；PodIP:3080 始终是显式允许的探针 authority。Host／Origin 继续交原 SDK 检查，不信任 Forwarded 系列头。原 CLI 就绪前 `/workbench` 为 503，就绪后无 cookie 的 GET 返回成员页面；这只作启动／就绪，不认证业务完成。
+
+所有 HOME／DSH_HOME 和生成 overlay 落 `/data`。操作者能力仅写本进程的 `operator-url-*.txt`（0600），正常退出删除自己的文件，不输出 URL；只通过 Pod 本地或回环端口转发访问。文件与事件逐段透传，断开只关闭运输，不当作 Run 排空或交付。SIGTERM 转交并等待原 CLI，超预算为失败，不报告业务成功。运行时直接核 `SOURCE.json` 的固定 SDK、产品版本、平台、Node 与逐文件摘要，不要求 Git 或写入 `/app/.build`。
+
 ## 用已安装的 App 启动
 
 从同一次 Release 下载并核验 DMG、`SOURCE.json`、`SHA256SUMS`、`packaged-backend.sh` 和 `packaged-backend.mjs`。把两个启动文件放在同一目录，安装对应版本的 Zhuma 后执行：
@@ -21,7 +54,7 @@ pnpm workbench:build
 node scripts/server/start.mjs --sdk /path/to/prepared-sdk --data /path/to/zhuma-data
 ```
 
-默认只监听 `127.0.0.1:3080`。CLI 的 `--host` 必须是具体地址，不能用 `0.0.0.0` 或 `::`。本版不配置集群、公开网络入口或代理。
+旧源码开发入口默认只监听 `127.0.0.1:3080`。CLI 的 `--host` 必须是具体地址，不能用 `0.0.0.0` 或 `::`。该本地入口不配置集群；Linux／成员端口隔离使用上面的独立运行包，不把旧同口操作者页面暴露为成员 Service。
 
 成员使用启动时显示的无 token `/workbench` 地址，可创建账号并登录个人空间。在账号菜单打开“账号与团队”，创建团队或由创建者添加已有账号。普通成员可查看自己团队的成员，只有真实管理员可增删成员；旧团队没有管理员事实时保持只读。修改密码会使旧会话失效并要求重新登录。任务列表与看板读取同一批数据，卡片打开原任务；取消或未知进度不会显示为已交付。
 
