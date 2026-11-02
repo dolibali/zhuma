@@ -1,0 +1,17 @@
+# Copy to local-overrides/server-deployment/kustomization.yaml before editing.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../distribution/server/k8s
+images:
+  - name: zhuma-backend
+    newName: registry.example.invalid/library/zhuma-backend
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+patches:
+  - target:
+      kind: Deployment
+      name: zhuma-backend
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: https://backend.example.invalid
