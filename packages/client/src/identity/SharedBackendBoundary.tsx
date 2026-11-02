@@ -21,6 +21,8 @@ export function SharedBackendBoundary({
     [busy, setBusy] = useState<'saving' | 'checking' | null>(null),
     [error, setError] = useState('');
   const lifetime = useRef<AbortController>();
+  const opener = useRef<HTMLButtonElement>(),
+    restorePending = useRef(false);
   useEffect(() => {
     const active = new AbortController();
     lifetime.current = active;
@@ -29,6 +31,16 @@ export function SharedBackendBoundary({
       active.abort();
     };
   }, [client]);
+  useEffect(() => {
+    if (open) {
+      restorePending.current = true;
+      return;
+    }
+    if (!restorePending.current || busy) return;
+    restorePending.current = false;
+    const target = opener.current;
+    if (target?.isConnected && !target.disabled) target.focus();
+  }, [open, busy]);
   function select(next: string | null) {
     const active = lifetime.current;
     if (!active || busy) return;
@@ -118,7 +130,8 @@ export function SharedBackendBoundary({
         <Button
           variant="quiet"
           disabled={busy !== null}
-          onClick={() => {
+          onClick={(event) => {
+            opener.current = event.currentTarget;
             setMode(state.selection?.origin ? 'shared' : 'local');
             setOrigin(state.selection?.origin ?? '');
             setError('');
