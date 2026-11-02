@@ -1,0 +1,97 @@
+{
+  "scope": "Actual official macOS debug UI. Same isolated fictional workspace, target and viewport per comparison; stopped local target for connection error presentation. No user attachments. Not Windows/K8s/model or release acceptance.",
+  "beforeSource": "796dfc4a8dd5f7ca523d7039042520626e7f42eb",
+  "afterSource": "96e82034b143f6eb638a022f6bd25ae801ee1022",
+  "sdk": "504a01a9578abc2c6f1fb896b1dc322c9fe24f66",
+  "carrier": "Pinned patched SDK compiled once; unchanged SDK outputs reused. Product nine files rebuilt for each source. After client SHA matches author build.",
+  "files": [
+    {
+      "name": "connection-before-796-light.png",
+      "path": "docs/evidence/v1.4.0/pr380/connection-before-796-light.png",
+      "bytes": 57825,
+      "sha256": "8053a21e83379392b8af65c6aabee7d8b49e7142fbba4faf8c1263f3cef13b5e",
+      "size": [
+        1440,
+        900
+      ],
+      "source": "796dfc4a8dd5f7ca523d7039042520626e7f42eb"
+    },
+    {
+      "name": "connection-before-796-dark.png",
+      "path": "docs/evidence/v1.4.0/pr380/connection-before-796-dark.png",
+      "bytes": 52344,
+      "sha256": "5bfb3a23d375e9b31b516e81a9f45b24fc6486602882b07074596355fbba75e6",
+      "size": [
+        1440,
+        900
+      ],
+      "source": "796dfc4a8dd5f7ca523d7039042520626e7f42eb"
+    },
+    {
+      "name": "connection-after-96e-light.png",
+      "path": "docs/evidence/v1.4.0/pr380/connection-after-96e-light.png",
+      "bytes": 74594,
+      "sha256": "2fc23523d6684b6fc616b0c12bae65de8b7736985bfae1eaf8732179185c8f2a",
+      "size": [
+        1440,
+        900
+      ],
+      "source": "96e82034b143f6eb638a022f6bd25ae801ee1022"
+    },
+    {
+      "name": "connection-after-96e-dark.png",
+      "path": "docs/evidence/v1.4.0/pr380/connection-after-96e-dark.png",
+      "bytes": 69126,
+      "sha256": "ec0719da2203a01930cb6a5cef715f9ca7b551a8f82a8cfd892d0ccb60490c25",
+      "size": [
+        1440,
+        900
+      ],
+      "source": "96e82034b143f6eb638a022f6bd25ae801ee1022"
+    },
+    {
+      "name": "connection-after-96e-focus-return-light.png",
+      "path": "docs/evidence/v1.4.0/pr380/connection-after-96e-focus-return-light.png",
+      "bytes": 43906,
+      "sha256": "8a0cb86f20b33579f6b6108b1dd3acc24785a3865e273ba775a7284faa1fbf23",
+      "size": [
+        1440,
+        900
+      ],
+      "source": "96e82034b143f6eb638a022f6bd25ae801ee1022"
+    },
+    {
+      "name": "connection-after-96e-light-1024-unsaved.png",
+      "path": "docs/evidence/v1.4.0/pr380/connection-after-96e-light-1024-unsaved.png",
+      "bytes": 73340,
+      "sha256": "6093a92777acd866f2e528869340fb61d8713672616e9552cf543b25fc749694",
+      "size": [
+        1024,
+        800
+      ],
+      "source": "96e82034b143f6eb638a022f6bd25ae801ee1022"
+    },
+    {
+      "name": "brand-native-after-96e-light.png",
+      "path": "docs/evidence/v1.4.0/pr380/brand-native-after-96e-light.png",
+      "bytes": 45237,
+      "sha256": "d3b73280764f84c53d019d853bdb183c790119bc2224580ebb5dfdaeb488fa9f",
+      "size": [
+        1440,
+        900
+      ],
+      "source": "96e82034b143f6eb638a022f6bd25ae801ee1022"
+    },
+    {
+      "name": "brand-native-after-96e-dark.png",
+      "path": "docs/evidence/v1.4.0/pr380/brand-native-after-96e-dark.png",
+      "bytes": 44560,
+      "sha256": "3580c0a9e32f57c849026f9a664432a6d5c188cd1a345b546f8a07891547596f",
+      "size": [
+        1440,
+        900
+      ],
+      "source": "96e82034b143f6eb638a022f6bd25ae801ee1022"
+    }
+  ]
+}
