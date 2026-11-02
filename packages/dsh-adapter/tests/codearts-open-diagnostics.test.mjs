@@ -54,6 +54,11 @@ test('CodeArts trust preflight: bounded independent UTF-8 streams match only the
 for (const row of [
   { channel: 'stdout', text: `Folder not trusted: ${privateText}`, code: 'workspace-untrusted' },
   { channel: 'stderr', text: `文件夹未被信任: ${privateText}`, code: 'workspace-untrusted' },
+  {
+    channel: 'stdout',
+    text: `认证失败，没有设置环境变量CODEARTS_CLI_AK/CODEARTS_CLI_SK ${privateText}`,
+    code: 'authentication-required',
+  },
   { channel: 'stderr', text: `信任 ${privateText}`, code: 'start-failed' },
 ]) {
   test(`CodeArts trust preflight: ${row.channel}/${row.code} reaches the unchanged ACP failure and teardown`, async (t) => {
@@ -109,6 +114,32 @@ for (const row of [
     assert.equal(starts, 1, 'a failed preflight does not retry or grant trust');
   });
 }
+
+test('CodeArts authentication preflight: complete independent bounded UTF-8 templates only', () => {
+  const prefix = '认证失败，没有设置环境变量CODEARTS_CLI_AK/CODEARTS_CLI_SK';
+  const split = new CodeArtsStartupFailure();
+  split.write('stdout', Buffer.from(prefix.slice(0, -6)));
+  split.write('stderr', Buffer.from(prefix.slice(-6)));
+  assert.equal(split.code, undefined, 'different output streams cannot form a template');
+  for (const byte of Buffer.from(`\u001b[34m${prefix} ${privateText}\u001b[0m`))
+    split.write('stderr', Uint8Array.of(byte));
+  assert.equal(split.code, 'authentication-required');
+  assert.equal(JSON.stringify(split).includes(privateText), false);
+
+  for (const text of ['认证失败', 'CODEARTS_CLI_AK/CODEARTS_CLI_SK', prefix.slice(0, -1)]) {
+    const partial = new CodeArtsStartupFailure();
+    partial.write('stdout', Buffer.from(text));
+    assert.equal(partial.code, undefined);
+  }
+  const exhausted = new CodeArtsStartupFailure();
+  exhausted.write('stdout', Buffer.alloc(64 * 1024, 120));
+  exhausted.write('stderr', Buffer.from(prefix));
+  assert.equal(exhausted.code, undefined);
+  const ready = new CodeArtsStartupFailure();
+  ready.seal();
+  ready.write('stdout', Buffer.from(prefix));
+  assert.equal(ready.code, undefined, 'later server output cannot become a startup failure');
+});
 
 for (const row of [
   { stage: 'realpath', missing: true },

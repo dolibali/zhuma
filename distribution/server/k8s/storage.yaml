@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zhuma-backend-data
+  labels:
+    app.kubernetes.io/name: zhuma-backend
+    app.kubernetes.io/part-of: zhuma
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 5Gi

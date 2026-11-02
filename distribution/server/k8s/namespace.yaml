@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zhuma
+  labels:
+    app.kubernetes.io/part-of: zhuma
+    app.kubernetes.io/managed-by: zhuma-deployment

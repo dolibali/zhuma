@@ -2,7 +2,7 @@ import { symbols, type Context } from '@deepseek-ai/cordis';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { createCodeArtsProfileRegistration } from './executors/codearts/registration.js';
@@ -172,6 +172,48 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
     current();
     return { path, sha256: hash.digest('hex') };
   }
+  async function resolveLauncher(subprocess: Record<string, unknown>, command: string) {
+    const resolve = subprocess.resolveExecutable;
+    if (typeof resolve !== 'function') throw new SetupError('unavailable');
+    const selected: unknown = await Reflect.apply(resolve, subprocess, [
+      command,
+      undefined,
+      lifetime.signal,
+    ]);
+    current();
+    if (typeof selected !== 'string' || !isAbsolute(selected))
+      throw new SetupError('command-not-found');
+    if (process.platform !== 'win32') return selected;
+    try {
+      const physical = await realpath(selected);
+      current();
+      if (!/\.(?:cmd|bat)$/iu.test(physical)) return physical;
+      // The fixed official installer places its wrapper beside bin/codearts.exe.
+      // Resolve that file through the original service; never execute/parse a batch file.
+      if (basename(physical).toLowerCase() !== 'codearts.cmd')
+        throw new SetupError('command-not-found');
+      const bin = join(dirname(physical), 'bin');
+      const candidate: unknown = await Reflect.apply(resolve, subprocess, [
+        join(bin, 'codearts.exe'),
+        undefined,
+        lifetime.signal,
+      ]);
+      current();
+      if (typeof candidate !== 'string' || !isAbsolute(candidate))
+        throw new SetupError('command-not-found');
+      const executable = await realpath(candidate);
+      current();
+      if (
+        dirname(executable).toLowerCase() !== bin.toLowerCase() ||
+        basename(executable).toLowerCase() !== 'codearts.exe'
+      )
+        throw new SetupError('command-not-found');
+      return executable;
+    } catch {
+      current();
+      throw new SetupError('command-not-found');
+    }
+  }
   async function configure(command: string, checkpoint: (stage: SetupStage) => void) {
     checkpoint('edit-admission');
     if (writing) throw new SetupError('incomplete');
@@ -191,14 +233,7 @@ export function openHostCodeArtsSetup(ctx: Context, bundle = new URL('./', impor
       if (!record(subprocess) || typeof subprocess.resolveExecutable !== 'function')
         throw new SetupError('unavailable');
       checkpoint('resolve-command');
-      const launcher: unknown = await Reflect.apply(subprocess.resolveExecutable, subprocess, [
-        command,
-        undefined,
-        lifetime.signal,
-      ]);
-      current();
-      if (typeof launcher !== 'string' || !isAbsolute(launcher))
-        throw new SetupError('command-not-found');
+      const launcher = await resolveLauncher(subprocess, command);
       checkpoint('manifest');
       const manifestFile = physicalBundleFile(new URL('codearts-acp.manifest.json', bundle));
       if ((await stat(manifestFile)).size > 256 * 1024) throw new SetupError('unavailable');

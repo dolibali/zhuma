@@ -77,7 +77,11 @@ type Entry = { key: number } & (
       sessionId: string;
     }
 );
-type Guard = (target: unknown, signal: AbortSignal) => Promise<boolean>;
+type Guard = (
+  target: unknown,
+  signal: AbortSignal,
+  intent?: 'restore' | 'explicit',
+) => Promise<boolean>;
 
 /** Existing Workspace navigation is classified before retain/resume. Task
  * hits open the same controlled task view, never the ordinary Conversation. */
@@ -357,7 +361,7 @@ export function installMemberNativeNavigation(
     if (!accepted) active = false;
     return false;
   };
-  const unguard = source.registerSessionNavigationGuard(async (value, signal) => {
+  const unguard = source.registerSessionNavigationGuard(async (value, signal, intent) => {
     signal.throwIfAborted();
     if (!installed) throw new DOMException('Navigation disposed', 'AbortError');
     const attempt = ++navigation;
@@ -371,8 +375,10 @@ export function installMemberNativeNavigation(
       publish();
       return false;
     };
-    if (member.status !== 'authenticated')
+    if (member.status !== 'authenticated') {
+      if (intent === 'restore') return false;
       return refuse('请先登录账号并选择有权空间，再重新打开会话。');
+    }
     if (backend.phase !== 'ready' || !backend.selection)
       return refuse('服务连接尚未就绪。请检查账号菜单中的服务连接后重试。');
     if (scope?.status !== 'ready')

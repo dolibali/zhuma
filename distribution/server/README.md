@@ -2,6 +2,38 @@
 
 本入口复用固定 SDK 官方 Web CLI、原身份、目录、工作台、执行与附件存储，不启动另一套运行器。普通成员从 `/workbench` 进入，仅使用产品成员 cookie；SDK 根页面、通用 RPC、WebSocket、连接和首次设置仍属于操作者。
 
+## Linux amd64 候选运行包
+
+此入口用于 [v1.4 工作项 #372](https://github.com/dolibali/zhuma/issues/372) 的 Linux／容器交付；实际目标平台首启、权限、持久化和恢复仍在该项分别留证，不以准备成功代替验收。
+
+构建机使用 Node `24.15.0`、本仓 pnpm `12.4.2` 和固定 SDK 自己的 pnpm `11.28.5`。先取得完整 Git 检出及固定子模块，安装本仓冻结依赖，在实际 Linux amd64／glibc 构建：
+
+```sh
+node scripts/server/prepare.mjs
+cd .build/server/deepseek-harness
+corepack pnpm install --frozen-lockfile
+corepack pnpm run build:native-system
+corepack pnpm run build:lib
+corepack pnpm run build:web
+cd ../../..
+node scripts/server/package-runtime.mjs --sdk .build/server/deepseek-harness --out .build/backend-runtime
+```
+
+`build:native-system` 使用当前 Node 安装的开发头与本机编译器，Linux flock 不复制 macOS 二进制。SDK Host 编译原命令预留 4 GiB V8 heap，构建资源和运行服务资源分别记录。构建还需要 Git、编译工具、Python 与冻结依赖下载通道；不需要启动 Electron、导入任何原 profile 或调用模型。
+
+打包从当前干净源码重新生成工作台九文件，并核源码在构建期间未移动，不能把旧 `.build/workbench` 标成新提交。SDK 复用原 production closure／完整性检查和 isolated deploy，保留固定锁中的私有依赖版本与共享实例；只将指向原 SDK workspace 的链接复制为各自唯一模块，其余链接保持包内相对路径。先核固定源码、准备摘要、运行闭包与共享补丁分类，再沿真实 CLI 依赖链逐文件核版本和补丁字节，不把根目录中的同名包当作实际使用版本。原 legacy deploy 对明确构建期补丁的 unused 参数不替代这些检查。输出先写临时目录、完成后原子改名，拒绝覆盖已有输出。根布局固定为 `sdk/`、`workbench/`、`start.mjs`、`member-gateway.mjs`、`runtime-manifest.mjs`、`SOURCE.json`、`LICENSE`、`THIRD_PARTY_LICENSES.txt`。保留许可，不含 Git 检出、原数据或凭据；绝对／逃逸链接拒绝，运行不依赖构建机路径。
+
+运行只读 `/app` 和唯一可写数据目录 `/data`：
+
+```sh
+node /app/start.mjs --data /data --host "$POD_IP" --port 3080 --operator-port 3081 \
+  --public-origin http://members.example:30080 --file-uploads --independent-reviews
+```
+
+`--host` 为本机具体 IP，拒绝通配。成员 HTTP 门只转送逐项登记的方法／路径元组到固定回环目的地；SDK 根页面、通用 RPC、操作者 token 和 upgrade 不公开。原 CLI 只监听 `127.0.0.1:3081`，K8s Service 仅映射成员 `3080`。外部 NodePort／域名根地址须明确列为 `--public-origin`（可重复）；PodIP:3080 始终是显式允许的探针 authority。Host／Origin 继续交原 SDK 检查，不信任 Forwarded 系列头。原 CLI 就绪前 `/workbench` 为 503，就绪后无 cookie 的 GET 返回成员页面；这只作启动／就绪，不认证业务完成。
+
+所有 HOME／DSH_HOME 和生成 overlay 落 `/data`。操作者能力仅写本进程的 `operator-url-*.txt`（0600），正常退出删除自己的文件，不输出 URL；只通过 Pod 本地或回环端口转发访问。文件与事件逐段透传，断开只关闭运输，不当作 Run 排空或交付。SIGTERM 转交并等待原 CLI，超预算为失败，不报告业务成功。运行时直接核 `SOURCE.json` 的固定 SDK、产品版本、平台、Node 与逐文件摘要，不要求 Git 或写入 `/app/.build`。
+
 ## 用已安装的 App 启动
 
 从同一次 Release 下载并核验 DMG、`SOURCE.json`、`SHA256SUMS`、`packaged-backend.sh` 和 `packaged-backend.mjs`。把两个启动文件放在同一目录，安装对应版本的 Zhuma 后执行：
@@ -21,13 +53,15 @@ pnpm workbench:build
 node scripts/server/start.mjs --sdk /path/to/prepared-sdk --data /path/to/zhuma-data
 ```
 
-默认只监听 `127.0.0.1:3080`。CLI 的 `--host` 必须是具体地址，不能用 `0.0.0.0` 或 `::`。本版不配置集群、公开网络入口或代理。
+旧源码开发入口默认只监听 `127.0.0.1:3080`。CLI 的 `--host` 必须是具体地址，不能用 `0.0.0.0` 或 `::`。该本地入口不配置集群；Linux／成员端口隔离使用上面的独立运行包，不把旧同口操作者页面暴露为成员 Service。
 
 成员使用启动时显示的无 token `/workbench` 地址，可创建账号并登录个人空间。在账号菜单打开“账号与团队”，创建团队或由创建者添加已有账号。普通成员可查看自己团队的成员，只有真实管理员可增删成员；旧团队没有管理员事实时保持只读。修改密码会使旧会话失效并要求重新登录。任务列表与看板读取同一批数据，卡片打开原任务；取消或未知进度不会显示为已交付。
 
 原首次设置的操作者入口保留在数据目录内权限为 `0600` 的 `operator-url.txt`，只供操作者在本机打开，普通成员注册不需要该链接。官方 CLI 为每个进程生成该链接；正常退出后删除，不发给成员。共享 AI 规划由操作者在该后端官方根页面的 Settings → Models 中配置供应商与模型；成员 `/workbench` 的团队管理员身份不授予 SDK 操作者权限。桌面本机模型配置与此后端配置分开，不复制另一安装的密钥。模板／知识页面及多成员执行按各自集成版本验收，不能仅凭服务器已启动判断完整产品通过。
 
 `--data` 下的 `dsh/` 持久化原 SDK 凭据、身份、目录、工作台、执行和附件；`home/` 是隔离的运行 HOME。此目录含私密资料，不提交、不复制其他安装的模型 profile 或会话库。停止服务后备份整个目录；恢复到同版本并用相同 `--data` 启动。旧单人数据不会自动迁移。启动器不继承当前 shell 的模型密钥，也不读取原用户 HOME。
+
+原生模块通过原加载器的直接模式，从清单核验后的只读应用目录加载；不向 `/tmp` 复制可执行缓存，也不放宽临时挂载权限。运行包仍核准确版本、文件摘要和原生绑定兼容性。
 
 ## 执行位置与边界
 

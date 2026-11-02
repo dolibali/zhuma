@@ -60,23 +60,24 @@ import {Context} from '@deepseek-ai/cordis';
 const {UiWorkspaceService}=await import('./navigation.mjs');
 const checks=[];
 function store(value){const listeners=new Set();return {getSnapshot:()=>value,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn)},set(next){value=next;for(const fn of listeners)fn()}}}
-function bench(saved){
+function bench(saved,fresh=false){
  const backing=new Map(saved?[['dsh.sessions.current',JSON.stringify(saved)]]:[]);
  globalThis.localStorage={getItem:key=>backing.get(key)??null,setItem:(key,value)=>backing.set(key,value),removeItem:key=>backing.delete(key)};
- const ctx=new Context(),retained=[],revealed=[];
+ const ctx=new Context(),retained=[],revealed=[],created=[];
  let navigation=new AbortController();
  ctx.provide('layout',{beginNavigation(){navigation.abort();navigation=new AbortController();return navigation.signal},selectPanel(value){revealed.push(value)}});
  const workspaces=store({items:[],archivedSessionIds:[],pinnedSessionIds:[],phase:'pending',state:'loading',error:null});
  const sessions=store({ids:[],byId:{},phase:'pending',projectionsBySession:{}});
- const nav=new UiWorkspaceService(ctx,{}, {list:workspaces}, {list:sessions,retain(target){retained.push(target);return {sessionId:typeof target==='string'?target:target.childSessionId,release(){}}},subagentAddress(){return undefined},create(){throw Error('Navigation must not create Sessions')}},{pinSessionOrder(){}},()=>{});
- return {ctx,nav,retained,revealed,workspaces,sessions};
+ const workspaceOwner={list:workspaces,async initializeDefault(){assert.equal(fresh,true);const item={workspaceId:'initial-workspace',path:'/workspace/initial',sessionIds:[],createdAt:'2026-01-01T00:00:00Z'};workspaces.set({...workspaces.getSnapshot(),items:[item]});return item}};
+ const nav=new UiWorkspaceService(ctx,{}, workspaceOwner, {list:sessions,retain(target){retained.push(target);return {sessionId:typeof target==='string'?target:target.childSessionId,release(){}}},subagentAddress(){return undefined},create(request){assert.equal(fresh,true,'Navigation must not create Sessions');created.push(request);return Promise.resolve('initial-blank')}},{pinSessionOrder(){}},()=>{});
+ return {ctx,nav,retained,revealed,created,workspaces,sessions};
 }
 async function flush(){await tick();await tick()}
 {
  const b=bench();b.nav.openSession('ordinary');assert.deepEqual(b.retained,['ordinary']);assert.deepEqual(b.revealed,[null]);await b.ctx.fiber.dispose();checks.push('unregistered-ordinary-path-preserved');
 }
 {
- const b=bench();let calls=0;b.nav.registerSessionNavigationGuard((target)=>{calls++;assert.equal(target,'task');return false});b.nav.openSession('task');assert.deepEqual(b.retained,[]);await flush();assert.equal(calls,1);assert.deepEqual(b.retained,[]);assert.deepEqual(b.revealed,[]);await b.ctx.fiber.dispose();checks.push('task-handled-before-retain-or-reveal');
+ const b=bench();let calls=0;b.nav.registerSessionNavigationGuard((target,_signal,intent)=>{calls++;assert.equal(target,'task');assert.equal(intent,'explicit');return false});b.nav.openSession('task');assert.deepEqual(b.retained,[]);await flush();assert.equal(calls,1);assert.deepEqual(b.retained,[]);assert.deepEqual(b.revealed,[]);await b.ctx.fiber.dispose();checks.push('task-handled-before-retain-or-reveal');
 }
 {
  const b=bench(),pending=Promise.withResolvers();b.nav.registerSessionNavigationGuard(()=>pending.promise);b.nav.openSession('ordinary');await flush();assert.deepEqual(b.retained,[]);pending.resolve(true);await flush();assert.deepEqual(b.retained,['ordinary']);await b.ctx.fiber.dispose();checks.push('ordinary-retain-after-explicit-allow-only');
@@ -97,7 +98,10 @@ async function flush(){await tick();await tick()}
  const b=bench(),target={parentSessionId:'task-parent',childSessionId:'task-child'};let received;b.nav.registerSessionNavigationGuard(value=>{received=value;return false});b.nav.openSession(target);await flush();assert.equal(received,target);assert.deepEqual(b.retained,[]);await b.ctx.fiber.dispose();checks.push('actual-subagent-address-before-retain');
 }
 {
- const b=bench({sessionId:'saved-task'});let looked;b.nav.registerSessionNavigationGuard(target=>{looked=target;return false});b.sessions.set({ids:['saved-task'],byId:{'saved-task':{id:'saved-task',blank:false,updatedAt:0}},phase:'ready',projectionsBySession:{}});b.workspaces.set({items:[],archivedSessionIds:[],pinnedSessionIds:[],phase:'ready',state:'idle',error:null});await flush();assert.equal(looked,'saved-task');assert.deepEqual(b.retained,[]);await b.ctx.fiber.dispose();checks.push('cold-saved-selection-shares-central-guard');
+ const b=bench({sessionId:'saved-task'});let looked;b.nav.registerSessionNavigationGuard((target,_signal,intent)=>{looked=target;assert.equal(intent,'restore');return false});b.sessions.set({ids:['saved-task'],byId:{'saved-task':{id:'saved-task',blank:false,updatedAt:0}},phase:'ready',projectionsBySession:{}});b.workspaces.set({items:[],archivedSessionIds:[],pinnedSessionIds:[],phase:'ready',state:'idle',error:null});await flush();assert.equal(looked,'saved-task');assert.deepEqual(b.retained,[]);await b.ctx.fiber.dispose();checks.push('cold-saved-selection-shares-central-guard');
+}
+{
+ const b=bench(undefined,true);let looked;b.nav.registerSessionNavigationGuard((target,_signal,intent)=>{looked=target;assert.equal(intent,'restore');return false});b.sessions.set({ids:[],byId:{},phase:'ready',projectionsBySession:{}});b.workspaces.set({items:[],archivedSessionIds:[],pinnedSessionIds:[],phase:'ready',state:'idle',error:null});await flush();assert.equal(looked,'initial-blank');assert.deepEqual(b.created,[{workspaceId:'initial-workspace'}]);assert.deepEqual(b.retained,[]);assert.deepEqual(b.revealed,[]);await b.ctx.fiber.dispose();checks.push('fresh-startup-blank-is-implicit-before-retain');
 }
 {
  const b=bench(),pending=Promise.withResolvers();b.nav.registerSessionNavigationGuard(()=>pending.promise);b.nav.openSession('late');await flush();await b.ctx.fiber.dispose();pending.resolve(true);await flush();assert.deepEqual(b.retained,[]);checks.push('disposed-navigation-never-retains');

@@ -195,3 +195,43 @@ test('长项目、资料和小窗口不横溢；取消编辑不修改项目', as
   await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
   expect(commands(replay)).toHaveLength(0);
 });
+
+test('项目行键盘：嵌套编辑／创建任务保留 Enter，仅行本身打开工作页', async ({ page, replay }) => {
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: '工作台导航' })
+    .getByRole('button', { name: /^项目/ })
+    .click();
+  const row = page.getByRole('article', { name: '订单门户', exact: true });
+  await expect(row).toBeVisible();
+
+  // Nested 编辑 keeps Enter — edit dialog, still on the project list (no project nav).
+  await row.getByRole('button', { name: '编辑', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  const edit = page.getByRole('dialog', { name: '编辑项目', exact: true });
+  await expect(edit).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '项目导航' })).toHaveCount(0);
+  await button(edit, '取消').click();
+  await expect(edit).toHaveCount(0);
+
+  // Row itself: focus article then Enter opens the project work page.
+  await row.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: '订单门户', exact: true })).toBeVisible();
+  await expect(button(page.getByRole('navigation', { name: '项目导航' }), '工作')).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+
+  // Back to the list — 创建任务 navigates into the project, so exercise it after returning.
+  await button(page, '全部项目').click();
+  const listed = page.getByRole('article', { name: '订单门户', exact: true });
+  await expect(listed).toBeVisible();
+  await listed.getByRole('button', { name: '创建任务', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  const create = page.getByRole('dialog', { name: '创建任务', exact: true });
+  await expect(create).toBeVisible();
+  await button(create, '取消').click();
+  await expect(create).toHaveCount(0);
+  expect(commands(replay)).toHaveLength(0);
+});

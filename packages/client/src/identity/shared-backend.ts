@@ -1,4 +1,5 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
+import { createIdentityApi, IdentityApiError } from './api.js';
 
 export interface SharedBackendStatus {
   readonly origin: string | null;
@@ -9,6 +10,8 @@ export interface SharedBackendStatus {
 export interface SharedBackendSnapshot {
   readonly phase: 'loading' | 'ready' | 'error';
   readonly selection: SharedBackendStatus | undefined;
+  readonly verification?:
+    'checking' | 'reachable' | 'login-required' | 'unavailable' | 'invalid-response';
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const object = (raw: unknown): raw is Record<string, unknown> =>
@@ -165,7 +168,11 @@ export function createSharedBackendClient(
       changed =
         snapshot.selection !== undefined &&
         snapshot.selection.connectionId !== selection.connectionId;
-    publish({ phase: 'ready', selection });
+    publish({
+      phase: 'ready',
+      selection,
+      ...(!changed && snapshot.verification ? { verification: snapshot.verification } : {}),
+    });
     if (changed) onConnectionChange();
   }
   function refresh(): Promise<void> {
@@ -403,6 +410,41 @@ export function createSharedBackendClient(
   return {
     fetcher,
     refresh,
+    async check(signal: AbortSignal) {
+      if (snapshot.phase !== 'ready' || !snapshot.selection)
+        throw new TypeError('请先重新读取服务设置。');
+      const attempt = sequence;
+      publish({ ...snapshot, verification: 'checking' });
+      try {
+        // Use the original read-only member endpoint and its strict public codec.
+        // Saving an address or reading local metadata never proves reachability.
+        await createIdentityApi(async (input, init) => {
+          const response = await fetcher(input, init);
+          if (
+            response.status === 502 &&
+            (await response
+              .clone()
+              .json()
+              .catch(() => undefined)) === null
+          )
+            throw new IdentityApiError('invalid-response');
+          return response;
+        }).session(signal);
+        current(attempt, signal);
+        publish({ ...snapshot, verification: 'reachable' });
+      } catch (error) {
+        current(attempt, signal);
+        publish({
+          ...snapshot,
+          verification:
+            error instanceof IdentityApiError && error.code === 'unauthenticated'
+              ? 'login-required'
+              : error instanceof IdentityApiError && error.code === 'invalid-response'
+                ? 'invalid-response'
+                : 'unavailable',
+        });
+      }
+    },
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) {
       listeners.add(listener);
