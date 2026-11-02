@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 export const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export const serverReceipt = (context) => ({
@@ -54,13 +55,14 @@ export function serverSource(context) {
 }
 export async function publishedPlatformFixture(context, directory) {
   const names = platformNames(context),
-    installer = Buffer.from('SYNTHETIC_EXE_CONTRACT_ONLY');
+    installer = Buffer.from('SYNTHETIC_EXE_CONTRACT_ONLY'),
+    rawImage = Buffer.from('SYNTHETIC_IMAGE_CONTRACT_ONLY');
   const content = [
     installer,
     JSON.stringify(windowsSource(context, installer)),
     JSON.stringify(serverSource(context)),
     'SYNTHETIC_PORTABLE_CONTRACT_ONLY',
-    'SYNTHETIC_IMAGE_CONTRACT_ONLY',
+    gzipSync(rawImage),
     'SYNTHETIC_DEPLOYMENT_CONTRACT_ONLY',
     await readFile(join(context.root, 'LICENSE')),
     await readFile(join(context.root, 'THIRD_PARTY_NOTICES.md')),
@@ -85,9 +87,11 @@ export async function publishedPlatformFixture(context, directory) {
             name,
             i === 0
               ? { bytes: assets[3].bytes, sha256: assets[3].sha256 }
-              : i === 2
-                ? { bytes: assets[2].bytes, sha256: assets[2].sha256 }
-                : { bytes: 1, sha256: 'e'.repeat(64) },
+              : i === 1
+                ? { bytes: rawImage.length, sha256: sha(rawImage) }
+                : i === 2
+                  ? { bytes: assets[2].bytes, sha256: assets[2].sha256 }
+                  : { bytes: 1, sha256: 'e'.repeat(64) },
           ],
         ),
       ),

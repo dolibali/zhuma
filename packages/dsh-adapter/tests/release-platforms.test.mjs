@@ -95,7 +95,7 @@ test('release assembly contracts: retain original platform sources, qualify ever
     output,
   );
   assert.deepEqual(
-    verifyPlatformAssets(context, output, platforms).map((item) => item.name),
+    (await verifyPlatformAssets(context, output, platforms)).map((item) => item.name),
     platformNames(context),
   );
   assert.equal(
@@ -104,10 +104,10 @@ test('release assembly contracts: retain original platform sources, qualify ever
     ),
     true,
   );
-  assert.throws(() => verifyPlatformAssets(context, output, undefined));
-  assert.throws(() =>
+  await assert.rejects(verifyPlatformAssets(context, output, undefined));
+  await assert.rejects(
     verifyPlatformAssets({ ...context, source: 'f'.repeat(40) }, output, platforms),
   );
   await writeFile(join(output, platforms.windows.installer), 'CHANGED_SYNTHETIC_EXE');
-  assert.throws(() => verifyPlatformAssets(context, output, platforms));
+  await assert.rejects(verifyPlatformAssets(context, output, platforms));
 });

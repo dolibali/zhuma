@@ -11,9 +11,9 @@ import {
   readdirSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { Transform } from 'node:stream';
+import { Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createGzip } from 'node:zlib';
+import { createGunzip, createGzip } from 'node:zlib';
 import { candidateFileRecord } from './windows-candidate.mjs';
 
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
@@ -245,7 +245,7 @@ export async function assemblePlatformAssets(context, windows, server, receipt, 
   };
 }
 
-export function verifyPlatformAssets(context, directory, platforms) {
+export async function verifyPlatformAssets(context, directory, platforms) {
   assert(
     platforms && Array.isArray(platforms.assets),
     'Both Windows and qualified Linux release assets are required.',
@@ -303,5 +303,28 @@ export function verifyPlatformAssets(context, directory, platforms) {
   assert.match(receipt.artifactDigest, /^sha256:[a-f0-9]{64}$/u);
   for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md'])
     assert(readFileSync(join(directory, file)).equals(readFileSync(join(context.root, file))));
+  const original = records['backend-image.tar'],
+    hash = createHash('sha256');
+  let bytes = 0;
+  await pipeline(
+    createReadStream(join(directory, platforms.server.image)),
+    createGunzip(),
+    new Writable({
+      write(chunk, _encoding, done) {
+        bytes += chunk.length;
+        if (bytes > original.bytes) {
+          done(new Error('Decompressed image exceeds the qualified byte length.'));
+          return;
+        }
+        hash.update(chunk);
+        done();
+      },
+    }),
+  );
+  assert.deepEqual(
+    { bytes, sha256: hash.digest('hex') },
+    original,
+    'Decompressed image differs from the qualified Docker SAVE.',
+  );
   return platforms.assets;
 }

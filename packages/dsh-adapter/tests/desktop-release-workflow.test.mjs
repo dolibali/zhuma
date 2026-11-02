@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { gzipSync } from 'node:zlib';
 import { parse } from 'yaml';
 import {
   platformNames,
@@ -355,4 +356,55 @@ test('release contracts: self-consistent changed backend launcher bytes still re
   );
   await assert.rejects(publish(context, directory, h.api), /exact checked-out release source/);
   assert.equal(h.calls.length, 0);
+});
+
+test('release contracts: recomputed outer hashes cannot replace the qualified Docker SAVE with invalid or different decompressed bytes', async (t) => {
+  for (const [name, replacement, expected] of [
+    [
+      'not-gzip',
+      () => Buffer.from('NOT_GZIP_AND_NOT_THE_QUALIFIED_DOCKER_SAVE'),
+      { code: 'Z_DATA_ERROR' },
+    ],
+    [
+      'same-length-different-bytes',
+      (original) => gzipSync(Buffer.alloc(original.bytes)),
+      /Decompressed image differs from the qualified Docker SAVE/,
+    ],
+    [
+      'shorter-original',
+      (original) => gzipSync(Buffer.alloc(original.bytes - 1)),
+      /Decompressed image differs from the qualified Docker SAVE/,
+    ],
+    [
+      'longer-original',
+      (original) => gzipSync(Buffer.alloc(original.bytes + 1)),
+      /Decompressed image exceeds the qualified byte length/,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const directory = await artifacts(t),
+        h = fakeApi();
+      const manifest = JSON.parse(await readFile(join(directory, 'SOURCE.json'), 'utf8'));
+      const original = structuredClone(manifest.platforms.server.records['backend-image.tar']);
+      const bytes = replacement(original);
+      await writeFile(join(directory, manifest.platforms.server.image), bytes);
+      const asset = manifest.platforms.assets.find(
+        (item) => item.name === manifest.platforms.server.image,
+      );
+      asset.bytes = bytes.length;
+      asset.sha256 = sha(bytes);
+      const source = Buffer.from(JSON.stringify(manifest));
+      await writeFile(join(directory, 'SOURCE.json'), source);
+      await writeFile(
+        join(directory, 'SHA256SUMS'),
+        `${sha(await readFile(join(directory, context.filename)))}  ${context.filename}\n${sha(source)}  SOURCE.json\n` +
+          [...manifest.artifacts.backendLaunchers, ...manifest.platforms.assets]
+            .map((item) => `${item.sha256}  ${item.name}\n`)
+            .join(''),
+      );
+      assert.deepEqual(manifest.platforms.server.records['backend-image.tar'], original);
+      await assert.rejects(publish(context, directory, h.api), expected);
+      assert.equal(h.calls.length, 0, 'Reject before any release API call.');
+    });
+  }
 });

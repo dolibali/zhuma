@@ -231,7 +231,7 @@ export function verifyMacMaterial(context, directory, additionalAssets = []) {
 }
 export async function publish(context, directory, api) {
   const manifest = readJson(join(directory, 'SOURCE.json'));
-  const extra = verifyPlatformAssets(context, directory, manifest.platforms);
+  const extra = await verifyPlatformAssets(context, directory, manifest.platforms);
   verifyMacMaterial(context, directory, extra);
   assert.deepEqual(
     await serverQualification(context, manifest.platforms.server.qualification.runId, api),
@@ -360,7 +360,7 @@ async function main() {
       readJson(join(server, 'server-preflight.json')),
       output,
     );
-    verifyPlatformAssets(context, output, manifest.platforms);
+    await verifyPlatformAssets(context, output, manifest.platforms);
     const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
     writeFileSync(join(output, 'SOURCE.json'), bytes, { flag: 'wx' });
     writeFileSync(
