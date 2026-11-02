@@ -102,7 +102,7 @@ try {
   await materializeStagedLinks(deployed);
   await deduplicateStagedWorkspacePackages(deployed, sdk);
   for (const patch of plan.patches) {
-    const from = await sharedPatchPackageRoot(sdk, patch.name);
+    const from = await sharedPatchPackageRoot(sdk, patch.name, patch.version);
     const to = join(deployed, 'node_modules', patch.name);
     assert.equal(
       JSON.parse(await readFile(join(to, 'package.json'), 'utf8')).version,
